@@ -1,178 +1,153 @@
 /**
- * Covers AC-4 (#600) — the local-calendar-day suite is proven able to fail.
+ * #600 — the proof that `test/unit/local-calendar-day.test.ts` can fail.
  *
  * `.claude/rules/checks-must-be-able-to-fail.md`: before you trust a check,
- * restore the defect and watch it go red. The defect here is one line — the
- * UTC day stamp inside `localCalendarDay` — so the mutant is that line put
- * back, and `test/unit/local-calendar-day.test.ts` is SPAWNED twice against
- * one argv differing only in `LOCAL_CALENDAR_DAY_SOURCE`.
+ * break the thing it guards and watch it go red. The thing guarded here is
+ * one function, so the break is one function — the UTC stamp this issue
+ * removed, restored inside `localCalendarDay` — and the 23:30 suite is
+ * SPAWNED twice against one argv, differing only in
+ * `LOCAL_CALENDAR_DAY_SOURCE`.
  *
- * Four properties, each asserted here rather than left as a convention:
+ * Four properties, all asserted rather than left as conventions:
  *
  * - **The mutation is proven to change behaviour before any count is read.**
- *   A row of zeros from a mutant that was never really applied is
- *   indistinguishable from a row of zeros from a check that cannot fail
- *   (#485, #297), so the first case names an input — 23:30 EDT on
- *   2026-09-14 — and shows real and mutant disagreeing on it.
- * - **The baseline is read before any mutation row.** An instrument that
- *   stopped reporting takes the baseline down with it (#60), and the baseline
- *   is the row nobody checks.
- * - **`ran` is established before any verdict.** A suite that failed to load
- *   reports no failures, which reads exactly like a suite that passed.
- * - **Red and green are compared by NAME, not by count.** "2 of 6" is
- *   satisfied by any two. The TZ=UTC control must stay GREEN under the
- *   mutant, because under UTC the two rules agree and a mutation that turned
- *   everything red would mean the mutant was broken, not that the suite
- *   measures the zone.
+ *   A 0 and a mutation that was never applied look identical. The
+ *   distinguishing input is named, run against both sources, and the two
+ *   answers compared, before the suites are spawned at all.
+ * - **The signature appears exactly once**, so no second day-stamp rule can
+ *   survive the mutation and hold the suite up.
+ * - **The module has no relative imports**, so the mutant runs from a temp
+ *   directory. Without that a later `from "../x"` would make the mutant die
+ *   on module resolution, and a suite that failed to load reports no
+ *   failures — indistinguishable from a mutant nothing caught.
+ * - **`ran` is read before any verdict.** Both spawns must come back with the
+ *   whole case list; a suite that never loaded is 0 fail.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { extractTestFailureCount } from "../../gates/gate-executor";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const HELPER = join(ROOT, "lib", "local-calendar-day.ts");
 const SUITE = join(ROOT, "test", "unit", "local-calendar-day.test.ts");
 
-/**
- * The one line that makes the helper local. Declared here as a literal so the
- * mutation has a single site; if it moves or is duplicated the builder throws
- * and this whole file ABORTS rather than passing quietly over a mutation that
- * was never applied.
- */
-const LOCAL_READING = "const [y, m, d] = [at.getFullYear(), at.getMonth() + 1, at.getDate()];";
+/** The one binding this file mutates. Declared as a literal so a rename aborts. */
+const SIGNATURE = "export function localCalendarDay(at: Date = new Date(), timeZone?: string): string {";
 
 /**
- * The defect, restored. UTC-INTENTIONAL: this string is the pre-#600 stamp
- * written out on purpose — it is the mutant, not a day stamp this repo uses.
+ * The defect, restored. The marker travels with the line into the generated
+ * mutant, where it is equally true — this is the bug #600 removed, rebuilt so
+ * the suite can be seen going red against it, and never written back to lib/.
  */
-const UTC_READING = 'const [y, m, d] = at.toISOString().slice(0, 10).split("-").map(Number);';
+const RESTORED_UTC_BODY = `
+  void timeZone;
+  // UTC-INTENTIONAL: the restored #600 defect, built only inside a temp-dir mutant
+  return at.toISOString().split("T")[0];
+}
+`;
 
-/** The instant the whole issue is about: 23:30 EDT on 2026-09-14. */
-const EVENING = "2026-09-15T03:30:00.000Z";
-
-let dir: string;
-let mutant: string;
-let probe: string;
-
-function buildMutant(): string {
-  const source = readFileSync(HELPER, "utf-8");
-  const hits = source.split(LOCAL_READING).length - 1;
-  if (hits !== 1) {
+function buildRestoredUtcMutant(source: string): string {
+  const occurrences = source.split(SIGNATURE).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(`could not build the mutant: the binding signature appears ${occurrences} times`);
+  }
+  const relativeImports = source.match(/from\s+["']\.{1,2}\//g) ?? [];
+  if (relativeImports.length > 0) {
     throw new Error(
-      `could not build the mutant: the local reading appears ${hits} times in ${HELPER}, expected exactly 1`,
+      `could not build the mutant: ${HELPER} grew ${relativeImports.length} relative import(s), ` +
+        `so a mutant in a temp directory would die on module resolution rather than on the mutation`,
     );
   }
-  const mutated = source.replace(LOCAL_READING, UTC_READING);
-  // A mutant byte-identical to the original is not a mutant.
-  if (mutated === source) throw new Error("could not build the mutant: the replacement changed nothing");
-  return mutated;
+  return source.slice(0, source.indexOf(SIGNATURE)) + SIGNATURE + RESTORED_UTC_BODY;
 }
 
-beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), "local-calendar-day-mutant-"));
-  mutant = join(dir, "local-calendar-day.mutant.ts");
-  writeFileSync(mutant, buildMutant());
-  probe = join(dir, "probe.ts");
-  writeFileSync(
-    probe,
-    `const [, , source, iso] = process.argv;
-const mod = await import(source);
-process.stdout.write(mod.localCalendarDay(new Date(iso)));
-`,
-  );
-});
-
-afterAll(() => {
-  if (dir) rmSync(dir, { recursive: true, force: true });
-});
-
-function stampFrom(source: string, tz: string, iso: string): string {
-  const run = spawnSync("bun", [probe, source, iso], {
-    cwd: dir,
-    env: { ...process.env, TZ: tz },
-    encoding: "utf-8",
-    timeout: 60_000,
-  });
-  if (run.status !== 0) {
-    throw new Error(`probe exited ${run.status}: ${(run.stderr || "").trim() || "(no stderr)"}`);
+function withMutant<T>(fn: (mutantPath: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "lcd-mutant-"));
+  try {
+    const path = join(dir, "local-calendar-day.ts");
+    writeFileSync(path, buildRestoredUtcMutant(readFileSync(HELPER, "utf-8")));
+    return fn(path);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  return (run.stdout || "").trim();
 }
 
-interface SuiteRun {
-  pass: number;
-  fail: number;
-  /** The names bun printed on `(fail)` lines — the membership, not the count. */
-  failed: string[];
-  output: string;
+/** One instant, one zone, through whichever source is named. */
+function stampVia(source: string, iso: string, tz: string): string {
+  const r = spawnSync(
+    "bun",
+    ["-e", `const m = await import(process.env.SRC); console.log(m.localCalendarDay(new Date(process.env.AT), process.env.TZNAME));`],
+    { encoding: "utf-8", cwd: ROOT, env: { ...process.env, SRC: source, AT: iso, TZNAME: tz }, timeout: 60_000 },
+  );
+  if (r.status !== 0) throw new Error(`stampVia(${source}) exited ${r.status}: ${(r.stderr || "").trim()}`);
+  return (r.stdout || "").trim();
 }
 
-function runSuiteAgainst(source: string): SuiteRun {
-  const run = spawnSync("bun", ["test", SUITE], {
+function runSuite(source: string): { ran: number; failures: number; out: string } {
+  const r = spawnSync("bun", ["test", SUITE], {
+    encoding: "utf-8",
     cwd: ROOT,
     env: { ...process.env, LOCAL_CALENDAR_DAY_SOURCE: source },
-    encoding: "utf-8",
     timeout: 300_000,
   });
-  const output = `${run.stdout || ""}\n${run.stderr || ""}`;
-  const pass = /^\s*(\d+) pass\b/m.exec(output);
-  const fail = /^\s*(\d+) fail\b/m.exec(output);
-  // An unreadable summary is not a zero. #60: when the instrument stops
-  // reporting, every row — including the baseline — comes back blank, and a
-  // blank read as 0 is the most expensive mistake this method can make.
-  if (!pass || !fail) {
-    throw new Error(`could not read the suite summary from the run against ${source}:\n${output.slice(-2000)}`);
-  }
-  const failed = output
-    .split("\n")
-    .filter(l => l.includes("(fail)"))
-    .map(l => l.slice(l.indexOf("(fail)") + "(fail)".length).trim());
-  return { pass: Number(pass[1]), fail: Number(fail[1]), failed, output };
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const pass = Number(out.match(/(\d+) pass/)?.[1] ?? 0);
+  const failures = extractTestFailureCount(out);
+  return { ran: pass + failures, failures, out };
 }
 
-let real: SuiteRun;
-let mutated: SuiteRun;
+/** 23:30 on 2026-03-10 in America/New_York; 2026-03-11 in UTC. */
+const STRADDLING_INSTANT = "2026-03-11T03:30:00.000Z";
 
 describe("local-calendar-day mutation battery (#600)", () => {
-  test("the mutation changes behaviour on a named input", () => {
-    // Before believing any count: name an input on which mutant and original
-    // differ, and run it.
-    const realStamp = stampFrom(HELPER, "America/New_York", EVENING);
-    const mutantStamp = stampFrom(mutant, "America/New_York", EVENING);
-    expect(realStamp).toBe("2026-09-14");
-    expect(mutantStamp).toBe("2026-09-15");
-    expect(realStamp).not.toBe(mutantStamp);
+  test("the mutant and the original differ on a named input", () => {
+    // Read this row before any count below. A mutation that changes nothing
+    // produces the same zeros as a mutation nothing catches.
+    const real = stampVia(HELPER, STRADDLING_INSTANT, "America/New_York");
+    const mutant = withMutant(path => stampVia(path, STRADDLING_INSTANT, "America/New_York"));
+    expect(real).toBe("2026-03-10");
+    expect(mutant).toBe("2026-03-11");
+    expect(mutant).not.toBe(real);
   }, 120_000);
 
-  test("baseline — the unmutated suite is 0 fail, and every case ran", () => {
-    real = runSuiteAgainst(HELPER);
-    expect(real.fail).toBe(0);
-    // Read before the verdict: a suite that never loaded also reports 0 fail.
-    expect(real.pass).toBeGreaterThanOrEqual(6);
+  test("the baseline suite runs every case and is 0 fail", () => {
+    // The instrument. An empty or shrunken baseline means the measurement
+    // stopped reporting, and every mutation row below is then meaningless.
+    const baseline = runSuite(HELPER);
+    expect(baseline.ran, `the suite never loaded:\n${baseline.out}`).toBeGreaterThanOrEqual(4);
+    expect(baseline.failures, baseline.out).toBe(0);
   }, 300_000);
 
-  test("the restored-UTC mutant turns at least 2 cases red, and the UTC control stays green", () => {
-    mutated = runSuiteAgainst(mutant);
-    // Same number of cases as the baseline, so the reds are verdicts rather
-    // than a suite that half-loaded.
-    expect(mutated.pass + mutated.fail).toBe(real.pass + real.fail);
-    expect(mutated.fail).toBeGreaterThanOrEqual(2);
-    // The baseline named no failures, so the membership below is caused by
-    // the mutation and not by a case that was already red.
-    expect(real.failed).toEqual([]);
-
-    // By NAME, not by count. "2 of 6" is satisfied by any two; only these are
-    // the zone-sensitive cases, and only they mean what this claims.
-    const red = mutated.failed.join("\n");
-    expect(red).toContain("23:30 in America/New_York");
-    expect(red).toContain("midnight UTC stamps the PREVIOUS day");
-    expect(red).toContain("Asia/Tokyo");
-
-    // The positive control. Under TZ=UTC both rules name the same day, so a
-    // working mutant leaves this one passing; if it went red the mutant would
-    // be broken rather than the suite discriminating.
-    expect(red).not.toContain("under TZ=UTC the helper agrees");
+  test("restoring the UTC stamp inside the helper turns the suite red", () => {
+    const baseline = runSuite(HELPER);
+    const mutated = withMutant(runSuite);
+    expect(mutated.ran, `the mutant suite never loaded:\n${mutated.out}`).toBe(baseline.ran);
+    console.log(
+      `local-calendar-day mutation: baseline ${baseline.ran - baseline.failures} pass / ${baseline.failures} fail; ` +
+        `restored-UTC mutant ${mutated.ran - mutated.failures} pass / ${mutated.failures} fail of ${mutated.ran}`,
+    );
+    expect(baseline.failures).toBe(0);
+    expect(mutated.failures).toBeGreaterThanOrEqual(2);
+    // Named, so a later case that goes red for an unrelated reason cannot
+    // quietly substitute for one of these.
+    expect(mutated.out).toContain("23:30 in America/New_York");
+    expect(mutated.out).toContain("the default zone is the process zone");
+    expect(mutated.out).toContain("00:30 in Asia/Tokyo");
   }, 300_000);
+
+  test("a renamed binding aborts the build rather than measuring nothing", () => {
+    // A mutation harness that silently no-ops when its target moves is the
+    // decorative check this whole exercise is about.
+    expect(() => buildRestoredUtcMutant("export function someoneRenamedIt() {}\n")).toThrow(
+      /the binding signature appears 0 times/,
+    );
+  });
+
+  test("a relative import in the helper aborts the build", () => {
+    const withImport = `import { x } from "../x";\n${SIGNATURE}\n  return "";\n}\n`;
+    expect(() => buildRestoredUtcMutant(withImport)).toThrow(/relative import/);
+  });
 });

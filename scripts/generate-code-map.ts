@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync, statSync } from "fs";
 import { join, basename } from "path";
+import { localCalendarDay } from "../lib/local-calendar-day";
 import {
   fallowAvailable,
   fallowNotInstalled,
@@ -17,7 +18,6 @@ import {
   fallowUnmeasuredNotice,
   type FallowUnavailable,
 } from "../lib/fallow-availability";
-import { localCalendarDay } from "../lib/local-calendar-day";
 
 const projectPath = process.argv[2];
 if (!projectPath || !existsSync(projectPath)) {

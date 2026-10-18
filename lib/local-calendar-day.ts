@@ -1,44 +1,78 @@
 /**
- * The calendar day, as the person running the command would write it (#600).
+ * The project's one day stamp (#600).
  *
- * A LEAF module, in the shape `lib/git-dates.ts` established (#508/#323): one
- * exported binding, nothing imported, so every caller shares one rule and
- * there is exactly one site to mutate when somebody wants to know whether the
- * rule is load-bearing.
+ * A LEAF module, in the shape `lib/git-dates.ts` established (#508): one
+ * exported binding, no relative imports, so there is exactly one thing to
+ * mutate and every call site names the same rule.
  *
  * ## Why this exists
  *
- * `new Date().toISOString().split("T")[0]` is the **UTC** calendar day, and
- * twenty sites in this tree used it to stamp a document with "today". Between
- * 20:00 EDT and midnight the UTC day is already tomorrow, so an evening
- * session stamped `updated:` with a day the work did not happen on — in
- * `PROJECT-STATE.md`, in generated specs, in agent briefs, in `CODE-MAP.md`.
+ * `new Date().toISOString().split("T")[0]` is the UTC calendar day. Between
+ * 20:00 EDT and midnight that is TOMORROW, so an evening session stamps work
+ * on a day it did not happen. Twenty sites in this tree did it, and the one
+ * that mattered was `scripts/update-project-state.ts`, whose stamp is read
+ * back by the pre-commit hook: the hook only produced a staged diff when the
+ * computed stamp differed from the stored one, so the DA-owned-file violation
+ * of #599 fired for about four hours a day and the other twenty hours of
+ * green runs were not evidence of compliance. A date that is wrong for four
+ * hours a day is worse than one that is wrong always, because the twenty
+ * green hours look like a passing check.
  *
- * It also made #599 intermittent rather than constant, which is the more
- * expensive half. The pre-commit hook only produces a staged diff from
- * `scripts/update-project-state.ts` when the computed date differs from the
- * stored one, so the DA-owned-file violation fired for roughly four hours a
- * day and the other twenty hours of green runs were never evidence of
- * compliance — they were evidence that the clock had not rolled over yet.
+ * ## What it is NOT for
  *
- * ## When NOT to use it
+ * Instants. `new Date().toISOString()` — the whole timestamp — is correct and
+ * stays correct: an instant is zone-free and UTC is its canonical spelling.
+ * This module is only about collapsing an instant to the calendar day a
+ * HUMAN would write next to it, and that question has no answer without a
+ * zone.
  *
- * An INSTANT is not a day. A timestamp recording when something happened —
- * `measuredAt`, a witness `ts`, anything another machine will compare — stays
- * a full UTC ISO string, because the point of those is to be comparable
- * across zones. This function is for the other thing: the human-facing
- * calendar day a document is dated with.
+ * ## Why Intl rather than getFullYear/getMonth/getDate
+ *
+ * The local-getter form is three calls that must each be padded correctly and
+ * cannot be pointed at another zone, so a test for the defect would have to
+ * mutate `process.env.TZ` and could never assert the explicit-zone case.
+ * `formatToParts` answers both from one binding, and `calendar`/
+ * `numberingSystem` are pinned so a host default cannot hand back a
+ * non-Gregorian year or non-Latin digits.
  */
 
+const PART_FORMAT: Intl.DateTimeFormatOptions = {
+  calendar: "gregory",
+  numberingSystem: "latn",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+};
+
 /**
- * Render `at` as `YYYY-MM-DD` in the process's own time zone.
+ * The calendar day `at` falls on, in `timeZone`, as `YYYY-MM-DD`.
  *
- * `getFullYear`/`getMonth`/`getDate` are the local-time accessors, so the
- * answer follows `TZ`. Note that Bun reads `TZ` once at startup — setting
- * `process.env.TZ` later does not move this, which is why every zone-sensitive
- * case in `test/unit/local-calendar-day.test.ts` is a subprocess.
+ * @param at        the instant to collapse. Defaults to now.
+ * @param timeZone  an IANA zone. Defaults to the process zone, which is what
+ *                  every call site in this repo wants — the day the person
+ *                  running the command is living in.
  */
-export function localCalendarDay(at: Date = new Date()): string {
-  const [y, m, d] = [at.getFullYear(), at.getMonth() + 1, at.getDate()];
-  return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+export function localCalendarDay(at: Date = new Date(), timeZone?: string): string {
+  if (Number.isNaN(at.getTime())) {
+    // Intl renders an invalid date as literal "Invalid Date" parts rather
+    // than throwing, and a frontmatter block reading `updated: Invalid Date`
+    // is worse than a crash: it is written, committed, and read as a date.
+    throw new Error("localCalendarDay: invalid Date — nothing to stamp");
+  }
+  const parts = new Intl.DateTimeFormat(
+    "en-US",
+    timeZone ? { ...PART_FORMAT, timeZone } : PART_FORMAT,
+  ).formatToParts(at);
+  const of = (type: Intl.DateTimeFormatPartTypes) => parts.find(p => p.type === type)?.value;
+  const year = of("year");
+  const month = of("month");
+  const day = of("day");
+  if (!year || !month || !day) {
+    // Only reachable if a host's ICU stops emitting a requested part. Loud,
+    // because the alternative is `undefined-undefined-undefined` in a doc.
+    throw new Error(
+      `localCalendarDay: Intl did not return year/month/day for ${timeZone ?? "the process zone"}`,
+    );
+  }
+  return `${year.padStart(4, "0")}-${month}-${day}`;
 }

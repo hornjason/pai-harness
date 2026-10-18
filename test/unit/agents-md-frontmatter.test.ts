@@ -3,8 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { generateAgentsMd } from '../../lib/generators/agents-md';
-import { localCalendarDay } from '../../lib/local-calendar-day';
 import { mockProjectScan } from '../../lib/generators/types';
+import { localCalendarDay } from '../../lib/local-calendar-day';
 
 function scanAt(root: string) {
   return mockProjectScan({ root, name: 'demo' });
@@ -51,9 +51,11 @@ describe('AGENTS.md frontmatter (#63)', () => {
       return generateAgentsMd(scanAt(root));
     });
     expect(out).not.toContain('updated: 2020-01-01');
-    // Follows the generator (#600): `updated:` is the LOCAL calendar day now,
-    // so an assertion against the UTC one is red every evening after 20:00 EDT
-    // — the same four-hour window the defect itself lived in.
+    // #600. This followed the generator: it asserted the UTC day because the
+    // generator stamped the UTC day, so between 20:00 EDT and midnight the
+    // two were wrong together and the case stayed green. It is a DEPENDENT
+    // assertion, not an independent day-stamp site — it has to name whatever
+    // rule `generateAgentsMd` uses, which is now the shared helper.
     expect(out).toContain(`updated: ${localCalendarDay()}`);
   });
 

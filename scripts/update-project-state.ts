@@ -192,11 +192,9 @@ if (shapeProblems.length > 0) {
 }
 
 const state: ProjectState = parsed as ProjectState;
-// The LOCAL calendar day, not the UTC one (#600). `toISOString()` rolls over
-// at 20:00 EDT, so an evening session stamped tomorrow's date onto work done
-// today — and because this script only produces a staged diff when the
-// computed date differs from the stored one, it also made #599's DA-owned-file
-// violation fire for four hours a day and stay invisible for the other twenty.
+// #600. This was the UTC calendar day, so an evening EDT session stamped
+// tomorrow — and the hook that reads this field back only staged a diff on
+// the hours when the two disagreed, which is what made #599 intermittent.
 state.updated = localCalendarDay();
 
 // Sync SC status from spec files (promote-only: specs can mark done, never undo)

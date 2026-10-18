@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync, readdirSync } from "fs";
 import { join, basename, resolve } from "path";
+import { localCalendarDay } from "../lib/local-calendar-day";
 import {
   type ToolCall,
   type TranscriptData,
@@ -10,7 +11,6 @@ import {
   evaluateCriteria,
   ROLES,
 } from "../lib/eval-criteria.js";
-import { localCalendarDay } from "../lib/local-calendar-day";
 
 export { type ToolCall, type CriterionResult, type Role, type Verdict };
 

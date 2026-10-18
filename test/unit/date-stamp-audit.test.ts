@@ -1,343 +1,315 @@
 /**
- * Covers AC-3, AC-5 (#600) — every day-stamp site in the tree, enumerated.
+ * #600 — every day stamp in the tree goes through `localCalendarDay`, or says
+ * in writing why it is UTC on purpose.
  *
- * #600 was one line in `scripts/update-project-state.ts`. It was also
- * nineteen other lines spelling the same mistake in two syntaxes, and fixing
- * the one that was reported would have left the other nineteen stamping UTC
- * days on documents dated by humans. So the guard is a CENSUS rather than a
- * grep for the known site: it enumerates every day-stamp expression in the
- * tree and refuses any that neither goes through `localCalendarDay` nor says
- * out loud why UTC is intended.
+ * Fixing `scripts/update-project-state.ts` alone would have left nineteen
+ * other sites doing the same thing, each one a day stamp that is wrong for
+ * four hours a day. This file is the ratchet: it ENUMERATES the sites rather
+ * than asserting that one of them is clean, and it reports its own coverage —
+ * how many files it read and how many sites it found — because a scan that
+ * reports a verdict without its coverage cannot be told from a scan that read
+ * nothing (`.claude/rules/checks-must-be-able-to-fail.md`).
  *
- * Three properties, each a lesson from `.claude/rules/checks-must-be-able-to-fail.md`:
- *
- * - **The scan reports its own coverage** (#492). `36 of 426` and `426 of 426`
- *   are the same PASS, and no reader can tell them apart from the output, so
- *   the file count and byte count are asserted and printed. A census whose
- *   walk silently shrank to four files would otherwise read as a clean tree.
- * - **Comments are blanked before anything is counted** (#484). This file, the
- *   helper's docstring, and the mutation battery all QUOTE the defect in
- *   prose. Scanning raw source reports a quotation as a site, which is both a
- *   false red and — once you add the quotation to an ignore list — a hole.
- * - **The classifier is exercised on synthetic inputs** (#500). Today the tree
- *   is clean, so every assertion about it holds vacuously the moment the
- *   classifier stops classifying. The last block feeds it a raw site, a
- *   justified site, a helper site and an empty justification, and asserts the
- *   verdicts differ.
- *
- * **The cheapest wrong fix, named in advance** (fifth shape): somebody adds a
- * raw stamp and writes `// UTC-INTENTIONAL:` above it with nothing after the
- * colon. That is the 5pm repair for this guard, it is one line, and it is why
- * a justification shorter than `MIN_REASON` is counted as no justification at
- * all — asserted below rather than left as a comment.
+ * The escape hatch is deliberate and deliberately narrow: an instant
+ * (`new Date().toISOString()` in full) is zone-free and correct, and a few
+ * places genuinely need the UTC day. Those write `UTC-INTENTIONAL: <reason>`
+ * in the comment block attached to the line. An empty marker is refused —
+ * a waiver nobody has to justify is a warning nobody reads.
  */
 import { describe, test, expect } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "fs";
-import { join, relative, sep } from "path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync } from "fs";
+import { join, relative } from "path";
+import { tmpdir } from "os";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
-/** Directories a census of THIS project's code must not walk into. */
-const SKIP_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  "coverage",
-  ".next",
-  "worktrees",
-]);
+/** Where day stamps can live. `workflows/` is included even though it carries none today. */
+const SCANNED_DIRS = ["lib", "scripts", "gates", "hooks", "bin", "test", "workflows"];
 
 /**
- * Fixtures are sample projects, not this project's code. `test/fixtures/`
- * holds a golden project whose own source is the subject of other tests, and
- * rewriting it would change what those tests measure.
- */
-const FIXTURE_SEGMENTS = [join("test", "fixtures") + sep, join("templates") + sep];
-
-const CODE_EXT = /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
-
-/**
- * A calendar DAY derived from an instant's UTC rendering — the defect.
- *
- * All three syntaxes, because they are one question asked three ways and a
- * detector that knows only one reads exactly like a detector that is
- * satisfied (#484). `scripts/` used `.split("T")[0]`, `lib/` used
- * `.slice(0, 10)`, and `lib/scaffold/steps.ts` carried both in one file.
+ * A day stamp written the old way: an instant collapsed to its first ten
+ * characters. All three spellings, because this tree carried two of them in
+ * one file and a detector that knew one spelling reads exactly like a
+ * detector that is satisfied (#484).
  */
 const RAW_DAY_STAMP =
-  /toISOString\(\)\s*\.\s*(?:split\(\s*["'`]T["'`]\s*\)\s*\[\s*0\s*\]|slice\(\s*0\s*,\s*10\s*\)|substring\(\s*0\s*,\s*10\s*\))/;
+  /\.toISOString\(\)\s*\.\s*(?:split\(\s*(['"])T\1\s*\)\s*\[\s*0\s*\]|slice\(\s*0\s*,\s*10\s*\)|substring\(\s*0\s*,\s*10\s*\))/;
 
-/** A day stamp that goes through the shared rule. */
-const HELPER_CALL = /\blocalCalendarDay\s*\(/;
+/** A day stamp written the new way. The definition itself is not a call site. */
+const HELPER_CALL = /(?<!function\s)\blocalCalendarDay\s*\(/;
 
-/** The declaration is not a call site. */
-const HELPER_DECLARATION = /function\s+localCalendarDay\s*\(/;
+/** The waiver, which must carry a reason. */
+const JUSTIFICATION = /UTC-INTENTIONAL:\s*\S/;
 
-/** The marker that makes a UTC day stamp deliberate, and the reason it needs. */
-const JUSTIFICATION = /UTC-INTENTIONAL:(.*)$/;
-const MIN_REASON = 20;
-/** How many lines above a site a justification may sit. */
-const JUSTIFICATION_LOOKBEHIND = 4;
+/** A line that is nothing but comment, for walking up to an attached block. */
+const COMMENT_LINE = /^\s*(\/\/|\*|\/\*)/;
 
-export type SiteKind = "helper" | "raw-justified" | "raw-unjustified";
+export type SiteKind = "helper" | "raw";
 
 export interface DayStampSite {
   file: string;
   line: number;
   kind: SiteKind;
+  justified: boolean;
   text: string;
 }
 
-export interface DayStampCensus {
-  filesScanned: number;
-  bytesScanned: number;
-  sites: DayStampSite[];
-}
-
 /**
- * `source` with comment bodies blanked and string literals left alone.
+ * Blank out comments, preserving line numbering.
  *
- * Blanking rather than deleting keeps every offset and every line number
- * where it was, so a reported site still points at the right place.
+ * Load-bearing rather than tidy: `lib/local-calendar-day.ts`'s own docstring
+ * QUOTES the defect it replaced, and a scanner reading raw source reports
+ * that quote as a day stamp — the exact shape that made #484's comment-
+ * stripping row 3 red instead of 4. Proven below by scanning the real file
+ * both ways.
  */
-export function blankComments(source: string): string {
-  const out = source.split("");
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to && k < out.length; k++) if (out[k] !== "\n") out[k] = " ";
-  };
-  let i = 0;
-  while (i < source.length) {
-    const c = source[i];
-    if (c === "/" && source[i + 1] === "/") {
-      const end = source.indexOf("\n", i);
-      const stop = end === -1 ? source.length : end;
-      blank(i, stop);
-      i = stop;
-    } else if (c === "/" && source[i + 1] === "*") {
-      const end = source.indexOf("*/", i + 2);
-      const stop = end === -1 ? source.length : end + 2;
-      blank(i, stop);
-      i = stop;
-    } else if (c === "'" || c === '"' || c === "`") {
-      i++;
-      while (i < source.length) {
-        if (source[i] === "\\") i += 2;
-        else if (source[i] === c) {
-          i++;
-          break;
-        } else i++;
+export function withoutComments(source: string): string[] {
+  const out: string[] = [];
+  let inBlock = false;
+  for (const raw of source.split("\n")) {
+    let line = raw;
+    if (inBlock) {
+      const end = line.indexOf("*/");
+      if (end === -1) {
+        out.push("");
+        continue;
       }
-    } else i++;
+      line = " ".repeat(end + 2) + line.slice(end + 2);
+      inBlock = false;
+    }
+    line = line.replace(/\/\*[\s\S]*?\*\//g, m => " ".repeat(m.length));
+    const open = line.indexOf("/*");
+    if (open !== -1) {
+      line = line.slice(0, open);
+      inBlock = true;
+    }
+    const lineComment = line.indexOf("//");
+    if (lineComment !== -1) line = line.slice(0, lineComment);
+    out.push(line);
   }
-  return out.join("");
+  return out;
 }
 
 /**
- * Classify every day-stamp site in one file's source.
+ * Is the site at `index` waived?
  *
- * Sites are found in the COMMENT-BLANKED text; justifications are looked for
- * in the RAW text, because a justification is a comment by construction.
+ * The marker must be on the line itself or in the comment block ATTACHED to
+ * it — walk up only while the lines above are comments. A fixed window of N
+ * lines would let an unrelated waiver three lines up cover a new site that
+ * arrived underneath it.
  */
-export function dayStampSitesIn(file: string, source: string): DayStampSite[] {
-  const raw = source.split("\n");
-  const code = blankComments(source).split("\n");
-  const sites: DayStampSite[] = [];
-  for (let i = 0; i < code.length; i++) {
-    const codeLine = code[i];
-    const isRaw = RAW_DAY_STAMP.test(codeLine);
-    const isHelper = HELPER_CALL.test(codeLine) && !HELPER_DECLARATION.test(codeLine);
-    if (!isRaw && !isHelper) continue;
-    if (isRaw) {
-      sites.push({
-        file,
-        line: i + 1,
-        kind: justifiedAt(raw, i) ? "raw-justified" : "raw-unjustified",
-        text: raw[i].trim(),
-      });
-    }
-    if (isHelper) sites.push({ file, line: i + 1, kind: "helper", text: raw[i].trim() });
-  }
-  return sites;
-}
-
-function justifiedAt(rawLines: string[], index: number): boolean {
-  for (let k = index; k >= 0 && k >= index - JUSTIFICATION_LOOKBEHIND; k--) {
-    const m = JUSTIFICATION.exec(rawLines[k]);
-    // A marker with nothing substantive after it is not a justification. It is
-    // the cheapest repair available to anyone this guard stops, so it has to
-    // cost at least a sentence.
-    if (m && m[1].trim().length >= MIN_REASON) return true;
+function isJustified(rawLines: string[], index: number): boolean {
+  if (JUSTIFICATION.test(rawLines[index] ?? "")) return true;
+  for (let i = index - 1; i >= 0; i--) {
+    const line = rawLines[i] ?? "";
+    if (!COMMENT_LINE.test(line)) return false;
+    if (JUSTIFICATION.test(line)) return true;
   }
   return false;
 }
 
-export function censusOf(root: string): DayStampCensus {
-  const census: DayStampCensus = { filesScanned: 0, bytesScanned: 0, sites: [] };
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const abs = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
-        walk(abs);
-        continue;
-      }
-      if (!entry.isFile() || !CODE_EXT.test(entry.name)) continue;
-      const rel = relative(root, abs);
-      if (FIXTURE_SEGMENTS.some(seg => rel.startsWith(seg))) continue;
-      const source = readFileSync(abs, "utf-8");
-      census.filesScanned++;
-      census.bytesScanned += source.length;
-      census.sites.push(...dayStampSitesIn(rel, source));
-    }
-  };
-  walk(root);
-  return census;
+/** Every day stamp site in one file's source. The ONE classifier. */
+export function dayStampSitesIn(file: string, source: string): DayStampSite[] {
+  const rawLines = source.split("\n");
+  const code = withoutComments(source);
+  const sites: DayStampSite[] = [];
+  for (let i = 0; i < code.length; i++) {
+    const line = code[i];
+    if (!line.trim()) continue;
+    const kind: SiteKind | null = RAW_DAY_STAMP.test(line)
+      ? "raw"
+      : HELPER_CALL.test(line)
+        ? "helper"
+        : null;
+    if (!kind) continue;
+    sites.push({
+      file,
+      line: i + 1,
+      kind,
+      justified: kind === "helper" ? true : isJustified(rawLines, i),
+      text: rawLines[i].trim(),
+    });
+  }
+  return sites;
 }
 
-const census = censusOf(ROOT);
+function sourceFiles(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (name === "node_modules" || name === ".git" || name === "fixtures") continue;
+      const abs = join(dir, name);
+      let s;
+      try {
+        s = statSync(abs);
+      } catch {
+        continue;
+      }
+      if (s.isDirectory()) walk(abs);
+      else if (/\.(ts|js|mjs|cjs)$/.test(name)) found.push(abs);
+    }
+  };
+  for (const d of SCANNED_DIRS) walk(join(root, d));
+  return found;
+}
 
-describe("day-stamp census (#600)", () => {
-  test("the scan reports its own coverage, and the coverage is the whole tree", () => {
-    // Printed, not merely asserted: a verdict with no coverage beside it
-    // cannot be told apart from a verdict over four files.
-    console.log(
-      `day-stamp census: ${census.sites.length} sites in ${census.filesScanned} files ` +
-        `(${census.bytesScanned} bytes)`,
-    );
-    expect(census.filesScanned).toBeGreaterThanOrEqual(100);
-    expect(census.bytesScanned).toBeGreaterThan(1_000_000);
+export interface AuditReading {
+  filesScanned: number;
+  sites: DayStampSite[];
+  unjustified: DayStampSite[];
+}
+
+export function auditDayStamps(root: string): AuditReading {
+  const files = sourceFiles(root);
+  const sites: DayStampSite[] = [];
+  for (const abs of files) {
+    sites.push(...dayStampSitesIn(relative(root, abs), readFileSync(abs, "utf-8")));
+  }
+  return { filesScanned: files.length, sites, unjustified: sites.filter(s => !s.justified) };
+}
+
+function withTree<T>(files: Record<string, string>, fn: (root: string) => T): T {
+  const root = mkdtempSync(join(tmpdir(), "daystamp-"));
+  try {
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = join(root, rel);
+      mkdirSync(join(abs, ".."), { recursive: true });
+      writeFileSync(abs, content);
+    }
+    return fn(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// The three literals below are the scanner's own fixtures — the defect text
+// it has to recognise — so each carries its own marker. A block comment above
+// the first would not reach the other two, which is the point of walking up
+// only through an attached comment block and is asserted directly below.
+const RAW_SPLIT = 'const d = new Date().toISOString().split("T")[0];'; // UTC-INTENTIONAL: scanner fixture, not a stamp this project writes
+const RAW_SLICE = "const d = new Date().toISOString().slice(0, 10);"; // UTC-INTENTIONAL: scanner fixture, not a stamp this project writes
+const RAW_SUBSTR = "const d = new Date().toISOString().substring(0, 10);"; // UTC-INTENTIONAL: scanner fixture, not a stamp this project writes
+
+describe("day-stamp audit — the classifier can tell the three cases apart (#600)", () => {
+  test("an unjustified raw stamp is reported, in all three spellings", () => {
+    for (const text of [RAW_SPLIT, RAW_SLICE, RAW_SUBSTR]) {
+      const sites = dayStampSitesIn("x.ts", `${text}\n`);
+      expect(sites.map(s => s.kind), text).toEqual(["raw"]);
+      expect(sites[0].justified, text).toBe(false);
+    }
   });
 
-  test("at least 20 day-stamp sites were enumerated", () => {
-    expect(census.sites.length).toBeGreaterThanOrEqual(20);
+  test("a helper call is a site and is never reported", () => {
+    const sites = dayStampSitesIn("x.ts", "const d = localCalendarDay();\n");
+    expect(sites.map(s => s.kind)).toEqual(["helper"]);
+    expect(sites[0].justified).toBe(true);
   });
 
-  test("every raw UTC day stamp is justified — none is left unexplained", () => {
-    const unjustified = census.sites
-      .filter(s => s.kind === "raw-unjustified")
-      .map(s => `${s.file}:${s.line}  ${s.text}`);
-    expect(unjustified).toEqual([]);
+  test("the helper's own definition is not counted as a call site", () => {
+    expect(dayStampSitesIn("x.ts", "export function localCalendarDay(at = new Date()) {\n")).toEqual([]);
   });
 
-  test("the 20 converted sites go through the shared helper", () => {
-    const helper = census.sites.filter(s => s.kind === "helper");
-    expect(helper.length).toBeGreaterThanOrEqual(20);
+  test("a raw stamp with an attached justification is a site and is not reported", () => {
+    const sites = dayStampSitesIn("x.ts", `// UTC-INTENTIONAL: the API this feeds is UTC-only\n${RAW_SPLIT}\n`);
+    expect(sites.map(s => s.kind)).toEqual(["raw"]);
+    expect(sites[0].justified).toBe(true);
   });
 
-  test("AC-5: the rule is exactly one exported binding in lib/", () => {
-    expect(exportedHelperDeclarations()).toEqual([join("lib", "local-calendar-day.ts")]);
+  test("a justification with no reason after it does not waive anything", () => {
+    // The cheapest wrong fix for a red audit is to paste the marker. A bare
+    // marker has to stay red or the hatch is a rubber stamp.
+    const sites = dayStampSitesIn("x.ts", `// UTC-INTENTIONAL:\n${RAW_SPLIT}\n`);
+    expect(sites[0].justified).toBe(false);
   });
 
-  test("AC-5: every converted call site IMPORTS the rule rather than re-deriving the day", () => {
-    // Scoped to the production sites #600 converted. A test file may carry the
-    // name inside a fixture string or resolve the module by path at runtime —
-    // `test/unit/local-calendar-day.test.ts` does exactly that, so that it can
-    // be spawned against a mutant — and neither is a call site re-deriving a
-    // day inline, which is the thing this criterion is about.
-    const production = census.sites.filter(s => s.kind === "helper" && !s.file.startsWith("test" + sep));
-    const callers = [...new Set(production.map(s => s.file))];
-    // 20 sites across 17 files — two files carried the stamp twice and one
-    // carried both syntaxes.
-    expect(production.length).toBeGreaterThanOrEqual(20);
-    const withoutImport = callers.filter(f => {
-      const source = readFileSync(join(ROOT, f), "utf-8");
-      // The declaring module does not import what it exports.
-      if (/^export function localCalendarDay\b/m.test(source)) return false;
-      return !/\blocalCalendarDay\b[^\n]*\bfrom\s+["']/.test(source);
-    });
-    expect(withoutImport).toEqual([]);
+  test("a justification detached by a blank line does not reach the site", () => {
+    // Walking up stops at the first non-comment line, so an unrelated waiver
+    // further up cannot cover a site that arrives underneath it.
+    const sites = dayStampSitesIn("x.ts", `// UTC-INTENTIONAL: something else entirely\n\n${RAW_SPLIT}\n`);
+    expect(sites[0].justified).toBe(false);
+  });
+
+  test("a raw stamp inside a comment is not a site at all", () => {
+    // And the stripper is what makes that true, not luck: the same text
+    // un-stripped is reported.
+    expect(dayStampSitesIn("x.ts", `// example: ${RAW_SPLIT}\n`)).toEqual([]);
+    expect(dayStampSitesIn("x.ts", `${RAW_SPLIT}\n`).length).toBe(1);
+  });
+
+  test("a block comment spanning lines is stripped without losing line numbers", () => {
+    const src = `/**\n * ${RAW_SPLIT}\n */\n${RAW_SLICE}\n`;
+    const sites = dayStampSitesIn("x.ts", src);
+    expect(sites.length).toBe(1);
+    expect(sites[0].line).toBe(4);
   });
 });
 
-function exportedHelperDeclarations(): string[] {
-  const found: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const abs = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue;
-        walk(abs);
-        continue;
-      }
-      if (!CODE_EXT.test(entry.name)) continue;
-      const source = readFileSync(abs, "utf-8");
-      if (/^export function localCalendarDay\b/m.test(source)) found.push(relative(ROOT, abs));
-    }
-  };
-  walk(join(ROOT, "lib"));
-  return found.sort();
-}
-
-/**
- * The classifier, fed inputs rather than asked about the tree.
- *
- * Every assertion above is about a tree that is currently clean, so all of
- * them stay green if `dayStampSitesIn` starts returning nothing. These do
- * not: each one names a verdict the classifier must produce, and a classifier
- * that returns `[]` fails three of them.
- */
-describe("day-stamp classifier (#600)", () => {
-  const sitesOf = (src: string) => dayStampSitesIn("probe.ts", src);
-
-  // The two syntaxes of the defect, written down ONCE and interpolated into
-  // every case below. Declaring them once means this file contributes two
-  // justified sites to its own census rather than eight unjustified ones, and
-  // a reader can see in one place what the guard is pointed at.
-  //
-  // UTC-INTENTIONAL: the next two constants ARE the defect, quoted on purpose
-  // as the classifier's input rather than used to stamp anything.
-  const SPLIT_FORM = 'new Date().toISOString().split("T")[0]';
-  const SLICE_FORM = "new Date().toISOString().slice(0, 10)";
-
-  test("a bare UTC day stamp is refused", () => {
-    const sites = sitesOf(`const today = ${SPLIT_FORM};\n`);
-    expect(sites.map(s => s.kind)).toEqual(["raw-unjustified"]);
-  });
-
-  test("the slice syntax is refused too, not just the split one", () => {
-    const sites = sitesOf(`const today = ${SLICE_FORM};\n`);
-    expect(sites.map(s => s.kind)).toEqual(["raw-unjustified"]);
-  });
-
-  test("a justified UTC day stamp is allowed", () => {
-    const sites = sitesOf(
-      `// UTC-INTENTIONAL: the contrast reading the case asserts against.\nconst utc = ${SPLIT_FORM};\n`,
+describe("day-stamp audit — the walk reaches the classifier (#600)", () => {
+  test("a planted unjustified site in a scanned directory is reported by path and line", () => {
+    // End to end, not the classifier alone: walk, strip, classify, waive.
+    const reading = withTree(
+      {
+        "lib/clean.ts": "export const d = localCalendarDay();\n",
+        "scripts/dirty.ts": `export function f() {\n  return ${RAW_SPLIT}\n}\n`,
+      },
+      auditDayStamps,
     );
-    expect(sites.map(s => s.kind)).toEqual(["raw-justified"]);
+    expect(reading.filesScanned).toBe(2);
+    expect(reading.sites.length).toBe(2);
+    expect(reading.unjustified.map(s => `${s.file}:${s.line}`)).toEqual(["scripts/dirty.ts:2"]);
   });
 
-  test("a marker with no reason after it is NOT a justification", () => {
-    // The cheapest wrong fix, blocked: this is what somebody writes at 5pm.
-    const sites = sitesOf(`// UTC-INTENTIONAL:\nconst utc = ${SPLIT_FORM};\n`);
-    expect(sites.map(s => s.kind)).toEqual(["raw-unjustified"]);
+  test("a site under fixtures/ is out of scope", () => {
+    const reading = withTree({ "test/fixtures/golden/u.ts": `export const d = ${RAW_SPLIT}\n` }, auditDayStamps);
+    expect(reading.filesScanned).toBe(0);
+    expect(reading.sites).toEqual([]);
   });
+});
 
-  test("a justification too far above the site does not reach it", () => {
-    const sites = sitesOf(
-      `// UTC-INTENTIONAL: a reason written a long way from the site.\n\n\n\n\n\nconst utc = ${SPLIT_FORM};\n`,
+describe("day-stamp audit — the live tree (#600)", () => {
+  const reading = auditDayStamps(ROOT);
+
+  test("the scan read files and found sites — coverage, before any verdict", () => {
+    // A scan that read nothing reports zero unjustified sites and is
+    // indistinguishable from a clean tree. Say the numbers out loud.
+    console.log(
+      `day-stamp audit: ${reading.sites.length} day-stamp sites ` +
+        `(${reading.sites.filter(s => s.kind === "helper").length} via localCalendarDay, ` +
+        `${reading.sites.filter(s => s.kind === "raw").length} raw) ` +
+        `across ${reading.filesScanned} scanned files; ${reading.unjustified.length} unjustified`,
     );
-    expect(sites.map(s => s.kind)).toEqual(["raw-unjustified"]);
+    expect(reading.filesScanned).toBeGreaterThan(100);
+    expect(reading.sites.length).toBeGreaterThanOrEqual(20);
   });
 
-  test("a helper call is a site, and the helper's own declaration is not", () => {
-    const sites = sitesOf(
-      "export function localCalendarDay(at: Date = new Date()): string { return ''; }\n" +
-        "const today = localCalendarDay();\n",
-    );
-    expect(sites.map(s => s.kind)).toEqual(["helper"]);
-    expect(sites[0].line).toBe(2);
+  test("every converted call site is a helper call, and there are at least twenty", () => {
+    expect(reading.sites.filter(s => s.kind === "helper").length).toBeGreaterThanOrEqual(20);
   });
 
-  test("the defect quoted in a comment is not a site", () => {
-    // #484: a docstring that quotes the expression reads exactly like the
-    // expression. Three of this issue's files quote it.
-    const sites = sitesOf(`// never write ${SPLIT_FORM} here\n`);
-    expect(sites).toEqual([]);
+  test("no site in the tree is an unjustified raw day stamp", () => {
+    expect(reading.unjustified.map(s => `${s.file}:${s.line}  ${s.text}`)).toEqual([]);
   });
 
-  test("the defect inside a block comment is not a site either", () => {
-    const sites = sitesOf(`/**\n * ${SLICE_FORM} is the UTC day.\n */\n`);
-    expect(sites).toEqual([]);
+  test("the defect quoted in the helper's own docstring is stripped, not counted", () => {
+    // The #484 row, reproduced on this tree: raw source reports the quote as
+    // a stamp, stripped source does not. Without this the stripper could be
+    // deleted and every case above would still pass.
+    const source = readFileSync(join(ROOT, "lib", "local-calendar-day.ts"), "utf-8");
+    expect(dayStampSitesIn("lib/local-calendar-day.ts", source).filter(s => s.kind === "raw")).toEqual([]);
+    const unstripped = source.split("\n").filter(l => RAW_DAY_STAMP.test(l));
+    expect(unstripped.length, "the docstring no longer quotes the defect").toBeGreaterThan(0);
+  });
+
+  test("scripts/update-project-state.ts — the defect site — carries no raw stamp", () => {
+    const source = readFileSync(join(ROOT, "scripts", "update-project-state.ts"), "utf-8");
+    const sites = dayStampSitesIn("scripts/update-project-state.ts", source);
+    expect(sites.filter(s => s.kind === "raw")).toEqual([]);
+    expect(sites.filter(s => s.kind === "helper").length).toBe(1);
   });
 });

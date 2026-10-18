@@ -1,152 +1,114 @@
 /**
- * Covers AC-1, AC-2 (#600) — the local-calendar-day helper.
+ * #600 — the day stamp must be the LOCAL calendar day, not the UTC one.
  *
- * `new Date().toISOString().split("T")[0]` is the UTC calendar day. Between
- * 20:00 EDT and midnight that is TOMORROW, so an evening session records work
- * on a day it did not happen. Every case here fixes a real instant and a real
- * zone and asserts the two renderings DISAGREE, because a zone where local and
- * UTC agree makes the case vacuous — it would pass over the defect
- * (`.claude/rules/checks-must-be-able-to-fail.md`, third shape).
+ * `scripts/update-project-state.ts` stamped `new Date().toISOString()
+ * .split("T")[0]`. Between 20:00 EDT and midnight that reads tomorrow, so an
+ * evening session records work on a day it did not happen — and it is the
+ * half that made #599 visible, because the pre-commit hook only produced a
+ * staged diff on the four hours a day when the computed stamp differed from
+ * the stored one. A date that is wrong for four hours a day is worse than one
+ * that is wrong always: the other twenty hours look like a passing check.
  *
- * ## Why every case is a subprocess
+ * Every discriminating case fixes an INSTANT and asks for it in a zone where
+ * local and UTC disagree, then asserts the UTC rendering of that same instant
+ * IN THE SAME CASE. A zone where the two agree makes the case vacuous
+ * (`.claude/rules/checks-must-be-able-to-fail.md`), and the in-case UTC
+ * assertion is what makes the fixture say so rather than pass quietly.
  *
- * Bun reads `TZ` once, at startup: setting `process.env.TZ` afterwards does
- * nothing. Measured on bun 1.3.14 — a `Date` built under `TZ=Asia/Tokyo`
- * reports the same `getHours()` after `process.env.TZ = "America/New_York"`.
- * So a case that wants a zone has to be a process that was STARTED in it,
- * and the ambient zone of the machine running the suite is not allowed to
- * decide any verdict here.
+ * The default-zone cases run in a SUBPROCESS with `TZ` in its environment.
+ * Bun resolves the host zone once per process and caches it — measured:
+ * after one default-zone format, assigning `process.env.TZ` changes nothing
+ * and `resolvedOptions().timeZone` keeps reporting the original. An
+ * in-process `process.env.TZ = ...` fixture therefore asserts the machine's
+ * own zone while looking like it asserts Tokyo's, which is exactly the
+ * "fixture that reached the assertion without the feature" shape.
  *
- * ## Why the module under test is an env var
- *
- * `test/unit/local-calendar-day-mutation.test.ts` spawns this whole file
- * twice — once against `lib/local-calendar-day.ts` and once against a mutant
- * with the UTC stamp restored — with one variable differing between the runs.
- * Without that, the mutation case would have to re-state these assertions and
- * the two copies would drift.
+ * `LOCAL_CALENDAR_DAY_SOURCE` exists for
+ * `test/unit/local-calendar-day-mutation.test.ts`, which spawns this file
+ * twice: once against `lib/local-calendar-day.ts` and once against a copy
+ * whose body is the UTC stamp this issue removed. Nothing else sets it.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
-import { tmpdir } from "os";
+import { join } from "path";
 
-const ROOT = join(import.meta.dir, "..", "..");
+const REAL_SOURCE = join(import.meta.dir, "..", "..", "lib", "local-calendar-day.ts");
+const SOURCE = process.env.LOCAL_CALENDAR_DAY_SOURCE || REAL_SOURCE;
 
-/**
- * The module the probe imports. Absolute, so the probe can live in a temp
- * directory with no relative specifier to resolve — the property
- * `.claude/rules/checks-must-be-able-to-fail.md` demands of any mutant, so a
- * mutant that died on module resolution cannot read as a refusal.
- */
-export const SOURCE_UNDER_TEST = process.env.LOCAL_CALENDAR_DAY_SOURCE
-  ? resolve(process.env.LOCAL_CALENDAR_DAY_SOURCE)
-  : join(ROOT, "lib", "local-calendar-day.ts");
-
-let probeDir: string;
-let probe: string;
-
-/**
- * Printed by the probe for every instant: what the helper says, and what the
- * UTC rendering of the SAME instant says. One process, one `Date`, so the two
- * readings cannot differ by anything except the rule that produced them.
- */
-interface Reading {
-  local: string;
-  utc: string;
-  noArgLocal: string;
+const mod = (await import(SOURCE)) as { localCalendarDay?: unknown };
+if (typeof mod.localCalendarDay !== "function") {
+  // A module that loaded but exports nothing usable would leave every case
+  // below throwing an unhelpful "not a function" — say which file it was.
+  throw new Error(`local-calendar-day: ${SOURCE} does not export a localCalendarDay function`);
 }
+const localCalendarDay = mod.localCalendarDay as (at?: Date, timeZone?: string) => string;
 
-beforeAll(() => {
-  probeDir = mkdtempSync(join(tmpdir(), "local-calendar-day-probe-"));
-  probe = join(probeDir, "probe.ts");
-  writeFileSync(
-    probe,
-    `const [, , source, iso] = process.argv;
-const mod = await import(source);
-const at = new Date(iso);
-// UTC-INTENTIONAL: this is the CONTRAST reading, not a stamp. The whole point
-// of the case is that the UTC rendering of this instant names a different day
-// from the helper's, so it must be derived the old way on purpose.
-const utc = at.toISOString().split("T")[0];
-console.log(JSON.stringify({ local: mod.localCalendarDay(at), utc, noArgLocal: mod.localCalendarDay() }));
-`,
+/** 23:30 on 2026-03-10 in America/New_York. In UTC it is already 2026-03-11. */
+const EVENING_EDT = "2026-03-11T03:30:00.000Z";
+/** 00:30 on 2026-03-10 in Asia/Tokyo. In UTC it is still 2026-03-09. */
+const EARLY_TOKYO = "2026-03-09T15:30:00.000Z";
+
+/** The stamp the defect produced, written once so no case re-derives it. */
+// UTC-INTENTIONAL: this reproduces the DEFECT so each case can assert that the
+// two renderings of one instant disagree. It is the subject of the test, not a
+// day stamp this project writes anywhere.
+const utcDay = (iso: string) => new Date(iso).toISOString().split("T")[0];
+
+/**
+ * The stamp the helper produces with NO zone argument, in a process whose
+ * `TZ` is `tz`. This is the path every converted call site takes.
+ */
+function defaultZoneStamp(tz: string, iso: string): string {
+  const r = spawnSync(
+    "bun",
+    ["-e", `const m = await import(process.env.SRC); console.log(m.localCalendarDay(new Date(process.env.AT)));`],
+    { encoding: "utf-8", env: { ...process.env, TZ: tz, SRC: SOURCE, AT: iso }, timeout: 60_000 },
   );
-});
-
-afterAll(() => {
-  if (probeDir) rmSync(probeDir, { recursive: true, force: true });
-});
-
-function readingAt(tz: string, iso: string): Reading {
-  const run = spawnSync("bun", [probe, SOURCE_UNDER_TEST, iso], {
-    cwd: probeDir,
-    env: { ...process.env, TZ: tz },
-    encoding: "utf-8",
-    timeout: 60_000,
-  });
-  // A probe that failed to start is not a reading. Without this the next line
-  // throws a JSON parse error and the case reports a confusing red for a true
-  // but unrelated reason.
-  if (run.status !== 0) {
-    throw new Error(
-      `probe exited ${run.status} under TZ=${tz} for ${iso}: ${(run.stderr || "").trim() || "(no stderr)"}`,
-    );
+  if (r.status !== 0) {
+    throw new Error(`defaultZoneStamp(${tz}) exited ${r.status}: ${(r.stderr || "").trim() || "(no stderr)"}`);
   }
-  const out = (run.stdout || "").trim().split("\n").filter(Boolean).pop();
-  if (!out) throw new Error(`probe printed nothing under TZ=${tz} for ${iso}`);
-  return JSON.parse(out) as Reading;
+  return (r.stdout || "").trim();
 }
 
 describe("localCalendarDay (#600)", () => {
-  test("23:30 in America/New_York stamps that day while UTC already reads the next one", () => {
-    // 2026-09-15T03:30:00Z is 23:30 EDT on 2026-09-14 — the window the defect
-    // lives in, and the one that made #599 visible for about four hours a day.
-    const r = readingAt("America/New_York", "2026-09-15T03:30:00.000Z");
-    expect(r.local).toBe("2026-09-14");
-    expect(r.utc).toBe("2026-09-15");
-    // Asserted in the same case: if these ever agree the case is vacuous and
-    // proves nothing about which rule produced `local`.
-    expect(r.local).not.toBe(r.utc);
+  test("23:30 in America/New_York stamps that day, while UTC reads the next one", () => {
+    // Both halves in one case on purpose: the claim is that the two
+    // renderings of ONE instant disagree and the helper takes the local one.
+    expect(utcDay(EVENING_EDT), "fixture no longer straddles UTC midnight").toBe("2026-03-11");
+    expect(localCalendarDay(new Date(EVENING_EDT), "America/New_York")).toBe("2026-03-10");
   });
 
-  test("midnight UTC stamps the PREVIOUS day in America/New_York", () => {
-    const r = readingAt("America/New_York", "2026-07-04T00:00:00.000Z");
-    expect(r.local).toBe("2026-07-03");
-    expect(r.utc).toBe("2026-07-04");
-    expect(r.local).not.toBe(r.utc);
+  test("the default zone is the process zone, not UTC — 23:30 EDT", () => {
+    // The converted call sites pass no zone, so this is the path they take.
+    // Asserting only the explicit-zone overload would leave the default
+    // reachable by a route no case covers.
+    expect(utcDay(EVENING_EDT), "fixture no longer straddles UTC midnight").toBe("2026-03-11");
+    expect(defaultZoneStamp("America/New_York", EVENING_EDT)).toBe("2026-03-10");
   });
 
-  test("the error runs the other way too — 08:30 in Asia/Tokyo stamps the day UTC still calls yesterday", () => {
-    // East of UTC the UTC stamp is behind, not ahead. A helper that merely
-    // subtracted a fixed offset would pass the two cases above and fail here.
-    const r = readingAt("Asia/Tokyo", "2026-02-09T23:30:00.000Z");
-    expect(r.local).toBe("2026-02-10");
-    expect(r.utc).toBe("2026-02-09");
-    expect(r.local).not.toBe(r.utc);
+  test("00:30 in Asia/Tokyo stamps that day, while UTC reads the previous one", () => {
+    // The other direction. A zone ahead of UTC fails differently from one
+    // behind it, and a helper that subtracted a fixed offset would pass the
+    // two cases above and fail here.
+    expect(utcDay(EARLY_TOKYO), "fixture no longer straddles UTC midnight").toBe("2026-03-09");
+    expect(localCalendarDay(new Date(EARLY_TOKYO), "Asia/Tokyo")).toBe("2026-03-10");
+    expect(defaultZoneStamp("Asia/Tokyo", EARLY_TOKYO)).toBe("2026-03-10");
   });
 
-  test("under TZ=UTC the helper agrees with the UTC rendering", () => {
-    // The positive control. It is the one case a restored-UTC mutant must
-    // still pass: a suite that failed to load reports no failures at all, and
-    // a mutation row of "everything red" cannot be told apart from that.
-    const r = readingAt("UTC", "2026-09-15T03:30:00.000Z");
-    expect(r.local).toBe("2026-09-15");
-    expect(r.utc).toBe("2026-09-15");
+  test("single-digit months and days are zero-padded to YYYY-MM-DD", () => {
+    expect(localCalendarDay(new Date("2026-01-05T12:00:00.000Z"), "UTC")).toBe("2026-01-05");
+    expect(localCalendarDay(new Date("2026-12-31T12:00:00.000Z"), "UTC")).toBe("2026-12-31");
   });
 
-  test("the stamp is zero-padded YYYY-MM-DD", () => {
-    const r = readingAt("UTC", "2026-01-05T12:00:00.000Z");
-    expect(r.local).toBe("2026-01-05");
-    expect(r.local).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  test("called with no argument it stamps now, in the process zone", () => {
+    const now = new Date();
+    expect(localCalendarDay()).toBe(localCalendarDay(now));
+    expect(localCalendarDay()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
-  test("called with no argument it stamps the current local day", () => {
-    const r = readingAt("UTC", "2026-01-05T12:00:00.000Z");
-    expect(r.noArgLocal).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    // UTC-INTENTIONAL: the probe ran under TZ=UTC, so "now, locally" and
-    // "now, in UTC" are the same day by construction and this is checkable
-    // without racing the clock or importing the thing under test.
-    expect(r.noArgLocal).toBe(new Date().toISOString().slice(0, 10));
+  test("an invalid Date is refused rather than stamped", () => {
+    // Intl renders an invalid date as literal "Invalid Date" parts rather
+    // than throwing, which would put that text into a frontmatter block.
+    expect(() => localCalendarDay(new Date("not a date"))).toThrow(/invalid/i);
   });
 });

@@ -33,6 +33,9 @@ export function promoteOutputs(projectRoot: string): PromoteResult {
         const data = JSON.parse(readFileSync(councilJson, "utf-8"));
         const topic = data.topic || slug;
         const topicSlug = topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+        // `capturedAt` is an ISO INSTANT written by the council run, so
+        // slicing it is reading a recorded field rather than stamping a day.
+        // The fallback — nothing recorded — is a day stamp and is local (#600).
         const date = data.capturedAt?.slice(0, 10) || localCalendarDay();
         const destDir = join(projectRoot, "docs", "council");
         const destFile = join(destDir, `${date}-${topicSlug}.md`);
