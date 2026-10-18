@@ -27,6 +27,21 @@
 # Model: PINNED. Unpinned, the `opus` alias resolves to Opus 5.5 on Vertex and
 # every review bills at the Opus rate.
 #
+# KNOWN GAPS, both tracked on #630. Neither is acceptable in a version that
+# runs on pull requests from people who are not you:
+#
+#  1. `google-github-actions/auth` writes `gha-creds-*.json` into
+#     `$GITHUB_WORKSPACE` — the directory this agent then reads. A static GCP
+#     key sits in the same tree as attacker-influenceable diff text. The tool
+#     deny list below removes the exfiltration path; it does not remove the
+#     key. Workload Identity Federation does, and that is the fix.
+#
+#  2. `plugin_marketplaces` loads executing code from a MUTABLE git ref. Every
+#     `uses:` here is SHA-pinned and a test asserts it — and then this input
+#     fetches a plugin from `main`. Same property, different syntax, which is
+#     the shape `.claude/rules/checks-must-be-able-to-fail.md` §#484 is about.
+#     Whether the input accepts a pinned ref is unverified.
+#
 # Every `uses:` is pinned to a commit SHA, per this repo's convention.
 name: Claude review (trial)
 
@@ -75,7 +90,17 @@ jobs:
           # --allowedTools is required even though the skill's own frontmatter
           # names the same tool: the action starts the inline-comment MCP
           # server only when claude_args names it.
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment" --max-turns 25'
+          # The deny list is load-bearing, not belt-and-braces. This agent
+          # reads a PR diff — attacker-influenceable text — in the same
+          # workspace that google-github-actions/auth writes gha-creds-*.json
+          # into. Without Bash and the network tools there is no path from
+          # "injected instruction in a diff" to "key leaves the runner".
+          # Removing the key from the workspace entirely is the real fix and
+          # is tracked on #630; this is what holds the line until then.
+          claude_args: >-
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            --disallowedTools "Bash,Write,Edit,WebFetch,WebSearch,NotebookEdit"
+            --max-turns 25
         env:
           CLAUDE_CODE_USE_VERTEX: "1"
           ANTHROPIC_VERTEX_PROJECT_ID: itpc-gcp-global-revenue-claude
