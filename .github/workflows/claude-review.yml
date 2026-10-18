@@ -1,0 +1,83 @@
+# TRIAL (#630). Not managed by rungate — this file is hand-written and
+# caller-owned while we find out whether the thing is worth scaffolding.
+#
+# What this is: Claude reviews the pull request, running on Red Hat's Vertex
+# project rather than against an Anthropic API key or a Copilot credit pool.
+# `use_vertex` means inference bills `itpc-gcp-global-revenue-claude` at Vertex
+# rates; there is no credit pool to exhaust and no subscription rate-limit
+# window shared with an interactive session.
+#
+# WHAT THIS IS NOT, YET: a gate. It posts comments and nothing else. Do NOT add
+# it to branch protection in this form. A required check that only ever
+# concludes success is the defect `.claude/rules/checks-must-be-able-to-fail.md`
+# is about, and #630 exists to build the version that can actually fail —
+# including the three-state auth ladder so a consumer with no credentials
+# reports UNMEASURED rather than a green check over a review that never ran.
+#
+# Verified 2026-10-18 before this file was written: the service account
+# `claude-ci@itpc-gcp-global-revenue-claude.iam.gserviceaccount.com` holding
+# only `roles/aiplatform.user` returns HTTP 200 from
+# `publishers/anthropic/models/claude-sonnet-5:rawPredict` at location
+# `global`. An earlier 403 was IAM propagation, not configuration.
+#
+# Region: `global`. `us-east5` returned 429 — the project's per-minute token
+# quota is already consumed by other users, and Anthropic's own guidance for
+# 429s is to move to the global endpoint.
+#
+# Model: PINNED. Unpinned, the `opus` alias resolves to Opus 5.5 on Vertex and
+# every review bills at the Opus rate.
+#
+# Every `uses:` is pinned to a commit SHA, per this repo's convention.
+name: Claude review (trial)
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# Least privilege. `pull-requests: write` is the only write, and it is what
+# lets Claude post the review. `id-token: write` is required for the OIDC
+# exchange even though this trial authenticates with a key, because the action
+# requests it for its own GitHub App auth path.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
+# One review per PR at a time. A force-push storm should not fan out into
+# parallel jobs against a project whose quota is already contended.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Review
+        uses: anthropics/claude-code-action@f27be6b65a4652f08a2ba3cff79114829b588967 # v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_vertex: "true"
+          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
+          plugins: "code-review@claude-code-plugins"
+          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          # --allowedTools is required even though the skill's own frontmatter
+          # names the same tool: the action starts the inline-comment MCP
+          # server only when claude_args names it.
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment" --max-turns 25'
+        env:
+          CLAUDE_CODE_USE_VERTEX: "1"
+          ANTHROPIC_VERTEX_PROJECT_ID: itpc-gcp-global-revenue-claude
+          CLOUD_ML_REGION: global
+          ANTHROPIC_MODEL: claude-sonnet-5
