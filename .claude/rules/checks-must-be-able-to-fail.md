@@ -929,3 +929,85 @@ five files #274 adds (113 tests):
 
 None is left in the tree; all were run and reverted, and `workflows/ship.js`
 and `lib/evidence-prevalidator.ts` were confirmed byte-identical afterwards.
+
+### When the check is a comparison between documents (#621)
+
+Three files in this tree name the project's test command. Nothing compared
+them, and on the day #621 was filed they named two different things —
+`AGENTS.md` and `.github/workflows/ci.yml` both said `bun test`, while
+`.claude/rungate/config.json`'s `test.command`, the spelling the ship gate
+actually measures with, said `bun test --parallel --no-isolate`. The
+`--parallel` is what starved 122 I/O-bound tests past bun's per-test
+timeout, so every ship run reported `SHIP_PASSED_SUITE_FAILED` over a tree
+with zero real failures.
+
+A check that reads N files and compares what it found has one characteristic
+way to die, and it is the third shape: **finding nothing in every file is
+perfect agreement.** Zero strings are trivially all equal, so a template edit
+that moves a table row or renames a CI step converts the check into a
+ceremony without changing a line of it. `test/test-command-agreement.test.ts`
+answers that by making every extractor REFUSE when it finds no command, and
+by letting the refusal out of `testCommandAgreement` rather than folding it
+into an empty violation list.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/test-command-agreement.test.ts` (4 tests). Baseline before any
+mutation: **4 pass, 0 fail.**
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the distinct-command set truncated to one entry, so `violations` is always empty | 2 | **2 of 4** — `AC-8a` and the spawned counted case |
+| the AGENTS.md extractor returns `[]` instead of refusing when the `\| Test \|` row is absent | 1 | **1 of 4** — `AC-4b` |
+| the AGENTS.md extractor matches the whole document instead of the `## Commands` slice | 1 | **1 of 4** — `AC-4b` |
+| the missing-file refusal removed from `testCommandAgreement` | 1 | **1 of 4** — `AC-4b` |
+| the CI extractor stops excluding `bun install` and `bun run typecheck` | 3 | **4 of 4** |
+
+Before believing any of those, the input on which mutant and original differ,
+named and run rather than assumed:
+
+- **row 1** — a tree whose config says `bun test --parallel` while the other
+  two files say `bun test`. The original reports one violation naming all
+  three positions; the mutant reports none.
+- **rows 2 and 3** — an `AGENTS.md` carrying `## Commands` with no `Test` row
+  and a `| Test | \`bun test\` |` row further down, outside the section. The
+  original refuses; the mutant returns `bun test` it read from the wrong
+  region. Row 3 is `.claude/rules/checks-must-be-able-to-fail.md`'s own
+  "search the slice, not the document", and the fixture for it exists only
+  because the slice is otherwise untestable — the real `AGENTS.md` has both
+  a Commands row and a `**Test:**` line in its Workflow section, and they
+  agree, so the live tree cannot witness it.
+- **row 4** — an empty directory. The original throws `NoTestCommandError`;
+  the mutant throws `ENOENT` from `readFileSync`, which no caller can tell
+  from a genuine refusal.
+- **row 5** — a `ci.yml` whose `test:` job runs `bun install` and
+  `bun run typecheck` and nothing else. The original refuses; the mutant
+  reports `bun install` as the project's test command.
+
+**Row 5 came back HIGH, and the extra red is the real kind.** The prediction
+covered the three cases that read the live tree; the fourth is `AC-4b`'s
+"a CI job that runs only setup names nothing" fixture, which is red for a
+reason squarely about the mutated behaviour — the exclusion set is what makes
+that job name nothing, so removing it breaks the refusal and the reading at
+once. Not a crashing mutant: the three live-tree reds are about the value the
+extractor returns, and the file still parses and runs. Per the arithmetic
+above, that is "the prediction was wrong and the check is better than you
+thought", and the fact it records is that `NOT_THE_TEST_STEP` is load-bearing
+in two directions, not one.
+
+Two properties of the counted case are worth stating, because an in-process
+assertion that `violations` is non-empty does **not** establish them:
+
+- **The case is spawned, not described.** `violations.length === 1` proves the
+  function can disagree. It does not prove the CASE fails — a case that
+  computed a verdict and never asserted on it passes either way. So the
+  agreement case is run in a subprocess against a planted copy of the three
+  files, and the colours are counted.
+- **The control runs too, and `ran` is read before any verdict.** An
+  unmutated copy of the same three files is spawned first and must come back
+  green. A `-t` filter that matches nothing leaves bun reporting zero
+  failures, which is indistinguishable from the check passing and is also
+  what a run that failed to resolve its imports looks like, so both spawns
+  assert `ran === 1` before anything else.
+
+None of the five mutations is left in the tree; all were run and reverted,
+and the test file was confirmed byte-identical afterwards.
