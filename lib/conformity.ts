@@ -6,7 +6,8 @@
  *   runScaffoldConformity(import.meta.dir + "/..");
  */
 import { describe, test, expect } from "bun:test";
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import type { Dirent } from "fs";
 import { collectSpecFiles } from "./spec-files";
 import {
@@ -29,6 +30,13 @@ import { isHarnessItself } from "./harness-identity";
 import { fallowAvailable } from "./fallow-availability";
 import { tsconfigVerdict, TS_SOURCE_DIRS } from "./typescript-project";
 import { readSuccessDoc, readSuccessTemplate, successViolations } from "./success-doc";
+import {
+  AI_REVIEW_AUTH_PRECEDENCE,
+  AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_JOB,
+  AI_REVIEW_REQUIRE_VAR,
+  AI_REVIEW_WORKFLOW_FILE,
+} from "./scaffold/ai-review-step";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -4097,6 +4105,229 @@ export function runConfigAccessValidation(root: string) {
       }
       const messages = violations.map(v => v.message);
       expect(messages, messages.join("\n")).toEqual([]);
+    });
+  });
+}
+
+// ── AIREVIEW-1: the generated ai-review job (#630) ──────────────────────
+//
+// `test/ai-review-scaffold.test.ts` proves the BUILDER produces a script that
+// annotates UNMEASURED. This proves the FILE ON DISK does — which is a
+// different claim, and the one a consumer's pipeline depends on. A generator
+// that is correct and a workflow file that drifted from it look identical
+// from the generator's side.
+
+export { AI_REVIEW_JOB, AI_REVIEW_WORKFLOW_FILE } from "./scaffold/ai-review-step";
+
+/** What `aiReviewAuthScript` could establish about a project's ai-review job. */
+export interface AiReviewReading {
+  /** The bash the generated auth-detect step runs, or null when none was read. */
+  script: string | null;
+  /**
+   * Non-null when this project is not one the check can reach a verdict on —
+   * it has no scaffolded CI at all. UNMEASURED, said out loud, because `0`,
+   * `{}`, `null` and `SKIP` are indistinguishable from success.
+   */
+  unmeasured: string | null;
+  /**
+   * Non-null when the project IS scaffolded and the job is absent, renamed,
+   * conditional, or unreadable.
+   *
+   * Absence is a FAILURE and not UNMEASURED on purpose. The cheapest repair
+   * for a red AIREVIEW-1 is to delete `.github/workflows/ai-review.yml`, and a
+   * check that goes green under its own cheapest wrong fix certifies the
+   * regression it exists to block (.claude/rules/checks-must-be-able-to-fail.md,
+   * the fifth shape).
+   */
+  failure: string | null;
+}
+
+/**
+ * Read the auth-detect script out of a project's generated ai-review workflow.
+ *
+ * Parses rather than greps: the property is "GitHub will run this script in a
+ * job that cannot report skipped", and only a parse can say that. A `# if:` in
+ * a comment is not a condition and a condition reformatted across lines still
+ * is one, so a text match is wrong in both directions.
+ */
+export function aiReviewAuthScript(root: string): AiReviewReading {
+  const dir = join(root, ".github", "workflows");
+  const path = join(dir, AI_REVIEW_WORKFLOW_FILE);
+  const none = { script: null, unmeasured: null, failure: null };
+
+  if (!existsSync(path)) {
+    if (!existsSync(join(dir, "ci.yml"))) {
+      return {
+        ...none,
+        unmeasured: `UNMEASURED: this project has no .github/workflows/ci.yml, so it has ` +
+          `no scaffolded CI and no ${AI_REVIEW_WORKFLOW_FILE} to execute. Run the scaffold ` +
+          `to get one; until then nothing here says an AI review passed.`,
+      };
+    }
+    return {
+      ...none,
+      failure: `.github/workflows/${AI_REVIEW_WORKFLOW_FILE} is absent while ci.yml is present, ` +
+        `so this project took a scaffold that writes it and no longer has it. ` +
+        `A deleted review job is not a passing review — re-run the scaffold.`,
+    };
+  }
+
+  let doc: unknown;
+  try {
+    doc = Bun.YAML.parse(readFileSync(path, "utf-8"));
+  } catch (e) {
+    return { ...none, failure: `${AI_REVIEW_WORKFLOW_FILE} does not parse as YAML: ${(e as Error).message}` };
+  }
+  const jobs = (doc as any)?.jobs;
+  if (!jobs || typeof jobs !== "object") {
+    return { ...none, failure: `${AI_REVIEW_WORKFLOW_FILE} declares no jobs: mapping` };
+  }
+  const job = jobs[AI_REVIEW_JOB];
+  if (!job || typeof job !== "object") {
+    return {
+      ...none,
+      failure: `${AI_REVIEW_WORKFLOW_FILE} has no job named ${AI_REVIEW_JOB} ` +
+        `(found: ${Object.keys(jobs).join(", ") || "none"})`,
+    };
+  }
+  if ("if" in job) {
+    return {
+      ...none,
+      failure: `the ${AI_REVIEW_JOB} job carries a job-level \`if:\` — a job skipped by a ` +
+        `condition reports \`skipped\`, and a skipped required check can be treated as ` +
+        `satisfied. Resolve the condition inside \`run:\` instead.`,
+    };
+  }
+  const steps = Array.isArray(job.steps) ? job.steps : [];
+  const conditional = steps.filter((s: any) => s && typeof s === "object" && "if" in s);
+  if (conditional.length > 0) {
+    return {
+      ...none,
+      failure: `${conditional.length} step(s) in the ${AI_REVIEW_JOB} job carry an \`if:\`, ` +
+        `which reports \`skipped\` rather than a verdict`,
+    };
+  }
+  const auth = steps.find((s: any) => s && s.id === AI_REVIEW_AUTH_STEP_ID);
+  if (!auth || typeof auth.run !== "string") {
+    return {
+      ...none,
+      failure: `${AI_REVIEW_WORKFLOW_FILE}'s ${AI_REVIEW_JOB} job has no \`run:\` step with ` +
+        `id ${AI_REVIEW_AUTH_STEP_ID}, so nothing resolves a credential mode`,
+    };
+  }
+  return { script: auth.run, unmeasured: null, failure: null };
+}
+
+/** One execution of a generated script, under an environment built from scratch. */
+function runAiReviewScript(script: string, env: Record<string, string>): { code: number; stdout: string } {
+  const dir = mkdtempSync(join(tmpdir(), "rungate-ai-review-"));
+  try {
+    const sh = join(dir, "auth-detect.sh");
+    writeFileSync(sh, script);
+    const out = join(dir, "github_output");
+    writeFileSync(out, "");
+    // Built from scratch, NOT inherited. A developer or a runner with
+    // ANTHROPIC_API_KEY exported would make the credential-free case resolve a
+    // mode, and the whole check would go green for a reason unrelated to the
+    // code — test/ai-review-scaffold.test.ts makes the same argument.
+    const r = spawnSync("bash", [sh], {
+      encoding: "utf-8",
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, GITHUB_OUTPUT: out, ...env },
+    });
+    return { code: r.status ?? -1, stdout: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Warning annotations naming UNMEASURED, which is the state AC-4 counts. */
+function unmeasuredWarnings(stdout: string): string[] {
+  return stdout.split("\n").filter(l => l.startsWith("::warning") && l.includes("UNMEASURED"));
+}
+
+/**
+ * Execute a generated auth-detect script and report what it got wrong.
+ *
+ * Two runs, and the second one is what makes the first mean anything: a script
+ * that annotated UNMEASURED unconditionally would satisfy the credential-free
+ * case while telling a consumer nothing, so the word has to be absent when a
+ * credential IS configured.
+ */
+export function aiReviewUnmeasuredViolations(script: string): string[] {
+  const out: string[] = [];
+
+  const bare = runAiReviewScript(script, {});
+  const warnings = unmeasuredWarnings(bare.stdout);
+  if (warnings.length !== 1) {
+    out.push(
+      `with no credential configured the ai-review step emitted ${warnings.length} UNMEASURED ` +
+        `warning annotation(s), expected exactly 1 — a tree with no credential has not PASSED ` +
+        `an AI review, it has not HAD one\n${bare.stdout.trim()}`,
+    );
+  }
+  for (const { secret } of AI_REVIEW_AUTH_PRECEDENCE) {
+    if (warnings.length === 1 && !warnings[0].includes(secret)) {
+      out.push(`the UNMEASURED annotation does not name ${secret}, so nobody can act on it`);
+    }
+  }
+  if (bare.code !== 0) {
+    out.push(
+      `the ai-review step exited ${bare.code} with no credential and no ` +
+        `${AI_REVIEW_REQUIRE_VAR} set — the honest default for a tree that has never ` +
+        `configured one is an annotation, not a red pipeline on the first scaffold`,
+    );
+  }
+
+  const credentialed = runAiReviewScript(script, { [AI_REVIEW_AUTH_PRECEDENCE[0].secret]: "x" });
+  const stillWarned = credentialed.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
+  if (stillWarned.length !== 0) {
+    out.push(
+      `with ${AI_REVIEW_AUTH_PRECEDENCE[0].secret} configured the step still emitted ` +
+        `${stillWarned.length} UNMEASURED line(s) — an unconditional annotation makes the ` +
+        `word mean nothing\n${credentialed.stdout.trim()}`,
+    );
+  }
+  if (credentialed.code !== 0) {
+    out.push(`the ai-review step exited ${credentialed.code} with a credential configured`);
+  }
+
+  return out;
+}
+
+/**
+ * AIREVIEW-1 (#630) — a scaffolded project reports UNMEASURED rather than a
+ * passing review when no credential is configured.
+ *
+ * FAILS; does not warn, for every state except "this project has no CI at
+ * all". See `.claude/rules/config-access.md` — an absent credential is
+ * UNMEASURED, and UNMEASURED is not a pass.
+ */
+export function runAiReviewValidation(root: string) {
+  describe("AI review workflow (#630)", () => {
+    test("AIREVIEW-1: no credential is UNMEASURED, and a credential is not", () => {
+      const reading = aiReviewAuthScript(root);
+      if (reading.unmeasured) {
+        addFinding({
+          ruleId: "AIREVIEW-1",
+          severity: "WARN",
+          file: `.github/workflows/${AI_REVIEW_WORKFLOW_FILE}`,
+          message: reading.unmeasured,
+        });
+        return;
+      }
+      const violations = reading.failure
+        ? [reading.failure]
+        : aiReviewUnmeasuredViolations(reading.script!);
+      for (const v of violations) {
+        addFinding({
+          ruleId: "AIREVIEW-1",
+          severity: "FAIL",
+          file: `.github/workflows/${AI_REVIEW_WORKFLOW_FILE}`,
+          message: v,
+          fixCommand: "bunx rungate scaffold .",
+        });
+      }
+      expect(violations, violations.join("\n")).toEqual([]);
     });
   });
 }

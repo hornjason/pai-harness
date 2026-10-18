@@ -23,6 +23,7 @@ import {
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
+import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep } from "./ai-review-step";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
@@ -767,7 +768,7 @@ export function generateConformityTest(root?: string): string {
   const from = root && isHarnessItself(root) ? "../lib/conformity" : "rungate/lib/conformity";
   return `import { resolve } from "path";
 import { afterAll } from "bun:test";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, writeFindingsReport } from "${from}";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, runAiReviewValidation, writeFindingsReport } from "${from}";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -783,6 +784,7 @@ runTsconfigValidation(ROOT);
 runConfigAccessValidation(ROOT);
 runPromptConfigAccessValidation(ROOT);
 runSuccessDocValidation(ROOT);
+runAiReviewValidation(ROOT);
 
 afterAll(() => writeFindingsReport(ROOT));
 `;
@@ -2668,12 +2670,61 @@ ${bunStep}
           echo "Secret scan clean"
 `;
 
+  // #630. The ai-review job, and the one property that makes it a check
+  // rather than a decoration: there is NO `if:` here, at job level or step
+  // level. A job skipped by `if:` reports `skipped`, and a skipped required
+  // check can be treated as satisfied — a green required check for a review
+  // that never ran. `secrets` is unavailable in `if:` at any level anyway, so
+  // the mode is resolved inside `run:`, where it can emit an annotation and
+  // choose an exit code. The step text is `buildAuthDetectStep()`'s verbatim,
+  // not a copy: one decider for the script, and a mutation of it has one
+  // binding. See lib/scaffold/ai-review-step.ts.
+  //
+  // `pull_request` only. A review of a pull request has nothing to say about
+  // a push to a branch, and a trigger that fires where the job cannot do its
+  // work is a run whose outcome means nothing.
+  const aiReviewYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
+#
+# This job is deliberately unconditional. A job skipped by a condition reports
+# \`skipped\`, which a required status check can be configured to accept, and
+# that is a green check for a review that never ran. The credential check
+# happens inside \`run:\` instead, and reports UNMEASURED when there is none.
+#
+# The second step says the same thing for the other door: a credential that
+# resolved with no reviewer wired to use it (#631) has also not produced a
+# review, and a check that stays quiet about that is the same defect.
+name: AI Review
+
+on:
+  pull_request:
+    branches:
+${branchList}
+
+permissions:
+  contents: read
+
+jobs:
+  ${AI_REVIEW_JOB}:
+    runs-on: ${runsOn}
+    steps:
+${buildAuthDetectStep()}${buildReviewRunStep()}`;
+
   // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does
   // not own the file, and a consumer's own jobs have to survive the update
   // that re-scaffolding IS. A refusal is recorded rather than thrown so that
   // one unpreservable workflow does not abandon the rest of the scaffold
   // half-done — scripts/scaffold-project.ts exits non-zero on it.
-  for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml]] as const) {
+  // The filenames are spelled here, not read from a constant, because
+  // test/release-guard.test.ts pins this tuple as a literal: a directory-wide
+  // write would take the caller-owned workflows with it, and a name behind an
+  // import is a name that assertion cannot see. (That test also asserts this
+  // module names no workflow it does not write — prose is indistinguishable
+  // from a write to it — so the caller-owned files are not spelled anywhere
+  // here, this comment included.) `AI_REVIEW_WORKFLOW_FILE` is the spelling
+  // lib/conformity.ts reads back, and the two are held together by
+  // test/ai-review-workflow.test.ts AC-1, which looks for the constant's
+  // filename in what this loop actually wrote.
+  for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml]] as const) {
     const label = `.github/workflows/${name}`;
     try {
       writeManagedFile(join(workflowsDir, name), content, label, actions, opts);
