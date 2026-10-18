@@ -17,6 +17,9 @@ import { resolveConfig } from "./config-loader";
 // instead of drifting apart (#380).
 import { isHarnessItself } from "./harness-identity";
 import { isSpecFile } from "./spec-listing";
+// The one decider for the top-level docs rows, shared with lib/scaffold/steps.ts
+// so the scan the scaffold runs cannot drift from this one (#617).
+import { pruneObviousRoutes, topLevelDocRoutes } from "./doc-routing";
 import { testCommandDecision } from "./test-command";
 import type {
   ProjectScan,
@@ -348,21 +351,16 @@ function scanDocRouting(root: string, categories: Category[]): DocRoute[] {
     }
   }
 
-  // Docs top-level files
+  // Docs top-level files. #617: a document with no `governs:` field gets a
+  // marked row rather than no row, and the only way out of the table is the
+  // document declaring `status: archived` — see lib/doc-routing.ts.
+  const exemptFromPruning = new Set<string>();
   const docsDir = join(root, "docs");
   if (existsSync(docsDir)) {
     try {
-      const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"));
-      for (const f of allDocs) {
-        const docPath = join(docsDir, f);
-        const content = readFileSync(docPath, "utf-8");
-        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-        let need = f.replace(/\.md$/, "").replace(/-/g, " ");
-        if (fmMatch) {
-          const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-          if (gMatch && gMatch[1].trim() !== "TODO") need = gMatch[1].trim();
-        }
-        docRouting.push({ need, file: `docs/${f}` });
+      for (const route of topLevelDocRoutes(root)) {
+        docRouting.push(route);
+        exemptFromPruning.add(route.file);
       }
       const subDirs = readdirSync(docsDir, { withFileTypes: true })
         .filter(d => d.isDirectory() && !categories.some(c => c.dir === `docs/${d.name}`))
@@ -377,12 +375,9 @@ function scanDocRouting(root: string, categories: Category[]): DocRoute[] {
     } catch {}
   }
 
-  // Filter to non-obvious mappings
-  return docRouting.filter(d => {
-    const slug = d.file.replace(/\.md$/, "").replace(/.*\//, "").toLowerCase().replace(/-/g, " ");
-    const needLower = d.need.toLowerCase();
-    return !needLower.startsWith(slug) || d.need.includes("—") || d.need.includes("(");
-  });
+  // Filter to non-obvious mappings — except the rows that already decided for
+  // themselves whether they belong here (#617).
+  return pruneObviousRoutes(docRouting, exemptFromPruning);
 }
 
 // ── Identity detection ─────────────────────────────────────────

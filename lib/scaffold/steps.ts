@@ -34,6 +34,7 @@ import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profile
 import { referencedPaths } from "../agents-md-refs";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
+import { pruneObviousRoutes, topLevelDocRoutes } from "../doc-routing";
 import {
   readSuccessDoc,
   readSuccessTemplate,
@@ -522,18 +523,14 @@ export function generateAgentsMdContent(
       actions.push(`WARN: ${cat.dir}/ listed in routing but directory does not exist`);
     }
   }
+  // #617 — same binding as lib/scanner.ts, not a second copy of it. A
+  // document with no `governs:` field keeps a marked row; the way out of the
+  // table is `status: archived` in the document's own frontmatter.
+  const exemptFromPruning = new Set<string>();
   if (existsSync(docsDir)) {
-    const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"));
-    for (const f of allDocs) {
-      const docPath = join(docsDir, f);
-      const content = readFileSync(docPath, "utf-8");
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      let need = f.replace(/\.md$/, "").replace(/-/g, " ");
-      if (fmMatch) {
-        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-        if (gMatch && gMatch[1].trim() !== "TODO") need = gMatch[1].trim();
-      }
-      docRouting.push({ need, file: `docs/${f}` });
+    for (const route of topLevelDocRoutes(projectPath)) {
+      docRouting.push(route);
+      exemptFromPruning.add(route.file);
     }
     const subDirs = readdirSync(docsDir, { withFileTypes: true })
       .filter(d => d.isDirectory() && !categories.some(c => c.dir === `docs/${d.name}`))
@@ -546,11 +543,7 @@ export function generateAgentsMdContent(
       }
     }
   }
-  const filteredRouting = docRouting.filter(d => {
-    const slug = d.file.replace(/\.md$/, "").replace(/.*\//, "").toLowerCase().replace(/-/g, " ");
-    const needLower = d.need.toLowerCase();
-    return !needLower.startsWith(slug) || d.need.includes("—") || d.need.includes("(");
-  });
+  const filteredRouting = pruneObviousRoutes(docRouting as DocRoute[], exemptFromPruning);
 
   const consumers = harness?.consumers || [];
 
