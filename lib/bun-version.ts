@@ -129,9 +129,35 @@ function configDeclaration(root: string): string | null {
   return declared.trim();
 }
 
-export function declaredBunVersion(root: string): BunVersionDecision {
+/** One position that declares a version, and what it says. */
+export interface BunVersionDeclaration {
+  source: Exclude<BunVersionSource, "undeclared">;
+  version: string;
+}
+
+/**
+ * Every position in a project that declares a Bun version, in rung order.
+ *
+ * Separate from `declaredBunVersion` because the two questions are different:
+ * the decision is "what will CI install", and this is "who said so". A caller
+ * comparing positions — `scripts/contract-parity.ts` — needs the second, and
+ * reconstructing it from the decision's `conflict` string was the alternative:
+ * a consumer parsing a producer's prose, which is this repository's most
+ * expensive recurring mistake (#626).
+ */
+export function bunVersionDeclarations(root: string): BunVersionDeclaration[] {
+  const out: BunVersionDeclaration[] = [];
   const fromFile = fileDeclaration(root);
+  if (fromFile !== null) out.push({ source: "bun-version-file", version: fromFile });
   const fromConfig = configDeclaration(root);
+  if (fromConfig !== null) out.push({ source: "config", version: fromConfig });
+  return out;
+}
+
+export function declaredBunVersion(root: string): BunVersionDecision {
+  const declarations = bunVersionDeclarations(root);
+  const fromFile = declarations.find(d => d.source === "bun-version-file")?.version ?? null;
+  const fromConfig = declarations.find(d => d.source === "config")?.version ?? null;
   const conflict =
     fromFile !== null && fromConfig !== null && fromFile !== fromConfig
       ? `${BUN_VERSION_FILE} declares ${fromFile} and ci.bunVersion declares ${fromConfig}; ` +
