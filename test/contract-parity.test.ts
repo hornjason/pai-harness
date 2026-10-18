@@ -493,6 +493,48 @@ describe("#626: the remaining categories read a real corpus", () => {
     expect(reading.verdict, `transport parity: ${reading.violations.join("; ")}`).toBe("PASS");
   });
 
+  /**
+   * Transport parity is the only category that EXECUTES the inspected tree —
+   * `new Function` over a block sliced out of `<root>/workflows/ship.js`. A
+   * security review flagged that `--root` therefore chooses whose code runs,
+   * and the first draft answered it with a comment saying "first-party by
+   * assumption". This is that assumption made executable.
+   *
+   * The canary is the point. Asserting UNMEASURED on its own is satisfied by a
+   * run that compiled the foreign block, executed it, and then happened to
+   * discard the result — so the fixture's block is written to be LOUD if it is
+   * ever evaluated: its transports return `CANARY-EXECUTED`, which disagrees
+   * with the library and would push a violation and turn the category FAIL.
+   * UNMEASURED and an empty site list is the only reading in which nothing ran.
+   */
+  test("transport parity refuses a foreign root instead of compiling its code", () => {
+    const root = scratchDir("foreign-transport");
+    put(
+      root,
+      join("workflows", "ship.js"),
+      [
+        "// AC-PAYLOAD-TRANSPORT-START",
+        "function acPayloadShellArgument() { return 'CANARY-EXECUTED' }",
+        "function acPayloadReadExpression() { return 'CANARY-EXECUTED' }",
+        "// AC-PAYLOAD-TRANSPORT-END",
+        "writeACs({})",
+      ].join("\n"),
+    );
+
+    const reading = transportParity(root);
+
+    expect(reading.verdict).toBe("UNMEASURED");
+    expect(reading.unmeasured.map(u => u.kind)).toContain("unresolved-source");
+    expect(named(reading, "is a different tree")).toBe(true);
+    // The canary: any of these three means the foreign block was evaluated.
+    expect(JSON.stringify(reading)).not.toContain("CANARY-EXECUTED");
+    expect(reading.sites).toEqual([]);
+    expect(reading.violations).toEqual([]);
+    // Coverage still reports what the category CAN see, not what it read —
+    // `0/3`, not `0/0`, which would be a refusal hiding behind a full fraction.
+    expect(reading.coverage.reading).toBe("0/3");
+  });
+
   test("field reachability and write accountability see more than a handful of sites", () => {
     const fields = fieldReachability(REPO_ROOT);
     const writes = writeAccountability(REPO_ROOT);

@@ -73,7 +73,7 @@
  */
 import { execFileSync, spawnSync } from "child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import {
   BUN_VERSION_FILE,
   bunVersionDeclarations,
@@ -683,15 +683,26 @@ export function toolchainParity(root: string, running: string = Bun.version): Ca
 
 // ── category 3: transport parity ────────────────────────────────────────────
 //
-// STATED LIMIT, because it is the one thing in this file that executes rather
-// than reads: proving two transports agree means RUNNING both, so this
-// category evaluates the marked block of the inspected tree's
-// `workflows/ship.js` and spawns one `bun -e` with a payload this file
-// authored. Both are first-party by assumption — `--root` is meant for this
-// repository and for `git archive` exports of its own history, which is how
-// AC-5 uses it. Do not point it at a tree you would not run `bun test` in;
-// the same is true of `test/evidence-command-roundtrip.test.ts`, which has
-// extracted and executed that block since #614.
+// ENFORCED LIMIT, because this is the one category in this file that EXECUTES
+// rather than reads: proving two transports agree means RUNNING both, so it
+// evaluates the marked block of the inspected tree's `workflows/ship.js`
+// through `new Function` and spawns one `bun -e`. `--root` chooses that tree,
+// so on a foreign root this category would compile code the caller named.
+//
+// The first draft of this file wrote that limit down as prose — "first-party
+// by assumption, do not point it at a tree you would not run `bun test` in" —
+// and a security review was right to flag it. A stated assumption nothing
+// executes is this repository's own named defect, and writing it two lines
+// above the `new Function` that ignores it is that defect at its purest.
+//
+// So it is a refusal now. `transportIsFirstParty` is the single binding that
+// decides, and a foreign root reports UNMEASURED — never PASS, which is the
+// distinction AC-4 exists for. Nothing is lost by this: AC-5 drives its
+// `git archive` export through `commandParity`, which only reads.
+//
+// `test/evidence-command-roundtrip.test.ts` has extracted and executed the
+// same block since #614, and still does. The difference is that a test has no
+// `--root`: it can only ever mean this tree.
 
 /**
  * A payload built to be destroyed by a shell.
@@ -708,6 +719,19 @@ export const HOSTILE_EVIDENCE_COMMAND =
   "grep -rhcE '^export function x' lib | awk '{s+=$1} END {print s+0}' ${HOME} $(echo no) `echo no`";
 
 const TRANSPORT_MARKERS = { start: "AC-PAYLOAD-TRANSPORT-START", end: "AC-PAYLOAD-TRANSPORT-END" };
+
+/**
+ * One binding decides whether this category may execute, so a test can mutate
+ * it to `true` and watch the refusal stop refusing. A second copy of this
+ * comparison would survive that mutation and hold every case up green —
+ * `.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape.
+ */
+export function transportIsFirstParty(root: string): boolean {
+  return resolve(root) === resolve(REPO_ROOT);
+}
+
+/** Declared once: two return paths naming one category must not disagree. */
+const TRANSPORT_TITLE = "an evidence command survives the path it is actually executed through";
 
 /** The block `workflows/ship.js` carries because it cannot import (#69). */
 export function inlinedTransportBlock(shipSource: string): string {
@@ -732,6 +756,24 @@ export function transportParity(root: string): CategoryReport {
   const sites: ParitySite[] = [];
   const violations: string[] = [];
   const unmeasured: Unmeasurable[] = [];
+
+  // The refusal, before anything is compiled or spawned. See the ENFORCED
+  // LIMIT above: a foreign root is a tree whose code this category would run.
+  if (!transportIsFirstParty(root)) {
+    return categoryReport("transport-parity", TRANSPORT_TITLE, {
+      visible: 3,
+      sites: [],
+      violations: [],
+      unmeasured: [
+        unmeasurable(
+          "unresolved-source",
+          "workflows/ship.js — the inlined copy",
+          `transport parity executes the inspected tree's own code, so it is measured only against ${REPO_ROOT}; ` +
+            `${root} is a different tree and nothing in it was compiled or run`,
+        ),
+      ],
+    });
+  }
   const acs = [{ id: "AC-1", evidenceMethod: { command: HOSTILE_EVIDENCE_COMMAND } }];
   const argument = acPayloadShellArgument(acs);
 
@@ -834,7 +876,7 @@ export function transportParity(root: string): CategoryReport {
     }
   }
 
-  return categoryReport("transport-parity", "an evidence command survives the path it is actually executed through", {
+  return categoryReport("transport-parity", TRANSPORT_TITLE, {
     visible: 3,
     sites,
     violations,
