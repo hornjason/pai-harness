@@ -714,6 +714,117 @@ mutation above is that control, performed and observed. Without it the row
 would read **0 of 70**, in the sweep written to prove a claim about the whole
 tree — which is where it would have been least visible.
 
+## #589 — the last resort spoke for criteria that merely mentioned a file
+
+Split out of #586, which fixed the LOSS case and deliberately left this one.
+
+`findClosestPattern`'s last resort takes any filename-like token from
+anywhere in a sentence and renders the whole criterion as `<that file>
+exists`. Measured over the corpus `scaffold . --fix` actually edits — the
+unchecked, unmatched criteria of the **testable** specs at the top level of
+`specs/`, 19 of them on the tree at the time — **the fallback rewrote two**:
+
+```diff
+-- [ ] SC-1940: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
++- [ ] SC-1940: reference/rejected-constraints.md exists
+
+-- [ ] SC-1943: Makefile targets, `package.json` scripts and CI workflow files are scanned for constraints alongside markdown
++- [ ] SC-1943: package.json exists
+```
+
+Both replacements hold vacuously against a file that obviously exists.
+**After this change the fallback rewrites none of them, and it still rewrites
+the criterion #426 pinned as having to survive** — so the population is two
+before and zero after, with the rewrite path still live.
+
+### The property that separates the two classes
+
+**The last resort may only speak for a criterion that makes ONE claim.**
+
+SC-1940 coordinates two: a hash is written, AND the rule never resurfaces.
+SC-1943 coordinates a three-item subject — Makefile targets, `package.json`
+scripts, CI workflow files — of which the filename is one. `<file> exists`
+can be about at most one of those, so the rewrite is guaranteed to be about
+something other than what the criterion claims. The criterion that is still
+rewritten — *"the generator should emit a tidy CODE-MAP.md for every
+project"* — makes a single claim about the single file it names.
+
+`coordinatedClaims` in `scripts/audit-specs.ts` is the one binding, and it
+returns the clause after each coordinator rather than a boolean, so the
+refusal names the claim the rewrite would have dropped instead of merely
+reporting that one was.
+
+It is scoped to the fallback, and the scoping is the point: a heuristic that
+MATCHED a statement was chosen by what the statement says; the last resort
+was chosen by a filename being present. `closest.fallback` is a field of its
+own rather than a reading of `patternName`, which renders `file-exists` for
+both.
+
+### The cheapest wrong fix, named in advance
+
+`.claude/rules/checks-must-be-able-to-fail.md`'s fifth shape asks what
+somebody would do at 5pm to make the symptom go away. Here it is **narrow the
+fallback to statements whose verb is existence** — `exists`, `is present`,
+`must exist`. Both criteria above lose their rewrite under it and the issue
+closes.
+
+It is wrong because it switches the fallback off for the whole population:
+SC-1587's `UNSTRUCTURED`, whose verb is *emit*, goes with them and `--fix`
+stops rewriting anything. So every case asserting a criterion is KEPT sits
+beside one asserting that non-existence-verb statement is still rewritten,
+and SC-2024 asserts both directions in a single run.
+
+- [x] SC-2020: test/audit-specs-fallback-scope.test.ts contains [a filename a criterion mentions is not what the criterion is about] — both named criteria driven through the real decision, each asserted KEPT with a reason naming the coordinated claim the rewrite would drop, beside the single-claim control that must still be rewritten
+- [x] SC-2021: test/audit-specs-fallback-scope.test.ts contains [the rewritten line still carries the original beside it] — `--fix` executed over a fixture holding all three, so the decision is proved through the WRITE: the two named lines byte-identical and marked, the single-claim one rewritten with its original in a REVIEW comment
+- [x] SC-2022: test/audit-specs-fallback-scope.test.ts contains [the fallback rewrite population across specs/ is zero] — measured by running `--fix` over a copy of the real specs/ rather than over a fixture, with the classifier's own coverage asserted first and a second run proving the measurement can see a fallback rewrite when there is one
+- [x] SC-2023: test/audit-specs-fallback-scope.test.ts contains [the distinction answers both ways] — and the one input on the other side of the fallback precondition (#492): a coordinated statement the `file-exists` HEURISTIC binds is still rewritten, so the guard is proved scoped rather than global
+- [x] SC-2024: test/audit-specs-fallback-scope.test.ts contains [a mutant with the distinction removed rewrites both named criteria] — the mutant is proved functional on the control before any divergence is read, because a mutant that failed to load declines everything and reads exactly like the mutation being rejected on the merits
+- [x] SC-2025: test/audit-specs-fallback-scope.test.ts contains [the spec records the population counts and the property] — searched over the `#589` SLICE rather than the document, because a 1,200-line spec answers `rejected-constraints.md` from #586's section
+
+### What was broken to prove it (SC-2020..2025)
+
+Measured over `test/audit-specs-fallback-scope.test.ts`,
+`test/audit-specs-lossless.test.ts`,
+`test/audit-specs-rewrite-fidelity.test.ts` and `test/audit-specs.test.ts` —
+**55 tests, baseline 55 pass / 0 fail**. Each count was predicted before the
+run. None of the four is left in the tree; all were run and reverted, and
+`scripts/audit-specs.ts` was confirmed byte-identical afterwards by sha256.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `coordinatedClaims` short-circuited to `return []` — the #589 defect restored | 6 | **7 of 55** |
+| the binding signature moved (`statement` renamed to `stmt` in the declaration) | 2 | **1 of 54** — the SC-2024 block aborts in `beforeAll` with *"the binding signature appears 0 times"*, so its two cases are one unnamed failure and one test never runs |
+| the `closest.fallback` scoping removed, so the guard applies to every pattern | 1 | **1 of 55** — and only *the guard is scoped to the fallback* |
+| `coordinatedClaims` returns `[statement]`, so the fallback is switched off | 8 | **10 of 55** |
+
+Before believing any of it, the input on which mutant and original differ,
+run rather than assumed: `Rejecting a promoted rule writes its hash to
+`reference/rejected-constraints.md` and it is never re-promoted` is KEPT by
+the real source and rewritten to `reference/rejected-constraints.md exists`
+by the first mutant. That pair is also in the tree, as SC-2024.
+
+**Two rows came back HIGH, and per
+`.claude/rules/checks-must-be-able-to-fail.md` the extra reds were read
+before anything was concluded. Both are about the mutated behaviour, so the
+prediction was wrong and the binding reaches further than it did:**
+
+- Row 1's extra is *the population measurement can see a fallback rewrite
+  when there is one*. It asserts the measurement over the **whole corpus**
+  equals exactly the one criterion it planted; restoring the defect puts
+  SC-1940 and SC-1943 back into that list. The prediction had it as a local
+  control over the planted line, and it is a control over the population.
+- Row 4's extras are SC-1594 and SC-2002, both of which assert the rewriter
+  still distinguishes a rewrite from a decline. Switching the fallback off
+  collapses that distinction, which is the thing those two exist for — so
+  the "fix by switching it off" row is the most-caught mutation here, as it
+  was in #426's own battery.
+
+The third row is the one worth keeping in view. The guard is deliberately
+scoped to the last resort, and exactly one case is on the other side of that
+precondition — a coordinated statement the `file-exists` HEURISTIC binds.
+Without it the scoping would be unmeasured in both directions (#492), and a
+later simplification that dropped `closest.fallback` would be 0 red.
+
 ## #442 — external adoption was built and had never fired
 
 `scanExternalSources` does `~` expansion, scanning, matching and

@@ -156,6 +156,15 @@ describe("#586: a rewrite keeps what the criterion was about", () => {
     // defect that is real but is a DIFFERENT defect, filed rather than
     // folded in. What is pinned here instead is the property that makes the
     // downgrade survivable: the marker.
+    //
+    // **#589 closed the filed defect, and the DECISION half of this case
+    // moved with it.** The two criteria below are now KEPT, by
+    // `coordinatedClaims` — each coordinates a second claim that
+    // `<file> exists` cannot be about — and `test/audit-specs-fallback-scope.test.ts`
+    // owns that. What stays here is what this case was always for: the
+    // fallback reports `ambiguous: true`, so wherever it DOES rewrite, the
+    // statement it replaced is written beside the line. The vacuity control
+    // below therefore drives a statement the fallback still acts on.
     const behaviour =
       "Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` " +
       "and it is never re-promoted";
@@ -167,15 +176,23 @@ describe("#586: a rewrite keeps what the criterion was about", () => {
       "a behavioural criterion is replaced by a file-existence one AND the original is " +
         "not written beside it — the rewrite is now unrecoverable",
     ).toBe(true);
-    expect(
-      decideRewrite(behaviour, closest).kind,
-      "nothing is rewritten, so the marker assertion above holds vacuously",
-    ).toBe("rewrite");
-
     const scanned =
       "Makefile targets, `package.json` scripts and CI workflow files are scanned for " +
       "constraints alongside markdown";
     expect(closestPatternFor(scanned)?.ambiguous).toBe(true);
+
+    // The vacuity control: the fallback must still rewrite SOMETHING, or the
+    // `ambiguous` assertions above are about a flag nothing ever reads. This
+    // is the statement #426 pinned as having to survive, and #589's own
+    // positive control.
+    const single = "the generator should emit a tidy CODE-MAP.md for every project";
+    const singleClosest = closestPatternFor(single);
+    expect(singleClosest?.ambiguous, "the fallback stopped marking its rewrites for review")
+      .toBe(true);
+    expect(
+      decideRewrite(single, singleClosest).kind,
+      "nothing is rewritten, so the marker assertions above hold vacuously",
+    ).toBe("rewrite");
 
     // The negative control, because every `ambiguous` in the registry being
     // `true` would satisfy the assertions above while saying nothing. A
