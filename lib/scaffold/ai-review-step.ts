@@ -87,6 +87,20 @@ export const AI_REVIEW_REQUIRE_VALUE = "true";
 /** The step's `id:`, so a later step can read `steps.<id>.outputs.mode`. */
 export const AI_REVIEW_AUTH_STEP_ID = "ai-review-auth";
 
+/**
+ * The generated workflow's filename and its one job name.
+ *
+ * Declared here rather than at either use site. `lib/scaffold/steps.ts` writes
+ * the file and `lib/conformity.ts` reads it back and executes the step inside
+ * it; two string literals that agree today are one decider too many, and a
+ * generator and a checker that disagree about a filename is a checker that
+ * reports a clean tree it never opened.
+ */
+export const AI_REVIEW_WORKFLOW_FILE = "ai-review.yml";
+
+/** The single job in that file. Carries no `if:` — see the header. */
+export const AI_REVIEW_JOB = "ai-review";
+
 export const AI_REVIEW_AUTH_STEP_NAME = "Detect AI review credentials";
 
 /** The annotation title, shared by the warning and the refusal. */

@@ -1,6 +1,6 @@
 import { resolve } from "path";
 import { afterAll } from "bun:test";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, writeFindingsReport } from "../lib/conformity";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, runAiReviewValidation, writeFindingsReport } from "../lib/conformity";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -16,5 +16,6 @@ runTsconfigValidation(ROOT);
 runConfigAccessValidation(ROOT);
 runPromptConfigAccessValidation(ROOT);
 runSuccessDocValidation(ROOT);
+runAiReviewValidation(ROOT);
 
 afterAll(() => writeFindingsReport(ROOT));
