@@ -1,210 +1,242 @@
 /**
- * The one declared Bun version for a project (#622).
+ * The one Bun version for a project (#622).
  *
- * Covers SC-2064 (HARNESS-STANDARD.md).
+ * Nothing in this repository pinned the runtime. `.github/workflows/ci.yml`
+ * and `gates.yml` carried `bun-version: "latest"`, `release.yml` carried the
+ * literal `"1.3.14"`, the development machine ran 1.3.14 and CI's `latest`
+ * resolved to **1.4.3** — a full minor apart, with nothing comparing any of
+ * the four.
  *
- * Nothing in this repository pinned Bun, and the versions in play had
- * already diverged by a full minor. `createCiWorkflows` emitted
- * `harness?.ci?.bunVersion || "latest"` into the generated `test` and
- * `gates` jobs, this project's own config declared no `ci` block, and
- * `release.yml` — the one file a human pinned by hand — said `1.3.14`. So
- * the job that publishes the package ran a different runtime from the job
- * that tested it, and the difference was invisible because no document
- * named both.
+ * `latest` is the opposite of a pin: the runtime executing a given commit can
+ * change between two runs of that same commit, with nothing in the diff to
+ * explain a new failure. Re-running a red job was also a Bun upgrade, and a
+ * green local run could not say which runtime produced it.
  *
- * `latest` is the shape of the defect rather than an unlucky value. It
- * agrees with itself across every file, so a check that only compares
- * spellings reports a tree with no pin at all as perfectly consistent, and
- * a suite that passed this morning can fail this afternoon over a runtime
- * nobody in the repository chose.
+ * ## Why this is a module and not a string in two template literals
  *
- * ## Why this is a module and not a `||` chain in the generator
- *
- * Because the version has three consumers that must not answer the
- * question separately:
- *
- * | Consumer | What it needs |
- * |---|---|
- * | `createCiWorkflows` | the string to write into both generated workflows |
- * | `scripts/test-clean-env.ts` | the version to COMPARE the running bun against |
- * | `test/bun-version-agreement.test.ts` | the declaration every document is checked against |
- *
- * Two sites that agree today are one decider too many: only a mutation of a
- * SHARED binding can show the agreement is load-bearing rather than
- * coincidental (`.claude/rules/checks-must-be-able-to-fail.md`, fourth
- * shape). This is #488's fix for the test command and #87's for the type
- * check, applied to the step beside them.
+ * It was two, and they were fed by `harness?.ci?.bunVersion || "latest"` in
+ * `lib/scaffold/steps.ts` while two other workflow files — neither of them
+ * generated — named versions of their own. Four positions, three spellings,
+ * no decider. This is #87's fix for the type check and #488's for the test
+ * command, applied to the step directly beside them: one binding, so a
+ * mutation of it can show that the agreement is load-bearing rather than
+ * coincidental.
  *
  * ## The rungs, and what each one is not
  *
- * 1. **`ci.bunVersion` from the rungate config.** The operator said so, in
- *    the field the generator already documents in the header of every file
- *    it writes.
- * 2. **Nothing.** `version` is `null` and `source` is `undeclared` — which
- *    is NOT a version, and callers must not be able to mistake it for one.
- *
- * There is deliberately no inference rung. A `packageManager` field or a
- * `.bun-version` file would be a SECOND declaration, and a module whose job
- * is to make one declaration authoritative cannot have two.
+ * 1. **`.bun-version` at the project root.** The ecosystem's file:
+ *    `oven-sh/setup-bun` reads it through `bun-version-file`, and so do
+ *    `mise` and `asdf`. It wins because it is the file CI itself obeys —
+ *    a resolver that preferred something else would be naming a version CI
+ *    does not install.
+ * 2. **`ci.bunVersion` in the rungate config.** The field the harness has
+ *    documented since SC-86, and the only declaration a consumer who has not
+ *    adopted `.bun-version` has. Emitted as a literal, because there is no
+ *    file for CI to point at.
+ * 3. **Nothing.** `null`, and the state is named `undeclared` rather than
+ *    quietly becoming `latest`. `.claude/rules/config-access.md`: a built-in
+ *    default substituted for an absent declaration must be loud, because `0`,
+ *    `{}`, `null` and silence are all indistinguishable from success.
  *
  * ## What this does NOT cover
  *
- * - **The bun a developer actually runs.** Nothing here installs or
- *   switches a runtime; the local tooling REPORTS the comparison and leaves
- *   the choice to the human. A version manager is a different issue.
- * - **`.github/workflows/release.yml` and `issue-audit.yml`.** They are
- *   caller-owned (`.claude/rules/harness-managed.md`) and the scaffold does
- *   not write them, so the generator fix cannot reach them. They are held
- *   to the declaration by `test/bun-version-agreement.test.ts` instead,
- *   which is a check rather than a generator and says so.
- * - **What the registry can resolve.** A declared version that does not
- *   exist is emitted verbatim and fails loudly in CI. Silently substituting
- *   `latest` for an unresolvable pin would turn a typo into a moving target,
- *   which is the state this module exists to leave.
+ * - **Which bun is on the developer's PATH.** Two installations from two
+ *   package managers sit on the issue's machine; this reports the mismatch,
+ *   it cannot fix it. That is what `bunVersionReading` is for.
+ * - **Whether the declared version exists.** A pin CI cannot resolve fails
+ *   the job, loudly, naming the value — which is the point. A
+ *   well-formedness guard with `|| "latest"` behind it is the cheapest repair
+ *   for that failure and is exactly the silent fallback AC-7 forbids, so
+ *   `isPinnedBunVersion` refuses moving tags and nothing else.
+ * - **`package.json` `engines.bun` and `.tool-versions`.** Neither exists in
+ *   this tree, and a rung nobody declares is a rung nothing can test. Add one
+ *   here, with a case, if a consumer turns up on it — not before.
+ * - **`workflows/*.js`.** They cannot import (#69) and none of them installs
+ *   bun; if one ever does, it reads the resolved config the way every other
+ *   workflow prompt does.
  */
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { tryLoadRungateConfig } from "./config-loader";
 
-/** The field, spelled once. Prose, messages and tests all read it from here. */
-export const BUN_VERSION_FIELD = "ci.bunVersion";
+/** The declaration file, at the project root. The name `setup-bun` knows. */
+export const BUN_VERSION_FILE = ".bun-version";
 
 /**
- * What a generated workflow says when the project declares nothing.
- *
- * Unchanged from the pre-#622 behaviour on purpose: a consumer who has
- * never configured a version must not have their pipeline changed by taking
- * a rungate update. What changes is that the substitution is now RECORDED
- * in the file that carries it — `0`, `{}`, `null` and a silent default are
- * indistinguishable from a decision (`.claude/rules/config-access.md`).
+ * Tags that resolve to whatever shipped today. Declaring one is a declaration
+ * that the project is NOT pinned, which is a legitimate thing for a consumer
+ * to choose and is not a thing this repository may choose by accident.
  */
-export const UNDECLARED_WORKFLOW_VERSION = "latest";
+export const MOVING_BUN_TAGS = ["latest", "canary"] as const;
 
-export type BunVersionSource = "config" | "undeclared";
+export type BunVersionSource = "bun-version-file" | "config" | "undeclared";
 
 export interface BunVersionDecision {
-  /** The declared version, verbatim. `null` when nothing declares one. */
+  /** The declared version. Null only when nothing declares one. */
   version: string | null;
   source: BunVersionSource;
-  /** Where the declaration lives — or would live, when there is none. */
-  where: string;
   /** Why this version and not another. */
   reason: string;
+  /**
+   * Both declarations present and disagreeing. Empty when they agree, or when
+   * only one of them exists. Reported rather than resolved in silence: two
+   * positions naming two versions is #621's defect, and the loser here is the
+   * one a human is most likely to have edited.
+   */
+  conflict: string;
 }
 
-export function bunVersionDecision(root: string): BunVersionDecision {
+/** Where a decision came from, spelled the way a log reader can act on. */
+export function bunVersionSourceLabel(source: BunVersionSource): string {
+  if (source === "bun-version-file") return BUN_VERSION_FILE;
+  if (source === "config") return "ci.bunVersion in .claude/rungate/config.json";
+  return "no declaration";
+}
+
+/**
+ * Is this a pin — a value that names the same runtime tomorrow?
+ *
+ * Deliberately NOT a semver test. `1.0.x`, a commit sha and a download URL are
+ * all things `setup-bun` resolves, and narrowing this to `\d+\.\d+\.\d+` is
+ * the over-narrow detector that would reject a legitimate declaration and send
+ * someone looking for a fallback.
+ */
+export function isPinnedBunVersion(version: string | null | undefined): boolean {
+  if (typeof version !== "string") return false;
+  const v = version.trim();
+  if (v === "") return false;
+  return !(MOVING_BUN_TAGS as readonly string[]).includes(v);
+}
+
+function fileDeclaration(root: string): string | null {
+  const path = join(root, BUN_VERSION_FILE);
+  if (!existsSync(path)) return null;
+  // A file that exists and says nothing is not a declaration. It is also not
+  // a reason to throw: `setup-bun` would fail on it anyway, and the rung below
+  // is a better answer than a dead scaffold.
+  const raw = readFileSync(path, "utf-8").trim();
+  return raw === "" ? null : raw;
+}
+
+function configDeclaration(root: string): string | null {
   // Through the loader, never a constructed path to `.claude/rungate*`
-  // (`.claude/rules/config-access.md`). Both layouts are honoured, and a
-  // malformed config THROWS rather than reading as an absent one — a
-  // corrupt config is never a missing config, and `catch {}` here is the
-  // conversion that rule exists to forbid.
+  // (`.claude/rules/config-access.md`), so both config layouts are honoured.
+  // It THROWS on a malformed config, deliberately: a corrupt config is never a
+  // missing config, and `catch {}` here is the conversion that rule forbids.
   const config = tryLoadRungateConfig(root) as { ci?: { bunVersion?: unknown } } | null;
   const declared = config?.ci?.bunVersion;
-  if (typeof declared === "string" && declared.trim() !== "") {
+  if (typeof declared !== "string" || declared.trim() === "") return null;
+  return declared.trim();
+}
+
+export function declaredBunVersion(root: string): BunVersionDecision {
+  const fromFile = fileDeclaration(root);
+  const fromConfig = configDeclaration(root);
+  const conflict =
+    fromFile !== null && fromConfig !== null && fromFile !== fromConfig
+      ? `${BUN_VERSION_FILE} declares ${fromFile} and ci.bunVersion declares ${fromConfig}; ` +
+        `CI installs what ${BUN_VERSION_FILE} says, so the config field is the stale one`
+      : "";
+
+  if (fromFile !== null) {
     return {
-      version: declared.trim(),
-      source: "config",
-      where: `\`${BUN_VERSION_FIELD}\` in the rungate config`,
-      reason: `the project declares \`${BUN_VERSION_FIELD}\``,
+      version: fromFile,
+      source: "bun-version-file",
+      reason: `the project declares ${BUN_VERSION_FILE}, which is the file setup-bun itself reads`,
+      conflict,
     };
   }
-
+  if (fromConfig !== null) {
+    return {
+      version: fromConfig,
+      source: "config",
+      reason: `the project declares ci.bunVersion and no ${BUN_VERSION_FILE}`,
+      conflict,
+    };
+  }
   return {
     version: null,
     source: "undeclared",
-    where: `\`${BUN_VERSION_FIELD}\` in the rungate config`,
-    reason: `the project declares no \`${BUN_VERSION_FIELD}\``,
+    reason: `the project declares neither ${BUN_VERSION_FILE} nor ci.bunVersion`,
+    conflict,
   };
 }
 
-/** The string a `setup-bun` step should carry for this project. */
-export function workflowBunVersion(decision: BunVersionDecision): string {
-  return decision.version ?? UNDECLARED_WORKFLOW_VERSION;
-}
-
-/**
- * The `setup-bun` step, emitted from one place.
- *
- * Both generated workflows call this rather than interpolating a version of
- * their own: two emissions of one decision are two things to drift, and the
- * drift is what #622 is.
- */
-export function setupBunStep(decision: BunVersionDecision, indent = "      "): string {
-  const inner = `${indent}  `;
-  const note =
-    decision.source === "undeclared"
-      ? `${inner}  # UNDECLARED: this project sets no \`${BUN_VERSION_FIELD}\`, so CI resolves whatever\n` +
-        `${inner}  # \`${UNDECLARED_WORKFLOW_VERSION}\` is at the moment the job runs. Set the field to pin it.\n`
-      : "";
-  return (
-    `${indent}- uses: oven-sh/setup-bun@v2\n` +
-    `${inner}with:\n` +
-    note +
-    `${inner}  bun-version: "${workflowBunVersion(decision)}"`
-  );
-}
-
-export type BunVersionAgreementVerdict = "match" | "mismatch" | "undeclared";
+export type BunVersionState = "match" | "mismatch" | "undeclared";
 
 export interface BunVersionReading {
-  agreement: BunVersionAgreementVerdict;
-  /** The version this process is running under. */
-  running: string;
-  /** The declared version, or null. */
-  declared: string | null;
-  /** One line, for a log a human reads. */
+  state: BunVersionState;
+  /** One line, for a log somebody pastes into an issue. */
   line: string;
 }
 
 /**
- * Compare a running Bun against the declared one, and say so in one line.
+ * What a run should say about the runtime it is running on.
  *
- * Both versions are PARAMETERS rather than read in here, so a test can
- * drive every branch with fabricated values. A comparison that read
- * `Bun.version` itself could only ever be exercised in the `match` state on
- * a correctly configured machine, and the branch that matters — the warning
- * — would be unreachable from any test (`.claude/rules/checks-must-be-able-to-fail.md`).
- *
- * `undeclared` is its own verdict and NOT a match. A tree with no
- * declaration has not been checked against one; reporting agreement there
- * would make the warning satisfiable by deleting the declaration, which is
- * the cheapest wrong fix available to anyone it ever annoys.
- *
- * Every line opens with `bun <running>` and spells the running version
- * exactly once, because `scripts/test-clean-env.ts`'s provenance line is
- * counted: a mismatch line naming the running version twice would report
- * two provenance lines for one run.
+ * `running` is a parameter rather than `Bun.version` read inside, and that is
+ * the whole of AC-4: a comparison that reads the machine can only be driven
+ * with the machine's own answer, so the mismatch branch is unreachable from a
+ * test on any machine that is already correct — which is every machine where
+ * the case would be written.
  */
-export function bunVersionReading(opts: {
-  running: string;
-  declared: string | null;
-  where: string;
-}): BunVersionReading {
-  const { running, declared, where } = opts;
-  const head = `bun ${running}`;
+export function bunVersionReading(decision: BunVersionDecision, running: string): BunVersionReading {
+  const suffix = decision.conflict ? ` WARNING: ${decision.conflict}.` : "";
 
-  if (declared === null) {
+  if (decision.version === null) {
     return {
-      agreement: "undeclared",
-      running,
-      declared,
+      state: "undeclared",
       line:
-        `${head} — UNDECLARED: nothing sets ${where}, so CI resolves ` +
-        `\`${UNDECLARED_WORKFLOW_VERSION}\` at job time and this run is UNMEASURED against it`,
+        `bun ${running} is running, and the declared version is UNMEASURED — ` +
+        `${decision.reason}, so this run says nothing about what CI will install.${suffix}`,
     };
   }
-  if (declared === running) {
+  if (decision.version !== running) {
     return {
-      agreement: "match",
-      running,
-      declared,
-      line: `${head} — matches the version declared in ${where}`,
+      state: "mismatch",
+      line:
+        `WARNING: bun ${running} is running but ${bunVersionSourceLabel(decision.source)} declares ` +
+        `${decision.version} — this run does NOT model CI, and a result pasted from it ` +
+        `describes ${running}.${suffix}`,
     };
   }
   return {
-    agreement: "mismatch",
-    running,
-    declared,
-    line:
-      `${head} — MISMATCH: ${where} declares ${declared}, so CI runs a different Bun ` +
-      `than this did and a green result here is not a green result there`,
+    state: "match",
+    line: `bun ${running} (declared in ${bunVersionSourceLabel(decision.source)}).${suffix}`,
   };
+}
+
+/**
+ * The `with:` body of a generated `oven-sh/setup-bun` step.
+ *
+ * One function, so the generator has nothing to decide and no second place
+ * for a fallback to grow. It returns LINES rather than writing anything,
+ * which is what lets a test assert the emission for a declaration no machine
+ * has — including one CI cannot resolve.
+ */
+export function setupBunWith(decision: BunVersionDecision, indent: string): string {
+  if (decision.source === "bun-version-file") {
+    return (
+      `${indent}# Pinned by ${BUN_VERSION_FILE} — the project's single declaration (#622).\n` +
+      `${indent}# setup-bun reads that file, so there is no version spelled here to drift from it.\n` +
+      `${indent}bun-version-file: "${BUN_VERSION_FILE}"`
+    );
+  }
+  if (decision.source === "config") {
+    return (
+      `${indent}# From ci.bunVersion in .claude/rungate/config.json — this project declares no\n` +
+      `${indent}# ${BUN_VERSION_FILE}. Add one and re-scaffold to let CI read the declaration directly.\n` +
+      `${indent}bun-version: "${decision.version}"`
+    );
+  }
+  // UNPINNED, said out loud. The value is unchanged from what this generator
+  // has always emitted for a project that declares nothing — changing a
+  // consumer's runtime without being asked is not this issue's business — but
+  // the silence is. An unpinned CI is a state, and a state that is not
+  // reportable is one nobody fixes.
+  return (
+    `${indent}# UNPINNED: ${decision.reason}, so every run of this job installs whatever\n` +
+    `${indent}# shipped today and re-running a red job is also a Bun upgrade. Declare a version in\n` +
+    `${indent}# ${BUN_VERSION_FILE} (or ci.bunVersion) and re-scaffold.\n` +
+    `${indent}bun-version: "latest"`
+  );
 }

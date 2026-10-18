@@ -2727,74 +2727,6 @@ substitution runs during transport. A fix that escaped `$1` and `${VAR}` and
 stopped there would leave that case red, which is the point of carrying all
 three forms rather than the one the issue was filed for.
 
-### The version nobody declared, spelled four ways (#622)
-
-Nothing in this repository pinned Bun. `createCiWorkflows` emitted
-`harness?.ci?.bunVersion || "latest"` into the generated `test` and `gates`
-jobs, `.claude/rungate/config.json` declared no `ci` block at all, and
-`issue-audit.yml` said `latest` too — while `release.yml`, the one file a
-human pinned by hand, said `1.3.14`. So the job that publishes the package
-ran a different runtime from the job that tested it, the difference was a
-full minor, and no document named both.
-
-**`latest` is the shape of the defect, not an unlucky value.** It agrees with
-itself in every file, so a check that only compares spellings reports a tree
-with no pin at all as perfectly consistent — which is why
-`bunVersionAgreement` has two violation kinds and the moving-target one is
-asserted on a planted tree rather than assumed. It has already cost a red
-row: `test/suite-run-reading.test.ts`'s SC-1827 asserted bun 1.3.14's exact
-"0 test files matching" wording and went red in CI, where 1.4.3 says
-`No tests found!`.
-
-The version now resolves through `lib/bun-version.ts` — one module read by
-the generator, by `scripts/test-clean-env.ts` and by the agreement check, so
-a mutation of the shared binding is what shows the agreement is load-bearing
-rather than coincidental. The two caller-owned workflows cannot be reached by
-the generator and are held to the declaration by the check instead, which is
-stated in both files rather than assumed.
-
-- [x] SC-2064: lib/bun-version.ts contains [The one declared Bun version for a project] — one module, two rungs and no inference rung, because a `packageManager` field or a `.bun-version` file would be a SECOND declaration and a module whose job is to make one declaration authoritative cannot have two; `undeclared` carries `version: null` rather than the string a caller could mistake for a pin
-- [x] SC-2065: test/bun-version-agreement.test.ts contains [the config and every workflow name one pinned Bun version] — coverage is asserted before the verdict (every workflow with a `setup-bun` step must have contributed), and the agreed string is compared against `bunVersionDecision`, so the case is about the declaration and not about four files that happen to have been edited together
-- [x] SC-2066: test/bun-version-agreement.test.ts contains [no workflow names a moving Bun version, and a planted one is caught] — `latest` agrees with `latest`, so the disagreement check alone cannot see the defect; the moving-target rule is driven by a planted tree where every position is rewritten to `latest`, and the case asserts it is NOT reported as a disagreement
-- [x] SC-2067: test/bun-version-agreement.test.ts contains [a position that names nothing refuses instead of agreeing] — every extractor REFUSES rather than returning nothing, because N files naming nothing are trivially N files that agree; the step's own block is sliced out first, so a pin in the next step cannot answer for an unpinned one, and a corrupt config throws rather than reading as an absent one
-- [x] SC-2068: test/bun-version-agreement.test.ts contains [the reading tells match, mismatch and undeclared apart] — both versions are parameters, so the warning branch is reachable from a test with a fabricated version rather than only on a misconfigured machine; `undeclared` is its own verdict and explicitly not a match, and every line spells the running version exactly once
-- [x] SC-2069: test/bun-version-agreement.test.ts contains [an unresolvable declared version reaches both workflows verbatim] — a declared version CI cannot resolve is emitted as written, with no fallback to `latest`, because substituting a moving target for a typo is the state this issue exists to leave
-- [x] SC-2070: test/bun-version-agreement.test.ts contains [the clean-env script prints exactly one line naming the bun it ran under] — the script is SPAWNED and the provenance lines are counted, because a pasted suite result used to carry no record of the runtime that produced it and the runtime was the one thing CI did not share
-
-#### What was broken to prove it (SC-2064..2070)
-
-Run and counted rather than asserted, over
-`test/bun-version-agreement.test.ts` (7 tests). Every count was predicted
-before the run.
-
-| Mutation | Red | Predicted |
-|---|---|---|
-| **baseline** — unmutated | **7 pass, 0 fail** | 7 pass |
-| `bunVersionDecision` stops reading the config — the pre-#622 fallback restored | **2 of 7** | 2 |
-| the moving-target violation removed from `bunVersionAgreement` | **1 of 7** | 1 |
-| the extractor's step boundary removed, so it searches the whole file | **1 of 7** | 1 |
-| `setupBunStep` emits `UNDECLARED_WORKFLOW_VERSION` regardless of the decision | **1 of 7** | 1 |
-
-None is left in the tree; `lib/bun-version.ts` and
-`test/bun-version-agreement.test.ts` were confirmed byte-identical
-afterwards.
-
-Before the first row was believed, the input on which mutant and original
-differ was named and run: a project whose config declares
-`9.9.9-not-a-real-bun`. The original generates `bun-version:
-"9.9.9-not-a-real-bun"` into both workflows; the mutant generates
-`bun-version: "latest"`. A tree that declares `1.3.14` would have been the
-natural fixture and would have measured nothing, because the pre-fix
-`|| "latest"` only fires when the config says nothing — the mutation and the
-original behave identically on every declared value.
-
-**Row two is the one that is not about the code under test.** `AC-5` stays
-GREEN under it: the mutant's clean-env line reads `bun 1.3.14 — UNDECLARED:
-…`, which still names the running version exactly once, and that is the
-reading behaving correctly over a decision that got worse. A case that went
-red there would be measuring the decision through the count, which is the
-proxy rather than the property.
-
 ### A criterion forbidding a call, ticked over that call (#395)
 
 `gates/workflow.test.ts` read an issue's labels by shelling out to the
@@ -10412,3 +10344,99 @@ counted only the dangling case, which is the one the original finding named.
 ### Success Criteria
 
 - [x] SC-1949: test/scaffold-ownership.test.ts contains [no owned file is written through a symlink] — a dangling link on a `regenerate` file, a live link to a file outside the project, and a real file on the same strategy as the positive control
+
+## Four workflow files, three spellings of the runtime they run on (#622)
+
+Nothing in this repository pinned Bun. Measured on 2026-10-18:
+
+| Where | Version |
+|---|---|
+| the development machine, both installations | 1.3.14 |
+| `ci.yml` and `gates.yml` — `bun-version: "latest"` | **1.4.3** |
+| `release.yml` — `bun-version: "1.3.14"` | 1.3.14 |
+
+`latest` is the opposite of a pin: the runtime executing a given commit can
+change between two runs of that same commit, with nothing in the diff to
+explain a new failure, so re-running a red job was also a Bun upgrade. The
+fourth file, `issue-audit.yml`, said `latest` too — and it is not generated,
+which is the point: `lib/scaffold/steps.ts` held `harness?.ci?.bunVersion ||
+"latest"` and emitted it at two sites, so fixing the generator reached half
+the tree. This is #87's collapse of the typecheck step and #488's of the test
+step, applied to the step between them, and then taken one position further
+than either: the declaration is a FILE — `.bun-version` — because
+`oven-sh/setup-bun` reads that file itself through `bun-version-file`, so the
+generated workflows point at the declaration rather than carrying a copy of
+it that can drift.
+
+`scripts/test-clean-env.ts` is why this is worth its own issue rather than a
+line in a release checklist. Its whole purpose is to make a local run answer
+"will this pass in CI", and its own docstring listed **the pinned bun
+version** among the six things it does not model. That qualification was
+honest and was papering over a gap a full minor wide. It still does not
+CONTROL which bun runs, and it now reports the one it ran under, so a pasted
+result carries its own provenance and a disagreement with the declaration is
+a line a reader can scan for rather than a thing nobody measured.
+
+### When the declaration is a runtime version (#622)
+
+The negative control is the whole of AC-7, and it is this standard's fifth
+shape — *a case that goes green under the wrong fix*. Without it, "no
+workflow says `latest`" is satisfied by four files that happen to carry the
+right string, and nothing establishes that the generated text DERIVES from
+the declaration.
+
+So the fixture declares `9999.0.0-no-such-bun`, which is deliberately not
+plain semver. The cheapest repair for "CI failed on a bad pin" is a
+well-formedness guard with a fallback to `latest` behind it — the fallback
+this criterion forbids — and a `1.2.3`-shaped fixture would survive that
+repair and certify it.
+
+#### What was broken to prove it
+
+Three mutations over `test/bun-version-agreement.test.ts` (17 tests).
+Baseline read before any mutation row: **17 pass, 0 fail.** None is left in
+the tree; all were run and reverted, and `lib/bun-version.ts` was restored
+from a copy taken before the first.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the fallback restored — `setupBunWith` emits a `latest` literal when the declared version is not plain semver | 4 | **4 of 17** |
+| `fileDeclaration` stops reading the declaration file, so every project falls to the config rung | 5 | **5 of 17** |
+| `bunVersionReading` never reports a mismatch | 1 | **1 of 17** |
+
+Before believing any row, the input on which mutant and original differ,
+named and run rather than assumed:
+
+- **row 1** — a project whose `.bun-version` holds `9999.0.0-no-such-bun`.
+  The original emits `bun-version-file: ".bun-version"`, so CI installs that
+  value and fails loudly naming it; the mutant emits `bun-version: "latest"`,
+  so CI goes green on a runtime nobody declared. Printed and compared before
+  the row was counted.
+- **row 2** — a project declaring `1.2.3` in `.bun-version` and nothing in
+  its config. The original resolves `1.2.3` from `bun-version-file`; the
+  mutant resolves `undeclared` and emits the UNPINNED step.
+- **row 3** — `declared = 1.3.14-fabricated`, `running = 9999.0.0-fabricated`.
+  The original reports `mismatch`; the mutant reports `match`.
+
+Row 3 is small on purpose and is recorded rather than padded: one case
+depends on that branch, because the OTHER two states — a match and an
+undeclared reading — are asserted separately and neither goes through it. A
+mutation that turned all three red would mean the three states are one
+decider wearing three names.
+
+The two numbers that did NOT move are the ones worth reading. Rows 1 and 2
+leave the live-tree cases green, because this repository's own `.bun-version`
+says `1.3.14` — plain semver, present, and therefore invisible to both
+mutants. A battery whose fixtures all meet a precondition measures nothing
+past it (#492), and the precondition here is *the declaration is ordinary*.
+The fixture that does not meet it is the only thing in the file that can see
+either defect.
+
+### Success Criteria
+
+- [x] SC-2071: test/bun-version-agreement.test.ts contains [setupBunStepsUnder(WORKFLOW_DIR)] — every `oven-sh/setup-bun` step under `.github/workflows/` is read from the PARSED workflow rather than grepped, because an unquoted, single-quoted or flow-mapped version is valid syntax a text search misses
+- [x] SC-2072: test/bun-version-agreement.test.ts contains [names oven-sh/setup-bun ${raw} time(s) but the parse found] — the raw text is used for exactly one thing, the number of steps the parse must have found, because a reading that silently shrank to zero reads identically to four files that agree
+- [x] SC-2073: test/bun-version-agreement.test.ts contains [no workflow spells a Bun version literal of its own] — asserted against the real `.github/workflows/` this repo's CI runs, not against a fixture the change produced, and preceded by a coverage case naming all four files
+- [x] SC-2074: test/bun-version-agreement.test.ts contains [a mismatch names both versions and both positions] — driven with two fabricated versions asserted to differ from `Bun.version`, because a comparison that reads the machine cannot be driven to disagree on a machine that is already correct
+- [x] SC-2075: test/bun-version-agreement.test.ts contains [exactly one line names the running bun version] — the clean-env run is SPAWNED and its output counted; a source-text assertion that the script imports the module cannot tell a printed line from an unreachable one
+- [x] SC-2076: test/bun-version-agreement.test.ts contains [the generated workflows resolve exactly the unresolvable value] — the negative control, declared as a value no registry can resolve and deliberately not plain semver, so the case does not survive the well-formedness guard that is the cheapest wrong fix

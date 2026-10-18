@@ -37,17 +37,10 @@
  * ## what this does NOT model
  *
  * Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
- * every run: the runner OS, a fresh `bun install`, the bun version, the
- * pull-request merge commit, network and API availability, and files git
+ * every run: the runner OS, a fresh `bun install`, the pinned bun version,
+ * the pull-request merge commit, network and API availability, and files git
  * ignores. The claim this replaces failed by being unqualified, so the
  * replacement is qualified, in writing, where a reader of the output sees it.
- *
- * The bun version is still unmodelled — this runs whatever is on PATH, and
- * nothing here installs a runtime — but since #622 it is no longer
- * unreported: the run prints the version it is under and says whether it
- * matches `ci.bunVersion`, so a pasted result carries its own provenance
- * and a run on the wrong runtime announces itself instead of looking
- * identical to a run on the right one.
  *
  * Usage:
  *   bun scripts/test-clean-env.ts                    # whole suite, CI-shaped checkout
@@ -67,7 +60,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { acquireFullSuiteSlot, isFullSuiteCommand, releaseFullSuiteSlot } from "../lib/test-suite-lock";
 import { CLEAN_ENV_REFUSE_EXIT, prepareCiCheckout, type Runner } from "../lib/ci-checkout";
-import { bunVersionDecision, bunVersionReading } from "../lib/bun-version";
+import { bunVersionReading, declaredBunVersion } from "../lib/bun-version";
 
 const ROOT = join(import.meta.dir, "..");
 const CI_WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml");
@@ -179,17 +172,15 @@ try {
   }
 
   console.error(`[clean-env] HOME=${home}  gh credentials stripped  git identity unset`);
-  // #622. A pasted result used to carry no record of the runtime that
-  // produced it, and the runtime was the one thing CI did not share — CI
-  // resolved `bun-version: latest` while this ran whatever was on PATH. One
-  // line, in the same reported block as the checkout and the UNMODELLED
-  // list, and it is one line in all three states: a mismatch line that
-  // spelled the running version twice would report two provenance lines for
-  // one run.
-  const bun = bunVersionDecision(ROOT);
-  console.error(
-    `[clean-env] ${bunVersionReading({ running: Bun.version, declared: bun.version, where: bun.where }).line}`,
-  );
+  // #622. A pasted result that cannot say which runtime produced it is not
+  // evidence about CI — local was 1.3.14 while CI's `latest` resolved to
+  // 1.4.3, and this script's own docstring listed the bun version among the
+  // things it does not model. It still does not CONTROL the version; it now
+  // reports it, and says so loudly when the declaration and the process
+  // disagree. Printed in the same block as the checkout's own report, and
+  // printed whether or not the checkout is modelled, because the provenance
+  // of the run is the one line every mode owes the reader.
+  console.error(`[clean-env] ${bunVersionReading(declaredBunVersion(ROOT), Bun.version).line}`);
   if (modelCheckout) {
     checkoutDir = buildCiCheckout(ROOT);
   } else {

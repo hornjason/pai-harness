@@ -98,7 +98,8 @@ Read by: AGENTS.md, agents/*.md, ship.js, prove.js, verify.js, gates, CI workflo
 | codeCommittedPaths | User-configured | Manual | Gates (code-committed check) |
 | specs | Convention (specs/) | Auto-detect | Gate discovery |
 | ci.runner | User-configured | Manual | CI workflow (GitHub Actions runner) |
-| ci.bunVersion | User-configured | Manual | CI workflow (Bun version) |
+| ci.bunVersion | Detected from the bun that scaffolded (#622) | Hybrid | CI workflow (Bun version), when the project has no `.bun-version` |
+| `.bun-version` | User-configured, at the project root | Manual | CI workflow — `setup-bun` reads it directly, and it beats `ci.bunVersion` |
 | ci.branches | User-configured | Manual | CI workflow (push trigger branches) |
 | mcp | Auto-detect from .claude/settings.json | Hybrid | Agent briefs (available tools), AGENTS.md |
 | envVars | .env.example (if exists) | Auto-detect | Agents know what env vars the project expects |
@@ -178,7 +179,7 @@ The harness provides two workflow files that enforce gates in the CI pipeline. L
 {
   "ci": {
     "runner": "ubuntu-latest",
-    "bunVersion": "latest",
+    "bunVersion": "1.3.14",
     "branches": ["main"]
   }
 }
@@ -187,7 +188,7 @@ The harness provides two workflow files that enforce gates in the CI pipeline. L
 | Field | Default | What it controls |
 |-------|---------|-----------------|
 | `ci.runner` | `"ubuntu-latest"` | GitHub Actions runner (e.g., `"self-hosted"`, `"ubuntu-24.04"`) |
-| `ci.bunVersion` | `"latest"`, and the generated file RECORDS that nothing was declared (#622) | Bun version in CI. Pin it: `latest` agrees with itself in every file, so a tree with no pin reads as perfectly consistent while a green suite is a statement about whichever bun shipped this morning. Resolved by `lib/bun-version.ts`, which is also what `scripts/test-clean-env.ts` compares the running bun against |
+| `ci.bunVersion` | the bun that ran the scaffold | Bun version in CI, for a project with no `.bun-version`. Detected rather than defaulted (#622): `"latest"` wrote an UNPINNED runtime into every new project's CI, so re-running a red job was also a Bun upgrade |
 | `ci.branches` | `["main"]` | Which branches trigger push CI |
 
 All fields optional — defaults used when null.
@@ -214,7 +215,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest  # from ci.bunVersion
+          # From .bun-version when the project declares one — setup-bun reads
+          # that file itself, so the workflow carries no copy to drift from it.
+          # A project declaring only ci.bunVersion gets that value as a literal.
+          bun-version-file: ".bun-version"
       - run: bun install
       - run: bun test
       - run: bunx tsc --noEmit
@@ -245,7 +249,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest  # from ci.bunVersion
+          # From .bun-version when the project declares one — setup-bun reads
+          # that file itself, so the workflow carries no copy to drift from it.
+          # A project declaring only ci.bunVersion gets that value as a literal.
+          bun-version-file: ".bun-version"
       - run: bun install
       - name: Secret scan
         run: bunx rungate check-secrets --staged

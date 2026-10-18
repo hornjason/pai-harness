@@ -99,15 +99,15 @@ jobs:
       # then asking it for whatever shipped this morning closes the front door
       # and leaves the window open. Found by the commit security review.
       #
-      # This was the ONLY pinned version in the repository, and for a full
-      # minor it disagreed with the `latest` the test job resolved — so the
-      # runtime that published the package was not the runtime that tested
-      # it, and no document named both. The value is now held to
-      # `ci.bunVersion` by test/bun-version-agreement.test.ts; raise it
-      # there and here in the same commit (#622).
+      # The pin moved into `.bun-version` in #622 and is no stronger or weaker
+      # for it: the file is in the repository, so a tag resolves it to exactly
+      # one version the same way a literal here did. What changed is that this
+      # was the THIRD spelling of the runtime in four workflow files — the
+      # other two said `latest` — and a pin nobody compares to anything is a
+      # pin that drifts from the runtime everything else was tested on.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.0.2
         with:
-          bun-version: "1.3.14"
+          bun-version-file: ".bun-version"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
