@@ -7,6 +7,9 @@
     "agents": "AGENTS.md"
   },
   "consumers": [],
+  "ci": {
+    "bunVersion": "1.3.14"
+  },
   "pages": {},
   "test": {
     "command": "bun test",

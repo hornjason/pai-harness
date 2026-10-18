@@ -31,6 +31,7 @@ import { spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { BUN_VERSION_FILE, declaredBunVersion, isPinnedBunVersion } from "../lib/bun-version";
 import {
   awaitRegistryServes,
   confirmCommand,
@@ -925,7 +926,18 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
     // Positive control: the pins must actually be versions, or a step that
     // stopped installing anything would satisfy both refusals above.
     expect(steps, "no pinned npm version to check").toMatch(/npm@\d+\.\d+\.\d+/);
-    expect(steps, "no pinned bun version to check").toMatch(/bun-version:\s*["']\d+\.\d+\.\d+["']/);
+
+    // The bun pin moved out of this file in #622: four workflows spelled the
+    // runtime three ways, so the version is declared once and every
+    // setup-bun step points at the declaration. That is no weaker a pin — the
+    // file is in the repository, so a tag resolves it to exactly one version
+    // — but the positive control has to follow it, or "this job pins bun"
+    // would be satisfied by a pointer at a file that says `latest` or at no
+    // file at all.
+    expect(steps, "no bun declaration to check").toContain(`bun-version-file: "${BUN_VERSION_FILE}"`);
+    const declared = declaredBunVersion(ROOT);
+    expect(declared.source, declared.reason).toBe("bun-version-file");
+    expect(isPinnedBunVersion(declared.version), `the declaration says ${declared.version}`).toBe(true);
   });
 
   test("id-token: write is granted to the job, not to the whole workflow", () => {

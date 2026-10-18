@@ -20,7 +20,9 @@ jobs:
             || echo "WARN: could not fetch main; the conformity allowlist growth check will report UNMEASURED."
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "latest"
+          # Pinned by .bun-version — the project's single declaration (#622).
+          # setup-bun reads that file, so there is no version spelled here to drift from it.
+          bun-version-file: ".bun-version"
       - run: bun install
       - run: bun test
       - run: bun run typecheck

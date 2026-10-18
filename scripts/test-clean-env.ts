@@ -60,6 +60,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { acquireFullSuiteSlot, isFullSuiteCommand, releaseFullSuiteSlot } from "../lib/test-suite-lock";
 import { CLEAN_ENV_REFUSE_EXIT, prepareCiCheckout, type Runner } from "../lib/ci-checkout";
+import { bunVersionReading, declaredBunVersion } from "../lib/bun-version";
 
 const ROOT = join(import.meta.dir, "..");
 const CI_WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml");
@@ -171,6 +172,15 @@ try {
   }
 
   console.error(`[clean-env] HOME=${home}  gh credentials stripped  git identity unset`);
+  // #622. A pasted result that cannot say which runtime produced it is not
+  // evidence about CI — local was 1.3.14 while CI's `latest` resolved to
+  // 1.4.3, and this script's own docstring listed the bun version among the
+  // things it does not model. It still does not CONTROL the version; it now
+  // reports it, and says so loudly when the declaration and the process
+  // disagree. Printed in the same block as the checkout's own report, and
+  // printed whether or not the checkout is modelled, because the provenance
+  // of the run is the one line every mode owes the reader.
+  console.error(`[clean-env] ${bunVersionReading(declaredBunVersion(ROOT), Bun.version).line}`);
   if (modelCheckout) {
     checkoutDir = buildCiCheckout(ROOT);
   } else {

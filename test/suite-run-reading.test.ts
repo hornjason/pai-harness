@@ -189,8 +189,8 @@ describe("#469/#490: the fixtures still reproduce what they were built for", () 
   test("SC-1827: a directory with no test files reads UNMEASURED", () => {
     // The instrument, asserted as a PROPERTY rather than as bun's sentence.
     // The first draft asserted `toContain("0 test files matching")`, which is
-    // the exact wording of bun 1.3.14 — CI runs `bun-version: latest` and
-    // 1.4.3 says `No tests found!` instead, so the row went red in CI while
+    // the exact wording of bun 1.3.14 — CI ran `bun-version: latest` until
+    // #622 and 1.4.3 says `No tests found!` instead, so the row went red in CI while
     // the reading was correct on both. An assertion on a vendor's phrasing is
     // a detector narrower than what it detects
     // (.claude/rules/checks-must-be-able-to-fail.md), and the property here

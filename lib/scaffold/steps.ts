@@ -33,6 +33,7 @@ import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
+import { declaredBunVersion, setupBunWith } from "../bun-version";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
 import {
   readSuccessDoc,
@@ -1141,7 +1142,14 @@ export function generateOrAuditProjectHarness(root: string, actions: string[], o
       envVars: envVars || [],
       ci: {
         runner: "ubuntu-latest",
-        bunVersion: "latest",
+        // Detected, never defaulted (#346, #622). `"latest"` here wrote an
+        // UNPINNED runtime into every greenfield project's CI and called it a
+        // configuration: the job installs whatever shipped this morning, so
+        // re-running a red build is also a Bun upgrade. The bun that ran the
+        // scaffold is a measurement of what this project has been built with,
+        // which is the honest thing to write down, and the operator can change
+        // it in one place afterwards.
+        bunVersion: Bun.version,
         branches: ["main"],
       },
       contextDocs: {},
@@ -2352,7 +2360,17 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   }
 
   const harness = loadHarnessConfig(root);
-  const bunVersion = harness?.ci?.bunVersion || "latest";
+  // #622. This was `harness?.ci?.bunVersion || "latest"`, emitted at the two
+  // sites below, while the two hand-owned workflow files this generator never
+  // touches named versions of their own — four positions, three spellings,
+  // and nothing comparing any of them. (Neither of those filenames is spelled
+  // here: test/release-guard.test.ts asserts this module names no workflow it
+  // does not write, and prose is indistinguishable from a write to it.) The
+  // decision and the YAML it becomes are now `lib/bun-version.ts`'s, for the
+  // same reason #87 took the typecheck step and #488 took the test step: two
+  // sites that agree today are one decider too many, and only a mutation of a
+  // SHARED binding can show the agreement is load-bearing.
+  const bunStep = setupBunWith(declaredBunVersion(root), "          ");
   const runner = harness?.ci?.runner || "ubuntu-latest";
   const branches = harness?.ci?.branches || ["main"];
   // Branch patterns are globs: a bare `*` is a YAML alias indicator and `*-dev`
@@ -2450,7 +2468,7 @@ jobs:
 ${baseRefStep}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "${bunVersion}"
+${bunStep}
       - run: bun install
       - run: ${test.command}${typecheckStep}
 `;
@@ -2473,7 +2491,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "${bunVersion}"
+${bunStep}
       - run: bun install
       - name: Conformity + spec drift
         run: bun test test/scaffold-conformity.test.ts

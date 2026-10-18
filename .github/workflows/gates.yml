@@ -16,7 +16,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "latest"
+          # Pinned by .bun-version — the project's single declaration (#622).
+          # setup-bun reads that file, so there is no version spelled here to drift from it.
+          bun-version-file: ".bun-version"
       - run: bun install
       - name: Conformity + spec drift
         run: bun test test/scaffold-conformity.test.ts
