@@ -2716,13 +2716,40 @@ if [ -f "project-state.json" ]; then
   gitdir=$(git rev-parse --git-dir)
   commondir=$(git rev-parse --git-common-dir)
   if [ -n "$gitdir" ] && [ "$gitdir" = "$commondir" ]; then
-    bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
-    git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+    # The updater lives under node_modules for a consumer and in scripts/ when
+    # the harness IS the project. The hardcoded consumer path meant this
+    # repo's own hook invoked a file it does not have — and \`2>/dev/null ||
+    # true\` turned that ENOENT into silence, after which the git add below
+    # staged whatever happened to be on disk. A commit that regenerated
+    # nothing was byte-indistinguishable from one that regenerated
+    # everything (#599).
+    #
+    # The order is deliberate: a checkout that has its own scripts/ copy is
+    # the harness, and the harness must not grade itself against a stale
+    # vendored duplicate of its own updater.
+    updater=""
+    if [ -f "scripts/update-project-state.ts" ]; then
+      updater="scripts/update-project-state.ts"
+    elif [ -f "node_modules/rungate/scripts/update-project-state.ts" ]; then
+      updater="node_modules/rungate/scripts/update-project-state.ts"
+    fi
+    if [ -z "$updater" ]; then
+      echo "project-state: UNMEASURED — project-state.json is here but no update-project-state.ts was found at scripts/ or node_modules/rungate/scripts/, so nothing was regenerated and nothing was staged." >&2
+    elif bun "$updater" --skip-tests; then
+      # Staged only AFTER the updater succeeded. Staging regardless is the
+      # fail-open: it puts yesterday's PROJECT-STATE.md in today's commit and
+      # the commit looks exactly like a successful update.
+      git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+    else
+      echo "project-state: UNMEASURED — \$updater exited non-zero, so PROJECT-STATE.md and project-state.json were NOT staged. Re-run it by hand to see why." >&2
+    fi
   else
-    # Announced, not silent. A developer who expected the state files to move
-    # would otherwise be left guessing, and SKIP that says nothing is
-    # indistinguishable from the update having happened.
-    echo "project-state: SKIPPED — linked worktree. project-state.json, PROJECT-STATE.md and SUCCESS.md are DA-owned (#296); update them from the primary checkout."
+    # Announced, not silent, and on STDERR — stdout is what a caller captures
+    # as the command's answer, and a decline is diagnosis. A developer who
+    # expected the state files to move would otherwise be left guessing, and
+    # a SKIP that says nothing is indistinguishable from the update having
+    # happened.
+    echo "project-state: SKIPPED — linked worktree. project-state.json, PROJECT-STATE.md and SUCCESS.md are DA-owned (#296); update them from the primary checkout." >&2
   fi
 fi
 
