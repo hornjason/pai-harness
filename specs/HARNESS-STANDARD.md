@@ -3859,6 +3859,95 @@ all: the mutation changes nothing a text match or an execution of the extracted
 slice can see, so without the reachability assertion this section would have
 shipped 31 green tests over a floor that never ran.
 
+### The subsystem observations have to be able to go red (#274)
+
+#215 proved the floor resolves the right TIER. That is a different claim from
+"the subsystems a tier switches on actually ran", and the second claim is the
+one a consumer cares about: DailyBriefDashboard's complaint was never about a
+string, it was that the scope gate, Quinn local, container verify and prove
+were all skipped and the run still said DONE. No rungate self-run has ever
+entered any of them — `pages: {}` rewrites every one to LIGHT — so until #274
+the five subsystems had no coverage of any kind.
+
+`test/fixtures/consumer-ui-project/` is the stand-in: a monolith
+`.claude/rungate.json` declaring four page routes, a container block, a remote
+host and a `dev` block, beside a `workflow-state.json` whose discovery sized
+the issue XS/LIGHT and whose AC set carries one PLAYWRIGHT AC. Four config
+facts, not one — a fixture that declared only `pages` would satisfy the tier
+floor and still SILENTLY skip container verify (which also needs
+`containerConfig`) and prove (which also needs `hasUIACs`).
+
+Every run starts from the fixture's own LIGHT discovery rather than a tier the
+test typed in. That is load-bearing and is itself asserted: hardcoding
+`FIXTURE_TIER` to `"STANDARD"` turns 1 of 27 red, and without it the floor
+would be irrelevant to every observation in the file.
+
+A suite that watches four subsystems execute and never watches them NOT execute
+is the decorative check `.claude/rules/checks-must-be-able-to-fail.md` is about.
+Every one of its observations would be satisfied by a harness that resolved
+STANDARD for every input — including the inputs that must stay LIGHT. So the
+pre-#215 defect is REBUILT: `test/consumer-tier-downgrade-mutation.test.ts`
+removes the `CEREMONY-TIER-FLOOR` block, the floor call and the raise from a
+copy of `workflows/ship.js`, leaving `hasUI` with nothing but its one-way
+downgrade, and SPAWNS a five-observation suite twice — once against the real
+source, once against the mutant, with one argv and only `SHIP_UNDER_TEST`
+differing. Real: 5 of 5 green. Mutant: exactly 4 red and 1 green, and the green
+has to be the remote pre-flight BY NAME, because the pre-flight is the one
+observation in that set that is not tier-gated. Its greenness under the mutant
+is the positive control — a suite that failed to load would leave 0 of 5, and
+"4 red" compared only by count could not tell those apart.
+
+**Four observations, five conditions.** `ship.js` has five tier-gated
+CONDITIONS but four tier-gated STATEMENTS: container verify and the
+container-declined arm are the two arms of one
+`if (… && containerConfig) { … } else if (…) { … }`. One statement, one branch
+point, one observation — and that observation asserts BOTH arms, so neither can
+go quiet unnoticed. Splitting them would report five reds for one mutation
+applied to one branch point.
+
+**On the SC numbers.** This section was written as SC-694..SC-699, SC-702 and
+SC-703, and sat unmerged for six days while `CONFIG-DRIVEN-TESTING-SPEC.md`
+claimed that whole block. Renumbered to SC-2004..SC-2011 — the later claimant
+renumbers, and in landing order that is this section. The numbers come from
+`allocateScNumber`, not from reading this file: #507's lesson is that a margin
+computed from a narrower reading than the allocator's own agrees right up until
+it does not, and a sibling worktree or an unmerged branch is exactly the input
+this file cannot see. There is no gap at 2000..2003 to explain — SC-1993..2003
+are #586's, merged yesterday.
+
+The collision was caught by five checks and not by review: `SD-4`, `#330: a
+global SC id belongs to one spec`, both halves of `SC-885`, and `#358`'s
+ambiguous-mention accounting. Worth recording that the full clean-env run
+carrying those five failures **exited 0**, which is #168 — the verdict was read
+off the `12203 pass / 5 fail` summary, not off the exit code.
+
+- [x] SC-2004: test/consumer-ceremony-fixture.test.ts contains [loadRungateConfig(FIXTURE_ROOT), the chain resolves the fixture's XS/LIGHT discovery to STANDARD] — the consumer fixture is read through the harness's own loader and ship.js's four tier statements are extracted and EXECUTED over it, rather than the test asserting that a file it wrote contains what it wrote
+- [x] SC-2005: test/helpers/consumer-ship-sites.ts contains [loadRungateConfig(FIXTURE_ROOT)] — the consumer config is one fact in one place; run wf_536df065-969 had two worktrees independently typing a consumer config into TypeScript with different contents, and a fixture that disagrees with itself cannot be the thing a consumer run is compared against
+- [x] SC-2006: test/consumer-tier-gated-subsystems.test.ts contains [scanAssertions(selfSource).readingCeremonyTier] — the prohibition on reading the tier back is COUNTED rather than left as a comment, with a positive control held in the helper so the scan is not satisfied or defeated by its own text
+- [x] SC-2007: test/consumer-tier-downgrade-mutation.test.ts contains [could not build the mutant: ${label} appears ${hits} times] — the downgrade, the floor call and the tier raise are each located exactly once before anything is removed, and the builder THROWS when one of them moves; a mutation harness that silently returns an unmutated copy reports green over a mutation that never happened
+- [x] SC-2008: test/consumer-tier-downgrade-mutation.test.ts contains [the mutation is local: every subsystem block is byte-identical in the mutant] — all ten extracted ship.js sites are compared between the real source and the mutant, so the four reds are caused by the tier the chain resolved and not by a mutant that damaged the blocks it is measured through
+- [x] SC-2009: test/consumer-tier-downgrade-mutation.test.ts contains [exactly four tier-gated observations turn red] — green and red are compared as NAME lists read out of the junit report, and every verdict is read only after `ran === 5`, because a suite that failed to resolve its imports reports no failures and is indistinguishable from a suite that passed
+- [x] SC-2010: test/consumer-scope-gate-prevalidation.test.ts contains [a zero-match grep is classified empty, and is not auto-widened] — the scope gate's pre-validator has never executed on a self-run, so #271's FIXED contract is exercised here over commands that really run: exit 1 from a bare grep is a RESULT, and classifying it must not set `fixedCommand` the way the `|| true` rewrite it replaced did
+- [x] SC-2011: test/consumer-no-rebuild-delegation.test.ts contains [rebuildExecutions, EXECUTION_CONSTRUCTS] — the prohibition is scanned by EXECUTION CONSTRUCT and not by string presence, because the rebuild phrase is inert data in the fixture by design; a string check would ban the fixture and would be a check that cannot fail
+
+What was broken to prove it, run and counted rather than asserted:
+
+| Mutation | Red |
+|---|---|
+| the unconditional `hasUI` downgrade restored — floor block, floor call and raise removed from the copy under spawn | the mutation the file SHIPS, measured on every run rather than claimed: the spawned suite comes back 1 pass / 4 fail of 5, the single green being `remote pre-flight runs` |
+| the floor's comparison short-circuited to `return tier` in `workflows/ship.js` | 15 of 113 across the five new files — every subsystem observation, the fixture's LIGHT→STANDARD raise, and `all five are green` in the spawned suite. The pre-flight's own emission count stays GREEN and the "two runs resolved different tiers" case goes red, which is the asymmetry in one measurement |
+| `buildRestoredDowngradeMutant` short-circuited to `return src`, so the "mutant" is the real source | 6 of 13 — both name comparisons, the red count, the shape check, and the builder-abort cases, which now find nothing to refuse |
+| the downgrade site renamed to `!hasUIProject` in `workflows/ship.js` | the whole file ABORTS in `beforeAll` — 0 of 13 run, throwing `could not build the mutant: the hasUI downgrade site appears 0 times`, rather than passing quietly over a mutation that no longer applies |
+| `FIXTURE_TIER` hardcoded to `"STANDARD"` in the helper | 1 of 27 — the premise case. Without it every observation would run from a tier the test chose and the floor would be irrelevant to all of them |
+| `prevalidateEvidence` short-circuited to `return []` | 5 of 22 — the fixture measures nothing, so every classification, the derived reading and the refusal have nothing behind them. The absent-reading case stays green on purpose: it does not depend on the producer |
+| `grepNoMatchIsResult` short-circuited to `return false` — #271 reverted | 5 of 22 — the zero-match grep reverts to `broken`, and `empty` and `broken` stop being distinguishable |
+| `rebuildExecutions` short-circuited to `return []` | 2 of 30 — only the two positive controls, which is exactly why they exist: a scan whose answer is "none" cannot be checked by the files it reports none in |
+| `stripComments` short-circuited to `return source` | 1 of 30 — a comment describing the prohibition starts reading as the prohibition being violated |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+and `lib/evidence-prevalidator.ts` were restored from copies taken before the
+first mutation and confirmed byte-identical.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

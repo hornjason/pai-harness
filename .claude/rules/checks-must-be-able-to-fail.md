@@ -783,3 +783,86 @@ caught by the guard it describes: an SC line that names its own tokens is not
 evidence for them. None of the eleven mutations is left in the tree; all were
 run and reverted, and the two counted over 201 tests were re-measured after the
 write-back case was added.
+
+### When the fix is a VALUE and the proof has to be the subsystems (#274)
+
+#215 added a tier floor and proved it resolves STANDARD for a project that
+declares pages. That is a correct proof of the wrong claim. Nobody is harmed by
+the string `"LIGHT"`; they are harmed because the scope gate, Quinn local,
+container verify and prove do not run and the run still reports DONE. A suite
+that only reads the resolved tier is asserting the value the test itself set up
+the inputs to produce.
+
+So #274 watches the subsystems EXECUTE, each through its own output —
+`scopeRan`, the `quinn-local-1` agent label, the `container-rebuild`,
+`env-check` and `quinn-container` labels, the container-declined arm's skip
+log, and the prove workflow's `scriptPath`. Nothing in the suite reads
+`ceremonyTier`, and that prohibition is COUNTED by a scanner rather than left
+as a comment.
+
+Three properties this example adds that the earlier ones did not need:
+
+- **The fixture needs every input the subsystem needs, not just the one the
+  issue is about.** Declaring `pages` floors the tier, and a fixture that
+  stopped there would satisfy the tier claim while SILENTLY skipping container
+  verify (which also needs `containerConfig`) and prove (which also needs
+  `hasUIACs`). Three of five running looks exactly like five of five when the
+  only thing asserted is that the ones you watched ran.
+- **The run must start from the input that would skip.** Every block is handed
+  the fixture's own LIGHT discovery, not a STANDARD the test typed in.
+  Hardcoding it to `"STANDARD"` turns 1 of 27 red — and without that case the
+  floor would be irrelevant to every observation in the file while all of them
+  stayed green.
+- **An observation of a subsystem running is only evidence if the same
+  observation has been seen to go red when the subsystem is skipped.**
+
+`test/consumer-tier-downgrade-mutation.test.ts` is the worked example for the
+third. The pre-#215 defect is REBUILT — the `CEREMONY-TIER-FLOOR` block, the
+floor call and the raise removed from a copy of `workflows/ship.js`, leaving
+`hasUI` with nothing but its one-way downgrade — and a five-observation suite
+is SPAWNED twice, with one argv, differing only in `SHIP_UNDER_TEST`. Four
+properties make it work, all asserted by the test rather than left as
+conventions:
+
+- **Green and red are compared by NAME.** "1 of 5" is satisfied by any one of
+  the five. Only `remote pre-flight runs` means what this claims, and it means
+  it because the pre-flight is the one subsystem in the set that is NOT
+  tier-gated — it runs ~450 lines before `ceremonyTier` is first read. It is
+  the positive control: a suite that failed to resolve its imports leaves 0 of
+  5, and a count alone cannot tell those apart.
+- **`ran` is read before any verdict.** Both spawns assert five test cases came
+  back from the junit report first. A suite that never loaded reports no
+  failures, which is indistinguishable from a suite that passed.
+- **The mutation is local.** All ten extracted ship.js sites are compared
+  byte-for-byte between the real source and the mutant, so the four reds are
+  caused by the tier the chain resolved and not by a mutant that damaged the
+  blocks it is measured through.
+- **Each removal site is located exactly once, and the builder throws when one
+  moves.** A second copy of the downgrade would survive the removal and leave
+  the mutant behaving like the real source.
+
+One counting decision is part of the proof rather than a detail. `ship.js` has
+five tier-gated CONDITIONS but four tier-gated STATEMENTS — container verify
+and the container-declined arm are two arms of one `if`/`else if`. They are one
+observation, which asserts both arms. Splitting them would report five reds for
+one mutation applied to one branch point, and a mutation count that overstates
+what it measured is the same defect as a check that cannot fail, pointing the
+other way.
+
+What was broken to prove it, run and counted rather than asserted, over the
+five files #274 adds (113 tests):
+
+| Mutation | Red |
+|---|---|
+| the unconditional `hasUI` downgrade restored | the mutation the file ships, measured rather than claimed: the spawned suite returns 1 pass / 4 fail of 5, the single green being `remote pre-flight runs` |
+| the floor's comparison short-circuited to `return tier` in `workflows/ship.js` | 15 of 113 — and the pre-flight's own emission count stays GREEN while the "two runs resolved different tiers" case goes red, which is the asymmetry in one measurement |
+| `buildRestoredDowngradeMutant` short-circuited to `return src` | 6 of 13 in that file |
+| the downgrade site renamed to `!hasUIProject` in `workflows/ship.js` | the whole file ABORTS in `beforeAll` — 0 of 13 run |
+| `FIXTURE_TIER` hardcoded to `"STANDARD"` in the helper | 1 of 27 — the premise case |
+| `prevalidateEvidence` short-circuited to `return []` | 5 of 22 |
+| `grepNoMatchIsResult` short-circuited to `return false` — #271 reverted | 5 of 22 |
+| `rebuildExecutions` short-circuited to `return []` | 2 of 30 — only the positive controls, which is why they exist |
+| `stripComments` short-circuited to `return source` | 1 of 30 |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+and `lib/evidence-prevalidator.ts` were confirmed byte-identical afterwards.

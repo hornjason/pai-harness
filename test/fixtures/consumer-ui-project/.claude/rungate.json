@@ -1,0 +1,41 @@
+{
+  "project": "consumer-ui-project",
+  "repo": "example/consumer-ui-project",
+  "issueRepo": "example/consumer-ui-project",
+  "contextDocs": {
+    "agents": "AGENTS.md"
+  },
+  "consumers": [],
+  "pages": {
+    "/": "home",
+    "/reports": "reports",
+    "/reports/:id": "report-detail",
+    "/settings": "settings"
+  },
+  "dev": {
+    "start": "make dev-all",
+    "apiBase": "http://localhost:7778",
+    "uiBase": "http://localhost:5173",
+    "testCmd": "bun test",
+    "typeCheck": "bunx tsc --noEmit"
+  },
+  "prod": {
+    "rebuild": "make rebuild",
+    "apiBase": "http://localhost:7777"
+  },
+  "container": {
+    "rebuildCommand": "make rebuild",
+    "hosts": ["localhost"],
+    "port": 7777,
+    "healthPath": "/api/health"
+  },
+  "remoteHosts": {
+    "runner": {
+      "host": "mini",
+      "access": "ssh",
+      "purpose": "GitHub Actions self-hosted runner",
+      "preFlightCmd": "~/actions-runner/svc.sh status 2>/dev/null | grep -q Started",
+      "workDir": "~/actions-runner/_work/consumer-ui-project/consumer-ui-project"
+    }
+  }
+}

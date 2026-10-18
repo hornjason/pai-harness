@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "issue": 274,
+  "repo": "example/consumer-ui-project",
+  "issueRepo": "example/consumer-ui-project",
+  "slug": "consumer-ui-project-274",
+  "phase": "DISCOVERY",
+  "issueGoal": "Show the four declared report routes in the consumer dashboard nav",
+  "sizing": {
+    "predicted": "XS",
+    "ceremonyTier": "LIGHT"
+  },
+  "acs": [
+    {
+      "id": "AC-1",
+      "type": "CODE",
+      "statement": "The dashboard nav renders one link for every route declared in the consumer pages map",
+      "specElement": "pages",
+      "threshold": { "op": "==", "value": 4, "unit": "links" },
+      "evidenceMethod": { "type": "BUN_TEST", "command": "bun test test/nav.test.ts" },
+      "evidence": null,
+      "verdict": "PENDING"
+    },
+    {
+      "id": "AC-2",
+      "type": "OUTCOME",
+      "statement": "Every declared route responds without a client-side render error in the browser",
+      "specElement": "pages",
+      "threshold": { "op": "==", "value": 0, "unit": "console errors" },
+      "evidenceMethod": { "type": "PLAYWRIGHT", "command": "bunx playwright test test/routes.spec.ts" },
+      "evidence": null,
+      "verdict": "PENDING"
+    }
+  ],
+  "startTs": "2026-10-11T00:00:00.000Z",
+  "updatedTs": "2026-10-11T00:00:00.000Z"
+}

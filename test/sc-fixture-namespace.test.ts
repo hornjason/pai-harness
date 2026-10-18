@@ -316,7 +316,25 @@ describe("SC-1525: the CLI asks the allocator the whole question", () => {
     //
     // Computed, never spelled: a literal id here would be a stray in this
     // very file, and the guard below would report its own test.
-    const probeId = allocateScNumber(ROOT, "").number + 7;
+    //
+    // #274: the `registry` third argument is the fix the paragraph above
+    // asks for, and it was missing. `allocateScNumber`'s `reg` parameter is
+    // OPTIONAL, and omitting it silently drops the spec-registry leg — so
+    // this read source and sibling namespaces but not the specs, which is a
+    // narrower reading than the CLI's own and the precise shape #507 records.
+    // It agreed with the right answer only while every spec-declared id was
+    // also spelled in a source file. #274 declared SC-2004..SC-2011 in
+    // HARNESS-STANDARD.md with no source mention of any of them, the two
+    // readings diverged by eight, and the +7 margin landed the probe one
+    // below `specOnly` — caught by the guard on the next line, which is the
+    // guard doing its job rather than a new failure.
+    //
+    // Not repaired by widening the margin. That is the cheapest fix and it
+    // is the fifth shape in `.claude/rules/checks-must-be-able-to-fail.md`:
+    // it goes green today and re-breaks on the next spec block, and it would
+    // leave the probe computed from a reading that structurally cannot see
+    // spec declarations.
+    const probeId = allocateScNumber(ROOT, "", registry).number + 7;
     expect(probeId, "the probe is not above the registry answer it must beat").toBeGreaterThan(specOnly);
     try {
       writeFileSync(probeFile, `// scratch probe written by test/sc-fixture-namespace.ts\nconst id = "SC-${probeId}";\n`);
