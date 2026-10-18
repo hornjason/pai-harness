@@ -168,7 +168,7 @@ registry, and goes red when either drifts. Bumping `package.json` without
 updating this line turns it red, which is what makes a release a two-commit
 operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-18)** — tree `0.6.0`, published `rungate@0.5.0`.
+- **Distribution standing (2026-10-18)** — tree `0.6.0`, published `rungate@0.6.0`.
 
 **Why `0.6.0` and not `0.5.1`.** Fifty-two commits past `v0.5.0`, carrying
 features and not only fixes — `#630`'s auth ladder, `#626`'s contract-parity
