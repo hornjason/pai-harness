@@ -192,3 +192,173 @@ export function suiteRunVerdict(run: SuiteRun): "PASS" | "FAIL" | "UNMEASURED" {
   if (run.status !== "MEASURED") return "UNMEASURED";
   return run.fail === 0 ? "PASS" : "FAIL";
 }
+
+/* ─────────────────────────────────────────────────────────────
+ * The failures that happen before there is any output (#621)
+ * ───────────────────────────────────────────────────────────── */
+
+/**
+ * What a caller knows about one attempt to measure the suite.
+ *
+ * `readSuiteRun` above reads what a runner PRINTED, and that is everything
+ * once a runner has run. Two of the three ways a measurement fails never get
+ * that far, and both of them print nothing:
+ *
+ *  - the full-suite slot pool refused, so no runner was started at all;
+ *  - the runner binary could not be executed.
+ *
+ * Both reach the output parser as an empty string, where they are
+ * indistinguishable from each other and from a runner that ran and said
+ * nothing. The facts that separate them are not IN the output, so they travel
+ * beside it.
+ */
+export interface SuiteRunAttempt {
+  /**
+   * The full-suite slot pool's answer, when one was asked for.
+   *
+   * Structurally typed rather than imported from `lib/test-suite-lock.ts`: a
+   * real `AcquireResult` satisfies it, and this module stays free of `fs` and
+   * `child_process` so it can be read anywhere a verdict is read. Omit it
+   * when no slot was required — `undefined` means "not asked", which is not
+   * the same fact as a refusal.
+   */
+  slot?: SlotOutcome | null;
+  /**
+   * What the process launcher reported when it could not start the runner —
+   * `spawnSync(...).error`, or anything else that says the launch failed.
+   * Absent and null both mean the runner launched.
+   */
+  launchError?: unknown;
+  /** The command that was attempted, as argv or as a string. */
+  command?: unknown;
+  /** What the runner printed, handed to `readSuiteRun` unchanged. */
+  output?: unknown;
+  /**
+   * The exit status, when there was one.
+   *
+   * RECORDED, NEVER CONSULTED. It is quoted into an UNMEASURED reason so an
+   * operator reading the artefact does not have to go and re-run anything,
+   * and no branch below asks what it is. SC-1829 is the measurement that says
+   * why: among this module's fixtures, exit 0 and exit 1 each cover both a
+   * measured and an unmeasured run, so a reading keyed off it is wrong about
+   * one of them.
+   */
+  exitCode?: unknown;
+}
+
+/** The shape of a slot-pool answer this module needs. `AcquireResult` is one. */
+export interface SlotOutcome {
+  ok: boolean;
+  holders?: ReadonlyArray<{
+    sessionId?: string;
+    workerId?: string;
+    ageSeconds?: number;
+  }>;
+  degraded?: boolean;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** `bun test`, from argv or from a string. Never empty — an unnamed command
+ * is a fact worth printing rather than a hole in the sentence. */
+function describeCommand(command: unknown): string {
+  if (Array.isArray(command)) {
+    const parts = command.filter((p): p is string => typeof p === "string" && p !== "");
+    if (parts.length > 0) return parts.join(" ");
+  }
+  if (typeof command === "string" && command.trim() !== "") return command.trim();
+  return "(the harness did not record which command it tried to run)";
+}
+
+/** `ENOENT: Executable not found in $PATH: "…"`. */
+function describeLaunchFailure(error: unknown): string {
+  const record = isRecord(error) ? error : null;
+  const code = record && typeof record.code === "string" ? record.code : null;
+  const message =
+    record && typeof record.message === "string" && record.message !== ""
+      ? record.message
+      : String(error);
+  return code ? `${code}: ${message}` : message;
+}
+
+/** ` by holder-worker (12s)`, or nothing when the pool named nobody. */
+function describeHolders(holders: SlotOutcome["holders"]): string {
+  if (!Array.isArray(holders)) return "";
+  const named = holders
+    .filter(isRecord)
+    .map(h => {
+      const who = typeof h.workerId === "string" && h.workerId !== ""
+        ? h.workerId
+        : typeof h.sessionId === "string" && h.sessionId !== ""
+          ? h.sessionId
+          : "an unidentified worker";
+      const age = typeof h.ageSeconds === "number" && Number.isFinite(h.ageSeconds)
+        ? `${h.ageSeconds}s`
+        : "age unknown";
+      return `${who} (${age})`;
+    });
+  return named.length === 0 ? "" : ` by ${named.join(", ")}`;
+}
+
+/** `. The runner exited 1.`, or nothing when no status was recorded. */
+function describeExit(exitCode: unknown): string {
+  return typeof exitCode === "number" ? ` The runner exited ${exitCode}.` : "";
+}
+
+/**
+ * Read one attempt to measure the suite.
+ *
+ * FAILS CLOSED, like everything else here, and for the one reason #621 names
+ * by hand: `scripts/test-clean-env.ts` exits 2 when the slot pool refuses,
+ * and **that exit must record UNMEASURED, never FAIL**. A refused run and a
+ * broken runner are not results about the tree; they are the absence of a
+ * measurement, and an absence that reads as a failing suite is as wrong as
+ * one that reads as a clean one — it just fails in the direction nobody
+ * notices, by making the gate cry wolf until its reader stops believing it.
+ *
+ * The three refusals are ORDERED and each is the only decider for its fact.
+ * The output parser is `readSuiteRun`, called once at the end rather than
+ * re-implemented, so the missing-summary refusal has exactly one binding and
+ * a mutation of it cannot be held up by a copy in here
+ * (.claude/rules/checks-must-be-able-to-fail.md, the fourth shape).
+ */
+export function readSuiteAttempt(attempt: SuiteRunAttempt): SuiteRun {
+  // 1. The pool refused. Checked first because nothing downstream of it ran:
+  //    there is no launch error and no output, so every later branch would
+  //    describe this as "the runner printed nothing", which is true and
+  //    useless — the runner was never asked to print anything.
+  //
+  //    `ok !== true` rather than `ok === false`: a slot answer this module
+  //    cannot read is not an acquired slot.
+  const slot = attempt.slot;
+  if (slot !== undefined && slot !== null && slot.ok !== true) {
+    return unmeasured(
+      "the suite was never run: the full-suite slot pool is exhausted — every slot is held" +
+        `${describeHolders(slot.holders)}, so ${describeCommand(attempt.command)} was refused ` +
+        "before any runner started. A refused run has no result, and must not be read as a " +
+        "failing one (#621)",
+    );
+  }
+
+  // 2. The runner could not be executed. Also checked before the output,
+  //    because an ENOENT launch prints nothing: left to the parser it would
+  //    report "the test runner produced no output", which names neither the
+  //    runner nor the fact that there isn't one to name.
+  if (attempt.launchError !== undefined && attempt.launchError !== null) {
+    return unmeasured(
+      `the test runner could not be executed: ${describeCommand(attempt.command)} — ` +
+        `${describeLaunchFailure(attempt.launchError)}. No suite ran, so there is no result to ` +
+        "read, and the absence of a runner is not the absence of failures (#621)",
+    );
+  }
+
+  // 3. Whatever the runner printed, read by the one reader that reads output.
+  //    The exit status is appended to a refusal rather than consulted for it.
+  const run = readSuiteRun(attempt.output);
+  if (run.status === "UNMEASURED") {
+    return unmeasured(`${run.reason}${describeExit(attempt.exitCode)}`);
+  }
+  return run;
+}

@@ -20,6 +20,23 @@
  * unmeasured run, and so does exit 1. #469's run exited 0; the reproduction
  * of it on bun 1.3.14 exits 1. A reading keyed off the exit code would have
  * been wrong about one of them.
+ *
+ * ── #621 AC-2 ────────────────────────────────────────────────
+ *
+ * The second half of the file is about the three ways a measurement can fail
+ * BEFORE there is any output worth parsing, and the one thing they have in
+ * common: none of them is a FAIL.
+ *
+ *  - the full-suite slot pool is exhausted, so the run was refused before the
+ *    runner started. #621 names this one by hand: `test-clean-env.ts` exits 2
+ *    when `acquireFullSuiteSlot` refuses, and "exit 2 must record UNMEASURED,
+ *    never FAIL".
+ *  - the test runner binary cannot be executed at all.
+ *  - the runner exited non-zero having printed no pass/fail summary.
+ *
+ * Each has to record its OWN reason, because the thing an operator has to go
+ * and do about them is different in all three cases, and a shared reason
+ * would make the recorded artefact unable to say which one happened.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
@@ -27,7 +44,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { readSuiteRun, suiteRunVerdict } from "../lib/suite-run-reading";
+import { readSuiteAttempt, readSuiteRun, suiteRunVerdict } from "../lib/suite-run-reading";
+import { readSuiteMeasurement } from "../lib/suite-measurement";
+import { acquireFullSuiteSlot, type AcquireResult } from "../lib/test-suite-lock";
+import { buildMeasurement } from "../scripts/record-suite-measurement";
 
 let ROOT = "";
 
@@ -57,6 +77,22 @@ const ONE_PASSING = 'import { test, expect } from "bun:test";\ntest("t", () => {
 
 /** Named so the four live runs can be read as a table rather than as prose. */
 const LIVE: Record<"vanishing" | "noFiles" | "emptyFile" | "clean" | "failing", Run> = {} as any;
+
+/**
+ * A binary that does not exist, spelled so it cannot start existing by
+ * accident. The reason for AC-2b has to NAME it, which is what separates that
+ * branch from "the runner produced no output" — an ENOENT launch produces no
+ * output either, so a reading that fell through to the output parser would be
+ * green on everything except the one thing an operator needs to be told.
+ */
+const ABSENT_RUNNER = "rungate-no-such-test-runner-9f3c1a";
+
+/** The real `child_process` failure for a runner that is not on PATH. */
+let LAUNCH: ReturnType<typeof spawnSync>;
+
+/** The real refusal from a real exhausted slot pool, in a private lock dir. */
+let SLOT_REFUSAL: AcquireResult;
+let LOCK_DIR = "";
 
 beforeAll(() => {
   ROOT = mkdtempSync(join(tmpdir(), "suite-run-reading-"));
@@ -89,10 +125,28 @@ beforeAll(() => {
       "a.test.ts": 'import { test, expect } from "bun:test";\ntest("t", () => { expect(1).toBe(2); });\n',
     }),
   );
+
+  // #621 AC-2b, executed. `spawnSync` reports a runner that is not on PATH
+  // through `.error` with a null status and no output at all.
+  LAUNCH = spawnSync(ABSENT_RUNNER, ["test"], { encoding: "utf-8" });
+
+  // #621 AC-2a, executed against the real slot pool rather than a hand-written
+  // `{ ok: false }`. A literal would make the case a test of a boolean; the
+  // library's own refusal is what the measurement path will actually be
+  // handed. The lock dir is private and the capacity is 1, so this cannot see
+  // or take a slot any real suite is using — and `suitesRunning` is pinned so
+  // the held slot is never reclaimed as stale while the fixture is being read.
+  LOCK_DIR = mkdtempSync(join(tmpdir(), "suite-run-reading-slots-"));
+  const pool = { lockDir: LOCK_DIR, capacity: 1, suitesRunning: () => true };
+  const held = acquireFullSuiteSlot("holder-session", { ...pool, workerId: "holder-worker" });
+  if (!held.ok) throw new Error("the slot fixture could not take the only slot, so nothing is exhausted");
+  SLOT_REFUSAL = acquireFullSuiteSlot("asking-session", { ...pool, workerId: "asking-worker" });
 });
 
 afterAll(() => {
   if (ROOT) rmSync(ROOT, { recursive: true, force: true });
+  // The slot files live in this directory, so removing it releases them.
+  if (LOCK_DIR) rmSync(LOCK_DIR, { recursive: true, force: true });
 });
 
 // ── the fixtures are what they claim to be ───────────────────
@@ -274,5 +328,199 @@ describe("#469/#490: outputs no bun fixture can make, driven directly", () => {
       expect(nested.fail).toBe(2);
       expect(nested.files).toBe(4);
     }
+  });
+});
+
+// ── #621 AC-2: three measurement failures, three reasons ─────
+
+/** The three attempts, built from the executed fixtures above. */
+function attempts() {
+  return {
+    // AC-2a. The pool refused, so the runner never started and there is no
+    // output of any kind to read — which is why the slot answer has to travel
+    // with the attempt rather than be inferred from what was printed.
+    slotExhausted: { slot: SLOT_REFUSAL, command: ["bun", "test"] },
+    // AC-2b.
+    absentRunner: {
+      command: [ABSENT_RUNNER, "test"],
+      launchError: LAUNCH.error,
+      output: `${LAUNCH.stdout ?? ""}${LAUNCH.stderr ?? ""}`,
+      exitCode: LAUNCH.status,
+    },
+    // AC-2c.
+    noSummary: { command: ["bun", "test"], output: LIVE.vanishing.output, exitCode: LIVE.vanishing.code },
+  };
+}
+
+function reasonOf(attempt: Parameters<typeof readSuiteAttempt>[0]): string {
+  const run = readSuiteAttempt(attempt);
+  if (run.status !== "UNMEASURED") throw new Error(`expected UNMEASURED, got ${run.status}`);
+  return run.reason;
+}
+
+/**
+ * The artefact a recorder would leave behind, derived rather than typed out.
+ *
+ * `scripts/record-suite-measurement.ts` refuses on UNMEASURED and writes
+ * nothing, so the state a failed measurement produces carries no
+ * `suiteMeasurement` at all. Mirroring that here — with the recorder's own
+ * `buildMeasurement` for the measured half — is what makes AC-2e a claim
+ * about the recorded artefact and not only about the in-memory reading.
+ */
+function recordedState(attempt: Parameters<typeof readSuiteAttempt>[0]): Record<string, unknown> {
+  const run = readSuiteAttempt(attempt);
+  if (run.status !== "MEASURED") return {};
+  return { suiteMeasurement: buildMeasurement("0f1e2d3c4b5a69788796a5b4c3d2e1f0abcdef01", run) };
+}
+
+describe("#621 AC-2: a measurement that failed records UNMEASURED and says which way", () => {
+  test("AC-2a: a run refused because the full-suite slot is held records UNMEASURED naming slot exhaustion", () => {
+    // The instrument, before anything is read off it: the pool really did
+    // refuse, and it really did name a holder. A fixture that silently started
+    // succeeding would make every assertion below describe a different input.
+    expect(SLOT_REFUSAL.ok, "the slot fixture was granted a slot — the pool is not exhausted").toBe(false);
+    expect(SLOT_REFUSAL.degraded ?? false, "the slot guard degraded, so this is not a refusal").toBe(false);
+    expect((SLOT_REFUSAL.holders ?? []).length, "the refusal named no holder").toBeGreaterThan(0);
+
+    const run = readSuiteAttempt(attempts().slotExhausted);
+    expect(run.status).toBe("UNMEASURED");
+    if (run.status !== "UNMEASURED") return;
+    expect(run.reason).toContain("slot");
+    expect(run.reason).toContain("exhaust");
+    // The holder is named, so an operator can tell a wedged slot from a busy
+    // one without going to look at the lock directory.
+    expect(run.reason).toContain("holder-worker");
+    expect(suiteRunVerdict(run)).toBe("UNMEASURED");
+    expect(suiteRunVerdict(run)).not.toBe("FAIL");
+
+    // The cheapest wrong repair for a reading that refuses too much is to make
+    // the slot branch unconditional. This is the input that catches it: a pool
+    // that GRANTED the slot, over a clean run, is a measurement.
+    const granted = readSuiteAttempt({
+      slot: { ok: true },
+      command: ["bun", "test"],
+      output: LIVE.clean.output,
+      exitCode: LIVE.clean.code,
+    });
+    expect(granted.status, "a granted slot over a clean run must still be measured").toBe("MEASURED");
+  });
+
+  test("AC-2b: a run whose test runner cannot be executed records UNMEASURED naming the absent runner", () => {
+    expect(LAUNCH.error, "the absent-runner fixture found a binary — rename it").toBeTruthy();
+    // `spawnSync` reports no status at all for a launch that never happened —
+    // undefined on bun, null on node. Either way it is NOT a number, and that
+    // is the property: there is no exit code to read, so a reading that waited
+    // for one would wait forever.
+    expect(typeof LAUNCH.status, "the absent-runner fixture produced an exit status, so it launched")
+      .not.toBe("number");
+    // The whole difficulty of this mode, asserted as the premise it is: an
+    // ENOENT launch prints NOTHING, so the output parser downstream has no
+    // way to tell it from a runner that ran and said nothing.
+    expect(`${LAUNCH.stdout ?? ""}${LAUNCH.stderr ?? ""}`, "the absent runner printed something").toBe("");
+
+    const run = readSuiteAttempt(attempts().absentRunner);
+    expect(run.status).toBe("UNMEASURED");
+    if (run.status !== "UNMEASURED") return;
+    expect(run.reason).toContain(ABSENT_RUNNER);
+    expect(run.reason).toContain("could not be executed");
+    expect(run.reason).toContain("ENOENT");
+    expect(suiteRunVerdict(run)).toBe("UNMEASURED");
+    expect(suiteRunVerdict(run)).not.toBe("FAIL");
+  });
+
+  test("AC-2c: a non-zero exit with no pass/fail summary records UNMEASURED naming the missing summary", () => {
+    expect(LIVE.vanishing.code, "the vanishing fixture now exits 0 — AC-2c is about a non-zero exit")
+      .not.toBe(0);
+    expect(LIVE.vanishing.output, "the vanishing fixture now prints a summary — re-derive it")
+      .not.toMatch(/^\s*\d+\s+(pass|fail)\s*$/m);
+
+    const run = readSuiteAttempt(attempts().noSummary);
+    expect(run.status).toBe("UNMEASURED");
+    if (run.status !== "UNMEASURED") return;
+    expect(run.reason).toContain("no pass/fail summary");
+    expect(run.reason).toContain(`exited ${LIVE.vanishing.code}`);
+    expect(suiteRunVerdict(run)).toBe("UNMEASURED");
+    expect(suiteRunVerdict(run)).not.toBe("FAIL");
+
+    // The exit code must not have become a decider on the way in. SC-1829
+    // measures that for `readSuiteRun`; this is the same claim for the attempt
+    // reader, and it is the input that fails under the cheapest wrong fix for
+    // AC-2c — "refuse when the exit code is non-zero", which would turn every
+    // genuinely failing suite into an unmeasured one and switch the gate off.
+    const measuredFailure = readSuiteAttempt({
+      command: ["bun", "test"],
+      output: LIVE.failing.output,
+      exitCode: LIVE.failing.code,
+    });
+    expect(LIVE.failing.code, "the failing fixture no longer exits non-zero").not.toBe(0);
+    expect(measuredFailure.status, "a non-zero exit WITH a summary is a result").toBe("MEASURED");
+    expect(suiteRunVerdict(measuredFailure)).toBe("FAIL");
+  });
+
+  test("AC-2d: the three reasons are pairwise distinct", () => {
+    const a = attempts();
+    const reasons = {
+      slotExhausted: reasonOf(a.slotExhausted),
+      absentRunner: reasonOf(a.absentRunner),
+      noSummary: reasonOf(a.noSummary),
+    };
+    const list = Object.values(reasons);
+    expect(new Set(list).size, `two modes share a reason: ${JSON.stringify(reasons, null, 2)}`).toBe(3);
+
+    // Distinct strings are the floor, not the property. Three reasons that
+    // differ only in a timestamp would pass the line above while leaving an
+    // operator unable to tell the modes apart, so each reason must carry its
+    // OWN marker and neither of the other two.
+    const markers = {
+      slotExhausted: /slot/i,
+      absentRunner: new RegExp(ABSENT_RUNNER),
+      noSummary: /no pass\/fail summary/,
+    } as const;
+    const crossed: string[] = [];
+    for (const [mode, reason] of Object.entries(reasons)) {
+      for (const [other, marker] of Object.entries(markers)) {
+        const hit = marker.test(reason);
+        if (mode === other && !hit) crossed.push(`${mode} does not carry its own marker`);
+        if (mode !== other && hit) crossed.push(`${mode} carries ${other}'s marker`);
+      }
+    }
+    expect(crossed).toEqual([]);
+
+    // And no reason is a prefix or substring of another, which is the way two
+    // reasons stay distinguishable to a reader doing a substring match.
+    for (const [i, one] of list.entries()) {
+      for (const [j, other] of list.entries()) {
+        if (i === j) continue;
+        expect(one.includes(other), `reason ${i} contains reason ${j} whole`).toBe(false);
+      }
+    }
+  });
+
+  test("AC-2e: no mode returns FAIL - through either module, and FAIL is still reachable", () => {
+    const a = attempts();
+    const modes = [
+      ["slot exhausted", a.slotExhausted],
+      ["absent runner", a.absentRunner],
+      ["no summary", a.noSummary],
+    ] as const;
+
+    const verdicts = modes.map(([label, attempt]) => ({
+      label,
+      reading: suiteRunVerdict(readSuiteAttempt(attempt)),
+      recorded: readSuiteMeasurement(recordedState(attempt)).verdict,
+    }));
+    expect(verdicts.filter(v => v.reading === "FAIL" || v.recorded === "FAIL")).toEqual([]);
+    expect(verdicts.map(v => `${v.reading}/${v.recorded}`)).toEqual([
+      "UNMEASURED/UNMEASURED",
+      "UNMEASURED/UNMEASURED",
+      "UNMEASURED/UNMEASURED",
+    ]);
+
+    // The positive control, without which a pair of modules that never
+    // returned FAIL at all would satisfy every row above. Same two functions,
+    // same helper, a run that really did fail.
+    const failing = { command: ["bun", "test"], output: LIVE.failing.output, exitCode: LIVE.failing.code };
+    expect(suiteRunVerdict(readSuiteAttempt(failing))).toBe("FAIL");
+    expect(readSuiteMeasurement(recordedState(failing)).verdict).toBe("FAIL");
   });
 });
