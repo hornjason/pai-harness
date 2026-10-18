@@ -193,6 +193,15 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     const waveNeedsIntegration = new Function(
       `${shipSource.slice(rStart, rEnd)}\nreturn waveNeedsIntegration;`,
     )();
+    // #611's element-shape guard, evaluated INTO the block's scope rather
+    // than injected, for the same reason as the four above: a stub would let
+    // this suite and the real block disagree about what a reported path is.
+    const sStart = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-START ────");
+    const sEnd = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-END ────");
+    if (sStart === -1 || sEnd === -1) {
+      throw new Error("ship.js is missing the FILES-CHANGED-SHAPE markers");
+    }
+    const shapeBlock = shipSource.slice(sStart, sEnd);
     const logs: string[] = [];
     const factory = new Function(
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
@@ -201,7 +210,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     "REPO",
       "taskSourceRefusal",
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
-      `${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
+      `${shapeBlock}\n${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
     );
     const run = factory(
       (m: string) => logs.push(String(m)),

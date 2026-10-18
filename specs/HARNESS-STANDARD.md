@@ -2559,6 +2559,97 @@ The two disagree, which is exactly what that case exists to detect. The
 prediction was wrong, not the mutant — the binding reaches further than the
 one fixture that was counted for it.
 
+### A reported path that was a sentence, and no contract that could say so (#611)
+
+Run `wf_68a566ab-500` (issue #599) reached SHIP with all six ACs PASS and rook
+PASS, and lost its entire collection at the claim audit. 28 agents, ~1.79M
+subagent tokens, 103 minutes.
+
+The path it died on was `lib/scaffold/steps.ts` — an ordinary file in this
+repository. What `pathRefusal` was handed was that path with a prose
+annotation glued to it, and the `(`, `)` and `~` inside the annotation are the
+shell metacharacters it reported. **The guard at `workflows/ship.js:4283` is
+right and is not loosened.** Two other things were wrong:
+
+1. **There is no contract for an element.** `BUILD_RESULT_SCHEMA` declared
+   `filesChanged: { type: 'array', items: { type: 'string' } }`, which a
+   sentence satisfies completely, so nothing between the agent's reply and
+   `git add` had an opinion about what a path is. The implement result read
+   checked only that the list was non-empty (#181).
+2. **The refusal misdescribed itself.** It said *"git add refuses the path"*
+   when the true statement is *"that is not a path, it is a sentence"* — a
+   proxy, in the sense `.claude/rules/checks-must-be-able-to-fail.md` records
+   against #492, and an operator who reads it goes looking for a quoting bug.
+
+`filesChangedShapeRefusal` is a SECOND decider, deliberately, and the reason
+is the fourth shape: two deciders that agree are behaviourally one. These two
+answer different questions and each has an input only it reaches, asserted by
+name rather than described:
+
+| Input | `filesChangedShapeRefusal` | `pathRefusal` |
+|---|---|---|
+| `lib/a.ts modified by marcus` | refuses | **accepts** — `SHELL_METACHARACTERS` contains no space and no tab, so the path table takes this in BOTH phases today and it dies at `git add` with `pathspec did not match` |
+| `lib/a;rm.ts` | **accepts** — one token, shaped exactly like a path | refuses |
+
+That asymmetry is measured below, not argued: the two mutations turn
+disjoint sets of rows red, 13 and 3, with no row in both.
+
+The element is **refused, never repaired**. The cheapest fix for "the run died
+on a metacharacter" is `el.split(' ')[0]` somewhere upstream, and a stripped
+path is a path the agent did not report — #114 already cost this repo one run
+filed under a different project. The bare path is QUOTED back so the agent can
+report it, and nothing stages it on their behalf.
+
+- [x] SC-2046: test/files-changed-path-shape.test.ts contains [every filesChanged element is checked for bare repo-relative path shape] — the guard is extracted from its markers and EXECUTED at the implement result read, over an element at a non-zero index, a non-string, an empty string and six annotation shapes each asserted against the RULE it is refused under, with the 957 tracked paths of this repository as the population it must not refuse
+- [x] SC-2047: test/files-changed-path-shape.test.ts contains [it quotes the bare path the element would have been] — the refusal names the annotation and quotes the bare path, and an element from which no bare path can be recovered says so rather than splicing `""` into the sentence, because an empty quote reads as a truncated report
+- [x] SC-2048: test/files-changed-path-shape.test.ts contains [a run whose implement reader ran hands the audit ZERO annotated elements] — the real decomposed-ship block is RUN and what it forwards is handed to the real `auditWorktreeClaims`, with a CONTROL case feeding the annotated element to the audit directly so the zero has a believable baseline beside it rather than being satisfied by a fixture the audit never sees
+- [x] SC-2049: workflows/ship.js contains [bare repo-relative path] — the format is stated in `BUILD_RESULT_SCHEMA`'s `filesChanged` description and in the marcus implement prompt, and the test reads both statements out of their own SLICES of ship.js rather than restating them, because a whole-file search is satisfied by the refusal message naming the same phrase
+- [x] SC-2050: test/files-changed-path-shape.test.ts contains [an input ONLY pathRefusal reaches] — a path carrying a genuine shell metacharacter keeps the staging sentence unchanged and the annotated path gets the annotation sentence, with a separate case for the input each decider alone refuses, so the pair cannot collapse into one
+- [x] SC-2051: test/files-changed-shape-mutation.test.ts contains [mutant and original differ on a NAMED input, run rather than argued] — `filesChangedShapeRefusal` short-circuited in a mutant copy of ship.js lets the annotated fixture reach the collection audit again, proven by running the mutant's own decomposed block and handing what it forwards to the real audit; the observation suite is spawned twice with one argv, `ran` is read before any verdict, and green and red are compared by NAME
+
+#### What was broken to prove it (SC-2046..2051)
+
+Run and counted rather than asserted, over
+`test/files-changed-path-shape.test.ts` (29 tests) and
+`test/files-changed-shape-mutation.test.ts` (14 tests). Every count was
+predicted before the run.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| **baseline** — unmutated | **29 pass, 0 fail** | 29 pass |
+| `filesChangedShapeRefusal` short-circuited to `return null` — the pre-#611 pipeline | **13 of 29** | 13 |
+| `pathRefusal` short-circuited to `return null` | **3 of 29** | 3 |
+| `barePathCandidate` short-circuited to `return ''` | **1 of 29** | 1 |
+| `buildShapeRemovalMutant` neutered to `return src` | **7 of 14** | 5 |
+
+None is left in the tree; `workflows/ship.js` was confirmed byte-identical
+afterwards.
+
+**Three rows are worth reading rather than counting.**
+
+Before any count was believed, the input on which mutant and original differ
+was named and run: `{success: true, filesChanged: ["lib/scaffold/steps.ts
+(modified — added the refusal, ~40 lines)"]}` — the element measured on
+wf_68a566ab-500. The real guard returns a sentence containing `annotated
+path`; the mutant returns `null`. That check is also in the tree, as
+SC-2051's first case, so it is re-run rather than trusted.
+
+**Rows two and three share no row.** The 13 and the 3 are disjoint sets of
+test names, and that is the measurement that says these are two deciders
+rather than one. In particular `an input ONLY pathRefusal reaches` stays GREEN
+under the shape mutation and goes RED under the path mutation, while `an input
+ONLY the shape decider reaches` does the opposite. A collapsed pair cannot
+produce that.
+
+The last row came back **7 where 5 was predicted**, and per
+`.claude/rules/checks-must-be-able-to-fail.md` the extra reds were read before
+anything was concluded. Both are `the builder ABORTS when …` cases: a builder
+neutered to `return src` never throws, so the two cases asserting it refuses a
+moved target go red too. They are *about* the mutated behaviour — the
+builder's refusal to silently no-op is the property those cases exist for —
+so the prediction was wrong and the harness is stricter than the prediction
+assumed.
+
 ### A criterion forbidding a call, ticked over that call (#395)
 
 `gates/workflow.test.ts` read an issue's labels by shelling out to the

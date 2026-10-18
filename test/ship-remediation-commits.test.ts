@@ -303,6 +303,19 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     `${shipSource.slice(pStart, pEnd)}\nreturn taskSourceRefusal;`,
   )();
 
+  // #611 added a fourth, injected for the same reason: a stub would let this
+  // suite and the guard disagree about what a reported path is. The fixtures
+  // below report bare repo-relative paths because the real agents are now
+  // asked for them.
+  const sStart = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-START ────");
+  const sEnd = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-END ────");
+  if (sStart === -1 || sEnd === -1) {
+    throw new Error("ship.js is missing the FILES-CHANGED-SHAPE-START/END markers");
+  }
+  const filesChangedShapeRefusal = new Function(
+    `${shipSource.slice(sStart, sEnd)}\nreturn filesChangedShapeRefusal;`,
+  )();
+
   return new Function(
     "runCeremonyOnce",
     "briefedAgent",
@@ -314,6 +327,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     "worktreeIdentity",
     "REPO",
     "taskSourceRefusal",
+    "filesChangedShapeRefusal",
     `${slicedFunction("async function runImplement()")}\nreturn runImplement`,
   )(
     async () => opts.ceremony ?? { contextExcerpts: [], acContextFiles: [] },
@@ -326,6 +340,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     worktreeIdentity,
     RUN_REPO,
     taskSourceRefusal,
+    filesChangedShapeRefusal,
   ) as () => Promise<{ success?: boolean; status?: string; buildResult?: any }>;
 }
 

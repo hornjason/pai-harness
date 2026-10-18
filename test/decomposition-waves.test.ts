@@ -378,6 +378,15 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
   const end = shipSource.indexOf(BLOCK_END);
   if (start === -1 || end === -1) throw new Error("ship.js is missing the DECOMPOSED-SHIP markers");
   const block = shipSource.slice(start + BLOCK_START.length, end);
+  // #611 put a free reference in the block. The real text is evaluated
+  // alongside it rather than stubbed — a stub would let this suite and
+  // ship.js disagree about what a reported path is.
+  const shapeA = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-START ────");
+  const shapeB = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-END ────");
+  if (shapeA === -1 || shapeB === -1) {
+    throw new Error("ship.js is missing the FILES-CHANGED-SHAPE markers");
+  }
+  const shapeBlock = shipSource.slice(shapeA, shapeB);
   const logs: string[] = [];
 
   const sliced = (name: string, fn: string) => {
@@ -394,7 +403,7 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
     "establishRunRef",
     "integrateWave",
     "waveNeedsIntegration",
-    `${block}\nreturn runDecomposedShip;`,
+    `${shapeBlock}\n${block}\nreturn runDecomposedShip;`,
   );
 
   const runDecomposedShip = factory(

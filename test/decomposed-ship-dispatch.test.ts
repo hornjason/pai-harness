@@ -67,6 +67,16 @@ function loadRunDecomposedShip(deps: {
     `${shipSource.slice(guardStart, guardEnd)}\nreturn implementRefusal;`,
   )();
 
+  // #611 added a second free reference the same way. The block text is
+  // evaluated into the factory body below rather than injected, because
+  // ship.js declares it at module scope beside the decomposed block.
+  const shapeStart = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-START ────");
+  const shapeEnd = shipSource.indexOf("// ──── FILES-CHANGED-SHAPE-END ────");
+  if (shapeStart === -1 || shapeEnd === -1) {
+    throw new Error("ship.js is missing the FILES-CHANGED-SHAPE-START/END markers");
+  }
+  const shapeBlock = shipSource.slice(shapeStart, shapeEnd);
+
   // #218's guard, injected for the same reason as the one above: a stub
   // would let this block and the real one disagree about which repository a
   // worktree belongs to, and nothing would notice.
@@ -114,7 +124,10 @@ function loadRunDecomposedShip(deps: {
     "establishRunRef",
     "integrateWave",
     "waveNeedsIntegration",
-    `${block}\nreturn runDecomposedShip;`,
+    // #611's element-shape guard, evaluated INTO the block's scope for the
+    // same reason the guards above are injected: a stub would let this suite
+    // and the real block disagree about what a reported path is.
+    `${shapeBlock}\n${block}\nreturn runDecomposedShip;`,
   );
 
   const runDecomposedShip = factory(

@@ -137,7 +137,17 @@ const BUILD_RESULT_SCHEMA = {
     success: { type: 'boolean' },
     branch: { type: 'string' },
     commitSha: { type: 'string' },
-    filesChanged: { type: 'array', items: { type: 'string' } },
+    // #611 — `items: { type: 'string' }` is satisfied by a sentence, which
+    // is how `lib/scaffold/steps.ts (modified — added the refusal, ~40
+    // lines)` reached the claim audit and cost run wf_68a566ab-500 its whole
+    // collection. The format is stated here AND in the implement prompt;
+    // `filesChangedShapeRefusal` is what enforces it, because a description
+    // is a request.
+    filesChanged: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Each element is a bare repo-relative path and nothing else — one token, no annotation, no parenthetical, no markdown. "lib/a.ts", never "lib/a.ts (modified)".',
+    },
     testFiles: { type: 'array', items: { type: 'string' } },
     testOutput: { type: 'string' },
     findings: { type: 'array', items: { type: 'string' } },
@@ -3717,6 +3727,129 @@ function implementRefusal(buildResult, label) {
 }
 // ──── IMPLEMENT-RESULT-END ────
 
+// ──── FILES-CHANGED-SHAPE-START ────
+/**
+ * Why a reported `filesChanged` element is not a path (#611).
+ *
+ * Run wf_68a566ab-500 reached SHIP with all six ACs PASS and rook PASS, and
+ * lost its entire collection at the claim audit. The path it died on was
+ * `lib/scaffold/steps.ts` — an ordinary file in this repository. What
+ * `pathRefusal` was handed was that path with a prose annotation glued to
+ * it, and the `(`, `)` and `~` inside the annotation are the shell
+ * metacharacters it reported. 28 agents, ~1.79M subagent tokens, 103
+ * minutes.
+ *
+ * The guard that refused it is RIGHT and is not loosened. Two other things
+ * were wrong, and this block is the first:
+ *
+ *   1. There is no contract for an element. `BUILD_RESULT_SCHEMA` declares
+ *      `filesChanged: { type: 'array', items: { type: 'string' } }`, which a
+ *      sentence satisfies completely, so nothing between the agent's reply
+ *      and `git add` had an opinion about what a path is.
+ *   2. The refusal, when it finally came, said "git add refuses the path".
+ *      The true statement is "that is not a path, it is a sentence", and an
+ *      operator who reads the first one goes looking for a quoting bug.
+ *
+ * ## Why this is not a second copy of `pathRefusal`
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md`'s fourth shape: two
+ * deciders that agree are behaviourally one, and a mutation of either leaves
+ * the other holding every case up. These two answer different questions —
+ * "did the agent report a path, or a sentence about a path" versus "can this
+ * path be handled safely" — and each has an input only it reaches:
+ *
+ *   only this one:     `lib/a.ts modified by marcus`
+ *                      `SHELL_METACHARACTERS` contains no space and no tab,
+ *                      so the path table accepts that in BOTH phases today
+ *                      and it dies at `git add` with `pathspec did not
+ *                      match`. It is the hole left behind if the two are
+ *                      merged.
+ *   only pathRefusal:  `lib/a;rm.ts`
+ *                      one token, no annotation, shaped exactly like a path
+ *                      and genuinely unsafe. This one must stay silent about
+ *                      it, or the operator gets the wrong sentence in the
+ *                      other direction.
+ *
+ * REFUSED, never repaired. The cheapest fix for "the run died on a
+ * metacharacter" is to strip the annotation and carry on, and a stripped
+ * path is a path the agent did not report — #114 already cost this repo one
+ * run filed under a different project. The bare path is QUOTED in the
+ * message so the agent can report it, and nothing stages it on their behalf.
+ *
+ * It says nothing about a result that already failed, and nothing about an
+ * empty or absent list: those are `implementRefusal`'s question, and
+ * answering them twice under a different reason misattributes the failure.
+ */
+const FILES_CHANGED_SHAPE_RULES = [
+  ['whitespace, so everything after the first token is prose rather than path', p => /\s/.test(p)],
+  ['a trailing parenthetical', p => /\([^)]*\)$/.test(p) || /\[[^\]]*\]$/.test(p)],
+  ["markdown emphasis or quote characters wrapped around it", p => /^[`*_'"]/.test(p) || /[`*_'"]$/.test(p)],
+]
+
+/** The one decider: which shape rule refuses `p`, or null if none does. */
+function filesChangedShapeRule(p) {
+  for (const [rule, fails] of FILES_CHANGED_SHAPE_RULES) {
+    if (fails(p)) return rule
+  }
+  return null
+}
+
+/**
+ * The bare path the element would have been, for quoting back — or `''` when
+ * none can be recovered.
+ *
+ * Deliberately conservative: a token only qualifies if it carries a `/` or a
+ * `.` AND is itself clean once decoration is removed. `(modified` and
+ * `~40` are tokens too, and quoting one of those back as "the path you
+ * meant" would be worse than saying nothing.
+ */
+function barePathCandidate(element) {
+  const strip = t => t
+    .replace(/^[`*_'"<]+/, '')
+    .replace(/[`*_'">]+$/, '')
+    .replace(/\([^)]*\)$/, '')
+    .replace(/\[[^\]]*\]$/, '')
+    .replace(/[`*_'",;:]+$/, '')
+  for (const token of String(element).trim().split(/\s+/)) {
+    const t = strip(token)
+    if (!t) continue
+    if (!t.includes('/') && !t.includes('.')) continue
+    if (filesChangedShapeRule(t)) continue
+    return t
+  }
+  return ''
+}
+
+/**
+ * A refusal string, or null to proceed. One function, so there is one
+ * binding to mutate; both implement paths call it, per sub-issue and before
+ * any union.
+ */
+function filesChangedShapeRefusal(buildResult, label) {
+  if (!buildResult || !buildResult.success) return null
+  if (!Array.isArray(buildResult.filesChanged)) return null
+  const files = buildResult.filesChanged
+  for (let i = 0; i < files.length; i++) {
+    const el = files[i]
+    const where = `${label} reported filesChanged[${i}] as ${JSON.stringify(el)}`
+    if (typeof el !== 'string' || el.trim() === '') {
+      return `${where}, which is not a path at all. Every element must be a bare repo-relative path — one token, no annotation — such as "lib/a.ts".`
+    }
+    const rule = filesChangedShapeRule(el)
+    if (!rule) continue
+    const bare = barePathCandidate(el)
+    const instead = bare
+      ? `Here the bare path is ${JSON.stringify(bare)}`
+      : 'No bare path could be recovered from it'
+    return `${where}, which is an annotated path and not a path: it carries ${rule}. `
+      + `${instead}. Report the bare repo-relative path and nothing else, and put the `
+      + `explanation in findings or testOutput — an annotation travels into git add as `
+      + `part of the filename, and the run loses the whole collection two phases later.`
+  }
+  return null
+}
+// ──── FILES-CHANGED-SHAPE-END ────
+
 async function runImplement() {
   const ceremony = await runCeremonyOnce()
   if (!ceremony) {
@@ -3733,6 +3866,12 @@ Do NOT commit or push yet — Quinn will validate first.
 If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
+Every element of filesChanged is a bare repo-relative path and nothing else —
+one token, no annotation, no parenthetical, no markdown: \`lib/a.ts\`, never
+\`lib/a.ts (modified)\`. Say what changed in each file in findings or
+testOutput instead. An annotated element is refused here and the run stops
+(#611); it is not repaired for you, because a repaired path is a path you did
+not report.
 Also report worktreePath: your current working directory (run pwd and include the result).
 Also report worktreeRepo: run \`git remote get-url origin\` in that directory and
 include exactly what it printed. Do NOT substitute the repo named in your brief —
@@ -3799,6 +3938,14 @@ what it said rather than omitting the field.
   if (emptyRefusal) {
     log(`IMPLEMENT FAILED: ${emptyRefusal}`)
     return { success: false, buildResult: { ...buildResult, success: false, findings: [emptyRefusal] } }
+  }
+  // #611 — the shape of each element, at the phase that READ it. An
+  // annotated path satisfies the schema, survives this phase, and is refused
+  // ~103 minutes later by the claim audit under a sentence about `git add`.
+  const shapeRefusal = filesChangedShapeRefusal(buildResult, 'marcus')
+  if (shapeRefusal) {
+    log(`IMPLEMENT FAILED: ${shapeRefusal}`)
+    return { success: false, buildResult: { ...buildResult, success: false, findings: [shapeRefusal] } }
   }
   // #180 — BEFORE the success log, for the same reason as the guard above. A
   // run that worked from the relayed message instead of the brief reports
@@ -4467,6 +4614,10 @@ ${subIssue.filesToModify.map(f => `- ${f}`).join('\n')}
 
 Do NOT commit or push yet — Quinn will validate first.
 Report: success, files changed, test output.
+Every element of filesChanged is a bare repo-relative path and nothing else —
+one token, no annotation, no parenthetical, no markdown: \`lib/a.ts\`, never
+\`lib/a.ts (modified)\`. Say what changed in findings or testOutput instead
+(#611).
 Also report worktreePath: your current working directory.
 Also report worktreeRepo: what \`git remote get-url origin\` printed in that
 directory (#218) — not the repo named in your brief, the one your checkout has.
@@ -4503,6 +4654,19 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         return {
           subIssue,
           buildResult: { ...buildResult, success: false, findings: [subRefusal] },
+          ok: false,
+        }
+      }
+      // #611 AC-3 — per sub-issue and BEFORE the union, for the same reason
+      // the empty check above is: `allFilesChanged` flattens every list
+      // together, so one sub-issue's annotated element is invisible the
+      // moment the lists are merged.
+      const subShapeRefusal = filesChangedShapeRefusal(buildResult, `marcus-sub-${subIssue.number}`)
+      if (subShapeRefusal) {
+        log(`Sub-issue FAILED: ${subIssue.title} — ${subShapeRefusal}`)
+        return {
+          subIssue,
+          buildResult: { ...buildResult, success: false, findings: [subShapeRefusal] },
           ok: false,
         }
       }
