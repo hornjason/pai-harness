@@ -55,6 +55,28 @@ nowhere else in the file.
 If a run cannot carry every one of those lines forward it **refuses the
 write**, names the lines, and leaves your file untouched.
 
+### The CI job's global-tool installs are generated, never hand-edited (#597)
+
+The `npm install -g` step in `ci.yml`'s generated `test` job is written from
+`ci.globalTools` in `.claude/rungate/config.json` — a package-name-to-exact-
+version map — by `globalToolInstallStep` in `lib/scaffold/steps.ts`. That
+config is the only position in the tree that names a version; the generator
+carries no literal, and neither should you.
+
+**To change, add or remove a pinned tool, edit the config and re-scaffold.**
+A version typed straight into `ci.yml` is overwritten on the next run of the
+generator without being reported, because the `test` job is harness-owned —
+and in the meantime it is a second position naming a version, which is the
+defect (#621, #622) rather than a shortcut around it.
+
+Only an EXACT version is installed. A range, `latest` or any other dist-tag
+is refused BY NAME in a comment in the generated file rather than installed
+unpinned, because an unpinned install is the state #597 is about: three
+Layer 1 compliance checks shell out to `agnix` and `npx @reporails/cli`, CI
+installed neither, and an identical SHA re-ran red to green with no code
+change. A project that declares no `ci.globalTools` gets no install step and
+a comment saying so — absent is reported, not silently defaulted.
+
 ### The workflow files are job-owned, not file-owned (#216)
 
 rungate owns the `test` job in `ci.yml` and the `gates` job in

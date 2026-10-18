@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "fs";
 import { join, relative } from "path";
-import { probeExternalTool } from "./tool-probe";
+import { probeExternalTool, type ToolProbe, type ToolProbeOutcome } from "./tool-probe";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -33,6 +33,36 @@ export interface FileScore {
   findings: InstructionFinding[];
 }
 
+/** The external tools Layer 1 scores with, in the order they are reported. */
+export const COMPLIANCE_TOOLS = ["agnix", "reporails"] as const;
+
+export type ComplianceTool = (typeof COMPLIANCE_TOOLS)[number];
+
+/** A tool that did not answer, as the report names it. */
+export interface UnmeasuredTool {
+  /** The tool's name in this report — not the command line it was probed with. */
+  tool: ComplianceTool;
+  outcome: ToolProbeOutcome;
+  /** The probe's own one-liner, carried through unedited. */
+  reason: string;
+}
+
+/**
+ * Whether this report measured what it claims to have measured.
+ *
+ * A scan that one of its two tools sat out is not a scan with a slightly
+ * smaller finding count — it is a scan of an unknown fraction of the surface,
+ * and the number it would print is indistinguishable from the number a clean
+ * run prints. `UNMEASURED` is the only value that is not.
+ */
+export interface ComplianceReading {
+  reading: "MEASURED" | "UNMEASURED";
+  /** Every tool that did not answer, in probe order. Empty exactly when MEASURED. */
+  unmeasured: UnmeasuredTool[];
+  /** Names every tool that did not answer and why. Null exactly when MEASURED. */
+  reason: string | null;
+}
+
 export interface ComplianceReport {
   timestamp: string;
   layer: "template" | "generated" | "behavioral";
@@ -42,6 +72,13 @@ export interface ComplianceReport {
   totalFindings: number;
   highCount: number;
   toolsAvailable: { agnix: boolean; reporails: boolean };
+  /**
+   * The whole probe per tool — outcome and reason, not just the boolean.
+   * `toolsAvailable` above is a projection of these and stays for the callers
+   * that only ever wanted "can I run this".
+   */
+  toolProbes: Record<ComplianceTool, ToolProbe>;
+  reading: ComplianceReading;
 }
 
 // ── Tool Runners ───────────────────────────────────────────
@@ -201,11 +238,104 @@ export function collectComplianceSurface(root: string, surface?: string[]): stri
 // wanted — the difference is that it is now a projection of a reading that
 // still knows which of the three happened.
 
+/** How each tool is asked whether it is there. */
+const COMPLIANCE_TOOL_PROBE_ARGV: Record<ComplianceTool, string[]> = {
+  agnix: ["agnix", "--version"],
+  reporails: ["npx", "@reporails/cli", "version"],
+};
+
+/**
+ * The single seam between this module and the outside world (#597).
+ *
+ * Every availability question Layer 1 asks is asked here, once per tool, and
+ * `probeExternalTool` is called from nowhere else in this file — two deciders
+ * that agree are behaviourally one, and a second probe would survive any
+ * mutation of this one.
+ *
+ * A caller may supply a reading per tool. That is how a test forces a tool
+ * absent or errored without mutating `PATH`, which is both unavailable to a
+ * test running in-process and a global mutation that leaks into whatever else
+ * the suite is doing. An injected tool overrides; an omitted one still spawns,
+ * so the seam cannot silently drop a tool it was not told about.
+ */
+export function probeComplianceTools(
+  injected?: Partial<Record<ComplianceTool, ToolProbe>>,
+): Record<ComplianceTool, ToolProbe> {
+  const probes = {} as Record<ComplianceTool, ToolProbe>;
+  for (const tool of COMPLIANCE_TOOLS) {
+    const given = injected?.[tool];
+    if (given) {
+      probes[tool] = given;
+      continue;
+    }
+    const [command, ...args] = COMPLIANCE_TOOL_PROBE_ARGV[tool];
+    probes[tool] = probeExternalTool(command, args);
+  }
+  return probes;
+}
+
+/**
+ * Turns the probes into the report's own verdict about itself.
+ *
+ * One binding, so there is one thing to mutate, and so no branch can decide
+ * separately that a report is clean enough to print a number.
+ */
+export function complianceReading(
+  probes: Record<ComplianceTool, ToolProbe>,
+): ComplianceReading {
+  const unmeasured: UnmeasuredTool[] = [];
+  for (const tool of COMPLIANCE_TOOLS) {
+    const probe = probes[tool];
+    if (probe.available) continue;
+    unmeasured.push({ tool, outcome: probe.outcome, reason: probe.reason });
+  }
+
+  if (unmeasured.length === 0) {
+    return { reading: "MEASURED", unmeasured: [], reason: null };
+  }
+
+  // Name every one of them. A warning that does not say what was missing is a
+  // warning nobody can act on, and "a tool was unavailable" does not tell an
+  // operator whether to install something or to look at a stderr line.
+  const named = unmeasured.map(u => `${u.tool} (${u.outcome}): ${u.reason}`).join("; ");
+  return {
+    reading: "UNMEASURED",
+    unmeasured,
+    reason:
+      `UNMEASURED: ${unmeasured.length} of ${COMPLIANCE_TOOLS.length} compliance tools did not ` +
+      `answer — ${named}. The quality score is withheld rather than averaged over the tools ` +
+      `that did, because a surface nobody scored has not passed and a number would say it had.`,
+  };
+}
+
+/**
+ * The surface's quality score, or nothing when the reading says nothing was
+ * measured.
+ *
+ * Averaging whatever came back is the shape this exists to refuse: with one
+ * tool silent the mean is taken over the files the other tool happened to
+ * reach, and it prints as an ordinary number beside an ordinary PASS.
+ */
+export function overallQualityOf(
+  fileScores: FileScore[],
+  reading: ComplianceReading,
+): number | null {
+  if (reading.reading === "UNMEASURED") return null;
+  const scored = fileScores.filter(f => f.reporailsQuality !== null);
+  if (scored.length === 0) return null;
+  return scored.reduce((sum, f) => sum + f.reporailsQuality!, 0) / scored.length;
+}
+
 // ── Layer 1: Template Compliance ───────────────────────────
 
 export interface TemplateComplianceOpts {
   surface?: string[];
   writeReport?: boolean;
+  /**
+   * Readings to use instead of spawning. Per tool — an omitted tool is still
+   * probed for real.
+   */
+  probes?: Partial<Record<ComplianceTool, ToolProbe>>;
 }
 
 export async function runTemplateCompliance(
@@ -214,17 +344,17 @@ export async function runTemplateCompliance(
 ): Promise<ComplianceReport> {
   const files = collectComplianceSurface(root, opts?.surface);
 
-  const agnixProbe = probeExternalTool("agnix", ["--version"]);
-  const reporailsProbe = probeExternalTool("npx", ["@reporails/cli", "version"]);
-  const agnixAvailable = agnixProbe.available;
-  const reporailsAvailable = reporailsProbe.available;
+  const toolProbes = probeComplianceTools(opts?.probes);
+  const reading = complianceReading(toolProbes);
+  const agnixAvailable = toolProbes.agnix.available;
+  const reporailsAvailable = toolProbes.reporails.available;
 
   // agnix: batch mode works fine for file attribution
   const agnixByFile = new Map<string, AgnixDiagnostic[]>();
   // RepoRails: per-file mode — batch drops findings for small files
   const rrByFile = new Map<string, { quality: number | null; findings: RepoRailsFinding[] }>();
 
-  if (agnixAvailable) {
+  if (agnixAvailable && files.length > 0) {
     const results = runAgnixBatch(files);
     if (results) {
       for (const d of results) {
@@ -300,20 +430,17 @@ export async function runTemplateCompliance(
     0,
   );
 
-  const qualityScores = fileScores.filter(f => f.reporailsQuality !== null);
-  const overallQuality = qualityScores.length > 0
-    ? qualityScores.reduce((sum, f) => sum + f.reporailsQuality!, 0) / qualityScores.length
-    : null;
-
   const report: ComplianceReport = {
     timestamp: new Date().toISOString(),
     layer: "template",
     surface: files.map(f => relative(root, f)),
     files: fileScores,
-    overallQuality,
+    overallQuality: overallQualityOf(fileScores, reading),
     totalFindings,
     highCount,
     toolsAvailable: { agnix: agnixAvailable, reporails: reporailsAvailable },
+    toolProbes,
+    reading,
   };
 
   if (opts?.writeReport !== false) {
@@ -325,12 +452,15 @@ export async function runTemplateCompliance(
     );
   }
 
-  if (!agnixAvailable) {
-    console.warn("WARN TOOL-NOT-INSTALLED-agnix: agnix not found — install globally or via npm");
+  // SC-183 keeps its marker, but only for the state it describes: a tool that
+  // ran and failed is not one that is missing, and telling an operator to
+  // install something already installed is the advice the collapsed boolean
+  // used to give.
+  for (const u of reading.unmeasured) {
+    if (u.outcome !== "absent") continue;
+    console.warn(`WARN TOOL-NOT-INSTALLED-${u.tool}: ${u.reason} — install it, then re-run`);
   }
-  if (!reporailsAvailable) {
-    console.warn("WARN TOOL-NOT-INSTALLED-reporails: @reporails/cli not found — install via npm");
-  }
+  if (reading.reason) console.warn(`WARN COMPLIANCE-${reading.reason}`);
 
   return report;
 }
@@ -350,6 +480,16 @@ export async function runGeneratedCompliance(
         `FAIL: Scaffold degraded instruction quality from ${baselineReport.overallQuality.toFixed(1)} to ${report.overallQuality.toFixed(1)}`
       );
     }
+  } else if (baselineReport) {
+    // A comparison that could not be made is not a comparison that passed.
+    // Both sides are reported, because "which one had no number" is the first
+    // thing anyone reading this will want to know.
+    console.warn(
+      `WARN COMPLIANCE-UNMEASURED: the Layer 2 degradation check did not run — ` +
+      `baseline ${baselineReport.reading.reading}/${baselineReport.overallQuality ?? "no score"}, ` +
+      `generated ${report.reading.reading}/${report.overallQuality ?? "no score"}` +
+      (report.reading.reason ? ` — ${report.reading.reason}` : ""),
+    );
   }
 
   const outDir = join(root, ".rungate");

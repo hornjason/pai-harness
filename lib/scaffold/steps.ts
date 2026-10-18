@@ -2353,6 +2353,130 @@ export function writeManagedFile(
   actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
 }
 
+/** One globally installed CI tool, and the exact version it is pinned to. */
+export interface GlobalToolPin {
+  package: string;
+  version: string;
+}
+
+export interface GlobalToolDecision {
+  /** YAML spliced into the test job ahead of the test step. Never empty. */
+  step: string;
+  /** What will be installed, in declaration order. */
+  pins: GlobalToolPin[];
+  /** Why this and not something else. */
+  reason: string;
+  /** Declarations refused, each naming itself, so the omission is visible. */
+  rejected: string[];
+}
+
+/** An npm package name, optionally scoped. Excludes every shell metacharacter. */
+const SAFE_GLOBAL_TOOL_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+
+/**
+ * An EXACT version. Deliberately not a semver test and deliberately not a
+ * range: `^1.2.0`, `latest` and `next` all resolve to whatever shipped today,
+ * which is the state #597 is about, and admitting one here would be a fix
+ * that looks like the fix while reintroducing the defect.
+ */
+const PINNED_GLOBAL_TOOL_VERSION = /^[0-9][A-Za-z0-9.+-]*$/;
+
+/**
+ * A value on its way into a generated YAML comment.
+ *
+ * Only REJECTED entries ever reach a comment, and they are rejected precisely
+ * because they did not match the two charsets above — so this is the one
+ * place in the generator that formats a string nothing has validated. A
+ * newline in it ends the comment, and the next line is a step.
+ *
+ * That was live, not theoretical. Before this function existed, a config
+ * declaring a package named `pwned\n      - name: Injected step\n
+ * run: echo INJECTED` produced a generated `ci.yml` containing exactly that
+ * step, runnable. The version field did the same, and a config pairing one
+ * VALID pin with one evil entry injected through the success path too,
+ * because the refusals string is appended there as well.
+ *
+ * The accepted path does not need this — it is charset-validated and single
+ * quoted, two defences chosen to agree. The rejection path is the one that
+ * handles hostile input by definition, which is what made it the hole: the
+ * branch whose whole job is to refuse an unsafe declaration was the branch
+ * that emitted it verbatim.
+ */
+function commentSafe(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7e]/g, "?").slice(0, 120);
+}
+
+/**
+ * The global-install step for the generated CI test job (#597).
+ *
+ * `lib/compliance.ts` decides three Layer 1 verdicts by spawning `agnix` and
+ * `npx @reporails/cli`. CI installed neither, so the registry's mood at that
+ * moment was the verdict — an identical SHA re-ran red to green with no code
+ * change. The versions live in ONE position, `ci.globalTools` in
+ * `.claude/rungate/config.json`; this function carries none of them, for the
+ * same reason `setupBunWith` carries no Bun version (#622) and the test step
+ * carries no command (#488).
+ *
+ * It returns LINES rather than writing, which is what lets a test assert the
+ * emission for a declaration no registry has ever served.
+ *
+ * `npm install -g` rather than `bun add -g`: the consumers are
+ * `probeExternalTool("agnix", …)`, which wants a binary on PATH, and
+ * `npx @reporails/cli`, which resolves through npm.
+ *
+ * The absent case emits a REASON, not silence —
+ * `.claude/rules/config-access.md`: `0`, `{}`, `null` and nothing at all are
+ * indistinguishable from success. Same shape as `typecheckStep` below.
+ */
+export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToolDecision {
+  const declared = (ci as { globalTools?: unknown } | null | undefined)?.globalTools;
+  const entries =
+    declared !== null && typeof declared === "object" && !Array.isArray(declared)
+      ? Object.entries(declared as Record<string, unknown>)
+      : [];
+
+  const pins: GlobalToolPin[] = [];
+  const rejected: string[] = [];
+  for (const [name, raw] of entries) {
+    const version = typeof raw === "string" ? raw.trim() : "";
+    if (!SAFE_GLOBAL_TOOL_PACKAGE.test(name)) {
+      rejected.push(`${commentSafe(name)}@${commentSafe(version) || "(nothing)"} (not an npm package name)`);
+      continue;
+    }
+    if (!PINNED_GLOBAL_TOOL_VERSION.test(version)) {
+      rejected.push(`${commentSafe(name)}@${commentSafe(version) || "(nothing)"} (not an exact version)`);
+      continue;
+    }
+    pins.push({ package: name, version });
+  }
+
+  const refusals = rejected.length === 0 ? "" : ` Refused, and so NOT installed: ${rejected.join("; ")}.`;
+
+  if (pins.length === 0) {
+    const reason =
+      entries.length === 0 ? "the config declares no ci.globalTools" : "every ci.globalTools entry was refused";
+    return { step: `\n${indent}# No global tools installed: ${reason}.${refusals}`, pins, reason, rejected };
+  }
+
+  // Validated AND quoted, chosen to agree: the charset above admits nothing
+  // the single quotes would have to defend against, which is what makes
+  // neither defence a place for the other to be relaxed.
+  const specs = pins.map(p => `'${p.package}@${p.version}'`).join(" ");
+  return {
+    // The versions appear on the `run:` line and nowhere else in the emitted
+    // YAML, so a test asserting the pin is asserting the command rather than
+    // a comment that happens to quote it.
+    step:
+      `\n${indent}# Pinned by ci.globalTools in .claude/rungate/config.json — one declaration (#597).` +
+      (rejected.length === 0 ? "" : `\n${indent}#${refusals}`) +
+      `\n${indent}- name: Install pinned global tools` +
+      `\n${indent}  run: npm install -g ${specs}`,
+    pins,
+    reason: `ci.globalTools pins ${pins.map(p => `${p.package}@${p.version}`).join(", ")}`,
+    rejected,
+  };
+}
+
 export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {
   const workflowsDir = join(root, ".github", "workflows");
   if (!existsSync(workflowsDir)) {
@@ -2444,6 +2568,12 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   // binding can show the agreement is load-bearing.
   const test = testCommandDecision(root);
 
+  // #597. The Layer 1 compliance checks shell out to agnix and
+  // @reporails/cli; CI installed neither, so what the registry served at that
+  // moment decided the verdict. Pinned from the one declaration, never a
+  // literal here.
+  const globalTools = globalToolInstallStep(harness?.ci);
+
   const typecheck = typecheckDecision(root);
   const typecheckStep = typecheck.command
     ? `\n      - run: ${typecheck.command}`
@@ -2469,7 +2599,7 @@ ${baseRefStep}
       - uses: oven-sh/setup-bun@v2
         with:
 ${bunStep}
-      - run: bun install
+      - run: bun install${globalTools.step}
       - run: ${test.command}${typecheckStep}
 `;
 

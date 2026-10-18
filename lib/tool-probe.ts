@@ -65,6 +65,31 @@ export interface ToolProbeOptions {
   timeoutMs?: number;
 }
 
+/**
+ * The one place that decides `available` from `outcome`.
+ *
+ * Every return below goes through it, and so does every caller that needs to
+ * state a reading it did not spawn — a test forcing a tool absent, a consumer
+ * replaying a recorded probe. Without it `available` is a field anyone can set,
+ * and a probe reporting `{ outcome: "absent", available: true }` would be a
+ * contradiction nothing could refuse. It is a projection of the reading, and
+ * the projection has an owner.
+ */
+export function toolProbe(fields: {
+  outcome: ToolProbeOutcome;
+  tool: string;
+  exitCode?: number | null;
+  reason: string;
+}): ToolProbe {
+  return {
+    outcome: fields.outcome,
+    available: fields.outcome === "available",
+    tool: fields.tool,
+    exitCode: fields.exitCode ?? null,
+    reason: fields.reason,
+  };
+}
+
 /** The probe's own budget. A tool that cannot answer in five seconds is not ready to be used in a gate. */
 export const TOOL_PROBE_TIMEOUT_MS = 5_000;
 
@@ -88,33 +113,30 @@ export function probeExternalTool(command: string, args: string[] = [], opts?: T
     // tool is not here, and it is why this branch is not merged with a
     // non-zero exit below.
     const message = e instanceof Error ? e.message : String(e);
-    return {
+    return toolProbe({
       outcome: "absent",
-      available: false,
       tool,
       exitCode: null,
       reason: `${command} is not on PATH: ${message.split("\n")[0]}`,
-    };
+    });
   }
 
   if (exitCode === 0 || stdout.trim().length > 0) {
-    return {
+    return toolProbe({
       outcome: "available",
-      available: true,
       tool,
       exitCode,
       reason: `${tool} ran and answered (exit ${exitCode})`,
-    };
+    });
   }
 
-  return {
+  return toolProbe({
     outcome: "errored",
-    available: false,
     tool,
     exitCode,
     reason:
       `${tool} ran and did not succeed (exit ${exitCode})` +
       (stderr.trim() ? `: ${stderr.trim().split("\n")[0].slice(0, 200)}` : "") +
       ` — the tool was reachable, so this is not the same as it being absent`,
-  };
+  });
 }
