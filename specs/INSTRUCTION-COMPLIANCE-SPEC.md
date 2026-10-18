@@ -574,3 +574,106 @@ of its own fixtures.
 - **Nothing reads `evidence` yet beyond the round trip.** `evidenceFor()`
   exists so a verdict can be re-checked; wiring it into the report's output is
   a separate change.
+
+## #597 — a Layer 1 report that could not say it had measured nothing
+
+`lib/tool-probe.ts` has known the difference between **absent**, **errored**
+and **available** since #626. `runTemplateCompliance` read `.available` off
+each probe at the door and kept nothing else, so everything downstream was
+back to one boolean:
+
+```ts
+const agnixAvailable = probeExternalTool("agnix", ["--version"]).available;
+// …
+toolsAvailable: { agnix: agnixAvailable, reporails: reporailsAvailable },
+overallQuality: qualityScores.length > 0 ? average(qualityScores) : null,
+```
+
+CI installs neither tool. A report produced with agnix missing is
+byte-indistinguishable from one produced with agnix installed and silent, and
+with one tool out the quality score is an **average over whichever tool
+answered** — a tidy number printed for a surface nobody scored. That is
+*Silent Default Substitution* in `.claude/rules/config-access.md`, in the
+place it does the most damage: `0`, `{}`, `null` and a plausible mean are all
+indistinguishable from success. `UNMEASURED` is not.
+
+### The contract
+
+- **The report keeps the whole `ToolProbe` per tool** — outcome, exit code and
+  `reason` — in `toolProbes`. `toolsAvailable` stays exactly as it was and is
+  derived from them, so no existing caller changes.
+- **Any tool that is not `available` makes the reading UNMEASURED**, and the
+  reading **names every such tool and its own reason**. An operator cannot act
+  on "a tool was unavailable": installing something fixes `absent` and does
+  nothing for `errored`, and the two arrive by different routes.
+- **The quality score is withheld under an UNMEASURED reading**, not averaged
+  over the tools that did answer. `overallQualityOf` is the one binding that
+  decides, so there is one thing to mutate.
+- **`reading.reading === "UNMEASURED"` is the only discriminator.** A second
+  `qualityWithheld` boolean beside it would be a decider that always agrees,
+  and two deciders that agree are behaviourally one.
+- **Probes are injected through one exported seam**, `probeComplianceTools`.
+  `probeExternalTool` is called from nowhere else in the module. A caller
+  forces a tool absent or errored without mutating `PATH`; an omitted tool is
+  still probed for real, so the seam cannot silently drop one.
+- **`available` is derived from `outcome` by `toolProbe` in
+  `lib/tool-probe.ts`**, which every return in that module now goes through —
+  an injected reading cannot claim to be available while reporting that it was
+  absent.
+- **Layer 2 says when its comparison did not happen.** A degradation check
+  that both sides had no number for was previously an `if` that quietly did
+  not fire.
+
+- [x] SC-2077: lib/compliance.ts contains [toolProbes, ComplianceReading] — the report keeps the full probe per tool, outcome and reason, and `toolsAvailable` remains a derived boolean projection so existing callers are unchanged
+- [x] SC-2078: lib/compliance.ts contains [UNMEASURED, complianceReading] — when any probed tool is not available the report carries an UNMEASURED reading naming every such tool and its reason, and an errored tool is not reported as an absent one
+- [x] SC-2079: lib/compliance.ts contains [overallQualityOf] — the quality score is withheld under an UNMEASURED reading rather than averaged over the tools that did answer, through one binding
+- [x] SC-2080: lib/compliance.ts contains [probeComplianceTools] — one exported seam accepts injected probe results per tool, so a caller forces a tool absent or errored without mutating PATH, and an omitted tool is still probed
+
+### What was broken to prove it
+
+Measured over `test/compliance-unmeasured.test.ts` (15 tests). Baseline before
+any mutation: **15 pass, 0 fail.**
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `overallQualityOf` loses its `UNMEASURED` early return | 1 | **1 of 15** |
+| `complianceReading` treats every probe as available | 6 | **6 of 15** |
+| `probeComplianceTools` ignores the injected probes | 8 | **8 of 15** |
+
+Before believing those, the input on which mutant and original differ, named
+and run rather than assumed:
+
+- **row 1** — two file scores of 8 and 6 under an UNMEASURED reading. The
+  original returns `null`; the mutant returns `7`.
+- **row 2** — a probe pair `{agnix: absent, reporails: available}`. The
+  original reads UNMEASURED naming agnix; the mutant reads MEASURED naming
+  nothing.
+- **row 3** — an injected probe whose `reason` is the sentinel
+  `PLANTED-agnix-errored`. The original carries it onto the report; the mutant
+  reports whatever this machine's `PATH` happens to say.
+
+**Row 1 is the one worth reading twice.** The three end-to-end cases that
+assert the score is withheld stay **green** under it, because they run over an
+empty surface: with no files there is nothing to average, so the mutant and the
+original agree on every input those cases have. They are measuring the reading,
+not the withholding. The only witness to the withholding is the unit case over
+`overallQualityOf` with file scores in hand — which is
+`.claude/rules/checks-must-be-able-to-fail.md`'s "a battery whose fixtures all
+meet a precondition measures nothing past it", and it is why that case exists
+rather than being folded into the four states.
+
+The cheapest wrong fix for "the score must be withheld" is `overallQuality =
+null` always. The four end-to-end cases survive it; the unit case does not.
+
+None of the three mutations is left in the tree; all were run and reverted, and
+`lib/compliance.ts` was confirmed byte-identical afterwards.
+
+### What this does NOT fix
+
+- **UNMEASURED is reported, not enforced.** Nothing refuses a run on it yet.
+  Whether a Layer 1 scan that measured nothing should fail the gate is a
+  consumer's decision and needs the switch read exactly, per
+  `.claude/rules/config-access.md`.
+- **A report does not state its coverage.** 36 of 426 files scanned and 426 of
+  426 are still the same PASS to a reader, which is #492's generalisation and a
+  separate change.

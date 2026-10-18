@@ -77,6 +77,61 @@ The rule for `lib/scaffold/ai-review-step.ts` and anything shaped like it:
   green having witnessed nothing —
   `.claude/rules/checks-must-be-able-to-fail.md`.
 
+## Worked instance: the Layer 1 compliance report (#597)
+
+The credential case above is a scan that could not authenticate. This is the
+same shape with the tool itself missing, and it lives in the tree rather than
+in a generated CI job, so it is the one to read if you are about to write
+anything that summarises external tools.
+
+`lib/compliance.ts` scores the instruction surface with agnix and RepoRails.
+`lib/tool-probe.ts` has told it `absent`, `errored` or `available` since #626
+— and `runTemplateCompliance` read `.available` off each probe at the door and
+kept nothing else. Two consequences, both *Silent Default Substitution*:
+
+- A report produced with agnix missing is **byte-indistinguishable** from one
+  produced with agnix installed and silent. CI installs neither tool, which is
+  how #597 was re-run red to green on an identical SHA with nothing in the
+  artefact saying why.
+- `overallQuality` was the mean of whatever came back. With one tool out that
+  is **an average over the files the other tool happened to reach**, and it
+  prints as an ordinary number beside an ordinary PASS. A number is
+  indistinguishable from success.
+
+What it does now, and the parts worth copying:
+
+- **Keep the whole reading, derive the boolean.** `toolProbes` carries the
+  full `ToolProbe` per tool; `toolsAvailable` is a projection of it, so every
+  caller that only wanted "can I run this" is unchanged and nothing had to be
+  migrated to buy the honesty.
+- **Name every tool and its own reason.** "A tool was unavailable" is not
+  actionable: installing something fixes `absent` and does nothing for
+  `errored`. The reading lists each failing tool, its outcome and the probe's
+  own line.
+- **Withhold the derived number; do not average what is left.**
+  `overallQualityOf` returns `null` under an UNMEASURED reading. One binding,
+  so there is one thing to mutate.
+- **One discriminator, not two.** `reading.reading === "UNMEASURED"` is the
+  whole answer. A `qualityWithheld` boolean beside it would always agree with
+  it, and two deciders that agree are behaviourally one.
+- **`available` is derived from `outcome` in one place** — `toolProbe()` in
+  `lib/tool-probe.ts`, which every return in that module goes through. A
+  reading cannot say `{ outcome: "absent", available: true }`.
+- **One injection seam, exported.** `probeComplianceTools` is the only caller
+  of `probeExternalTool` in the module, and it takes a reading per tool so a
+  test can force a tool absent or errored without mutating `PATH`. An omitted
+  tool is still probed, so the seam cannot quietly drop one.
+- **Say when a comparison did not happen.** Layer 2's degradation check
+  compares two quality scores. With both withheld the `if` simply did not
+  fire — a check that was skipped reading exactly like a check that passed.
+
+`test/compliance-unmeasured.test.ts` covers the four states. The thing it
+teaches that the list above does not: its end-to-end cases run over an empty
+surface, so they witness the **reading** and not the **withholding** — delete
+the withholding and all four stay green (measured: 1 of 15 red, and it is the
+unit case). The only witness is the unit case over `overallQualityOf` with
+file scores in hand. If you copy this pattern, copy that case with it.
+
 ## Enforced by
 
 `runConfigAccessValidation` (CONFIG-1, TypeScript sources) and

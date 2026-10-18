@@ -24,5 +24,8 @@ jobs:
           # setup-bun reads that file, so there is no version spelled here to drift from it.
           bun-version-file: ".bun-version"
       - run: bun install
+      # Pinned by ci.globalTools in .claude/rungate/config.json — one declaration (#597).
+      - name: Install pinned global tools
+        run: npm install -g 'agnix@0.59.0' '@reporails/cli@0.6.4'
       - run: bun test
       - run: bun run typecheck
