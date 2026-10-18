@@ -1,2 +1,23 @@
+# The per-test timeout this suite is measured against (#621).
+#
+# MEASURED on bun 1.3.14, not assumed: this key is NOT read by the test
+# runner. A scratch project declaring `timeout = 1000` runs a 2000ms test to
+# completion and reports `1 pass`; the same test under `bun test --timeout
+# 1000` dies with `this test timed out after 1000ms`.
+#
+# So the number below DECLARES the budget that is in force, it does not set
+# it. 5000 is bun's built-in default, and it is the number all 112 of #621's
+# timeouts carry — while this file said 30000, which no test has ever been
+# given. A proximity check against 30000 could never fire, because everything
+# is killed at 5000 first.
+#
+# test/test-timeout-population.test.ts reads the number from here rather than
+# restating it, and PROVES the declaration is the budget in force by running a
+# test that sleeps past it and asserting the runner kills it at exactly this
+# number. Raising this to make a slow test pass is the repair #621 refuses:
+# measured, it changes nothing the runner does, and that probe goes red saying
+# so. The budget is raised with `--timeout` on the command, or per test with
+# `setDefaultTimeout` — see lib/gate-timeouts.ts, which is how the gate suite
+# gets 120s.
 [test]
-timeout = 30000
+timeout = 5000

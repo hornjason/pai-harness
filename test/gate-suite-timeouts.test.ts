@@ -42,6 +42,10 @@ import {
   TYPECHECK_TIMEOUT_MS,
   gateTimeoutOrderingViolations,
 } from "../lib/gate-timeouts";
+// The bunfig reading lives beside the timeout-population check it was
+// written for (#621, lib/junit-checks.ts). One owner, one binding to
+// mutate — a second parser here would survive any mutation of that one.
+import { bunfigTestTimeoutMs } from "../lib/junit-checks";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const GATE_SUITE = join(REPO_ROOT, "gates", "workflow.test.ts");
@@ -158,6 +162,35 @@ describe("#550: each layer outlives the process it starts", () => {
       bareTimeoutLiterals("x = { timeout: 1234, }"),
       "the extraction does not match a plain literal",
     ).toHaveLength(1);
+  });
+
+  test("#621: the per-test default is declared in code, because the bunfig key is inert", () => {
+    // MEASURED on bun 1.3.14 by test/test-timeout-population.test.ts, which
+    // runs the probe rather than asserting the claim here twice: `[test]
+    // timeout` in a bunfig.toml is NOT read by the test runner. The repo's
+    // own bunfig declared 30000 while all 112 of #621's timeouts died at
+    // 5000.
+    //
+    // The consequence for THIS file is the whole of #550 restated: the only
+    // thing standing between a 90-second typecheck and bun's five-second
+    // default is `setDefaultTimeout(GATE_TEST_TIMEOUT_MS)`, asserted below.
+    // A bunfig cannot take its place, and `gates/bunfig.toml` must not carry
+    // a second declaration of the number — that would be a fifth timeout
+    // beside the four the ordering compares, and the ordering cannot see it.
+    const gateBunfig = readFileSync(join(REPO_ROOT, "gates", "bunfig.toml"), "utf-8");
+    expect(
+      bunfigTestTimeoutMs(gateBunfig),
+      `gates/bunfig.toml declares a per-test timeout the runner will ignore:\n${gateBunfig}`,
+    ).toBeNull();
+
+    // The instrument: the reader finds the root declaration, so the null
+    // above is a fact about gates/bunfig.toml and not about a reader that
+    // always says no.
+    const rootDeclared = bunfigTestTimeoutMs(readFileSync(join(REPO_ROOT, "bunfig.toml"), "utf-8"));
+    expect(rootDeclared, "the root bunfig.toml declares no per-test timeout for #621 to read").not.toBeNull();
+    // And the gate suite's own budget outlives the repo-wide one. A gate
+    // check spawns processes the ordinary suite never does.
+    expect(GATE_TEST_TIMEOUT_MS).toBeGreaterThan(rootDeclared!);
   });
 
   test("the gate suite declares the default, and the executor uses the constant", () => {
