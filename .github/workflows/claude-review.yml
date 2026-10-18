@@ -45,9 +45,28 @@
 # Every `uses:` is pinned to a commit SHA, per this repo's convention.
 name: Claude review (trial)
 
+# MANUAL DISPATCH ONLY, deliberately. This ran automatically on pull_request
+# for three commits, proved the Vertex path works, and is now parked.
+#
+# It is parked because the third security review found the finding that ends
+# the argument: `create_inline_comment` is an EGRESS SINK. The agent can read
+# the credentials file and post its contents as a review comment, using the
+# one tool this job exists to use. No Bash, no network, no fork required. The
+# denylist below cannot close that, and neither can a longer denylist —
+# two rounds of enumeration missed `Task` and then `SlashCommand`, which is
+# what an incomplete enumeration always looks like from the inside.
+#
+# Re-enable the `pull_request:` trigger when AC-15 lands and no credential is
+# readable from the tree the agent walks. Not before.
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to review"
+        required: true
+        type: string
+  # pull_request:
+  #   types: [opened, synchronize, ready_for_review, reopened]
 
 # Least privilege. `pull-requests: write` is the only write, and it is what
 # lets Claude post the review. `id-token: write` is required for the OIDC
@@ -62,7 +81,7 @@ permissions:
 # One review per PR at a time. A force-push storm should not fan out into
 # parallel jobs against a project whose quota is already contended.
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
+  group: claude-review-${{ inputs.pr }}
   cancel-in-progress: true
 
 jobs:
@@ -74,7 +93,7 @@ jobs:
     # PRs anyway, which would make the auth step fail rather than skip — this
     # says no deliberately instead of failing by accident, and it is the
     # actual boundary of the exposure described in the header.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -96,7 +115,7 @@ jobs:
           use_vertex: "true"
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ inputs.pr }}"
           # --allowedTools is required even though the skill's own frontmatter
           # names the same tool: the action starts the inline-comment MCP
           # server only when claude_args names it.
@@ -111,7 +130,7 @@ jobs:
           # and the fork guard above is what actually bounds the exposure.
           claude_args: >-
             --allowedTools "mcp__github_inline_comment__create_inline_comment"
-            --disallowedTools "Bash,BashOutput,KillShell,Task,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch"
+            --disallowedTools "Bash,BashOutput,KillShell,Task,SlashCommand,ExitPlanMode,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch"
             --max-turns 25
         env:
           CLAUDE_CODE_USE_VERTEX: "1"
