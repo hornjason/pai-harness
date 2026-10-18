@@ -2650,6 +2650,83 @@ builder's refusal to silently no-op is the property those cases exist for —
 so the prediction was wrong and the harness is stricter than the prediction
 assumed.
 
+### An agent-authored evidence command, interpolated into a shell string (#614)
+
+Run `wf_c92dd0a7-fe6` (issue #600). The discovery agent authored AC-5's
+evidence as
+
+```
+grep -rhcE '^export function localCalendarDay' lib | awk '{s+=$1} END {print s+0}'
+```
+
+and `workflow-state.json` holds the same command with `$1` **gone** —
+`awk '{s+=} END {print s+0}'`, which awk refuses with a syntax error. AC-5
+could never produce evidence, stayed PENDING, and took the verify gate down
+with four failures. The journal's agent-reply lines carry `s+=$1}` intact, so
+the loss happened after the agent returned and before the state file was
+written.
+
+The site was `workflows/ship.js`'s setup step: the AC payload was
+interpolated into a DOUBLE-QUOTED `bun -e "…"`, and inside double quotes a
+shell expands `$1` to the empty string, substitutes `${VAR}`, and **runs**
+`$(cmd)`. Agent-authored text in that position is a corruption channel and an
+injection channel at once; the blast radius was every evidence command
+containing a `$`.
+
+The payload now leaves the generator as a single-quoted argument and the
+program reads it out of `process.argv`. A file in `${WORK_DIR}` was the first
+draft and does not work: `initWorkflow` calls `beginRun`, whose sweep (#288)
+archives the directory's contents, so the read that follows is an ENOENT —
+caught by the round-trip case before it shipped, and recorded here because
+nothing in the diff would have shown it.
+
+- [x] SC-2052: test/evidence-command-roundtrip.test.ts contains [the setup payload round trip is byte-identical] — the three `$` forms are carried through a REAL `bash -c` running the command ship.js hands the agent, with the measured #600 string as its own case and a canary file asserting a `$(cmd)` in the payload is not EXECUTED during transport; byte equality rather than `toContain("$1")`, which a command that kept one `$1` of two would satisfy
+- [x] SC-2053: test/evidence-command-roundtrip.test.ts contains [the execution boundary hands the runner the authored command] — `autoPopulateACs` is RUN, and each `$` form is witnessed by an OUTPUT only a command whose `$` survived can produce (`7`, `4`, `7`), because the persisted string and the executed string are different facts and a round trip proven at the state file says nothing about the `execSync` hop
+- [x] SC-2054: test/evidence-command-roundtrip.test.ts contains [the payload builder, driven with a $1-bearing command] — every `$` is asserted to sit inside a single-quoted run by a scanner that walks the argument the way the shell does, with a positive control proving the scanner reports an unquoted payload; `'\''` escaping legitimately leaves the quoting, so "all of it is inside one pair of quotes" is false of a correct argument and asserting it would fail on the input the escaping exists for
+- [x] SC-2055: test/evidence-command-roundtrip.test.ts contains [rewrite provenance — both forms, at every rewriting site] — `recordEvidenceRewrite` is the single writer of an evidence command, `authoredCommand` holds the FIRST form across repeated rewrites, a no-op records nothing, and the shape is declared in `EvidenceMethodSchema` rather than left to `passthrough()`, which answers yes to every field you ask it about (#530)
+- [x] SC-2056: test/evidence-command-shell-mutation.test.ts contains [the round-trip cases go red when the defect is put back] — the pre-#614 transport is rebuilt inside a copy of ship.js, a four-case suite is spawned twice with one argv, `ran` is read before any verdict, and green and red are compared by NAME with the `$`-free control as the positive witness that the spawn ran at all
+- [x] SC-2057: test/evidence-command-shell-mutation.test.ts contains [the mutant builder refuses to no-op] — a renamed site and a second copy of a site each abort the build, because a mutation harness that silently returns an unmutated copy reports green over a mutation that never happened
+
+#### What was broken to prove it (SC-2052..2057)
+
+Run and counted rather than asserted, over
+`test/evidence-command-roundtrip.test.ts` (17 tests) and
+`test/evidence-command-shell-mutation.test.ts` (4 tests). Every count was
+predicted before the run.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| **baseline** — unmutated | **21 pass, 0 fail** | 21 pass |
+| the pre-#614 raw interpolation rebuilt in a copy of ship.js | **3 of 4** in the spawned suite | 3 |
+| `acPayloadShellArgument` stops quoting (`return acPayloadJson(acs)`) | **7 of 21** | 7 |
+| `recordEvidenceRewrite` short-circuited to `return false` | **4 of 21** | 4 |
+| `buildRawInterpolationMutant` neutered to `return src` | **4 of 21** | 4 |
+
+None is left in the tree; `lib/evidence-command-transport.ts` and
+`workflows/ship.js` were confirmed byte-identical afterwards.
+
+Before the first row was believed, the input on which mutant and original
+differ was named and run: the AC above. Through the real transport
+`workflow-state.json` holds `awk '{s+=$1} END {print s+0}'`; through the
+mutant it holds `awk '{s+=} END {print s+0}'` — the exact string run
+`wf_c92dd0a7-fe6` produced. That check is in the tree as SC-2056's first
+case, so it is re-run rather than trusted.
+
+**Why the mutant escapes the payload's double quotes.** The pre-fix source
+left the JSON's `"` characters bare, and bash's quote removal makes that
+program unparseable — every case would go red, control included, and the
+measurement would be of a mutant that crashes rather than of the defect. What
+the setup agent actually produced was a state file with valid ACs and one
+`$1` missing: it escaped the quotes it could see a problem with and left
+alone the `$` it could not. The mutant reproduces that, and the control
+staying green is what says so.
+
+**Row three is the one worth reading.** Removing the quoting turns the three
+round-trip cases red AND the `$(cmd)` canary case red — the payload's command
+substitution runs during transport. A fix that escaped `$1` and `${VAR}` and
+stopped there would leave that case red, which is the point of carrying all
+three forms rather than the one the issue was filed for.
+
 ### A criterion forbidding a call, ticked over that call (#395)
 
 `gates/workflow.test.ts` read an issue's labels by shelling out to the

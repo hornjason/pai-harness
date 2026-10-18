@@ -12,6 +12,7 @@ import {
 } from "./orchestrator";
 import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
+import { recordEvidenceRewrite } from "../lib/evidence-command-transport";
 import { GATE_SUITE_TIMEOUT_MS } from "../lib/gate-timeouts";
 import { checksRunFrom, readJunitCheckNames } from "../lib/junit-checks";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
@@ -688,8 +689,12 @@ export function autoPopulateACs(state: Record<string, any>, sf: string): void {
     // Writing it back onto the AC means the repaired form is what gets
     // persisted and reported, so a human reading the failure sees the command
     // that actually ran.
+    //
+    // #614: through `recordEvidenceRewrite`, so the authored form survives
+    // the repair. This is the last site that changes an evidence command,
+    // and it used to be the one that made the authored text unrecoverable.
     const cmd = normalizeGitRefs(rawCmd).command;
-    if (cmd !== rawCmd) ac.evidenceMethod.command = cmd;
+    recordEvidenceRewrite(ac.evidenceMethod, "normalize-git-refs", cmd);
 
     // A ref the command needs but the clone does not have is an ENVIRONMENT
     // fault, not a code failure. Letting it fall through produces a non-zero

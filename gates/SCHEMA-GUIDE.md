@@ -39,6 +39,41 @@ unit:  string (optional)
 
 Valid `type` values (case-sensitive): `GREP_CHECK`, `FILE_EXISTS`, `CURL_CHECK`, `BUN_TEST`, `SCREENSHOT`, `PLAYWRIGHT`, `COMMAND`, `MANUAL`, `grep`, `command`, `api`, `screenshot`, `manual`
 
+### Rewrite provenance — `authoredCommand` and `rewrites` (#614)
+
+`command` is what will RUN. Three places legitimately change it before it
+does, and each one records what it changed.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `authoredCommand` | string | The command as the discovery agent wrote it. Written once by the FIRST rewrite and never overwritten |
+| `rewrites` | `{by, from, to}[]` | Every change to `command`, oldest first. `by` names the site: `discovery-path-normalize`, `evidence-type-ratio`, `normalize-git-refs` |
+
+**A `rewrites` list with no `authoredCommand` beside it is rejected at write
+time.** It is the same pairing as `evidencePrevalidation`'s
+`autoFixed`/`originalCommand`/`fixedCommand`, and for the same reason: a
+rewrite that reports only its replacement cannot be reviewed, and a repaired
+command is then indistinguishable from one that was always written that way.
+
+Both are absent on an AC nothing has rewritten. Absence means "as authored",
+not "unknown".
+
+```json
+{ "evidenceMethod": {
+  "type": "COMMAND",
+  "command": "git log origin/main..HEAD --oneline | wc -l | tr -d ' '",
+  "authoredCommand": "git log main..HEAD --oneline | wc -l | tr -d ' '",
+  "rewrites": [{ "by": "normalize-git-refs",
+                 "from": "git log main..HEAD --oneline | wc -l | tr -d ' '",
+                 "to": "git log origin/main..HEAD --oneline | wc -l | tr -d ' '" }]
+} }
+```
+
+Write it with `recordEvidenceRewrite` in `lib/evidence-command-transport.ts`,
+never by assigning `command` directly — that function is the single site that
+changes an evidence command, and a direct assignment is what made run
+`wf_c92dd0a7-fe6`'s corruption unattributable.
+
 ## Statement Constraints
 
 **Garbage patterns (auto-rejected):**

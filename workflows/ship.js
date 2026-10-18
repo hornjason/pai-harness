@@ -1700,6 +1700,72 @@ function decompositionRefusal(allAcs, phase1AcIds, subIssues) {
 }
 // ──── PHASE2-DECOMPOSITION-END ────
 
+// ──── AC-PAYLOAD-TRANSPORT-START ────
+/**
+ * Inline copy of lib/evidence-command-transport.ts (#614). ship.js cannot
+ * import (#69), so this block and the library are held together by a shared
+ * matrix in test/evidence-command-roundtrip.test.ts — the same arrangement as
+ * the deny-list block above and as test/phase2-decomposition.test.ts.
+ *
+ * The defect: the AC payload was interpolated into the setup agent's
+ * DOUBLE-QUOTED `bun -e "…"` shell string. A shell expands `$1` to the empty
+ * string inside double quotes, so run `wf_c92dd0a7-fe6` persisted
+ * `awk '{s+=} END {print s+0}'` for a command the agent had written as
+ * `awk '{s+=$1} END {print s+0}'` — an awk syntax error, an AC that could
+ * never produce evidence, and a verify gate down with four failures.
+ *
+ * The payload now travels as a SINGLE-QUOTED argument after the program, and
+ * the program reads it out of `process.argv` — a file in ${WORK_DIR} would be
+ * archived by `beginRun`'s sweep (#288) before the read, which is how the
+ * first draft of this failed. `shellSingleQuote` lives in the phase-2 block
+ * above; both blocks are loaded together by the matrix so the extracted copy
+ * is the one that runs here.
+ */
+const AC_PAYLOAD_ARGV_INDEX = 1
+
+function acPayloadRecords(acs) {
+  return (Array.isArray(acs) ? acs : []).map(ac => ({
+    id: ac.id,
+    type: ac.type,
+    statement: ac.statement,
+    threshold: ac.threshold,
+    evidenceMethod: ac.evidenceMethod,
+    specElement: ac.specElement,
+    coversCriteria: ac.coversCriteria || [],
+    contextFiles: ac.contextFiles || [],
+  }))
+}
+
+function acPayloadJson(acs) {
+  return JSON.stringify(acPayloadRecords(acs))
+}
+
+function acPayloadShellArgument(acs) {
+  return shellSingleQuote(acPayloadJson(acs))
+}
+
+function acPayloadReadExpression() {
+  return `JSON.parse(process.argv[${AC_PAYLOAD_ARGV_INDEX}])`
+}
+
+/**
+ * Change an evidence command, on the record. Returns true when it changed.
+ *
+ * `authoredCommand` is written once and never overwritten: a field holding
+ * whatever the command was one rewrite ago cannot answer the question #614
+ * took a run and a post-mortem to answer, which is what the AGENT wrote.
+ */
+function recordEvidenceRewrite(evidenceMethod, by, next) {
+  if (!evidenceMethod || typeof evidenceMethod.command !== 'string') return false
+  const from = evidenceMethod.command
+  if (from === next) return false
+  if (evidenceMethod.authoredCommand === undefined) evidenceMethod.authoredCommand = from
+  evidenceMethod.command = next
+  evidenceMethod.rewrites = [...(evidenceMethod.rewrites || []), { by, from, to: next }]
+  return true
+}
+// ──── AC-PAYLOAD-TRANSPORT-END ────
+
 // ──── FAILURE-LEDGER-START ────
 /**
  * Every refusal this run made, so the terminal result can report all of them
@@ -2472,17 +2538,17 @@ Project root: ${PROJECT_ROOT}
       let cmd = ac.evidenceMethod.command
       cmd = cmd.replace(new RegExp(PROJECT_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/', 'g'), '')
       cmd = cmd.replace(new RegExp('^cd\\s+' + PROJECT_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*&&\\s*', ''), '')
-      if (cmd !== ac.evidenceMethod.command) {
-        log(`Normalized evidence path for ${ac.id}: stripped absolute paths`)
-      }
       // Evidence commands are executed verbatim by the gates — screen them.
       const verdict = validateEvidenceCommand(cmd)
       if (!verdict.safe) {
         log(`REJECTED evidence command for ${ac.id}: ${verdict.reason} — downgraded to MANUAL`)
         ac.evidenceMethod.type = 'MANUAL'
         delete ac.evidenceMethod.command
-      } else {
-        ac.evidenceMethod.command = cmd
+      } else if (recordEvidenceRewrite(ac.evidenceMethod, 'discovery-path-normalize', cmd)) {
+        // Both forms, not just the new one (#614). A reader of a broken
+        // evidence command could not tell a repair from a corruption, which
+        // is the question that cost run wf_c92dd0a7-fe6 a post-mortem.
+        log(`Normalized evidence path for ${ac.id}: stripped absolute paths — authored "${ac.evidenceMethod.authoredCommand}", now "${cmd}"`)
       }
     }
     // Normalize contextFiles paths too, then drop any that escape the repo
@@ -2538,11 +2604,12 @@ Project root: ${PROJECT_ROOT}
     for (const ac of toUpgrade) {
       const cmd = ac.evidenceMethod.command
       ac.evidenceMethod.type = 'COMMAND'
-      // grep -c already outputs a count — don't pipe through wc -l (produces always-1 bug)
-      if (cmd.includes('grep -c')) {
-        ac.evidenceMethod.command = cmd
-      } else {
-        ac.evidenceMethod.command = `${cmd} | wc -l | tr -d ' '`
+      // grep -c already outputs a count — don't pipe through wc -l (produces always-1 bug).
+      // That branch leaves the command exactly as authored, so there is
+      // nothing to record: `recordEvidenceRewrite` is the only writer of
+      // `command`, and a no-op there records nothing by design (#614).
+      if (!cmd.includes('grep -c')) {
+        recordEvidenceRewrite(ac.evidenceMethod, 'evidence-type-ratio', `${cmd} | wc -l | tr -d ' '`)
         // The threshold follows a command this branch actually rewrote: the
         // output is now a count, so `contains` could not hold over it. The
         // `grep -c` branch above deliberately does NOT do this (#217) — it
@@ -2771,7 +2838,12 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
   setupResult = await timedAgent(`
 Run these commands in order. Do NOT implement code. Just run commands and report output.
 
-1. Init workflow state:
+1. Init workflow state. Run this EXACTLY as written, including the long
+   single-quoted argument on the last line. That argument is the AC payload
+   and the single quotes around it are load-bearing: it is agent-authored
+   text, and anywhere else in this command a shell would expand \`$1\` to the
+   empty string, substitute \`\${VAR}\` and RUN \`$(cmd)\` (#614). Do not
+   reformat it, do not re-indent it, do not move it inside the program:
 mkdir -p ${WORK_DIR} && bun -e "
 import {initWorkflow, writeACs} from '${HARNESS_ROOT}/gates/orchestrator.ts';
 const sf = '${WORK_DIR}/workflow-state.json';
@@ -2785,15 +2857,10 @@ initWorkflow(sf, {
   ${priorWorkArg},
   acCoverage: ${JSON.stringify(acCoverage)},
 });
-writeACs(sf, ${JSON.stringify(discovery.acs.map(ac => ({
-  id: ac.id, type: ac.type, statement: ac.statement,
-  threshold: ac.threshold, evidenceMethod: ac.evidenceMethod, specElement: ac.specElement,
-  coversCriteria: ac.coversCriteria || [],
-  contextFiles: ac.contextFiles || [],
-})))});
+writeACs(sf, ${acPayloadReadExpression()});
 const s=JSON.parse(require('fs').readFileSync(sf,'utf-8'));
 console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
-" 2>&1
+" ${acPayloadShellArgument(discovery.acs)} 2>&1
 
 2. Load config (ADR-002 D1 — the loader is the only thing that reads
    .claude/rungate*, and it normalises dev.* into the resolved shape, so the
@@ -2824,18 +2891,16 @@ null in all four: it means git could not answer, not that the branch is current.
   if (!setupResult || setupResult.acCount === 0) {
     log('FATAL: workflow-state.json has 0 ACs after setup — writeACs likely failed. Re-writing.')
     await timedAgent(`
-Re-write ACs to workflow-state.json:
+Re-write ACs to workflow-state.json. Run this EXACTLY as written, including
+the long single-quoted argument on the last line — it is the AC payload, it is
+agent-authored text, and the single quotes are the only thing stopping the
+shell eating every \`$\` in it (#614):
 bun -e "
 import {writeACs} from '${HARNESS_ROOT}/gates/orchestrator.ts';
-writeACs('${WORK_DIR}/workflow-state.json', ${JSON.stringify(discovery.acs.map(ac => ({
-  id: ac.id, type: ac.type, statement: ac.statement,
-  threshold: ac.threshold, evidenceMethod: ac.evidenceMethod, specElement: ac.specElement,
-  coversCriteria: ac.coversCriteria || [],
-  contextFiles: ac.contextFiles || [],
-})))});
+writeACs('${WORK_DIR}/workflow-state.json', ${acPayloadReadExpression()});
 const s=JSON.parse(require('fs').readFileSync('${WORK_DIR}/workflow-state.json','utf-8'));
 console.log('ACs written: ' + s.acs.length);
-" 2>&1
+" ${acPayloadShellArgument(discovery.acs)} 2>&1
     `, { label: 'fix-acs', phase: 'Discovery' })
   }
 
