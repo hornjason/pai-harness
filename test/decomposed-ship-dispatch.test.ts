@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { stripComments } from "./helpers/strip-comments";
 
 /**
  * Regression coverage for issue #66 — SC-411.
@@ -15,6 +16,26 @@ import { join } from "path";
  * test/workflow-security-integration.ts: pull the delimited block out and
  * evaluate it against injected fakes, giving behavioural coverage rather than
  * grep coverage.
+ *
+ * ## AC-7a / AC-7c (#627)
+ *
+ * #627 moves the claim/result pairing out of the two inline
+ * `claimedFiles: r.subIssue?.filesToModify` expressions in the block below and
+ * into one named binding the wave path calls too. Two things in this file are
+ * about that move, and they pull in opposite directions on purpose:
+ *
+ *   - `loadRunDecomposedShip` must keep loading the block after the binding
+ *     leaves it. Every free reference the block makes is already injected by
+ *     name, so a binding declared at ship.js module scope would make the block
+ *     throw `ReferenceError` the first time a sub-issue completes — the suite
+ *     would go red for a reason that has nothing to do with the dispatch it
+ *     covers. `resolveFreeReferences` below follows the declaration wherever
+ *     it is declared, and ABORTS naming the identifier when it cannot, rather
+ *     than letting the block die mid-run.
+ *   - the AC-7c cases pin what the staging rows CONTAIN, executed rather than
+ *     grepped, so the wave fix cannot be bought by changing the end-of-run
+ *     path it is now shared with. Nothing in this file reads the inline
+ *     expression as source text; the claim is asserted as a value on the row.
  */
 
 // SPEC-REF: PARALLEL-AGENT-COORDINATION-SPEC.md § Success Criteria
@@ -28,6 +49,16 @@ const shipSource = readFileSync(SHIP_PATH, "utf-8");
 const BLOCK_START = "// ──── DECOMPOSED-SHIP-START ────";
 const BLOCK_END = "// ──── DECOMPOSED-SHIP-END ────";
 
+/** The dispatch block, sliced once so the loader and AC-7a read the same text. */
+const DECOMPOSED_BLOCK = (() => {
+  const start = shipSource.indexOf(BLOCK_START);
+  const end = shipSource.indexOf(BLOCK_END);
+  if (start === -1 || end === -1) {
+    throw new Error("ship.js is missing the DECOMPOSED-SHIP-START/END markers");
+  }
+  return shipSource.slice(start + BLOCK_START.length, end);
+})();
+
 type AgentCall = { label: string; start: number; end: number };
 
 type BriefedAgentFake = (
@@ -35,18 +66,155 @@ type BriefedAgentFake = (
   opts: { label: string },
 ) => Promise<unknown>;
 
+/**
+ * Every name ship.js declares at module scope, and the offset it starts at.
+ *
+ * Column-anchored on purpose: a `function` or `const` indented by even one
+ * space is inside something, and slicing it out of its enclosure would produce
+ * a fragment that does not parse.
+ */
+function topLevelDeclarations(source: string): Map<string, number> {
+  const at = new Map<string, number>();
+  const patterns = [
+    /^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm,
+    /^const\s+([A-Za-z_$][\w$]*)\s*=/gm,
+  ];
+  for (const re of patterns) {
+    for (const m of source.matchAll(re)) if (!at.has(m[1]!)) at.set(m[1]!, m.index!);
+  }
+  return at;
+}
+
+/** The one declaration starting at `from`, bounded by the next top-level one. */
+function declarationAt(source: string, from: number): string {
+  const boundary = /^(?:\/\/ ──── |\/\*\*|(?:async )?function |const |let )/gm;
+  boundary.lastIndex = from + 1;
+  const next = boundary.exec(source);
+  return source.slice(from, next ? next.index : source.length);
+}
+
+/**
+ * Whether `fragment` reaches `name`.
+ *
+ * Call syntax for everything, plus a bare mention for SCREAMING_SNAKE names,
+ * which is how ship.js spells a module-scope data constant and the only shape
+ * a call-only probe cannot see. Deliberately NOT a bare mention for every
+ * name: ship.js's agent prompts are template literals carrying shell and JS
+ * at column zero, so `^const ` matches things like `s`, `path` and `files`
+ * inside them, and a bare probe drags those in as declarations.
+ */
+/**
+ * Whether `fragment` actually USES `name` — asked of code, never of prose.
+ *
+ * The caller strips comments first, and that is load-bearing rather than
+ * tidy. The SCREAMING_CASE arm below matches a BARE word, so for a module
+ * const it cannot tell a call from a sentence, and the block it is asked
+ * about is heavily commented — #627's own pairing docstring explains the
+ * defect by naming `SINGLE_WORKTREE_EXEMPT`, which is exactly the shape of
+ * "a comment explaining what must not happen reads like the thing
+ * happening". Unstripped, the resolver followed that sentence to module
+ * scope and prepended a `const` the block never references.
+ *
+ * Harmless on that name — it is not injected, so it shadowed no fake — but
+ * the general case is not: a comment mentioning any uninjected module-scope
+ * SCREAMING_CASE binding silently pulls the REAL definition into a scope
+ * built out of fakes, and the suite goes green having tested ship.js's
+ * values instead of its own.
+ */
+function reaches(fragment: string, name: string): boolean {
+  if (new RegExp(`\\b${name}\\s*\\(`).test(fragment)) return true;
+  return /^[A-Z][A-Z0-9_]*$/.test(name) && new RegExp(`\\b${name}\\b`).test(fragment);
+}
+
+/** Every name a fragment declares, at any depth — what it does NOT need. */
+function namesDeclaredIn(fragment: string): Set<string> {
+  const names = new Set<string>();
+  for (const m of fragment.matchAll(/(?:^|\s)(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)) {
+    names.add(m[1]!);
+  }
+  for (const m of fragment.matchAll(/(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=/g)) names.add(m[1]!);
+  return names;
+}
+
+/**
+ * Source text for every binding the block calls and nothing supplies.
+ *
+ * Transitive, because a binding moved to module scope may itself call one:
+ * `filesChangedShapeRefusal` calls `filesChangedShapeRule`, and resolving only
+ * the first level produces a slice that parses and throws the moment it runs.
+ * Returns the slices to prepend in ship.js declaration order, so a `const`
+ * still precedes the binding that closes over it.
+ *
+ * A name that cannot be sliced into something that parses throws HERE rather
+ * than at call time: a loader that silently omits a binding leaves a
+ * `ReferenceError` deep inside an async dispatch, which reads as the dispatch
+ * being broken rather than as the loader having lost track of a declaration.
+ */
+function resolveFreeReferences(block: string, provided: Set<string>): string[] {
+  const declarations = topLevelDeclarations(shipSource);
+  const resolved = new Map<string, { offset: number; source: string }>();
+  // Both questions are asked of CODE. `namesDeclaredIn` is stripped for the
+  // mirror of `reaches`'s reason: a comment quoting `const x =` would record
+  // a declaration the block does not make, and the binding would then be
+  // left unresolved rather than wrongly resolved — the same bug, failing the
+  // other way, and louder only by luck.
+  const satisfied = new Set([...provided, ...namesDeclaredIn(stripComments(block))]);
+  let frontier = [stripComments(block)];
+
+  while (frontier.length > 0) {
+    const next: string[] = [];
+    for (const fragment of frontier) {
+      for (const [name, offset] of declarations) {
+        if (satisfied.has(name) || resolved.has(name)) continue;
+        if (!reaches(fragment, name)) continue;
+        const source = declarationAt(shipSource, offset);
+        try {
+          new Function(`${source}\nreturn ${name};`);
+        } catch (e) {
+          throw new Error(
+            `the dispatch block reaches ${name}, which ship.js declares at module scope, ` +
+              `and the slice for it does not parse: ${(e as Error).message}`,
+          );
+        }
+        // Stored RAW, because this text is prepended as real code and its
+        // comments are part of the file. Scanned STRIPPED, because the next
+        // hop is the same question `reaches` just answered.
+        resolved.set(name, { offset, source });
+        next.push(stripComments(source));
+      }
+    }
+    frontier = next;
+  }
+
+  return [...resolved.values()].sort((a, b) => a.offset - b.offset).map(r => r.source);
+}
+
+/** The names the factory below supplies, as parameters or as prepended text. */
+const INJECTED = new Set([
+  "log",
+  "briefedAgent",
+  "parallel",
+  "WORK_DIR",
+  "ISSUE",
+  "PROJECT_ROOT",
+  "BUILD_RESULT_SCHEMA",
+  "runImplement",
+  "implementRefusal",
+  "worktreeIdentity",
+  "REPO",
+  "taskSourceRefusal",
+  "establishRunRef",
+  "integrateWave",
+  "waveNeedsIntegration",
+  // supplied as text, from FILES-CHANGED-SHAPE
+  "filesChangedShapeRefusal",
+]);
+
 function loadRunDecomposedShip(deps: {
   briefedAgent: BriefedAgentFake;
   runImplement?: () => Promise<unknown>;
 }) {
-  const start = shipSource.indexOf(BLOCK_START);
-  const end = shipSource.indexOf(BLOCK_END);
-  if (start === -1 || end === -1) {
-    throw new Error(
-      "ship.js is missing the DECOMPOSED-SHIP-START/END markers",
-    );
-  }
-  const block = shipSource.slice(start + BLOCK_START.length, end);
+  const block = DECOMPOSED_BLOCK;
   const logs: string[] = [];
 
   // The real Workflow runtime injects `parallel` as a global that takes an array
@@ -108,6 +276,12 @@ function loadRunDecomposedShip(deps: {
   const sliced = (_name: string, fn: string) =>
     new Function(`${shipSource.slice(refStart, refEnd)}\nreturn ${fn};`)();
 
+  // #627: anything the block calls that the list below does not supply is
+  // followed to its declaration and prepended. Today this is empty — the
+  // assertion in "AC-7a" states that, so a binding arriving here is visible
+  // rather than silent.
+  const followed = resolveFreeReferences(block, INJECTED);
+
   const factory = new Function(
     "log",
     "briefedAgent",
@@ -127,7 +301,7 @@ function loadRunDecomposedShip(deps: {
     // #611's element-shape guard, evaluated INTO the block's scope for the
     // same reason the guards above are injected: a stub would let this suite
     // and the real block disagree about what a reported path is.
-    `${shapeBlock}\n${block}\nreturn runDecomposedShip;`,
+    `${shapeBlock}\n${followed.join("\n")}\n${block}\nreturn runDecomposedShip;`,
   );
 
   const runDecomposedShip = factory(
@@ -150,7 +324,7 @@ function loadRunDecomposedShip(deps: {
     sliced("RUN-REF", "waveNeedsIntegration"),
   );
 
-  return { runDecomposedShip, logs };
+  return { runDecomposedShip, logs, followed };
 }
 
 /** Records the execution window of each call so overlap can be measured. */
@@ -280,6 +454,191 @@ describe("AC-3: logging matches the dispatch mechanism actually used", () => {
     if (mentionsBatchShip) {
       expect(importsBatchShip).toBe(true);
     }
+  });
+});
+
+// ── AC-7a / AC-7c (#627): the staging rows, and the loader that reaches them ──
+
+/** The remote every fixture worktree reports, matching RUN_REPO (#218). */
+const PAIRED_REMOTE = `git@github.com:${RUN_REPO}.git`;
+
+/**
+ * One DISTINCT worktree, file and claim per sub-issue.
+ *
+ * `makeTimingAgent` reports `/tmp/wt` for all three, which is right for
+ * measuring concurrency and useless for measuring a pairing: three rows that
+ * agree on every field are satisfied by a binding that shuffles them. Here
+ * every field differs per sub-issue, and none of them equals the claim.
+ */
+function makePairedAgent(opts: { failOn?: string } = {}): BriefedAgentFake {
+  return async (_prompt, { label }) => {
+    if (opts.failOn && label.includes(opts.failOn)) {
+      return { success: false, findings: ["injected failure"] };
+    }
+    return {
+      success: true,
+      filesChanged: [`${label}.ts`],
+      worktreePath: `/tmp/wt-${label}`,
+      worktreeRepo: PAIRED_REMOTE,
+      taskSource: "brief",
+    };
+  };
+}
+
+interface StagedRow {
+  worktreePath: unknown;
+  worktreeRepo: unknown;
+  filesChanged: unknown;
+  claimedFiles: unknown;
+}
+
+/**
+ * The four fields #627's binding is responsible for, in a stable order.
+ *
+ * Projected rather than compared whole, because an added field is not a
+ * regression and a DROPPED one is — a `toEqual` over the raw row would refuse
+ * the first and the projection below still catches the second.
+ */
+function stagedRows(buildResult: unknown): StagedRow[] {
+  const rows = ((buildResult as { agentResults?: unknown[] })?.agentResults ?? []) as Array<
+    Record<string, unknown>
+  >;
+  return rows
+    .map(r => ({
+      worktreePath: r.worktreePath,
+      worktreeRepo: r.worktreeRepo,
+      filesChanged: r.filesChanged,
+      claimedFiles: r.claimedFiles,
+    }))
+    .sort((a, b) => String(a.worktreePath).localeCompare(String(b.worktreePath)));
+}
+
+/** What the sub-issue at index `i` of DISJOINT_SUB_ISSUES must stage. */
+function expectedRow(i: number): StagedRow {
+  const label = `marcus-sub-${66 * 1000 + i + 1}`;
+  return {
+    worktreePath: `/tmp/wt-${label}`,
+    worktreeRepo: PAIRED_REMOTE,
+    filesChanged: [`${label}.ts`],
+    claimedFiles: DISJOINT_SUB_ISSUES[i]!.filesToModify,
+  };
+}
+
+describe("AC-7a: the loader follows the pairing binding wherever it is declared (#627)", () => {
+  test("every free reference the dispatch block makes is accounted for", () => {
+    const { followed } = loadRunDecomposedShip({
+      briefedAgent: makePairedAgent(),
+    });
+    // Empty today: `filesChangedShapeRefusal` is the block's one module-scope
+    // call and it is prepended by name. A binding that moves out of the block
+    // shows up here as a slice, which is the point — the suite follows it
+    // instead of dying on a ReferenceError inside an async dispatch.
+    expect(
+      followed,
+      "a module-scope binding was followed into the block — check it does not shadow an injected fake",
+    ).toEqual([]);
+  });
+
+  test("a binding named only in a comment is not followed", () => {
+    // The regression this file shipped red with. #627's pairing docstring
+    // explains the defect by naming `SINGLE_WORKTREE_EXEMPT` in prose; the
+    // SCREAMING_CASE arm of `reaches` matches a bare word, so unstripped it
+    // followed a sentence and prepended a `const` the block never uses.
+    //
+    // Asserted as a PAIR derived from one source, so the two halves cannot
+    // drift: the same reference, once in a comment and once as code.
+    const decl = "const SINGLE_WORKTREE_EXEMPT";
+    expect(
+      shipSource.split(decl).length - 1,
+      "the fixture assumes ship.js declares this exactly once",
+    ).toBe(1);
+
+    const inProse = "/* a note about SINGLE_WORKTREE_EXEMPT and nothing else */";
+    const asCode = "const x = SINGLE_WORKTREE_EXEMPT";
+    expect(resolveFreeReferences(inProse, new Set())).toEqual([]);
+    // The control, and the reason the line above is a measurement rather than
+    // a resolver that stopped working: the identical name, in code, IS found.
+    expect(resolveFreeReferences(asCode, new Set()).join("\n")).toContain(decl);
+  });
+
+  test("control: the resolver is not a no-op — withholding one name finds it", () => {
+    // Without this, `followed` being empty above is indistinguishable from a
+    // resolver that can never find anything, which is the vacuous assertion
+    // .claude/rules/checks-must-be-able-to-fail.md names.
+    const withheld = new Set(INJECTED);
+    withheld.delete("filesChangedShapeRefusal");
+    const slices = resolveFreeReferences(DECOMPOSED_BLOCK, withheld);
+    expect(slices.join("\n")).toContain("function filesChangedShapeRefusal(");
+    // And the slices are a usable binding, not merely text that mentions it.
+    // `filesChangedShapeRefusal` calls `filesChangedShapeRule`, so a resolver
+    // that stopped at the first level would parse and then throw here — which
+    // is exactly what it would do to the dispatch after #627 moves a binding.
+    const resolved = new Function(
+      `${slices.join("\n")}\nreturn filesChangedShapeRefusal;`,
+    )() as (b: unknown, l: string) => unknown;
+    expect(typeof resolved).toBe("function");
+    expect(resolved({ success: true, filesChanged: ["lib/a.ts (modified)"] }, "marcus")).toBeTruthy();
+    expect(resolved({ success: true, filesChanged: ["lib/a.ts"] }, "marcus")).toBeNull();
+  });
+});
+
+describe("AC-7c: the end-of-run staging rows carry the claim beside its pair (#627)", () => {
+  test("every succeeded sub-issue stages its own worktree, remote, files and claim", async () => {
+    const { runDecomposedShip } = loadRunDecomposedShip({
+      briefedAgent: makePairedAgent(),
+    });
+
+    const result = (await runDecomposedShip(DISJOINT_SUB_ISSUES)) as {
+      success: boolean;
+      buildResult: unknown;
+    };
+
+    expect(result.success).toBe(true);
+    expect(stagedRows(result.buildResult)).toEqual([
+      expectedRow(0),
+      expectedRow(1),
+      expectedRow(2),
+    ]);
+  });
+
+  test("the claim is the PLAN, not a copy of what the agent changed", async () => {
+    // The cheapest wrong fix for "claimedFiles arrives undefined in the wave
+    // path" is `claimedFiles: r.buildResult.filesChanged` — the field is then
+    // always present, the collection guard always agrees with itself, and
+    // SC-413 is switched off for every run. Every fixture row reports a file
+    // its plan does not name, so that repair cannot pass this.
+    const { runDecomposedShip } = loadRunDecomposedShip({
+      briefedAgent: makePairedAgent(),
+    });
+    const result = (await runDecomposedShip(DISJOINT_SUB_ISSUES)) as { buildResult: unknown };
+
+    const rows = stagedRows(result.buildResult);
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(Array.isArray(row.claimedFiles), "the claim is absent on a staged row").toBe(true);
+      expect(row.claimedFiles, "a staged row carries an empty claim").not.toEqual([]);
+      expect(
+        row.claimedFiles,
+        "the claim is a copy of filesChanged, so the guard can only ever agree with itself",
+      ).not.toEqual(row.filesChanged);
+    }
+  });
+
+  test("a mid-batch failure stages the survivors with their own claims", async () => {
+    // The failure branch builds its own `agentResults`. Two staging sites
+    // means two chances to lose the claim, and the all-green case above
+    // cannot see the second one.
+    const { runDecomposedShip } = loadRunDecomposedShip({
+      briefedAgent: makePairedAgent({ failOn: "66002" }),
+    });
+
+    const result = (await runDecomposedShip(DISJOINT_SUB_ISSUES)) as {
+      success: boolean;
+      buildResult: unknown;
+    };
+
+    expect(result.success).toBe(false);
+    expect(stagedRows(result.buildResult)).toEqual([expectedRow(0), expectedRow(2)]);
   });
 });
 

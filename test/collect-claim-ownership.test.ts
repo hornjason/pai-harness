@@ -12,9 +12,17 @@
  * The second run carried an explicit prohibition naming project-state.json. It
  * worked, and the run then died on two filenames nobody had thought to
  * prohibit. Enumerating prohibitions in prose is a treadmill: the claim is
- * written from the decomposition plan (ship.js, `claimedFiles:
- * r.subIssue?.filesToModify`) BEFORE the work exists, so it cannot anticipate
- * a file the repo's own tooling demands every contributor touch.
+ * written from the decomposition plan — by ship.js's one pairing binding,
+ * which puts a sub-issue's `filesToModify` on the row beside what its agent
+ * reported (#627) — BEFORE the work exists, so it cannot anticipate a file
+ * the repo's own tooling demands every contributor touch.
+ *
+ * That binding used to be an inline expression at two end-of-run staging
+ * sites, and #627 names it so the wave path can call the same one. Nothing in
+ * this file reads it, under either spelling: every fixture below hands
+ * `auditWorktreeClaims` the paired rows directly and the evidence is what the
+ * block DID with them. The pairing itself is covered where it is executed, in
+ * test/decomposed-ship-dispatch.test.ts.
  *
  * So the fix is not a bigger prohibition list in a prompt, it is two ownership
  * classes in the guard itself, and the whole point of this file is that the

@@ -45,6 +45,13 @@ const DECOMPOSED_BLOCK = sliceBlock("DECOMPOSED-SHIP");
 // evaluated alongside it rather than stubbed — a stub would let this suite
 // and ship.js disagree about what a reported path is.
 const SHAPE_BLOCK = sliceBlock("FILES-CHANGED-SHAPE");
+// #627 put a third free reference in the RUN-REF block: the wave path pairs
+// each settled sub-issue with the claim the plan issued for it, through the
+// same binding the end-of-run collect uses. Evaluated from its own markers
+// rather than stubbed, for the reason above — a stub would let this suite and
+// ship.js disagree about what the collector is handed, which is precisely the
+// disagreement #627 is.
+const CLAIM_PAIRING_BLOCK = sliceBlock("CLAIM-PAIRING");
 
 type AgentCall = { label: string; prompt: string };
 
@@ -64,7 +71,8 @@ function loadRunRef(opts: {
   const factory = new Function(
     "timedAgent", "collectAgentWork", "shellQuote", "log", "PROJECT_ROOT", "ISSUE",
     "worktreeIdentityViolations", "REPO",
-    `${RUN_REF_BLOCK}
+    `${CLAIM_PAIRING_BLOCK}
+     ${RUN_REF_BLOCK}
      return { runRefName, runRefRefusal, waveNeedsIntegration, establishRunRef, integrateWave };`,
   );
   return {

@@ -1011,3 +1011,89 @@ assertion that `violations` is non-empty does **not** establish them:
 
 None of the five mutations is left in the tree; all were run and reverted,
 and the test file was confirmed byte-identical afterwards.
+
+### When the symptom is a refusal, the cheapest wrong fix is to widen it (#627)
+
+The fifth shape again, and this instance is worth its own row because of
+where the wrong fix lives: **inside the guard that reported the problem.**
+
+Wave integration handed `collectAgentWork` rows built from `buildResult`
+alone. #178's claim is a sibling of the build result, not a field in it, so
+every row arrived with `claimedFiles` undefined and SC-413 read a wave in
+which nobody had claimed anything. Run `wf_9e60257d-7d3`: three worktrees,
+correct non-overlapping claims, every reported file inside its own claim,
+nine files refused as unclaimed, run dead at the barrier.
+
+What an operator sees is a refusal naming files that were claimed. The
+repair that makes it stop, in one word, is to let an absent claim through —
+`claims.includes(key) : claimant === wt` becomes `: true`. It works. The
+wave integrates, the run completes, and the claim is exactly as absent as it
+was, with the #296 fail-open reinstated for every run in the process.
+
+So the regression case asserts **where the claim went**, not whether anybody
+complained about its absence. `claimReachedCollector` in
+`test/wave-integration.test.ts` reads the rows handed to the real
+`collectAgentWork` — recorded before it runs — and compares each worktree's
+`claimedFiles` to its sub-issue's own claim. The wave's verdict is asserted
+separately and deliberately never feeds that function: a case built on the
+verdict is green under the wrong fix, which is the thing being avoided.
+
+Three worktrees, not one and not two. With one,
+`SINGLE_WORKTREE_EXEMPT` keeps every file whether a claim travelled or not,
+so the case reaches its assertion without the feature; two is the floor at
+which the claim is load-bearing, and three is the shape the run had. The
+fixture builds its own worktree tree under `mkdtemp` and names no path that
+exists in this repository — asserted, with `existsSync` over `REPO_ROOT`,
+rather than promised — so it keeps witnessing after the run's nine files
+move.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/wave-integration.test.ts` + `test/collect-claim-enforcement.test.ts`
+(70 tests).
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 70 pass, 0 fail | **70 pass, 0 fail** |
+| the claim-stripping mutant: the wave call site's pairing expression replaced by bare `waveResults`, so `integrateWave`'s own `.map(r => r.buildResult)` strips the claim | 3 | **3 of 70** |
+| the cheapest wrong fix: the `Array.isArray` claim guard widened to let an absent claim through | 5 | **7 of 70** |
+| the test's own `claimReachedCollector` short-circuited to `{reached: true}` | 2 | **2 of 70** |
+| the genuinely pre-#627 `workflows/ship.js`, from this branch's merge-base | 3 | **3 of 70** |
+
+Before believing any of those, the input on which mutant and original
+differ, named and run rather than assumed: the three-worktree fixture
+itself. On the pre-#627 source the AC-4 case fails with *"alpha arrived with
+no claim at all (claimedFiles is undefined)"* — the run's defect, in the
+test's own words — while on the live source the same case reads
+`["fixture/alpha/reader.ts", "fixture/alpha/reader.probe.ts"]` off the row.
+For the widened guard the input is the claim-less rows that path produces:
+the real audit refuses all six, the widened one refuses none, both measured
+in the case itself before the wave is driven.
+
+**Row three came back HIGH, and the extra reds are the real kind.** The
+prediction covered the five cases that reason about an absent claim
+directly; the two extra are #228's preserve cases — *"every path on the
+preserve command line is quoted"* and *"the preserve step is never pointed
+at the project root"*. Both plant a worktree with no claim beside one that
+claims the same file, and both reach the preserve step only because that
+row is refused. Widen the guard and nothing is refused, so no preserve step
+runs and there is no command line to inspect. Squarely about the mutated
+behaviour, and not a crashing mutant: 63 cases still pass and every red is
+claim-related. Per the arithmetic above that is "the prediction was wrong
+and the check is better than you thought", and the fact it records is that
+the claim guard is load-bearing for the preserve path too — the quoting
+proof for a path that originates in an agent's reply depends on an absent
+claim still being refused.
+
+The last row is the one that is not a mutation at all: the pre-#627 source
+is a real tree, and it is the only row that measures the case against the
+defect rather than against a reconstruction of it. Its count matching the
+reconstruction's is the evidence that the reconstruction is faithful.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`test/wave-integration.test.ts` and `workflows/ship.js` were confirmed
+byte-identical to the measured source afterwards. The counts are from a tree
+carrying #627's staging change — `claimedWork` and the paired call site. On a
+checkout without it the two mutant-building cases do not pass or fail
+quietly: `mutate` finds the pairing expression zero times and throws *"could
+not build the mutant"*, which is the loud-abort property the builder exists
+for.
