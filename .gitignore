@@ -17,6 +17,7 @@ node_modules
 .spec-collection-scratch-*/
 .state-contract-scratch-*/
 .tmp-sc-drift-test-*/
+.sc-arity-probe-*/
 
 # Added by rungate scaffold
 dist/

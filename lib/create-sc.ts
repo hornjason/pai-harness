@@ -228,6 +228,24 @@ export function listPatterns(): string {
 }
 
 /**
+ * Every SC number a piece of text spells.
+ *
+ * One parse, used by the allocation and by the leg count the reading
+ * reports. Two copies would be two deciders that agree — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and the symptom would be
+ * a reading that says it consulted five ids while the number was computed
+ * from four.
+ */
+function scNumbersInText(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(/SC-(\d+)/g)) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
  * The next free SC number.
  *
  * `SC-<n>` is a GLOBAL id — `lib/sc-ids.ts` says so, and
@@ -279,9 +297,7 @@ export function nextSCNumber(
     const n = Number(raw.replace(/^SC-[A-Z]?/, ""));
     if (Number.isFinite(n)) ids.push(n);
   };
-  const pattern = /SC-(\d+)/g;
-  let match;
-  while ((match = pattern.exec(specContent)) !== null) take(match[0]);
+  for (const n of scNumbersInText(specContent)) ids.push(n);
   for (const id of reg?.declaredById.keys() ?? []) take(id);
   for (const id of spelledInSource ?? []) if (!isFixtureScId(id)) take(id);
   if (ids.length === 0) return 1;
@@ -303,17 +319,63 @@ export function nextSCNumber(
  * a clone on another machine is outside anything this process can reach, and
  * a caller that printed only the number would be claiming a guarantee the
  * reading explicitly does not give.
+ *
+ * ## `reg` is REQUIRED, and was not (#593)
+ *
+ * It was optional, which made the composition a suggestion. Omitting it is a
+ * legal call that reads source mentions and the cross-tree namespace, skips
+ * `reg?.declaredById` entirely, and hands back a number with a reading beside
+ * it as though it had asked everything — the exact failure the paragraph
+ * above says this function exists to prevent, permitted by the character at
+ * the end of its own signature.
+ *
+ * Two of the three call sites in the tree omitted it, and both were in
+ * synthetic trees where no spec declares anything. So the defaulted answer
+ * and the stated answer agreed on every input the suite had, which is why
+ * nothing went red for as long as it did. A caller with genuinely nothing to
+ * declare says so with `buildScRegistry([])`; the empty registry is a value,
+ * not an absence.
+ *
+ * The reading that comes back names every leg, including the three this
+ * function supplies rather than `readScNamespace`. A scan that reports a
+ * verdict should report its own coverage, and `118 source(s)` says nothing
+ * about whether the spec registry was one of them.
  */
 export function allocateScNumber(
   root: string,
   specContent: string,
-  reg?: ScRegistry,
+  reg: ScRegistry,
 ): { number: number; namespace: ScNamespaceReading } {
   const namespace = readScNamespace(root);
+  const spelled = scIdsSpelledInSource(root);
   const number = nextSCNumber(specContent, reg, [
-    ...scIdsSpelledInSource(root).keys(),
+    ...spelled.keys(),
     ...namespace.ids.keys(),
   ]);
+
+  // Ahead of the worktrees and refs, so the printed account reads in the
+  // order the widths were added to this function across #392, #399 and #503.
+  namespace.sources.unshift(
+    {
+      label: "the spec content handed in",
+      kind: "spec-content",
+      status: "read",
+      found: new Set(scNumbersInText(specContent)).size,
+    },
+    {
+      label: "the spec registry",
+      kind: "registry",
+      status: "read",
+      found: reg.declaredById.size,
+    },
+    {
+      label: "SC ids spelled in source files",
+      kind: "source",
+      status: "read",
+      found: spelled.size,
+    },
+  );
+
   return { number, namespace };
 }
 

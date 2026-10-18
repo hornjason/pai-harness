@@ -9611,6 +9611,92 @@ running it rather than by reading it.
 - [x] SC-1911: test/sc-id-cross-tree.test.ts contains [the allocator does not re-issue a sibling's number] — driven with two different sibling values, since one cannot tell reading the namespace from adding a constant
 - [x] SC-1912: test/sc-id-cross-tree.test.ts contains [the allocator composes all three widths] — SC-1911 hands `nextSCNumber` ids the test assembled, so only this can witness a caller that reads the namespace and forgets to pass it
 
+## The composition whose third width was optional (#593)
+
+`allocateScNumber` is where the three widths above compose, and it took the
+spec registry as an OPTIONAL third argument. Omit it and `nextSCNumber` never
+reaches `reg?.declaredById.keys()`: the allocator reads source mentions and
+the cross-tree namespace itself, skips the spec declarations entirely, and
+returns a number with a reading beside it as though it had asked everything.
+Its own docstring, one line above the `?`, says a caller must not be able to
+"assemble two of the three and believe it asked".
+
+Two of the three call sites in the tree omitted it, and both read as correct
+for a reason worth naming: they are synthetic trees where no spec declares
+anything, so **the defaulted answer and the stated answer agree on every
+input the suite has.** That is the first diagnostic in
+`.claude/rules/checks-must-be-able-to-fail.md` — a mutation and an original
+that cannot be told apart by the fixtures to hand — arriving as a parameter
+default rather than as a regex.
+
+### Why the proof is a compile and not a call
+
+Making the parameter required changes NO runtime behaviour: every call that
+passes three arguments behaves identically either way. The whole defect is
+what the signature PERMITS, so the type checker is the only instrument that
+can see it. Three probes are compiled in one run by the pinned compiler
+`scripts/typecheck.ts` spawns — not whatever `bunx` resolves, which is a
+different major version and a different diagnostic set (#87):
+
+| Probe | What only it reaches |
+|---|---|
+| three arguments | the instrument. An error here means the probe could never have compiled, which reads exactly like the arity being enforced |
+| two arguments | the defect verbatim — the call the two shipped sites were making |
+| `undefined` as the registry | the CHEAPEST wrong fix. Widening the parameter to `ScRegistry \| undefined` while keeping it required makes the two-argument probe go green and reinstates the omission under a name that looks deliberate |
+
+### The reading names the legs, not just the trees
+
+A required argument stops the registry being skipped silently; it does not
+make the reading honest about having consulted it. `ScNamespaceReading.sources`
+named only the worktrees and the refs, so a caller printing
+`describeReading` printed two of the five widths that produced the number.
+The spec content, the spec registry and the source-spelled ids are now
+sources in the same list, with their own counts — an empty registry is
+recorded as read with `found: 0`, because `0`, `{}` and silence are
+indistinguishable from success and `UNMEASURED` is not
+(`.claude/rules/config-access.md`).
+
+### What was broken to prove it
+
+One mutation over `test/sc-id-cross-tree.test.ts`. It is not left in the
+tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| baseline — unmutated | 10 pass, 0 fail | 0 |
+| `reg` restored to `reg?: ScRegistry` in `lib/create-sc.ts` | 2 of 10 | 2 |
+
+The mutant differs from the real source by one character, confirmed with a
+`diff` of the two files before the run, and the file was restored and
+`diff`ed again afterwards.
+
+**The input on which mutant and original differ, named and run before the
+count was believed** — because a 0 and a 2 both mean nothing if the mutant
+and the original behave identically on every input the suite has:
+
+```
+.../p.ts(2,20): error TS2554: Expected 3 arguments, but got 2.
+.../q.ts(2,51): error TS2345: Argument of type 'undefined' is not
+                assignable to parameter of type 'ScRegistry'.
+```
+
+`p.ts` is `allocateScNumber("/nowhere", "")` and `q.ts` passes `undefined` as
+the third argument. The real signature produces those two diagnostics; the
+mutant compiles both files clean, with no diagnostic at all.
+
+The two reds are the two compile probes, and the three-argument control stays
+GREEN under the mutation — which is what makes the row a measurement of the
+arity rather than of a probe that stopped building. SC-2013, SC-2014 and
+SC-2015 also stay green, correctly: they are about the registry leg's effect
+on the number, the reading, and the call sites, none of which the `?` moves.
+
+### Success Criteria
+
+- [x] SC-2012: test/sc-id-cross-tree.test.ts contains [the registry argument is required] — a two-argument probe and an `undefined`-registry probe compiled by the pinned compiler, against a three-argument control that must compile clean or nothing below measures the arity
+- [x] SC-2013: test/sc-id-cross-tree.test.ts contains [the registry leg changes the answer] — a spec declaring an id no source file spells and no tree holds, with both other legs asserted blind to it, and the margin computed from the allocator's own reading rather than from a narrower one (#507)
+- [x] SC-2014: test/sc-id-cross-tree.test.ts contains [the reading names the legs consulted] — all five widths appear in `sources`, and an empty registry is recorded as read with a count of zero rather than omitted
+- [x] SC-2015: test/sc-id-cross-tree.test.ts contains [no caller omits the registry] — every `.ts` and `.js` under lib, scripts, test, gates, hooks and workflows, with no file exempt and the number of files walked asserted alongside the verdict
+
 ## A containment decision taken on the half of the population it covered (#497)
 
 #439 decided that a `contextDocs` entry resolving outside the project root

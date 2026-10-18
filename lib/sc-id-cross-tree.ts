@@ -57,10 +57,19 @@ import { join } from "path";
 
 import { isFixtureScId, scDeclarationPattern, scHeadingDeclarationPattern } from "./sc-ids";
 
-/** One place ids were looked for, and whether the look succeeded. */
+/**
+ * One place ids were looked for, and whether the look succeeded.
+ *
+ * `worktree` and `refs` are the two this module reads. The other three are
+ * the legs `allocateScNumber` composes around it (#593) — the spec content
+ * handed in, the spec registry, and the ids source files spell — and they
+ * live in the same list for one reason: a caller that printed the reading
+ * was printing two of the five widths that produced the number, which is a
+ * scan reporting a verdict without reporting its own coverage.
+ */
 export interface SourceReading {
   label: string;
-  kind: "worktree" | "refs";
+  kind: "worktree" | "refs" | "spec-content" | "registry" | "source";
   /** `read` means the ids below came from here; `skipped` means they did not. */
   status: "read" | "skipped";
   /** Why it was skipped. Absent on a successful read. */
@@ -280,12 +289,21 @@ export function readScNamespace(root: string): ScNamespaceReading {
   return { ids, sources, unmeasured };
 }
 
-/** A one-line account of what a reading covered, for a CLI to print. */
+/**
+ * A one-line account of what a reading covered, for a CLI to print.
+ *
+ * It names the LEGS and not just the count, because a count is a proxy and a
+ * proxy is a thing people satisfy directly: `118 source(s)` is the same
+ * sentence whether or not the spec registry was one of them, and the whole
+ * of #593 is a width that was missing from an answer that looked complete.
+ */
 export function describeReading(reading: ScNamespaceReading): string {
   const read = reading.sources.filter(s => s.status === "read");
   const skipped = reading.sources.filter(s => s.status === "skipped");
+  const legs = [...new Set(read.map(s => s.kind))];
   const parts = [
     `${reading.ids.size} ids across ${read.length} source(s)`,
+    `legs: ${legs.length > 0 ? legs.join(", ") : "NONE"}`,
     skipped.length > 0 ? `${skipped.length} skipped` : null,
     `${reading.unmeasured.length} unmeasured`,
   ].filter(Boolean);
