@@ -102,14 +102,27 @@ function extractSCs(content: string, specFile: string): ParsedSC[] {
 
 // ── Closest pattern matching for rewrites ─────────────────────
 
+export interface ClosestPattern {
+  patternName: string;
+  rewrite: string;
+  ambiguous: boolean;
+  /**
+   * Set ONLY by the last-resort file-token match (#589).
+   *
+   * `patternName` cannot carry this: the last resort renders `file-exists`,
+   * which is also the name of a real heuristic, so a caller reading the name
+   * alone cannot tell a pattern the statement matched from one inferred off a
+   * filename that happened to be in the sentence.
+   */
+  fallback?: boolean;
+}
+
 /**
  * Score how well an SC statement matches a registry pattern by
  * looking for keyword overlaps. Returns the best pattern name and
  * a generated rewrite, or null if nothing is close enough.
  */
-function findClosestPattern(
-  statement: string
-): { patternName: string; rewrite: string; ambiguous: boolean } | null {
+function findClosestPattern(statement: string): ClosestPattern | null {
   const registry = loadRegistry();
   const lower = statement.toLowerCase();
 
@@ -297,13 +310,16 @@ function findClosestPattern(
   //
   // Narrowing it here turns SC-1587 and SC-1594 red for a reason those
   // criteria are right about, which is how the distinction got found. The
-  // downgrade is #589, filed rather than folded in.
+  // downgrade is #589, and it is now scoped by `coordinatedClaims` below
+  // rather than by narrowing the token match: WHICH statements this may
+  // speak for is a question about the criterion, not about the filename.
   const fileToken = statement.match(/\b(\S+\.\w{1,5})\b/);
   if (fileToken) {
     return {
       patternName: "file-exists",
       rewrite: `${fileToken[1]} exists`,
       ambiguous: true,
+      fallback: true,
     };
   }
 
@@ -380,7 +396,7 @@ export type RewriteDecision =
  */
 export function decideRewrite(
   statement: string,
-  closest: { patternName: string; rewrite: string; ambiguous: boolean } | null,
+  closest: ClosestPattern | null,
 ): RewriteDecision {
   if (alreadyStructured(statement)) {
     return { kind: "keep", reason: "already a structured criterion — a matcher gap is not a licence to rewrite it" };
@@ -395,6 +411,33 @@ export function decideRewrite(
       kind: "keep",
       reason: `rewriting as ${closest.patternName} would drop the file ${file} the criterion names`,
     };
+  }
+
+  // #589: the last resort may only speak for a criterion that makes ONE
+  // claim. It takes a filename-like token from anywhere in a sentence and
+  // renders the whole criterion as `<that file> exists`, which can be about
+  // at most one thing — so a criterion that coordinates a second claim is
+  // guaranteed to come back as a statement about something else.
+  //
+  // Measured over the corpus `--fix` edits: two criteria went through it,
+  // SC-1940 (a hash is written AND the rule never resurfaces) and SC-1943 (a
+  // three-item subject of which the filename is one). Both are kept now.
+  //
+  // Scoped to the fallback deliberately. A heuristic that MATCHED the
+  // statement was chosen by what the statement says; the last resort was
+  // chosen by a filename being present, and that is the difference this
+  // guard is about.
+  if (closest.fallback) {
+    const claims = coordinatedClaims(statement);
+    if (claims.length > 0) {
+      return {
+        kind: "keep",
+        reason:
+          `rewriting as ${closest.patternName} would assert only that ${closest.rewrite}, ` +
+          `while the criterion coordinates a further claim (${claims[0]}) — ` +
+          `the file is mentioned, not what the criterion is about`,
+      };
+    }
   }
 
   const rationale = rationaleOf(statement);
@@ -463,14 +506,36 @@ export function distinguishingTerms(statement: string): string[] {
 }
 
 /**
+ * The further claims this criterion coordinates, if any (#589).
+ *
+ * Returns the clause after each `and`/`or`, so the refusal can name what the
+ * rewrite would have dropped rather than merely reporting that something was
+ * dropped. Empty for a criterion that makes one claim.
+ *
+ * One exported binding, so there is exactly one thing to mutate — and it is
+ * the only thing that decides which statements the last resort may speak
+ * for.
+ */
+export function coordinatedClaims(statement: string): string[] {
+  const claims: string[] = [];
+  const coordinator = /\s+(?:and|or)\s+/gi;
+  let m: RegExpExecArray | null;
+  while ((m = coordinator.exec(statement)) !== null) {
+    const rest = statement.slice(m.index + m[0].length).trim();
+    // A trailing coordinator joins nothing. An empty string here would read
+    // as a second claim whose text is gone, and refuse a rewrite on it.
+    if (rest.length > 0) claims.push(rest);
+  }
+  return claims;
+}
+
+/**
  * `findClosestPattern`, exported so a test can drive the real decision.
  *
  * One binding (#586). A test that reimplemented the heuristic walk would
  * agree with it right up until somebody changed one of them.
  */
-export function closestPatternFor(
-  statement: string,
-): { patternName: string; rewrite: string; ambiguous: boolean } | null {
+export function closestPatternFor(statement: string): ClosestPattern | null {
   return findClosestPattern(statement);
 }
 

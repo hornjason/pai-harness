@@ -1104,6 +1104,11 @@ behaviour this change would have removed. The downgrade is real and is #589,
 filed rather than folded in, which is the same call #586 itself records being
 made about it.
 
+**#589 has since landed, and it did not take the narrowing.** The property
+it scoped the last resort by is *the criterion makes one claim*, not *the
+criterion's verb is existence* — which is why SC-1587's criterion, whose verb
+is *emit*, still rewrites. See `specs/SCAFFOLD-DECOMPOSITION-SPEC.md` §#589.
+
 So what SC-1998 pins is the property that makes the downgrade survivable:
 the marker, and a negative control that an exactly-bound criterion reports
 `ambiguous: false`, because every pattern reporting `true` would satisfy the
@@ -1116,7 +1121,7 @@ assertion while saying nothing.
 - [x] SC-1995: test/audit-specs-rewrite-fidelity.test.ts contains [distinguishing terms are the statement's own words, not the matched keyword] — counting the matched keyword as retained content is how a constant rewrite reads as faithful
 - [x] SC-1996: test/audit-specs-rewrite-fidelity.test.ts contains [an extractor that ignores its input cannot claim to be unambiguous] — two statements differing in every word must not produce one unambiguous rewrite
 - [x] SC-1997: test/audit-specs-rewrite-fidelity.test.ts contains [a keyword list means all of its phrases, not any one of them] — with the rule still firing on the statement it is actually for
-- [x] SC-1998: test/audit-specs-rewrite-fidelity.test.ts contains [the loose file fallback downgrades, and records that it did] — the two live survivors rewrite, and each carries `ambiguous: true` so the original is written beside it; the negative control is a criterion the registry binds exactly, which must report `false`
+- [x] SC-1998: test/audit-specs-rewrite-fidelity.test.ts contains [the loose file fallback downgrades, and records that it did] — the two criteria it reached each carry `ambiguous: true`, so wherever the fallback rewrites, the original is written beside it; the negative control is a criterion the registry binds exactly, which must report `false`. **#589 closed the filed defect and the DECISION half moved with it**: those two are KEPT now, the vacuity control drives the single-claim criterion the fallback still acts on, and `test/audit-specs-fallback-scope.test.ts` owns the keeps
 - [x] SC-1999: test/audit-specs-rewrite-fidelity.test.ts contains [a directory pattern is satisfied by its broader bare form, and not the reverse] — the `.gitignore` half, which was filed wrongly as non-idempotence; the reverse direction is pinned because widening this match is how `service-account*` comes back
 
 ### What was broken to prove it (SC-1993..SC-1999)
