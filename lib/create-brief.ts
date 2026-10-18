@@ -6,6 +6,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { writeRoleConfig } from "./config-loader";
+import { localCalendarDay } from "./local-calendar-day";
 import type { AgentMeta } from "./generators/types";
 
 /**
@@ -16,7 +17,7 @@ export function generateBriefTemplate(
   description: string,
   forbiddenCommands?: string[],
 ): string {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
   const displayName = roleName.charAt(0).toUpperCase() + roleName.slice(1);
 
   return `---

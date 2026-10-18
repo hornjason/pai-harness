@@ -16,6 +16,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, basename, dirname } from "path";
 import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -225,7 +226,7 @@ function deriveSlug(title: string): string {
 // ── Spec generation ───────────────────────────────────────────
 
 function generateSpec(rules: ExtractedRule[], title: string, governs: string): string {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
 
   // Build SC lines
   const scLines = rules.map((rule, i) => {

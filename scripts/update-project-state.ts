@@ -14,6 +14,7 @@ import { execSync } from "child_process";
 /** How many sessions the handoff shows. One site, so the count can be mutated. */
 const RENDERED_SESSIONS = 3;
 import { missingStateVerdict, projectStateViolations, selectRecentSessions } from "../lib/project-state-shape";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 /**
  * The one exit code every refusal here routes through, per
@@ -191,7 +192,12 @@ if (shapeProblems.length > 0) {
 }
 
 const state: ProjectState = parsed as ProjectState;
-state.updated = new Date().toISOString().split("T")[0];
+// The LOCAL calendar day, not the UTC one (#600). `toISOString()` rolls over
+// at 20:00 EDT, so an evening session stamped tomorrow's date onto work done
+// today — and because this script only produces a staged diff when the
+// computed date differs from the stored one, it also made #599's DA-owned-file
+// violation fire for four hours a day and stay invisible for the other twenty.
+state.updated = localCalendarDay();
 
 // Sync SC status from spec files (promote-only: specs can mark done, never undo)
 const specStatus = scanSpecSCStatus();

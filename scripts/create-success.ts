@@ -19,6 +19,7 @@ import { existsSync, lstatSync, readFileSync, unlinkSync, writeFileSync } from "
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { seedFromTemplate } from "../lib/success-doc";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -121,7 +122,7 @@ if (/[\r\n:]/.test(owner)) {
   );
   process.exit(1);
 }
-const today = new Date().toISOString().slice(0, 10);
+const today = localCalendarDay();
 
 // The SHARED substitution, so this and the scaffold's seed step cannot
 // produce different bytes for the same logical seed.

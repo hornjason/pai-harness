@@ -17,6 +17,7 @@ import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { isMatchablePattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
 import { loadRegistry, type RegistryEntry } from "../lib/create-sc";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -123,7 +124,7 @@ if (scStatements.length > 0) {
 
 // ── Generate spec content ─────────────────────────────────────
 
-const today = new Date().toISOString().split("T")[0];
+const today = localCalendarDay();
 
 // Build SC lines from validated --sc statements, or use placeholder
 let scSection: string;

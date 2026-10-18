@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { generateAgentsMd } from '../../lib/generators/agents-md';
+import { localCalendarDay } from '../../lib/local-calendar-day';
 import { mockProjectScan } from '../../lib/generators/types';
 
 function scanAt(root: string) {
@@ -50,7 +51,10 @@ describe('AGENTS.md frontmatter (#63)', () => {
       return generateAgentsMd(scanAt(root));
     });
     expect(out).not.toContain('updated: 2020-01-01');
-    expect(out).toContain(`updated: ${new Date().toISOString().slice(0, 10)}`);
+    // Follows the generator (#600): `updated:` is the LOCAL calendar day now,
+    // so an assertion against the UTC one is red every evening after 20:00 EDT
+    // — the same four-hour window the defect itself lived in.
+    expect(out).toContain(`updated: ${localCalendarDay()}`);
   });
 
   it('drops a value that would terminate the block early', () => {

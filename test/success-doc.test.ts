@@ -461,10 +461,15 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
     // and reads exactly like the refusal under test. Re-exported from the
     // real module rather than stubbed, so this cannot pass by accident if
     // the import list grows.
-    writeFileSync(
-      join(fakePkg, "lib", "success-doc.ts"),
-      `export * from ${JSON.stringify(join(ROOT, "lib", "success-doc.ts"))};\n`,
-    );
+    // The import list grew in #600 (`lib/local-calendar-day`), which is the
+    // case this fixture was written to notice — so both siblings are
+    // re-exported rather than one.
+    for (const mod of ["success-doc", "local-calendar-day"]) {
+      writeFileSync(
+        join(fakePkg, "lib", `${mod}.ts`),
+        `export * from ${JSON.stringify(join(ROOT, "lib", `${mod}.ts`))};\n`,
+      );
+    }
     const root = project({});
     const r = spawnSync("bun", [join(fakePkg, "scripts", "create-success.ts"), "--project-root", root], {
       cwd: ROOT,

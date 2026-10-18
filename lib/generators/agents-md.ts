@@ -13,6 +13,7 @@ import type { ProjectScan } from "./types";
 import { OWNED_FILES, ownedFilesTable } from "../scaffold/owned-files";
 import { isHarnessItself } from "../harness-identity";
 import { typecheckDecision } from "../typescript-project";
+import { localCalendarDay } from "../local-calendar-day";
 
 /**
  * Build the AGENTS.md frontmatter block.
@@ -45,7 +46,7 @@ export function existingFrontmatter(root: string): Record<string, string> {
 }
 
 function buildFrontmatter(root: string): string {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localCalendarDay();
   const defaults: Record<string, string> = {
     "doc-type": "reference",
     status: "active",

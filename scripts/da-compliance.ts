@@ -14,6 +14,7 @@ import { readdirSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import { auditAgent, type AgentAudit, type Role } from "./audit-transcript.js";
 import { ROLES, getCriteria } from "../lib/eval-criteria.js";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 interface ComplianceOutput {
   date: string;
@@ -42,7 +43,7 @@ interface CriterionCompliance {
 }
 
 function computeCompliance(audits: AgentAudit[]): ComplianceOutput {
-  const date = new Date().toISOString().split("T")[0];
+  const date = localCalendarDay();
   const overallScore = audits.length > 0
     ? Math.round(audits.reduce((s, a) => s + a.score, 0) / audits.length)
     : 0;

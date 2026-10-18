@@ -17,6 +17,7 @@ import {
   fallowUnmeasuredNotice,
   type FallowUnavailable,
 } from "../lib/fallow-availability";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 const projectPath = process.argv[2];
 if (!projectPath || !existsSync(projectPath)) {
@@ -25,7 +26,7 @@ if (!projectPath || !existsSync(projectPath)) {
 }
 
 const projectName = basename(projectPath);
-const today = new Date().toISOString().split("T")[0];
+const today = localCalendarDay();
 
 // ── Fallow analysis ──────────────────────────────────────────
 

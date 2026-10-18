@@ -360,8 +360,19 @@ describe("SC-1482: the ratchet runs the pinned compiler", () => {
     // refusal nothing reaches. The mutant copy runs from a directory with no
     // node_modules at all.
     const src = readFileSync(join(ROOT, "scripts", "typecheck.ts"), "utf-8");
+    // A relative specifier in the copy resolves against the TEMP directory and
+    // dies on module resolution — which exits non-zero and reads exactly like
+    // the refusal under test. #600 added `../lib/local-calendar-day` and this
+    // case went red for that reason rather than for the compiler. Rewrite the
+    // specifiers to absolute paths, and refuse to run if one survived, so a
+    // future import the rewriter cannot see aborts loudly instead of passing.
+    const resolved = src.replace(
+      /(from\s+["'])(\.\.?\/[^"']+)(["'])/g,
+      (_m, open, spec, close) => `${open}${join(ROOT, "scripts", spec)}${close}`,
+    );
+    expect(resolved, "a relative specifier survived the rewrite").not.toMatch(/from\s+["']\.\.?\//);
     const copy = join(scratch, "typecheck-copy.ts");
-    writeFileSync(copy, src);
+    writeFileSync(copy, resolved);
     const r = spawnSync("bun", [copy], { cwd: scratch, encoding: "utf-8" });
     expect(r.status, "a missing compiler produced a result instead of a refusal").not.toBe(0);
     expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).toContain("bun install");

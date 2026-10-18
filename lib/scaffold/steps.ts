@@ -12,6 +12,7 @@ import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
 import { isHarnessItself } from "../harness-identity";
+import { localCalendarDay } from "../local-calendar-day";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
@@ -1804,7 +1805,7 @@ export function generateProjectState(root: string, actions: string[]): void {
     return;
   }
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
 
   interface SC { id: string; what: string; done: boolean; }
   const scs: SC[] = [];
@@ -1929,7 +1930,7 @@ export function seedSuccessDoc(root: string, actions: string[]): void {
     return;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localCalendarDay();
   const owner = process.env.USER || "TODO-OWNER";
   // The SHARED substitution. Writing the template raw here while
   // `create-success` substituted meant one seed with two possible byte

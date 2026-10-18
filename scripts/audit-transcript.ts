@@ -10,6 +10,7 @@ import {
   evaluateCriteria,
   ROLES,
 } from "../lib/eval-criteria.js";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 export { type ToolCall, type CriterionResult, type Role, type Verdict };
 
@@ -184,7 +185,7 @@ export function formatReport(audits: AgentAudit[]): string {
   const lines: string[] = [];
   lines.push("# Workflow Transcript Audit Report");
   lines.push(`\nAudited: ${audits.length} agents`);
-  lines.push(`Date: ${new Date().toISOString().split("T")[0]}`);
+  lines.push(`Date: ${localCalendarDay()}`);
 
   const avgScore = Math.round(audits.reduce((s, a) => s + a.score, 0) / audits.length);
   lines.push(`\n## Summary: ${avgScore}% average (${audits.map((a) => a.grade).join(", ")})`);

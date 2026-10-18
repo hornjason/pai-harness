@@ -2,6 +2,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 export interface SplitBoundary {
   heading: string;
@@ -166,7 +167,7 @@ export function generateSplitFiles(
   metadata: { owner: string; testable: boolean }
 ): SplitFile[] {
   const lines = content.split("\n");
-  const now = new Date().toISOString().split("T")[0];
+  const now = localCalendarDay();
   const groups = groupBoundaries(boundaries, lines.length);
 
   return groups.map((group) => {
