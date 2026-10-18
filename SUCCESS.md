@@ -168,7 +168,45 @@ registry, and goes red when either drifts. Bumping `package.json` without
 updating this line turns it red, which is what makes a release a two-commit
 operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-17)** — tree `0.5.0`, published `rungate@0.5.0`.
+- **Distribution standing (2026-10-18)** — tree `0.6.0`, published `rungate@0.5.0`.
+
+**Why `0.6.0` and not `0.5.1`.** Fifty-two commits past `v0.5.0`, carrying
+features and not only fixes — `#630`'s auth ladder, `#626`'s contract-parity
+script, `#622`'s Bun pinning. On this file's own test (*observable behaviour
+changes, not fixes*) a minor is the honest signal on 0.x.
+
+**What 0.6.0 is actually for, stated plainly: the consumer was pinned below the
+floor and every harness fix since 2026-10-17 was unreachable.** DBD declares
+`"rungate": "^0.4.0"`, and caret on a 0.x version means `>=0.4.0 <0.5.0` — so
+0.5.x was never installable there by any amount of `bun update`. Meanwhile four
+defects fixed on main cost that consumer real runs on 2026-10-18: #634 (wave
+integration onto a stale run ref), #611 (a collection lost to prose in
+`filesChanged`), #614 (evidence commands losing every `$`) and #621 (ship runs
+reporting `SUITE_FAILED` from test-command starvation). A harness whose fixes
+cannot reach the project it is harnessing is the distribution claim failing in
+a new way — not "published software nobody can install", but "installable
+software the consumer's own pin excludes".
+
+**`lib/scaffold/ai-review-step.ts` lands dormant.** It is the auth-detect step
+for the AI review gate (#630). No scaffold path emits it yet and it is not in
+the `exports` map — which has exactly five subpaths, none of them this — so a
+consumer cannot reach it even deliberately. The job that uses it ships
+separately. Read the diff and you would reasonably conclude the AI review gate
+exists; it does not.
+
+**Known issues shipping in 0.6.0, against claim 5.** #597: CI installs neither
+`agnix` nor `@reporails/cli`, so three Layer 1 compliance checks shell out to
+tools that are absent, and `npx @reporails/cli version` races a 5s probe budget
+— an identical SHA ran red at 20:48Z and green at 21:11Z with no code change. A
+green there means "npx was fast this time", not "the tools are available", and
+`release.yml:157` runs `bun test` inside the publish gate, so the coin flip sits
+in this very pipeline. #640: a ship run leaves the shared primary checked out on
+`rungate/run-<issue>` and never deletes the branch; two leftovers are sitting in
+the primary now. Both are open, neither is fixed here.
+
+**#626 landed `scripts/contract-parity.ts`** (six producer/consumer parity
+categories) in `a0a9e08d`, delivering 4 of its 7 SCs. SC-5, SC-6 and SC-7 are
+deferred to #637 and are not ticked.
 
 **The release pipeline reported a success for the first time.** `v0.3.0`,
 `v0.4.0` and `v0.4.1` all published correctly and all three ended in a red
