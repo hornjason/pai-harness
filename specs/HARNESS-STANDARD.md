@@ -3658,9 +3658,11 @@ both worth nothing.
 
 Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
 every run: the runner OS (CI is ubuntu-latest), a fresh `bun install`
-(node_modules is linked), the pinned bun version, the pull-request merge
-commit `actions/checkout` builds, network and API availability, and files git
-ignores. Naming them is the difference between a model and a promise, and the
+(node_modules is linked), the bun version (reported, not controlled — since
+#622 the run prints the bun it ran under and whether it matches what
+`.bun-version` declares, but nothing here switches runtimes), the pull-request
+merge commit `actions/checkout` builds, network and API availability, and
+files git ignores. Naming them is the difference between a model and a promise, and the
 promise is what failed.
 
 ---
