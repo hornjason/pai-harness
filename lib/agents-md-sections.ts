@@ -48,21 +48,71 @@
  * names what it dropped is a refusal the caller can act on.
  */
 
-/** The heading that opens the preserved section. Case-sensitive, at the start of a line. */
-const HARD_CONSTRAINTS = /^##[ \t]+Hard Constraints\b[^\n]*$/m;
+/**
+ * ## One merge, two files (#655)
+ *
+ * `.claude/agents/*.md` has the same problem AGENTS.md had, for the same
+ * reason: a rule mined from a project's own compliance history is
+ * non-inferable by construction — it is derived from what THIS repo's agents
+ * got wrong — and until #655 the only surfaces that could hold one were
+ * regenerated from harness-wide inputs. `templates/agent-briefs/_shared.md`
+ * resolves under `scan.harnessTemplatesDir`, so a project rule written there
+ * reaches every consumer.
+ *
+ * What differs between the two files is a heading and a list of anchors.
+ * What must NOT differ is the merge, the loss check, or the refusal — so
+ * those stay in one function and the vocabulary travels as data. Two copies
+ * of `preserveSections` with different constants would be two deciders
+ * answering one question, and a mutation of either would leave the other
+ * holding every case up (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+export interface SectionSpec {
+  /** How the file names the preserved section, for a refusal a human reads. */
+  label: string;
+  /** The heading that opens it. Case-sensitive, at the start of a line. */
+  heading: RegExp;
+  /**
+   * Where the section is re-inserted, in order of preference. An anchor that
+   * is not in the generated output is not an error — appending is.
+   */
+  anchors: RegExp[];
+}
+
+/** AGENTS.md's user-owned section (#568). */
+export const HARD_CONSTRAINTS_SECTION: SectionSpec = {
+  label: "## Hard Constraints",
+  heading: /^##[ \t]+Hard Constraints\b[^\n]*$/m,
+  // `## Rules` first, because constraints are rules and a reader scanning for
+  // one should not have to pass the Commands table to find the other. The
+  // fallbacks exist because a profile can omit sections.
+  anchors: [/^##[ \t]+Rules$/m, /^##[ \t]+Commands$/m, /^##[ \t]+Workflow$/m],
+};
+
+/**
+ * An agent brief's project-owned section (#655).
+ *
+ * A different heading from AGENTS.md's on purpose. The two sections hold
+ * different things — AGENTS.md's constraints are read by every agent, a
+ * brief's are scoped to one role — and one spelling for both would make a
+ * rule written in the wrong file look like it was in the right one.
+ *
+ * The anchors are the three headings every generated brief in this
+ * repository carries at least one of; `## Reference (read when needed)` is
+ * last in each template, so the section lands above it rather than after a
+ * table of file paths.
+ */
+export const BRIEF_CONSTRAINTS_SECTION: SectionSpec = {
+  label: "## Project Constraints",
+  heading: /^##[ \t]+Project Constraints\b[^\n]*$/m,
+  anchors: [
+    /^##[ \t]+Reference \(read when needed\)$/m,
+    /^##[ \t]+Workflow$/m,
+    /^##[ \t]+Reference$/m,
+  ],
+};
 
 /** Any other `##` heading — where the preserved section ends. */
 const NEXT_H2 = /^##[ \t]+/m;
-
-/**
- * Where the preserved section is re-inserted, in order of preference.
- *
- * `## Rules` first, because constraints are rules and a reader scanning for
- * one should not have to pass the Commands table to find the other. The
- * fallbacks exist because a profile can omit sections, and an anchor that is
- * not in the generated output is not an error — appending is.
- */
-const ANCHORS = [/^##[ \t]+Rules$/m, /^##[ \t]+Commands$/m, /^##[ \t]+Workflow$/m];
 
 export interface SectionReading {
   /** The section verbatim — heading line through the last line before the next `##`. */
@@ -94,9 +144,12 @@ export interface PreserveResult {
  * heading forward would make a run that preserved nothing look identical to
  * a run that preserved something.
  */
-export function readHardConstraints(content: string | null): SectionReading | null {
+export function readPreservedSection(
+  content: string | null,
+  spec: SectionSpec = HARD_CONSTRAINTS_SECTION,
+): SectionReading | null {
   if (content === null) return null;
-  const open = HARD_CONSTRAINTS.exec(content);
+  const open = spec.heading.exec(content);
   if (open === null) return null;
 
   const start = open.index;
@@ -112,6 +165,14 @@ export function readHardConstraints(content: string | null): SectionReading | nu
 }
 
 /**
+ * AGENTS.md's reading, by name. The existing callers ask this question and
+ * only this one; the spec'd form above is what a second file uses.
+ */
+export function readHardConstraints(content: string | null): SectionReading | null {
+  return readPreservedSection(content, HARD_CONSTRAINTS_SECTION);
+}
+
+/**
  * Graft the existing file's Hard Constraints section into freshly generated
  * content, and report anything the graft dropped.
  *
@@ -119,8 +180,12 @@ export function readHardConstraints(content: string | null): SectionReading | nu
  * every run, so the second run over its own output is byte-identical, which
  * is what SC-364 asks of every generator here.
  */
-export function preserveSections(existing: string | null, generated: string): PreserveResult {
-  const preserved = readHardConstraints(existing);
+export function preserveSections(
+  existing: string | null,
+  generated: string,
+  spec: SectionSpec = HARD_CONSTRAINTS_SECTION,
+): PreserveResult {
+  const preserved = readPreservedSection(existing, spec);
   if (preserved === null) return { content: generated, preserved: null, lost: [] };
 
   // A generated template that already carries the section is not a case
@@ -128,11 +193,11 @@ export function preserveSections(existing: string | null, generated: string): Pr
   // duplicate heading in a consumer's AGENTS.md. Its own section wins, and
   // the post-condition below reports whatever that costs.
   let content: string;
-  const own = readHardConstraints(generated);
+  const own = readPreservedSection(generated, spec);
   if (own !== null) {
     content = generated;
   } else {
-    const anchor = ANCHORS.map(a => a.exec(generated)).find(m => m !== null) ?? null;
+    const anchor = spec.anchors.map(a => a.exec(generated)).find(m => m !== null) ?? null;
     content =
       anchor === null
         ? `${generated.replace(/\s+$/, "")}\n\n${preserved.text}\n`

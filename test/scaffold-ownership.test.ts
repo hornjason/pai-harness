@@ -34,6 +34,7 @@ import {
 } from "../lib/scaffold/owned-files";
 import {
   generateConformityTest,
+  ownedSections,
   ownedStrategy,
   regenerateOwned,
   safeWrite,
@@ -76,6 +77,35 @@ describe("#208 SC-837: the declared list and the iterated list are the same obje
         .toBeGreaterThan(0);
       expect(f.avoid.length, `${f.path} says nothing to avoid`).toBeGreaterThan(0);
     }
+  });
+
+  // covers SC-2131 (AGENT-BRIEF-TEMPLATE-SPEC.md)
+  test("SC-2131: every section-preserving row declares WHICH section", () => {
+    // #655. `decideOwnedWrite`'s fourth parameter defaults to AGENTS.md's
+    // `## Hard Constraints`, so a row that declared the strategy and no
+    // section would merge a brief against a heading no brief has — and
+    // `preserveSections` returns the generated content untouched when it
+    // finds no section, which is byte-identical to the pre-#655 bug and
+    // reports nothing. Silent Default Substitution in the one position the
+    // declaration is supposed to be the whole answer.
+    const preserving = OWNED_FILES.filter(f => f.strategy === "section-preserving");
+    expect(preserving.length, "no section-preserving rows — this case has nothing to check")
+      .toBeGreaterThan(1);
+    for (const f of preserving) {
+      expect(f.sections, `${f.path} is section-preserving and names no section`).toBeDefined();
+      expect(f.sections!.label.length, `${f.path}'s section has no label`).toBeGreaterThan(0);
+      expect(f.sections!.anchors.length, `${f.path}'s section has nowhere to be re-inserted`)
+        .toBeGreaterThan(0);
+      // The lookup the generator calls, not the row read directly — the
+      // #208 lesson applied to the new field.
+      expect(ownedSections(f.path.replace("*", "example"))).toBe(f.sections);
+    }
+
+    // And the two are DIFFERENT sections. One heading for both files would
+    // make a rule written in the wrong file look like it was in the right
+    // one, and no behavioural case can see that.
+    const labels = new Set(preserving.map(f => f.sections!.label));
+    expect(labels.size, "two section-preserving files share one heading").toBe(preserving.length);
   });
 
   test("the DA-owned files are create-only, and nothing has tidied them away", () => {

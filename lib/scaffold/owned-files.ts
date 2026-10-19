@@ -53,7 +53,12 @@
 
 import { createHash } from "crypto";
 
-import { preserveSections } from "../agents-md-sections";
+import {
+  BRIEF_CONSTRAINTS_SECTION,
+  HARD_CONSTRAINTS_SECTION,
+  preserveSections,
+  type SectionSpec,
+} from "../agents-md-sections";
 
 /** How the generator writes one owned file. */
 export type WriteStrategy =
@@ -76,6 +81,14 @@ export interface OwnedFile {
   customize: string;
   /** The thing not to do. */
   avoid: string;
+  /**
+   * Which section carries forward. REQUIRED on a `section-preserving` row,
+   * and asserted as such by `test/scaffold-ownership.test.ts` — a row that
+   * declared the strategy and no section would silently merge against
+   * AGENTS.md's heading, which is *Silent Default Substitution* in the one
+   * place the declaration is supposed to be the whole answer.
+   */
+  sections?: SectionSpec;
 }
 
 /**
@@ -94,6 +107,7 @@ export const OWNED_FILES: OwnedFile[] = [
     strategy: "section-preserving",
     customize: "Everything but `## Hard Constraints` is generated from the scan and `.claude/rungate/`; put non-inferable project rules in that section and they carry forward",
     avoid: "Don't hand-edit the generated sections — a re-scaffold rewrites them without reporting it",
+    sections: HARD_CONSTRAINTS_SECTION,
   },
   {
     path: ".github/workflows/ci.yml",
@@ -108,10 +122,17 @@ export const OWNED_FILES: OwnedFile[] = [
     avoid: "Don't edit the generated `gates` job",
   },
   {
+    // `regenerate` until #655, and the declaration was never consulted:
+    // `generateAgentBriefsStep` called `writeFileSync` directly, so the row
+    // described behaviour that a bare overwrite happened to coincide with.
+    // The cost was that a rule mined from a project's own compliance history
+    // had nowhere in that project to live — every brief surface was rebuilt
+    // from harness-wide templates on the next scaffold.
     path: ".claude/agents/*.md",
-    strategy: "regenerate",
-    customize: "Settings from `.claude/rungate/roles.json`",
-    avoid: "Don't edit briefs",
+    strategy: "section-preserving",
+    customize: "Everything but `## Project Constraints` is generated from `.claude/rungate/roles.json` and the templates; put rules mined from this repo's own history in that section and they carry forward",
+    avoid: "Don't hand-edit the generated sections — a re-scaffold rewrites them without reporting it",
+    sections: BRIEF_CONSTRAINTS_SECTION,
   },
   {
     path: ".claude/rules/*.md",
@@ -150,6 +171,24 @@ export const OWNED_FILES: OwnedFile[] = [
     avoid: "Don't leave it as the seed; SUCCESS-1 refuses a template, and re-scaffold will not fill it in",
   },
 ];
+
+/**
+ * The declared row for a label, or null.
+ *
+ * One matcher. `ownedStrategy` and `ownedSections` are two questions about
+ * one row, and a second copy of the glob rule would be a second answer to
+ * "which row is this" that nothing compares against the first.
+ */
+export function ownedFileFor(label: string): OwnedFile | null {
+  for (const owned of OWNED_FILES) {
+    if (owned.path === label) return owned;
+    if (owned.path.includes("*")) {
+      const [prefix, suffix] = owned.path.split("*");
+      if (label.startsWith(prefix) && label.endsWith(suffix)) return owned;
+    }
+  }
+  return null;
+}
 
 /**
  * The markdown table for `.claude/rules/harness-managed.md`, generated.
@@ -250,6 +289,7 @@ export function decideOwnedWrite(
   strategy: WriteStrategy,
   existing: string | null,
   generated: string,
+  sections: SectionSpec = HARD_CONSTRAINTS_SECTION,
 ): WriteDecision {
   if (existing === null) {
     return {
@@ -267,13 +307,14 @@ export function decideOwnedWrite(
     // The merge is in `lib/agents-md-sections.ts`; what belongs HERE is the
     // decision, so a strategy cannot be implemented at a call site and left
     // out of the one binding every owned file routes through.
-    const merged = preserveSections(existing, generated);
+    const merged = preserveSections(existing, generated, sections);
     if (merged.lost.length > 0) {
       return {
         action: "refuse",
         reason:
-          `${merged.lost.length} line(s) of user-owned content would be lost, and the spec ` +
-          `guarantees they survive regeneration: ${merged.lost.join(" | ")}`,
+          `${merged.lost.length} line(s) of user-owned content would be lost from ` +
+          `${sections.label}, and the spec guarantees they survive regeneration: ` +
+          merged.lost.join(" | "),
       };
     }
     if (bytesIdentical(existing, merged.content)) {

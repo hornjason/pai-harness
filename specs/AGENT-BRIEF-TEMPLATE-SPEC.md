@@ -159,6 +159,131 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 - [x] SC-427: lib/create-brief.ts contains [tiers, agentMeta] — `agentMeta` and the tier map live in the brief factory now, not in scaffold-project.ts
 - [x] SC-428: lib/rule-registry.ts contains [identity]
 
+## A brief carries one project-owned region (#655)
+
+Every per-role surface an agent reads was regenerated from harness-wide
+inputs, so a reinforcement mined from a project's own compliance history had
+nowhere in that project to live. The four positions, each verified against
+the source at `db66dd79`:
+
+| Position | What it was |
+|---|---|
+| `lib/scaffold/owned-files.ts` | `.claude/agents/*.md` declared `regenerate`, *"Don't edit briefs"* |
+| `lib/scaffold/steps.ts` | the brief write was a bare `writeFileSync(p, content)` — no `ownedStrategy`, no `decideOwnedWrite`, so the declaration above was never consulted and a bare overwrite merely coincided with it |
+| `lib/generators/agent-briefs.ts` | reads only the templates, `_shared.md` and the scan; `_shared.md` resolves under `scan.harnessTemplatesDir`, so a project rule written there reaches every consumer |
+| `.claude/rungate/roles.json` | `tiers.reinforcement` is a list of section NAMES (`["Discovery Rules"]`), not rule text |
+
+`## Project Constraints` is the fourth option beyond #648's three
+destinations. It works the way `AGENTS.md`'s `## Hard Constraints` does
+(#568) and **through the same merge**, which is the design decision worth
+stating: `preserveSections` takes a `SectionSpec` and the two files supply
+different vocabularies. Two copies of the merge with different constants
+would be two deciders answering one question, and a mutation of either would
+leave the other holding every case up.
+
+The section is **opt-in** and no template emits it. A generated section
+would take `preserveSections`' own-section branch and refuse every
+re-scaffold on every consumer that had written one, which is the opposite of
+the promise.
+
+The hill-climb **prefers** the region and does not create it. Creating it
+would make `NO_SECTION` unreachable and silently change every receipt #646
+made reportable; a brief with none of the four headings still reaches that
+state.
+
+### Success Criteria (project-owned region)
+
+- [ ] SC-2131: test/scaffold-ownership.test.ts contains [every section-preserving row declares WHICH section] — and that the two rows name different headings, because one spelling for both files would make a rule written in the wrong file look like it was in the right one
+- [ ] SC-2132: test/brief-project-region.test.ts contains [a marker written into the region survives a re-scaffold verbatim] — the premise is asserted first: the generator's own output contains neither the marker nor the heading, and the run really regenerated
+- [ ] SC-2133: test/brief-project-region.test.ts contains [the merge is idempotent — a third run is byte-identical]
+- [ ] SC-2134: test/brief-project-region.test.ts contains [no shipped template emits the project-owned heading]
+- [ ] SC-2135: test/brief-project-region.test.ts contains [the write is refused, the lines are named, and the file is untouched] — read off disk, byte-compared against the content before the run
+- [ ] SC-2136: test/brief-project-region.test.ts contains [the same colliding templates write freely when no region was planted] — the control, so the refusal is about the region and not about an unreadable template
+- [ ] SC-2137: test/brief-project-region.test.ts contains [a COMMIT reinforcement lands in the region and survives a re-scaffold]
+- [ ] SC-2138: test/brief-project-region.test.ts contains [with no region the loop still uses a generated heading, and NO_SECTION still fires]
+- [ ] SC-2139: test/brief-project-region.test.ts contains [the brief write reads OWNED_FILES rather than naming a strategy] — asserted over a structural cut of the write loop, not a fixed window (#664)
+
+### The mutation battery, predicted and measured
+
+Measured over `test/brief-project-region.test.ts` +
+`test/scaffold-ownership.test.ts` + `test/unit/scaffold-probe-order.test.ts`
+(48 tests). Every count was predicted before the battery ran, and **the
+baseline row was read before any mutation row** — an instrument that has
+stopped reporting takes the baseline down with it, and that is the row
+nobody checks. The baseline's composition was read too: 8 + 33 + 7.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 48 pass, 0 fail | **48 pass, 0 fail** | — |
+| the genuinely pre-#655 write: the loop body replaced by `writeFileSync(p, content)` | 5 | **6 of 48** | a scratch project scaffolded, `## Project Constraints\n\n- CANARY-655` appended to `marcus.md`, scaffolded again. Printed and compared before the row was counted: the original's brief contains `CANARY-655` afterwards, the mutant's does not |
+| the `OWNED_FILES` row flipped back to `regenerate`, the write path untouched | 5 | **6 of 48** | the same fixture. `ownedStrategy` resolves `regenerate`, so `decideOwnedWrite` takes the plain branch and the line is gone |
+| **the cheapest wrong fix**, applied in full | 2 | **2 of 48** — SC-2139 and SC-2131, and nothing else | a tree where the behaviour is right and every declared surface is wrong. See below |
+| `preserveSections` short-circuited to return the generated content | 3 | **3 of 48** | the same fixture: the merge is the only thing carrying the section, so the write lands without it and the collision can no longer be detected |
+| `ownedSections(label)` dropped from the brief's `decideOwnedWrite` call | 3 | **4 of 48** | the same fixture. The call then defaults to `## Hard Constraints`, which no brief has, so the region reads as absent — Silent Default Substitution, and the reason the parameter is declared on the row |
+| the refusal arm writes the generated content and reports `UPDATED` | 1 | **1 of 48** — SC-2135 | the colliding-templates fixture: the original refuses and names `CANARY-655`, the mutant writes a brief with the planted line gone and reports success. #568's defect, reintroduced in the new file |
+| the hill-climb's `projectIdx` preference removed | 1 | **1 of 48** — SC-2137 | a brief carrying both `## Project Constraints` and `## Testing Rules`: the original puts the reinforcement in the region and it survives the next scaffold, the mutant puts it under `## Testing Rules` and the next scaffold deletes it |
+
+**Two rows came back HIGH, and in both the extra red is the real kind.**
+Both are SC-2139, which asserts the declaration is in the path on *two*
+sides — the row says `section-preserving`, and the write loop resolves it
+through `ownedStrategy`/`ownedSections` rather than carrying a literal. The
+predictions counted the behavioural cases and forgot the case written
+specifically to watch the declaration. Not a crashing mutant in either row:
+42 of 48 still pass and every red is about the brief write. Per
+`.claude/rules/checks-must-be-able-to-fail.md`, that is "the prediction was
+wrong and the check is better than you thought".
+
+#### The cheapest wrong fix, named, applied and measured
+
+**Named:** call the preservation at `generateAgentBriefsStep`'s write site —
+a literal `"section-preserving"` and a literal `BRIEF_CONSTRAINTS_SECTION`
+— and leave the `OWNED_FILES` row and `.claude/rules/harness-managed.md`
+both saying `regenerate` / *"Don't edit briefs"*. One import, two literals.
+
+It is the 5pm repair and it **works**: `bun run typecheck` reports 0 errors
+and **46 of 48 pass**. Every behavioural case is green — the marker
+survives, the merge is idempotent, the refusal fires and names its lines,
+the reinforcement lands in the region and survives a re-scaffold. The three
+reconciliation cases in `test/scaffold-ownership.test.ts` are green too,
+*because `OWNED_FILES` was never touched*, so the doc and the declaration
+still agree with each other about the wrong thing.
+
+What ships is a brief that preserves edits while every surface a human or an
+agent reads to decide whether to edit one says not to — the declared
+contract and the behaviour disagreeing, with the documentation as the half
+that is wrong. That is the state the bare `writeFileSync` had already left
+this row in, and it is why criterion 3 is load-bearing rather than
+documentation hygiene.
+
+**The two cases that survive it are SC-2131 and SC-2139, and they are the
+only protection.** SC-2131 because reverting the row leaves one
+section-preserving entry where the declaration now requires more than one
+that declares its section; SC-2139 because it reads the write loop and
+refuses a strategy literal there. Neither is a behavioural case and neither
+could be — a repair that is behaviourally correct cannot be caught by
+watching behaviour.
+
+None of the seven mutations is left in the tree; all were run and reverted,
+and `lib/scaffold/steps.ts`, `lib/scaffold/owned-files.ts`,
+`lib/agents-md-sections.ts`, `lib/compliance-report.ts`,
+`.claude/rules/harness-managed.md` and `test/brief-project-region.test.ts`
+were confirmed byte-identical to the measured source afterwards by
+`shasum -a 256 -c`, with the baseline re-measured at 48 pass / 0 fail.
+
+### What #655 did NOT do
+
+- **The region is not created for a consumer.** A project opts in by writing
+  the heading, exactly as it does for `AGENTS.md`'s `## Hard Constraints`.
+  Making the hill-climb write the heading when it is absent would make
+  `NO_SECTION` unreachable and change every receipt #646 shipped, so it is a
+  decision for #648 with that cost stated rather than a side effect here.
+- **The `COMMIT` default is unchanged.** Which destination the shipped loop
+  uses is #648's first criterion and has to move
+  `scripts/persist-compliance.ts`'s re-grade step with it.
+- **`roles.json` still carries section names, not rule text.** Nothing here
+  needed it: the region is in the brief, which is where a rule an agent
+  reads has to be.
+
 ## Cautions
 
 - Template files are scaffold INPUTS, not outputs — don't regenerate them on re-scaffold
