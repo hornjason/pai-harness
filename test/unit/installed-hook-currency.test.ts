@@ -14,9 +14,18 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createGitHooks, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
+// `import.meta.main` is false under an import, so this loads the table without
+// running the check. Importing the labels rather than retyping them is the
+// point: a test carrying its own copy of the strings asserts that two literals
+// agree, which they do, right up until one of them is edited.
+import {
+  REFUSAL_PREFIX,
+  type RefusalClass,
+} from '../../scripts/check-installed-hook-currency';
 
 /**
  * Covers SC-2043, SC-2044, SC-2045 (HARNESS-STANDARD.md) — #599.
+ * Covers SC-2141..SC-2146 (HARNESS-STANDARD.md) — #613.
  *
  * `scripts/check-installed-hook-currency.ts` — the installed `.git/hooks/pre-commit`
  * read at the SHARED git common dir and compared against what the generator
@@ -125,6 +134,46 @@ function expectRefused(args: string[], reason: RegExp) {
   ).toBe(0);
 }
 
+/**
+ * #613. The same proof, plus the CLASS the refusal was reported under.
+ *
+ * An exit code says a refusal happened; it cannot say WHAT was refused, and
+ * before #613 every refusal in this script printed the staleness label — so
+ * `expectRefused` above was satisfied by a flag typo reporting the installed
+ * hook as stale on a checkout whose hook was current.
+ *
+ * Two assertions and the second is the one that means something. Asserting the
+ * expected prefix is PRESENT is satisfied by a line carrying every prefix; the
+ * claim is that the reader can TELL the classes apart, so every other prefix
+ * in the table is asserted absent by name. The reason regexp is asserted too,
+ * because a run that died before producing any message has an empty stderr,
+ * which contains no wrong prefix either.
+ */
+function expectRefusedAs(args: string[], cls: RefusalClass, reason: RegExp) {
+  const real = run(SCRIPT, args);
+  expect(real.code, `expected a refusal for [${args.join(' ')}]\n${real.err}`).not.toBe(0);
+  expect(real.err, `the refusal does not say what it is about\n${real.err}`).toMatch(reason);
+  expect(
+    real.err.startsWith(`${REFUSAL_PREFIX[cls]}: `),
+    `[${args.join(' ')}] should be reported as ${cls}, and the line reads:\n${real.err}`,
+  ).toBe(true);
+  for (const [other, prefix] of Object.entries(REFUSAL_PREFIX)) {
+    if (other === cls) continue;
+    expect(
+      real.err.includes(prefix),
+      `[${args.join(' ')}] is a ${cls} refusal and the output also carries the ${other} ` +
+        `label, so the two classes are not distinguishable:\n${real.err}`,
+    ).toBe(false);
+  }
+
+  const mutant = run(MUTANT, args);
+  expect(
+    mutant.code,
+    `the mutant (REFUSE_EXIT = 0) still exited ${mutant.code} for [${args.join(' ')}] — ` +
+      `this case is not being caught by the refusal under test.\n${mutant.err}`,
+  ).toBe(0);
+}
+
 // ── The property the mutant protects (the #129 pattern) ──────────────────
 
 describe('#599: the refusal is routed through exactly one exit code', () => {
@@ -159,13 +208,118 @@ describe('#599: the refusal is routed through exactly one exit code', () => {
   });
 });
 
+// ── #613: the exit code says a refusal happened; the class says what ─────
+
+describe('#613: an argument error is not a verdict about the installed hook', () => {
+  test('SC-2141: an unrecognised option, a missing value and an unexpected argument each name the argument', () => {
+    // The filed symptom, verbatim: `--harness` instead of `--generator` on a
+    // checkout whose hook was current printed a staleness verdict, and the
+    // remedy that label implies — --install, or a re-scaffold — replaces a
+    // hook that was fine. Nothing about the installed hook had been read.
+    //
+    // All three inputs are `parseArgs`', which is exactly why they are not on
+    // their own sufficient: see SC-2142.
+    expectRefusedAs(['--project', '.', '--harness', 'x'], 'ARGUMENTS', /--harness/);
+    expectRefusedAs(['--project'], 'ARGUMENTS', /--project needs a value/);
+    expectRefusedAs(['not-a-flag'], 'ARGUMENTS', /unexpected argument "not-a-flag"/);
+  });
+
+  test('SC-2142: a refusal raised OUTSIDE parseArgs is not reported as an argument error either', () => {
+    // This is the case the cheapest wrong fix does not survive, and it is here
+    // deliberately (.claude/rules/checks-must-be-able-to-fail.md, fifth shape).
+    //
+    // The 5pm repair for SC-2141 is three lines: wrap the `parseArgs` call in
+    // its own try and leave the outer catch labelling everything else stale.
+    // The reported symptom disappears, SC-2141 goes green in full — all three
+    // of its inputs are ones parseArgs owns — and ten of the thirteen throw
+    // sites stay mislabelled, including all four generator ones.
+    //
+    // A generator root with no lib/scaffold/steps.ts is the cheapest input
+    // outside parseArgs. It is also the class that matters most: "the
+    // installed hook differs from the generator" is a measurement and "the
+    // generator could not be run" is the absence of one, and the defective
+    // version reported the absence as the stalest available verdict.
+    const empty = join(FIX, 'no-generator');
+    mkdirSync(empty, { recursive: true });
+    expectRefusedAs(
+      ['--project', repoWithHook('unmeasurable', CURRENT), '--generator', empty],
+      'UNMEASURED',
+      /could not load the hook generator/,
+    );
+  });
+
+  test('SC-2143: the four readings are four different strings', () => {
+    // `0`, `{}`, `null` and silence are indistinguishable from success. Four
+    // classes sharing one label is the same defect one level up, and it is
+    // what this file shipped with: an argument error, a measured difference
+    // and a reading that was never taken all printed the same sentence.
+    const prefixes = Object.values(REFUSAL_PREFIX);
+    expect(new Set(prefixes).size, 'two classes share a label and cannot be told apart').toBe(
+      prefixes.length,
+    );
+    // No prefix may be a prefix of another, or startsWith() cannot separate
+    // them and neither can a reader scanning the start of a line.
+    for (const a of prefixes) {
+      for (const b of prefixes) {
+        if (a === b) continue;
+        expect(a.startsWith(b), `"${a}" starts with "${b}"`).toBe(false);
+      }
+    }
+    // Each literal is written once, in the table. A second copy at a print
+    // site would survive any mutation of the table and both would read as
+    // covered — the fourth shape.
+    for (const p of prefixes) {
+      expect(source.split(p).length - 1, `the ${p} label is written in more than one place`).toBe(1);
+    }
+  });
+
+  test('SC-2145: every raise names a class, and every class is raised', () => {
+    // Without this a new refusal added later takes whatever label the catch
+    // happens to default to, which is how all thirteen came to share one.
+    const raises = source.match(/new HookRefused\(\s*("[A-Z_]+")?/g) || [];
+    expect(raises.length, 'no HookRefused is raised at all — nothing can refuse').toBeGreaterThan(0);
+    const classes = Object.keys(REFUSAL_PREFIX);
+    for (const r of raises) {
+      const named = /"([A-Z_]+)"/.exec(r)?.[1];
+      expect(
+        named && classes.includes(named),
+        `${r.replace(/\s+/g, ' ')} does not name a class from REFUSAL_PREFIX, so whatever it ` +
+          `refuses will be reported under some other class's label`,
+      ).toBe(true);
+    }
+    // And the table has no dead rows: a class nothing raises is a label that
+    // can never appear, which no behavioural case could notice.
+    for (const c of classes) {
+      expect(
+        (source.match(new RegExp(`new HookRefused\\(\\s*"${c}"`, 'g')) || []).length,
+        `the ${c} class is declared in REFUSAL_PREFIX and raised nowhere`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  test('SC-2146: the class is carried on the raise, and the catch is the only reader of it', () => {
+    // One decider. A catch that re-derived the class by matching the message
+    // text would be a second reading of a fact the raise already holds — two
+    // deciders that agree, which no behavioural test can tell apart.
+    const lookups = source.match(/REFUSAL_PREFIX\[/g) || [];
+    expect(lookups.length, 'the prefix table is indexed from more than one position').toBe(1);
+    expect(source, 'the catch no longer reads the class off the refusal').toContain(
+      'REFUSAL_PREFIX[e.refusalClass]',
+    );
+    // Exactly one position turns a refusal into a line of output. The
+    // pre-#613 file had two, and only one of them was entitled to its label.
+    const prints = source.match(/console\.error\(/g) || [];
+    expect(prints.length, 'a second print site is a second decider about the label').toBe(1);
+  });
+});
+
 // ── What it refuses ──────────────────────────────────────────────────────
 
 describe('#599: an installed hook that is not the generator output is refused', () => {
   test('SC-2043: a checkout with no installed pre-commit is refused', () => {
     // Not "clean". A hook nobody installed is a hook that enforces nothing,
     // and silence there is indistinguishable from a current one.
-    expectRefused(against(repoWithHook('absent', null)), /no .*pre-commit|not installed/i);
+    expectRefusedAs(against(repoWithHook('absent', null)), 'STALE', /no .*pre-commit|not installed/i);
   });
 
   test('SC-2043: a hook that predates the worktree guard is refused, and the refusal names it', () => {
@@ -181,7 +335,7 @@ describe('#599: an installed hook that is not the generator output is refused', 
       '',
     ].join('\n');
     const dir = repoWithHook('pre-450', pre450);
-    expectRefused(against(dir), /worktree guard/i);
+    expectRefusedAs(against(dir), 'STALE', /worktree guard/i);
     expect(run(SCRIPT, against(dir)).err, 'the refusal does not say how to fix it').toMatch(/--install/);
   });
 
@@ -195,12 +349,13 @@ describe('#599: an installed hook that is not the generator output is refused', 
     expect(pre599, 'the pre-#599 fixture is identical to the current hook').not.toBe(CURRENT);
     expect(pre599, 'the fixture lost the worktree guard too, so it cannot isolate the updater leg')
       .toContain('--git-common-dir');
-    expectRefused(against(repoWithHook('pre-599', pre599)), /updater resolution/i);
+    expectRefusedAs(against(repoWithHook('pre-599', pre599)), 'STALE', /updater resolution/i);
   });
 
   test('SC-2043: a hand-written hook is refused rather than silently compared', () => {
-    expectRefused(
+    expectRefusedAs(
       against(repoWithHook('hand-written', '#!/bin/sh\n# mine\nexit 0\n')),
+      'STALE',
       /hand-written|not managed/i,
     );
   });
@@ -210,12 +365,34 @@ describe('#599: an installed hook that is not the generator output is refused', 
     // that asked only for the guards would be satisfiable by pasting three
     // strings into a hook that does nothing with them.
     const drifted = `${CURRENT}\n# a line somebody added by hand\n`;
-    expectRefused(against(repoWithHook('drifted', drifted)), /not byte-identical|differs/i);
+    expectRefusedAs(against(repoWithHook('drifted', drifted)), 'STALE', /not byte-identical|differs/i);
   });
 
   test('an unknown option and a missing value are both refused', () => {
     expectRefused(['--nonsense', 'x'], /unknown option/i);
     expectRefused(['--project'], /needs a value/i);
+  });
+
+  test('SC-2144: the staleness label belongs to the currencyRefusal return path alone', () => {
+    // Criterion 2 of #613 pinned to the BINDING rather than to a count. There
+    // are five refusal classes produced by one `return` path and thirteen
+    // throw sites that are not refusals of that kind at all, so "the five
+    // existing refusals keep their prefix" is a claim about where the label is
+    // attached, not about how many messages carry it.
+    const raises = source.match(/new HookRefused\(\s*"STALE"/g) || [];
+    expect(raises.length, 'the staleness class is raised from more than one position').toBe(1);
+
+    const at = source.indexOf('new HookRefused("STALE"');
+    const line = source.slice(source.lastIndexOf('\n', at) + 1, source.indexOf('\n', at));
+    expect(
+      line,
+      'the staleness raise is no longer the currencyRefusal verdict, so the label has ' +
+        'detached from the only decider entitled to it',
+    ).toContain('if (refusal)');
+    expect(
+      source.slice(0, at),
+      'currencyRefusal is not called above the staleness raise',
+    ).toContain('currencyRefusal(readIfPresent(path)');
   });
 });
 
@@ -252,7 +429,7 @@ describe('#599: a current hook passes, and the read is at the shared common dir'
     // And the same worktree over a STALE shared hook must refuse, or the case
     // above would pass for a check that never read anything.
     writeFileSync(join(primary, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\n# mine\nexit 0\n');
-    expectRefused(against(linked), /hand-written|not managed/i);
+    expectRefusedAs(against(linked), 'STALE', /hand-written|not managed/i);
   });
 
   test('SC-2045: --install writes the generator output and the next run is current', () => {
@@ -275,7 +452,11 @@ describe('#599: a current hook passes, and the read is at the shared common dir'
     writeFileSync(outside, 'not a hook\n');
     symlinkSync(outside, join(dir, '.git', 'hooks', 'pre-commit'));
 
-    expectRefused([...against(dir), '--install'], /symlink/i);
+    // #613: an --install that cannot write is an INSTALL refusal, not a
+    // staleness verdict. The operator ran --install BECAUSE something said the
+    // hook was stale; saying it again names the command that just failed as
+    // the remedy for the command that just failed.
+    expectRefusedAs([...against(dir), '--install'], 'INSTALL', /symlink/i);
     expect(readFileSync(outside, 'utf-8'), 'the generator was written through the link').toBe('not a hook\n');
   });
 });
