@@ -16,6 +16,13 @@
  * #267/#136 manoeuvre that left 907 lines of unreviewed output on `main`. So
  * two things are asserted together throughout: the output arrives, AND it
  * never arrives on a default branch.
+ *
+ * Covers SC-2084..SC-2091 (HARNESS-STANDARD.md), #652 — the two describes at
+ * the foot of this file. #420 shipped the ref and the comparison; #652 is
+ * about what the run SAYS when either goes wrong, and about the one input
+ * #420 never considered: the shared checkout is shared, so a peer session can
+ * move it between the moment the ref is established and the moment a wave
+ * commits onto it.
  */
 
 import { describe, test, expect } from "bun:test";
@@ -310,6 +317,176 @@ describe("#420 — integrateWave", () => {
   });
 });
 
+/**
+ * Covers SC-2084..SC-2088 (HARNESS-STANDARD.md), #652.
+ *
+ * Two consecutive ship runs died at `IMPLEMENT_FAILED` carrying one sentence —
+ * "the wave commit did not report success" — and both needed hand assembly.
+ * The journal for `wf_9bb6f96d-200` holds the answer the run was holding and
+ * discarded: `collect-wave-1` succeeded with four files staged, then
+ * `commit-wave-1` replied `{committed:false, branch:"main", sha:""}`. A peer
+ * session had moved the shared `PROJECT_ROOT` checkout onto `main` mid-run and
+ * the commit prompt's own `main|master` guard refused, exactly as it should.
+ *
+ * `integrateWave` returned the generic sentence on `committed !== true` and
+ * RETURNED. The comparison that would have named `main` and the run ref is the
+ * next statement, so it never ran — the branch the agent reported was read
+ * into nothing. An operator is told a commit failed and not told that their
+ * checkout is the reason, which is the difference between a one-line `git
+ * switch` and hand-assembling a run.
+ *
+ * ## Four cells, because `committed` and the branch are two readings
+ *
+ * `committed` says whether a commit happened. The branch says WHERE the
+ * checkout was. They are independent, and folding them into one `if` is what
+ * made two of the four cells unreachable. All four are driven here, each as
+ * its own case, and the two cells where the branch disagrees both name it —
+ * that is the clause `committed !== true` was eating.
+ *
+ * ## The cheapest wrong fix, and whether these cases survive it
+ *
+ * Delete or widen the commit prompt's `case "$branch" in main|master) …
+ * exit 1`. The symptom is a refusal, so the 5pm repair is to stop refusing:
+ * the wave commits, the run completes, and unreviewed agent output lands on
+ * the default branch — #267/#136 verbatim, which on 2026-10-11 left 907 lines
+ * of it staged on `main`.
+ *
+ * Every case below SURVIVES that fix, and survives it VACUOUSLY rather than by
+ * catching it: the commit reply is injected here, so no shell guard runs in
+ * any of them and widening or deleting it changes none of their verdicts.
+ * What catches it is SC-1564 above, which reads the prompt text and asserts
+ * `main|master` is in it. The halves are deliberately separate — a case that
+ * both read the prompt and judged the reply would be two questions in one
+ * assertion (#484), and would go green under half a repair.
+ */
+describe("#652 — a wave commit refusal names the branch it was handed", () => {
+  const RUN_REF = "rungate/run-652";
+  // The sentence the two dead runs got, and the whole of what they got.
+  const GENERIC = "the wave commit did not report success";
+  // An alternation, not the exact sentence. What AC-1 asks is that the detail
+  // still SAYS no commit happened once it has learned to name the branch;
+  // pinning the wording would turn a reworded-but-correct message red, which
+  // is a detector narrower than the thing it detects.
+  const SAYS_NO_COMMIT = /did not report success|did not commit|no commit|commit failed|was not committed/i;
+
+  const accepted = [
+    {
+      ok: true,
+      buildResult: {
+        success: true,
+        worktreePath: "/tmp/wt1",
+        worktreeRepo: "git@github.com:owner/project.git",
+        filesChanged: ["a.ts"],
+      },
+    },
+  ];
+
+  async function integrate(commitReply: unknown) {
+    const { fns } = loadRunRef({ commitReply });
+    return await fns.integrateWave(accepted, 0, 2, RUN_REF);
+  }
+
+  // `main` for the committed:false cell, because that is the reply the dead
+  // run actually produced. `fix/someone-elses-work` for the committed:true
+  // cell, because a default branch is caught by `runRefRefusal` as well as by
+  // the comparison, and SC-1565 already measured that pair at 0 of 196 red —
+  // two deciders agreeing is one decider (SC-1565's own comment says so).
+  const FOREIGN_REF = "fix/someone-elses-work";
+
+  test("SC-2084: all four committed-by-branch cells are separate outcomes", async () => {
+    const tt = await integrate({ committed: true, sha: "abc1234", branch: RUN_REF });
+    const tf = await integrate({ committed: true, sha: "dead123", branch: FOREIGN_REF });
+    const ft = await integrate({ committed: false, sha: "", branch: RUN_REF });
+    const ff = await integrate({ committed: false, sha: "", branch: "main" });
+
+    // Exactly one cell succeeds. Without this a decider that refused
+    // everything, or accepted everything, would satisfy half the file.
+    expect([tt.ok, tf.ok, ft.ok, ff.ok]).toEqual([true, false, false, false]);
+
+    // AC-2: the branch disagreement is reported in BOTH committed arms. This
+    // is the clause the `committed !== true` early return ate — `ff` is the
+    // reply `wf_9bb6f96d-200` got.
+    for (const [name, out, landed] of [["tf", tf, FOREIGN_REF], ["ff", ff, "main"]] as const) {
+      expect(out.detail, `${name} must name the branch it landed on`).toContain(landed);
+      expect(out.detail, `${name} must name the ref it expected`).toContain(RUN_REF);
+    }
+
+    // And the three failures are three different sentences. Composing one
+    // message for every failing cell would satisfy every `toContain` above
+    // while telling an operator the same thing in all three.
+    expect(new Set([tf.detail, ft.detail, ff.detail]).size).toBe(3);
+
+    // That set is not enough on its own, and the battery said so: one
+    // composed message for every failing cell measured 1 red where 2 was
+    // predicted, because `tf` and `ff` name DIFFERENT branches, so the three
+    // strings differ whatever the sentence around them is. Distinctness by
+    // branch name is not distinctness by cell.
+    //
+    // So vary exactly ONE reading. `tm` and `ff` report the same branch and
+    // differ only in `committed`, which makes this a measurement of the flag
+    // rather than of the string interpolated beside it (#585).
+    const tm = await integrate({ committed: true, sha: "dead123", branch: "main" });
+    expect(tm.ok).toBe(false);
+    expect(tm.detail, "a commit that landed on main and one that never happened are different facts")
+      .not.toBe(ff.detail);
+  });
+
+  test("SC-2085: committed true onto another ref names both, and does not claim the commit failed", async () => {
+    const out = await integrate({ committed: true, sha: "dead123", branch: FOREIGN_REF });
+    expect(out.ok).toBe(false);
+    expect(out.detail).toContain(FOREIGN_REF);
+    expect(out.detail).toContain(RUN_REF);
+    // A commit DID happen in this cell; it landed in the wrong place. Saying
+    // "did not report success" here would be false, and asserting its absence
+    // is what stops the cheap repair of appending the generic sentence to
+    // every failure — which would pass every `toContain` in this describe.
+    expect(out.detail).not.toMatch(SAYS_NO_COMMIT);
+  });
+
+  test("SC-2086: committed false naming main names main and the run ref", async () => {
+    // AC-1 verbatim: the reply `wf_9bb6f96d-200` recorded, against the run ref
+    // this issue is shipping under.
+    const out = await integrate({ committed: false, branch: "main", sha: "" });
+    expect(out.ok).toBe(false);
+    expect(out.detail).toContain("main");
+    expect(out.detail).toContain(RUN_REF);
+    // Both facts, not one: no commit happened AND the checkout is elsewhere.
+    expect(out.detail).toMatch(SAYS_NO_COMMIT);
+    // The regression stated as the exact string the two dead runs carried.
+    expect(out.detail).not.toBe(GENERIC);
+  });
+
+  test("SC-2087: committed false on the run ref reports the commit, and invents no branch", async () => {
+    // The cell with nothing to disagree about. It exists so the branch clause
+    // cannot be unconditional: a detail that named a disagreement here would
+    // be reporting one that did not happen, and `git commit` exiting non-zero
+    // on the right branch is an ordinary failure with an ordinary cause.
+    const out = await integrate({ committed: false, sha: "", branch: RUN_REF });
+    expect(out.ok).toBe(false);
+    expect(out.detail).toMatch(SAYS_NO_COMMIT);
+    expect(out.detail).toContain(RUN_REF);
+    expect(out.detail).not.toContain("main");
+  });
+
+  test("SC-2088: committed false with no branch at all names no branch", async () => {
+    // The positive control for the two cells above. The agent reported
+    // nothing about where it was, so there is nothing to name — and a
+    // composition that always appends a branch clause would print an empty
+    // one here and read as a disagreement with the ref.
+    const out = await integrate({ committed: false, sha: "", branch: "" });
+    expect(out.ok).toBe(false);
+    expect(out.detail).toMatch(SAYS_NO_COMMIT);
+    expect(out.detail).not.toContain("main");
+    expect(out.detail).not.toContain(FOREIGN_REF);
+    // Nothing about a branch AT ALL, not merely no branch name. "it reported
+    // branch , not the run ref rungate/run-652" names neither `main` nor any
+    // other branch and would satisfy the two lines above while printing an
+    // empty branch clause — which is what an unconditional composition does
+    // to the one cell that has nothing to compose.
+    expect(out.detail).not.toMatch(/branch|run ref|rungate\//i);
+  });
+});
+
 describe("#420 — the dispatch path", () => {
   type Spawn = { label: string; at: number };
 
@@ -317,9 +494,18 @@ describe("#420 — the dispatch path", () => {
     branchAfter?: string;
     failTitles?: string[];
     integrateFails?: boolean;
+    // #652. One reply per time the dispatcher asks where the shared checkout
+    // is; the last entry is reused if it asks more often. The default below is
+    // unchanged for every caller that passes none, so the #420 cases are
+    // driven by exactly the harness they were written against.
+    refReplies?: Array<{ branch: string; refusal: string | null }>;
   }) {
     const spawns: Spawn[] = [];
-    const integrations: Array<{ waveIndex: number; total: number; accepted: number }> = [];
+    const integrations: Array<{ waveIndex: number; total: number; accepted: number; runRef: unknown }> = [];
+    // `at` is the spawn clock, so a read is ordered against the spawns rather
+    // than against the other reads: "before wave 2's agents" is the claim
+    // #652 AC-3 makes, and a count of reads cannot witness it.
+    const refReads: Array<{ at: number; branch: string }> = [];
     const logs: string[] = [];
     let clock = 0;
 
@@ -355,9 +541,16 @@ describe("#420 — the dispatch path", () => {
       () => ({ refusal: null }),
       "owner/project",
       () => null,
-      async () => ({ branch: opts.branchAfter ?? "rungate/run-420", refusal: null }),
-      async (acc: unknown[], waveIndex: number, total: number) => {
-        integrations.push({ waveIndex, total, accepted: acc.length });
+      async () => {
+        const seq = opts.refReplies;
+        const reply = seq && seq.length > 0
+          ? seq[Math.min(refReads.length, seq.length - 1)]
+          : { branch: opts.branchAfter ?? "rungate/run-420", refusal: null };
+        refReads.push({ at: clock, branch: reply.branch });
+        return reply;
+      },
+      async (acc: unknown[], waveIndex: number, total: number, runRef: unknown) => {
+        integrations.push({ waveIndex, total, accepted: acc.length, runRef });
         return opts.integrateFails
           ? { ok: false, integrated: 0, detail: "collect failed" }
           : { ok: true, integrated: 1 };
@@ -368,7 +561,7 @@ describe("#420 — the dispatch path", () => {
       loadRunRef({}).fns.waveNeedsIntegration,
     ) as (subIssues: unknown[]) => Promise<any>;
 
-    return { runDecomposedShip, spawns, integrations, logs };
+    return { runDecomposedShip, spawns, integrations, refReads, logs };
   }
 
   const LAYERED = [
@@ -386,7 +579,11 @@ describe("#420 — the dispatch path", () => {
     const result = await d.runDecomposedShip(LAYERED);
     expect(result.success, JSON.stringify(result.failed || [])).toBe(true);
     // Two waves, one barrier, one integration — and it is the FIRST wave's.
-    expect(d.integrations).toEqual([{ waveIndex: 0, total: 2, accepted: 1 }]);
+    // The run ref is recorded alongside, because #652 makes it a value that
+    // can change between waves rather than a constant set once.
+    expect(d.integrations).toEqual([
+      { waveIndex: 0, total: 2, accepted: 1, runRef: "rungate/run-420" },
+    ]);
   });
 
   test("SC-1568: a failed wave integrates nothing, and so does a single wave", async () => {
@@ -457,5 +654,113 @@ describe("#420 — the dispatch path", () => {
     expect(result.refusal).toMatch(/main/);
     // SC-3: nothing ran, so nothing could have committed anywhere.
     expect(spawns).toEqual([]);
+  });
+
+  /*
+   * Covers SC-2089..SC-2091 (HARNESS-STANDARD.md), #652.
+   *
+   * SC-1570 above asks the question once, before the first spawn, and #420
+   * shipped exactly that. The input it did not consider is that `PROJECT_ROOT`
+   * is SHARED: `wf_9bb6f96d-200` established `rungate/run-652`, dispatched
+   * wave 1, and a peer session moved the checkout onto `main` while wave 1 was
+   * running. By the time the wave commit asked, the ref the run had checked
+   * was no longer the ref it was standing on — and the first thing to notice
+   * was the commit, after the wave's whole budget had been spent.
+   *
+   * So the reading is taken again before each wave after the first, and it is
+   * taken through `establishRunRef` — the SAME binding SC-1570's refusal comes
+   * from. That is the contract these three cases pin, and it is pinned by the
+   * `new Function` argument list in `loadDispatch`: a re-read written as a new
+   * injected helper would be a ReferenceError here rather than a quiet second
+   * decider, which is the loud-abort property the block-slicing harness exists
+   * for. `establishRunRef` already switches a checkout that has drifted onto a
+   * default branch and returns a refusal only when it cannot, so "refuses or
+   * re-establishes" is one call and not two deciders that agree.
+   *
+   * ## The cheapest wrong fix, and whether these cases survive it
+   *
+   * The same one the describe above names: delete or widen the commit
+   * prompt's `main|master` guard, because the thing an operator SEES is that
+   * guard refusing. These three cases SURVIVE it, and unlike the commit-reply
+   * cases they survive it non-vacuously: they never reach a commit at all.
+   * The refusal here is `runRefRefusal`'s, raised before wave 2's agents are
+   * spawned, so a run with no prompt guard left still fails SC-2090 — the
+   * checkout is still on `main` and the dispatcher still has to say so.
+   */
+  const CHAINED = [
+    { title: "foundation", acs: ["a"], filesToModify: ["paths.ts"], size: "M" },
+    { title: "consumer", acs: ["b"], filesToModify: ["use.ts"], size: "M", dependsOn: ["foundation"] },
+    { title: "finisher", acs: ["c"], filesToModify: ["end.ts"], size: "M", dependsOn: ["consumer"] },
+  ];
+
+  test("SC-2089: the shared checkout is re-read before each wave after the first", async () => {
+    const d = loadDispatch({});
+    const result = await d.runDecomposedShip(LAYERED);
+    expect(result.success, JSON.stringify(result.failed || [])).toBe(true);
+
+    // Two waves, two readings — not one taken before the run and trusted for
+    // its duration, which is #420's behaviour and the whole of #652.
+    expect(d.refReads.length).toBe(2);
+    // And the second one lands BETWEEN the two spawns. A count alone is
+    // satisfied by a second read taken after wave 2 had already started,
+    // which would observe the drift too late to stop anything.
+    expect(d.refReads.map(r => r.at)).toEqual([0, 1]);
+    expect(d.spawns.map(s => s.label)).toEqual(["marcus-sub-420001", "marcus-sub-420002"]);
+
+    // The single-wave control, in the same case for the reason SC-1568 gives:
+    // a wave with no successor hands its output to nobody, so asking where
+    // the operator's checkout is would be asking to no purpose.
+    const single = loadDispatch({});
+    await single.runDecomposedShip(INDEPENDENT);
+    expect(single.refReads).toEqual([]);
+  });
+
+  test("SC-2090: a checkout that moved off the run ref refuses, and that wave spawns nothing", async () => {
+    const moved = loadRunRef({}).fns.runRefRefusal("main");
+    const d = loadDispatch({
+      refReplies: [
+        { branch: "rungate/run-420", refusal: null },
+        // The peer session's move, observed on the second reading.
+        { branch: "main", refusal: moved },
+      ],
+    });
+    const result = await d.runDecomposedShip(LAYERED);
+
+    expect(result.success).toBe(false);
+    // AC-3's second half: the spawn list for the refused wave is EMPTY. Wave
+    // 1 ran — it ran before the drift — and the consumer never starts, so the
+    // wave's budget is not spent discovering this at commit time.
+    expect(d.spawns.map(s => s.label)).toEqual(["marcus-sub-420001"]);
+    // The refusal text comes from the real decider, not from a sentence this
+    // test invented, and it reaches the caller rather than only the log.
+    const said = JSON.stringify([result.refusal ?? null, result.failed ?? []]);
+    expect(said).toContain("the project checkout is on main");
+    expect((result.failed || []).map((f: { title: string }) => f.title)).toContain("consumer");
+  });
+
+  test("SC-2091: a re-established ref is the one the next wave commits onto", async () => {
+    // Three waves, so there are two integrations to compare. The second
+    // reading returns a DIFFERENT ref name on purpose: `runRefName` is
+    // deterministic, so a re-read that returned the same string would be
+    // indistinguishable from the `let runRef` #420 sets once and never
+    // touches again, and the assertion would hold with the feature deleted.
+    const d = loadDispatch({
+      refReplies: [
+        { branch: "rungate/run-420", refusal: null },
+        { branch: "rungate/run-420-reestablished", refusal: null },
+      ],
+    });
+    const result = await d.runDecomposedShip(CHAINED);
+    expect(result.success, JSON.stringify(result.failed || [])).toBe(true);
+
+    expect(d.refReads.length).toBe(3);
+    expect(d.spawns.map(s => s.label)).toEqual([
+      "marcus-sub-420001", "marcus-sub-420002", "marcus-sub-420003",
+    ]);
+    // The value flows from the reading to the commit. Wave 1 went onto what
+    // the first read said; wave 2 goes onto what the second read said.
+    expect(d.integrations.map(i => i.runRef)).toEqual([
+      "rungate/run-420", "rungate/run-420-reestablished",
+    ]);
   });
 });

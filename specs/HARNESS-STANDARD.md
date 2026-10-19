@@ -5894,6 +5894,142 @@ own is still most of the value: sub-issue 4 is briefed after sub-issue 1 has
 consumer. What it does not buy is the consumer being able to *read* the
 foundation's code. Filed as a follow-up rather than left as a silent gap.
 
+## #652 — the wave commit held the reason and threw it away
+
+Two consecutive ship runs died at `IMPLEMENT_FAILED` carrying one sentence,
+*"the wave commit did not report success"*, and both needed hand assembly.
+
+The journal for `wf_9bb6f96d-200` has the answer the run was holding:
+`collect-wave-1` succeeded with four files staged, then `commit-wave-1`
+replied `{committed:false, branch:"main", sha:""}`. A peer session had moved
+the shared `PROJECT_ROOT` checkout onto `main` while wave 1 was running, and
+the commit prompt's own `main|master` guard refused — correctly, and that
+guard is not what is being changed here.
+
+`integrateWave` returned the generic sentence on `committed !== true` and
+RETURNED. The comparison that would have named `main` and the run ref is the
+NEXT statement, so the branch the agent had just reported was read into
+nothing. The two readings are independent — `committed` says whether a commit
+happened, the branch says where the checkout was — and folding them into one
+`if` made two of the four cells unreachable.
+
+Two gaps, one cause:
+
+- **The message.** The branch reading is taken before the `committed` arm, so
+  a disagreement with the run ref is reported in BOTH arms, and the cell with
+  nothing to disagree about reports where it was rather than falling back to
+  the bare sentence. The cell with no branch at all still gets the bare
+  sentence, because there is nothing to append.
+- **The timing.** #420 establishes the ref once, before the first spawn, and
+  trusts it for the run's duration. `PROJECT_ROOT` is SHARED, so that trust
+  has a window exactly as long as the run. The reading is taken again before
+  each wave after the first, through the SAME binding SC-1570's refusal comes
+  from — `establishRunRef`, which already switches a drifted checkout back and
+  returns a refusal only when it cannot, so "refuses or re-establishes" is one
+  decider and not two that agree. A wave refused this way spawns nothing, so
+  the drift is found before the wave's budget is spent rather than at commit
+  time after it.
+
+**The cheapest wrong fix is to delete or widen the commit prompt's
+`main|master` guard.** What an operator sees is that guard refusing, so the
+5pm repair is to stop refusing: the wave commits, the run completes, and
+unreviewed agent output lands on the default branch — #267/#136 verbatim,
+which on 2026-10-11 left 907 lines of it staged on `main`. Every case below
+states whether it survives that fix. The five commit-reply cases survive it
+VACUOUSLY — the reply is injected, so no shell guard runs in them at all —
+and what catches it is SC-1564, which reads the prompt text. The three
+dispatch cases survive it non-vacuously: their refusal is raised before any
+commit is attempted, so a run with no prompt guard left still fails SC-2090.
+
+- [ ] SC-2084: test/wave-integration.test.ts contains [all four committed-by-branch cells are separate outcomes] — exactly one cell succeeds, both disagreeing cells name the branch AND the run ref, and the pair that differs only in `committed` while reporting the same branch says different things
+- [ ] SC-2085: test/wave-integration.test.ts contains [committed true onto another ref names both, and does not claim the commit failed] — a commit DID happen in this cell, so asserting the absence of "did not report success" is what stops the repair of appending the generic sentence to every failure
+- [ ] SC-2086: test/wave-integration.test.ts contains [committed false naming main names main and the run ref] — the reply `wf_9bb6f96d-200` recorded, with the regression stated as the exact string the two dead runs carried
+- [ ] SC-2087: test/wave-integration.test.ts contains [committed false on the run ref reports the commit, and invents no branch] — the cell with nothing to disagree about, so the branch clause cannot become unconditional
+- [ ] SC-2088: test/wave-integration.test.ts contains [committed false with no branch at all names no branch] — nothing about a branch AT ALL, not merely no branch name: an empty clause names nothing and would pass a `not.toContain`
+- [ ] SC-2089: test/wave-integration.test.ts contains [the shared checkout is re-read before each wave after the first] — ordered against the spawn clock, because a count alone is satisfied by a read taken after the wave had already started, and carrying the single-wave control that must read nothing
+- [ ] SC-2090: test/wave-integration.test.ts contains [a checkout that moved off the run ref refuses, and that wave spawns nothing] — the refusal text comes from the real decider and the spawn list for the refused wave is asserted EMPTY
+- [ ] SC-2091: test/wave-integration.test.ts contains [a re-established ref is the one the next wave commits onto] — the fixture gives the second reading a DIFFERENT ref name on purpose, because `runRefName` is deterministic and a re-read returning the same string is indistinguishable from the `let runRef` #420 sets once
+
+### What was broken to prove it (SC-2084..SC-2091)
+
+Measured over `test/wave-integration.test.ts` — 22 tests. Every count
+predicted before the battery ran.
+
+The battery was run on a `git archive` export of this branch's HEAD under
+`/tmp`, carrying this sub-issue's test file plus the intended
+`workflows/ship.js` change. **This sub-issue's file scope is the test file and
+this spec**; `workflows/ship.js` belongs beside it and the repository was
+never modified to take these numbers. Re-run them against the tree once the
+implementation lands.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — the intended implementation | 22 pass, 0 fail | **22 pass, 0 fail** |
+| the genuinely pre-#652 `workflows/ship.js`, from this branch's HEAD | 6 | **6 of 22** |
+| the `committed` arm returns the bare generic sentence again — the defect verbatim | 3 | **3 of 22** — SC-2084, SC-2086, SC-2087 |
+| the clause naming the ref dropped from the cell whose branch AGREES | 1 | **1 of 22** — SC-2087, and only that one |
+| the branch clause appended unconditionally, including where no branch was reported | 1 | **1 of 22** — SC-2088 |
+| "did not report success" prefixed to the committed-TRUE disagreement too | 1 | **1 of 22** — SC-2085 |
+| one composed message for every failing cell | 2 | **2 of 22** — SC-2084 and SC-2085. **Was 1.** See below |
+| the pre-wave re-read removed — #420's behaviour | 3 | **3 of 22** — SC-2089, SC-2090, SC-2091 |
+| the re-read taken and `runRef` not written back | 1 | **1 of 22** — SC-2091 |
+| the drift observed and logged, and the wave spawns anyway | 1 | **1 of 22** — SC-2090 |
+| the re-read moved BELOW the wave's spawns | 2 | **2 of 22** — SC-2089 and SC-2090 |
+
+Before believing any of those, the input on which mutant and original differ,
+named and run rather than assumed. The six commit-reply cells, driven against
+run ref `rungate/run-652`, print this on the two sources:
+
+| Reply | Original | Pre-#652 |
+|---|---|---|
+| `{committed:true, branch:"rungate/run-652"}` | integrates | integrates |
+| `{committed:true, branch:"fix/someone-elses-work"}` | `wave 1 committed onto fix/someone-elses-work, not the run ref rungate/run-652 (#420)` | same |
+| `{committed:true, branch:"main"}` | `wave 1 committed onto main, not the run ref rungate/run-652 (#420)` | same |
+| `{committed:false, branch:"rungate/run-652"}` | `…did not report success on the run ref rungate/run-652 (#652)` | `the wave commit did not report success` |
+| `{committed:false, branch:"main"}` — **the dead run's reply** | `…did not report success — it reported branch main, not the run ref rungate/run-652, so the shared checkout has been moved (#652)` | `the wave commit did not report success` |
+| `{committed:false, branch:""}` | `the wave commit did not report success` | same |
+
+The remaining rows, each as the one input that separates them:
+
+- **the generic-only row** — the dead run's reply above, which is the row's
+  whole subject.
+- **the dropped agreeing-branch clause** — `{committed:false,
+  branch:"rungate/run-652"}`: the original names the ref, the mutant falls
+  back to the bare sentence and becomes indistinguishable from a reply that
+  named no branch at all.
+- **the unconditional clause** — `{committed:false, branch:""}`: the original
+  returns the bare sentence, the mutant returns *"…did not report success — it
+  reported branch , not the run ref rungate/run-652 (#652)"*, an empty branch
+  clause reading as a disagreement.
+- **the prefixed committed-TRUE arm** and **one message for all** —
+  `{committed:true, branch:"fix/someone-elses-work"}`: a commit happened, and
+  both mutants say it did not.
+- **the three dispatch rows** — a two-wave plan whose SECOND checkout reading
+  reports `main`. The original spawns `marcus-sub-420001` and nothing else and
+  fails naming the branch; `no-reread` and `refusal-ignored` both spawn
+  `marcus-sub-420002` and report success.
+- **the late re-read** — the same input. The original records its second
+  reading at spawn clock 1; the mutant records it at clock 2, with wave 2
+  already dispatched. That row is the reason SC-2089 asserts the ORDER and not
+  the count.
+- **the dropped write-back** — a three-wave plan whose second reading reports
+  `rungate/run-420-reestablished`. The original drives wave 2's integration
+  with that ref; the mutant drives it with `rungate/run-420`.
+
+**The "one composed message" row came back LOW, at 1 of 22, and the miss is
+the finding.** SC-2084's distinctness check was a three-element `Set` over
+`tf`, `ft` and `ff` — and `tf` and `ff` name *different branches*, so the
+three strings differ whatever sentence is wrapped around them. It was
+measuring the interpolated branch name, not the cell. The fix is #585's pair
+discipline: vary exactly ONE reading. A `{committed:true, branch:"main"}`
+reply and a `{committed:false, branch:"main"}` reply report the same branch
+and differ only in the flag, so comparing those two is a measurement of the
+flag. With that case added the row is 2 and matches the prediction.
+
+None of the mutations is left anywhere; all were run against the `/tmp` export
+and the repository tree was confirmed to carry only `test/wave-integration.test.ts`
+afterwards.
+
 ## #180 — the brief lost to text it never saw
 
 The Workflow runtime prepends the relayed user request to every subagent

@@ -1097,3 +1097,107 @@ checkout without it the two mutant-building cases do not pass or fail
 quietly: `mutate` finds the pairing expression zero times and throws *"could
 not build the mutant"*, which is the loud-abort property the builder exists
 for.
+
+### When the check is a MATRIX, and some of its cells are controls (#652)
+
+Two independent readings folded into one `if`. The wave-commit agent replies
+`{committed, branch}`; `integrateWave` returned on `committed !== true`, and
+the comparison that names the branch is the NEXT statement, so a refusal that
+happened *because* of the branch returned the message that mentions no
+branch.
+
+Run `wf_9bb6f96d-200` died at `IMPLEMENT_FAILED` carrying *"the wave commit
+did not report success"* while holding `branch: "main"` in the reply it had
+just read. A peer session had run `git checkout -q main && git pull
+--ff-only` in the shared `PROJECT_ROOT` after merging its own PR — confirmed
+by that session, not inferred — and the commit prompt's own `main|master`
+guard refused. **The guard was correct to refuse and is unchanged.** The
+whole defect is in what was said about it, and in the fact that nothing
+looked at the shared checkout between establishing the ref and committing
+onto it twenty minutes later. The refuse-versus-re-establish choice that
+follows from that is argued on #652 itself.
+
+Two readings make four cells, and the test file drives all four plus two
+controls. What this row is here for is the thing a matrix hides: **the cells
+are not equally load-bearing, and a matrix that is green everywhere looks
+identical whether its cells witness the fix or merely sit beside it.**
+
+Measured over `test/wave-integration.test.ts` — 22 tests. Every count
+predicted before the battery ran.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — the intended implementation | 22 pass, 0 fail | **22 pass, 0 fail** | — |
+| the genuinely pre-#652 `workflows/ship.js` | 6 | **6 of 22** — SC-2084, SC-2086, SC-2087, SC-2089, SC-2090, SC-2091 | `{committed:false, branch:"main"}`, the dead run's own reply: the original says *"…did not report success — it reported branch main, not the run ref `rungate/run-652`, so the shared checkout has been moved (#652)"*, the pre-#652 source says *"the wave commit did not report success"* |
+| the `committed` arm returns the bare generic sentence again — the defect verbatim | 3 | **3 of 22** — SC-2084, SC-2086, SC-2087 | the same reply |
+| the clause naming the ref dropped from the cell whose branch AGREES | 1 | **1 of 22** — SC-2087 | `{committed:false, branch:"rungate/run-652"}`: the original names the ref, the mutant falls back to the bare sentence and becomes indistinguishable from a reply that named no branch at all |
+| the branch clause appended unconditionally, including where no branch was reported | 1 | **1 of 22** — SC-2088 | `{committed:false, branch:""}`: the original returns the bare sentence, the mutant returns *"…it reported branch , not the run ref `rungate/run-652`"* — an empty clause reading as a disagreement |
+| "did not report success" prefixed to the committed-TRUE disagreement too | 1 | **1 of 22** — SC-2085 | `{committed:true, branch:"fix/someone-elses-work"}`: a commit happened, and the mutant says it did not |
+| one composed message for every failing cell | 2 | **2 of 22** — SC-2084, SC-2085. **Was 1** | the same reply, plus the pair that varies only `committed`: `{committed:true, branch:"main"}` against `{committed:false, branch:"main"}` |
+| the pre-wave re-read removed — #420's behaviour | 3 | **3 of 22** — SC-2089, SC-2090, SC-2091 | a two-wave plan whose SECOND checkout reading reports `main`: the original spawns `marcus-sub-420001` and nothing else and fails naming the branch, the mutant spawns `marcus-sub-420002` and reports success |
+| the re-read taken and `runRef` not written back | 1 | **1 of 22** — SC-2091 | a three-wave plan whose second reading reports `rungate/run-420-reestablished`: the original drives wave 2's integration with that ref, the mutant with `rungate/run-420` |
+| the drift observed and logged, and the wave spawns anyway | 1 | **1 of 22** — SC-2090 | the two-wave plan above |
+| the re-read moved BELOW the wave's spawns | 2 | **2 of 22** — SC-2089, SC-2090 | the same plan: the original records its second reading at spawn clock 1, the mutant at clock 2 with wave 2 already dispatched. That is why SC-2089 asserts the ORDER and not the count |
+
+**Provenance, because the two halves were measured differently.** Every row
+except the second was measured by the sub-issue that shipped the cases, on a
+`git archive` export under `/tmp` carrying the test file plus the intended
+`workflows/ship.js` change — which is not in the tree yet, so those rows are
+a measurement of an implementation this repository does not hold. The
+pre-#652 row was re-measured independently here, against the shipped test
+file and the unmodified `workflows/ship.js`, and reproduces at 6 of 22 naming
+the same six cases. Nothing was modified to take it: the file was copied in,
+run, and restored, with `git status` clean afterwards. **Re-run the rest
+against the tree once the implementation lands** — a row measured on a tree
+nobody can check out is a claim, not a count.
+
+**The two cells the pre-#652 row does not name are the point of this
+section.** SC-2085 (committed TRUE onto a foreign ref) and SC-2088 (no branch
+reported at all) are **green on the defective source**. They are not
+witnesses of the fix; they are controls against the wrong *composition* —
+appending the generic sentence to every failure, and appending a branch
+clause unconditionally. Both are repairs that can only arrive after the fix,
+so there is no state of the code in which they go red for the original
+defect. Five commit-reply cases, five greens once the fix lands, three of
+them witnesses. Say which cells are witnesses and which are controls, or the
+next reader counts five.
+
+**The low row is the matrix's own trap.** SC-2084 asserted the three failing
+cells produce three distinct sentences, as a `Set` of size 3. The three
+replies name *different branches*, so the strings differ whatever sentence is
+wrapped around them — the assertion was measuring the interpolated branch
+name, not the cell, and "one composed message for every failing cell" came
+back 1 where 2 was predicted. The fix is #585's pair discipline applied
+inside a matrix: **vary exactly one reading.** `{committed:true,
+branch:"main"}` against `{committed:false, branch:"main"}` reports the same
+branch and differs only in the flag, so comparing those two is a measurement
+of the flag. With that case added the row is 2.
+
+**The cheapest wrong fix, named: delete or widen the commit prompt's `case
+"$branch" in main|master) … exit 1`.** What an operator sees is that guard
+refusing, so the 5pm repair is to stop refusing — and it works. The wave
+commits, the run completes, and unreviewed agent output lands on the default
+branch: #267/#136 verbatim, which on 2026-10-11 left 907 lines of it staged
+on `main`.
+
+Do the shipped cases survive it? Two different answers, and the difference
+between them is the part worth copying:
+
+- The five commit-reply cases survive it **vacuously**. The reply is
+  injected, so no shell guard runs in any of them and widening or deleting it
+  changes none of their verdicts. They do not certify the regression — but
+  they do not catch it either. What catches it is SC-1564, which reads the
+  prompt text and asserts `main|master` is in it. The halves are deliberately
+  separate: a case that both read the prompt and judged the reply would be
+  two questions in one assertion (#484), and would go green under half a
+  repair.
+- The three dispatch cases survive it **non-vacuously**. Their refusal is
+  `runRefRefusal`'s, raised before wave 2's agents are spawned and before any
+  commit is attempted, so a run with the prompt guard deleted still fails
+  SC-2090 — the checkout is still on `main` and the dispatcher still has to
+  say so.
+
+So "survives the wrong fix" has two grades and only one of them is
+protection. A vacuous survival is worth stating precisely because it names
+the case that IS the protection; left unstated, it reads as coverage, and
+deleting the guard would then be a change with eight green cases beside it.
