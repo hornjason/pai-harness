@@ -11031,7 +11031,7 @@ Two things fell out of measuring it, both worth stating:
 - A consumer whose file DOES carry the marker is unaffected: the region hashes
   equal, the harness lines are provable, and the header is free to change.
 
-### One reading is deliberately not a verdict
+### One reading can decline to return a verdict, and the pair says why
 
 `credentialIsolation` asks AC-8's third clause structurally rather than by
 input name: every `${{ }}` expression outside the auth-detect step that
@@ -11040,36 +11040,68 @@ names belong to `lib/scaffold/ai-review-step.ts`; re-typing them in the
 check would be a second decider that agrees with that one until the day it
 does not.
 
-On this tree the review action is not wired yet, so no step outside the auth
-detector reads any credential, and the reading is **UNMEASURED**
-(`NO_CREDENTIAL_REACHES_A_STEP`) rather than clean. An empty violation list
-there would be byte-indistinguishable from a job that isolates its
-credentials correctly, and those are different facts
+With the review action wired, all three credentials reach it and the reading
+is **MEASURED** and clean. A workflow in which nothing outside the auth
+detector reads a credential is **UNMEASURED**
+(`NO_CREDENTIAL_REACHES_A_STEP`) rather than clean, because an empty
+violation list is true of both and only one of them is a pass
 (`.claude/rules/config-access.md`).
+
+The first draft of this section said the opposite, and that is the part worth
+recording. #631 shipped in three waves: one wired the review action, another
+wrote this check and this paragraph, and the paragraph described the tree as
+it stood when the wave began — *"the review action is not wired yet"*. It was
+wired, in the same commit, by the wave next door. The live case asserted
+UNMEASURED and the suite returned MEASURED, which is the only reason anyone
+found out. **A claim about "this tree" written inside a parallel wave is a
+claim about a tree that no longer exists by the time it lands**, so the two
+cases now assert the distinction rather than the state: one over the
+generated workflow, one over the same workflow with its hand-overs blanked.
+
+The repair that was NOT taken, named so it can be judged: flip the live case
+to expect MEASURED and stop there. It is one word, the suite goes green, and
+the `carried.length === 0` branch loses its only witness — mutating it away
+would then be 0 red, and the withholding this whole section is about would be
+dead code that reads as covered.
+
+`violations: []` is likewise not the live case's first assertion. It is true
+of a job that hands over nothing at all, so the case asserts **which**
+credentials were carried first and the absence of a violation only after it
+(#518): reversed, the cheapest repair for a red hand-over is to delete the
+hand-over, and the case would go green over exactly that.
 
 ### What was broken to prove it
 
-Run and counted over `bun test test/ai-review-workflow.test.ts` — 52 tests.
+Run and counted over `bun test test/ai-review-workflow.test.ts` — 53 tests.
 Every count was predicted before the battery ran. **The baseline row was read
 before any mutation row**, because an instrument that has stopped reporting
 takes the baseline down with it and that is the one row nobody mutates
 anything to produce.
 
+Re-measured in full after the credential-isolation pair replaced the single
+stale live-tree case. Not one row is carried over from the 52-case battery: a
+count taken on a tree nobody can check out is a claim, not a count
+(`.claude/rules/parallel-sessions.md`), and three of the twelve moved —
+the checkout row from 6 to 4, the findings-removal row from 6 to 5 and the
+alias row from 2 to 3. The predicted column is this run's prediction, written
+down before it ran; the earlier battery's numbers were not reused as
+predictions, because a prediction copied from a different tree tests nothing.
+
 | Row | Predicted | Measured |
 |---|---|---|
-| **baseline** — unmutated | 52 pass, 0 fail | **52 pass, 0 fail** |
-| the `pull_request` trigger restored in the generator — the genuine pre-#631 state | 4 | **4 of 52** |
-| the SHA-pinned checkout step removed from the job | 6 | **6 of 52** |
-| the findings verdict step removed from the job — the genuine pre-#631 state | 6 | **6 of 52** |
-| the findings step emitted BEFORE the review step | 4 | **4 of 52** |
-| the alias detector's `-` boundary dropped, so `claude-opus-5-5` reads as an alias | 1 | **2 of 52** |
-| `unpinnedUsesViolations` short-circuited to `return []` | 2 | **2 of 52** |
-| `triggerViolations` short-circuited to `return []` | 2 | **2 of 52** |
-| `findingsStepViolations` short-circuited to `return []` | 3 | **3 of 52** |
-| the `carrying === 0` UNMEASURED branch removed from `credentialIsolation` | 1 | **1 of 52** |
-| `credentialIsolation` never records a guard violation | 2 | **2 of 52** |
-| the auth step no longer exempt from `credentialIsolation` | 5 | **5 of 52** |
-| the recorded baseline left at its pre-record value while the file declares 52 cases | 1 | **1 of 52** |
+| **baseline** — unmutated | 53 pass, 0 fail | **53 pass, 0 fail** |
+| the `pull_request` trigger restored in the generator — the genuine pre-#631 state | 4 | **4 of 53** |
+| the SHA-pinned checkout step removed from the job | 4 | **4 of 53** |
+| the findings verdict step removed from the job — the genuine pre-#631 state | 5 | **5 of 53** |
+| the findings step emitted BEFORE the review step | 4 | **4 of 53** |
+| the alias detector's `-` boundary dropped, so `claude-opus-5-5` reads as an alias | 3 | **3 of 53** |
+| `unpinnedUsesViolations` short-circuited to `return []` | 2 | **2 of 53** |
+| `triggerViolations` short-circuited to `return []` | 2 | **2 of 53** |
+| `findingsStepViolations` short-circuited to `return []` | 3 | **3 of 53** |
+| the `carried.length === 0` UNMEASURED branch removed from `credentialIsolation` | 1 | **1 of 53** |
+| `credentialIsolation` never records a guard violation | 2 | **2 of 53** |
+| the auth step no longer exempt from `credentialIsolation` | 6 | **6 of 53** |
+| the recorded baseline left at its pre-record value while the file declares 53 cases | 1 | **1 of 53** |
 
 Before believing any of those, the input on which mutant and original differ,
 named and run rather than assumed:
@@ -11079,36 +11111,50 @@ named and run rather than assumed:
   the fixture's four branch patterns under it, which is the file #630
   shipped.
 - **the checkout and findings rows** — the same file, with one step's worth
-  of text absent. The step-count assertion moves from 4 to 3 in both, which
-  is why each row carries the no-`if:` case as its sixth red.
+  of text absent. Neither takes the no-`if:` case with it: the job emits six
+  steps and that case asks for more than three, so removing one leaves it
+  green. What goes red is what the removed step is the subject of — four
+  pin cases for the checkout, five findings cases for the findings step.
 - **the ordering row** — the two steps swapped in the emitted text. The
   mutant parses and runs; it reads a payload the reviewer has not written
   yet, which is always absent.
+- **the alias row** — the generated file, which hands the action
+  `--model claude-opus-5-5`. Dropping `-` from the boundary makes the `opus`
+  inside that pinned id a bare alias, so all three alias cases go red at
+  once: the live-tree absence reports a violation, the planting case asserts
+  exactly one and gets more, and the pinned control — which plants
+  `claude-opus-5-5`, `claude-sonnet-5` and `claude-haiku-4-5` and expects
+  none — gets one per planted id plus the generated file's own. That is the
+  boundary being load-bearing in three positions, which is the fact the row
+  records.
 - **the short-circuit rows** — any fixture the binding is pointed at. The
   real-source half of each case still asserts `[]`, so only the halves that
   need a refusal go red.
-- **the auth-exemption row** — the generated file itself: the original reads
-  `carrying === 0` and reports UNMEASURED, the mutant reads the auth step's
-  own three `${{ secrets.X }}` values and reports three unguarded
-  hand-overs.
+- **the `carried.length === 0` row** — the generated workflow with its three
+  credential hand-overs blanked. The original withholds
+  (`NO_CREDENTIAL_REACHES_A_STEP`); the mutant returns MEASURED with an empty
+  violation list, which is the reading of a correctly isolated job. One case
+  can see it, and it is the only reason that case exists.
+- **the auth-exemption row** — the generated file itself: the original skips
+  the auth step and reads three guarded hand-overs, the mutant additionally
+  reads the auth step's own three `${{ secrets.X }}` values and reports them
+  as unguarded. Six reds, and the blanked-workflow case is among them —
+  with the auth step counted, a workflow that hands nothing over still
+  carries three credentials, so the UNMEASURED reading disappears.
 - **the record row** — this table. It was observed red for real rather than
-  reconstructed: the AC-8h case was written while the table still said `51`,
-  which is what the file declared before the case itself existed, and it
-  reported *"the baseline row says 51 pass, 0 fail / Expected to contain: 52
-  pass, 0 fail"*. That is the whole point of comparing the recorded baseline
-  against the live declaration count — a record that drifts from the suite
-  it claims is a measurement of a tree nobody can check out.
+  reconstructed, twice: once while the table still said `51` and the file
+  declared 52, and again on this change, when the pair of credential cases
+  took the file to 53 and the recorded baseline still read *"52 pass, 0
+  fail"*. That is the whole point of comparing the recorded baseline against
+  the live declaration count — a record that drifts from the suite it claims
+  is a measurement of a tree nobody can check out, and it is exactly the
+  drift that produced the stale case this battery was re-run for.
 
-**The alias row came back HIGH, and the extra red is the real kind.** The
-prediction covered the pinned-identifier control. The second red is the
-planting case itself, which asserts exactly one violation and gets two: the
-planted step's `id: planted-opus` is a second site the `-` boundary governs,
-so dropping the boundary makes the detector fire on the step's own name as
-well as on its `--model` argument. Squarely about the mutated behaviour, and
-not a crashing mutant — 49 cases still pass and both reds are alias cases.
-Per `.claude/rules/checks-must-be-able-to-fail.md`'s arithmetic that is "the
-prediction was wrong and the check is better than you thought", and the fact
-it records is that the boundary is load-bearing in two positions, not one.
+**Every row matched its prediction, including the three that moved.** The
+three were predicted at their new values because the tree had changed under
+them in ways this change could be read off — two of the three are the step
+count the job now emits. A row reused at its old number would have come back
+high or low and been indistinguishable from a finding.
 
 ### The cheapest wrong fix, named
 
@@ -11132,5 +11178,5 @@ case rather than passing it. Measured as the third row above: 6 of 51.
 - [x] SC-2107: test/ai-review-workflow.test.ts contains [AC-8g: the trigger is manual dispatch, and `pull_request` is nowhere] — both halves are asserted separately, so a file that declares no workflow_dispatch and a file that declares pull_request beside it are different refusals rather than one
 - [x] SC-2108: test/ai-review-workflow.test.ts contains [AC-8g: there is at least one `uses:`, and every one of them is a sha] — presence is established in its own assertion before the pin is compared, because zero uses lines make "every one is pinned" vacuously true and deleting the checkout is the cheapest repair for a red pin
 - [x] SC-2109: test/ai-review-workflow.test.ts contains [AC-8f: deleting the REVIEW step is refused, not read as correct ordering] — both steps are established present before either index is compared, because indexOf returns -1 for an absent step and -1 < n reads a deletion as correct order
-- [x] SC-2110: test/ai-review-workflow.test.ts contains [AC-8: no credential reaches a step outside the auth detector — UNMEASURED, said] — the credential-isolation reading withholds a verdict rather than reporting an empty violation list, because a job with no reviewer wired and a job that isolates its credentials correctly are different facts that an empty list cannot tell apart
+- [x] SC-2110: test/ai-review-workflow.test.ts contains [AC-8: a job that hands over nothing is UNMEASURED, not clean, AC-8: all three credentials reach the action, each guarded by its own mode] — the credential-isolation reading withholds a verdict rather than reporting an empty violation list, and both sides of that distinction are driven over the same generated workflow, because a job with no reviewer wired and a job that isolates its credentials correctly are different facts that an empty list cannot tell apart
 - [x] SC-2111: test/ai-review-workflow.test.ts contains [AC-8h: the recorded #631 mutation rows parse, with the baseline row first] — the table is read out of the spec as data and its baseline compared against the number of cases this file actually declares, because a record whose baseline has drifted from the suite it claims is a measurement of a tree nobody can check out

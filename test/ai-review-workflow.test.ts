@@ -55,11 +55,14 @@
  * the cases that are about it and no others.
  *
  * Every red half is DERIVED from the live generated workflow rather than
- * written out beside it (#585). The one reading that is deliberately not a
- * verdict is `credentialIsolation` over this tree: until #631's review action
- * lands, no step outside the auth detector reads a credential, and "no
- * violations" there would be byte-indistinguishable from a job that isolates
- * its credentials correctly. It reports UNMEASURED and names the reason.
+ * written out beside it (#585). `credentialIsolation` is the one of the four
+ * that can decline to return a verdict at all, and the pair of cases over it
+ * is why: with #631's review action wired, all three credentials reach it and
+ * the reading is MEASURED and clean, while the same workflow with its
+ * hand-overs blanked reports UNMEASURED and names the reason. "No violations"
+ * is true of both, which is what makes it useless as the whole answer — so
+ * the live case asserts WHICH credentials were carried before it asserts that
+ * none of them was unguarded.
  *
  * The #631 mutation counts are recorded in `specs/HARNESS-STANDARD.md`.
  *
@@ -416,6 +419,15 @@ export interface CredentialIsolationReading {
   reading: "MEASURED" | "UNMEASURED";
   /** Named when, and only when, the reading is UNMEASURED. */
   reasons: string[];
+  /**
+   * The secrets that reached a step outside the auth detector, in precedence
+   * order. The reading and this list are two projections of one walk, so they
+   * cannot disagree — and it is what stops `violations: []` being read as a
+   * verdict on a job that handed nothing over. An empty violation list over
+   * three carried credentials and an empty violation list over zero are
+   * different facts, and only the first one is a pass.
+   */
+  carried: string[];
   violations: string[];
 }
 
@@ -431,9 +443,12 @@ export interface CredentialIsolationReading {
  * authenticates with it.
  *
  * A workflow in which no step outside the auth detector reads any credential
- * is UNMEASURED, not clean. That is this repository's own state until #631's
- * review action lands, and `0`, `{}` and silence are indistinguishable from
- * success where UNMEASURED is not (`.claude/rules/config-access.md`).
+ * is UNMEASURED, not clean — `0`, `{}` and silence are indistinguishable from
+ * success where UNMEASURED is not (`.claude/rules/config-access.md`). That was
+ * this repository's own state through #630, when the job resolved a mode and
+ * had nothing to hand it to; since #631 wired the review action it is the
+ * reading of a job that has LOST its reviewer, which is the regression the
+ * withholding exists to keep legible.
  */
 export function credentialIsolation(yml: string): CredentialIsolationReading {
   let doc: any;
@@ -443,13 +458,14 @@ export function credentialIsolation(yml: string): CredentialIsolationReading {
     return {
       reading: "UNMEASURED",
       reasons: ["WORKFLOW_UNPARSEABLE"],
+      carried: [],
       violations: [`the workflow does not parse as YAML: ${(e as Error).message}`],
     };
   }
   const job = doc?.jobs?.[AI_REVIEW_JOB];
   const steps: any[] = Array.isArray(job?.steps) ? job.steps : [];
   const violations: string[] = [];
-  let carrying = 0;
+  const carried: string[] = [];
 
   for (const step of steps) {
     if (!step || typeof step !== "object" || step.id === AI_REVIEW_AUTH_STEP_ID) continue;
@@ -457,7 +473,7 @@ export function credentialIsolation(yml: string): CredentialIsolationReading {
     for (const expr of text.match(/\$\{\{[^}]*\}\}/g) ?? []) {
       for (const c of AI_REVIEW_AUTH_PRECEDENCE) {
         if (!expr.includes(`secrets.${c.secret}`)) continue;
-        carrying += 1;
+        if (!carried.includes(c.secret)) carried.push(c.secret);
         const guard = `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == '${c.mode}'`;
         if (!expr.includes(guard)) {
           violations.push(
@@ -470,14 +486,15 @@ export function credentialIsolation(yml: string): CredentialIsolationReading {
     }
   }
 
-  if (carrying === 0) {
+  if (carried.length === 0) {
     return {
       reading: "UNMEASURED",
       reasons: ["NO_CREDENTIAL_REACHES_A_STEP"],
+      carried,
       violations: [],
     };
   }
-  return { reading: "MEASURED", reasons: [], violations };
+  return { reading: "MEASURED", reasons: [], carried, violations };
 }
 
 // ── The derivations the red halves are built from ────────────────────────
@@ -490,6 +507,26 @@ function plantStep(yml: string, step: string): string {
 /** The index of the findings step's `- name:` line in the generated text. */
 function findingsStepAt(yml: string): number {
   return yml.indexOf(`      - name: ${AI_REVIEW_FINDINGS_STEP_NAME}`);
+}
+
+/**
+ * The generated workflow with every credential hand-over blanked, and the
+ * auth detector left exactly as it is.
+ *
+ * The input the UNMEASURED branch is about, DERIVED rather than written out
+ * beside the real one (#585): it differs from `generated()` in one thing — no
+ * expression outside the auth step reads a secret — so a case over the pair
+ * is a measurement of that and nothing else. The guard shape is deliberately
+ * not re-typed here; every `${{ }}` carrying `secrets.` goes, whatever it is
+ * guarded by, because a derivation that knew the guard would stop deriving
+ * the day the guard changed.
+ */
+function withoutCredentialHandovers(yml: string): string {
+  const authAt = yml.indexOf(`        id: ${AI_REVIEW_AUTH_STEP_ID}`);
+  expect(authAt, "the auth step is not where the derivation expects it").toBeGreaterThan(-1);
+  const after = yml.indexOf("      - name: ", authAt);
+  expect(after, "no step follows the auth step — nothing to blank").toBeGreaterThan(-1);
+  return yml.slice(0, after) + yml.slice(after).replace(/\$\{\{[^}]*secrets\.[^}]*\}\}/g, "''");
 }
 
 describe("AC-8g: the trigger is manual dispatch, and `pull_request` is nowhere", () => {
@@ -691,14 +728,35 @@ describe("AC-8: the expanded job keeps what #630 bought", () => {
     expect(run.code, "an unconfigured project must not go red on the first scaffold").toBe(0);
   });
 
-  test("AC-8: no credential reaches a step outside the auth detector — UNMEASURED, said", () => {
-    // This repository's own state until #631's review action lands. A reading
-    // of "no violations" here would be indistinguishable from a job that
-    // isolates its credentials correctly, and those are different facts.
+  test("AC-8: all three credentials reach the action, each guarded by its own mode", () => {
+    // Presence before comparison (#518): `violations: []` is true of a job
+    // that hands over nothing at all, so what the credentials DID is asserted
+    // first and the absence of a violation only after it. The order matters —
+    // reversed, the cheapest repair for a red hand-over is to delete it, and
+    // this case would go green over exactly that.
     const reading = credentialIsolation(generated());
-    expect(reading.violations).toEqual([]);
+    expect(reading.carried, "no credential reaches the review action at all").toEqual(
+      AI_REVIEW_AUTH_PRECEDENCE.map(c => c.secret),
+    );
+    expect(reading.reading).toBe("MEASURED");
+    expect(reading.reasons).toEqual([]);
+    expect(reading.violations, reading.violations.join("\n")).toEqual([]);
+  });
+
+  test("AC-8: a job that hands over nothing is UNMEASURED, not clean", () => {
+    // The state #630 shipped and #631 left behind: a mode resolves and no
+    // step uses it. An empty violation list there is byte-indistinguishable
+    // from the case above, and those are different facts
+    // (`.claude/rules/config-access.md`), so the reading withholds instead.
+    // Derived from the live workflow, so the two differ in one thing.
+    const stripped = withoutCredentialHandovers(generated());
+    expect(stripped, "the derivation did not apply").not.toBe(generated());
+    expect(() => Bun.YAML.parse(stripped)).not.toThrow();
+    const reading = credentialIsolation(stripped);
+    expect(reading.carried).toEqual([]);
     expect(reading.reading).toBe("UNMEASURED");
     expect(reading.reasons).toEqual(["NO_CREDENTIAL_REACHES_A_STEP"]);
+    expect(reading.violations).toEqual([]);
   });
 
   test("AC-8: a credential guarded by its own mode reads MEASURED and clean", () => {
