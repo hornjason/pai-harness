@@ -22,7 +22,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { persistCompliance } from "../../scripts/persist-compliance";
+import { persistCompliance, HILL_CLIMB_STATES } from "../../scripts/persist-compliance";
 import { COMPLIANCE_HISTORY_SCHEMA, entryVerdicts } from "../../lib/compliance-report";
 
 const HARNESS_ROOT = join(import.meta.dir, "..", "..");
@@ -276,6 +276,18 @@ describe("#69: the CLI contract ship.js depends on", () => {
     const lines = stdout.trim().split("\n");
     expect(lines.length).toBe(1);
     expect(JSON.parse(lines[0])).toMatchObject({ ok: true, persisted: true, graded: 1 });
+  });
+
+  test("the receipt names all five hill-climb outcome states (#646)", () => {
+    // The CLI receipt is what ship.js reads, so the states have to survive the
+    // JSON round trip — a list that exists only on the in-process return value
+    // is invisible to the only caller there is.
+    writeState(workDir);
+    writeGrade(workDir, [GRADE_A]);
+    const { stdout } = run([workDir, HARNESS_ROOT, "69"]);
+    const receipt = JSON.parse(stdout.trim());
+    expect(Object.keys(receipt.hillClimb.states).sort()).toEqual([...HILL_CLIMB_STATES].sort());
+    expect(receipt.hillClimb.reading).toBe("MEASURED");
   });
 
   test("exits non-zero with ok:false when there is no grade to persist", () => {

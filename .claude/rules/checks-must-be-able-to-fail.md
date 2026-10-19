@@ -1201,3 +1201,98 @@ So "survives the wrong fix" has two grades and only one of them is
 protection. A vacuous survival is worth stating precisely because it names
 the case that IS the protection; left unstated, it reads as coverage, and
 deleting the guard would then be a change with eight green cases beside it.
+
+### When the consumer is a SCHEMA, and the thing it drops is the fix (#646)
+
+#621 above is two documents naming one string with nothing comparing them.
+This is the same family with the consumer in an unusual position: **a
+structured-output schema is not a description of the reply, it is a filter on
+it.** Every field it does not declare is removed on the way back, silently,
+and the caller then reads a reply that is missing exactly what it did not ask
+for. There is no error, no warning and no shorter output — the object simply
+arrives with fewer keys.
+
+`scripts/persist-compliance.ts` was changed by #646 to say WHICH of five
+outcomes each hill-climb reached, instead of printing `hillClimbApplied: 0`
+for all five and for a clean run as well. The script does not reach the
+operator: `workflows/ship.js` asks an agent to run it and return the receipt
+under a declared schema, and that schema named six scalar fields. A receipt
+carrying `hillClimb` would have been filtered back down to the pre-#646
+shape, one hop before anyone read it, and the run would have logged the exact
+line the issue exists to replace.
+
+**The producing side cannot see this at all.** Every test over
+`persistCompliance` passes — the function returns the field, and
+`test/unit/hill-climb-receipt.test.ts` reads the returned receipt, which is
+the right thing for it to read. The loss happens in a position neither end
+owns, and the only way to see it is to compare the two.
+
+So `test/persist-receipt-relay.test.ts` holds one exported binding,
+`persistReceiptRelayViolations`, which walks the schema literal sliced out of
+`workflows/ship.js`'s `PERSIST-RECEIPT` block and the field paths of receipts
+the **real** `persistCompliance` produced, and names every carried path the
+declaration would drop. Four properties, each because of a shape named
+elsewhere in this file:
+
+- **The receipts are produced, never typed.** Reading the `PersistResult`
+  interface as text would assert that a type annotation exists — and a type
+  is erased before anything runs, so a field the script stopped returning
+  would still be in the interface. #530: ask the contract, not an artefact
+  that agrees with whatever you put in it.
+- **An unreadable position THROWS.** Zero declared properties against N
+  carried fields is not agreement, and neither is an empty receipt set. Both
+  refuse by name, because a comparison that could not be performed reads
+  exactly like one that passed (#621).
+- **A vacuity case stands beside the agreement case.** Receipts that never
+  reached an occurrence would agree with a schema declaring none, so one case
+  asserts the fixtures really carry all five state keys and the three
+  occurrence fields under two different parents.
+- **The declared schema is the schema the call is handed.** A perfect
+  declaration beside a second literal at the call site is the same defect
+  wearing a fix, so the call site is asserted to pass
+  `schema: PERSIST_RECEIPT_SCHEMA` and the const is asserted to exist once.
+
+**The cheapest wrong fix, named: declare `hillClimb: { type: 'object' }` and
+stop there.** It is one line, the field stops being dropped outright, and
+every sub-field under it still is — the operator gets `hillClimb: {}`, which
+is `0` with more punctuation. The cases survive it NON-vacuously: the walk
+compares paths, not top-level keys, so the eighteen paths beneath `hillClimb`
+are still violations and "no field of any real receipt is dropped by the
+relay" stays red until the states are declared by name.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/persist-receipt-relay.test.ts` (17 tests). Every count was predicted
+before the battery ran, and **the baseline row was read before any mutation
+row** — an instrument that has stopped reporting takes the baseline down with
+it, and that is the row nobody checks.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 17 pass, 0 fail | **17 pass, 0 fail** | — |
+| `persistReceiptRelayViolations` short-circuited to `return []` | 8 | **8 of 17** | any of them: the binding stops refusing an unreadable source, an empty receipt set, and all six dropped-field mutants |
+| the genuinely pre-#646 schema literal — six scalars, no `hillClimb` | 7 | **7 of 17** | the NO_SUITABLE_SECTION receipt: the original returns `[]`, the mutant returns **19** violations, from `hillClimb` down to `hillClimb.unclassified[].detail` |
+| `NO_SUITABLE_SECTION` dropped from the schema declaration | 6 | **6 of 17** | the same receipt: the original returns `[]`, the mutant names `hillClimb.states.NO_SUITABLE_SECTION` and its three occurrence fields |
+| the pre-#646 operator line — `hill-climb reinforcements=N` and nothing else | 4 | **4 of 17** | a clean grade against a brief with no insertion point: the original prints `not applied: NO_ACTIONS_DETECTED=1` for one and `not applied: NO_SUITABLE_SECTION=1` plus an `UNMEASURED hill-climb` line for the other, the mutant prints the same sentence for both |
+| the state clause never appended to the line | 3 | **3 of 17** | the same pair, plus the unclassified receipt |
+| the absent-`hillClimb` UNMEASURED branch removed | 1 | **1 of 17** | a receipt with `hillClimb` deleted — which is precisely what a relay that dropped it delivers: the original says `UNMEASURED hill-climb`, the mutant prints an ordinary clean line |
+
+**The 6 row is 6 and not 1 on purpose, and it is worth saying why before
+someone reads it as an over-broad case.** Each of the five per-state cases
+asserts the real source agrees BEFORE it asserts the mutant disagrees — "the
+real source is clean" and "the mutant is not" are one claim read in two
+directions, and a case asserting only the second passes over a binding that
+refuses everything. So a single real-source removal reds all five of them
+plus the agreement case. The 8 row is the complement: short-circuiting the
+binding leaves the real-source half green and reds only the halves that
+need a refusal.
+
+None of the six mutations is left in the tree; all were run and reverted, and
+`workflows/ship.js` and `test/persist-receipt-relay.test.ts` were confirmed
+byte-identical to the measured source afterwards by checksum.
+
+**Provenance.** The table was measured by the wave that wrote the relay test,
+whose worktree was never collected. The baseline and two rows — the binding
+short-circuited, and the pre-#646 schema literal — were re-measured on the
+shipped tree and reproduce exactly (17 pass / 0 fail, 8 of 17, 7 of 17). The
+other three were not re-run; they are rows about `persistReceiptLines`, whose
+source is byte-identical to the measured one.

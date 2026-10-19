@@ -573,26 +573,84 @@ export function insertReinforcement(
   return `${before}${lead}${REINFORCEMENT_PREFIX}${reinforcement}${separator}${rest}`;
 }
 
+/**
+ * What `applyHillClimb` decided about an action it did NOT apply (#646).
+ *
+ * The function decides exactly three things, and it used to report all three
+ * as English in one `skipped: string[]`. A caller that wanted the tier it was
+ * being told to promote to had to recover it from the middle of a sentence,
+ * which is the same defect as an unsourced verdict: the decision was readable
+ * and not usable.
+ *
+ * - `TIER_PROMOTION` — the rule is past the tier-1 threshold, so a brief
+ *   bullet is the wrong instrument. `tier` and `promotion` are FIELDS here,
+ *   not substrings of the sentence.
+ * - `REINFORCEMENT_PRESENT` — the brief already carries this reinforcement.
+ * - `NO_SECTION` — the brief has none of the headings a reinforcement is
+ *   spliced into.
+ *
+ * `promotion` is `string | undefined` rather than optional because an action
+ * at tier 2 or 3 may carry none, and "the action named no promotion" is a
+ * state the outcome has to be able to hold — the sentence rendered it as the
+ * word `undefined`, and that is preserved byte for byte.
+ */
+export type HillClimbSkipOutcome =
+  | { kind: "TIER_PROMOTION"; compId: string; tier: 2 | 3; promotion: string | undefined }
+  | { kind: "REINFORCEMENT_PRESENT"; compId: string }
+  | { kind: "NO_SECTION"; compId: string };
+
+/**
+ * The one binding that turns a skip outcome into the reported line.
+ *
+ * Every sentence `applyHillClimb` reports is produced here and nowhere else,
+ * so there is a single thing to mutate; a second producer elsewhere would
+ * hold a case up through any mutation of this one
+ * (`.claude/rules/checks-must-be-able-to-fail.md`). The strings are the ones
+ * the loop has always printed — `scripts/persist-compliance.ts` logs them as
+ * `HILL-CLIMB skipped: …` and that stderr is unchanged.
+ */
+export function hillClimbSkipSentence(outcome: HillClimbSkipOutcome): string {
+  switch (outcome.kind) {
+    case "TIER_PROMOTION":
+      return `${outcome.compId}: TIER ${outcome.tier} PROMOTION needed — ${outcome.promotion}`;
+    case "REINFORCEMENT_PRESENT":
+      return `${outcome.compId}: reinforcement already present in brief`;
+    case "NO_SECTION":
+      return `${outcome.compId}: no suitable section found in brief`;
+  }
+}
+
 export function applyHillClimb(
   briefPath: string,
   actions: HillClimbAction[],
   opts: HillClimbWriteOptions = {},
-): { applied: string[]; skipped: string[]; write: HillClimbWrite } {
+): {
+  applied: string[];
+  skipped: string[];
+  /** One entry per action that was not applied, in the order they were decided. */
+  skipOutcomes: HillClimbSkipOutcome[];
+  write: HillClimbWrite;
+} {
   const destination = opts.destination ?? DEFAULT_HILL_CLIMB_DESTINATION;
   const nothingWritten: HillClimbWrite = { destination, path: null };
 
   if (!existsSync(briefPath) || actions.length === 0)
-    return { applied: [], skipped: [], write: nothingWritten };
+    return { applied: [], skipped: [], skipOutcomes: [], write: nothingWritten };
 
   let content = readFileSync(briefPath, "utf-8");
   const applied: string[] = [];
-  const skipped: string[] = [];
+  const skipOutcomes: HillClimbSkipOutcome[] = [];
 
   for (const action of actions) {
     if (action.tier >= 2) {
-      skipped.push(
-        `${action.compId}: TIER ${action.tier} PROMOTION needed — ${action.promotion}`
-      );
+      skipOutcomes.push({
+        kind: "TIER_PROMOTION",
+        compId: action.compId,
+        // `>=` rather than `!== 1`, so an off-type tier keeps the branch it
+        // has always taken; the declared type admits only 1, 2 and 3.
+        tier: action.tier as 2 | 3,
+        promotion: action.promotion,
+      });
       continue;
     }
 
@@ -602,9 +660,7 @@ export function applyHillClimb(
     const normalizedContent = content.toLowerCase().replace(/[`*"']/g, "");
 
     if (normalizedContent.includes(normalizedReinforcement.slice(0, 40))) {
-      skipped.push(
-        `${action.compId}: reinforcement already present in brief`
-      );
+      skipOutcomes.push({ kind: "REINFORCEMENT_PRESENT", compId: action.compId });
       continue;
     }
 
@@ -620,7 +676,7 @@ export function applyHillClimb(
           : neverIdx;
 
     if (sectionIdx === -1) {
-      skipped.push(`${action.compId}: no suitable section found in brief`);
+      skipOutcomes.push({ kind: "NO_SECTION", compId: action.compId });
       continue;
     }
 
@@ -638,7 +694,9 @@ export function applyHillClimb(
       ? writeReinforcedBrief(briefPath, content, { ...opts, destination })
       : nothingWritten;
 
-  return { applied, skipped, write };
+  // The reported strings are DERIVED from the outcomes, in one expression, so
+  // the typed answer and the human-readable one cannot disagree.
+  return { applied, skipped: skipOutcomes.map(hillClimbSkipSentence), skipOutcomes, write };
 }
 
 // --- WARN-to-FAIL promotion tracking (SC-515, DEC-012) ---

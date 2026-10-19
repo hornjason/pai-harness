@@ -59,6 +59,7 @@ import {
   applyHillClimb,
   COMPLIANCE_HISTORY_SCHEMA,
   type ComplianceEntry,
+  type HillClimbSkipOutcome,
 } from "../lib/compliance-report";
 import { writeWorkflowState } from "../gates/orchestrator";
 import { loadRoleBriefPaths, type GradeOutput } from "./grade-deterministic";
@@ -69,12 +70,143 @@ type Grade = GradeOutput["grades"][number];
 
 const pct = (g: Grade) => (g.total > 0 ? Math.round((100 * g.followed) / g.total) : 0);
 
+/**
+ * The five outcomes a hill-climb attempt can reach without applying anything
+ * (#646).
+ *
+ * Every one of them used to be a `logger()` line and a `continue`, and the
+ * receipt said `hillClimbApplied: 0` for all five — the same number it says
+ * when a role had nothing wrong with it. A run in which the grader gate
+ * dropped every action, a run in which the brief had no section to write
+ * into, and a clean run were byte-identical receipts. That is *Silent Default
+ * Substitution*: `0` is indistinguishable from success.
+ */
+export const HILL_CLIMB_STATES = [
+  "NO_ACTIONS_DETECTED",
+  "GRADER_ACCURACY_DROP",
+  "TIER_PROMOTION_RECOMMENDED",
+  "REINFORCEMENT_ALREADY_PRESENT",
+  "NO_SUITABLE_SECTION",
+] as const;
+
+export type HillClimbState = (typeof HILL_CLIMB_STATES)[number];
+
+/**
+ * The states that mean the hill-climb did not happen and nobody knows what it
+ * would have done.
+ *
+ * A brief with no insertion point is not a brief that needed no reinforcement
+ * — the reinforcement was composed, had nowhere to go, and was dropped. Only
+ * one of those two is reportable as a pass, so the receipt says which.
+ */
+export const UNMEASURED_HILL_CLIMB_STATES: readonly HillClimbState[] = [
+  "NO_SUITABLE_SECTION",
+];
+
+/** One occurrence of a state, carrying the producing code's own reason. */
+export interface HillClimbOccurrence {
+  role: string;
+  /** The COMP the outcome is about, or null for a role-level outcome. */
+  compId: string | null;
+  /** The reason as the producing code stated it — kept whole, not re-worded. */
+  detail: string;
+}
+
+export interface HillClimbReceipt {
+  /** One list per state. Every state is present, so an empty one is a reading. */
+  states: Record<HillClimbState, HillClimbOccurrence[]>;
+  /**
+   * Skip lines `applyHillClimb` emitted that no state claims. A reword
+   * upstream must not read as nothing having happened, so an unclassified
+   * line raises the reading rather than disappearing.
+   */
+  unclassified: HillClimbOccurrence[];
+  /** Derived from the lists above in `hillClimbReceipt` and nowhere else. */
+  reading: "MEASURED" | "UNMEASURED";
+  /** Why the reading is UNMEASURED, each naming its state. Empty when MEASURED. */
+  unmeasuredReasons: string[];
+}
+
 export interface PersistResult {
   ok: boolean;
   persisted: boolean;
   graded: number;
   hillClimbApplied: number;
   verified: string[];
+  /** What happened when nothing was applied — see HILL_CLIMB_STATES (#646). */
+  hillClimb: HillClimbReceipt;
+}
+
+export function emptyHillClimbStates(): Record<HillClimbState, HillClimbOccurrence[]> {
+  return {
+    NO_ACTIONS_DETECTED: [],
+    GRADER_ACCURACY_DROP: [],
+    TIER_PROMOTION_RECOMMENDED: [],
+    REINFORCEMENT_ALREADY_PRESENT: [],
+    NO_SUITABLE_SECTION: [],
+  };
+}
+
+/**
+ * Which receipt state each of `applyHillClimb`'s own decisions is (#646).
+ *
+ * `applyHillClimb` decides which skip a skip is; this only renames its
+ * answer. Deciding it again here — by matching the sentence with a regex, or
+ * by asking the brief and the action a second time — would be two deciders
+ * for one question: they would always agree, and a mutation of either would
+ * leave the other holding the case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). A sentence
+ * matcher is also a second position spelling strings `hillClimbSkipSentence`
+ * owns, which SC-2093 refuses by name.
+ *
+ * It is a total `Record` rather than a lookup with a fallback, so a `kind`
+ * added to `HillClimbSkipOutcome` and not mapped here is a type error at the
+ * build, not an `UNCLASSIFIED_SKIP` at the end of a ship run.
+ */
+const SKIP_OUTCOME_STATE: Record<HillClimbSkipOutcome["kind"], HillClimbState> = {
+  TIER_PROMOTION: "TIER_PROMOTION_RECOMMENDED",
+  REINFORCEMENT_PRESENT: "REINFORCEMENT_ALREADY_PRESENT",
+  NO_SECTION: "NO_SUITABLE_SECTION",
+};
+
+/**
+ * The state a reported skip belongs to, or `null` when nothing decided it.
+ *
+ * A `HillClimbSkipOutcome` is the producing code's answer, read as given. A
+ * bare STRING is a line that arrived with no outcome beside it — a
+ * `skipped.push` upstream that does not go through `skipOutcomes`, leaving
+ * `skipped` longer than the outcomes it is supposed to be derived from. Such
+ * a line carries no decision to read, so it is unclassified rather than
+ * guessed at from its wording, and `hillClimbReceipt` turns it into an
+ * UNMEASURED reading instead of letting it vanish.
+ */
+export function classifySkip(skip: HillClimbSkipOutcome | string): HillClimbState | null {
+  return typeof skip === "string" ? null : SKIP_OUTCOME_STATE[skip.kind];
+}
+
+/**
+ * The one place a reading is derived from the state lists.
+ *
+ * `reading` and `unmeasuredReasons` are projections of the same lists, so they
+ * cannot disagree, and `reading === "UNMEASURED"` is the whole answer for a
+ * caller that only wants the boolean.
+ */
+export function hillClimbReceipt(
+  states: Record<HillClimbState, HillClimbOccurrence[]>,
+  unclassified: HillClimbOccurrence[],
+): HillClimbReceipt {
+  const unmeasuredReasons = [
+    ...UNMEASURED_HILL_CLIMB_STATES.flatMap(state =>
+      states[state].map(o => `${state}: ${o.role} — ${o.detail}`),
+    ),
+    ...unclassified.map(o => `UNCLASSIFIED_SKIP: ${o.role} — ${o.detail}`),
+  ];
+  return {
+    states,
+    unclassified,
+    reading: unmeasuredReasons.length > 0 ? "UNMEASURED" : "MEASURED",
+    unmeasuredReasons,
+  };
 }
 
 /**
@@ -147,6 +279,8 @@ export function persistCompliance(
   const historyPath = join(workDir, "..", "compliance-history.jsonl");
   const verified: string[] = [];
   let hillClimbApplied = 0;
+  const states = emptyHillClimbStates();
+  const unclassified: HillClimbOccurrence[] = [];
 
   for (const g of grades) {
     // #116 — the whole record, not `id → verdict`. The grader already has
@@ -190,17 +324,38 @@ export function persistCompliance(
     // Grader accuracy gate: skip hill-climb for COMPs where more than half the
     // recent verdicts are N/A, so briefs are not patched to paper over grader
     // false positives.
-    const graderAccuracySkips = new Set<string>();
+    // A Map, not a Set: the reason the gate computed is the reason the receipt
+    // reports, so there is one statement of why a COMP was dropped.
+    const graderAccuracySkips = new Map<string, string>();
     for (const ct of report.compTrends) {
       const naCount = ct.lastN.filter(v => v === "N/A").length;
       const ignoredCount = ct.lastN.filter(v => v === "IGNORED").length;
       if (naCount > 0 && ignoredCount > 0 && naCount / (naCount + ignoredCount) > 0.5) {
-        graderAccuracySkips.add(ct.compId);
-        logger(`GRADER-GATE: skipping hill-climb for ${ct.compId} — ${naCount}/${naCount + ignoredCount} recent verdicts are N/A`);
+        const reason = `${naCount}/${naCount + ignoredCount} recent verdicts are N/A`;
+        graderAccuracySkips.set(ct.compId, reason);
+        logger(`GRADER-GATE: skipping hill-climb for ${ct.compId} — ${reason}`);
       }
     }
 
-    const actions = detectHillClimbNeeds(report).filter(a => !graderAccuracySkips.has(a.compId));
+    const detected = detectHillClimbNeeds(report);
+    if (detected.length === 0) {
+      states.NO_ACTIONS_DETECTED.push({
+        role: g.role,
+        compId: null,
+        detail: "no COMP reached the consecutive-fail threshold",
+      });
+      continue;
+    }
+
+    const actions: typeof detected = [];
+    for (const a of detected) {
+      const droppedBecause = graderAccuracySkips.get(a.compId);
+      if (droppedBecause !== undefined) {
+        states.GRADER_ACCURACY_DROP.push({ role: g.role, compId: a.compId, detail: droppedBecause });
+        continue;
+      }
+      actions.push(a);
+    }
     if (actions.length === 0) continue;
 
     const briefPath = loadRoleBriefPaths(harnessRoot)[g.role];
@@ -209,9 +364,26 @@ export function persistCompliance(
       continue;
     }
 
-    const { applied, skipped } = applyHillClimb(briefPath, actions);
+    const { applied, skipped, skipOutcomes } = applyHillClimb(briefPath, actions);
     for (const a of applied) logger(`HILL-CLIMB: ${a}`);
-    for (const s of skipped) logger(`HILL-CLIMB skipped: ${s}`);
+    // `skipped` is `skipOutcomes.map(hillClimbSkipSentence)` at a single
+    // return in `applyHillClimb`, so index i of one is index i of the other.
+    // Iterating the SENTENCES rather than the outcomes is deliberate: every
+    // line that is reported gets an occurrence, and a line with no outcome
+    // beside it is reported as unclassified instead of being dropped.
+    skipped.forEach((s, i) => {
+      logger(`HILL-CLIMB skipped: ${s}`);
+      const outcome = skipOutcomes[i];
+      const occurrence: HillClimbOccurrence = {
+        role: g.role,
+        // The COMP as the decision carried it, not as a sentence spells it.
+        compId: outcome?.compId ?? null,
+        detail: s,
+      };
+      const state = classifySkip(outcome ?? s);
+      if (state) states[state].push(occurrence);
+      else unclassified.push(occurrence);
+    });
     if (applied.length === 0) continue;
     hillClimbApplied += applied.length;
     logger(`brief updated for ${g.role} — ${applied.length} reinforcement(s) applied`);
@@ -244,7 +416,14 @@ export function persistCompliance(
     }
   }
 
-  return { ok: true, persisted, graded: grades.length, hillClimbApplied, verified };
+  const hillClimb = hillClimbReceipt(states, unclassified);
+  if (hillClimb.reading === "UNMEASURED") {
+    // Named, not silent: exiting 0 having applied nothing is the default this
+    // receipt exists to distinguish from a clean run.
+    logger(`UNMEASURED hill-climb — ${hillClimb.unmeasuredReasons.join("; ")}`);
+  }
+
+  return { ok: true, persisted, graded: grades.length, hillClimbApplied, verified, hillClimb };
 }
 
 if (import.meta.main) {
