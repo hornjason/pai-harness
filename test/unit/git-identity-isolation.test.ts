@@ -44,6 +44,30 @@ interface Offender { where: string; why: string }
  * — a checker that tests a different implementation than the one that runs.
  * The agreement test below pins them together.
  */
+/**
+ * Does this FILE bind the repo directory once, in a local git wrapper?
+ *
+ * One exported binding, because this question was spelled twice — once in
+ * `scan()` and once in the agreement case below — and two deciders for one
+ * question are behaviourally one: a mutation of either leaves the other
+ * holding the case up, and both read as covered
+ * (`.claude/rules/checks-must-be-able-to-fail.md`). They disagreed the
+ * moment one of them learned about `-C`.
+ *
+ * Both spellings count. `detect()` already accepts an explicit
+ * `"-C", <dir>` on a call line and says why: `cwd` can be inherited or
+ * changed by a parent, while `-C` names the repo on the command git
+ * actually runs. A wrapper rule that recognised only `cwd` refused the
+ * stronger form and accepted the weaker one.
+ */
+export function bindsDirInWrapper(src: string): boolean {
+  const binds = String.raw`(?:\bcwd\b|["'\`]-C["'\`])`;
+  return (
+    new RegExp(String.raw`execFileSync\(\s*["'\`]git["'\`][\s\S]{0,200}?${binds}`).test(src) ||
+    new RegExp(String.raw`spawnSync\(\s*["'\`]git["'\`][\s\S]{0,200}?${binds}`).test(src)
+  );
+}
+
 export function detect(line: string, wrapperBindsDir = false): boolean {
   if (/^\s*(\/\/|\*|#)/.test(line)) return false;
   const shell = line.match(SHELL_FORM);
@@ -81,11 +105,20 @@ function scan(): Offender[] {
     const src = readFileSync(join(ROOT, rel), "utf-8");
     // A file may bind the directory once, in a local wrapper:
     //   const git = (...args) => execFileSync("git", args, { cwd, ... })
+    //   const git = (...args) => execFileSync("git", ["-C", root, ...args])
     // Calls through that wrapper are safe even though no `cwd:` appears on
     // them. The binding is what matters, not where it is written — demanding it
     // at every call site would only push people to rename the wrapper.
-    const wrapperBindsDir = /execFileSync\(\s*["'`]git["'`][\s\S]{0,200}?\bcwd\b/.test(src)
-      || /spawnSync\(\s*["'`]git["'`][\s\S]{0,200}?\bcwd\b/.test(src);
+    //
+    // **Both spellings, and `-C` is here because leaving it out made this
+    // check push callers toward the weaker one.** `detect()` already accepts
+    // an explicit `"-C", <dir>` on a call line, and says in its own comment
+    // that `-C` is STRONGER than `cwd` — cwd can be inherited or changed by a
+    // parent, while `-C` names the repo on the command git actually runs. A
+    // wrapper rule that recognised only `cwd` therefore refused the stronger
+    // form and was satisfied by the weaker one, which is the wrong direction
+    // for a safety rule and is the thing the comment below warns about.
+    const wrapperBindsDir = bindsDirInWrapper(src);
 
     src.split("\n").forEach((line, i) => {
       // Comments never run. Flagging prose about the rule trains people to
@@ -210,8 +243,7 @@ describe("scan() and detect() cannot drift apart", () => {
       // Same file-level wrapper flag scan() derives, so the comparison is
       // like-for-like. Without it the two disagree on wrapper-bound helpers
       // for a reason that is about missing context, not a differing rule.
-      const wrapperBindsDir = /execFileSync\(\s*["'`]git["'`][\s\S]{0,200}?\bcwd\b/.test(src)
-        || /spawnSync\(\s*["'`]git["'`][\s\S]{0,200}?\bcwd\b/.test(src);
+      const wrapperBindsDir = bindsDirInWrapper(src);
       src.split("\n").forEach((line, i) => {
         if (detect(line, wrapperBindsDir)) flaggedByDetect.push(`${rel}:${i + 1}`);
       });
