@@ -33,6 +33,7 @@ import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
+import { scanDocsDirectory } from "../doc-routing";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { declaredBunVersion, setupBunWith } from "../bun-version";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
@@ -530,35 +531,16 @@ export function generateAgentsMdContent(
       actions.push(`WARN: ${cat.dir}/ listed in routing but directory does not exist`);
     }
   }
-  if (existsSync(docsDir)) {
-    const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"));
-    for (const f of allDocs) {
-      const docPath = join(docsDir, f);
-      const content = readFileSync(docPath, "utf-8");
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      let need = f.replace(/\.md$/, "").replace(/-/g, " ");
-      if (fmMatch) {
-        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-        if (gMatch && gMatch[1].trim() !== "TODO") need = gMatch[1].trim();
-      }
-      docRouting.push({ need, file: `docs/${f}` });
-    }
-    const subDirs = readdirSync(docsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !categories.some(c => c.dir === `docs/${d.name}`))
-      .map(d => d.name);
-    for (const sub of subDirs) {
-      const subPath = join(docsDir, sub);
-      const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md"));
-      if (subFiles.length > 0) {
-        docRouting.push({ need: `${sub} (${subFiles.length} files)`, file: `docs/${sub}/` });
-      }
-    }
-  }
-  const filteredRouting = docRouting.filter(d => {
-    const slug = d.file.replace(/\.md$/, "").replace(/.*\//, "").toLowerCase().replace(/-/g, " ");
-    const needLower = d.need.toLowerCase();
-    return !needLower.startsWith(slug) || d.need.includes("—") || d.need.includes("(");
-  });
+  // Through the one binding (#617, #619). This was a complete second copy of
+  // `scanDocRouting`, with its own inline `governs:` regex — and it is the copy
+  // the scaffold actually calls, so a fix applied only to the scanner changes
+  // no generated output at all (#91).
+  docRouting.push(...scanDocsDirectory(docsDir, categories.map(c => c.dir)));
+
+  // The "filter to non-obvious mappings" is deleted here for the same reason
+  // as in lib/scanner.ts: it could only ever drop a top-level `docs/*.md`, and
+  // dropping those is #617. See lib/doc-routing.ts.
+  const filteredRouting = docRouting;
 
   const consumers = harness?.consumers || [];
 
