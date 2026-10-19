@@ -32,6 +32,7 @@ import {
   requiresQualification,
   scDeclarationPattern,
   scMentionPattern as scIdMentionPattern,
+  unenumeratedScRegistry,
   type ScRegistry,
 } from "../lib/sc-ids";
 
@@ -55,13 +56,28 @@ export interface UncheckedSC {
  * Built from the same spec scan `findUncheckedSCs` walks, so the ids a test
  * can be credited for and the ids a spec declares are the same set by
  * construction rather than by two regexes agreeing.
+ *
+ * ## An absent `specs/` is UNENUMERATED, not "declares nothing" (#606)
+ *
+ * This is the one producer feeding `allocateScNumber` in the live CLI
+ * (`scripts/create-sc.ts`), and it returned `buildScRegistry([])` for a tree
+ * with no `specs/` at all. That registry says "this tree declares nothing",
+ * which the allocator then reported as a consulted width contributing zero
+ * ids. A fix on the reading side alone cannot see this: the registry leg
+ * would faithfully report an enumeration flag nobody had ever set wrong.
  */
 export function readScRegistry(specsDir?: string): ScRegistry {
   const dir = specsDir || SPECS_DIR;
-  if (!existsSync(dir)) return buildScRegistry([]);
+  if (!existsSync(dir)) return unenumeratedScRegistry(`${dir} does not exist`);
   const specs: Array<{ file: string; content: string }> = [];
-  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
-    specs.push({ file, content: readFileSync(join(dir, file), "utf-8") });
+  try {
+    for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
+      specs.push({ file, content: readFileSync(join(dir, file), "utf-8") });
+    }
+  } catch (err) {
+    // A directory that exists and cannot be listed or read. Same fact as an
+    // absent one from the allocator's side, and a different reason.
+    return unenumeratedScRegistry(`${dir} could not be enumerated: ${(err as Error).message}`);
   }
   return buildScRegistry(specs);
 }

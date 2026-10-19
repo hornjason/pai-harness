@@ -193,9 +193,49 @@ export function isFixtureScId(id: string): boolean {
  *   declaredById  EVERY form. The namespace as it actually is, which is what
  *                 ambiguity and allocation have to be computed over.
  */
+/**
+ * Whether the `specs/` this registry was built from was actually enumerated
+ * (#606).
+ *
+ * `buildScRegistry([])` is a registry with no declarations, and it means "this
+ * tree declares nothing" — a reading. A caller that could not list `specs/` at
+ * all produces the same empty maps and means the opposite, and before this
+ * field existed nothing downstream could tell them apart:
+ * `allocateScNumber`'s registry leg reported `found: reg.declaredById.size`
+ * with `status: "read"` for both. `0` from a width that was consulted and `0`
+ * from a width that was skipped are the same number and opposite facts
+ * (`.claude/rules/config-access.md`).
+ *
+ * The reason travels with the status because "install something" fixes a
+ * missing directory and nothing else does — a skip with no reason is a skip
+ * nobody can act on.
+ */
+export interface ScRegistryEnumeration {
+  status: "enumerated" | "unenumerated";
+  /** Why `specs/` could not be enumerated. Absent when it was. */
+  reason?: string;
+}
+
 export interface ScRegistry {
   byId: Map<string, string[]>;
   declaredById: Map<string, string[]>;
+  /** Where the declarations came from, or why they could not be collected. */
+  enumeration: ScRegistryEnumeration;
+}
+
+/**
+ * A registry whose `specs/` could NOT be listed (#606).
+ *
+ * Empty maps, like `buildScRegistry([])` — and the only thing separating the
+ * two is this flag, which is the point. A consumer handed one of these must
+ * not report the registry width as consulted.
+ */
+export function unenumeratedScRegistry(reason: string): ScRegistry {
+  return {
+    byId: new Map(),
+    declaredById: new Map(),
+    enumeration: { status: "unenumerated", reason },
+  };
 }
 
 /** The template's ids are placeholders — `isTemplateSpec` already skips it. */
@@ -276,7 +316,9 @@ export function buildScRegistry(specs: Array<{ file: string; content: string }>)
       record(declaredById, d.id, file);
     }
   }
-  return { byId, declaredById };
+  // Enumerated by construction: the caller handed over the list of specs it
+  // read. An empty list is a tree that declares nothing, which is a reading.
+  return { byId, declaredById, enumeration: { status: "enumerated" } };
 }
 
 /**
@@ -396,8 +438,42 @@ export interface ScMentionInSource {
   inComment: boolean;
 }
 
+/** A directory the walk met and could not open, with the reason it gave. */
+export interface ScSourceDirUnwalkable {
+  /** Relative to `root` where that is possible, absolute otherwise. */
+  dir: string;
+  reason: string;
+}
+
 /**
- * Every numeric SC id spelled anywhere under `SC_SOURCE_DIRS`.
+ * What the source walk found AND where it could not look (#606).
+ *
+ * The walk returns silently from a directory it cannot open, which is right
+ * for the walk — a consumer whose tests live in `tests/` has no `test/` and
+ * that is not an error. It is wrong for a CALLER that then reports the result
+ * as a completed read: a tree with four readable, present, genuinely empty
+ * source directories and a tree with none of them both produce zero ids, and
+ * only one of them has been measured.
+ *
+ * So the count and the coverage travel together. A scan that reports a
+ * verdict reports its own coverage
+ * (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+export interface ScSourceMentionsReading {
+  mentions: ScMentionInSource[];
+  /** Which of `SC_SOURCE_DIRS` were opened. Never contains an unwalkable dir. */
+  walked: string[];
+  /**
+   * Every directory `readdirSync` refused — a top-level `SC_SOURCE_DIRS`
+   * entry or anything nested beneath one, because the fail-open is the same
+   * `catch` in both positions.
+   */
+  unwalkable: ScSourceDirUnwalkable[];
+}
+
+/**
+ * Every numeric SC id spelled anywhere under `SC_SOURCE_DIRS`, with an
+ * account of which of those directories were actually walked (#606).
  *
  * Deliberately NOT restricted to declaring forms. The allocator's question is
  * "could handing out this number break something", and a fixture spelled in
@@ -407,18 +483,28 @@ export interface ScMentionInSource {
  * (`.claude/rules/claiming-sc-coverage.md`); this is a different question
  * asked for a different purpose, and widening it here cannot credit anything.
  */
-export function scMentionsInSource(root: string): ScMentionInSource[] {
+export function scMentionsInSource(root: string): ScSourceMentionsReading {
   const { readdirSync, readFileSync } = require("fs") as typeof import("fs");
-  const { join } = require("path") as typeof import("path");
+  const { join, relative } = require("path") as typeof import("path");
   const { commentMask } = require("./strip-js-comments") as typeof import("./strip-js-comments");
   const out: ScMentionInSource[] = [];
+  const unwalkable: ScSourceDirUnwalkable[] = [];
 
-  const walk = (dir: string): void => {
+  /** True when the directory was opened. The return value is the whole fix. */
+  const walk = (dir: string): boolean => {
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;   // a source dir this consumer does not have
+    } catch (err) {
+      // A source dir this consumer does not have. Still not an error — but
+      // the caller hears about it, because "walked and found nothing" and
+      // "never opened" were the same answer until #606.
+      const rel = relative(root, dir);
+      unwalkable.push({
+        dir: rel === "" || rel.startsWith("..") ? dir : rel,
+        reason: (err as Error).message,
+      });
+      return false;
     }
     for (const e of entries) {
       if (e.name === "node_modules" || e.name === ".git") continue;
@@ -432,20 +518,42 @@ export function scMentionsInSource(root: string): ScMentionInSource[] {
         out.push({ id: m[0], file: p.slice(root.length + 1), inComment: mask[m.index!] === true });
       }
     }
+    return true;
   };
-  for (const d of SC_SOURCE_DIRS) walk(join(root, d));
-  return out;
+
+  const walked: string[] = [];
+  for (const d of SC_SOURCE_DIRS) if (walk(join(root, d))) walked.push(d);
+  return { mentions: out, walked, unwalkable };
 }
 
-/** Ids spelled in source, with the files that spell them. */
-export function scIdsSpelledInSource(root: string): Map<string, string[]> {
+/** Ids spelled in source, with the files that spell them, and the coverage. */
+export interface ScIdsSpelledReading {
+  ids: Map<string, string[]>;
+  walked: string[];
+  unwalkable: ScSourceDirUnwalkable[];
+}
+
+/**
+ * Ids spelled in source, keeping the walk's own account of where it looked.
+ *
+ * ONE place builds the id map, so `scIdsSpelledInSource` and the allocator's
+ * source-mentions leg cannot be two deciders that agree
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ */
+export function scIdsSpelledInSourceReading(root: string): ScIdsSpelledReading {
+  const reading = scMentionsInSource(root);
   const found = new Map<string, string[]>();
-  for (const m of scMentionsInSource(root)) {
+  for (const m of reading.mentions) {
     const files = found.get(m.id) ?? [];
     if (!files.includes(m.file)) files.push(m.file);
     found.set(m.id, files);
   }
-  return found;
+  return { ids: found, walked: reading.walked, unwalkable: reading.unwalkable };
+}
+
+/** Ids spelled in source, with the files that spell them. */
+export function scIdsSpelledInSource(root: string): Map<string, string[]> {
+  return scIdsSpelledInSourceReading(root).ids;
 }
 
 /**

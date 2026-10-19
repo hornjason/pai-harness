@@ -10165,6 +10165,119 @@ compiled throws rather than passing.
 - [ ] SC-2018: test/sc-id-cross-tree.test.ts contains [the registry leg changes the answer] — driven by an id only the registry knows, asserted as a relation against the no-registry answer rather than as a literal, so the case survives the tree moving
 - [ ] SC-2019: test/sc-id-cross-tree.test.ts contains [the reading names the legs consulted] — every composed width is a source with the count it contributed, and `describeReading` names them, because a caller cannot print the number without printing which widths produced it
 
+## The three legs that reported `read` without probing anything (#606)
+
+#593's section above ends by saying the three composed widths "are now
+sources of their own, with the count each contributed". They were. All three
+also carried `status: "read"`, as a literal, and not one of them asked
+whether it could be read. The function's own docstring states the property it
+was breaking, two paragraphs above the code that breaks it.
+
+Measured on a tree holding one spec and none of `test/`, `lib/`, `scripts/`
+or `gates/`:
+
+```
+{"kind":"spec-content","status":"read","found":1,"reason":null}
+{"kind":"registry","status":"read","found":0,"reason":null}
+{"kind":"source-mentions","status":"read","found":0,"reason":null}
+```
+
+`source-mentions: read, found 0` is the output for a tree whose four
+directories were walked and held no SC ids, and the output for a tree where
+four directories were never opened. A consumer whose tests live in `tests/`
+or `src/` was in the second case every single run, and the reading said it
+had asked.
+
+### Two of the three, not three
+
+The title of the issue says three. One of them was right, and rewriting it
+with the others is the repair that looks thorough and adds an unreachable
+branch nothing can go red over.
+
+| Leg | Source of `found` | Could it have failed to read? |
+|---|---|---|
+| `spec-content` | `idsInSpecContent(specContent)` | **No.** `specContent` is a string parameter, already in memory. `0` means "this spec declares no ids", which is a reading |
+| `registry` | `reg.declaredById.size` | Yes — `reg` may be built from a `specs/` the caller could not enumerate |
+| `source-mentions` | the source walk | Yes — four directories, any of which the walk returns silently from |
+
+So `spec-content` is unchanged and SC-2157 is a **control** for that choice
+rather than a witness for the fix: it is green on the defective source, and
+there is no state of the code in which it goes red for the original defect.
+Counting it among the witnesses would overstate this file by one.
+
+### The fix is a return-shape change in the walk, not only in the caller
+
+`scMentionsInSource` holds the `catch { return; }`, so it is the only place
+that knows WHICH directories it could not open — a caller cannot recover that
+from a count. It now returns `{ mentions, walked, unwalkable }`, and
+`scIdsSpelledInSource` is a projection of the same single map-builder, so the
+two are not deciders that can disagree.
+
+The registry half is the same shape one call frame up.
+`ScRegistry.enumeration` says whether the `specs/` behind the maps was
+listed, `unenumeratedScRegistry(reason)` builds the other answer, and
+`readScRegistry` — the one producer the live CLI hands to
+`allocateScNumber` — returned `buildScRegistry([])` for an absent `specs/`.
+A fix on the reading side alone cannot see that: the leg would faithfully
+report a flag nobody had ever set wrong, which is why SC-2155 drives the
+producer (#235).
+
+### A partial read is `read`, and says what it missed
+
+Three directories opened of four is a reading of three. Folding it into
+`skipped` would make it indistinguishable from a leg that opened none, which
+swaps the two cases instead of separating them. `status` stays `read`, the
+`reason` names the directories it could not reach, and every one of them
+appends to `namespace.unmeasured` — the list the CLI actually prints.
+
+That mixed tree is the fixture nobody writing this battery would reach for,
+because every natural example is all-or-nothing (#492). It is also the one
+the cheapest wrong fix cannot satisfy.
+
+### The cheapest wrong fix, named, applied and measured
+
+**Flip `source-mentions` to `skipped` when `found === 0`.** One condition. The
+reported instance — a consumer with none of the four directories — starts
+reporting `skipped`, so the symptom is gone.
+
+It is wrong in the direction the issue exists to close: a tree with four
+readable, present, genuinely empty source directories reports `skipped` too.
+The two cases swap places instead of separating, and the reading goes from
+"always claims it read" to "always claims it did not". Applied to the
+pre-#606 source and measured below; the shipped cases survive it
+NON-vacuously, because every one of them pairs two trees whose `found` is
+EQUAL and asserts the premise before the verdict.
+
+### What was broken to prove it
+
+Seven mutations over `test/sc-allocator-leg-provenance.test.ts` +
+`test/sc-id-cross-tree.test.ts` (17 tests). Every count was predicted before
+the battery ran, and **the baseline row was read before any mutation row** —
+an instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody checks.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 17 pass, 0 fail | TBD | — |
+| the genuinely pre-#606 leg composition: all three `status: "read"`, no `unmeasured` append | 6 | TBD | TBD |
+| **the cheapest wrong fix**, on top of that source: `skipped` when `found === 0` | 6 | TBD | TBD |
+| the walk's `catch` stops recording — `walk` always returns `true`, `unwalkable` always empty | 4 | TBD | TBD |
+| `readScRegistry` returns `buildScRegistry([])` for an absent `specs/` — the pre-#606 producer | 1 | TBD | TBD |
+| `buildScRegistry` stamps `unenumerated` — the enumerated direction, inverted | 4 | TBD | TBD |
+| the `unmeasured` append dropped from `allocateScNumber`, legs otherwise intact | 3 | TBD | TBD |
+| the partial-read branch collapsed into `skipped` | 1 | TBD | TBD |
+
+### Success Criteria
+
+- [ ] SC-2151: test/sc-allocator-leg-provenance.test.ts contains [no source directories and four empty ones differ on more than found] — the equal-`found` premise is asserted BEFORE the verdict, because a case built on the count is green under the repair that only reads the count
+- [ ] SC-2152: test/sc-allocator-leg-provenance.test.ts contains [every source directory that could not be walked is named in unmeasured] — by NAME and not by list length, since `unmeasured` is never empty on any reading and a non-empty list is therefore not evidence
+- [ ] SC-2153: test/sc-allocator-leg-provenance.test.ts contains [a partial walk is read, contributes its ids, and still names what it missed] — the mixed tree, which is the fixture every all-or-nothing battery leaves outside its reach (#492)
+- [ ] SC-2154: test/sc-allocator-leg-provenance.test.ts contains [an unenumerated registry is not a registry that declares nothing] — both registries hold zero declarations and the two readings must still differ
+- [ ] SC-2155: test/sc-allocator-leg-provenance.test.ts contains [readScRegistry reports an absent specs/ as unenumerated] — the producing side, because a reading that faithfully reports a flag nobody sets wrong is a reading of nothing (#235)
+- [ ] SC-2156: test/sc-allocator-leg-provenance.test.ts contains [describeReading says a leg was skipped] — the CLI prints that one binding and the unmeasured list, so a distinction that stops at the data structure never reaches an operator
+- [ ] SC-2157: test/sc-allocator-leg-provenance.test.ts contains [the spec-content leg stays read in the worst reading there is] — a CONTROL against a uniform rewrite of all three legs, green on the defective source and named as such rather than counted as coverage
+- [ ] SC-2158: test/sc-allocator-leg-provenance.test.ts contains [the walk's own reading separates an opened directory from a refused one] — the unit beneath SC-2151, because the `catch` is the only position that knows which directory it refused
+
 ## A containment decision taken on the half of the population it covered (#497)
 
 #439 decided that a `contextDocs` entry resolving outside the project root
