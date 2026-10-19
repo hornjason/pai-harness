@@ -4221,6 +4221,18 @@ what it said rather than omitting the field.
  */
 const DEFAULT_BRANCHES = new Set(['main', 'master'])
 
+/**
+ * The branch the SHARED primary checkout was on when this run arrived (#640).
+ *
+ * Declared here, at module scope, because the two ends of the comparison are
+ * hundreds of lines and several phases apart: `establishRunRef` reads it
+ * before it switches, and the finalize step has to put the checkout back
+ * onto it. Empty means it was never read, and that is a reading — a run that
+ * did not look has not proven it put anything back, and comparing two empty
+ * strings is equality, which is how a check that never happened passes.
+ */
+let primaryBranchBefore = ''
+
 /** The branch this run commits waves onto. Deterministic, so a re-run resumes. */
 function runRefName(issue) {
   return `rungate/run-${issue}`
@@ -4328,6 +4340,13 @@ async function establishRunRef() {
 Run exactly this in ${shellQuote(PROJECT_ROOT)} and report what it prints.
 
 cd ${shellQuote(PROJECT_ROOT)}
+before=$(git branch --show-current)
+echo "BEFORE: $before"
+if [ -n "$before" ]; then
+  bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode leftover --repo ${shellQuote(PROJECT_ROOT)} --issue ${ISSUE} --base "$before"
+else
+  echo '{"reading":"UNMEASURED","notice":"the checkout reported no branch, so there is nothing to compare a leftover against (#640)"}'
+fi
 branch=$(git branch --show-current)
 case "$branch" in
   ""|main|master)
@@ -4337,14 +4356,72 @@ git branch --show-current
 
 Report the LAST line as branch — the branch the checkout is on after the
 command, not the one it was on before, and not the one the command asked for.
+
+Report the BEFORE: line's value as branchBefore, EXACTLY as printed. That is
+the branch this shared checkout was on when the run arrived, and the run has
+to put it back at the end; an empty value stays empty rather than being
+guessed at, because a guess is indistinguishable from a reading (#640).
+
+The leftover command prints one JSON object. Report its "reading" as
+leftoverReading and its "notice" as leftoverNotice — null when it printed no
+notice. It exits zero in every case: an interrupted run's branch is usually
+what you want to resume onto, so it reports and does not refuse.
+
 Do not create, delete or push any other ref, and do not switch again.
   `, { label: 'run-ref', phase: 'Implement', schema: {
     type: 'object',
-    properties: { branch: { type: 'string' } },
+    properties: {
+      branch: { type: 'string' },
+      // A schema is a FILTER on the reply, not a description of it (#646):
+      // an undeclared field is stripped on the way back, silently, and the
+      // caller reads a reply missing exactly what it did not ask for.
+      branchBefore: { type: 'string' },
+      leftoverReading: { type: 'string' },
+      leftoverNotice: { type: ['string', 'null'] },
+    },
     required: ['branch'],
   } })
 
   const branch = reply && typeof reply.branch === 'string' ? reply.branch.trim() : ''
+  // Recorded even when empty. An unread start is what makes the end-of-run
+  // comparison UNMEASURED rather than silently equal, and overwriting it
+  // with the ref we just switched to would make every run look unchanged.
+  //
+  // VALIDATED, because this value becomes the `--base` of a destructive
+  // gate. It arrives from an agent, and an agent that reported
+  // `rungate/run-${ISSUE}` would make the containment check compare the
+  // branch against itself — which can only say yes, and then the branch is
+  // deleted with nothing having been checked. `lib/run-branch.ts` refuses
+  // that case too; this refuses it one hop earlier, where the bad value
+  // enters, so neither guard is the only one and each has an input the
+  // other does not see.
+  //
+  // Anything that fails validation is treated as UNREAD, not as a value to
+  // use carefully: an unread start branch skips the restore and the delete
+  // entirely, which is the direction that leaves work alone.
+  const reportedBefore = reply && typeof reply.branchBefore === 'string' ? reply.branchBefore.trim() : ''
+  const looksLikeRef = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$/.test(reportedBefore)
+  if (reportedBefore && !looksLikeRef) {
+    log(`RUN_BRANCH_UNMEASURED: the reported starting branch is not a ref name, so it is being ` +
+      `ignored rather than used as a deletion base (#640)`)
+  } else if (reportedBefore && reportedBefore === runRefName(ISSUE)) {
+    log(`RUN_BRANCH_UNMEASURED: the reported starting branch IS ${runRefName(ISSUE)} — the run's own ` +
+      'ref cannot be the base its containment is checked against, so it is being ignored (#640)')
+  }
+  primaryBranchBefore =
+    looksLikeRef && reportedBefore !== runRefName(ISSUE) ? reportedBefore : ''
+  if (!primaryBranchBefore) {
+    log('RUN_BRANCH_UNMEASURED: the shared checkout\'s starting branch was not reported, ' +
+      'so nothing at the end of this run can say whether it was put back (#640)')
+  }
+  // Reported, never refused — see the script's own note. A leftover branch
+  // from an earlier run of this issue is indistinguishable BY NAME from the
+  // one this run is about to make, and the name is keyed on the issue.
+  if (reply?.leftoverNotice) {
+    log(String(reply.leftoverNotice).replace(/[\r\n]+/g, ' ').slice(0, 500))
+  } else if (reply?.leftoverReading && reply.leftoverReading !== 'ABSENT') {
+    log(`RUN_BRANCH_UNMEASURED: leftover reading ${reply.leftoverReading} arrived with no notice (#640)`)
+  }
   const refusal = runRefRefusal(branch)
   return { branch, refusal }
 }
@@ -8072,7 +8149,7 @@ log(`Prove: ${proveVerdict}`)
 
 // ── Telemetry ──────────────────────────────────────────────
 // Batched: prove-label + telemetry + worktree-cleanup + stale-scan (was 4 agents, now 1)
-await timedAgent(`
+const finalizeResult = await timedAgent(`
 Do ALL of these tasks in order:
 
 1. Post the prove result on the issue:
@@ -8095,8 +8172,83 @@ ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in t
 4. Scan stale issues:
    cd ${HARNESS_ROOT} && bun scripts/scan-stale-issues.ts --repo ${ISSUE_REPO} --exclude ${ISSUE} 2>/dev/null || echo "scan skipped"
 
+5. Put the shared checkout back, and remove this run's branch (#640). Run
+   exactly this:
+
+   cd ${shellQuote(PROJECT_ROOT)}
+${primaryBranchBefore ? `   git switch ${shellQuote(primaryBranchBefore)} || echo "RESTORE_FAILED"
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode delete --repo ${shellQuote(PROJECT_ROOT)} --issue ${ISSUE} --base ${shellQuote(primaryBranchBefore)} || echo "DELETE_REFUSED"` : `   echo "RESTORE_SKIPPED: this run never read the checkout's starting branch"`}
+   after=$(git branch --show-current)
+   echo "AFTER: $after"
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode drift --before ${shellQuote(primaryBranchBefore)} --after "$after" || true
+
+   This checkout is SHARED. Every other session reads it, and a run that
+   leaves it on \`rungate/run-${ISSUE}\` hands them a branch that looks like
+   theirs. The delete step REFUSES when the branch holds anything the base
+   does not — compared by blob and mode, never by ancestry, because every
+   branch here is squash-merged and ancestry reports ORPHANED for content
+   that fully landed. If it refuses, report that and leave the branch alone:
+   do NOT pass --force, do NOT \`git branch -D\` it by hand, and do NOT
+   commit, stash or discard anything to make the refusal go away.
+
+   Report the AFTER: value as branchAfter EXACTLY as printed, the drift
+   command's "reading" as driftReading, and its refusal line as
+   driftRefusal — null when it printed none. Report whether the delete step
+   removed the branch as runBranchDeleted, and its sentence as
+   runBranchDetail.
+
 Report results for each step.
-`, { label: 'finalize', phase: 'Prove' })
+`, { label: 'finalize', phase: 'Prove', schema: {
+  // Declared, because a schema is a FILTER on the reply and an undeclared
+  // field is stripped silently on the way back (#646). The nullable ones
+  // say so: null is what "nothing to report" looks like here, and
+  // `type: 'string'` would drop it and leave the field absent, which reads
+  // as a step that was never asked about.
+  type: 'object',
+  properties: {
+    branchAfter: { type: 'string' },
+    driftReading: { type: 'string' },
+    driftRefusal: { type: ['string', 'null'] },
+    runBranchDeleted: { type: 'boolean' },
+    runBranchDetail: { type: ['string', 'null'] },
+  },
+} })
+
+// ──── RUN-BRANCH-RESTORE-START ────
+// #640 — say where the shared checkout ended up, and whether the branch went.
+//
+// The comparison itself is NOT made here. `checkoutDrift` in
+// lib/run-branch.ts is the one binding that decides whether a run moved the
+// checkout, and the script above asks it; this reads the answer. A second
+// comparison in ship.js would be two deciders that agree, and a mutation of
+// either would leave the other answering correctly
+// (.claude/rules/checks-must-be-able-to-fail.md, the fourth shape).
+//
+// Everything below is an agent's RESTATEMENT of that answer (#530), so an
+// absent field is UNMEASURED and never clean: a run that reported nothing
+// looked at nothing, and "the checkout came back" is the one conclusion
+// nobody may draw from silence.
+const driftReading = finalizeResult?.driftReading || 'UNMEASURED'
+if (driftReading === 'UNCHANGED') {
+  log(`Shared checkout: back on ${primaryBranchBefore || '(unreported)'} (#640)`)
+} else if (finalizeResult?.driftRefusal) {
+  log(`RUN_BRANCH_DRIFT: ${String(finalizeResult.driftRefusal).replace(/[\r\n]+/g, ' ').slice(0, 500)}`)
+} else {
+  log('RUN_BRANCH_UNMEASURED: finalize did not report where the shared checkout ended up, ' +
+    `so whether this run put it back is unknown — reading ${driftReading} (#640)`)
+}
+
+if (finalizeResult?.runBranchDeleted === true) {
+  log(`Run branch: ${String(finalizeResult.runBranchDetail || 'deleted').replace(/[\r\n]+/g, ' ').slice(0, 500)}`)
+} else if (finalizeResult?.runBranchDetail) {
+  // A refusal is the designed outcome when the branch holds work the base
+  // does not, so this is a finding to print rather than a failure. The run
+  // is over; what is left is a ref somebody has to look at.
+  log(`RUN_BRANCH_KEPT: ${String(finalizeResult.runBranchDetail).replace(/[\r\n]+/g, ' ').slice(0, 500)}`)
+} else if (primaryBranchBefore) {
+  log(`RUN_BRANCH_UNMEASURED: finalize did not say whether ${runRefName(ISSUE)} was removed (#640)`)
+}
+// ──── RUN-BRANCH-RESTORE-END ────
 
 // ──── PROVE-STATUS-START ────
 /**

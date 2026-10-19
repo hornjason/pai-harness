@@ -42,7 +42,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execFileSync } from "child_process";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 
 import {
   ABSENT,
@@ -133,12 +133,28 @@ beforeAll(() => {
   if (literalExits.length > 0) {
     throw new Error(`could not build the mutant: ${literalExits.length} refusal(s) exit with a literal code`);
   }
-  // The mutant runs from a temp directory; a relative import would die on
-  // module resolution, exiting non-zero, which reads as the mutation being
-  // rejected on the merits.
-  const relative = src.match(/^\s*import\s[^;]*?from\s+["']\.{1,2}\//gm) ?? [];
-  if (relative.length > 0) {
-    throw new Error(`could not build the mutant: ${relative.length} relative import(s)`);
+  // The mutant runs from a temp directory, so a relative specifier would die
+  // on module resolution — exiting non-zero, which reads as the mutation
+  // being rejected on the merits.
+  //
+  // This REFUSED outright until #640 moved `treeEntries` into
+  // `lib/tree-entries.ts`, so that the run-branch containment check and this
+  // script ask one binding rather than two that agree. The refusal was the
+  // right behaviour and it fired exactly as designed; what it cannot do is
+  // tell a layering fix from a mistake. So the specifiers are now REWRITTEN
+  // to absolute paths against the script's own directory, and anything the
+  // rewriter could not resolve still aborts the file — which is the property
+  // that matters (`.claude/rules/checks-must-be-able-to-fail.md`: a mutant
+  // that dies on module resolution is not a mutant).
+  let rewritten = src.replace(
+    /(from\s+["'])(\.{1,2}\/[^"']+)(["'])/g,
+    (_m, open: string, spec: string, close: string) => `${open}${resolve(dirname(SCRIPT), spec)}${close}`,
+  );
+  const unresolved = rewritten.match(/from\s+["']\.{1,2}\//g) ?? [];
+  if (unresolved.length > 0) {
+    throw new Error(
+      `could not build the mutant: ${unresolved.length} relative specifier(s) the rewriter could not see`,
+    );
   }
   // The waiver filter was written out twice in the first cut — once in the
   // report, once in the CLI — and mutating either left the other deciding,
@@ -155,7 +171,8 @@ beforeAll(() => {
   const dir = mkdtempSync(join(tmpdir(), "rg-516-mut-"));
   scratch.push(dir);
   mutant = join(dir, "verify-merge-content.ts");
-  writeFileSync(mutant, src.replace(decl, "export const REFUSE_EXIT = 0;"));
+  rewritten = rewritten.replace(decl, "export const REFUSE_EXIT = 0;");
+  writeFileSync(mutant, rewritten);
 });
 
 afterAll(() => {
