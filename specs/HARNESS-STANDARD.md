@@ -11787,6 +11787,47 @@ cwd-is-a-repository validation produces no refusal for. Measured below at
 - [x] SC-2182: test/unit/launch-base-wiring.test.ts contains [a SAME_CHECKOUT claim carrying a non-zero exit is a contradiction] — the script cannot produce that pair, so a reply asserting both has misread one of them, and the control varying only the exit code is asserted beside it
 - [x] SC-2183: test/unit/launch-base-wiring.test.ts contains [a refusal ends the run through the terminal funnel] — not a warning: the two failures guarded are a run that dies 19 seconds later with a message about the wrong thing and a run that succeeds onto somebody else's branch, and neither is improved by a log line
 
+### The suite's own fixtures were all on the wrong side of the new precondition
+
+Adding the launch-base check turned **eleven** existing cases red, in
+`test/workflow-contracts.test.ts` and `test/terminal-failure-reason.test.ts`,
+and all eleven for one reason: `lib/workflow-test-harness.ts` drives ship.js
+with a `projectRoot` under `/tmp` that has never been a repository, because
+no case before #644 needed it to be. Ten reported
+`Expected "IMPLEMENT_FAILED", received "LAUNCH_BASE_FAILED"` and the
+eleventh — SC-1753, *preload-contexts no longer declares a phase ahead* —
+reported a missing call, because the run it reads terminated before reaching
+it. Neither the cases nor the gate were wrong.
+
+**This is #492's shape arriving from the other side.** There, every fixture
+in a battery met a precondition and the branch where it did not hold was
+outside the battery's reach. Here a precondition was ADDED beneath a suite
+whose every fixture predates it, so all of them landed on the far side at
+once. The tell is the same in both directions: a population of fixtures that
+agrees about something nobody chose.
+
+**Fixed at the harness, not at the gate**, and the distinction is the whole
+of it. The cheapest wrong fix was available in one line — make the check pass
+when the reading is `UNMEASURED`, or skip it when `projectRoot` is under
+`/tmp` — and both delete the point of #644: `UNMEASURED` is precisely the
+reading that must refuse, and a `/tmp` carve-out is a production bypass every
+synthetic caller inherits. Neither was applied.
+
+Both suites now override the `launch-base` label with a `SAME_CHECKOUT`
+reading. The override supplies a READING, which `readLaunchBase` then judges
+exactly as it judges a real one, so a refusing reading injected there still
+stops the run — it is not a flag that turns the gate off.
+
+What stops the override becoming a default nobody notices is SC-2184, which
+runs the real script through the harness with NO override and requires
+`LAUNCH_BASE_FAILED`, asserts the run stopped at the launch-base step rather
+than later (`read-issue` is never called), and pairs it with a control
+varying exactly that one injected reading. It is the one run in the suite
+built deliberately NOT to meet the precondition every other run now asserts
+past.
+
+- [x] SC-2184: test/unit/launch-base-wiring.test.ts contains [with no reading injected the real script refuses] — the seam the rest of the suite needs is proved not to be a bypass by executing the real script without it, with a control varying only the injected reading so the pair is a measurement of the seam rather than of a script that refuses everything
+
 ### What was broken to prove the cases fail
 
 Run and counted rather than asserted. Every count predicted before the

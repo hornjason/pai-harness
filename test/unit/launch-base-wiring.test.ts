@@ -43,6 +43,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 import { anchorOccurrences, structuralCut } from "../../lib/source-slice";
+import { runWorkflow } from "../../lib/workflow-test-harness";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const SHIP = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
@@ -259,6 +260,66 @@ describe("SC-2181: the reply shape is declared, and the refusal is terminal", ()
     // The reading travels with the status, so the run record says which of
     // the five states stopped it rather than only that something did.
     expect(call).toContain("launchBaseReading: launchBase.reading");
+  });
+
+  /**
+   * The seam that was needed to make the rest of the suite runnable, and the
+   * thing that stops it being a bypass.
+   *
+   * Every synthetic run in `test/workflow-contracts.test.ts` and
+   * `test/terminal-failure-reason.test.ts` drives ship.js with a
+   * `projectRoot` under `/tmp` that has never been a repository, because no
+   * case before #644 needed it to be. They now override the `launch-base`
+   * label with a `SAME_CHECKOUT` reading — the harness saying "assume the
+   * launch base is fine, I am testing something else".
+   *
+   * That override is a READING, judged by the same `readLaunchBase` a real
+   * run uses, so it cannot be used to wave a refusing reading through. What
+   * it could become is a default nobody notices: if the gate stopped
+   * refusing, every one of those runs would stay green and so would every
+   * case in this file, because they all drive the reader directly.
+   *
+   * So this case runs the REAL script through the harness with NO override
+   * and requires the refusal — #492's precondition fixture, built on
+   * purpose: the one run in the suite that does not meet the precondition
+   * every other run now asserts past.
+   */
+  test("SC-2184: with no reading injected the real script refuses, so the seam is not a bypass", async () => {
+    const SHIP_BODY = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
+    const ARGS = {
+      issue: 644,
+      projectRoot: "/tmp/rungate-launch-base-not-a-repo",
+      repo: "owner/repo",
+      issueRepo: "owner/repo",
+      harnessRoot: "/tmp/rungate-launch-base-harness",
+    };
+
+    const refused = await runWorkflow(SHIP_BODY, { args: { ...ARGS } });
+    expect(refused.error, refused.error ? `the harness threw: ${refused.error.message}` : "").toBeNull();
+    const out = (refused.result ?? {}) as Record<string, unknown>;
+    expect(out.status).toBe("LAUNCH_BASE_FAILED");
+    expect(String(out.reason)).toContain("LAUNCH_BASE_");
+    // It stopped THERE, not later: the issue is never read.
+    const labels = refused.calls.filter(c => c.kind === "agent").map(c => (c as { label?: string }).label);
+    expect(labels[0]).toBe("launch-base");
+    expect(labels).not.toContain("read-issue");
+
+    // The control, varying exactly one thing: the injected reading. Without
+    // it the pair would be one run that refused, which is satisfied by a
+    // script that refuses everything.
+    const cleared = await runWorkflow(SHIP_BODY, {
+      args: { ...ARGS },
+      overrides: {
+        "launch-base": () => ({ reading: "SAME_CHECKOUT", cwd: ARGS.projectRoot, refusal: null, exitCode: 0 }),
+        "read-issue": (s: Record<string, unknown>) => ({
+          ...s,
+          successCriteria: ["- [ ] SC-1: the launch base is checked before anything else"],
+        }),
+      },
+    });
+    expect((cleared.result as Record<string, unknown>)?.status).not.toBe("LAUNCH_BASE_FAILED");
+    expect(cleared.calls.filter(c => c.kind === "agent").map(c => (c as { label?: string }).label))
+      .toContain("read-issue");
   });
 
   test("ship.js restates the reading and decides nothing about the launch base itself", () => {
