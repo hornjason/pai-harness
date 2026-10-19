@@ -518,6 +518,38 @@ function suiteCaptureCommand(projectRoot, testCommand, workDir, quote) {
   return `cd ${quote(projectRoot)} && ${testCommand} 2>&1 | tee ${quote(suiteOutputPath(workDir))}`
 }
 
+/**
+ * The tests this branch's changes can reach, for the agent's ITERATION loop
+ * (#676).
+ *
+ * Deliberately NOT used by `suiteCaptureCommand` above, and the reason is
+ * the whole design. Both of that function's call sites feed the recorder,
+ * which writes `verdict: PASS` and `environments.local.tests`. A subset run
+ * recorded there is a PASS over 113 of 388 files wearing a PASS over the
+ * suite — #673 verbatim, one event with two denominators — so the gate's
+ * measurement stays a full suite and the saving is taken where the wall
+ * clock actually goes: the repair cycle, where the suite is run again every
+ * time an agent changes a line.
+ *
+ * It replaces an instruction, not a command. The prompt already said "use
+ * TARGETED tests only" and left the agent to work out which, and the method
+ * an agent reaches for is `grep -rl "<basename>" test/` — which drops any
+ * test that reaches the change through an intermediate module without
+ * naming it. That is the cheapest wrong fix `lib/affected-tests.ts` is
+ * measured against, and six of its eighteen cases do not survive it.
+ *
+ * **Printing nothing means run everything**, so a selector that cannot
+ * establish a trustworthy reading costs a slow run and never a missed test.
+ * `--work` is keyed by the agent's own directory because waves run in
+ * parallel worktrees and one shared artefact path would have them
+ * overwriting each other's reading.
+ */
+function selectedTestsCommand(harnessRoot, workDir, testCommand, quote) {
+  const script = quote(`${harnessRoot}/scripts/select-affected-tests.ts`)
+  const work = `${quote(`${workDir}/selection`)}/"$(basename "$PWD")"`
+  return `${testCommand} $(bun ${script} --work ${work})`
+}
+
 function recorderCommand(harnessRoot, workDir, projectRoot, quote) {
   return (
     `bun ${quote(`${harnessRoot}/scripts/record-suite-measurement.ts`)} \\\n` +
@@ -2955,6 +2987,14 @@ const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
 const hasContainer = !!(projectConfig.container)
 const testCommand = projectConfig.test?.command || projectConfig.dev?.testCmd || 'bun test'
+
+// Resolved once here, at module scope, rather than inside `runImplement`
+// (#676). Every harness that reconstructs that function with `new Function`
+// has to supply each free name it reaches for, and calling the builder in
+// the prompt would have added four — `selectedTestsCommand`, `HARNESS_ROOT`,
+// `testCommand` and `shellQuote`. A resolved string is one, and it is a
+// string, so there is no stub that could disagree with the real thing.
+const SELECTED_TESTS_COMMAND = selectedTestsCommand(HARNESS_ROOT, WORK_DIR, testCommand, shellQuote)
 const testTimeout = projectConfig.test?.timeout || 120000
 
 // ──── LOCAL-ENV-CLAUSE-START ────
@@ -3945,7 +3985,18 @@ async function runImplement() {
   const buildResult = await briefedAgent(`
 Read ${WORK_DIR}/marcus-brief.md for full instructions including ACs and files to modify.
 
-Use TARGETED tests only: bun test test/specific-file.test.ts (timeout: ${testTimeout}). Never run the full suite.
+Use TARGETED tests only (timeout: ${testTimeout}). This command computes the set
+your changes can actually reach — imports followed transitively, module-relative
+file reads, and every directory sweep kept unconditionally — and runs it:
+
+  ${SELECTED_TESTS_COMMAND}
+
+Run it from your worktree. Do NOT hand-pick test files by grepping for a
+filename: a test that reaches your change through an intermediate module never
+names it, so that method reports green over code it did not exercise (#676).
+If the selector prints nothing it is telling you it could not establish a
+trustworthy selection, and the full suite it then runs is the correct answer —
+do not override it.
 Do NOT commit or push yet — Quinn will validate first.
 If tests fail, fix them before reporting.
 

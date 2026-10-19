@@ -328,6 +328,9 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     "REPO",
     "taskSourceRefusal",
     "filesChangedShapeRefusal",
+    // #676: the selected-test command, resolved at ship.js's module scope
+    // and interpolated into the prompt as a plain string.
+    "SELECTED_TESTS_COMMAND",
     `${slicedFunction("async function runImplement()")}\nreturn runImplement`,
   )(
     async () => opts.ceremony ?? { contextExcerpts: [], acContextFiles: [] },
@@ -341,6 +344,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     RUN_REPO,
     taskSourceRefusal,
     filesChangedShapeRefusal,
+    "bun test $(bun /h/scripts/select-affected-tests.ts --work '/tmp/work/selection'/\"$(basename \"$PWD\")\")",
   ) as () => Promise<{ success?: boolean; status?: string; buildResult?: any }>;
 }
 
