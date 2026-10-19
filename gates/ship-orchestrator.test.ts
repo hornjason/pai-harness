@@ -33,9 +33,6 @@ function readState(): any {
   return JSON.parse(readFileSync(SF, "utf-8"));
 }
 
-// Override WORK_DIR_BASE for tests via env
-process.env.RUNGATE_WORK_DIR = TEST_BASE;
-
 import {
   advancePhase,
   currentState,
@@ -61,11 +58,34 @@ describe("ship-orchestrator", () => {
   // Use mock executor to prevent subprocess spawning
   beforeEach(() => setGateExecutor(mockGateExecutor));
   afterEach(() => setGateExecutor(null));
+
+  /**
+   * `workDirBase()` in ./ship-orchestrator reads RUNGATE_WORK_DIR, so these
+   * tests have to point it at their own scratch base. It used to be set once at
+   * module scope, above the import, on the theory that the import had to see
+   * it — but `ship-orchestrator.ts:10` reads the variable INSIDE the function,
+   * so the assignment never needed to be there and the comment was wrong.
+   *
+   * What it cost: `bun test gates/` is one process, so that write landed in
+   * every other gate test file's environment and stayed there. Six checks in
+   * `workflow.test.ts` resolved this run's artifacts from it, and whether they
+   * saw `/tmp/ship-orch-test-<pid>` instead of the real directory came down to
+   * which file bun's walk over `gates/` reached first. On APFS this file runs
+   * last and nothing happens; on CI's ext4 it does not. That is the whole of
+   * #700 — six red CI runs, zero local.
+   *
+   * Scoped and restored, the way gates/adversarial.test.ts already did it.
+   */
+  let origWorkDir: string | undefined;
   beforeEach(() => {
+    origWorkDir = process.env.RUNGATE_WORK_DIR;
+    process.env.RUNGATE_WORK_DIR = TEST_BASE;
     mkdirSync(WORK_DIR, { recursive: true });
   });
 
   afterEach(() => {
+    if (origWorkDir === undefined) delete process.env.RUNGATE_WORK_DIR;
+    else process.env.RUNGATE_WORK_DIR = origWorkDir;
     try { rmSync(TEST_BASE, { recursive: true, force: true }); } catch {}
   });
 

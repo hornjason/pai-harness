@@ -168,6 +168,13 @@ describe("#524: the exits that carried no reason now carry a specific one", () =
    * #251 and the prior-work detector have their own tests.
    */
   const REACHES_IMPLEMENT: Record<string, (s: any) => unknown> = {
+    // The launch-base check (#644) is the run's first step and refuses
+    // anything but SAME_CHECKOUT — including the UNMEASURED that a synthetic
+    // placeholder reading produces. `/tmp/p` has never been a repository,
+    // because no case before #644 needed it to be, so without this every run
+    // here terminates at LAUNCH_BASE_FAILED and none of the exits below is
+    // ever reached. A third property of the harness, same as the two above.
+    "launch-base": () => ({ reading: "SAME_CHECKOUT", cwd: "/tmp/p", refusal: null, exitCode: 0 }),
     "read-issue": s => ({ ...s, successCriteria: [] }),
     discovery: s => ({ ...s, priorWork: { explicitCommits: [], acStatus: [{ id: "AC-1", status: "UNMET" }] } }),
   };
