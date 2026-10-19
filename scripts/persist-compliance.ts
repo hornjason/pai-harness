@@ -87,6 +87,14 @@ export const HILL_CLIMB_STATES = [
   "TIER_PROMOTION_RECOMMENDED",
   "REINFORCEMENT_ALREADY_PRESENT",
   "NO_SUITABLE_SECTION",
+  // #662 — two sibling paths that reached a `continue` without leaving an
+  // occurrence, so a role whose actions were dropped produced the same
+  // receipt as a role that needed nothing. They are not skips
+  // `applyHillClimb` decided, which is why they are not in
+  // `SKIP_OUTCOME_STATE`: the first happens before it is called and the
+  // second is the discovery that its answer does not account for its input.
+  "NO_BRIEF_REGISTERED",
+  "OUTCOMES_UNACCOUNTED",
 ] as const;
 
 export type HillClimbState = (typeof HILL_CLIMB_STATES)[number];
@@ -101,6 +109,15 @@ export type HillClimbState = (typeof HILL_CLIMB_STATES)[number];
  */
 export const UNMEASURED_HILL_CLIMB_STATES: readonly HillClimbState[] = [
   "NO_SUITABLE_SECTION",
+  // #662. Both are the same sentence as the one above with a different
+  // reason: the actions were detected, survived the grader-accuracy gate,
+  // and then nobody ever found out what applying them would have done. A
+  // role with no registered brief has not been reinforced and has not been
+  // examined, and an `applyHillClimb` whose two arrays do not account for
+  // the actions it was handed has returned an answer about fewer actions
+  // than it was asked about.
+  "NO_BRIEF_REGISTERED",
+  "OUTCOMES_UNACCOUNTED",
 ];
 
 /** One occurrence of a state, carrying the producing code's own reason. */
@@ -144,6 +161,8 @@ export function emptyHillClimbStates(): Record<HillClimbState, HillClimbOccurren
     TIER_PROMOTION_RECOMMENDED: [],
     REINFORCEMENT_ALREADY_PRESENT: [],
     NO_SUITABLE_SECTION: [],
+    NO_BRIEF_REGISTERED: [],
+    OUTCOMES_UNACCOUNTED: [],
   };
 }
 
@@ -227,12 +246,32 @@ function readEfficiency(workDir: string, logger: (m: string) => void): unknown {
   }
 }
 
+/**
+ * The one injection seam, exported (#662).
+ *
+ * `OUTCOMES_UNACCOUNTED` is a statement about a reply `applyHillClimb` is
+ * not supposed to make, so there is no input to this script that provokes
+ * it — and a branch no test can enter is the thing
+ * `.claude/rules/checks-must-be-able-to-fail.md` is about. The seam lets a
+ * case hand the loop a reply that does not account for its actions, without
+ * mutating the real function or reaching for a fixture that happens to
+ * produce one today.
+ *
+ * Optional and defaulted to the real function, so every existing caller is
+ * unchanged and a test that forgets to pass it is testing the real thing.
+ */
+export interface PersistSeams {
+  applyHillClimb?: typeof applyHillClimb;
+}
+
 export function persistCompliance(
   workDir: string,
   harnessRoot: string,
   issue: string,
   logger: (m: string) => void = m => console.error(m),
+  seams: PersistSeams = {},
 ): PersistResult {
+  const applyHillClimbFn = seams.applyHillClimb ?? applyHillClimb;
   const gradePath = join(workDir, "compliance-grade.json");
   if (!existsSync(gradePath)) {
     throw new Error(
@@ -360,11 +399,42 @@ export function persistCompliance(
 
     const briefPath = loadRoleBriefPaths(harnessRoot)[g.role];
     if (!briefPath) {
+      // #662. This `continue` used to leave nothing behind, and a role whose
+      // actions were detected and then discarded produced the same receipt
+      // as a role that needed nothing — which is the reading #646 exists to
+      // abolish, surviving one branch above the place it was abolished.
       logger(`no brief registered for role ${g.role} — skipping hill-climb`);
+      states.NO_BRIEF_REGISTERED.push({
+        role: g.role,
+        compId: null,
+        detail:
+          `${actions.length} action(s) were detected and no brief is registered for this role, ` +
+          `so nothing was composed and nobody knows what reinforcing it would have done`,
+      });
       continue;
     }
 
-    const { applied, skipped, skipOutcomes } = applyHillClimb(briefPath, actions);
+    const { applied, skipped, skipOutcomes } = applyHillClimbFn(briefPath, actions);
+    // #662. The two arrays are the whole answer about `actions`, and nothing
+    // required them to be an answer about all of it. A call that returns
+    // both empty for a non-empty input has reported neither an application
+    // nor a skip, and the receipt's five lists are then empty for this role
+    // — `hillClimbApplied: 0` one layer in.
+    //
+    // Counted rather than asked as `length === 0`: a reply accounting for
+    // two of three actions is the same defect in a quieter size, and a
+    // guard worded after the cheapest proxy is a guard people satisfy
+    // directly (`.claude/rules/checks-must-be-able-to-fail.md`).
+    if (applied.length + skipped.length < actions.length) {
+      states.OUTCOMES_UNACCOUNTED.push({
+        role: g.role,
+        compId: null,
+        detail:
+          `${actions.length} action(s) went in and ${applied.length} application(s) plus ` +
+          `${skipped.length} skip(s) came back, so ${actions.length - applied.length - skipped.length} ` +
+          `of them produced no outcome at all`,
+      });
+    }
     for (const a of applied) logger(`HILL-CLIMB: ${a}`);
     // `skipped` is `skipOutcomes.map(hillClimbSkipSentence)` at a single
     // return in `applyHillClimb`, so index i of one is index i of the other.
