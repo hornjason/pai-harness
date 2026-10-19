@@ -42,6 +42,7 @@ import {
   containmentRefusal,
   leftoverRunBranch,
   runBranchName,
+  runBranchRefs,
 } from "../lib/run-branch";
 import { gitRead } from "../lib/tree-entries";
 
@@ -108,12 +109,65 @@ export function deleteRunBranch(
   repo: string,
   issue: number | string,
   base: string,
-): { deleted: boolean; branch: string; reading: string; detail: string } {
+): {
+  deleted: boolean
+  branch: string
+  reading: string
+  detail: string
+  refsReading: string
+  resolvedRef: string | null
+  resolvedSha: string | null
+} {
   const branch = runBranchName(issue);
-  const containment = branchContainment(repo, branch, base);
+
+  // WHICH commit the name points at, before anything is compared or removed.
+  //
+  // This is the destructive mode, so it is the one place the local-only
+  // resolution cost real work: a local head BEHIND the push reads CONTAINED
+  // against the base and `git branch -D` then destroys the commits that
+  // exist only under the remote name. Resolving both refs first means the
+  // deletion is authorised by a reading that knows what it is about, and a
+  // name that resolves to two commits authorises nothing (#640).
+  const refs = runBranchRefs(repo, branch);
+  const refsFloor = {
+    deleted: false,
+    branch,
+    refsReading: refs.reading,
+    resolvedRef: refs.resolvedRef ?? null,
+    resolvedSha: refs.resolvedSha ?? null,
+  };
+  if (refs.reading === "DIVERGED" || refs.reading === "UNMEASURED") {
+    return { ...refsFloor, reading: refs.reading, detail: refs.refusal };
+  }
+  if (refs.reading === "ABSENT") {
+    return {
+      ...refsFloor,
+      reading: "ABSENT",
+      detail: `no ref named ${branch} exists locally or on origin, so there is nothing to delete (#640)`,
+    };
+  }
+  if (refs.reading === "REMOTE_ONLY") {
+    // `git branch -D` only removes local heads. Reporting a deletion here
+    // would be reporting a command git declined to perform, and deleting the
+    // remote-tracking ref instead would hide a branch that still exists on
+    // the remote.
+    return {
+      ...refsFloor,
+      reading: "REMOTE_ONLY",
+      detail:
+        `${branch} exists only as ${refs.resolvedRef} (${refs.resolvedSha.slice(0, 12)}) and not as a local ` +
+        "head. `git branch -D` removes local heads, so there is nothing here this can delete — the branch " +
+        "on the remote is not this run's to remove (#640)",
+    };
+  }
+
+  // The RESOLVED ref, never the bare name: the bare name resolves to the
+  // local head by git's own rules, which is the reading that can be about a
+  // commit the run never pushed.
+  const containment = branchContainment(repo, refs.resolvedRef, base);
   const refusal = containmentRefusal(containment);
   if (refusal) {
-    return { deleted: false, branch, reading: containment.reading, detail: refusal };
+    return { ...refsFloor, reading: containment.reading, detail: refusal };
   }
   // Narrowed off `refusal` above, which is null for CONTAINED and only
   // CONTAINED — but `containmentRefusal` is a function, so the compiler
@@ -131,12 +185,13 @@ export function deleteRunBranch(
   // than `-d` performs.
   gitRead(repo, ["branch", "-D", branch]);
   return {
+    ...refsFloor,
     deleted: true,
-    branch,
     reading: containment.reading,
     detail:
-      `deleted ${branch}: all ${containment.comparedPaths} changed path(s) are present on ${base}, ` +
-      "compared by blob and mode rather than by ancestry (#640)",
+      `deleted ${branch} at ${refs.resolvedRef} (${refs.resolvedSha.slice(0, 12)}): all ` +
+      `${containment.comparedPaths} changed path(s) are present on ${base}, compared by blob and mode ` +
+      "rather than by ancestry (#640)",
   };
 }
 
@@ -164,7 +219,11 @@ if (import.meta.main) {
     } else {
       const result = deleteRunBranch(args.repo, args.issue, args.base);
       console.log(JSON.stringify(result, null, 2));
-      if (!result.deleted) throw new RunBranchRefused(result.detail);
+      // The READING leads the sentence. #640's second gap was an output that
+      // answered confidently without saying what it had answered about, and a
+      // refusal whose class is only recoverable by reading the prose is the
+      // same defect one layer out.
+      if (!result.deleted) throw new RunBranchRefused(`${result.reading}: ${result.detail}`);
     }
   } catch (e: any) {
     console.error(
