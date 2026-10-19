@@ -9,7 +9,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import type { ScRegistry } from "./sc-ids";
-import { isFixtureScId, scIdsSpelledInSource, SC_SOURCE_DIRS } from "./sc-ids";
+import { isFixtureScId, scIdsSpelledInSourceReading, SC_SOURCE_DIRS } from "./sc-ids";
 import type { ScNamespaceReading, SourceReading } from "./sc-id-cross-tree";
 import { readScNamespace } from "./sc-id-cross-tree";
 import { tryLoadRungateConfig } from "./config-loader";
@@ -338,6 +338,31 @@ export function nextSCNumber(
  * own, with the count each contributed — `0` from a leg that was consulted
  * and `0` from a leg that was skipped are the same number and opposite
  * facts (`.claude/rules/config-access.md`).
+ *
+ * ## …and for two issues all three said `read` without asking (#606)
+ *
+ * The sentence above was the docstring of a function that hardcoded
+ * `status: "read"` on every one of the three. Measured on a tree holding one
+ * spec and none of the four source directories: `source-mentions` reported
+ * `read, found 0` — which is also the output for a tree whose four
+ * directories were walked and held no ids. A consumer whose tests live in
+ * `tests/` or `src/` was in the second case on every single run.
+ *
+ * Two of the three are now derived, and one is not:
+ *
+ * | Leg | Source of `found` | Can it have failed to read? |
+ * |---|---|---|
+ * | `spec-content` | `idsInSpecContent(specContent)` | **No.** `specContent` is a string parameter, already in memory. `0` here is a reading |
+ * | `registry` | `reg.declaredById.size` | Yes — `reg` may have been built from a `specs/` the caller could not enumerate, which `ScRegistry.enumeration` now states |
+ * | `source-mentions` | the source walk | Yes — four directories, any of which the walk returns silently from |
+ *
+ * `spec-content` stays `read` deliberately. Rewriting all three uniformly is
+ * the cheap-looking repair and it adds an unreachable branch to the one leg
+ * that was right, which no case can go red over.
+ *
+ * A leg that could not be fully read also appends to `namespace.unmeasured`,
+ * because `status` is a per-leg fact and `unmeasured` is the list a caller
+ * prints. A gap in only one of them is a gap a reader can miss.
  */
 export function allocateScNumber(
   root: string,
@@ -345,31 +370,84 @@ export function allocateScNumber(
   reg: ScRegistry,
 ): { number: number; namespace: ScNamespaceReading } {
   const namespace = readScNamespace(root);
-  const spelled = [...scIdsSpelledInSource(root).keys()];
+  const source = scIdsSpelledInSourceReading(root);
+  const spelled = [...source.ids.keys()];
   const number = nextSCNumber(specContent, reg, [...spelled, ...namespace.ids.keys()]);
+
+  const unmeasured: string[] = [];
+
+  const registryLabel = "spec registry (every declared id, checkbox and heading)";
+  const registryLeg: SourceReading = reg.enumeration.status === "enumerated"
+    ? { label: registryLabel, kind: "registry", status: "read", found: reg.declaredById.size }
+    : {
+      label: registryLabel,
+      kind: "registry",
+      status: "skipped",
+      reason: reg.enumeration.reason ?? "the spec registry was not enumerated",
+      found: 0,
+    };
+  if (reg.enumeration.status === "unenumerated") {
+    unmeasured.push(
+      `the spec registry was not enumerated: ${reg.enumeration.reason ?? "no reason given"}`,
+    );
+  }
+
+  const sourceLabel = `SC ids spelled under ${SC_SOURCE_DIRS.join(", ")}`;
+  const unreached = source.unwalkable.map(u => `${u.dir} (${u.reason})`).join("; ");
+  let sourceLeg: SourceReading;
+  if (source.walked.length === 0) {
+    // None of them opened. There is no reading here at all, and the count is
+    // the count of a walk that never happened.
+    sourceLeg = {
+      label: sourceLabel,
+      kind: "source-mentions",
+      status: "skipped",
+      reason: `none of ${SC_SOURCE_DIRS.join(", ")} could be walked: ${unreached}`,
+      found: 0,
+    };
+  } else if (source.unwalkable.length > 0) {
+    // Partially read, and the count is real for the part that was. Saying
+    // `skipped` here would swap the two cases rather than separate them.
+    sourceLeg = {
+      label: `${sourceLabel} (walked ${source.walked.join(", ")})`,
+      kind: "source-mentions",
+      status: "read",
+      reason: `could not walk ${unreached}`,
+      found: new Set(spelled).size,
+    };
+  } else {
+    sourceLeg = {
+      label: sourceLabel,
+      kind: "source-mentions",
+      status: "read",
+      found: new Set(spelled).size,
+    };
+  }
+  for (const u of source.unwalkable) {
+    unmeasured.push(`source directory ${u.dir} could not be walked: ${u.reason}`);
+  }
 
   const legs: SourceReading[] = [
     {
+      // Not derived, and the table above says why: there is no state in which
+      // this one could have failed to read a string it was handed.
       label: "the spec's own content",
       kind: "spec-content",
       status: "read",
       found: new Set(idsInSpecContent(specContent)).size,
     },
-    {
-      label: "spec registry (every declared id, checkbox and heading)",
-      kind: "registry",
-      status: "read",
-      found: reg.declaredById.size,
-    },
-    {
-      label: `SC ids spelled under ${SC_SOURCE_DIRS.join(", ")}`,
-      kind: "source-mentions",
-      status: "read",
-      found: new Set(spelled).size,
-    },
+    registryLeg,
+    sourceLeg,
   ];
 
-  return { number, namespace: { ...namespace, sources: [...legs, ...namespace.sources] } };
+  return {
+    number,
+    namespace: {
+      ...namespace,
+      sources: [...legs, ...namespace.sources],
+      unmeasured: [...unmeasured, ...namespace.unmeasured],
+    },
+  };
 }
 
 /**

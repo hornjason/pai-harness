@@ -71,7 +71,13 @@ export interface SourceReading {
   kind: "worktree" | "refs" | "spec-content" | "registry" | "source-mentions";
   /** `read` means the ids below came from here; `skipped` means they did not. */
   status: "read" | "skipped";
-  /** Why it was skipped. Absent on a successful read. */
+  /**
+   * Why it was skipped — or, on a PARTIAL read, what it could not reach
+   * (#606). A leg over four directories that opened three of them is `read`
+   * for the three and still owes an account of the fourth; folding that into
+   * `skipped` would make it indistinguishable from a leg that opened none.
+   * Absent only on a read that reached everything it was pointed at.
+   */
   reason?: string;
   /** How many distinct ids this source contributed. */
   found: number;

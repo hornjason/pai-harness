@@ -377,7 +377,15 @@ describe("#593: the registry leg is not optional", () => {
     // skipped leg and a leg with nothing to say read the same.
     const registryLeg = namespace.sources.find(s => s.kind === "registry");
     expect(registryLeg, "the registry leg is absent from the reading").toBeDefined();
+    // #606 updated this rather than deleting it, and the update is the
+    // PREMISE: `read` is the right answer here only because this registry was
+    // enumerated. Asserting the string alone was satisfied by a leg that
+    // hardcoded it, which is what #606 was filed over. This case is a control
+    // for the enumerated direction; the witness for the other one is
+    // `test/sc-allocator-leg-provenance.test.ts`.
+    expect(registryOnly.enumeration.status, "the fixture registry was not enumerated").toBe("enumerated");
     expect(registryLeg!.status).toBe("read");
+    expect(registryLeg!.reason, "an enumerated registry leg carries a reason").toBeUndefined();
     expect(registryLeg!.found).toBe(registryOnly.declaredById.size);
 
     // The three legs are the ALLOCATOR's, not the namespace reading's: a
