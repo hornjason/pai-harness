@@ -63,10 +63,24 @@ const RAN_LINE = /^Ran\s+(\d+)\s+tests?\s+across\s+(\d+)\s+files?\./gm;
  * comparing either against a previous run's number may be comparing
  * different quantities.
  *
- * ABSENT means zero here, and that is safe in a way the other counts are
- * not: bun omits the line when the count is zero, so absent and zero are
- * the same statement from the same producer. `pass`/`fail`/`tests` are
- * different — those are omitted when the run DIED, which is not zero.
+ * **Searched in the SUMMARY BLOCK, not the document.** `pass` and `fail` get
+ * away with `lastMatch` over the whole output because the outer run's
+ * summary is the last thing printed. These two cannot: bun OMITS them when
+ * the count is zero, so a last-match over the document walks BACKWARD past
+ * the summary into whatever the suite captured. That is not hypothetical —
+ * `~/.rungate/pai-harness-669/suite-output.txt` carries a nested
+ * `1 pass / 0 fail` at line 2600 of 2688, from a test that drives bun
+ * itself. A nested run's skips would have been recorded as the outer run's.
+ * `.claude/rules/checks-must-be-able-to-fail.md`: search the slice.
+ *
+ * **Absent means zero only when the producer's own total says so.** bun
+ * omits the line at zero, so for bun absent and zero are the same statement
+ * — but that is a fact about one runner, and a reading that asserts `skip:
+ * 0` over a runner with no concept of skipping is a number nobody measured.
+ * `pass + fail + skip + todo === tests` is the producer's own arithmetic,
+ * and it is what resolves the absence: when it closes, the missing counts
+ * really are zero; when it does not, they are `null` — not reported. Both
+ * findings were raised by the security review of this change.
  */
 const SKIP_LINE = /^\s*(\d+)\s+skip\s*$/gm;
 const TODO_LINE = /^\s*(\d+)\s+todo\s*$/gm;
@@ -87,12 +101,16 @@ export interface MeasuredRun {
    * Tests the runner declined to execute, by kind (#673).
    *
    * These exist so that "tests that RAN" and "tests that EXIST" are both
-   * nameable without anybody subtracting to find out which is which. Zero
-   * rather than null: bun omits the line when the count is zero, so an
-   * absent line and a zero line are the same statement.
+   * nameable without anybody subtracting to find out which is which.
+   *
+   * **null, not 0, when the runner did not say.** A missing line resolves to
+   * zero only when the runner's own `Ran N tests` total closes without it —
+   * see the patterns above. "This runner reports no skip count" and "this
+   * runner skipped none" are opposite facts, and `0` is the one value that
+   * would let a reader add them together.
    */
-  skip: number;
-  todo: number;
+  skip: number | null;
+  todo: number | null;
   /**
    * Test files the runner discovered, or null when it did not say.
    *
@@ -178,10 +196,25 @@ export function readSuiteRun(output: unknown): SuiteRun {
   const ran = lastMatch(RAN_LINE, output);
   const tests = ran ? Number(ran[1]) : null;
   const files = ran ? Number(ran[2]) : null;
-  const skipMatch = lastMatch(SKIP_LINE, output);
-  const todoMatch = lastMatch(TODO_LINE, output);
-  const skip = skipMatch ? Number(skipMatch[1]) : 0;
-  const todo = todoMatch ? Number(todoMatch[1]) : 0;
+
+  // The summary block, cut from the two lines that are always in it. bun
+  // prints `pass`, then `skip` and `todo` when non-zero, then `fail`, so the
+  // span between those two anchors is where a skip count belongs and
+  // anywhere else in the output is somebody else's run.
+  const at = (m: RegExpMatchArray) => m.index ?? 0;
+  const summary = output.slice(
+    Math.min(at(passMatch), at(failMatch)),
+    Math.max(at(passMatch) + passMatch[0].length, at(failMatch) + failMatch[0].length),
+  );
+  const skipMatch = lastMatch(SKIP_LINE, summary);
+  const todoMatch = lastMatch(TODO_LINE, summary);
+  const skipRead = skipMatch ? Number(skipMatch[1]) : null;
+  const todoRead = todoMatch ? Number(todoMatch[1]) : null;
+  // The runner's own total is what resolves an absent line. It closes only
+  // if the counts it did print account for everything it says it ran.
+  const absentIsZero = tests !== null && pass + fail + (skipRead ?? 0) + (todoRead ?? 0) === tests;
+  const skip = skipRead ?? (absentIsZero ? 0 : null);
+  const todo = todoRead ?? (absentIsZero ? 0 : null);
 
   // #490 SC-1, as a contradiction rather than as a second way of asking
   // whether anything ran. A runner claiming results it discovered no files to

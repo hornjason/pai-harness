@@ -353,13 +353,15 @@ const SuiteMeasurementShape = {
   // difference is exactly `skip + todo`, so the three are recorded beside the
   // total and a reader never has to subtract to find out what a number means.
   //
-  // `.optional()` and not `.nullable()`: absent means "recorded by a harness
-  // older than this field", and a runner that reports a summary at all always
-  // reports these — bun simply omits the line when the count is zero, which
-  // is the same statement as a zero from the same producer.
+  // `ran` is always a number on a measured run — it is `pass + fail`, and a
+  // run with neither is refused upstream. `skip` and `todo` are `.nullable()`
+  // for the reason `tests` and `files` are: a runner that reports no skip
+  // count and a runner that skipped none are opposite facts, and `0` is the
+  // value that would let a reader add them together. Absent on all three
+  // means "recorded by a harness older than #673".
   ran: z.number().int().nonnegative().optional(),
-  skip: z.number().int().nonnegative().optional(),
-  todo: z.number().int().nonnegative().optional(),
+  skip: z.number().int().nonnegative().nullable().optional(),
+  todo: z.number().int().nonnegative().nullable().optional(),
 };
 
 /**

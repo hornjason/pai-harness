@@ -327,7 +327,12 @@ export function coverageSentence(run: MeasuredRun): string {
   // The separator travels with the clause: "across 387 file(s)" reads as a
   // continuation and "file count not reported" reads as a second item.
   const where = run.files === null ? ", file count not reported" : ` across ${run.files} file(s)`;
-  const declined = `${run.skip} skipped, ${run.todo} todo`;
+  // A runner that did not report a count says so. `0 skipped` over a runner
+  // with no concept of skipping is a number nobody measured, which is the
+  // same substitution the whole sentence exists to undo.
+  const declined =
+    `${run.skip === null ? "skip not reported" : `${run.skip} skipped`}, ` +
+    `${run.todo === null ? "todo not reported" : `${run.todo} todo`}`;
   return run.tests === null
     ? `${ran} test(s) that ran (the runner reported no collected total, ${declined})${where}`
     : `${run.tests} test(s) collected (${ran} ran, ${declined})${where}`;

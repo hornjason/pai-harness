@@ -191,13 +191,97 @@ describe("#673: the fixtures are a real runner's output, not a transcription", (
     // tests` counts, this says so here instead of silently changing what
     // every recorded measurement means.
     const { pass, fail, skip, todo, tests } = MIXED.run;
-    expect(tests).toBe(pass + fail + skip + todo);
+    // Both counts were printed by this run, so neither is the "not reported"
+    // reading — asserted, because `null + null` would otherwise coerce to 0
+    // and make the identity hold over a run that said nothing.
+    expect(skip).not.toBeNull();
+    expect(todo).not.toBeNull();
+    expect(tests).toBe(pass + fail + (skip ?? 0) + (todo ?? 0));
   });
 
   test("the one-test fixture is the interim write from the issue", () => {
     expect(ONE.run.pass + ONE.run.fail).toBe(1);
     expect(ONE.run.files).toBe(1);
     expect(ONE.run.fail).toBe(0);
+  });
+});
+
+/**
+ * Raised by the security review of this change, and both are real.
+ *
+ * `pass` and `fail` can be last-matched over the whole output because the
+ * outer run's summary is the last thing printed. `skip` and `todo` cannot:
+ * bun omits them at zero, so a last-match walks BACKWARD out of the summary
+ * into whatever the suite captured — and this repo's suite captures bun runs.
+ */
+describe("#673 hardening: the skip counts come from the summary, not the document", () => {
+  /** A real summary with a NESTED run's counts printed above it. */
+  const NESTED = [
+    "bun test v1.3.14",
+    "",
+    "  nested run captured by a test that drives bun:",
+    " 1 pass",
+    " 7 skip",
+    " 9 todo",
+    " 0 fail",
+    "Ran 17 tests across 1 file. [0.10s]",
+    "",
+    "  the outer run:",
+    " 40 pass",
+    " 0 fail",
+    "Ran 40 tests across 4 files. [1.00s]",
+  ].join("\n");
+
+  test("a nested run's skip and todo are not attributed to the outer run", () => {
+    const run = readSuiteRun(NESTED);
+    expect(run.status).toBe("MEASURED");
+    if (run.status !== "MEASURED") return;
+    // The premise: the document really does contain counts that would be
+    // picked up by a whole-document search, and they are not the outer
+    // run's. Without this the case would pass over an output with nothing
+    // to mis-attribute.
+    expect(NESTED).toContain(" 7 skip");
+    expect(run.pass).toBe(40);
+    expect(run.skip, "a nested run's skip count was read as this run's").not.toBe(7);
+    expect(run.todo, "a nested run's todo count was read as this run's").not.toBe(9);
+    // 40 pass + 0 fail accounts for all 40 collected, so the absent lines
+    // really are zero — the runner's own total says so.
+    expect(run.skip).toBe(0);
+    expect(run.todo).toBe(0);
+  });
+
+  test("an absent count is null when the runner's own total does not account for it", () => {
+    // A runner that reports 40 of 50 and names no skip or todo has not said
+    // the other 10 were skipped. `0` would be a number nobody measured.
+    const run = readSuiteRun(" 40 pass\n 0 fail\nRan 50 tests across 4 files. [1.00s]\n");
+    expect(run.status).toBe("MEASURED");
+    if (run.status !== "MEASURED") return;
+    expect(run.skip).toBeNull();
+    expect(run.todo).toBeNull();
+    expect(run.skip).not.toBe(0);
+  });
+
+  test("an absent count is null when the runner reported no collected total at all", () => {
+    const run = readSuiteRun(" 40 pass\n 0 fail\n");
+    expect(run.status).toBe("MEASURED");
+    if (run.status !== "MEASURED") return;
+    expect(run.tests).toBeNull();
+    expect(run.skip).toBeNull();
+    expect(run.todo).toBeNull();
+  });
+
+  test("the recorded line says 'not reported' rather than printing a zero", () => {
+    const s = scene("one-passing");
+    // Overwrite the captured output with a summary carrying no collected
+    // total, so the absence cannot be resolved.
+    writeFileSync(s.output, " 40 pass\n 0 fail\n");
+    const r = record(s, "full");
+    expect(r.code, r.out).toBe(0);
+    expect(r.detail).toContain("skip not reported");
+    expect(r.detail).toContain("todo not reported");
+    expect(r.detail).not.toContain("0 skipped");
+    expect(r.state.suiteMeasurement.skip).toBeNull();
+    rmSync(s.root, { recursive: true, force: true });
   });
 });
 

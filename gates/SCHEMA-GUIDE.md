@@ -183,8 +183,8 @@ and **absent means UNMEASURED** — not "clean".
 | `measuredAt` | string | ISO timestamp of the run (optional) |
 | `tests` | number \| null | Tests the runner COLLECTED, or `null` when it did not say (#490) |
 | `ran` | number | Tests that actually executed — `pass + fail`. Absent only on a record older than #673 |
-| `skip` | number | Tests the runner skipped. Absent only on a record older than #673 |
-| `todo` | number | Tests marked todo. Absent only on a record older than #673 |
+| `skip` | number \| null | Tests the runner skipped, or `null` when it reports no skip count. Absent only on a record older than #673 |
+| `todo` | number \| null | Tests marked todo, or `null` when the runner reports no todo count. Absent only on a record older than #673 |
 | `files` | number \| null | Test files the runner said it discovered, or `null` when it did not say. Never `0` — a run over no files is refused, not recorded (#490) |
 
 **`tests` and `ran` are different quantities and both are recorded (#673).**
