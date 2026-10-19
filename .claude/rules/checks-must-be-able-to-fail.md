@@ -1565,3 +1565,91 @@ the row — it is three MORE than the eleven #664 found by hand
 `strip-js-comments.test.ts:211`), which is the argument for a sweep over a
 list of ten edits.
 
+
+### When the second decider is a COMMENT, and it agrees with itself (#689)
+
+#621 above is N documents naming one string with nothing comparing them. This
+is the same family with the second decider in the cheapest possible position:
+**a trailing comment**, which has no behaviour, is never executed, and is the
+only thing a reader checks.
+
+Two workflows pinned `anthropics/claude-code-action` to two different commits
+and annotated both `# v1`:
+
+| File | Pin | Comment | What it actually was |
+|---|---|---|---|
+| `.github/workflows/ai-review.yml` (#631, unmerged) | `5eb090f3` | `# v1` | v1 |
+| `.github/workflows/claude-review.yml` | `f27be6b6` | `# v1` | v1 as of two releases earlier |
+
+The comments agreed. The pins did not. Nothing compared either pair, and the
+agreement a reader perceived was between two copies of the same assertion.
+
+**The issue's own resolution step is worth a sentence, because it is a second
+instance of this file's subject inside the report of the first.** #689 ran
+`gh api repos/anthropics/claude-code-action/git/ref/tags/v1 --jq .object.sha`,
+got `310805dc…`, and concluded that NEITHER pinned SHA was v1. `v1` is an
+ANNOTATED tag: `refs/tags/v1` points at a tag OBJECT, and the commit is one
+dereference further down — `git/tags/310805dc…` → `5eb090f3…`, which
+`commits/v1` confirms. `310805dc` is not a commit and cannot be a `uses:` pin
+at all. The measurement was taken with an instrument that answers a nearby
+question, and it answered confidently. One of the two pins WAS v1.
+
+The fix is `lib/claude-code-action.ts` — one declaration of the SHA and the
+version — and `action-pin-parity` in `scripts/contract-parity.ts`, which
+compares every `.github/workflows/*.yml` `uses:` line and every literal under
+`lib/` and `scripts/` to it. The comment is compared too, so it is derived
+from the same declaration as the pin rather than asserted beside it.
+
+**The cheapest wrong fix, named: edit the two SHAs so they match, and move
+on.** One character, the symptom goes away, and nothing compares them
+tomorrow. The cases survive it NON-vacuously, and the reason is a design
+choice rather than a happy accident: they never compare the workflows to EACH
+OTHER. Every position is compared to the declaration, so the tree that repair
+produces — two workflows agreeing perfectly, nothing saying what they should
+agree with — reports UNMEASURED. `AC-4` plants exactly that tree.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/action-pin-parity.test.ts` (12 tests). Every count was predicted before
+the battery ran, and **the baseline row was read before any mutation row.**
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 12 pass, 0 fail | **12 pass, 0 fail** | — |
+| `actionPinViolations` short-circuited to `return []` | 5 | **5 of 12** | a tree declaring `5eb090f3` whose two workflows pin `5eb090f3` and `f27be6b6`: the original returns FAIL and one violation naming `claude-review.yml:4` and both SHAs, the mutant returns PASS and none |
+| the `pins.length === 0` refusal removed from `actionPinParity` | 1 | **1 of 12** | a tree declaring the pin whose only workflow is a `ci.yml` naming the action nowhere: the original is UNMEASURED (`unresolved-source`), the mutant is **PASS** — zero pins read as perfect agreement |
+| the `NoActionPinError` throw removed from `actionPinAgreement` | 1 | **1 of 12** | the same tree: the original throws, the mutant returns `{pins: 0, violations: []}` |
+| **the cheapest wrong fix as a CHECK**: the declaration dropped, the pins compared to each other | 5 | **8 of 12** | a tree with no declaration whose two workflows both pin `5eb090f3`: the original is UNMEASURED (`absent-file`), the mutant is PASS |
+| the genuinely pre-#689 `claude-review.yml` — `f27be6b6` restored | 3 | **3 of 12** | the live tree: the original reads `5eb090f3` off `claude-review.yml:122`, the pre-fix source reads `f27be6b6` and the category is FAIL |
+
+**The 8 row came back HIGH, and the three extra reds are the real kind.** The
+prediction covered the five cases that reason about the declaration directly.
+The extra three are:
+
+- `AC-1`'s live-tree case, which asserts `coverage.examined > 1`. With no
+  declaration site pushed, the live tree examines one position instead of two
+  — the coverage control doing exactly its job.
+- both `AC-3` cases, which assert the violation text names
+  `claude-review.yml` and `lib/scaffold/ai-review-step.ts`. A self-comparison
+  can report THAT the pins disagree and cannot say WHERE, so its message
+  carries SHAs and no positions.
+
+All three are squarely about the mutated behaviour and the mutant is not
+broken — four cases still pass and the file parses and runs. Per the
+arithmetic above that is "the prediction was wrong and the check is better
+than you thought", and the fact it records is that **naming the position in a
+violation is load-bearing, not decoration**: three cases depend on it, and a
+check that only reports a count would have satisfied the author's model of
+itself.
+
+**What this does NOT do, said here rather than left as an omission.** Nothing
+fails when the pin goes stale. `v1` is a moving tag upstream, so
+`CLAUDE_CODE_ACTION_RESOLVED_ON` dates the reading rather than certifying it;
+a freshness check needs the network, and whether one belongs in the suite is
+the decision #377 is open for. The guarantee here is narrower and exact: every
+position in the tree follows one declaration, and a tree that follows nothing
+says so.
+
+None of the five mutations is left in the tree; all were run and reverted, and
+`scripts/contract-parity.ts`, `.github/workflows/claude-review.yml`,
+`lib/claude-code-action.ts` and `test/action-pin-parity.test.ts` were confirmed
+byte-identical to the measured source afterwards by checksum.

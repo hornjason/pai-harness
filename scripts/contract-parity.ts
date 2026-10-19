@@ -83,6 +83,7 @@ import {
   isPinnedBunVersion,
   setupBunWith,
 } from "../lib/bun-version";
+import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
 import { acPayloadReadExpression, acPayloadShellArgument } from "../lib/evidence-command-transport";
 import { shellSingleQuote } from "../lib/phase2-decomposition";
 import { RUNGATE_CONFIG_RELATIVE_PATH, resolveConfig } from "../lib/config-loader";
@@ -159,6 +160,7 @@ export const PARITY_CATEGORIES = [
   "probe-honesty",
   "field-reachability",
   "write-accountability",
+  "action-pin-parity",
 ] as const;
 export type ParityCategory = (typeof PARITY_CATEGORIES)[number];
 
@@ -1404,6 +1406,256 @@ export function writeAccountability(root: string): CategoryReport {
   });
 }
 
+// ── category 7: action pin parity ───────────────────────────────────────────
+//
+// #689. Two workflows pinned `anthropics/claude-code-action` to two different
+// commits and annotated both `# v1`. The comment is the only thing a reader
+// checks; it agreed with itself in both files while naming neither commit.
+//
+// This is #621's shape with the consumer in YAML, and it has #621's
+// characteristic way to die: finding nothing in every file is perfect
+// agreement. Zero strings are trivially all equal, and this tree has exactly
+// ONE consumer, so one renamed step converts the check into a ceremony
+// without changing a line of it. `actionPinAgreement` therefore THROWS when
+// the tree names the action nowhere, and the throw escapes the function
+// rather than folding into an empty violation list.
+
+/** The one position that says which commit of the action this tree means. */
+export const ACTION_PIN_DECLARATION = join("lib", "claude-code-action.ts");
+
+/** Where a second literal can hide. YAML cannot import, so a generator can. */
+export const ACTION_PIN_SOURCE_DIRS = ["lib", "scripts"];
+
+export { CLAUDE_CODE_ACTION };
+
+/** Thrown when no position in a tree names the action at all. */
+export class NoActionPinError extends Error {}
+
+/** What the declaration module declares. */
+export interface DeclaredActionPin {
+  action: string;
+  sha: string;
+  version: string;
+}
+
+/** One reference to the action, and the position that carries it. */
+export interface NamedActionPin {
+  /** Repo-relative path. */
+  file: string;
+  /** 1-based. */
+  line: number;
+  /** Whatever follows the `@` — a SHA if the position is pinned, else not. */
+  sha: string;
+  /** The trailing `# …` annotation, or null when the position carries none. */
+  comment: string | null;
+  raw: string;
+}
+
+/**
+ * The declared pin, read from the file rather than imported.
+ *
+ * Text, because `--root` chooses a different tree and a different tree cannot
+ * be imported. The live module's exports and this parser are therefore two
+ * readings of one fact, which is the fourth shape if nothing compares them —
+ * so `test/action-pin-parity.test.ts` compares them in a case of its own.
+ */
+export function declaredActionPin(root: string): DeclaredActionPin {
+  const path = join(root, ACTION_PIN_DECLARATION);
+  if (!existsSync(path)) {
+    throw new UnreadableSource(`${ACTION_PIN_DECLARATION} does not exist under ${root}`);
+  }
+  const text = readFileSync(path, "utf-8");
+  const read = (name: string): string => {
+    const m = new RegExp(`export const ${name}\\s*=\\s*"([^"]+)"`).exec(text);
+    if (!m) throw new UnreadableSource(`${ACTION_PIN_DECLARATION} declares no string \`${name}\``);
+    return m[1];
+  };
+  return { action: read("CLAUDE_CODE_ACTION"), sha: read("CLAUDE_CODE_ACTION_SHA"), version: read("CLAUDE_CODE_ACTION_VERSION") };
+}
+
+/** The `# …` trailing annotation of a line, or null when it carries none. */
+function trailingComment(line: string): string | null {
+  const m = /#\s*(\S.*?)\s*$/.exec(line);
+  return m ? m[1] : null;
+}
+
+/**
+ * Every `uses:` step in one workflow that references the action.
+ *
+ * Anchored on `uses:` rather than on the action's name alone: a sentence in a
+ * header comment and a commented-out step are prose, and reading prose as a
+ * position is the defect in the other direction (#235).
+ */
+export function actionPinsNamedByWorkflow(text: string, file: string): NamedActionPin[] {
+  const out: NamedActionPin[] = [];
+  const pattern = new RegExp(`^\\s*(?:-\\s+)?uses:\\s*${CLAUDE_CODE_ACTION.replace("/", "\\/")}@(\\S+)`);
+  text.split("\n").forEach((line, i) => {
+    const m = pattern.exec(line);
+    if (!m) return;
+    out.push({ file, line: i + 1, sha: m[1], comment: trailingComment(line), raw: line.trim() });
+  });
+  return out;
+}
+
+/**
+ * Every literal reference to the action in a TypeScript source file.
+ *
+ * This is the #622c position: the workflows in this tree are not what a
+ * scaffolded consumer gets, the generator is, and a fix that edited only the
+ * checked-in YAML would leave every consumer on whatever a template literal
+ * says. The declaration module is excluded — it is the thing being agreed
+ * with, not a position that has to agree.
+ */
+export function actionPinsNamedBySource(text: string, file: string): NamedActionPin[] {
+  const out: NamedActionPin[] = [];
+  const pattern = new RegExp(`${CLAUDE_CODE_ACTION.replace("/", "\\/")}@([A-Za-z0-9._-]+)`);
+  text.split("\n").forEach((line, i) => {
+    const m = pattern.exec(line);
+    if (!m) return;
+    out.push({ file, line: i + 1, sha: m[1], comment: trailingComment(line), raw: line.trim() });
+  });
+  return out;
+}
+
+/** Every position in a tree that names the action, workflows and source alike. */
+export function actionPinsInTree(root: string): NamedActionPin[] {
+  const found: NamedActionPin[] = [];
+  for (const yml of workflowFiles(root)) {
+    found.push(...actionPinsNamedByWorkflow(readFileSync(join(root, yml), "utf-8"), yml));
+  }
+  for (const dir of ACTION_PIN_SOURCE_DIRS) {
+    for (const path of walk(join(root, dir))) {
+      const relative = path.slice(root.length + 1);
+      if (relative === ACTION_PIN_DECLARATION) continue;
+      found.push(...actionPinsNamedBySource(readFileSync(path, "utf-8"), relative));
+    }
+  }
+  return found;
+}
+
+export interface ActionPinAgreement {
+  declared: DeclaredActionPin;
+  pins: NamedActionPin[];
+  violations: string[];
+}
+
+/**
+ * The binding. Every position that names the action is compared to the one
+ * declaration — never to the other positions, which is the whole of AC-4: two
+ * workflows matched by hand agree perfectly and agree with nothing.
+ *
+ * A tree that declares nothing and a tree that names the action nowhere both
+ * THROW. Neither is a clean reading, and both would otherwise arrive as "no
+ * disagreement".
+ */
+export function actionPinAgreement(root: string): ActionPinAgreement {
+  const declared = declaredActionPin(root);
+  const pins = actionPinsInTree(root);
+  if (pins.length === 0) {
+    throw new NoActionPinError(
+      `no position under ${root} names ${CLAUDE_CODE_ACTION}, so there is nothing to compare the declaration to. ` +
+        `Zero pins are trivially all equal — see .claude/rules/checks-must-be-able-to-fail.md.`,
+    );
+  }
+  return { declared, pins, violations: actionPinViolations(declared, pins) };
+}
+
+/** The violation text, shared by the binding above and the category below. */
+function actionPinViolations(declared: DeclaredActionPin, pins: NamedActionPin[]): string[] {
+  const violations: string[] = [];
+  for (const pin of pins) {
+    if (!/^[0-9a-f]{40}$/.test(pin.sha)) {
+      violations.push(
+        `${pin.file}:${pin.line} references ${CLAUDE_CODE_ACTION} at \`${pin.sha}\`, which is not a commit SHA: ` +
+          `a tag is the action publisher's to repoint at any time, so it names a different thing on two runs of ` +
+          `one commit (#689)`,
+      );
+      continue;
+    }
+    if (pin.sha !== declared.sha) {
+      violations.push(
+        `${pin.file}:${pin.line} pins ${CLAUDE_CODE_ACTION} at ${pin.sha}, and ${ACTION_PIN_DECLARATION} declares ` +
+          `${declared.sha}. Two positions naming one action and nothing comparing them is how this tree ended up ` +
+          `running two versions of it (#689)`,
+      );
+      continue;
+    }
+    if (pin.comment !== null && pin.comment !== declared.version) {
+      violations.push(
+        `${pin.file}:${pin.line} annotates the pin \`# ${pin.comment}\` while ${ACTION_PIN_DECLARATION} declares ` +
+          `\`${declared.version}\`. The comment is the only thing a reader checks, and a comment that can disagree ` +
+          `with the pin it annotates is worse than no comment (#689)`,
+      );
+    }
+  }
+  return violations;
+}
+
+/**
+ * Category 7. The declaration, every workflow that uses the action, and every
+ * generator literal that could emit one.
+ */
+export function actionPinParity(root: string): CategoryReport {
+  const title = `every position pinning ${CLAUDE_CODE_ACTION} resolves to one declared commit`;
+  const sites: ParitySite[] = [];
+  const unmeasured: Unmeasurable[] = [];
+  let violations: string[] = [];
+
+  let declared: DeclaredActionPin | null = null;
+  const declarationPath = join(root, ACTION_PIN_DECLARATION);
+  if (!existsSync(declarationPath)) {
+    unmeasured.push(
+      unmeasurable(
+        "absent-file",
+        ACTION_PIN_DECLARATION,
+        `${ACTION_PIN_DECLARATION} does not exist under ${root}, so nothing in this tree says which commit of ` +
+          `${CLAUDE_CODE_ACTION} it means. Workflows that agree with each other are not workflows that agree with ` +
+          `anything (#689)`,
+      ),
+    );
+  } else {
+    try {
+      declared = declaredActionPin(root);
+      sites.push({ site: `${ACTION_PIN_DECLARATION} — the declared pin`, value: `${declared.sha} # ${declared.version}` });
+    } catch (e) {
+      // A declaration that cannot be parsed is never an absent declaration
+      // (`.claude/rules/config-access.md`).
+      unmeasured.push(unmeasurable("unparseable-file", ACTION_PIN_DECLARATION, firstLine(e)));
+    }
+  }
+
+  const workflowDir = join(".github", "workflows");
+  const haveWorkflows = existsSync(join(root, workflowDir));
+  if (!haveWorkflows) {
+    unmeasured.push(unmeasurable("absent-file", workflowDir, `${workflowDir} does not exist under ${root}`));
+  }
+
+  const pins = actionPinsInTree(root);
+  for (const pin of pins) sites.push({ site: `${pin.file}:${pin.line}`, value: `${pin.sha}${pin.comment === null ? "" : ` # ${pin.comment}`}` });
+
+  if (haveWorkflows && pins.length === 0) {
+    unmeasured.push(
+      unmeasurable(
+        "unresolved-source",
+        workflowDir,
+        `no position in this tree names ${CLAUDE_CODE_ACTION}, so the comparison could not be performed. ` +
+          `Finding nothing in every file is perfect agreement, which is the way this check dies rather than a ` +
+          `reading it can report (#689)`,
+      ),
+    );
+  }
+
+  if (declared !== null) violations = actionPinViolations(declared, pins);
+
+  return categoryReport("action-pin-parity", title, {
+    // The declaration, plus every position that names the action.
+    visible: 1 + pins.length,
+    sites,
+    violations,
+    unmeasured,
+  });
+}
+
 // ── the run ─────────────────────────────────────────────────────────────────
 
 const RUNNERS: Record<ParityCategory, (root: string) => CategoryReport> = {
@@ -1413,6 +1665,7 @@ const RUNNERS: Record<ParityCategory, (root: string) => CategoryReport> = {
   "probe-honesty": probeHonesty,
   "field-reachability": fieldReachability,
   "write-accountability": writeAccountability,
+  "action-pin-parity": actionPinParity,
 };
 
 export function contractParity(root: string, only?: ParityCategory[]): ContractParityReport {
