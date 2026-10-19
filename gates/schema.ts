@@ -4,6 +4,7 @@ import { z } from "zod";
 // the pre-change tree" (#669). The schema compares the persisted list against
 // it; the gate's refusal names ids out of it. A second copy here would be a
 // second source of truth for one fact, and the two would disagree silently.
+import { COMMIT_SHA } from "../lib/commit-sha";
 import { alreadySatisfiedIds } from "../lib/evidence-prevalidator";
 
 // ── Gate contract interfaces (SC-373) ─────────────────────────────────────
@@ -321,7 +322,10 @@ export const ChangelogEntry = z.object({
 // would be a measurement asserting there was no measurement, and would give a
 // caller a way to park an unmeasured run in the field that is supposed to
 // prove the suite ran.
-const MEASURED_SHA = /^[0-9a-f]{7,40}$/i;
+// ONE binding, in lib/commit-sha.ts. `harness.sha` below asks the same
+// question of a different field, and a second copy would be two deciders
+// that agree (#602).
+const MEASURED_SHA = COMMIT_SHA;
 
 const SuiteMeasurementShape = {
   verdict: z.enum(["PASS", "FAIL"]),
@@ -403,6 +407,77 @@ export const PREVALIDATION_VERDICTS = ["PASS", "FAIL", "UNMEASURED"] as const;
 export const PREVALIDATION_AC_STATUSES = ["ok", "broken", "empty", "skipped"] as const;
 
 export const BASELINE_VERDICTS = ["MEASURED", "UNMEASURED"] as const;
+
+/**
+ * Which harness checkout graded this run (#602).
+ *
+ * `UNMEASURED` IS writable here, for `evidencePrevalidation`'s reason and
+ * not `suiteMeasurement`'s: there, a recorded UNMEASURED would be a way to
+ * park an unmeasured run in the field that proves the suite ran. Here the
+ * failure mode runs the other way — a harness whose SHA could not be read
+ * and a harness nobody asked about both leave the field absent, and a
+ * reader cannot tell them apart. So a failed reading is recorded with its
+ * reason, and absence keeps its own meaning: a run from before this field
+ * existed, or one that never got as far as asking.
+ *
+ * `sha` reuses `MEASURED_SHA`, which is `COMMIT_SHA` from lib/commit-sha.ts
+ * — ONE binding, because `measuredSha` above asks the same question of a
+ * different field and two copies would be two deciders that agree.
+ *
+ * The contradictions below are refused for the same reason the baseline's
+ * are: a verdict that disagrees with the fields beside it lets a reader
+ * pick whichever half suits them.
+ */
+export const HarnessSchema = z.object({
+  reading: z.enum(["MEASURED", "UNMEASURED"]),
+  sha: z.string().regex(MEASURED_SHA, "harness.sha must be a commit SHA (7-40 hex), not a ref name").nullable(),
+  branch: z.string().nullable(),
+  dirty: z.array(z.string()),
+  // null is NOT zero: a checkout with no upstream is one nobody can say
+  // anything about, and 0 would be the silent default (#602).
+  behind: z.number().int().nonnegative().nullable(),
+  behindReason: z.string().nullable(),
+  reason: z.string().nullable(),
+}).superRefine((h, ctx) => {
+  if (h.reading === "UNMEASURED") {
+    if (!h.reason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "harness: UNMEASURED with no reason — an absence nobody can explain is not actionable",
+      });
+    }
+    if (h.sha !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `harness: UNMEASURED while naming a SHA (${h.sha}) — a reading that could not be taken has no SHA to report`,
+      });
+    }
+    return;
+  }
+  if (h.sha === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "harness: MEASURED with no SHA — the SHA is the measurement",
+    });
+  }
+  if (h.reason !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `harness: MEASURED while carrying a failure reason (${h.reason}) — one of the two is wrong`,
+    });
+  }
+  // `behind` and `behindReason` are the same pair one level down: exactly
+  // one of them says what happened.
+  if ((h.behind === null) === (h.behindReason === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        h.behind === null
+          ? "harness: behind is null with no behindReason — a number nobody could read must say why"
+          : `harness: behind is ${h.behind} AND behindReason is set — a count and an excuse for not counting`,
+    });
+  }
+});
 
 /**
  * The threshold as the AC wrote it, copied into the baseline (#669).
@@ -949,6 +1024,13 @@ export const WorkflowStateSchema = z.object({
   // The scope gate's evidence dry-run (#235). Absent means UNMEASURED — the
   // gate never got as far as measuring. Written by the scope gate, not by hand.
   evidencePrevalidation: EvidencePrevalidationSchema.optional(),
+
+  // Which harness graded this run (#602). Absent means UNMEASURED, and that
+  // is the state every run before this field was in: a stale harness and a
+  // current one emit byte-identical artefacts, so the run's own output
+  // could never say which validator produced its verdicts. Written by
+  // scripts/record-harness-provenance.ts, never by hand.
+  harness: HarnessSchema.optional(),
 });
 
 export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
