@@ -3,6 +3,7 @@
  * operator, not just by the diff.
  *
  * Covers SC-1432, SC-1433, SC-1434, SC-1435 (PARALLEL-AGENT-COORDINATION-SPEC.md).
+ * Covers SC-2114, SC-2115 (#629).
  *
  * Phase 1 gave `auditWorktreeClaims` three ownership answers and each of them
  * got its own sentence. Nothing checked that the sentences stay different.
@@ -212,6 +213,11 @@ const KINDS: Kind[] = [
     ],
   },
   {
+    // #629: this row is now the narrower of two. Claims WERE issued in this
+    // run — WT_A claims lib/a.ts and WT_B claims lib/b.ts — and none of them
+    // names the reported file. The sentence #296 SC-3 pinned is true of
+    // exactly this case, which is why the split below adds an arm instead of
+    // rewording it.
     kind: "out-of-scope unclaimed — nobody owns it",
     named: true,
     token: "no worktree claimed that file",
@@ -223,6 +229,21 @@ const KINDS: Kind[] = [
         claimedFiles: ["lib/a.ts"],
       },
       OTHER_WORK,
+    ],
+  },
+  {
+    // #629: the opposite fact under the same `claimant === null`. NOBODY
+    // issued a claim, so the comparison never had an input — which is #627's
+    // defect seen from the refusal, and a caller fault rather than an agent
+    // one. Two participants, because one would take SINGLE_WORKTREE_EXEMPT
+    // and collect everything (#228), and then this arm is unreachable.
+    kind: "absent claim — no worktree issued one",
+    named: false,
+    token: "issued a claim at all",
+    path: "gates/workflow.test.ts",
+    results: [
+      { worktreePath: WT_A, filesChanged: ["gates/workflow.test.ts", "lib/a.ts"] },
+      { worktreePath: WT_B, filesChanged: ["lib/b.ts"] },
     ],
   },
 ];
@@ -373,6 +394,85 @@ describe("SC-1433: the refusals are pairwise distinguishable", () => {
     expect(byKind("out-of-scope unclaimed — nobody owns it")).toBe(
       `${WT_A} reported gates/workflow.test.ts, which it did not claim — no worktree claimed that file`,
     );
+  });
+});
+
+// ── #629 AC-3: the two absent-claim arms, varying exactly one thing ────────
+
+describe("#629 AC-3: an absent claim says WHICH absence it is", () => {
+  /**
+   * The pair, derived rather than written twice (#585).
+   *
+   * Two hand-written fixtures can differ in something nobody noticed, and
+   * then the comparison measures that instead of the dimension it names. The
+   * second half here is the first with `claimedFiles` deleted and nothing
+   * else, and the derivation is asserted before anything is concluded from
+   * it — so the only thing that can explain a difference in the refusal is
+   * the presence of claims.
+   */
+  const withClaims = [
+    {
+      worktreePath: WT_A,
+      filesChanged: ["gates/workflow.test.ts", "lib/a.ts"],
+      claimedFiles: ["lib/a.ts"],
+    },
+    { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] },
+  ];
+  const withoutClaims = withClaims.map(({ claimedFiles, ...rest }) => rest);
+
+  const detailFor = (results: unknown[]): string => {
+    const got = auditWorktreeClaims(results).violations.filter(
+      v => v.path === "gates/workflow.test.ts" && v.worktreePath === WT_A,
+    );
+    expect(got).toHaveLength(1);
+    return got[0]!.detail;
+  };
+
+  test("the pair varies only the presence of claims", () => {
+    expect(withClaims.map(r => r.worktreePath)).toEqual(withoutClaims.map(r => r.worktreePath));
+    expect(withClaims.map(r => r.filesChanged)).toEqual(withoutClaims.map(r => r.filesChanged));
+    expect(withClaims.every(r => Array.isArray(r.claimedFiles))).toBe(true);
+    expect(withoutClaims.every(r => !("claimedFiles" in r))).toBe(true);
+  });
+
+  test("the two absences produce different refusals", () => {
+    expect(detailFor(withClaims)).not.toBe(detailFor(withoutClaims));
+  });
+
+  test("the no-claim arm points upstream and the other does not", () => {
+    // The whole point: the two call for opposite next actions, and the
+    // operator has one line to decide from. A refusal that reads the same
+    // either way costs the wrong investigation, which is what `claimant` was
+    // already right about and the absent case was not.
+    const absent = detailFor(withoutClaims);
+    expect(absent).toContain("issued a claim at all");
+    expect(absent).toContain("Fix the caller");
+    expect(absent).toContain("#627");
+
+    const outside = detailFor(withClaims);
+    expect(outside).toContain("no worktree claimed that file");
+    expect(outside).not.toContain("Fix the caller");
+  });
+
+  test("an empty claim array is an issued claim, not an absent one", () => {
+    // `claimedFiles: []` is a plan that named no files — a claim that
+    // arrived and said nothing, which is a planning problem. Reading it as
+    // "no claim issued" would send an operator upstream to look for a relay
+    // bug that is not there.
+    const emptyClaims = withoutClaims.map(r => ({ ...r, claimedFiles: [] as string[] }));
+    expect(detailFor(emptyClaims)).toBe(detailFor(withClaims));
+  });
+
+  test("a single worktree is still exempt, so the new arm did not widen the guard", () => {
+    // SINGLE_WORKTREE_EXEMPT is checked before any of this (#228). A lone
+    // agent with no claim collects, and a new refusal arm must not be
+    // reachable for it — run wf_74366574-136 is what that costs.
+    const lone = [{ worktreePath: WT_A, filesChanged: ["gates/workflow.test.ts"] }];
+    const { violations, candidates } = auditWorktreeClaims(lone);
+    expect(violations).toEqual([]);
+    expect(candidates).toEqual([
+      { worktreePath: WT_A, filesChanged: ["gates/workflow.test.ts"] },
+    ]);
   });
 });
 
