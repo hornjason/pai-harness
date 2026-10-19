@@ -4870,8 +4870,89 @@ are found; the scratch exclusion is asserted separately so the widening
 cannot quietly undo it.
 
 - [x] SC-868: lib/prior-branch.ts contains [export function issueReference] — one binding decides whether a text references an issue, bounded on digits rather than on a `#` so it matches a PR body, a commit subject and a branch name alike, and total over the `null` body GitHub returns for an empty PR
-- [x] SC-869: lib/prior-branch.ts contains [refs(pr?.title) || refs(pr?.body)] — an open PR is matched by what it SAYS, never by its own number; an API failure returns unreadable rather than null, so "no PR" and "could not look" stop being the same answer
-- [x] SC-870: lib/prior-branch.ts contains [refs(c.branch) || refs(c.subject)] — a prior branch is found by its tip commit subject as well as its name, and harness scratch refs stay excluded either way
+- [x] SC-869: lib/prior-branch.ts contains [prose(pr?.title) || prose(pr?.body)] — an open PR is matched by what it SAYS, never by its own number; an API failure returns unreadable rather than null, so "no PR" and "could not look" stop being the same answer
+- [x] SC-870: lib/prior-branch.ts contains [refs(c.branch) || prose(c.subject)] — a prior branch is found by its tip commit subject as well as its name, and harness scratch refs stay excluded either way
+
+### A ref is an identifier; a title and a body are prose (#687)
+
+SC-868 above chose one bound for all four fields, "bounded on digits rather
+than on a `#` so it matches a PR body, a commit subject and a branch name
+alike". The half of that sentence about branch names is right and the half
+about bodies is not, and the two cannot share a bound.
+
+Measured. Ship run `wf_4b5a4d83-fa4` for issue #631 refused with
+`PRIOR_WORK_OPEN_PR`, naming PR #686 — whose head ref is
+`fix/644-launch-base`, whose title and body reference #644, and whose body
+quotes a sample refusal message containing the string
+`and projectRoot is on rungate/run-631 ...`. `-` is a word boundary and so is
+the end of the token, so `\b631\b` fired on prose that was quoting another
+branch's name. #631 could not ship until an unrelated PR closed.
+
+`detectExistingPR`'s own comment names that hazard two lines above the
+matcher — refusing is "a false positive on the one path where a false
+positive stops a correct run from ever starting" — and the bare-number body
+reading sat directly beneath it.
+
+So there are two readings with two bounds, and they are separate exported
+bindings so that each has one site to mutate and a case can tell them apart
+(`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape):
+
+- a **head ref** is an identifier and keeps `issueReference`'s bare number.
+  `209-deep-modules`, `fix/631-pr-reference` and `rungate/run-631` carry no
+  `#` and never will.
+- a **title** and a **body** are prose and take `issueProseReference`, which
+  requires the `#`. Every form this repository produces already carries one:
+  `Fixes #209`, which ship.js writes into every body, and `fix(#209):`,
+  which it writes into every subject. #223's original case — a worktree
+  branch whose name has no number at all, found by `Closes #209` in the body
+  — still matches.
+
+A commit **subject** is prose by the same reading, so `detectPriorBranch`
+pairs the identifier bound on `c.branch` with the prose bound on `c.subject`.
+
+The two must not agree everywhere, or they are one decider wearing two names
+and a mutation of either leaves the other holding every case up. The input
+they disagree on is the one that caused this: `rungate/run-631` is a
+reference as a ref and not as prose.
+
+- [x] SC-2112: lib/prior-branch.ts contains [export function issueProseReference] — the prose reading requires a literal `#` before the number, is total over the `null` body GitHub returns for an empty PR, and throws on an issue number that is not a non-negative integer rather than silently matching nothing
+- [x] SC-2113: test/prior-pr-prose-reference.test.ts contains [AC-3: the two disagree on exactly the input that caused #687] — the identifier reading and the prose reading are asserted to differ on `rungate/run-631` and to agree on `Fixes #631`, so neither can be deleted while the other holds the cases up
+
+What was broken to prove the cases fail, run and counted rather than
+asserted, over the four files that read `lib/prior-branch.ts` —
+`prior-pr-prose-reference`, `prior-work-detection`, `prior-branch-reference`,
+`prior-branch` (99 tests). Every mutation applied to the real source. **The
+baseline row was read before any mutation row**, because an instrument that
+has stopped reporting takes the baseline down with it.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 99 pass, 0 fail | **99 pass, 0 fail** |
+| the genuinely pre-#687 matcher — `prose(pr?.title) \|\| prose(pr?.body)` back to `refs(..)` | ≥1 | **4 of 99** — AC-1's three cases and AC-4 |
+| the prose bound widened to `#?N\b`, collapsing the two readings into one | ≥1 | **7 of 99** — AC-1, AC-3 and #433's word-boundary case |
+| `refs(c.branch)` narrowed to prose in `detectPriorBranch` | ≥1 | **1 of 99** — #223's "the name still wins when it has the number" |
+| `refs(headRef)` narrowed to prose in `detectExistingPR` | ≥1 | **4 of 99** — AC-2's head-ref case and three pre-existing `detectExistingPR` cases |
+| restored | 99 pass, 0 fail | **99 pass, 0 fail** |
+
+Before believing the first row, the input on which mutant and original
+differ, named and run rather than assumed: a body reading `Fixes #644.\n\nand
+projectRoot is on rungate/run-631 ...`. The mutant returns PR #686; the
+original returns `null`.
+
+No row scored zero. The second row is the one that matters most — making the
+`#` optional is the obvious simplification, and it is caught by AC-3 as well
+as AC-1, which is why AC-3 exists. The third and fourth rows are the opposite
+error, narrowing the identifier side, and each is caught by a case that was
+already in the tree.
+
+**The cheapest wrong fix, named: strip `rungate/run-\d+` out of the text
+before matching.** What an operator sees is one branch name matching, so the
+5pm repair is to delete that one prefix. It fixes this body and nothing else.
+AC-1's third case asserts that `631 pass, 0 fail` and `took 631ms` are not
+references either, so it stays red under that repair.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`lib/prior-branch.ts` was restored from a copy taken before the battery.
 - [x] SC-871: workflows/ship.js contains [PRIOR-WORK-REFUSAL-START, PRIOR_WORK_OPEN_PR] — a run refuses before IMPLEMENT when the issue has an open PR this run is not standing on, and resuming that PR's own branch is not refused
 - [x] SC-872: workflows/ship.js contains [function lookupTargets, function normalizeExistingPr] — the issue number and repo slug are validated before they are interpolated into the lookup command, and only a positive outcome of "none" is read as "no open PR"
 
