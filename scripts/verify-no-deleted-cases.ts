@@ -20,7 +20,22 @@
  *
  * Usage:
  *   bun scripts/verify-no-deleted-cases.ts --project <dir> \
- *     --previous <sha> --current <sha> [--ledger <junit.xml>] [--out <file>]
+ *     --previous <sha> --current <sha> [--ledger <junit.xml>] [--out <file>] \
+ *     [--accept '<file> :: <case name>']... [--reason <why>]
+ *
+ * A deletion you meant is waived PER CASE, by exact FILE and exact NAME,
+ * and `--accept` without `--reason` is refused — a waiver nobody has to
+ * justify is a warning nobody reads, which is the rule
+ * `scripts/verify-merge-content.ts` states and the model this follows
+ * (#661). The waiver is spelled exactly as the refusal prints the case, so
+ * it is copied rather than retyped, and a waiver naming no file is refused:
+ * a case name is not unique across a tree, and the round this exists for
+ * deleted cases from two files at once.
+ *
+ * The reason and the LEDGER'S OWN READING are written into the artefact
+ * beside each case the waiver covers, so a waived round and a clean one are
+ * never the same record, and waiving a case the ledger proved green is
+ * never confused with waiving one nothing could judge.
  *
  * Prints one JSON object on stdout; diagnostics go to stderr so stdout stays
  * machine-readable. Exits non-zero when a case the previous build commit
@@ -42,17 +57,28 @@
 
 import { writeFileSync } from "fs";
 
-import { deletedCases, deletionReading, ledgerFromJunit, type PassLedger } from "../lib/test-case-deletion";
+import {
+  WAIVER_SEPARATOR,
+  deletedCases,
+  deletionReading,
+  ledgerFromJunit,
+  parseWaiver,
+  type PassLedger,
+} from "../lib/test-case-deletion";
 
 /** The one exit code every refusal travels through. */
 export const REFUSE_EXIT = 1;
 
-const OPTIONS = new Set(["project", "previous", "current", "ledger", "out"]);
+const OPTIONS = new Set(["project", "previous", "current", "ledger", "out", "accept", "reason"]);
+/** Repeatable, because one waiver per case is the whole point. */
+const REPEATABLE = new Set(["accept"]);
 
 class Refused extends Error {}
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
+export interface ParsedArgs extends Record<string, string | string[]> {}
+
+export function parseArgs(argv: string[]): Record<string, any> {
+  const out: Record<string, any> = { accept: [] };
   for (let i = 0; i < argv.length; i++) {
     const m = /^--([a-z][a-z-]*)$/.exec(argv[i]);
     if (!m || !OPTIONS.has(m[1])) {
@@ -60,7 +86,33 @@ function parseArgs(argv: string[]): Record<string, string> {
     }
     const value = argv[++i];
     if (value === undefined || value.startsWith("--")) throw new Refused(`--${m[1]} needs a value`);
-    out[m[1]] = value;
+    if (REPEATABLE.has(m[1])) out[m[1]].push(value);
+    else out[m[1]] = value;
+  }
+  // The rule this check borrows from `scripts/verify-merge-content.ts`: an
+  // unexplained waiver is not a waiver. Refused here rather than defaulted
+  // to an empty string, because a blank reason in the artefact reads as a
+  // reason nobody wrote down rather than as one that was never required.
+  if (out.accept.length > 0 && String(out.reason ?? "").trim().length === 0) {
+    throw new Refused(
+      `--accept was given for ${out.accept.join(", ")} without --reason. An unexplained waiver ` +
+        "is a deletion nobody has to account for, which is the thing this check exists to stop",
+    );
+  }
+  if (out.accept.length === 0 && String(out.reason ?? "").trim().length > 0) {
+    throw new Refused("--reason was given with no --accept, so it explains nothing");
+  }
+  // Refused at the DOOR, not at match time. A waiver that names no file
+  // matches nothing, so left to the matcher it would arrive as a stale
+  // waiver — a warning beside a still-refused run, which reads as the
+  // operator having mistyped a name rather than having written the flag in
+  // a form this command does not accept.
+  for (const raw of out.accept as string[]) {
+    try {
+      parseWaiver(raw);
+    } catch (e: any) {
+      throw new Refused(e.message);
+    }
   }
   for (const required of ["project", "previous", "current"]) {
     if (!out[required]) throw new Refused(`--${required} is required`);
@@ -84,18 +136,55 @@ if (import.meta.main) {
         };
 
     const deleted = deletedCases(args.project, args.previous, args.current);
-    const reading = deletionReading(deleted, ledger);
+    const reading = deletionReading(deleted, ledger, {
+      cases: args.accept,
+      reason: String(args.reason ?? ""),
+    });
 
     const result = {
       verdict: reading.verdict,
       previous: args.previous,
       current: args.current,
-      cases: reading.cases.map(c => ({ name: c.name, file: c.file })),
+      cases: reading.cases.map((c: { name: string; file: string }) => ({ name: c.name, file: c.file })),
       reason: reading.verdict === "UNMEASURED" ? reading.reason : null,
+      // Recorded unconditionally when present, so a CLEAN reached by waiving
+      // and a CLEAN reached by deleting nothing are different records.
+      ...(reading.waived ? { waived: reading.waived } : {}),
+      ...(reading.unusedWaivers ? { unusedWaivers: reading.unusedWaivers } : {}),
     };
     const json = JSON.stringify(result, null, 2);
     if (args.out) writeFileSync(args.out, json);
     console.log(json);
+
+    // A CLEAN reached by waiving is not a CLEAN reached by deleting nothing,
+    // and the console is where an operator actually looks. Saying it here
+    // keeps the two distinguishable without the artefact being opened.
+    if (reading.waived && reading.waived.length > 0) {
+      // Each waived case carries what the ledger said about it. Waiving a
+      // case the ledger proved GREEN and waiving one nothing can judge are
+      // different acts, and a line that reported them identically would be
+      // the silent default this module exists to refuse.
+      console.error(
+        `WAIVED: ${reading.waived.length} deleted case(s) accepted — ` +
+          `${reading.waived.map(w => `${w.file}${WAIVER_SEPARATOR}${w.name} [ledger: ${w.ledgerReading}]`).join("; ")}` +
+          ` — reason: ${reading.waived[0].acceptedReason}`,
+      );
+      const unjudged = reading.waived.filter(w => w.ledgerReading === "unjudged");
+      if (unjudged.length > 0) {
+        console.error(
+          `WAIVED_UNMEASURED: ${unjudged.length} of them were waived without the ledger being able to ` +
+            "say whether they were passing. The waiver records that it was deliberate; it does not " +
+            "establish that nothing green was lost",
+        );
+      }
+    }
+    if (reading.unusedWaivers && reading.unusedWaivers.length > 0) {
+      console.error(
+        `STALE_WAIVER: ${reading.unusedWaivers.join(", ")} matched no deleted case. Either the ` +
+          "deletion is gone and the waiver should go with it, or the case was renamed and the " +
+          "waiver has silently stopped applying",
+      );
+    }
 
     if (reading.verdict !== "CLEAN") {
       console.error(

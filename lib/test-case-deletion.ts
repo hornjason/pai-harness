@@ -198,11 +198,82 @@ export type PassLedger =
   | { status: "MEASURED"; passed: string[]; failed: string[] }
   | { status: "UNMEASURED"; reason: string };
 
+/**
+ * A deletion the operator has taken responsibility for (#661).
+ *
+ * Carries the reason with it rather than beside it, so a waived case and
+ * the justification for waiving it cannot be read apart in the artefact.
+ */
+export interface WaivedCase extends DeletedCase {
+  acceptedReason: string;
+  /**
+   * What the previous build commit's ledger said about this case.
+   *
+   * A waiver RECORDS the reading, it does not erase it. Waiving a case the
+   * ledger proved green and waiving one nothing can judge are different
+   * acts, and a CLEAN that cannot tell them apart has thrown away the one
+   * fact this module exists to carry (`.claude/rules/config-access.md`:
+   * keep the whole reading, derive the boolean).
+   */
+  ledgerReading: LedgerReading;
+}
+
+/** What a ledger says about one case. `unjudged` is not `red`. */
+export type LedgerReading = "green" | "red" | "unjudged";
+
+/**
+ * Per-case waivers, modelled on `scripts/verify-merge-content.ts`.
+ *
+ * `cases` are matched by EXACT case name. There is deliberately no pattern,
+ * no prefix and no `all`: a waiver you have to write out one name at a time
+ * is a waiver somebody has to look at, and the artefact then lists each one
+ * against the reason. The cheapest wrong fix for a refusal is to widen it
+ * until it stops firing, and a wildcard here is that fix pre-installed.
+ */
+export interface DeletionWaivers {
+  /**
+   * Each entry is `<file> :: <case name>` — the same spelling every report
+   * in this module prints, so a waiver is copied from the refusal rather
+   * than retyped.
+   *
+   * The FILE is required, and a waiver without one is refused rather than
+   * matched on the name alone. A case name is not unique across a tree:
+   * the round this check exists for deleted cases from two files at once,
+   * and a bare name like `the baseline` is the kind of name test files
+   * share. A name-only waiver silently clears every file that happens to
+   * declare it, which is the widening the exact-match design exists to
+   * prevent, in the one dimension a name cannot see.
+   */
+  cases: string[];
+  reason: string;
+}
+
+/** The separator every report and every waiver uses. One spelling. */
+export const WAIVER_SEPARATOR = " :: ";
+
+/** A waiver string, split — or a throw naming what was wrong with it. */
+export function parseWaiver(raw: string): DeletedCase {
+  const at = raw.indexOf(WAIVER_SEPARATOR);
+  if (at < 0) {
+    throw new Error(
+      `the waiver "${raw}" names no file. Write it as it is printed — ` +
+        `"<file>${WAIVER_SEPARATOR}<case name>" — because a case name is not unique across ` +
+        "a tree and a name-only waiver clears every file that declares it",
+    );
+  }
+  const file = raw.slice(0, at);
+  const name = raw.slice(at + WAIVER_SEPARATOR.length);
+  if (file.trim() === "" || name.trim() === "") {
+    throw new Error(`the waiver "${raw}" has an empty file or case name`);
+  }
+  return { file, name };
+}
+
 /** The reading, with UNMEASURED as a first-class outcome. */
 export type DeletionReading =
-  | { verdict: "CLEAN"; cases: DeletedCase[] }
-  | { verdict: "DELETED"; cases: DeletedCase[] }
-  | { verdict: "UNMEASURED"; cases: DeletedCase[]; reason: string };
+  | { verdict: "CLEAN"; cases: DeletedCase[]; waived?: WaivedCase[]; unusedWaivers?: string[] }
+  | { verdict: "DELETED"; cases: DeletedCase[]; waived?: WaivedCase[]; unusedWaivers?: string[] }
+  | { verdict: "UNMEASURED"; cases: DeletedCase[]; reason: string; waived?: WaivedCase[]; unusedWaivers?: string[] };
 
 /** A ledger from a bun JUnit report written at the previous build commit. */
 export function ledgerFromJunit(path: string): PassLedger {
@@ -237,16 +308,74 @@ function names(entries: string[], name: string): boolean {
  * complete answer it does not have, and the two outcomes refuse the run
  * either way — what differs is what an operator is told to go and do.
  */
-export function deletionReading(deleted: DeletedCase[], ledger: PassLedger): DeletionReading {
+export function deletionReading(
+  deleted: DeletedCase[],
+  ledger: PassLedger,
+  waivers: DeletionWaivers = { cases: [], reason: "" },
+): DeletionReading {
+  // Waivers are applied HERE, in the owning binding, and not in the script.
+  // A script that filtered its own input before calling this would be a
+  // second decider agreeing with the first, and a mutation of either would
+  // leave the other holding every case up
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+  //
+  // ONE predicate, used by all three readers below. "Is this case waived?"
+  // asked in two places is two deciders that agree, so a mutation of either
+  // leaves the other applying the waiver and no behavioural test can tell
+  // them apart — measured: widening the `waived` list alone moved the record
+  // and left the verdict untouched, which is a mutant that proves nothing.
+  // `matches` is that predicate, and it is the ONLY place the shape of a
+  // waiver is decided. Widening it to a prefix — the cheap repair for an
+  // operator with five long case names to type — then moves the waived
+  // list, the verdict and the unused-waiver report together, instead of
+  // moving one and leaving the others to hold the case up.
+  // `matches` is that predicate, and it is the ONLY place the shape of a
+  // waiver is decided. Widening it to a prefix — the cheap repair for an
+  // operator with five long case names to type — then moves the waived
+  // list, the verdict and the unused-waiver report together, instead of
+  // moving one and leaving the others to hold the case up. Both components
+  // are compared: a name alone does not identify a case across a tree.
+  const refs = waivers.cases.map(parseWaiver);
+  const matches = (w: DeletedCase, d: DeletedCase) => w.name === d.name && w.file === d.file;
+  const isWaived = (d: DeletedCase) => refs.some(w => matches(w, d));
+
+  // The ledger's answer for one case, asked in ONE place. The green/red/
+  // unjudged split below is derived from it too, so a waived case and an
+  // unwaived one cannot be classified by two different readers.
+  const ledgerReadingOf = (d: DeletedCase): LedgerReading => {
+    if (ledger.status !== "MEASURED") return "unjudged";
+    if (names(ledger.passed, d.name)) return "green";
+    if (names(ledger.failed, d.name)) return "red";
+    return "unjudged";
+  };
+
+  const waived: WaivedCase[] = deleted
+    .filter(isWaived)
+    .map(d => ({ ...d, acceptedReason: waivers.reason, ledgerReading: ledgerReadingOf(d) }));
+  // A waiver that matches nothing is REPORTED, never silently dropped. It
+  // means either the deletion it covered is gone — so the waiver should go
+  // too — or the case was renamed and the waiver has quietly stopped
+  // applying, which is the failure mode an allowlist has
+  // (`feedback-exemption-list-self-reference`). Reported and not refused:
+  // refusing would be a scope this issue did not ask for.
+  const unusedWaivers = waivers.cases.filter((_raw, i) => !deleted.some(d => matches(refs[i], d)));
+  const extra = {
+    ...(waived.length > 0 ? { waived } : {}),
+    ...(unusedWaivers.length > 0 ? { unusedWaivers } : {}),
+  };
+
+  deleted = deleted.filter(d => !isWaived(d));
+
   // Nothing left, so there is nothing a ledger could tell us. This arm is
   // what keeps the check usable: requiring a ledger on every round would
   // refuse every run, and a refusal everyone overrides is not a check.
-  if (deleted.length === 0) return { verdict: "CLEAN", cases: [] };
+  if (deleted.length === 0) return { verdict: "CLEAN", cases: [], ...extra };
 
   if (ledger.status !== "MEASURED") {
     return {
       verdict: "UNMEASURED",
       cases: deleted,
+      ...extra,
       reason:
         `${deleted.length} test case(s) were deleted between the two build commits and the ` +
         `previous commit's ledger could not be read, so nothing says whether they were passing: ` +
@@ -254,14 +383,18 @@ export function deletionReading(deleted: DeletedCase[], ledger: PassLedger): Del
     };
   }
 
-  const green = deleted.filter(d => names(ledger.passed, d.name));
-  const red = deleted.filter(d => names(ledger.failed, d.name));
-  const unjudged = deleted.filter(d => !green.includes(d) && !red.includes(d));
+  // Three projections of ONE reading. `red` is not consulted below — a case
+  // the ledger proved red is not this defect — and it is named here so the
+  // three outcomes are visible as a partition rather than as two tests and
+  // a remainder.
+  const green = deleted.filter(d => ledgerReadingOf(d) === "green");
+  const unjudged = deleted.filter(d => ledgerReadingOf(d) === "unjudged");
 
   if (unjudged.length > 0) {
     return {
       verdict: "UNMEASURED",
       cases: deleted,
+      ...extra,
       reason:
         `the previous build commit's ledger does not mention ${unjudged.length} of the ` +
         `${deleted.length} deleted case(s), so they are neither proven green nor proven red — ` +
@@ -275,7 +408,7 @@ export function deletionReading(deleted: DeletedCase[], ledger: PassLedger): Del
   // removes tests at all; this check is about the narrower and more
   // dangerous thing — a repair that deleted the evidence that it was not
   // needed.
-  if (green.length === 0) return { verdict: "CLEAN", cases: [] };
+  if (green.length === 0) return { verdict: "CLEAN", cases: [], ...extra };
 
-  return { verdict: "DELETED", cases: green };
+  return { verdict: "DELETED", cases: green, ...extra };
 }
