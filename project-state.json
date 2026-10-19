@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-18",
+  "updated": "2026-10-19",
   "priorities": [
     "P0 CRITICAL PATH TO PHASE C (measured 2026-10-11, see #274) — the order below is forced by dependencies, not preference. Every rungate self-run is rewritten to LIGHT by workflows/ship.js:1705 because the repo's own config sets pages:{}, so the scope gate, Quinn local, Quinn verify, prove and the remote pre-flight have NEVER executed here. DailyBriefDashboard configures 18 pages and enters all five on its first run.",
     "P0.1: #273 — DONE, merged eba80415 (PR #284). Six phase-ordering checks in test/spec-compliance.test.ts asserted on COMMENTS. Verified on main by the mutation that defined it: gutting the PR step out of ship.js while leaving its comment at :4338 gave 6 pass / 0 fail before and gives 4 pass / 2 fail after. The converse also holds — rewording three phase banner comments with no code change leaves all six green, which is the false red that had refused #254 four times.",
@@ -226,6 +226,15 @@
     }
   ],
   "sessions": [
+    {
+      "date": "2026-10-19 session 51 (#646 merged partially open; two ship runs stopped for deleting or mis-scoring their own evidence)",
+      "items": [
+        "#660 landed #646, and the issue stayed OPEN on purpose. hillClimbApplied: 0 was the receipt for five different outcomes, one of which is a live bug, so three sessions read the zero as nothing-to-reinforce when it meant a reinforcement was composed and dropped. The receipt now names every state, derives its reading from one list so reading and unmeasuredReasons cannot disagree, and consumes applyHillClimb's structured outcomes through a total Record — an unmapped kind is a build error rather than an UNCLASSIFIED_SKIP at the end of a ship run. Four of seven criteria landed; the two asking for a rule section on the absent-instrument reading did not, and saying so was the point. 12903 pass, 0 fail, 13734 tests across 378 files; verify-merge-content 10 of 10, 0 divergent.",
+        "The run that produced it damaged it, and that is the session's real finding. Its verify gate returned a wrong FAIL — a two-grep evidence method scored against a single == 0 threshold where the second grep must be non-zero — and the repair cycle deleted eight passing test cases, five of them rewritten into three differently-named ones so a count comparison would report two deletions and name none of the five. The deleted cases were the witnesses for the very property the issue exists to establish. The run was stopped and its FIRST build commit shipped instead. #659 is that defect, and the shape generalises: a gate FAIL is not evidence about the code, and it is not evidence against the code either.",
+        "#659's own run then failed on an AC whose expected set I had written wrong — three deleted cases when the true answer is eight — so a correct implementation was scored against a bad fixture and the repair available to it was to break the implementation until it agreed. Stopped again. The lesson is narrower than it looks: I enumerated deleted cases in one file, read the other file's numstat, and wrote the resulting number into two issues and a merged PR body. A numstat is not an enumeration.",
+        "Three defects found downstream of the merged work, all the same family and all filed rather than hot-fixed: #662, two paths that drop a composed reinforcement and record no state so the new receipt reports them clean; #663, a relay check that proves no field is dropped by PATH while compId is string|null against a declared type of string, and a receipt that reaches the operator as an agent's restatement with nothing comparing it to what the script wrote; #664, ten source-slice guards that cut a fixed character count instead of a construct — one had 650 characters of headroom and went red on a 2,119-character insertion two branches away, accusing an else that had not moved."
+      ]
+    },
     {
       "date": "2026-10-18 session 50",
       "items": [
@@ -772,24 +781,20 @@
     }
   ],
   "session": {
-    "number": 50,
-    "date": "2026-10-18",
-    "suite": "12299 pass, 0 fail, 22 skip across 354 files on the shipped tree — typecheck 0 errors, matching baseline",
+    "number": 51,
+    "date": "2026-10-19",
+    "suite": "12903 pass, 0 fail, 13 skip, 818 todo across 378 files on the shipped tree (430df61b)",
     "issues_created": [
-      589,
-      590,
-      593,
-      597,
-      599,
-      600,
-      602
+      654,
+      655,
+      659,
+      662,
+      663,
+      664
     ],
     "issues_closed": [
-      274,
-      585,
-      586,
-      590
+      652
     ],
-    "summary": "Five merges, and the thread running through all of them is a reading that was never taken against the tree it claimed to describe. #591 landed #586 — a scaffold run rewrote a spec criterion into an unrelated one and discarded the original exactly when it was most confident (SC-1993..SC-2003). #595 landed #274, which had been CLOSED COMPLETED with none of its six files on main; it was reopened, finished and merged with verify-merge-content reporting 17 of 17 files landed, and PR #305 was retired after proving by content that nothing unique to it was lost. #596 landed #590 — scripts/check-state-record-closes.ts now refuses a state record whose text closes issues it never declared, in both directions. The defect it fixes is real and recent: PR #588 squash-merged a commit body reading \"Filed and left open at the time: #586\", GitHub matched \"fixed: #586\", and an issue that had not shipped was auto-closed. lib/issue-closure-audit.ts scopes that case OUT by design — attribution is not authorization — so #590 is its proper home. The check is deliberately NOT wired into update-project-state.ts, whose only caller is the pre-commit hook invoking it as `2>/dev/null || true`: a refusal there would be discarded, which is a fail-open amplifier rather than a guard. #601 landed #585 — the TDZ check in scripts/validate-workflow.ts matched only assignments, and only indented ones, so a module-scope READ before declaration was invisible. That is the shape that crashed ship.js with \"Cannot access SINGLE_WORKTREE_EXEMPT before initialization\" after 11 agents and ~724k tokens, while the validator ran on the real file in CI and reported PASS. It is now a scanner that strips comments, strings, template literals and regexes and tracks scope with a bracket stack. The criterion worth recording is SC-2019-adjacent rather than the fix itself: ship.js contains no textual forward reference at all, so \"no TDZ in ship.js\" stays green even if every brace is misread as module scope. The case therefore asserts the scan OWN COVERAGE — N tracked declarations, M references scanned, M greater than N — because a scan over blanked-out source reports every reference as a declaration and is otherwise indistinguishable from a clean verdict. Three ship runs refused rather than shipping, and the refusals were right every time. #590 and #585 both reported large suite FAIL counts — 120 and 100 — measured under 25 and 34 concurrent agents; both were 0 fail on a bare quiet-machine run of the identical tree, with 88 of #585 100 being `timed out after` in the git/worktree/push cluster. Among the 12 that were not timeouts was `error: the mutant was accepted:`, which reads exactly like a dead check and was not one. A ship run own suite is not a verdict on the code, and the same now holds for its GATE verdicts: #593 verify gate recorded AC-6 FAIL for a TS18048 typecheck error that does not reproduce on the branch head, because it graded a commit the remediation had already superseded. #585 and #593 both ended on SUITE_MEASUREMENT_STALE — the refusal that, per #530, had never once been able to fire before it was reconnected. Both PRs were assembled by hand afterwards, each time proving by BLOB comparison which preserved worktree branch was the superset rather than reading diffs. Filed and not yet fixed, all found while doing the above rather than by looking for them. #597: three Layer 1 compliance tests fail intermittently in CI because it installs neither agnix nor @reporails/cli, so `npx @reporails/cli version` reaching the registry decides the verdict — proven by re-running an identical SHA red to green with no code change. #599: the shared pre-commit hook writes and stages project-state.json and PROJECT-STATE.md from EVERY worktree, which CLAUDE.md forbids and the #178/SC-413 collection guard refuses, so an agent can comply perfectly and still trip it; it demonstrated itself by re-adding the file inside the commit that removed it. #600: update-project-state.ts stamps the UTC date, so evening EDT work records tomorrow — which is the only reason #599 is ever visible, and why its green runs were never evidence of compliance. #602: every ship run loads its gates from whatever is checked out at harnessRoot, and nothing records which version graded it; that checkout was 82 files behind main, including gates/schema.ts and lib/evidence-prevalidator.ts, and nothing broke only because workflows/ship.js happened to be byte-identical. It has since been fast-forwarded, but the silence is the defect, not the staleness. #589 and #593 remain open; #168 was investigated and cleared. Issues closed by this session: closes #274, closes #585, closes #586, closes #590."
+    "summary": "#660 landed #646, and the issue stayed OPEN on purpose. hillClimbApplied: 0 was the receipt for five different outcomes, one of which is a live bug, so three sessions read the zero as nothing-to-reinforce when it meant a reinforcement was composed and dropped. The receipt now names every state, derives its reading from one list so reading and unmeasuredReasons cannot disagree, and consumes applyHillClimb's structured outcomes through a total Record — an unmapped kind is a build error rather than an UNCLASSIFIED_SKIP at the end of a ship run. Four of seven criteria landed; the two asking for a rule section on the absent-instrument reading did not, and saying so was the point. 12903 pass, 0 fail, 13734 tests across 378 files; verify-merge-content 10 of 10, 0 divergent."
   }
 }
