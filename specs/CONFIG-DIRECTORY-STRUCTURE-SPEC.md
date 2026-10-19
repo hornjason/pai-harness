@@ -137,7 +137,7 @@ run.
    CLAUDE.md forbids the agent from running the rebuild while its Makefile has a
    worktree guard that exits 1. The honest value for a rebuild nobody performed
    is `SKIP` with a reason, which the same prompt already knows how to write
-   (`ship.js:4569`, the "test container not running" arm). The gap is that
+   (`workflows/ship.js:4569`, the "test container not running" arm). The gap is that
    nothing forces the second arm when the first is impossible.
 
 4. **A fourth, found while building the fixture and recorded with the others:

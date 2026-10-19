@@ -2989,6 +2989,62 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
 }
 
 /**
+ * ## The generated pre-commit hook, as one binding (#610)
+ *
+ * ## What was wrong
+ *
+ * The hook decided WHICH updater to run by sniffing the working tree at
+ * commit time:
+ *
+ *     updater=""
+ *     if [ -f "scripts/update-project-state.ts" ]; then
+ *       updater="scripts/update-project-state.ts"
+ *     elif [ -f "node_modules/rungate/scripts/update-project-state.ts" ]; then
+ *       updater="node_modules/rungate/scripts/update-project-state.ts"
+ *     fi
+ *
+ * and the comment above it said the order was deliberate because "a checkout
+ * that has its own scripts/ copy is the harness". That is an identity
+ * inferred from a FILENAME. "This tree holds a file at this path" and "this
+ * tree is the rungate harness" are different facts, and the hook treated the
+ * first as proof of the second — so a consumer that keeps a script at that
+ * path for its own reasons was silently reclassified as the harness and ran a
+ * different program than the one rungate installed. Nothing in the commit
+ * recorded which branch fired, so the two outcomes were indistinguishable
+ * afterwards.
+ *
+ * A detector narrower than what it detects
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, second shape), with the
+ * *Silent Default Substitution* that `.claude/rules/config-access.md` refuses
+ * sitting underneath it.
+ *
+ * ## What it does instead
+ *
+ * The decision is taken HERE, at generation time, and one concrete path is
+ * baked into the emitted script. The hook names the program it runs; a tree
+ * that acquires a same-named file afterwards cannot change what executes.
+ *
+ * Identity is read from the project's own declaration — `isHarnessItself`,
+ * which reads `package.json`'s `name` and is the single existing binding for
+ * this question in the tree (#380). It is deliberately NOT a second reading
+ * of the same fact: two deciders that agree are behaviourally one, and no
+ * mutation of either could tell them apart.
+ *
+ * ## Three readings, and UNMEASURED is one of them
+ *
+ * | the tree declares | the candidate | emitted |
+ * |---|---|---|
+ * | `name: "rungate"` | `scripts/update-project-state.ts` | that path, baked |
+ * | anything else | `node_modules/rungate/scripts/…` | that path, baked |
+ * | either, candidate absent | — | UNMEASURED, and no lookup at all |
+ *
+ * The third row is the one that must not be a guess. A hook carrying a
+ * lookup "in case the file turns up later" succeeds at some unknown future
+ * commit for a reason nobody chose, and `0`, `""`, `null` and a
+ * plausible-looking path are all indistinguishable from success.
+ */
+
+/**
  * The line that marks a pre-commit hook as ours, so a fix can reach one that
  * already exists (#450).
  *
@@ -3001,18 +3057,104 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
  */
 export const PRE_COMMIT_MANAGED_MARKER = "# Managed by rungate — secret scan + PROJECT-STATE update";
 
-export function createGitHooks(root: string, actions: string[]): void {
-  const hooksDir = join(root, ".git", "hooks");
-  if (!existsSync(hooksDir)) return;
+/**
+ * Present in EVERY form this generator emits, resolved or not.
+ *
+ * `scripts/check-installed-hook-currency.ts` probes for it to tell a hook
+ * that predates #610 from one that carries it, and that probe has to work for
+ * a consumer and for the harness alike — so it cannot be either baked path.
+ */
+export const UPDATER_GENERATION_MARKER =
+  "# Which updater runs was decided when this hook was generated (#610), not here.";
 
-  const { chmodSync } = require("fs");
+/** The harness's own copy, relative to the project root. */
+export const HARNESS_UPDATER = "scripts/update-project-state.ts";
 
-  const preCommit = join(hooksDir, "pre-commit");
-  const existingPreCommit = existsSync(preCommit) ? readFileSync(preCommit, "utf-8") : null;
-  if (existingPreCommit !== null && !existingPreCommit.includes(PRE_COMMIT_MANAGED_MARKER)) {
-    actions.push("SKIP: .git/hooks/pre-commit (hand-written, not overwriting)");
-  } else {
-    writeFileSync(preCommit, `#!/bin/sh
+/** The copy rungate installs into a consumer, relative to the project root. */
+export const VENDORED_UPDATER = "node_modules/rungate/scripts/update-project-state.ts";
+
+export type UpdaterIdentity = "harness" | "consumer";
+
+export interface UpdaterResolution {
+  /** What the tree declared itself to be, read from package.json's name. */
+  identity: UpdaterIdentity;
+  /** The one path that identity selects — present or not. */
+  candidate: string;
+  /** The path baked into the hook, or null when the candidate is absent. */
+  path: string | null;
+}
+
+/**
+ * The single decider. One binding to mutate, asked once by
+ * `preCommitHookScript` and nowhere else.
+ */
+export function resolveUpdater(root: string): UpdaterResolution {
+  const identity: UpdaterIdentity = isHarnessItself(root) ? "harness" : "consumer";
+  const candidate = identity === "harness" ? HARNESS_UPDATER : VENDORED_UPDATER;
+  return {
+    identity,
+    candidate,
+    path: existsSync(join(root, candidate)) ? candidate : null,
+  };
+}
+
+const IDENTITY_NOTE: Record<UpdaterIdentity, string> = {
+  harness:
+    "# package.json names this tree as the rungate harness, so the updater is its own\n" +
+    "    # scripts/ copy — never a vendored duplicate of itself, which would be stale.",
+  consumer:
+    "# package.json does not name this tree as the harness, so the updater is the copy\n" +
+    "    # rungate installed. A script this project keeps at scripts/ is its own program\n" +
+    "    # and is not run here, whatever it is called.",
+};
+
+/**
+ * The block that goes inside the primary-checkout arm.
+ *
+ * The resolved form contains the path EXACTLY ONCE — in the assignment — so
+ * there is one literal to mutate and one literal for a test to count. The
+ * echo below it reports `$updater` rather than repeating the path, which is
+ * the same reason: a second copy would survive any mutation of the first.
+ */
+function updaterBlock(r: UpdaterResolution): string {
+  if (r.path === null) {
+    return `    ${UPDATER_GENERATION_MARKER}
+    ${IDENTITY_NOTE[r.identity]}
+    #
+    # Nothing was found there when this hook was generated, so this hook runs
+    # no updater and performs no lookup. A lookup kept "in case it turns up"
+    # would succeed at some later commit for a reason nobody chose.
+    echo "project-state: UNMEASURED — when this hook was generated this tree read as a ${r.identity} checkout and no updater was present at ${r.candidate}. This hook runs none and stages nothing. Re-scaffold once it is installed." >&2`;
+  }
+  return `    ${UPDATER_GENERATION_MARKER}
+    ${IDENTITY_NOTE[r.identity]}
+    updater="${r.path}"
+    # Say which program is about to run, before running it. Without this the
+    # commit's output records nothing about which updater fired and the
+    # answer is only recoverable by inspecting the tree afterwards (#610).
+    echo "project-state: running $updater (resolved when this hook was generated)" >&2
+    if bun "$updater" --skip-tests >&2; then
+      # Staged only after the updater SUCCEEDED. Staging regardless is the
+      # fail-open the readings above exist to replace: it puts yesterday's
+      # PROJECT-STATE.md in today's commit, and the commit then looks exactly
+      # like one that updated it.
+      git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+    else
+      echo "project-state: UNMEASURED — $updater exited non-zero, so PROJECT-STATE.md and project-state.json were NOT staged. Run it by hand to see why." >&2
+    fi`;
+}
+
+/**
+ * What `createGitHooks` writes, for a given project root.
+ *
+ * A function of the root rather than a constant, because the updater is
+ * resolved here. It writes nothing: `scripts/check-installed-hook-currency.ts`
+ * has to obtain the text for a project it is only INSPECTING, and a generator
+ * that could only answer by installing itself would make the check the thing
+ * it is checking.
+ */
+export function preCommitHookScript(root: string): string {
+  return `#!/bin/sh
 ${PRE_COMMIT_MANAGED_MARKER}
 #
 # Scans the staged DIFF, not files on disk. This is deliberate and fixes four
@@ -3090,10 +3232,7 @@ fi
 # checkout — which has scripts/update-project-state.ts and no
 # node_modules/rungate at all — bun exited non-zero on a file that is not
 # there. 2>/dev/null threw the ENOENT away, || true threw the status away, and
-# the git add below then staged whatever happened to be on disk. A commit that
-# regenerated nothing was byte-indistinguishable from one that regenerated
-# everything, and the only reason anyone noticed is that the stamp is UTC, so
-# the stale copy differs from the fresh one for four hours an evening.
+# the git add below then staged whatever happened to be on disk.
 #
 # Every message is on STDERR: stdout is what a caller captures as the
 # command's answer, and a decline, a reading and an updater's progress are all
@@ -3102,26 +3241,7 @@ if [ -f "project-state.json" ]; then
   gitdir=$(git rev-parse --git-dir)
   commondir=$(git rev-parse --git-common-dir)
   if [ -n "$gitdir" ] && [ "$gitdir" = "$commondir" ]; then
-    # The order is deliberate. A checkout carrying its own scripts/ copy IS
-    # the harness, and the harness must not regenerate its state with a stale
-    # vendored duplicate of its own updater.
-    updater=""
-    if [ -f "scripts/update-project-state.ts" ]; then
-      updater="scripts/update-project-state.ts"
-    elif [ -f "node_modules/rungate/scripts/update-project-state.ts" ]; then
-      updater="node_modules/rungate/scripts/update-project-state.ts"
-    fi
-    if [ -z "$updater" ]; then
-      echo "project-state: UNMEASURED — project-state.json is here, but no update-project-state.ts was found at scripts/update-project-state.ts or node_modules/rungate/scripts/update-project-state.ts. Nothing was regenerated and nothing was staged." >&2
-    elif bun "$updater" --skip-tests >&2; then
-      # Staged only after the updater SUCCEEDED. Staging regardless is the
-      # fail-open the readings above exist to replace: it puts yesterday's
-      # PROJECT-STATE.md in today's commit, and the commit then looks exactly
-      # like one that updated it.
-      git add PROJECT-STATE.md project-state.json 2>/dev/null || true
-    else
-      echo "project-state: UNMEASURED — $updater exited non-zero, so PROJECT-STATE.md and project-state.json were NOT staged. Run it by hand to see why." >&2
-    fi
+${updaterBlock(resolveUpdater(root))}
   else
     # Announced, not silent. A developer who expected the state files to move
     # would otherwise be left guessing, and SKIP that says nothing is
@@ -3135,7 +3255,21 @@ fi
 # made the hook exit non-zero and reject a perfectly good commit. Everything
 # that should block has already exited 1 above.
 exit 0
-`);
+`;
+}
+
+export function createGitHooks(root: string, actions: string[]): void {
+  const hooksDir = join(root, ".git", "hooks");
+  if (!existsSync(hooksDir)) return;
+
+  const { chmodSync } = require("fs");
+
+  const preCommit = join(hooksDir, "pre-commit");
+  const existingPreCommit = existsSync(preCommit) ? readFileSync(preCommit, "utf-8") : null;
+  if (existingPreCommit !== null && !existingPreCommit.includes(PRE_COMMIT_MANAGED_MARKER)) {
+    actions.push("SKIP: .git/hooks/pre-commit (hand-written, not overwriting)");
+  } else {
+    writeFileSync(preCommit, preCommitHookScript(root));
     chmodSync(preCommit, 0o755);
     actions.push(
       existingPreCommit === null

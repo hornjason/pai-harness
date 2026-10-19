@@ -44,6 +44,7 @@ import {
   buildScRegistry, SC_SOURCE_DIRS,
 } from "../lib/sc-ids";
 import { allocateScNumber, nextSCNumber } from "../lib/create-sc";
+import { readScReservations, reservationFor } from "../lib/sc-reservations";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -334,12 +335,34 @@ describe("SC-1525: the CLI asks the allocator the whole question", () => {
     // it goes green today and re-breaks on the next spec block, and it would
     // leave the probe computed from a reading that structurally cannot see
     // spec declarations.
-    const probeId = allocateScNumber(ROOT, "", registry).number + 7;
+    // #725: and the owner is passed EXPLICITLY, for the same reason the
+    // registry argument is. `allocateScNumber` now takes a reserved block
+    // into account, and the CLI's default owner is whatever branch the suite
+    // happens to be running on — so without this line the probe is computed
+    // from a no-owner reading while the CLI is computed from a branch that
+    // may hold a block, and the two readings would differ the first time
+    // somebody reserved one. Exactly #507, arriving again: a fixture whose
+    // margin is set by something outside it.
+    //
+    // The owner names nothing, deliberately. This case is about the FIXTURE
+    // half of the namespace — does the CLI step over a planted id — and a
+    // caller allocating from inside its own block does not step over
+    // anything, because a block is filled from the bottom. The premise is
+    // asserted rather than assumed on the next line.
+    const PROBE_OWNER = "__sc-fixture-namespace-probe__";
+    const reserved = readScReservations(ROOT);
+    expect(
+      reservationFor(reserved.blocks, PROBE_OWNER),
+      "the probe owner holds a reserved block, so this case no longer measures the fixture step",
+    ).toBeNull();
+
+    const probeId = allocateScNumber(ROOT, "", registry, { owner: PROBE_OWNER }).number + 7;
     expect(probeId, "the probe is not above the registry answer it must beat").toBeGreaterThan(specOnly);
     try {
       writeFileSync(probeFile, `// scratch probe written by test/sc-fixture-namespace.ts\nconst id = "SC-${probeId}";\n`);
       const r = spawnSync("bun", [join(ROOT, "scripts", "create-sc.ts"),
         "--spec", spec, "--pattern", "file-exists",
+        "--owner", PROBE_OWNER,
         "--params", JSON.stringify({ file: "PROBE-ONLY.md" })],
         { cwd: ROOT, encoding: "utf-8", timeout: 120_000 });
       const out = `${r.stdout}${r.stderr}`;

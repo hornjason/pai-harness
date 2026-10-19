@@ -73,7 +73,7 @@ import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { tryLoadRungateConfig } from "../lib/config-loader";
 import { createCiWorkflows, globalToolInstallStep } from "../lib/scaffold/steps";
-import { testCommandsNamedByCiWorkflow } from "../scripts/contract-parity";
+import { testCommandsNamedByCiWorkflow } from "../lib/test-command-positions";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const STEPS = join(REPO_ROOT, "lib", "scaffold", "steps.ts");

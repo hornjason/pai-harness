@@ -6,8 +6,10 @@ import { execFileSync } from 'child_process';
 import { createGitHooks, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
 import {
   ORIGINAL,
-  REGENERATED,
+  REGENERATED_BY_SCRIPTS,
+  REGENERATED_BY_VENDORED,
   UPDATER_CHATTER,
+  hookFor,
   runWithStateFiles as runHookWithStateFiles,
   type HookRun,
   type UpdaterLayout,
@@ -54,12 +56,18 @@ const AWS_KEY = 'AKIA' + 'IOSFODNN7EXAMPLE';
  * A primary checkout with one commit, and a linked worktree off it. Plants the
  * state files UNSTAGED, runs the freshly generated hook, and reports the two
  * streams apart, what ended up in the index, and the bytes of PROJECT-STATE.md.
+ *
+ * The hook is generated FOR THE SAME LAYOUT it is then run in (#610). Since
+ * the updater is resolved at generation time, a hook built against one tree
+ * shape and executed in another measures the mismatch rather than the hook —
+ * so the layout is one description, used twice, and not two that can drift.
  */
 function runWithStateFiles(
   where: 'primary' | 'worktree',
   opts: { updater?: UpdaterLayout } = {},
 ): HookRun {
-  return runHookWithStateFiles(script, where, opts);
+  const layout = opts.updater ?? 'harness';
+  return runHookWithStateFiles(hookFor(layout), where, { updater: layout });
 }
 
 describe('generated pre-commit — structure', () => {
@@ -269,7 +277,7 @@ describe('#599: the primary arm runs an updater that exists, and stages only whe
   it('SC-2038: resolves the harness layout and stages after the updater succeeded', () => {
     const { code, staged, stateMd, err } = runWithStateFiles('primary', { updater: 'harness' });
     expect(code).toBe(0);
-    expect(stateMd, 'the updater never ran — nothing rewrote PROJECT-STATE.md').toBe(REGENERATED);
+    expect(stateMd, 'the updater never ran — nothing rewrote PROJECT-STATE.md').toBe(REGENERATED_BY_SCRIPTS);
     expect(staged).toContain('PROJECT-STATE.md');
     expect(staged).toContain('project-state.json');
     expect(err).not.toContain('UNMEASURED');
@@ -281,7 +289,7 @@ describe('#599: the primary arm runs an updater that exists, and stages only whe
     // case would let someone delete this branch and stay green.
     const { code, staged, stateMd } = runWithStateFiles('primary', { updater: 'vendored' });
     expect(code).toBe(0);
-    expect(stateMd, 'the vendored updater never ran').toBe(REGENERATED);
+    expect(stateMd, 'the vendored updater never ran').toBe(REGENERATED_BY_VENDORED);
     expect(staged).toContain('PROJECT-STATE.md');
   });
 
@@ -329,7 +337,9 @@ describe('#599: the primary arm runs an updater that exists, and stages only whe
     // The amplifier, not the bug. Every reading above is only legible because
     // the ENOENT is no longer thrown away, so the redirect is asserted gone
     // from the invocation rather than left to the behaviour cases to imply.
-    const invocation = script.split('\n').filter(l => l.includes('$updater') && !l.trim().startsWith('#'));
+    const invocation = hookFor('harness')
+      .split('\n')
+      .filter(l => l.includes('$updater') && !l.trim().startsWith('#'));
     expect(invocation.length, 'the updater is not invoked through a resolved variable').toBeGreaterThan(0);
     for (const line of invocation) {
       expect(line, 'the updater failure is being discarded again').not.toContain('2>/dev/null');

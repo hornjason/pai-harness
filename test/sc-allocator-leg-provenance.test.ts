@@ -44,6 +44,7 @@ import { join } from "path";
 import { allocateScNumber } from "../lib/create-sc";
 import { describeReading } from "../lib/sc-id-cross-tree";
 import type { SourceReading } from "../lib/sc-id-cross-tree";
+import { RESERVATIONS_CONTROL_KEY, SC_RESERVATIONS_PATH } from "../lib/sc-reservations";
 import {
   buildScRegistry,
   SC_SOURCE_DIRS,
@@ -73,7 +74,20 @@ function git(cwd: string, args: string[]): string {
  * every case below — #585's pair discipline, applied by making the second
  * half of each pair impossible to differ in anything else.
  */
-function tree(opts: { specIds: string[]; sourceDirs: string[]; spell?: Record<string, string[]> }): string {
+function tree(opts: {
+  specIds: string[];
+  sourceDirs: string[];
+  spell?: Record<string, string[]>;
+  /**
+   * Write an empty-but-declared reservation store (#725).
+   *
+   * Only the cases whose claim is "this reading is COMPLETE" need it. A tree
+   * with no store has a legitimately skipped reservations leg, so
+   * `describeReading` says `1 skipped` over it — correctly, and that makes it
+   * the wrong fixture for a case asserting nothing was skipped.
+   */
+  reservations?: boolean;
+}): string {
   // realpath, because on macOS `/var` is a symlink to `/private/var` and git
   // reports the resolved path.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sc-606-")));
@@ -86,6 +100,9 @@ function tree(opts: { specIds: string[]; sourceDirs: string[]; spell?: Record<st
     join(root, "specs", "MAIN-SPEC.md"),
     ["# Fixture spec", "", ...opts.specIds.map(i => `- [ ] ${i}: a criterion`), ""].join("\n"),
   );
+  if (opts.reservations) {
+    writeFileSync(join(root, SC_RESERVATIONS_PATH), JSON.stringify({ [RESERVATIONS_CONTROL_KEY]: [] }));
+  }
   for (const d of opts.sourceDirs) {
     mkdirSync(join(root, d), { recursive: true });
     for (const spelled of opts.spell?.[d] ?? []) {
@@ -244,7 +261,10 @@ describe("#606: a leg that was not probed says so by name", () => {
     // list, and nothing else. A distinction that stops at the data structure
     // never reaches an operator.
     const none = tree({ specIds: [id(5601)], sourceDirs: [] });
-    const empty = tree({ specIds: [id(5601)], sourceDirs: [...SC_SOURCE_DIRS] });
+    // `reservations: true` because the claim on the next-but-three line is
+    // that a COMPLETE reading says nothing was skipped, and since #725 a tree
+    // with no reservation store has one leg that legitimately was.
+    const empty = tree({ specIds: [id(5601)], sourceDirs: [...SC_SOURCE_DIRS], reservations: true });
 
     const bad = allocateScNumber(none, "", unenumeratedScRegistry("no specs/ here")).namespace;
     const good = allocateScNumber(empty, "", ENUMERATED_EMPTY).namespace;
