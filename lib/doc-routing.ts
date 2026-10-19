@@ -15,7 +15,7 @@
  *
  * `need` falls back to the filename with dashes turned into spaces when a
  * document carries no `governs:`, so `need === slug` and the row was dropped.
- * Measured on the asaCommandCenter consumer: **0 of 38 top-level `docs/*.md`
+ * Measured on one consumer: **0 of 38 top-level `docs/*.md`
  * carried the field, so all 38 were dropped** — `ENVIRONMENTS.md` among them,
  * which cost a DA a false P1 on 2026-10-17 after it inferred the production
  * host rather than reading the document that names it in three places.

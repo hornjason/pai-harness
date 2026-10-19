@@ -44,7 +44,7 @@ const SPECS = join(REPO, "specs");
 const BANKED: Record<string, number> = {
   "bootstrap-data-flow/success-criteria.md": 120,
   "INSTRUCTION-COMPLIANCE-SPEC.md": 12,
-  "AGENTS-MD-TEMPLATE-SPEC.md": 11,
+  "AGENTS-MD-TEMPLATE-SPEC.md": 10,
   "CONFIG-DRIVEN-TESTING-SPEC.md": 8,
   "AGENT-BRIEF-TEMPLATE-SPEC.md": 2,
   "DA-COMPLIANCE-SPEC.md": 2,

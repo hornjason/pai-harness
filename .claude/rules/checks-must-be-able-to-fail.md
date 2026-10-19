@@ -1565,7 +1565,6 @@ the row — it is three MORE than the eleven #664 found by hand
 `strip-js-comments.test.ts:211`), which is the argument for a sweep over a
 list of ten edits.
 
-
 ### When the second decider is a COMMENT, and it agrees with itself (#689)
 
 #621 above is N documents naming one string with nothing comparing them. This

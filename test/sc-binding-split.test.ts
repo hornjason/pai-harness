@@ -41,7 +41,7 @@ const SPECS = join(REPO, "specs");
  * may fall freely, and a rise means a criterion was ticked with nothing
  * testing it.
  *
- * It is NOT the primary refusal. 154 of these 154 are in the census
+ * It is NOT the primary refusal. 153 of these 153 are in the census
  * `test/ticked-sc-cover.test.ts` already ratchets PER SPEC, both directions,
  * naming the ids — so banking a second global number here would be two
  * deciders answering one question, and a mutation of either would leave the
@@ -49,7 +49,7 @@ const SPECS = join(REPO, "specs");
  * which is what makes this number safe to carry: it cannot drift away from
  * the ratchet that does the refusing.
  */
-const UNCLAIMED_RATCHET = 154;
+const UNCLAIMED_RATCHET = 153;
 
 /**
  * Checked, unmatchable, and a test file DOES declare it.
