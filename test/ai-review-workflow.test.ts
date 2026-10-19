@@ -53,6 +53,62 @@
  * `createCiWorkflows` writes, which is the one thing holding
  * `AI_REVIEW_WORKFLOW_FILE` (what `lib/conformity.ts` reads back) to the
  * literal in the tuple `test/release-guard.test.ts` pins.
+ *
+ * ## #631: every step measured, each level in its own words, and the
+ * ## credential inputs read off the parsed file
+ *
+ * Three readings were widened here, and the sub-issue's own cases are the
+ * `#631 AC-…` describes below.
+ *
+ * - **Every step, not the one we came for.** The step-level refusal reads the
+ *   whole list and NAMES the offending steps. The fixture plants the
+ *   condition on a step other than the first, because a reader narrowed to
+ *   `steps[0]` or to the auth step is the shape a first-step fixture cannot
+ *   tell apart from a correct one.
+ * - **One level per sentence.** A job-level `if:` and a step-level `if:` are
+ *   different defects with different repairs, so they refuse in different
+ *   words and neither sentence claims the other's level.
+ * - **`aiReviewCredentialGuards` reads the file.** Each credential input on
+ *   an action must carry exactly one comparison against
+ *   `steps.ai-review-auth.outputs.mode` and name exactly one mode's secret.
+ *   A job that hands no action a credential is UNMEASURED BY NAME — an empty
+ *   list of guarded inputs is not a guarded job.
+ * - **The instrument before the count.** A credential-free run that printed
+ *   NOTHING is reported as that, not as "expected exactly 1 warning": a run
+ *   with no output is indistinguishable from one that never happened (#60).
+ *
+ * ### What was broken to prove these fail, run and counted rather than asserted
+ *
+ * Over this file (49 tests). Every count was predicted before the battery
+ * ran, and **the baseline row was read first** — an instrument that has
+ * stopped reporting takes the baseline down with it.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 49 pass, 0 fail | **49 pass, 0 fail** | — |
+ * | the step-level filter narrowed to `steps[0]` | 6 | **6 of 49** | the three-step fixture with the `if:` on step 2: the original refuses naming `step 2 (Second)`, the mutant returns the auth script and no failure at all |
+ * | both levels collapsed into one generic refusal | 6 | **6 of 49** | the same fixture and its job-level twin: the original's two sentences name their own levels, the mutant returns one sentence naming neither |
+ * | `credentialGuardViolations` short-circuited to `return []` | 6 | **6 of 49** | `api_key_credential: ${{ secrets.ANTHROPIC_API_KEY }}` — the original reports one violation naming 0 comparisons, the mutant reports none |
+ * | the no-inputs UNMEASURED branch removed | 2 | **2 of 49** | the scaffolded fixture project's own file, which hands no action a credential: the original names UNMEASURED, the mutant returns zero inputs and zero violations, which reads as a guarded job |
+ * | the empty-output instrument branch removed | 1 | **1 of 49** | `#!/bin/bash\nexit 0` — the original says the step printed nothing at all, the mutant says it "emitted 0 UNMEASURED warning annotation(s), expected exactly 1", which is a count taken off no output |
+ *
+ * **The first row was 5 before the distinctness case established presence.**
+ * `null !== "the job carries a job-level if:"` is a difference, so "the two
+ * sentences are not the same sentence" was GREEN over a reader that had
+ * stopped refusing one of the two levels entirely — #518, found by the count
+ * missing low and by nothing else. It asserts both readings are non-null
+ * first, and the row is 6.
+ *
+ * **The cheapest wrong fix, named: delete the `with:` block that AIREVIEW-2
+ * refused.** The symptom is a credential input the check will not accept, and
+ * removing the input makes it stop. The cases survive it non-vacuously — a
+ * job that hands no action a credential is UNMEASURED, not clean, and
+ * *"a job that hands no action a credential is UNMEASURED, not clean"* is the
+ * case that says so.
+ *
+ * None of the five mutations is left in the tree; all were run and reverted,
+ * and `lib/conformity.ts` was confirmed byte-identical to the measured source
+ * afterwards by checksum.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
@@ -70,7 +126,11 @@ import {
   buildReviewRunScript,
   buildReviewRunStep,
 } from "../lib/scaffold/ai-review-step";
-import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
+import {
+  aiReviewAuthScript,
+  aiReviewCredentialGuards,
+  aiReviewUnmeasuredViolations,
+} from "../lib/conformity";
 
 /** Four patterns, including a bare `*` and a `**` glob — AC-3's fixture. */
 const BRANCHES = ["main", "*", "*-dev", "release/**"];
@@ -253,11 +313,28 @@ describe("AC-4: no credential configured is UNMEASURED, not a passing review", (
   test("AC-4: the count is one, and it is read off a real run of the generated script", () => {
     const reading = aiReviewAuthScript(PROJECT);
     const run = runAuthScript(reading.script!, {});
+    // The instrument first (#60): a run that printed NOTHING yields zero
+    // warnings and zero of anything else, and an empty reading is
+    // indistinguishable from a clean one. Assert the execution produced
+    // output, and that the output is this script's own, before counting it.
+    expect(run.stdout.trim(), "the generated script produced no output at all").not.toBe("");
+    expect(run.stdout, `no mode line in the output\n${run.stdout}`).toContain(
+      "ai-review auth mode: none",
+    );
     const warnings = run.stdout
       .split("\n")
       .filter(l => l.startsWith("::warning") && l.includes("UNMEASURED"));
     expect(warnings.length, `expected one UNMEASURED warning\n${run.stdout}`).toBe(1);
     expect(run.code, "an unconfigured project must not fail on the first scaffold").toBe(0);
+  });
+
+  test("AC-4: a run that printed nothing is UNMEASURED to the check, not a clean run", () => {
+    // The same instrument reading, inside the binding the conformity case
+    // uses. Without it `warnings.length !== 1` reports "expected exactly 1"
+    // for a script that never executed, which names the wrong defect.
+    const violations = aiReviewUnmeasuredViolations("#!/bin/bash\nexit 0\n");
+    expect(violations.join("\n")).toContain("printed nothing");
+    expect(violations.join("\n")).toContain("UNMEASURED");
   });
 });
 
@@ -265,6 +342,12 @@ describe("AC-5: a configured credential emits no UNMEASURED annotation", () => {
   test("AC-5: GCP_SA_KEY present means zero UNMEASURED annotations", () => {
     const reading = aiReviewAuthScript(PROJECT);
     const run = runAuthScript(reading.script!, { GCP_SA_KEY: "x" });
+    // "zero UNMEASURED lines" is satisfied by a script that printed nothing
+    // at all, which is what a step that failed to run looks like. The mode
+    // line is the control that says this reading is of a real execution.
+    expect(run.stdout, `the credentialed run printed nothing\n${run.stdout}`).toContain(
+      "ai-review auth mode: vertex",
+    );
     const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
     expect(warnings.length, `a resolved mode still warned\n${run.stdout}`).toBe(0);
     expect(run.code).toBe(0);
@@ -433,6 +516,270 @@ describe("AC-4: the reading refuses rather than reporting a clean tree it never 
   test("a file that does not parse is a FAILURE, not an empty job list", () => {
     const reading = aiReviewAuthScript(plant("jobs:\n  ai-review:\n   - [unbalanced\n"));
     expect(reading.failure).not.toBeNull();
+  });
+});
+
+// ── #631 AC-1 / AC-2: every step is measured, and each level says so ─────
+//
+// `steps.filter(s => "if" in s)` reads the whole list today. The cheapest way
+// for it to stop doing that is a reader that looks at the step it cares about
+// — the auth step, or `steps[0]` — so the fixture plants the condition on a
+// step OTHER than the first, which is the only input that tells the two apart.
+//
+// The pair discipline is #585's: the conditional fixture is DERIVED from the
+// clean one by inserting a single line, and the derivation is asserted, so the
+// two halves cannot drift into differing in anything but the condition.
+
+const IF_CONDITION = "${{ vars.RUNGATE_AI_REVIEW == 'true' }}";
+
+/** A step with a `run:` and nothing else — a body for the list to have. */
+function plainStep(name: string): string {
+  return `      - name: ${name}\n        run: echo ${JSON.stringify(name)}\n`;
+}
+
+/** A workflow whose ai-review job carries exactly these step blocks. */
+function jobYaml(steps: string[], opts: { jobIf?: string } = {}): string {
+  return (
+    `name: AI Review\non:\n  pull_request:\n    branches:\n      - "main"\n\njobs:\n` +
+    `  ${AI_REVIEW_JOB}:\n` +
+    (opts.jobIf ? `    if: ${opts.jobIf}\n` : "") +
+    `    runs-on: "ubuntu-latest"\n    steps:\n` +
+    steps.join("")
+  );
+}
+
+/** The same document with one `if:` line inserted under the named step. */
+function withIfOnStep(yml: string, stepName: string): string {
+  const lines = yml.split("\n");
+  const at = lines.findIndex(l => l.trim() === `- name: ${stepName}`);
+  expect(at, `no step named ${stepName} in the fixture`).toBeGreaterThan(-1);
+  lines.splice(at + 1, 0, `        if: ${IF_CONDITION}`);
+  const derived = lines.join("\n");
+  // The derivation, asserted rather than trusted: one line longer, and
+  // identical once the inserted line is taken back out.
+  expect(derived.split("\n").length).toBe(yml.split("\n").length + 1);
+  const back = derived.split("\n");
+  back.splice(at + 1, 1);
+  expect(back.join("\n"), "the derivation changed something other than the condition").toBe(yml);
+  return derived;
+}
+
+const THREE_STEPS = () =>
+  jobYaml([buildAuthDetectStep(), plainStep("Second"), plainStep("Third")]);
+
+describe("#631 AC-1: an `if:` on ANY step is refused, not only on the first", () => {
+  test("AC-1: the clean three-step fixture is accepted — the control", () => {
+    // Without this, every refusal below could be about the fixture rather
+    // than about the condition planted into it.
+    const reading = aiReviewAuthScript(plant(THREE_STEPS()));
+    expect(reading.failure, `${reading.failure}`).toBeNull();
+    expect(reading.unmeasured).toBeNull();
+    expect(reading.script, "the control fixture produced no auth script").not.toBeNull();
+  });
+
+  test("AC-1: a condition on the SECOND step is refused", () => {
+    const reading = aiReviewAuthScript(plant(withIfOnStep(THREE_STEPS(), "Second")));
+    expect(reading.failure, "an `if:` on step 2 was accepted").not.toBeNull();
+    expect(reading.failure).toContain("Second");
+    expect(reading.script, "a refused reading still handed back a script").toBeNull();
+  });
+
+  test("AC-1: a condition on the LAST step is refused, and the refusal names it", () => {
+    const reading = aiReviewAuthScript(plant(withIfOnStep(THREE_STEPS(), "Third")));
+    expect(reading.failure, "an `if:` on the last step was accepted").not.toBeNull();
+    expect(reading.failure).toContain("Third");
+    expect(reading.failure).not.toContain("Second");
+  });
+
+  test("AC-1: two conditional steps are both named, and the count is the list's", () => {
+    const two = withIfOnStep(withIfOnStep(THREE_STEPS(), "Second"), "Third");
+    const reading = aiReviewAuthScript(plant(two));
+    expect(reading.failure).toContain("Second");
+    expect(reading.failure).toContain("Third");
+    expect(reading.failure).toContain("2 step");
+  });
+});
+
+describe("#631 AC-2: a job-level and a step-level `if:` refuse in their own words", () => {
+  // One condition, two positions. Varying only the placement is what makes
+  // the comparison a measurement of the LEVEL and not of the text (#585).
+  const jobLevel = () => aiReviewAuthScript(plant(jobYaml([buildAuthDetectStep()], { jobIf: IF_CONDITION })));
+  const stepLevel = () =>
+    aiReviewAuthScript(plant(withIfOnStep(THREE_STEPS(), "Second")));
+
+  test("AC-2: both refuse", () => {
+    expect(jobLevel().failure, "a job-level if: was accepted").not.toBeNull();
+    expect(stepLevel().failure, "a step-level if: was accepted").not.toBeNull();
+  });
+
+  test("AC-2: the two sentences are not the same sentence", () => {
+    // Presence before comparison (#518). `null !== "…"` is a difference, so
+    // without these two lines a reader that stopped refusing one of the two
+    // levels entirely would satisfy "the sentences differ" — measured: this
+    // case was green under the `steps[0]`-only mutant until they were added.
+    const job = jobLevel().failure;
+    const step = stepLevel().failure;
+    expect(job, "the job-level reading refused nothing").not.toBeNull();
+    expect(step, "the step-level reading refused nothing").not.toBeNull();
+    expect(job).not.toBe(step);
+  });
+
+  test("AC-2: the job-level refusal names the job level and only the job level", () => {
+    const f = jobLevel().failure!;
+    expect(f, "the job-level refusal does not say which level it is about").toContain("job-level");
+    expect(f, "the job-level refusal also claims a step-level condition").not.toContain(
+      "step-level",
+    );
+  });
+
+  test("AC-2: the step-level refusal names the step level and only the step level", () => {
+    const f = stepLevel().failure!;
+    expect(f, "the step-level refusal does not say which level it is about").toContain(
+      "step-level",
+    );
+    expect(f, "the step-level refusal also claims a job-level condition").not.toContain(
+      "job-level",
+    );
+  });
+});
+
+// ── #631 AC-3: the credential inputs on the review action ────────────────
+//
+// A credential handed to an action unguarded, or guarded by somebody else's
+// mode, is a secret flowing in a run the auth step resolved a different mode
+// for. The reading is taken off the PARSED FILE: a builder that composes the
+// expression correctly and a file that drifted from it look identical from
+// the builder's side, which is the whole argument for AIREVIEW-1 existing.
+
+const SHA = "0".repeat(40);
+
+/** An action step handed the given `with:` inputs, quoted. */
+function actionStep(name: string, uses: string, inputs: Record<string, string>): string {
+  const lines = Object.entries(inputs).map(([k, v]) => `          ${k}: ${JSON.stringify(v)}\n`);
+  return `      - name: ${name}\n        uses: ${uses}@${SHA}\n        with:\n${lines.join("")}`;
+}
+
+/** `mode == '<mode>' && secrets.<SECRET> || ''` — the guarded form. */
+function guarded(mode: string, secret: string): string {
+  return `\${{ steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == '${mode}' && secrets.${secret} || '' }}`;
+}
+
+/** A workflow whose review action is handed every credential, correctly. */
+function guardedJob(overrides: Record<string, string> = {}): string {
+  const inputs: Record<string, string> = {};
+  for (const c of AI_REVIEW_AUTH_PRECEDENCE) {
+    inputs[`${c.mode.replace("-", "_")}_credential`] = guarded(c.mode, c.secret);
+  }
+  return jobYaml([
+    buildAuthDetectStep(),
+    actionStep("Run the AI review", "anthropics/claude-code-action", { ...inputs, ...overrides }),
+  ]);
+}
+
+describe("#631 AC-3: every credential input is guarded by its own mode, once", () => {
+  test("AC-3: the scaffolded project's own file is read, and never silently empty", () => {
+    // The real measurement, over the file `createCiWorkflows` just wrote.
+    // Today that job hands no action a credential — the credentialed job is
+    // its own sub-issue — so the honest reading is UNMEASURED BY NAME, which
+    // is what this asserts: zero inputs and no unmeasured sentence would be
+    // `0`, `{}` and `SKIP` wearing a pass (.claude/rules/config-access.md).
+    const reading = aiReviewCredentialGuards(PROJECT);
+    expect(reading.failure, `${reading.failure}`).toBeNull();
+    if (reading.inputs.length === 0) {
+      expect(reading.unmeasured, "no credential inputs and no UNMEASURED reading").not.toBeNull();
+      expect(reading.unmeasured).toContain("UNMEASURED");
+      return;
+    }
+    expect(reading.unmeasured).toBeNull();
+    expect(reading.violations, reading.violations.join("\n")).toEqual([]);
+  });
+
+  test("AC-3: a correctly guarded job reads clean, with every credential seen", () => {
+    // The non-vacuity control for the case above: a reading that refused
+    // everything, or that found nothing anywhere, would also report `[]`.
+    const reading = aiReviewCredentialGuards(plant(guardedJob()));
+    expect(reading.unmeasured, `${reading.unmeasured}`).toBeNull();
+    expect(reading.violations, reading.violations.join("\n")).toEqual([]);
+    expect(reading.inputs.map(i => i.secrets.join("+")).sort()).toEqual(
+      AI_REVIEW_AUTH_PRECEDENCE.map(c => c.secret).sort(),
+    );
+  });
+
+  test("AC-3: an unguarded credential is refused", () => {
+    const reading = aiReviewCredentialGuards(
+      plant(guardedJob({ api_key_credential: "${{ secrets.ANTHROPIC_API_KEY }}" })),
+    );
+    expect(reading.violations.join("\n"), "a bare secret was accepted").toContain(
+      "api_key_credential",
+    );
+    expect(reading.violations.join("\n")).toContain("0 comparison");
+  });
+
+  test("AC-3: a credential guarded TWICE is refused — exactly one comparison", () => {
+    const twice =
+      `\${{ steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == 'api-key' && ` +
+      `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode != 'none' && secrets.ANTHROPIC_API_KEY || '' }}`;
+    const reading = aiReviewCredentialGuards(plant(guardedJob({ api_key_credential: twice })));
+    expect(reading.violations.join("\n")).toContain("2 comparison");
+  });
+
+  test("AC-3: a credential guarded by ANOTHER mode is refused", () => {
+    const reading = aiReviewCredentialGuards(
+      plant(guardedJob({ api_key_credential: guarded("oauth", "ANTHROPIC_API_KEY") })),
+    );
+    const text = reading.violations.join("\n");
+    expect(text, "a mode/secret mismatch was accepted").toContain("ANTHROPIC_API_KEY");
+    expect(text).toContain("oauth");
+    expect(text).toContain("api-key");
+  });
+
+  test("AC-3: an input naming a second mode's secret is refused", () => {
+    const both =
+      `\${{ steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == 'api-key' && ` +
+      `secrets.ANTHROPIC_API_KEY || secrets.CLAUDE_CODE_OAUTH_TOKEN }}`;
+    const reading = aiReviewCredentialGuards(plant(guardedJob({ api_key_credential: both })));
+    const text = reading.violations.join("\n");
+    expect(text).toContain("ANTHROPIC_API_KEY");
+    expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+
+  test("AC-3: a guard that compares something other than the auth step's mode is refused", () => {
+    // `secrets` is unavailable in `if:`, so the tempting guard is a `vars`
+    // comparison — which is a different question answered in the same shape.
+    const reading = aiReviewCredentialGuards(
+      plant(
+        guardedJob({
+          api_key_credential: "${{ vars.AI_REVIEW_MODE == 'api-key' && secrets.ANTHROPIC_API_KEY || '' }}",
+        }),
+      ),
+    );
+    expect(reading.violations.join("\n")).toContain("0 comparison");
+  });
+
+  test("AC-3: a job that hands no action a credential is UNMEASURED, not clean", () => {
+    const reading = aiReviewCredentialGuards(
+      plant(jobYaml([buildAuthDetectStep(), actionStep("Checkout", "actions/checkout", { ref: "main" })])),
+    );
+    expect(reading.unmeasured, "an action with no credential read as guarded").not.toBeNull();
+    expect(reading.unmeasured).toContain("UNMEASURED");
+    expect(reading.violations).toEqual([]);
+  });
+
+  test("AC-3: the reading comes off the file, so editing the file changes it", () => {
+    // Two trees, one builder. The only thing that differs is the bytes on
+    // disk, so a reading taken off the builder cannot tell them apart.
+    const clean = aiReviewCredentialGuards(plant(guardedJob()));
+    const edited = aiReviewCredentialGuards(
+      plant(guardedJob().replace(`== 'api-key' && secrets.ANTHROPIC_API_KEY`, `&& secrets.ANTHROPIC_API_KEY`)),
+    );
+    expect(clean.violations).toEqual([]);
+    expect(edited.violations.length, "an edit to the file on disk was not read").toBeGreaterThan(0);
+  });
+
+  test("AC-3: an absent file is a FAILURE here too, not an absence of inputs", () => {
+    const reading = aiReviewCredentialGuards(plant(null));
+    expect(reading.failure, "a deleted workflow read as no credentials to guard").not.toBeNull();
+    expect(reading.unmeasured).toBeNull();
   });
 });
 

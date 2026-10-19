@@ -4151,9 +4151,64 @@ export interface AiReviewReading {
  * is one, so a text match is wrong in both directions.
  */
 export function aiReviewAuthScript(root: string): AiReviewReading {
+  const job = aiReviewJob(root);
+  if (job.unmeasured || job.failure || !job.job) {
+    return { script: null, unmeasured: job.unmeasured, failure: job.failure };
+  }
+  const none = { script: null, unmeasured: null, failure: null };
+  const steps = Array.isArray(job.job.steps) ? job.job.steps : [];
+  const conditional = steps
+    .map((s: any, i: number) => ({ s, i }))
+    .filter(({ s }: any) => s && typeof s === "object" && "if" in s);
+  if (conditional.length > 0) {
+    // Every step in the list, not the one we came looking for. A reader that
+    // only asked the auth step — or `steps[0]` — accepts a condition on the
+    // step that runs the review, which is the same green-for-nothing the
+    // job-level case is about. The offending steps are NAMED: "2 steps carry
+    // an if:" is not something a consumer can act on.
+    const named = conditional
+      .map(({ s, i }: any) => `step ${i + 1} (${s.name ?? s.id ?? "unnamed"})`)
+      .join(", ");
+    return {
+      ...none,
+      failure:
+        `${conditional.length} step(s) in the ${AI_REVIEW_JOB} job carry a step-level ` +
+        `\`if:\` — ${named}. A step skipped by a condition reports \`skipped\` and the ` +
+        `job still concludes success without having run it. Resolve the condition ` +
+        `inside \`run:\` instead.`,
+    };
+  }
+  const auth = steps.find((s: any) => s && s.id === AI_REVIEW_AUTH_STEP_ID);
+  if (!auth || typeof auth.run !== "string") {
+    return {
+      ...none,
+      failure: `${AI_REVIEW_WORKFLOW_FILE}'s ${AI_REVIEW_JOB} job has no \`run:\` step with ` +
+        `id ${AI_REVIEW_AUTH_STEP_ID}, so nothing resolves a credential mode`,
+    };
+  }
+  return { script: auth.run, unmeasured: null, failure: null };
+}
+
+/** The ai-review job as parsed off disk, or the reason there is none to read. */
+interface AiReviewJobReading {
+  job: any | null;
+  unmeasured: string | null;
+  failure: string | null;
+}
+
+/**
+ * Locate and parse the ai-review job — the one place that decides what the
+ * file is and whether it can be read at all.
+ *
+ * Both readings below depend on this answer, and two functions each finding
+ * the job their own way would be two deciders for one question: a mutation of
+ * either would leave the other holding the case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ */
+function aiReviewJob(root: string): AiReviewJobReading {
   const dir = join(root, ".github", "workflows");
   const path = join(dir, AI_REVIEW_WORKFLOW_FILE);
-  const none = { script: null, unmeasured: null, failure: null };
+  const none = { job: null, unmeasured: null, failure: null };
 
   if (!existsSync(path)) {
     if (!existsSync(join(dir, "ci.yml"))) {
@@ -4198,24 +4253,134 @@ export function aiReviewAuthScript(root: string): AiReviewReading {
         `satisfied. Resolve the condition inside \`run:\` instead.`,
     };
   }
-  const steps = Array.isArray(job.steps) ? job.steps : [];
-  const conditional = steps.filter((s: any) => s && typeof s === "object" && "if" in s);
-  if (conditional.length > 0) {
+  return { job, unmeasured: null, failure: null };
+}
+
+/** One credential a generated step hands to an action, and how it is guarded. */
+export interface AiReviewCredentialInput {
+  /** The step that hands it over, by name, id or action. */
+  step: string;
+  /** The action it is handed to, `uses:` verbatim. */
+  uses: string;
+  /** The action input's name, e.g. `anthropic_api_key`. */
+  input: string;
+  /** The expression the file hands that input. */
+  expression: string;
+  /** Every credential secret the expression names. */
+  secrets: string[];
+  /** Every comparison in it against the auth step's own mode output. */
+  comparisons: { op: string; mode: string }[];
+}
+
+/** What `aiReviewCredentialGuards` could establish about a project's job. */
+export interface AiReviewGuardReading {
+  inputs: AiReviewCredentialInput[];
+  /** Non-null when the job hands no action a credential — nothing to guard. */
+  unmeasured: string | null;
+  /** Non-null when the file is absent, renamed, conditional or unreadable. */
+  failure: string | null;
+  violations: string[];
+}
+
+/** Comparisons against `steps.<auth>.outputs.mode`, either way round. */
+function authModeComparisons(expression: string): { op: string; mode: string }[] {
+  const ref = `steps\\.${AI_REVIEW_AUTH_STEP_ID.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")}\\.outputs\\.mode`;
+  const re = new RegExp(`(?:${ref}\\s*(==|!=)\\s*'([^']*)'|'([^']*)'\\s*(==|!=)\\s*${ref})`, "g");
+  const out: { op: string; mode: string }[] = [];
+  for (const m of expression.matchAll(re)) {
+    out.push({ op: m[1] ?? m[4], mode: m[2] ?? m[3] });
+  }
+  return out;
+}
+
+/** What is wrong with one credential input, in the file's own terms. */
+function credentialGuardViolations(i: AiReviewCredentialInput): string[] {
+  const out: string[] = [];
+  const where = `\`${i.input}\` on ${i.uses} (${i.step})`;
+  if (i.comparisons.length !== 1) {
+    out.push(
+      `${where} is guarded by ${i.comparisons.length} comparison(s) against ` +
+        `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode, expected exactly 1 — a credential ` +
+        `the resolved mode does not gate is a secret handed to a run that resolved a ` +
+        `different mode, and two gates for one credential are two deciders that agree\n` +
+        `  ${i.expression}`,
+    );
+  }
+  if (i.secrets.length !== 1) {
+    out.push(
+      `${where} names ${i.secrets.length} credentials (${i.secrets.join(", ")}) — one input ` +
+        `carries one mode's secret, so a single comparison can say whether it may flow\n` +
+        `  ${i.expression}`,
+    );
+  }
+  if (i.comparisons.length === 1 && i.secrets.length === 1) {
+    const own = AI_REVIEW_AUTH_PRECEDENCE.find(c => c.secret === i.secrets[0]);
+    const cmp = i.comparisons[0];
+    if (cmp.op !== "==") {
+      out.push(
+        `${where} is guarded by a \`${cmp.op}\` comparison against mode '${cmp.mode}' — a ` +
+          `negated guard lets the credential through in every mode but one\n  ${i.expression}`,
+      );
+    } else if (own && cmp.mode !== own.mode) {
+      out.push(
+        `${where} is handed ${own.secret}, whose mode is '${own.mode}', but is guarded by ` +
+          `mode '${cmp.mode}' — the credential flows in a mode it does not belong to\n` +
+          `  ${i.expression}`,
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Read the credential inputs the generated job hands to actions, and say
+ * which of them are not guarded by exactly one comparison against the mode
+ * the auth step resolved.
+ *
+ * Taken off the PARSED FILE, never off the builder. A generator that composes
+ * the expression correctly and a workflow file that drifted from it look
+ * identical from the generator's side — which is the argument AIREVIEW-1 was
+ * built on, and it is the same argument here.
+ */
+export function aiReviewCredentialGuards(root: string): AiReviewGuardReading {
+  const reading = aiReviewJob(root);
+  if (reading.unmeasured || reading.failure || !reading.job) {
+    return { inputs: [], unmeasured: reading.unmeasured, failure: reading.failure, violations: [] };
+  }
+  const steps = Array.isArray(reading.job.steps) ? reading.job.steps : [];
+  const inputs: AiReviewCredentialInput[] = [];
+  for (const s of steps) {
+    if (!s || typeof s !== "object" || typeof s.uses !== "string") continue;
+    if (!s.with || typeof s.with !== "object") continue;
+    for (const [input, raw] of Object.entries(s.with as Record<string, unknown>)) {
+      if (typeof raw !== "string") continue;
+      const secrets = AI_REVIEW_AUTH_PRECEDENCE
+        .filter(c => raw.includes(`secrets.${c.secret}`))
+        .map(c => c.secret);
+      if (secrets.length === 0) continue;
+      inputs.push({
+        step: s.name ?? s.id ?? s.uses,
+        uses: s.uses,
+        input,
+        expression: raw,
+        secrets,
+        comparisons: authModeComparisons(raw),
+      });
+    }
+  }
+  if (inputs.length === 0) {
     return {
-      ...none,
-      failure: `${conditional.length} step(s) in the ${AI_REVIEW_JOB} job carry an \`if:\`, ` +
-        `which reports \`skipped\` rather than a verdict`,
+      inputs,
+      unmeasured:
+        `UNMEASURED: no step in the ${AI_REVIEW_JOB} job hands an action a credential ` +
+        `(${AI_REVIEW_AUTH_PRECEDENCE.map(c => c.secret).join(", ")}), so nothing here says ` +
+        `a resolved mode gates the secret it resolved. An empty list of guarded inputs is ` +
+        `not a job whose credentials are guarded.`,
+      failure: null,
+      violations: [],
     };
   }
-  const auth = steps.find((s: any) => s && s.id === AI_REVIEW_AUTH_STEP_ID);
-  if (!auth || typeof auth.run !== "string") {
-    return {
-      ...none,
-      failure: `${AI_REVIEW_WORKFLOW_FILE}'s ${AI_REVIEW_JOB} job has no \`run:\` step with ` +
-        `id ${AI_REVIEW_AUTH_STEP_ID}, so nothing resolves a credential mode`,
-    };
-  }
-  return { script: auth.run, unmeasured: null, failure: null };
+  return { inputs, unmeasured: null, failure: null, violations: inputs.flatMap(credentialGuardViolations) };
 }
 
 /** One execution of a generated script, under an environment built from scratch. */
@@ -4258,7 +4423,19 @@ export function aiReviewUnmeasuredViolations(script: string): string[] {
 
   const bare = runAiReviewScript(script, {});
   const warnings = unmeasuredWarnings(bare.stdout);
-  if (warnings.length !== 1) {
+  if (bare.stdout.trim() === "") {
+    // The instrument before the reading (#60). A script that printed nothing
+    // yields zero warnings, zero errors and zero of everything else, and an
+    // execution that produced no output is indistinguishable from one that
+    // never happened. Reporting "expected exactly 1" for it names the wrong
+    // defect, so the empty case gets its own sentence and the count below is
+    // only read when there is output to read it from.
+    out.push(
+      `with no credential configured the ai-review step printed nothing at all — a run ` +
+        `that produced no output is UNMEASURED, not a clean run, and no count taken off ` +
+        `it means anything`,
+    );
+  } else if (warnings.length !== 1) {
     out.push(
       `with no credential configured the ai-review step emitted ${warnings.length} UNMEASURED ` +
         `warning annotation(s), expected exactly 1 — a tree with no credential has not PASSED ` +
@@ -4321,6 +4498,34 @@ export function runAiReviewValidation(root: string) {
       for (const v of violations) {
         addFinding({
           ruleId: "AIREVIEW-1",
+          severity: "FAIL",
+          file: `.github/workflows/${AI_REVIEW_WORKFLOW_FILE}`,
+          message: v,
+          fixCommand: "bunx rungate scaffold .",
+        });
+      }
+      expect(violations, violations.join("\n")).toEqual([]);
+    });
+
+    // AIREVIEW-2 (#631) — a credential handed to an action in a run that
+    // resolved a different mode is a secret flowing where the mode said it
+    // should not. A job that hands no action a credential is UNMEASURED and
+    // says so: an empty list of guarded inputs is not a guarded job.
+    test("AIREVIEW-2: every credential input is gated by the resolved mode, once", () => {
+      const reading = aiReviewCredentialGuards(root);
+      if (reading.unmeasured) {
+        addFinding({
+          ruleId: "AIREVIEW-2",
+          severity: "WARN",
+          file: `.github/workflows/${AI_REVIEW_WORKFLOW_FILE}`,
+          message: reading.unmeasured,
+        });
+        return;
+      }
+      const violations = reading.failure ? [reading.failure] : reading.violations;
+      for (const v of violations) {
+        addFinding({
+          ruleId: "AIREVIEW-2",
           severity: "FAIL",
           file: `.github/workflows/${AI_REVIEW_WORKFLOW_FILE}`,
           message: v,
