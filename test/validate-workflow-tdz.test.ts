@@ -19,6 +19,9 @@
  * crashed, and a crash is indistinguishable from a refusal by exit code alone.
  *
  * What was broken to prove each case can fail is recorded per-AC below.
+ *
+ * Covers SC-2161, SC-2162, SC-2163, SC-2164, SC-2165, SC-2166
+ * (HARNESS-STANDARD.md), #585 and #598.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -208,6 +211,11 @@ describe("AC-2: the assignment shape and the read shape are both refused", () =>
 // route that bypasses the property under test
 // (.claude/rules/checks-must-be-able-to-fail.md, #500).
 
+/** The first `✗ TDZ:` line of a run, trimmed, or "". */
+function violationLine(out: string): string {
+  return (out.split("\n").find((l) => l.includes("TDZ:")) || "").trim();
+}
+
 describe("AC-3: an indented usage and one at column zero are the same finding", () => {
   const COLUMN_ZERO = [
     "const seen = []",
@@ -240,12 +248,268 @@ describe("AC-3: an indented usage and one at column zero are the same finding", 
       "READ_ME",
     );
 
-    const violation = (out: string) =>
-      (out.split("\n").find((l) => l.includes("TDZ:")) || "").trim();
-
-    expect(violation(zeroOut)).toContain("READ_ME");
-    expect(violation(zeroOut)).toBe(violation(indentedOut));
+    expect(violationLine(zeroOut)).toContain("READ_ME");
+    expect(violationLine(zeroOut)).toBe(violationLine(indentedOut));
   });
+});
+
+// ── AC-4 (#598): the name class is not the check ──
+//
+// Both regexes required `[A-Z_][A-Z_0-9]*`, so every identifier that is not
+// SCREAMING_SNAKE_CASE sat outside the check while the success line still
+// said "no temporal dead zone issues". The live instance is `let
+// primaryBranchBefore` in workflows/ship.js, declared beside the worktree
+// registry ~3,800 lines above the line that assigns it BECAUSE
+// `terminalFailure` reads it on the way out of phases that run long before
+// that assignment. Had it stayed where it is assigned the run would have died
+// on the exit path, and this validator would have passed the file.
+//
+// Widening the character class is one character and it is the WRONG fix on
+// its own: `testCommand`, `headSha`, `agentResults`, `scopeVerdict` and six
+// more are module-scope consts in ship.js AND parameter names on functions
+// declared above them, so the naive widening reports TEN violations on a
+// correct ship.js. Over-detection is not the safe direction here — a
+// validator that fails correct workflows is one people route around — so a
+// name bound anywhere else is DROPPED, and the drop is named in the output.
+//
+// Which cases are witnesses and which are controls, said rather than counted:
+//
+//   - the name-class pair and the lowercase/`$` cases WITNESS the widening.
+//     They also go green under the naive one-character widening, so they do
+//     not protect against it. Saying so is the point.
+//   - every control pair below, and AC-6's real-ship.js case, are what catch
+//     the naive widening: each one is a correct file that the naive detector
+//     refuses.
+
+/** The pre-#598 identifier class, declared once so the premise can assert it. */
+const PRE_598_NAME_CLASS = /^[A-Z_][A-Z_0-9]*$/;
+
+describe("AC-4 / SC-2161 / SC-2162: a camelCase declaration is checked exactly like a SCREAMING_SNAKE one", () => {
+  const SNAKE_SOURCE = [
+    "const seen = []",
+    "seen.push(SHIP_CONFIG)",
+    "const SHIP_CONFIG = 3",
+    "",
+  ].join("\n");
+  // DERIVED, not written twice: the only thing that varies between the two
+  // halves is the identifier, because the second half is not written down
+  // (#585). A hand-written twin can gain a second difference on the next edit.
+  const CAMEL_SOURCE = SNAKE_SOURCE.replaceAll("SHIP_CONFIG", "shipConfig");
+
+  test("the pair varies the name class and nothing else", () => {
+    // The derivation makes divergence impossible, so what is worth asserting
+    // is that the one thing varied CROSSES the old detector's boundary, and
+    // that it is confined to the two lines the check reasons about.
+    expect(PRE_598_NAME_CLASS.test("SHIP_CONFIG")).toBe(true);
+    expect(PRE_598_NAME_CLASS.test("shipConfig")).toBe(false);
+    expect(CAMEL_SOURCE).not.toBe(SNAKE_SOURCE);
+    expect(CAMEL_SOURCE).not.toContain("SHIP_CONFIG");
+
+    const a = SNAKE_SOURCE.split("\n");
+    const b = CAMEL_SOURCE.split("\n");
+    expect(b.length).toBe(a.length);
+    const differing = a.map((l, i) => i).filter((i) => a[i] !== b[i]);
+    expect(differing).toEqual([1, 2]);
+  });
+
+  test("both halves are refused, and the two findings differ only in the name", () => {
+    const snakeOut = refusesAndMutantDoesNot(
+      fixture("name-class-snake.js", SNAKE_SOURCE),
+      "SHIP_CONFIG",
+    );
+    const camelOut = refusesAndMutantDoesNot(
+      fixture("name-class-camel.js", CAMEL_SOURCE),
+      "shipConfig",
+    );
+    expect(violationLine(camelOut)).toBe(
+      violationLine(snakeOut).replaceAll("SHIP_CONFIG", "shipConfig"),
+    );
+  });
+
+  test("an all-lowercase name and a $-prefixed one are refused too", () => {
+    // camelCase is not the property; "anything a JS identifier can be" is.
+    const lower = refusesAndMutantDoesNot(
+      fixture("name-lowercase.js", ["console.log(threshold)", "const threshold = 1", ""].join("\n")),
+      "threshold",
+    );
+    expect(lower).toContain("read at line 1");
+
+    const dollar = refusesAndMutantDoesNot(
+      fixture("name-dollar.js", ["console.log($cache)", "const $cache = 1", ""].join("\n")),
+      "$cache",
+    );
+    expect(dollar).toContain("read at line 1");
+  });
+
+  test("the reachability rule is name-class-agnostic", () => {
+    // AC-5's shape with a camelCase name: the read is inside a function body,
+    // which a line-order comparison cannot see, and what makes it a crash is
+    // the module-scope call above the declaration. This is the shape
+    // `primaryBranchBefore` has in ship.js.
+    const out = refusesAndMutantDoesNot(
+      fixture(
+        "reach-camel.js",
+        [
+          "function exitPath() {",
+          "  return branchBefore",
+          "}",
+          "exitPath()",
+          "let branchBefore = ''",
+          "",
+        ].join("\n"),
+      ),
+      "branchBefore",
+    );
+    expect(out).toContain("reached from the module-scope call to exitPath()");
+  });
+});
+
+// ── AC-4, the other direction: forms that must NOT be reported ──
+//
+// Each case is a PAIR derived from one source by one substitution, so the
+// clean half and the caught half cannot drift apart and the clean half cannot
+// be clean for a reason the caught half shares. A control with no caught twin
+// proves only that the scanner found nothing, which is what a scanner that
+// reads nothing also reports.
+
+interface ControlPair {
+  /** What the pair varies, one dimension. */
+  dimension: string;
+  /** The file that must PASS. */
+  clean: string;
+  /** Applied once to `clean` to produce the file that must be REFUSED. */
+  from: string;
+  to: string;
+  /** The tracked name both halves are about. */
+  name: string;
+  /**
+   * Whether the clean half is clean because the name was DROPPED as re-bound
+   * rather than because the scan looked and found nothing. The two are
+   * different states and the output has to tell them apart.
+   */
+  dropped: boolean;
+}
+
+const CONTROL_PAIRS: ControlPair[] = [
+  {
+    dimension: "inside a string literal",
+    clean: ["const note = 'shipConfig'", "const shipConfig = 3", ""].join("\n"),
+    from: "'shipConfig'",
+    to: "shipConfig",
+    name: "shipConfig",
+    dropped: false,
+  },
+  {
+    dimension: "inside a comment",
+    clean: ["// shipConfig", "const shipConfig = 3", ""].join("\n"),
+    from: "// shipConfig",
+    to: "shipConfig",
+    name: "shipConfig",
+    dropped: false,
+  },
+  {
+    dimension: "a property of another object",
+    clean: ["const bag = {}", "console.log(bag.shipConfig)", "const shipConfig = 3", ""].join("\n"),
+    from: "bag.shipConfig",
+    to: "shipConfig",
+    name: "shipConfig",
+    dropped: false,
+  },
+  {
+    dimension: "an object-literal key, against the shorthand that reads it",
+    clean: ["const held = { shipConfig: 1 }", "const shipConfig = 3", ""].join("\n"),
+    from: "{ shipConfig: 1 }",
+    to: "{ shipConfig }",
+    name: "shipConfig",
+    dropped: false,
+  },
+  {
+    dimension: "a parameter that re-binds the name in an inner scope",
+    clean: [
+      "function render(shipConfig) {",
+      "  return shipConfig",
+      "}",
+      "render(1)",
+      "const shipConfig = 2",
+      "",
+    ].join("\n"),
+    from: "function render(shipConfig) {",
+    to: "function render(given) {",
+    name: "shipConfig",
+    dropped: true,
+  },
+  {
+    dimension: "an inner const that re-binds the name",
+    clean: [
+      "function render() {",
+      "  const shipConfig = 1",
+      "  return shipConfig",
+      "}",
+      "render()",
+      "const shipConfig = 2",
+      "",
+    ].join("\n"),
+    from: "const shipConfig = 1",
+    to: "const given = 1",
+    name: "shipConfig",
+    dropped: true,
+  },
+  {
+    dimension: "a catch binding that re-binds the name",
+    clean: [
+      "function parse() {",
+      "  try {",
+      "    return JSON.parse('x')",
+      "  } catch (shipConfig) {",
+      "    return shipConfig",
+      "  }",
+      "}",
+      "parse()",
+      "const shipConfig = 2",
+      "",
+    ].join("\n"),
+    from: "catch (shipConfig) {",
+    to: "catch (given) {",
+    name: "shipConfig",
+    dropped: true,
+  },
+];
+
+describe("AC-4 / SC-2164: the widened detector does not report a correct file", () => {
+  for (const pair of CONTROL_PAIRS) {
+    test(`${pair.dimension} — clean, and the one-substitution twin is refused`, () => {
+      const exposed = pair.clean.replace(pair.from, pair.to);
+
+      // Premise: one substitution, one line, same shape. Establish it before
+      // comparing verdicts — two verdicts over two unrelated files say
+      // nothing about the dimension either of them is named after (#518).
+      expect(exposed).not.toBe(pair.clean);
+      const a = pair.clean.split("\n");
+      const b = exposed.split("\n");
+      expect(b.length).toBe(a.length);
+      expect(a.map((_, i) => i).filter((i) => a[i] !== b[i]).length).toBe(1);
+
+      const slug = pair.dimension.replace(/[^a-z]+/gi, "-");
+      const cleanRun = runValidator(fixture(`control-clean-${slug}.js`, pair.clean));
+      expect(cleanRun.out).toContain("no temporal dead zone issues");
+      expect(cleanRun.code).toBe(0);
+
+      // A clean verdict has two causes and the output must say which: the
+      // name was tracked and nothing was wrong, or the name was dropped. `0`,
+      // `{}` and silence are indistinguishable from success.
+      if (pair.dropped) {
+        expect(cleanRun.out).toContain(`re-bound elsewhere and NOT checked: ${pair.name}`);
+      } else {
+        expect(cleanRun.out).not.toContain("re-bound elsewhere");
+      }
+
+      const out = refusesAndMutantDoesNot(
+        fixture(`control-exposed-${slug}.js`, exposed),
+        pair.name,
+      );
+      expect(out).toContain("TDZ");
+    });
+  }
 });
 
 // ── AC-5: the defect that actually shipped, rebuilt ──
@@ -312,6 +576,62 @@ describe("AC-5: the relocated COLLECT-CLAIM block is refused; real ship.js is no
   });
 });
 
+// ── AC-4: the live camelCase hazard, rebuilt on the real ship.js ──
+//
+// `let primaryBranchBefore = ''` sits beside the worktree registry with a
+// docblock saying why: `terminalFailure` reads it, and `terminalFailure` is
+// reachable from phases that run long before `establishRunRef` assigns it.
+// Moving the declaration to where it is assigned — the position a reader who
+// had not been told would put it — is a real TDZ on the exit path, and it is
+// the exact shape this validator could not see before #598.
+
+describe("AC-4 / SC-2163: the relocated primaryBranchBefore declaration is refused", () => {
+  const DECL = "let primaryBranchBefore = ''";
+  const ASSIGN = "  primaryBranchBefore =";
+
+  function relocatedDeclarationMutant(): string {
+    const src = readFileSync(SHIP_PATH, "utf-8");
+    const decls = src.split(`${DECL}\n`).length - 1;
+    if (decls !== 1) {
+      throw new Error(
+        `could not build the mutant: the primaryBranchBefore declaration appears ${decls} times`,
+      );
+    }
+    const assigns = src.split(`\n${ASSIGN}`).length - 1;
+    if (assigns !== 1) {
+      throw new Error(
+        `could not build the mutant: the primaryBranchBefore assignment appears ${assigns} times`,
+      );
+    }
+    const without = src.replace(`${DECL}\n`, "");
+    const at = without.indexOf(ASSIGN);
+    const lineStart = without.lastIndexOf("\n", at) + 1;
+    const p = join(DIR, "ship-primary-branch-relocated.js");
+    writeFileSync(p, `${without.slice(0, lineStart)}${DECL}\n${without.slice(lineStart)}`);
+    return p;
+  }
+
+  test("the mutant is refused naming primaryBranchBefore and real ship.js exits 0", () => {
+    const refused = runValidator(relocatedDeclarationMutant());
+    expect(refused.out).toContain("primaryBranchBefore");
+    // Not merely "a violation": the finding has to be the reachability one,
+    // because a line-order comparison cannot see this and reporting it for
+    // the wrong reason would read identically.
+    expect(refused.out).toContain("reached from the module-scope call to");
+    expect(refused.code).toBe(1);
+
+    const real = runValidator(SHIP_PATH);
+    expect(real.out).toContain("PASSED");
+    expect(real.code).toBe(0);
+  });
+
+  test("the refusal is removable — REFUSE_EXIT=0 still reports it and exits 0", () => {
+    const mutated = runValidator(relocatedDeclarationMutant(), MUTANT_VALIDATOR);
+    expect(mutated.out).toContain("primaryBranchBefore");
+    expect(mutated.code).toBe(0);
+  });
+});
+
 // ── AC-6: no false positive on a deferred forward reference ──
 //
 // A hoisted function may legitimately name a `const` declared below it: the
@@ -374,13 +694,82 @@ describe("AC-6: a forward reference called after the declaration is not reported
 // its own coverage, and that number is the only part of its output that can
 // change when it stops working.
 
-describe("the TDZ scan reports its own coverage", () => {
+describe("SC-2165 / SC-2166: the TDZ scan reports its own coverage", () => {
+  function coverage(out: string) {
+    const line = out.split("\n").find((l) => l.includes("TDZ check")) || "";
+    const m = line.match(/(\d+) of (\d+) module declaration\(s\) tracked, (\d+) reference/);
+    return {
+      line,
+      tracked: Number(m?.[1]),
+      found: Number(m?.[2]),
+      refs: Number(m?.[3]),
+    };
+  }
+
   test("ship.js's clean verdict carries non-zero tracked declarations and references", () => {
-    const r = runValidator(SHIP_PATH);
-    const line = r.out.split("\n").find((l) => l.includes("TDZ check")) || "";
-    const decls = Number((line.match(/(\d+) tracked declaration/) || [])[1]);
-    const refs = Number((line.match(/(\d+) reference/) || [])[1]);
-    expect(decls).toBeGreaterThan(10);
-    expect(refs).toBeGreaterThan(50);
+    const c = coverage(runValidator(SHIP_PATH).out);
+    expect(c.tracked).toBeGreaterThan(10);
+    expect(c.refs).toBeGreaterThan(50);
+  });
+
+  // #598: the widening is what makes this number worth reading. A PASS over
+  // 62 SCREAMING_SNAKE names and a PASS over 141 names of every shape print
+  // the same word, and the count is the only part of the output that can say
+  // which one happened.
+  test("the widening is visible in the count, and the untracked ones are NAMED", () => {
+    const out = runValidator(SHIP_PATH).out;
+    const c = coverage(out);
+
+    // The pre-#598 class found 62 module declarations in this file. Anything
+    // at or below that is a scan that has stopped reading past the old class.
+    expect(c.tracked).toBeGreaterThan(62);
+    expect(c.found).toBeGreaterThanOrEqual(c.tracked);
+
+    // Every name the scan declined is listed, not counted. ship.js has ten,
+    // each a module-scope const that is also a parameter somewhere above it.
+    const dropped = c.found - c.tracked;
+    if (dropped > 0) {
+      const named = (c.line.split("NOT checked: ")[1] || "").split(", ").filter(Boolean);
+      expect(named.length).toBe(dropped);
+      expect(named).toContain("testCommand");
+    }
+  });
+
+  // Found by predicting a battery row and getting 0: making `bumpBindings`
+  // count default values as bindings — `function f(projectRoot = PROJECT_ROOT)`
+  // — drops HARNESS_ROOT and PROJECT_ROOT from ship.js's tracked set, and
+  // nothing in this file noticed. A widening is allowed to cost nothing; it is
+  // NOT allowed to pay for itself by quietly dropping names the check has
+  // tracked since before #598.
+  test("no name the pre-#598 class covered has been dropped from ship.js", () => {
+    const c = coverage(runValidator(SHIP_PATH).out);
+    const named = (c.line.split("NOT checked: ")[1] || "").split(", ").filter(Boolean);
+    // Premise: the list is populated, or this asserts nothing about anything.
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((n) => PRE_598_NAME_CLASS.test(n))).toEqual([]);
+  });
+
+  test("a file whose names are all re-bound says so instead of reporting nothing", () => {
+    // The state this exists to make visible: a scan that checked NOTHING and
+    // a scan that checked everything and found nothing print the same verdict
+    // without it (#492).
+    const r = runValidator(
+      fixture(
+        "all-shadowed.js",
+        [
+          "function render(shipConfig) {",
+          "  return shipConfig",
+          "}",
+          "render(1)",
+          "const shipConfig = 2",
+          "",
+        ].join("\n"),
+      ),
+    );
+    const c = coverage(r.out);
+    expect(c.tracked).toBe(0);
+    expect(c.found).toBe(1);
+    expect(r.out).toContain("re-bound elsewhere and NOT checked: shipConfig");
+    expect(r.code).toBe(0);
   });
 });

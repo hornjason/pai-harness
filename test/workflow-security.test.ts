@@ -479,8 +479,12 @@ describe("validate-workflow.ts — TDZ reads at any column (#585)", () => {
     // even when every brace is misread as module scope — measured. The only
     // part of this output that moves when the scan stops reading the file is
     // its own coverage, so that is what is asserted.
+    // #598 widened the identifier class and the coverage line with it: it now
+    // reports how many of the module declarations it FOUND it was able to
+    // track, because a name re-bound in an inner scope is dropped rather than
+    // resolved and a drop nobody can see is a drop nobody can read.
     const coverage = ship.out.match(
-      /TDZ check: no temporal dead zone issues — (\d+) tracked declaration\(s\), (\d+) reference\(s\) scanned/,
+      /TDZ check: no temporal dead zone issues — (\d+) of \d+ module declaration\(s\) tracked, (\d+) reference\(s\) scanned/,
     );
     expect(coverage, `the TDZ check reported no coverage at all:\n${ship.out}`).not.toBeNull();
     const declared = Number(coverage![1]);
