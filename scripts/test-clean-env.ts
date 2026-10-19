@@ -37,9 +37,11 @@
  * ## what this does NOT model
  *
  * Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
- * every run: the runner OS, a fresh `bun install`, the pinned bun version,
- * the pull-request merge commit, network and API availability, and files git
- * ignores. The claim this replaces failed by being unqualified, so the
+ * every run: the runner OS, a fresh `bun install`, the bun version (reported,
+ * not controlled — since #622 the run prints the bun it ran under and whether
+ * it matches what `.bun-version` declares, but nothing here switches
+ * runtimes), the pull-request merge commit, network and API availability, and
+ * files git ignores. The claim this replaces failed by being unqualified, so the
  * replacement is qualified, in writing, where a reader of the output sees it.
  *
  * Usage:

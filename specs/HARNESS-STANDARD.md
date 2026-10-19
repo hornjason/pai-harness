@@ -2669,6 +2669,111 @@ None of the mutations is left in the tree; all were run and reverted, and
 `test/unit/installed-hook-currency.test.ts` were confirmed byte-identical to
 the measured source afterwards by `shasum -a 256`.
 
+### The hook that inferred which repository it was in from a filename (#610)
+
+The generated pre-commit hook decided WHICH updater to run by sniffing the
+working tree at commit time — `scripts/update-project-state.ts` if that file
+was there, otherwise the vendored copy — and a comment above it said the
+order was deliberate because *"a checkout that has its own `scripts/` copy is
+the harness"*.
+
+**That is an identity inferred from a filename.** "This tree holds a file at
+this path" and "this tree is the rungate harness" are different facts, and
+the hook treated the first as proof of the second. A consumer keeping a
+script at that path for its own reasons was silently reclassified as the
+harness and ran a different program than the one rungate installed; nothing
+in the commit recorded which branch fired, so the two outcomes were
+indistinguishable afterwards. A detector narrower than what it detects, with
+*Silent Default Substitution* underneath it.
+
+The choice is now taken when the hook is GENERATED, and one concrete path is
+baked into the emitted script. Identity comes from the project's own
+declaration — `isHarnessItself`, the single existing binding for that
+question (#380), deliberately not a second reading of the same fact. A
+candidate that is absent at generation time produces the UNMEASURED branch
+and **no lookup at all**: a lookup kept "in case the file turns up later"
+succeeds at some unknown future commit for a reason nobody chose.
+
+`preCommitHookScript(root)` is a pure function of the root and writes
+nothing. That is what lets `scripts/check-installed-hook-currency.ts` ask
+what the generator would produce FOR THE PROJECT it is inspecting — a
+scratch directory would compare every real checkout against the hook for an
+empty consumer, and a generator that could only answer by installing itself
+would make the check the thing it is checking.
+
+- [x] SC-2210: test/unit/pre-commit-updater-resolution.test.ts contains [names the vendored path on exactly one executable line] — the emitted hook carries one updater path on one executable line and no line tests for the existence of a candidate, with comments excluded from the count because the hook's own prose names both paths and a whole-document search would be answered by a sentence
+- [x] SC-2211: test/unit/pre-commit-updater-resolution.test.ts contains [both forms are asserted, and they are not the same text] — generating into a tree that declares itself the harness and into a consumer produce different hook text, each naming its own path, and the live repository is read as a third control that nobody planted
+- [x] SC-2212: test/unit/pre-commit-updater-resolution.test.ts contains [a consumer carrying its own scripts/ copy still runs the vendored updater] — the fixture has scripts/update-project-state.ts PRESENT, without which the case cannot tell the new behaviour from the old, and the two planted copies write different bytes so the evidence is which program ran rather than that something did
+- [x] SC-2213: test/unit/pre-commit-updater-resolution.test.ts contains [a harness checkout carrying a vendored duplicate still runs its own scripts/ copy] — the other direction, which exists because the cheapest wrong fix makes SC-2212 green and this one red: it is the case that is protection rather than the case that reports the symptom
+- [x] SC-2214: test/unit/pre-commit-updater-resolution.test.ts contains [the hook reports UNMEASURED, names where it looked, and stages nothing] — a candidate absent at generation time emits no assignment and no lookup, and planting both copies in the repository the hook later runs in still regenerates nothing, because "performs no lookup" asserted only over the text is a claim about a string
+- [x] SC-2215: test/unit/pre-commit-updater-resolution.test.ts contains [the resolved path is printed to stderr before the updater runs] — the branch that fired is visible in the commit's output rather than inferable from the tree, on stderr and never on stdout, and the announcement is asserted to PRECEDE the invocation because a hook whose updater crashes the shell otherwise records nothing
+- [x] SC-2216: test/unit/pre-commit-updater-resolution.test.ts contains [an updater that appears AFTER generation does not change what runs] — a hook generated against a tree holding one copy and executed in a tree that has since acquired the other still runs the copy it names, which is the whole shape of the defect in one case
+- [x] SC-2217: test/unit/pre-commit-updater-resolution.test.ts contains [createGitHooks writes exactly preCommitHookScript] — the generator writes the template function's output and not a copy of it, and resolving the hook for a root leaves that root byte-for-byte unchanged so the currency check can read a project without installing into it
+- [x] SC-2218: test/unit/pre-commit-updater-resolution.test.ts contains [restoring the runtime sniff turns exactly the consumer-with-own case red] — the defect is rebuilt inside the hook text and the two orderings of it red DIFFERENT named rows, with three controls green, because a count that does not say which case it was is not a measurement
+- [x] SC-2219: test/unit/pre-commit-updater-resolution.test.ts contains [the builder aborts loudly when the baked assignment moves] — zero or two baked assignments throw rather than producing a copy of the original, and the baseline row is read before any mutation row
+- [x] SC-2220: test/unit/pre-commit-updater-resolution.test.ts contains [a consumer whose ONLY updater is its own gets UNMEASURED] — the one fixture that does not hold the precondition every other one here does, and the only case that fails a repair which resolves at generation time and still decides by filename
+
+#### What was broken to prove it (SC-2210..2220)
+
+Run and counted rather than asserted, over
+`test/unit/pre-commit-updater-resolution.test.ts` +
+`test/unit/git-hooks-generator.test.ts` (45 tests). Every count was predicted
+before the battery ran, and **the baseline row was read before any mutation
+row** — an instrument that has stopped reporting takes the baseline down with
+it, and that is the row nobody mutates anything to produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 45 pass, 0 fail | **45 pass, 0 fail** | — |
+| the genuinely pre-#610 `updaterBlock` — the runtime `-f` sniff, scripts first | 15 | **15 of 45** | all six probed tree shapes: the original bakes `updater="scripts/update-project-state.ts"` or `updater="node_modules/rungate/scripts/update-project-state.ts"` per shape, the mutant bakes `updater=""` for every one of them and defers |
+| `resolveUpdater`'s identity hardcoded to `"harness"` | 12 | **12 of 45** | a consumer holding only the vendored copy: the original bakes the vendored path, the mutant emits `UNMEASURED … no updater was present at scripts/update-project-state.ts` |
+| `resolveUpdater`'s identity hardcoded to `"consumer"` | 11 | **12 of 45** | a harness holding only its own copy: the original bakes `scripts/…`, the mutant emits `UNMEASURED … at node_modules/rungate/scripts/…` |
+| the existence check removed — `path: candidate` always | 2 | **2 of 45** | a tree with no updater at all: the original emits UNMEASURED, the mutant bakes `updater="node_modules/rungate/scripts/update-project-state.ts"` for a file that is not there |
+| the stderr announcement line deleted | 1 | **1 of 45** | any resolved tree: the original's run prints `project-state: running node_modules/rungate/scripts/update-project-state.ts (resolved when this hook was generated)`, the mutant prints nothing before invoking it |
+| **the cheapest wrong fix**: resolve at generation time and still decide by filename — bake whichever candidate exists, vendored first | 3 | **4 of 45** | a harness carrying a vendored duplicate: the original bakes `scripts/…`, the mutant bakes `node_modules/rungate/scripts/…` and grades the harness against a stale copy of its own updater |
+
+**The third row came back HIGH, and the extra red is the real kind.** The
+prediction covered the eight #610 cases plus SC-1654, SC-2038's harness case
+and SC-2040's stream case. The fourth is SC-2040's *"no project-state line is
+silenced with `2>/dev/null`"*, which filters the harness hook for executable
+lines mentioning `$updater` and asserts the list is non-empty BEFORE scanning
+it for the redirect. Force every tree to read as a consumer and the harness
+hook resolves nothing, so there is no invocation to scan — squarely about the
+mutated behaviour, and not a crashing mutant: 33 cases still pass and every
+red is resolution-related. The fact it records is that the non-vacuity floor
+on that scan doubles as a witness that the harness hook resolves an updater
+at all, which is further than the prediction reached.
+
+**The sixth row came back HIGH too, and that one cost a case.** The extra red
+was SC-2214 — a TEXT assertion about which path the UNMEASURED message names
+— standing in for a behaviour nothing drove. Reading it exposed the
+precondition every fixture in the file held: *some copy rungate installed is
+present*. A consumer whose ONLY updater is its own is on the other side of
+it, and that is the tree where this repair does its damage — it bakes the
+consumer's own program and runs it, with the one-path criterion satisfied in
+full. SC-2220 is that fixture. Predicted at 3 before it existed and measured
+at 4 with it, and the row is 4 because the case was added, not because the
+prediction was wrong twice.
+
+**The cheapest wrong fix, named before the repair was written.** What an
+operator sees is a consumer running the wrong program, so the 5pm repair is
+to move the vendored branch above the scripts one — one line. Do the cases
+survive it?
+
+- **SC-2212 does NOT.** It goes green under that repair, because the
+  consumer then runs the vendored copy for the wrong reason. On its own it
+  would certify the regression it was written to block.
+- **SC-2213 and SC-2220 do**, non-vacuously. Both are measured above as the
+  rows that stay red: the flipped sniff makes the harness grade itself
+  against a vendored duplicate, and the generation-time-by-filename variant
+  runs a consumer's own program. Neither is reachable from the reported
+  symptom, which is why both had to be constructed deliberately.
+
+None of the six mutations is left in the tree; all were run and reverted with
+a `cp` of a backup taken before the first one, and `lib/scaffold/steps.ts`
+was confirmed byte-identical to the measured source afterwards by
+`shasum -a 256` (`e36061e1886be05420ac2e2bc6da104842981505309b6f62c949a12154e0347d`).
+
 ### A reported path that was a sentence, and no contract that could say so (#611)
 
 Run `wf_68a566ab-500` (issue #599) reached SHIP with all six ACs PASS and rook
@@ -3553,9 +3658,11 @@ both worth nothing.
 
 Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
 every run: the runner OS (CI is ubuntu-latest), a fresh `bun install`
-(node_modules is linked), the pinned bun version, the pull-request merge
-commit `actions/checkout` builds, network and API availability, and files git
-ignores. Naming them is the difference between a model and a promise, and the
+(node_modules is linked), the bun version (reported, not controlled — since
+#622 the run prints the bun it ran under and whether it matches what
+`.bun-version` declares, but nothing here switches runtimes), the pull-request
+merge commit `actions/checkout` builds, network and API availability, and
+files git ignores. Naming them is the difference between a model and a promise, and the
 promise is what failed.
 
 ---
