@@ -49,9 +49,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
-  AGENTS_MD,
-  CI_YML,
-  CONFIG_JSON,
   PARITY_CATEGORIES,
   REFUSE_EXIT,
   actionPinParity,
@@ -66,6 +63,9 @@ import {
   writeAccountability,
   type CategoryReport,
 } from "../scripts/contract-parity";
+// #637 AC-9: category one's positions now live in lib/, and this file reads
+// them from there rather than through the script.
+import { AGENTS_MD, CI_YML, CONFIG_JSON } from "../lib/test-command-positions";
 import { TOOL_PROBE_OUTCOMES, probeExternalTool } from "../lib/tool-probe";
 
 const REPO_ROOT = join(import.meta.dir, "..");

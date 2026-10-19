@@ -232,6 +232,27 @@ export function bunVersionReading(decision: BunVersionDecision, running: string)
 }
 
 /**
+ * What a `setup-bun` step's `with:` block NAMES, one entry per step.
+ *
+ * The reading half of `setupBunWith` below, and here rather than in
+ * `scripts/contract-parity.ts` (#637, AC-9) for one reason: the generator and
+ * the reader of the thing it generates are a producer and a consumer that must
+ * agree, and keeping them in one module is what makes a round-trip case —
+ * emit a step, read it back, compare — an ordinary import rather than a second
+ * copy of this regex somewhere a script can reach.
+ *
+ * Deliberately text, not YAML: `#622c`'s position is the step the SCAFFOLD
+ * would emit, which is a string that has never been a file.
+ */
+export function setupBunDeclarations(text: string): Array<{ key: "bun-version" | "bun-version-file"; value: string }> {
+  const out: Array<{ key: "bun-version" | "bun-version-file"; value: string }> = [];
+  for (const m of text.matchAll(/^\s*(bun-version|bun-version-file):\s*"?([^"\s#]+)"?\s*$/gm)) {
+    out.push({ key: m[1] as "bun-version" | "bun-version-file", value: m[2] });
+  }
+  return out;
+}
+
+/**
  * The `with:` body of a generated `oven-sh/setup-bun` step.
  *
  * One function, so the generator has nothing to decide and no second place
