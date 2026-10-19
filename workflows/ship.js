@@ -2937,8 +2937,11 @@ It prints one JSON receipt on stdout and writes the reading into
 workflow-state.json. Report its "harness"."reading" as harnessReading and
 "harness"."sha" as harnessSha. Report them EXACTLY as printed — a null sha
 stays null. It also prints a HARNESS_DIVERGENCE or HARNESS_UNMEASURED line
-on stderr when there is something to say; if it did, report that line
-verbatim as harnessWarning. Do NOT commit, stash, pull or otherwise tidy
+on stderr when there is something to say; report that line verbatim as
+harnessWarning. ALWAYS return harnessWarning: report null when it printed
+nothing on stderr. Do not omit the field — an absent field and a clean
+harness must not look the same, and omitting it is read as a dropped
+reading, not as good news. Do NOT commit, stash, pull or otherwise tidy
 the harness checkout to make the warning go away: the warning is a reading
 of what graded you, and changing the grader mid-run is the thing it exists
 to make visible.
@@ -2993,14 +2996,44 @@ console.log('ACs written: ' + s.acs.length);
   // silence. A stale harness and a current one emit byte-identical
   // artefacts, so this log line is the only thing in a run's whole output
   // that can tell them apart.
+  // Everything below is an AGENT'S RESTATEMENT of a file ship.js cannot
+  // read (#69), which is the #530 shape: the reply agrees with whatever
+  // was put in it. So the three fields are each checked for the one thing
+  // a restatement can get wrong on its own, and none of the three is
+  // allowed to be absent-and-silent.
+  //
+  // The SHA goes through `rookReviewSha` rather than being interpolated:
+  // an unvalidated agent string in the run log is a provenance claim
+  // nobody checked, and `Harness: main` would read exactly like a reading.
   const harnessReading = setupResult?.harnessReading || 'UNMEASURED'
-  log(harnessReading === 'MEASURED'
-    ? `Harness: ${setupResult?.harnessSha || '(no sha reported)'}`
-    : `HARNESS_UNMEASURED: setup did not report which harness is grading this run (#602)`)
+  const harnessSha = rookReviewSha(setupResult?.harnessSha)
+  if (harnessReading !== 'MEASURED') {
+    log('HARNESS_UNMEASURED: setup did not report which harness is grading this run (#602)')
+  } else if (!harnessSha) {
+    // MEASURED is the arm that claims a reading was taken, and the SHA is
+    // the measurement. A MEASURED with nothing resolvable in it is a
+    // claim with its evidence missing, which is not the same as clean.
+    log('HARNESS_UNMEASURED: setup reported MEASURED with no usable SHA (#602)')
+  } else {
+    log(`Harness: ${harnessSha}`)
+  }
   // Reported separately from the SHA, because a run can know exactly which
   // harness graded it AND that harness can be the wrong one. Collapsing the
   // two would make a dirty checkout look like an unreadable one.
-  if (setupResult?.harnessWarning) log(String(setupResult.harnessWarning))
+  //
+  // Absent is a third state, and under MEASURED it is not silence: the
+  // recorder prints a warning whenever there is one and the prompt asks
+  // for it verbatim, so a MEASURED reply carrying no `harnessWarning` KEY
+  // is a reply that dropped it — the #646 relay shape — and that is not
+  // distinguishable from a clean harness without saying so.
+  if (setupResult?.harnessWarning) {
+    // Flattened and bounded before it reaches the log. The string is an
+    // agent's, and a newline in it forges a log line that looks like
+    // ship.js's own.
+    log(String(setupResult.harnessWarning).replace(/[\r\n]+/g, ' ').slice(0, 500))
+  } else if (harnessReading === 'MEASURED' && !('harnessWarning' in (setupResult || {}))) {
+    log('HARNESS_UNMEASURED: setup reported MEASURED but returned no divergence reading (#602)')
+  }
 
   log(`Sized: ${discovery.sizing}/${discovery.ceremonyTier} — ${discovery.acs.length} ACs`)
   return true

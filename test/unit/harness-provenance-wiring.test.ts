@@ -107,13 +107,50 @@ describe("#602 SC-2: the summary says it, and absence is UNMEASURED", () => {
     // A run can know exactly which harness graded it AND that harness can
     // be the wrong one. One line carrying both would make a dirty
     // checkout indistinguishable from an unreadable one.
-    expect(RUN_DISCOVERY).toContain("`Harness: ${setupResult?.harnessSha");
+    expect(RUN_DISCOVERY).toContain("log(`Harness: ${harnessSha}`)");
     expect(RUN_DISCOVERY).toContain("if (setupResult?.harnessWarning)");
   });
 
-  test("a MEASURED reading with no sha still logs something, not an empty string", () => {
-    // `|| '(no sha reported)'`. An empty interpolation would print
-    // "Harness: " — a line that looks like a reading and carries none.
-    expect(RUN_DISCOVERY).toContain("'(no sha reported)'");
+  /**
+   * Everything the summary prints here is an AGENT'S RESTATEMENT of a
+   * file `ship.js` cannot read (#69) — the #530 shape, where the evidence
+   * agrees with whatever was put into it. Three things a restatement can
+   * get wrong on its own, and none of them may be absent-and-silent.
+   *
+   * Raised by the automated security review of `13c0318e`, which called
+   * the first a fail-open self-reported verdict and the second log
+   * forging. Both are correct.
+   */
+  test("the SHA is validated before it reaches the log, not interpolated raw", () => {
+    // `Harness: main` would read exactly like a reading. `rookReviewSha`
+    // is the binding this file already uses for every other agent-supplied
+    // SHA, so there is one spelling to mutate rather than a second regex.
+    expect(RUN_DISCOVERY).toContain("rookReviewSha(setupResult?.harnessSha)");
+    expect(RUN_DISCOVERY).not.toContain("${setupResult?.harnessSha");
+  });
+
+  test("MEASURED with no usable SHA is UNMEASURED, not a reading", () => {
+    // The SHA is the measurement. MEASURED carrying nothing resolvable is
+    // a claim with its evidence missing — a different state from clean,
+    // and the one `|| '(no sha reported)'` used to print as a Harness line.
+    expect(RUN_DISCOVERY).toContain("setup reported MEASURED with no usable SHA");
+    expect(RUN_DISCOVERY, "a placeholder inside a Harness: line reads as a reading")
+      .not.toContain("(no sha reported)");
+  });
+
+  test("a MEASURED reply that OMITS harnessWarning says so", () => {
+    // The prompt requires the field always, null when there is nothing to
+    // say, so absence means the relay dropped it (#646) rather than that
+    // the harness was fine. Without this branch those two are one output.
+    expect(RUN_DISCOVERY).toContain("'harnessWarning' in (setupResult || {})");
+    expect(RUN_DISCOVERY).toContain("returned no divergence reading");
+    expect(SETUP, "and the prompt has to ask for it unconditionally, or this fires on clean runs")
+      .toContain("ALWAYS return harnessWarning: report null");
+  });
+
+  test("the warning is flattened and bounded before it is logged", () => {
+    // An agent-supplied newline forges a line that looks like ship.js's own.
+    expect(RUN_DISCOVERY).toContain("replace(/[\\r\\n]+/g, ' ')");
+    expect(RUN_DISCOVERY).toContain(".slice(0, 500)");
   });
 });
