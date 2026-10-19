@@ -1,5 +1,5 @@
 /**
- * Covers SC-2159, SC-2160, SC-2161, SC-2162 (GATE-CONTRACTS-SPEC.md).
+ * Covers SC-2159, SC-2160, SC-2167, SC-2168 (GATE-CONTRACTS-SPEC.md).
  *
  * #705 — an evidence command that printed nothing was recorded as `""`, and
  * every reader downstream treats `""` as "no evidence was ever recorded".
@@ -235,9 +235,9 @@ describe("#705 SC-2160: the gate stops accusing the AC of carrying no evidence",
   });
 });
 
-// ── SC-2161 ─────────────────────────────────────────────────────────────────
+// ── SC-2167 ─────────────────────────────────────────────────────────────────
 
-describe("#705 SC-2161: a command that errored records a reading rather than nothing", () => {
+describe("#705 SC-2167: a command that errored records a reading rather than nothing", () => {
   test("AC-2161a: a non-zero exit with no stdout is recorded, not merely warned about", () => {
     // `grep` exits 2 on a missing file, with nothing on stdout. The pre-#705
     // code reached neither recording branch — `stdout !== "" || e.status === 1`
@@ -253,9 +253,9 @@ describe("#705 SC-2161: a command that errored records a reading rather than not
   });
 });
 
-// ── SC-2162 ─────────────────────────────────────────────────────────────────
+// ── SC-2168 ─────────────────────────────────────────────────────────────────
 
-describe("#705 SC-2162: the test-runner carve-out is intact", () => {
+describe("#705 SC-2168: the test-runner carve-out is intact", () => {
   test("AC-2162a: a bun test command with empty stdout is not called unmeasured", () => {
     // `isTestRunner` is decided by `/bun test\b/` over the command STRING, and
     // nothing else, so a no-output command carrying that substring exercises

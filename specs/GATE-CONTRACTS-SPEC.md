@@ -674,8 +674,8 @@ Calling that UNMEASURED would refuse every `BUN_TEST` AC in the project.
 
 - [x] SC-2159: gates/gate-executor.ts contains [emptyOutputUnmeasured] — a command that printed nothing records a reading naming its own cause, because `""` is indistinguishable from an absence and the AC was then accused of carrying no evidence at all
 - [x] SC-2160: test/empty-evidence-unmeasured.test.ts contains [the refusal #705 was filed over is gone] — the repair is at the producing side and `hasRecordedEvidence` is untouched, because widening the reader would reopen #277 for every AC whose command came back silent
-- [x] SC-2161: test/empty-evidence-unmeasured.test.ts contains [a non-zero exit with no stdout is recorded] — the branch that only warned now records, because the warning was the single place the cause existed and nothing downstream reads a warning
-- [x] SC-2162: test/empty-evidence-unmeasured.test.ts contains [the test-runner carve-out is intact] — a `bun test` command with empty stdout is not reclassified, because bun writes its summary to stderr and the carve-out is load-bearing for every BUN_TEST AC
+- [x] SC-2167: test/empty-evidence-unmeasured.test.ts contains [a non-zero exit with no stdout is recorded] — the branch that only warned now records, because the warning was the single place the cause existed and nothing downstream reads a warning
+- [x] SC-2168: test/empty-evidence-unmeasured.test.ts contains [the test-runner carve-out is intact] — a `bun test` command with empty stdout is not reclassified, because bun writes its summary to stderr and the carve-out is load-bearing for every BUN_TEST AC
 
 ### What was broken to prove it (#705)
 

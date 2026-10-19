@@ -504,7 +504,25 @@ describe("contract: negative cases", () => {
     }, null, 2));
     writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2\n\n## AC-1\nHas evidence\n\n## AC-2\nMissing evidence\n");
     const r = runGate("ship", "broken-evidence", "/tmp/test");
-    expect(r.output).toContain("all-acs-have-evidence");
+    // The run must refuse, and refuse FOR THIS REASON.
+    //
+    // #705 moved the detection earlier. AC-2's command runs and produces no
+    // output, which EVIDENCE PRE-VALIDATION now reports by name — so the gate
+    // refuses before `all-acs-have-evidence` is reached, and that check is
+    // FILTERED OUT rather than red. Asserting the old check name alone would
+    // now fail over a tree whose behaviour improved.
+    //
+    // So the assertion names the property, not whichever check caught it.
+    // `BLOCKED` on its own is not enough: this fixture has unrelated failures
+    // (`code-pushed`, `worktree-repo`) that would satisfy it with AC-2's
+    // evidence never looked at, which is the vacuous pass this case exists to
+    // avoid. Naming AC-2 is what ties the refusal to the missing evidence.
+    expect(r.output).toContain("BLOCKED");
+    expect(
+      r.output,
+      "ship refused, but not for AC-2's missing evidence — the refusal must " +
+        "name the AC, or this case is satisfied by any unrelated failure",
+    ).toMatch(/AC-2: command runs but produces no output|all-acs-have-evidence/);
   });
 });
 
