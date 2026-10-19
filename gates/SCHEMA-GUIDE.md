@@ -236,6 +236,7 @@ tests read the file (#235). Top-level, optional, and **absent means UNMEASURED**
 | `checkedAt` | string | ISO timestamp of the dry-run |
 | `acs` | array | One entry per AC: `id`, `status`, and the auto-fix fields below. Empty — and only empty — when UNMEASURED |
 | `broken` | array of AC ids | The ACs `acs` classified `broken`, in measured order. Derived, never supplied. Required on a FAIL (#274) |
+| `alreadySatisfied` | array of AC ids | The ACs whose **pre-change** output already cleared their own threshold. Derived from the baselines under `acs`, never supplied (#669) |
 | `reason` | string \| null | Why the reading is UNMEASURED. Null, and only null, when it is not |
 | `takenAt` | `scope` \| `verify` \| `ship`, optional | Which gate measured it (#264, #280). Absent means a run older than the field |
 
@@ -290,6 +291,7 @@ Each entry in `acs` carries:
 |---|---|---|
 | `id` | string | The AC the command belongs to |
 | `status` | `ok` \| `broken` \| `empty` \| `skipped` | Dry-run outcome. `skipped` means the AC has no command |
+| `baseline` | object | What the command printed on the **pre-change** tree, beside the threshold it will be judged against (#669). See below |
 | `autoFixed` | boolean | The command was repaired. Requires **both** command fields below |
 | `originalCommand` | string | The command as the AC was written |
 | `fixedCommand` | string | The command to run instead |
@@ -303,16 +305,80 @@ written that way. This includes the ref-rewrite path (`main` → `origin/main`),
 which returns `status: "ok"`: the command dry-runs clean and only diverges at
 Verify, so the rewrite is the only record that anything happened.
 
+### `baseline` — the pre-change reading (#669)
+
+The pre-change tree stops existing the moment Marcus writes a line. Until
+#669 the pre-validation ran every AC's command against it, kept `ok` /
+`broken` / `empty` / `skipped`, and threw the output away — so the one tree on
+which a threshold is known **not** to be satisfied was measured and then
+forgotten, and nothing ever compared the output to the AC's own bar.
+
+| Baseline field | Type | Meaning |
+|---|---|---|
+| `verdict` | `MEASURED` \| `UNMEASURED` | Whether the output is a value a threshold can be compared against |
+| `output` | string | What the command printed, verbatim and trimmed. Non-empty on a MEASURED baseline |
+| `reason` | string \| null | Why it is UNMEASURED. Null, and only null, when it is MEASURED |
+| `threshold` | object \| null | The AC's threshold as written — `op`, `value`, `unit`. Recorded beside the output so both read without re-running anything |
+| `satisfiesThreshold` | boolean \| null | Whether the pre-change output already clears the bar. **Null, and only null, when no comparison was made** |
+
+**An UNMEASURED baseline is never reduced to a threshold comparison.** Two
+outputs reach that verdict: nothing at all, and a tool version banner. The
+second is the one that hid. Run `wf_448af2c4-6c1` carried an AC whose evidence
+command kept only the line bun prints before it runs anything —
+
+```
+bun test v1.3.14 (d1632b29)
+```
+
+— which is 27 characters from a command that exited zero, so it classified
+`ok` and every downstream reader saw an AC with evidence. There is no
+measurement in it. Worse, a `contains "bun test"` threshold is **true** of
+that string, so the comparison it was about to be fed would have reported the
+AC satisfied by the tool's own name. The two unmeasured states carry different
+reasons, because "it printed nothing" and "it printed only a banner" are fixed
+by different edits.
+
+`satisfiesThreshold` is `null` rather than `false` whenever no comparison
+happened. `false` claims the bar was tested and missed — a statement about the
+tree — while null says nobody could test it. Collapsing the two is how an AC
+that cannot measure anything reads as one that simply has not landed yet.
+
+The schema refuses a baseline that contradicts itself, the same way it already
+refuses an `UNMEASURED` reading with no reason:
+
+| Contradiction | Why |
+|---|---|
+| `UNMEASURED` with no `reason` | An absence nobody can explain is not actionable |
+| `UNMEASURED` with a non-null `satisfiesThreshold` | An output nobody could read was reduced to a comparison |
+| `MEASURED` with a `reason` | A measured output explains itself |
+| `MEASURED` with empty `output` | A command that printed nothing measured nothing |
+| `satisfiesThreshold` with `threshold: null` | There was no bar to clear |
+| `alreadySatisfied` disagreeing with the baselines under `acs` | The refusal would name the wrong AC |
+| `alreadySatisfied` absent while a baseline is satisfied | A vacuous AC nothing records is one nothing can refuse |
+
+**`alreadySatisfied` is a refusal at scope and nowhere else.**
+`prevalidationViolations` names those ids only when `takenAt` is `scope`,
+which is the one phase whose tree is the pre-change one. At verify and at ship
+the work has landed, so an AC that satisfies its threshold there is an AC that
+**passed** — refusing those would turn every successful run red. A reading
+with no `takenAt` predates the field and cannot say which tree it describes,
+so it is not refused either.
+
 ```json
 { "evidencePrevalidation": {
   "verdict": "FAIL", "checkedAt": "2026-10-09T18:04:11.000Z", "reason": null,
-  "broken": ["AC-2"],
+  "broken": ["AC-2"], "alreadySatisfied": [], "takenAt": "scope",
   "acs": [
     { "id": "AC-1", "status": "ok", "autoFixed": true,
       "originalCommand": "git log main..HEAD --oneline",
-      "fixedCommand": "git log origin/main..HEAD --oneline" },
+      "fixedCommand": "git log origin/main..HEAD --oneline",
+      "baseline": { "verdict": "MEASURED", "output": "0", "reason": null,
+        "threshold": { "op": ">=", "value": 1 }, "satisfiesThreshold": false } },
     { "id": "AC-2", "status": "broken", "needsRewrite": true,
-      "diagnostic": "Command failed with exit code 127" }
+      "diagnostic": "Command failed with exit code 127",
+      "baseline": { "verdict": "UNMEASURED", "output": "",
+        "reason": "the command ran and printed nothing, so there is no value to compare against the threshold",
+        "threshold": { "op": "contains", "value": "ok" }, "satisfiesThreshold": null } }
   ]
 } }
 ```

@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+// The one binding that answers "which ACs already cleared their own bar on
+// the pre-change tree" (#669). The schema compares the persisted list against
+// it; the gate's refusal names ids out of it. A second copy here would be a
+// second source of truth for one fact, and the two would disagree silently.
+import { alreadySatisfiedIds } from "../lib/evidence-prevalidator";
+
 // ── Gate contract interfaces (SC-373) ─────────────────────────────────────
 
 export interface SchemaValidateInput {
@@ -396,9 +402,91 @@ export const SuiteMeasurementSchema = z.object(SuiteMeasurementShape).superRefin
 export const PREVALIDATION_VERDICTS = ["PASS", "FAIL", "UNMEASURED"] as const;
 export const PREVALIDATION_AC_STATUSES = ["ok", "broken", "empty", "skipped"] as const;
 
+export const BASELINE_VERDICTS = ["MEASURED", "UNMEASURED"] as const;
+
+/**
+ * The threshold as the AC wrote it, copied into the baseline (#669).
+ *
+ * Loose on purpose — it is a RECORD of what was there, not a second place
+ * that decides what a valid threshold is. `ThresholdSchema` above is that
+ * place, and a baseline refusing a threshold the AC schema accepted would be
+ * two deciders for one question.
+ */
+export const BaselineThresholdSchema = z.object({
+  op: z.string().optional(),
+  value: z.union([z.string(), z.number()]).optional(),
+  unit: z.string().optional(),
+});
+
+/**
+ * What an AC's evidence command printed on the pre-change tree, beside the
+ * bar it will be judged against (#669).
+ *
+ * The contradictions below are refused for the same reason the reading's own
+ * `UNMEASURED with no reason` is: an absence nobody can explain is not
+ * actionable, and a verdict that disagrees with the fields beside it lets a
+ * reader pick whichever half suits them.
+ */
+export const BaselineSchema = z.object({
+  verdict: z.enum(BASELINE_VERDICTS),
+  output: z.string(),
+  reason: z.string().nullable(),
+  threshold: BaselineThresholdSchema.nullable(),
+  satisfiesThreshold: z.boolean().nullable(),
+}).superRefine((b, ctx) => {
+  if (b.verdict === "UNMEASURED") {
+    if (!b.reason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "baseline: UNMEASURED with no reason — an absence nobody can explain is not actionable",
+        path: ["reason"],
+      });
+    }
+    if (b.satisfiesThreshold !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `baseline: UNMEASURED carrying satisfiesThreshold=${b.satisfiesThreshold} — an output ` +
+          "nobody could read was reduced to a threshold comparison, which is how " +
+          "`bun test v1.3.14 (d1632b29)` once counted as evidence",
+        path: ["satisfiesThreshold"],
+      });
+    }
+    return;
+  }
+  if (b.reason !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "baseline: reason is only for UNMEASURED — a measured output explains itself",
+      path: ["reason"],
+    });
+  }
+  if (b.output.trim().length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "baseline: MEASURED with no output — a command that printed nothing measured nothing",
+      path: ["output"],
+    });
+  }
+  if (b.satisfiesThreshold !== null && b.threshold === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "baseline: satisfiesThreshold recorded against no threshold — there was no bar to clear",
+      path: ["satisfiesThreshold"],
+    });
+  }
+});
+
 export const PrevalidatedACSchema = z.object({
   id: z.string(),
   status: z.enum(PREVALIDATION_AC_STATUSES),
+  // The pre-change reading (#669). Optional: a reading written before the
+  // field existed still validates, the same amnesty `broken` and `takenAt`
+  // have.
+  baseline: BaselineSchema.optional(),
   autoFixed: z.boolean().optional(),
   originalCommand: z.string().optional(),
   fixedCommand: z.string().optional(),
@@ -454,6 +542,16 @@ const EvidencePrevalidationShape = {
   // superRefine below requires it there, because that is the only verdict
   // whose whole job is to name something.
   broken: z.array(z.string()).optional(),
+  // The ids whose pre-change output already satisfied their own threshold
+  // (#669).
+  //
+  // Derived from the baselines under `acs`, never supplied, and cross-checked
+  // below in both directions: a list that disagrees with its own results is
+  // refused, and a reading that omits the key while its results carry a
+  // satisfied baseline is refused too. Optional only so a reading written
+  // before the field existed still validates — those carry no baselines, so
+  // the derived list is empty and the absence agrees with it.
+  alreadySatisfied: z.array(z.string()).optional(),
   reason: z.string().nullable(),
   // Which gate measured this (#264).
   //
@@ -508,6 +606,33 @@ export const EvidencePrevalidationSchema = z.object(EvidencePrevalidationShape).
         "evidencePrevalidation: FAIL with no `broken` list — the gate's refusal names the ACs to " +
         "fix out of this field, and a FAIL that names none costs a heal round and teaches it nothing",
       path: ["broken"],
+    });
+  }
+
+  // #669 — the vacuous-AC list, held to its own results the same way.
+  const satisfied = alreadySatisfiedIds(r.acs);
+  if (r.alreadySatisfied !== undefined) {
+    const named = r.alreadySatisfied;
+    const differs =
+      named.length !== satisfied.length || named.some((id, i) => id !== satisfied[i]);
+    if (differs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `evidencePrevalidation: alreadySatisfied names [${named.join(", ")}] but the baselines ` +
+          `classify [${satisfied.join(", ")}] as already satisfied — the gate's refusal would ` +
+          "name the wrong AC",
+        path: ["alreadySatisfied"],
+      });
+    }
+  } else if (satisfied.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        `evidencePrevalidation: ${satisfied.length} AC baseline(s) already satisfy their own ` +
+        "threshold and the reading names none — a vacuous AC that nothing records is one " +
+        "nothing can refuse",
+      path: ["alreadySatisfied"],
     });
   }
 

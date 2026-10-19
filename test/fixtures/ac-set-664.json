@@ -1,0 +1,150 @@
+{
+  "_provenance": {
+    "run": "wf_448af2c4-6c1",
+    "issue": 664,
+    "copiedFrom": "~/.rungate/pai-harness-664/workflow-state.json (acs)",
+    "copiedAt": "2026-10-19",
+    "why": "#669 replays the real AC set as a fixture. A test that read it from ~/.rungate would be measuring a file nobody can check out, and the directory is deleted between runs — a scan over an absent AC set finds no defects, which is indistinguishable from a clean AC set.",
+    "verbatim": "thresholds and evidenceMethod.command are byte-for-byte as the run recorded them; contextFiles were dropped (bulk, and no check reads them)."
+  },
+  "acs": [
+    {
+      "id": "AC-1",
+      "type": "CODE",
+      "statement": "A scan over test/ finds zero occurrences of the fixed-character window form slice(idx, idx + literal), and the zero is reached by rewriting every matching site to a structural cut rather than by adding any exemption or allowlist file",
+      "threshold": {
+        "op": "==",
+        "value": 0,
+        "unit": "fixed-character slice windows remaining in test/"
+      },
+      "evidenceMethod": {
+        "type": "BUN_TEST",
+        "command": "bun test test/source-slice-structural.test.ts"
+      },
+      "specElement": "Ten guards that cut a character count instead of a construct (#664)",
+      "coversCriteria": [
+        "C-1"
+      ],
+      "recordedEvidence": {
+        "type": "command-output",
+        "content": "bun test v1.3.14 (d1632b29)"
+      },
+      "recordedVerdict": "PASS"
+    },
+    {
+      "id": "AC-2",
+      "type": "CODE",
+      "statement": "The scan proves it is non-vacuous by asserting the number of test files it actually read, and that number is above one hundred (the tree currently holds 365 .test.ts files)",
+      "threshold": {
+        "op": ">",
+        "value": 100,
+        "unit": "test files read by the scan"
+      },
+      "evidenceMethod": {
+        "type": "BUN_TEST",
+        "command": "bun test test/source-slice-structural.test.ts --grep 'read'"
+      },
+      "specElement": "Ten guards that cut a character count instead of a construct (#664)",
+      "coversCriteria": [
+        "C-1"
+      ],
+      "recordedEvidence": {
+        "type": "command-output",
+        "content": "bun test v1.3.14 (d1632b29)"
+      },
+      "recordedVerdict": "PASS"
+    },
+    {
+      "id": "AC-4",
+      "type": "CODE",
+      "statement": "One shared helper module does every structural cut, so there is a single binding to mutate, and it refuses by name both an anchor it cannot find and a cut that comes back empty, with all eleven converted sites importing that helper and defining no local cutting of their own",
+      "threshold": {
+        "op": ">=",
+        "value": 11,
+        "unit": "converted test sites importing the shared helper, with zero local cut implementations"
+      },
+      "evidenceMethod": {
+        "type": "BUN_TEST",
+        "command": "bun test test/source-slice-structural.test.ts test/worktree-repo.test.ts test/ac-coverage.test.ts test/agent-timings.test.ts test/agent-timings-queued.test.ts test/recorder-command-executed.test.ts test/suite-measurement-parity.test.ts test/decomposition-waves.test.ts test/issue-close-guard-target.test.ts test/slug-derivation.test.ts test/ship-and-heal.test.ts"
+      },
+      "specElement": "Ten guards that cut a character count instead of a construct (#664)",
+      "coversCriteria": [
+        "C-3"
+      ],
+      "recordedEvidence": {
+        "type": "command-output",
+        "content": "bun test v1.3.14 (d1632b29)"
+      },
+      "recordedVerdict": "PASS"
+    },
+    {
+      "id": "AC-5",
+      "type": "CODE",
+      "statement": "At least one converted case is proven to still catch the property it guards: deleting the else branch that SC-1446 is about from workflows/ship.js turns that case red, and inserting three thousand characters of unrelated text inside the old six-thousand-character window leaves it green",
+      "threshold": {
+        "op": "==",
+        "value": 1,
+        "unit": "converted case red after the else branch is deleted and green after the 3,000-character unrelated insertion"
+      },
+      "evidenceMethod": {
+        "type": "BUN_TEST",
+        "command": "bun test test/source-slice-structural.test.ts --grep 'else'"
+      },
+      "specElement": "Ten guards that cut a character count instead of a construct (#664)",
+      "coversCriteria": [
+        "C-4"
+      ],
+      "recordedEvidence": {
+        "type": "command-output",
+        "content": "bun test v1.3.14 (d1632b29)"
+      },
+      "recordedVerdict": "FAIL"
+    },
+    {
+      "id": "AC-6",
+      "type": "CODE",
+      "statement": "A mutation in which the shared helper returns the whole document instead of the cut turns every converted case red, which requires each converted case to assert the boundedness of its cut rather than only a substring, and both the predicted and the measured red counts are recorded in the spec",
+      "threshold": {
+        "op": ">=",
+        "value": 11,
+        "unit": "converted cases red when the helper returns the whole document, with predicted and measured counts both recorded"
+      },
+      "evidenceMethod": {
+        "type": "COMMAND",
+        "command": "awk '/^## Ten guards that cut a character count/,/^## [^T]/' specs/HARNESS-STANDARD.md | grep -ciE 'whole document.*(predicted|measured)|predicted.*measured'"
+      },
+      "specElement": "Ten guards that cut a character count instead of a construct (#664)",
+      "coversCriteria": [
+        "C-5"
+      ],
+      "recordedEvidence": {
+        "type": "command-output",
+        "content": "0"
+      },
+      "recordedVerdict": "FAIL"
+    },
+    {
+      "id": "AC-7",
+      "type": "CODE",
+      "statement": "The cheapest wrong fix is named and actually applied — widening the six thousand to nine thousand in test/worktree-repo.test.ts and leaving the other ten alone — and the measured result is written down: the SC-1446 case goes green while the zero-fixed-windows scan stays red",
+      "threshold": {
+        "op": "==",
+        "value": 1,
+        "unit": "recorded row stating the applied 6000-to-9000 widening with SC-1446 measured green and the scan measured still red"
+      },
+      "evidenceMethod": {
+        "type": "COMMAND",
+        "command": "awk '/^## Ten guards that cut a character count/,/^## [^T]/' specs/HARNESS-STANDARD.md | grep -ciE '9000|9,000'"
+      },
+      "specElement": "Ten guards that cut a character count instead of a construct (#664)",
+      "coversCriteria": [
+        "C-6"
+      ],
+      "recordedEvidence": {
+        "type": "command-output",
+        "content": "0"
+      },
+      "recordedVerdict": "FAIL"
+    }
+  ]
+}

@@ -275,3 +275,134 @@ describe("#269: the refusal is usable and the run stops before implementing", ()
     expect(shipSource).toMatch(/>= 1[\s\S]{0,200}?always passes|always passes[\s\S]{0,200}?>= 1/);
   });
 });
+
+/**
+ * #669 — the three evidence clauses, and the one place they are allowed to
+ * live.
+ *
+ * The AC-evidence rules do NOT go in `acDiscoveryViolations`. That function is
+ * held to byte-for-byte verdict parity with `ACSchema` by the matrix above, so
+ * a rule added here and not to `gates/schema.ts` turns the matrix red — and a
+ * rule added to both would be a THIRD decider for a question
+ * `satisfiabilityRefusal` already owns end to end, which is the fourth shape
+ * in `.claude/rules/checks-must-be-able-to-fail.md`. ship.js's own comment at
+ * the scope gate says it in one line: "Do not add another one here; change the
+ * module instead."
+ *
+ * So what ship.js carries for #669 is the two things only ship.js can carry:
+ * the RULE, stated to Discovery in the prompt, and the FIELD, declared in the
+ * structured-output schema so the waiver is not filtered out of the reply
+ * (#646).
+ */
+describe("#669: one AC-evidence validator, and it is not in ship.js", () => {
+  const SOURCE_DIRS = ["lib", "gates", "workflows", "scripts", "hooks"];
+
+  /** Every source file a second copy could hide in. */
+  const sources = (): string[] => {
+    const out: string[] = [];
+    for (const dir of SOURCE_DIRS) {
+      for (const f of new Bun.Glob(`${dir}/**/*.{ts,js}`).scanSync(REPO_ROOT)) {
+        if (f.endsWith(".test.ts")) continue;
+        out.push(f);
+      }
+    }
+    return out;
+  };
+
+  test("each clause of the decider is defined exactly once, in one module", () => {
+    const files = sources();
+    // Vacuity: a scan that read nothing agrees with every claim about what it
+    // did not find.
+    expect(files.length, "the source scan read nothing").toBeGreaterThan(50);
+
+    const bindings = [
+      "satisfiabilityRefusal",
+      "unitDisagreementRefusal",
+      "absentLiteralRefusal",
+      "unknownFlagRefusal",
+      "countedQuantity",
+    ];
+    const definitions: Record<string, string[]> = {};
+    for (const f of files) {
+      const src = readFileSync(join(REPO_ROOT, f), "utf-8");
+      for (const b of bindings) {
+        if (new RegExp(`function ${b}\\b`).test(src)) (definitions[b] ??= []).push(f);
+      }
+    }
+    for (const b of bindings) {
+      expect(definitions[b] ?? [], `${b} is not defined exactly once`).toEqual([
+        "lib/evidence-satisfiability.ts",
+      ]);
+    }
+  });
+
+  test("the inlined ship.js AC validator never looks at an evidence COMMAND", () => {
+    // It reads `evidenceMethod.type` against the enum, which is a shape rule
+    // the schema also has. The moment it reads `.command` it has become a
+    // second evidence validator, running at a different phase, with no parity
+    // matrix against the one that already exists.
+    const validator = block("AC-VALIDATION");
+    expect(validator.length, "the AC-VALIDATION block moved").toBeGreaterThan(500);
+    expect(validator, "the inlined validator started reading evidence commands").not.toContain(
+      "evidenceMethod.command",
+    );
+    for (const clause of ["--test-name-pattern", "BUN_TEST_FLAGS", "treeContains", "wc -l"]) {
+      expect(validator, `a #669 clause was copied into the inlined validator: ${clause}`)
+        .not.toContain(clause);
+    }
+  });
+});
+
+describe("#669: the Discovery prompt states the three evidence rules", () => {
+  /**
+   * The prompt, sliced out rather than searched for in the whole file — the
+   * rules are about text an agent reads, and `workflows/ship.js` mentions
+   * every one of these strings somewhere in a comment.
+   */
+  const prompt = shipSource.slice(
+    shipSource.indexOf("## PRIOR WORK CHECK"),
+    shipSource.indexOf("8. Find governingSpec"),
+  );
+
+  test("the slice is the prompt", () => {
+    expect(prompt.length, "the Discovery prompt moved or was renamed").toBeGreaterThan(1000);
+    expect(prompt).toContain("THRESHOLD RULE");
+  });
+
+  test("each rule is stated, and names the issue it came from", () => {
+    for (const rule of ["BUN TEST NAME FILTER RULE", "UNIT RULE", "EVIDENCE LITERAL RULE"]) {
+      expect(prompt, `the Discovery prompt does not state the ${rule}`).toContain(rule);
+    }
+    expect(prompt.match(/#669/g) ?? [], "the rules do not say where they came from").not.toEqual([]);
+  });
+
+  test("the prompt no longer tells Discovery to write `bun test --grep`", () => {
+    // #664's planted flag came from HERE: two prompt rules used `--grep` as
+    // the worked example, one of them ending "just use: bun test
+    // test/file.test.ts --grep 'pattern'". A refusal that fires on a flag the
+    // harness itself recommends is a refusal that fails correct obedience.
+    //
+    // Asserted on the USAGE form — a flag followed by its quoted argument —
+    // because the rule now has to NAME `--grep` in order to warn about it.
+    // A bare `.not.toContain("--grep")` would be a check that cannot pass, and
+    // searching for the word would make prose about the anti-pattern
+    // indistinguishable from the anti-pattern, which is this repo's
+    // self-reference trap.
+    expect(prompt, "the prompt still demonstrates `bun test --grep '…'`").not.toContain("--grep '");
+    expect(prompt, "the accepted flag is not named").toContain("--test-name-pattern");
+  });
+
+  test("the waiver field the literal rule points at is declared in the schema", () => {
+    // A structured-output schema is a filter: a field it does not name is
+    // stripped out of the reply (#646). Telling Discovery to write
+    // `evidenceInterfaces` without declaring it would produce a rule nobody
+    // can comply with — the reply would be edited on the way back and the
+    // clause would refuse every AC that had done the right thing.
+    expect(prompt).toContain("evidenceInterfaces");
+    const schema = shipSource.slice(
+      shipSource.indexOf("const DISCOVERY_SCHEMA"),
+      shipSource.indexOf("8. Find governingSpec"),
+    );
+    expect(schema).toContain("evidenceInterfaces: { type: 'array'");
+  });
+});

@@ -26,9 +26,57 @@ export interface ACInput {
   };
 }
 
+/** The AC's own bar, recorded verbatim beside the output it will be judged against. */
+export interface ACThresholdInput {
+  op?: string;
+  value?: string | number;
+  unit?: string;
+}
+
+/**
+ * Whether the baseline output is a value a threshold can be compared against.
+ *
+ * MEASURED means the command printed something that stands for a reading of
+ * the tree. UNMEASURED means it did not — it printed nothing, or it printed
+ * only the tool announcing itself. Those two states are the whole point: `0`,
+ * `{}`, an empty string and `bun test v1.3.14 (d1632b29)` are all
+ * indistinguishable from success, and UNMEASURED is not.
+ */
+export type BaselineVerdict = "MEASURED" | "UNMEASURED";
+
+/**
+ * What an AC's evidence command printed on the PRE-CHANGE tree, beside the
+ * threshold it will later be judged against (#669).
+ *
+ * Both halves are persisted so neither has to be re-derived: the pre-change
+ * tree stops existing the moment Marcus writes a line, so a reader asking
+ * "what did this print before the work" had no way to find out that did not
+ * involve a checkout.
+ */
+export interface ACBaseline {
+  verdict: BaselineVerdict;
+  /** The command's own output, verbatim and trimmed. Empty only when UNMEASURED. */
+  output: string;
+  /** Why the baseline is UNMEASURED. Null — and only null — when it is MEASURED. */
+  reason: string | null;
+  /** The AC's threshold as written. Null when the AC declares none. */
+  threshold: ACThresholdInput | null;
+  /**
+   * Whether the PRE-CHANGE output already clears the bar.
+   *
+   * Null — and only null — when no comparison was made: an UNMEASURED
+   * baseline is never reduced to one, and neither is a bar nothing can be
+   * compared against. `false` would claim the comparison happened and missed,
+   * which is a different fact and the one that hides a banner.
+   */
+  satisfiesThreshold: boolean | null;
+}
+
 export interface PrevalidationResult {
   id: string;
   status: "ok" | "broken" | "empty" | "skipped";
+  /** The pre-change reading (#669). */
+  baseline?: ACBaseline;
   autoFixed?: boolean;
   /**
    * The command as the AC was written, present only when `autoFixed` is.
@@ -74,8 +122,154 @@ export interface EvidencePrevalidationReading {
    * nothing, which is part of how #261 cost two.
    */
   broken: string[];
+  /**
+   * The ids whose PRE-CHANGE output already satisfied their own threshold
+   * (#669).
+   *
+   * Derived from `acs` by `alreadySatisfiedIds`, the same binding the gate's
+   * refusal reads, so the list the reading carries and the list the refusal
+   * names cannot be two different answers to one question.
+   */
+  alreadySatisfied: string[];
   /** Why the reading is UNMEASURED. Null — and only null — when it is not. */
   reason: string | null;
+}
+
+// ── The pre-change baseline (#669) ──────────────────────────────────────
+
+/**
+ * A line that is a tool announcing itself rather than reporting anything.
+ *
+ * Deliberately narrow. The direction this is allowed to be wrong in is toward
+ * MEASURED: a pattern that swallowed ordinary output would convert real
+ * evidence into an absence, which is strictly worse than the state it
+ * replaces. So the digits must be introduced by a literal `v` or the word
+ * `version` — `3.14` on its own is a number somebody measured, and
+ * `bun test v1.3.14 (d1632b29)` is not.
+ */
+const VERSION_BANNER =
+  /^(?:[A-Za-z][\w.+-]*(?:[ \t]+[A-Za-z][\w.+-]*){0,2}[ \t]+)?(?:v|[Vv]ersion[ \t]+)\d+\.\d+(?:\.\d+)?[\w.+-]*(?:[ \t]*\([0-9a-f]{6,}\))?$/;
+
+/**
+ * Why this output is not a measurement, or null if it is.
+ *
+ * THE single binding that decides it, because two deciders answering one
+ * question are behaviourally one and a mutation of either leaves the other
+ * holding the case up (`.claude/rules/checks-must-be-able-to-fail.md`).
+ *
+ * The two unmeasured states carry DIFFERENT sentences on purpose. A command
+ * that printed nothing and a command that printed only a banner are fixed by
+ * different edits, so one shared reason would be a warning nobody can act on.
+ */
+export function baselineUnmeasuredReason(output: string | null): string | null {
+  if (output === null) {
+    return "the evidence command was not run, so there is no baseline output to read";
+  }
+  const trimmed = output.trim();
+  if (trimmed.length === 0) {
+    return "the command ran and printed nothing, so there is no value to compare against the threshold";
+  }
+  const lines = trimmed.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.every((l) => VERSION_BANNER.test(l))) {
+    return (
+      `the only output is a tool version banner (${lines.join(" / ")}), which is the tool ` +
+      "announcing itself and not a reading of the tree"
+    );
+  }
+  return null;
+}
+
+/**
+ * Does this output clear this bar? Null when no comparison could be made.
+ *
+ * Null rather than false for an uncomparable pair, because `false` says the
+ * bar was tested and missed — a claim about the tree — while null says nobody
+ * could test it. Collapsing the two is how an AC with a nonsense threshold
+ * reads as an AC that simply has not landed yet.
+ */
+export function thresholdSatisfiedBy(
+  output: string,
+  threshold: ACThresholdInput | null | undefined,
+): boolean | null {
+  const op = threshold?.op;
+  if (!op) return null;
+  const text = output.trim();
+  if (op === "exists") return text.length > 0;
+  if (op === "contains") {
+    if (threshold?.value === undefined || threshold.value === null) return null;
+    return text.includes(String(threshold.value));
+  }
+  const expected = parseFloat(String(threshold?.value));
+  const actual = parseFloat(text);
+  if (Number.isNaN(expected) || Number.isNaN(actual) || !/^-?\d+(?:\.\d+)?$/.test(text)) return null;
+  switch (op) {
+    case ">=": return actual >= expected;
+    case "<=": return actual <= expected;
+    case ">": return actual > expected;
+    case "<": return actual < expected;
+    case "==": return actual === expected;
+    case "!=": return actual !== expected;
+    default: return null;
+  }
+}
+
+/**
+ * Compose one AC's pre-change baseline from what its command printed.
+ *
+ * One site, so the ordering is not re-decided anywhere: the output is
+ * classified FIRST, and only a MEASURED output is ever handed to the
+ * comparison. That ordering is the whole of #669's third criterion — an
+ * UNMEASURED baseline is never reduced to a threshold comparison, and the
+ * only way to guarantee that is to make the comparison unreachable from the
+ * unmeasured branch rather than to check afterwards that it did not happen.
+ *
+ * `output` is null when the command never ran at all.
+ */
+export function acBaseline(
+  output: string | null,
+  threshold: ACThresholdInput | null | undefined,
+): ACBaseline {
+  const recorded = threshold ? { ...threshold } : null;
+  const reason = baselineUnmeasuredReason(output);
+  if (reason !== null) {
+    return {
+      verdict: "UNMEASURED",
+      output: (output ?? "").trim(),
+      reason,
+      threshold: recorded,
+      satisfiesThreshold: null,
+    };
+  }
+  const text = (output as string).trim();
+  return {
+    verdict: "MEASURED",
+    output: text,
+    reason: null,
+    threshold: recorded,
+    satisfiesThreshold: recorded ? thresholdSatisfiedBy(text, recorded) : null,
+  };
+}
+
+/**
+ * The ids whose PRE-CHANGE output already clears their own threshold.
+ *
+ * An AC in this list cannot observe the work: its command printed a
+ * satisfying value before a line was written, so it will print one afterwards
+ * whatever Marcus does. That is a check that cannot fail, arriving in the
+ * harness's own acceptance criteria.
+ *
+ * Exported and called by BOTH the writer (`measureEvidencePrevalidation`) and
+ * the reader (`prevalidationViolations` in gates/workflow.test.ts), so there
+ * is one binding to mutate. `broken` taught this at the cost of a heal round:
+ * until #295 the reader derived its own answer, disagreed with the writer, and
+ * the refusal named nothing.
+ */
+export function alreadySatisfiedIds(acs: unknown): string[] {
+  if (!Array.isArray(acs)) return [];
+  return acs
+    .filter((ac: unknown) => (ac as { baseline?: ACBaseline })?.baseline?.satisfiesThreshold === true)
+    .map((ac: unknown) => String((ac as { id?: unknown })?.id ?? ""))
+    .filter((id: string) => id.length > 0);
 }
 
 // ── Auto-fix patterns ───────────────────────────────────────────────────
@@ -160,11 +354,17 @@ export async function prevalidateEvidence(
   for (const ac of acs) {
     const rawCommand = ac.evidenceMethod?.command;
 
-    // Skip ACs without a command
+    // Skip ACs without a command.
+    //
+    // It still carries a baseline (#669), and the baseline still says why
+    // there is nothing in it. A missing `baseline` key and a command that
+    // produced no value read identically to every consumer, which is the
+    // confusion this field exists to remove.
     if (!rawCommand) {
       results.push({
         id: ac.id,
         status: "skipped",
+        baseline: acBaseline(null, ac.threshold),
       });
       continue;
     }
@@ -203,8 +403,22 @@ export async function prevalidateEvidence(
      * single push site rather than at each branch is what keeps a later
      * auto-fix pattern from quietly landing with only half the pair.
      */
+    /**
+     * What the command printed on this tree, or null if it never ran (#669).
+     *
+     * Captured per AC and read by `record` so the baseline is composed at the
+     * SINGLE push site. Stamping it at each branch instead would let a later
+     * classification land with the pre-change reading quietly missing, which
+     * is the half-pair problem `originalCommand` already has a comment about.
+     */
+    let printed: string | null = null;
+
     const record = (r: PrevalidationResult): void => {
-      results.push(r.autoFixed ? { ...r, originalCommand: rawCommand } : r);
+      const withBaseline: PrevalidationResult = {
+        ...r,
+        baseline: acBaseline(printed, ac.threshold),
+      };
+      results.push(withBaseline.autoFixed ? { ...withBaseline, originalCommand: rawCommand } : withBaseline);
     };
 
     // Check for bun test pipe pattern BEFORE running — always auto-fix
@@ -262,6 +476,7 @@ export async function prevalidateEvidence(
         cwd: projectRoot,
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
+      printed = output;
 
       if (output.length === 0) {
         record(withRefFix({
@@ -284,6 +499,10 @@ export async function prevalidateEvidence(
       const exitCode: number = e.status ?? 1;
       const stdout = (e.stdout?.toString?.() || "").trim();
       const stderr = (e.stderr?.toString?.() || "").trim();
+      // A command that exited non-zero still ran, so its stdout is the
+      // baseline reading. `grep` exit 1 is the case that matters: it is a
+      // RESULT (#271), and the value it measured is in stdout.
+      printed = stdout;
 
       // A grep that selected nothing has not failed — it has measured zero
       // (#271). Classified here, before any repair is attempted, so the
@@ -366,6 +585,7 @@ export async function measureEvidencePrevalidation(
     checkedAt,
     acs: [],
     broken: [],
+    alreadySatisfied: [],
     reason,
   });
 
@@ -407,6 +627,8 @@ export async function measureEvidencePrevalidation(
     // site that derives it, so the verdict and the names it refuses under
     // cannot disagree.
     broken: broken.map((r) => r.id),
+    // Same discipline as `broken`, through the binding the gate reads (#669).
+    alreadySatisfied: alreadySatisfiedIds(results),
     reason: null,
   };
 }
