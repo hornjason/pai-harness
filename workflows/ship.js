@@ -4746,6 +4746,30 @@ function auditWorktreeClaims(results) {
   )]
   const unconstrained = SINGLE_WORKTREE_EXEMPT && participants.length === 1
 
+  // Who issued a claim AT ALL, which is a different question from who claimed
+  // a particular file (#629).
+  //
+  // `claimant === null` below has two causes that call for OPPOSITE next
+  // actions, and until now they shared one sentence. Either no participant
+  // issued a claim — the pairing that carries `claimedFiles` into collection
+  // dropped it, which is #627's defect and a HARNESS fault — or participants
+  // did issue claims and this file is outside every one of them, which is an
+  // agent exceeding its scope. "Fix the caller" and "send the agent back" are
+  // not interchangeable, and an operator reading the old line could not tell
+  // which they were looking at.
+  //
+  // An EMPTY `claimedFiles` counts as issued: a plan that claims no files is
+  // a claim that arrived and named nothing, which is a planning problem and
+  // not a relay one. `Array.isArray` is the same reading `claimPermits` takes
+  // one function down, so the two cannot disagree about what a claim is.
+  const claimIssuers = [...new Set(
+    results
+      .filter(r => Array.isArray(r && r.claimedFiles))
+      .map(r => String(r && r.worktreePath || '').trim())
+      .filter(Boolean),
+  )]
+  const noClaimsIssued = claimIssuers.length === 0
+
   // Ownership first, across every worktree — a file's claimant has to be known
   // before any worktree's report can be judged against it.
   const claimants = {}
@@ -4858,11 +4882,29 @@ function auditWorktreeClaims(results) {
         kept.push(key)
         continue
       }
+      // Three arms, not two (#629). The `claimant` arm is unchanged and its
+      // wording is pinned by #296 SC-3. The absent-claimant case splits:
+      //
+      //   no claim issued — nobody in the run claimed anything, so the claim
+      //                     never arrived. The agent may have been perfectly
+      //                     in scope; there is nothing to compare it against.
+      //                     FIX THE CALLER.
+      //   outside every claim — claims arrived and this file is in none of
+      //                     them. The comparison happened and the agent lost
+      //                     it. SEND THE AGENT BACK.
+      //
+      // The second keeps the exact sentence #296 SC-3 pinned, because that
+      // sentence is TRUE of it and only of it: worktrees did claim, and none
+      // claimed this file. Splitting a message that another criterion holds
+      // fixed is how a distinctness fix buys green by rewording, so the split
+      // adds an arm rather than editing the pinned one.
       violations.push({
         worktreePath: wt, path: key, claimant,
         detail: claimant
           ? `${wt} reported ${key}, which it did not claim — that file is claimed by ${claimant}`
-          : `${wt} reported ${key}, which it did not claim — no worktree claimed that file`,
+          : noClaimsIssued
+            ? `${wt} reported ${key}, which it did not claim — and not one of the ${participants.length} worktrees in this run issued a claim at all, so there was never anything to check it against. The agent may well have stayed in scope; what is broken is upstream of it — the pairing that carries claimedFiles into collection dropped them (#627). Fix the caller and re-collect; re-running the agent will reproduce this.`
+            : `${wt} reported ${key}, which it did not claim — no worktree claimed that file`,
       })
     }
 

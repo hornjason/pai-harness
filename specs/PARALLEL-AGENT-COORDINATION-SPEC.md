@@ -328,3 +328,108 @@ the refusal — the collection succeeds again — and the case it breaks is
 *"a worktree that exceeds its claim in a wave is still refused"*. So the 5pm
 repair for this issue is measurably a disabling of SC-413 for every decomposed
 run, and the cost of reaching for it is one MORE red test, not a green suite.
+
+## A refusal with two opposite causes and one sentence (#629, 2026-10-19)
+
+#627 restored the claim to the wave path. What it did not change is what the
+audit SAYS when the claim is absent anyway, and `claimant === null` has two
+causes that call for opposite next actions:
+
+- **No participant issued a claim at all.** The pairing dropped it — #627's
+  defect, or the next one shaped like it. The agent may have been perfectly in
+  scope; nothing was ever compared. **Fix the caller.**
+- **Participants did issue claims and this file is in none of them.** The
+  comparison happened and the agent lost it. **Send the agent back.**
+
+`workflows/ship.js:4402` documented the distinction and
+`if (!wt || !Array.isArray(r.claimedFiles)) continue` implemented half of it:
+rows with no claim were skipped when building the ownership map, and nothing
+downstream remembered that NOBODY had contributed to it. Both ended at *"no
+worktree claimed that file"*. An operator reading that line after #627's
+failure mode spent the investigation on the agent, and the agent was fine.
+
+Three things this had to get right:
+
+- **The pinned sentence is kept, and the split adds an arm.** #296 SC-3 pins
+  *"no worktree claimed that file"* and `test/claim-refusal-kinds.test.ts`
+  asserts it by exact equality, so rewording it to make a distinctness problem
+  go away is the specific failure that pin exists to catch. That sentence is
+  TRUE of the narrower case — worktrees did claim, and none claimed this file
+  — so the new arm sits beside it rather than replacing it. The battery below
+  measures what the alternative would have cost: the cheapest wrong fix
+  rewords it and is 10 red, three of them for that reason alone.
+- **An empty claim array is an issued claim.** `claimedFiles: []` is a plan
+  that named no files — a planning problem, not a relay one — and reading it
+  as "no claim issued" would send an operator upstream after a bug that is not
+  there. `Array.isArray` is the same reading `claimPermits` takes one function
+  down, so the two cannot disagree about what a claim is.
+- **The pair varies exactly one thing.** Two hand-written fixtures can differ
+  in something nobody noticed, and then the comparison measures that instead
+  of the dimension it names (#585). The second fixture is the first with
+  `claimedFiles` deleted, the derivation is asserted before anything is
+  concluded from it, and `SINGLE_WORKTREE_EXEMPT` is asserted still to exempt a
+  lone agent — because a new refusal arm reachable for one worktree is #228
+  reintroduced.
+
+- [x] SC-2114: test/claim-refusal-kinds.test.ts contains [the no-claim arm points upstream and the other does not] — the two absent-claim causes produce distinguishable refusals naming opposite next actions, driven through the real block, with the kind matrix carrying both as separate rows so a third arm cannot be added without one
+- [x] SC-2115: test/claim-refusal-kinds.test.ts contains [the pair varies only the presence of claims] — the two fixtures are one fixture and its derivation, asserted equal in every other field first, so the refusal difference can only be explained by the dimension the criterion names
+
+### What was broken to prove it (SC-2114..2115)
+
+Run and counted over `test/claim-refusal-kinds.test.ts`. Every count was
+predicted before the battery ran, and **the baseline row was read first** — an
+instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody mutates anything to produce.
+
+**Baseline, unmutated: 35 pass, 0 fail.**
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the split removed — both causes back under one sentence (genuinely pre-#629) | 7 | **7 of 35** |
+| `noClaimsIssued` inverted | 4 | **6 of 35** |
+| any participant counts as a claim issuer, so the new arm is unreachable | 6 | **6 of 35** |
+| the cheapest wrong fix: one message, with both possibilities appended to it | 7 | **10 of 35** |
+
+**Before believing any of them, the input on which mutant and original
+differ** (#485), named and run rather than assumed: two participating
+worktrees reporting `gates/workflow.test.ts`, in one fixture carrying
+`claimedFiles` and in the other with that key deleted and nothing else
+changed. The original answers *"not one of the 2 worktrees in this run issued
+a claim at all … Fix the caller"* for the second and *"no worktree claimed
+that file"* for the first; row 1's mutant answers the latter for both.
+
+**Two rows came back HIGH and in both the extra reds are the real kind** — the
+mutants parse, most cases pass, and every extra red is about the mutated
+behaviour.
+
+Row 2's two extras are the sharper ones. Inverting the flag swaps which
+fixture gets which sentence, so *"the two out-of-scope arms stay the wording
+#296 SC-3 pinned"* goes red — the pin is precisely what a swap breaks. The
+other is #300's own `SC-1435` mutant case, which replaces the co-owned
+template with the generic sentence and asserts the two shapes collapse. That
+case **depends on the unclaimed fixture producing the generic sentence**, and
+the inversion moves it. That is a fact about this file worth writing down: it
+is a second, independent argument for adding an arm rather than rewording the
+pinned one, and it was not visible from the diff.
+
+Row 4's three extras are the pin again plus both halves of `SC-1435`, whose
+`loadMutant` can no longer find the generic template in the source and
+**aborts loudly** rather than no-opping — the property a mutant builder exists
+to have.
+
+**The cheapest wrong fix, named and applied: keep one message and append the
+explanation of both possibilities to it** — *"no worktree claimed that file
+(either no claim was issued in this run, in which case the pairing dropped it
+(#627), or this file is outside every claim)"*. It is the 5pm repair: the
+operator is told both things, no branch is added, one string changes.
+
+**The cases do not survive it: 10 of 35 red.** It leaves the two causes
+indistinguishable by grep — which is the property an operator actually uses,
+one phrase identifying one kind — and it rewords a sentence another criterion
+holds fixed. An operator still cannot tell from the line which investigation
+to open; they are told that it might be either, which is what they already
+knew.
+
+None of the four mutations is left in the tree; all were applied to
+`workflows/ship.js`, run, reverted, and the file confirmed byte-identical
+afterwards by checksum.
