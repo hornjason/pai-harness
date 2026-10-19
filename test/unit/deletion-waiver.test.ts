@@ -22,7 +22,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { deletionReading, type DeletedCase, type PassLedger } from "../../lib/test-case-deletion";
+import {
+  WAIVER_SEPARATOR,
+  deletionReading,
+  type DeletedCase,
+  type PassLedger,
+} from "../../lib/test-case-deletion";
 
 const SCRIPT = join(import.meta.dir, "..", "..", "scripts", "verify-no-deleted-cases.ts");
 
@@ -34,6 +39,12 @@ afterAll(() => {
 const KEPT = "the one that stays";
 const GONE_A = "the one the repair deleted";
 const GONE_B = "the other one the repair deleted";
+const FILE = "test/a.test.ts";
+const COMPLIANCE = "test/compliance-report.test.ts";
+
+/** A waiver as the refusal prints it: a waiver is copied, never retyped. */
+const W = (name: string, file = FILE) => `${file}${WAIVER_SEPARATOR}${name}`;
+const W_CLI = (name: string, file = FILE) => ["--accept", W(name, file)];
 
 const DELETED: DeletedCase[] = [
   { name: GONE_A, file: "test/a.test.ts" },
@@ -96,7 +107,7 @@ describe("#661-5: the waiver is per case, and only with a reason", () => {
   });
 
   test("waiving ONE case leaves the other refused", () => {
-    const r = deletionReading(DELETED, LEDGER, { cases: [GONE_A], reason: "superseded by the table-driven case" });
+    const r = deletionReading(DELETED, LEDGER, { cases: [W(GONE_A)], reason: "superseded by the table-driven case" });
     expect(r.verdict, "a waiver is per case, so one waiver cannot clear two deletions").toBe("DELETED");
     expect(r.cases.map(c => c.name)).toEqual([GONE_B]);
     expect(r.waived?.map(w => w.name)).toEqual([GONE_A]);
@@ -104,7 +115,7 @@ describe("#661-5: the waiver is per case, and only with a reason", () => {
   });
 
   test("waiving every deleted case clears the verdict, and the record says so", () => {
-    const r = deletionReading(DELETED, LEDGER, { cases: [GONE_A, GONE_B], reason: "both merged into one case" });
+    const r = deletionReading(DELETED, LEDGER, { cases: [W(GONE_A), W(GONE_B)], reason: "both merged into one case" });
     expect(r.verdict).toBe("CLEAN");
     // The distinction that matters: CLEAN-by-waiving and CLEAN-by-deleting-
     // nothing must not be the same object, or the waiver is invisible in
@@ -117,8 +128,8 @@ describe("#661-5: the waiver is per case, and only with a reason", () => {
   });
 
   test("a waiver that matches no deleted case is reported, not silently dropped", () => {
-    const r = deletionReading(DELETED, LEDGER, { cases: [GONE_A, "a case that was renamed"], reason: "why" });
-    expect(r.unusedWaivers).toEqual(["a case that was renamed"]);
+    const r = deletionReading(DELETED, LEDGER, { cases: [W(GONE_A), W("a case that was renamed")], reason: "why" });
+    expect(r.unusedWaivers).toEqual([W("a case that was renamed")]);
   });
 
   /**
@@ -149,21 +160,84 @@ describe("#661-5: the waiver is per case, and only with a reason", () => {
       "SC-2092: a reinforcement already in the brief is its own outcome kind",
       "SC-2092: a brief with no section the rule belongs in is its own outcome kind",
     ];
-    const deleted: DeletedCase[] = SC2092.map(name => ({ name, file: "test/compliance-report.test.ts" }));
+    const deleted: DeletedCase[] = SC2092.map(name => ({ name, file: COMPLIANCE }));
     const ledger: PassLedger = { status: "MEASURED", passed: SC2092, failed: [] };
 
     // Waiving one by its FULL name leaves the other two refused, by name.
-    const one = deletionReading(deleted, ledger, { cases: [SC2092[0]], reason: "folded into the table" });
+    const one = deletionReading(deleted, ledger, { cases: [`${COMPLIANCE}${WAIVER_SEPARATOR}${SC2092[0]}`], reason: "folded into the table" });
     expect(one.verdict).toBe("DELETED");
     expect(one.cases.map(c => c.name)).toEqual([SC2092[1], SC2092[2]]);
 
     // The prefix waives nothing and is reported stale. Under `startsWith`
     // it would silently clear all three and this reads CLEAN.
-    const prefix = deletionReading(deleted, ledger, { cases: ["SC-2092"], reason: "folded into the table" });
+    const prefix = deletionReading(deleted, ledger, { cases: [`${COMPLIANCE}${WAIVER_SEPARATOR}SC-2092`], reason: "folded into the table" });
     expect(prefix.verdict, "a prefix is not a case name").toBe("DELETED");
     expect(prefix.cases).toHaveLength(3);
     expect(prefix.waived ?? []).toHaveLength(0);
-    expect(prefix.unusedWaivers).toEqual(["SC-2092"]);
+    expect(prefix.unusedWaivers).toEqual([`${COMPLIANCE}${WAIVER_SEPARATOR}SC-2092`]);
+  });
+
+  /**
+   * The same widening in the dimension a name cannot see.
+   *
+   * The real round deleted cases from TWO files at once — five from
+   * `test/compliance-report.test.ts` and three from
+   * `test/unit/hill-climb-receipt.test.ts`. Test files share names: `the
+   * baseline`, `the control`, `it refuses`. A waiver keyed on the name
+   * alone clears every file that declares it, and the operator who waived
+   * one deletion never learns they waived two.
+   *
+   * Every other case in this file plants its cases in ONE file, so a
+   * name-only matcher and a file-and-name matcher agree on all of them.
+   * This is the only case that can tell them apart.
+   */
+  test("a case name shared by two files is waived in ONE of them", () => {
+    const shared = "the baseline";
+    const deleted: DeletedCase[] = [
+      { name: shared, file: "test/a.test.ts" },
+      { name: shared, file: "test/b.test.ts" },
+    ];
+    const ledger: PassLedger = { status: "MEASURED", passed: [shared], failed: [] };
+
+    const r = deletionReading(deleted, ledger, { cases: [W(shared, "test/a.test.ts")], reason: "a's copy moved" });
+    expect(r.verdict, "b's deletion was never accounted for").toBe("DELETED");
+    expect(r.cases).toEqual([{ name: shared, file: "test/b.test.ts" }]);
+    expect(r.waived?.map(w => w.file)).toEqual(["test/a.test.ts"]);
+  });
+
+  test("a waiver naming no file is refused, not matched on the name alone", () => {
+    expect(() => deletionReading(DELETED, LEDGER, { cases: [GONE_A], reason: "why" }))
+      .toThrow(/names no file/);
+    // And the empty halves of the separator are refused too, so the form
+    // cannot be satisfied by writing the separator and nothing else.
+    expect(() => deletionReading(DELETED, LEDGER, { cases: [` ${WAIVER_SEPARATOR}${GONE_A}`], reason: "why" }))
+      .toThrow(/empty file or case name/);
+  });
+
+  /**
+   * The waiver records the ledger's reading; it does not erase it.
+   *
+   * Waiving a case the ledger proved GREEN is an operator saying "I removed
+   * a passing test on purpose". Waiving one the ledger cannot judge is an
+   * operator saying "I removed something and nobody knows what it was".
+   * Both are permitted and they are not the same act, so a CLEAN that
+   * reported them identically would have thrown away the distinction this
+   * whole module exists to carry.
+   */
+  test("each waived case carries what the ledger said about it", () => {
+    const partial: PassLedger = { status: "MEASURED", passed: [GONE_A], failed: [] };
+    const r = deletionReading(DELETED, partial, { cases: [W(GONE_A), W(GONE_B)], reason: "both deliberate" });
+    expect(r.verdict).toBe("CLEAN");
+    expect(r.waived?.map(w => [w.name, w.ledgerReading])).toEqual([
+      [GONE_A, "green"],
+      [GONE_B, "unjudged"],
+    ]);
+
+    // A red deletion reads as red, not as unjudged — the distinction
+    // `deletionReading` already makes for unwaived cases, made here too.
+    const withRed: PassLedger = { status: "MEASURED", passed: [], failed: [GONE_A] };
+    const red = deletionReading(DELETED, withRed, { cases: [W(GONE_A)], reason: "it was failing anyway" });
+    expect(red.waived?.[0]?.ledgerReading).toBe("red");
   });
 
   test("the waiver also covers a case the ledger cannot judge", () => {
@@ -173,7 +247,7 @@ describe("#661-5: the waiver is per case, and only with a reason", () => {
     // way to say so.
     const thin: PassLedger = { status: "MEASURED", passed: [KEPT], failed: [] };
     expect(deletionReading(DELETED, thin).verdict).toBe("UNMEASURED");
-    const r = deletionReading(DELETED, thin, { cases: [GONE_A, GONE_B], reason: "deleted deliberately" });
+    const r = deletionReading(DELETED, thin, { cases: [W(GONE_A), W(GONE_B)], reason: "deleted deliberately" });
     expect(r.verdict).toBe("CLEAN");
     expect(r.waived).toHaveLength(2);
   });
@@ -182,11 +256,26 @@ describe("#661-5: the waiver is per case, and only with a reason", () => {
 describe("#661-5: the script refuses an unexplained waiver", () => {
   test("--accept with no --reason is refused, and the refusal names the cases", () => {
     const { root, previous, current } = repoWithDeletion();
-    const r = runScript(["--project", root, "--previous", previous, "--current", current, "--accept", GONE_A]);
+    const r = runScript(["--project", root, "--previous", previous, "--current", current, ...W_CLI(GONE_A)]);
     expect(r.status, "an unexplained waiver must not be accepted").not.toBe(0);
     expect(r.stderr).toContain("REFUSED");
     expect(r.stderr).toContain(GONE_A);
     expect(r.stderr).toContain("--reason");
+  });
+
+  test("--accept naming no file is refused at the door, not reported as stale", () => {
+    const { root, previous, current } = repoWithDeletion();
+    const r = runScript([
+      "--project", root, "--previous", previous, "--current", current,
+      "--accept", GONE_A, "--reason", "deliberate",
+    ]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("REFUSED");
+    expect(r.stderr).toContain("names no file");
+    // The distinction being protected: a bare name must NOT come back as a
+    // stale waiver. That reads as a mistyped case name beside a refused
+    // run, and sends the operator to check the name rather than the form.
+    expect(r.stderr).not.toContain("STALE_WAIVER");
   });
 
   test("--reason with no --accept is refused, because it explains nothing", () => {
@@ -211,10 +300,22 @@ describe("#661-5: the script refuses an unexplained waiver", () => {
     const r = runScript([
       "--project", root, "--previous", previous, "--current", current, "--ledger", junit(root),
       "--out", out,
-      "--accept", GONE_A, "--accept", GONE_B, "--reason", "folded into one table-driven case",
+      ...W_CLI(GONE_A), ...W_CLI(GONE_B), "--reason", "folded into one table-driven case",
     ]);
     expect(r.status, `expected a clear run, got: ${r.stderr}`).toBe(0);
     expect(r.stderr, "a waived round must not look like a clean one on the console").toContain("WAIVED");
+
+    // The ledger proved both green, so no WAIVED_UNMEASURED line — and a
+    // run that waived something unjudgeable must say so, which is the
+    // half that makes this assertion mean anything.
+    expect(r.stderr).not.toContain("WAIVED_UNMEASURED");
+    const noLedger = runScript([
+      "--project", root, "--previous", previous, "--current", current,
+      "--out", join(root, "no-ledger.json"),
+      ...W_CLI(GONE_A), ...W_CLI(GONE_B), "--reason", "folded into one table-driven case",
+    ]);
+    expect(noLedger.status, "a waived round with no ledger still clears").toBe(0);
+    expect(noLedger.stderr, "but it must not look like the measured one").toContain("WAIVED_UNMEASURED");
 
     const artefact = JSON.parse(readFileSync(out, "utf-8"));
     expect(artefact.verdict).toBe("CLEAN");
