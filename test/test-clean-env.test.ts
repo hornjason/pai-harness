@@ -33,6 +33,7 @@ import {
   executeCheckoutPlan,
   isSafeRefspec,
   parseCheckoutModel,
+  suiteJobName,
   prepareCiCheckout,
   UNMODELLED,
   type CheckoutModel,
@@ -73,7 +74,7 @@ describe("#168: the checkout model is read from the workflow, not assumed", () =
     // real file means a change to CI shows up here rather than silently
     // widening the gap this issue exists to close.
     const yaml = readFileSync(join(REPO, ".github", "workflows", "ci.yml"), "utf-8");
-    const { model, why } = parseCheckoutModel(yaml, "test");
+    const { model, why } = parseCheckoutModel(yaml, suiteJobName(yaml));
     expect(model, why).not.toBeNull();
     expect(model!.depth).toBe(1);
   });
@@ -84,7 +85,7 @@ describe("#168: the checkout model is read from the workflow, not assumed", () =
     // today, because the job fetches origin/main at depth 200 before the
     // suite runs — and would report failures CI does not have.
     const yaml = readFileSync(join(REPO, ".github", "workflows", "ci.yml"), "utf-8");
-    const { model } = parseCheckoutModel(yaml, "test");
+    const { model } = parseCheckoutModel(yaml, suiteJobName(yaml));
     expect(model!.fetches.length).toBeGreaterThan(0);
     expect(model!.fetches.some(f => f.refspec.includes("refs/heads/main"))).toBe(true);
     expect(model!.fetches[0].depth).toBe(200);

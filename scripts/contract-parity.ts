@@ -83,6 +83,7 @@ import {
   isPinnedBunVersion,
   setupBunWith,
 } from "../lib/bun-version";
+import { suiteJobName } from "../lib/ci-checkout";
 import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
 import { acPayloadReadExpression, acPayloadShellArgument } from "../lib/evidence-command-transport";
 import { shellSingleQuote } from "../lib/phase2-decomposition";
@@ -338,15 +339,39 @@ export function testCommandsNamedByConfig(text: string): NamedTestCommand[] {
  */
 const NOT_THE_TEST_STEP = new Set(["bun install", "bun run typecheck"]);
 
-/** The test step of the generated `test` job in ci.yml. */
+/**
+ * The shard selector is a CI PARTITION, not a different test command (#735).
+ *
+ * `bun test --shard=2/4` runs a quarter of the files of `bun test`; it does
+ * not run them differently. The property #621 protects is that one command
+ * is named everywhere, and appending a partition selector in CI does not
+ * break it — but comparing the raw strings says it does, and the cheap fix
+ * for that red is to add the sharded spelling to AGENTS.md, which would put
+ * a CI-only flag in the row a human copies to run the suite locally.
+ *
+ * Stripped only at the END and only with a `N/M` argument, so a command that
+ * genuinely differs before the flag still disagrees.
+ *
+ * `\S+` will not do for the numerator: the generated value is the GitHub
+ * expression `${{ matrix.shard }}`, which contains spaces.
+ */
+const SHARD_SELECTOR = /\s+--shard=.+?\/\d+\s*$/;
+
+/** The test step of the generated suite job in ci.yml. */
 export function testCommandsNamedByCiWorkflow(text: string): NamedTestCommand[] {
-  const start = text.indexOf("\n  test:");
+  // `suiteJobName` is the one binding for "which job runs the suite" — it is
+  // `test` normally and `test-shard` under a matrix, where `test` becomes the
+  // aggregate and runs no tests at all. A second copy of that rule here would
+  // survive any mutation of the first and both would read as covered.
+  const anchor = `\n  ${suiteJobName(text)}:`;
+  const start = text.indexOf(anchor);
   if (start === -1) refuse(CI_YML, "it has no `test:` job");
   const rest = text.slice(start + 1);
   // The next job at the same indent ends this one. Jobs a consumer added are
   // theirs (#216) and must not be read as this project's test command.
-  const end = /\n {2}[A-Za-z_][\w-]*:/.exec(rest.slice("  test:".length));
-  const job = end === null ? rest : rest.slice(0, "  test:".length + end.index);
+  const head = anchor.slice(1);
+  const end = /\n {2}[A-Za-z_][\w-]*:/.exec(rest.slice(head.length));
+  const job = end === null ? rest : rest.slice(0, head.length + end.index);
   if (job.trim() === "") refuse(CI_YML, "its `test:` job is empty");
 
   const runs = job
@@ -356,7 +381,8 @@ export function testCommandsNamedByCiWorkflow(text: string): NamedTestCommand[] 
     .map(m => m[1].trim())
     // `run: |` opens a block scalar; the body is not a command on this line.
     .filter(cmd => cmd !== "|" && !cmd.startsWith("|"))
-    .filter(cmd => !NOT_THE_TEST_STEP.has(cmd));
+    .filter(cmd => !NOT_THE_TEST_STEP.has(cmd))
+    .map(cmd => cmd.replace(SHARD_SELECTOR, ""));
 
   if (runs.length === 0) {
     refuse(CI_YML, "its `test:` job runs nothing but setup and the type check");
