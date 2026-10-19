@@ -329,6 +329,130 @@ The second: that same assertion matched the whole table line, and one spec's
 keys on the row's first cell now — `lib/spec-listing.ts`'s *"a mention is not
 a listing"*, arriving in the table that module exists to police.
 
+### Line-number citations in documentation (#541)
+
+#514 converted one document's seven line citations to the anchor form and
+measured, while doing it, that **three of the four unguarded ones were already
+wrong** — each pointing at a plausible-looking line in the right file. The
+three that stayed true were the three a test executed. The rest of the tree was
+left as it was.
+
+**Measured on this branch's base, with the command beside the number**, because
+a count with no command is not reproducible and the tree underneath it moves:
+
+```
+bun -e 'const {markdownDocuments,repoFileIndex,documentCensus}=await import("./lib/line-citation.ts");
+const i=repoFileIndex("."),c={};let t=0;for(const d of markdownDocuments(".")){const x=documentCensus(".",i,d,false);
+t+=x.broken+x.unmeasured;for(const r of x.readings)if(r.reading==="BROKEN")c[r.cause]=(c[r.cause]??0)+1;}
+console.log(t,JSON.stringify(c))'
+```
+
+**231 line citations across 23 markdown documents**, of which 81 could not be
+resolved at all. The issue's own figure was 134 across ten documents, taken
+five weeks earlier against `specs/` and `docs/adr/` only; the population had
+grown and the scope here is every markdown document in the tree.
+
+Two readings govern the design, and both refuse a comfortable default:
+
+- **A line citation is never VALID.** `LineReading` has two arms. One that
+  resolves reads `UNMEASURED` — the file and the line exist, and whether it is
+  the line the sentence describes is not decidable from here. A 75% staleness
+  rate in the unguarded half of one document is the argument against an
+  optimistic default; a green tick, `0` and `null` are all indistinguishable
+  from a correct answer, and a refusal naming the reading is not.
+- **A citation that cannot be resolved has a named cause.** `NO_SUCH_FILE`,
+  `UNQUALIFIED_PATH`, `AMBIGUOUS_PATH`, `PAST_END_OF_FILE`,
+  `OUTSIDE_REPOSITORY`. Four different repairs, so four different readings;
+  "this citation is broken" is not actionable.
+
+**A ratchet, not a hard gate, and the split is the reason.** An anchor carries
+its own text, so whether it still names a site is DECIDABLE — that half is a
+hard gate over every document in the tree, where before this it ran over one.
+A line number is not decidable, so that half is a both-ways known-violations
+ratchet in `.claude/line-citation-ratchet.json`, which banks **three** numbers
+per document rather than one. One total cannot see progress: qualifying
+`ship.js` to `workflows/ship.js` deletes nothing and adds nothing, and
+converting a citation to the anchor form looks, to a total, exactly like
+deleting it. The arithmetic cannot forbid a deletion — a paragraph is allowed
+to go away — so what three numbers buy is that the two cases move DIFFERENTLY
+in the diff. The file says so in its own `meaning` block, because a ratchet
+nobody can interpret becomes a number nobody lowers.
+
+Eleven bare basenames were qualified in `specs/HARNESS-GATES.md` and
+`specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md`, taking the broken population from
+81 to 71. **Ten became UNMEASURED and one got worse in a useful way**: writing
+`gates/run-gate.ts` in front of a citation to line 291 turned an
+`UNQUALIFIED_PATH` into a `PAST_END_OF_FILE`, because that file has 163 lines.
+A citation that was merely unresolvable is now demonstrably wrong, and it is
+banked with a note saying so rather than repaired, because nobody knows what
+line 291 described.
+
+- [x] SC-2230: test/line-citation-ratchet.test.ts contains [a path naming no file in the tree is BROKEN for not existing] — named, not merely refused, because "something is wrong with this citation" and "this file is not in the repository" are different repairs
+- [x] SC-2231: test/line-citation-ratchet.test.ts contains [a bare basename is BROKEN even when exactly one file matches] — the tempting case to wave through: a basename is not a path, it is a guess that resolves until a second file with that name lands
+- [x] SC-2232: test/line-citation-ratchet.test.ts contains [a basename matching two files is AMBIGUOUS, a different cause] — synthetic, because the live tree has no surviving example and so cannot witness the distinction
+- [x] SC-2233: test/line-citation-ratchet.test.ts contains [a line past the end of the file is BROKEN] — with the in-tree control that a line inside the file is not, or a guard refusing every resolvable citation would satisfy the row while saying nothing about the end of the file
+- [x] SC-2234: test/line-citation-ratchet.test.ts contains [a citation that leaves the repository is refused for leaving] — refused for LEAVING and not for being absent, plus the symlink input nothing lexical can reach, whose target is outside the walked tree so the case cannot be satisfied by a route that bypasses the feature
+- [x] SC-2235: test/line-citation-ratchet.test.ts contains [a citation that resolves reads UNMEASURED, and there is no third reading] — exhaustive over the live tree, so an arm meaning "fine" appearing later is caught rather than inferred
+- [x] SC-2236: test/line-citation-ratchet.test.ts contains [a document the ratchet says has citations and has none THROWS] — a checker finding zero citations in every document is in perfect agreement, and zero strings are trivially all fine
+- [x] SC-2237: test/line-citation-ratchet.test.ts contains [the refusal escapes citationRatchetViolations rather than folding in] — folded into the violation list the refusal is one more sentence in a report, and an empty violation list is what a clean tree looks like
+- [x] SC-2238: test/line-citation-ratchet.test.ts contains [the pattern reads a citation and does not read the historical prose form] — both halves, since a pattern matching nothing passes every row above it and a pattern matching prose refuses a paragraph whose point is that the line is gone
+- [x] SC-2239: test/line-citation-ratchet.test.ts contains [over the banked number fails, and so does under it] — the under direction is the one people forget, and a stale entry is an entry nobody will ever remove
+- [x] SC-2240: test/line-citation-ratchet.test.ts contains [a document absent from the ratchet is allowed no citations at all] — the migration window is exactly when the next line citation gets written
+- [x] SC-2241: test/line-citation-ratchet.test.ts contains [broken and unmeasured are banked apart, so qualifying a path is progress] — the same document, the same citation count, the path qualified: a single total cannot see it happen
+- [x] SC-2242: test/line-citation-ratchet.test.ts contains [an anchor citation is banked too, so a conversion is legible] — a conversion lowers one number and raises another, a deletion lowers one and raises nothing
+- [x] SC-2243: test/line-citation-ratchet.test.ts contains [an anchor that no longer resolves is a hard failure, not a banked one] — enforce the half the repository can decide and report the other half as UNMEASURED; a single policy over both would have to be the weaker one
+- [x] SC-2244: test/line-citation-ratchet.test.ts contains [a banked document that no longer exists is a failure] — the ratchet refuses in both directions at the document level too
+- [x] SC-2245: test/line-citation-ratchet.test.ts contains [the whole tree agrees with the ratchet, and the census is not empty] — the control runs first: a walk that found no documents, or a pattern that matched nothing, would satisfy every comparison by finding nothing to compare
+- [x] SC-2246: test/line-citation-ratchet.test.ts contains [the ratchet says what an entry means and what clears one] — including the one instruction not inferable from the numbers, that a count lowered by deleting the citation is not progress
+
+#### What was broken to prove it (SC-2230..SC-2246)
+
+Run and counted over `test/line-citation-ratchet.test.ts` +
+`test/source-anchor-citations.test.ts` (27 tests). Every count predicted before
+the battery ran, and **the baseline row was read before any mutation row** — an
+instrument that has stopped reporting takes the baseline down with it, and that
+is the row nobody mutates anything to produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 27 pass, 0 fail | **27 pass, 0 fail** | — |
+| `citationRatchetViolations` short-circuited to `return []` | 7 | **7 of 27** | a document carrying 4 line citations against an entry banking 3: the original returns one violation naming 4, the mutant returns nothing |
+| the under-direction removed (`found <= banked` continues) | 3 | **3 of 27** | the same document carrying 2 against an entry banking 3: the original says lower it or delete the entry, the mutant says nothing |
+| the no-citations refusal removed from `documentCensus` | 2 | **2 of 27** | a document banked at 3 unmeasured that contains none: the original throws, the mutant returns a zero census |
+| the refusal CAUGHT inside `citationRatchetViolations` and pushed as a string | 1 | **1 of 27** | the same document: the original throws out of the function, the mutant returns a one-element violation list, which is what a report full of sentences looks like |
+| `UNQUALIFIED_PATH` collapsed into `NO_SUCH_FILE` | 1 | **1 of 27** | a bare `ship.js` citation in a tree holding `workflows/ship.js` — one cause says qualify the path, the other says the file is gone |
+| `AMBIGUOUS_PATH` collapsed into `UNQUALIFIED_PATH` | 1 | **1 of 27** | a bare `steps.ts` citation in a tree holding two files of that name |
+| the `PAST_END_OF_FILE` reading removed | 2 | **2 of 27** | a citation to line 400 of a three-line file. The second red is the LIVE TREE: `gates/run-gate.ts` line 291 becomes UNMEASURED, moving two banked numbers |
+| `UNMEASURED` renamed to `VALID` in the resolving arm | 6 | **6 of 27** | any resolvable citation. The census counts by reading, so a renamed arm empties `unmeasured` everywhere and four ratchet cases go with the two that name it |
+| the anchor hard gate dropped from the violations list | 1 | **1 of 27** | a document citing an anchor whose text was deleted from the file |
+| the zero-tolerance for an unbanked document removed | 1 | **1 of 27** | a document carrying one citation with no entry at all |
+| the banked-but-not-scanned loop removed | 1 | **1 of 27** | an entry naming a document that is not in the tree |
+| the anchor-span strip removed from `lineCitations` | 1 | **1 of 27** | an anchor whose quoted TEXT contains the old form — the original counts nothing, the mutant counts the good form as an instance of the bad one and makes the repair raise the banked number |
+| **the cheapest wrong fix**: one banked total per document instead of three numbers | 2 | **2 of 27** | the qualified-path document, where broken falls and unmeasured rises by one each: the original reports both movements, the total reports nothing |
+
+**The last row is the one the rest of the table exists to support.** The
+cheapest repair here is *bank the number and move on* — one count per document,
+green today, no classification. It works, and the two cases that do not survive
+it are SC-2241 and SC-2242, which are precisely the cases about progress being
+recordable. They go red **non-vacuously**: they assert which numbers moved, and
+a total has no numbers to move. The second-cheapest wrong fix, *only check the
+document that already works*, is caught by SC-2240 and SC-2245 — a document
+absent from the ratchet is allowed no citations, and the corpus floor refuses a
+walk that found nothing.
+
+**Two rows deserve reading rather than counting.** The `VALID` row at 6 is high
+because the census counts BY READING, so renaming one arm empties `unmeasured`
+for the whole tree; every extra red is squarely about the mutated behaviour and
+the file still parses, which is the discriminator between a load-bearing
+binding and a crashing mutant. The `PAST_END_OF_FILE` row at 2 is the one that
+proves the live-tree case is not decorative: without a single genuinely wrong
+citation in this repository it would have been 1, and SC-2245 would have been
+asserting agreement between two things that could not disagree.
+
+None of the thirteen mutations is left in the tree; all were run and reverted
+from a `cp` backup — never `git checkout --` — and `lib/line-citation.ts` was
+confirmed byte-identical to the measured source afterwards by `shasum -a 256 -c`.
+
 ## Constraints
 
 - All new content-alignment checks MUST start as WARN, not FAIL (spec-policies.json Decision #9)

@@ -45,11 +45,14 @@ import { dirname, join } from "path";
 export const REPO_ROOT = join(import.meta.dir, "..");
 
 /**
- * The comparison itself lives in `scripts/contract-parity.ts` (#626).
+ * The comparison itself lives in `lib/test-command-positions.ts` — #621 wrote
+ * it here, #626 moved it into `scripts/contract-parity.ts`, and #637 AC-9
+ * moved it to `lib/`.
  *
- * It was written here and moved there when the contract-parity check came to
- * need it: a script cannot import a file that calls `describe` at module
- * scope, so the alternative was a second copy of the three extractors — a
+ * A script cannot import a file that calls `describe` at module scope, and a
+ * script cannot be imported by another script either, so each new consumer
+ * pushed the binding one position further out. `lib/` is where it stops. The
+ * alternative at every step was a second copy of the three extractors — a
  * producer and a consumer that must agree with nothing comparing them, which
  * is the exact defect #626 exists to find. One binding, re-exported here so
  * the cases below and every existing reader keep their import path, and one
@@ -67,7 +70,7 @@ import {
   testCommandsNamedByConfig,
   type NamedTestCommand,
   type TestCommandAgreement,
-} from "../scripts/contract-parity";
+} from "../lib/test-command-positions";
 
 export {
   AGENTS_MD,

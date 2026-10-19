@@ -2415,6 +2415,161 @@ This validates via Zod at write time — you get immediate error feedback. Repor
 // ════════════════════════════════════════════════════════════
 
 phase('Goal')
+
+// ──── LAUNCH-BASE-CHECK-START ────
+/**
+ * Is the SESSION's working directory the tree this run was handed? (#644)
+ *
+ * ## Why this is the first thing the run does
+ *
+ * `opts.cwd = PROJECT_ROOT` has pinned every worktree-isolated spawn in this
+ * file since `804b9a43` on 2026-09-23, and it does not hold: the agent
+ * runtime resolves `isolation: 'worktree'` against the SESSION's current
+ * directory and applies `opts.cwd` to the spawned agent afterwards. Rungate
+ * already passes the explicit argument and is overridden. So #644's SC-1 as
+ * filed — *resolve the base from an explicit argument, never from
+ * `process.cwd()`* — is not reachable from this repository, and the one point
+ * rungate controls is whether the run STARTS.
+ *
+ * Two failures, one input, and the quiet one is worse:
+ *
+ *   1. the session's directory is not a git repository — the run dies at the
+ *      first isolated spawn with `WorktreeIsolationError: … not in a git
+ *      repository`, a message about a directory it does not name, pointing at
+ *      VCS hook configuration that is irrelevant;
+ *   2. the session's directory IS a git repository, in another project or on
+ *      another branch — **nothing fails.** The run cuts its worktrees from
+ *      somebody else's tree and succeeds onto the wrong base.
+ *
+ * Both are decided before the first isolated spawn, so the check has to be
+ * before it too — which is why this is the first step of the first phase and
+ * not a gate.
+ *
+ * ## It decides nothing
+ *
+ * `lib/launch-base.ts` holds the one binding that compares the two trees, and
+ * the check script is the only caller. ship.js runs it and restates the
+ * reading. A second comparison composed here out of `pwd` and a toplevel
+ * probe would be two deciders that agree, and mutating either would leave the
+ * other answering correctly (`.claude/rules/checks-must-be-able-to-fail.md`).
+ *
+ * This file makes no subprocess calls (#69), so the command travels through
+ * an agent the way the build commit, the suite measurement and the run-branch
+ * checks already do. That agent is roleless and sets no isolation, so it cuts
+ * no worktree of its own — and it runs in the same ambient directory the
+ * runtime would resolve an isolated spawn against, which is what makes its
+ * reading the one this run needs.
+ */
+function launchBaseCheckShell() {
+  // No `cd`. Everywhere else in this file a command is pinned to a directory
+  // because ambient state is the defect; here the ambient state IS the
+  // measurement, and a `cd` would make the step report the answer the run
+  // wanted rather than the one it has.
+  return `   pwd
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-launch-base.ts`)} --project-root ${shellQuote(PROJECT_ROOT)}
+   echo "EXIT: $?"
+`
+}
+
+/**
+ * What the reply is allowed to carry back.
+ *
+ * A schema is a FILTER on the reply, not a description of it (#646): an
+ * undeclared field is stripped silently on the way back. The nullable ones
+ * say so — `refusal` and `cwd` are null on a clean reading, and
+ * `type: 'string'` would drop the null and leave the field absent, which
+ * reads as a step nobody asked about rather than one that looked.
+ */
+function launchBaseCheckSchema() {
+  return {
+    type: 'object',
+    properties: {
+      reading: { type: 'string' },
+      cwd: { type: ['string', 'null'] },
+      refusal: { type: ['string', 'null'] },
+      exitCode: { type: ['number', 'null'] },
+    },
+    required: ['reading'],
+  }
+}
+
+/**
+ * The reading, and the sentence that stops the run — or null to proceed.
+ *
+ * Everything in `reply` is an agent's RESTATEMENT of what the command printed
+ * (#530), so an absent reading is UNMEASURED and never clean: a run launched
+ * by the absence of an answer is launched by nothing at all.
+ */
+function readLaunchBase(reply) {
+  const clean = v => String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').slice(0, 500).trim()
+  const r = reply && typeof reply === 'object' ? reply : {}
+  const reading = clean(r.reading)
+  const cwd = clean(r.cwd)
+  const exitCode = typeof r.exitCode === 'number' ? r.exitCode : null
+
+  if (!reading) {
+    return {
+      reading: 'UNMEASURED',
+      refusal: 'LAUNCH_BASE_UNMEASURED: the launch-base step reported no reading, so which tree this ' +
+        'run would cut its agent worktrees from was never established — and unknown is not the right ' +
+        'tree (#644)',
+    }
+  }
+
+  if (reading === 'SAME_CHECKOUT') {
+    // The script exits non-zero for every reading except this one, so a reply
+    // asserting both has restated something that cannot have happened. A PASS
+    // carrying its own refusal is not a pass.
+    if (exitCode !== null && exitCode !== 0) {
+      return {
+        reading: 'UNMEASURED',
+        refusal: `LAUNCH_BASE_UNMEASURED: the step reported SAME_CHECKOUT and exit ${exitCode}, which the ` +
+          'check cannot produce together — one of the two was misread, and a contradicted reading is not ' +
+          'one that passed (#644)',
+      }
+    }
+    return { reading, refusal: null }
+  }
+
+  const why = clean(r.refusal) ||
+    `the check read ${reading} and gave no reason. The launching session's working directory ` +
+    `${cwd || '(unreported)'} is not the tree this run was handed (${PROJECT_ROOT}), and agent worktrees ` +
+    'are cut by the runtime from the session\'s directory'
+  return { reading, refusal: `LAUNCH_BASE_${reading}: ${why}` }
+}
+
+const launchBaseReply = await timedAgent(`
+Run exactly this, in the directory you are already in, and report what it printed:
+
+${launchBaseCheckShell()}
+
+Do NOT \`cd\` anywhere first — not into the project root, not into a worktree,
+not anywhere. The directory you are in IS what is being measured: the agent
+runtime resolves worktree isolation against the launching session's directory,
+so a run started from the wrong one cuts its worktrees from the wrong tree and
+either dies at the first isolated spawn or succeeds onto somebody else's
+branch (#644).
+
+The command prints one JSON object. Report its "reading" as reading and its
+"cwd" as cwd, both EXACTLY as printed. Report its "refusal" as refusal — null
+when the JSON carried none. Report the EXIT: value as exitCode, as a number.
+
+Do not fix anything, do not create any directory, and do not re-run the
+command from somewhere else to get a different answer. If it refuses, report
+the refusal.
+`, { label: 'launch-base', phase: 'Goal', schema: launchBaseCheckSchema() })
+
+const launchBase = readLaunchBase(launchBaseReply)
+if (launchBase.refusal) {
+  log(launchBase.refusal)
+  return await terminalFailure('LAUNCH_BASE_FAILED', {
+    reason: launchBase.refusal,
+    launchBaseReading: launchBase.reading,
+  })
+}
+log('Launch base: SAME_CHECKOUT — the launching session is in the tree this run was handed (#644)')
+// ──── LAUNCH-BASE-CHECK-END ────
+
 log(`Ship #${ISSUE}: reading issue`)
 
 // ── Deterministic issue reading via gh CLI ──

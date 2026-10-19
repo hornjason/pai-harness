@@ -13,7 +13,7 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createGitHooks, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
+import { preCommitHookScript, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
 // `import.meta.main` is false under an import, so this loads the table without
 // running the check. Importing the labels rather than retyping them is the
 // point: a test carrying its own copy of the strings asserts that two literals
@@ -55,8 +55,19 @@ const source = readFileSync(SCRIPT, 'utf-8');
 let MUTANT = '';
 let MUTANT_DIR = '';
 let FIX = '';
-/** What the generator produces today, byte for byte. */
+/**
+ * What the generator produces today FOR A FIXTURE REPOSITORY, byte for byte.
+ *
+ * Since #610 the hook names one updater, resolved from what the project
+ * declares itself to be, so "the generator output" is a function of the
+ * project and not a constant. Every fixture built by `repoWithHook` is a bare
+ * temp directory — no package.json, no updater — so they all resolve to the
+ * same consumer-with-nothing form and one reading serves all of them. The
+ * live tree is a different shape and gets its own reading.
+ */
 let CURRENT = '';
+/** The same question asked of this repository, which declares itself rungate. */
+let CURRENT_LIVE = '';
 
 function git(cwd: string, args: string[]) {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf-8' }).trim();
@@ -101,11 +112,19 @@ beforeAll(() => {
 
   FIX = mkdtempSync(join(tmpdir(), 'hook-currency-fix-'));
 
-  const gen = mkdtempSync(join(tmpdir(), 'hook-currency-gen-'));
-  mkdirSync(join(gen, '.git', 'hooks'), { recursive: true });
-  createGitHooks(gen, []);
-  CURRENT = readFileSync(join(gen, '.git', 'hooks', 'pre-commit'), 'utf-8');
-  rmSync(gen, { recursive: true, force: true });
+  // Read, never installed. `preCommitHookScript` writes nothing, which is the
+  // property that lets this file ask what the generator would produce for the
+  // LIVE repository without going near the installed hook — a file every
+  // linked worktree of this repository shares.
+  const shape = join(FIX, 'generator-shape');
+  mkdirSync(shape, { recursive: true });
+  CURRENT = preCommitHookScript(shape);
+  CURRENT_LIVE = preCommitHookScript(REPO_ROOT);
+  expect(
+    CURRENT_LIVE,
+    'the harness and a bare consumer get the same hook, so the fixtures below could not tell ' +
+      'a project-scoped reading from a scratch one',
+  ).not.toBe(CURRENT);
 });
 
 afterAll(() => {
@@ -343,12 +362,21 @@ describe('#599: an installed hook that is not the generator output is refused', 
     // The #599 shape: #450 landed, the primary arm did not. This is the case
     // that separates "has a worktree guard" from "is current", and without it
     // the check would certify every hook installed between the two fixes.
-    const pre599 = CURRENT
-      .replace(/updater=""[\s\S]*?\n    fi\n/, '')
-      .replace(/elif bun "\$updater" --skip-tests >&2; then/, 'if true; then');
+    const GUARD = 'if [ -n "$gitdir" ] && [ "$gitdir" = "$commondir" ]; then\n';
+    const pre599 = CURRENT.split('\n')
+      .filter(l => !l.includes('project-state: UNMEASURED') && !l.includes('(#610)'))
+      .join('\n')
+      .replace(
+        GUARD,
+        GUARD +
+          '    bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true\n' +
+          '    git add PROJECT-STATE.md project-state.json 2>/dev/null || true\n',
+      );
     expect(pre599, 'the pre-#599 fixture is identical to the current hook').not.toBe(CURRENT);
     expect(pre599, 'the fixture lost the worktree guard too, so it cannot isolate the updater leg')
       .toContain('--git-common-dir');
+    expect(pre599, 'the fixture still carries the UNMEASURED reading it is meant to predate')
+      .not.toContain('project-state: UNMEASURED');
     expectRefusedAs(against(repoWithHook('pre-599', pre599)), 'STALE', /updater resolution/i);
   });
 
@@ -479,7 +507,7 @@ describe('#599: the live tree', () => {
     const installed = existsSync(path) ? readFileSync(path, 'utf-8') : null;
 
     const r = run(SCRIPT, ['--project', REPO_ROOT]);
-    const shouldPass = installed === CURRENT;
+    const shouldPass = installed === CURRENT_LIVE;
     expect(
       r.code === 0,
       shouldPass
