@@ -227,6 +227,12 @@
   ],
   "sessions": [
     {
+      "date": "2026-10-19 session 53 (#669 merged as d48b9a7e; the new check fired on this repo's own fixture and was right twice)",
+      "items": [
+        "#672 landed #669 (7f9f066c -> d48b9a7e), 16 of 16 paths by content, 0 divergent, CI 4/4. The ship run was STOPPED BY HAND at its repair cycle: the repair agent had run 32 minutes with nothing committed and no way to distinguish working from hung. Its worktree turned out to hold 995 uncommitted lines RE-IMPLEMENTING the feature from base and NOT touching test/contract.test.ts at all -- it had not reached the three failing tests it was dispatched for. The five pre-existing test files it was adapting pass unmodified on merged main (90 pass, 0 fail), so nothing was lost; its patch is preserved at ~/.rungate/pai-harness-669/repair-agent-uncommitted.patch. Six ACs were already PASS before the stop; the suite was the only blocker. Criterion 7 was read out of the shipped bytes rather than inferred from a gate colour, and is stronger than asked: the widening is applied to a COPY of the fixture on disk and re-read from that file, and its finding is that the wrong fix cannot reach its own symptom until the invented heading is repaired first. Two reporting defects in the run's own state filed as #673 rather than fixed here: an interim verdict of PASS written over 1 test in 1 file nine minutes before the real reading, and one measurement event carrying two denominators (13084 ran against 13915 existing, the difference being exactly 13 skip + 818 todo). The run also left the primary checkout parked on rungate/run-669 rather than main, which is silent until the next session assumes main -- agreed a convention with jhorn-1f that whoever finishes says which branch they left the primary on, not merely that they are done."
+      ]
+    },
+    {
       "date": "2026-10-19 session 52 (#664 and #666 merged as 66a74648; three gates failed correct work and two could not have passed it)",
       "items": [
         "#667 landed #664 and #666 in one commit (d579f383 -> 66a74648). Eleven fixed-character windows across thirteen test files converted to structural cuts behind lib/source-slice.ts, which has NO numeric-length parameter anywhere in its API -- stronger than the issue asked, because a twelfth decaying window cannot be reintroduced when there is no window to pass. Four refusals named for the single input each reaches, including AnchorOutsideCutError for a two-sided region that is well-formed, non-empty and about other code. The sweep in test/no-fixed-window-slices.test.ts has no exemption file and no allowlist, citing the rule about allowlists becoming evidence for the files they exempt, asserts >100 files read, and proves its matcher fires on both window forms and not on slice(at, i + 1). 12961 pass, 0 fail, 13792 tests across 381 files, exit 0; verify-merge-content 19 of 19 paths, 0 divergent.",
@@ -792,18 +798,15 @@
     }
   ],
   "session": {
-    "number": 52,
+    "number": 53,
     "date": "2026-10-19",
-    "suite": "12961 pass, 0 fail, 13 skip, 818 todo -- 13792 tests across 381 files on the build commit (d579f383), exit 0",
+    "suite": "CI test job PASS -- full suite, 5m22s, on 7f9f066c (merged d48b9a7e). Locally 166 pass, 0 fail targeted over test/contract.test.ts, the six evidence test files, the #664 replay, discovery AC validation and gates/workflow.test.ts; typecheck 0 errors. The full suite was NOT re-measured locally -- run wf_62d68d55-81c had spent its 8/8 per-run full-suite budget -- so CI is the independent full reading. Pre-repair suite on 570c9e1c: 13081 pass, 3 fail, 13 skip, 818 todo across 387 files.",
     "issues_created": [
-      666,
-      668,
-      669
+      673
     ],
     "issues_closed": [
-      664,
-      666
+      669
     ],
-    "summary": "Closes #664 and closes #666 together: eleven fixed-character source-slice windows across thirteen test files became structural cuts behind one helper, and the measurement the conversion destroys got written down before it was destroyed. lib/source-slice.ts has no numeric-length parameter anywhere in its API, so a twelfth decaying window cannot be reintroduced, and it refuses four distinct bad cuts by name. The sweep that proves zero remain has no exemption file and no allowlist, asserts it read more than 100 files, and plants four strings as a positive control. The headroom table found something nobody asked for: no row was negative in the sense #666 expected, and the record says so explicitly rather than by silence, but two windows were cutting SHORTER than the construct they claim to be about -- agent-timings.test.ts:344 by 482 characters and ac-coverage.test.ts:485 by 1,305, where 3 of 4 'required' mentions live in the part the window never reached. The session's real finding is the pipeline again. Three gates failed this correct work and all three were instruments: AC-5 recorded a bun version banner because --grep is not a flag bun has and bun does not reject it; AC-6 and AC-7 recorded 0 because their awk ranges open on a heading Discovery invented and nobody told the implementer was load-bearing. Re-run against the heading actually written, AC-6 returns 4 against a threshold of >= 11 and AC-7 returns 3 against == 1 -- neither is satisfiable by a correct record. The run was stopped before its repair cycle could pad a spec to reach an unreachable count. Filed as #669, with #668 for the one real gap: the helper resolves anchors with indexOf and never refuses one that appears twice, against the sibling module it names as its model, which says not-found and found-twice are both refusals. Two of my own numbers were wrong and are corrected in the record: the headline headroom is 548, not the 650 carried in the issue title and commit subject, and the site count is eleven windows over thirteen files, not ten -- the sweep found three the hand list missed."
+    "summary": "Closes #669: an AC evidence command is now checked against the thing it claims to measure. Each command is run against the pre-change tree at scope and its output recorded beside the threshold, so a command that already satisfies its bar, or cannot reach it, is named before IMPLEMENT rather than at the verdict -- which is what sent #664 into a repair cycle against correct work. The check fired on this repository's own STANDARD contract fixture on first contact and both hits were true positives: an AC green before the work existed (grep fix target.ts against contains 'fix', on a tree already carrying the fix), and an evidence reading whose entire captured output was the banner 'bun test v1.3.14 (d1632b29)' -- the #664 defect verbatim, found by the check written to find it. The fixture took its baseline against the finished tree, which makes EVERY passing AC already-satisfied, so the repair gives the two phases the two trees rather than weakening the refusal. The cheapest wrong fix was named publicly before the repair was written so it could be judged against it: let the refusal skip a reading with no baselines. Not taken. Mutation: pointing scope back at the post-change tree is 1 of 15 red, the control and only it, predicted 1."
   }
 }
