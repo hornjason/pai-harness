@@ -56,16 +56,7 @@
  */
 
 import { execFileSync } from "child_process";
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "fs";
-import { tmpdir } from "os";
+import { chmodSync, lstatSync, readFileSync, writeFileSync } from "fs";
 import { isAbsolute, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -141,11 +132,21 @@ export const GUARD_PROPERTIES: GuardProperty[] = [
   },
   {
     name: "the updater resolution (#599)",
-    probe: 'updater="scripts/update-project-state.ts"',
+    probe: "project-state: UNMEASURED",
   },
   {
     name: "the decline on stderr (#599)",
     probe: "are DA-owned (#296); update them from the primary checkout.\" >&2",
+  },
+  {
+    // #610. Deliberately NOT either baked path: the generator emits
+    // `scripts/update-project-state.ts` for the harness and
+    // `node_modules/rungate/scripts/…` for a consumer, so a probe naming
+    // either one reports every tree of the other kind as predating a fix it
+    // carries. This marker is in every form the generator emits, including
+    // the UNMEASURED one.
+    name: "the generation-time updater resolution (#610)",
+    probe: "Which updater runs was decided when this hook was generated (#610)",
   },
 ];
 
@@ -190,7 +191,10 @@ export interface GeneratorOutput {
  * always agrees with the first: the comparison would pass while the generator
  * drifted, and no mutation of either could tell them apart.
  */
-export async function generatorHook(generatorRoot: string): Promise<GeneratorOutput> {
+export async function generatorHook(
+  generatorRoot: string,
+  projectRoot: string,
+): Promise<GeneratorOutput> {
   const modulePath = join(generatorRoot, "lib", "scaffold", "steps.ts");
   let mod: any;
   try {
@@ -202,19 +206,34 @@ export async function generatorHook(generatorRoot: string): Promise<GeneratorOut
         `Pass --generator <rungate checkout> if this project is not the harness.`,
     );
   }
-  if (typeof mod.createGitHooks !== "function" || typeof mod.PRE_COMMIT_MANAGED_MARKER !== "string") {
+  if (
+    typeof mod.preCommitHookScript !== "function" ||
+    typeof mod.PRE_COMMIT_MANAGED_MARKER !== "string"
+  ) {
     throw new HookRefused(
       "UNMEASURED",
-      `${modulePath} does not export createGitHooks and PRE_COMMIT_MANAGED_MARKER, so there is ` +
-        `nothing to compare the installed hook against`,
+      `${modulePath} does not export preCommitHookScript and PRE_COMMIT_MANAGED_MARKER, so there ` +
+        `is nothing to compare the installed hook against`,
     );
   }
 
-  const scratch = mkdtempSync(join(tmpdir(), "rungate-hookgen-"));
-  try {
-    mkdirSync(join(scratch, ".git", "hooks"), { recursive: true });
-    mod.createGitHooks(scratch, []);
-    const content = readFileSync(join(scratch, ".git", "hooks", "pre-commit"), "utf-8");
+  {
+    let content: string;
+    try {
+      // Generated FOR THE PROJECT, and written nowhere (#610). The hook names
+      // one updater, chosen from what the project declares itself to be — so
+      // a scratch directory would produce the hook for an empty consumer and
+      // report every real checkout as stale. And a generator that could only
+      // answer by installing itself would make this check the thing it is
+      // checking, over a `.git/hooks/pre-commit` that is shared by every
+      // linked worktree of the repository at once.
+      content = mod.preCommitHookScript(projectRoot);
+    } catch (e) {
+      throw new HookRefused(
+        "UNMEASURED",
+        `the hook generator threw for ${projectRoot}: ${firstLine(e)}`,
+      );
+    }
     const marker: string = mod.PRE_COMMIT_MANAGED_MARKER;
     if (!content.includes(marker)) {
       throw new HookRefused(
@@ -234,8 +253,6 @@ export async function generatorHook(generatorRoot: string): Promise<GeneratorOut
       );
     }
     return { content, marker };
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -386,7 +403,7 @@ if (import.meta.main) {
     const generatorRoot = typeof args.generator === "string" ? args.generator : defaultGeneratorRoot();
 
     const path = installedHookPath(project);
-    const { content, marker } = await generatorHook(generatorRoot);
+    const { content, marker } = await generatorHook(generatorRoot, project);
 
     if (args.install === true) {
       installHook(path, content);
