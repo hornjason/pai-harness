@@ -1,0 +1,100 @@
+{
+  "meaning": [
+    "What this file is: the banked population of line-number citations in this repository's markdown, measured by lib/line-citation.ts and enforced by test/line-citation-ratchet.test.ts (#541). It exists because a line citation decays silently — the line moves, the citation points at unrelated code, and nothing goes red. Measured in #514: of one spec's seven line citations, the three under a test were correct and three of the four unguarded ones were already wrong.",
+    "What an entry means. Three numbers per document, and they are three because one total cannot see progress happen. 'unmeasured' is a citation that RESOLVES: the path is a real repository path and the line is inside the file. It is NOT a citation that is correct — whether it is still the line the sentence describes cannot be decided mechanically, so the honest reading is UNMEASURED and never VALID. 'broken' is a citation that cannot be resolved at all: the path names no file, or names a bare basename instead of a repository path, or matches more than one file, or the line is past the end. 'anchors' is the good form, path@\"text\", which carries its own text so the resolver reports the position; anchors are not ratcheted for correctness, they are a HARD gate and must always resolve.",
+    "What clears an entry. Lower 'broken' and raise 'unmeasured' by qualifying the path: ship.js:<N> written as workflows/ship.js:<N> deletes nothing and adds nothing, and that is exactly why a single total could not record it. Lower 'unmeasured' and raise 'anchors' by converting the citation to the anchor form, which is the target state for the whole population and the only state that is actually checked.",
+    "Lowering a number by DELETING the citation is not progress, and this file cannot stop you. The arithmetic has no way to tell a converted citation from a removed paragraph, and a paragraph is allowed to go away. What the three numbers buy is that the two cases move DIFFERENTLY in the diff — a conversion lowers one number and raises another, a deletion lowers one and raises nothing — so a reviewer can see which happened. Say which one it was in the PR.",
+    "The ratchet refuses in BOTH directions. Over a banked number fails, and under it fails too: an entry that has stopped being true is an entry nobody will ever remove, and the file rots into a number nobody lowers. A document absent from this file is allowed NO line citations at all, because the migration window is exactly when the next one gets written. A document banked here that carries no line citations throws rather than passing, because a pattern that stopped matching would find zero in every document and zero strings are trivially all fine.",
+    "Do not regenerate this file wholesale to make a red run green. Each number is a claim somebody earned; bank a change in the same commit that caused it."
+  ],
+  "documents": {
+    ".claude/rules/checks-must-be-able-to-fail.md": {
+      "broken": 3,
+      "unmeasured": 14,
+      "anchors": 0,
+      "note": "#664's measurement table. The three broken ones are the three windows the sweep found that the hand list missed, cited by basename."
+    },
+    ".claude/rules/config-access.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    ".claude/rules/ship-workflow.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "PROJECT-STATE.md": {
+      "broken": 6,
+      "unmeasured": 1,
+      "anchors": 0,
+      "note": "DA-owned (#296). An agent in a worktree must never write this file, so its citations are banked here and reported as prose rather than repaired in passing."
+    },
+    "SUCCESS.md": {
+      "broken": 4,
+      "unmeasured": 2,
+      "anchors": 0,
+      "note": "DA-owned (#296), same as PROJECT-STATE.md. One of the four names a path under node_modules in a consumer's tree, which is not a file in this repository and never will be."
+    },
+    "docs/adr/ADR-001-config-loader-unification.md": {
+      "broken": 4,
+      "unmeasured": 18,
+      "anchors": 0,
+      "note": "An ADR is a record of a decision at a moment. Converting one may be the wrong thing to do — decide that per document before touching it (#541)."
+    },
+    "docs/adr/ADR-002-single-config-loader.md": {
+      "broken": 21,
+      "unmeasured": 24,
+      "anchors": 0,
+      "note": "The largest single population. Same frozen-record question as ADR-001."
+    },
+    "docs/council/2026-09-20-routing-table-design.md": {
+      "broken": 2,
+      "unmeasured": 0,
+      "anchors": 0,
+      "note": "A dated council record."
+    },
+    "docs/council/2026-09-20-sc-driven-testing.md": {
+      "broken": 2,
+      "unmeasured": 3,
+      "anchors": 0,
+      "note": "A dated council record."
+    },
+    "docs/research/session-audit-2026-09-21-session2.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "gates/SCHEMA-GUIDE.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "reference/specs/HARNESS-EXTRACTION-SPEC.md": {
+      "broken": 19,
+      "unmeasured": 2,
+      "anchors": 0,
+      "note": "reference/ is historical and inactive by routing. Its citations describe a tree that has moved a long way; qualifying them would make them resolvable without making them true."
+    },
+    "specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md": {
+      "broken": 0,
+      "unmeasured": 13,
+      "anchors": 0,
+      "note": "Was 1 broken before #541; one bare basename qualified."
+    },
+    "specs/DOC-HYGIENE-ARCHITECTURE-SPEC.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "specs/GATE-CONTRACTS-SPEC.md": {
+      "broken": 0,
+      "unmeasured": 0,
+      "anchors": 10,
+      "note": "The one document already converted (#514), and the target state for every other entry here. Its anchors are a HARD gate, and this count is also the control that stops the anchor sweep passing over a tree it found nothing in."
+    },
+    "specs/HARNESS-GATES.md": {
+      "broken": 1,
+      "unmeasured": 10,
+      "anchors": 0,
+      "note": "Was 10 broken before #541; ten bare basenames qualified. The one that remains is gates/run-gate.ts:291 — the file has 163 lines, so qualifying the path turned an UNQUALIFIED_PATH into a PAST_END_OF_FILE and exposed a citation that is definitely wrong. Nobody knows what line 291 described; repairing it needs a reader of that section, not a script."
+    },
+    "specs/HARNESS-STANDARD.md": {
+      "broken": 7,
+      "unmeasured": 60,
+      "anchors": 0,
+      "note": "The largest live population, mostly #664's measurement tables."
+    },
+    "specs/HOOK-ARCHITECTURE-SPEC.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "specs/INSTRUCTION-COMPLIANCE-SPEC.md": { "broken": 0, "unmeasured": 2, "anchors": 0 },
+    "specs/PARALLEL-AGENT-COORDINATION-SPEC.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "specs/SCAFFOLD-DECOMPOSITION-SPEC.md": { "broken": 0, "unmeasured": 2, "anchors": 0 },
+    "specs/bootstrap-data-flow/rca-protocol.md": {
+      "broken": 2,
+      "unmeasured": 0,
+      "anchors": 0,
+      "note": "Both are illustrative paths inside JSON samples showing what an RCA field looks like in a consumer's project. They are not claims about this repository and will never resolve; they are banked rather than exempted, because an exemption nobody has to justify is a warning nobody reads."
+    },
+    "specs/bootstrap-data-flow/success-criteria.md": { "broken": 0, "unmeasured": 2, "anchors": 0 }
+  }
+}

@@ -120,23 +120,13 @@ describe("#654-adjacent: a gate that never reported is not a gate that passed", 
  * unrelated branches and the logs could not say which check failed, because
  * the assertion did not carry it.
  *
- * The whole output, not a window on it. `run-gate.ts` prints its batch
- * diagnosis last, so a tail was the obvious shape — and a fixed tail is a
- * guess about how long the gate's output will stay that size. The guess
- * expired: the STANDARD tier prints 158 checks, `brief-ac-alignment: brief
- * missing AC ids: <ids>` is above the last 3000 characters, and five
- * reproductions of #700 across five unrelated branches produced no diagnosis
- * because the instrument discarded the answer before anyone read it.
- *
- * Widening the window to some larger number is the cheapest wrong fix and is
- * the shape `.claude/rules/checks-must-be-able-to-fail.md` names twice (#492's
- * `bytesScanned < 10`, #664's 6000→9000): it buys green against today's output
- * and decays silently the next time a check is added. There is no window.
+ * The tail rather than the head: `run-gate.ts` prints its batch diagnosis
+ * last, so the end of the buffer is where the check names are.
  */
 function expectGateGreen(r: GateRun, what: string): void {
   expect(r.measured, `${what}: the gate printed no pass/fail summary — it did not report a verdict, ` +
-    `which is not the same as reporting a clean one. Output:\n${r.output}`).toBe(true);
-  expect(r.fail, `${what}: the gate failed ${r.fail} check(s). Output:\n${r.output}`).toBe(0);
+    `which is not the same as reporting a clean one. Output:\n${r.output.slice(-3000)}`).toBe(true);
+  expect(r.fail, `${what}: the gate failed ${r.fail} check(s). Output:\n${r.output.slice(-3000)}`).toBe(0);
 }
 
 // Bun ignores a describe-level `timeout` option, so the 30s budget lives on each
