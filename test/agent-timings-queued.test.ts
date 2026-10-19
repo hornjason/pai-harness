@@ -38,6 +38,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { structuralCutAround } from "../lib/source-slice";
 import {
   TIMING_USAGE_EXIT,
   readTimings,
@@ -287,9 +288,17 @@ describe("AC-4: queued time survives the trip to the run report", () => {
   });
 
   test("the TIMING log line prints the wait when there was one", () => {
-    const at = shipSource.indexOf("TIMING: ${t.agent}");
-    expect(at).toBeGreaterThan(-1);
-    const block = shipSource.slice(at - 1_500, at + 1_500);
+    // #664: the before-and-after window was fragile at BOTH ends. The region
+    // is the loop that prints the line, cut from the loop header to its own
+    // closing brace — and `structuralCutAround` refuses if the region does not
+    // contain the line it is about, which a two-sided count cannot check.
+    const block = structuralCutAround(shipSource, "TIMING: ${t.agent}", {
+      startAnchor: "for (const t of gradeResult.timing)",
+      end: { balanced: "{" },
+    });
+    expect(block.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+      shipSource.length,
+    );
     expect(block).toContain("queuedSeconds");
   });
 });

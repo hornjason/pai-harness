@@ -44,6 +44,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { assertMarkedBlockReachable } from "../lib/reachability";
+import { structuralCut, structuralCutAround } from "../lib/source-slice";
 import {
   readWorktreeRemote,
   redactRemote,
@@ -55,11 +56,20 @@ import {
 const REPO_ROOT = join(import.meta.dir, "..");
 const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
 
-function sliceBlock(name: string): string {
-  const start = shipSource.indexOf(`// ──── ${name}-START ────`);
-  const end = shipSource.indexOf(`// ──── ${name}-END ────`);
-  if (start < 0 || end < 0) throw new Error(`${name} markers missing from workflows/ship.js`);
-  return shipSource.slice(start, end);
+/**
+ * Every cut this file takes out of `workflows/ship.js` goes through
+ * `lib/source-slice.ts` (#664). There is no cutting defined here — one binding
+ * means one thing to mutate, and a helper that returned the whole document
+ * would otherwise be invisible to a file holding four private copies of the
+ * same three lines.
+ *
+ * A marked block is a two-anchor cut, exclusive of the END marker, which is
+ * byte-for-byte what the four hand-written copies did.
+ */
+function markedBlock(name: string, source: string = shipSource): string {
+  return structuralCut(source, `// ──── ${name}-START ────`, {
+    endAnchor: `// ──── ${name}-END ────`,
+  });
 }
 
 /**
@@ -72,7 +82,7 @@ function sliceBlock(name: string): string {
  * never be given a source from anywhere else.
  */
 const shipBlock = new Function(
-  `${sliceBlock("WORKTREE-IDENTITY")}\nreturn { repoSlug, redactRemote, worktreeIdentity, worktreeIdentityViolations, worktreeRecords }`,
+  `${markedBlock("WORKTREE-IDENTITY")}\nreturn { repoSlug, redactRemote, worktreeIdentity, worktreeIdentityViolations, worktreeRecords }`,
 )() as {
   repoSlug: typeof repoSlug;
   redactRemote: typeof redactRemote;
@@ -469,12 +479,7 @@ interface Captured {
 }
 
 function loadBriefedAgent(source = shipSource) {
-  const block = (name: string) => {
-    const start = source.indexOf(`// ──── ${name}-START ────`);
-    const end = source.indexOf(`// ──── ${name}-END ────`);
-    if (start < 0 || end < 0) throw new Error(`${name} markers missing`);
-    return source.slice(start, end);
-  };
+  const block = (name: string) => markedBlock(name, source);
   const calls: Captured[] = [];
   const factory = new Function(
     "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "WORK_DIR", "log", "agent",
@@ -485,7 +490,10 @@ function loadBriefedAgent(source = shipSource) {
     // test/briefed-agent-model.test.ts.
     // BRIEF-PRECEDENCE likewise: briefedAgent appends its notice (#180), so
     // without the block the composed prompt dies on a free reference.
-    `${source.match(/function shellQuote\(word\)[\s\S]*?\n}/)?.[0] ?? ""}\n` +
+    // Cut to the function's closing brace, not to the first `\n}` a regex
+    // happens to reach: same bytes, and it refuses by name if shellQuote is
+    // renamed instead of silently interpolating an empty string (#664).
+    `${structuralCut(source, "function shellQuote(word)", { balanced: "{" })}\n` +
       `${block(PRECEDENCE)}\n${block(AGENT_TIMING)}\n${block(BRIEFED)}\nreturn briefedAgent;`,
   );
   const call = factory(
@@ -577,11 +585,8 @@ describe("SC-1445: an isolated spawn is pinned to the run's root, whatever the c
  * and the refusal itself went unobserved. That zero is why this runs.
  */
 function loadCollectBoundary(source = shipSource) {
-  const start = source.indexOf("// ──── COLLECT-IDENTITY-START ────");
-  const end = source.indexOf("// ──── COLLECT-IDENTITY-END ────");
-  if (start < 0 || end < 0) throw new Error("COLLECT-IDENTITY markers missing from ship.js");
   const logs: string[] = [];
-  const body = source.slice(start, end);
+  const body = markedBlock("COLLECT-IDENTITY", source);
   if (!body.includes("worktreeIdentityViolations(")) {
     throw new Error("could not build the harness: the block no longer calls the collector");
   }
@@ -644,11 +649,12 @@ describe("SC-1448: the run stops at the collection boundary, not after it", () =
     // The wave path stages inside the RUN-REF block, long before the
     // top-level guard runs. Asserted on the block rather than on the file so
     // the ordering is read where it actually holds.
-    const a = shipSource.indexOf("// ──── RUN-REF-START ────");
-    const b = shipSource.indexOf("// ──── RUN-REF-END ────");
-    expect(a).toBeGreaterThan(-1);
-    expect(b).toBeGreaterThan(a);
-    const block = shipSource.slice(a, b);
+    const block = markedBlock("RUN-REF");
+    // The cut is bounded: a helper that handed back the whole document would
+    // satisfy every ordering below out of unrelated code (#664).
+    expect(block.length, "the RUN-REF cut came back empty").toBeGreaterThan(0);
+    expect(block.length, "the RUN-REF cut is the whole of ship.js, not the block")
+      .toBeLessThan(shipSource.length);
 
     const asks = block.indexOf("worktreeIdentityViolations(");
     const stages = block.indexOf("await collectAgentWork(");
@@ -743,6 +749,118 @@ describe("SC-1448: the run stops at the collection boundary, not after it", () =
 
 // ── SC-1446: the call sites, and the remediation else ────────
 
+/**
+ * The construct SC-1446 is about, and the single binding that reads it (#664).
+ *
+ * This case used to cut a fixed six-thousand-character window forward from
+ * the anchor — the form `DECAYED_WINDOW` below is named after, written out
+ * nowhere in this file because a scan for it must not find a description of
+ * it (`.claude/rules/claiming-sc-coverage.md`, the same trap). The
+ * anchor and the vacuity guard on it were both right; what it did not have
+ * was an END. Measured on #664: 650 characters of headroom on `430df61b`, and a
+ * 2,119-character prompt block added for an unrelated issue, in the branch
+ * ABOVE the one this guards, pushed both target strings 1,469 characters past
+ * the boundary. The case went red with the name "the Verify BUILD regression
+ * has an else, and it is terminal", and the `else` was still there and still
+ * terminal. The failure message was the opposite of the truth.
+ *
+ * So the region now ends where the construct ends: the `if (verifyResult
+ * .regressionTarget === 'BUILD' …)` branch, cut to its matching brace. There
+ * is no number left to decay.
+ *
+ * **Why a violation list rather than three inline `expect`s.** One binding is
+ * one thing to mutate, and boundedness has to be part of the READING rather
+ * than an opinion beside it: a cut helper that returned the whole document
+ * would satisfy every `includes` below out of unrelated code, which is exactly
+ * the vacuity `.claude/rules/checks-must-be-able-to-fail.md` names. So "the
+ * cut is shorter than the document" and "the cut stopped before the next
+ * construct" are rows this function refuses on.
+ */
+const VERIFY_REGRESSION_ANCHOR = "Verify CODE regression #${regressionCount}";
+const VERIFY_REGRESSION_BRANCH = "if (verifyResult.regressionTarget === 'BUILD'";
+const NO_WORK_LOG = "VERIFY BUILD regression produced no work";
+const VERIFY_TERMINAL = "terminalFailure('VERIFY_FAILED'";
+/** The first thing past the branch. A cut that reaches it has overrun. */
+const PAST_THE_BRANCH = "// ──── ROOK-SECURITY-START ────";
+/**
+ * The window this case used to cut with. Nothing cuts with it any more — it is
+ * the ruler the decay fixture is measured against, so that fixture can prove
+ * it really pushed the targets out of the old window rather than asserting it.
+ */
+const DECAYED_WINDOW = 6000;
+
+/** The branch, cut to its construct. Throws by name on an anchor it cannot find. */
+export function verifyRegressionBranch(source: string = shipSource): string {
+  return structuralCutAround(source, VERIFY_REGRESSION_ANCHOR, {
+    startAnchor: VERIFY_REGRESSION_BRANCH,
+    end: { balanced: "{" },
+  });
+}
+
+/** The reading SC-1446 asserts: empty means the branch has its terminal else. */
+export function verifyRegressionElseViolations(source: string = shipSource): string[] {
+  const region = verifyRegressionBranch(source);
+  const out: string[] = [];
+  if (region.length >= source.length) {
+    out.push(
+      `the cut is ${region.length} of ${source.length} characters — it is the document, not the branch`,
+    );
+  }
+  if (region.includes(PAST_THE_BRANCH)) {
+    out.push(`the cut ran past the branch and into ${JSON.stringify(PAST_THE_BRANCH)}`);
+  }
+  if (!region.includes(NO_WORK_LOG)) {
+    out.push(`the BUILD regression branch does not log ${JSON.stringify(NO_WORK_LOG)} — the else is gone`);
+  }
+  if (!region.includes(VERIFY_TERMINAL)) {
+    out.push(`the BUILD regression branch does not end the run — no ${VERIFY_TERMINAL}`);
+  }
+  return out;
+}
+
+/**
+ * The `else` #218 added, removed from an IN-MEMORY copy.
+ *
+ * `workflows/ship.js` is never written. The site is located exactly once
+ * first: a second copy would survive the removal and leave the mutant
+ * behaving like the real source for a reason that has nothing to do with the
+ * mutation having worked.
+ */
+const ELSE_SITE = "} else {\n      // #218: this `if` had no else";
+
+export function buildDeletedElseMutant(source: string = shipSource): string {
+  const hits = source.split(ELSE_SITE).length - 1;
+  if (hits !== 1) {
+    throw new Error(
+      `could not build the mutant: the #218 else branch appears ${hits} times in workflows/ship.js, expected exactly 1`,
+    );
+  }
+  const branch = structuralCut(source, ELSE_SITE, { balanced: "{" });
+  const out = source.replace(branch, "}");
+  if (out === source) throw new Error("could not build the mutant: the removal changed nothing");
+  if (out.includes(NO_WORK_LOG)) {
+    throw new Error("could not build the mutant: the else survived the removal");
+  }
+  return out;
+}
+
+/**
+ * The decay, rebuilt: unrelated text inserted INSIDE the window the old form
+ * cut, above the code this case is about.
+ *
+ * Comment lines with no brackets in them, so the fixture moves the targets and
+ * changes nothing about what balances — the thing being measured is distance,
+ * and a fixture that also broke the construct would turn the case red for the
+ * wrong reason.
+ */
+export function buildDecayedWindowFixture(source: string = shipSource, chars = 3000): string {
+  const anchorLine = structuralCut(source, VERIFY_REGRESSION_ANCHOR, { endAnchor: "\n" });
+  const line = "    // an unrelated prompt block, inserted two functions away (#664)\n";
+  let filler = "";
+  while (filler.length < chars) filler += line;
+  return source.replace(anchorLine, `${anchorLine}\n${filler}`);
+}
+
 describe("SC-1446: the guard is wired in, and a dead remediation stops the run", () => {
   test("both isolated marcus spawns ask for the remote and check it", () => {
     // Source text, deliberately narrow: the executed proof is the matrix
@@ -759,11 +877,49 @@ describe("SC-1446: the guard is wired in, and a dead remediation stops the run",
     // #218's other half: `if (reimpl.success)` had no else, so a remediation
     // that performed no work was indistinguishable from one never attempted
     // and the run advanced to rook-scope and rook.
-    const at = shipSource.indexOf("Verify CODE regression #${regressionCount}");
-    expect(at, "the Verify regression branch moved — this assertion is reading nothing").toBeGreaterThan(-1);
-    const region = shipSource.slice(at, at + 6000);
-    expect(region).toContain("VERIFY BUILD regression produced no work");
-    expect(region).toContain("terminalFailure('VERIFY_FAILED'");
+    //
+    // #664 converted the cut. The three claims below — the reading, the
+    // mutation that must turn it red, and the insertion that must leave it
+    // green — are one case on purpose: they are one property measured from
+    // three sides, and splitting them would change this file's size, which
+    // the conversion is supposed to leave alone.
+    expect(verifyRegressionElseViolations(), "the BUILD regression branch no longer refuses")
+      .toEqual([]);
+
+    // Boundedness, as a number and not only as "a substring is somewhere".
+    // Without this a cut helper that returned the whole document would make
+    // every `includes` above true out of unrelated code.
+    const region = verifyRegressionBranch();
+    expect(region.length, "the cut came back empty").toBeGreaterThan(0);
+    expect(region.length, "the cut is the whole of ship.js, not the branch")
+      .toBeLessThan(shipSource.length);
+    expect(region, "the cut ran past the branch it is about").not.toContain(PAST_THE_BRANCH);
+
+    // MUTANT, in memory — workflows/ship.js is never written. Delete the else
+    // this case is named after and the reading has to refuse, naming it.
+    const deleted = buildDeletedElseMutant();
+    expect(deleted, "the mutant is the real source — nothing was deleted").not.toBe(shipSource);
+    const refused = verifyRegressionElseViolations(deleted);
+    expect(refused.length, "the else was deleted and this case still read clean")
+      .toBeGreaterThan(0);
+    expect(refused.join("\n")).toContain(NO_WORK_LOG);
+
+    // The decay itself: 3,000 characters of unrelated text inside the window
+    // the old form cut. The distance is asserted BEFORE the verdict, because
+    // a fixture that left the targets inside the old window would prove
+    // nothing — it is the input on which the old form and this one differ.
+    const padded = buildDecayedWindowFixture();
+    expect(padded.length - shipSource.length, "the fixture inserted less than 3,000 characters")
+      .toBeGreaterThanOrEqual(3000);
+    const pushedTo = padded.indexOf(NO_WORK_LOG) - padded.indexOf(VERIFY_REGRESSION_ANCHOR);
+    expect(
+      pushedTo,
+      `the insertion left the target inside the old ${DECAYED_WINDOW}-character window, so this fixture measures nothing`,
+    ).toBeGreaterThan(DECAYED_WINDOW);
+    expect(
+      verifyRegressionElseViolations(padded),
+      "an insertion that touched nothing this case guards turned it red again",
+    ).toEqual([]);
   });
 
   test("both regression refusals carry the agent's own reason", () => {

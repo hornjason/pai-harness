@@ -33,6 +33,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { structuralCut } from "../lib/source-slice";
 
 import { WorkflowStateSchema } from "../gates/schema";
 
@@ -299,9 +300,16 @@ describe("#224: the refusal path uses the extracted block", () => {
 describe("#224: the suite result reaches state through the recorder", () => {
   /** The tests-pass remediation text, which is where the suite gets run. */
   const testsPassStep = (() => {
-    const at = shipSource.indexOf("For tests-pass:");
-    expect(at, "ship.js has no tests-pass remediation step").toBeGreaterThan(-1);
-    return shipSource.slice(at, at + 1200);
+    // #664: bounded by the next step in the prompt, not by 1,200 characters.
+    // Three of the four assertions below are `not.toContain`, and a window
+    // that falls short of the step satisfies every one of them.
+    const step = structuralCut(shipSource, "For tests-pass:", {
+      endAnchor: "\nFor local-api-validated:",
+    });
+    expect(step.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+      shipSource.length,
+    );
+    return step;
   })();
 
   test("the step runs scripts/record-suite-measurement.ts", () => {

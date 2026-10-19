@@ -22,6 +22,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { structuralCut } from "../lib/source-slice";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
@@ -105,8 +106,12 @@ describe("#114: no project-specific literal survives as a fallback", () => {
     expect(assignment!.l, "REPO fell back to a default again").not.toContain("||");
 
     // And the refusal exists, naming the argument rather than a project.
-    const idx = shipSource.indexOf("const REPO =");
-    const after = shipSource.slice(idx, idx + 800);
+    // #664: the refusal is the `if` block below the assignment, and it ends
+    // where that block closes.
+    const after = structuralCut(shipSource, "const REPO =", { balanced: "{" });
+    expect(after.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+      shipSource.length,
+    );
     expect(after).toContain("ARGS_ERROR");
     expect(after).toContain("repo is required");
   });

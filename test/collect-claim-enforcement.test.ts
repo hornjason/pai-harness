@@ -45,6 +45,7 @@ import {
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 
+import { structuralCut } from "../lib/source-slice";
 import { collectWorktreeFiles, groupFilesByWorktree } from "../lib/worktree-collect";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -807,7 +808,16 @@ describe("#228 / AC-3+AC-4: a refused collection preserves the work and says whe
     const unquoted: string[] = [];
     for (let i = 0; i < emitted.length; i++) {
       if (emitted[i] === "'") { inQuote = !inQuote; continue; }
-      if (!inQuote && emitted.startsWith("$(", i)) unquoted.push(emitted.slice(i, i + 20));
+      if (!inQuote && emitted.startsWith("$(", i)) {
+        // #664: report the substitution to its own closing paren rather than
+        // a 20-character excerpt — a truncated command in a security finding
+        // is a finding nobody can act on.
+        const span = structuralCut(emitted.slice(i), "$(", { balanced: "(" });
+        expect(span.length, "the excerpt is the whole line — it is not a cut").toBeLessThan(
+          emitted.length,
+        );
+        unquoted.push(span);
+      }
     }
     expect(unquoted, "a command substitution reaches the shell unquoted").toEqual([]);
     expect(inQuote, "the quoting is unbalanced — the line does not parse as intended").toBe(false);

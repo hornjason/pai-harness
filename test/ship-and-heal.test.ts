@@ -12,6 +12,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { structuralCut } from "../lib/source-slice";
 
 const ROOT = join(import.meta.dir, "..");
 const WORKFLOW = readFileSync(join(ROOT, "workflows/ship-and-heal.js"), "utf-8");
@@ -66,12 +67,18 @@ describe("ship-and-heal: grading and violation flow", () => {
   });
 
   test("AC-6: clean success returns SHIPPED without heal", () => {
-    const cleanIdx = WORKFLOW.indexOf(
-      "qualityViolations.length === 0 && processViolations.length === 0"
+    // The return inside that check should be SHIPPED. #664: the region is the
+    // `if` block, cut to its own closing brace — a 200-character window ended
+    // wherever the object literal happened to end, and `not.toContain` below
+    // is satisfied by a window that stops too early.
+    const afterClean = structuralCut(
+      WORKFLOW,
+      "qualityViolations.length === 0 && processViolations.length === 0",
+      { balanced: "{" }
     );
-    expect(cleanIdx).toBeGreaterThan(-1);
-    // The next return after that check should be SHIPPED
-    const afterClean = WORKFLOW.slice(cleanIdx, cleanIdx + 200);
+    expect(afterClean.length, "the cut is the whole workflow — it bounds nothing").toBeLessThan(
+      WORKFLOW.length
+    );
     expect(afterClean).toContain("SHIPPED");
     expect(afterClean).not.toContain("SHIPPED_WITH");
   });

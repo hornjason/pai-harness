@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { harnessRoot } from "../lib/paths";
+import { structuralCut } from "../lib/source-slice";
 import { stripJsComments } from "../lib/strip-js-comments";
 
 /**
@@ -200,15 +201,21 @@ describe("strip-js-comments: blankLiterals blanks literal contents, nothing else
     const open = SHIP_JS.indexOf("if (containerConfig) {", SHIP_JS.indexOf("phase('Ship')"));
     expect(open).toBeGreaterThan(0);
     const start = open + "if (containerConfig) {".length - 1;
-    let depth = 0;
-    let close = -1;
-    for (let i = start; i < skeleton.length; i++) {
-      if (skeleton[i] === "{") depth++;
-      else if (skeleton[i] === "}" && --depth === 0) { close = i; break; }
-    }
+    // #664: the brace walk this case used to hand-roll is now the one shared
+    // cut in lib/source-slice.ts, taken over the BLANKED view — which is the
+    // subject of the case. One binding to mutate, and no `close + 8` window:
+    // eight characters was a bet on the whitespace between `}` and `else`.
+    expect(skeleton.indexOf("if (containerConfig) {"), "the conditional is not unique").toBe(open);
+    const armCut = structuralCut(skeleton, "if (containerConfig) {", { balanced: "{" });
+    expect(armCut.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+      skeleton.length,
+    );
+    const close = open + armCut.length - 1;
     expect(close).toBeGreaterThan(start);
     expect(SHIP_JS[close]).toBe("}");
-    expect(skeleton.slice(close, close + 8)).toMatch(/^\}\s*else\b/);
+    const afterClose = skeleton.slice(close);
+    expect(afterClose.startsWith("}")).toBe(true);
+    expect(afterClose.slice(1).trimStart().startsWith("else")).toBe(true);
 
     // And the blanking is doing work on THIS input rather than being a no-op
     // that happens to agree: the arm carries braces that are prompt text.

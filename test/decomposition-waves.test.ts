@@ -21,6 +21,7 @@ import { join } from "path";
 
 import { dependencyWaves, wavePlanSummary } from "../lib/decomposition-waves";
 import { assertMarkedBlockReachable } from "../lib/reachability";
+import { structuralCut } from "../lib/source-slice";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const RUN_REPO = "owner/project";
@@ -264,16 +265,25 @@ describe("SC-1465: the dispatcher reads the plan and the decomposer can write it
   test("the decomposition schema has somewhere for the answer to land", () => {
     // #189's whole subject: the prompt asked for dependency order and the
     // schema had no field for it, so the answer was produced and discarded.
-    const schemaStart = shipSource.indexOf("const M_DECOMPOSITION_SCHEMA");
-    expect(schemaStart).toBeGreaterThan(-1);
-    const schema = shipSource.slice(schemaStart, schemaStart + 2000);
+    // #664: the schema ends where its object literal closes. A 2,000-character
+    // window is a bet on how many fields the schema keeps.
+    const schema = structuralCut(shipSource, "const M_DECOMPOSITION_SCHEMA", { balanced: "{" });
+    expect(schema.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+      shipSource.length,
+    );
     expect(schema, "the schema still has no dependsOn field").toContain("dependsOn:");
   });
 
   test("the decompose prompt names the field the schema accepts", () => {
     // Asking for "dependency order" in prose and accepting `dependsOn` in the
     // schema is the same defect in the other direction.
-    const promptAt = shipSource.indexOf("dependsOn", shipSource.indexOf("const M_DECOMPOSITION_SCHEMA") + 2000);
+    // Searched from the END of the schema object rather than 2,000 characters
+    // past its start (#664) — the same decay in an `indexOf` offset.
+    const schema = structuralCut(shipSource, "const M_DECOMPOSITION_SCHEMA", { balanced: "{" });
+    const promptAt = shipSource.indexOf(
+      "dependsOn",
+      shipSource.indexOf("const M_DECOMPOSITION_SCHEMA") + schema.length,
+    );
     expect(promptAt, "no prompt text mentions dependsOn").toBeGreaterThan(-1);
   });
 

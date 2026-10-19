@@ -30,6 +30,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { parseCloseTarget } from "../hooks/lib/utils";
+import { structuralCut } from "../lib/source-slice";
 
 const CLOSE = `gh issue ${["clos", "e"].join("")}`;
 const env = (o: Record<string, string> = {}) => o as unknown as NodeJS.ProcessEnv;
@@ -155,9 +156,15 @@ describe("#143: the block text does not teach the bypass", () => {
       .split("\n")
       .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line))
       .join("\n");
-    const at = hook.indexOf("the command names no repository");
-    expect(at).toBeGreaterThan(-1);
-    const message = hook.slice(at, at + 400);
+    // #664: the message ends where its `throw`/call argument list closes, not
+    // 400 characters along. The `not.toContain` below is exactly the shape a
+    // window that stops short satisfies for free.
+    const message = structuralCut(hook, "the command names no repository", {
+      endAnchor: "\n    );",
+    });
+    expect(message.length, "the cut is the whole hook — it bounds nothing").toBeLessThan(
+      hook.length,
+    );
     expect(message).toContain("--repo owner/name");
     expect(message).not.toContain("GH_REPO");
   });
