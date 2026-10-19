@@ -12,14 +12,19 @@
  * ```
  * bun scripts/read-review-execution.ts \
  *   --execution-file "$RUNNER_TEMP/claude-execution-output.json" \
- *   --reviews-posted 3 \
+ *   --reviews-before 2 --reviews-after 3 \
  *   --diff-truncated false
  * ```
  *
- * `--reviews-posted` absent, or the string `unknown`, means the caller could
- * not count: that is `REVIEW_COUNT_UNAVAILABLE`, not zero. An absent count and
- * a count of zero are different states and only one of them is a finding about
- * the review.
+ * Two counts, differenced here, because a TOTAL makes the second run of any
+ * reviewed PR unfalsifiable: #746's first dispatch left one review on it, and
+ * a total would have read `1` for every run after that including one that
+ * posted nothing.
+ *
+ * Either count absent, non-numeric, or the string `unknown` means the caller
+ * could not count: that is `REVIEW_COUNT_UNAVAILABLE`, not zero. An absent
+ * count and a count of zero are different states and only one of them is a
+ * finding about the review.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -38,11 +43,13 @@ const executionFile = flag("execution-file");
 const executionFileRaw =
   executionFile && existsSync(executionFile) ? readFileSync(executionFile, "utf8") : null;
 
-const rawCount = flag("reviews-posted");
-const reviewsPosted =
-  rawCount === undefined || rawCount === "" || rawCount === "unknown" || !/^\d+$/.test(rawCount)
-    ? null
-    : Number(rawCount);
+const count = (name: string): number | null => {
+  const raw = flag(name);
+  return raw === undefined || !/^\d+$/.test(raw) ? null : Number(raw);
+};
+const before = count("reviews-before");
+const after = count("reviews-after");
+const reviewsPosted = before === null || after === null ? null : Math.max(0, after - before);
 
 const reading = reviewExecutionReading({
   executionFileRaw,

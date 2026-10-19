@@ -192,7 +192,7 @@ describe("a review that produced no output is UNMEASURED, not success (#732)", (
     const report = reviewReadingReport(r);
     for (const reason of r.reasons) expect(report).toContain(reason);
     expect(report).toContain("tool calls: 0");
-    expect(report).toContain("reviews posted: 0");
+    expect(report).toContain("reviews added by this run: 0");
     expect(reviewReadingReport(r).startsWith("UNMEASURED")).toBe(true);
   });
 });
@@ -258,12 +258,12 @@ describe("the script's refusal is load-bearing (#732)", () => {
   writeFileSync(workingRun, executionFile(["mcp__github__submit_pending_pull_request_review"]));
 
   test("AC-10: a run with zero tool calls refuses, and the mutant does not", () => {
-    const real = run(build(false), ["--execution-file", emptyRun, "--reviews-posted", "0"]);
+    const real = run(build(false), ["--execution-file", emptyRun, "--reviews-before", "0", "--reviews-after", "0"]);
     expect(real.out).toContain("UNMEASURED");
     expect(real.out).toContain("NO_TOOL_CALLS");
     expect(real.code).not.toBe(0);
 
-    const mutant = run(build(true), ["--execution-file", emptyRun, "--reviews-posted", "0"]);
+    const mutant = run(build(true), ["--execution-file", emptyRun, "--reviews-before", "0", "--reviews-after", "0"]);
     expect(mutant.out).toContain("UNMEASURED");
     expect(mutant.code).toBe(0);
   });
@@ -272,8 +272,10 @@ describe("the script's refusal is load-bearing (#732)", () => {
     const real = run(build(false), [
       "--execution-file",
       join(dir, "does-not-exist.json"),
-      "--reviews-posted",
+      "--reviews-before",
       "0",
+      "--reviews-after",
+      "1",
     ]);
     expect(real.out).toContain("EXECUTION_FILE_ABSENT");
     expect(real.code).not.toBe(0);
@@ -285,18 +287,58 @@ describe("the script's refusal is load-bearing (#732)", () => {
    * resolve its imports exits non-zero and looks exactly like a refusal.
    */
   test("AC-12: a run that worked exits zero and says MEASURED", () => {
-    const real = run(build(false), ["--execution-file", workingRun, "--reviews-posted", "1"]);
+    const real = run(build(false), ["--execution-file", workingRun, "--reviews-before", "2", "--reviews-after", "3"]);
     expect(real.out).toContain("MEASURED");
     expect(real.out).not.toContain("UNMEASURED");
     expect(real.code).toBe(0);
+  });
+
+  /**
+   * The hole the first live dispatch opened, and the reason the script takes
+   * two counts rather than one.
+   *
+   * Dispatch 39337986456 posted one review on PR #746. With a TOTAL, every
+   * later run of that PR reads `reviews posted: 1` — including a run that
+   * posted nothing, which is precisely the state #732 is about. The second
+   * run of any reviewed pull request would have been unfalsifiable, and the
+   * only way to see it is to run the thing and look at the number it leaves
+   * behind.
+   */
+  test("AC-14: a run that adds nothing to an already-reviewed PR is UNMEASURED", () => {
+    const addedNothing = run(build(false), [
+      "--execution-file",
+      workingRun,
+      "--reviews-before",
+      "1",
+      "--reviews-after",
+      "1",
+    ]);
+    expect(addedNothing.out).toContain("NO_REVIEW_POSTED");
+    expect(addedNothing.code).not.toBe(0);
+
+    // The pair differs in the BEFORE count and in nothing else, so the
+    // comparison is a measurement of the difference and not of the total
+    // (#585). A total reads `1` for both of these.
+    const addedOne = run(build(false), [
+      "--execution-file",
+      workingRun,
+      "--reviews-before",
+      "0",
+      "--reviews-after",
+      "1",
+    ]);
+    expect(addedOne.out).toContain("MEASURED");
+    expect(addedOne.code).toBe(0);
   });
 
   test("AC-13: an uncountable review total refuses rather than reading as zero reviews", () => {
     const unknown = run(build(false), [
       "--execution-file",
       workingRun,
-      "--reviews-posted",
+      "--reviews-before",
       "unknown",
+      "--reviews-after",
+      "3",
     ]);
     expect(unknown.out).toContain("REVIEW_COUNT_UNAVAILABLE");
     expect(unknown.out).not.toContain("NO_REVIEW_POSTED");

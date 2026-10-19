@@ -63,13 +63,16 @@ import {
   AUTOMATION_ONLY_TRIGGERS,
   ENTITY_ONLY_MCP_SERVERS,
   POSTING_TOOLS,
+  READING_SCRIPT,
   ReviewSourceUnreadableError,
   SUBJECT_OUTPUT_NAME,
   blockUnder,
+  jobSteps,
   mcpServerOf,
   mcpToolsNamedIn,
   reviewToolAgreement,
   reviewWorkflowRegions,
+  withoutComments,
   type ReviewToolViolationKind,
 } from "../lib/review-tool-agreement";
 
@@ -113,6 +116,23 @@ const ALLOWLIST =
  * cannot provide. */
 const INLINE_COMMENT_ALLOWLIST =
   '--allowedTools "mcp__github_inline_comment__create_inline_comment"';
+
+/**
+ * The one step that RUNS the reading script, refusing on zero or two.
+ *
+ * `withoutComments` is not optional here: the `setup-bun` step's comment
+ * names the script in prose, so a raw-text search returns two steps for a
+ * file with one. Measured — this helper threw "2 steps run the reading
+ * script" before the comment strip was added, which is the loud abort doing
+ * its job on its own author.
+ */
+function readingStep(src: string): string {
+  const hits = jobSteps(src).filter(s => withoutComments(s).includes(READING_SCRIPT));
+  if (hits.length !== 1) {
+    throw new Error(`could not build the mutant: ${hits.length} steps run the reading script`);
+  }
+  return hits[0];
+}
 
 function mutateOnce(src: string, needle: string, replacement: string): string {
   const occurrences = src.split(needle).length - 1;
@@ -256,9 +276,45 @@ describe("the reviewer's prompt is executable with the tools the job grants (#73
     expect(kinds(mutant)).toContain("MUTABLE_PLUGIN_MARKETPLACE");
   });
 
-  test("AC-10: removing the step that reads the execution output is caught", () => {
-    const mutant = live.replace(/execution_file/g, "branch_name");
-    expect(mutant, "the mutation did not apply").not.toEqual(live);
+  test("AC-10: a reading step that reads the wrong output is caught", () => {
+    const mutant = mutateOnce(
+      live,
+      "--execution-file \"$EXECUTION_FILE\"",
+      "--execution-file \"$BRANCH_NAME\"",
+    ).replace(/EXECUTION_FILE: \$\{\{ steps\.review\.outputs\.execution_file \}\}/, "BRANCH_NAME: x");
+    expect(kinds(mutant)).toContain("NO_STEP_READS_THE_EXECUTION_OUTPUT");
+  });
+
+  /**
+   * The defect the first live dispatch of this very change found in this very
+   * module, posted as an inline comment on PR #746 and repaired here.
+   *
+   * The check was `/execution_file/.test(source)` over the WHOLE workflow.
+   * The string already appears in a comment inside the Review step, so
+   * deleting the reading step entirely left the check satisfied — by prose
+   * about the thing it was looking for.
+   * `.claude/rules/checks-must-be-able-to-fail.md` §"search the slice, not the
+   * document", found by the reviewer rather than by its author, which is the
+   * first evidence this job does anything.
+   */
+  test("AC-15: deleting the reading step is caught, though the file still says execution_file", () => {
+    const step = readingStep(live);
+    const withoutStep = mutateOnce(live, step, "");
+    // The control, and the whole point: the prose that satisfied the first
+    // draft of this check is still in the file.
+    expect(withoutStep).toContain("execution_file");
+    expect(
+      jobSteps(withoutStep).filter(s => withoutComments(s).includes(READING_SCRIPT)),
+    ).toEqual([]);
+    expect(kinds(withoutStep)).toContain("NO_STEP_READS_THE_EXECUTION_OUTPUT");
+  });
+
+  test("AC-16: a reading step that is not `if: always()` is caught", () => {
+    const step = readingStep(live);
+    const mutant = mutateOnce(live, step, step.replace(/^\s*if: always\(\)\n/m, ""));
+    expect(jobSteps(mutant).filter(s => withoutComments(s).includes(READING_SCRIPT))).toHaveLength(
+      1,
+    );
     expect(kinds(mutant)).toContain("NO_STEP_READS_THE_EXECUTION_OUTPUT");
   });
 

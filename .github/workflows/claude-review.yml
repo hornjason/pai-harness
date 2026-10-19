@@ -234,6 +234,13 @@ jobs:
             cat /tmp/pr.diff
             echo "$d"
           } >> "$GITHUB_OUTPUT"
+          # The review count BEFORE the agent runs. The post-step reads the
+          # DIFFERENCE, not the total: #746's first dispatch left one review
+          # on it, and a total would read 1 for every run of that PR
+          # afterwards — including one that posted nothing, which is the state
+          # #732 is about. A cumulative count makes the second run of any
+          # reviewed pull request unfalsifiable.
+          echo "reviews_before=$(gh api "repos/$REPO/pulls/$PR/reviews" --jq 'length' 2>/dev/null || echo unknown)" >> "$GITHUB_OUTPUT"
 
       # Workload Identity Federation, and NO service-account key (#677, AC-15).
       #
@@ -368,10 +375,13 @@ jobs:
       #
       # Two counts, deliberately separate, because they can disagree and the
       # disagreement is the informative case: what the AGENT did (tool calls,
-      # from the execution file) and what GITHUB holds (reviews on the PR). An
-      # agent that called the posting tool and had the API refuse it has a
-      # non-zero first count and a zero second one, and that is a different
-      # defect from one that never tried.
+      # from the execution file) and what GITHUB gained (reviews added by this
+      # run). An agent that called the posting tool and had the API refuse it
+      # has a non-zero first count and a zero second one, and that is a
+      # different defect from one that never tried.
+      #
+      # The second is a DIFFERENCE against `steps.subject.outputs.reviews_before`,
+      # never a total — see that step.
       #
       # An absent review count is REVIEW_COUNT_UNAVAILABLE, not zero. A reading
       # that could not be taken is not a reading that passed.
@@ -383,10 +393,12 @@ jobs:
           REPO: ${{ github.repository }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
           DIFF_TRUNCATED: ${{ steps.subject.outputs.truncated }}
+          REVIEWS_BEFORE: ${{ steps.subject.outputs.reviews_before }}
         run: |
           set -uo pipefail
-          reviews=$(gh api "repos/$REPO/pulls/$PR/reviews" --jq 'length' 2>/dev/null || echo unknown)
+          after=$(gh api "repos/$REPO/pulls/$PR/reviews" --jq 'length' 2>/dev/null || echo unknown)
           bun scripts/read-review-execution.ts \
             --execution-file "$EXECUTION_FILE" \
-            --reviews-posted "$reviews" \
+            --reviews-before "$REVIEWS_BEFORE" \
+            --reviews-after "$after" \
             --diff-truncated "$DIFF_TRUNCATED"

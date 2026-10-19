@@ -16,8 +16,17 @@
  *   messages; a tool call is a `tool_use` content block on an assistant
  *   message). Zero is AC-2: the agent executed nothing, so whatever it
  *   concluded it concluded from nothing.
- * - **reviews on the pull request** — what GitHub holds, counted by the
- *   caller against the API. Zero is AC-1: nobody can read the review.
+ * - **reviews THIS RUN added** — what GitHub holds after, minus what it held
+ *   before, counted by the caller against the API. Zero is AC-1: nobody can
+ *   read this run's review.
+ *
+ * **A DELTA, and not a total, and that is not a refinement.** The first live
+ * dispatch of the fixed workflow posted one review on PR #746. A total would
+ * then have read `1` for every subsequent run of that PR forever — including
+ * a run that posted nothing, which is the exact state #732 is about. A
+ * cumulative count makes the second run of any reviewed PR unfalsifiable, so
+ * the before-count is taken before the agent starts and the reading is the
+ * difference.
  *
  * These are not two deciders answering one question
  * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). An agent
@@ -61,7 +70,8 @@ export type ReviewExecutionReading = {
   toolCalls: number | null;
   /** Tool calls by tool name, for the annotation — "which door" needs names. */
   toolCallsByName: Record<string, number>;
-  /** `null` when the caller could not count reviews. */
+  /** Reviews this run ADDED — after minus before. `null` when either
+   * count could not be taken. */
   reviewsPosted: number | null;
   reasons: ReviewUnmeasuredReason[];
   /** One sentence per reason, in the same order. */
@@ -71,7 +81,9 @@ export type ReviewExecutionReading = {
 export type ReviewExecutionInput = {
   /** The contents of `claude-execution-output.json`, or `null` if absent. */
   executionFileRaw: string | null;
-  /** Reviews + review comments the PR holds after the run, or `null`. */
+  /** Reviews this run ADDED — the PR's review count after the run minus its
+   * count before it, or `null` when either could not be taken. A TOTAL would
+   * make the second run of any reviewed PR unfalsifiable. */
   reviewsPosted: number | null;
   /** Whether the diff handed to the agent was cut short of the real one. */
   diffTruncated: boolean;
@@ -143,14 +155,14 @@ export function reviewExecutionReading(input: ReviewExecutionInput): ReviewExecu
   if (input.reviewsPosted === null) {
     add(
       "REVIEW_COUNT_UNAVAILABLE",
-      "the number of reviews on the pull request could not be counted, so 'a review was posted' " +
-        "is unestablished rather than false",
+      "the pull request's review count could not be taken before or after the run, so 'this " +
+        "run posted a review' is unestablished rather than false",
     );
   } else if (input.reviewsPosted === 0) {
     add(
       "NO_REVIEW_POSTED",
-      "the pull request carries no review and no review comment from this run: a review nobody " +
-        "can read is indistinguishable from one that found nothing (AC-1)",
+      "this run added no review to the pull request: a review nobody can read is " +
+        "indistinguishable from one that found nothing (AC-1)",
     );
   }
 
@@ -185,7 +197,9 @@ export function reviewReadingReport(r: ReviewExecutionReading): string {
               .join(", ")})`
           : "");
   const reviews =
-    r.reviewsPosted === null ? "reviews posted: UNCOUNTED" : `reviews posted: ${r.reviewsPosted}`;
+    r.reviewsPosted === null
+      ? "reviews added by this run: UNCOUNTED"
+      : `reviews added by this run: ${r.reviewsPosted}`;
   const head = `${r.reading} — ${calls}; ${reviews}`;
   if (r.reading === "MEASURED") return head;
   return [head, ...r.reasons.map((reason, i) => `  ${reason}: ${r.detail[i]}`)].join("\n");

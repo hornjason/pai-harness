@@ -146,7 +146,61 @@ export const SUBJECT_FETCHING_TOOLS = [
  */
 export const SUBJECT_OUTPUT_NAME = "diff";
 
+/** The script whose presence in a step makes that step the reading. */
+export const READING_SCRIPT = "scripts/read-review-execution.ts";
+
 export class ReviewSourceUnreadableError extends Error {}
+
+/**
+ * Every step of the job, as its own string: a `- ` list marker under `steps:`
+ * and every line up to the next one.
+ *
+ * **A comment above a `- ` marker lands in the PRECEDING step, and that is
+ * deliberate rather than overlooked.** An earlier draft reattached each
+ * trailing comment block to the step it introduces, which reads better and
+ * which this file's first measurement showed to be dead: with
+ * `withoutComments` below standing between every claim and the prose,
+ * restoring the misattribution is **0 of 31 red**, measured. Two deciders
+ * answering one question are behaviourally one
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape), so the
+ * cleverer one is gone and `withoutComments` is the single binding.
+ *
+ * What the misattribution broke before `withoutComments` existed is worth
+ * recording, because it is the reason that function is not ceremony: the
+ * `setup-bun` step's comment names `READING_SCRIPT` in prose, so a raw-text
+ * `filter` returned **two** reading steps for a file with one.
+ */
+export function jobSteps(source: string): string[] {
+  const lines = source.split("\n");
+  const start = lines.findIndex(l => l.trimStart() === "steps:");
+  if (start === -1) throw new ReviewSourceUnreadableError("the job declares no steps:");
+  const indentOf = (l: string) => l.length - l.trimStart().length;
+  const base = indentOf(lines[start]);
+  const steps: string[][] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() !== "" && indentOf(line) <= base) break;
+    if (/^\s*- /.test(line)) steps.push([]);
+    if (steps.length > 0) steps[steps.length - 1].push(line);
+  }
+  return steps.map(s => s.join("\n"));
+}
+
+/**
+ * A step with its comments removed.
+ *
+ * A claim about a step's CONFIGURATION must not be satisfiable by a sentence
+ * ABOUT that configuration. `lib/review-tool-agreement.ts`'s own first draft
+ * asked `/execution_file/.test(source)` of the whole file and was satisfied by
+ * a comment in a different step — found by the reviewer this module exists to
+ * repair, posted as an inline comment on PR #746.
+ */
+export function withoutComments(step: string): string {
+  return step
+    .split("\n")
+    .filter(l => !l.trimStart().startsWith("#"))
+    .join("\n");
+}
 
 /**
  * The YAML block an anchor line opens: that line, plus every following line
@@ -340,13 +394,39 @@ export function reviewToolAgreement(source: string): ReviewToolViolation[] {
 
   // 7. AC-1/AC-2: something has to read what the run actually did, or a run
   //    that made zero tool calls concludes success exactly as before.
-  if (!/execution_file/.test(source)) {
+  //
+  //    Asked of the STEP, not the document. The first draft of this check was
+  //    `/execution_file/.test(source)` and was caught by the reviewer this
+  //    very change exists to repair: the string already appears in a comment
+  //    in the Review step, so the check was satisfied by prose about itself —
+  //    `.claude/rules/checks-must-be-able-to-fail.md` §"search the slice, not
+  //    the document", which that rule has now caught in its own subject four
+  //    times. The step is located by the SCRIPT it runs rather than by its
+  //    `name:`, because a name is prose and the invocation is the binding.
+  const readingSteps = jobSteps(source)
+    .map(withoutComments)
+    .filter(s => s.includes(READING_SCRIPT));
+  if (readingSteps.length !== 1) {
     v.push({
       kind: "NO_STEP_READS_THE_EXECUTION_OUTPUT",
       detail:
-        "no step reads the action's execution_file output, so a run that made zero tool calls " +
-        "and posted nothing concludes success — which is #732's whole subject",
+        `${readingSteps.length} steps run ${READING_SCRIPT}, not one. A run that made zero tool ` +
+        `calls and posted nothing then concludes success — which is #732's whole subject`,
     });
+  } else {
+    const step = readingSteps[0];
+    const missing = [
+      /execution_file/.test(step) ? null : "it does not read the action's execution_file output",
+      /^\s*if:\s*always\(\)\s*$/m.test(step)
+        ? null
+        : "it is not `if: always()`, so the interesting case — the review step reporting success — skips it",
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      v.push({
+        kind: "NO_STEP_READS_THE_EXECUTION_OUTPUT",
+        detail: `the step running ${READING_SCRIPT} cannot do its job: ${missing.join("; ")}`,
+      });
+    }
   }
 
   return v;
