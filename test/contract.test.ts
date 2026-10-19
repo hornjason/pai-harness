@@ -49,20 +49,84 @@ const GATES_DIR = join(import.meta.dir, "..", "gates");
  */
 const NO_TOKEN = { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" };
 
-function runGate(gate: string, slug: string, treeUnderTest: string): { pass: number; fail: number; output: string } {
+interface GateRun {
+  pass: number;
+  fail: number;
+  output: string;
+  /**
+   * Whether the output carried a summary at all.
+   *
+   * `failMatch ? parse : 0` read a gate that never reported as a gate with
+   * zero failures, so `expect(r.fail).toBe(0)` was GREEN over a run that
+   * timed out, was killed, or died before printing — which is the fail-open
+   * `.claude/rules/checks-must-be-able-to-fail.md` is about, in the contract
+   * test that is supposed to be the gate's own proof. A reading with no
+   * summary behind it is not a verdict, and `expectGateGreen` refuses it.
+   */
+  measured: boolean;
+}
+
+function readGateOutput(output: string): GateRun {
+  const passMatch = output.match(/(\d+) pass/);
+  const failMatch = output.match(/(\d+) fail/);
+  return {
+    pass: passMatch ? parseInt(passMatch[1]) : 0,
+    fail: failMatch ? parseInt(failMatch[1]) : 0,
+    output,
+    measured: passMatch !== null && failMatch !== null,
+  };
+}
+
+function runGate(gate: string, slug: string, treeUnderTest: string): GateRun {
   const gateRunner = join(GATES_DIR, "run-gate.ts");
   const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 --tree-under-test ${treeUnderTest} --force 2>&1`;
   try {
-    const output = execSync(cmd, { encoding: "utf-8", timeout: 30000, env: NO_TOKEN });
-    const passMatch = output.match(/(\d+) pass/);
-    const failMatch = output.match(/(\d+) fail/);
-    return { pass: passMatch ? parseInt(passMatch[1]) : 0, fail: failMatch ? parseInt(failMatch[1]) : 0, output };
+    return readGateOutput(execSync(cmd, { encoding: "utf-8", timeout: 30000, env: NO_TOKEN }));
   } catch (e: any) {
-    const out = (e.stdout || "") + (e.stderr || "");
-    const passMatch = out.match(/(\d+) pass/);
-    const failMatch = out.match(/(\d+) fail/);
-    return { pass: passMatch ? parseInt(passMatch[1]) : 0, fail: failMatch ? parseInt(failMatch[1]) : 0, output: out };
+    return readGateOutput((e.stdout || "") + (e.stderr || ""));
   }
+}
+
+describe("#654-adjacent: a gate that never reported is not a gate that passed", () => {
+  // These two are the whole reason `measured` exists, and they are cases
+  // rather than a comment because the branch is otherwise unreachable: no
+  // fixture in this file makes the runner die, and a branch no test can
+  // enter is what `.claude/rules/checks-must-be-able-to-fail.md` is about.
+  test("output with no summary reads as UNMEASURED, not as zero failures", () => {
+    const killed = readGateOutput("bun run gates/run-gate.ts\n");
+    expect(killed.measured).toBe(false);
+    // The pre-existing reading. `fail` is 0 here and always was — which is
+    // exactly why `fail` alone could not be the thing asserted on.
+    expect(killed.fail).toBe(0);
+    expect(() => expectGateGreen(killed, "a killed runner")).toThrow(/did not report a verdict/);
+  });
+
+  test("a real summary is measured, and a failing one carries the gate's own output", () => {
+    const red = readGateOutput("running checks\ngoverning-spec-exists FAILED\n 12 pass\n 1 fail\n");
+    expect(red.measured).toBe(true);
+    expect(red.fail).toBe(1);
+    // The information the three CI reds could not produce: which check.
+    expect(() => expectGateGreen(red, "a failing gate")).toThrow(/governing-spec-exists/);
+  });
+});
+
+/**
+ * The gate ran and found nothing wrong — and say what it found when it did.
+ *
+ * `expect(r.fail).toBe(0)` with no message produces `Expected: 0 / Received:
+ * 1` and nothing else. These cases spawn a gate runner that prints the names
+ * of every check it failed, and that output was thrown away at exactly the
+ * moment somebody needed it: three of these cases went red in CI on two
+ * unrelated branches and the logs could not say which check failed, because
+ * the assertion did not carry it.
+ *
+ * The tail rather than the head: `run-gate.ts` prints its batch diagnosis
+ * last, so the end of the buffer is where the check names are.
+ */
+function expectGateGreen(r: GateRun, what: string): void {
+  expect(r.measured, `${what}: the gate printed no pass/fail summary — it did not report a verdict, ` +
+    `which is not the same as reporting a clean one. Output:\n${r.output.slice(-3000)}`).toBe(true);
+  expect(r.fail, `${what}: the gate failed ${r.fail} check(s). Output:\n${r.output.slice(-3000)}`).toBe(0);
 }
 
 // Bun ignores a describe-level `timeout` option, so the 30s budget lives on each
@@ -88,7 +152,7 @@ describe("contract: LIGHT tier", () => {
 
   test("scope passes", () => {
     const r = runGate("scope", "light", "/tmp/test");
-    expect(r.fail).toBe(0);
+    expectGateGreen(r, "LIGHT scope");
     expect(r.pass).toBeGreaterThan(0);
   }, { timeout: 30_000 });
 
@@ -276,7 +340,7 @@ describe("contract: STANDARD tier", () => {
 
   test("scope passes", () => {
     const r = runGate("scope", "standard", STANDARD_PROJECT);
-    expect(r.fail).toBe(0);
+    expectGateGreen(r, "STANDARD scope");
   }, { timeout: 30_000 });
 
   test("verify passes", () => {
@@ -284,12 +348,12 @@ describe("contract: STANDARD tier", () => {
     // the tree scope measured (#669).
     setFixtureTree(POST_FIX_TREE);
     const r = runGate("verify", "standard", STANDARD_PROJECT);
-    expect(r.fail).toBe(0);
+    expectGateGreen(r, "STANDARD verify");
   }, { timeout: 30_000 });
 
   test("ship passes", () => {
     const r = runGate("ship", "standard", STANDARD_PROJECT);
-    expect(r.fail).toBe(0);
+    expectGateGreen(r, "STANDARD ship");
   }, { timeout: 30_000 });
 
 
@@ -373,7 +437,7 @@ describe("contract: STANDARD tier", () => {
     // which is how the record-then-read split above was found.
     writeStandardFixture("standard-control");
     const { verify: r } = scopeThenVerify("standard-control");
-    expect(r.fail).toBe(0);
+    expectGateGreen(r, "the broken-evidence control");
   }, { timeout: 60_000 });
 });
 
