@@ -185,7 +185,10 @@ describe("#224: suiteMeasurement — schema and SCHEMA-GUIDE.md describe the sam
     // UNMEASURED is the reader's answer to an absent record, not a writable
     // verdict — a schema that accepted it would give a caller a way to park an
     // unmeasured run in the field that proves the suite ran.
-    expect(v3SourceForSuite).toContain('verdict: z.enum(["PASS", "FAIL"])');
+    // PARTIAL joined it in #673 and is not a third result: it says the
+    // reading was taken over less than the suite, and readSuiteMeasurement
+    // turns it into UNMEASURED for every consumer.
+    expect(v3SourceForSuite).toContain('verdict: z.enum(["PASS", "FAIL", "PARTIAL"])');
   });
 });
 

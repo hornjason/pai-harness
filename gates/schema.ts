@@ -328,7 +328,12 @@ export const ChangelogEntry = z.object({
 const MEASURED_SHA = COMMIT_SHA;
 
 const SuiteMeasurementShape = {
-  verdict: z.enum(["PASS", "FAIL"]),
+  // #673 — three words, and `PARTIAL` is not a third result. It says the
+  // reading was taken over something smaller than the suite, which
+  // `readSuiteMeasurement` resolves to UNMEASURED by name, so no gate can
+  // act on it. `UNMEASURED` itself is still not writable: recording it would
+  // be a measurement saying there was no measurement.
+  verdict: z.enum(["PASS", "FAIL", "PARTIAL"]),
   measuredSha: z.string().regex(MEASURED_SHA, "measuredSha must be a commit SHA (7-40 hex), not a ref name"),
   failures: z.number().int().nonnegative(),
   measuredAt: z.string().optional(),
@@ -342,6 +347,21 @@ const SuiteMeasurementShape = {
   // means "it said none". Collapsing those is the defect one level down.
   tests: z.number().int().nonnegative().nullable().optional(),
   files: z.number().int().positive().nullable().optional(),
+  // #673 — `tests` is the COLLECTED total and `ran` is `pass + fail`. On run
+  // `wf_62d68d55-81c` those were 13915 and 13084, the changelog carried one
+  // and this record carried the other, and nothing said which was which. The
+  // difference is exactly `skip + todo`, so the three are recorded beside the
+  // total and a reader never has to subtract to find out what a number means.
+  //
+  // `ran` is always a number on a measured run — it is `pass + fail`, and a
+  // run with neither is refused upstream. `skip` and `todo` are `.nullable()`
+  // for the reason `tests` and `files` are: a runner that reports no skip
+  // count and a runner that skipped none are opposite facts, and `0` is the
+  // value that would let a reader add them together. Absent on all three
+  // means "recorded by a harness older than #673".
+  ran: z.number().int().nonnegative().optional(),
+  skip: z.number().int().nonnegative().nullable().optional(),
+  todo: z.number().int().nonnegative().nullable().optional(),
 };
 
 /**

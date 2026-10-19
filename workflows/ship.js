@@ -550,11 +550,24 @@ function selectedTestsCommand(harnessRoot, workDir, testCommand, quote) {
   return `${testCommand} $(bun ${script} --work ${work})`
 }
 
+/**
+ * `--scope full` is a LITERAL here, and both call sites want it (#673).
+ *
+ * The two commands this builds are handed to an agent beside
+ * `suiteCaptureCommand`, which runs the project's whole test command — so
+ * the scope of what the recorder will read is a fact this workflow knows and
+ * the agent does not have to decide. What the agent CAN do is run something
+ * narrower and record that, which is exactly what happened on run
+ * `wf_62d68d55-81c`: `{"verdict":"PASS","tests":1,"files":1}` sat in the
+ * state for nine minutes. The flag does not stop that; it makes it say so,
+ * and the prompts beside both call sites tell the agent to change the word.
+ */
 function recorderCommand(harnessRoot, workDir, projectRoot, quote) {
   return (
     `bun ${quote(`${harnessRoot}/scripts/record-suite-measurement.ts`)} \\\n` +
     `    --state ${quote(`${workDir}/workflow-state.json`)} \\\n` +
     `    --project ${quote(projectRoot)} \\\n` +
+    `    --scope full \\\n` +
     `    --output ${quote(suiteOutputPath(workDir))}`
   )
 }
@@ -3154,7 +3167,16 @@ measurement backs is a verdict somebody typed, and the gate refuses it (#530):
   ${o.recorder}
 Do NOT type a count anywhere, and do NOT add flags. The recorder reads the
 summary out of the file the first command captured and derives the count, the
-verdict and the commit from it (#469). If it refuses because the run printed
+verdict and the commit from it (#469).
+--scope is the one thing it cannot read out of the output, because a run over
+one file prints the same shape as a run over all of them. The command above
+says \`full\` because the command above it runs the whole suite. If you ran
+anything less than that, change it to \`--scope partial\` — the measurement is
+then recorded as PARTIAL and will NOT satisfy the verify gate, which is
+correct: a subset is not a reading about the suite, and a PASS over 1 test
+looks exactly like a PASS over 13915 (#673). Do not reach for \`full\` to make
+the gate go green; run the whole suite.
+If it refuses because the run printed
 no summary or executed no tests, that is the finding: the suite did not
 measure this branch, and what needs fixing is the run, not the number. Report
 the refusal rather than working around it.
@@ -3473,7 +3495,16 @@ that predates the final commit got read as a clean suite:
 Do NOT type a count anywhere, and do NOT add flags. The recorder reads the
 summary out of the file the first command captured and derives both the count
 and the verdict from it, so there is no flag for either (#469). It reads the
-commit from the project itself; do NOT pass it a SHA you typed. If it refuses
+commit from the project itself; do NOT pass it a SHA you typed.
+--scope is the one thing it cannot read out of the output, because a run over
+one file prints the same shape as a run over all of them. The command above
+says \`full\` because the command above it runs the whole suite. If you ran
+anything less than that, change it to \`--scope partial\` — the measurement is
+then recorded as PARTIAL and will NOT satisfy this gate, which is correct: a
+subset is not a reading about the suite, and a PASS over 1 test looks exactly
+like a PASS over 13915 (#673). Do not reach for \`full\` to make the gate go
+green; run the whole suite.
+If it refuses
 because the run printed no summary or executed no tests, that is the finding:
 the suite did not measure this project, and what needs fixing is the run, not
 the number.
