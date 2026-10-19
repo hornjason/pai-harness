@@ -31,7 +31,7 @@
  * ## Why the interpolation cases MUTATE the module
  *
  * AC-6b says the prompt names the findings path and key by interpolating the
- * exported constants. `expect(prompt).toContain(AI_REVIEW_FINDINGS_PATH)` is
+ * exported constants. `expect(prompt).toContain(AI_REVIEW_FINDINGS_PATH_VAR)` is
  * satisfied by a prompt with the value typed into it a second time — the
  * assertion passes over exactly the duplication the AC forbids. So the cases
  * build a copy of `lib/scaffold/ai-review-step.ts` with the constant changed,
@@ -52,7 +52,7 @@ import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
   AI_REVIEW_FINDINGS_KEY,
-  AI_REVIEW_FINDINGS_PATH,
+  AI_REVIEW_FINDINGS_PATH_VAR,
   AI_REVIEW_JOB,
   AI_REVIEW_MODEL,
   AI_REVIEW_RUN_STEP_ID,
@@ -341,7 +341,7 @@ describe("AC-6: exactly one pinned model identifier, declared once in the module
 
 describe("AC-6b: the review prompt interpolates the findings path and key", () => {
   test("AC-6b: both constants are exported and assigned exactly once", () => {
-    for (const name of ["AI_REVIEW_FINDINGS_PATH", "AI_REVIEW_FINDINGS_KEY"]) {
+    for (const name of ["AI_REVIEW_FINDINGS_PATH_VAR", "AI_REVIEW_FINDINGS_KEY"]) {
       expect(source, `${name} is not exported`).toContain(`export const ${name}`);
       expect((source.match(new RegExp(`${name}\\s*=`, "g")) || []).length, `${name} is assigned twice`)
         .toBe(1);
@@ -351,18 +351,18 @@ describe("AC-6b: the review prompt interpolates the findings path and key", () =
   test("AC-6b: the prompt the action receives names both", () => {
     const prompt = String(step(AI_REVIEW_ACTION_STEP_ID).with?.prompt ?? "");
     expect(prompt.length, "the action is handed no prompt").toBeGreaterThan(100);
-    expect(prompt).toContain(AI_REVIEW_FINDINGS_PATH);
+    expect(prompt).toContain(AI_REVIEW_FINDINGS_PATH_VAR);
     expect(prompt).toContain(AI_REVIEW_FINDINGS_KEY);
   });
 
   test("AC-6b: changing the path constant moves the prompt — no second spelling", async () => {
-    const mutant = await mutate("AI_REVIEW_FINDINGS_PATH", AI_REVIEW_FINDINGS_PATH, "mutant.json");
+    const mutant = await mutate("AI_REVIEW_FINDINGS_PATH_VAR", AI_REVIEW_FINDINGS_PATH_VAR, "mutant.json");
     expect(mutant.buildReviewPrompt()).toContain("mutant.json");
     expect(
       mutant.buildReviewPrompt(),
-      `the prompt still names ${AI_REVIEW_FINDINGS_PATH} after the constant changed — ` +
+      `the prompt still names ${AI_REVIEW_FINDINGS_PATH_VAR} after the constant changed — ` +
         `the path is typed into the prompt a second time`,
-    ).not.toContain(AI_REVIEW_FINDINGS_PATH);
+    ).not.toContain(AI_REVIEW_FINDINGS_PATH_VAR);
     expect(mutant.buildReviewRunStep()).toContain("mutant.json");
   });
 

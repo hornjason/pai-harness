@@ -158,14 +158,108 @@ export const AI_REVIEW_ACTION_VERSION = "v1";
 export const AI_REVIEW_MODEL = "claude-opus-5-5";
 
 /**
- * Where the reviewer writes its findings, workspace-relative.
+ * The environment variable carrying the path the reviewer writes its findings
+ * to, and the step that computes that path.
  *
- * One spelling, interpolated into the prompt that asks for it and into the
- * step that looks for it. #295 is the trap: a reader that looked for a key no
- * writer ever produced found an empty list on every run, and an absent key
- * reads as an empty list reads as clean.
+ * ## Why this is not a workspace-relative filename any more
+ *
+ * It was `ai-review-findings.json` in the workspace root, which is the branch
+ * under review. On `pull_request` the workspace holds the contributor's tree,
+ * so anyone opening a pull request could COMMIT that file — and the reviewer
+ * writes "the result" to a path whose contents the reviewed branch already
+ * controls. A payload committed as `{"verdict":"PASS","findings":[]}` is
+ * indistinguishable, to any reader, from a review that ran and found nothing.
+ * An agent that failed to write anything leaves the attacker's file in place
+ * and the job reports a clean review it never performed.
+ *
+ * `RUNNER_TEMP` is outside the checkout, so nothing in the branch can put a
+ * file there. The per-run nonce is for the other direction: a self-hosted
+ * runner reuses its working tree between jobs, so a fixed name could be a
+ * leftover from the PREVIOUS run — a stale clean payload read as this run's
+ * result, which is the same fail-open with a clock instead of an attacker.
+ *
+ * The path reaches the reviewer through `env:` and never through `${{ }}`
+ * inside the prompt. An expression in the prompt is substituted before the
+ * action sees it; `env:` is the channel every other value in this file uses.
  */
-export const AI_REVIEW_FINDINGS_PATH = "ai-review-findings.json";
+export const AI_REVIEW_FINDINGS_PATH_VAR = "AI_REVIEW_FINDINGS_PATH";
+
+export const AI_REVIEW_PREPARE_STEP_ID = "ai-review-prepare";
+
+export const AI_REVIEW_PREPARE_STEP_NAME = "Choose a findings path outside the checkout";
+
+/** The basename, nonce aside. One spelling, so the glob and the write agree. */
+export const AI_REVIEW_FINDINGS_BASENAME = "ai-review-findings";
+
+/**
+ * The tool grant handed to the reviewer, as one constant.
+ *
+ * Wave 2 shipped `--allowedTools Read,Grep,Glob,Write` and nothing else. Three
+ * things were wrong with it and all three are the same shape — a permission
+ * nobody wrote down is a permission granted:
+ *
+ * - **No `--disallowedTools`.** An allow-list is only half the statement when
+ *   the agent can reach anything the action's defaults hand it. The denial is
+ *   written out so the refusal is a line somebody can read, and it is the
+ *   same list `.github/workflows/claude-review.yml` carries.
+ * - **`Write` was unscoped.** The reviewer is told to write one file; nothing
+ *   stopped it writing any other, including the workflow reviewing it and the
+ *   script that reads its verdict. The `git diff --exit-code` step below is
+ *   what measures that, because a grant is a claim and a diff is a reading.
+ * - **No `--max-turns`.** A reviewer with no turn budget is a job with no
+ *   upper bound on what it costs, and the billing path this whole issue is
+ *   about is the one that runs out.
+ */
+export const AI_REVIEW_DISALLOWED_TOOLS = [
+  "Bash",
+  "BashOutput",
+  "KillShell",
+  "Task",
+  "SlashCommand",
+  "ExitPlanMode",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "WebFetch",
+  "WebSearch",
+].join(",");
+
+export const AI_REVIEW_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Write"].join(",");
+
+export const AI_REVIEW_MAX_TURNS = 25;
+
+export const AI_REVIEW_CLAUDE_ARGS =
+  `--model ${AI_REVIEW_MODEL} --max-turns ${AI_REVIEW_MAX_TURNS} ` +
+  `--allowedTools ${AI_REVIEW_ALLOWED_TOOLS} ` +
+  `--disallowedTools ${AI_REVIEW_DISALLOWED_TOOLS}`;
+
+/**
+ * The checkout the reviewer reads. Pinned, like everything else here.
+ *
+ * Wave 2 had no checkout step at all. `anthropics/claude-code-action` does not
+ * clone for you, so the reviewer ran over an empty workspace — it would find
+ * nothing, every time, and "found nothing" is the output of a clean review.
+ * That is the whole defect this issue exists against, reached by omitting a
+ * step rather than by writing a wrong one.
+ *
+ * `persist-credentials: false` because the default writes `GITHUB_TOKEN` into
+ * `.git/config`, which puts a credential inside the tree the agent is about to
+ * read. The review needs the files; it does not need the ability to push.
+ */
+export const AI_REVIEW_CHECKOUT_STEP_NAME = "Check out the pull request";
+
+export const AI_REVIEW_CHECKOUT_ACTION = "actions/checkout";
+
+export const AI_REVIEW_CHECKOUT_SHA = "d23441a48e516b6c34aea4fa41551a30e30af803";
+
+export const AI_REVIEW_CHECKOUT_VERSION = "v6";
+
+/** The step that reports the reviewer having written outside its one file. */
+export const AI_REVIEW_DRIFT_STEP_ID = "ai-review-drift";
+
+export const AI_REVIEW_DRIFT_STEP_NAME = "Refuse a reviewer that modified the tree";
+
+export const AI_REVIEW_DRIFT_TITLE = "AI review modified the tree";
 
 /**
  * The JSON member the findings array travels under.
@@ -179,10 +273,71 @@ export const AI_REVIEW_FINDINGS_PATH = "ai-review-findings.json";
  */
 export const AI_REVIEW_FINDINGS_KEY = "findings";
 
-/** The severities the reader recognises, and the verdict words it accepts. */
-const AI_REVIEW_BLOCKING_SEVERITIES = ["critical", "high"] as const;
-const AI_REVIEW_PASSIVE_SEVERITIES = ["medium", "low", "info"] as const;
-const AI_REVIEW_VERDICTS = ["PASS", "BLOCK"] as const;
+/** The key the agent records its own verdict word under. */
+export const AI_REVIEW_VERDICT_KEY = "verdict";
+
+/** The key each finding carries its severity under. */
+export const AI_REVIEW_SEVERITY_KEY = "severity";
+
+/**
+ * Every field a finding carries, named ONCE, here, for both ends.
+ *
+ * `buildReviewPrompt()` builds the JSON shape it asks the agent for out of
+ * this map, and `lib/scaffold/ai-review-findings.ts` imports it to read the
+ * payload back. Wave 2 of #631 had the reader interpolating `finding.title`,
+ * a key the prompt never asks any writer to produce: every real finding
+ * rendered as `(untitled)` and the one annotation a maintainer acts on named
+ * no file, no line and no summary. That is #295 exactly — an absent key reads
+ * as an empty value reads as nothing to report — and it survived because
+ * every fixture in the suite hand-typed `title`, so the fixtures satisfied the
+ * assertion through a path the real contract never takes.
+ *
+ * The map lives in THIS module and not in the reader because the dependency
+ * can only point one way: this file has no relative imports, so the mutant
+ * copy `test/ai-review-scaffold.test.ts` builds can run from a temp directory.
+ */
+export const AI_REVIEW_FINDING_FIELDS = {
+  severity: AI_REVIEW_SEVERITY_KEY,
+  file: "file",
+  line: "line",
+  summary: "summary",
+  failureScenario: "failure_scenario",
+} as const;
+
+/**
+ * Every severity the contract recognises, and whether it blocks.
+ *
+ * A closed table, and the single one: the prompt's "use one of these words"
+ * list and the reader's "this word blocks" table are the same statement, and
+ * two copies of it drift into a review whose findings the reader calls
+ * unrecognised. Derived lists below, never a second literal.
+ *
+ * A severity absent from the table does not resolve to "does not block" — it
+ * makes the whole reading UNMEASURED, because a word nobody declared is a
+ * word nobody has decided about, and guessing in the permissive direction is
+ * how a blocking finding becomes a green check.
+ */
+export const AI_REVIEW_SEVERITIES: Readonly<Record<string, boolean>> = Object.freeze({
+  critical: true,
+  high: true,
+  medium: false,
+  low: false,
+  info: false,
+});
+
+/** The verdict word meaning "nothing here blocks the pull request". */
+export const AI_REVIEW_PASS_VERDICT = "PASS";
+
+/** The verdict word meaning "something here blocks the pull request". */
+export const AI_REVIEW_BLOCK_VERDICT = "BLOCK";
+
+const AI_REVIEW_BLOCKING_SEVERITIES = Object.keys(AI_REVIEW_SEVERITIES).filter(
+  s => AI_REVIEW_SEVERITIES[s],
+);
+const AI_REVIEW_PASSIVE_SEVERITIES = Object.keys(AI_REVIEW_SEVERITIES).filter(
+  s => !AI_REVIEW_SEVERITIES[s],
+);
+const AI_REVIEW_VERDICTS = [AI_REVIEW_PASS_VERDICT, AI_REVIEW_BLOCK_VERDICT] as const;
 
 const SECRET_NAMES = AI_REVIEW_AUTH_PRECEDENCE.map(c => c.secret);
 
@@ -294,26 +449,35 @@ export function buildAuthDetectStep(indent = "      "): string {
 export function buildReviewPrompt(): string {
   const blocking = AI_REVIEW_BLOCKING_SEVERITIES.join(", ");
   const passive = AI_REVIEW_PASSIVE_SEVERITIES.join(", ");
+  const f = AI_REVIEW_FINDING_FIELDS;
 
   return `Review the changes on this branch for correctness defects: bugs that
 produce a wrong result, a crash, or data loss on some input you can name.
 Read the diff and the files around it before you conclude anything.
 
-Write the result to \`${AI_REVIEW_FINDINGS_PATH}\` in the workspace root, as a
-single JSON object shaped exactly like this:
+Write the result to the absolute path held in the \`${AI_REVIEW_FINDINGS_PATH_VAR}\`
+environment variable. It is outside this checkout on purpose. Do not write a
+findings file into the workspace, and if one is already there, ignore it — it
+came from the branch you are reviewing, not from a review.
+
+The payload is a single JSON object shaped exactly like this:
 
 {
   "${AI_REVIEW_FINDINGS_KEY}": [
     {
-      "severity": "one of: ${blocking}, ${passive}",
-      "file": "repo-relative path",
-      "line": 1,
-      "summary": "one sentence stating the defect",
-      "failure_scenario": "concrete inputs or state, then the wrong output"
+      "${f.severity}": "one of: ${blocking}, ${passive}",
+      "${f.file}": "repo-relative path",
+      "${f.line}": 1,
+      "${f.summary}": "one sentence stating the defect",
+      "${f.failureScenario}": "concrete inputs or state, then the wrong output"
     }
   ],
-  "verdict": "${AI_REVIEW_VERDICTS.join(" or ")}"
+  "${AI_REVIEW_VERDICT_KEY}": "${AI_REVIEW_VERDICTS.join(" or ")}"
 }
+
+Every one of those member names is required on every finding. A finding
+missing \`${f.file}\` or \`${f.summary}\` reaches a maintainer as an annotation
+naming no code and no defect, which is the same as not reporting it.
 
 Rules for the payload, each of which a later step enforces:
 
@@ -329,8 +493,9 @@ Rules for the payload, each of which a later step enforces:
 - Write the file even if you can say nothing useful. A job with no payload has
   not passed a review, it has not had one.
 
-Do not post review comments, do not push commits, and do not edit any file in
-the tree other than the payload above.
+Do not post review comments and do not push commits. Write nothing into this
+checkout at all: the payload path above is outside it, and a later step fails
+the job if \`git diff\` reports anything, so an edit here costs the review.
 `;
 }
 
@@ -366,7 +531,7 @@ the tree other than the payload above.
 export function buildReviewRunScript(): string {
   const pending =
     `The review action (#631) did not complete, so no AI review ran on this ` +
-    `pull request and nothing was written to ${AI_REVIEW_FINDINGS_PATH}. This ` +
+    `pull request and no findings payload was written. This ` +
     `check is UNMEASURED, not a passing review.`;
 
   const refusal =
@@ -400,6 +565,79 @@ exit 0
 `;
 }
 
+/**
+ * The bash that picks the findings path, before the reviewer is handed it.
+ *
+ * `RUNNER_TEMP` is required rather than defaulted. A default — the workspace,
+ * `/tmp`, anything — would put the payload somewhere the branch can reach on
+ * a runner where the variable is unset, which is precisely the state this
+ * step exists to make impossible, and it would do it silently. An absent
+ * `RUNNER_TEMP` is a runner nobody has characterised, so the job refuses and
+ * says so rather than reviewing against a path it chose by itself.
+ *
+ * The nonce is `GITHUB_RUN_ID`/`GITHUB_RUN_ATTEMPT` and not `RANDOM`: a
+ * reproducible name a later step can also derive, unique per attempt, and not
+ * a value a re-run would collide with.
+ */
+export function buildPrepareScript(): string {
+  const refusal =
+    `RUNNER_TEMP is not set, so there is nowhere outside the checkout to ` +
+    `write the findings payload. Refusing rather than writing it into the ` +
+    `branch under review, where the branch could have committed it already.`;
+
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+if [ -z "\${RUNNER_TEMP:-}" ]; then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+nonce="\${GITHUB_RUN_ID:-0}-\${GITHUB_RUN_ATTEMPT:-0}"
+path="\${RUNNER_TEMP}/${AI_REVIEW_FINDINGS_BASENAME}-\${nonce}.json"
+
+# A leftover from a previous attempt on a reused runner is a stale clean
+# payload read as this run's result. Same fail-open, a clock instead of an
+# attacker.
+rm -f "\${path}"
+
+echo "ai-review findings path: \${path}"
+echo "path=\${path}" >> "\${GITHUB_OUTPUT}"
+`;
+}
+
+/**
+ * The bash that refuses a reviewer which modified the tree.
+ *
+ * The prompt tells the agent to write one file and touch nothing else, and
+ * the tool grant above narrows what it can reach. Both are claims. This is
+ * the reading: the payload now lives outside the checkout, so a clean
+ * `git diff` is the whole statement, and anything the reviewer wrote into the
+ * branch — including the workflow reviewing it — shows up here.
+ *
+ * It refuses unconditionally, not under ${AI_REVIEW_REQUIRE_VAR}. That
+ * variable governs whether an ABSENT review is fatal, which is a consumer's
+ * call about their own pipeline. A review that edited the code it was
+ * reviewing is not an absent review; it is a review nobody should read.
+ */
+export function buildDriftScript(): string {
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+if [ "\${AI_REVIEW_MODE:-none}" = none ]; then
+  exit 0
+fi
+
+if git diff --quiet && git diff --quiet --cached; then
+  exit 0
+fi
+
+changed=$(git status --porcelain | tr '\\n' ' ')
+echo "::error title=${AI_REVIEW_DRIFT_TITLE}::The reviewer modified the tree it was reviewing: \${changed}. A review that edits the code under review is not a result." >&2
+exit ${AI_REVIEW_REQUIRED_EXIT}
+`;
+}
+
 /** Indent a block of YAML lines, leaving blank lines blank. */
 function indented(lines: string[], indent: string): string {
   return lines.map(l => (l ? `${indent}${l}` : "")).join("\n") + "\n";
@@ -408,8 +646,11 @@ function indented(lines: string[], indent: string): string {
 /**
  * The review steps, as YAML, ready to be indented under a job's `steps:`.
  *
- * Three steps, in the order they have to run: authenticate to Vertex, run the
- * reviewer, say whether it ran. Every credential is gated on the mode the
+ * Six steps, in the order they have to run: check out the branch, choose a
+ * payload path outside it, authenticate to Vertex, run the reviewer, say
+ * whether it ran, and refuse one that edited the tree it was reviewing.
+ *
+ * Every credential is gated on the mode the
  * auth step resolved rather than on the secret itself — the auth step is the
  * single decider, and a second `secrets.X != ''` reading here would be a
  * decider that always agrees with it and can never be told apart from it.
@@ -423,6 +664,23 @@ export function buildReviewRunStep(indent = "      "): string {
     `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == '${mode}'`;
   const credential = (mode: string, secret: string) =>
     `\${{ ${modeIs(mode)} && secrets.${secret} || '' }}`;
+
+  const checkout = [
+    `- name: ${AI_REVIEW_CHECKOUT_STEP_NAME}`,
+    `  uses: ${AI_REVIEW_CHECKOUT_ACTION}@${AI_REVIEW_CHECKOUT_SHA} # ${AI_REVIEW_CHECKOUT_VERSION}`,
+    `  with:`,
+    `    fetch-depth: 1`,
+    // The default writes GITHUB_TOKEN into .git/config, which is a credential
+    // inside the tree the agent reads.
+    `    persist-credentials: false`,
+  ];
+
+  const prepare = [
+    `- name: ${AI_REVIEW_PREPARE_STEP_NAME}`,
+    `  id: ${AI_REVIEW_PREPARE_STEP_ID}`,
+    `  run: |`,
+    ...buildPrepareScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
 
   const vertexAuth = [
     `- name: ${AI_REVIEW_VERTEX_AUTH_STEP_NAME}`,
@@ -445,13 +703,25 @@ export function buildReviewRunStep(indent = "      "): string {
     // is inferable from the service-account key by the reviewer.
     `    ANTHROPIC_VERTEX_PROJECT_ID: \${{ vars.ANTHROPIC_VERTEX_PROJECT_ID }}`,
     `    CLOUD_ML_REGION: \${{ vars.CLOUD_ML_REGION }}`,
+    // The payload path, through `env:` like every other value here. An
+    // expression inside `prompt:` is substituted before the action sees it.
+    `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
     `  with:`,
     `    use_vertex: \${{ ${modeIs("vertex")} }}`,
     `    claude_code_oauth_token: ${credential("oauth", "CLAUDE_CODE_OAUTH_TOKEN")}`,
     `    anthropic_api_key: ${credential("api-key", "ANTHROPIC_API_KEY")}`,
-    `    claude_args: --model ${AI_REVIEW_MODEL} --allowedTools Read,Grep,Glob,Write`,
+    `    claude_args: ${AI_REVIEW_CLAUDE_ARGS}`,
     `    prompt: |`,
     ...buildReviewPrompt().trimEnd().split("\n").map(l => (l ? `      ${l}` : "")),
+  ];
+
+  const drift = [
+    `- name: ${AI_REVIEW_DRIFT_STEP_NAME}`,
+    `  id: ${AI_REVIEW_DRIFT_STEP_ID}`,
+    `  env:`,
+    `    AI_REVIEW_MODE: \${{ steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode }}`,
+    `  run: |`,
+    ...buildDriftScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
   const report = [
@@ -465,5 +735,12 @@ export function buildReviewRunStep(indent = "      "): string {
     ...buildReviewRunScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
-  return indented(vertexAuth, indent) + indented(review, indent) + indented(report, indent);
+  return (
+    indented(checkout, indent) +
+    indented(prepare, indent) +
+    indented(vertexAuth, indent) +
+    indented(review, indent) +
+    indented(report, indent) +
+    indented(drift, indent)
+  );
 }

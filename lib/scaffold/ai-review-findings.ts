@@ -47,43 +47,86 @@
 
 import { readFileSync } from "fs";
 
-import { AI_REVIEW_REQUIRED_EXIT } from "./ai-review-step";
+/**
+ * The contract itself is declared in `./ai-review-step`, beside the prompt
+ * that asks a writer to honour it, and imported here rather than restated.
+ *
+ * That direction is forced and it is the right one anyway: `ai-review-step.ts`
+ * has no relative imports, because `test/ai-review-scaffold.test.ts` builds a
+ * mutant copy of it that runs from a temp directory. So the module holding the
+ * contract cannot depend on the module reading it, and every name below has
+ * exactly one declaration — which is the whole of #295's lesson. A reader and
+ * a writer that merely agree today are two contracts, and nothing fails to
+ * compile when they stop agreeing.
+ *
+ * Re-exported because the reader's own callers and tests name them, and a
+ * second `export const` here would be the duplicate this paragraph is about.
+ */
+import {
+  AI_REVIEW_BLOCK_VERDICT,
+  AI_REVIEW_FINDING_FIELDS,
+  AI_REVIEW_FINDINGS_KEY,
+  AI_REVIEW_PASS_VERDICT,
+  AI_REVIEW_REQUIRED_EXIT,
+  AI_REVIEW_SEVERITIES,
+  AI_REVIEW_SEVERITY_KEY,
+  AI_REVIEW_VERDICT_KEY,
+} from "./ai-review-step";
+
+export {
+  AI_REVIEW_BLOCK_VERDICT,
+  AI_REVIEW_FINDING_FIELDS,
+  AI_REVIEW_FINDINGS_KEY,
+  AI_REVIEW_PASS_VERDICT,
+  AI_REVIEW_SEVERITIES,
+  AI_REVIEW_SEVERITY_KEY,
+  AI_REVIEW_VERDICT_KEY,
+};
 
 /**
- * The one spelling of the key the payload carries its findings under.
+ * Percent-encode a value before it is interpolated into a workflow command.
  *
- * Asserted by the suite to be the only spelling in this module. Every read
- * goes through `obj[AI_REVIEW_FINDINGS_KEY]`.
+ * ONE escaper, because there is one rule and a second copy is a second rule
+ * nobody updates. GitHub parses `::command::` lines one per line, so a newline
+ * inside an interpolated value starts a NEW command — and the payload this
+ * reads is written by an agent that has just read untrusted branch content.
+ *
+ * Measured on wave 2 at `22c9da89`, not reasoned about: a finding titled
+ * `benign\n::stop-commands::deadbeef\n::notice::all clear` made the reader emit
+ * `::stop-commands::deadbeef` as its own line. That token disables all
+ * subsequent workflow-command processing, so a BLOCKED review becomes
+ * indistinguishable from a clean one — the exact failure this module exists to
+ * prevent, reachable by writing a string.
  */
-export const AI_REVIEW_FINDINGS_KEY = "findings";
+export function escapeAnnotation(value: unknown): string {
+  return String(value)
+    .replace(/%/g, "%25")
+    .replace(/\r/g, "%0D")
+    .replace(/\n/g, "%0A");
+}
 
-/** The key the agent records its own verdict word under. */
-export const AI_REVIEW_VERDICT_KEY = "verdict";
-
-/** The key each finding carries its severity under. */
-export const AI_REVIEW_SEVERITY_KEY = "severity";
-
-/** The verdict word meaning "nothing here blocks the pull request". */
-export const AI_REVIEW_PASS_VERDICT = "PASS";
-
-/** The verdict word meaning "something here blocks the pull request". */
-export const AI_REVIEW_BLOCK_VERDICT = "BLOCK";
+/** Annotation detail is capped: a megabyte of agent prose is not a message. */
+export const AI_REVIEW_DETAIL_MAX = 300;
 
 /**
- * Every severity the contract recognises, and whether it blocks.
+ * One finding, rendered for an annotation — capped, naming file and summary.
  *
- * A closed table on purpose. A severity that is not in it does not resolve to
- * "does not block" — it makes the whole reading UNMEASURED, because a word
- * nobody declared is a word nobody has decided about, and guessing in the
- * permissive direction is how a blocking finding becomes a green check.
+ * Deliberately does NOT escape. Escaping happens once, at the single emission
+ * site in `main()`, because two escapers applied in sequence turn `%` into
+ * `%2525` and the bug that produces is invisible until someone reads a log.
+ * One rule, one binding, applied last.
  */
-export const AI_REVIEW_SEVERITIES: Readonly<Record<string, boolean>> = Object.freeze({
-  critical: true,
-  high: true,
-  medium: false,
-  low: false,
-  info: false,
-});
+export function renderFinding(index: number, finding: Record<string, unknown>): string {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const where = finding[f.file] !== undefined
+    ? `${String(finding[f.file])}:${String(finding[f.line] ?? "?")}`
+    : "(no file recorded)";
+  const what = finding[f.summary] !== undefined
+    ? String(finding[f.summary])
+    : "(no summary recorded)";
+  const line = `finding ${index} is ${String(finding[f.severity])} at ${where}: ${what}`;
+  return line.length > AI_REVIEW_DETAIL_MAX ? `${line.slice(0, AI_REVIEW_DETAIL_MAX)}…` : line;
+}
 
 /** The annotation title the script prints its refusal under. */
 export const AI_REVIEW_FINDINGS_TITLE = "AI review findings";
@@ -232,7 +275,7 @@ export function readAiReviewFindings(raw: string | null): AiReviewFindingsReadin
     }
     if (blocks) {
       blocking.push(item);
-      detail.push(`finding ${i} is ${String(severity)}: ${String(finding.title ?? "(untitled)")}`);
+      detail.push(renderFinding(i, finding));
     }
   });
 
@@ -343,9 +386,13 @@ export function main(argv: string[]): number {
 
   console.log(`ai-review findings outcome: ${reading.outcome}`);
 
+  // The ONE place a value reaches a workflow command. Everything upstream of
+  // here — `renderFinding`, every `detail` sentence, `aiReviewRefusal` — builds
+  // plain text and leaves escaping alone, so there is one binding to mutate and
+  // no path where two escapers run in sequence and turn `%` into `%2525`.
   const refusal = aiReviewRefusal(reading);
   if (refusal !== null) {
-    console.error(`::error title=${AI_REVIEW_FINDINGS_TITLE}::${refusal}`);
+    console.error(`::error title=${AI_REVIEW_FINDINGS_TITLE}::${escapeAnnotation(refusal)}`);
   }
 
   return aiReviewExitCode(reading);
