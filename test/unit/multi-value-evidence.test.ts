@@ -65,7 +65,23 @@ describe("#659 AC-1: the measured command", () => {
     // a refusal of a working command. They do not: at the run's build commit
     // the first is 0 and the second is 2, and `== 0` holds of one and fails
     // of the other.
-    const show = spawnSync("git", ["-C", REPO_ROOT, "show", `b08b3a37:scripts/persist-compliance.ts`], {
+    // The run's build commit, addressed by TAG. Its branch,
+    // `worktree-wf_2abbe96f-546-10`, is a run branch nothing keeps alive,
+    // and CI clones one branch — so the bare SHA resolved on the author's
+    // machine and nowhere else. Fetched on demand, and REFUSED rather than
+    // skipped if it cannot be had: a measurement whose subject is missing
+    // must not read as a measurement.
+    const BUILD = "fixture/659-build-2";
+    const have = () =>
+      spawnSync("git", ["-C", REPO_ROOT, "rev-parse", "--verify", `${BUILD}^{commit}`],
+        { encoding: "utf-8" }).status === 0;
+    if (!have()) {
+      spawnSync("git", ["-C", REPO_ROOT, "fetch", "--depth=2", "origin",
+        `refs/tags/${BUILD}:refs/tags/${BUILD}`], { encoding: "utf-8" });
+    }
+    expect(have(), `the #659 fixture tag ${BUILD} is not in this clone and could not be fetched`).toBe(true);
+
+    const show = spawnSync("git", ["-C", REPO_ROOT, "show", `${BUILD}:scripts/persist-compliance.ts`], {
       encoding: "utf-8",
       maxBuffer: 16 * 1024 * 1024,
     });

@@ -24,7 +24,7 @@
  * invented for it: a deletion that is real, measured, and invisible to the
  * comparison everything else in the harness makes.
  */
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { spawnSync } from "child_process";
 import { join } from "path";
@@ -32,10 +32,30 @@ import { caseNames, deletedCases } from "../../lib/test-case-deletion";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 
-/** The first build commit — what the gate graded. */
-const BUILD_1 = "59bfda75";
+/**
+ * The first build commit — what the gate graded.
+ *
+ * Addressed by TAG, not by raw SHA, and that is not cosmetic. Both commits
+ * live on `worktree-wf_2abbe96f-546-10`, a run branch nothing keeps alive —
+ * it was on a sweep list for deletion when this landed — and CI clones one
+ * branch, so the bare SHAs resolved on the author's machine and nowhere
+ * else. `fixture/659-build-1` and `-2` are pushed tags, so the fixture is
+ * reachable from the remote by a name that says what it is for.
+ */
+const BUILD_1 = "fixture/659-build-1";
 /** The repair commit the FAIL verdict caused. */
-const BUILD_2 = "b08b3a37";
+const BUILD_2 = "fixture/659-build-2";
+/**
+ * The merge base of the pair with main — `3b10f745`, the parent of the first
+ * build commit.
+ *
+ * A TAG rather than `git merge-base <build> origin/main`, because CI checks
+ * out shallow and a merge base needs history neither side has. Computing it
+ * was also asking git to re-derive a constant this file already knows: the
+ * value is fixed by the fixture, so pinning it makes the casemeasure the same
+ * thing on every clone instead of a different thing on a deep one.
+ */
+const BASE = "fixture/659-base";
 
 const DELETED_FILE = "test/unit/hill-climb-receipt.test.ts";
 
@@ -84,6 +104,38 @@ const ALSO_DELETED = [
 ];
 
 const ALL_DELETED = [...EXPECTED, ...ALSO_DELETED];
+
+/**
+ * Make the two fixture commits resolvable, on a shallow clone too.
+ *
+ * It REFUSES rather than skipping. A deletion check whose fixture is absent
+ * reports "nothing was deleted", which is the one answer indistinguishable
+ * from the bug it exists to catch — `0`, `{}` and `SKIP` all read as success
+ * (`.claude/rules/config-access.md`). So an unobtainable fixture stops this
+ * file with a sentence naming what is missing.
+ */
+function ensureFixtureCommits(): void {
+  const have = (ref: string) =>
+    spawnSync("git", ["-C", REPO_ROOT, "rev-parse", "--verify", `${ref}^{commit}`],
+      { encoding: "utf-8" }).status === 0;
+  if (have(BUILD_1) && have(BUILD_2) && have(BASE)) return;
+
+  spawnSync("git", ["-C", REPO_ROOT, "fetch", "--depth=2", "origin",
+    `refs/tags/${BUILD_1}:refs/tags/${BUILD_1}`,
+    `refs/tags/${BUILD_2}:refs/tags/${BUILD_2}`,
+    `refs/tags/${BASE}:refs/tags/${BASE}`], { encoding: "utf-8" });
+
+  const missing = [BUILD_1, BUILD_2, BASE].filter(r => !have(r));
+  if (missing.length > 0) {
+    throw new Error(
+      `the #659 fixture commits are not in this clone and could not be fetched: ${missing.join(", ")}. ` +
+        "They are pushed tags on this repository; a deletion check with no fixture reports that " +
+        "nothing was deleted, which is the one answer that cannot be told from the defect.",
+    );
+  }
+}
+
+beforeAll(ensureFixtureCommits);
 
 function git(args: string[]): string {
   const r = spawnSync("git", ["-C", REPO_ROOT, ...args], { encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 });
@@ -137,14 +189,14 @@ describe("#659 AC-4: build commit against build commit", () => {
   test("the merge base is a different commit from the first build commit", () => {
     // The premise. If these were the same commit the case below would be
     // green without measuring anything.
-    const base = git(["merge-base", BUILD_2, "origin/main"]).trim();
+    const base = git(["rev-parse", `${BASE}^{commit}`]).trim();
     const first = git(["rev-parse", BUILD_1]).trim();
     expect(base).not.toBe(first);
     expect(base.startsWith("3b10f745"), `merge base moved: ${base}`).toBe(true);
   });
 
   test("the deletion is INVISIBLE from the merge base, and visible between the build commits", () => {
-    const base = git(["merge-base", BUILD_2, "origin/main"]).trim();
+    const base = git(["rev-parse", `${BASE}^{commit}`]).trim();
     const fromBase = deletedCases(REPO_ROOT, base, BUILD_2).map(d => d.name);
     for (const name of ALL_DELETED) {
       expect(fromBase, `${name} was reported against the merge base`).not.toContain(name);
@@ -157,7 +209,7 @@ describe("#659 AC-4: build commit against build commit", () => {
     // Without this the case above is satisfied by a comparison that looks at
     // nothing: a file absent from both readings produces no deleted cases for
     // the same reason an unreadable commit does.
-    const base = git(["merge-base", BUILD_2, "origin/main"]).trim();
+    const base = git(["rev-parse", `${BASE}^{commit}`]).trim();
     const changed = git(["diff", "--name-only", base, BUILD_2]).split("\n");
     expect(changed).toContain(DELETED_FILE);
   });
