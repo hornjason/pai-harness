@@ -1400,6 +1400,130 @@ shipped tree and reproduce exactly (17 pass / 0 fail, 8 of 17, 7 of 17). The
 other three were not re-run; they are rows about `persistReceiptLines`, whose
 source is byte-identical to the measured one.
 
+### When the DERIVATION of a check is the thing being tested (#637, #626)
+
+#626 shipped six parity categories drawn from a twelve-row table of defects
+this harness had already paid for. Phase 1 proved the command RUNS — six
+verdicts, coverage beside each, UNMEASURED where it could not compare. What
+no amount of that establishes is that **category N catches the defect row N
+was derived from**, and without it the six categories are a paraphrase of the
+table rather than a test of it.
+
+The shape this section adds is specific to that: a check derived from a known
+defect, whose defect is now FIXED. Four of the six derivation issues are
+merged, so the live tree cannot witness any of them, and the only honest case
+is one that PLANTS the pre-fix condition. **The trap is reaching for the live
+environment instead**, and category 4 is the sharp instance: #597 merged as
+`41f2e640` and CI now installs a pinned `agnix` before `bun test`, so a case
+probing the ambient environment for a missing `agnix` passes today for a
+reason that has nothing to do with the check. Nothing in
+`test/contract-parity-derivation.test.ts` reads an external tool whose
+installation state can move under it.
+
+**That sentence cost a red test, and the red was correct.** Its first draft
+quoted the pinned `agnix` version, and `test/ci-global-tools.test.ts` refuses
+a version string with more than one declaring position — which is #621 and
+#622's rule, met by the document explaining it. The version lives in
+`.claude/rungate/config.json`'s `ci.globalTools` and nowhere else, prose
+included.
+
+Each of the six is paired with a control varying exactly one thing — the
+config's string, the CI pin, the quoting of one shell word, the routing of one
+spawn, one name in a schema, one row in a table. A case that only shows the
+category refusing is satisfied by a category that refuses everything.
+
+#### The cheapest wrong fix, named before the repair was described
+
+AC-8's words are *"the exported symbol is declared exactly once"*. When that
+goes red because somebody added a second `contractParity`, **the 5pm repair is
+to delete the word `export` from the duplicate.** One word. The scan stops
+seeing it, the violation disappears, and the tree still holds two deciders
+answering one question, each still called from inside its own module — which
+is the fourth shape, reinstated by the fix for the fourth shape.
+
+The three AC-8 decider cases survive that repair **vacuously**: no fixture of
+theirs contains an unexported duplicate, so none of them changes verdict. They
+neither certify the regression nor catch it, and left unstated that reads as
+coverage. What catches it is one further case and one further line of
+`parityBindingViolations`: the ENTRY-POINT name is counted whether or not it is
+exported, while every other parity name stays exported-only, because a
+module-local `const parity` is nobody's second decider. That case survives the
+wrong fix **really** — row M7 below is the repair applied, and it is 1 red.
+
+#### Predicted and measured, over 48 tests
+
+`test/contract-parity-derivation.test.ts` + `test/contract-parity.test.ts`.
+Every count was predicted before the battery ran, in
+`/tmp/637-battery/predictions.md`, and **the baseline row was read before any
+mutation row** — an instrument that has stopped reporting takes the baseline
+down with it, and that is the row nobody mutates anything to produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 48 pass, 0 fail | **48 pass, 0 fail** | — |
+| M1 `parityBindingViolations` short-circuited to `return []` | 5 | **5 of 48** | the duplicate tree: the original names both files, the mutant returns `[]` |
+| M2 `declarationsNaming` short-circuited to `return []` | 6 | **6 of 48** | `REPO_ROOT`: the original reads 13 parity declarations and 7 `preflight` ones, the mutant 0 and 0 |
+| M3 the `UNMEASURED_PARITY_SCAN` refusal removed | 2 | **2 of 48** | a tree with no `contractParity`: the original refuses, the mutant returns `[]` |
+| M4 the `PREFLIGHT_NAMED_PARITY` clause removed | 2 | **2 of 48** | a tree declaring `export const preflightParity` beside a correct entry point |
+| M5 the `DUPLICATE_PARITY_BINDING` clause removed | 3 | **3 of 48** | a tree declaring `contractParity` in `scripts/` and in `workflows/ship.js` |
+| M6 `commandDisagreement` short-circuited to `return []` | 4 | **4 of 48** | the #621 tree — config `bun test --parallel --no-isolate`, the other two `bun test`: original 1 violation, mutant none |
+| M7 **the cheapest wrong fix**: the duplicate check narrowed back to exported-only | 1 | **1 of 48** | a tree with one exported and one UNEXPORTED `contractParity` |
+| M8 `transportIsFirstParty` → `return true` | 2 | **2 of 48** | a foreign root: original `0/3` with no sites, mutant compiles and runs the library transport |
+| M9 `AVAILABILITY_QUERY` never matches | 2 | **2 of 48** | a file calling `spawnSync(tool, ["--version"])` directly |
+| M10 `undeclaredReadViolations` short-circuited to `return []` | 2 | **2 of 48** | the #530 tree reading `sf("testsSha")` against a schema that never declared it |
+| M11 the #624 unaccounted-writer violation loop removed | 1 | **1 of 48** | the #624 tree writing `.claude/agents/marcus.md` with nothing declaring it |
+| M12 the #622 unpinned-version violation removed | 1 | **1 of 48** | a `ci.yml` saying `bun-version: "latest"` |
+| M13 a second copy of `testCommandsNamedByCiWorkflow` added to `scripts/` | 1 | **1 of 48** | the grep over `lib`, `scripts`, `gates`, `workflows` |
+
+**Thirteen of thirteen matched, which this file says to distrust**, so the
+precondition question was asked of the battery rather than of the code (#492):
+every fixture here is a tree the category CAN read, so the branch where it
+cannot is outside the battery's reach entirely. That branch is #626 AC-4's,
+measured by `test/contract-parity.test.ts` and in scope above — which is why
+the two files are counted together rather than the new one alone.
+
+**The battery did find one thing, and it was M2.** *"AC-8: `contractParity` is
+not spelled preflight anywhere the scan can see"* iterates the declarations and
+asserts each name. With the scan short-circuited to `[]` the loop runs zero
+times and the case stayed GREEN — an assertion that holds vacuously, in the
+file whose subject is assertions that hold vacuously. The first measurement of
+M2 was 5. It now asserts the list is non-empty first, and the row is 6.
+
+#### Which cells are witnesses and which are controls
+
+Say which, or the next reader counts twenty-eight.
+
+- **Witnesses** — red on the pre-fix condition, green on the control: the six
+  `AC-6/#NNN` defective cases (one per category), the AC-8 duplicate,
+  preflight-naming and instrument cases, the wrong-fix case, and the three
+  AC-9 position cases.
+- **Controls** — green on BOTH sides by construction, and not evidence of any
+  fix: the six `AC-6/#NNN control` cases, *"this repository reports no
+  unaccounted writer"*, *"the category reports PASS on this tree"*, and
+  *"the moved bindings behave identically"*. They exist to stop a category
+  that refuses everything reading as a category that catches something, and
+  there is no state of the code in which they go red for the original defect.
+- **The #530 artifact case is neither, and is the point of its category**: it
+  asserts the planted `workflow-state.json` DOES carry `testsSha` — so a
+  reading taken off the artifact would say yes — while the schema-based
+  reading refuses. Opposite answers over one tree, which is #530 entire.
+
+#### Provenance
+
+Measured in the `fix/637-derivation-cases` worktree at the tip recorded in the
+PR, with `lib/parity-binding.ts`, `lib/test-command-positions.ts` and
+`scripts/contract-parity.ts` restored from a `cp` backup after every row and
+confirmed **byte-identical by sha256**, never by `git checkout --`. None of the
+thirteen mutations is left in the tree.
+
+One row is NOT a reconstruction and is worth more than the twelve that are:
+category 1's defect has a real pre-fix tree, and `#626 AC-5` drives the same
+binding over a `git archive` export of `0357c06c^`. M6 reds that case and the
+planted #621 case together, which is the evidence that the reconstruction is
+faithful. **The other five categories have no such tree** — their derivation
+issues are fixed and their pre-fix states were never exported — so those five
+rows measure the case against a reconstruction and not against the defect.
+
 ### Eleven windows converted, and the measurement that says which were about to fail (#664, #666)
 
 Ten guards in `test/` — eleven counting the two-sided one — cut a FIXED

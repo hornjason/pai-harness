@@ -161,8 +161,21 @@ export function parityBindingViolations(root: string): string[] {
   // One name, one home. Counted per name rather than only for the entry
   // point: a second `commandParity` is the same defect one level down, and
   // the category runners are what `contractParity` dispatches to.
+  //
+  // **The entry point is counted whether or not it is exported, and that is
+  // the fifth shape applied in advance.** AC-8's words are "the exported
+  // symbol is declared exactly once", so the cheapest repair when this goes
+  // red is to delete the `export` keyword from the duplicate — one word, the
+  // symptom disappears, and the tree still holds two deciders answering one
+  // question, each called from inside its own module. A check that counted
+  // only exported declarations would CERTIFY that repair. A module-local
+  // `const parity` is a different matter and stays out of this: it is nobody's
+  // second decider, which is why the widening is to the entry-point NAME and
+  // not to every name containing the word.
+  const entryAnywhere = parity.filter(d => d.name === PARITY_BINDING);
+  const counted = [...exported, ...entryAnywhere.filter(d => !d.exported)];
   const byName = new Map<string, ParityDeclaration[]>();
-  for (const d of exported) {
+  for (const d of counted) {
     if (!byName.has(d.name)) byName.set(d.name, []);
     byName.get(d.name)!.push(d);
   }
