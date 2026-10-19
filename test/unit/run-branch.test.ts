@@ -193,6 +193,56 @@ describe("#640: containment is a blob comparison, and ancestry is the wrong ques
     expect(r.reading).toBe("NOT_CONTAINED");
   });
 
+  /**
+   * The two ways this check can be vacuous before a DESTRUCTIVE operation,
+   * both raised by the automated security review of `e0861fb8` and both
+   * correct. They chain: the base reaches the gate from an agent reply, so
+   * a reply naming the run's own ref makes the gate compare a ref against
+   * itself, which can only say yes, and the branch is then deleted with
+   * nothing having been checked.
+   */
+  test("a ref compared against ITSELF is UNMEASURED — it could only say yes", () => {
+    const { root, branch } = repoWithRunBranch("self", 615, "none");
+    const r = branchContainment(root, branch, branch);
+    expect(r.reading).toBe("UNMEASURED");
+    if (r.reading !== "UNMEASURED") throw new Error("unreachable");
+    expect(r.refusal).toContain("same commit");
+  });
+
+  test("two DIFFERENT names for one commit are also refused — identity, not spelling", () => {
+    // `rungate/run-N` and a base fast-forwarded onto it are two names and
+    // one commit. A string comparison would pass this straight through.
+    const { root, branch } = repoWithRunBranch("alias", 616, "none");
+    git(root, "branch", "alias-of-the-run-branch", branch);
+    const r = branchContainment(root, branch, "alias-of-the-run-branch");
+    expect(r.reading).toBe("UNMEASURED");
+    if (r.reading !== "UNMEASURED") throw new Error("unreachable");
+    expect(r.refusal).toContain("same commit");
+  });
+
+  test("a scope of ZERO paths is UNMEASURED, not CONTAINED", () => {
+    // Two distinct commits whose trees are identical: an empty commit on
+    // the branch. Nothing differs at any path, so the comparison witnesses
+    // nothing — and CONTAINED over nothing is the verdict a deletion would
+    // act on. The reading has carried `comparedPaths` since it was written
+    // and the script never looked at it, which is the #602 shape.
+    const root = scratch("vacuous");
+    git(root, "init", "-q", "-b", "main");
+    write(root, "a.txt", "a\n");
+    commit(root, "base");
+    git(root, "switch", "-q", "-c", "rungate/run-617");
+    git(root, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "an empty commit: a different sha, the same tree");
+    git(root, "switch", "-q", "main");
+
+    expect(git(root, "rev-parse", "rungate/run-617"), "the premise: two distinct commits")
+      .not.toBe(git(root, "rev-parse", "main"));
+    const r = branchContainment(root, "rungate/run-617", "main");
+    expect(r.reading).toBe("UNMEASURED");
+    if (r.reading !== "UNMEASURED") throw new Error("unreachable");
+    expect(r.refusal).toContain("no path at all");
+  });
+
   test("an unreadable repo, an absent ref and an empty argument are UNMEASURED", () => {
     const { root, branch } = repoWithRunBranch("unmeasured", 608, "squash");
     for (const [name, reading] of [
@@ -337,6 +387,15 @@ describe("#640: the CLI deletes a contained branch and refuses an uncontained on
     // The outcome of the pair, read off the repository rather than off the
     // two exit codes: one gone, one still there.
     expect(branches(root).sort()).toEqual(["main", "rungate/run-627"]);
+  });
+
+  test("the CLI refuses to delete on a self-comparison", () => {
+    const { root, branch } = repoWithRunBranch("cli-self", 618, "none");
+    const r = run(["--mode", "delete", "--repo", root, "--issue", "618", "--base", branch]);
+    expect(r.status, "a gate comparing a ref against itself must not authorise a deletion")
+      .not.toBe(0);
+    expect(r.stderr).toContain("same commit");
+    expect(branches(root)).toContain(branch);
   });
 
   test("drift exits non-zero and names both branches", () => {

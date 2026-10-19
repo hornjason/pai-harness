@@ -108,6 +108,32 @@ export function branchContainment(repo: string, branch: string, base: string): C
     }
   }
 
+  // Self-comparison, refused by identity before any tree is read. The
+  // names can differ and still be one commit — `rungate/run-640` and a
+  // base that was fast-forwarded onto it — so the SHAs are compared, not
+  // the strings. `scripts/verify-merge-content.ts` refuses the same shape.
+  try {
+    const bSha = gitRead(repo, ["rev-parse", "--verify", `${branch}^{commit}`]).out.trim();
+    const oSha = gitRead(repo, ["rev-parse", "--verify", `${base}^{commit}`]).out.trim();
+    if (bSha && bSha === oSha) {
+      return {
+        ...named,
+        reading: "UNMEASURED",
+        refusal:
+          `${branch} and ${base} are the same commit (${bSha.slice(0, 12)}), so the containment ` +
+          "check would be comparing a ref against itself and could only say yes",
+      };
+    }
+  } catch (e: any) {
+    return {
+      ...named,
+      reading: "UNMEASURED",
+      refusal:
+        `${branch} or ${base} could not be resolved to a commit ` +
+        `(${String(e?.message || e).split("\n")[0]}), and unresolvable is not contained`,
+    };
+  }
+
   let branchTree: Map<string, string>;
   let baseTree: Map<string, string>;
   let mergeBaseTree: Map<string, string>;
@@ -164,6 +190,24 @@ export function branchContainment(repo: string, branch: string, base: string): C
     const b = branchTree.get(path) ?? "ABSENT";
     const o = baseTree.get(path) ?? "ABSENT";
     if (b !== o) divergent.push({ path, branch: b, base: o });
+  }
+
+  // A comparison over ZERO paths is not a verdict. It is produced by a
+  // branch that is genuinely identical to its base AND by a scope that
+  // resolved nothing, and the second is what `--base <the branch itself>`
+  // produces: merge-base of a ref with itself is that ref, every entry
+  // matches, scope is empty, CONTAINED, delete. The reading has carried
+  // `comparedPaths` since it was written and nothing looked at it, which
+  // is the #602 shape — an available reading nobody reads.
+  if (scope.size === 0) {
+    return {
+      ...named,
+      reading: "UNMEASURED",
+      refusal:
+        `${branch} and ${base} differ at no path at all, so the containment check witnessed ` +
+        "nothing — a comparison over zero paths is not a verdict to delete on. This is what " +
+        "comparing a ref against itself looks like.",
+    };
   }
 
   if (divergent.length > 0) {

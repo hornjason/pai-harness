@@ -4386,7 +4386,30 @@ Do not create, delete or push any other ref, and do not switch again.
   // Recorded even when empty. An unread start is what makes the end-of-run
   // comparison UNMEASURED rather than silently equal, and overwriting it
   // with the ref we just switched to would make every run look unchanged.
-  primaryBranchBefore = reply && typeof reply.branchBefore === 'string' ? reply.branchBefore.trim() : ''
+  //
+  // VALIDATED, because this value becomes the `--base` of a destructive
+  // gate. It arrives from an agent, and an agent that reported
+  // `rungate/run-${ISSUE}` would make the containment check compare the
+  // branch against itself — which can only say yes, and then the branch is
+  // deleted with nothing having been checked. `lib/run-branch.ts` refuses
+  // that case too; this refuses it one hop earlier, where the bad value
+  // enters, so neither guard is the only one and each has an input the
+  // other does not see.
+  //
+  // Anything that fails validation is treated as UNREAD, not as a value to
+  // use carefully: an unread start branch skips the restore and the delete
+  // entirely, which is the direction that leaves work alone.
+  const reportedBefore = reply && typeof reply.branchBefore === 'string' ? reply.branchBefore.trim() : ''
+  const looksLikeRef = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$/.test(reportedBefore)
+  if (reportedBefore && !looksLikeRef) {
+    log(`RUN_BRANCH_UNMEASURED: the reported starting branch is not a ref name, so it is being ` +
+      `ignored rather than used as a deletion base (#640)`)
+  } else if (reportedBefore && reportedBefore === runRefName(ISSUE)) {
+    log(`RUN_BRANCH_UNMEASURED: the reported starting branch IS ${runRefName(ISSUE)} — the run's own ` +
+      'ref cannot be the base its containment is checked against, so it is being ignored (#640)')
+  }
+  primaryBranchBefore =
+    looksLikeRef && reportedBefore !== runRefName(ISSUE) ? reportedBefore : ''
   if (!primaryBranchBefore) {
     log('RUN_BRANCH_UNMEASURED: the shared checkout\'s starting branch was not reported, ' +
       'so nothing at the end of this run can say whether it was put back (#640)')

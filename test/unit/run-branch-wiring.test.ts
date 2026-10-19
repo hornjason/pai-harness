@@ -83,9 +83,31 @@ describe("#640 SC-1/SC-2: the checkout's starting branch is read before anything
   test("an unreported starting branch is UNMEASURED, loudly", () => {
     // Empty is not main. A run that never read it cannot claim at the end
     // that it put anything back, and two empty strings compare equal.
-    expect(ESTABLISH).toContain("primaryBranchBefore = reply && typeof reply.branchBefore === 'string'");
+    expect(ESTABLISH).toContain("reply && typeof reply.branchBefore === 'string'");
     expect(ESTABLISH).toContain("RUN_BRANCH_UNMEASURED");
     expect(ESTABLISH).toContain("branchBefore: { type: 'string' }");
+  });
+
+  /**
+   * The value becomes the `--base` of a DESTRUCTIVE gate, and it arrives
+   * from an agent. A reply naming the run's own ref makes the containment
+   * check compare a ref against itself — which can only say yes — and the
+   * branch is then deleted with nothing having been checked.
+   *
+   * `lib/run-branch.ts` refuses that too, and this is not a second decider
+   * for one question: the library refuses by COMMIT IDENTITY in the repo,
+   * this refuses a VALUE at the boundary it enters by. Each has an input
+   * the other cannot see — a non-ref string never reaches git, and two
+   * different names for one commit pass this and are caught there.
+   *
+   * Raised by the automated security review of `e0861fb8`.
+   */
+  test("an agent-supplied starting branch is validated before it can become a deletion base", () => {
+    expect(ESTABLISH).toContain("/^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$/.test(reportedBefore)");
+    expect(ESTABLISH).toContain("reportedBefore === runRefName(ISSUE)");
+    // Treated as UNREAD, not as a value to use carefully. An unread start
+    // skips the restore and the delete, which leaves work alone.
+    expect(ESTABLISH).toContain("looksLikeRef && reportedBefore !== runRefName(ISSUE) ? reportedBefore : ''");
   });
 });
 
