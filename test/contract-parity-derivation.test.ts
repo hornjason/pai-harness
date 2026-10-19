@@ -598,7 +598,18 @@ describe("#637 AC-8: the contract-parity binding has one name and one home", () 
     // The control string: this repository has a `preflight` family that cannot
     // all have vanished, so a zero here is an absent instrument rather than an
     // absent problem (#646, #657).
-    expect(declarationsNaming(REPO_ROOT, FOREIGN_PARITY_WORD).length, "the scan stopped reading the tree").toBe(7);
+    //
+    // A FLOOR, not an equality, and the distinction cost a red on #637's own
+    // rebase. The first draft asserted exactly 7, which is a number any
+    // unrelated PR can move — #721 added `actionPinParity` and took the parity
+    // count from 12 to 13 while this case was in flight. A control whose
+    // margin is set by something outside the fixture stops witnessing the day
+    // someone else edits a file it does not name (#507). What the control has
+    // to establish is that the scan READ something, and a floor says that.
+    expect(
+      declarationsNaming(REPO_ROOT, FOREIGN_PARITY_WORD).length,
+      "the scan found no `preflight` declaration in a tree that has a family of them",
+    ).toBeGreaterThan(4);
   });
 
   test("AC-8: the DUPLICATE_PARITY_BINDING decider — a second declaration of the same name", () => {

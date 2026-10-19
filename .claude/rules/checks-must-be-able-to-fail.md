@@ -1462,7 +1462,7 @@ down with it, and that is the row nobody mutates anything to produce.
 |---|---|---|---|
 | **baseline** — unmutated | 48 pass, 0 fail | **48 pass, 0 fail** | — |
 | M1 `parityBindingViolations` short-circuited to `return []` | 5 | **5 of 48** | the duplicate tree: the original names both files, the mutant returns `[]` |
-| M2 `declarationsNaming` short-circuited to `return []` | 6 | **6 of 48** | `REPO_ROOT`: the original reads 13 parity declarations and 7 `preflight` ones, the mutant 0 and 0 |
+| M2 `declarationsNaming` short-circuited to `return []` | 6 | **6 of 48** | `REPO_ROOT`: the original reads every parity and `preflight` declaration in the tree, the mutant none of either |
 | M3 the `UNMEASURED_PARITY_SCAN` refusal removed | 2 | **2 of 48** | a tree with no `contractParity`: the original refuses, the mutant returns `[]` |
 | M4 the `PREFLIGHT_NAMED_PARITY` clause removed | 2 | **2 of 48** | a tree declaring `export const preflightParity` beside a correct entry point |
 | M5 the `DUPLICATE_PARITY_BINDING` clause removed | 3 | **3 of 48** | a tree declaring `contractParity` in `scripts/` and in `workflows/ship.js` |
@@ -1489,6 +1489,27 @@ times and the case stayed GREEN — an assertion that holds vacuously, in the
 file whose subject is assertions that hold vacuously. The first measurement of
 M2 was 5. It now asserts the list is non-empty first, and the row is 6.
 
+#### The control that had to become a floor, and why a count is the wrong shape
+
+The instrument check beside M2 asserts the scan can still see this
+repository's `preflight` family. Its first draft asserted **exactly 7**, which
+was true the day it was written and is not a property of anything this case
+owns. Between that measurement and the rebase, #721 landed `actionPinParity`
+and took the parity count from 12 to 13 — a file this case does not name, in
+an issue it has nothing to do with.
+
+The preflight count happened not to move, so the case did not go red; it was
+one unrelated merge away from doing so, and the red would have accused the
+wrong code. This is #507's shape in a control rather than in a fixture: **the
+margin was set by something outside the case.** The assertion is now a floor,
+because what a control has to establish is that the scan READ something, and
+an equality establishes that plus a fact nobody is maintaining.
+
+The general form, since this file already says the mirror of it for refusals:
+**when you assert a number about a collection you do not own, ask whether your
+claim is about the count or about non-emptiness.** It is almost always the
+second, and the second is the one that survives other people's work.
+
 #### Which cells are witnesses and which are controls
 
 Say which, or the next reader counts twenty-eight.
@@ -1510,11 +1531,21 @@ Say which, or the next reader counts twenty-eight.
 
 #### Provenance
 
-Measured in the `fix/637-derivation-cases` worktree at the tip recorded in the
-PR, with `lib/parity-binding.ts`, `lib/test-command-positions.ts` and
-`scripts/contract-parity.ts` restored from a `cp` backup after every row and
-confirmed **byte-identical by sha256**, never by `git checkout --`. None of the
-thirteen mutations is left in the tree.
+Measured twice. First on the `fix/637-derivation-cases` branch as originally
+written, and then **re-measured in full after rebasing onto `71e3f413`** —
+eleven commits later, including #721's new `action-pin-parity` category inside
+the very file four of these rows mutate. All thirteen rows and the baseline
+reproduce exactly. A row measured on a tree nobody can check out is a claim
+rather than a count (`.claude/rules/parallel-sessions.md`), and a rebase
+retires the tree a row was taken on just as surely as a new commit does.
+
+`lib/parity-binding.ts`, `lib/test-command-positions.ts` and
+`scripts/contract-parity.ts` were restored from a `cp` backup after every row
+and confirmed **byte-identical by sha256**, never by `git checkout --`. None of
+the thirteen mutations is left in the tree. The harness ABORTS a row whose
+anchor appears zero or more than one times rather than measuring nothing —
+which is the property that made the re-measurement worth running at all, since
+#721 added 253 lines to the file holding six of the anchors.
 
 One row is NOT a reconstruction and is worth more than the twelve that are:
 category 1's defect has a real pre-fix tree, and `#626 AC-5` drives the same
