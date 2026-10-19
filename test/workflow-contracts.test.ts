@@ -66,6 +66,20 @@ const ARGS = {
  * synthetic data self-consistent.
  */
 const COHERENT = (tier: string, pages: Record<string, string>) => ({
+  // The launch-base check (#644) is the run's first step and it refuses
+  // anything but SAME_CHECKOUT — including UNMEASURED, which is what the
+  // synthetic placeholder reading is. `projectRoot` here is a path that has
+  // never been a repository, because no case before #644 needed it to be,
+  // so every run in this file would otherwise terminate at
+  // LAUNCH_BASE_FAILED with its real subject never reached.
+  //
+  // This says "assume the launch base is fine, I am testing something else"
+  // at the harness, which is the only honest place for it: the override
+  // supplies a READING and `readLaunchBase` still judges it, so injecting a
+  // refusing reading still stops the run. The gate's default is asserted by
+  // test/unit/launch-base-wiring.test.ts, which runs this same script with
+  // no override and requires it to refuse.
+  "launch-base": () => ({ reading: "SAME_CHECKOUT", cwd: ARGS.projectRoot, refusal: null, exitCode: 0 }),
   "read-issue": (s: any) => ({
     ...s,
     successCriteria: ["- [ ] SC-1: the harness executes the workflow end to end"],
@@ -111,7 +125,14 @@ describe("#61 SC-1: the whole workflow executes with no agents", () => {
     // suite or stopping quietly — a quiet stop is indistinguishable from a
     // short run, which is the reading that would send someone looking at the
     // script instead of at the cap.
-    const capped = await runWorkflow(SHIP, { args: { ...ARGS }, maxCalls: 3 });
+    // The overrides travel with it: without them the run refuses at the
+    // launch-base check after two agent calls and never reaches the cap, so
+    // the cap case would pass over a script that stopped for another reason.
+    const capped = await runWorkflow(SHIP, {
+      args: { ...ARGS },
+      overrides: COHERENT("STANDARD", { home: "/" }),
+      maxCalls: 3,
+    });
     expect(capped.error?.message).toMatch(/more than 3 agent calls/);
   });
 
