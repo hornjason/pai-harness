@@ -47,6 +47,30 @@ const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
 const SF = `${TEST_DIR}/workflow-state.json`;
 
+/**
+ * A path inside THIS run's directory — the one the gate handed us (#700).
+ *
+ * Six checks used to rebuild this directory a second way, from
+ * `process.env.RUNGATE_WORK_DIR` (or a `$HOME/.rungate` fallback) joined to the
+ * state's slug. That is the same answer derived twice, and the two can
+ * disagree: `bun test gates/` runs every file in this directory in ONE process,
+ * so a module-scope `process.env.RUNGATE_WORK_DIR = …` in any sibling file is a
+ * write to this one's environment, and which of them lands first is a
+ * filesystem walk order rather than a decision anybody made.
+ *
+ * `gate-executor.ts:1523` already passes the resolved directory as
+ * `TEST_WORK_DIR`, and `SF` above reads the state out of it. So the directory
+ * is not in doubt here; it only became doubtful when a check went and asked a
+ * global for it again.
+ *
+ * One binding, so there is one thing to mutate
+ * (`.claude/rules/checks-must-be-able-to-fail.md`). Shared, cross-run paths —
+ * `signals` — are deliberately NOT routed through this; they want the base.
+ */
+function runArtifact(...parts: string[]): string {
+  return join(TEST_DIR, ...parts);
+}
+
 function loadRaw(): any | null {
   if (!existsSync(SF)) return null;
   return JSON.parse(readFileSync(SF, "utf-8"));
@@ -1222,7 +1246,7 @@ describe("verify checks", () => {
     if (!isVerifyPlus()) return;
     const slug = sf("slug");
     if (!slug) return;
-    const briefPath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "marcus-brief.md");
+    const briefPath = runArtifact("marcus-brief.md");
     const exists = existsSync(briefPath);
     const reading = briefAcAlignment({
       briefPath,
@@ -1284,7 +1308,7 @@ describe("verify checks", () => {
     if (uiChanged.length === 0) return;
     const slug = sf("slug");
     if (!slug) return;
-    const evidencePath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "prove-evidence.json");
+    const evidencePath = runArtifact("prove-evidence.json");
     if (!existsSync(evidencePath)) return;
     const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
     const afterType = evidence.afterEvidence?.type;
@@ -1665,7 +1689,7 @@ describe("ship checks", () => {
     if (!isShipPlus()) return;
     const slug = sf("slug");
     if (!slug) return;
-    const witnessDir = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "witnesses");
+    const witnessDir = runArtifact("witnesses");
     if (!existsSync(witnessDir)) {
       // WARN — witnesses are new, not all workflows have them yet
       console.warn("WARN: No witness directory found — witness chain not verified");
@@ -1680,7 +1704,7 @@ describe("ship checks", () => {
     if (!isShipPlus()) return;
     const slug = sf("slug");
     if (!slug) return;
-    const witnessDir = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "witnesses");
+    const witnessDir = runArtifact("witnesses");
     if (!existsSync(witnessDir)) {
       // No witnesses = cannot verify AC verdicts were set by gate system
       const passACs = (sf("acs") || []).filter((ac: any) => ac.verdict === "PASS");
@@ -1912,7 +1936,7 @@ describe("prove checks", () => {
     if (currentGate !== "prove") return;
     const slug = sf("slug");
     if (!slug) return;
-    const evidencePath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "prove-evidence.json");
+    const evidencePath = runArtifact("prove-evidence.json");
     expect(existsSync(evidencePath), "prove-evidence.json must exist after prove gate runs (ADR-009 B3)").toBe(true);
   });
 
@@ -1922,7 +1946,7 @@ describe("prove checks", () => {
     if (currentGate !== "prove") return;
     const slug = sf("slug");
     if (!slug) return;
-    const evidencePath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "prove-evidence.json");
+    const evidencePath = runArtifact("prove-evidence.json");
     if (!existsSync(evidencePath)) return;
     const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
     const VALID_VERDICTS = ["PROVEN", "UNPROVEN", "INCONCLUSIVE"];
