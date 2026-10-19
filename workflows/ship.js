@@ -7600,7 +7600,12 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
               GRADER_ACCURACY_DROP: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
               TIER_PROMOTION_RECOMMENDED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
               REINFORCEMENT_ALREADY_PRESENT: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
-              NO_SUITABLE_SECTION: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE }
+              NO_SUITABLE_SECTION: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+              // #662 — the two paths that reached a `continue` without
+              // leaving an occurrence. Declared here or the relay drops
+              // them, which is this issue one hop later.
+              NO_BRIEF_REGISTERED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+              OUTCOMES_UNACCOUNTED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE }
             }
           },
           unclassified: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
