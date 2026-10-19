@@ -21,7 +21,7 @@
  * grep method cannot reach the assertion.
  */
 import { describe, expect, test, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 
@@ -52,6 +52,11 @@ function chainProject(): string {
   const root = dir();
   put(root, "lib/deep.ts", "export const deep = 1;\n");
   put(root, "lib/middle.ts", 'import { deep } from "./deep";\nexport const middle = deep + 1;\n');
+  // Present in the tree, imported by nothing. The genuinely-empty selection
+  // has to come from a file the walk SAW, because a file it never saw is
+  // now UNMEASURED — those are different answers and conflating them is
+  // the defect this module exists to prevent.
+  put(root, "lib/isolated.ts", "export const isolated = 1;\n");
   put(
     root,
     "test/chain.test.ts",
@@ -133,13 +138,93 @@ describe("#676: a test is selected when it can reach a changed file", () => {
 });
 
 describe("#676: what the graph cannot see is UNMEASURED, and the caller runs everything", () => {
-  test("a non-TypeScript change refuses and names the file", () => {
-    // Nothing imports a template, a rule file or a YAML. Tests reach them
-    // with readFileSync against a path the graph has no reason to resolve.
+  test("a non-module change nothing in the tree names refuses, and names the file", () => {
+    // Nothing imports a template, a rule file or a YAML, so the only thing
+    // that can reach one is a file that writes its path down. When none
+    // does, the reader — if there is one — is building the path at runtime
+    // and the graph cannot see it, which is a refusal and not a clean zero.
     const root = chainProject();
     const r = affectedTests(root, ["lib/deep.ts", "templates/brief.md"]);
     expect(r.reading).toBe("UNMEASURED");
     expect(r.unmeasuredReasons.join("\n")).toContain("templates/brief.md");
+  });
+
+  test("a non-module change IS measured when a test names its path", () => {
+    // The measurement that forced this: across eight real commits of this
+    // repository, seven carried at least one non-module file, and the
+    // blanket refusal above made the whole feature inert on them. A rule
+    // file a test reads by name is reachable — and the test that reads it
+    // is what has to run.
+    const root = chainProject();
+    put(root, ".claude/rules/some-rule.md", "# a rule\n");
+    put(
+      root,
+      "test/rule.test.ts",
+      'import { readFileSync } from "fs";\n' +
+        'export const n = readFileSync(".claude/rules/some-rule.md", "utf-8").length;\n',
+    );
+
+    const r = affectedTests(root, [".claude/rules/some-rule.md"]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.tests).toEqual(["test/rule.test.ts"]);
+  });
+
+  test("a test that only CITES a rule file in a comment is not selected by it", () => {
+    // The measurement that forced the comment strip, and the case without
+    // which nothing witnesses it: matching raw source,
+    // `.claude/rules/checks-must-be-able-to-fail.md` selected 322 of 388
+    // files here, because this repository cites that file in docstrings
+    // everywhere. A citation is not a read — the same distinction
+    // `.claude/rules/claiming-sc-coverage.md` draws for SC ids, in the
+    // position where getting it wrong costs the whole saving.
+    const root = chainProject();
+    put(root, ".claude/rules/cited.md", "# a much-cited rule\n");
+    put(
+      root,
+      "test/reader.test.ts",
+      'import { readFileSync } from "fs";\n' +
+        'export const n = readFileSync(".claude/rules/cited.md", "utf-8").length;\n',
+    );
+    put(
+      root,
+      "test/citer.test.ts",
+      "// The direction of error here is argued in .claude/rules/cited.md,\n" +
+        "/* and again in .claude/rules/cited.md for good measure. */\n" +
+        'import { test } from "bun:test";\ntest("unrelated", () => {});\n',
+    );
+
+    const r = affectedTests(root, [".claude/rules/cited.md"]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.tests).toContain("test/reader.test.ts");
+    expect(r.tests, "a citation in a comment is not a read, and selecting on it costs the saving")
+      .not.toContain("test/citer.test.ts");
+  });
+
+  test("a non-module change reaches a test THROUGH the helper that names it", () => {
+    // The textual edge is an edge like any other, so it composes with the
+    // import graph rather than sitting beside it. The test never names the
+    // rule file, which is what the filename-grep method cannot do.
+    const root = chainProject();
+    put(root, ".claude/rules/other.md", "# another rule\n");
+    put(
+      root,
+      "lib/rule-reader.ts",
+      'import { readFileSync } from "fs";\n' +
+        'export const read = () => readFileSync(".claude/rules/other.md", "utf-8");\n',
+    );
+    put(
+      root,
+      "test/indirect.test.ts",
+      'import { read } from "../lib/rule-reader";\nimport { test, expect } from "bun:test";\n' +
+        'test("reads", () => { expect(read()).toBeDefined(); });\n',
+    );
+    const source = readFileSync(join(root, "test/indirect.test.ts"), "utf-8");
+    expect(source, "the fixture must not name the rule file, or grep would also find it")
+      .not.toContain("other.md");
+
+    const r = affectedTests(root, [".claude/rules/other.md"]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.tests).toContain("test/indirect.test.ts");
   });
 
   test("an empty changed set is UNMEASURED, not an empty selection", () => {
@@ -147,6 +232,38 @@ describe("#676: what the graph cannot see is UNMEASURED, and the caller runs eve
     const r = affectedTests(root, []);
     expect(r.reading).toBe("UNMEASURED");
     expect(r.unmeasuredReasons.length).toBeGreaterThan(0);
+  });
+
+  test("a changed file outside the walked tree is UNMEASURED, not unaffected", () => {
+    // The finding that nearly shipped. `workflows/ship.js` passes the
+    // extension check, so it was never refused — and `workflows` was not
+    // walked, so nothing could have an edge to it, so every test came back
+    // unaffected and the reading said MEASURED. Silent under-selection on
+    // the most-changed file in the repository.
+    //
+    // `workflows` is in SCAN_DIRS now, so this case uses a directory that
+    // is deliberately not walked, which is what keeps it witnessing after
+    // the list changes.
+    const root = chainProject();
+    put(root, "vendor/thing.ts", "export const thing = 1;\n");
+
+    const r = affectedTests(root, ["vendor/thing.ts"]);
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons.join("\n")).toContain("vendor/thing.ts");
+  });
+
+  test("a change to workflows/ is now in the graph rather than silently empty", () => {
+    const root = chainProject();
+    put(root, "workflows/ship.js", "// a workflow script, which cannot be imported (#69)\n");
+    put(
+      root,
+      "test/reads-workflow.test.ts",
+      'import { readFileSync } from "fs";\nimport { join } from "path";\n' +
+        'export const n = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8").length;\n',
+    );
+    const r = affectedTests(root, ["workflows/ship.js"]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.tests).toContain("test/reads-workflow.test.ts");
   });
 
   test("a tree with no test files is UNMEASURED, not a clean zero", () => {
@@ -173,7 +290,7 @@ describe("#676: what the graph cannot see is UNMEASURED, and the caller runs eve
     put(root, "test/sweep.test.ts", 'import { readdirSync } from "fs";\nexport const all = readdirSync("test");\n');
 
     const unmeasured = affectedTests(root, []);
-    const measuredButEmpty = affectedTests(root, ["lib/orphan.ts"]);
+    const measuredButEmpty = affectedTests(root, ["lib/isolated.ts"]);
 
     expect(unmeasured.reading).toBe("UNMEASURED");
     expect(unmeasured.tests, "an UNMEASURED reading must not carry the sweep it would have selected")
@@ -188,6 +305,63 @@ describe("#676: what the graph cannot see is UNMEASURED, and the caller runs eve
       unmeasured.reading === measuredButEmpty.reading,
       "an unmeasured reading and a genuinely empty one are the same object",
     ).toBe(false);
+  });
+});
+
+describe("#676: the walk terminates on shapes a real repository has", () => {
+  test("an import cycle does not hide a test that reaches the change through it", () => {
+    // The first draft walked FORWARD from each test with a memo, which is
+    // unsound here in a way that is hard to see: a `false` computed while a
+    // cycle edge was cut gets cached and a later query reads it. Walking
+    // dependents outward removes the interaction rather than guarding it,
+    // so the thing to assert is that a cycle neither hangs nor drops a test.
+    const root = dir();
+    put(root, "lib/a.ts", 'import { b } from "./b";\nexport const a = () => b;\n');
+    put(root, "lib/b.ts", 'import { a } from "./a";\nexport const b = 1;\nexport const useA = a;\n');
+    put(
+      root,
+      "test/cycle.test.ts",
+      'import { a } from "../lib/a";\nimport { test, expect } from "bun:test";\n' +
+        'test("a", () => { expect(a).toBeDefined(); });\n',
+    );
+
+    const viaA = affectedTests(root, ["lib/a.ts"]);
+    expect(viaA.reading).toBe("MEASURED");
+    expect(viaA.tests).toContain("test/cycle.test.ts");
+
+    // The far side of the cycle — the test never names `b`, and reaching it
+    // means traversing the edge that closes the loop.
+    const source = readFileSync(join(root, "test/cycle.test.ts"), "utf-8");
+    expect(source, "the fixture must not name the far side, or grep would also find it")
+      .not.toContain('"../lib/b"');
+    const viaB = affectedTests(root, ["lib/b.ts"]);
+    expect(viaB.tests).toContain("test/cycle.test.ts");
+  });
+
+  test("a symlink loop terminates, and a link out of the tree is declined", () => {
+    // `readdirSync(withFileTypes)` reports a symlink as not-a-directory, so
+    // a monorepo whose packages are linked into place is invisible without
+    // a statSync (#500) — and following them is what makes a loop possible.
+    const root = dir();
+    put(root, "lib/real.ts", "export const real = 1;\n");
+    put(
+      root,
+      "test/link.test.ts",
+      'import { real } from "../lib/real";\nimport { test, expect } from "bun:test";\n' +
+        'test("real", () => { expect(real).toBe(1); });\n',
+    );
+    symlinkSync(join(root, "lib"), join(root, "lib/loop"));
+
+    const outside = dir();
+    put(outside, "secret.ts", "export const secret = 1;\n");
+    symlinkSync(outside, join(root, "lib/escape"));
+
+    const r = affectedTests(root, ["lib/real.ts"]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.tests).toEqual(["test/link.test.ts"]);
+    // Nothing from outside the root is in the graph, so nothing outside it
+    // can be selected or reported as seen.
+    expect(r.testFilesSeen).toBe(1);
   });
 });
 

@@ -32,10 +32,11 @@
  * this so I kept it" the same output, which is the reporting-position defect
  * this repo keeps finding.
  */
-import { readdirSync, readFileSync, statSync } from "fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { join, dirname } from "path";
 
-import { relativeImports, runtimeReads } from "./package-closure";
+import { relativeImports, runtimeReads, unresolvedModuleRelativeJoins } from "./package-closure";
+import { stripJsComments } from "./strip-js-comments";
 
 /** Extensions whose dependencies this module can actually resolve. */
 export const SELECTABLE_SOURCE = /\.(ts|tsx|js|jsx|mts|cts)$/;
@@ -43,20 +44,44 @@ export const SELECTABLE_SOURCE = /\.(ts|tsx|js|jsx|mts|cts)$/;
 /** A test file, by the convention this repo uses everywhere. */
 export const TEST_FILE = /\.test\.(ts|tsx)$/;
 
-/** Directories walked when building the graph. */
-export const SCAN_DIRS = ["test", "lib", "scripts", "gates", "bin", "hooks"];
+/**
+ * Directories walked when building the graph.
+ *
+ * `workflows` is in this list for a reason worth stating: `ship.js` is the
+ * most-changed file in this repository and it cannot be imported (#69), so
+ * it is reached only by the tests that read it as text. Leaving the
+ * directory out did not make a change to it UNMEASURED — it made the change
+ * resolve to nothing and report MEASURED, which is silent under-selection
+ * and the exact failure this module exists to prevent. Found in review
+ * before it shipped; every fixture in the battery put its changed files
+ * inside the walked tree, so the branch where that is false was outside the
+ * battery's reach entirely (#492).
+ */
+export const SCAN_DIRS = ["test", "lib", "scripts", "gates", "bin", "hooks", "workflows"];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "coverage"]);
 
 /**
- * A test that enumerates a directory rather than importing from it.
+ * A test that discovers its subjects at runtime rather than importing them.
  *
- * `Bun.Glob` and `globSync` are here as well as `readdirSync` because the
- * question is "does this test discover its subjects at runtime", and a
- * detector that knows one spelling of that is the narrow-detector shape in
- * `.claude/rules/checks-must-be-able-to-fail.md`.
+ * Deliberately a family rather than one spelling: a detector that knows only
+ * `readdirSync` is the narrow-detector shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, and the cost of missing a
+ * sweep is a green run over a tree it never walked.
+ *
+ * `execSync`/`spawnSync` are included ONLY when the command text contains an
+ * enumeration verb. Marking every shell-out a sweep would catch the tests
+ * that `git grep` the tree — which are genuine sweeps — and also every test
+ * that runs `git rev-parse`, which is most of them, and the selection would
+ * collapse to the whole suite. The matched spelling is reported so the
+ * over-inclusion stays visible rather than becoming a number nobody can
+ * explain.
  */
-const SWEEP = /\breaddirSync\s*\(|\bBun\s*\.\s*Glob\b|\bglobSync\s*\(/;
+const SWEEP_PATTERNS: Array<[string, RegExp]> = [
+  ["readdir", /\b(readdirSync|readdir|opendirSync|opendir)\s*\(/],
+  ["glob", /\b(globSync|glob)\s*\(|\bGlob\b|\.scan\s*\(/],
+  ["shell-enumeration", /\b(execSync|spawnSync|execFileSync)\s*\([^)]*?(grep\s+-r|git\s+grep|git\s+ls-files|\bfind\b|\bls\b)/],
+];
 
 export interface AffectedTestsReading {
   /** `UNMEASURED` means run the full suite; `tests` is empty and means nothing. */
@@ -78,13 +103,43 @@ function norm(p: string): string {
   return p.split("\\").join("/").replace(/^\.\//, "");
 }
 
-/** Every source file under SCAN_DIRS, repo-relative. */
+/**
+ * Every source file under SCAN_DIRS, repo-relative.
+ *
+ * Symlinked directories are followed — a monorepo whose packages are linked
+ * into place is a real layout, and `readdirSync(withFileTypes)` reports a
+ * symlink as not-a-directory, so a `statSync` is the only thing that makes
+ * them visible (#500). Following them means a link cycle would recurse
+ * forever, so every directory is recorded by its REAL path and visited
+ * once, and a link pointing outside the root is declined rather than
+ * walked.
+ */
 function sourceFiles(root: string): string[] {
   const out: string[] = [];
+  const seenDirs = new Set<string>();
+  const rootReal = (() => {
+    try {
+      return realpathSync(root);
+    } catch {
+      return root;
+    }
+  })();
+
   const walk = (rel: string): void => {
+    const abs = join(root, rel);
+    let real: string;
+    try {
+      real = realpathSync(abs);
+    } catch {
+      return;
+    }
+    if (real !== rootReal && !real.startsWith(rootReal + "/")) return; // escaped the tree
+    if (seenDirs.has(real)) return; // a cycle, or two links to one directory
+    seenDirs.add(real);
+
     let entries;
     try {
-      entries = readdirSync(join(root, rel), { withFileTypes: true });
+      entries = readdirSync(abs, { withFileTypes: true });
     } catch {
       return; // a directory this project does not have
     }
@@ -142,10 +197,10 @@ function resolveRuntimeRead(from: string, up: number, segments: string[]): strin
  *
  * `changed` is repo-relative. The reading is UNMEASURED — meaning "run the
  * full suite" — when the graph provably cannot answer: an empty change set,
- * a changed file whose dependencies are not expressible as imports, or a
- * walk that found no tests at all. That last one is #492's lesson: a scan
- * that reached nothing reports the same clean result as a scan that found
- * nothing wrong.
+ * a changed module the walk never saw, a changed non-module nothing in the
+ * tree names, or a walk that found no tests at all. That last one is #492's
+ * lesson: a scan that reached nothing reports the same clean result as a
+ * scan that found nothing wrong.
  */
 export function affectedTests(root: string, changed: string[]): AffectedTestsReading {
   const unmeasuredReasons: string[] = [];
@@ -158,24 +213,115 @@ export function affectedTests(root: string, changed: string[]): AffectedTestsRea
     );
   }
 
-  for (const c of wanted) {
-    if (!SELECTABLE_SOURCE.test(c)) {
-      unmeasuredReasons.push(
-        `${c} is not a module this graph can follow: nothing imports a template, ` +
-          "a rule file or a workflow YAML, and the tests that read it do so by path",
-      );
-    }
-  }
-
+  const nonModule = wanted.filter(c => !SELECTABLE_SOURCE.test(c));
   const files = sourceFiles(root);
   const known = new Set(files);
   const testFiles = files.filter(f => TEST_FILE.test(f));
+
+  // A changed file the walk never saw has NO EDGE to it by construction, so
+  // every test comes back unaffected and the reading would say MEASURED over
+  // a question it never asked. This is the one that nearly shipped: before
+  // `workflows` was in SCAN_DIRS, a change to `ship.js` landed here.
+  for (const c of wanted) {
+    if (SELECTABLE_SOURCE.test(c) && !known.has(c)) {
+      unmeasuredReasons.push(
+        `${c} is outside the walked tree (${SCAN_DIRS.join(", ")}) or no longer exists, so no ` +
+          "edge to it can exist — \"nothing is affected\" would be an artefact of not looking",
+      );
+    }
+  }
 
   if (testFiles.length === 0) {
     unmeasuredReasons.push(
       `the walk over ${SCAN_DIRS.join(", ")} found no test files, which is not the ` +
         "same as finding no affected ones",
     );
+  }
+
+  // REVERSE edges: for each file, who depends on it.
+  //
+  // Walking dependents outward from the changed set is linear and has no
+  // interaction with cycles at all. The first draft walked forward from each
+  // test with a memo, which is unsound in exactly one way that is hard to
+  // see: a `false` computed while a cycle edge was cut gets cached, and a
+  // later query reads the wrong answer. Reversing the question removes the
+  // bug rather than guarding it.
+  const dependents = new Map<string, Set<string>>();
+  const sweeps: string[] = [];
+  const opaque: string[] = [];
+
+  const addEdge = (from: string, to: string): void => {
+    let s = dependents.get(to);
+    if (!s) {
+      s = new Set();
+      dependents.set(to, s);
+    }
+    s.add(from);
+  };
+
+  for (const f of files) {
+    let source: string;
+    try {
+      source = readFileSync(join(root, f), "utf-8");
+    } catch {
+      continue;
+    }
+    for (const spec of relativeImports(source)) {
+      const target = resolveSpec(f, spec, known);
+      if (target) addEdge(f, target);
+    }
+    for (const read of runtimeReads(source)) {
+      addEdge(f, resolveRuntimeRead(f, read.up, read.segments));
+    }
+
+    // A changed file that is not a module is reached by the files that NAME
+    // it. Nothing imports a rule file, a spec or a YAML, so the first draft
+    // refused the whole selection whenever one appeared in the change set —
+    // and measured against eight real commits of this repository, seven
+    // carried at least one, so the feature was inert on the input it exists
+    // to serve.
+    //
+    // **Over a COMMENT-STRIPPED view.** A citation and a read are the same
+    // bytes, and this repository cites its own rule files constantly:
+    // matching raw source, `.claude/rules/checks-must-be-able-to-fail.md`
+    // alone selected 322 of 388 files — 83% of the suite — because almost
+    // every test mentions it in a docstring. Over code only it is 108, of
+    // which 72 are the sweep floor. `blankLiterals` stays OFF: the path
+    // lives in a string literal, which is exactly the thing a read is made
+    // of.
+    //
+    // The direction of error is unchanged. A reader that does not write the
+    // path down in code is assembling it at runtime, and a file that does
+    // that is already a sweep.
+    const code = stripJsComments(source);
+    for (const c of nonModule) {
+      if (code.includes(c)) addEdge(f, c);
+    }
+
+    // A module-relative join whose segments are not all literals reads a
+    // path nobody can name statically. `runtimeReads` drops those; dropping
+    // them here would be the fail-open `lib/package-closure.ts` built
+    // `unresolvedModuleRelativeJoins` to prevent. A test that does it is a
+    // sweep; anything else becomes a seed, so every test that can reach it
+    // runs too.
+    const unresolved = unresolvedModuleRelativeJoins(source).length > 0;
+    if (TEST_FILE.test(f)) {
+      if (unresolved || SWEEP_PATTERNS.some(([, re]) => re.test(code))) sweeps.push(f);
+    } else if (unresolved) {
+      opaque.push(f);
+    }
+  }
+
+  // A non-module file nothing in the tree names is not an unaffected file —
+  // it is a file whose readers, if it has any, build its path at runtime,
+  // and the graph has no way to see them. Refuse by name.
+  for (const c of nonModule) {
+    if (!dependents.has(c)) {
+      unmeasuredReasons.push(
+        `${c} is not a module, and no file under ${SCAN_DIRS.join(", ")} names it, so any test ` +
+          "that reads it builds the path at runtime where the graph cannot follow",
+      );
+    }
   }
 
   if (unmeasuredReasons.length > 0) {
@@ -189,53 +335,19 @@ export function affectedTests(root: string, changed: string[]): AffectedTestsRea
     };
   }
 
-  // Forward edges: a file depends on what it imports and what it reads.
-  const deps = new Map<string, Set<string>>();
-  const sweeps: string[] = [];
-  for (const f of files) {
-    let source: string;
-    try {
-      source = readFileSync(join(root, f), "utf-8");
-    } catch {
-      continue;
-    }
-    const edges = new Set<string>();
-    for (const spec of relativeImports(source)) {
-      const target = resolveSpec(f, spec, known);
-      if (target) edges.add(target);
-    }
-    for (const read of runtimeReads(source)) {
-      edges.add(resolveRuntimeRead(f, read.up, read.segments));
-    }
-    deps.set(f, edges);
-    if (TEST_FILE.test(f) && SWEEP.test(source)) sweeps.push(f);
+  // Breadth-first over dependents, seeded with the change set and with every
+  // module whose own reads could not be resolved.
+  const reached = new Set<string>();
+  const queue = [...wanted, ...opaque];
+  while (queue.length > 0) {
+    const cur = queue.pop() as string;
+    if (reached.has(cur)) continue;
+    reached.add(cur);
+    for (const d of dependents.get(cur) ?? []) if (!reached.has(d)) queue.push(d);
   }
 
-  const target = new Set(wanted);
-  const memo = new Map<string, boolean>();
-
-  const reaches = (file: string, seen: Set<string>): boolean => {
-    if (target.has(file)) return true;
-    const cached = memo.get(file);
-    if (cached !== undefined) return cached;
-    if (seen.has(file)) return false; // a cycle contributes nothing
-    seen.add(file);
-    let hit = false;
-    for (const d of deps.get(file) ?? []) {
-      if (reaches(d, seen)) {
-        hit = true;
-        break;
-      }
-    }
-    seen.delete(file);
-    memo.set(file, hit);
-    return hit;
-  };
-
   const sweepSet = new Set(sweeps);
-  const tests = testFiles
-    .filter(t => sweepSet.has(t) || reaches(t, new Set()))
-    .sort();
+  const tests = testFiles.filter(t => sweepSet.has(t) || reached.has(t)).sort();
 
   return {
     reading: "MEASURED",
