@@ -668,6 +668,50 @@ export function remoteRefsIn(command: string): string[] {
 }
 
 /**
+ * #705 — a command that printed nothing measured nothing, and `""` says the
+ * wrong one of those.
+ *
+ * The recording below used to write `{ type: "command-output", content: "" }`
+ * whenever an evidence command exited 0 without printing. `hasRecordedEvidence`
+ * in `lib/evidence-required.ts` reads `Boolean("")` as false, so the verify
+ * gate then refused with *"threshold == 0 with NO evidence recorded"* — a
+ * sentence about an AC nobody measured, applied to an AC that was measured and
+ * came back silent. Run `wf_b8f7b077-9cf` AC-3 died that way, and the message
+ * names the AC and its `evidenceMethod.type`, so each occurrence reads as an
+ * authoring mistake three phases after authoring.
+ *
+ * It is not about `GREP_CHECK`. This function has never read `ac.type` or
+ * `evidenceMethod.type` — it keys on `evidenceMethod.command` alone — and two
+ * `GREP_CHECK` ACs in the same batch of runs recorded `"0"` and passed. What
+ * distinguishes them is whether the command PRINTS its count: `grep -c` does,
+ * `grep -n` prints nothing when it matches nothing. A `COMMAND` AC reaches
+ * this branch on identical terms.
+ *
+ * ONE binding, called from both recording sites, so there is a single thing to
+ * mutate. A second site composing its own sentence would survive any mutation
+ * of this one and the gap would go green for the wrong reason.
+ */
+export function emptyOutputUnmeasured(
+  command: string,
+  exitCode: number | null,
+  detail?: string,
+): { type: "unmeasured"; content: string } {
+  const exit = exitCode === null ? "with no status" : `with status ${exitCode}`;
+  return {
+    type: "unmeasured",
+    content:
+      `UNMEASURED: the evidence command exited ${exit} and wrote NOTHING to stdout, so no ` +
+      `value was produced and there is nothing to compare against the threshold. An empty ` +
+      `reading and a measured 0 are different states — recording the empty one as "" made ` +
+      `every reader downstream report this AC as carrying no evidence at all (#705). Make ` +
+      `the command PRINT the value it asserts about: \`grep -c <pattern> <file>\` prints 0 ` +
+      `where \`grep -n\` prints nothing, and a count swallowed by \`$( )\` never reaches ` +
+      `stdout. Command: ${command}` +
+      (detail ? ` — ${detail}` : ""),
+  };
+}
+
+/**
  * Exported for test. This is where evidence commands actually execute, and it
  * is the last place a stale git ref can be caught (#118).
  */
@@ -736,6 +780,22 @@ export function autoPopulateACs(state: Record<string, any>, sf: string): void {
       const isTestRunner = /bun test\b/.test(cmd);
       const cmdTimeout = isTestRunner ? 300000 : 10000;
       const output = execSync(cmd, { encoding: "utf-8", timeout: cmdTimeout, cwd: evidenceCwd }).trim();
+      // #705. Blocking, not SKIP, and for the reason the missing-ref branch
+      // above gives: gates/orchestrator.ts advances when every AC is PASS or
+      // SKIP, so marking an AC nothing could measure as SKIP would turn a
+      // blocking gate into a passing one.
+      //
+      // `isTestRunner` is carved out because bun writes its summary to stderr:
+      // a `bun test` invocation can leave stdout holding only the version
+      // banner, or nothing at all, and the verdict below does not read the
+      // output anyway. Calling that UNMEASURED would refuse every BUN_TEST AC
+      // in the project.
+      if (!isTestRunner && output === "") {
+        state.acs[i].verdict = "FAIL";
+        state.acs[i].evidence = emptyOutputUnmeasured(cmd, 0);
+        acUpdated = true;
+        continue;
+      }
       const lastLine = output.split("\n").pop() || "";
       let verdict: "PASS" | "FAIL" = "FAIL";
       if (isTestRunner) {
@@ -783,7 +843,19 @@ export function autoPopulateACs(state: Record<string, any>, sf: string): void {
         state.acs[i].evidence = { type: "command-output", content: lastLine };
         acUpdated = true;
       } else {
+        // #705. The branch that recorded nothing at all, which is the literal
+        // "can never record evidence" the issue title describes: the AC kept a
+        // PENDING verdict and an absent `evidence`, so the gate refused it with
+        // the never-measured sentence and the warning below was the only place
+        // the real cause existed. A warning is not a reading.
         console.warn(`WARN: AC ${ac.id} evidence command failed: ${e.message?.slice(0, 100) || 'unknown'}`);
+        state.acs[i].verdict = "FAIL";
+        state.acs[i].evidence = emptyOutputUnmeasured(
+          cmd,
+          typeof e.status === "number" ? e.status : null,
+          (stderr.trim().split("\n").pop() || e.message || "").slice(0, 200),
+        );
+        acUpdated = true;
       }
     }
   }

@@ -615,6 +615,117 @@ check turns a quarter of the file red — including the case asserting that
 crosscheck's silence on a missing-evidence AC is only safe because something
 else speaks first.
 
+## An empty reading was recorded as a measurement, and read as an absence (#705)
+
+#277 above made the gate refuse an AC that carries a threshold and no recorded
+evidence. This is the state one layer up: an AC that WAS measured, whose
+command came back silent, and whose silence `autoPopulateACs` wrote down as
+`{ type: "command-output", content: "" }`. `hasRecordedEvidence` reads
+`Boolean("")` as false, so the two states arrive at the gate identical and the
+run refuses with #277's sentence —
+
+    AC-3: threshold == 0 with NO evidence recorded (evidenceMethod.type=GREP_CHECK)
+
+— which is about an AC nobody measured, printed over an AC that was.
+
+### It is not about GREP_CHECK, and the issue's three options all are
+
+#705 was filed as *"a GREP_CHECK AC can never record evidence"* and proposes
+upgrading the type unconditionally, teaching something to run it, or refusing
+it at authoring time. The run history refutes the premise.
+`autoPopulateACs` has never read `ac.type` or `evidenceMethod.type` — it keys
+on `evidenceMethod.command` alone — and two `GREP_CHECK` ACs in the same batch
+of runs the issue cites recorded evidence and passed:
+
+| Run | AC | Command | Evidence | Verdict |
+|---|---|---|---|---|
+| `agentgrit-258b` | AC-2 | `grep -c '…' src/graph/co…` | `"0"` | PASS |
+| `agentgrit-258c` | AC-3 | `grep -c '\|\| entry.id' …` | `"0"` | PASS |
+| `agentgrit-258d` | AC-3 | `grep -n '…' …; test $(grep -c '…' …) -eq 0` | `""` | **FAIL** |
+
+The discriminator in that table is whether the command PRINTS. `grep -c`
+publishes its count; `grep -n` prints nothing when it matches nothing, and the
+count the author meant to publish is swallowed by `$( )`. All three exit 0.
+A `COMMAND` AC reaches the same branch on identical terms, so a repair aimed
+at `GREP_CHECK` would have left the defect in place under another name.
+
+### Two silences, one binding
+
+`emptyOutputUnmeasured` in `gates/gate-executor.ts` is called from both sites
+that could record nothing, so there is a single thing to mutate:
+
+- the **success path**, which wrote `""` — a reading that exists and says
+  nothing; and
+- the **catch branch's `else`**, which wrote nothing at all and emitted a
+  `console.warn`. That is the literal "can never record evidence" of the
+  issue title: a command exiting 2 with empty stdout (a missing file, a bad
+  regex) left the AC `PENDING` with `evidence` absent, and the warning was the
+  only place the real cause existed. A warning is not a reading.
+
+Both record `FAIL`, not `SKIP`, for the reason the missing-ref branch twenty
+lines above already gives: `gates/orchestrator.ts` advances when every AC is
+PASS or SKIP, so marking an unmeasurable AC SKIP turns a blocking gate into a
+passing one.
+
+`isTestRunner` is carved out. Bun writes its summary to stderr — measured, a
+`bun test` invocation leaves 28 bytes of version banner on stdout and nothing
+else — and the verdict for a test runner does not read the output anyway.
+Calling that UNMEASURED would refuse every `BUN_TEST` AC in the project.
+
+- [x] SC-2159: gates/gate-executor.ts contains [emptyOutputUnmeasured] — a command that printed nothing records a reading naming its own cause, because `""` is indistinguishable from an absence and the AC was then accused of carrying no evidence at all
+- [x] SC-2160: test/empty-evidence-unmeasured.test.ts contains [the refusal #705 was filed over is gone] — the repair is at the producing side and `hasRecordedEvidence` is untouched, because widening the reader would reopen #277 for every AC whose command came back silent
+- [x] SC-2161: test/empty-evidence-unmeasured.test.ts contains [a non-zero exit with no stdout is recorded] — the branch that only warned now records, because the warning was the single place the cause existed and nothing downstream reads a warning
+- [x] SC-2162: test/empty-evidence-unmeasured.test.ts contains [the test-runner carve-out is intact] — a `bun test` command with empty stdout is not reclassified, because bun writes its summary to stderr and the carve-out is load-bearing for every BUN_TEST AC
+
+### What was broken to prove it (#705)
+
+Run and counted over `test/empty-evidence-unmeasured.test.ts` plus
+`test/evidence-command-roundtrip.test.ts` (25 tests), except row 7, which is
+over `test/empty-evidence-unmeasured.test.ts` plus
+`test/evidence-required.test.ts` (49 tests). Every count was predicted before
+the battery ran, and **the baseline row was read first** — an instrument that
+has stopped reporting takes the baseline down with it, and nobody mutates
+anything to produce that row. None is left in the tree; all were run and
+restored from a `cp` backup, and both sources were confirmed byte-identical by
+checksum afterwards.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 25 pass, 0 fail | **25 pass, 0 fail** | — |
+| `emptyOutputUnmeasured` short-circuited to the pre-#705 shape | 3 | **3 of 25** | the silent command: original records `{type:"unmeasured", content:"UNMEASURED: …"}`, mutant records `{type:"command-output", content:""}` |
+| the success-path empty-output block removed — genuinely pre-#705 at that site | 2 | **2 of 25** | the same command, exit 0 with empty stdout. AC-2161a stays green: the catch branch is a separate site |
+| the catch-branch `else` recording removed — genuinely pre-#705 at that site | 1 | **1 of 25** | `grep -c '<pattern>' no-such-file.ts`: exit 2, empty stdout. Original records UNMEASURED and FAIL, mutant records nothing and leaves the verdict PENDING |
+| **the cheapest wrong fix**: block removed and `\|\| ""` becomes `\|\| "0"` | 2 | **2 of 25** | the silent command: original UNMEASURED/FAIL, mutant `command-output` `"0"`/**PASS** |
+| the `isTestRunner` carve-out dropped | 1 | **1 of 25** | `true >/dev/null # bun test test/x.test.ts`: original PASS, mutant UNMEASURED/FAIL |
+| `hasRecordedEvidence` widened to `e.content != null` — the reader-side wrong fix | 1 | **0 of 48, then 1 of 49** | an AC carrying `evidence: {type:"command-output", content:""}`: original returns 1 violation, mutant returns 0 |
+
+**The cheapest wrong fix, named: change `output.split("\n").pop() || ""` to
+`|| "0"`**, matching the line the catch branch already carries. One character
+of real change; the symptom disappears — AC-3 records `"0"`, `== 0` is
+satisfied, the gate stops refusing — and every evidence command that fails to
+print anything then CERTIFIES ABSENCE, which is exactly what a `== 0`
+threshold is for.
+
+The cases survive it, and **not all of them do, which is the part worth
+recording.** AC-2159a reads the recorded `type` and AC-2159c asserts the
+silent half does not PASS and does not record the same string as the printing
+half; both go red on a fabricated `"0"`. **AC-2160a goes GREEN under it** — a
+`"0"` is recorded evidence, so `missingEvidenceViolations` falls silent and
+the case it was written for is satisfied by the repair it exists to block.
+Stated rather than left for a reader to count five witnesses: AC-2159a,
+AC-2160a and AC-2161a are the witnesses of the fix; AC-2159b, AC-2160b,
+AC-2160c and AC-2162a are controls, green before and after.
+
+**The last row is the one that was not predicted correctly, and the 0 is a
+finding rather than noise.** The mutation was proven to change behaviour
+before the count was recorded — the probe above returns 1 on the original and
+0 on the mutant. Nothing caught it because #277's own case for this predicate
+is `evidence: {}`, where `content` is **undefined**, and `undefined != null`
+is false, so the widened predicate refuses that fixture too. The fixture the
+existing case naturally reached for is one the mutant also catches (#485).
+The input that reaches the branch is an empty **string**, which is precisely
+what the pre-#705 recorder wrote, and AC-2160c now plants it.
+
 ## The rest of the hardcoding, fixed rather than filed (#343, #344)
 
 #304's sweep found hardcoded **routes**. Looking for them turned up the same
