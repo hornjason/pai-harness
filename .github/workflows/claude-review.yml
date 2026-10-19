@@ -220,6 +220,11 @@ jobs:
           full=$(wc -c < /tmp/pr.diff | tr -d ' ')
           if [ "$full" -gt "$MAX_BYTES" ]; then
             head -c "$MAX_BYTES" /tmp/pr.diff > /tmp/pr.diff.cut
+            # Tell the AGENT its subject is incomplete. The post-step turns
+            # the same fact into DIFF_TRUNCATED; this is the half the model
+            # can see, and a silently cut diff is #732 one layer down.
+            printf '\n*** diff truncated at %s of %s bytes ***\n' "$MAX_BYTES" "$full" \
+              >> /tmp/pr.diff.cut
             mv /tmp/pr.diff.cut /tmp/pr.diff
             echo "truncated=true" >> "$GITHUB_OUTPUT"
             echo "::warning::diff truncated at $MAX_BYTES of $full bytes"
@@ -232,6 +237,19 @@ jobs:
           {
             echo "diff<<$d"
             cat /tmp/pr.diff
+            # LOAD-BEARING, and not formatting. The heredoc terminator has to
+            # START a line. `head -c` cuts mid-line and a patch need not end
+            # in a newline at all, so without this blank line the delimiter is
+            # swallowed by the last diff line and the runner refuses the whole
+            # write: `Invalid value. Matching delimiter not found`. Measured
+            # on run 39339388211 against a 110,547-byte diff — the step died,
+            # `auth` and `Review` were skipped, and the review never ran.
+            #
+            # Unconditional on purpose. Doing it only in the truncation branch
+            # is one binding for a guarantee that both branches need, and the
+            # untruncated branch is the one nobody tests because every real
+            # `gh pr diff` happens to end in a newline.
+            echo ""
             echo "$d"
           } >> "$GITHUB_OUTPUT"
           # The review count BEFORE the agent runs. The post-step reads the
