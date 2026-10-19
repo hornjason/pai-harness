@@ -4104,6 +4104,66 @@ function waveNeedsIntegration(waveIndex, totalWaves) {
 }
 
 /**
+ * Why a wave commit reply is not an integration, or null if it is one (#652).
+ *
+ * Two consecutive ship runs died at `IMPLEMENT_FAILED` carrying one sentence —
+ * "the wave commit did not report success" — and both needed hand assembly.
+ * The journal for `wf_9bb6f96d-200` holds what the run was holding and threw
+ * away: `collect-wave-1` staged four files, then `commit-wave-1` replied
+ * `{committed:false, branch:"main", sha:""}`. A peer session had moved the
+ * shared `PROJECT_ROOT` checkout onto `main` mid-run and the commit prompt's
+ * own `main|master` guard refused — correctly, and that guard is NOT what
+ * changed here: deleting or widening it is the cheapest wrong fix, and it
+ * puts unreviewed agent output on the default branch (#267/#136).
+ *
+ * What changed is that `committed` no longer gates the branch reading. The
+ * two are independent readings — `committed` says whether a commit happened,
+ * the branch says where the checkout was — and the old `if (committed !==
+ * true) return <generic>` made two of their four cells unreachable, so an
+ * operator was told a commit failed and not told that their own checkout was
+ * the reason. That is the difference between a one-line `git switch` and
+ * hand-assembling a run.
+ *
+ * Every clause below is reachable by an input no other clause answers, which
+ * is what .claude/rules/checks-must-be-able-to-fail.md asks of a decider that
+ * keeps more than one:
+ *
+ *   - `{committed:false, branch:""}`          → the bare sentence. There is
+ *     nothing to append, and an unconditional clause would print an empty
+ *     branch here, which reads as a disagreement that did not happen.
+ *   - `{committed:false, branch:<the ref>}`   → names the ref it was on. An
+ *     ordinary `git commit` failure, with nothing to disagree about.
+ *   - `{committed:false, branch:"main"}`      → the dead run's reply: names
+ *     the branch AND the ref, because the checkout having moved is the cause.
+ *   - `{committed:true,  branch:<other>}`     → #420's comparison, which must
+ *     NOT say a commit failed: one did, in the wrong place.
+ *   - `{committed:true,  branch:""}` with no run ref → the re-check below,
+ *     the only cell the comparison cannot see.
+ */
+function waveCommitFailure(reply, waveIndex, runRef) {
+  // Read BEFORE the committed arm, so both arms can use it. This line being
+  // below the `committed` early return is the whole of #652.
+  const landedOn = reply && typeof reply.branch === 'string' ? reply.branch.trim() : ''
+
+  if (!reply || reply.committed !== true) {
+    if (!landedOn) return 'the wave commit did not report success'
+    if (landedOn === runRef) {
+      return `the wave commit did not report success on the run ref ${runRef} (#652)`
+    }
+    return 'the wave commit did not report success — it reported branch ' +
+      `${landedOn}, not the run ref ${runRef}, so the shared checkout has been moved (#652)`
+  }
+
+  // The branch is re-read from the reply rather than assumed, for the reason
+  // #218 gives about worktree identity: the run asked where it was, and an
+  // answer that disagrees with what it established is the interesting case.
+  if (landedOn && landedOn !== runRef) {
+    return `wave ${waveIndex + 1} committed onto ${landedOn}, not the run ref ${runRef} (#420)`
+  }
+  return runRefRefusal(landedOn || runRef)
+}
+
+/**
  * Put the project checkout on a ref this run may commit onto, and say which.
  *
  * Creates one when the checkout is on a default branch rather than refusing:
@@ -4227,22 +4287,12 @@ Report: committed (true only if git commit exited zero), sha, and the branch.
     required: ['committed'],
   } })
 
-  if (!reply || reply.committed !== true) {
-    return { ok: false, integrated: 0, detail: 'the wave commit did not report success' }
-  }
-  // The branch is re-read from the reply rather than assumed, for the reason
-  // #218 gives about worktree identity: the run asked where it was, and an
-  // answer that disagrees with what it established is the interesting case.
-  const landedOn = typeof reply.branch === 'string' ? reply.branch.trim() : ''
-  if (landedOn && landedOn !== runRef) {
-    return {
-      ok: false,
-      integrated: 0,
-      detail: `wave ${waveIndex + 1} committed onto ${landedOn}, not the run ref ${runRef} (#420)`,
-    }
-  }
-  const stillRefused = runRefRefusal(landedOn || runRef)
-  if (stillRefused) return { ok: false, integrated: 0, detail: stillRefused }
+  // One decider for the whole reply (#652). The committed flag and the branch
+  // are read together rather than the first returning before the second is
+  // looked at, which is what left two dead runs holding a sentence that named
+  // neither the branch they were on nor the ref they expected.
+  const failure = waveCommitFailure(reply, waveIndex, runRef)
+  if (failure) return { ok: false, integrated: 0, detail: failure }
 
   log(`Wave ${waveIndex + 1} integrated onto ${runRef} at ${reply.sha || 'unknown'} — ` +
     `wave ${waveIndex + 2}'s worktrees branch from it (#420)`)
@@ -4866,6 +4916,51 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         continue
       }
       if (w > 0) log(plan.reasons[w - 1])
+      // #652 — `PROJECT_ROOT` is SHARED. #420 establishes the ref once, before
+      // the first spawn, and trusts it for the run's duration; that trust has
+      // a window exactly as long as the run, and `wf_9bb6f96d-200` is what
+      // walks through it — a peer session moved the checkout onto `main` while
+      // wave 1 was running, and the first thing to notice was the wave commit,
+      // after the wave's whole budget had been spent.
+      //
+      // So the reading is taken again before each wave after the first, and
+      // through the SAME binding SC-1570's refusal comes from.
+      // `establishRunRef` already switches a drifted checkout back and returns
+      // a refusal only when it cannot, so "refuses or re-establishes" is one
+      // decider rather than two that agree
+      // (.claude/rules/checks-must-be-able-to-fail.md).
+      if (w > 0 && runRef) {
+        const reread = await establishRunRef()
+        if (reread.refusal) {
+          // Before the spawns, not after: the wave's agents never start, so
+          // the drift costs a re-run of nothing instead of a wave's budget.
+          waveFailed = true
+          log(`Wave ${w + 1} was not dispatched: ${reread.refusal}`)
+          for (const i of wave) {
+            settled.push({
+              subIssue: batchIssues[i],
+              buildResult: {
+                success: false,
+                filesChanged: [],
+                findings: [
+                  `did not start — the shared project checkout moved after the run ref was ` +
+                  `established: ${reread.refusal}`,
+                ],
+              },
+              ok: false,
+            })
+          }
+          continue
+        }
+        if (reread.branch !== runRef) {
+          log(`Run ref re-established as ${reread.branch} before wave ${w + 1} — the shared ` +
+            `checkout had moved off ${runRef} (#652)`)
+        }
+        // Written back, because what this wave commits onto is what the
+        // checkout is standing on NOW. A reading taken and discarded would
+        // leave the commit pointed at a ref the run is no longer on.
+        runRef = reread.branch
+      }
       const waveResults = await parallel(wave.map(i => () => shipSubIssue(batchIssues[i])))
       for (let k = 0; k < wave.length; k++) {
         const r = waveResults[k]
