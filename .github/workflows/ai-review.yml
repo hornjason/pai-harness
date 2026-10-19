@@ -172,6 +172,11 @@ jobs:
           fi
 
           if [ "${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
+            echo "::warning title=AI review UNMEASURED::The AI review completed and wrote a findings payload, but no step in this job reads it yet (#675), so a blocking finding would not fail this check. The review is UNMEASURED as a GATE — the comments are real, the verdict is not enforced."
+            if [ "${RUNGATE_REQUIRE_AI_REVIEW:-}" = "true" ]; then
+              echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and nothing in this job adjudicates the findings payload (#675), so a blocking finding would report green. Failing rather than reporting a passing gate for a verdict nobody read." >&2
+              exit 1
+            fi
             exit 0
           fi
 
@@ -195,10 +200,17 @@ jobs:
             exit 0
           fi
 
-          if git diff --quiet && git diff --quiet --cached; then
+          # ONE reading, and it is the widest one. The first draft asked
+          # `git diff --quiet && git diff --quiet --cached`, which is two deciders for
+          # one question and blind to the case most likely to occur: a reviewer told to
+          # write a findings file writes a NEW file, and a new file is untracked, so
+          # neither `git diff` sees it. `--untracked-files=all` descends into new
+          # directories as well — the default stops at the directory name.
+          changed=$(git status --porcelain --untracked-files=all | tr '\n' ' ')
+
+          if [ -z "${changed}" ]; then
             exit 0
           fi
 
-          changed=$(git status --porcelain | tr '\n' ' ')
           echo "::error title=AI review modified the tree::The reviewer modified the tree it was reviewing: ${changed}. A review that edits the code under review is not a result." >&2
           exit 1
