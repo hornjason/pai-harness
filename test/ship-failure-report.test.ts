@@ -94,7 +94,11 @@ function loadLedger(block: string, logs: string[] = []): Ledger {
     // #232 made shipFailed preserve before it returns. Stubbed here: this
     // file owns the LEDGER's behaviour, and test/preserve-every-exit.test.ts
     // owns the claim that preservation happens.
-    "var preserveSeenWorktrees = async () => ({ preserved: [], detail: '' });\n";
+    "var preserveSeenWorktrees = async () => ({ preserved: [], detail: '' });\n" +
+    // #640: the funnels restore the shared checkout on the way out. Stubbed
+    // rather than omitted — an absent binding is a ReferenceError inside the
+    // funnel, which would red every case here for a reason unrelated to it.
+    "var restorePrimaryCheckout = async () => ({ reading: 'UNCHANGED', restoreOutcome: 'ALREADY_ON_START', lines: [] });\n";
   const out = new Function(
     "__log__",
     `var log = __log__;\n${prelude}${block}\n` +

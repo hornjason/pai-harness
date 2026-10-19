@@ -151,6 +151,7 @@ async function runBlock(block: string, scope: Record<string, unknown> = {}): Pro
     // Stubbed — test/preserve-every-exit.test.ts owns that claim; this file
     // is about what the decision block decides.
     preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
+    restorePrimaryCheckout: async () => ({ reading: 'UNCHANGED', restoreOutcome: 'ALREADY_ON_START', lines: [] }),
     ...merged,
   };
   const sandbox = new Proxy(full, {

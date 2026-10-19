@@ -840,6 +840,26 @@ async function timedAgent(prompt, opts = {}) {
 const WORKTREES_SEEN = new Set()
 
 /**
+ * The branch the SHARED primary checkout was on when this run arrived (#640).
+ *
+ * At module scope because the two ends of the comparison are hundreds of
+ * lines and several phases apart: `establishRunRef` reads it before it
+ * switches, and the exits have to put the checkout back onto it. Empty means
+ * it was never read, and that is a reading — a run that did not look has not
+ * proven it put anything back, and comparing two empty strings is equality,
+ * which is how a check that never happened passes.
+ *
+ * Declared HERE, beside the worktree registry, rather than next to
+ * `establishRunRef` where it is assigned. `terminalFailure` reads it, and
+ * `terminalFailure` is reachable from phases that run long before
+ * `establishRunRef`'s line is executed. A `let` read before its declaration
+ * runs throws a ReferenceError; it does not read as empty. That is the
+ * failure `scripts/validate-workflow.ts` was written for, and the exits are
+ * the last place in this file that should be able to die on the way out.
+ */
+let primaryBranchBefore = ''
+
+/**
  * Record any worktree path an agent reply mentions.
  *
  * Walks the reply rather than reading two known fields: agents report
@@ -943,6 +963,9 @@ function terminalReason(status, extra) {
  */
 async function terminalFailure(status, extra = {}) {
   const kept = await preserveSeenWorktrees(String(status || 'FAILED'), 'terminal-preserve')
+  // After preservation, never before: the restore moves the shared checkout,
+  // and the work has to have a ref of its own before anything moves.
+  const restored = await restorePrimaryCheckout(String(status || 'FAILED'))
   return {
     status,
     ...extra,
@@ -954,10 +977,219 @@ async function terminalFailure(status, extra = {}) {
     // stopped, and this is where the work went. Losing either one is how an
     // operator ends up with a refusal they cannot act on.
     ...(kept.detail ? { preservedDetail: kept.detail.trim(), preserved: kept.preserved } : {}),
+    // Returned, not only logged. A log line is read by whoever is watching;
+    // a field is read by the test that proves the exit took the step (#640).
+    runBranchReading: restored.reading,
+    runBranchRestore: restored.restoreOutcome,
     workDir: WORK_DIR,
   }
 }
 // ──── WORKTREE-REGISTRY-END ────
+
+// ──── RUN-BRANCH-RESTORE-STEP-START ────
+/**
+ * Put the shared primary checkout back, and say what happened (#640).
+ *
+ * #692 built `scripts/check-run-branch.ts`, wired all three of its modes into
+ * this file, and proved criteria 3, 4 and 6 against a real branch. What it
+ * did not do is reach the exits: the restore was step 5 of the post-prove
+ * finalize prompt, so it ran on the SUCCESS path and nowhere else. Run
+ * `wf_9d22ecf5-aed` ended SHIP_FAILED, never reached step 5, and left
+ * `/Users/jhorn/Projects/rungate` sitting on `rungate/run-631` where a second
+ * session found it the next morning and read it as somebody's live branch.
+ *
+ * Both funnels already called `preserveSeenWorktrees`, so the position for
+ * this existed; the restore simply was not in it. That is the gap, and it is
+ * the half of criterion 1 the happy path hides — the check ran exactly when
+ * it was least likely to be needed.
+ *
+ * ONE binding, three callers. The shell is composed here and nowhere else,
+ * because the finalize step and the two exits asking the same question in two
+ * hand-written forms are two deciders that agree
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape): a
+ * mutation of either would leave the other restoring correctly, both would
+ * read as covered, and nobody could say which one was dead.
+ */
+function runBranchRestoreShell(opts) {
+  const withDelete = !!(opts && opts.withDelete)
+  if (!primaryBranchBefore) {
+    // Not a failure and not a pass. The run never read where the checkout
+    // started, so it cannot claim to have put it back — and `git switch ""`
+    // would be a guess dressed as a restore.
+    return `   cd ${shellQuote(PROJECT_ROOT)}\n` +
+      `   echo "RESTORE: NOT_READ"\n` +
+      `   echo "AFTER: $(git branch --show-current)"\n`
+  }
+  const runRef = runRefName(ISSUE)
+  // The switch is CONDITIONAL on the checkout being on this run's own ref.
+  //
+  // An unconditional `git switch` was the pre-#640-phase-2 behaviour and it
+  // is wrong in one direction that matters: a peer session that moved the
+  // shared checkout onto a third branch while this run was working gets it
+  // yanked out from under them by a run that never put it there. "This run
+  // left the checkout somewhere" and "the checkout is somewhere unexpected"
+  // are different facts, and only the first is this run's to fix. The second
+  // is reported by name and left alone.
+  return `   cd ${shellQuote(PROJECT_ROOT)}
+   before=${shellQuote(primaryBranchBefore)}
+   run_ref=${shellQuote(runRef)}
+   current=$(git branch --show-current)
+   if [ "$current" = "$before" ]; then
+     echo "RESTORE: ALREADY_ON_START"
+   elif [ "$current" = "$run_ref" ]; then
+     git switch "$before" && echo "RESTORE: SWITCHED_BACK" || echo "RESTORE: SWITCH_FAILED"
+   else
+     echo "RESTORE: FOREIGN_BRANCH"
+   fi
+${withDelete ? `   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode delete --repo ${shellQuote(PROJECT_ROOT)} --issue ${ISSUE} --base ${shellQuote(primaryBranchBefore)} || echo "DELETE_REFUSED"
+` : `   echo "DELETE: NOT_ATTEMPTED"
+`}   after=$(git branch --show-current)
+   echo "AFTER: $after"
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode drift --before ${shellQuote(primaryBranchBefore)} --after "$after" || true
+`
+}
+
+/**
+ * What the reply is allowed to carry back.
+ *
+ * A function rather than a `const`, because the exits call it and the exits
+ * are reachable before a module-scope `const` on this line would have been
+ * initialised — the same TDZ hazard `primaryBranchBefore` is declared early
+ * for. One literal, so the finalize step and the exits cannot drift apart: a
+ * schema is a FILTER on the reply and a field one caller declares and the
+ * other does not is dropped silently on the way back (#646).
+ *
+ * The nullable ones say so. `type: 'string'` would drop a null and leave the
+ * field absent, which reads as a step nobody asked about rather than a step
+ * that looked and found nothing.
+ */
+function runBranchRestoreSchema() {
+  return {
+    type: 'object',
+    properties: {
+      branchAfter: { type: 'string' },
+      restoreOutcome: { type: 'string' },
+      driftReading: { type: 'string' },
+      driftRefusal: { type: ['string', 'null'] },
+      runBranchDeleted: { type: 'boolean' },
+      runBranchDetail: { type: ['string', 'null'] },
+    },
+  }
+}
+
+/**
+ * The lines an operator gets out of a restore reply.
+ *
+ * Everything in `reply` is an agent's RESTATEMENT of what the shell printed
+ * (#530), so an absent field is UNMEASURED and never clean. "The checkout
+ * came back" is the one conclusion nobody may draw from silence: a run that
+ * reported nothing looked at nothing, and `0`, `{}`, `null` and no output at
+ * all are indistinguishable from success
+ * (`.claude/rules/config-access.md`, Silent Default Substitution).
+ *
+ * The comparison itself is NOT made here. `checkoutDrift` in
+ * `lib/run-branch.ts` is the one binding that decides whether a run moved the
+ * checkout, and the shell above asks it; this reads the answer. A second
+ * comparison in ship.js would be the fourth shape again.
+ */
+function readRunBranchRestore(reply, opts) {
+  const withDelete = !!(opts && opts.withDelete)
+  const clean = v => String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').slice(0, 500)
+  const r = reply && typeof reply === 'object' ? reply : {}
+  const lines = []
+
+  const driftReading = clean(r.driftReading) || 'UNMEASURED'
+  if (!primaryBranchBefore) {
+    lines.push('RUN_BRANCH_UNMEASURED: this run never read which branch the shared ' +
+      'checkout started on, so whether it put it back is unknowable (#640)')
+  } else if (driftReading === 'UNCHANGED') {
+    lines.push(`Shared checkout: back on ${primaryBranchBefore} (#640)`)
+  } else if (r.driftRefusal) {
+    lines.push(`RUN_BRANCH_DRIFT: ${clean(r.driftRefusal)}`)
+  } else {
+    lines.push('RUN_BRANCH_UNMEASURED: the restore step did not report where the shared ' +
+      `checkout ended up, so whether this run put it back is unknown — reading ${driftReading} (#640)`)
+  }
+
+  // A FOREIGN_BRANCH is printed even when the drift reading is clean, because
+  // the two say different things: drift answers "is it where it started",
+  // and this answers "did this run decline to touch it". A run that found a
+  // peer's branch there and left it alone did the right thing, and the next
+  // reader needs to know it happened rather than inferring it from a silence.
+  const outcome = clean(r.restoreOutcome)
+  if (outcome === 'FOREIGN_BRANCH') {
+    lines.push(`RUN_BRANCH_FOREIGN: the shared checkout was on neither ${primaryBranchBefore} ` +
+      `nor ${runRefName(ISSUE)}, so this run left it alone (#640)`)
+  } else if (outcome === 'SWITCH_FAILED') {
+    lines.push(`RUN_BRANCH_RESTORE_FAILED: git switch back to ${primaryBranchBefore} did not ` +
+      'succeed — the checkout is still on this run\'s branch (#640)')
+  }
+
+  if (!withDelete) {
+    // Said rather than left out. This run refused, so its branch holds work
+    // nothing has merged; deleting it is the one action that cannot be undone
+    // and the delete check would refuse it anyway. Printing the decision is
+    // what stops the next reader assuming the step was forgotten again.
+    lines.push(`Run branch: ${runRefName(ISSUE)} kept — this run did not ship, so its branch ` +
+      'holds unmerged work and no delete was attempted (#640)')
+  } else if (r.runBranchDeleted === true) {
+    lines.push(`Run branch: ${clean(r.runBranchDetail) || 'deleted'}`)
+  } else if (r.runBranchDetail) {
+    // A refusal is the designed outcome when the branch holds work the base
+    // does not, so this is a finding to print rather than a failure. The run
+    // is over; what is left is a ref somebody has to look at.
+    lines.push(`RUN_BRANCH_KEPT: ${clean(r.runBranchDetail)}`)
+  } else if (primaryBranchBefore) {
+    lines.push(`RUN_BRANCH_UNMEASURED: the restore step did not say whether ${runRefName(ISSUE)} was removed (#640)`)
+  }
+
+  return { reading: driftReading, restoreOutcome: outcome || 'UNMEASURED', lines }
+}
+
+/**
+ * Restore the shared checkout on the way out of a FAILING run.
+ *
+ * Called by both terminal funnels. Deletes nothing: a run that refused has a
+ * branch holding work nothing merged, and the delete check refuses exactly
+ * that case by name, so attempting it would spend a step to be told no.
+ *
+ * Never throws. This is the last thing a dying run does, and an exit path
+ * that can itself fail turns one bad status into no status at all — the
+ * funnel's whole job is to return a reason.
+ */
+async function restorePrimaryCheckout(phaseName) {
+  try {
+    const reply = await timedAgent(`
+Run exactly this, then report what it printed:
+
+${runBranchRestoreShell({ withDelete: false })}
+
+This checkout is SHARED. Every other session reads it, and a run that leaves
+it on \`${runRefName(ISSUE)}\` hands them a branch that looks like theirs.
+
+This run FAILED, so its branch holds work nothing has merged. Do NOT delete
+it, do NOT pass --force, and do NOT commit, stash or discard anything to make
+a step succeed. If the switch fails, report that it failed.
+
+Report the RESTORE: value as restoreOutcome and the AFTER: value as
+branchAfter, both EXACTLY as printed. Report the drift command's "reading" as
+driftReading and its refusal line as driftRefusal — null when it printed none.
+    `, { label: 'run-branch-restore', phase: phaseName, schema: runBranchRestoreSchema() })
+
+    const read = readRunBranchRestore(reply, { withDelete: false })
+    for (const line of read.lines) log(line)
+    return read
+  } catch (err) {
+    // Named, not swallowed. A catch that returned a clean reading here would
+    // be the fail-open this repo's own rule file opens with: the restore
+    // would report success for every run in which it crashed.
+    const detail = String(err && err.message || err).replace(/[\r\n]+/g, ' ').slice(0, 300)
+    log(`RUN_BRANCH_UNMEASURED: the restore step itself failed (${detail}) — ` +
+      'where the shared checkout ended up is unknown (#640)')
+    return { reading: 'UNMEASURED', restoreOutcome: 'UNMEASURED', lines: [] }
+  }
+}
+// ──── RUN-BRANCH-RESTORE-STEP-END ────
 
 // ── Agent brief loader (config-driven) ────────────────────
 // Workflow sandbox can't resolve project-local agentTypes from .claude/agents/.
@@ -2022,6 +2254,9 @@ function observedDraft(pr) {
 async function shipFailed(phaseName, immediateReason, extra = {}) {
   if (immediateReason) recordRefusal('REFUSAL', phaseName, immediateReason)
   const kept = await preserveSeenWorktrees(phaseName, 'ship-failed-preserve')
+  // After preservation, never before: the restore moves the shared checkout,
+  // and the work has to have a ref of its own before anything moves.
+  const restored = await restorePrimaryCheckout(phaseName)
   // The one combination nobody should have to infer from a JSON field: this
   // run will not ship and there is a mergeable PR on the branch. Said out
   // loud, at the moment it becomes true.
@@ -2058,6 +2293,10 @@ async function shipFailed(phaseName, immediateReason, extra = {}) {
     // Where the work went, beside why the run stopped. Losing either is how
     // an operator ends up with a refusal they cannot act on (#232).
     ...(kept.detail ? { preservedDetail: kept.detail.trim(), preserved: kept.preserved } : {}),
+    // Returned, not only logged. A log line is read by whoever is watching;
+    // a field is read by the test that proves the exit took the step (#640).
+    runBranchReading: restored.reading,
+    runBranchRestore: restored.restoreOutcome,
     ...extra,
   }
 }
@@ -4252,17 +4491,12 @@ what it said rather than omitting the field.
  */
 const DEFAULT_BRANCHES = new Set(['main', 'master'])
 
-/**
- * The branch the SHARED primary checkout was on when this run arrived (#640).
- *
- * Declared here, at module scope, because the two ends of the comparison are
- * hundreds of lines and several phases apart: `establishRunRef` reads it
- * before it switches, and the finalize step has to put the checkout back
- * onto it. Empty means it was never read, and that is a reading — a run that
- * did not look has not proven it put anything back, and comparing two empty
- * strings is equality, which is how a check that never happened passes.
- */
-let primaryBranchBefore = ''
+// `primaryBranchBefore` is declared with the worktree registry near the top of
+// this file, NOT here where it is first assigned. `terminalFailure` reads it
+// and can be called from a phase that runs before this line does, and a `let`
+// read before its declaration executes is a TDZ crash, not an empty string —
+// `scripts/validate-workflow.ts` exists because that shape already took a run
+// down (#585). The docblock travels with the declaration.
 
 /** The branch this run commits waves onto. Deterministic, so a re-run resumes. */
 function runRefName(issue) {
@@ -8382,13 +8616,7 @@ ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in t
 5. Put the shared checkout back, and remove this run's branch (#640). Run
    exactly this:
 
-   cd ${shellQuote(PROJECT_ROOT)}
-${primaryBranchBefore ? `   git switch ${shellQuote(primaryBranchBefore)} || echo "RESTORE_FAILED"
-   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode delete --repo ${shellQuote(PROJECT_ROOT)} --issue ${ISSUE} --base ${shellQuote(primaryBranchBefore)} || echo "DELETE_REFUSED"` : `   echo "RESTORE_SKIPPED: this run never read the checkout's starting branch"`}
-   after=$(git branch --show-current)
-   echo "AFTER: $after"
-   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode drift --before ${shellQuote(primaryBranchBefore)} --after "$after" || true
-
+${runBranchRestoreShell({ withDelete: true })}
    This checkout is SHARED. Every other session reads it, and a run that
    leaves it on \`rungate/run-${ISSUE}\` hands them a branch that looks like
    theirs. The delete step REFUSES when the branch holds anything the base
@@ -8398,63 +8626,23 @@ ${primaryBranchBefore ? `   git switch ${shellQuote(primaryBranchBefore)} || ech
    do NOT pass --force, do NOT \`git branch -D\` it by hand, and do NOT
    commit, stash or discard anything to make the refusal go away.
 
-   Report the AFTER: value as branchAfter EXACTLY as printed, the drift
-   command's "reading" as driftReading, and its refusal line as
-   driftRefusal — null when it printed none. Report whether the delete step
-   removed the branch as runBranchDeleted, and its sentence as
-   runBranchDetail.
+   Report the RESTORE: value as restoreOutcome and the AFTER: value as
+   branchAfter, both EXACTLY as printed. Report the drift command's "reading"
+   as driftReading, and its refusal line as driftRefusal — null when it
+   printed none. Report whether the delete step removed the branch as
+   runBranchDeleted, and its sentence as runBranchDetail.
 
 Report results for each step.
-`, { label: 'finalize', phase: 'Prove', schema: {
-  // Declared, because a schema is a FILTER on the reply and an undeclared
-  // field is stripped silently on the way back (#646). The nullable ones
-  // say so: null is what "nothing to report" looks like here, and
-  // `type: 'string'` would drop it and leave the field absent, which reads
-  // as a step that was never asked about.
-  type: 'object',
-  properties: {
-    branchAfter: { type: 'string' },
-    driftReading: { type: 'string' },
-    driftRefusal: { type: ['string', 'null'] },
-    runBranchDeleted: { type: 'boolean' },
-    runBranchDetail: { type: ['string', 'null'] },
-  },
-} })
+`, { label: 'finalize', phase: 'Prove', schema: runBranchRestoreSchema() })
 
 // ──── RUN-BRANCH-RESTORE-START ────
 // #640 — say where the shared checkout ended up, and whether the branch went.
 //
-// The comparison itself is NOT made here. `checkoutDrift` in
-// lib/run-branch.ts is the one binding that decides whether a run moved the
-// checkout, and the script above asks it; this reads the answer. A second
-// comparison in ship.js would be two deciders that agree, and a mutation of
-// either would leave the other answering correctly
-// (.claude/rules/checks-must-be-able-to-fail.md, the fourth shape).
-//
-// Everything below is an agent's RESTATEMENT of that answer (#530), so an
-// absent field is UNMEASURED and never clean: a run that reported nothing
-// looked at nothing, and "the checkout came back" is the one conclusion
-// nobody may draw from silence.
-const driftReading = finalizeResult?.driftReading || 'UNMEASURED'
-if (driftReading === 'UNCHANGED') {
-  log(`Shared checkout: back on ${primaryBranchBefore || '(unreported)'} (#640)`)
-} else if (finalizeResult?.driftRefusal) {
-  log(`RUN_BRANCH_DRIFT: ${String(finalizeResult.driftRefusal).replace(/[\r\n]+/g, ' ').slice(0, 500)}`)
-} else {
-  log('RUN_BRANCH_UNMEASURED: finalize did not report where the shared checkout ended up, ' +
-    `so whether this run put it back is unknown — reading ${driftReading} (#640)`)
-}
-
-if (finalizeResult?.runBranchDeleted === true) {
-  log(`Run branch: ${String(finalizeResult.runBranchDetail || 'deleted').replace(/[\r\n]+/g, ' ').slice(0, 500)}`)
-} else if (finalizeResult?.runBranchDetail) {
-  // A refusal is the designed outcome when the branch holds work the base
-  // does not, so this is a finding to print rather than a failure. The run
-  // is over; what is left is a ref somebody has to look at.
-  log(`RUN_BRANCH_KEPT: ${String(finalizeResult.runBranchDetail).replace(/[\r\n]+/g, ' ').slice(0, 500)}`)
-} else if (primaryBranchBefore) {
-  log(`RUN_BRANCH_UNMEASURED: finalize did not say whether ${runRefName(ISSUE)} was removed (#640)`)
-}
+// The lines are composed by `readRunBranchRestore`, the SAME binding the two
+// terminal funnels use. It was inlined here before, and that is precisely how
+// the exits ended up without a restore at all: the success path had the only
+// copy, so there was nothing to call from anywhere else.
+for (const line of readRunBranchRestore(finalizeResult, { withDelete: true }).lines) log(line)
 // ──── RUN-BRANCH-RESTORE-END ────
 
 // ──── PROVE-STATUS-START ────

@@ -111,6 +111,7 @@ function decisionScope(
     // Stubbed — test/preserve-every-exit.test.ts owns that claim; this file
     // is about what the decision block decides.
     preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
+    restorePrimaryCheckout: async () => ({ reading: 'UNCHANGED', restoreOutcome: 'ALREADY_ON_START', lines: [] }),
     securityVerdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
     shipBranch: "169-deep-modules",
     ISSUE: 169,
@@ -948,6 +949,7 @@ function shipRoundScope(
     // #232: shipFailed preserves before it returns. Stubbed — see
     // test/preserve-every-exit.test.ts for the claim that it does.
     preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
+    restorePrimaryCheckout: async () => ({ reading: 'UNCHANGED', restoreOutcome: 'ALREADY_ON_START', lines: [] }),
     ...rest,
   };
 }

@@ -30,12 +30,28 @@ const RESTORE = structuralCut(SHIP, "// ──── RUN-BRANCH-RESTORE-START �
   endAnchor: "// ──── RUN-BRANCH-RESTORE-END ────",
 });
 
+/**
+ * The shared restore binding, which is where the shell and the reading now
+ * live (#640, phase 2).
+ *
+ * They were inlined in the finalize prompt and in the `RUN-BRANCH-RESTORE`
+ * block below, and that is exactly why the two terminal funnels never had a
+ * restore: the success path held the only copy, so there was nothing to call
+ * from anywhere else. The cases in this file kept their properties and moved
+ * their anchor — asserting against the position the code left would be a
+ * source-text assertion that has stopped describing the code, which #235
+ * records as a thing a grep cannot notice about itself.
+ */
+const STEP = structuralCut(SHIP, "// ──── RUN-BRANCH-RESTORE-STEP-START ────", {
+  endAnchor: "// ──── RUN-BRANCH-RESTORE-STEP-END ────",
+});
+
 describe("#640 SC-1/SC-2: the checkout's starting branch is read before anything moves it", () => {
   test("the cuts found their sections and are bounded", () => {
     // A cut that failed to find its section is an empty string, and an
     // empty string contains nothing — indistinguishable from clean. Every
     // assertion below goes through this one.
-    for (const [name, cut] of [["establish", ESTABLISH], ["finalize", FINALIZE], ["restore", RESTORE]] as const) {
+    for (const [name, cut] of [["establish", ESTABLISH], ["finalize", FINALIZE], ["step", STEP]] as const) {
       expect(cut.length, `${name} cut is empty or trivial`).toBeGreaterThan(300);
       expect(cut.length, `${name} cut is the size of the file`).toBeLessThan(SHIP.length / 2);
     }
@@ -142,16 +158,35 @@ describe("#640 SC-4: a leftover branch is reported before the run commits onto i
 
 describe("#640 SC-1/SC-3: the run puts the checkout back and removes its branch", () => {
   test("finalize switches back and invokes the delete mode", () => {
-    expect(FINALIZE).toContain("git switch ${shellQuote(primaryBranchBefore)}");
-    expect(FINALIZE).toContain("--mode delete");
-    expect(FINALIZE).toContain("--mode drift");
+    // Asserted in TWO LINKS, because the shell moved behind a function and a
+    // single grep can no longer see both ends. #235 is the precedent: a
+    // source-text assertion cannot notice that it has stopped describing the
+    // code, so the call site and the thing it calls are each asserted.
+    expect(FINALIZE).toContain("runBranchRestoreShell({ withDelete: true })");
+    expect(STEP).toContain('git switch "$before"');
+    expect(STEP).toContain("--mode delete");
+    expect(STEP).toContain("--mode drift");
+
+    // …and the delete is reachable ONLY from the shipping side. A failing
+    // run's branch holds work nothing merged, so the one irreversible action
+    // here must not be on the path every run that went wrong takes.
+    const deleteAt = STEP.indexOf("--mode delete");
+    const guardAt = STEP.indexOf("${withDelete ?");
+    expect(guardAt, "the delete is no longer behind the withDelete guard").toBeGreaterThan(-1);
+    expect(guardAt).toBeLessThan(deleteAt);
   });
 
   test("with no starting branch recorded, it skips the restore and says so", () => {
     // Switching to an empty string is a command that does something
     // unpredictable; skipping silently is a run that looks like it tidied up.
-    expect(FINALIZE).toContain("RESTORE_SKIPPED");
-    expect(FINALIZE).toContain("primaryBranchBefore ?");
+    expect(STEP).toContain("RESTORE: NOT_READ");
+    expect(STEP).toContain("if (!primaryBranchBefore) {");
+    // And nothing downstream of that branch can run: the early return is
+    // what makes it a skip rather than a message printed beside a switch.
+    const guardAt = STEP.indexOf("if (!primaryBranchBefore) {");
+    const switchAt = STEP.indexOf('git switch "$before"');
+    expect(switchAt).toBeGreaterThan(guardAt);
+    expect(STEP.slice(guardAt, switchAt)).toContain("return `");
   });
 
   test("the agent is told not to force the deletion past a refusal", () => {
@@ -163,49 +198,109 @@ describe("#640 SC-1/SC-3: the run puts the checkout back and removes its branch"
   });
 
   test("all four reported fields are declared, and the nullable ones admit null", () => {
-    expect(FINALIZE).toContain("branchAfter: { type: 'string' }");
-    expect(FINALIZE).toContain("driftReading: { type: 'string' }");
-    expect(FINALIZE).toContain("driftRefusal: { type: ['string', 'null'] }");
-    expect(FINALIZE).toContain("runBranchDeleted: { type: 'boolean' }");
-    expect(FINALIZE).toContain("runBranchDetail: { type: ['string', 'null'] }");
+    // The literal moved into one function so the finalize step and the two
+    // terminal exits cannot declare different shapes. A schema is a FILTER
+    // on the reply (#646), and a field one caller declares and the other
+    // does not is dropped silently on the way back.
+    expect(STEP).toContain("branchAfter: { type: 'string' }");
+    expect(STEP).toContain("restoreOutcome: { type: 'string' }");
+    expect(STEP).toContain("driftReading: { type: 'string' }");
+    expect(STEP).toContain("driftRefusal: { type: ['string', 'null'] }");
+    expect(STEP).toContain("runBranchDeleted: { type: 'boolean' }");
+    expect(STEP).toContain("runBranchDetail: { type: ['string', 'null'] }");
+    // …and finalize is handed that one literal rather than a second copy.
+    expect(FINALIZE).toContain("schema: runBranchRestoreSchema()");
+    expect(SHIP.split("properties: {\n      branchAfter:")).toHaveLength(2);
+  });
+
+  /**
+   * SC-1 for the FAILING paths, which is the half #692 did not reach.
+   *
+   * The restore was step 5 of this finalize prompt, so it ran on the success
+   * path and nowhere else. Run `wf_9d22ecf5-aed` ended SHIP_FAILED, never
+   * reached it, and left the shared primary on `rungate/run-631`.
+   *
+   * The two funnels are asserted by name here and driven for behaviour in
+   * `test/run-branch-restore-exits.test.ts`. Both, deliberately: this file
+   * is about the wiring and that one is about what the wiring does, and a
+   * case that did both would be two questions in one assertion (#484).
+   */
+  test("the terminal funnels take the same step, not only the finalize path", () => {
+    // Written as two LITERAL cuts rather than a loop over an array.
+    //
+    // #668's scan reads `structuralCut` call sites out of `test/` and refuses
+    // a computed anchor pointed at `workflows/ship.js`, because an anchor it
+    // cannot read is one whose uniqueness it cannot check — and these two
+    // signatures are exactly the kind that could gain a duplicate. Spelling
+    // them out costs one repeated line and keeps the population scannable,
+    // which is worth more than the loop.
+    const TERMINAL = structuralCut(SHIP, "async function terminalFailure(", { endAnchor: "\n}" });
+    const SHIP_FAILED = structuralCut(SHIP, "async function shipFailed(", { endAnchor: "\n}" });
+    for (const [name, body] of [["terminalFailure", TERMINAL], ["shipFailed", SHIP_FAILED]] as const) {
+      expect(body.length, `${name} cut is empty`).toBeGreaterThan(300);
+      expect(body, `${name} does not restore the shared checkout`)
+        .toContain("await restorePrimaryCheckout(");
+    }
+    // The failing path deletes nothing, and says so rather than going quiet.
+    expect(STEP).toContain("runBranchRestoreShell({ withDelete: false })");
+    expect(STEP).toContain("DELETE: NOT_ATTEMPTED");
   });
 });
 
 describe("#640: the run summary says where the checkout ended up", () => {
+  test("the finalize path logs through the shared reader, and composes nothing itself", () => {
+    // The block that used to hold the reader now holds one call. That is the
+    // fix for the position defect, so it is asserted as a BOUND and not just
+    // as a presence: a second copy of the composition re-growing here is how
+    // the exits lost theirs the first time.
+    expect(RESTORE).toContain("readRunBranchRestore(finalizeResult, { withDelete: true })");
+    expect(RESTORE.length, "the finalize reader has re-grown its own composition").toBeLessThan(1200);
+    expect(RESTORE).not.toContain("RUN_BRANCH_DRIFT:");
+  });
+
   test("ship.js does not make the comparison itself", () => {
     // One binding. `checkoutDrift` in lib/run-branch.ts decides whether a
     // run moved the checkout; a second comparison here would be two
     // deciders that agree, and mutating either would leave the other
     // answering correctly.
-    expect(RESTORE, "a comparison here is the second decider")
+    expect(STEP, "a comparison here is the second decider")
       .not.toMatch(/branchAfter\s*[!=]==?\s*primaryBranchBefore/);
-    expect(RESTORE).toContain("finalizeResult?.driftReading");
+    expect(STEP).toContain("r.driftReading");
   });
 
   test("an absent drift reading is UNMEASURED rather than silence", () => {
-    expect(RESTORE).toContain("|| 'UNMEASURED'");
-    expect(RESTORE).toContain("RUN_BRANCH_UNMEASURED");
-    expect(RESTORE).toContain("is unknown");
+    expect(STEP).toContain("|| 'UNMEASURED'");
+    expect(STEP).toContain("RUN_BRANCH_UNMEASURED");
+    expect(STEP).toContain("is unknown");
   });
 
   test("a MOVED checkout prints the refusal, and a kept branch prints why", () => {
-    expect(RESTORE).toContain("RUN_BRANCH_DRIFT");
-    expect(RESTORE).toContain("RUN_BRANCH_KEPT");
+    expect(STEP).toContain("RUN_BRANCH_DRIFT");
+    expect(STEP).toContain("RUN_BRANCH_KEPT");
   });
 
   test("a delete that reported nothing is UNMEASURED, not a deletion", () => {
     // `runBranchDeleted !== true` covers absent and false alike; without
     // the explicit UNMEASURED arm a reply that dropped the field looks the
     // same as a run with no branch to remove.
-    expect(RESTORE).toContain("finalizeResult?.runBranchDeleted === true");
-    expect(RESTORE).toContain("did not say whether");
+    expect(STEP).toContain("r.runBranchDeleted === true");
+    expect(STEP).toContain("did not say whether");
   });
 
   test("every agent-supplied line is flattened and bounded before logging", () => {
     // A newline in an agent string forges a line that looks like ship.js's
-    // own. Four interpolations here come from the reply; all four go
-    // through the same treatment.
-    const flattened = RESTORE.match(/replace\(\/\[\\r\\n\]\+\/g, ' '\)\.slice\(0, 500\)/g) ?? [];
-    expect(flattened.length, "every logged agent string must be flattened").toBe(3);
+    // own. The treatment is now ONE helper rather than four copies of the
+    // same expression, which is a strictly stronger version of the property
+    // this case has always asserted: there is one thing to mutate, and no
+    // interpolation can quietly skip it.
+    expect(STEP).toContain("const clean = v => String(v == null ? '' : v).replace(/[\\r\\n]+/g, ' ').slice(0, 500)");
+    expect(STEP.split("const clean = v =>")).toHaveLength(2);
+
+    // Every reply field that reaches a log line goes through it. Asserted by
+    // enumeration rather than by a count, because a count is satisfied by
+    // any four occurrences and the property is about WHICH fields (#532).
+    for (const field of ["r.driftRefusal", "r.runBranchDetail", "r.restoreOutcome", "r.driftReading"]) {
+      expect(STEP, `${field} reaches a log line unflattened`).toContain(`clean(${field})`);
+    }
   });
 });
