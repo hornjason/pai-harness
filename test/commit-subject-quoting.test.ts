@@ -46,6 +46,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { structuralCut } from "../lib/source-slice";
+import { commitSubject } from "../lib/commit-subject";
 
 const SHIP = join(import.meta.dir, "..", "workflows", "ship.js");
 const shipSource = readFileSync(SHIP, "utf8");
@@ -202,13 +203,15 @@ describe("AC-1: an issue title cannot become a second command", () => {
 
 describe("AC-3: a closing keyword in the title is neutralised", () => {
   /**
-   * GitHub's parser, written out rather than imported: `<keyword> #<digits>`
-   * over the nine documented keywords, with the `Fixes: #N` colon form that
-   * works in practice. Deliberately a SPEC here and an implementation there —
-   * importing ship.js's own regex would make the assertion say "the code
-   * agrees with itself".
+   * GitHub's parser, written out rather than imported: one of the nine
+   * documented keywords, an optional colon, then a reference in any of the
+   * forms GitHub resolves — `#N`, `GH-N`, `owner/repo#N`, and a full issue
+   * URL. Deliberately a SPEC here and an implementation there; importing the
+   * library's own regex would make the assertion say "the code agrees with
+   * itself".
    */
-  const GITHUB_CLOSES = /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#\d/i;
+  const GITHUB_CLOSES =
+    /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+((?:[\w.-]+\/[\w.-]+)?#|GH-|https?:\/\/\S*?\/issues\/)\d/i;
 
   test.each([
     // All nine keywords GitHub documents, each in a plausible title.
@@ -226,6 +229,12 @@ describe("AC-3: a closing keyword in the title is neutralised", () => {
     "Fixes: #632",
     // The keyword at the end of a line, with the reference on the next.
     "wave 2\nfixes #44",
+    // The three reference forms beyond `#N`. A fix that handles only `#N`
+    // leaves these closing issues, which is what the first draft did —
+    // found by the automated review of the first commit, not by this file.
+    "closes GH-77",
+    "fixes hornjason/pai-harness#88",
+    "resolves https://github.com/hornjason/pai-harness/issues/99",
   ])("AC-3: %j no longer reads as a reference", (title) => {
     const subject = shipCommitSubject(696, title);
     // Break the adjacency and the link is gone; the keyword and the number
@@ -237,7 +246,15 @@ describe("AC-3: a closing keyword in the title is neutralised", () => {
   test("AC-3: the fixtures really do trip GitHub's parser before the transform", () => {
     // Vacuity control. If the spec regex matched none of them, every case
     // above would pass over a transform that does nothing at all.
-    for (const title of ["Fixes #500", "CLOSE #31", "Fixes: #632", "wave 2\nfixes #44"]) {
+    for (const title of [
+      "Fixes #500",
+      "CLOSE #31",
+      "Fixes: #632",
+      "wave 2\nfixes #44",
+      "closes GH-77",
+      "fixes hornjason/pai-harness#88",
+      "resolves https://github.com/hornjason/pai-harness/issues/99",
+    ]) {
       expect(title, `${title} is not a closing reference — the fixture is inert`)
         .toMatch(GITHUB_CLOSES);
     }
@@ -259,6 +276,109 @@ describe("AC-3: a closing keyword in the title is neutralised", () => {
   test("AC-3: the transform is total over the things GitHub hands back", () => {
     for (const v of [null, undefined, 42, ""]) {
       expect(() => shipCommitSubject(696, v as never)).not.toThrow();
+    }
+  });
+});
+
+// ── AC-6: ship.js's forced copy and the library agree ───────────────────
+
+describe("AC-6: the two positions that compose a commit subject are one decider", () => {
+  /**
+   * `lib/commit-subject.ts` owns this; `scripts/github-op.ts` imports it;
+   * `workflows/ship.js` carries an inline copy because a workflow script
+   * cannot import (#69).
+   *
+   * Two copies that nothing compares is #621 exactly — three files named the
+   * project's test command, nothing compared them, and two of them had said
+   * different things for long enough that every ship run reported
+   * `SHIP_PASSED_SUITE_FAILED`. So the copies are compared, by BEHAVIOUR
+   * over inputs rather than by source text: a byte comparison would be
+   * defeated by a reformat and satisfied by two regexes that differ in a
+   * comment.
+   */
+  const FIXTURES = [
+    "an ordinary title",
+    "Fixes #500",
+    "Fixes: #632",
+    "closes GH-77",
+    "fixes hornjason/pai-harness#88",
+    "resolves https://github.com/hornjason/pai-harness/issues/99",
+    "#630 Phase 2: the three credentialed modes",
+    "wave 2\nfixes #44",
+    'x" ; echo PWNED ; : "',
+    "it's a title",
+    "prefix fixtures #5 suffix",
+    "",
+  ];
+
+  test("AC-6: every fixture composes identically on both sides", () => {
+    for (const title of FIXTURES) {
+      expect(shipCommitSubject(696, title), `the copies disagree on ${JSON.stringify(title)}`)
+        .toBe(commitSubject(696, title));
+    }
+  });
+
+  test("AC-6: the comparison is not vacuous — the fixtures reach the transform", () => {
+    // Both sides returning the input unchanged would agree perfectly. At
+    // least one fixture has to be something the transform CHANGES, or this
+    // whole describe is two identity functions agreeing.
+    const changed = FIXTURES.filter(t => commitSubject(696, t) !== `fix(#696): ${t}`);
+    expect(changed.length, "no fixture is altered by the transform").toBeGreaterThan(3);
+  });
+
+  /** Every file in this tree that composes a `fix(#N): …` commit subject. */
+  const SCANNED = ["scripts/github-op.ts", "lib/commit-subject.ts", "workflows/ship.js"];
+
+  /**
+   * The 1-indexed lines composing a subject WITHOUT the neutraliser.
+   *
+   * Line-based rather than a windowed slice, because both real sites are one
+   * line and `test/no-fixed-window-slices.test.ts` holds the population of
+   * numeric slices at zero (#664). The two accepted spellings are the owning
+   * binding and the inline copy's call to its own regex — not an allowlist of
+   * sites, which is the thing that becomes evidence it was reviewed; the
+   * parity case above is what makes the second spelling equivalent to the
+   * first rather than merely tolerated.
+   */
+  const handComposed = (src: string): number[] =>
+    src
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => /`fix\(#\$\{[^}]*\}\): \$\{/.test(line))
+      .filter(({ line }) => !/neutraliseClosingKeywords|\.replace\(CLOSING_REFERENCE/.test(line))
+      .map(({ n }) => n);
+
+  test("AC-6: no position composes a commit subject by hand", () => {
+    // The third position, and the one neither AC-1 nor AC-3 can see:
+    // `scripts/github-op.ts --title-from-issue` built `fix(#N): <title>` with
+    // a template literal. Keeping the title off a command line stops a SHELL
+    // reading it and does nothing about GITHUB reading it — that PR title
+    // becomes the squash-merge commit subject, which is the position that
+    // closed #644. A behavioural case would need the API, so this is a
+    // population scan over the source, which is what it is: the composition
+    // must go through the one binding, everywhere.
+    const offenders = SCANNED.flatMap(p =>
+      handComposed(readFileSync(join(import.meta.dir, "..", p), "utf8")).map(n => `${p}:${n}`),
+    );
+    expect(offenders, `a hand-composed commit subject in: ${offenders.join(", ")}`).toEqual([]);
+  });
+
+  test("AC-6: that scan can see a hand-composed subject", () => {
+    // Zero is also what a scan pointed at the wrong thing reports, so both
+    // directions are exercised against the same binding: the genuinely
+    // pre-#696 line out of github-op.ts, and the two live compositions.
+    expect(handComposed("  title = `fix(#${n}): ${issue.title}`;"), "the pre-#696 line")
+      .toEqual([1]);
+    expect(handComposed("return `fix(#${issue}): ${neutraliseClosingKeywords(title)}`")).toEqual([]);
+    expect(
+      handComposed("return `fix(#${issue}): ${String(title ?? '').replace(CLOSING_REFERENCE, '$1$2$3 ')}`"),
+    ).toEqual([]);
+  });
+
+  test("AC-6: the library refuses an issue number it cannot compose a reference from", () => {
+    // `fix(#undefined):` is a subject, and it is one nobody can trace back.
+    for (const bad of [0, -1, 1.5, NaN, undefined]) {
+      expect(() => commitSubject(bad as never, "t")).toThrow(TypeError);
     }
   });
 });

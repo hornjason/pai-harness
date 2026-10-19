@@ -477,23 +477,24 @@ function shellQuote(word) {
 }
 
 // ──── COMMIT-SUBJECT-START ────
-// GitHub closes an issue when a merged commit message contains
-// `<keyword> #<number>`, and it does not care about markdown: `cfc1415d`
-// quoted `Fixes #644` inside a backtick code span as a SAMPLE INPUT on
-// 2026-10-19, and #644 was closed three seconds after the merge. Backticks
-// are not an escape.
+// An inline copy of `lib/commit-subject.ts`, which is the owner. A workflow
+// script cannot import (#69), so the duplication is forced — and a second
+// copy that nothing compares is the defect, not the copy
+// (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape; #621).
+// `test/commit-subject-quoting.test.ts` lifts this block out, runs it, and
+// asserts it agrees with the library over every fixture, so a change to
+// either side without the other turns the suite red.
 //
-// An issue title is arbitrary text written by whoever opened the issue, so a
-// title that mentions another issue must not close it. The adjacency is what
-// GitHub parses, so the adjacency is what this breaks — the keyword and the
-// number both stay readable. The run's own `fix(#N):` prefix is composed
-// AFTER the transform and is deliberately untouched: that reference is the
-// one this commit means.
-const CLOSING_KEYWORD = /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)#(?=\d)/gi
+// Read the library for why this exists. In one line: GitHub closes an issue
+// when a merged commit message carries a closing keyword beside an issue
+// reference, it does not care about markdown, and an issue title is written
+// by whoever filed the issue.
+const CLOSING_REFERENCE =
+  /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)((?:[\w.-]+\/[\w.-]+)?#|GH-|https?:\/\/\S*?\/issues\/)(?=\d)/gi
 
 /** The commit subject for a ship run, from an untrusted issue title (#696). */
 function shipCommitSubject(issue, title) {
-  return `fix(#${issue}): ${String(title ?? '').replace(CLOSING_KEYWORD, '$1$2# ')}`
+  return `fix(#${issue}): ${String(title ?? '').replace(CLOSING_REFERENCE, '$1$2$3 ')}`
 }
 // ──── COMMIT-SUBJECT-END ────
 
