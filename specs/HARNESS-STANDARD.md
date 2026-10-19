@@ -2559,6 +2559,116 @@ The two disagree, which is exactly what that case exists to detect. The
 prediction was wrong, not the mutant — the binding reaches further than the
 one fixture that was counted for it.
 
+### One exit code, one label, four different facts (#613)
+
+The script above routes every refusal through one exit code, which is the
+property `.claude/rules/checks-must-be-able-to-fail.md` asks of a script whose
+job is to exit non-zero. It then printed every one of them under the same
+label, which is the same defect one level up: **an exit code can say that a
+refusal happened and cannot say what was refused.**
+
+Measured on `origin/main` at `db66dd79`, by running the script rather than by
+reading it:
+
+```
+$ bun scripts/check-installed-hook-currency.ts --project . --harness x
+INSTALLED HOOK STALE: unknown option --harness
+$ bun scripts/check-installed-hook-currency.ts --project . --generator /tmp
+INSTALLED HOOK STALE: could not load the hook generator at /tmp/lib/scaffold/steps.ts: …
+```
+
+The correct flag is `--generator`. Nothing about the installed hook was read
+in either run, and the remedy the label implies — `--install`, or a
+re-scaffold — replaces a hook that was fine.
+
+**The scope is thirteen throw sites across five functions, not one.**
+`currencyRefusal` is the function that produces the five named staleness
+refusals and it **returns**; it never throws. So the print site at the
+`currencyRefusal` verdict was always correct and the catch was wrong for
+every case that reached it — `installedHookPath` (2 sites: git could not
+resolve the hook path), `generatorHook` (4: the generator could not be read
+or run), `installHook` (2: the destination is not a writable regular file),
+`parseArgs` (3: unknown option, missing value, unexpected argument) and
+`readIfPresent` (2: the installed path is not a regular file).
+
+Two of those classes are worse than the typo the issue was filed over:
+
+- **The generator failing is the INSTRUMENT, not the subject.** "The installed
+  hook differs from the generator" is a measurement; "the generator could not
+  be run" is the absence of one. Reporting the absence as a verdict is
+  `.claude/rules/config-access.md`'s UNMEASURED distinction with the sign
+  flipped, and this one does not go silent — it asserts the stalest available
+  answer.
+- **`installHook` failing reported staleness in `--install` mode.** The
+  operator ran `--install` *because* something said the hook was stale, and
+  the message names the command that just failed as the remedy for itself.
+
+So the refusal now carries a CLASS, set by the code that raises it, and one
+exported table — `REFUSAL_PREFIX` — turns the class into a label. Each label
+literal is written exactly once; the catch is the only position that reads a
+class; and the staleness verdict is RAISED rather than printed, so there is
+one position in the file that turns a refusal into a line of output. A second
+print site, or a catch that re-derived the class from the message text, would
+be a second decider that always agrees with the first.
+
+- [x] SC-2141: test/unit/installed-hook-currency.test.ts contains [an unrecognised option, a missing value and an unexpected argument each name the argument] — all three exit non-zero under the ARGUMENTS label, each naming the offending token, and every other label in the table is asserted ABSENT from the line because asserting the expected prefix present is satisfied by a line carrying all of them
+- [x] SC-2142: test/unit/installed-hook-currency.test.ts contains [a refusal raised OUTSIDE parseArgs is not reported as an argument error either] — a generator root holding no hook-generator module is reported UNMEASURED, which is the input the cheapest wrong fix does not survive because all three of SC-2141's inputs are ones parseArgs owns
+- [x] SC-2143: test/unit/installed-hook-currency.test.ts contains [the four readings are four different strings] — the four labels are pairwise distinct, none is a prefix of another, and each literal appears exactly once in the source so no print site can carry its own copy
+- [x] SC-2144: test/unit/installed-hook-currency.test.ts contains [the staleness label belongs to the currencyRefusal return path alone] — the staleness class is raised from exactly one position and that position is the currencyRefusal verdict, which pins the criterion to the binding rather than to a count of messages a reader has to reconstruct
+- [x] SC-2145: test/unit/installed-hook-currency.test.ts contains [every raise names a class, and every class is raised] — every HookRefused construction names a class the table declares and every declared class is raised somewhere, so a refusal added later cannot inherit whatever label the catch defaults to and no row of the table is dead
+- [x] SC-2146: test/unit/installed-hook-currency.test.ts contains [the class is carried on the raise, and the catch is the only reader of it] — the prefix table is indexed from exactly one position and exactly one console.error turns a refusal into output, because a catch that re-derived the class from the message would be a second reading of a fact the raise already holds
+
+#### What was broken to prove it (SC-2141..2146)
+
+Run and counted rather than asserted, over
+`test/unit/installed-hook-currency.test.ts` (20 tests). Every count was
+predicted before the battery ran, and **the baseline row was read before any
+mutation row** — an instrument that has stopped reporting takes the baseline
+down with it, and that is the row nobody mutates anything to produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 20 pass, 0 fail | **20 pass, 0 fail** | — |
+| the defect behaviourally: the catch reads `REFUSAL_PREFIX["STALE"]` instead of the raised class | 4 | **4 of 20** — SC-2141, SC-2142, SC-2146, SC-2045's symlink install | `--project . --harness x`: the original prints `ARGUMENT ERROR: unknown option --harness`, the mutant `INSTALLED HOOK STALE: unknown option --harness` |
+| **the cheapest wrong fix**: the `parseArgs` call wrapped in its own try printing the ARGUMENTS label, outer catch back to staleness | 3 | **3 of 20** — SC-2142, SC-2146, SC-2045's symlink install. **SC-2141 is GREEN** | `--project . --generator /tmp`: the original prints `HOOK CURRENCY UNMEASURED: could not load the hook generator…`, the mutant `INSTALLED HOOK STALE: could not load the hook generator…` |
+| the generator-load raise reclassified `UNMEASURED` → `STALE` | 1 | **2 of 20** — SC-2142 and SC-2144 | the same `--generator /tmp` run |
+| the staleness raise reclassified `STALE` → `UNMEASURED` | 8 | **8 of 20** — all five SC-2043 refusals, SC-2044's linked-worktree stale half, SC-2144 and SC-2145 | a checkout with no installed pre-commit: the original labels it STALE, the mutant UNMEASURED |
+| `REFUSAL_PREFIX` collapsed — all four rows set to the staleness string | 10 | **10 of 20** — SC-2141, SC-2142, SC-2143, the five SC-2043 refusals, SC-2044's linked half, SC-2045's symlink install | `--project . --harness x` again, and every staleness case too: with one string in four rows no case can assert the other labels absent |
+| the test's own mutant builder neutered (`writeFileSync(MUTANT, source)`) | 10 | **10 of 20** — exactly the ten cases that run the mutant | any refusal: the REFUSE_EXIT=0 copy exits 1 instead of 0, so every case asserting the refusal was observed goes red |
+| the genuinely pre-#613 `scripts/check-installed-hook-currency.ts` from `origin/main` | abort | **0 of 20 run** — `SyntaxError: Export named 'REFUSAL_PREFIX' not found` | — the file cannot load, which is the loud abort rather than a quiet pass |
+
+**The third row came back HIGH, and the extra red is the real kind.** The
+prediction counted only SC-2142, the behavioural case. The second is SC-2144,
+whose subject is that the staleness label is attached to one position — the
+mutation ADDS a second staleness raise, which is squarely the mutated
+behaviour. Not a crashing mutant: 18 cases still pass, the file parses, and
+the distinguishing input ran and printed the mutated label. Per
+`.claude/rules/checks-must-be-able-to-fail.md` that is "the prediction was
+wrong and the check is better than you thought", and the fact it records is
+that SC-2144's singleton assertion is load-bearing in two directions — it
+catches the staleness raise being MOVED and it catches one being ADDED.
+
+**The fifth row is 10 and the written prediction said 9, and that was an
+addition slip rather than a surprise.** The enumerated set — three #613 cases,
+five SC-2043 refusals, SC-2044's linked half and SC-2045's symlink install —
+is ten, and it is exactly the set measured. Recorded rather than quietly
+corrected, because a prediction edited after the fact is not a prediction.
+
+**The cheapest wrong fix, named before the repair was written and then
+APPLIED: wrap the `parseArgs` call in its own try and leave the outer catch
+alone.** Three lines. The reported symptom disappears and the issue's
+criterion 1 is satisfiable in full — unrecognised option, missing value and
+unexpected argument all come from `parseArgs` — while ten of the thirteen
+sites stay mislabelled, including all four generator ones. Measured above at
+**3 of 20 red with SC-2141 green**, which is why SC-2142 drives an input from
+outside `parseArgs`: without it, criterion 1 certifies the fix it was written
+to block.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`scripts/check-installed-hook-currency.ts` and
+`test/unit/installed-hook-currency.test.ts` were confirmed byte-identical to
+the measured source afterwards by `shasum -a 256`.
+
 ### A reported path that was a sentence, and no contract that could say so (#611)
 
 Run `wf_68a566ab-500` (issue #599) reached SHIP with all six ACs PASS and rook
