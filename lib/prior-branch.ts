@@ -94,12 +94,32 @@ export interface DetectExistingPROptions {
  * Does this text reference issue N? One binding, used by both detectors
  * and by anything that reads a PR body (#223).
  *
- * The bound is on DIGITS, not on a `#`: the three places this has to match
- * spell the reference three ways — `Closes #209` in a PR body, `fix(#209):`
- * in the subject ship.js writes, and `209-deep-modules` in a branch name.
- * The digit bound is what stops `515` matching `5150`, and it is the whole
- * of the correctness condition; the `#` is decoration that two of the three
- * forms do not have.
+ * ## This is the IDENTIFIER form. Prose has its own binding below.
+ *
+ * The bound is on DIGITS and not on a `#`, which is right for the thing this
+ * now reads and ONLY that thing: a branch name. `209-deep-modules` carries no
+ * `#` and never will, because a ref is a structured identifier whose whole
+ * content is chosen to name the work. The digit bound is what stops `515`
+ * matching `5150`.
+ *
+ * It used to read PR titles and bodies too, and that was wrong in a way no
+ * amount of tightening the digit bound could reach (#687). A body is FREE
+ * TEXT. Ship run `wf_4b5a4d83-fa4` for issue #631 refused with
+ * `PRIOR_WORK_OPEN_PR — Issue #631 already has open PR #686`; PR #686 is
+ * #644's work, and what matched was line 42 of its body:
+ *
+ *     and projectRoot is on rungate/run-631 ...
+ *
+ * a sample refusal message quoted as evidence. So a PR that merely MENTIONS
+ * another issue's branch name became that issue's prior work, and that issue
+ * could not be shipped until the PR closed. Not rare prose — this repository
+ * writes cross-session handoff notes, quoted refusals and "adjacent to #631"
+ * paragraphs into PR bodies deliberately.
+ *
+ * `detectExistingPR`'s own comment names the hazard two lines above the call:
+ * matching `pr.number` "is a false positive on the one path where a false
+ * positive stops a correct run from ever starting". That is exactly what a
+ * bare-number body reading is, and it sat beneath that sentence.
  *
  * Total over non-strings. It runs over `pr.body`, which GitHub returns as
  * `null` for a PR opened with an empty body, and a throw on that path is a
@@ -144,6 +164,42 @@ export function issueReference(issueNumber: number): (text: unknown) => boolean 
   // and `fix(#209):`. All of them are asserted in
   // test/prior-branch-reference.test.ts rather than trusted to this comment.
   const pattern = new RegExp(`\\b${issueNumber}\\b`)
+  return (text: unknown) => typeof text === 'string' && pattern.test(text)
+}
+
+/**
+ * Does this PROSE reference issue N? The second binding, and the narrow one.
+ *
+ * A PR title, a PR body and a commit subject are sentences people write. A
+ * bare number in one of them is a number, not a claim — it is a line count, a
+ * SHA prefix, a quoted branch name, a port. What makes it a REFERENCE is the
+ * `#`, and every form this repository actually produces in prose has one:
+ * `Closes #209` and `Fixes #209`, which ship.js writes into every body it
+ * opens, and `fix(#209):`, which it writes into every subject it commits.
+ *
+ * So the `#` is not decoration here. It is the entire difference between the
+ * two populations, and requiring it loses nothing: a PR with no `#` reference
+ * anywhere in its prose is still found through its HEAD REF by
+ * `issueReference` above, which is the identifier reading and keeps its bare
+ * number. Two readings, two bounds, named separately — because the fields
+ * have different grammars and one pattern over all three cannot be right for
+ * all three.
+ *
+ * `#209\b` rejects `rungate/run-631` for 631 (no `#`), rejects `#2091` (`1`
+ * is a word character, so there is no boundary) and rejects `#1209` (the
+ * character before `209` is `1`, not `#`). All asserted in
+ * `test/prior-branch-reference.test.ts` rather than trusted to this comment.
+ *
+ * Total over non-strings, for the same reason as above: GitHub returns `null`
+ * for the body of a PR opened without one.
+ */
+export function issueProseReference(issueNumber: number): (text: unknown) => boolean {
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 0) {
+    throw new TypeError(
+      `issueProseReference needs a non-negative integer issue number, got ${JSON.stringify(issueNumber)}`,
+    )
+  }
+  const pattern = new RegExp(`#${issueNumber}\\b`)
   return (text: unknown) => typeof text === 'string' && pattern.test(text)
 }
 
@@ -332,9 +388,13 @@ export async function detectPriorBranch(opts: DetectOptions): Promise<PriorBranc
   // becomes findable. Scratch refs are still excluded upstream by
   // `isHarnessScratchRef`: a subject match widens which REAL branches are
   // found, it does not readmit the ones #185 ruled out.
+  // Two readings, because a ref and a subject have different grammars. The
+  // ref is an identifier and carries the bare number; the subject is a
+  // sentence and must carry `#` (#687).
   const refs = issueReference(issueNumber)
+  const prose = issueProseReference(issueNumber)
   const matches = listCandidateRefs(projectRoot)
-    .filter(c => refs(c.branch) || refs(c.subject))
+    .filter(c => refs(c.branch) || prose(c.subject))
   if (matches.length === 0) return null
 
   // Most recent wins; a local head breaks a tie with its origin twin.
@@ -400,6 +460,11 @@ const PR_PAGE_SIZE = 100
  * says which issue the PR is for. A head-ref-only reading could not match the
  * PRs this workflow opens.
  *
+ * The head ref is read as an IDENTIFIER (bare number) and the title and body
+ * as PROSE (`#` required) — see `issueProseReference`. One pattern over all
+ * three was #687: a PR body quoting `rungate/run-631` as evidence became
+ * issue 631's prior work and blocked its run.
+ *
  * Returns `null` for "no open PR", a PR for "this one", and `{unreadable}`
  * for "could not look". Never conflate the first and the last.
  */
@@ -424,9 +489,15 @@ export async function detectExistingPR(opts: DetectExistingPROptions | DetectExi
   // about, which is a false positive on the one path where a false positive
   // stops a correct run from ever starting.
   const refs = issueReference(issueNumber)
+  const prose = issueProseReference(issueNumber)
   const match = prs.find((pr: any) => {
     const headRef = pr?.head?.ref || pr?.headRefName || ''
-    return refs(headRef) || refs(pr?.title) || refs(pr?.body)
+    // The head ref is an identifier and keeps the bare-number reading. The
+    // title and the body are free text and must carry `#` — a PR quoting
+    // another issue's branch name in a sentence is not that issue's prior
+    // work, and treating it as one stops a correct run from ever starting
+    // (#687).
+    return refs(headRef) || prose(pr?.title) || prose(pr?.body)
   })
 
   if (!match) return null
