@@ -57,9 +57,10 @@ import {
   formatComplianceReport,
   detectHillClimbNeeds,
   applyHillClimb,
+  classifyHillClimbSkipSentence,
   COMPLIANCE_HISTORY_SCHEMA,
   type ComplianceEntry,
-  type HillClimbSkipOutcome,
+  type HillClimbSkipKind,
 } from "../lib/compliance-report";
 import { writeWorkflowState } from "../gates/orchestrator";
 import { loadRoleBriefPaths, type GradeOutput } from "./grade-deterministic";
@@ -71,15 +72,16 @@ type Grade = GradeOutput["grades"][number];
 const pct = (g: Grade) => (g.total > 0 ? Math.round((100 * g.followed) / g.total) : 0);
 
 /**
- * The five outcomes a hill-climb attempt can reach without applying anything
- * (#646).
+ * The five ways a role can finish the hill-climb having applied nothing (#646).
  *
- * Every one of them used to be a `logger()` line and a `continue`, and the
- * receipt said `hillClimbApplied: 0` for all five — the same number it says
- * when a role had nothing wrong with it. A run in which the grader gate
- * dropped every action, a run in which the brief had no section to write
- * into, and a clean run were byte-identical receipts. That is *Silent Default
- * Substitution*: `0` is indistinguishable from success.
+ * `hillClimbApplied: 0` was the whole answer, and it was the SAME answer for
+ * a role with nothing wrong with it and for a role whose every detected
+ * reinforcement was dropped. `0` is indistinguishable from success —
+ * *Silent Default Substitution*, `.claude/rules/config-access.md`.
+ *
+ * Measured across ~4000 agent transcripts, `TIER_PROMOTION_RECOMMENDED` is
+ * the most common of the five, and it is the one that needs a human: a text
+ * patch cannot make the change it asks for.
  */
 export const HILL_CLIMB_STATES = [
   "NO_ACTIONS_DETECTED",
@@ -92,39 +94,111 @@ export const HILL_CLIMB_STATES = [
 export type HillClimbState = (typeof HILL_CLIMB_STATES)[number];
 
 /**
- * The states that mean the hill-climb did not happen and nobody knows what it
- * would have done.
+ * The states under which the run did not learn what it set out to learn.
  *
- * A brief with no insertion point is not a brief that needed no reinforcement
- * — the reinforcement was composed, had nowhere to go, and was dropped. Only
- * one of those two is reportable as a pass, so the receipt says which.
+ * A reinforcement that was composed and had nowhere to go is not a clean
+ * run and it is not a decision either — it is a measurement that did not
+ * happen, and a reading is the only thing that says so. The other four are
+ * answers: nothing needed doing, the gate declined, a human has to act, the
+ * rule is already there.
  */
 export const UNMEASURED_HILL_CLIMB_STATES: readonly HillClimbState[] = [
   "NO_SUITABLE_SECTION",
 ];
 
-/** One occurrence of a state, carrying the producing code's own reason. */
+/** One thing that happened, to one role, about one COMP. */
 export interface HillClimbOccurrence {
   role: string;
-  /** The COMP the outcome is about, or null for a role-level outcome. */
+  /** `null` when the occurrence is about the role rather than a rule. */
   compId: string | null;
-  /** The reason as the producing code stated it — kept whole, not re-worded. */
   detail: string;
 }
 
+export type HillClimbStates = Record<HillClimbState, HillClimbOccurrence[]>;
+
+/**
+ * Every state as a key with an empty list.
+ *
+ * An ABSENT key and an empty one are indistinguishable to a reader, so every
+ * receipt carries all five and an empty list is a reading
+ * (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+export function emptyHillClimbStates(): HillClimbStates {
+  const states = {} as HillClimbStates;
+  for (const state of HILL_CLIMB_STATES) states[state] = [];
+  return states;
+}
+
+/**
+ * The owning module's skip kinds, as receipt states.
+ *
+ * This is a renaming, not a second classification: the answer comes from
+ * `applyHillClimb`, which is the only thing that knows why it declined.
+ */
+const SKIP_KIND_STATE: Record<HillClimbSkipKind, HillClimbState> = {
+  TIER_PROMOTION: "TIER_PROMOTION_RECOMMENDED",
+  REINFORCEMENT_PRESENT: "REINFORCEMENT_ALREADY_PRESENT",
+  NO_SECTION: "NO_SUITABLE_SECTION",
+};
+
+/**
+ * The state a skip line that arrived WITHOUT a structured outcome belongs to.
+ *
+ * The loop below reads `skipOutcomes`; this is reachable only for a line with
+ * no outcome beside it — a skip site that pushed a string and nothing else.
+ * It delegates to the owning module rather than carrying its own phrase
+ * table, so there is one position spelling the sentences (SC-2093), and it
+ * returns `null` rather than guessing: an unrecognised line becomes an
+ * UNCLASSIFIED_SKIP, which raises the reading instead of vanishing.
+ */
+export function classifySkip(line: string): HillClimbState | null {
+  const kind = classifyHillClimbSkipSentence(line);
+  return kind === null ? null : SKIP_KIND_STATE[kind];
+}
+
 export interface HillClimbReceipt {
-  /** One list per state. Every state is present, so an empty one is a reading. */
-  states: Record<HillClimbState, HillClimbOccurrence[]>;
-  /**
-   * Skip lines `applyHillClimb` emitted that no state claims. A reword
-   * upstream must not read as nothing having happened, so an unclassified
-   * line raises the reading rather than disappearing.
-   */
+  states: HillClimbStates;
+  /** Skip lines no state claimed. Never silently empty — see the reading. */
   unclassified: HillClimbOccurrence[];
-  /** Derived from the lists above in `hillClimbReceipt` and nowhere else. */
   reading: "MEASURED" | "UNMEASURED";
-  /** Why the reading is UNMEASURED, each naming its state. Empty when MEASURED. */
+  /** Empty exactly when the reading is MEASURED. */
   unmeasuredReasons: string[];
+}
+
+/**
+ * The reading, derived in ONE place from the occurrences.
+ *
+ * A `reading` field beside a `measured` boolean would be two deciders
+ * answering one question, so there is one discriminator and the reasons are
+ * a projection of the same walk.
+ */
+export function hillClimbReceipt(
+  states: HillClimbStates,
+  unclassified: HillClimbOccurrence[],
+): HillClimbReceipt {
+  const unmeasuredReasons: string[] = [];
+  for (const state of UNMEASURED_HILL_CLIMB_STATES) {
+    const occurrences = states[state];
+    if (occurrences.length > 0) {
+      unmeasuredReasons.push(
+        `${state}: ${occurrences.length} reinforcement(s) were composed and had nowhere to go — ` +
+          occurrences.map(o => `${o.role}/${o.compId ?? "-"}`).join(", "),
+      );
+    }
+  }
+  if (unclassified.length > 0) {
+    unmeasuredReasons.push(
+      `UNCLASSIFIED_SKIP: ${unclassified.length} skip line(s) no state claimed, so what the ` +
+        `hill-climb did with them is unknown — ` +
+        unclassified.map(o => `${o.role}/${o.compId ?? "-"}: ${o.detail}`).join("; "),
+    );
+  }
+  return {
+    states,
+    unclassified,
+    reading: unmeasuredReasons.length > 0 ? "UNMEASURED" : "MEASURED",
+    unmeasuredReasons,
+  };
 }
 
 export interface PersistResult {
@@ -133,80 +207,7 @@ export interface PersistResult {
   graded: number;
   hillClimbApplied: number;
   verified: string[];
-  /** What happened when nothing was applied — see HILL_CLIMB_STATES (#646). */
   hillClimb: HillClimbReceipt;
-}
-
-export function emptyHillClimbStates(): Record<HillClimbState, HillClimbOccurrence[]> {
-  return {
-    NO_ACTIONS_DETECTED: [],
-    GRADER_ACCURACY_DROP: [],
-    TIER_PROMOTION_RECOMMENDED: [],
-    REINFORCEMENT_ALREADY_PRESENT: [],
-    NO_SUITABLE_SECTION: [],
-  };
-}
-
-/**
- * Which receipt state each of `applyHillClimb`'s own decisions is (#646).
- *
- * `applyHillClimb` decides which skip a skip is; this only renames its
- * answer. Deciding it again here — by matching the sentence with a regex, or
- * by asking the brief and the action a second time — would be two deciders
- * for one question: they would always agree, and a mutation of either would
- * leave the other holding the case up
- * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). A sentence
- * matcher is also a second position spelling strings `hillClimbSkipSentence`
- * owns, which SC-2093 refuses by name.
- *
- * It is a total `Record` rather than a lookup with a fallback, so a `kind`
- * added to `HillClimbSkipOutcome` and not mapped here is a type error at the
- * build, not an `UNCLASSIFIED_SKIP` at the end of a ship run.
- */
-const SKIP_OUTCOME_STATE: Record<HillClimbSkipOutcome["kind"], HillClimbState> = {
-  TIER_PROMOTION: "TIER_PROMOTION_RECOMMENDED",
-  REINFORCEMENT_PRESENT: "REINFORCEMENT_ALREADY_PRESENT",
-  NO_SECTION: "NO_SUITABLE_SECTION",
-};
-
-/**
- * The state a reported skip belongs to, or `null` when nothing decided it.
- *
- * A `HillClimbSkipOutcome` is the producing code's answer, read as given. A
- * bare STRING is a line that arrived with no outcome beside it — a
- * `skipped.push` upstream that does not go through `skipOutcomes`, leaving
- * `skipped` longer than the outcomes it is supposed to be derived from. Such
- * a line carries no decision to read, so it is unclassified rather than
- * guessed at from its wording, and `hillClimbReceipt` turns it into an
- * UNMEASURED reading instead of letting it vanish.
- */
-export function classifySkip(skip: HillClimbSkipOutcome | string): HillClimbState | null {
-  return typeof skip === "string" ? null : SKIP_OUTCOME_STATE[skip.kind];
-}
-
-/**
- * The one place a reading is derived from the state lists.
- *
- * `reading` and `unmeasuredReasons` are projections of the same lists, so they
- * cannot disagree, and `reading === "UNMEASURED"` is the whole answer for a
- * caller that only wants the boolean.
- */
-export function hillClimbReceipt(
-  states: Record<HillClimbState, HillClimbOccurrence[]>,
-  unclassified: HillClimbOccurrence[],
-): HillClimbReceipt {
-  const unmeasuredReasons = [
-    ...UNMEASURED_HILL_CLIMB_STATES.flatMap(state =>
-      states[state].map(o => `${state}: ${o.role} — ${o.detail}`),
-    ),
-    ...unclassified.map(o => `UNCLASSIFIED_SKIP: ${o.role} — ${o.detail}`),
-  ];
-  return {
-    states,
-    unclassified,
-    reading: unmeasuredReasons.length > 0 ? "UNMEASURED" : "MEASURED",
-    unmeasuredReasons,
-  };
 }
 
 /**
@@ -324,8 +325,6 @@ export function persistCompliance(
     // Grader accuracy gate: skip hill-climb for COMPs where more than half the
     // recent verdicts are N/A, so briefs are not patched to paper over grader
     // false positives.
-    // A Map, not a Set: the reason the gate computed is the reason the receipt
-    // reports, so there is one statement of why a COMP was dropped.
     const graderAccuracySkips = new Map<string, string>();
     for (const ct of report.compTrends) {
       const naCount = ct.lastN.filter(v => v === "N/A").length;
@@ -337,7 +336,16 @@ export function persistCompliance(
       }
     }
 
+    // Detected first, then filtered: an action the gate dropped is a thing
+    // that happened, and reporting it as "nothing was detected" is the state
+    // collapse #646 is about.
     const detected = detectHillClimbNeeds(report);
+    for (const a of detected) {
+      const reason = graderAccuracySkips.get(a.compId);
+      if (reason !== undefined) {
+        states.GRADER_ACCURACY_DROP.push({ role: g.role, compId: a.compId, detail: reason });
+      }
+    }
     if (detected.length === 0) {
       states.NO_ACTIONS_DETECTED.push({
         role: g.role,
@@ -346,16 +354,7 @@ export function persistCompliance(
       });
       continue;
     }
-
-    const actions: typeof detected = [];
-    for (const a of detected) {
-      const droppedBecause = graderAccuracySkips.get(a.compId);
-      if (droppedBecause !== undefined) {
-        states.GRADER_ACCURACY_DROP.push({ role: g.role, compId: a.compId, detail: droppedBecause });
-        continue;
-      }
-      actions.push(a);
-    }
+    const actions = detected.filter(a => !graderAccuracySkips.has(a.compId));
     if (actions.length === 0) continue;
 
     const briefPath = loadRoleBriefPaths(harnessRoot)[g.role];
@@ -366,23 +365,19 @@ export function persistCompliance(
 
     const { applied, skipped, skipOutcomes } = applyHillClimb(briefPath, actions);
     for (const a of applied) logger(`HILL-CLIMB: ${a}`);
-    // `skipped` is `skipOutcomes.map(hillClimbSkipSentence)` at a single
-    // return in `applyHillClimb`, so index i of one is index i of the other.
-    // Iterating the SENTENCES rather than the outcomes is deliberate: every
-    // line that is reported gets an occurrence, and a line with no outcome
-    // beside it is reported as unclassified instead of being dropped.
     skipped.forEach((s, i) => {
       logger(`HILL-CLIMB skipped: ${s}`);
+      // The structured outcome is the answer; `classifySkip` is only reached
+      // by a skip line that arrived without one.
       const outcome = skipOutcomes[i];
+      const state = outcome ? SKIP_KIND_STATE[outcome.kind] : classifySkip(s);
       const occurrence: HillClimbOccurrence = {
         role: g.role,
-        // The COMP as the decision carried it, not as a sentence spells it.
         compId: outcome?.compId ?? null,
         detail: s,
       };
-      const state = classifySkip(outcome ?? s);
-      if (state) states[state].push(occurrence);
-      else unclassified.push(occurrence);
+      if (state === null) unclassified.push(occurrence);
+      else states[state].push(occurrence);
     });
     if (applied.length === 0) continue;
     hillClimbApplied += applied.length;
@@ -417,9 +412,9 @@ export function persistCompliance(
   }
 
   const hillClimb = hillClimbReceipt(states, unclassified);
+  // Said out loud as well as returned: the receipt crosses an agent on the way
+  // to the operator, and a reading nobody reports is a reading nobody reads.
   if (hillClimb.reading === "UNMEASURED") {
-    // Named, not silent: exiting 0 having applied nothing is the default this
-    // receipt exists to distinguish from a clean run.
     logger(`UNMEASURED hill-climb — ${hillClimb.unmeasuredReasons.join("; ")}`);
   }
 

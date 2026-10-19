@@ -574,50 +574,81 @@ export function insertReinforcement(
 }
 
 /**
- * What `applyHillClimb` decided about an action it did NOT apply (#646).
+ * The ways `applyHillClimb` can decline to patch a brief (#646).
  *
- * The function decides exactly three things, and it used to report all three
- * as English in one `skipped: string[]`. A caller that wanted the tier it was
- * being told to promote to had to recover it from the middle of a sentence,
- * which is the same defect as an unsourced verdict: the decision was readable
- * and not usable.
- *
- * - `TIER_PROMOTION` — the rule is past the tier-1 threshold, so a brief
- *   bullet is the wrong instrument. `tier` and `promotion` are FIELDS here,
- *   not substrings of the sentence.
- * - `REINFORCEMENT_PRESENT` — the brief already carries this reinforcement.
- * - `NO_SECTION` — the brief has none of the headings a reinforcement is
- *   spliced into.
- *
- * `promotion` is `string | undefined` rather than optional because an action
- * at tier 2 or 3 may carry none, and "the action named no promotion" is a
- * state the outcome has to be able to hold — the sentence rendered it as the
- * word `undefined`, and that is preserved byte for byte.
+ * A caller needs to know WHICH of these happened: a tier promotion is a
+ * design change nobody can make with a text patch, a reinforcement already in
+ * the brief is a no-op, and a brief with no insertion point is a rule that was
+ * composed and then dropped on the floor. Collapsing them into "0 applied" is
+ * the same receipt a role with nothing wrong with it produces.
  */
-export type HillClimbSkipOutcome =
-  | { kind: "TIER_PROMOTION"; compId: string; tier: 2 | 3; promotion: string | undefined }
-  | { kind: "REINFORCEMENT_PRESENT"; compId: string }
-  | { kind: "NO_SECTION"; compId: string };
+export const HILL_CLIMB_SKIP_KINDS = [
+  "TIER_PROMOTION",
+  "REINFORCEMENT_PRESENT",
+  "NO_SECTION",
+] as const;
+
+export type HillClimbSkipKind = (typeof HILL_CLIMB_SKIP_KINDS)[number];
+
+/** A skip, as a fact rather than as a sentence about a fact. */
+export interface HillClimbSkipOutcome {
+  kind: HillClimbSkipKind;
+  compId: string;
+  /** The rendered line, so `skipped[i]` and `skipOutcomes[i]` are one thing. */
+  sentence: string;
+}
 
 /**
- * The one binding that turns a skip outcome into the reported line.
+ * The ONE position in this repository that spells a skip sentence.
  *
- * Every sentence `applyHillClimb` reports is produced here and nowhere else,
- * so there is a single thing to mutate; a second producer elsewhere would
- * hold a case up through any mutation of this one
- * (`.claude/rules/checks-must-be-able-to-fail.md`). The strings are the ones
- * the loop has always printed — `scripts/persist-compliance.ts` logs them as
- * `HILL-CLIMB skipped: …` and that stderr is unchanged.
+ * SC-2093 (`test/compliance-report.test.ts`) scans every `.ts` under `lib/`
+ * and `scripts/` and refuses a second occurrence of any of these phrases. A
+ * consumer that re-parsed the prose would be a second speller: reword a line
+ * here and the consumer stops classifying, reporting "nothing was skipped"
+ * for a run in which everything was.
  */
-export function hillClimbSkipSentence(outcome: HillClimbSkipOutcome): string {
-  switch (outcome.kind) {
+const SKIP_PHRASE: Record<HillClimbSkipKind, string> = {
+  TIER_PROMOTION: "PROMOTION needed",
+  REINFORCEMENT_PRESENT: "reinforcement already present in brief",
+  NO_SECTION: "no suitable section found in brief",
+};
+
+function assertNeverSkipKind(kind: never): never {
+  throw new Error(`unhandled hill-climb skip kind: ${String(kind)}`);
+}
+
+/** The single speller. Every skip line in the tree is produced here. */
+export function hillClimbSkipSentence(
+  kind: HillClimbSkipKind,
+  action: HillClimbAction,
+): string {
+  switch (kind) {
     case "TIER_PROMOTION":
-      return `${outcome.compId}: TIER ${outcome.tier} PROMOTION needed — ${outcome.promotion}`;
+      return `${action.compId}: TIER ${action.tier} ${SKIP_PHRASE.TIER_PROMOTION} — ${action.promotion}`;
     case "REINFORCEMENT_PRESENT":
-      return `${outcome.compId}: reinforcement already present in brief`;
+      return `${action.compId}: ${SKIP_PHRASE.REINFORCEMENT_PRESENT}`;
     case "NO_SECTION":
-      return `${outcome.compId}: no suitable section found in brief`;
+      return `${action.compId}: ${SKIP_PHRASE.NO_SECTION}`;
+    default:
+      return assertNeverSkipKind(kind);
   }
+}
+
+/**
+ * Read a skip line back into its kind, for a line that arrives as a bare
+ * string with no structured outcome beside it.
+ *
+ * This is the fallback, not the path: `applyHillClimb` returns
+ * `skipOutcomes`, and a caller holding those never needs to ask. It reads the
+ * same `SKIP_PHRASE` table the speller writes from, so the two cannot drift —
+ * an unrecognised line returns `null` rather than guessing, because a guess
+ * here is indistinguishable from a run with no skips.
+ */
+export function classifyHillClimbSkipSentence(line: string): HillClimbSkipKind | null {
+  for (const kind of HILL_CLIMB_SKIP_KINDS) {
+    if (line.includes(SKIP_PHRASE[kind])) return kind;
+  }
+  return null;
 }
 
 export function applyHillClimb(
@@ -627,7 +658,6 @@ export function applyHillClimb(
 ): {
   applied: string[];
   skipped: string[];
-  /** One entry per action that was not applied, in the order they were decided. */
   skipOutcomes: HillClimbSkipOutcome[];
   write: HillClimbWrite;
 } {
@@ -639,18 +669,19 @@ export function applyHillClimb(
 
   let content = readFileSync(briefPath, "utf-8");
   const applied: string[] = [];
+  const skipped: string[] = [];
   const skipOutcomes: HillClimbSkipOutcome[] = [];
+
+  /** Both lists are written here, so an index in one indexes the other. */
+  const skip = (kind: HillClimbSkipKind, action: HillClimbAction): void => {
+    const sentence = hillClimbSkipSentence(kind, action);
+    skipped.push(sentence);
+    skipOutcomes.push({ kind, compId: action.compId, sentence });
+  };
 
   for (const action of actions) {
     if (action.tier >= 2) {
-      skipOutcomes.push({
-        kind: "TIER_PROMOTION",
-        compId: action.compId,
-        // `>=` rather than `!== 1`, so an off-type tier keeps the branch it
-        // has always taken; the declared type admits only 1, 2 and 3.
-        tier: action.tier as 2 | 3,
-        promotion: action.promotion,
-      });
+      skip("TIER_PROMOTION", action);
       continue;
     }
 
@@ -660,7 +691,7 @@ export function applyHillClimb(
     const normalizedContent = content.toLowerCase().replace(/[`*"']/g, "");
 
     if (normalizedContent.includes(normalizedReinforcement.slice(0, 40))) {
-      skipOutcomes.push({ kind: "REINFORCEMENT_PRESENT", compId: action.compId });
+      skip("REINFORCEMENT_PRESENT", action);
       continue;
     }
 
@@ -676,7 +707,7 @@ export function applyHillClimb(
           : neverIdx;
 
     if (sectionIdx === -1) {
-      skipOutcomes.push({ kind: "NO_SECTION", compId: action.compId });
+      skip("NO_SECTION", action);
       continue;
     }
 
@@ -694,9 +725,7 @@ export function applyHillClimb(
       ? writeReinforcedBrief(briefPath, content, { ...opts, destination })
       : nothingWritten;
 
-  // The reported strings are DERIVED from the outcomes, in one expression, so
-  // the typed answer and the human-readable one cannot disagree.
-  return { applied, skipped: skipOutcomes.map(hillClimbSkipSentence), skipOutcomes, write };
+  return { applied, skipped, skipOutcomes, write };
 }
 
 // --- WARN-to-FAIL promotion tracking (SC-515, DEC-012) ---

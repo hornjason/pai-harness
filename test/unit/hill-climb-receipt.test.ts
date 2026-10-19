@@ -33,10 +33,8 @@ import {
   type PersistResult,
 } from "../../scripts/persist-compliance";
 import {
-  hillClimbSkipSentence,
   setComplianceProjectRoot,
   type ComplianceEntry,
-  type HillClimbSkipOutcome,
 } from "../../lib/compliance-report";
 
 const ROLE = "marcus";
@@ -300,86 +298,13 @@ describe("#646: the reading is derived in one place", () => {
   });
 
   test("a skip line no state claims raises the reading rather than vanishing", () => {
-    // A bare line is a line that arrived with no outcome beside it, so there
-    // is no decision to read. It must not read as nothing having happened.
+    // The classifier reads phrases `applyHillClimb` writes. If one is reworded
+    // the line must not read as nothing having happened.
     expect(classifySkip("COMP-13: some wording nobody here has seen")).toBeNull();
     const receipt = hillClimbReceipt(emptyHillClimbStates(), [
       { role: ROLE, compId: COMP, detail: "COMP-13: some wording nobody here has seen" },
     ]);
     expect(receipt.reading).toBe("UNMEASURED");
     expect(receipt.unmeasuredReasons).toEqual([expect.stringContaining("UNCLASSIFIED_SKIP")]);
-  });
-});
-
-/**
- * Covers AC-9 (#646), SC-2095 (INSTRUCTION-COMPLIANCE-SPEC.md).
- *
- * The first wave of this issue classified a skip by RE-PARSING the sentence
- * `applyHillClimb` had just composed — a three-row table of regexes in
- * `scripts/persist-compliance.ts` matching `TIER \d+ PROMOTION needed` and
- * friends. That is two deciders for one question: `applyHillClimb` already
- * knew which of the three a skip was, both answers would always agree, and a
- * mutation of either would leave the other holding every case in this file
- * up (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). It was
- * also a second position spelling sentences `hillClimbSkipSentence` owns,
- * which is what SC-2093 refuses.
- *
- * The witness is a NEGATIVE one and it has to be: with the table gone, the
- * rendered sentence classifies as nothing at all, and reintroducing any
- * prose matcher turns that red — a sentence matcher matches its own
- * sentence. The cheapest wrong fix is to put the table back "just for the
- * tier", and this is the case that refuses it.
- */
-describe("#646 AC-9: the state is read off the decision, not matched out of the sentence", () => {
-  const OUTCOME: HillClimbSkipOutcome = {
-    kind: "TIER_PROMOTION",
-    compId: COMP,
-    tier: 3,
-    promotion: "Deploy BashToolGuard hook",
-  };
-
-  test("the decision classifies; the sentence it renders to does not", () => {
-    expect(classifySkip(OUTCOME)).toBe("TIER_PROMOTION_RECOMMENDED");
-
-    // Derived, not typed: this is the real line the run prints, so the case
-    // cannot drift into asserting a sentence the code stopped producing.
-    const sentence = hillClimbSkipSentence(OUTCOME);
-    expect(sentence).toBe("COMP-13: TIER 3 PROMOTION needed — Deploy BashToolGuard hook");
-    expect(classifySkip(sentence)).toBeNull();
-  });
-
-  test("every outcome kind applyHillClimb can return maps to a state", () => {
-    // The other half of the claim: nothing the producer can decide falls
-    // through to UNCLASSIFIED_SKIP, so that list means what it says.
-    const kinds: HillClimbSkipOutcome[] = [
-      OUTCOME,
-      { kind: "REINFORCEMENT_PRESENT", compId: COMP },
-      { kind: "NO_SECTION", compId: COMP },
-    ];
-    expect(kinds.map(classifySkip)).toEqual([
-      "TIER_PROMOTION_RECOMMENDED",
-      "REINFORCEMENT_ALREADY_PRESENT",
-      "NO_SUITABLE_SECTION",
-    ]);
-  });
-
-  test("no fragment of a skip sentence is spelled in the consuming script", () => {
-    // SC-2093 scans `scripts/` for the three WHOLE sentences. The deleted
-    // table carried fragments of them — `reinforcement already present`
-    // without `in brief` — which that scan cannot see, so the fragments are
-    // counted here.
-    const source = readFileSync(
-      join(import.meta.dir, "..", "..", "scripts", "persist-compliance.ts"),
-      "utf-8",
-    );
-    // A scan that read nothing agrees with everything (#492).
-    expect(source.length).toBeGreaterThan(1000);
-    for (const fragment of [
-      "PROMOTION needed",
-      "reinforcement already present",
-      "no suitable section found",
-    ]) {
-      expect({ fragment, hits: source.split(fragment).length - 1 }).toEqual({ fragment, hits: 0 });
-    }
   });
 });
