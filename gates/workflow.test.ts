@@ -16,6 +16,7 @@ import {
   resolveContainerRuntime,
 } from "../lib/container-provenance";
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
+import { alreadySatisfiedIds } from "../lib/evidence-prevalidator";
 import { readBranchDiff } from "../lib/branch-diff";
 import { proveLabelGateVerdict, type LabelRead } from "../lib/prove-label-gate";
 import { worktreeDiskIdentity, type RemoteReading } from "../lib/worktree-repo";
@@ -508,13 +509,43 @@ export function prevalidationViolations(val: unknown, gatePhase?: unknown): stri
     .map((ac: unknown) => String((ac as { id?: unknown })?.id ?? ""))
     .filter((id: string) => id.length > 0);
 
+  // #669 — an AC whose PRE-CHANGE output already cleared its own threshold
+  // cannot observe the work. It printed a satisfying value before a line was
+  // written, so it will print one afterwards whatever Marcus does: a check
+  // that cannot fail, arriving in the run's own acceptance criteria.
+  //
+  // Derived through `alreadySatisfiedIds`, the same binding the writer and
+  // the schema use, so the refusal cannot name a different set than the
+  // reading carries (#295 is the cost of getting that wrong).
+  //
+  // ONLY on a reading taken at scope, and the restriction is the point. Scope
+  // is the one phase whose tree is the pre-change one. At verify and at ship
+  // the work has landed, so an AC that satisfies its threshold there is an AC
+  // that PASSED — refusing those would turn every successful run red, which
+  // is the fastest way to build a refusal everyone learns to click past. A
+  // reading with no `takenAt` predates the field and cannot say which tree it
+  // describes, so it is not refused either.
+  const vacuous =
+    (val as { takenAt?: unknown }).takenAt === "scope" ? alreadySatisfiedIds(reading.acs) : [];
+  const vacuousRefusal =
+    vacuous.length > 0
+      ? [
+          `evidence pre-validation: ${vacuous.join(", ")} already satisfied their own thresholds ` +
+            "on the pre-change tree — an AC that passes before the work is done certifies the " +
+            "change without observing it (#669)",
+        ]
+      : [];
+
   if (verdict === "FAIL") {
-    return broken.length > 0
-      ? [`evidence pre-validation: FAIL — broken evidence commands on ${broken.join(", ")}`]
-      : [
-          "evidence pre-validation: FAIL — but no broken AC ids were recorded, so the " +
-            "refusal cannot name what to fix (#235)",
-        ];
+    return [
+      ...(broken.length > 0
+        ? [`evidence pre-validation: FAIL — broken evidence commands on ${broken.join(", ")}`]
+        : [
+            "evidence pre-validation: FAIL — but no broken AC ids were recorded, so the " +
+              "refusal cannot name what to fix (#235)",
+          ]),
+      ...vacuousRefusal,
+    ];
   }
 
   if (verdict !== "PASS") {
@@ -526,9 +557,10 @@ export function prevalidationViolations(val: unknown, gatePhase?: unknown): stri
   if (broken.length > 0) {
     return [
       `evidence pre-validation: PASS recorded alongside broken evidence commands on ${broken.join(", ")}`,
+      ...vacuousRefusal,
     ];
   }
-  return [];
+  return vacuousRefusal;
 }
 
 // ═══ SCHEMA VALIDATION ════════════════════════════════════════════════

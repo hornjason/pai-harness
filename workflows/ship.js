@@ -43,6 +43,15 @@ const DISCOVERY_SCHEMA = {
           statement: { type: 'string' },
           threshold: { type: 'object', properties: { op: { type: 'string', enum: ['==', '>=', '<=', '>', '<', '!=', 'contains', 'exists'] }, value: {}, unit: { type: 'string' } }, required: ['op', 'value'] },
           evidenceMethod: { type: 'object', properties: { type: { type: 'string', enum: ['GREP_CHECK', 'FILE_EXISTS', 'CURL_CHECK', 'BUN_TEST', 'SCREENSHOT', 'PLAYWRIGHT', 'COMMAND', 'MANUAL', 'grep', 'command', 'api', 'screenshot', 'manual'] }, command: { type: 'string' } }, required: ['type'] },
+          // Literals this AC's evidence keys on that the tree does not hold
+          // yet — an invented heading, a marker, a section title (#669).
+          //
+          // Declared here because a structured-output schema is a FILTER, not
+          // a description: a field the schema does not name is stripped out of
+          // the reply on the way back, silently, and the clause that reads it
+          // in lib/evidence-satisfiability.ts would then refuse every AC that
+          // had correctly declared one. That is #646's defect exactly.
+          evidenceInterfaces: { type: 'array', items: { type: 'string' } },
           specElement: { type: 'string' },
           // The ISSUE's success criteria this AC answers, by id (C-1, C-2, …).
           //
@@ -1730,6 +1739,14 @@ function acPayloadRecords(acs) {
     statement: ac.statement,
     threshold: ac.threshold,
     evidenceMethod: ac.evidenceMethod,
+    // #669's `evidenceInterfaces` is deliberately NOT carried here yet. This
+    // function is held to byte-for-byte parity with `acPayloadRecords` in
+    // lib/evidence-command-transport.ts by test/evidence-command-roundtrip.ts
+    // (#614), so adding a field to one copy and not the other turns that
+    // matrix red — measured, not assumed: it reports three records differing
+    // by `"evidenceInterfaces": []`. The two must move in one commit, and
+    // lib/evidence-command-transport.ts is not a file this sub-issue claimed.
+    // The waiver reaches the decider off the AC itself in the meantime.
     specElement: ac.specElement,
     coversCriteria: ac.coversCriteria || [],
     contextFiles: ac.contextFiles || [],
@@ -2517,8 +2534,10 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
    CONTEXT FILES RULE (CRITICAL): Every AC MUST have a contextFiles array listing the specific files Marcus will need to read to implement that AC. Include path and reason. Example: [{"path": "hooks/WorkflowStateGuard.hook.ts", "reason": "existing hook pattern to follow"}, {"path": "lib/conformity.ts", "reason": "matchPattern function to reuse"}]. Do NOT leave contextFiles empty — Marcus wastes 80% of context loading files he doesn't need when you don't specify what he actually needs.
    THRESHOLD RULE: a threshold of >= 1 or >= 0 is REFUSED at the end of this phase. Both always passes, so a criterion carrying one measures nothing. State the number the work actually has to reach: >= 5 tests, == 0 failures, >= 2 red under mutation. If the real condition is "at least one", write == 1 or >= 2 and say which you mean. The run REFUSES and names the AC; there is no way past it, and it also refuses a statement under five words, a tautology such as "it works" or "tests pass", and language about who should do something rather than what is measured (#269).
    EVIDENCE TYPE RULE: At least 50% of ACs must use non-grep evidence (BUN_TEST, COMMAND, PLAYWRIGHT). If you have 4 ACs, at least 2 must use bun test or curl commands, not grep. A regression test AC should use evidenceMethod type "BUN_TEST" with command "bun test test/unit/relevant.test.ts".
-   BUN TEST GREP RULE: In bun test --grep patterns, use | (pipe) for alternation, NOT \\| (backslash-pipe). Bun uses JS regex, not BRE — backslash-pipe matches a literal pipe character and will match 0 tests. Example: --grep 'foo|bar' is correct, --grep 'foo\\|bar' is WRONG.
-   BUN TEST OUTPUT RULE: Bun test outputs results to STDERR, not stdout. NEVER pipe bun test through grep (e.g., 'bun test ... | grep -c ✓' will always return 0). Instead use direct bun test commands — exit code 0 means PASS. For test counts, just use: bun test test/file.test.ts --grep 'pattern'
+   BUN TEST NAME FILTER RULE: the flag is --test-name-pattern (short form -t). There is NO --grep flag in bun test, and bun does NOT reject one — it exits 0 with no error, so 'bun test file.test.ts --grep foo' runs the WHOLE file and looks like it filtered. On #664 that made one AC behaviourally identical to another and the criterion that existed to be independent of it was checked by the same observation. The run REFUSES a bun test flag that is not in 'bun test --help' and names the accepted alternative (#669). In the pattern, use | (pipe) for alternation, NOT \\| (backslash-pipe): bun uses JS regex, not BRE — backslash-pipe matches a literal pipe character and matches 0 tests. Example: --test-name-pattern 'foo|bar' is correct, --test-name-pattern 'foo\\|bar' is WRONG.
+   BUN TEST OUTPUT RULE: Bun test outputs results to STDERR, not stdout. NEVER pipe bun test through grep (e.g., 'bun test ... | grep -c ✓' will always return 0). Instead use direct bun test commands — exit code 0 means PASS. For test counts, just use: bun test test/file.test.ts --test-name-pattern 'pattern'
+   UNIT RULE: if the command's output is a COUNT, the threshold's unit must name the thing the command actually counts. 'grep -c' counts matching lines; 'wc -l' counts lines; a unit saying "cases", "assertions" or "files" over either is a comparison between two unrelated integers, which is well-typed and measures nothing. On #664 a threshold of ">= 11 converted cases red under the mutation" was measured by counting lines of prose in a markdown section, and the gate failed correct work. The run REFUSES a unit that names a different quantity from the one the command counts, naming the AC, the unit and the counted thing (#669).
+   EVIDENCE LITERAL RULE: if a COMMAND evidence method keys on a literal the tree does not already hold — an invented heading, a marker, a section title — it is testing whether the implementer guessed that exact string. Either key the evidence on something that exists, or list the literal in that AC's evidenceInterfaces array so it is carried into Marcus's brief as a named interface. On #664 both failing gates opened an awk range on a heading DISCOVERY invented; the implementer wrote a better one and both gates read 0 (#669).
 7. Garbage test each AC.
 8. Find governingSpec from ${PROJECT_ROOT}/AGENTS.md routing table (absolute path or empty).
 9. Set sourceSpecs with citedInDiscovery:true, specElements[]. One AC per specElement minimum.

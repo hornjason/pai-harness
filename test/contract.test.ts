@@ -116,6 +116,63 @@ const STANDARD_PROJECT = join(TEST_BASE, "standard-project");
 const STANDARD_BRIEF = "# Marcus Brief\n\n## Context\nProject root: /tmp/test\n\n## Task\nFix the module\n\n## AC-1\nFix applied to target module correctly\n\n## AC-2\nAll unit tests pass without regression\n\n## Verify\nbun test\n\n## Report back\nReport results\n";
 
 /**
+ * The fixture tree before the work, and after it.
+ *
+ * An evidence baseline is a reading of the tree the work has NOT yet been done
+ * to (#669). This fixture modelled a finished run at every phase — one static
+ * `target.ts` already carrying the fix — so `grep fix target.ts` against a
+ * threshold of `contains "fix"` was satisfied at SCOPE, before anything had
+ * been implemented, and `evidence-prevalidation` refused the whole STANDARD
+ * contract. It was right to. An AC whose command passes on the pre-change tree
+ * is a gate that was green before the work existed, which is the defect #669
+ * exists to name.
+ *
+ * Note this was never specific to AC-1: a fixture that runs scope against the
+ * finished tree makes EVERY passing AC already-satisfied, so the honest repair
+ * is to give the two phases the two trees rather than to find a cleverer
+ * command. The cheapest wrong fix — letting the refusal skip readings with no
+ * baselines, or excusing an already-satisfied one — turns this file green and
+ * makes the check a no-op on every project that has not opted in.
+ */
+const PRE_FIX_TREE = "export const placeholder = true;\n";
+const POST_FIX_TREE = "export const fix = true;\n";
+
+/**
+ * Put the fixture repo at one of the two trees, committed and pushed.
+ *
+ * Committed and pushed because the gate contains `code-committed` and
+ * `code-pushed` (#174): a working tree left dirty by this helper would turn
+ * those red and the failure would be attributed to whatever the test was
+ * actually about.
+ */
+function setFixtureTree(content: string): void {
+  writeFileSync(join(STANDARD_PROJECT, "target.ts"), content);
+  const g = (args: string) =>
+    execSync(`git -c user.email=t@t -c user.name=t ${args}`, { cwd: STANDARD_PROJECT, stdio: "ignore" });
+  g("add -A");
+  // Re-applying the tree it already has is a no-op commit, which git refuses.
+  try { g('commit -m "fixture tree"'); } catch { /* already at this tree */ }
+  g("push mirror main");
+}
+
+/**
+ * Drive scope against the pre-change tree and verify against the post-change
+ * one, which is the order a real run has them in.
+ *
+ * Both halves have to be driven and they have to see different trees. Scope
+ * alone is green on a broken command — it writes the verdict and advances —
+ * and a scope taken against the finished tree records a baseline that already
+ * clears its own bar, so the record it leaves for verify is meaningless in a
+ * way no count of passing checks reveals.
+ */
+function scopeThenVerify(slug: string): { verify: ReturnType<typeof runGate> } {
+  setFixtureTree(PRE_FIX_TREE);
+  runGate("scope", slug, STANDARD_PROJECT);
+  setFixtureTree(POST_FIX_TREE);
+  return { verify: runGate("verify", slug, STANDARD_PROJECT) };
+}
+
+/**
  * The STANDARD state as a fresh literal, so the broken-evidence case below can
  * differ from the passing one by exactly one command.
  *
@@ -159,7 +216,10 @@ describe("contract: STANDARD tier", () => {
     mkdirSync(dir, { recursive: true });
     rmSync(STANDARD_PROJECT, { recursive: true, force: true });
     mkdirSync(STANDARD_PROJECT, { recursive: true });
-    writeFileSync(join(STANDARD_PROJECT, "target.ts"), "export const fix = true;\n");
+    // The tree as it stands BEFORE the work, because `scope passes` below is
+    // the next thing to run and scope's job is to read the pre-change tree
+    // (#669). `verify passes` applies the change first.
+    writeFileSync(join(STANDARD_PROJECT, "target.ts"), PRE_FIX_TREE);
     writeFileSync(join(STANDARD_PROJECT, "target.test.ts"),
       'import { test, expect } from "bun:test";\ntest("canary", () => { expect(1).toBe(1); });\n');
 
@@ -220,6 +280,9 @@ describe("contract: STANDARD tier", () => {
   }, { timeout: 30_000 });
 
   test("verify passes", () => {
+    // The work lands between scope and verify, so the tree verify reads is not
+    // the tree scope measured (#669).
+    setFixtureTree(POST_FIX_TREE);
     const r = runGate("verify", "standard", STANDARD_PROJECT);
     expect(r.fail).toBe(0);
   }, { timeout: 30_000 });
@@ -281,12 +344,21 @@ describe("contract: STANDARD tier", () => {
       s.acs[0].evidenceMethod.command = "grep fix no-such-file.ts";
     });
 
+    // Scope reads the pre-change tree; the previous case left the post-change
+    // one in place, and a scope taken against that would record AC-1 as
+    // already-satisfied — a second, unrelated reason for the same refusal,
+    // which would make the status assertion below the only thing separating
+    // this from a false confirmation.
+    setFixtureTree(PRE_FIX_TREE);
     runGate("scope", "standard-broken-evidence", STANDARD_PROJECT);
     const recorded = JSON.parse(readFileSync(
       join(TEST_BASE, "standard-broken-evidence", "workflow-state.json"), "utf-8"));
     expect(recorded.evidencePrevalidation?.verdict).toBe("FAIL");
     expect(recorded.evidencePrevalidation.acs.find((a: any) => a.id === "AC-1").status).toBe("broken");
+    // The refusal is attributable to the unrunnable command and nothing else.
+    expect(recorded.evidencePrevalidation.alreadySatisfied ?? []).toEqual([]);
 
+    setFixtureTree(POST_FIX_TREE);
     const r = runGate("verify", "standard-broken-evidence", STANDARD_PROJECT);
     expect(r.fail).toBeGreaterThan(0);
     expect(r.output).toContain("evidence-prevalidation");
@@ -300,8 +372,7 @@ describe("contract: STANDARD tier", () => {
     // version of both tests drove verify without scope and this went red,
     // which is how the record-then-read split above was found.
     writeStandardFixture("standard-control");
-    runGate("scope", "standard-control", STANDARD_PROJECT);
-    const r = runGate("verify", "standard-control", STANDARD_PROJECT);
+    const { verify: r } = scopeThenVerify("standard-control");
     expect(r.fail).toBe(0);
   }, { timeout: 60_000 });
 });
