@@ -1034,3 +1034,126 @@ symptom disappearing.
 - **An applied action has no outcome of its own.** `applied` is still a
   `string[]` carrying the consecutive-fail count and the destination inside a
   sentence, which is the same defect one state over.
+
+## #645 — the zero-reinforcement baseline, measured rather than estimated
+
+The hill-climb loop has never produced a reinforcement. This section is the
+record of what it did instead, so the empty reinforcement history is not read
+later as a quiet period rather than a broken instrument. #645 asks for the
+measured replay and not an estimate, so **every number below is printed with
+the command that produced it**, and the commands were re-run on the date in
+the heading. A count with no command is not reproducible and the store under
+it moves — which is the first thing this measurement found.
+
+### The store moved, and the issue's own figure is already stale
+
+#645 says "the 361-entry history".
+
+```bash
+wc -l ~/.rungate/compliance-history.jsonl        # → 377   (2026-10-19)
+```
+
+377, not 361. Nothing is wrong with the issue; the store grew between filing
+and fixing. It is recorded because the replay below is only meaningful
+against a stated denominator, and a later reader comparing 377 to a
+remembered 361 would be comparing two different stores.
+
+Roles in it: `marcus` 167, `discovery` 104, `rook` 103, `quinn` 3.
+
+### The replay
+
+Walk the history in timestamp order, treat each entry as the run's `current`
+with everything before it as `history`, and call the real
+`generateComplianceReport` then the real `detectHillClimbNeeds` — which is
+what `scripts/persist-compliance.ts` does on a live run.
+
+| Reading | Count |
+|---|---|
+| history entries | **377** |
+| runs that would detect at least one action | **137** |
+| actions detected in total | **193** (marcus 136, discovery 56, quinn 1) |
+| …that resolve to an insertion point | **57** (discovery/COMP-7 ×50, discovery/COMP-6 ×6, marcus/COMP-2 ×1) |
+| …that hit `NO_SECTION` | **136** |
+| longest consecutive-fail streak ever reached | marcus **6**, discovery **6**, quinn **3**, rook **1** |
+
+### Zero reinforcements have ever been committed
+
+```bash
+git log --all --oneline -S "REINFORCED (auto)" -- .claude/agents/ | wc -l   # → 0
+grep -rl "REINFORCED (auto)" .claude/agents/ | wc -l                        # → 0
+```
+
+**With the controls, because an empty search over a store proves nothing
+without one** (`.claude/rules/checks-must-be-able-to-fail.md`):
+
+```bash
+git log --all --oneline -S "## Never Do" -- .claude/agents/ | wc -l   # → 8
+git log --all --oneline -- .claude/agents/ | wc -l                    # → 60
+```
+
+60 commits have touched the briefs and the search finds other strings in
+them, so the zero is a reading and not an instrument that stopped reporting.
+
+### Prior output is unrecoverable, and the hits that look like it are not it
+
+```bash
+grep -rl "REINFORCED (auto)" ~/.rungate | wc -l                  # → 22
+find ~/.rungate -name "*.md" -path "*agents*" | wc -l            # → 0
+```
+
+22 files is a populated result and **none of it is evidence**. They are
+`compliance-grade.json`, `suite-output.txt`, `workflow-state.json`,
+`parent-body.md` and the history itself — grading data and logs that NAME the
+prefix, not briefs that used it. No brief copy survives in any run directory.
+This is the inverse trap #646 recorded: a store answering yes because it
+archives the thing you asked about.
+
+### The two causes #645 names do not survive the measurement
+
+Both were checked. Recorded here because the point of this section is that the
+record is measured, and transcribing a hypothesis that the measurement
+contradicts would be the gap it exists to prevent.
+
+**"An N/A grade resets the consecutive counter so the threshold is never
+reached" — the mechanism is real, the consequence is not.** `countConsecutiveFails`
+does break on anything that is not `IGNORED` or `VIOLATED`, N/A included
+(`lib/compliance-report.ts:424`). But the threshold is reached, **137 times**,
+and streaks run to 6 against a threshold of 3. The one role it fully
+suppresses is `rook`, which never exceeds 1.
+
+**"No brief carries the sections the inserter looks for" — two of seven do,
+and did before the fix landed.** `marcus.md` carries `## Testing Rules` and
+`discovery.md` carries `## Never Do`, both as of `f88d4bdd^`, the commit
+before #624 Phase 1.
+
+**What is actually true is sharper, and it is a selector bug rather than a
+missing section.** `lib/compliance-report.ts:672` reaches `## Testing Rules`
+**only for COMP-2**:
+
+```ts
+const sectionIdx =
+  action.compId === "COMP-2" && testingIdx !== -1 ? testingIdx
+  : efficiencyIdx !== -1 ? efficiencyIdx
+  : neverIdx;
+```
+
+`marcus.md` carries *only* `## Testing Rules`. So for marcus every action
+except COMP-2's falls through to `efficiencyIdx` (−1) and then `neverIdx`
+(−1) and lands on `NO_SECTION` — **136 of the 193**, which is every marcus
+action but one.
+
+**And a third cause neither of the two names: 57 actions DID resolve a
+section and nothing was ever committed.** The loss for those is downstream of
+the insertion point, which is what #624 Phase 1 fixed — the loop wrote to a
+destination nobody had chosen and the return value was believed over the
+working tree.
+
+- [x] SC-2116: specs/INSTRUCTION-COMPLIANCE-SPEC.md contains [the zero-reinforcement baseline, measured rather than estimated] — the replay is run over the real history with each count printed beside the command that produced it, the empty searches carry controls, and the two hypothesised causes are reported as measured rather than transcribed
+
+### What this section does not claim
+
+It does not claim the loop is fixed. It claims that before #624 Phase 1 the
+loop detected 193 actions, resolved 57 of them to an insertion point, and
+committed none — and that the three gaps are a selector that reaches one
+heading for one COMP, a counter that an N/A resets, and a write whose result
+was never observed. Only the third was Phase 1's subject.
