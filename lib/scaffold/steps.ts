@@ -924,8 +924,17 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
 
   for (const [agentName, content] of Object.entries(briefs)) {
     const p = join(agentsDir, `${agentName}.md`);
+    // #654. The probe is taken BEFORE the write it describes. Asked
+    // afterwards it is true on every path that reaches it — `writeFileSync`
+    // either succeeded, in which case the file is there, or threw, in which
+    // case this line never runs — so the `CREATED:` arm was unreachable and
+    // a consumer scaffolding for the first time was told its briefs were
+    // updated.
+    const existedBefore = existsSync(p);
     writeFileSync(p, content);
-    actions.push(existsSync(p) ? `UPDATED: .claude/agents/${agentName}.md` : `CREATED: .claude/agents/${agentName}.md`);
+    actions.push(
+      `${existedBefore ? "UPDATED" : "CREATED"}: .claude/agents/${agentName}.md`,
+    );
   }
 }
 
@@ -1442,7 +1451,17 @@ function writeDirectoryStructure(
  * so no later scaffold ever corrected it. Running this step last is what makes
  * that skip safe — the content it preserves is now right from run 1.
  */
-export function generateCodeMapStep(root: string, actions: string[]): void {
+export function generateCodeMapStep(
+  root: string,
+  actions: string[],
+  // #654 — the one injection seam, so the branch where the generator exits 0
+  // and writes nothing can be entered. There is no input to the real
+  // generator that provokes it, and a branch no test can enter is the thing
+  // `.claude/rules/checks-must-be-able-to-fail.md` is about. Optional and
+  // defaulted to the real script, so every caller is unchanged and a test
+  // that forgets it is testing the real thing.
+  opts: { generatorPath?: string } = {},
+): void {
   // No dry-run branch. It reported `GAP: CODE-MAP.md missing` and nothing
   // else — one of the four `existsSync` checks that stood in for twenty-five
   // write steps and made audit report 0 changes on a tree `--fix` rewrote in
@@ -1474,11 +1493,31 @@ export function generateCodeMapStep(root: string, actions: string[]): void {
   }
 
   // Run generate-code-map.ts if available
-  const scriptPath = join(dirname(dirname(__dirname)), "scripts", "generate-code-map.ts");
+  const scriptPath =
+    opts.generatorPath ?? join(dirname(dirname(__dirname)), "scripts", "generate-code-map.ts");
   if (existsSync(scriptPath)) {
+    // #654, and the same shape as the brief loop above with one extra arm.
+    // Asked after the generator ran, `existsSync` answered two questions at
+    // once and got both wrong: a successful generation reported `UPDATED:`
+    // whether or not the file was new, and a generator that exits 0 WITHOUT
+    // writing reported `CREATED:` for a file that is not there. The second
+    // is the one that matters — `lib/scaffold/rehearsal.ts:481` records the
+    // same defect at a site that was fixed, and it survived here because
+    // the note was attached to the site rather than to the shape.
+    const existedBefore = existsSync(codeMapPath);
     const result = Bun.spawnSync(["bun", scriptPath, root], { timeout: 60_000 });
     if (result.exitCode === 0) {
-      actions.push(existsSync(codeMapPath) ? "UPDATED: CODE-MAP.md" : "CREATED: CODE-MAP.md");
+      const existsNow = existsSync(codeMapPath);
+      actions.push(
+        !existsNow
+          // Neither created nor updated: the generator reported success and
+          // produced nothing, which is a measurement that did not happen
+          // and must not read as one that did.
+          ? "UNMEASURED: CODE-MAP.md — the generator exited 0 and wrote no file"
+          : existedBefore
+            ? "UPDATED: CODE-MAP.md"
+            : "CREATED: CODE-MAP.md",
+      );
     } else {
       actions.push("WARN: CODE-MAP.md generation failed via script — trying inline");
       generateCodeMapInline(root, codeMapPath, actions);
