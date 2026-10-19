@@ -2500,6 +2500,35 @@ function commentSafe(value: string): string {
  * `.claude/rules/config-access.md`: `0`, `{}`, `null` and nothing at all are
  * indistinguishable from success. Same shape as `typecheckStep` below.
  */
+/**
+ * How many CI shards to split the test files across (#728).
+ *
+ * One exported binding, read off the same `ci` object as its siblings, so
+ * there is one thing to mutate and the generator cannot grow a second
+ * opinion about the shard count.
+ *
+ * **Absent means 1, and 1 means the single-job workflow byte for byte.** A
+ * consumer who has never configured this gets exactly what they have today;
+ * sharding is something a project opts into once its suite is slow enough to
+ * be worth the runners.
+ *
+ * Refuses anything that is not a positive whole number, and refuses silently
+ * upward rather than downward — a malformed value yields 1 (no sharding),
+ * never 0 shards, because a matrix with an empty list runs NO tests and
+ * reports success. `0`, `{}` and `null` are indistinguishable from a clean
+ * result (`.claude/rules/config-access.md`); a suite that ran nothing and a
+ * suite that passed must not produce the same verdict.
+ *
+ * Capped at 32: the shard count becomes a matrix leg, and an unbounded value
+ * read from config is an unbounded number of runners billed to whoever
+ * mistyped it.
+ */
+export function shardCount(ci: unknown): number {
+  const raw = (ci as { shards?: unknown } | null | undefined)?.shards;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) return 1;
+  return Math.min(raw, 32);
+}
+
 export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToolDecision {
   const declared = (ci as { globalTools?: unknown } | null | undefined)?.globalTools;
   const entries =
@@ -2651,7 +2680,79 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
     ? `\n      - run: ${typecheck.command}`
     : `\n      # No type check: ${typecheck.reason}.`;
 
-  const ciYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
+  // #728. A suite is a wall every branch pays, and this one was 313s of a
+  // 376s run — one `bun test` on one runner, 13,562 tests, while `strict`
+  // branch protection makes every merge re-run it. Sharding splits the FILES
+  // across runners, which is not the same lever as `--parallel`: that one was
+  // tried, and #621 records it starving 122 I/O-bound tests past bun's
+  // per-test timeout so every ship run reported SHIP_PASSED_SUITE_FAILED over
+  // a tree with zero real failures. Separate runners give each shard a whole
+  // machine, so the starvation mechanism is absent by construction.
+  //
+  // Opt-in, and absent config means one shard and the single-job shape byte
+  // for byte — a consumer who has never heard of this gets what they have
+  // today. `shard` is read from the same `harness?.ci` binding as every
+  // sibling above rather than a second reader.
+  const shards = shardCount(harness?.ci);
+
+  // The required status check is the JOB NAME, and a matrix renames it:
+  // `test` becomes `test (1)`, `test (2)`. A repo whose protection requires
+  // `test` would then require a context nothing ever reports, and GitHub
+  // treats an absent required check as pending forever — every PR wedged,
+  // with no error anywhere saying why. So the matrix is `test-shard` and a
+  // dependent job keeps the name `test`, which is the context protection
+  // already names. Do not collapse these two jobs.
+  const ciYml = shards > 1
+    ? `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
+name: CI
+
+on:
+  push:
+    branches:
+${branchList}
+  pull_request:
+    branches:
+${branchList}
+
+jobs:
+  test-shard:
+    runs-on: ${runsOn}
+    strategy:
+      # One red shard must not cancel the others: the whole point is to see
+      # every failure in one run rather than re-running to find the next.
+      fail-fast: false
+      matrix:
+        shard: [${Array.from({ length: shards }, (_, i) => i + 1).join(", ")}]
+    steps:
+      - uses: actions/checkout@v4
+${baseRefStep}
+      - uses: oven-sh/setup-bun@v2
+        with:
+${bunStep}
+      - run: bun install${globalTools.step}
+      - run: ${test.command} --shard=\${{ matrix.shard }}/${shards}${typecheckStep}
+
+  # The aggregate. Named "test" because that is the context branch protection
+  # requires; it exists to turn N shard results into the one verdict.
+  test:
+    runs-on: ${runsOn}
+    needs: test-shard
+    # always() so a failed or cancelled shard reaches this job instead of
+    # skipping it. A skipped required check is not a failed one, and some
+    # protection configurations read a skip as satisfied — which would make
+    # this aggregate a gate that cannot refuse.
+    if: always()
+    steps:
+      - name: Every shard passed
+        run: |
+          result='\${{ needs.test-shard.result }}'
+          if [ "$result" != "success" ]; then
+            echo "::error::test-shard concluded '$result' — the suite is not green."
+            exit 1
+          fi
+          echo "All ${shards} shards passed."
+`
+    : `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
 on:

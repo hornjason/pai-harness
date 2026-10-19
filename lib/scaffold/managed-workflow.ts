@@ -227,11 +227,29 @@ export function jobNames(text: string): string[] {
 
 // ── the merge ──────────────────────────────────────────────────────────────
 
+/**
+ * Job names the harness owns whether or not it emitted one this run (#728).
+ *
+ * `mergeJobsSection` decides ownership by asking whether the GENERATED file
+ * contains a job of that name, which is correct for every job the harness
+ * always emits and wrong for one it emits conditionally. `test-shard` exists
+ * only when `ci.shards > 1`: turn sharding back off and the previous run's
+ * matrix is absent from the generated side, so it reads as a consumer job
+ * and is carried forward — leaving an orphan that runs the whole suite once
+ * per leg, forever, with nothing in the diff explaining where it came from.
+ *
+ * A name here is removed when it is not regenerated. Add a conditionally
+ * emitted job to this set in the same commit that makes it conditional.
+ */
+const HARNESS_OWNED_JOBS = new Set(["test", "test-shard", "gates"]);
+
 function mergeJobsSection(before: Section, generated: Section): string[] {
   const g = parseJobsSection(generated.lines);
   const b = parseJobsSection(before.lines);
   const generatedNames = new Set(g.jobs.map(j => j.name));
-  const extra = b.jobs.filter(j => !generatedNames.has(j.name));
+  const extra = b.jobs.filter(
+    j => !generatedNames.has(j.name) && !HARNESS_OWNED_JOBS.has(j.name),
+  );
   if (extra.length === 0) return generated.lines;
 
   const [content, trailing] = splitTrailingBlanks(g.jobs.flatMap(j => j.lines));
