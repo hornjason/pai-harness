@@ -1,5 +1,5 @@
 /**
- * Covers SC-2180..SC-2186 (HARNESS-STANDARD.md) — #728, CI suite sharding.
+ * #728, CI suite sharding.
  *
  * The suite is the wall every branch pays. pai-harness CI averaged 376s of
  * which 313s was one `bun test` on one runner, and `strict` branch protection
@@ -26,7 +26,7 @@ import { createCiWorkflows, shardCount } from "../lib/scaffold/steps";
 import { mergeManagedWorkflow } from "../lib/scaffold/managed-workflow";
 
 describe("#728: shardCount reads one declaration", () => {
-  test("SC-2180: absent config is one shard, not zero", () => {
+  test("absent config is one shard, not zero", () => {
     // The direction this is allowed to be wrong in. A matrix over an empty
     // list runs no tests and reports success, so 0 must be unreachable.
     expect(shardCount(undefined)).toBe(1);
@@ -34,18 +34,18 @@ describe("#728: shardCount reads one declaration", () => {
     expect(shardCount({})).toBe(1);
   });
 
-  test("SC-2181: a declared count is honoured", () => {
+  test("a declared count is honoured", () => {
     expect(shardCount({ shards: 4 })).toBe(4);
     expect(shardCount({ shards: 2 })).toBe(2);
   });
 
-  test("SC-2182: malformed values fall back to 1 and never to 0", () => {
+  test("malformed values fall back to 1 and never to 0", () => {
     for (const bad of [0, -3, 1.5, "4", true, [], {}, NaN, Infinity]) {
       expect(shardCount({ shards: bad })).toBe(1);
     }
   });
 
-  test("SC-2183: the count is capped, so a typo cannot bill 10000 runners", () => {
+  test("the count is capped, so a typo cannot bill 10000 runners", () => {
     expect(shardCount({ shards: 10000 })).toBe(32);
     expect(shardCount({ shards: 32 })).toBe(32);
     expect(shardCount({ shards: 33 })).toBe(32);
@@ -88,7 +88,7 @@ describe("#728: the emitted CI workflow", () => {
     return yml;
   };
 
-  test("SC-2184: the generator is reachable and writes a workflow", () => {
+  test("the generator is reachable and writes a workflow", () => {
     // A case that cannot find its subject reports no failures, which is
     // indistinguishable from a clean result. Establish presence first.
     const yml = emit(undefined);
@@ -96,7 +96,7 @@ describe("#728: the emitted CI workflow", () => {
     expect(yml).toContain("name: CI");
   });
 
-  test("SC-2185: an unsharded consumer gets no matrix at all", () => {
+  test("an unsharded consumer gets no matrix at all", () => {
     // Most downstream projects have never heard of this field. They must
     // get what they have today.
     const yml = emit(undefined);
@@ -106,7 +106,7 @@ describe("#728: the emitted CI workflow", () => {
     expect(yml).toContain("\n  test:");
   });
 
-  test("SC-2186: sharding keeps a job named exactly `test`", () => {
+  test("sharding keeps a job named exactly `test`", () => {
     // THE case. A matrix renames `test` to `test (1)`, and a repo whose
     // protection requires `test` then requires a context nothing reports —
     // every PR pending forever, no error anywhere saying why.
@@ -118,7 +118,7 @@ describe("#728: the emitted CI workflow", () => {
     expect(yml).toContain("shard: [1, 2, 3, 4]");
   });
 
-  test("SC-2186b: the aggregate runs on a failed shard, and does not hide siblings", () => {
+  test("the aggregate runs on a failed shard, and does not hide siblings", () => {
     const yml = emit(3);
     // Without always() a failed shard SKIPS the aggregate, and a skipped
     // required check is not a failed one.
@@ -132,7 +132,7 @@ describe("#728: the emitted CI workflow", () => {
     expect(yml).toContain("exit 1");
   });
 
-  test("SC-2186c: a malformed shard count emits the unsharded workflow, never an empty matrix", () => {
+  test("a malformed shard count emits the unsharded workflow, never an empty matrix", () => {
     // The direction this is allowed to be wrong in. A matrix over an empty
     // list runs no tests and reports success.
     for (const bad of [0, -1, 1.5] as unknown as number[]) {
@@ -144,7 +144,7 @@ describe("#728: the emitted CI workflow", () => {
 });
 
 /**
- * SC-2187 — turning sharding OFF must remove the matrix, not orphan it.
+ * Turning sharding OFF must remove the matrix, not orphan it.
  *
  * `mergeJobsSection` decides ownership by asking whether the generated file
  * contains a job of that name. For a conditionally emitted job that is the
@@ -159,7 +159,7 @@ describe("#728: the emitted CI workflow", () => {
  * prevent. The second case here is the control that survives it.
  */
 describe("#728: disabling sharding removes the matrix", () => {
-  test("SC-2187: a previously-sharded workflow loses test-shard when shards drop to 1", () => {
+  test("a previously-sharded workflow loses test-shard when shards drop to 1", () => {
     const sharded = `name: CI
 jobs:
   test-shard:
@@ -188,7 +188,7 @@ jobs:
     expect(merged).toContain("\n  test:");
   });
 
-  test("SC-2187b: a genuine consumer job is still carried forward — the control", () => {
+  test("a genuine consumer job is still carried forward — the control", () => {
     // Without this, 'delete the preserve branch' passes the case above while
     // destroying every consumer pipeline. This is what refuses that fix.
     const withConsumerJob = `name: CI
