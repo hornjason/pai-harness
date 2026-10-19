@@ -63,6 +63,19 @@ import { spawnSync } from "child_process";
 
 import { readWorktreeRemote, redactRemote, repoSlug } from "./worktree-repo";
 
+/**
+ * A path or branch name, quoted and redacted.
+ *
+ * `worktreeDiskIdentity` in the sibling module redacts everything it
+ * interpolates, and a control that does not is a parity gap a reader has
+ * to notice. Paths and branch names are not usually credential-bearing —
+ * but they come from the environment, a worktree can live under a
+ * directory named after one, and `redactRemote` leaves an ordinary path
+ * untouched, so the check costs nothing and the omission costs a leak
+ * nobody is looking for.
+ */
+const safe = (v: unknown) => JSON.stringify(redactRemote(String(v)));
+
 /** Every refusal and every pass travels through one of these. */
 export type LaunchBaseReading =
   /** cwd and projectRoot are the same working tree. The only clean answer. */
@@ -119,31 +132,41 @@ function branchOf(dir: string): string | null {
  * project", and that distinction is the whole of failure 2's quiet half.
  */
 export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseReading {
-  const here = { cwd: String(cwd ?? ""), projectRoot: String(projectRoot ?? "") };
+  // RAW for probing, REDACTED for reporting, and the two are never mixed
+  // up: `git -C` must receive the real path, and a redacted one would send
+  // the probe to a directory that does not exist — which resolves to
+  // CWD_NOT_A_REPO and reads exactly like the finding this module exists
+  // to report. Everything returned is built from `here`; everything handed
+  // to git comes from `raw`.
+  const raw = { cwd: String(cwd ?? ""), projectRoot: String(projectRoot ?? "") };
+  // Redacted ON THE READING, not at each call site. `check-launch-base.ts`
+  // serialises the whole object, and a caller that had to remember to
+  // redact is a control one caller will forget.
+  const here = { cwd: redactRemote(raw.cwd), projectRoot: redactRemote(raw.projectRoot) };
 
-  if (!here.projectRoot.trim()) {
+  if (!raw.projectRoot.trim()) {
     return {
       ...here,
       reading: "UNMEASURED",
       refusal:
-        "no projectRoot was given, so there is nothing for the session's working directory to be " +
+        "no projectRoot was given, so there is nothing for the launching session's working directory to be " +
         "compared against — a run that cannot state which tree it is for cannot check that it is in it",
     };
   }
 
-  const rootTop = toplevel(here.projectRoot);
+  const rootTop = toplevel(raw.projectRoot);
   if (rootTop === null) {
     return {
       ...here,
       reading: "UNMEASURED",
       refusal:
-        `projectRoot ${JSON.stringify(here.projectRoot)} is not a git repository git can resolve. ` +
-        "This is the run's own argument and not the session's working directory, so it is reported " +
+        `projectRoot ${safe(here.projectRoot)} is not a git repository git can resolve. ` +
+        "This is the run's own argument and not the launching session's working directory, so it is reported " +
         "as unmeasured rather than as the cwd problem this check exists for",
     };
   }
 
-  const cwdTop = toplevel(here.cwd);
+  const cwdTop = toplevel(raw.cwd);
   if (cwdTop === null) {
     // Failure 1, said about the right input. The runtime's own message for
     // this state names neither the directory nor the fact that it is the
@@ -152,8 +175,8 @@ export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseR
       ...here,
       reading: "CWD_NOT_A_REPO",
       refusal:
-        `the session's working directory ${JSON.stringify(here.cwd)} is not a git repository. ` +
-        `projectRoot ${JSON.stringify(here.projectRoot)} is one, and is correct — but agent worktrees ` +
+        `the launching session's working directory ${safe(here.cwd)} is not a git repository. ` +
+        `projectRoot ${safe(here.projectRoot)} is one, and is correct — but agent worktrees ` +
         "are cut by the runtime from the SESSION's directory, not from projectRoot, so this run " +
         "would die at the first isolated spawn. This is not a VCS-configuration problem and " +
         "WorktreeCreate hooks will not fix it: cd into projectRoot and relaunch",
@@ -177,8 +200,8 @@ export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseR
       ...here,
       reading: "UNMEASURED",
       refusal:
-        `the session's working directory ${JSON.stringify(cwdTop)} and projectRoot ` +
-        `${JSON.stringify(rootTop)} are different trees, and at least one of them has no origin ` +
+        `the launching session's working directory ${safe(cwdTop)} and projectRoot ` +
+        `${safe(rootTop)} are different trees, and at least one of them has no origin ` +
         `remote this can resolve (cwd: ${cwdSlug ?? redactRemote(String(cwdRemote.error ?? cwdRemote.url))}, ` +
         `projectRoot: ${rootSlug ?? redactRemote(String(rootRemote.error ?? rootRemote.url))}). ` +
         "Whether they are the same project is therefore unknown, and unknown is not clean",
@@ -190,8 +213,8 @@ export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseR
       ...here,
       reading: "DIFFERENT_REPO",
       refusal:
-        `the session's working directory ${JSON.stringify(cwdTop)} is a checkout of ${cwdSlug}, but ` +
-        `this run targets ${rootSlug} at ${JSON.stringify(rootTop)}. Agent worktrees are cut by the ` +
+        `the launching session's working directory ${safe(cwdTop)} is a checkout of ${cwdSlug}, but ` +
+        `this run targets ${rootSlug} at ${safe(rootTop)}. Agent worktrees are cut by the ` +
         "runtime from the SESSION's directory, so this run would do its work in the wrong repository " +
         "and succeed — which is how run wf_5e3ed885-98c put a remediation agent in a checkout of " +
         "one consumer's repository while working an issue in another (#218). cd into projectRoot and relaunch",
@@ -206,8 +229,8 @@ export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseR
     ...here,
     reading: "DIFFERENT_CHECKOUT",
     refusal:
-      `the session's working directory ${JSON.stringify(cwdTop)} and projectRoot ` +
-      `${JSON.stringify(rootTop)} are two different working trees of the same repository ` +
+      `the launching session's working directory ${safe(cwdTop)} and projectRoot ` +
+      `${safe(rootTop)} are two different working trees of the same repository ` +
       `(${rootSlug}) — cwd is on ${cwdBranch ?? "an unreadable branch"} and projectRoot is on ` +
       `${rootBranch ?? "an unreadable branch"}. Agent worktrees are cut by the runtime from the ` +
       "SESSION's directory, so this run would cut from a tree it was not handed, and nothing would " +

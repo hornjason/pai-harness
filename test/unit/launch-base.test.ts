@@ -170,7 +170,7 @@ describe("#644 SC-1: the launch is refused when cwd is not the tree the run was 
     const r = launchBaseReading(cwd, scratch("not-a-repo-root"));
     expect(r.reading).toBe("UNMEASURED");
     expect(refusalOf(r), "blaming cwd for the run's own bad argument sends the operator to the wrong place")
-      .toContain("not the session's working directory");
+      .toContain("not the launching session's working directory");
   });
 
   test("the refusal and the reading are one decision, not two", () => {
@@ -243,6 +243,63 @@ describe("#644 SC-1: the launch is refused when cwd is not the tree the run was 
         expect(refusalOf(r).length).toBeGreaterThan(40);
       }
     }
+  });
+});
+
+describe("#644: what the reading reports is redacted, and what it probes is not", () => {
+  /**
+   * The sibling control `worktreeDiskIdentity` redacts everything it
+   * interpolates; this one did not until the commit security review of
+   * `819f584b` pointed at the parity gap. A sanitiser nobody asserts is
+   * one the next edit removes, so it is asserted here.
+   */
+  test("a key-shaped token in a path is redacted out of the refusal AND the reading", () => {
+    const root = repo("redact-root", "hornjason/pai-harness");
+    const holder = scratch("redact");
+    // A path a worktree could genuinely sit under: somebody's scratch
+    // directory named after the token they were debugging with.
+    const leaky = join(holder, "ghp_0123456789abcdefghij");
+    mkdirSync(leaky, { recursive: true });
+
+    const r = launchBaseReading(leaky, root);
+    expect(r.reading, "the probe must have run against the REAL path").toBe("CWD_NOT_A_REPO");
+    expect(refusalOf(r)).not.toContain("ghp_0123456789abcdefghij");
+    expect(refusalOf(r)).toContain("<redacted>");
+    // The whole object is serialised by the script, so the fields carry it
+    // too — a caller that had to remember to redact is one that forgets.
+    expect(JSON.stringify(r)).not.toContain("ghp_0123456789abcdefghij");
+  });
+
+  test("an ordinary path is left exactly as it was — the redactor stays narrow", () => {
+    // A redactor that mangled every path would make every refusal
+    // unreadable, which is worse than the leak for the ordinary case.
+    const root = repo("redact-plain", "hornjason/pai-harness");
+    const plain = scratch("redact-plain-cwd");
+    const r = launchBaseReading(plain, root);
+    expect(r.cwd).toBe(plain);
+    expect(r.projectRoot).toBe(root);
+    expect(refusalOf(r)).toContain(plain);
+  });
+
+  test("the probe uses the raw path, not the redacted one", () => {
+    // The trap this guards: redacting before probing sends `git -C` to a
+    // directory that does not exist, which resolves to CWD_NOT_A_REPO —
+    // byte-identical to the finding the module exists to report. A real
+    // repository under a key-shaped directory name must read SAME_CHECKOUT.
+    const holder = scratch("raw-probe");
+    const under = join(holder, "ghp_abcdefghij0123456789");
+    mkdirSync(under, { recursive: true });
+    git(under, "init", "-q", "-b", "main");
+    git(under, "config", "user.email", "t@example.com");
+    git(under, "config", "user.name", "t");
+    git(under, "remote", "add", "origin", "https://github.com/hornjason/pai-harness.git");
+    writeFileSync(join(under, "a.txt"), "x\n");
+    git(under, "add", "-A");
+    git(under, "commit", "-q", "-m", "one");
+
+    const r = launchBaseReading(under, under);
+    expect(r.reading, "redacting before probing would make this CWD_NOT_A_REPO").toBe("SAME_CHECKOUT");
+    expect(launchBaseRefusal(under, under)).toBeNull();
   });
 });
 
