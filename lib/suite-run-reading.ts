@@ -53,6 +53,24 @@ const FAIL_LINE = /^\s*(\d+)\s+fail\s*$/gm;
 /** `Ran 11521 tests across 324 files.` — and `1 test across 1 file.` */
 const RAN_LINE = /^Ran\s+(\d+)\s+tests?\s+across\s+(\d+)\s+files?\./gm;
 
+/**
+ * `13 skip` and `818 todo` — bun prints these only when they are non-zero.
+ *
+ * Read so that `pass + fail` and `tests` stop being two unexplained numbers
+ * for one event (#673). On run `wf_62d68d55-81c` the changelog said 13084
+ * and the structured field said 13915; the difference was exactly this
+ * run's `13 skip + 818 todo`, and nothing in the record said so. A reader
+ * comparing either against a previous run's number may be comparing
+ * different quantities.
+ *
+ * ABSENT means zero here, and that is safe in a way the other counts are
+ * not: bun omits the line when the count is zero, so absent and zero are
+ * the same statement from the same producer. `pass`/`fail`/`tests` are
+ * different — those are omitted when the run DIED, which is not zero.
+ */
+const SKIP_LINE = /^\s*(\d+)\s+skip\s*$/gm;
+const TODO_LINE = /^\s*(\d+)\s+todo\s*$/gm;
+
 export interface MeasuredRun {
   status: "MEASURED";
   pass: number;
@@ -65,6 +83,16 @@ export interface MeasuredRun {
    * whole module is that a number nobody measured must not be reportable.
    */
   tests: number | null;
+  /**
+   * Tests the runner declined to execute, by kind (#673).
+   *
+   * These exist so that "tests that RAN" and "tests that EXIST" are both
+   * nameable without anybody subtracting to find out which is which. Zero
+   * rather than null: bun omits the line when the count is zero, so an
+   * absent line and a zero line are the same statement.
+   */
+  skip: number;
+  todo: number;
   /**
    * Test files the runner discovered, or null when it did not say.
    *
@@ -150,6 +178,10 @@ export function readSuiteRun(output: unknown): SuiteRun {
   const ran = lastMatch(RAN_LINE, output);
   const tests = ran ? Number(ran[1]) : null;
   const files = ran ? Number(ran[2]) : null;
+  const skipMatch = lastMatch(SKIP_LINE, output);
+  const todoMatch = lastMatch(TODO_LINE, output);
+  const skip = skipMatch ? Number(skipMatch[1]) : 0;
+  const todo = todoMatch ? Number(todoMatch[1]) : 0;
 
   // #490 SC-1, as a contradiction rather than as a second way of asking
   // whether anything ran. A runner claiming results it discovered no files to
@@ -178,7 +210,7 @@ export function readSuiteRun(output: unknown): SuiteRun {
     );
   }
 
-  return { status: "MEASURED", pass, fail, tests, files };
+  return { status: "MEASURED", pass, fail, tests, files, skip, todo };
 }
 
 /**

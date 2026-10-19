@@ -53,6 +53,28 @@
  * the honest path can no longer produce a wrong answer by accident, which is
  * how every instance of this has actually arrived.
  *
+ * WHY THERE IS A --scope, when there is no --verdict and no --failures (#673).
+ * Every value above was removed because the output already carries it and a
+ * caller who types it can type it wrong. The scope is the one fact the output
+ * does NOT carry: `bun test test/one.ts` and `bun test` print the same shape,
+ * so a run over one file records as a measurement of the suite. That is not a
+ * hypothetical — run `wf_62d68d55-81c` held `{"verdict":"PASS","tests":1,
+ * "files":1}` for nine minutes, and `PASS` over 1 test and `PASS` over 13915
+ * are the same word in the same field.
+ *
+ * So it is required rather than defaulted, and the direction of the failure
+ * is what makes that the right call: a default of `full` makes the quiet
+ * path the wrong one, and a default of `partial` makes every honest run
+ * record a reading no gate accepts. A caller who has not said which run they
+ * made has not made a statement about the suite.
+ *
+ * It does not reopen the forgery hole `--verdict` was. A caller who declares
+ * `full` over a subset is authoring a false measurement, which is the same
+ * thing as authoring the output file — named and out of scope below. What
+ * `--scope` buys is the same thing `--output` buys: the honest path can no
+ * longer produce a wrong answer by accident, which is how every instance of
+ * this has actually arrived.
+ *
  * WHY AN UNMEASURED RUN IS REFUSED RATHER THAN RECORDED. `lib/suite-measurement.ts`
  * says it: UNMEASURED is not a result, it is the statement that this run has
  * no suite evidence, and it is deliberately not writable — a recorded
@@ -62,7 +84,8 @@
  *
  * Usage:
  *   bun scripts/record-suite-measurement.ts --state <workflow-state.json> \
- *     --project <project root> --output <file holding the suite's output>
+ *     --project <project root> --output <file holding the suite's output> \
+ *     --scope full|partial
  */
 
 import { execFileSync } from "child_process";
@@ -80,8 +103,18 @@ import { readSuiteRun, type MeasuredRun } from "../lib/suite-run-reading";
  */
 export const REFUSE_EXIT = 1;
 
-const OPTIONS = new Set(["state", "project", "output"]);
+const OPTIONS = new Set(["state", "project", "output", "scope"]);
 const SHA = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * What the caller says they ran. See the `--scope` note at the top.
+ *
+ * Two words and not a boolean: `--full` absent would mean partial, and an
+ * absent flag is the thing a caller forgets rather than the thing they
+ * decide.
+ */
+export const SCOPES = ["full", "partial"] as const;
+export type SuiteScope = (typeof SCOPES)[number];
 
 /**
  * Flags this script used to take, refused by name.
@@ -157,6 +190,31 @@ export function measuredRun(outputPath: string | undefined): MeasuredRun {
 }
 
 /**
+ * The scope the caller declared, or a refusal.
+ *
+ * Refuses on absence rather than defaulting, for the reason the header gives:
+ * either default makes one of the two paths silently wrong, and the wrong one
+ * is always the one nobody is looking at.
+ */
+export function measuredScope(raw: string | undefined): SuiteScope {
+  if (raw === undefined) {
+    throw new Refused(
+      "--scope is required — `full` when the command you ran was this project's whole test " +
+        "suite, `partial` when it was anything less. It is the one thing the runner's output " +
+        "cannot say: a run over one file prints the same shape as a run over all of them, so " +
+        "without it a PASS over 1 test records exactly like a PASS over 13915 (#673)",
+    );
+  }
+  if (!(SCOPES as readonly string[]).includes(raw)) {
+    throw new Refused(
+      `--scope must be ${SCOPES.join(" or ")}, not ${JSON.stringify(raw.slice(0, 40))} — ` +
+        "a scope this script cannot read is not a scope the caller declared",
+    );
+  }
+  return raw as SuiteScope;
+}
+
+/**
  * The commit the suite ran against, read from the tree rather than told.
  *
  * Refuses rather than falling back. `git rev-parse` prints `HEAD` back at you
@@ -208,23 +266,71 @@ export function shaFromGitOutput(projectRoot: string, out: string): string {
 }
 
 /**
- * The record to persist. PASS means zero failures; it cannot mean anything else.
+ * The record to persist. PASS means zero failures over the whole suite; it
+ * cannot mean anything else.
  *
  * `tests` and `files` ride along as the run's own coverage (#490): a verdict
  * with no coverage beside it cannot tell `0 fail` over three hundred files
  * from `0 fail` over one empty one. They are written as `null` rather than
  * omitted when the runner did not report them, because absent would mean
  * "recorded by a harness older than this field".
+ *
+ * `ran`, `skip` and `todo` ride along for #673: `tests` is the COLLECTED
+ * total and `ran` is `pass + fail`, and on the run that produced that issue
+ * they were 13915 and 13084. Both are correct and neither said which it was,
+ * so a reader comparing one against a previous run's number could be
+ * comparing different quantities. Recording all four is what makes the
+ * difference readable without subtracting to find it.
+ *
+ * **`PARTIAL` is a verdict here and is not one anywhere else.** It is the
+ * state criterion 1 of #673 asks for: a reading that was taken, over
+ * something smaller than the suite. Every consumer goes through
+ * `readSuiteMeasurement`, which resolves it to UNMEASURED by name — so there
+ * is no path by which a partial reading satisfies a gate, and exactly one
+ * place that decides so.
  */
-export function buildMeasurement(sha: string, run: MeasuredRun): Record<string, unknown> {
+export function buildMeasurement(
+  sha: string,
+  run: MeasuredRun,
+  scope: SuiteScope,
+): Record<string, unknown> {
   return {
-    verdict: run.fail === 0 ? "PASS" : "FAIL",
+    verdict: scope === "partial" ? "PARTIAL" : run.fail === 0 ? "PASS" : "FAIL",
     measuredSha: sha,
     failures: run.fail,
+    ran: run.pass + run.fail,
+    skip: run.skip,
+    todo: run.todo,
     tests: run.tests,
     files: run.files,
     measuredAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
+}
+
+/**
+ * The run's coverage as one phrase, named rather than left to arithmetic.
+ *
+ * ONE binding, and it is the whole of #673's second half. The changelog line
+ * used to say `${run.pass + run.fail} test(s)` while `suiteMeasurement.tests`
+ * said the collected total — one event, two numbers, neither labelled. The
+ * quantity the prose leads with is now the same one the field holds, and the
+ * other three are beside it, so the two can be compared without anybody
+ * deriving a third number to do it.
+ *
+ * When the runner reported no collected total, the phrase says the number it
+ * does have IS the ran count rather than quietly promoting it. A quantity
+ * that changes meaning depending on what the runner printed is the defect
+ * this function exists to remove, not a fallback.
+ */
+export function coverageSentence(run: MeasuredRun): string {
+  const ran = run.pass + run.fail;
+  // The separator travels with the clause: "across 387 file(s)" reads as a
+  // continuation and "file count not reported" reads as a second item.
+  const where = run.files === null ? ", file count not reported" : ` across ${run.files} file(s)`;
+  const declined = `${run.skip} skipped, ${run.todo} todo`;
+  return run.tests === null
+    ? `${ran} test(s) that ran (the runner reported no collected total, ${declined})${where}`
+    : `${run.tests} test(s) collected (${ran} ran, ${declined})${where}`;
 }
 
 /**
@@ -245,6 +351,21 @@ export function buildMeasurement(sha: string, run: MeasuredRun): Record<string, 
  * The enum is why both exist: `EnvironmentLocalSchema` accepts
  * `PASS | FAIL | SKIP` and nothing richer, and the measurement has to carry
  * the SHA it was taken at or it is not evidence (#224).
+ *
+ * A PARTIAL measurement writes NOTHING there, and deletes what is there
+ * already (#673). `EnvironmentLocalSchema` has no word for it — the enum is
+ * `PASS | FAIL | SKIP` — and the nearest one is the wrong one:
+ * `suiteVerdictViolations` returns `[]` for `SKIP`, so recording a partial
+ * run as a skip would be a partial reading SATISFYING the gate, which is
+ * `.claude/rules/config-access.md`'s Silent Default Substitution at the one
+ * site this issue is about. Absent refuses, by the clause that already
+ * exists: *local.tests not set — an unmeasured suite is not a passing suite*.
+ *
+ * Deleting rather than leaving a previous run's value is the same argument
+ * one step on. A stale `PASS` beside a `PARTIAL` measurement already fails
+ * closed — the gate reads the measurement as UNMEASURED and refuses the
+ * disagreement — but it fails closed while stating two things, and a record
+ * a reader has to reconcile is a record somebody reconciles wrongly.
  */
 export function applyMeasurement(
   state: Record<string, any>,
@@ -253,27 +374,27 @@ export function applyMeasurement(
   state.suiteMeasurement = measurement;
   state.environments = state.environments || {};
   state.environments.local = state.environments.local || {};
-  state.environments.local.tests = measurement.verdict;
+  if (measurement.verdict === "PARTIAL") delete state.environments.local.tests;
+  else state.environments.local.tests = measurement.verdict;
 }
 
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
     if (!args.state) throw new Refused("--state is required");
+    const scope = measuredScope(args.scope);
     const sha = measuredSha(args.project);
     const run = measuredRun(args.output);
 
     const state = JSON.parse(readFileSync(args.state, "utf-8"));
-    const measurement = buildMeasurement(sha, run);
+    const measurement = buildMeasurement(sha, run, scope);
     applyMeasurement(state, measurement);
     state.changelog = state.changelog || [];
-    const coverage = run.files === null
-      ? `${run.pass + run.fail} test(s), file count not reported`
-      : `${run.pass + run.fail} test(s) across ${run.files} file(s)`;
     state.changelog.push({
       ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
       event: "suite-measurement",
-      detail: `${measurement.verdict}: ${run.fail} failing test(s) of ${coverage} at ${sha}`,
+      detail:
+        `${measurement.verdict}: ${run.fail} failing test(s) of ${coverageSentence(run)} at ${sha}`,
       actor: "gate-runner",
     });
 
@@ -281,8 +402,12 @@ if (import.meta.main) {
     console.log(JSON.stringify({
       ok: true,
       verdict: measurement.verdict,
+      scope,
       measuredSha: sha,
       failures: run.fail,
+      ran: run.pass + run.fail,
+      skip: run.skip,
+      todo: run.todo,
       tests: run.tests,
       files: run.files,
     }));

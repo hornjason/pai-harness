@@ -177,12 +177,29 @@ and **absent means UNMEASURED** — not "clean".
 
 | Field | Type | Meaning |
 |---|---|---|
-| `verdict` | `PASS` \| `FAIL` | Derived from the count, never supplied by a caller |
+| `verdict` | `PASS` \| `FAIL` \| `PARTIAL` | Derived from the count and the declared scope, never supplied by a caller |
 | `measuredSha` | string | The commit the suite actually ran against — 7-40 hex, never a ref name |
 | `failures` | number | Failing tests: `0` for a PASS, at least `1` for a FAIL |
 | `measuredAt` | string | ISO timestamp of the run (optional) |
-| `tests` | number \| null | Tests the runner said it executed, or `null` when it did not say (#490) |
+| `tests` | number \| null | Tests the runner COLLECTED, or `null` when it did not say (#490) |
+| `ran` | number | Tests that actually executed — `pass + fail`. Absent only on a record older than #673 |
+| `skip` | number | Tests the runner skipped. Absent only on a record older than #673 |
+| `todo` | number | Tests marked todo. Absent only on a record older than #673 |
 | `files` | number \| null | Test files the runner said it discovered, or `null` when it did not say. Never `0` — a run over no files is refused, not recorded (#490) |
+
+**`tests` and `ran` are different quantities and both are recorded (#673).**
+On run `wf_62d68d55-81c` they were `13915` and `13084`; the changelog line carried
+one, this record carried the other, and nothing said which was which, so a reader
+comparing either against a previous run's number could be comparing different
+things. The difference is exactly `skip + todo`, which is why all four are here —
+nobody should have to subtract to learn what a number means.
+
+**`PARTIAL` means the reading was taken over less than the whole suite**, declared
+by the caller through `--scope` because the runner's output cannot say it: `bun
+test test/one.ts` and `bun test` print the same shape. It is writable and it is
+not a result — `readSuiteMeasurement` resolves it to `UNMEASURED` by name, so no
+gate can act on it, and the recorder writes no `environments.local.tests` at all
+for one (`SKIP` would SATISFY the gate, which is the defect inverted).
 
 **A measurement with no `measuredSha` is rejected at write time.** A count with no
 commit attached cannot be checked against the tree being shipped, so it is not
@@ -208,7 +225,7 @@ than `0`, so a consumer cannot add an unmeasured run into a clean total.
 Write it with `scripts/record-suite-measurement.ts`, not by hand:
 
 ```
-bun scripts/record-suite-measurement.ts --state <workflow-state.json> --project <project root> --output <captured suite output>
+bun scripts/record-suite-measurement.ts --state <workflow-state.json> --project <project root> --output <captured suite output> --scope full|partial
 ```
 
 The commit is read from `--project`, not supplied (#312). A SHA a caller types

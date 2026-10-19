@@ -28,15 +28,21 @@ const SHA = /^[0-9a-f]{7,40}$/i;
 
 /**
  * UNMEASURED is not a result. It is the statement that this run has no suite
- * evidence, and it is deliberately not writable — see gates/schema.ts, which
- * accepts PASS and FAIL only. A recorded UNMEASURED would be a measurement
- * saying there was no measurement.
+ * evidence, and it is deliberately not writable — see gates/schema.ts, whose
+ * writable verdicts are PASS, FAIL and PARTIAL. A recorded UNMEASURED would
+ * be a measurement saying there was no measurement.
+ *
+ * PARTIAL is writable and is not a verdict THIS type has, which is the whole
+ * of #673's first half: a reading taken over less than the suite is a reading
+ * that was taken, so the recorder may write it — and it is not a statement
+ * about the suite, so every consumer must see UNMEASURED. The conversion
+ * happens in `readSuiteMeasurement` below and nowhere else.
  */
 export type SuiteVerdict = "PASS" | "FAIL" | "UNMEASURED";
 
 /** What a recorder persists at `suiteMeasurement` in workflow-state.json. */
 export interface SuiteMeasurement {
-  verdict: "PASS" | "FAIL";
+  verdict: "PASS" | "FAIL" | "PARTIAL";
   /** The commit the suite actually ran against. */
   measuredSha: string;
   /** Failing tests. 0 for a PASS, at least 1 for a FAIL. */
@@ -136,6 +142,19 @@ export function readSuiteMeasurement(state: unknown): SuiteReading {
   }
 
   const verdict = raw.verdict;
+  // #673 — a reading the caller declared PARTIAL. Its own branch rather than
+  // falling through to the clause below, because "nobody recognises this
+  // word" and "this run measured some tests and said so" are different
+  // things to go and do something about: the first is a corrupt record and
+  // the second is a run that has not measured the suite YET.
+  if (verdict === "PARTIAL") {
+    return unmeasured(
+      `the suite measurement for ${measuredSha} was taken over PART of the suite: the caller ` +
+        `declared the run it recorded was less than the whole of it, so what it found is not a ` +
+        `statement about the suite (#673). ${describe(raw.tests)} test(s) collected is not a ` +
+        `reading a gate can act on, whatever the count`,
+    );
+  }
   if (verdict !== "PASS" && verdict !== "FAIL") {
     return unmeasured(
       `the suite measurement for ${measuredSha} carries no usable verdict (got ${describe(verdict)}) — ` +

@@ -157,8 +157,21 @@ afterEach(() => {
   MUTANTS = [];
 });
 
+/**
+ * Run the recorder, declaring a full-suite scope unless the caller says
+ * otherwise (#673).
+ *
+ * Injected rather than repeated at twenty call sites, and injected
+ * CONDITIONALLY so the flag can still be varied: every case in this file is
+ * about something other than the scope, and `--scope full` is what every one
+ * of them means. The one case that is about the scope passes its own, and
+ * `test/unit/suite-denominator.test.ts` holds the refusals for an absent and
+ * an unreadable one — which is why this helper may default and that file may
+ * not.
+ */
 function run(args: string[], script = SCRIPT) {
-  const r = spawnSync("bun", [script, ...args], { encoding: "utf-8" });
+  const scoped = args.includes("--scope") ? args : [...args, "--scope", "full"];
+  const r = spawnSync("bun", [script, ...scoped], { encoding: "utf-8" });
   return { code: r.status ?? -1, out: r.stdout ?? "", err: r.stderr ?? "" };
 }
 
@@ -581,8 +594,13 @@ describe("#224: the properties the mutant depends on", () => {
 
 describe("#224: the schema exports the field list the guide is checked against", () => {
   test("SUITE_MEASUREMENT_FIELDS names every field of the measurement", () => {
+    // `ran`, `skip` and `todo` joined in #673: `tests` is the COLLECTED
+    // total and `ran` is `pass + fail`, and recording only one of them is
+    // how one event came to carry two unlabelled denominators.
     expect([...SUITE_MEASUREMENT_FIELDS].sort())
-      .toEqual(["failures", "files", "measuredAt", "measuredSha", "tests", "verdict"]);
+      .toEqual([
+        "failures", "files", "measuredAt", "measuredSha", "ran", "skip", "tests", "todo", "verdict",
+      ]);
   });
 
   test("SC-1838: the schema refuses a measurement over zero files", () => {

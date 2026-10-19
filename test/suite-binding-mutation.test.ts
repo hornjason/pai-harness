@@ -213,6 +213,9 @@ function recordFixtureSuite(): { code: number; err: string } {
       "--state", join(WORK, "workflow-state.json"),
       "--project", PROJECT,
       "--output", out,
+      // #673 — the fixture above runs the project's whole suite, and the
+      // scope is the one thing the recorder cannot read out of the output.
+      "--scope", "full",
     ],
     { encoding: "utf-8", timeout: 60000 },
   );

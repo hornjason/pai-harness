@@ -370,7 +370,11 @@ function reasonOf(attempt: Parameters<typeof readSuiteAttempt>[0]): string {
 function recordedState(attempt: Parameters<typeof readSuiteAttempt>[0]): Record<string, unknown> {
   const run = readSuiteAttempt(attempt);
   if (run.status !== "MEASURED") return {};
-  return { suiteMeasurement: buildMeasurement("0f1e2d3c4b5a69788796a5b4c3d2e1f0abcdef01", run) };
+  // `"full"`: these fixtures are whole-suite runs, and #673 made the scope a
+  // required argument because the output cannot say which kind of run it was.
+  return {
+    suiteMeasurement: buildMeasurement("0f1e2d3c4b5a69788796a5b4c3d2e1f0abcdef01", run, "full"),
+  };
 }
 
 describe("#621 AC-2: a measurement that failed records UNMEASURED and says which way", () => {
