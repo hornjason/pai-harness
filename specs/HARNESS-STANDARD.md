@@ -11163,3 +11163,178 @@ are load-bearing in a second direction.
 None of the mutations is left in the tree; all were run and reverted, and
 `workflows/ship.js` was confirmed byte-identical to the measured source
 afterwards by SHA-256.
+
+## #598 — a detector whose success line claimed more than its character class could see
+
+`scripts/validate-workflow.ts` matched declarations with
+`^(?:let|const)\s+([A-Z_][A-Z_0-9]*)\s*=`. #585 widened it from writes to
+reads and from indented usages to any column, and left the character class
+alone — so every identifier that is not SCREAMING_SNAKE_CASE sat outside the
+check entirely while the output said, in full, *"✓ TDZ check: no temporal
+dead zone issues"*. Not "no SCREAMING_SNAKE TDZ". A reader who trusts that
+line stops looking, which is what cost a day on PR #576.
+
+**The live instance is in this repository and it is not hypothetical.**
+`workflows/ship.js:860` declares `let primaryBranchBefore = ''` beside the
+worktree registry, roughly 3,800 lines above the only line that assigns it,
+with a docblock saying why: `terminalFailure` reads it, and `terminalFailure`
+is reachable from phases that run long before `establishRunRef` executes. The
+declaration was put there deliberately. Had it stayed where it is assigned —
+which is where a reader who had not been told would put it — the run would
+have died on its own exit path, and this validator would have passed the file
+twice: once in CI, once on the way out.
+
+### Which direction a widened detector is allowed to be wrong in
+
+Widening a detector is the change most likely to buy green with blindness,
+and the obvious guard against that is to measure what it now catches. That is
+the wrong half to worry about here. **Over-detection is not the safe
+direction for this script**: a validator that refuses a correct
+`workflows/ship.js` is a validator people route around, and a routed-around
+validator catches nothing at all. A missed TDZ costs one line somebody adds
+later; a false positive costs the check.
+
+So the widening is paired with a refusal to guess. The character class is now
+`[A-Za-z_$][A-Za-z0-9_$]*`, and a tracked name that is **bound anywhere else
+in the file** — as a parameter, an inner `let`/`const`/`var`, a `catch`
+binding, a destructured element or a function name — is DROPPED rather than
+resolved, because this scanner does not resolve scopes and a mention inside a
+scope that re-binds the name is not a mention of the module binding. On
+`ship.js` that is ten names, every one of them a module-scope const that is
+also a parameter on a function declared above it:
+
+```
+agentResults, gradeResult, hasUI, headSha, proveVerdict,
+refusals, scopeVerdict, suiteReading, testCommand, testedSha
+```
+
+The column-zero anchor stays, and it is worth saying that it is not a naming
+restriction: it is the scope test. An indented `let`/`const` is block- or
+function-scoped, its dead zone is bounded by its own block, and tracking it
+would compare a read in one scope against a declaration in another.
+
+### What the drop does to the success line
+
+Dropping names silently would re-create the defect one level up — a PASS over
+141 names and a PASS over 0 names print the same word. So the coverage line
+reports how many of the declarations it FOUND it was able to track, and
+**names every one it declined**, because "10 not tracked" tells a reader the
+scan is partial while the list tells the one person who needs to know which
+ten. On the live tree:
+
+```
+✓ TDZ check: no temporal dead zone issues — 141 of 151 module declaration(s)
+tracked, 652 reference(s) scanned; 10 re-bound elsewhere and NOT checked:
+agentResults, gradeResult, hasUI, headSha, proveVerdict, refusals,
+scopeVerdict, suiteReading, testCommand, testedSha
+```
+
+Before #598 the same file read `62 tracked declaration(s), 238 reference(s)
+scanned`. All six workflow files in the tree exit 0 under the widened
+detector, three of them with nothing dropped at all.
+
+### The cheapest wrong fix, applied and measured
+
+**Named: widen the character class and stop there.** One character class, no
+shadow handling. It is the 5pm repair, it makes the reported symptom go away,
+and the camelCase cases written to prove the widening all go GREEN under it —
+which is the fifth shape in `.claude/rules/checks-must-be-able-to-fail.md`,
+arriving in the file that records it.
+
+Applied. **8 of 29 red**, and the live workflow goes from exit 0 to exit 1
+with ten false positives on a correct file:
+
+```
+✗ TDZ: 'testCommand' read at line 517 but declared at line 3321
+… eight more …
+✗ TDZ check: 10 violation(s) — 151 of 151 module declaration(s) tracked
+```
+
+**Say which cases are witnesses and which are controls, or the next reader
+counts fifteen.** The name-class pair, the lowercase and `$` cases and the
+reachability case WITNESS the widening and are green under the wrong fix —
+they do not protect against it. What catches it is the seven control pairs
+and AC-6's real-`ship.js` case: each is a CORRECT file the naive detector
+refuses, and three of the seven plus three live-tree cases are exactly the 8.
+
+### Every control is a derived pair, in both directions
+
+#585 established that a fixture pair must be DERIVED, not written twice, so
+the two halves cannot gain a second difference on the next edit. #598 applies
+that to the *name class* — one source string with `SHIP_CONFIG`, the other
+`replaceAll`'d to `shipConfig`, with the premise asserted: the pre-#598 class
+admits one and refuses the other, the line counts agree, and exactly the two
+lines the check reasons about differ.
+
+The same discipline runs the other way, which is the part a widening needs
+most. Every "must NOT be reported" control is a pair derived by ONE
+substitution, so the clean half cannot be clean for a reason the caught half
+also has:
+
+| Dimension | Clean half | One substitution away |
+|---|---|---|
+| inside a string literal | `const note = 'shipConfig'` | `const note = shipConfig` |
+| inside a comment | `// shipConfig` | `shipConfig` |
+| a property of another object | `console.log(bag.shipConfig)` | `console.log(shipConfig)` |
+| an object-literal key | `{ shipConfig: 1 }` | `{ shipConfig }` |
+| a parameter re-binding the name | `function render(shipConfig) {` | `function render(given) {` |
+| an inner `const` re-binding it | `const shipConfig = 1` | `const given = 1` |
+| a `catch` binding re-binding it | `catch (shipConfig) {` | `catch (given) {` |
+
+A control with no caught twin proves only that the scanner found nothing,
+which is also what a scanner that reads nothing reports. And for the three
+shadow rows the clean verdict is asserted to SAY the name was dropped: "the
+name was tracked and nothing was wrong" and "the name was never checked" are
+different states, and silence is the second one wearing the first one's
+clothes.
+
+### Success Criteria
+
+- [x] SC-2161: test/validate-workflow-tdz.test.ts contains [both halves are refused] — one source string carries a SCREAMING_SNAKE name and the camelCase half is derived from it by rename so the pair cannot gain a second difference; the premise asserts the pre-#598 character class admits one and refuses the other and that exactly the two lines the check reasons about differ
+- [x] SC-2162: test/validate-workflow-tdz.test.ts contains [an all-lowercase name and a $-prefixed one are refused too] — the property is every shape a JS identifier can take and not camelCase specifically so an all-lowercase and a $-prefixed declaration are each executed against the real script and against the REFUSE_EXIT=0 mutant
+- [x] SC-2163: test/validate-workflow-tdz.test.ts contains [the mutant is refused naming primaryBranchBefore and real ship.js exits 0] — the live hazard is rebuilt by relocating ship.js's own declaration to the line that assigns it and the refusal is asserted to be the reachability one rather than merely a violation because a line-order comparison cannot see this shape
+- [x] SC-2164: test/validate-workflow-tdz.test.ts contains [and the one-substitution twin is refused] — every form that must NOT be reported is a pair derived by one substitution with the clean half asserted to pass and the twin asserted to refuse and the shadow rows additionally asserted to NAME the dropped binding rather than fall silent
+- [x] SC-2165: test/validate-workflow-tdz.test.ts contains [the untracked ones are NAMED] — the coverage line is read off an executed run and asserted to track more than the 62 declarations the pre-#598 class found with every declined name listed individually and the list length equal to the difference between found and tracked
+- [x] SC-2166: test/validate-workflow-tdz.test.ts contains [no name the pre-#598 class covered has been dropped from ship.js] — the widening may not pay for itself by quietly dropping names the check already had so no name matching the pre-#598 class may appear in ship.js's declined list and the list is asserted non-empty first because an empty list satisfies that vacuously
+
+What was broken to prove the cases fail, run and counted rather than
+asserted, over `test/validate-workflow-tdz.test.ts` (29 tests). Every count
+was predicted before the battery ran, and **the baseline row was read before
+any mutation row** — an instrument that has stopped reporting takes the
+baseline down with it, and that is the row nobody mutates anything to
+produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 29 pass, 0 fail | **29 pass, 0 fail** | — |
+| the genuinely pre-#598 `scripts/validate-workflow.ts`, from `origin/main` | 16 | **16 of 29** | `const seen = []` / `seen.push(shipConfig)` / `const shipConfig = 3`: the real script prints ``✗ TDZ: 'shipConfig' read at line 2 but declared at line 3`` and exits 1, the pre-#598 source prints ``✓ TDZ check: no temporal dead zone issues — 0 tracked declaration(s), 0 reference(s) scanned`` and exits 0 |
+| the identifier class alone restored to `[A-Z_][A-Z_0-9]*` | 15 | **15 of 29** | the same three-line file. One red fewer than the row above: the coverage line keeps its #598 shape, so *"ship.js's clean verdict carries non-zero tracked declarations"* can still parse it |
+| **the cheapest wrong fix** — the class widened and the shadow drop removed | 8 | **8 of 29** | `workflows/ship.js`: the real script exits 0 reporting 141 of 151 tracked, the mutant exits 1 with ten violations over a correct file |
+| the parameter rule removed from `bindingSites` | 6 | **6 of 29** | the same file: the real script declines `testCommand`, the mutant tracks it and reports two violations on lines 517 and 547 |
+| the default-value skip removed from `bumpBindings` | 1 | **1 of 29** | the same file: the real script declines 10 names, the mutant declines **12** — `HARNESS_ROOT` and `PROJECT_ROOT`, dropped because `function collectDestination(dir, projectRoot = PROJECT_ROOT, harnessRoot = HARNESS_ROOT)` reads them in a default |
+| the declined names counted but not NAMED in the coverage line | 6 | **6 of 29** | the same file: the real script ends `…NOT checked: agentResults, gradeResult, …`, the mutant ends `…10 re-bound elsewhere` |
+| the test's own name-class derivation neutered (`CAMEL_SOURCE = SNAKE_SOURCE`) | 2 | **2 of 29** | the pair itself: the premise case reads the two as identical, and the camel fixture's run names `SHIP_CONFIG` where the case expects `shipConfig` |
+| the control pairs' own substitution neutered (`exposed = pair.clean`) | 7 | **7 of 29** | all seven: the twin is byte-identical to the clean half, so the premise refuses before any verdict is read |
+
+**The default-value row is the reason this table exists.** It was predicted
+at **0** before the new case was written, and a 0 is the signature
+`.claude/rules/checks-must-be-able-to-fail.md` tells you to read as a
+finding — so the input on which mutant and original differ was named first
+(the two names above, present in one output and absent from the other), which
+established that the mutation really applied and nothing caught it. The
+missing case is SC-2166: a widening is allowed to cost nothing, and it is NOT
+allowed to pay for itself by quietly dropping two names the check had tracked
+since before #598. With that case added the row is 1.
+
+**One row matched its number with a different membership, and that is worth a
+sentence rather than a shrug.** The parameter row was predicted to red
+SC-2166; it reds SC-2165 instead. `bindingSites` still declines names through
+its `const`/destructuring rules when the parameter rule is gone, so ship.js's
+declined list is non-empty — SC-2166's premise and assertion both hold — but
+it no longer contains `testCommand`, which is what SC-2165 asserts by name. A
+count is the proxy; which names are in the list is the property.
+
+None of the eight mutations is left in the tree; all were run and reverted,
+and `scripts/validate-workflow.ts`, `test/validate-workflow-tdz.test.ts` and
+`workflows/ship.js` were confirmed byte-identical to the measured source
+afterwards by SHA-256. `workflows/ship.js` is unmodified by #598.
