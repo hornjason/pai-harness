@@ -12,16 +12,19 @@
  * What IS durable is the two MECHANISM claims the section makes about this
  * repository's own code, and those are the ones a later reader would act on:
  *
- *   1. the section selector reaches `## Testing Rules` for COMP-2 and for
- *      nothing else, so a brief carrying only that heading sends every other
- *      COMP to NO_SECTION;
+ *   1. a brief carrying ONE of the three headings accepts a reinforcement for
+ *      every COMP id, and a brief carrying none of them still refuses;
  *   2. the consecutive-fail counter is reset by an N/A, not merely by a pass.
  *
- * Both are driven through the real functions. The first is the correction
- * #645's own premise needed — the issue says no brief carries the sections,
- * and the measured answer is that two do and the selector cannot reach one of
- * them — so it is the claim most worth making executable rather than leaving
- * as a sentence in a spec nobody runs.
+ * Both are driven through the real functions. Claim 1 was written the other
+ * way up by #645 — *the selector reaches `## Testing Rules` for COMP-2 and
+ * for nothing else* — because that was the measured behaviour of the code on
+ * the day, and it is the correction #645's own premise needed: the issue said
+ * no brief carries the sections, and the measured answer was that two do and
+ * the selector could not reach one of them. #704 changed the code, so the
+ * case changed with it. The old reading is kept in the comment on the case
+ * rather than deleted, because a record of what the loop used to do is the
+ * only thing that makes the spec's pre-fix counts re-readable.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -80,7 +83,7 @@ function runOne(brief: string, compId: string): { applied: string[]; kinds: stri
   return { applied, kinds: skipOutcomes.map((o) => o.kind) };
 }
 
-describe("SC-2116: the selector reaches `## Testing Rules` for COMP-2 and nothing else", () => {
+describe("SC-2116 / SC-2175: one heading in a brief is enough, for every COMP", () => {
   const TESTING_ONLY = `# Marcus\n\n## Testing Rules\n\n- Write the test first.\n`;
 
   test("COMP-2 reaches the Testing Rules heading and inserts", () => {
@@ -92,24 +95,29 @@ describe("SC-2116: the selector reaches `## Testing Rules` for COMP-2 and nothin
     expect(kinds).toEqual([]);
   });
 
-  test("a COMP that is not COMP-2 lands on NO_SECTION in the same brief", () => {
-    // #645's real cause, and not the one the issue states. The brief DOES
-    // carry one of the three headings the inserter looks for — so the premise
-    // "no brief carries the sections" is false — and the action is dropped
-    // anyway, because the only heading present is reachable for one COMP id.
+  test("a COMP that is not COMP-2 reaches the SAME lone heading (#704)", () => {
+    // This case is the statement of #645's finding, updated by the fix for
+    // it. It USED to assert `NO_SECTION`, and that was the measured truth of
+    // the pre-#704 selector: `## Testing Rules` was reachable only for the
+    // literal string "COMP-2", so marcus — whose brief carries that heading
+    // and no other of the three — refused every other COMP while holding an
+    // insertion point the whole time. 136 of 193 recorded actions, measured
+    // with `scripts/replay-hill-climb-history.ts`; 1 of 193 after the fix,
+    // and that one is quinn, whose brief carries none of the three.
     const { applied, kinds } = runOne(TESTING_ONLY, "COMP-7");
-    expect(applied).toEqual([]);
-    expect(kinds).toContain("NO_SECTION");
-  });
-
-  test("the same COMP inserts once the brief carries a heading it can reach", () => {
-    // Non-vacuous: COMP-7 is not simply un-insertable. Varying ONE thing —
-    // the heading in the brief — flips the outcome, so the case above is
-    // about the selector and not about COMP-7.
-    const WITH_NEVER_DO = `# Marcus\n\n## Testing Rules\n\n- Write the test first.\n\n## Never Do\n\n- Guess.\n`;
-    const { applied, kinds } = runOne(WITH_NEVER_DO, "COMP-7");
     expect(applied).toHaveLength(1);
     expect(kinds).toEqual([]);
+  });
+
+  test("the SAME brief refuses once the heading is taken away", () => {
+    // Non-vacuous, and the direction matters: the case above would also be
+    // green over a selector that resolves everything unconditionally. Varying
+    // ONE thing — the heading, renamed to something outside the three — has
+    // to flip it back to a refusal, or the pair measures nothing (#585).
+    const NO_HEADINGS = `# Marcus\n\n## House Style\n\n- Write the test first.\n`;
+    const { applied, kinds } = runOne(NO_HEADINGS, "COMP-7");
+    expect(applied).toEqual([]);
+    expect(kinds).toEqual(["NO_SECTION"]);
   });
 });
 
