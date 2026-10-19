@@ -2,6 +2,8 @@ import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } fr
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 
+import { BRIEF_CONSTRAINTS_SECTION } from "./agents-md-sections.js";
+
 /**
  * The history's record shape (#116).
  *
@@ -664,16 +666,32 @@ export function applyHillClimb(
       continue;
     }
 
+    // #655. The project-owned region comes FIRST, and that is the whole
+    // point of this ordering rather than a preference between headings:
+    // `## Efficiency Rules`, `## Testing Rules` and `## Never Do` are
+    // generated from `templates/agent-briefs/`, so a reinforcement written
+    // into one of them is destroyed by the next `bunx rungate scaffold .`.
+    // `## Project Constraints` is the one region of a brief a re-scaffold
+    // carries forward verbatim, so a rule mined from this repo's own
+    // history survives there and nowhere else in the file.
+    //
+    // Preference, not creation. A brief with none of the four headings
+    // still reaches `NO_SECTION` below, which is the state #646 made
+    // reportable — writing the heading here would make that state
+    // unreachable and silently change what every receipt says.
+    const projectIdx = content.indexOf(BRIEF_CONSTRAINTS_SECTION.label);
     const efficiencyIdx = content.indexOf("## Efficiency Rules");
     const testingIdx = content.indexOf("## Testing Rules");
     const neverIdx = content.indexOf("## Never Do");
 
     const sectionIdx =
-      action.compId === "COMP-2" && testingIdx !== -1
-        ? testingIdx
-        : efficiencyIdx !== -1
-          ? efficiencyIdx
-          : neverIdx;
+      projectIdx !== -1
+        ? projectIdx
+        : action.compId === "COMP-2" && testingIdx !== -1
+          ? testingIdx
+          : efficiencyIdx !== -1
+            ? efficiencyIdx
+            : neverIdx;
 
     if (sectionIdx === -1) {
       skipOutcomes.push({ kind: "NO_SECTION", compId: action.compId });

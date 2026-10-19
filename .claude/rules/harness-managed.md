@@ -21,7 +21,7 @@ forever.
 | `AGENTS.md` | section-preserving | Everything but `## Hard Constraints` is generated from the scan and `.claude/rungate/`; put non-inferable project rules in that section and they carry forward | Don't hand-edit the generated sections — a re-scaffold rewrites them without reporting it |
 | `.github/workflows/ci.yml` | job-preserving | Set `ci` fields in `.claude/rungate/config.json`; add your own jobs alongside the generated `test` job | Don't edit the generated `test` job |
 | `.github/workflows/gates.yml` | job-preserving | Settings from `.claude/rungate/config.json`; add your own jobs alongside the generated `gates` job | Don't edit the generated `gates` job |
-| `.claude/agents/*.md` | regenerate | Settings from `.claude/rungate/roles.json` | Don't edit briefs |
+| `.claude/agents/*.md` | section-preserving | Everything but `## Project Constraints` is generated from `.claude/rungate/roles.json` and the templates; put rules mined from this repo's own history in that section and they carry forward | Don't hand-edit the generated sections — a re-scaffold rewrites them without reporting it |
 | `.claude/rules/*.md` | provenance | Edit freely — a hand-edited rule is preserved and reported (#370) | Don't expect edits to survive if you also delete the `generated-sha` marker |
 | `test/scaffold-conformity.test.ts` | regenerate | Runs automatically | Don't edit |
 | `CODE-MAP.md` | regenerate | Auto-generated from code scan | Don't edit |
@@ -45,15 +45,46 @@ section is yours, and a re-scaffold carries it forward verbatim —
 including the `<!-- BEGIN AUTO-EXTRACTED -->` block, and including any
 lines you wrote outside it.
 
-That is the only user-owned content in the tree that survives
-regeneration, which is a promise `specs/bootstrap-data-flow/` makes and
-nothing kept until #568: one run on a consumer removed 37 constraint
-lines and reported `REGENERATED: AGENTS.md`, exit 0. Put non-inferable
-project rules there — the ones an agent cannot read off the code — and
-nowhere else in the file.
+It was the only user-owned content in the tree that survived
+regeneration until #655, which is a promise `specs/bootstrap-data-flow/`
+makes and nothing kept until #568: one run on a consumer removed 37
+constraint lines and reported `REGENERATED: AGENTS.md`, exit 0. Put
+non-inferable project rules there — the ones an agent cannot read off the
+code — and nowhere else in the file.
 
 If a run cannot carry every one of those lines forward it **refuses the
 write**, names the lines, and leaves your file untouched.
+
+### An agent brief is section-owned too (#655)
+
+A rule mined from THIS repository's compliance history — the output of the
+hill-climb loop — is non-inferable by construction, and until #655 it had
+nowhere in the project to live. Every brief surface was rebuilt from
+harness-wide inputs on the next `bunx rungate scaffold .`:
+`templates/agent-briefs/_shared.md` resolves under the harness's own
+templates directory, so a project rule written there reaches every
+consumer; `roles.json`'s `tiers.reinforcement` carries section NAMES, not
+rule text; and the write itself was a bare `writeFileSync`.
+
+So `.claude/agents/*.md` now works the way `AGENTS.md` does, through the
+same merge in `lib/agents-md-sections.ts`:
+
+- Add a `## Project Constraints` heading to a brief and everything under
+  it, up to the next `##`, is yours. A re-scaffold carries it forward
+  verbatim and rewrites the rest.
+- The section is **opt-in**. No template emits it, because a generated
+  section would collide with yours and the merge would refuse every run.
+  A heading plus one line is a section; a heading alone is not.
+- If a run cannot carry every one of those lines forward it **refuses the
+  write**, names the lines, and leaves the brief untouched — the same
+  refusal-rather-than-silent-loss property #568 gave AGENTS.md.
+- A reinforcement the hill-climb applies goes there in preference to
+  `## Efficiency Rules`, `## Testing Rules` or `## Never Do`, so what the
+  loop writes is the content a re-scaffold preserves.
+
+The `## Hard Constraints` spelling is AGENTS.md's and only AGENTS.md's. A
+brief section is scoped to one role; using one heading for both would make
+a rule written in the wrong file look like it was in the right one.
 
 ### The CI job's global-tool installs are generated, never hand-edited (#597)
 

@@ -45,11 +45,12 @@ import {
 } from "../success-doc";
 import { TS_SOURCE_DIRS, typeScriptSourceDirs, typecheckDecision } from "../typescript-project";
 import {
-  OWNED_FILES,
   SCAFFOLD_REFUSE,
   decideOwnedWrite,
+  ownedFileFor,
   type WriteStrategy,
 } from "./owned-files";
+import type { SectionSpec } from "../agents-md-sections";
 
 /**
  * Look for a declared health route in the places a server declares one.
@@ -120,18 +121,23 @@ export function safeWrite(filePath: string, content: string, label: string, acti
  * prose while being written by a helper that skips it.
  */
 export function ownedStrategy(label: string): WriteStrategy {
-  for (const owned of OWNED_FILES) {
-    if (owned.path === label) return owned.strategy;
-    if (owned.path.includes("*")) {
-      const [prefix, suffix] = owned.path.split("*");
-      if (label.startsWith(prefix) && label.endsWith(suffix)) return owned.strategy;
-    }
-  }
   // An unlisted file is regenerated. The direction this is allowed to be
   // wrong in: a file nobody declared gets rewritten with the generator's
   // own output, which is recoverable. Defaulting to create-only would make
   // forgetting to declare a file look exactly like #208.
-  return "regenerate";
+  return ownedFileFor(label)?.strategy ?? "regenerate";
+}
+
+/**
+ * Which section of this label carries forward, from the declaration (#655).
+ *
+ * `undefined` for every strategy that preserves nothing, and for a
+ * `section-preserving` row that forgot to declare one — which
+ * `test/scaffold-ownership.test.ts` refuses, because reading it here would
+ * make the omission resolve to AGENTS.md's heading and look deliberate.
+ */
+export function ownedSections(label: string): SectionSpec | undefined {
+  return ownedFileFor(label)?.sections;
 }
 
 export function regenerateOwned(
@@ -182,7 +188,7 @@ export function regenerateOwned(
     return;
   }
   const existing = link ? readFileSync(filePath, "utf-8") : null;
-  const decision = decideOwnedWrite(strategy, existing, content);
+  const decision = decideOwnedWrite(strategy, existing, content, ownedSections(label));
 
   if (decision.action === "preserve") {
     actions.push(
@@ -792,7 +798,26 @@ afterAll(() => writeFindingsReport(ROOT));
 
 // ── Agent briefs generation ────────────────────────────────────
 
-export function generateAgentBriefsStep(root: string, actions: string[]): void {
+export function generateAgentBriefsStep(
+  root: string,
+  actions: string[],
+  opts: {
+    /**
+     * Where the brief templates live. Defaults to the harness's own
+     * `templates/agent-briefs/`, which is what every production caller
+     * wants and what makes the templates harness-wide (#655).
+     *
+     * The seam exists because the `section-preserving` refusal below can
+     * only fire when the GENERATED brief carries the project-owned heading
+     * itself, and no input `root` accepts can produce that — the identity
+     * extractor stops at the first `\n##` and the README fallback flattens
+     * newlines. Without a seam the refusal would be reachable in
+     * production and unreachable in a test, which is the shape
+     * `.claude/rules/checks-must-be-able-to-fail.md` is about.
+     */
+    templatesDir?: string;
+  } = {},
+): void {
   const agentsDir = join(root, ".claude", "agents");
   safeDir(agentsDir, ".claude/agents", actions);
 
@@ -865,7 +890,8 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
   const consumers = harness?.consumers || [];
 
   // Resolve templates directory relative to this module
-  const harnessTemplatesDir = join(dirname(dirname(__dirname)), "templates", "agent-briefs");
+  const harnessTemplatesDir =
+    opts.templatesDir ?? join(dirname(dirname(__dirname)), "templates", "agent-briefs");
 
   // buildAgentMeta takes the whole harness config and reads .roles itself.
   // Passing harness?.roles made it look for roles.roles, so every consumer's
@@ -924,6 +950,7 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
 
   for (const [agentName, content] of Object.entries(briefs)) {
     const p = join(agentsDir, `${agentName}.md`);
+    const label = `.claude/agents/${agentName}.md`;
     // #654. The probe is taken BEFORE the write it describes. Asked
     // afterwards it is true on every path that reaches it — `writeFileSync`
     // either succeeded, in which case the file is there, or threw, in which
@@ -931,10 +958,32 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
     // a consumer scaffolding for the first time was told its briefs were
     // updated.
     const existedBefore = existsSync(p);
-    writeFileSync(p, content);
-    actions.push(
-      `${existedBefore ? "UPDATED" : "CREATED"}: .claude/agents/${agentName}.md`,
+
+    // #655. The write used to be a bare `writeFileSync(p, content)` — no
+    // `decideOwnedWrite`, no strategy read, nothing. The row in
+    // `OWNED_FILES` said `regenerate` and a bare overwrite happens to
+    // behave like `regenerate`, so nothing ever disagreed and the
+    // declaration test could not see it: reading a strategy is not the same
+    // as honouring it. Flipping the row alone would have changed nothing
+    // here; this is the other half.
+    const existing = existedBefore ? readFileSync(p, "utf-8") : null;
+    const decision = decideOwnedWrite(
+      ownedStrategy(label),
+      existing,
+      content,
+      ownedSections(label),
     );
+
+    if (decision.action === "refuse" || decision.action === "preserve") {
+      actions.push(`${SCAFFOLD_REFUSE}: ${label} not written — ${decision.reason}`);
+      continue;
+    }
+    if (decision.action === "unchanged") {
+      actions.push(`UNCHANGED: ${label} (${decision.reason})`);
+      continue;
+    }
+    writeFileSync(p, decision.content!);
+    actions.push(`${existedBefore ? "UPDATED" : "CREATED"}: ${label}`);
   }
 }
 
