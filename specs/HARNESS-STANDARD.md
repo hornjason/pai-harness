@@ -11034,3 +11034,132 @@ flag or the banner-only evidence changes. None of it is left in the tree.
 - [x] SC-2103: test/evidence-664-replay.test.ts contains [a correct AC whose threshold is merely unmet is silent on all four] — the #659 shape is driven with a command that is RUN, not a fabricated output, because a check that fired there would make every unfinished criterion look like a broken instrument
 - [x] SC-2104: test/evidence-664-replay.test.ts contains [the cheapest wrong fix is applied, measured and reverted] — the widening is written to a copy of the fixture on disk and re-read from it, so the case cannot assert its own premise, and the committed fixture is asserted to still carry the original operator
 - [x] SC-2105: test/evidence-664-replay.test.ts contains [the five EVIDENCE-CHECK-669 rows agree with the live measurement] — the recorded rows are parsed out of the spec as data and compared against the numbers this run measures, so a record that drifts from the measurement it claims is red rather than merely out of date
+
+## #640 — the restore ran on the success path only
+
+`scripts/check-run-branch.ts` and all three of its modes shipped in #692, and
+they work: measured 2026-10-19 against the real `rungate/run-631` at
+`4acc0a17` with `origin/main` at `e278cb7b`, `delete` returned
+`NOT_CONTAINED` and exit 1 with the branch still present, `leftover` returned
+`LEFTOVER_UNCONTAINED` naming all seven divergent paths, and `drift` returned
+`MOVED` and exit 1 against a `--before main --after main` control that
+returned `UNCHANGED` and exit 0. Criteria 3, 4 and 6 are satisfied against a
+real branch rather than a constructed pair.
+
+Criterion 1 — *a ship run does not leave the primary checkout on a branch
+other than the one it started on* — was not, and the reason is a POSITION
+rather than a value. The restore was step 5 of the post-prove finalize
+prompt, in the `RUN-BRANCH-RESTORE` section of `workflows/ship.js`. Every
+terminal failure funnels through `shipFailed` or `terminalFailure`, both of
+which call `preserveSeenWorktrees` and neither of which reached step 5. Run
+`wf_9d22ecf5-aed` ended SHIP_FAILED and left the shared primary on
+`rungate/run-631`, where a second session found it the next morning and read
+it as somebody's live branch.
+
+**So the check ran exactly when it was least likely to be needed**, and did
+not run on the path that produced every observed instance. Nothing about the
+shell was wrong; every assertion anyone could have made about it was true of
+the version that never ran on a failing exit. What had to be asserted is
+where it is called FROM, which is why `test/run-branch-restore-exits.test.ts`
+reads the two funnels out of ship.js and asks whether each takes the step.
+
+Three things the fix is deliberately NOT:
+
+- **It deletes nothing on a failing exit.** A run that refused has a branch
+  holding work nothing merged. The delete check refuses exactly that case by
+  name, so attempting it would spend a step to be told no — and the one
+  action here that cannot be undone should not be on the path taken by every
+  run that went wrong.
+- **The switch is conditional on the checkout being on this run's own ref.**
+  An unconditional `git switch` is wrong in one direction that matters: a
+  peer session that moved the shared checkout onto a third branch while this
+  run was working gets it taken away by a run that never put it there. "This
+  run left the checkout somewhere" and "the checkout is somewhere
+  unexpected" are different facts and only the first is this run's to fix.
+  The second is reported as `FOREIGN_BRANCH` and left alone.
+- **It is one binding.** `runBranchRestoreShell`, `runBranchRestoreSchema`
+  and `readRunBranchRestore` are composed once and used by the finalize step
+  and by both exits. The shell was inlined in the finalize prompt before,
+  and that is precisely how the exits ended up without a restore at all:
+  the success path held the only copy, so there was nothing to call from
+  anywhere else.
+
+A fourth thing, which is a hazard rather than a decision: `terminalFailure`
+reads `primaryBranchBefore`, and it is reachable from phases that run long
+before `establishRunRef`'s line is executed. A `let` read before its
+declaration runs throws a ReferenceError — it does not read as empty — so
+the declaration moved to the worktree registry at the top of the file. The
+exits are the last place in this file that should be able to die on the way
+out, and `scripts/validate-workflow.ts` exists because that shape already
+took a run down (#585).
+
+### The remaining gap, recorded rather than fixed here
+
+`lib/run-branch.ts` resolves the branch with
+`git for-each-ref --format=%(refname:short) refs/heads/<branch>` — local
+heads only, with no remote ref consulted anywhere and no argument that
+accepts one. Measured on this pair: `rungate/run-631` resolves to
+`4acc0a17` locally and `92eb88cf` through origin, 2 commits one way and 6
+the other. So every mode can be answering confidently about a commit that is
+not the one the run pushed, and its output does not say which ref it read.
+Both error directions are live — a local ref behind the push reports
+CONTAINED and the delete destroys remote-only commits; a local ref ahead
+refuses and attributes the refusal to the run. Open on #640.
+
+**The cheapest wrong fix, named and applied: add the restore to `shipFailed`
+only**, because that is the funnel the observed run went through. The
+symptom for the observed instance disappears and `terminalFailure`'s other
+terminal statuses stay broken. Measured: **2 of 17 red** — *"both funnels
+take the restore step"* and *"the restore runs AFTER preservation in each
+funnel"*. The cases do not certify it.
+
+The second cheapest, named but not applied because row 5 below already
+measures it: restore unconditionally, or with `-f` so the switch cannot
+fail. It makes the symptom go away in every case including the one where it
+destroys a peer's checkout state.
+
+### Success Criteria
+
+- [x] SC-2117: test/run-branch-restore-exits.test.ts contains [both funnels take the restore step] — the two terminal funnels are sliced out of ship.js structurally and each is asserted to call the restore, after preservation rather than before, with an unreadable slice counted as a violation because an empty string contains nothing and reads exactly like a funnel that does not restore
+- [x] SC-2118: test/run-branch-restore-exits.test.ts contains [silence is UNMEASURED, on both paths] — the shell and the reading are one binding used by the finalize step and both exits, the failing path is asserted to attempt no delete and to say so, and an empty reply is asserted to read UNMEASURED rather than clean
+
+What was broken to prove the cases fail, run and counted rather than
+asserted, over `test/run-branch-restore-exits.test.ts` (17 tests). Every
+count predicted before the battery ran, and **the baseline row was read
+before any mutation row** — an instrument that has stopped reporting takes
+the baseline down with it, and that is the row nobody mutates anything to
+produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 17 pass, 0 fail | **17 pass, 0 fail** | — |
+| both `await restorePrimaryCheckout(` calls removed — the defect verbatim | 3 | **3 of 17** | `workflows/ship.js` itself: the real source reports both funnels restoring, the mutant reports neither |
+| `readRunBranchRestore` short-circuited to a clean reading with no lines | 8 | **8 of 17** | `{driftReading:"UNCHANGED"}` with `withDelete:false`: the original says ``rungate/run-640 kept — … holds unmerged work``, the mutant says nothing at all |
+| `withDelete` hardcoded true, so the delete is always emitted | 1 | **1 of 17** | `shell({withDelete:false})`: the original carries `DELETE: NOT_ATTEMPTED` and no `--mode delete`, the mutant carries the delete command |
+| the `!primaryBranchBefore` NOT_READ branch removed | 1 | **1 of 17** | `load("").shell({withDelete:true})`: the original prints `RESTORE: NOT_READ` and emits no `git switch`, the mutant emits a switch to the empty string |
+| the switch made unconditional — the pre-phase-2 shape | 2 | **3 of 17** | `load("main").shell({withDelete:true})`: the original carries `FOREIGN_BRANCH`, the mutant does not |
+| the failing path's `!withDelete` arm removed | 1 | **2 of 17** | the same reply as row 2: the original says the branch was kept, the mutant falls through to the shipping path's `RUN_BRANCH_UNMEASURED … was removed` |
+| **the cheapest wrong fix** — the restore added to `shipFailed` only | — | **2 of 17** | `workflows/ship.js`: `terminalFailure` reports no restore while `shipFailed` reports one |
+
+**Both high rows were read by name rather than filed as noise**, because a
+crashing mutant and an unexpectedly load-bearing binding both come back high
+and only one of them is a problem.
+
+- Row 5's third red is *"the shell literal appears exactly once in ship.js"*.
+  The mutation deletes `git switch "$before"` outright, which is the literal
+  that case counts — squarely about the mutated behaviour, and not a
+  crashing mutant: 14 cases still pass and every red is about the switch.
+- Row 6's extra red is *"a clean drift reading says the checkout came
+  back"*, which asserts the clean line carries no `UNMEASURED`. Removing the
+  failing path's own arm makes it fall through to the shipping path's
+  `was removed` line, so a failing run starts reporting an unmeasured delete
+  it never attempted. Also squarely about the subject.
+
+Per the arithmetic in `.claude/rules/checks-must-be-able-to-fail.md`, both
+are "the prediction was wrong and the check is better than you thought", and
+the fact each records is that the one-binding count and the clean-line case
+are load-bearing in a second direction.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`workflows/ship.js` was confirmed byte-identical to the measured source
+afterwards by SHA-256.

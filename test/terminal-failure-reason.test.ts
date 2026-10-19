@@ -125,10 +125,18 @@ describe("#524: the terminal funnel always has a reason to give", () => {
     expect(close, "could not slice terminalFailure").toBeGreaterThan(open);
 
     const fn = new Function(
-      "preserveSeenWorktrees", "WORK_DIR", "terminalReason",
+      "preserveSeenWorktrees", "WORK_DIR", "terminalReason", "restorePrimaryCheckout",
       `${SHIP.slice(start, close)}; return terminalFailure;`,
-    )(async () => ({ preserved: [], detail: "" }), "/tmp/work", reasonFn()) as
-      (s: string, e?: unknown) => Promise<Record<string, unknown>>;
+    )(
+      async () => ({ preserved: [], detail: "" }),
+      "/tmp/work",
+      reasonFn(),
+      // #640: the funnel restores the shared checkout on the way out. Stubbed
+      // rather than omitted — an absent binding is a ReferenceError inside the
+      // funnel, which would red this case for a reason that has nothing to do
+      // with the reason floor it is about.
+      async () => ({ reading: "UNCHANGED", restoreOutcome: "ALREADY_ON_START", lines: [] }),
+    ) as (s: string, e?: unknown) => Promise<Record<string, unknown>>;
 
     expect((await fn("COMMIT_FAILED")).reason).toContain(SENTINEL);
     expect((await fn("SCOPE_FAILED", { failures: ["AC-1 has no evidence"] })).reason)
