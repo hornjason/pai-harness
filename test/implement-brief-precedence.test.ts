@@ -343,6 +343,11 @@ function loadRunImplement(buildResult: unknown) {
     // #611's element-shape guard, from its own markers for the same reason
     // as the three above.
     "filesChangedShapeRefusal",
+    // #676's selected-test command. A resolved STRING, which is the whole
+    // reason it is resolved at ship.js's module scope rather than built
+    // inside runImplement: a builder here would be four free names and a
+    // stub that could disagree with the real one.
+    "SELECTED_TESTS_COMMAND",
     `${slicedFunction("async function runImplement()")}\nreturn runImplement`,
   )(
     async () => ({ contextExcerpts: [], acContextFiles: [] }),
@@ -356,6 +361,7 @@ function loadRunImplement(buildResult: unknown) {
     "owner/project",
     guard("BRIEF-PRECEDENCE", "taskSourceRefusal"),
     guard("FILES-CHANGED-SHAPE", "filesChangedShapeRefusal"),
+    "bun test $(bun /h/scripts/select-affected-tests.ts --work '/tmp/work/selection'/\"$(basename \"$PWD\")\")",
   ) as () => Promise<unknown>;
 }
 

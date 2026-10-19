@@ -2987,6 +2987,14 @@ const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
 const hasContainer = !!(projectConfig.container)
 const testCommand = projectConfig.test?.command || projectConfig.dev?.testCmd || 'bun test'
+
+// Resolved once here, at module scope, rather than inside `runImplement`
+// (#676). Every harness that reconstructs that function with `new Function`
+// has to supply each free name it reaches for, and calling the builder in
+// the prompt would have added four — `selectedTestsCommand`, `HARNESS_ROOT`,
+// `testCommand` and `shellQuote`. A resolved string is one, and it is a
+// string, so there is no stub that could disagree with the real thing.
+const SELECTED_TESTS_COMMAND = selectedTestsCommand(HARNESS_ROOT, WORK_DIR, testCommand, shellQuote)
 const testTimeout = projectConfig.test?.timeout || 120000
 
 // ──── LOCAL-ENV-CLAUSE-START ────
@@ -3981,7 +3989,7 @@ Use TARGETED tests only (timeout: ${testTimeout}). This command computes the set
 your changes can actually reach — imports followed transitively, module-relative
 file reads, and every directory sweep kept unconditionally — and runs it:
 
-  ${selectedTestsCommand(HARNESS_ROOT, WORK_DIR, testCommand, shellQuote)}
+  ${SELECTED_TESTS_COMMAND}
 
 Run it from your worktree. Do NOT hand-pick test files by grepping for a
 filename: a test that reaches your change through an intermediate module never

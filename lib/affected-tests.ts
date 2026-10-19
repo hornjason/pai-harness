@@ -270,8 +270,11 @@ export function affectedTests(root: string, changed: string[]): AffectedTestsRea
       const target = resolveSpec(f, spec, known);
       if (target) addEdge(f, target);
     }
+    const resolvedBasenames = new Set<string>();
     for (const read of runtimeReads(source)) {
-      addEdge(f, resolveRuntimeRead(f, read.up, read.segments));
+      const target = resolveRuntimeRead(f, read.up, read.segments);
+      resolvedBasenames.add(target.split("/").pop() as string);
+      addEdge(f, target);
     }
 
     // A changed file that is not a module is reached by the files that NAME
@@ -296,6 +299,41 @@ export function affectedTests(root: string, changed: string[]): AffectedTestsRea
     const code = stripJsComments(source);
     for (const c of nonModule) {
       if (code.includes(c)) addEdge(f, c);
+    }
+
+    // The same question in a third syntax (#484). `runtimeReads` sees
+    // `join(import.meta.dir, "..", "workflows", "ship.js")` and nothing
+    // else, so one const of indirection hides the read:
+    //
+    //   const REPO_ROOT = join(import.meta.dir, "..");
+    //   readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8")
+    //
+    // Measured on this repository, that is not hypothetical — it is how
+    // `test/implement-empty-result.test.ts` and
+    // `test/files-changed-path-shape.test.ts` reach `ship.js`, and both
+    // were silently unselected by a change to it. Resolving the
+    // indirection means evaluating the module, so instead the BASENAME as
+    // a quoted literal in code is an edge. It over-selects for a common
+    // basename and that is the direction this is allowed to be wrong in;
+    // a missed read is the direction that reports green over code it
+    // never ran.
+    //
+    // **Skipped for a basename this file already reads resolvably**, and
+    // that clause is what keeps `runtimeReads` load-bearing rather than a
+    // second decider agreeing with this one. Measured before it was added:
+    // deleting the `runtimeReads` call entirely was 0 red and moved the
+    // real selection by 0 files, because a resolvable read always quotes
+    // its own basename. With the clause, a file that resolvably reads
+    // `lib/a/config.ts` is NOT selected by a change to `lib/b/config.ts`
+    // — it has shown it can name that basename precisely — while a file
+    // that reaches the same path through a const still is. Two deciders,
+    // each with an input only it can reach.
+    for (const c of wanted) {
+      const b = c.split("/").pop();
+      if (!b || resolvedBasenames.has(b)) continue;
+      if (new RegExp(`["'\`]${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'\`]`).test(code)) {
+        addEdge(f, c);
+      }
     }
 
     // A module-relative join whose segments are not all literals reads a

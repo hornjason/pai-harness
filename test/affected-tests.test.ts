@@ -120,6 +120,79 @@ describe("#676: a test is selected when it can reach a changed file", () => {
     expect(r.tests).toContain("test/reads.test.ts");
   });
 
+  test("a module-relative read behind ONE const of indirection is still an edge", () => {
+    // #484's shape, found by dogfooding this branch against itself. The
+    // graph saw `join(import.meta.dir, ...)` and nothing else, so a single
+    // const hid the read:
+    //
+    //   const REPO_ROOT = join(import.meta.dir, "..");
+    //   readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8")
+    //
+    // Two real harnesses in this repository reach ship.js exactly that way
+    // and both were silently unselected by a change to it. Resolving the
+    // const means evaluating the module, so the quoted basename in code is
+    // the edge instead — broader than the read, which is the safe side.
+    const root = chainProject();
+    put(root, "workflows/subject.js", "// not importable\n");
+    put(
+      root,
+      "test/indirect-read.test.ts",
+      'import { readFileSync } from "fs";\nimport { join } from "path";\n' +
+        'const REPO_ROOT = join(import.meta.dir, "..");\n' +
+        'export const n = readFileSync(join(REPO_ROOT, "workflows", "subject.js"), "utf-8").length;\n',
+    );
+
+    const r = affectedTests(root, ["workflows/subject.js"]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.tests).toContain("test/indirect-read.test.ts");
+  });
+
+  test("a resolvable read keeps its precision: a same-named file elsewhere is not an edge", () => {
+    // The input only `runtimeReads` can reach, and the reason this module
+    // has two deciders rather than one. Measured before this case existed:
+    // deleting the `runtimeReads` call was 0 red and moved the real
+    // selection by 0 files, because a resolvable read always quotes its own
+    // basename — so the broad rule was silently answering for both. Every
+    // fixture here had a unique basename, which is the one precondition
+    // that makes the difference invisible (#492).
+    const root = chainProject();
+    put(root, "gates/a/config.ts", "export const a = 1;\n");
+    put(root, "gates/b/config.ts", "export const b = 1;\n");
+    put(
+      root,
+      "test/precise.test.ts",
+      'import { readFileSync } from "fs";\nimport { join } from "path";\n' +
+        'export const n = readFileSync(join(import.meta.dir, "..", "gates", "a", "config.ts"), "utf-8").length;\n',
+    );
+
+    const toA = affectedTests(root, ["gates/a/config.ts"]);
+    expect(toA.tests, "the file it actually reads").toContain("test/precise.test.ts");
+
+    const toB = affectedTests(root, ["gates/b/config.ts"]);
+    expect(
+      toB.tests,
+      "a file that has shown it can name this basename precisely is not selected by a namesake",
+    ).not.toContain("test/precise.test.ts");
+  });
+
+  test("a basename named only in a COMMENT is not an edge", () => {
+    // The over-selection this buys has to stop somewhere, and the comment
+    // strip is where. Without this the rule would select every file that
+    // merely discusses the changed one, which on this repository is most
+    // of them.
+    const root = chainProject();
+    put(root, "lib/subject.ts", "export const subject = 1;\n");
+    put(
+      root,
+      "test/mentions.test.ts",
+      '// This one is about "subject.ts" but never reads it.\n' +
+        'import { test } from "bun:test";\ntest("unrelated", () => {});\n',
+    );
+
+    const r = affectedTests(root, ["lib/subject.ts"]);
+    expect(r.tests).not.toContain("test/mentions.test.ts");
+  });
+
   test("a sweep over a directory is always selected, and says so", () => {
     // A test that walks a tree is affected by any change under it, and the
     // graph cannot express that. Excluding it would be the silent half of
