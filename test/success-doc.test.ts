@@ -108,11 +108,37 @@ afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
 let seq = 0;
 /** A project tree described as `relative path -> contents`. */
 /**
+ * The zone a spawned `create-success` runs in (#649).
+ *
+ * `bun test` resolves the in-process `Intl` default to **UTC**, while a
+ * subprocess it spawns gets the machine zone. `TZ` is unset on both sides, so
+ * nothing in the environment names the difference — measured here as
+ * `UTC` in-process and `America/New_York` in the child, at the same instant.
+ *
+ * Any case comparing something written in-process against something written
+ * by the spawned CLI therefore disagrees about the calendar day for every
+ * hour where the two zones fall on different dates: about five a night in US
+ * Eastern, eight in US Pacific, and none in UTC. That is why §3 was red on
+ * developer machines every evening and green in CI forever.
+ *
+ * Neither writer was wrong — both call `localCalendarDay()`, which correctly
+ * reads the ambient zone it is given. The test had introduced an environment
+ * difference and then asserted the two sides agreed. So remove the
+ * difference: the child is pinned to whatever zone the parent resolved, and
+ * the byte comparison goes back to being about the bytes.
+ */
+const PARENT_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const CHILD_ENV = { ...process.env, TZ: PARENT_TIME_ZONE };
+
+/**
  * Spawn `create-success`. ONE definition: three describes had declared their
- * own identical copy, and the fourth was about to.
+ * own identical copy, and the fourth was about to. §3 then declared a fifth
+ * anyway, which is how it acquired the zone bug this helper now closes — so
+ * every spawn of the CLI in this file goes through here, and there is one
+ * place for the environment to be decided.
  */
 const run = (args: string[], cwd = ROOT) =>
-  spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd, encoding: "utf-8" });
+  spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd, encoding: "utf-8", env: CHILD_ENV });
 
 function project(files: Record<string, string>): string {
   const root = join(scratch, `p${seq++}`);
@@ -979,13 +1005,125 @@ List them.
 
     const viaCli = project({});
     const owner = process.env.USER || "TODO-OWNER";
-    spawnSync("bun", [CREATE_SUCCESS, "--project-root", viaCli, "--owner", owner], { cwd: ROOT });
+    // Through `run`, so the child inherits the parent's zone (#649). A bare
+    // spawnSync here is what made this case red for five hours a night.
+    run(["--project-root", viaCli, "--owner", owner]);
     const generated = readFileSync(join(viaCli, "SUCCESS.md"), "utf-8");
 
     expect(scaffolded, "the two writers disagree about the same seed").toBe(generated);
+    // The frontmatter is the part #502 added this case for, and the part a
+    // date disagreement lands in. Assert it is actually being compared, so a
+    // later "just exclude `updated:`" repair cannot quietly empty the claim.
+    expect(scaffolded, "the seed carries no date, so the comparison cannot see one")
+      .toMatch(/^updated: \d{4}-\d{2}-\d{2}$/m);
     expect(scaffolded, "the scaffold left the template's owner placeholder")
       .not.toContain("TODO-OWNER");
     expect(scaffolded).not.toContain("TODO-DATE");
+  });
+
+  // ── #649: the case above must hold at every hour, not just the ones a
+  // developer happens to run it in ────────────────────────────────────────
+  //
+  // Waiting until tomorrow evening is not a test. The variable is the gap
+  // between the parent's zone and the child's, so these drive the parent's
+  // zone directly and let the fix hold it fixed.
+
+  const SEED_CASE = "§3: the two seed writers produce the same bytes";
+
+  /** Run one named case of THIS file in a child with `TZ` forced. */
+  function seedCaseUnder(tz: string): { ran: number; failed: number; out: string } {
+    const r = spawnSync(
+      "bun",
+      ["test", join(ROOT, "test", "success-doc.test.ts"), "-t", SEED_CASE],
+      { cwd: ROOT, encoding: "utf-8", env: { ...process.env, TZ: tz } },
+    );
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    // A `-t` that matches nothing reports zero failures, which is
+    // indistinguishable from passing — and is also what a run that failed to
+    // resolve its imports looks like. So read what actually RAN first, off
+    // bun's own summary line rather than off per-test lines, which are not
+    // printed in the default reporter.
+    const ran = Number(out.match(/^Ran (\d+) tests? across/m)?.[1] ?? NaN);
+    // The failure count comes from the harness's own parser, not a second
+    // regex beside it — two readers of one number are behaviourally one, and
+    // a mutation of either would leave the other holding the case up.
+    const failed = extractTestFailureCount(out);
+    return { ran, failed, out };
+  }
+
+  // Behind UTC, equal to UTC, and ahead of UTC. The first is the zone the
+  // bug was found in; the third is the mirror case, where the LOCAL day is
+  // ahead of the UTC one, and nothing had ever exercised it.
+  for (const tz of ["America/New_York", "UTC", "Asia/Tokyo"]) {
+    test(`§3 holds with the parent zone forced to ${tz} (#649)`, () => {
+      const { ran, failed, out } = seedCaseUnder(tz);
+      expect(ran, `no case matched "${SEED_CASE}" under ${tz} — the filter found nothing:\n${out}`)
+        .toBe(1);
+      expect(failed, `the seed comparison failed under ${tz}:\n${out}`).toBe(0);
+    }, 60_000);
+  }
+
+  test("§3 would catch a real divergence — the comparison is not vacuous (#649)", () => {
+    // The fix removes an environment difference. The risk is that it also
+    // removes the case's ability to see a difference that matters, and the
+    // cheapest wrong fix — dropping `updated:` from the comparison — would
+    // do exactly that while turning every row above green.
+    //
+    // So plant a divergence of the shape the bug produced, and confirm a
+    // byte comparison of these two documents still refuses it.
+    const viaScaffold = project({});
+    seedSuccessDoc(viaScaffold, []);
+    const scaffolded = readFileSync(join(viaScaffold, "SUCCESS.md"), "utf-8");
+
+    expect(scaffolded, "nothing to diverge — the seed has no date line")
+      .toMatch(/^updated: \d{4}-\d{2}-\d{2}$/m);
+
+    const divergent = scaffolded.replace(/^updated: .*$/m, "updated: 1999-12-31");
+    expect(divergent, "the plant did not change anything").not.toBe(scaffolded);
+
+    // What §3 does: a whole-document byte comparison. It must refuse this.
+    expect(
+      scaffolded === divergent,
+      "a differing `updated:` is invisible to the comparison §3 makes",
+    ).toBe(false);
+
+    // What the cheapest wrong fix would do: drop `updated:` before
+    // comparing, so the two documents become equal and the case goes green
+    // over exactly the divergence it exists to catch. Asserting that the
+    // wrong fix IS blind is what makes the row above load-bearing rather
+    // than a restatement of "two different strings differ".
+    const withoutDate = (s: string) => s.replace(/^updated: .*$/m, "");
+    expect(
+      withoutDate(scaffolded) === withoutDate(divergent),
+      "excluding `updated:` was expected to hide this divergence; if it no longer " +
+        "does, this case is no longer evidence about that repair",
+    ).toBe(true);
+  });
+
+  test("§3 compares whole documents, and this is the only thing that can see otherwise (#649)", () => {
+    // Measured, not assumed: with the environment pin removed AND `updated:`
+    // excluded from §3's comparison, this file reported 75 pass / 0 fail.
+    // Every behavioural case above — the three forced-zone rows included —
+    // went green over the exact repair they exist to discourage, because
+    // none of them observes what §3 actually compares. With this case
+    // present that same mutation is 1 red.
+    //
+    // A source assertion is a poor instrument and it is the only one with
+    // line of sight here, so it is scoped as narrowly as possible: one
+    // comparison, in one named section, sliced out before being searched.
+    const self = readFileSync(join(ROOT, "test", "success-doc.test.ts"), "utf-8");
+    const sectionStart = self.indexOf('test("§3: the two seed writers produce the same bytes"');
+    expect(sectionStart, "§3 has been renamed — this guard is now pointing at nothing")
+      .toBeGreaterThan(-1);
+    const section = self.slice(sectionStart, self.indexOf("\n  });", sectionStart));
+    expect(section.length, "the §3 slice came back empty, which contains nothing and proves nothing")
+      .toBeGreaterThan(0);
+
+    expect(
+      section,
+      "§3 no longer compares the two documents whole — if `updated:` was excluded to " +
+        "make a timezone failure go away, remove the environment difference instead (#649)",
+    ).toContain(".toBe(generated)");
   });
 
   test("§8: a flag is not accepted as a flag's value", () => {
