@@ -32,6 +32,7 @@ import { execFileSync, spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { structuralCut } from "../lib/source-slice";
 
 const HARNESS_ROOT = join(import.meta.dir, "..");
 const SHIP = readFileSync(join(HARNESS_ROOT, "workflows", "ship.js"), "utf-8");
@@ -345,9 +346,14 @@ describe("#312: the heal command is run, not described", () => {
     // none of it would notice the prompt calling a different builder, or
     // inlining the old text beside this one. One assertion ties the executed
     // function to the step an agent is actually handed.
-    const at = SHIP.indexOf("For tests-pass:");
-    expect(at, "ship.js has no tests-pass remediation step").toBeGreaterThan(-1);
-    const step = SHIP.slice(at, at + 1200);
+    // #664: the step ends where the NEXT step begins, which is a construct in
+    // the prompt. A character count here is a bet on how long the prose stays,
+    // and the `not.toContain` assertions below are the ones a short window
+    // silently satisfies.
+    const step = structuralCut(SHIP, "For tests-pass:", {
+      endAnchor: "\nFor local-api-validated:",
+    });
+    expect(step.length, "the cut is the whole file — it bounds nothing").toBeLessThan(SHIP.length);
 
     expect(step).toContain("recorderCommand(HARNESS_ROOT, WORK_DIR, PROJECT_ROOT, shellQuote)");
     // Both halves, since #469. The recorder reads a file, so a step that

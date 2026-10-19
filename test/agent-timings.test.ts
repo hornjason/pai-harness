@@ -36,6 +36,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 import { parse } from "acorn";
+import { structuralCut } from "../lib/source-slice";
 
 import {
   TIMING_USAGE_EXIT,
@@ -338,10 +339,16 @@ describe("AC-1: no agent invocation in ship.js escapes the timing bracket", () =
     // ship.js:1918 (preserveRefusedWork) and ship.js:2072 (collectAgentWork)
     // take their label from the CALLER, so a conversion keyed on literal
     // labels would have skipped exactly these two.
+    // #664: the body ends at the function's own closing brace. The 6,000-char
+    // window it replaces was already SHORT of `collectAgentWork`, whose body
+    // is 6,482 characters today — the window was truncating the thing it was
+    // asserting about and nobody could see it.
     const bodyOf = (fn: string) => {
-      const at = shipSource.indexOf(`async function ${fn}(`);
-      expect(at, `ship.js no longer defines ${fn}`).toBeGreaterThan(-1);
-      return shipSource.slice(at, at + 6_000);
+      const body = structuralCut(shipSource, `async function ${fn}(`, { balanced: "{" });
+      expect(body.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+        shipSource.length,
+      );
+      return body;
     };
     for (const fn of ["preserveRefusedWork", "collectAgentWork"]) {
       const body = bodyOf(fn);

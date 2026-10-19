@@ -10576,3 +10576,230 @@ either defect.
 - [x] SC-2074: test/bun-version-agreement.test.ts contains [a mismatch names both versions and both positions] — driven with two fabricated versions asserted to differ from `Bun.version`, because a comparison that reads the machine cannot be driven to disagree on a machine that is already correct
 - [x] SC-2075: test/bun-version-agreement.test.ts contains [exactly one line names the running bun version] — the clean-env run is SPAWNED and its output counted; a source-text assertion that the script imports the module cannot tell a printed line from an unreachable one
 - [x] SC-2076: test/bun-version-agreement.test.ts contains [the generated workflows resolve exactly the unresolvable value] — the negative control, declared as a value no registry can resolve and deliberately not plain semver, so the case does not survive the well-formedness guard that is the cheapest wrong fix
+
+## Eleven guards cut a character count, and converting them erases the evidence that said which were about to fail (#664, #666)
+
+Ten `test/` guards — eleven counting the two-sided one — cut a FIXED NUMBER
+OF CHARACTERS out of a source they were making a claim about, instead of
+cutting to the end of the construct the claim is about. #664 converted all
+eleven to `structuralCut`/`structuralCutAround` in `lib/source-slice.ts`,
+whose API carries no numeric-length parameter anywhere.
+
+Converting them does not say **how close to failing each one already was**,
+and once the structural cut lands the three interesting states look
+identical from the outside:
+
+- a window with 50 characters of slack, which was a guard about to red on
+  the next typo fix;
+- a window with 4,000, which would never have caught anything;
+- a window **shorter than the construct it was cutting**, which was never
+  reading the thing its name claims.
+
+This section is that evidence, measured before the conversion and recorded
+so the conversion cannot erase it. It is the Phase 2 deliverable of #666,
+and it carries the two batteries #664 asks for by name alongside it.
+
+### Two columns, because "headroom" has two honest readings
+
+`headroom` below is #666's definition: **window size minus the distance from
+the anchor to the END of the furthest string the case positively asserts.**
+A negative value there means the case could not see a string it demanded,
+and would be red today.
+
+`construct` is the length of the region Phase 1's structural cut actually
+returns — the thing the claim was always about. **A window shorter than its
+construct is a case whose subject it never finished reading**, and that is
+invisible to the first column, because the strings a case happens to assert
+can all sit early in a region the window truncates.
+
+Measured at `3a122903`, against `workflows/ship.js` (409,528 bytes, md5
+`e19f19c7cb02034ff91a60fb246bcf37`), `workflows/ship-and-heal.js` and
+`hooks/IssueCloseGuard.hook.ts` read through the same comment filter the
+case uses. `ship.js` is unmodified by #664 and by this record.
+
+#### The eleven pre-conversion windows, measured
+
+| # | site | anchor | window | farthest-needed | headroom | construct | covered |
+|---|---|---|---|---|---|---|---|
+| 1 | test/worktree-repo.test.ts:764 | `Verify CODE regression #${regressionCount}` | 6000 | 5452 | 548 | 5752 | yes |
+| 2 | test/agent-timings.test.ts:344 | `async function collectAgentWork(` | 6000 | 4977 | 1023 | 6482 | NO |
+| 3 | test/decomposition-waves.test.ts:269 | `const M_DECOMPOSITION_SCHEMA` | 2000 | 776 | 1224 | 980 | yes |
+| 4 | test/ac-coverage.test.ts:313 | `coverageViolations(goalData.successCriteria` | 1400 | 224 | 1176 | 430 | yes |
+| 5 | test/recorder-command-executed.test.ts:350 | `For tests-pass:` | 1200 | 554 | 646 | 1031 | yes |
+| 6 | test/suite-measurement-parity.test.ts:304 | `For tests-pass:` | 1200 | 554 | 646 | 1031 | yes |
+| 7 | test/slug-derivation.test.ts:109 | `const REPO =` | 800 | 129 | 671 | 347 | yes |
+| 8 | test/ac-coverage.test.ts:485 | `coversCriteria: { type: 'array'` | 600 | 363 | 237 | 1905 | NO |
+| 9 | test/issue-close-guard-target.test.ts:160 | `the command names no repository` | 400 | 137 | 263 | 140 | yes |
+| 10 | test/ship-and-heal.test.ts:74 | `qualityViolations.length === 0 && processViolations.length === 0` | 200 | 99 | 101 | 177 | yes |
+| 11 | test/agent-timings-queued.test.ts:292 | `TIMING: ${t.agent}` | 1500 | 125 | 1375 | 928 | yes |
+
+Row 11 is the two-sided form `slice(at - 1_500, at + 1_500)`; `window` is
+the reach on each side and `farthest-needed` is the nearer-side distance, so
+the arithmetic reads the same as every other row. Row 2's window was also
+used with a second anchor, `async function preserveRefusedWork(` —
+farthest-needed 478, construct 2045, headroom 5522, covered. The binding
+anchor is the one tabulated; a window is only as good as its worst caller.
+
+#### Two rows were passing for the wrong reason, named
+
+**No row has negative headroom in #666's first sense.** Every string these
+eleven cases assert was inside its window on `3a122903`, which is why all
+eleven were green. Recording that is the point — a zero that nobody measured
+and a zero that somebody measured are the same number and opposite facts.
+
+**Two rows have negative CONSTRUCT coverage, and those are the ones that
+were never reading what their names claim:**
+
+- **Row 2, `test/agent-timings.test.ts:344`, short by 482.**
+  `collectAgentWork`'s body is 6,482 characters and the window read 6,000.
+  The case is named *"AC-1: no agent invocation in ship.js escapes the
+  timing bracket"* and it had never read the last 482 characters of one of
+  the two functions it is about. Measured: those 482 characters contain
+  **0** occurrences of `agent(` today, so the case was green for a true
+  reason — and an untimed `await agent(` moved into the tail of that
+  function would have been invisible to the guard whose entire subject is
+  finding one.
+
+- **Row 8, `test/ac-coverage.test.ts:485`, short by 1,305.** The `acs`
+  schema object is 1,905 characters and the window read 600. The case is
+  named *"Discovery is REQUIRED to produce the attribution, not merely
+  asked"*, and the string it demands sits at +363 — inside. Of the object's
+  **4** occurrences of `required`, **3** are in the 1,305 characters the
+  window never reached, as are **2** of its **3** `coversCriteria`
+  mentions. A `required` list later in that object omitting the field is
+  exactly the regression this case exists to catch, and the case could not
+  have seen it.
+
+The nearest rows to the first kind of failure are 10 (101 of 200 spent), 8
+(237), 9 (263) and 1 (548). Row 1 is the one #664 was filed over: a
+2,119-character prompt insertion for an unrelated issue, two functions away,
+spent all 548 and 1,469 more.
+
+#### The whole-document mutation, predicted and measured
+
+#664 AC-6: a mutation in which the shared helper returns the whole document
+instead of the cut must turn every converted case red, which is only
+possible if each converted case asserts the BOUNDEDNESS of its cut rather
+than only a substring. `expect(cut).toContain(x)` is satisfied by the whole
+file, so without that assertion the mutation is invisible.
+
+Run over the ten converted files, on a copy of the post-conversion tree
+under `/tmp` with `node_modules` symlinked. **The baseline row was read
+before any mutation row**, because an instrument that has stopped reporting
+takes the baseline down with it and nobody mutates anything to produce that
+row.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 290 pass, 0 fail | **290 pass, 0 fail** |
+| `structuralCut` and `structuralCutAround` both short-circuited to `return doc` | 11 | **11** |
+
+**Before believing the row, the input on which mutant and original differ,
+named and run rather than assumed:** `structuralCut(shipSource, "const REPO
+=", { balanced: "{" })` returns **347** characters on the real helper and
+**409528** — the whole of `ship.js` — on the mutant. Printed and compared
+before the row was counted.
+
+**Read the composition, not just the number.** The measured 11 equals the
+eleven converted sites, and it is NOT eleven named case failures:
+
+| File | Under the mutation |
+|---|---|
+| test/ac-coverage.test.ts | 2 fail |
+| test/decomposition-waves.test.ts | 2 fail |
+| test/agent-timings.test.ts | 1 fail |
+| test/recorder-command-executed.test.ts | 1 fail |
+| test/slug-derivation.test.ts | 1 fail |
+| test/issue-close-guard-target.test.ts | 1 fail |
+| test/ship-and-heal.test.ts | 1 fail |
+| test/agent-timings-queued.test.ts | 1 fail |
+| test/suite-measurement-parity.test.ts | module-scope cut refuses — the whole `describe` dies |
+| test/worktree-repo.test.ts | module-scope `new Function` over the whole file: `SyntaxError: Unexpected keyword 'export'` — 0 of its cases run |
+
+So of the 290 baseline cases only **190** ran under the mutation: two files
+abort at load, and the 179 that passed are 179 cases that never saw the
+mutant. A reader who takes "179 pass" as reassurance is reading a file that
+never opened. Both aborts are loud and neither is silent, which is the
+behaviour a mutant builder is supposed to have — but they are the reason
+this table exists instead of a single number.
+
+#### The cheapest wrong fix, applied and measured
+
+#664 AC-7 names it: **widen the 6000 to 9000 in `test/worktree-repo.test.ts`
+and leave the other ten alone.** It is the 5pm repair — the symptom is one
+case going red, and one digit makes it stop.
+
+Applied, on a copy of the PRE-conversion tree at `3a122903` with
+`test/no-fixed-window-slices.test.ts` added and nothing else changed. The
+symptom has to exist before a repair can be measured against it, so the
+decay was reproduced first: **3068** characters of unrelated comment text
+inserted into `ship.js` immediately after the anchor line, inside the old
+window, mimicking the 2,119-character prompt insertion that reddened SC-1446
+on `cd27a54f`.
+
+| Row | Measured |
+|---|---|
+| SC-1446, insertion present, window still 6000 | **0 pass, 1 fail** |
+| SC-1446, insertion present, window widened to 9000 | **1 pass, 0 fail** |
+| the zero-fixed-windows scan on that same tree | **3 pass, 1 fail** |
+| windows the scan still reports there | **14** over **384** files |
+| the same scan on the converted tree | **4 pass, 0 fail** — **0** windows over **385** files |
+
+The wrong fix works, and it is wrong: SC-1446 goes green, the ten other
+windows are untouched, and the sweep is still red. The 14 is itself worth
+the row — it is three MORE than the eleven #664 found by hand
+(`sc-claim-forms.test.ts:178`, `collect-claim-enforcement.test.ts:810`,
+`strip-js-comments.test.ts:211`), which is the argument for a sweep over a
+list of ten edits.
+
+### What was broken to prove it
+
+The record above is a measurement in two markdown files, and a measurement in
+a markdown file has one failure mode worth guarding: it gets dropped, or
+quietly edited, and nothing is red anywhere.
+`test/fixed-window-record.test.ts` reads it back as data. Run and counted
+over that file alone (12 tests), every count predicted before the battery
+ran, and **the baseline row read first**.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 12 pass, 0 fail | **12 pass, 0 fail** |
+| the whole block deleted from the rule file | 6 | **6 of 12** — the rule's five cases plus the byte-for-byte comparison |
+| the spec's table cut to the two short-construct rows | 2 | **2 of 12** — SC-2096 on the spec, and the comparison |
+| one headroom value hand-edited in BOTH files | 2 | **2 of 12** — SC-2097 on each, and the comparison stays GREEN, which is why the arithmetic case exists |
+| a short-construct row relabelled `covered` in BOTH files | 4 | **4 of 12** — SC-2097 and the named-rows case on each |
+| the mutation row's measured column dropped in BOTH files | 2 | **2 of 12** — SC-2099 on each |
+| the wrong-fix row recorded as still red in BOTH files | 2 | **2 of 12** — SC-2100 on each |
+| the empty-table refusal removed from `tableRows` | 1 | **1 of 12** — the planted-table case, which is the only thing that can see it |
+| the row matcher made dead, so `tableRows` can see no line | 11 | **11 of 12** — every case that reads a table; the byte-for-byte comparison does not go through it and stays green |
+| prose inside the block changed in the RULE file only | 1 | **1 of 12** — the byte-for-byte comparison, alone |
+| …and that comparison then made to compare the spec against itself | 0 | **0 of 12** |
+
+Before believing any row, the input on which mutant and original differ,
+named and run rather than assumed: the last two rows share one. The rule
+file's copy of the block is edited to say *"were never reading what their
+TITLES claim"* where the spec says *"names"* — a one-word divergence that no
+other case in the file reads. The original reports the two paths and refuses;
+the self-comparing mutant reports 12 pass over two documents that no longer
+agree.
+
+**The last row is 0 on purpose and it is not a wrong-fix survival — it is the
+proof that there is one decider and not two.** A second assertion anywhere in
+the file that happened to notice the divergence would have held that row
+above zero, and then neither of the two could be shown to be load-bearing.
+The cheapest wrong fix for a red record test is a different thing — *delete
+the rule file's copy and keep the spec's* — and that is the second row, at 6
+of 12.
+
+None of the ten mutations is left in the tree; all were run and reverted, and
+`specs/HARNESS-STANDARD.md`, `.claude/rules/checks-must-be-able-to-fail.md`
+and `test/fixed-window-record.test.ts` were confirmed byte-identical
+afterwards by checksum.
+
+### Success Criteria
+
+- [x] SC-2096: test/fixed-window-record.test.ts contains [eleven rows, one per converted site] — the headroom table is parsed out of both record files and its row count asserted, because a table silently cut to the two interesting rows reads exactly like a complete one
+- [x] SC-2097: test/fixed-window-record.test.ts contains [headroom is window minus farthest-needed] — every row's three numbers are read as numbers and the arithmetic checked, so a row whose headroom was hand-edited to a comfortable value cannot sit in the table unchallenged
+- [x] SC-2098: test/fixed-window-record.test.ts contains [the two record files carry the same block, byte for byte] — the spec and the rule are compared against each other rather than each against itself, because two documents stating one measurement with nothing comparing them is the defect (#621), not the record
+- [x] SC-2099: test/fixed-window-record.test.ts contains [both red counts are present and equal] — the predicted and measured counts of the whole-document mutation are read as numbers from the recorded table, because a mutation row with its measured column dropped is indistinguishable from one that was never run
+- [x] SC-2100: test/fixed-window-record.test.ts contains [the wrong fix is recorded as applied, with numbers] — the 6000, the 9000 and the scan's surviving window count are asserted as parsed integers, so the record cannot decay into prose that says a fix was considered

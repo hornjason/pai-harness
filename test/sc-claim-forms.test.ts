@@ -17,6 +17,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { commentClaimForm, type ClaimForm } from "../lib/sc-claim-forms";
+import { structuralCut } from "../lib/source-slice";
 import { commentMask, enclosingComment } from "../lib/strip-js-comments";
 import { buildScRegistry } from "../lib/sc-ids";
 import { coverageClaimSites, findTestFilesForSCs } from "../scripts/sync-sc-status";
@@ -175,7 +176,17 @@ describe("#360 SC-807: the enclosing comment is recovered, not guessed", () => {
     expect(text.trimEnd().endsWith("*/")).toBe(true);
     expect(text).toContain("A heading");
     expect(text[offset]).toBe("S");
-    expect(text.slice(offset, offset + 7)).toBe("SC-9901");
+    // #664: `offset` is checked by asking the string whether the id STARTS
+    // there, not by cutting seven characters and comparing — a count that
+    // happens to equal the id's length today and silently stops meaning that
+    // the moment the id does. The recovered comment is then compared to the
+    // docblock cut to its own close, which is the claim this case is about.
+    expect(text.startsWith("SC-9901", offset), "offset does not point at the id").toBe(true);
+    const docblock = structuralCut(src, "/**", { endAnchor: "*/" });
+    expect(docblock.length, "the cut is the whole source — it bounds nothing").toBeLessThan(
+      src.length,
+    );
+    expect(text, "the recovered comment is not the docblock").toBe(`${docblock}*/`);
   });
 
   test("a truncated comment would turn every citation into a heading", () => {

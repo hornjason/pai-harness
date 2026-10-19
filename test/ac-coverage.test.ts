@@ -44,6 +44,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { structuralCut, structuralCutAround } from "../lib/source-slice";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
@@ -308,9 +309,15 @@ describe("#251: the decision is wired in, not merely defined", () => {
     // `shipFailed` is the only producer of a SHIP_FAILED status in ship.js
     // (#252, count asserted in test/ship-failure-report.test.ts), so a
     // `shipFailed(` beside the check is a refusal and a `log(` is not.
-    const at = shipSource.indexOf("coverageViolations(goalData.successCriteria");
-    expect(at, "ship.js never calls coverageViolations").toBeGreaterThan(-1);
-    const after = shipSource.slice(at, at + 1400);
+    // #664: cut to the end of the `if` the call guards, not to a character
+    // count. `structuralCut` refuses rather than returning a short region, so
+    // the anchor's own vacuity guard is the cut's.
+    const after = structuralCut(shipSource, "coverageViolations(goalData.successCriteria", {
+      balanced: "{",
+    });
+    expect(after.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+      shipSource.length,
+    );
     expect(after, "an uncovered run logs instead of refusing").toContain("shipFailed(");
   });
 
@@ -480,9 +487,16 @@ describe("#258: the shape a real run produces", () => {
   test("Discovery is REQUIRED to produce the attribution, not merely asked", () => {
     // An optional attribution field is an attribution nobody records, and
     // then every run refuses — the fail-closed half of this defect.
-    const at = shipSource.indexOf("coversCriteria: { type: 'array'");
-    expect(at, "the discovery schema has no coversCriteria field").toBeGreaterThan(-1);
-    const required = shipSource.slice(at, at + 600);
+    // #664: the region the claim is about is the `acs` schema object, and it
+    // ends where that object closes. The two-sided cut also asserts that the
+    // region CONTAINS the field it is about, which a character count cannot.
+    const required = structuralCutAround(shipSource, "coversCriteria: { type: 'array'", {
+      startAnchor: "    acs: {",
+      end: { balanced: "{" },
+    });
+    expect(required.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
+      shipSource.length,
+    );
     expect(
       required,
       "coversCriteria is optional, so the model may omit it and every run refuses",
