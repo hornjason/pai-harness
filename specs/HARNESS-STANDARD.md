@@ -11443,7 +11443,7 @@ exits are the last place in this file that should be able to die on the way
 out, and `scripts/validate-workflow.ts` exists because that shape already
 took a run down (#585).
 
-### The remaining gap, recorded rather than fixed here
+### The remaining gap, recorded here and closed one section below
 
 `lib/run-branch.ts` resolves the branch with
 `git for-each-ref --format=%(refname:short) refs/heads/<branch>` — local
@@ -11454,7 +11454,9 @@ the other. So every mode can be answering confidently about a commit that is
 not the one the run pushed, and its output does not say which ref it read.
 Both error directions are live — a local ref behind the push reports
 CONTAINED and the delete destroys remote-only commits; a local ref ahead
-refuses and attributes the refusal to the run. Open on #640.
+refuses and attributes the refusal to the run. **Closed by SC-2170..SC-2176
+below**, which is why this paragraph stays: the measurement that motivated
+the fix is not reproducible once the fix exists.
 
 **The cheapest wrong fix, named and applied: add the restore to `shipFailed`
 only**, because that is the funnel the observed run went through. The
@@ -11688,3 +11690,193 @@ None of the eight mutations is left in the tree; all were run and reverted,
 and `scripts/validate-workflow.ts`, `test/validate-workflow-tdz.test.ts` and
 `workflows/ship.js` were confirmed byte-identical to the measured source
 afterwards by SHA-256. `workflows/ship.js` is unmodified by #598.
+
+## #640 + #644 — the run branch resolved from one ref, and the launch base checked by nobody
+
+Two issues, one unit, because #644's own body says it is the mechanism under
+#640 and both edits land in the same worktree-and-branch logic. They are two
+halves of one question — *which tree is this run working on* — asked at the
+two ends of a run.
+
+### #640: `for-each-ref refs/heads/<branch>` is a confident answer about one of two commits
+
+`lib/run-branch.ts` resolved the run branch from LOCAL HEADS ONLY. No remote
+ref was consulted anywhere in the module, no argument accepted one, and no
+output said which ref an answer was about. Measured on the real pair on
+2026-10-19: `rungate/run-631` is `4acc0a17` through `refs/heads` and
+`92eb88cf` through `refs/remotes/origin` — 2 commits one way, 6 the other.
+
+Both error directions are live and they are not equally expensive:
+
+- the local ref **behind** the push → containment reports CONTAINED about a
+  commit the run never pushed, and the delete mode then removes a branch
+  whose remote-only commits nothing else holds;
+- the local ref **ahead** → the check refuses, correctly, and the refusal is
+  then attributed to the run whose work it is not. That misattribution was
+  posted on #640 as fact and corrected an hour later.
+
+`runBranchRefs` resolves both refs in ONE `for-each-ref` over two patterns —
+one call, because two calls are two readings taken at two moments and a fetch
+landing between them produces a pair that was never simultaneously true — and
+reports `ABSENT`, `LOCAL_ONLY`, `REMOTE_ONLY`, `AGREED`, `DIVERGED` or
+`UNMEASURED`. `leftoverRunBranch` and `deleteRunBranch` both resolve through
+it and both act on `resolvedRef`, never on the bare name, so neither can be
+answering about a ref it did not name. `DIVERGED` resolves NOTHING: a
+disagreement is reported, and the thing that must not happen is this module
+choosing.
+
+**The cheapest wrong fix, named before the repair: make `for-each-ref` also
+match `refs/remotes/origin/<branch>` and take whichever it finds.** It is the
+5pm repair, it makes the remote-only symptom disappear, and when both refs
+exist it silently picks one of two commits — which is the state the real pair
+is in. The cases survive it NON-vacuously: the fixture's local head is
+squash-merged onto main and its remote-tracking ref carries a path main has
+never held, so a resolver that takes the local one reports CONTAINED and
+destroys work. Measured below at **4 of 36**.
+
+### #644: an instruction nobody executes is not a rule
+
+`lib/launch-base.ts` and `scripts/check-launch-base.ts` shipped in PR #686
+and are correct: `SAME_CHECKOUT` clears, `CWD_NOT_A_REPO`, `DIFFERENT_REPO`,
+`DIFFERENT_CHECKOUT` and `UNMEASURED` all refuse.
+`.claude/rules/ship-workflow.md` gained a "Check the launch base first" step.
+Measured before this change: **`workflows/ship.js` contained zero references
+to that script.** An unwired control is byte-identical to no control.
+
+`ship.js` now runs it as the first step of the Goal phase — before the issue
+is read and before any role agent, which is before the first
+worktree-isolated spawn, and that spawn is the decision being guarded.
+`SAME_CHECKOUT` proceeds; every other reading ends the run at
+`LAUNCH_BASE_FAILED` through `terminalFailure`, which preserves worktrees and
+restores the shared checkout on the way out. ship.js decides nothing itself:
+it restates the reading, and a second comparison composed there out of `pwd`
+and a toplevel probe would be two deciders that agree.
+
+**#644's SC-1 as filed is not reachable from this repository and is not
+claimed here.** `opts.cwd = PROJECT_ROOT` has pinned every worktree-isolated
+spawn since `804b9a43` (2026-09-23) and is overridden: the agent runtime
+resolves `isolation: 'worktree'` against the SESSION's current directory and
+applies `opts.cwd` to the spawned agent afterwards. Rungate already passes
+the explicit argument. The only point rungate controls is whether the run
+starts.
+
+**The cheapest wrong fix, named: validate that the session's cwd is a git
+repository.** It converts failure 1 — the `WorktreeIsolationError` about a
+directory the message does not name — into a clear error and leaves failure
+2, the silent one, exactly as it was: a run launched from a valid repository
+on an unrelated branch still cuts its worktrees from that tree and succeeds
+onto the wrong base. The cases survive it NON-vacuously, because every
+refusal is driven from a reading and `DIFFERENT_CHECKOUT` is a reading a
+cwd-is-a-repository validation produces no refusal for. Measured below at
+**6 of 13**.
+
+### Success Criteria
+
+- [x] SC-2170: test/unit/run-branch-remote-ref.test.ts contains [the two refs are resolved and a disagreement is reported] — both refs are resolved in one call and a name pointing at two commits is its own reading that names both, because a resolver that picks one is confident about a commit the run may never have pushed
+- [x] SC-2171: test/unit/run-branch-remote-ref.test.ts contains [a diverged pair is refused by the delete mode] — the destructive mode is driven against a fixture whose local head is contained and whose remote ref is not, and the branch is asserted still present afterwards rather than only the exit code being read
+- [x] SC-2172: test/unit/run-branch-remote-ref.test.ts contains [a leftover whose refs disagree is LEFTOVER_DIVERGED] — a disagreement is reported at the start of a run and not folded into UNMEASURED, because "I could not look" and "I looked and the answer is two commits" are different facts and only the second names two commits to reconcile
+- [x] SC-2173: test/unit/run-branch-remote-ref.test.ts contains [a branch that exists only on the remote is not ABSENT] — the other error direction, where a local-heads read makes a branch another session pushed indistinguishable from a clean start, with the delete mode refusing by name rather than reporting a removal git declined
+- [x] SC-2174: test/unit/run-branch-remote-ref.test.ts contains [every reading names which ref it resolved] — the output's own gap on #640, so an agreeing pair carries the full ref and the sha it resolved and a disagreement carries null for both rather than a quiet default
+- [x] SC-2175: test/unit/run-branch-remote-ref.test.ts contains [an agreeing pair is still deleted when it is contained] — the CONTROL against a check that refuses everything, varying exactly one input against SC-2171: the commit the remote ref names
+- [x] SC-2176: test/unit/run-branch-remote-ref.test.ts contains [a repository the refs cannot be read from is UNMEASURED] — an unreadable resolution is not an absent branch, and the leftover reading built on it says so rather than reporting a clean start
+- [x] SC-2177: test/unit/launch-base-wiring.test.ts contains [ship.js runs scripts/check-launch-base.ts as a step of its own] — the script existed and was referenced nowhere, so what is asserted is the invocation and the single binding, not the script's behaviour which test/unit/launch-base.test.ts already covers
+- [x] SC-2178: test/unit/launch-base-wiring.test.ts contains [before the issue is read and before any role agent] — position is the property: the first worktree-isolated spawn is where both of #644's failures are decided, so a check placed after it measures a decision already taken
+- [x] SC-2179: test/unit/launch-base-wiring.test.ts contains [a same-checkout reading clears and the four others each refuse] — driven as one table over the five readings the library can produce, so the clearing one and the refusing ones are one measurement rather than separate assertions that happen to agree
+- [x] SC-2180: test/unit/launch-base-wiring.test.ts contains [a reply that reported nothing is UNMEASURED] — an empty reply is what an agent that did not run the step returns, and a run launched by the absence of an answer is launched by nothing at all
+- [x] SC-2181: test/unit/launch-base-wiring.test.ts contains [every field the reader reads is declared] — a schema is a FILTER on the reply (#646), so the declared property set is asserted exactly and the nullable fields are asserted to admit null rather than dropping it
+- [x] SC-2182: test/unit/launch-base-wiring.test.ts contains [a SAME_CHECKOUT claim carrying a non-zero exit is a contradiction] — the script cannot produce that pair, so a reply asserting both has misread one of them, and the control varying only the exit code is asserted beside it
+- [x] SC-2183: test/unit/launch-base-wiring.test.ts contains [a refusal ends the run through the terminal funnel] — not a warning: the two failures guarded are a run that dies 19 seconds later with a message about the wrong thing and a run that succeeds onto somebody else's branch, and neither is improved by a log line
+
+### The suite's own fixtures were all on the wrong side of the new precondition
+
+Adding the launch-base check turned **eleven** existing cases red, in
+`test/workflow-contracts.test.ts` and `test/terminal-failure-reason.test.ts`,
+and all eleven for one reason: `lib/workflow-test-harness.ts` drives ship.js
+with a `projectRoot` under `/tmp` that has never been a repository, because
+no case before #644 needed it to be. Ten reported
+`Expected "IMPLEMENT_FAILED", received "LAUNCH_BASE_FAILED"` and the
+eleventh — SC-1753, *preload-contexts no longer declares a phase ahead* —
+reported a missing call, because the run it reads terminated before reaching
+it. Neither the cases nor the gate were wrong.
+
+**This is #492's shape arriving from the other side.** There, every fixture
+in a battery met a precondition and the branch where it did not hold was
+outside the battery's reach. Here a precondition was ADDED beneath a suite
+whose every fixture predates it, so all of them landed on the far side at
+once. The tell is the same in both directions: a population of fixtures that
+agrees about something nobody chose.
+
+**Fixed at the harness, not at the gate**, and the distinction is the whole
+of it. The cheapest wrong fix was available in one line — make the check pass
+when the reading is `UNMEASURED`, or skip it when `projectRoot` is under
+`/tmp` — and both delete the point of #644: `UNMEASURED` is precisely the
+reading that must refuse, and a `/tmp` carve-out is a production bypass every
+synthetic caller inherits. Neither was applied.
+
+Both suites now override the `launch-base` label with a `SAME_CHECKOUT`
+reading. The override supplies a READING, which `readLaunchBase` then judges
+exactly as it judges a real one, so a refusing reading injected there still
+stops the run — it is not a flag that turns the gate off.
+
+What stops the override becoming a default nobody notices is SC-2184, which
+runs the real script through the harness with NO override and requires
+`LAUNCH_BASE_FAILED`, asserts the run stopped at the launch-base step rather
+than later (`read-issue` is never called), and pairs it with a control
+varying exactly that one injected reading. It is the one run in the suite
+built deliberately NOT to meet the precondition every other run now asserts
+past.
+
+- [x] SC-2184: test/unit/launch-base-wiring.test.ts contains [with no reading injected the real script refuses] — the seam the rest of the suite needs is proved not to be a bypass by executing the real script without it, with a control varying only the injected reading so the pair is a measurement of the seam rather than of a script that refuses everything
+
+### What was broken to prove the cases fail
+
+Run and counted rather than asserted. Every count predicted before the
+battery ran, and **the baseline row was read before any mutation row** — an
+instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody mutates anything to produce. Before each count, the
+input on which mutant and original differ is named.
+
+Battery A, over `test/unit/run-branch-remote-ref.test.ts` +
+`test/unit/run-branch.test.ts` (36 tests):
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 36 pass, 0 fail | **36 pass, 0 fail** | — |
+| `runBranchRefs` asks for `refs/heads` only — the defect verbatim | 5 | **5 of 36** — SC-2170..SC-2174 | the diverged fixture: the original refuses the delete non-zero with the branch still present, the mutant exits **0** having deleted it |
+| **the cheapest wrong fix**: both patterns matched, whichever is found taken | 4 | **4 of 36** — SC-2170, SC-2171, SC-2172, SC-2174 | the same fixture: the mutant reads `AGREED` off the local head and deletes. SC-2173 stays GREEN, which is the point — the wrong fix repairs the loud half and leaves the destructive one |
+| `leftoverRunBranch` compares the bare branch name instead of `resolvedRef` | 1 | **1 of 36** — SC-2173 | the remote-only fixture: the original reports `LEFTOVER_UNCONTAINED` naming `refs/remotes/origin/…`, the mutant cannot resolve `rungate/run-704` at all and reports UNMEASURED |
+| the `REMOTE_ONLY` refusal removed from `deleteRunBranch` | 1 | **1 of 36** — SC-2173 | the same fixture: the original refuses `REMOTE_ONLY`, the mutant refuses `NOT_CONTAINED: refs/remotes/origin/rungate/run-704 holds 1 of its 1 changed path(s)` — a true sentence about a ref the deletion was never going to touch |
+| the reading dropped from the CLI's refusal line | 2 | **2 of 36** — SC-2171, SC-2173 | both fixtures: the class of a refusal stops being recoverable from anything but the prose |
+
+**One mutation was considered and NOT run, because no input distinguishes
+it.** Pointing `deleteRunBranch`'s containment at the bare branch name rather
+than at `resolvedRef` is a no-op: `DIVERGED` and `REMOTE_ONLY` are refused
+above it, and for `LOCAL_ONLY` and `AGREED` the bare name and
+`refs/heads/<branch>` are the same commit by git's own rules. A row recording
+0 there would be the code run twice, not a mutation
+(`.claude/rules/checks-must-be-able-to-fail.md`).
+
+Battery B, over `test/unit/launch-base-wiring.test.ts` (13 tests):
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 13 pass, 0 fail | **13 pass, 0 fail** | — |
+| the whole `LAUNCH-BASE-CHECK` block deleted — the pre-#644 `ship.js` | abort, 0 run | **the file ABORTS at module scope**, 0 of 13 run, `AnchorNotFoundError: the anchor … does not appear in the document` | `workflows/ship.js` itself. The loud-abort property: a harness whose target has moved must not pass quietly |
+| **the cheapest wrong fix**: only `CWD_NOT_A_REPO` refuses | 6 | **6 of 13** | `{reading:"DIFFERENT_CHECKOUT", refusal:"cwd is on feat/something-else …"}`: the original refuses naming the branch, the mutant returns `refusal: null` and the run proceeds onto the wrong tree |
+| the call-site guard narrowed to one reading, the reader left correct | 1 | **1 of 13** — SC-2183 | `workflows/ship.js`: `if (launchBase.refusal && launchBase.reading === 'CWD_NOT_A_REPO')`. The same wrong fix one hop later, caught because the guard is asserted as a whole expression rather than as a prefix |
+| `cwd` and `exitCode` dropped from the declared schema — the #646 shape | 1 | **1 of 13** — SC-2181 | the schema literal: the original declares four properties and the mutant two, and the two it drops are ones the reader reads |
+| the Goal read moved ABOVE the check — order only | 1 | **1 of 13** — SC-2178 | `workflows/ship.js`: the check is still taken, still correct, and no longer first |
+
+**The order row came back 12 of 13 in its first form, and the composition is
+why it was re-done rather than recorded.** The first mutant moved the step
+OUT of its marker block instead of moving the Goal read above it — two
+changes at once: the position, and which cut the statement belongs to. That
+collapsed the test file's own `BLOCK` and `DECLARATIONS` cuts into one, the
+`new Function` harness then held a top-level `await`, and ten cases died on a
+`SyntaxError` that is about the cuts rather than about the order. Loud rather
+than silent — but a measurement of the instrument. Varying exactly one thing
+(#585) gives 1, and the one is SC-2178.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`workflows/ship.js`, `lib/run-branch.ts` and `scripts/check-run-branch.ts`
+were confirmed byte-identical to the measured source afterwards by SHA-256.
