@@ -221,7 +221,12 @@ describe("#664 AC-3: the before-and-after shape is cut structurally on both side
     // The live shape: the claim is that the TIMING log line prints the wait
     // when there was one. The region that claim is about is the loop, which
     // is 13 lines long and 1,500 characters away from being a number.
-    const cut = structuralCutAround(SHIP_SOURCE, "TIMING: ${t.agent}", {
+    // The subject is spelled in full. The bare `TIMING: ${t.agent}` prefix
+    // occurs THREE times in that loop — orphan, unterminated, and this one
+    // — so it named a region by whichever the search reached first. #668
+    // made that a refusal; before it, this cut answered about the orphan
+    // line while the case was named after the wait.
+    const cut = structuralCutAround(SHIP_SOURCE, "TIMING: ${t.agent} = ${t.seconds}s${queued}", {
       startAnchor: "for (const t of gradeResult.timing)",
       end: { balanced: "{" },
     });

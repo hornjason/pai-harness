@@ -292,7 +292,12 @@ describe("AC-4: queued time survives the trip to the run report", () => {
     // is the loop that prints the line, cut from the loop header to its own
     // closing brace — and `structuralCutAround` refuses if the region does not
     // contain the line it is about, which a two-sided count cannot check.
-    const block = structuralCutAround(shipSource, "TIMING: ${t.agent}", {
+    // The subject is the line that CARRIES the wait, spelled in full. The
+    // bare `TIMING: ${t.agent}` prefix occurs three times in that loop — the
+    // orphan line, the unterminated line and this one — so it named a
+    // region by whichever the search reached first. #668 made that a
+    // refusal; before it, this cut silently answered about the orphan line.
+    const block = structuralCutAround(shipSource, "TIMING: ${t.agent} = ${t.seconds}s${queued}", {
       startAnchor: "for (const t of gradeResult.timing)",
       end: { balanced: "{" },
     });

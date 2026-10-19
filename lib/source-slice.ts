@@ -23,11 +23,31 @@
  * | refusal | the input only it reaches |
  * |---|---|
  * | `AnchorNotFoundError` | an anchor, start anchor or end anchor absent from the document |
+ * | `AmbiguousAnchorError` | a subject or start anchor occurring more than once |
  * | `UnbalancedCutError` | a bracket with no matching close, or no opener after the anchor |
  * | `EmptyCutError` | an end landing where the anchor ends, so the cut holds only the anchor |
  * | `AnchorOutsideCutError` | a two-sided region that does not contain the anchor it is about |
  *
- * The last two are the ones that matter most, because the thing they prevent
+ * **`AmbiguousAnchorError` is the one this module shipped without (#668).**
+ * `structuralCut` used `indexOf` and `structuralCutAround` used
+ * `lastIndexOf`, and neither counted: a duplicated anchor produced a
+ * well-formed cut about whichever occurrence the direction of the search
+ * happened to reach. That is worse than the four refusals above, because
+ * those return nothing and this returns something — a confident answer about
+ * the wrong region, which is the failure line numbers already had (#514).
+ * `lib/source-anchor.ts`, named here as this module's model, has said
+ * *"not found and found-twice are both refusals"* since it was written;
+ * this module was the sibling that did not.
+ *
+ * **The END anchor is deliberately NOT counted**, and that is not an
+ * oversight carried forward. An end anchor is a boundary searched forward
+ * from a known start, and the nearest one is the correct one by
+ * construction: `"\n}"` closes hundreds of functions in any file worth
+ * cutting, and refusing it as ambiguous would make the end-anchor form
+ * unusable. A subject or start anchor is a claim about WHICH construct, and
+ * there the second occurrence is the whole problem.
+ *
+ * The last two of the original four are the ones that matter most, because the thing they prevent
  * reads as a pass. A caller that runs `expect(cut).toContain(x)` over a cut
  * that is nothing but the anchor is asserting against text it typed itself,
  * and a two-sided region that misses its subject answers confidently about the
@@ -40,7 +60,7 @@
  * ## Scope, stated rather than implied
  *
  * The bracket scan is a raw text scan, the same one already written by hand in
- * `test/ship-remediation-commits.test.ts` and `test/liveness-contradiction.ts`.
+ * `test/ship-remediation-commits.test.ts` and `test/liveness-contradiction.test.ts`.
  * It does not know about strings, comments or regex literals, so it is for
  * cutting a block out of source whose brackets balance across the region —
  * which is what every call site here does. An unbalanced region refuses by
@@ -111,6 +131,30 @@ export class EmptyCutError extends Error {
   }
 }
 
+/**
+ * The anchor names more than one place, so the cut is about whichever one
+ * the search direction reached first.
+ *
+ * The count is in the message on purpose. A refusal that says only
+ * "ambiguous" sends the reader back to count occurrences by hand, which is
+ * the work the refusal just did.
+ */
+export class AmbiguousAnchorError extends Error {
+  readonly anchor: string;
+  readonly occurrences: number;
+  constructor(anchor: string, role: string, occurrences: number) {
+    super(
+      `the ${role} ${JSON.stringify(anchor)} appears ${occurrences} times in the document, ` +
+        `so the cut would be about whichever one the search reached first — ` +
+        `not found and found-twice are both refusals`,
+    );
+    this.name = "AmbiguousAnchorError";
+    this.anchor = anchor;
+    this.occurrences = occurrences;
+    Object.setPrototypeOf(this, AmbiguousAnchorError.prototype);
+  }
+}
+
 /** A two-sided region closed before it reached the anchor it is about. */
 export class AnchorOutsideCutError extends Error {
   readonly anchor: string;
@@ -123,6 +167,41 @@ export class AnchorOutsideCutError extends Error {
     this.anchor = anchor;
     Object.setPrototypeOf(this, AnchorOutsideCutError.prototype);
   }
+}
+
+/**
+ * How many times `anchor` occurs in `doc`.
+ *
+ * Exported so the duplicate-anchor scan and every caller that wants to know
+ * ask ONE binding. `test/worktree-repo.test.ts` wrote
+ * `source.split(ELSE_SITE).length - 1` by hand, which is a second decider
+ * for the same question: mutating either would leave the other counting
+ * correctly, and no behavioural test could tell them apart
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ *
+ * An EMPTY anchor counts as zero rather than as `doc.length + 1`. Splitting
+ * on "" returns one element per character, which would report a huge number
+ * for an anchor that names nothing; and `indexOf("")` is 0, so without this
+ * an empty anchor silently cuts from the top of the file.
+ */
+export function anchorOccurrences(doc: string, anchor: string): number {
+  if (anchor === "") return 0;
+  return doc.split(anchor).length - 1;
+}
+
+/**
+ * The single index of `anchor`, refusing both zero and more than one.
+ *
+ * One binding for both functions and both anchor roles, so there is one
+ * thing to mutate. `structuralCut` reaching for `indexOf` and
+ * `structuralCutAround` reaching for `lastIndexOf` is exactly how the two
+ * ended up disagreeing about a question neither of them was asking.
+ */
+function locateUnique(doc: string, anchor: string, role: string): number {
+  const n = anchorOccurrences(doc, anchor);
+  if (n === 0) throw new AnchorNotFoundError(anchor, role);
+  if (n > 1) throw new AmbiguousAnchorError(anchor, role, n);
+  return doc.indexOf(anchor);
 }
 
 /**
@@ -173,8 +252,7 @@ function refuseEmpty(doc: string, from: number, anchor: string, to: number): voi
  * `EmptyCutError` — never a short cut and never an empty string.
  */
 export function structuralCut(doc: string, anchor: string, end: CutEnd): string {
-  const at = doc.indexOf(anchor);
-  if (at < 0) throw new AnchorNotFoundError(anchor, "anchor");
+  const at = locateUnique(doc, anchor, "anchor");
   const to = endIndex(doc, at, anchor, end);
   refuseEmpty(doc, at, anchor, to);
   return doc.slice(at, to);
@@ -201,11 +279,12 @@ export function structuralCut(doc: string, anchor: string, end: CutEnd): string 
  * that is well-formed, non-empty, and about something else.
  */
 export function structuralCutAround(doc: string, anchor: string, bounds: CutBounds): string {
-  const at = doc.indexOf(anchor);
-  if (at < 0) throw new AnchorNotFoundError(anchor, "anchor");
+  const at = locateUnique(doc, anchor, "anchor");
   const { startAnchor, end } = bounds;
-  const from = doc.lastIndexOf(startAnchor, at);
-  if (from < 0) throw new AnchorNotFoundError(startAnchor, "start anchor");
+  // Counted, not `lastIndexOf`. Searching backward from the subject makes a
+  // duplicated start anchor look resolved — it picks the nearest preceding
+  // one, which is a plausible region and not necessarily the right one.
+  const from = locateUnique(doc, startAnchor, "start anchor");
 
   const to = endIndex(doc, from, startAnchor, end);
   refuseEmpty(doc, from, startAnchor, to);

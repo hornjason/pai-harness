@@ -491,7 +491,10 @@ describe("#258: the shape a real run produces", () => {
     // ends where that object closes. The two-sided cut also asserts that the
     // region CONTAINS the field it is about, which a character count cannot.
     const required = structuralCutAround(shipSource, "coversCriteria: { type: 'array'", {
-      startAnchor: "    acs: {",
+      // Newline-bounded. The bare `    acs: {` is also a substring of the
+      // ten-space-indented `          acs: { type: 'array', … }` further
+      // down, so it named two places and picked the first (#668).
+      startAnchor: "\n    acs: {\n",
       end: { balanced: "{" },
     });
     expect(required.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
