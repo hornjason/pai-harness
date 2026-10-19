@@ -16,13 +16,13 @@
  *
  * `test/rook-review-scope.test.ts` is the worked example this copies.
  *
- * ## What was broken to prove it
+ * ## What was broken to prove it — #590
  *
  * Run and counted rather than asserted, over this file plus
- * `test/closing-keywords.test.ts` (59 tests). Every count was predicted
- * before the battery ran, as `.claude/rules/checks-must-be-able-to-fail.md`
- * requires, and each mutant was checked against an input on which it and the
- * original differ.
+ * `test/closing-keywords.test.ts` (59 tests at the time). Every count was
+ * predicted before the battery ran, as
+ * `.claude/rules/checks-must-be-able-to-fail.md` requires, and each mutant
+ * was checked against an input on which it and the original differ.
  *
  * | Mutation | Predicted | Red |
  * |---|---|---|
@@ -38,20 +38,70 @@
  * enumerate, not a crashing mutant. Every other case touching the comparison
  * went red, which is the discriminator that section prescribes.
  *
- * Two rows are worth keeping for what they say about the SHAPE of the
- * coverage rather than its size:
+ * The colon row does NOT include the live-record case. The live record is
+ * the only fixture nobody wrote, and it is blind to a narrowing of the
+ * detector — it can only witness a close the detector still sees. The form
+ * table is the thing holding that line.
  *
- *   - the colon row does NOT include the live-record case. The live record
- *     is the only fixture nobody wrote, and it is blind to a narrowing of
- *     the detector — it can only witness a close the detector still sees.
- *     The form table is the thing holding that line.
- *   - the `BANKED` row is 1, which is what makes the live-record case a
- *     witness rather than a subset assertion that is true of everything. It
- *     fails when the bank is emptied, so it is reading the real #586.
+ * **The last two rows are history, not current readings.** #605 deleted the
+ * declared-but-unclosed loop, and `BANKED` is `[]` on this tree, so neither
+ * mutation exists to apply any more. They are kept because a row that was
+ * true of a tree somebody can check out is evidence about how the file got
+ * here; see the #605 table below for what holds those lines now.
  *
- * None of the five is left in the tree; all were run and reverted, and
- * `scripts/check-state-record-closes.ts` was confirmed byte-identical
- * afterwards.
+ * ## What was broken to prove it — #605
+ *
+ * Re-measured on this tree over this file plus `test/closing-keywords.test.ts`
+ * (78 tests). Every count was predicted before the battery ran, the BASELINE
+ * row was read before any mutation row, and before each count was recorded
+ * an input was named and RUN on which the mutant and the original differ.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 78 pass, 0 fail | **78 pass, 0 fail** | — |
+ * | `declaredClosureViolations` short-circuited to `return []` — the mutation #605 AC-4 asks for | 10 | **10 of 78** | `declaredClosureViolations([640], {states:{640:"OPEN"}})`: original returns one refusal naming #640, mutant returns `[]` |
+ * | the keyword -> undeclared loop short-circuited | 7 | **7 of 78** | `keywordCloseViolations` over `"Filed and not fixed: #586"` with nothing declared: original returns one refusal, mutant returns `[]` |
+ * | UNMEASURED defaulted to CLOSED — *Silent Default Substitution* | 4 | **4 of 78** | `declaredClosureViolations([662], null)`: original refuses naming UNMEASURED, mutant returns `[]` |
+ * | the cheapest wrong fix: the live record's five declared ids appended to `BANKED` | 1 | **1 of 78** | the live `project-state.json`: the staleness arm names all five as banked ids the record does not produce |
+ * | the pre-#605 conflation reinstated — the declared-but-unclosed loop put back | 7 | **7 of 78** | the AC-1 fixture (`declared: [662]`, a summary with no keyword in it): original returns `[]`, mutant returns *"the record declares #662 closed, but no closing keyword … will make GitHub close it"* |
+ *
+ * **Two rows are the ones to read.**
+ *
+ * The last row is the only one that measures the new cases against the
+ * DEFECT rather than against a reconstruction of something else, and AC-1 —
+ * *a declared id that is CLOSED on GitHub passes with no keyword anywhere* —
+ * is in it. That case is red on the pre-#605 behaviour and green on this
+ * tree, which is what makes it a witness of the fix rather than a case that
+ * sits beside it.
+ *
+ * The `BANKED` row is the fifth shape — *a case that goes green under the
+ * wrong fix* — measured rather than argued. The 5pm repair for any refusal
+ * the live-record case produces is to append the id to `BANKED`: one array
+ * element, suite green, distinction buried. **It does not work here**, for
+ * two independent reasons. The bank is now a two-way ratchet, so an entry
+ * the live record does not actually produce is itself a failure (that is
+ * the 1). And the #605 cases are unreachable from it in any case: they are
+ * synthetic records with ids of their own, and `BANKED` is read in exactly
+ * one place, against the live file. Appending an id cannot turn any #605
+ * case from red to green, so none of them certifies the regression it was
+ * written to block.
+ *
+ * The keyword row is the #605 AC-3 control: *the keyword -> undeclared
+ * direction is unchanged and its existing cases still pass*. Seven cases
+ * depend on it, and none of them is among the ten the declared-side row
+ * reds — the two deciders have disjoint witnesses, which is the evidence
+ * that they are two and not one wearing two names.
+ *
+ * A note on the keyword row's prediction, because the arithmetic matters
+ * more than the appearance of having been right: the first number written
+ * down was "≈6", which was a mis-addition of a list of seven enumerated
+ * cases. The seven measured are exactly the seven enumerated, so the
+ * enumeration — which is the prediction that does any work — matched.
+ *
+ * None of the five #605 mutations is left in the tree; all were run and
+ * reverted, and `scripts/check-state-record-closes.ts`,
+ * `test/closing-keywords.test.ts` and this file were confirmed
+ * byte-identical to the measured source afterwards by `shasum -a 256`.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -107,6 +157,24 @@ function stateFile(name: string, session: unknown): string {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "project-state.json");
   writeFileSync(path, JSON.stringify({ updated: "2026-10-17", priorities: [], phases: [], sessions: [], session }, null, 2));
+  return path;
+}
+
+/**
+ * A GitHub reading on disk, which is how these cases drive the declared side
+ * without a network (#605).
+ *
+ * `--issue-states github` is the live path and is deliberately never
+ * exercised here: a case that reached out to api.github.com would be red on
+ * a plane and green at a desk, and neither colour would be about the code.
+ * The reading is injected in-process instead by
+ * `test/closing-keywords.test.ts`, over a fake `fetch`.
+ */
+function statesFile(name: string, states: Record<number, "OPEN" | "CLOSED">): string {
+  const dir = join(FIX, name);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "issue-states.json");
+  writeFileSync(path, JSON.stringify(states, null, 2));
   return path;
 }
 
@@ -180,18 +248,55 @@ describe("#590 AC-6: zeroing the exit constant turns the real refusals green", (
         "#582 closed #508: the body was expect(true). Filed and not fixed: #586, where a " +
         "scaffold run rewrites spec criteria text.",
     });
-    expectRefused(["--state", path, "--repo", REPO], /will CLOSE #586/);
+    const states = statesFile("undeclared", { 508: "CLOSED" });
+    expectRefused(
+      ["--state", path, "--repo", REPO, "--issue-states", states],
+      /will CLOSE #586/,
+    );
   });
 
-  test("a declared close with no keyword behind it refuses, and the mutant does not", () => {
-    const path = stateFile("missing", {
+  test("#605: a declared id that is OPEN on GitHub refuses, and the mutant does not", () => {
+    // The input only the declared-side decider can reach: no closing keyword
+    // exists anywhere in this record, so the keyword side has nothing to
+    // iterate. Under #590 the same fixture refused for the opposite reason —
+    // "no closing keyword behind it" — and the way to clear it was to write
+    // one into prose.
+    const path = stateFile("declared-open", {
       number: 49,
       date: "2026-10-17",
       suite: "green",
       issues_closed: [508, 586],
-      summary: "#582 closed #508: the body was expect(true).",
+      summary: "Session 49 landed the spec rewrite and left the scaffold criterion alone.",
     });
-    expectRefused(["--state", path, "--repo", REPO], /declares #586 closed/);
+    const states = statesFile("declared-open", { 508: "CLOSED", 586: "OPEN" });
+    expectRefused(
+      ["--state", path, "--repo", REPO, "--issue-states", states],
+      /declares #586 closed, but #586 is OPEN on GitHub/,
+    );
+  });
+
+  test("#605: a declared id with no reading behind it is UNMEASURED, and refuses", () => {
+    // An unavailable GitHub is a third state. `0`, `{}` and SKIP are
+    // indistinguishable from success; UNMEASURED is not.
+    const path = stateFile("declared-unmeasured", {
+      number: 49,
+      date: "2026-10-17",
+      suite: "green",
+      issues_closed: [586],
+      summary: "Session 49 landed the spec rewrite and left the scaffold criterion alone.",
+    });
+    expectRefused(["--state", path, "--repo", REPO], /#586 is UNMEASURED/);
+  });
+
+  test("#605: an unreadable --issue-states file refuses rather than reading as no reading", () => {
+    const path = stateFile("states-absent", {
+      number: 49, date: "2026-10-17", suite: "green", issues_closed: [586],
+      summary: "Session 49 landed the spec rewrite.",
+    });
+    expectRefused(
+      ["--state", path, "--repo", REPO, "--issue-states", join(FIX, "nope", "states.json")],
+      /could not be read/,
+    );
   });
 
   test("a qualified reference with no --repo refuses, and the mutant does not", () => {
@@ -249,13 +354,37 @@ describe("#590: the positive control — a record whose sets agree is not refuse
       issues_closed: [586, 590],
       summary: "This closes #586 and fixes #590. Filed and not yet looked at: see #591.",
     });
-    const real = run(SCRIPT, ["--state", path, "--repo", REPO]);
+    const states = statesFile("clean", { 586: "CLOSED", 590: "CLOSED" });
+    const real = run(SCRIPT, ["--state", path, "--repo", REPO, "--issue-states", states]);
     expect(real.code, real.err).toBe(0);
     expect(real.out).toContain("OK");
     // Coverage, not merely a verdict: 36 of 426 and 426 of 426 are the same
     // PASS, and no reader can tell them apart from the output.
     expect(real.out).toMatch(/\d+ of \d+ texts read/);
     expect(real.out).toContain("2 in this repository");
+    // #605: and a PASS over a record whose declared ids were read from
+    // GitHub must be distinguishable from one over a record nobody asked
+    // about. Both exit 0 today, so the coverage line is the only witness.
+    expect(real.out).toContain("2 of 2 declared ids read from GitHub");
+  });
+
+  test("#605: a clean record with no keyword at all also exits 0", () => {
+    // AC-1 at the CLI. This is the record the fix exists to allow: a session
+    // that closed its issues through their own PRs, declaring them, with no
+    // closing keyword written into the summary to satisfy a checker.
+    const path = stateFile("clean-no-keyword", {
+      number: 50,
+      date: "2026-10-18",
+      suite: "green",
+      issues_closed: [586, 590],
+      summary: "Session 50 landed the spec rewrite and the state-record comparison, through their own PRs.",
+    });
+    const states = statesFile("clean-no-keyword", { 586: "CLOSED", 590: "CLOSED" });
+    const real = run(SCRIPT, ["--state", path, "--repo", REPO, "--issue-states", states]);
+    expect(real.code, real.err).toBe(0);
+    expect(real.out).toContain("OK");
+    expect(real.out).toContain("0 in this repository");
+    expect(real.out).toContain("2 of 2 declared ids read from GitHub");
   });
 
   test("the title, the body and the commit message are all read", () => {
