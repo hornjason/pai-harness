@@ -92,6 +92,20 @@ describe("contract: negative — missing AC evidence fails ship", () => {
       ],
     });
     const r = runGate("ship", "broken-evidence");
-    expect(r.output).toContain("all-acs-have-evidence");
+    // Same change as the sibling case in test/contract.test.ts, and the same
+    // reasoning. #705 moved this detection into EVIDENCE PRE-VALIDATION:
+    // AC-2's command runs and produces no output, so the gate refuses before
+    // `all-acs-have-evidence` is reached and that check is FILTERED OUT
+    // rather than red. The old assertion went red over improved behaviour.
+    //
+    // The property is unchanged — ship must not pass an AC with no evidence —
+    // so the assertion names the property and the AC. `BLOCKED` alone would be
+    // satisfied by this fixture's unrelated failures with AC-2 never examined.
+    expect(r.output).toContain("BLOCKED");
+    expect(
+      r.output,
+      "ship refused, but not for AC-2's missing evidence — the refusal must " +
+        "name the AC, or this case is satisfied by any unrelated failure",
+    ).toMatch(/AC-2: command runs but produces no output|all-acs-have-evidence/);
   });
 });
