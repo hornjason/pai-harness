@@ -21,6 +21,7 @@ import { readBranchDiff } from "../lib/branch-diff";
 import { proveLabelGateVerdict, type LabelRead } from "../lib/prove-label-gate";
 import { worktreeDiskIdentity, type RemoteReading } from "../lib/worktree-repo";
 import { readSuiteMeasurement, type SuiteReading } from "../lib/suite-measurement";
+import { briefAcAlignment } from "../lib/brief-ac-alignment";
 import {
   EXEC_TIMEOUT_MS,
   GATE_TEST_TIMEOUT_MS,
@@ -1209,25 +1210,32 @@ describe("verify checks", () => {
   });
 
   // brief-ac-alignment: Marcus brief contains all AC ids (ADR-009 C2)
+  //
+  // #700: the decision lives in `lib/brief-ac-alignment.ts` and this is the
+  // call site. It failed on five consecutive pushes to main and nothing in
+  // the log said which of its two branches fired, because neither refusal
+  // named the path it had resolved — and the path is assembled here from
+  // RUNGATE_WORK_DIR, a $HOME/.rungate fallback and the slug, so a wrong
+  // directory and a short brief produced the same sentence. Every refusal
+  // from the binding now carries the resolved path.
   test("brief-ac-alignment: brief covers all ACs", () => {
     if (!isVerifyPlus()) return;
     const slug = sf("slug");
     if (!slug) return;
     const briefPath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "marcus-brief.md");
-    if (!existsSync(briefPath)) {
-      // Brief file must exist for STANDARD+ tiers when marcus was spawned
-      const marcus = sf("agents")?.marcus;
-      if (marcus?.spawned) {
-        expect("marcus-brief.md missing").toBe("brief file required when Marcus spawned (ADR-009 C2)");
-      }
+    const exists = existsSync(briefPath);
+    const reading = briefAcAlignment({
+      briefPath,
+      briefExists: exists,
+      briefText: exists ? readFileSync(briefPath, "utf-8") : "",
+      acIds: (sf("acs") || []).map((ac: any) => ac.id),
+      marcusSpawned: sf("agents")?.marcus?.spawned === true,
+    });
+    if (reading.reading === "NOT_APPLICABLE") {
+      console.warn(`WARN: ${reading.declined}`);
       return;
     }
-    const brief = readFileSync(briefPath, "utf-8");
-    const acs = sf("acs") || [];
-    const missingIds = acs
-      .map((ac: any) => ac.id)
-      .filter((id: string) => !brief.includes(id));
-    expect(missingIds, `brief-ac-alignment: brief missing AC ids: ${missingIds.join(", ")}`).toEqual([]);
+    expect(reading.refusal, reading.refusal ?? "brief-ac-alignment").toBeNull();
   });
 
   // ac-spec-traceability (#440)

@@ -1648,20 +1648,112 @@ export function readConformityFindings(state: Record<string, any>): void {
 
 // ── Batch diagnosis ─────────────────────────────────────────────────────
 
-function printBatchDiagnosis(fails: number, results: GateResult[]): void {
-  if (fails > 0) {
-    const failResults = results.filter(r => r.result === "FAIL");
-    const infra = failResults.filter(r => /B1|B2|B3|adversary|reproducer|health|port/.test(r.check));
-    const acRelated = failResults.filter(r => /evidence|verdict|AC|ac[- ]|threshold/.test(r.check));
-    const chain = failResults.filter(r => /hash|chain|pushed|merge|spec-trace/.test(r.check));
-    const other = failResults.filter(r => !infra.includes(r) && !acRelated.includes(r) && !chain.includes(r));
+/**
+ * How many lines of one failure's own output the diagnosis relays (#700).
+ *
+ * There is a cap because the diagnosis is read at the END of a very long log,
+ * and an unbounded relay reintroduces the problem it exists to solve from the
+ * other side: #726 removed a 3000-character window because it discarded the
+ * answer, and a reporter that prints a megabyte discards it too — one runaway
+ * failure buries every other check's reason.
+ *
+ * It is a LINE cap and not a character cap on purpose. Bun's excerpts are
+ * source quotes, so a character cut lands mid-token and the operator cannot
+ * tell a truncated line from a short one. And when it fires it SAYS so, with
+ * the number it dropped — a relay that just stops is indistinguishable from a
+ * failure that had nothing more to say.
+ */
+export const DETAIL_LINE_CAP = 12;
 
-    console.log(`\nBATCH DIAGNOSIS: ${failResults.length} failures — fix all before re-running`);
-    if (infra.length) console.log(`  Infrastructure (${infra.length}): ${infra.map(r => r.check.split(" > ").pop()).join(", ")}`);
-    if (acRelated.length) console.log(`  AC/Evidence (${acRelated.length}): ${acRelated.map(r => r.check.split(" > ").pop()).join(", ")}`);
-    if (chain.length) console.log(`  Chain integrity (${chain.length}): ${chain.map(r => r.check.split(" > ").pop()).join(", ")}`);
-    if (other.length) console.log(`  Other (${other.length}): ${other.map(r => r.check.split(" > ").pop()).join(", ")}`);
+/** What a failure carrying no usable detail reports. */
+export const NO_DETAIL_RECORDED = "no detail was recorded for this failure";
+
+/**
+ * The batch diagnosis, as lines, with each failure's own reason under it.
+ *
+ * ONE binding, exported, and `printBatchDiagnosis` is its only caller — so
+ * there is one thing a mutation battery can short-circuit, and a second
+ * composition inlined at the call site cannot hold a case up while this one
+ * is broken (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ *
+ * ## Why this changed (#700)
+ *
+ * `parseTestResults` has recovered bun's error excerpt for every failing
+ * check since #314, and stores it on `GateResult.detail`. This function
+ * printed `r.check` and dropped `detail` on the floor one line later.
+ *
+ * What that cost, with the run beside it. #700's STANDARD-tier trio
+ * reproduces only in CI, which makes a red run the scarce resource. #726
+ * widened `expectGateGreen` so the gate's output survives, and the next red —
+ * `main` at `71e3f413`, run `39325676895` — printed:
+ *
+ *     BATCH DIAGNOSIS: 2 failures — fix all before re-running
+ *       AC/Evidence (2): brief-ac-alignment: brief covers all ACs,
+ *                        brief-ac-alignment: brief covers all ACs
+ *
+ * A name, and only a name. `gates/workflow.test.ts:1212` fails two different
+ * ways — the brief file absent at `:1221`, or present and missing an id at
+ * `:1230` — and those are different bugs with different fixes. `grep -c` over
+ * that entire run gives 0 for `brief missing AC ids` and 0 for `brief file
+ * required when Marcus spawned`. The answer was on the result object and
+ * never reached the log.
+ *
+ * ## The shape of the output, and why it is not a comma list
+ *
+ * The cheapest wrong fix is to append `detail` to the joined name list. One
+ * expression, the detail stops being dropped, and N failures become one
+ * paragraph with no boundary between them — the reason present and still not
+ * attributable, which is this defect wearing a fix. So each failure gets its
+ * own line at one indent and its reason beneath it at another, and
+ * `test/batch-diagnosis-detail.test.ts` asserts attribution by SPAN rather
+ * than by "both strings appear somewhere", because both strings appearing
+ * somewhere is exactly what the wrong fix achieves.
+ */
+export function batchDiagnosisLines(fails: number, results: GateResult[]): string[] {
+  if (fails <= 0) return [];
+  const failResults = results.filter(r => r.result === "FAIL");
+  if (failResults.length === 0) return [];
+
+  const infra = failResults.filter(r => /B1|B2|B3|adversary|reproducer|health|port/.test(r.check));
+  const acRelated = failResults.filter(r => /evidence|verdict|AC|ac[- ]|threshold/.test(r.check));
+  const chain = failResults.filter(r => /hash|chain|pushed|merge|spec-trace/.test(r.check));
+  const other = failResults.filter(r => !infra.includes(r) && !acRelated.includes(r) && !chain.includes(r));
+
+  const lines = [`BATCH DIAGNOSIS: ${failResults.length} failures — fix all before re-running`];
+
+  for (const [label, group] of [
+    ["Infrastructure", infra],
+    ["AC/Evidence", acRelated],
+    ["Chain integrity", chain],
+    ["Other", other],
+  ] as const) {
+    if (group.length === 0) continue;
+    lines.push(`  ${label} (${group.length}):`);
+    for (const r of group) {
+      lines.push(`  - ${r.check.split(" > ").pop()}`);
+      // An empty or whitespace-only detail is reported as absent, never as a
+      // blank line. A blank line under a check name reads as a reason that
+      // was asked for and came back empty — `0`, `{}` and silence are all
+      // indistinguishable from success (`.claude/rules/config-access.md`).
+      const detail = (r.detail ?? "").split("\n").map(l => l.trimEnd()).filter(l => l.trim().length > 0);
+      if (detail.length === 0) {
+        lines.push(`      ${NO_DETAIL_RECORDED}`);
+        continue;
+      }
+      for (const l of detail.slice(0, DETAIL_LINE_CAP)) lines.push(`      ${l}`);
+      if (detail.length > DETAIL_LINE_CAP) {
+        lines.push(`      … ${detail.length - DETAIL_LINE_CAP} more lines truncated`);
+      }
+    }
   }
+  return lines;
+}
+
+function printBatchDiagnosis(fails: number, results: GateResult[]): void {
+  const lines = batchDiagnosisLines(fails, results);
+  if (lines.length === 0) return;
+  console.log("");
+  for (const l of lines) console.log(l);
 }
 
 // ── B1/B2 agent logic ───────────────────────────────────────────────────
