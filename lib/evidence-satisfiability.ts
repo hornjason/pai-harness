@@ -130,6 +130,13 @@ function tokenize(stage: string): string[] {
  *
  * Delimiters are matched longest-first, so `&&` is not read as two empty
  * segments around nothing.
+ *
+ * #659 found the same defect from the other end: `'SKIP_STATES|pattern: …'`
+ * carries a `|` inside single quotes, and a split that cannot see the quotes
+ * cuts one grep into four stages whose last word is part of a regex. Every
+ * reading taken off the last stage — `emitsCount`, and so both the threshold
+ * clause and the count-of-counts clause — then answers about a stage that
+ * does not exist.
  */
 function splitUnquoted(command: string, delimiters: readonly string[]): string[] {
   const parts: string[] = [];
@@ -164,6 +171,22 @@ function splitUnquoted(command: string, delimiters: readonly string[]): string[]
 /** The pipeline stages of a command, in order, trimmed. */
 function stages(command: string): string[] {
   return splitUnquoted(command, ["|"]);
+}
+
+/**
+ * The commands the shell would run one after another.
+ *
+ * `;`, `&&` and a newline, and deliberately NOT `||`: `cmd || true` is the
+ * fallback idiom, only one side of it runs, and treating the alternative as
+ * a second command would refuse a command that emits exactly one value
+ * (#659).
+ *
+ * `&&` is listed first because `splitUnquoted` matches delimiters in array
+ * order, so a shorter delimiter placed ahead of a longer one it prefixes
+ * would cut the longer one in half.
+ */
+function commandList(command: string): string[] {
+  return splitUnquoted(command, ["&&", ";", "\n"]);
 }
 
 /** Strip leading `VAR=value` assignments and return the command word. */
@@ -646,6 +669,56 @@ function unknownFlagRefusal(id: string, command: string): string | null {
   return null;
 }
 
+// ── Clause 4: more values than the threshold can judge ───────────────────
+
+/**
+ * The operators that compare ONE value with one other value.
+ *
+ * `contains` and `exists` read the output as text, and the concatenation of
+ * several outputs is text that may legitimately contain the value — so they
+ * are outside this clause rather than inside it with an exception.
+ */
+const VALUE_OPS = new Set(["==", ">=", "<=", ">", "<", "!=", "notContains"]);
+
+/**
+ * Two or more commands, each printing its own count, judged by one threshold
+ * (#659).
+ *
+ * Measured on `wf_2abbe96f-546`. Its AC-9 ran two greps joined by a
+ * semicolon and carried `{op: "==", value: 0}`. The first prints `0` and the
+ * second `2` — at BOTH of that run's build commits — so the command's output
+ * is the two-line string `"0\n2"`, which is not a number and cannot be
+ * compared with `0`. The scorer recorded `2`, the AC went FAIL, and a repair
+ * cycle then deleted three passing tests trying to satisfy a verdict that was
+ * never about the code.
+ *
+ * This holds for ALL possible code, which is the bar this module sets: no
+ * implementation makes two numbers into one, and nothing in the AC says which
+ * half the threshold is about. The verdict is a property of which value the
+ * scorer happens to read — the same defect
+ * `.claude/rules/checks-must-be-able-to-fail.md` is about, reached from a
+ * third side.
+ *
+ * NARROW ON PURPOSE, in the direction this module is allowed to be wrong in.
+ * A prelude (`cd lib; grep -c …`), a fallback (`grep -c … || true`) and a
+ * trailing `echo` all leave exactly one counting command and are accepted.
+ * The boundary is held in both directions by
+ * `test/unit/multi-value-evidence.test.ts`.
+ */
+function multiValueRefusal(command: string, op: string | undefined): string | null {
+  if (typeof op !== "string" || !VALUE_OPS.has(op)) return null;
+  const list = commandList(command);
+  if (list.length < 2) return null;
+  const counting = list.filter(emitsCount);
+  if (counting.length < 2) return null;
+  return (
+    `the command runs ${counting.length} separate commands that each print a count ` +
+    `(\`${counting.join("`, `")}\`), so its output is ${counting.length} values and a single ` +
+    `\`${op}\` threshold can judge only one of them — which one is read is a property of the ` +
+    `scorer rather than of the code, under every implementation. Split it into one AC per value`
+  );
+}
+
 // ── The one decider ──────────────────────────────────────────────────────
 
 /** The shape this reads. Structurally `ACInput`, repeated so this stays a leaf. */
@@ -703,6 +776,9 @@ export function satisfiabilityRefusal(
     const mismatch = thresholdRefusal(command, op);
     if (mismatch) reasons.push(mismatch);
   }
+
+  const multiValue = multiValueRefusal(command, op);
+  if (multiValue) reasons.push(multiValue);
 
   for (const stage of stages(command)) {
     const g = readGrep(stage);
