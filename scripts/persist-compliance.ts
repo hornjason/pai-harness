@@ -152,6 +152,18 @@ export interface PersistResult {
   verified: string[];
   /** What happened when nothing was applied — see HILL_CLIMB_STATES (#646). */
   hillClimb: HillClimbReceipt;
+  /**
+   * This receipt's integrity-relevant fields as one canonical string (#663).
+   *
+   * Everything above reaches the operator as an AGENT'S RESTATEMENT. `ship.js`
+   * asks an agent to run this script and return the receipt under a
+   * structured-output schema, and prints `hillClimb.reading` as the run's
+   * integrity verdict — so a model that summarises UNMEASURED as MEASURED
+   * produces an operator line that is simply wrong, and no position refuses
+   * it. See the `receiptSignature` docblock for what this does and does not
+   * reach.
+   */
+  receiptSignature: string;
 }
 
 export function emptyHillClimbStates(): Record<HillClimbState, HillClimbOccurrence[]> {
@@ -226,6 +238,104 @@ export function hillClimbReceipt(
     reading: unmeasuredReasons.length > 0 ? "UNMEASURED" : "MEASURED",
     unmeasuredReasons,
   };
+}
+
+/**
+ * The receipt's integrity-relevant fields as one canonical string (#663).
+ *
+ * WHAT THIS IS FOR. `workflows/ship.js` never sees this script's stdout. It
+ * asks an agent to run the command and return the receipt under
+ * `PERSIST_RECEIPT_SCHEMA`, then prints `hillClimb.reading` as the run's
+ * integrity verdict. Every field on that path is a model's restatement of a
+ * number it read, and nothing compared any step against the one before it.
+ *
+ * WHY A SIGNATURE RATHER THAN A FILE COMPARISON, which is what #663 asks for
+ * in as many words. `ship.js` **cannot read a file.** It runs in a sandbox
+ * with no module loading (#69) — every `readFileSync` in those 8,625 lines is
+ * inside a template string handed to an agent — so "compare the relayed
+ * receipt against the one the script wrote to the work directory" has no
+ * position to run in. Routing the comparison through a second agent would
+ * make the comparison itself a restatement, which is the defect wearing a
+ * fix. A signature moves the comparison into `ship.js`'s OWN process: the
+ * agent copies one opaque token, `ship.js` recomputes it from the structured
+ * fields it was handed, and a disagreement is UNMEASURED.
+ *
+ * WHAT IT REACHES. Any restatement that alters a field the operator line is
+ * composed from, while copying the token verbatim — which is the realistic
+ * failure, because normalising a field somebody understands and copying a
+ * field nobody understands are exactly the two things a summariser does.
+ *
+ * The COVERAGE is the rule, and it is the first thing to check when adding a
+ * field to that line: **everything printed as evidence is in the signature,
+ * or it is not printed as evidence.** The first version of this covered
+ * `reading`, the state counts, the unclassified count and the applied count —
+ * and `persisted`, `graded` and `verified` are all printed too, so a
+ * restatement that flipped `persisted` to true passed the comparison in
+ * silence. That is the same Silent Default Substitution this whole receipt
+ * exists to remove, reintroduced one field over by the fix for it. Found by
+ * the commit security review of `4cf80f0f`.
+ *
+ * `verified` and `unmeasuredReasons` are covered by MEMBERSHIP and not by
+ * length: both are lists of strings a restatement can swap entries in without
+ * changing the count.
+ *
+ * NOT covered, because the comparison is unreachable for them: `ok` and
+ * `error`. A receipt with `ok:false` returns from `persistReceiptLines`
+ * before the signature is looked at, and a run that reports its own failure
+ * is already saying the measurement did not happen.
+ *
+ * WHAT IT DOES NOT REACH, stated rather than left for a reader to discover: a
+ * model that fabricates the token to match fabricated fields. That requires
+ * reimplementing this function, and no in-process check can do better while
+ * #69 holds — the only ground truth `ship.js` can reach is what the agent
+ * hands it. The honest claim is "a restatement cannot drift silently", not
+ * "the receipt is authenticated".
+ *
+ * The format is versioned because `ship.js` carries a second implementation
+ * it cannot import, and two positions that must agree need a way to say they
+ * are talking about the same thing. Counts are emitted in `HILL_CLIMB_STATES`
+ * order so the string is canonical rather than key-order dependent.
+ */
+export function receiptSignature(result: {
+  hillClimb: HillClimbReceipt;
+  hillClimbApplied: number;
+  persisted: boolean;
+  graded: number;
+  verified: string[];
+}): string {
+  const { hillClimb } = result;
+  const counts = HILL_CLIMB_STATES.map((state) => (hillClimb.states[state] ?? []).length);
+  const readable =
+    `v1:${hillClimb.reading}:${counts.join(",")}:u${hillClimb.unclassified.length}` +
+    `:a${result.hillClimbApplied}:p${result.persisted ? 1 : 0}:g${result.graded}`;
+  // Membership, not just a count. `verified` is a list of role NAMES and
+  // `unmeasuredReasons` a list of sentences, and a restatement that swaps one
+  // entry for another leaves both lengths untouched — which is the trap
+  // `.claude/rules/checks-must-be-able-to-fail.md` names about #532: ask
+  // whether the defect changes the number or only the membership.
+  return `${readable}:h${fnv1a([...result.verified, "\u0000", ...hillClimb.unmeasuredReasons].join("\u0001"))}`;
+}
+
+/**
+ * A deterministic 32-bit fold, mirrored byte-for-byte in `workflows/ship.js`.
+ *
+ * FNV-1a and not a cryptographic hash, deliberately. It is not keyed and is
+ * not meant to resist forgery — see the `receiptSignature` docblock for what
+ * the signature does and does not claim. Its job is to make the LIST contents
+ * part of the compared value at a fixed width, so the signature can cover
+ * membership without carrying every sentence in it.
+ *
+ * Simple enough to reimplement exactly in a script that cannot import (#69),
+ * which is the actual constraint; anything needing a real digest would need a
+ * crypto primitive the workflow sandbox does not have.
+ */
+export function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
 }
 
 /**
@@ -493,7 +603,21 @@ export function persistCompliance(
     logger(`UNMEASURED hill-climb — ${hillClimb.unmeasuredReasons.join("; ")}`);
   }
 
-  return { ok: true, persisted, graded: grades.length, hillClimbApplied, verified, hillClimb };
+  return {
+    ok: true,
+    persisted,
+    graded: grades.length,
+    hillClimbApplied,
+    verified,
+    hillClimb,
+    receiptSignature: receiptSignature({
+      hillClimb,
+      hillClimbApplied,
+      persisted,
+      graded: grades.length,
+      verified,
+    }),
+  };
 }
 
 if (import.meta.main) {

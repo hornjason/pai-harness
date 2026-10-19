@@ -7574,11 +7574,23 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
   // COMPARED: `test/persist-receipt-relay.test.ts` walks a receipt the real
   // `persistCompliance` produced and refuses any field this literal would
   // drop. Adding a state to `HILL_CLIMB_STATES` and not here is red.
+  // `compId` is `string | null` on the producing side and the null is the
+  // POINT of the field — `HillClimbOccurrence.compId` is documented as "the
+  // COMP the outcome is about, or null for a role-level outcome", and
+  // NO_BRIEF_REGISTERED and OUTCOMES_UNACCOUNTED are both role-level. A
+  // declaration admitting `string` only describes every case except the one
+  // the nullability exists for (#663).
+  //
+  // The relay test walked field PATHS, and `compId` is present in both
+  // shapes, so the path walk agreed while the TYPE filter disagreed. It now
+  // compares the runtime type of every carried leaf as well — #646's own
+  // method, which that test wrote down, applied one level deeper: a filter
+  // discriminates on type as well as on name.
   const PERSIST_RECEIPT_OCCURRENCE = {
     type: 'object',
     properties: {
       role: { type: 'string' },
-      compId: { type: 'string' },
+      compId: { type: ['string', 'null'] },
       detail: { type: 'string' }
     }
   }
@@ -7613,9 +7625,79 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
           unmeasuredReasons: { type: 'array', items: { type: 'string' } }
         }
       },
+      // The script's own canonical summary of the fields below, copied
+      // verbatim rather than restated (#663). `recomputeReceiptSignature`
+      // rebuilds it from what actually arrived and the two are compared.
+      receiptSignature: { type: 'string' },
       error: { type: 'string' }
     },
     required: ['ok']
+  }
+
+  /**
+   * The states, in the order `scripts/persist-compliance.ts` emits counts for.
+   *
+   * A THIRD position naming them, and deliberately so: a signature is a
+   * comparison between two independent computations, and a comparison with
+   * one computation in it is the thing being guarded against. The parity is
+   * not left to inspection — `test/persist-receipt-relay.test.ts` drives this
+   * function and the script's `receiptSignature` over one matrix of receipts
+   * and refuses any disagreement, which is the shape #171's `rookScopeCommand`
+   * already uses for the same reason (`workflows/*.js` cannot import, #69).
+   */
+  const PERSIST_SIGNATURE_STATES = [
+    'NO_ACTIONS_DETECTED',
+    'GRADER_ACCURACY_DROP',
+    'TIER_PROMOTION_RECOMMENDED',
+    'REINFORCEMENT_ALREADY_PRESENT',
+    'NO_SUITABLE_SECTION',
+    'NO_BRIEF_REGISTERED',
+    'OUTCOMES_UNACCOUNTED'
+  ]
+
+  /** The two values `hillClimb.reading` is allowed to be. Anything else is UNMEASURED. */
+  const PERSIST_READINGS = ['MEASURED', 'UNMEASURED']
+
+  /**
+   * The signature this receipt SHOULD carry, rebuilt from what arrived (#663).
+   *
+   * Everything in `persistResult` is an agent's restatement of what the script
+   * printed. This recomputes the script's own canonical string from the
+   * restated fields, so a restatement that altered `reading`, a state count,
+   * the unclassified count or the applied count no longer agrees with the
+   * token the agent copied across.
+   *
+   * It is NOT authentication — see the `receiptSignature` docblock in
+   * `scripts/persist-compliance.ts`. A model that fabricates both consistently
+   * is out of reach of any in-process check while #69 holds. What this buys is
+   * that a restatement cannot drift SILENTLY.
+   */
+  function persistSignatureFold(s) {
+    let h = 0x811c9dc5
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i)
+      h = Math.imul(h, 0x01000193) >>> 0
+    }
+    return h.toString(16).padStart(8, '0')
+  }
+
+  function recomputeReceiptSignature(persistResult) {
+    const r = persistResult || {}
+    const hillClimb = r.hillClimb || {}
+    const states = hillClimb.states || {}
+    const counts = PERSIST_SIGNATURE_STATES
+      .map(s => (Array.isArray(states[s]) ? states[s].length : 0))
+      .join(',')
+    const unclassified = Array.isArray(hillClimb.unclassified) ? hillClimb.unclassified.length : 0
+    const applied = r.hillClimbApplied ?? 0
+    const readable =
+      `v1:${hillClimb.reading}:${counts}:u${unclassified}` +
+      `:a${applied}:p${r.persisted ? 1 : 0}:g${r.graded}`
+    // Every field `persistReceiptLines` prints is in here. A field added to
+    // that line and not to this string is evidence nothing compares.
+    const verified = Array.isArray(r.verified) ? r.verified : []
+    const reasons = Array.isArray(hillClimb.unmeasuredReasons) ? hillClimb.unmeasuredReasons : []
+    return `${readable}:h${persistSignatureFold([...verified, '\u0000', ...reasons].join('\u0001'))}`
   }
 
   /**
@@ -7656,8 +7738,48 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
     // (`.claude/rules/config-access.md`).
     if (!hillClimb) {
       lines.push('UNMEASURED hill-climb — the receipt carried no hillClimb reading at all, so which of the five outcomes each role reached is unknown for this run (#646)')
+    } else if (!PERSIST_READINGS.includes(hillClimb.reading)) {
+      // A third string is not a third reading (#663). `reading` is printed as
+      // this run's integrity verdict, and the thing that produces it is a
+      // model restating a word it read — so a value the script cannot emit
+      // means the restatement is wrong about the one field that matters, and
+      // "not UNMEASURED" is not the same as MEASURED.
+      lines.push(
+        `UNMEASURED hill-climb — the receipt's reading is ${JSON.stringify(hillClimb.reading)}, ` +
+        `which is neither MEASURED nor UNMEASURED. The script emits only those two, so this is the ` +
+        `relay restating the verdict rather than carrying it, and what the hill-climb actually did ` +
+        `is unknown for this run (#663)`,
+      )
     } else if (hillClimb.reading === 'UNMEASURED') {
       lines.push(`UNMEASURED hill-climb — ${(hillClimb.unmeasuredReasons || []).join('; ')}`)
+    }
+    // The relay check (#663). Everything above is read off an agent's
+    // restatement of the script's stdout; this is the only position that asks
+    // whether the restatement still agrees with the thing restated.
+    //
+    // A disagreement is reported as UNMEASURED and resolved in favour of
+    // NEITHER. Preferring the relayed value is the defect; preferring the
+    // recomputed one asserts that the fields are right and only the token is
+    // wrong, which is the same assumption in the other direction. What is
+    // actually known is that the two do not agree.
+    const expectedSignature = recomputeReceiptSignature(persistResult)
+    const carriedSignature = persistResult.receiptSignature
+    if (typeof carriedSignature !== 'string' || carriedSignature === '') {
+      // Absent is not agreement. A missing token and a matching one are the
+      // same silence, and silence is indistinguishable from success
+      // (`.claude/rules/config-access.md`).
+      lines.push(
+        `UNMEASURED relay — the receipt carried no receiptSignature, so nothing could be compared ` +
+        `against what the script computed. The fields above reached the operator through an agent ` +
+        `restatement that no position checked (#663)`,
+      )
+    } else if (carriedSignature !== expectedSignature) {
+      lines.push(
+        `UNMEASURED relay — the receipt's own signature \`${carriedSignature}\` does not match ` +
+        `\`${expectedSignature}\` recomputed from the fields that arrived. One of the two is a ` +
+        `restatement that drifted, and which one is not knowable from here — so neither is used ` +
+        `and the hill-climb reading above is not evidence for this run (#663)`,
+      )
     }
     if (persistResult.verified?.length) {
       lines.push(`HILL-CLIMB VERIFIED: ${persistResult.verified.join(', ')}`)
@@ -7673,9 +7795,16 @@ Run exactly this command and report its result:
 
 It prints human-readable progress on stderr and a single JSON receipt on stdout.
 
-Return that receipt. If the command exits non-zero, return ok:false with the
-error text from stderr — do NOT retry it and do NOT edit any file to make it
-pass. Change nothing else.
+Return that receipt. Copy every field from the JSON on stdout as it is
+written there. In particular \`receiptSignature\` is an opaque token the
+script computed from the other fields — copy it CHARACTER FOR CHARACTER and
+do not normalise, re-derive or tidy it, and do not adjust any other field to
+agree with it. It is compared against the fields you return, so an edit to
+either side is reported as an unmeasured relay rather than silently believed.
+
+If the command exits non-zero, return ok:false with the error text from
+stderr — do NOT retry it and do NOT edit any file to make it pass. Change
+nothing else.
   `, { label: 'persist-compliance', phase: 'Grade', model: 'sonnet', schema: PERSIST_RECEIPT_SCHEMA })
 
   for (const line of persistReceiptLines(persistResult)) log(line)

@@ -40,6 +40,7 @@ import {
   emptyHillClimbStates,
   hillClimbReceipt,
   persistCompliance,
+  receiptSignature,
   type PersistResult,
 } from "../scripts/persist-compliance";
 import { setComplianceProjectRoot, type ComplianceEntry } from "../lib/compliance-report";
@@ -56,6 +57,8 @@ const BLOCK = "PERSIST-RECEIPT";
 interface ReceiptBlock {
   PERSIST_RECEIPT_SCHEMA: Record<string, unknown>;
   persistReceiptLines: (receipt: unknown) => string[];
+  /** ship.js's own second implementation of the signature, for the parity matrix (#663). */
+  recomputeReceiptSignature: (receipt: unknown) => string;
 }
 
 /**
@@ -77,7 +80,7 @@ function loadReceiptBlock(source: string): ReceiptBlock {
   }
   const body = source.slice(start, end);
   return new Function(
-    `${body}\nreturn { PERSIST_RECEIPT_SCHEMA, persistReceiptLines }`,
+    `${body}\nreturn { PERSIST_RECEIPT_SCHEMA, persistReceiptLines, recomputeReceiptSignature }`,
   )() as ReceiptBlock;
 }
 
@@ -120,19 +123,115 @@ function valuePaths(value: unknown, prefix = ""): string[] {
   return out;
 }
 
+/** The runtime type of a value, in the vocabulary a JSON schema uses. */
+function runtimeType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/** Every path the schema declares a `type` for, with the types it admits. */
+function schemaTypes(schema: unknown, prefix = ""): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  if (!isPlainObject(schema)) return out;
+  if (prefix !== "" && schema.type !== undefined) {
+    out.set(prefix, Array.isArray(schema.type) ? schema.type.map(String) : [String(schema.type)]);
+  }
+  const props = schema.properties;
+  if (isPlainObject(props)) {
+    for (const [key, sub] of Object.entries(props)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      for (const [p, t] of schemaTypes(sub, path)) out.set(p, t);
+    }
+  }
+  if (schema.items !== undefined) {
+    for (const [p, t] of schemaTypes(schema.items, `${prefix}[]`)) out.set(p, t);
+  }
+  return out;
+}
+
 /**
- * THE BINDING (AC-C2).
+ * Every runtime type observed at every path, accumulated across receipts.
+ *
+ * A SET per path, not a single type, because one path legitimately carries
+ * more than one: `compId` is a string for a COMP-level occurrence and null
+ * for a role-level one, and a walk that kept only the last would report
+ * whichever receipt happened to come last in the fixture list.
+ */
+function valueTypes(value: unknown, prefix = "", out = new Map<string, Set<string>>()): Map<string, Set<string>> {
+  if (Array.isArray(value)) {
+    for (const el of value) valueTypes(el, `${prefix}[]`, out);
+    return out;
+  }
+  if (!isPlainObject(value)) return out;
+  for (const [key, sub] of Object.entries(value)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (!out.has(path)) out.set(path, new Set());
+    out.get(path)!.add(runtimeType(sub));
+    valueTypes(sub, path, out);
+  }
+  return out;
+}
+
+/**
+ * Every carried value whose runtime type the declaration does not admit (#663).
+ *
+ * The path walk above answers "is this field named in both shapes". That is
+ * the question #646 asked, and `compId` passes it: it is present either side.
+ * A structured-output schema is a FILTER, and a filter discriminates on TYPE
+ * as well as on name — `{ type: 'string' }` over a value that is `null` is
+ * the same silent drop one level down, in a field whose null is the whole
+ * reason it exists.
+ *
+ * Separated from the path comparison so it can be mutated on its own: a
+ * single function answering both questions would let either case be held up
+ * by the other (`.claude/rules/checks-must-be-able-to-fail.md`, #484).
+ */
+function typeMismatches(schema: unknown, receipts: unknown[]): string[] {
+  const declared = schemaTypes(schema);
+  const observed = new Map<string, Set<string>>();
+  for (const receipt of receipts) {
+    for (const [path, types] of valueTypes(receipt)) {
+      if (!observed.has(path)) observed.set(path, new Set());
+      for (const t of types) observed.get(path)!.add(t);
+    }
+  }
+  const out: string[] = [];
+  for (const [path, types] of [...observed].sort(([a], [b]) => a.localeCompare(b))) {
+    const admits = declared.get(path);
+    // An undeclared path is the OTHER check's finding. Reporting it here too
+    // would be two positions naming one defect, and the counts would then
+    // move together under either mutation.
+    if (admits === undefined) continue;
+    for (const t of [...types].sort()) {
+      if (!admits.includes(t)) {
+        out.push(
+          `the receipt carries \`${path}\` as \`${t}\` and the persist-compliance schema declares ` +
+            `it as \`${admits.join(" | ")}\` — a structured-output schema filters on type as well ` +
+            `as on name, so this value does not survive the relay in the shape it was produced (#663)`,
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * THE BINDING (AC-C2, #663).
  *
  * Every field the receipts carry that `workflows/ship.js`'s declared schema
- * would drop on the way back through the persist-compliance agent. One place
- * to mutate, so a case can watch the refusal stop refusing.
+ * would drop on the way back through the persist-compliance agent — by NAME,
+ * because the schema does not declare the path, or by TYPE, because it
+ * declares one the value is not. One place to mutate, so a case can watch the
+ * refusal stop refusing.
  *
  * Declared-but-unused is deliberately NOT a violation: `error` only exists on
  * the failure path and a schema is allowed to be wider than any one reply.
  * The direction that costs something is the other one.
  */
 export function persistReceiptRelayViolations(shipSource: string, receipts: unknown[]): string[] {
-  const declared = new Set(schemaPaths(loadReceiptBlock(shipSource).PERSIST_RECEIPT_SCHEMA));
+  const schema = loadReceiptBlock(shipSource).PERSIST_RECEIPT_SCHEMA;
+  const declared = new Set(schemaPaths(schema));
   if (declared.size === 0) {
     throw new Error(
       "the persist-compliance schema declares no properties at all — nothing could be " +
@@ -147,14 +246,17 @@ export function persistReceiptRelayViolations(shipSource: string, receipts: unkn
         "instrument and not the relay (#646)",
     );
   }
-  return [...carried]
-    .filter((path) => !declared.has(path))
-    .sort()
-    .map(
-      (path) =>
-        `the receipt carries \`${path}\` and the persist-compliance schema does not declare it — ` +
-        `the agent relay drops undeclared fields, so it would never reach the operator (#646)`,
-    );
+  return [
+    ...[...carried]
+      .filter((path) => !declared.has(path))
+      .sort()
+      .map(
+        (path) =>
+          `the receipt carries \`${path}\` and the persist-compliance schema does not declare it — ` +
+          `the agent relay drops undeclared fields, so it would never reach the operator (#646)`,
+      ),
+    ...typeMismatches(schema, receipts),
+  ];
 }
 
 // ── fixtures: receipts produced by the real script ──────────────────────────
@@ -422,5 +524,281 @@ describe("#646 AC-C1: the log line names each non-zero state", () => {
     const text = lines({ ok: false, error: "exit 1: boom" });
     expect(text).toContain("compliance persistence FAILED");
     expect(text).toContain("exit 1: boom");
+  });
+});
+
+// ── #663: the declaration admits the type, not only the name ────────────────
+
+/** Narrow `compId` back to the pre-#663 declaration, by name. */
+function withCompIdNotNullable(): string {
+  const pattern = /compId: \{ type: \['string', 'null'\] \}/;
+  if (!pattern.test(SHIP)) {
+    throw new Error(
+      "the schema declaration has no nullable `compId` to narrow — nothing was mutated, and a " +
+        "mutation that was never applied measures the code twice rather than once (#485)",
+    );
+  }
+  return SHIP.replace(pattern, "compId: { type: 'string' }");
+}
+
+describe("#663 AC-1: the declared schema admits every type the producing side carries", () => {
+  test("`compId` is declared nullable in the declaration itself, not inferred from a reply", () => {
+    // Over the DECLARATION, as the criterion asks. A case reading a sample
+    // reply would pass on any receipt whose occurrences all happened to carry
+    // a string, which is every receipt with no role-level outcome in it.
+    const occurrence = loadReceiptBlock(SHIP).PERSIST_RECEIPT_SCHEMA as any;
+    const compId = occurrence.properties.hillClimb.properties.states
+      .properties.NO_ACTIONS_DETECTED.items.properties.compId;
+    expect(compId.type).toEqual(["string", "null"]);
+  });
+
+  test("the fixtures really carry a null `compId`, so the case below is not vacuous", () => {
+    // `string | null` is only a distinction if a null travels. Without this,
+    // a declaration of `{ type: 'string' }` would agree with every fixture
+    // and the mutation case would be green over the defect.
+    const observed = new Set<string>();
+    for (const receipt of allReceipts()) {
+      for (const [path, types] of valueTypes(receipt)) {
+        if (path.endsWith("[].compId")) for (const t of types) observed.add(t);
+      }
+    }
+    expect(observed.has("null")).toBe(true);
+    expect(observed.has("string")).toBe(true);
+  });
+});
+
+describe("#663 AC-2: the comparison reads runtime types, not only paths", () => {
+  test("narrowing `compId` to a bare string turns the binding red", () => {
+    const receipts = allReceipts();
+    // Both directions in one case: "the real source agrees" and "the mutant
+    // does not" are one claim, and asserting only the second passes over a
+    // binding that refuses everything.
+    expect(persistReceiptRelayViolations(SHIP, receipts)).toEqual([]);
+    const violations = persistReceiptRelayViolations(withCompIdNotNullable(), receipts);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.join("\n")).toContain("compId");
+  });
+
+  test("each mismatch names both the declared type and the observed one", () => {
+    const text = persistReceiptRelayViolations(withCompIdNotNullable(), allReceipts()).join("\n");
+    expect(text).toContain("as `null`");
+    expect(text).toContain("declares it as `string`");
+  });
+
+  test("the path walk alone cannot see it, which is why the type walk exists", () => {
+    // The finding this issue is about: `compId` is present in BOTH shapes, so
+    // #646's path comparison agreed while the filter disagreed. Asserted here
+    // rather than argued, so a later simplification that folds the type walk
+    // back into the path walk has something to go red.
+    const narrowed = withCompIdNotNullable();
+    const declaredPaths = new Set(
+      schemaPaths(loadReceiptBlock(narrowed).PERSIST_RECEIPT_SCHEMA),
+    );
+    const carried = new Set(allReceipts().flatMap((r) => valuePaths(r)));
+    const droppedByName = [...carried].filter((p) => !declaredPaths.has(p));
+    expect(droppedByName).toEqual([]);
+    expect(declaredPaths.has("hillClimb.states.NO_ACTIONS_DETECTED[].compId")).toBe(true);
+  });
+});
+
+// ── #663: the relayed receipt is compared against what the script computed ──
+
+/**
+ * The matrix both signature implementations are driven over.
+ *
+ * It has to VARY, or a parity test is two functions agreeing on one input.
+ * The spread is asserted below rather than assumed.
+ */
+function signatureMatrix(): PersistResult[] {
+  const clean = cleanReceipt();
+  const noSection = noSectionReceipt();
+  const unclassified = unclassifiedReceipt(clean);
+  const applied: PersistResult = { ...clean, hillClimbApplied: 3 };
+  const multi: PersistResult = {
+    ...clean,
+    hillClimb: hillClimbReceipt(
+      {
+        ...emptyHillClimbStates(),
+        NO_BRIEF_REGISTERED: [
+          { role: ROLE, compId: null, detail: "no brief registered" },
+          { role: "quinn", compId: null, detail: "no brief registered" },
+        ],
+        OUTCOMES_UNACCOUNTED: [{ role: ROLE, compId: null, detail: "2 in, 1 out" }],
+      },
+      [],
+    ),
+  };
+  // One row per field the operator line prints, so the matrix varies every
+  // dimension the signature claims to cover rather than only the hill-climb
+  // ones (found by the commit security review of `4cf80f0f`).
+  const notPersisted: PersistResult = { ...clean, persisted: !clean.persisted };
+  const regraded: PersistResult = { ...clean, graded: clean.graded + 2 };
+  const verifiedOne: PersistResult = { ...clean, verified: [ROLE] };
+  // Same LENGTH, different member — a count would call these two equal, and
+  // `verified` is the list the operator line prints by name.
+  const verifiedOther: PersistResult = { ...clean, verified: ["quinn"] };
+  // Same again for the reasons, which are the sentences an UNMEASURED run is
+  // explained by.
+  const reasonsSwapped: PersistResult = {
+    ...noSection,
+    hillClimb: { ...noSection.hillClimb, unmeasuredReasons: ["a different reason entirely"] },
+  };
+  return [
+    clean, noSection, unclassified, applied, multi,
+    notPersisted, regraded, verifiedOne, verifiedOther, reasonsSwapped,
+  ];
+}
+
+describe("#663 AC-3: the two signature implementations are compared, not assumed", () => {
+  test("the matrix varies, so the parity below is over more than one shape", () => {
+    const signatures = new Set(
+      signatureMatrix().map((r) => receiptSignature(r)),
+    );
+    expect(signatures.size).toBe(signatureMatrix().length);
+  });
+
+  test("ship.js's recomputation agrees with the script's over every shape", () => {
+    // `workflows/ship.js` cannot import (#69), so the signature is computed in
+    // two positions. This is the comparison that makes that safe — the same
+    // shape #171 uses for `rookScopeCommand`. Adding a state to
+    // HILL_CLIMB_STATES and not to PERSIST_SIGNATURE_STATES is red here.
+    const recompute = loadReceiptBlock(SHIP).recomputeReceiptSignature;
+    for (const receipt of signatureMatrix()) {
+      expect(recompute(receipt)).toBe(receiptSignature(receipt));
+    }
+  });
+
+  test("every field the operator line prints is covered by the signature", () => {
+    // The rule, driven rather than written down: anything printed as evidence
+    // is in the signature, or it is not printed as evidence.
+    //
+    // The first version of this change covered only the hill-climb fields,
+    // and `persisted`, `graded` and `verified` are printed too — so a
+    // restatement that flipped `persisted` to true passed the comparison in
+    // silence, which is the Silent Default Substitution this receipt exists
+    // to remove, reintroduced by the fix for it. A per-field case rather than
+    // one happy-path assertion, because the defect is per field.
+    const base = cleanReceipt();
+    const perturbations: Array<[string, PersistResult]> = [
+      ["persisted", { ...base, persisted: !base.persisted }],
+      ["graded", { ...base, graded: base.graded + 1 }],
+      ["hillClimbApplied", { ...base, hillClimbApplied: base.hillClimbApplied + 1 }],
+      ["verified", { ...base, verified: [...base.verified, "quinn"] }],
+      ["hillClimb.reading", { ...base, hillClimb: { ...base.hillClimb, reading: "UNMEASURED" } }],
+      [
+        "hillClimb.unmeasuredReasons",
+        { ...base, hillClimb: { ...base.hillClimb, unmeasuredReasons: ["invented"] } },
+      ],
+      [
+        "hillClimb.states",
+        {
+          ...base,
+          hillClimb: {
+            ...base.hillClimb,
+            states: {
+              ...base.hillClimb.states,
+              GRADER_ACCURACY_DROP: [{ role: ROLE, compId: null, detail: "x" }],
+            },
+          },
+        },
+      ],
+      [
+        "hillClimb.unclassified",
+        {
+          ...base,
+          hillClimb: { ...base.hillClimb, unclassified: [{ role: ROLE, compId: null, detail: "x" }] },
+        },
+      ],
+    ];
+    const recompute = loadReceiptBlock(SHIP).recomputeReceiptSignature;
+    const baseline = receiptSignature(base);
+    for (const [field, perturbed] of perturbations) {
+      expect(receiptSignature(perturbed), `altering ${field} left the script's signature unchanged`)
+        .not.toBe(baseline);
+      // And ship.js agrees about each one, so the coverage is not one-sided.
+      expect(recompute(perturbed), `ship.js disagrees about ${field}`)
+        .toBe(receiptSignature(perturbed));
+    }
+  });
+
+  test("a swapped list member changes the signature, not just a different length", () => {
+    // `verified` and `unmeasuredReasons` are lists of strings. A count-based
+    // signature calls these two receipts identical, and the operator line
+    // prints the names (`.claude/rules/checks-must-be-able-to-fail.md` on
+    // #532: ask whether the defect changes the number or the membership).
+    const base = cleanReceipt();
+    const one = receiptSignature({ ...base, verified: ["marcus"] });
+    const other = receiptSignature({ ...base, verified: ["quinn"] });
+    expect(one).not.toBe(other);
+  });
+
+  test("the script really emits a non-empty signature, so agreement is not two silences", () => {
+    // The non-vacuity criterion. An absent signature on both sides compares
+    // equal, and `undefined === undefined` is the agreement this whole check
+    // exists to refuse.
+    const receipt = cleanReceipt();
+    expect(typeof receipt.receiptSignature).toBe("string");
+    expect(receipt.receiptSignature.length).toBeGreaterThan(0);
+    expect(receipt.receiptSignature).toContain("v1:");
+  });
+
+  test("a receipt whose signature matches its fields reports no relay problem", () => {
+    // The agreeing direction, as the criterion asks for explicitly.
+    const text = loadReceiptBlock(SHIP).persistReceiptLines(cleanReceipt()).join("\n");
+    expect(text).not.toContain("UNMEASURED relay");
+  });
+
+  test("a restatement that altered a field no longer agrees, and says so", () => {
+    // The disagreeing direction: the agent copied the token and changed the
+    // verdict, which is the realistic failure — normalising a field you
+    // understand and copying one you do not are what a summariser does.
+    const real = noSectionReceipt();
+    expect(real.hillClimb.reading).toBe("UNMEASURED");
+    const drifted = { ...real, hillClimb: { ...real.hillClimb, reading: "MEASURED" } };
+    const text = loadReceiptBlock(SHIP).persistReceiptLines(drifted).join("\n");
+    expect(text).toContain("UNMEASURED relay");
+    expect(text).toContain(real.receiptSignature);
+  });
+
+  test("the disagreement is resolved in favour of NEITHER side", () => {
+    // Preferring the relayed value is the defect. Preferring the recomputed
+    // one asserts the fields are right and only the token is wrong, which is
+    // the same assumption pointed the other way. What is known is that they
+    // disagree, so both are printed and neither is adopted.
+    const real = noSectionReceipt();
+    const drifted = { ...real, hillClimb: { ...real.hillClimb, reading: "MEASURED" } };
+    const text = loadReceiptBlock(SHIP).persistReceiptLines(drifted).join("\n");
+    const recomputed = loadReceiptBlock(SHIP).recomputeReceiptSignature(drifted);
+    expect(text).toContain(real.receiptSignature);
+    expect(text).toContain(recomputed);
+    expect(text).not.toContain("treating");
+  });
+
+  test("an absent signature is UNMEASURED, not agreement", () => {
+    const { receiptSignature: _dropped, ...stripped } = cleanReceipt();
+    expect(_dropped).toBeTruthy();
+    const text = loadReceiptBlock(SHIP).persistReceiptLines(stripped).join("\n");
+    expect(text).toContain("UNMEASURED relay");
+    expect(text).toContain("no receiptSignature");
+  });
+});
+
+describe("#663 AC-4: `reading` is validated against the two literals", () => {
+  test("a third string is UNMEASURED and the value it received is named", () => {
+    const real = cleanReceipt();
+    const odd = { ...real, hillClimb: { ...real.hillClimb, reading: "PARTIAL" } };
+    const text = loadReceiptBlock(SHIP).persistReceiptLines(odd).join("\n");
+    expect(text).toContain("UNMEASURED hill-climb");
+    expect(text).toContain('"PARTIAL"');
+  });
+
+  test("both legal values are accepted, so the check is not refusing everything", () => {
+    // A validator that refused every reading would make the case above pass
+    // for a reason that has nothing to do with the third string.
+    const clean = loadReceiptBlock(SHIP).persistReceiptLines(cleanReceipt()).join("\n");
+    expect(clean).not.toContain("neither MEASURED nor UNMEASURED");
+    const unmeasured = loadReceiptBlock(SHIP).persistReceiptLines(noSectionReceipt()).join("\n");
+    expect(unmeasured).not.toContain("neither MEASURED nor UNMEASURED");
+    expect(unmeasured).toContain("UNMEASURED hill-climb");
   });
 });
