@@ -2924,7 +2924,30 @@ bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT} --out ${
 3. Prior branch detect:
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
 
-Return: acCount from step 1, the full JSON from step 2 as config, and prior branch from step 3.
+4. Record which harness is grading this run (#602). Run exactly this:
+bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-harness-provenance.ts`)} --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} --harness-root ${shellQuote(HARNESS_ROOT)}
+
+The gate machinery is loaded out of that checkout, and nothing has ever said
+which version of it produced a run's verdicts. A stale harness and a current
+one emit byte-identical artefacts, and the error runs in the permissive
+direction: every refusal added since that checkout last moved is simply
+absent, so a stale harness PASSES things a current one would stop.
+
+It prints one JSON receipt on stdout and writes the reading into
+workflow-state.json. Report its "harness"."reading" as harnessReading and
+"harness"."sha" as harnessSha. Report them EXACTLY as printed — a null sha
+stays null. It also prints a HARNESS_DIVERGENCE or HARNESS_UNMEASURED line
+on stderr when there is something to say; report that line verbatim as
+harnessWarning. ALWAYS return harnessWarning: report null when it printed
+nothing on stderr. Do not omit the field — an absent field and a clean
+harness must not look the same, and omitting it is read as a dropped
+reading, not as good news. Do NOT commit, stash, pull or otherwise tidy
+the harness checkout to make the warning go away: the warning is a reading
+of what graded you, and changing the grader mid-run is the thing it exists
+to make visible.
+
+Return: acCount from step 1, the full JSON from step 2 as config, prior
+branch from step 3, and the three harness fields from step 4.
 Report priorBranch exactly as detection returned it — branch (bare name), refName
 (the git-resolvable ref), commitCount, which is null when git could not count,
 and the currency fields behindCount, isBehind and isMerged (#185). A null stays
@@ -2935,6 +2958,16 @@ null in all four: it means git could not answer, not that the branch is current.
       acCount: { type: 'number' },
       config: { type: 'object', properties: { pages: { type: 'object' }, apiUrl: { type: 'string' }, uiUrl: { type: 'string' }, container: { type: 'object', properties: { port: { type: 'number' }, rebuildCommand: { type: 'string' }, healthPath: { type: 'string' }, hosts: { type: 'array', items: { type: 'string' } } } }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } },
       priorBranch: { type: 'object', properties: { branch: { type: 'string' }, refName: { type: 'string' }, commitCount: { type: ['number', 'null'] }, behindCount: { type: ['number', 'null'] }, isBehind: { type: ['boolean', 'null'] }, isMerged: { type: ['boolean', 'null'] } } },
+      // #602. A structured-output schema is a FILTER on the reply, not a
+      // description of it: a field this does not declare is stripped on the
+      // way back, silently, and the caller then reads a reply missing
+      // exactly what it did not ask for (#646). All three are declared, and
+      // the two nullable ones say so — a null sha is what UNMEASURED looks
+      // like, and `type: 'string'` would drop it and leave the field absent,
+      // which reads as a harness nobody asked about.
+      harnessReading: { type: 'string', enum: ['MEASURED', 'UNMEASURED'] },
+      harnessSha: { type: ['string', 'null'] },
+      harnessWarning: { type: ['string', 'null'] },
     },
     required: ['acCount'],
   } })
@@ -2953,6 +2986,53 @@ const s=JSON.parse(require('fs').readFileSync('${WORK_DIR}/workflow-state.json',
 console.log('ACs written: ' + s.acs.length);
 " ${acPayloadShellArgument(discovery.acs)} 2>&1
     `, { label: 'fix-acs', phase: 'Discovery' })
+  }
+
+  // #602 — say which harness graded this run, where somebody reads it.
+  //
+  // Absent is UNMEASURED and not clean, for the reason the rest of this
+  // file keeps meeting: a step that did not report looked at nothing, and
+  // "the harness was fine" is the one answer nobody may infer from
+  // silence. A stale harness and a current one emit byte-identical
+  // artefacts, so this log line is the only thing in a run's whole output
+  // that can tell them apart.
+  // Everything below is an AGENT'S RESTATEMENT of a file ship.js cannot
+  // read (#69), which is the #530 shape: the reply agrees with whatever
+  // was put in it. So the three fields are each checked for the one thing
+  // a restatement can get wrong on its own, and none of the three is
+  // allowed to be absent-and-silent.
+  //
+  // The SHA goes through `rookReviewSha` rather than being interpolated:
+  // an unvalidated agent string in the run log is a provenance claim
+  // nobody checked, and `Harness: main` would read exactly like a reading.
+  const harnessReading = setupResult?.harnessReading || 'UNMEASURED'
+  const harnessSha = rookReviewSha(setupResult?.harnessSha)
+  if (harnessReading !== 'MEASURED') {
+    log('HARNESS_UNMEASURED: setup did not report which harness is grading this run (#602)')
+  } else if (!harnessSha) {
+    // MEASURED is the arm that claims a reading was taken, and the SHA is
+    // the measurement. A MEASURED with nothing resolvable in it is a
+    // claim with its evidence missing, which is not the same as clean.
+    log('HARNESS_UNMEASURED: setup reported MEASURED with no usable SHA (#602)')
+  } else {
+    log(`Harness: ${harnessSha}`)
+  }
+  // Reported separately from the SHA, because a run can know exactly which
+  // harness graded it AND that harness can be the wrong one. Collapsing the
+  // two would make a dirty checkout look like an unreadable one.
+  //
+  // Absent is a third state, and under MEASURED it is not silence: the
+  // recorder prints a warning whenever there is one and the prompt asks
+  // for it verbatim, so a MEASURED reply carrying no `harnessWarning` KEY
+  // is a reply that dropped it — the #646 relay shape — and that is not
+  // distinguishable from a clean harness without saying so.
+  if (setupResult?.harnessWarning) {
+    // Flattened and bounded before it reaches the log. The string is an
+    // agent's, and a newline in it forges a log line that looks like
+    // ship.js's own.
+    log(String(setupResult.harnessWarning).replace(/[\r\n]+/g, ' ').slice(0, 500))
+  } else if (harnessReading === 'MEASURED' && !('harnessWarning' in (setupResult || {}))) {
+    log('HARNESS_UNMEASURED: setup reported MEASURED but returned no divergence reading (#602)')
   }
 
   log(`Sized: ${discovery.sizing}/${discovery.ceremonyTier} — ${discovery.acs.length} ACs`)
