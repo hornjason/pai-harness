@@ -55,15 +55,24 @@ export const UPDATER_CHATTER = "update-project-state: rebuilding";
  *
  * The two DUAL layouts are #610's subject and neither existed before it. A
  * consumer that happens to keep a script at `scripts/update-project-state.ts`
- * and a harness checkout that happens to carry a vendored duplicate are the
- * only two trees on which the filename sniff and the generation-time
+ * and a harness checkout that happens to carry a vendored duplicate are two
+ * of the three trees on which the filename sniff and the generation-time
  * resolution give different answers — without them the fix cannot be told
  * from the defect.
+ *
+ * `consumer-own-only` is the third, and it exists because every other fixture
+ * here holds a precondition: SOME copy rungate installed is present. A
+ * consumer whose only updater is its own is on the other side of that
+ * precondition, and a battery whose fixtures all meet one measures nothing
+ * past it (`.claude/rules/checks-must-be-able-to-fail.md`). It was added
+ * after a mutation row came back HIGH and the extra red turned out to be a
+ * text assertion standing in for a behaviour nothing drove.
  */
 export type UpdaterLayout =
   | "harness"
   | "vendored"
   | "consumer-with-own"
+  | "consumer-own-only"
   | "harness-with-vendored"
   | "failing"
   | "none";
@@ -98,6 +107,7 @@ const DECLARES_HARNESS: Record<UpdaterLayout, boolean> = {
   failing: true,
   vendored: false,
   "consumer-with-own": false,
+  "consumer-own-only": false,
   none: false,
 };
 
@@ -131,7 +141,12 @@ export function plantLayout(root: string, layout: UpdaterLayout): void {
     writeScriptsCopy(root, FAILING_UPDATER);
     return;
   }
-  if (layout === "harness" || layout === "consumer-with-own" || layout === "harness-with-vendored") {
+  if (
+    layout === "harness" ||
+    layout === "consumer-with-own" ||
+    layout === "consumer-own-only" ||
+    layout === "harness-with-vendored"
+  ) {
     writeScriptsCopy(root, okUpdater(REGENERATED_BY_SCRIPTS));
   }
   if (layout === "vendored" || layout === "consumer-with-own" || layout === "harness-with-vendored") {

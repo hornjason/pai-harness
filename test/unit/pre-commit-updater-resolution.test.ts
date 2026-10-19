@@ -208,6 +208,33 @@ describe('#610: an unresolvable updater is UNMEASURED and carries no lookup', ()
     ).toBe(REGENERATED_BY_VENDORED);
   });
 
+  it('SC-2220: a consumer whose ONLY updater is its own gets UNMEASURED, and runs nothing', () => {
+    // The precondition every other fixture in this file holds: some copy
+    // rungate installed is present. This one is on the other side of it, and
+    // a battery whose fixtures all meet a precondition measures nothing past
+    // it (.claude/rules/checks-must-be-able-to-fail.md).
+    //
+    // It is also the only case that fails a repair which resolves at
+    // GENERATION time and still decides by filename — "bake whichever of the
+    // two candidates exists". That repair satisfies the one-path criterion in
+    // full, keeps every dual-copy case green, and runs a consumer's own
+    // program here. Found by a mutation row coming back HIGH, and by nothing
+    // else: the extra red was a text assertion about which path the message
+    // names, standing in for a behaviour nothing drove.
+    const h = hook('consumer-own-only');
+    expect(h, 'a consumer program was baked in because it happened to be named right')
+      .not.toContain(`updater="${HARNESS_PATH}"`);
+
+    const { code, stateMd, staged, err } = runWithStateFiles(h, 'primary', {
+      updater: 'consumer-own-only',
+    });
+    expect(code).toBe(0);
+    expect(stateMd, "the consumer's own scripts/ copy was run as if rungate had installed it")
+      .toBe(ORIGINAL);
+    expect(staged).not.toContain('PROJECT-STATE.md');
+    expect(err).toContain('project-state: UNMEASURED');
+  });
+
   it('SC-2214: a hook that resolved nothing cannot be made to resolve something later', () => {
     // The UNMEASURED form carries no lookup, so planting BOTH copies in the
     // run repository must still regenerate nothing. Without this the
