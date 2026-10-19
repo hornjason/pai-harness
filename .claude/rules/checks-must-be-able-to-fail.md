@@ -1450,7 +1450,7 @@ exported, while every other parity name stays exported-only, because a
 module-local `const parity` is nobody's second decider. That case survives the
 wrong fix **really** — row M7 below is the repair applied, and it is 1 red.
 
-#### Predicted and measured, over 48 tests
+#### Predicted and measured, over 51 tests
 
 `test/contract-parity-derivation.test.ts` + `test/contract-parity.test.ts`.
 Every count was predicted before the battery ran, in
@@ -1458,24 +1458,52 @@ Every count was predicted before the battery ran, in
 mutation row** — an instrument that has stopped reporting takes the baseline
 down with it, and that is the row nobody mutates anything to produce.
 
+**Re-measured in full against the tree rebased onto `5a4abdc8`**, not carried
+over. Three rows are new (M14–M16) and one was re-run after it turned out not
+to be a mutation at all; the other twelve were run again rather than copied,
+because a row measured against a tree nobody can check out is a claim rather
+than a count (`.claude/rules/parallel-sessions.md`).
+
 | Row | Predicted | Measured | The input on which mutant and original differ |
 |---|---|---|---|
-| **baseline** — unmutated | 48 pass, 0 fail | **48 pass, 0 fail** | — |
-| M1 `parityBindingViolations` short-circuited to `return []` | 5 | **5 of 48** | the duplicate tree: the original names both files, the mutant returns `[]` |
-| M2 `declarationsNaming` short-circuited to `return []` | 6 | **6 of 48** | `REPO_ROOT`: the original reads every parity and `preflight` declaration in the tree, the mutant none of either |
-| M3 the `UNMEASURED_PARITY_SCAN` refusal removed | 2 | **2 of 48** | a tree with no `contractParity`: the original refuses, the mutant returns `[]` |
-| M4 the `PREFLIGHT_NAMED_PARITY` clause removed | 2 | **2 of 48** | a tree declaring `export const preflightParity` beside a correct entry point |
-| M5 the `DUPLICATE_PARITY_BINDING` clause removed | 3 | **3 of 48** | a tree declaring `contractParity` in `scripts/` and in `workflows/ship.js` |
-| M6 `commandDisagreement` short-circuited to `return []` | 4 | **4 of 48** | the #621 tree — config `bun test --parallel --no-isolate`, the other two `bun test`: original 1 violation, mutant none |
-| M7 **the cheapest wrong fix**: the duplicate check narrowed back to exported-only | 1 | **1 of 48** | a tree with one exported and one UNEXPORTED `contractParity` |
-| M8 `transportIsFirstParty` → `return true` | 2 | **2 of 48** | a foreign root: original `0/3` with no sites, mutant compiles and runs the library transport |
-| M9 `AVAILABILITY_QUERY` never matches | 2 | **2 of 48** | a file calling `spawnSync(tool, ["--version"])` directly |
-| M10 `undeclaredReadViolations` short-circuited to `return []` | 2 | **2 of 48** | the #530 tree reading `sf("testsSha")` against a schema that never declared it |
-| M11 the #624 unaccounted-writer violation loop removed | 1 | **1 of 48** | the #624 tree writing `.claude/agents/marcus.md` with nothing declaring it |
-| M12 the #622 unpinned-version violation removed | 1 | **1 of 48** | a `ci.yml` saying `bun-version: "latest"` |
-| M13 a second copy of `testCommandsNamedByCiWorkflow` added to `scripts/` | 1 | **1 of 48** | the grep over `lib`, `scripts`, `gates`, `workflows` |
+| **baseline** — unmutated | 51 pass, 0 fail | **51 pass, 0 fail** | — |
+| M1 `parityBindingViolations` short-circuited to `return []` | 5 | **5 of 51** | the duplicate tree: the original names both files, the mutant returns `[]` |
+| M2 `declarationsNaming` short-circuited to `return []` | 6 | **6 of 51** | `REPO_ROOT`: the original reads every parity and `preflight` declaration in the tree, the mutant none of either |
+| M3 the `UNMEASURED_PARITY_SCAN` refusal removed | 2 | **2 of 51** | a tree with no `contractParity`: the original refuses, the mutant returns `[]` |
+| M4 the `PREFLIGHT_NAMED_PARITY` clause removed | 2 | **2 of 51** | a tree declaring `export const preflightParity` beside a correct entry point |
+| M5 the `DUPLICATE_PARITY_BINDING` clause removed | 3 | **3 of 51** | a tree declaring `contractParity` in `scripts/` and in `workflows/ship.js` |
+| M6 `commandDisagreement` short-circuited to `return []` | 4 | **4 of 51** | the #621 tree — config `bun test --parallel --no-isolate`, the other two `bun test`: original 1 violation, mutant none |
+| M7 **the cheapest wrong fix**: the duplicate check narrowed back to exported-only | 1 | **1 of 51** | a tree with one exported and one UNEXPORTED `contractParity` |
+| M8 `transportIsFirstParty` → `return true` | 2 | **2 of 51** | a foreign root: original `0/3` with no sites, mutant compiles and runs the library transport |
+| M9 `AVAILABILITY_QUERY` replaced with `/(?!)/g` | 2 | **2 of 51** | a file calling `spawnSync(tool, ["--version"])` directly |
+| M10 `undeclaredReadViolations` short-circuited to `return []` | 2 | **2 of 51** | the #530 tree reading `sf("testsSha")` against a schema that never declared it |
+| M11 the #624 unaccounted-writer violation loop removed | 1 | **1 of 51** | the #624 tree writing `.claude/agents/marcus.md` with nothing declaring it |
+| M12 the #622 unpinned-version violation removed | 1 | **1 of 51** | a `ci.yml` saying `bun-version: "latest"` |
+| M13 a second copy of `testCommandsNamedByCiWorkflow` added to `scripts/` | 1 | **1 of 51** | the grep over `lib`, `scripts`, `gates`, `workflows` |
+| M14 **the rebase row**: the whole of #735 reverted inside the moved module — what `git checkout --ours` produces | 4 | **4 of 51** | a matrix `ci.yml`: original reads `bun test` from `test-shard`, mutant reads `echo aggregate` from the job that now runs nothing |
+| M15 only #735's SECOND change reverted — the shard selector left on the string | 4 | **4 of 51** | a SINGLE-job `ci.yml` running `bun test --shard=2/4`: original `bun test`, mutant `bun test --shard=2/4`. M16 is green on this input |
+| M16 only #735's FIRST change reverted — the suite job name hardcoded to `test` | 4 | **4 of 51** | a matrix `ci.yml` whose shard job runs plain `bun test`: original `bun test`, mutant `echo aggregate`. M15 is green on this input |
 
-**Thirteen of thirteen matched, which this file says to distrust**, so the
+#### The row that was not a mutation, and how it was caught
+
+M9's first form edited the leading alternative of `AVAILABILITY_QUERY` —
+`/(?:Bun\.spawnSync|spawnSync|execFileSync|…` — to `zzBun\.spawnSync`, and
+measured **0 red against a predicted 2**. The reflex reading of a zero row is
+"the cases do not cover this", and it is wrong here: `spawnSync` is its own
+alternative three characters later, so the regex still matched every input the
+cases supply. **There is no input on which that mutant and the original behave
+differently.** The code ran twice.
+
+A row that misses LOW is the one to stop on, and the rule that caught this is
+the one stated above rather than any count: *before recording a number, name
+the input on which mutant and original differ*. Re-run as `/(?!)/g` — a regex
+that matches nothing — the row is 2, as predicted. The alternation is why a
+mutation to one branch of a disjunction is nearly always a weak mutation:
+pick the whole binding, or pick the branch and say which other branch covers
+for it.
+
+**Fifteen of sixteen matched on the first reading, which this file says to
+distrust** — and the sixteenth is the reason it says so. So the
 precondition question was asked of the battery rather than of the code (#492):
 every fixture here is a tree the category CAN read, so the branch where it
 cannot is outside the battery's reach entirely. That branch is #626 AC-4's,
@@ -1510,20 +1538,71 @@ The general form, since this file already says the mirror of it for refusals:
 claim is about the count or about non-emptiness.** It is almost always the
 second, and the second is the one that survives other people's work.
 
+#### A relocation is a copy until something holds it to the original
+
+This change moves ~200 lines out of `scripts/contract-parity.ts` into
+`lib/test-command-positions.ts`. While it sat open, #735 landed CI sharding
+and edited the same lines in their old home: `suiteJobName` became the one
+binding deciding which job runs the suite, and a trailing `--shard=N/M` became
+something the reader strips rather than a different command.
+
+**The resolution that looks obviously right is the one that reverts it.**
+`git checkout --ours` on that hunk resolves the conflict cleanly, compiles,
+typechecks, and leaves a module that is #735's code in its new location only
+by coincidence — it is the PRE-#735 code, and nothing in the diff says so,
+because the diff is a file deletion beside a file addition.
+
+Three things are true of that resolution and worth separating, because only
+the third is protection:
+
+1. **Typecheck does not see it.** Both versions are well-typed.
+2. **The pre-existing suite DOES see it, by luck.** M14 is 4 red, and three
+   of those four are cases that read the repository's own `ci.yml` and would
+   have gone green the moment `ci.shards` went back to 1. Catching a
+   regression because an unrelated config value happens to be set is not
+   coverage; it is a tree that currently disagrees.
+3. **A planted fixture sees it on purpose.** The `AC-9/#735` cases write a
+   matrix `ci.yml` of their own, assert the extracted command is `bun test`
+   rather than `echo aggregate`, and assert the equality the strip exists to
+   produce — `--shard=2/4` equal to no flag, `--parallel` **not** equal, a
+   differing command before the flag **not** equal. The second half is the
+   one that keeps the strip narrow; without it the case is satisfied by a
+   reader that discards every flag.
+
+The general rule for a move: **name the commits that touched the source
+region while your branch was open, and port each one into the destination
+rather than resolving the conflict.** Then prove each carried with a case the
+destination owns. A relocation with no behavioural case over it is #484's
+shape — two expressions of one property, with nothing comparing them.
+
 #### Which cells are witnesses and which are controls
 
 Say which, or the next reader counts twenty-eight.
 
 - **Witnesses** — red on the pre-fix condition, green on the control: the six
   `AC-6/#NNN` defective cases (one per category), the AC-8 duplicate,
-  preflight-naming and instrument cases, the wrong-fix case, and the three
-  AC-9 position cases.
+  preflight-naming and instrument cases, the wrong-fix case, the three AC-9
+  position cases, and the two `AC-9/#735` shard cases.
 - **Controls** — green on BOTH sides by construction, and not evidence of any
   fix: the six `AC-6/#NNN control` cases, *"this repository reports no
-  unaccounted writer"*, *"the category reports PASS on this tree"*, and
-  *"the moved bindings behave identically"*. They exist to stop a category
-  that refuses everything reading as a category that catches something, and
-  there is no state of the code in which they go red for the original defect.
+  unaccounted writer"*, and *"the category reports PASS on this tree"*. They
+  exist to stop a category that refuses everything reading as a category that
+  catches something, and there is no state of the code in which they go red
+  for the original defect.
+- **One case moved from the second list to the first, and the battery is what
+  moved it.** *"The moved bindings behave identically to what the script used
+  to hold"* was written as a control and described here as one. It is red in
+  M14, M15 and M16 — it drives `testCommandAgreement` over the LIVE tree, and
+  this repository's `ci.yml` has been sharded since `c664837a`, so the live
+  tree stopped being a tree on which both readers agree. A control that
+  acquires a witness is better than it was; a control still *described* as
+  one after that is a sentence nobody re-measured, which is the whole subject
+  of this file. The honest reading of its red is narrow, though: it witnesses
+  the shard port **only while `ci.shards` is set**. Set it to 1 and the
+  generated workflow is single-job again, the two readers agree exactly, and
+  this case goes green with nothing else changing — #507's shape, the margin
+  set from outside. That is why the two `AC-9/#735` cases plant their own
+  matrix `ci.yml` instead of reading the repository's.
 - **The #530 artifact case is neither, and is the point of its category**: it
   asserts the planted `workflow-state.json` DOES carry `testsSha` — so a
   reading taken off the artifact would say yes — while the schema-based

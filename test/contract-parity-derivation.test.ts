@@ -54,6 +54,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { setupBunDeclarations } from "../lib/bun-version";
+import { suiteJobName } from "../lib/ci-checkout";
 import { acPayloadJson, acPayloadReadExpression, acPayloadShellArgument } from "../lib/evidence-command-transport";
 import {
   FOREIGN_PARITY_WORD,
@@ -733,7 +734,114 @@ describe("#637 AC-8: the contract-parity binding has one name and one home", () 
 
 // ── AC-9: the comparisons are importable library modules ────────────────────
 
-describe("#637 AC-9: category one and two live in lib/, and their suites import them from there", () => {
+describe("#637 AC-9: the moved copy is #735's code, not the pre-shard code", () => {
+  /**
+   * A relocation is a copy until something holds it to the original's
+   * BEHAVIOUR (#484). These cases exist because of what the rebase onto
+   * `c664837a` could have silently done: this module was taken out of
+   * `scripts/contract-parity.ts` before #735 sharded CI, so resolving that
+   * conflict by keeping my side wholesale would have compiled, passed every
+   * case in this file, and reverted #735 with nothing to show it.
+   *
+   * Nothing above can see that. Every other fixture here writes a
+   * single-job `ci.yml`, which the pre-shard and post-shard readers agree on
+   * exactly — the precondition every fixture held fixed (#492), and these are
+   * the fixtures built to not meet it.
+   */
+  const MATRIX_CI = [
+    "name: CI",
+    "",
+    "jobs:",
+    "  test-shard:",
+    "    strategy:",
+    "      fail-fast: false",
+    "      matrix:",
+    "        shard: [1, 2, 3, 4]",
+    "    steps:",
+    "      - uses: actions/checkout@v4",
+    "      - run: bun install",
+    "      - run: bun test --shard=${{ matrix.shard }}/4",
+    "  test:",
+    "    needs: test-shard",
+    "    steps:",
+    "      - run: echo aggregate",
+    "",
+  ].join("\n");
+
+  test("AC-9/#735: a matrix ci.yml is read from `test-shard`, not from the aggregate `test`", () => {
+    // Under a matrix the job named `test` runs no tests at all. A reader that
+    // only knows `test` reports that CI names no test command — which is what
+    // turned #621's agreement check red on the first sharded run, correctly.
+    expect(suiteJobName(MATRIX_CI)).toBe("test-shard");
+    const named = testCommandsNamedByCiWorkflow(MATRIX_CI);
+    expect(named.map(c => c.command)).toEqual(["bun test"]);
+
+    // The control, varying exactly one thing: the same file without the
+    // matrix job resolves the ordinary name and still reads a command.
+    const single = MATRIX_CI.replace("  test-shard:", "  other-shard:").replace(
+      "    needs: test-shard",
+      "    needs: other-shard",
+    );
+    expect(suiteJobName(single)).toBe("test");
+    expect(testCommandsNamedByCiWorkflow(single).map(c => c.command)).toEqual(["echo aggregate"]);
+  });
+
+  test("AC-9/#735: `--shard=N/M` compares equal to the unsharded command; `--parallel` does not", () => {
+    // The shard selector is a CI PARTITION, not a different command — it runs
+    // a quarter of the FILES, not the files differently. Stripping it is what
+    // lets AGENTS.md keep the spelling a human copies to run the suite
+    // locally, which is the cheapest wrong fix #735 names and declines.
+    const sharded = testCommandsNamedByCiWorkflow(MATRIX_CI)[0].command;
+    const plain = testCommandsNamedByCiWorkflow(
+      MATRIX_CI.replace(" --shard=${{ matrix.shard }}/4", ""),
+    )[0].command;
+    expect(sharded).toBe(plain);
+
+    // …and the stripping is narrow. A genuinely different command still
+    // disagrees, which is the half that stops this reading as "any CI flag is
+    // noise" — #621's whole property is that one command is named everywhere.
+    const parallel = testCommandsNamedByCiWorkflow(
+      MATRIX_CI.replace("bun test --shard=${{ matrix.shard }}/4", "bun test --parallel"),
+    )[0].command;
+    expect(parallel).toBe("bun test --parallel");
+    expect(parallel).not.toBe(plain);
+
+    // A shard selector in the MIDDLE is not a trailing partition and is left
+    // alone, and a command that differs before the flag still differs.
+    const differsBefore = testCommandsNamedByCiWorkflow(
+      MATRIX_CI.replace("bun test --shard=${{ matrix.shard }}/4", "bun run ci --shard=2/4"),
+    )[0].command;
+    expect(differsBefore).toBe("bun run ci");
+    expect(differsBefore).not.toBe(plain);
+  });
+
+  test("AC-9/#735: the suite-job rule is declared once, and this module asks rather than copies", () => {
+    // Two readers that agree today are one decider too many, which is why
+    // #735 exported `suiteJobName` instead of letting contract-parity carry
+    // its own. The move did not add a third: the import travelled with the
+    // function, so the script no longer names it at all.
+    const declarations = execFileSync(
+      "grep",
+      ["-rno", "function suiteJobName(", ...PARITY_SCAN_DIRS.map(d => join(REPO_ROOT, d))],
+      { encoding: "utf-8" },
+    )
+      .trim()
+      .split("\n");
+    expect(declarations.length, declarations.join("\n")).toBe(1);
+    expect(declarations[0]).toContain("/lib/ci-checkout.ts:");
+
+    const moved = readFileSync(join(REPO_ROOT, "lib", "test-command-positions.ts"), "utf-8");
+    expect(moved).toContain('import { suiteJobName } from "./ci-checkout";');
+    // The rule itself must NOT be restated here. A QUOTED `test-shard` in
+    // this module would be the second decider #735 declined to write. The
+    // word in prose is not — this module explains where the rule lives, and
+    // a check that forbade saying so would be satisfied by deleting the
+    // explanation. The control for that distinction: the prose IS there.
+    expect(moved).toContain("`test-shard` under a matrix");
+    expect(moved).not.toContain('"test-shard"');
+    expect(moved).not.toContain("'test-shard'");
+  });
+
   test("AC-9: the category-one extractors are declared in lib/ and nowhere else", () => {
     const moved = [
       "testCommandsNamedByAgentsMd",
