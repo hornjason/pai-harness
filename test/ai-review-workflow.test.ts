@@ -6,9 +6,20 @@
  * the tests that RUN it. Nothing wrote it into a file. This is the file, and
  * the conformity check that executes the copy on disk.
  *
- * Covers AC-1, AC-2, AC-3 (the generated workflow) and AC-4, AC-5 (the
- * conformity case). AC-6 lives in `test/release-guard.test.ts`, beside the
- * tuple it is about.
+ * Covers AC-1, AC-2 (the generated workflow) and AC-4, AC-5 (the conformity
+ * case). AC-6 lives in `test/release-guard.test.ts`, beside the tuple it is
+ * about.
+ *
+ * Covers SC-2106, SC-2107, SC-2108, SC-2109, SC-2110, SC-2111
+ * (HARNESS-STANDARD.md) — #631's AC-7, AC-8, AC-8f, AC-8g and AC-8h.
+ *
+ * #630's AC-3 — "the configured branches reach `on.pull_request`, quoted" —
+ * is GONE rather than merely unasserted, and deliberately: #631 AC-8g takes
+ * the `pull_request` trigger away entirely, so there is no longer a branch
+ * list in this file for it to be about. The glob-quoting behaviour it
+ * exercised is still measured over `ci.yml` and `gates.yml` by
+ * `test/scaffold-ci-config.test.ts`, and the claim that replaces it here is
+ * the opposite one: a configured branch list must NOT reach this workflow.
  *
  * ## Why the job carries no `if:`, and why that is asserted after presence
  *
@@ -33,12 +44,31 @@
  * warns unconditionally — so every refusal the check can emit is observed
  * emitting.
  *
+ * ## #631: four more invariants, and why they are four bindings
+ *
+ * The expansion must not quietly regress what #630 bought, so AC-7, AC-8,
+ * AC-8f and AC-8g are asked by four exported bindings — `bareModelAliasViolations`,
+ * `credentialIsolation`, `findingsStepViolations` and the `triggerViolations`
+ * / `unpinnedUsesViolations` pair. One binding per question, because #484's
+ * lesson is that two questions folded into one assertion are satisfied by
+ * either, and because a mutation of one has to be readable as a count against
+ * the cases that are about it and no others.
+ *
+ * Every red half is DERIVED from the live generated workflow rather than
+ * written out beside it (#585). The one reading that is deliberately not a
+ * verdict is `credentialIsolation` over this tree: until #631's review action
+ * lands, no step outside the auth detector reads a credential, and "no
+ * violations" there would be byte-indistinguishable from a job that isolates
+ * its credentials correctly. It reports UNMEASURED and names the reason.
+ *
+ * The #631 mutation counts are recorded in `specs/HARNESS-STANDARD.md`.
+ *
  * ## What was broken to prove these fail, run and counted rather than asserted
  *
- * Baselines: this file 21 pass / 0 fail; `bun test test/scaffold-conformity.test.ts
- * -t AIREVIEW-1` 1 pass / 0 fail. None of the mutations is left in the tree;
- * all were run and reverted, and both files were confirmed to return to their
- * baselines afterwards.
+ * Baselines: this file 21 pass / 0 fail at #630, 51 pass / 0 fail at #631;
+ * `bun test test/scaffold-conformity.test.ts -t AIREVIEW-1` 1 pass / 0 fail.
+ * None of the mutations is left in the tree; all were run and reverted, and
+ * both files were confirmed to return to their baselines afterwards.
  *
  * | Mutation | Predicted | Measured |
  * |---|---|---|
@@ -58,12 +88,24 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createCiWorkflows } from "../lib/scaffold/steps";
+import {
+  AI_REVIEW_CHECKOUT_ACTION,
+  AI_REVIEW_CHECKOUT_SHA,
+  AI_REVIEW_CHECKOUT_VERSION,
+  AI_REVIEW_FINDINGS_PATH,
+  AI_REVIEW_FINDINGS_STEP_ID,
+  AI_REVIEW_FINDINGS_STEP_NAME,
+  AI_REVIEW_MODEL_ALIASES,
+  buildFindingsVerdictStep,
+  buildReviewCheckoutStep,
+  createCiWorkflows,
+} from "../lib/scaffold/steps";
 import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
   AI_REVIEW_JOB,
   AI_REVIEW_RUN_STEP_ID,
+  AI_REVIEW_RUN_STEP_NAME,
   AI_REVIEW_WORKFLOW_FILE,
   buildAuthDetectScript,
   buildAuthDetectStep,
@@ -72,7 +114,15 @@ import {
 } from "../lib/scaffold/ai-review-step";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
 
-/** Four patterns, including a bare `*` and a `**` glob — AC-3's fixture. */
+/**
+ * Four patterns, including a bare `*` and a `**` glob.
+ *
+ * #630's AC-3 asserted these reached `on.pull_request.branches` quoted. #631
+ * AC-8g takes the trigger away, so they are kept here as the input to the
+ * opposite claim: a configured branch list must NOT reach a file that cannot
+ * fire on a branch event. The quoting of glob patterns is still measured,
+ * over `ci.yml` and `gates.yml`, by `test/scaffold-ci-config.test.ts`.
+ */
 const BRANCHES = ["main", "*", "*-dev", "release/**"];
 const RUNNER = "ubuntu-latest";
 
@@ -194,35 +244,520 @@ describe("AC-2: the job exists, and it can never conclude `skipped`", () => {
   });
 });
 
-describe("AC-3: the configured branches reach on.pull_request, quoted", () => {
-  test("AC-3: the file parses with four glob branch patterns", () => {
-    const doc = Bun.YAML.parse(generated()) as any;
-    const triggers = triggersOf(doc);
-    expect(triggers.pull_request.branches).toEqual(BRANCHES);
-    expect(BRANCHES.length).toBe(4);
+// ── #631 AC-7 / AC-8 / AC-8f / AC-8g: the expanded job's invariants ──────
+//
+// Four questions, four exported bindings, one binding each. They are separate
+// because #484's lesson is that two questions folded into one assertion are
+// satisfied by either — and because a mutation of one of them has to be
+// readable as a count against the cases that are about it and no others.
+//
+// Every red half below is DERIVED from the live generated workflow rather
+// than written out beside it (#585): a pair of hand-written literals can
+// carry a second difference the comparison was never meant to vary, and the
+// next edit touches one of them.
+
+/** A 40-hex commit sha, which is the only ref a `uses:` here may carry. */
+const SHA_PIN = /^[0-9a-f]{40}$/;
+
+/**
+ * Every `uses:` line in a workflow, with the action and the ref split out.
+ *
+ * Line-based rather than parsed on purpose: a `uses:` the YAML parser cannot
+ * reach — a malformed step, a commented-out one somebody is about to restore
+ * — is still a line a reader takes as the project's convention, and the claim
+ * AC-8g makes is about the file.
+ */
+export function usesLines(yml: string): Array<{ line: number; action: string; ref: string }> {
+  const out: Array<{ line: number; action: string; ref: string }> = [];
+  yml.split("\n").forEach((raw, i) => {
+    const m = /^\s*(?:-\s+)?uses:\s*(\S+)/.exec(raw);
+    if (!m) return;
+    const at = m[1].lastIndexOf("@");
+    out.push({
+      line: i + 1,
+      action: at < 0 ? m[1] : m[1].slice(0, at),
+      ref: at < 0 ? "" : m[1].slice(at + 1),
+    });
+  });
+  return out;
+}
+
+/** AC-8g: every `uses:` is pinned to a commit sha, not to a movable tag. */
+export function unpinnedUsesViolations(yml: string): string[] {
+  return usesLines(yml)
+    .filter(u => !SHA_PIN.test(u.ref))
+    .map(
+      u =>
+        `line ${u.line}: ${u.action} is pinned to ${JSON.stringify(u.ref)}, which is not a ` +
+        `commit sha — a tag is a mutable pin and this job hands a credential to the runner`,
+    );
+}
+
+/**
+ * AC-7: no bare `opus`, `sonnet` or `haiku` alias anywhere in the file.
+ *
+ * The boundary is `-` as well as word characters, so `claude-opus-5-5` is NOT
+ * an alias and `--model opus` is. A detector that matched the substring would
+ * refuse every pinned identifier, which is the opposite check wearing the
+ * same name — so the pinned form has a case of its own below.
+ */
+export function bareModelAliasViolations(yml: string): string[] {
+  const out: string[] = [];
+  const lines = yml.split("\n");
+  for (const alias of AI_REVIEW_MODEL_ALIASES) {
+    const re = new RegExp(`(?<![A-Za-z0-9_-])${alias}(?![A-Za-z0-9_-])`);
+    lines.forEach((line, i) => {
+      if (re.test(line)) {
+        out.push(
+          `line ${i + 1} names the bare alias \`${alias}\`, which re-points the day the ` +
+            `provider moves it: ${line.trim()}`,
+        );
+      }
+    });
+  }
+  return out;
+}
+
+/**
+ * AC-8g: the trigger is manual dispatch and nothing else.
+ *
+ * Both halves are asserted, because they fail in different directions: a file
+ * that declares no `workflow_dispatch` cannot be run at all, and a file that
+ * declares `pull_request` beside it hands the reviewer's comment tool to
+ * anyone who can open a pull request. The text search is deliberate rather
+ * than redundant — `pull_request` inside a job-level `if:`, a comment or an
+ * expression is not a trigger and is still the thing being kept out.
+ */
+export function triggerViolations(yml: string): string[] {
+  const out: string[] = [];
+  let doc: any;
+  try {
+    doc = Bun.YAML.parse(yml);
+  } catch (e) {
+    return [`the workflow does not parse as YAML: ${(e as Error).message}`];
+  }
+  const triggers = triggersOf(doc);
+  if (triggers === undefined || triggers === null) {
+    out.push("the workflow declares no `on:` triggers at all, so nothing can ever run it");
+  } else {
+    const keys = typeof triggers === "string" ? [triggers] : Object.keys(triggers);
+    if (!keys.includes("workflow_dispatch")) {
+      out.push(
+        `the workflow does not declare workflow_dispatch (declares: ${keys.join(", ") || "none"})`,
+      );
+    }
+    const extra = keys.filter(k => k !== "workflow_dispatch");
+    if (extra.length > 0) {
+      out.push(
+        `the workflow declares ${extra.join(", ")} beside workflow_dispatch — manual ` +
+          `dispatch only is the control, not a default`,
+      );
+    }
+  }
+  if (yml.includes("pull_request")) {
+    out.push(
+      "`pull_request` appears in the generated file. The reviewer's comment tool is an " +
+        "egress sink, so an automatic trigger hands it to anyone who can open a pull request",
+    );
+  }
+  return out;
+}
+
+/**
+ * AC-8f: the findings step is in the job, and it is after the review step.
+ *
+ * Presence is established for BOTH steps before either index is compared.
+ * `indexOf` returns -1 for an absent step and `-1 < n` is true, so a
+ * comparison alone would read the deletion of the review step as correct
+ * ordering — the #518 shape, where one side of a comparison has been removed
+ * and the comparison duly reports a distinction.
+ */
+export function findingsStepViolations(yml: string): string[] {
+  const out: string[] = [];
+  let doc: any;
+  try {
+    doc = Bun.YAML.parse(yml);
+  } catch (e) {
+    return [`the workflow does not parse as YAML: ${(e as Error).message}`];
+  }
+  const job = doc?.jobs?.[AI_REVIEW_JOB];
+  if (!job || typeof job !== "object") {
+    return [`the workflow has no job named ${AI_REVIEW_JOB}`];
+  }
+  const steps: any[] = Array.isArray(job.steps) ? job.steps : [];
+  const at = (id: string) => steps.findIndex(s => s && typeof s === "object" && s.id === id);
+  const run = at(AI_REVIEW_RUN_STEP_ID);
+  const findings = at(AI_REVIEW_FINDINGS_STEP_ID);
+
+  if (run < 0) {
+    out.push(
+      `no step with id ${AI_REVIEW_RUN_STEP_ID} — the step the findings step has to follow ` +
+        `is absent, so its position cannot be read`,
+    );
+  }
+  if (findings < 0) {
+    out.push(
+      `no step with id ${AI_REVIEW_FINDINGS_STEP_ID} — a job that never reads ` +
+        `${AI_REVIEW_FINDINGS_PATH} has not reported what the review found, it has not ` +
+        `looked`,
+    );
+  }
+  if (run >= 0 && findings >= 0 && findings < run) {
+    out.push(
+      `the findings step is at index ${findings} and the review step at index ${run}: a ` +
+        `payload read before the reviewer writes it is always absent`,
+    );
+  }
+  return out;
+}
+
+/** What `credentialIsolation` could establish about a generated workflow. */
+export interface CredentialIsolationReading {
+  reading: "MEASURED" | "UNMEASURED";
+  /** Named when, and only when, the reading is UNMEASURED. */
+  reasons: string[];
+  violations: string[];
+}
+
+/**
+ * AC-8: each resolved mode reaches the action with only its own credential.
+ *
+ * Asked structurally, not by input name. The names of the review action's
+ * inputs belong to `lib/scaffold/ai-review-step.ts`; re-typing them here
+ * would be a second decider that agrees with that one until the day it does
+ * not. The property that does not depend on them: every `${{ }}` expression
+ * outside the auth-detect step that reads `secrets.X` must be guarded by the
+ * mode `X` resolves to, so a key can only be handed over in the one mode that
+ * authenticates with it.
+ *
+ * A workflow in which no step outside the auth detector reads any credential
+ * is UNMEASURED, not clean. That is this repository's own state until #631's
+ * review action lands, and `0`, `{}` and silence are indistinguishable from
+ * success where UNMEASURED is not (`.claude/rules/config-access.md`).
+ */
+export function credentialIsolation(yml: string): CredentialIsolationReading {
+  let doc: any;
+  try {
+    doc = Bun.YAML.parse(yml);
+  } catch (e) {
+    return {
+      reading: "UNMEASURED",
+      reasons: ["WORKFLOW_UNPARSEABLE"],
+      violations: [`the workflow does not parse as YAML: ${(e as Error).message}`],
+    };
+  }
+  const job = doc?.jobs?.[AI_REVIEW_JOB];
+  const steps: any[] = Array.isArray(job?.steps) ? job.steps : [];
+  const violations: string[] = [];
+  let carrying = 0;
+
+  for (const step of steps) {
+    if (!step || typeof step !== "object" || step.id === AI_REVIEW_AUTH_STEP_ID) continue;
+    const text = JSON.stringify(step);
+    for (const expr of text.match(/\$\{\{[^}]*\}\}/g) ?? []) {
+      for (const c of AI_REVIEW_AUTH_PRECEDENCE) {
+        if (!expr.includes(`secrets.${c.secret}`)) continue;
+        carrying += 1;
+        const guard = `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == '${c.mode}'`;
+        if (!expr.includes(guard)) {
+          violations.push(
+            `step ${step.id ?? step.name ?? "(unnamed)"} hands over ${c.secret} in an ` +
+              `expression that is not guarded by \`${guard}\`, so a mode that does not ` +
+              `authenticate with it still receives it: ${expr}`,
+          );
+        }
+      }
+    }
+  }
+
+  if (carrying === 0) {
+    return {
+      reading: "UNMEASURED",
+      reasons: ["NO_CREDENTIAL_REACHES_A_STEP"],
+      violations: [],
+    };
+  }
+  return { reading: "MEASURED", reasons: [], violations };
+}
+
+// ── The derivations the red halves are built from ────────────────────────
+
+/** Append a step to the job, which is where the generated steps list ends. */
+function plantStep(yml: string, step: string): string {
+  return `${yml.trimEnd()}\n${step.trimEnd()}\n`;
+}
+
+/** The index of the findings step's `- name:` line in the generated text. */
+function findingsStepAt(yml: string): number {
+  return yml.indexOf(`      - name: ${AI_REVIEW_FINDINGS_STEP_NAME}`);
+}
+
+describe("AC-8g: the trigger is manual dispatch, and `pull_request` is nowhere", () => {
+  test("AC-8g: the generated workflow declares workflow_dispatch and nothing else", () => {
+    const violations = triggerViolations(generated());
+    expect(violations, violations.join("\n")).toEqual([]);
+    // Presence before comparison: an empty trigger map would satisfy "declares
+    // nothing but workflow_dispatch" without declaring workflow_dispatch.
+    expect(Object.keys(triggersOf(Bun.YAML.parse(generated()) as any))).toEqual([
+      "workflow_dispatch",
+    ]);
   });
 
-  test("AC-3: every pattern is emitted as a double-quoted scalar", () => {
-    // A bare `*` is a YAML alias indicator and `*-dev` an unresolved alias, so
-    // an unquoted list is a workflow GitHub Actions refuses to parse.
-    const yml = generated();
+  test("AC-8g: restoring the pull_request trigger turns the case red", () => {
+    const mutant = generated().replace("on:\n  workflow_dispatch:\n", 'on:\n  pull_request:\n    branches:\n      - "main"\n');
+    expect(mutant, "the mutation did not apply").not.toBe(generated());
+    const violations = triggerViolations(mutant);
+    expect(violations.join("\n")).toContain("workflow_dispatch");
+    expect(violations.join("\n")).toContain("egress sink");
+  });
+
+  test("AC-8g: ADDING pull_request beside workflow_dispatch is also red", () => {
+    // "Manual dispatch ONLY" is the claim. A detector that only noticed the
+    // removal of workflow_dispatch would pass the cheapest way back in.
+    const mutant = generated().replace(
+      "on:\n  workflow_dispatch:\n",
+      'on:\n  workflow_dispatch:\n  pull_request:\n    branches:\n      - "main"\n',
+    );
+    expect(mutant, "the mutation did not apply").not.toBe(generated());
+    const violations = triggerViolations(mutant);
+    expect(violations.length, violations.join("\n")).toBeGreaterThan(0);
+    expect(violations.join("\n")).toContain("beside workflow_dispatch");
+  });
+
+  test("AC-8g: a configured branch list does not reach this file at all", () => {
+    // The fixture configures four patterns, including a bare `*`. They belong
+    // to ci.yml and gates.yml; a branch filter on a trigger that cannot fire
+    // on a branch event is configuration that reads as a control and is not.
+    expect(BRANCHES.length).toBe(4);
     for (const b of BRANCHES) {
-      expect(yml, `${b} is not quoted`).toContain(`      - ${JSON.stringify(b)}`);
+      expect(generated(), `${b} reached the ai-review workflow`).not.toContain(
+        `      - ${JSON.stringify(b)}`,
+      );
+    }
+  });
+});
+
+describe("AC-8g: every `uses:` in the generated workflow is SHA-pinned", () => {
+  test("AC-8g: there is at least one `uses:`, and every one of them is a sha", () => {
+    // Presence first, in its own assertion. Zero `uses:` lines make "every
+    // one is pinned" vacuously true, and deleting the checkout is the
+    // cheapest repair for a red pin (#518).
+    const uses = usesLines(generated());
+    expect(uses.length, `the generated workflow carries no \`uses:\` at all`).toBeGreaterThan(0);
+    const violations = unpinnedUsesViolations(generated());
+    expect(violations, violations.join("\n")).toEqual([]);
+  });
+
+  test("AC-8g: the checkout is the pin, and the tag it was read from is a comment", () => {
+    expect(generated()).toContain(
+      `uses: ${AI_REVIEW_CHECKOUT_ACTION}@${AI_REVIEW_CHECKOUT_SHA} # ${AI_REVIEW_CHECKOUT_VERSION}`,
+    );
+    expect(SHA_PIN.test(AI_REVIEW_CHECKOUT_SHA)).toBe(true);
+  });
+
+  test("AC-8g: de-pinning that one `uses:` to its tag turns the case red", () => {
+    const mutant = generated().replace(
+      `@${AI_REVIEW_CHECKOUT_SHA}`,
+      `@${AI_REVIEW_CHECKOUT_VERSION}`,
+    );
+    expect(mutant, "the mutation did not apply").not.toBe(generated());
+    const violations = unpinnedUsesViolations(mutant);
+    expect(violations.length, violations.join("\n")).toBe(1);
+    expect(violations[0]).toContain(AI_REVIEW_CHECKOUT_ACTION);
+  });
+
+  test("AC-8g: a `uses:` with no ref at all is refused, not read as unpinned-but-fine", () => {
+    const mutant = generated().replace(`@${AI_REVIEW_CHECKOUT_SHA}`, "");
+    expect(mutant, "the mutation did not apply").not.toBe(generated());
+    expect(unpinnedUsesViolations(mutant).length).toBe(1);
+  });
+
+  test("AC-8g: the checkout does not persist a second credential into the tree", () => {
+    // Without this, checkout writes GITHUB_TOKEN into .git/config — a
+    // credential sitting in the tree the reviewing agent walks.
+    expect(buildReviewCheckoutStep()).toContain("persist-credentials: false");
+    expect(generated()).toContain("persist-credentials: false");
+  });
+});
+
+describe("AC-7: no bare model alias reaches the generated workflow", () => {
+  test("AC-7: the generated workflow names no bare opus, sonnet or haiku", () => {
+    const violations = bareModelAliasViolations(generated());
+    expect(violations, violations.join("\n")).toEqual([]);
+    expect(AI_REVIEW_MODEL_ALIASES.length).toBe(3);
+  });
+
+  test("AC-7: planting one turns the guarding case red", () => {
+    for (const alias of AI_REVIEW_MODEL_ALIASES) {
+      const mutant = plantStep(
+        generated(),
+        `      - name: Planted reviewer\n        id: planted-${alias}\n        run: |\n          echo --model ${alias}\n`,
+      );
+      expect(mutant, "the mutation did not apply").not.toBe(generated());
+      // The mutant has to be a workflow, not a broken string: a detector
+      // proven only against garbage proves nothing about a real file.
+      expect(() => Bun.YAML.parse(mutant)).not.toThrow();
+      const violations = bareModelAliasViolations(mutant);
+      expect(violations.length, `${alias} was not caught\n${violations.join("\n")}`).toBe(1);
+      expect(violations[0]).toContain(alias);
     }
   });
 
-  test("AC-3: a project that configures no branches gets the default", () => {
-    const bare = scratchDir("ai-review-default-branch-");
-    mkdirSync(join(bare, ".claude", "rungate"), { recursive: true });
-    writeFileSync(
-      join(bare, ".claude", "rungate", "config.json"),
-      JSON.stringify({ project: "bare", ci: { bunVersion: "1.2.0" } }, null, 2) + "\n",
+  test("AC-7: a PINNED dated identifier is not an alias — the control", () => {
+    // The cheapest wrong detector is a substring match, which refuses every
+    // pinned id and so is green on an empty file and red on a correct one.
+    for (const pinned of ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"]) {
+      const mutant = plantStep(
+        generated(),
+        `      - name: Planted reviewer\n        id: planted-pinned\n        run: |\n          echo --model ${pinned}\n`,
+      );
+      const violations = bareModelAliasViolations(mutant);
+      expect(violations, `${pinned} was refused as a bare alias`).toEqual([]);
+    }
+  });
+});
+
+describe("AC-8f: the findings verdict step is in the job, after the review step", () => {
+  test("AC-8f: the step is present and the builder's text reaches the file verbatim", () => {
+    const violations = findingsStepViolations(generated());
+    expect(violations, violations.join("\n")).toEqual([]);
+    expect(generated()).toContain(buildFindingsVerdictStep(PROJECT));
+  });
+
+  test("AC-8f: it runs the findings reader against the one declared payload path", () => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    const step = doc.jobs[AI_REVIEW_JOB].steps.find((s: any) => s.id === AI_REVIEW_FINDINGS_STEP_ID);
+    expect(step, `no step with id ${AI_REVIEW_FINDINGS_STEP_ID}`).toBeDefined();
+    expect(step.run).toContain(AI_REVIEW_FINDINGS_PATH);
+    expect(step.run).toContain("ai-review-findings.ts");
+    // The mode arrives through env:, like every other value in this job.
+    expect(step.run).not.toContain("${{");
+    expect(step.env.AI_REVIEW_MODE).toContain(`steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode`);
+    expect(Object.keys(step)).not.toContain("if");
+  });
+
+  test("AC-8f: removing the step turns the case red", () => {
+    const at = findingsStepAt(generated());
+    expect(at, "the findings step is not where the derivation expects it").toBeGreaterThan(-1);
+    // It is the last step, which is the assumption this derivation rests on,
+    // so it is asserted rather than relied upon.
+    expect(generated().lastIndexOf("      - name: ")).toBe(at);
+    const mutant = generated().slice(0, at);
+    expect(() => Bun.YAML.parse(mutant)).not.toThrow();
+    const violations = findingsStepViolations(mutant);
+    expect(violations.length, violations.join("\n")).toBe(1);
+    expect(violations[0]).toContain(AI_REVIEW_FINDINGS_STEP_ID);
+  });
+
+  test("AC-8f: moving it BEFORE the review step turns the case red too", () => {
+    const at = findingsStepAt(generated());
+    const block = generated().slice(at);
+    const body = generated().slice(0, at);
+    const runAt = body.indexOf(`      - name: ${AI_REVIEW_RUN_STEP_NAME}`);
+    expect(runAt, "the review step is not where the derivation expects it").toBeGreaterThan(-1);
+    const mutant = body.slice(0, runAt) + block + body.slice(runAt);
+    expect(mutant, "the mutation did not apply").not.toBe(generated());
+    expect(() => Bun.YAML.parse(mutant)).not.toThrow();
+    const violations = findingsStepViolations(mutant);
+    expect(violations.length, violations.join("\n")).toBe(1);
+    expect(violations[0]).toContain("always absent");
+  });
+
+  test("AC-8f: deleting the REVIEW step is refused, not read as correct ordering", () => {
+    // `indexOf` returns -1 for an absent step and -1 < n is true, so a bare
+    // comparison would report the deletion as a job in the right order.
+    const body = generated().slice(0, findingsStepAt(generated()));
+    const runAt = body.indexOf(`      - name: ${AI_REVIEW_RUN_STEP_NAME}`);
+    const mutant = body.slice(0, runAt) + generated().slice(findingsStepAt(generated()));
+    expect(() => Bun.YAML.parse(mutant)).not.toThrow();
+    const violations = findingsStepViolations(mutant);
+    expect(violations.length, violations.join("\n")).toBe(1);
+    expect(violations[0]).toContain(AI_REVIEW_RUN_STEP_ID);
+  });
+});
+
+describe("AC-8: the expanded job keeps what #630 bought", () => {
+  test("AC-8: the UNMEASURED annotation still names all three secrets", () => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    const auth = doc.jobs[AI_REVIEW_JOB].steps.find((s: any) => s.id === AI_REVIEW_AUTH_STEP_ID);
+    const run = runAuthScript(auth.run, {});
+    const warnings = run.stdout
+      .split("\n")
+      .filter(l => l.startsWith("::warning") && l.includes("UNMEASURED"));
+    expect(warnings.length, run.stdout).toBe(1);
+    for (const { secret } of AI_REVIEW_AUTH_PRECEDENCE) {
+      expect(warnings[0], `the annotation does not name ${secret}`).toContain(secret);
+    }
+    expect(run.code, "an unconfigured project must not go red on the first scaffold").toBe(0);
+  });
+
+  test("AC-8: no credential reaches a step outside the auth detector — UNMEASURED, said", () => {
+    // This repository's own state until #631's review action lands. A reading
+    // of "no violations" here would be indistinguishable from a job that
+    // isolates its credentials correctly, and those are different facts.
+    const reading = credentialIsolation(generated());
+    expect(reading.violations).toEqual([]);
+    expect(reading.reading).toBe("UNMEASURED");
+    expect(reading.reasons).toEqual(["NO_CREDENTIAL_REACHES_A_STEP"]);
+  });
+
+  test("AC-8: a credential guarded by its own mode reads MEASURED and clean", () => {
+    const guard = `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == 'oauth'`;
+    const mutant = plantStep(
+      generated(),
+      `      - name: Planted reviewer\n        id: planted-review\n        with:\n` +
+        `          claude_code_oauth_token: \${{ ${guard} && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}\n`,
     );
-    createCiWorkflows(bare, []);
-    const doc = Bun.YAML.parse(
-      readFileSync(join(bare, ".github", "workflows", AI_REVIEW_WORKFLOW_FILE), "utf-8"),
-    ) as any;
-    expect(triggersOf(doc).pull_request.branches).toEqual(["main"]);
+    const reading = credentialIsolation(mutant);
+    expect(reading.reading).toBe("MEASURED");
+    expect(reading.violations, reading.violations.join("\n")).toEqual([]);
+  });
+
+  test("AC-8: the same credential handed over under another mode is refused", () => {
+    const guard = `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == 'vertex'`;
+    const mutant = plantStep(
+      generated(),
+      `      - name: Planted reviewer\n        id: planted-review\n        with:\n` +
+        `          anthropic_api_key: \${{ ${guard} && secrets.ANTHROPIC_API_KEY || '' }}\n`,
+    );
+    const reading = credentialIsolation(mutant);
+    expect(reading.reading).toBe("MEASURED");
+    expect(reading.violations.length, reading.violations.join("\n")).toBe(1);
+    expect(reading.violations[0]).toContain("ANTHROPIC_API_KEY");
+    expect(reading.violations[0]).toContain("'api-key'");
+  });
+
+  test("AC-8: an UNGUARDED credential is refused — the whole point", () => {
+    const mutant = plantStep(
+      generated(),
+      `      - name: Planted reviewer\n        id: planted-review\n        with:\n` +
+        `          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}\n`,
+    );
+    const reading = credentialIsolation(mutant);
+    expect(reading.reading).toBe("MEASURED");
+    expect(reading.violations.length, reading.violations.join("\n")).toBe(1);
+  });
+
+  test("AC-8: the auth detector's own env: is not read as an unguarded hand-over", () => {
+    // The control. The auth step is where the three secrets are READ, which is
+    // the one place they may appear ungated — a detector that refused it would
+    // be red on every correct workflow and so could never be switched on.
+    const doc = Bun.YAML.parse(generated()) as any;
+    const auth = doc.jobs[AI_REVIEW_JOB].steps.find((s: any) => s.id === AI_REVIEW_AUTH_STEP_ID);
+    for (const { secret } of AI_REVIEW_AUTH_PRECEDENCE) {
+      expect(auth.env[secret]).toBe(`\${{ secrets.${secret} }}`);
+    }
+    expect(credentialIsolation(generated()).violations).toEqual([]);
+  });
+
+  test("AC-8: the expanded job still carries no `if:` at job or step level", () => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    const job = doc.jobs[AI_REVIEW_JOB];
+    expect(Object.keys(job)).toContain("steps");
+    expect(Object.keys(job).filter(k => k === "if")).toEqual([]);
+    const steps = job.steps as any[];
+    expect(steps.length, "the job has no steps").toBeGreaterThan(3);
+    expect(steps.filter(s => "if" in s).map(s => s.name ?? s.id ?? "(unnamed)")).toEqual([]);
   });
 });
 
@@ -392,6 +927,50 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     const run = runAuthScript(quiet, { AI_REVIEW_MODE: "vertex" });
     expect(run.stdout).not.toContain("UNMEASURED");
     expect(run.code).toBe(0);
+  });
+});
+
+// ── AC-8h: the record, read as data ─────────────────────────────────────
+
+/** The heading the #631 battery is recorded under, and its table. */
+const RECORD_HEADING = "## The AI review job grew four steps";
+
+describe("AC-8h: the mutation counts are recorded, baseline first", () => {
+  test("AC-8h: the recorded #631 mutation rows parse, with the baseline row first", () => {
+    const spec = readFileSync(join(import.meta.dir, "..", "specs", "HARNESS-STANDARD.md"), "utf-8");
+    // Search the slice, not the document: a table anywhere else in a
+    // 11,000-line spec would satisfy every assertion below.
+    const from = spec.indexOf(RECORD_HEADING);
+    expect(from, `${RECORD_HEADING} is not in the spec`).toBeGreaterThan(-1);
+    const rest = spec.slice(from + RECORD_HEADING.length);
+    const to = rest.indexOf("\n## ");
+    const section = to < 0 ? rest : rest.slice(0, to);
+    expect(section.length, "the section sliced out empty").toBeGreaterThan(0);
+
+    const rows = section
+      .split("\n")
+      .filter(l => /^\| /.test(l) && !/^\|\s*-+/.test(l) && !/^\| Row \|/.test(l))
+      .map(l => l.split("|").slice(1, -1).map(c => c.trim()));
+    expect(rows.length, `the battery table has ${rows.length} rows`).toBe(13);
+
+    // The baseline is read first, and it is the row nobody mutates anything
+    // to produce — an instrument that stopped reporting takes it down too.
+    const [baseline, ...mutations] = rows;
+    expect(baseline[0]).toContain("baseline");
+    const declared = [...readFileSync(import.meta.path, "utf-8").matchAll(/^\s*test\(/gm)].length;
+    for (const cell of baseline.slice(1)) {
+      expect(cell, `the baseline row says ${cell}`).toContain(`${declared} pass, 0 fail`);
+    }
+
+    for (const row of mutations) {
+      const predicted = Number(row[1].replace(/\D/g, ""));
+      const measured = Number(/(\d+) of (\d+)/.exec(row[2])?.[1] ?? NaN);
+      const outOf = Number(/(\d+) of (\d+)/.exec(row[2])?.[2] ?? NaN);
+      expect(Number.isFinite(predicted), `row ${row[0]} has no predicted count`).toBe(true);
+      expect(Number.isFinite(measured), `row ${row[0]} has no measured count`).toBe(true);
+      expect(measured, `row ${row[0]} measured 0 — read the instrument`).toBeGreaterThan(0);
+      expect(outOf, `row ${row[0]} is counted against a different suite size`).toBe(declared);
+    }
   });
 });
 

@@ -23,7 +23,14 @@ import {
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
-import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep } from "./ai-review-step";
+import {
+  AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_JOB,
+  AI_REVIEW_REQUIRE_VALUE,
+  AI_REVIEW_REQUIRE_VAR,
+  buildAuthDetectStep,
+  buildReviewRunStep,
+} from "./ai-review-step";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
@@ -2479,6 +2486,168 @@ export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToo
   };
 }
 
+// ── The ai-review job's remaining wiring (#631) ──────────────────────────
+//
+// `lib/scaffold/ai-review-step.ts` owns the steps that resolve a credential
+// and run the reviewer. The two below are what turns those into a job: the
+// checkout the reviewer reads, and the step that reads what it wrote.
+
+/**
+ * The checkout the review needs, SHA-pinned.
+ *
+ * A tag is a mutable pin — the same `@v6` can point at new code tomorrow —
+ * and this job hands a service-account key to the runner a few steps later.
+ * The tag the sha was read from is a trailing comment on the generated line,
+ * so a reader can see what it was without the pin floating.
+ *
+ * `persist-credentials: false` for the reason `.github/workflows/claude-review.yml`
+ * gives: without it checkout writes `GITHUB_TOKEN` into `.git/config`, which
+ * is a second credential sitting in the tree the reviewing agent walks. The
+ * review needs the files, not the ability to push.
+ */
+export const AI_REVIEW_CHECKOUT_STEP_NAME = "Check out the tree the review reads";
+export const AI_REVIEW_CHECKOUT_ACTION = "actions/checkout";
+export const AI_REVIEW_CHECKOUT_SHA = "d23441a48e516b6c34aea4fa41551a30e30af803";
+export const AI_REVIEW_CHECKOUT_VERSION = "v6";
+
+/** The findings verdict step's `id:` and name. */
+export const AI_REVIEW_FINDINGS_STEP_ID = "ai-review-findings";
+export const AI_REVIEW_FINDINGS_STEP_NAME = "Read the AI review findings";
+
+/**
+ * Where the reviewer writes its payload, workspace-relative.
+ *
+ * ONE spelling, and it has to stay one: the prompt that asks the agent for the
+ * file and the step that reads it name the same string, and #295 is what
+ * happens when a reader looks for something no writer was ever asked to
+ * produce — an absent key reads as an empty list reads as a clean review.
+ */
+export const AI_REVIEW_FINDINGS_PATH = "ai-review-findings.json";
+
+/** The reader the findings step runs, relative to the workspace root. */
+export const AI_REVIEW_FINDINGS_READER = "lib/scaffold/ai-review-findings.ts";
+
+/** The annotation title the findings step prints under. */
+export const AI_REVIEW_FINDINGS_TITLE = "AI review findings";
+
+/**
+ * The three bare family aliases a model identifier in this job must not be.
+ *
+ * `opus`, `sonnet` and `haiku` float: the alias re-points at a different model
+ * the day the provider moves it, so two runs of the same workflow on two days
+ * review with two different models and nothing in the file records which. A
+ * review that got worse then looks exactly like a tree that got worse.
+ */
+export const AI_REVIEW_MODEL_ALIASES: readonly string[] = ["opus", "sonnet", "haiku"];
+
+/**
+ * The checkout step, as YAML, ready to be indented under a job's `steps:`.
+ *
+ * No `if:`, like everything else in this job — a step skipped by `if:` reports
+ * `skipped`, and a skipped required check can be treated as satisfied.
+ */
+export function buildReviewCheckoutStep(indent = "      "): string {
+  const lines = [
+    `- name: ${AI_REVIEW_CHECKOUT_STEP_NAME}`,
+    `  uses: ${AI_REVIEW_CHECKOUT_ACTION}@${AI_REVIEW_CHECKOUT_SHA} # ${AI_REVIEW_CHECKOUT_VERSION}`,
+    `  with:`,
+    `    fetch-depth: 1`,
+    `    persist-credentials: false`,
+  ];
+  return lines.map(l => (l ? `${indent}${l}` : "")).join("\n") + "\n";
+}
+
+/**
+ * The bash the findings verdict step runs.
+ *
+ * ## It routes a decision; it does not take one
+ *
+ * `lib/scaffold/ai-review-findings.ts` is the single decider: it reads the
+ * payload, computes the blocking verdict from the severities rather than from
+ * the agent's own verdict word, and exits non-zero for every reading that is
+ * not CLEAN. This step runs it and passes its exit code on. A second reading
+ * of the payload here would be a decider that always agrees with that one and
+ * could never be told apart from it
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ *
+ * ## Why mode `none` leaves before reading anything
+ *
+ * With no credential there is no reviewer, so there is no payload, so the
+ * reader would report `FINDINGS_FILE_ABSENT` — UNMEASURED, truthfully, and
+ * for the third time in one job. The auth step has already said it once. One
+ * state reported once.
+ *
+ * ## Why a refusal is an annotation by default
+ *
+ * The honest default for a tree that has never configured a credential is an
+ * annotation, not a red pipeline on the first scaffold, and
+ * `RUNGATE_REQUIRE_AI_REVIEW` is how a consumer opts into the refusal — read
+ * against the exact string `true` here exactly as the two steps above read it.
+ * Whether a BLOCKING finding should fail a consumer who has not opted in is
+ * #675's question, not this step's: it is the one state in which the reader's
+ * non-zero exit means "the review worked" rather than "the review is
+ * unreadable", and conflating them here would decide it by accident.
+ */
+export function buildFindingsVerdictScript(reader: string): string {
+  const pending =
+    `The AI review findings reader exited non-zero, so this pull request has ` +
+    `no readable AI review result. This check is UNMEASURED, not a passing ` +
+    `review. Set the repository variable ${AI_REVIEW_REQUIRE_VAR} to ` +
+    `'${AI_REVIEW_REQUIRE_VALUE}' to make that a failure instead.`;
+
+  return `# Generated by rungate — lib/scaffold/steps.ts. Do not edit.
+#
+# One decider: ${reader} reads the payload and
+# chooses the exit code. This step routes it.
+set -uo pipefail
+
+if [ "\${AI_REVIEW_MODE:-none}" = none ]; then
+  exit 0
+fi
+
+bun "${reader}" "${AI_REVIEW_FINDINGS_PATH}"
+verdict=$?
+
+if [ "\${verdict}" -eq 0 ]; then
+  exit 0
+fi
+
+echo "::warning title=${AI_REVIEW_FINDINGS_TITLE}::${pending}"
+
+if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
+  exit "\${verdict}"
+fi
+
+exit 0
+`;
+}
+
+/**
+ * The findings verdict step, as YAML, ready to be indented under `steps:`.
+ *
+ * `root` decides where the reader lives, through `isHarnessItself` and nothing
+ * else — the same question `generateConformityTest` and `generateAgentBriefsStep`
+ * ask, answered by the same predicate. A second predicate of my own would
+ * survive any mutation of that one (#208).
+ */
+export function buildFindingsVerdictStep(root: string, indent = "      "): string {
+  const reader = isHarnessItself(root)
+    ? AI_REVIEW_FINDINGS_READER
+    : `node_modules/rungate/${AI_REVIEW_FINDINGS_READER}`;
+
+  const lines = [
+    `- name: ${AI_REVIEW_FINDINGS_STEP_NAME}`,
+    `  id: ${AI_REVIEW_FINDINGS_STEP_ID}`,
+    `  env:`,
+    `    AI_REVIEW_MODE: \${{ steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode }}`,
+    `    ${AI_REVIEW_REQUIRE_VAR}: \${{ vars.${AI_REVIEW_REQUIRE_VAR} }}`,
+    `  run: |`,
+    ...buildFindingsVerdictScript(reader).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
+  return lines.map(l => (l ? `${indent}${l}` : "")).join("\n") + "\n";
+}
+
 export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {
   const workflowsDir = join(root, ".github", "workflows");
   if (!existsSync(workflowsDir)) {
@@ -2680,9 +2849,22 @@ ${bunStep}
   // not a copy: one decider for the script, and a mutation of it has one
   // binding. See lib/scaffold/ai-review-step.ts.
   //
-  // `pull_request` only. A review of a pull request has nothing to say about
-  // a push to a branch, and a trigger that fires where the job cannot do its
-  // work is a run whose outcome means nothing.
+  // MANUAL DISPATCH ONLY (#631), and not as a convenience. The hand-written
+  // trial this job productionises ran automatically for three commits and was
+  // parked when the review of its own pull request found the finding that
+  // ends the argument: the reviewer's comment tool is an EGRESS SINK, so an
+  // agent that can read the credentials file on the runner can post its
+  // contents as a review comment. That cannot be closed by a denylist — two
+  // attempts demonstrated it rather than argued it, the first missing `Task`
+  // and the second `SlashCommand`. Until no credential is readable from the
+  // tree the agent walks, an automatic `pull_request` trigger hands that sink
+  // to anyone who can open a pull request. So the trigger is
+  // `workflow_dispatch` and the word `pull_request` is absent from the
+  // generated file, which is a property a test asserts rather than a habit.
+  //
+  // `ci.branches` therefore does not reach this file. A branch filter on a
+  // trigger that does not fire on a branch event is configuration that reads
+  // as a control and is not one.
   const aiReviewYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # This job is deliberately unconditional. A job skipped by a condition reports
@@ -2693,12 +2875,19 @@ ${bunStep}
 # The second step says the same thing for the other door: a credential that
 # resolved with no reviewer wired to use it (#631) has also not produced a
 # review, and a check that stays quiet about that is the same defect.
+#
+# Every step that says the same thing says it once: the auth step reports a
+# tree with no credential, the reporting step reports a reviewer that did not
+# finish, and the findings step reports a result nobody can read. Three
+# different facts with three different fixes, and none of them is a pass.
+#
+# MANUAL DISPATCH ONLY, deliberately — see lib/scaffold/steps.ts. Every
+# \`uses:\` below is pinned to a commit SHA, because a tag is a mutable pin and
+# this job hands a credential to the runner.
 name: AI Review
 
 on:
-  pull_request:
-    branches:
-${branchList}
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -2707,7 +2896,7 @@ jobs:
   ${AI_REVIEW_JOB}:
     runs-on: ${runsOn}
     steps:
-${buildAuthDetectStep()}${buildReviewRunStep()}`;
+${buildAuthDetectStep()}${buildReviewCheckoutStep()}${buildReviewRunStep()}${buildFindingsVerdictStep(root)}`;
 
   // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does
   // not own the file, and a consumer's own jobs have to survive the update
