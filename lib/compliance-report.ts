@@ -1,5 +1,6 @@
 import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname, join } from "path";
+import { homedir } from "os";
+import { basename, dirname, join } from "path";
 
 /**
  * The history's record shape (#116).
@@ -464,12 +465,124 @@ export function detectHillClimbNeeds(report: ComplianceReport): HillClimbAction[
   return actions;
 }
 
+/**
+ * Where a reinforcement goes, named (#624).
+ *
+ * The loop used to write the tracked brief at the bottom of the compose loop,
+ * as a side effect of having composed it. Nobody chose that: no brief in this
+ * repository has ever carried a committed reinforcement, so every rule the
+ * loop produced was either discarded by the next `git checkout` or left in a
+ * working tree for some later run to trip over.
+ *
+ * Three answers are defensible, and the point of this binding is that a run
+ * says which one it is giving:
+ *
+ * - `COMMIT` — write the tracked brief in place, for a human to review and
+ *   commit. This is what the loop did, now chosen rather than fallen into.
+ * - `UNTRACKED` — write the reinforced brief outside the brief's own
+ *   directory, so the proposal survives without dirtying the tree.
+ * - `DISCARD` — compose it, report it, write nothing.
+ */
+export const HILL_CLIMB_DESTINATIONS = ["COMMIT", "UNTRACKED", "DISCARD"] as const;
+
+export type HillClimbDestination = (typeof HILL_CLIMB_DESTINATIONS)[number];
+
+/**
+ * The destination a caller gets when it does not name one.
+ *
+ * `COMMIT` is the behaviour every existing caller already had, so this change
+ * routes the write without changing where it lands. Which destination the
+ * shipped loop should default to is #624's AC-2 and is a separate decision —
+ * it has to move `scripts/persist-compliance.ts`'s re-grade step with it,
+ * because re-grading a brief that was not written measures the old one.
+ */
+export const DEFAULT_HILL_CLIMB_DESTINATION: HillClimbDestination = "COMMIT";
+
+/** What a write actually did, so a caller can report it rather than assume. */
+export interface HillClimbWrite {
+  destination: HillClimbDestination;
+  /** The path written, or `null` when the destination writes nothing. */
+  path: string | null;
+}
+
+export interface HillClimbWriteOptions {
+  destination?: HillClimbDestination;
+  /** Where an `UNTRACKED` write lands. Defaults to `~/.rungate/hill-climb`. */
+  untrackedDir?: string;
+}
+
+export function defaultUntrackedDir(): string {
+  return join(homedir(), ".rungate", "hill-climb");
+}
+
+/** The path an `UNTRACKED` write uses for a given brief. */
+export function untrackedBriefPath(
+  briefPath: string,
+  untrackedDir: string = defaultUntrackedDir(),
+): string {
+  return join(untrackedDir, basename(briefPath));
+}
+
+/**
+ * The one place a reinforced brief is written.
+ *
+ * Every destination goes through here, so there is one binding to mutate and
+ * one answer to "where did that rule go".
+ */
+export function writeReinforcedBrief(
+  briefPath: string,
+  content: string,
+  opts: HillClimbWriteOptions = {},
+): HillClimbWrite {
+  const destination = opts.destination ?? DEFAULT_HILL_CLIMB_DESTINATION;
+  if (destination === "DISCARD") return { destination, path: null };
+
+  const path =
+    destination === "COMMIT"
+      ? briefPath
+      : untrackedBriefPath(briefPath, opts.untrackedDir);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+  return { destination, path };
+}
+
+/** The one spelling of the inserted bullet's opening. */
+export const REINFORCEMENT_PREFIX = "- **REINFORCED (auto):** ";
+
+const ATX_HEADING = /^#{1,6} /;
+
+/**
+ * Splice one reinforcement bullet into a brief at `insertIdx`.
+ *
+ * A list item immediately followed by an ATX heading is not a reliably parsed
+ * construct, and a brief is read by agents as context — so the inserted block
+ * is separated from a following heading by a blank line. The separator is
+ * decided here and nowhere else; it is not a newline smuggled into the prefix,
+ * which would move the rule's text off its own bullet and leave the heading
+ * exactly where it was.
+ */
+export function insertReinforcement(
+  content: string,
+  insertIdx: number,
+  reinforcement: string,
+): string {
+  const before = content.slice(0, insertIdx);
+  const rest = content.slice(insertIdx).replace(/^\n+/, "");
+  const lead = before.length === 0 || before.endsWith("\n") ? "" : "\n";
+  const separator = ATX_HEADING.test(rest) ? "\n\n" : "\n";
+  return `${before}${lead}${REINFORCEMENT_PREFIX}${reinforcement}${separator}${rest}`;
+}
+
 export function applyHillClimb(
   briefPath: string,
-  actions: HillClimbAction[]
-): { applied: string[]; skipped: string[] } {
+  actions: HillClimbAction[],
+  opts: HillClimbWriteOptions = {},
+): { applied: string[]; skipped: string[]; write: HillClimbWrite } {
+  const destination = opts.destination ?? DEFAULT_HILL_CLIMB_DESTINATION;
+  const nothingWritten: HillClimbWrite = { destination, path: null };
+
   if (!existsSync(briefPath) || actions.length === 0)
-    return { applied: [], skipped: [] };
+    return { applied: [], skipped: [], write: nothingWritten };
 
   let content = readFileSync(briefPath, "utf-8");
   const applied: string[] = [];
@@ -499,45 +612,33 @@ export function applyHillClimb(
     const testingIdx = content.indexOf("## Testing Rules");
     const neverIdx = content.indexOf("## Never Do");
 
-    let insertIdx = -1;
-    let prefix = "\n- ";
+    const sectionIdx =
+      action.compId === "COMP-2" && testingIdx !== -1
+        ? testingIdx
+        : efficiencyIdx !== -1
+          ? efficiencyIdx
+          : neverIdx;
 
-    if (
-      action.compId === "COMP-2" &&
-      testingIdx !== -1
-    ) {
-      const nextSection = content.indexOf("\n## ", testingIdx + 1);
-      insertIdx = nextSection !== -1 ? nextSection : content.length;
-      prefix = "\n- **REINFORCED (auto):** ";
-    } else if (efficiencyIdx !== -1) {
-      const nextSection = content.indexOf("\n## ", efficiencyIdx + 1);
-      insertIdx = nextSection !== -1 ? nextSection : content.length;
-      prefix = "\n- **REINFORCED (auto):** ";
-    } else if (neverIdx !== -1) {
-      const nextSection = content.indexOf("\n## ", neverIdx + 1);
-      insertIdx = nextSection !== -1 ? nextSection : content.length;
-      prefix = "\n- **REINFORCED (auto):** ";
-    }
-
-    if (insertIdx === -1) {
+    if (sectionIdx === -1) {
       skipped.push(`${action.compId}: no suitable section found in brief`);
       continue;
     }
 
-    content =
-      content.slice(0, insertIdx) +
-      `${prefix}${action.reinforcement}` +
-      content.slice(insertIdx);
+    const nextSection = content.indexOf("\n## ", sectionIdx + 1);
+    const insertIdx = nextSection !== -1 ? nextSection : content.length;
+
+    content = insertReinforcement(content, insertIdx, action.reinforcement);
     applied.push(
-      `${action.compId}: added reinforcement (${action.consecutiveFails} consecutive fails)`
+      `${action.compId}: added reinforcement (${action.consecutiveFails} consecutive fails) → ${destination}`
     );
   }
 
-  if (applied.length > 0) {
-    writeFileSync(briefPath, content);
-  }
+  const write =
+    applied.length > 0
+      ? writeReinforcedBrief(briefPath, content, { ...opts, destination })
+      : nothingWritten;
 
-  return { applied, skipped };
+  return { applied, skipped, write };
 }
 
 // --- WARN-to-FAIL promotion tracking (SC-515, DEC-012) ---
