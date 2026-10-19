@@ -966,6 +966,62 @@ and `scripts/persist-compliance.ts` was confirmed byte-identical afterwards.
 
 - [x] SC-2095: scripts/persist-compliance.ts contains [SKIP_OUTCOME_STATE, skipOutcomes] — the receipt state for a skip is read off applyHillClimb's typed outcome through one total map and no sentence-matching table decides it a second time, so UNCLASSIFIED_SKIP is reachable only for a reported line that genuinely arrived with no outcome beside it
 
+### The Phase 1 receipt checks can go red — baseline and four rows (#657)
+
+The record above is #646 measured by the wave that shipped it. This table is
+the **Phase 2** obligation: a battery re-run against the tree as it stands,
+so a reader can tell whether those checks still work rather than whether
+they once did.
+
+Run over `test/unit/hill-climb-receipt.test.ts` +
+`test/unit/persist-compliance.test.ts`:
+
+```bash
+bun test test/unit/hill-climb-receipt.test.ts test/unit/persist-compliance.test.ts
+```
+
+**The baseline row was read before any mutation row**, because an instrument
+that has stopped reporting takes the baseline down with it and that is the
+one row nobody mutates anything to produce. It is also the agreement check
+on the earlier record: 32 pass is the number `.claude/rules/config-access.md`
+wrote down, so the two measurements are of the same thing.
+
+Every count was predicted before the battery ran.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 32 pass, 0 fail | **32 pass, 0 fail** |
+| **collapse to a bare count** — `hillClimb` dropped from the returned receipt, the genuine pre-#646 shape | 8 | **8 of 32** |
+| **cheapest wrong fix, applied** — the inserter appends at the end of the brief when no heading matches | 2 | **2 of 32** |
+| `reading` hardcoded to `"MEASURED"` | 3 | **3 of 32** |
+| every skip occurrence dropped | 3 | **3 of 32** |
+
+All four matched. Both sources were confirmed byte-identical afterwards by
+checksum, and neither mutation is left in the tree.
+
+**The collapse row is the one the issue asks for by name.** A receipt
+carrying only `hillClimbApplied: 0` is what a clean run and a run whose every
+action was skipped both produced before #646, and the eight reds are the five
+state cases plus the three that compare two runs. It is the row that says the
+distinction is load-bearing rather than decorative.
+
+**The cheapest wrong fix was applied, not merely named.** It is the 5pm
+repair for "the reinforcement was never written": stop refusing when no
+heading matches and append at the end of the file. It works — the text lands,
+`hillClimbApplied` goes to 1 — and the rule ends up under whatever section
+happens to be last, which in every brief this repo generates is the
+`Reference` table.
+
+The cases do **not** survive it, which is the answer you want: the two reds
+are *"NO_SUITABLE_SECTION: a brief with no insertion point is UNMEASURED, not
+clean"* and *"a run whose every action was skipped differs from a run with no
+actions"*. They assert the STATE the run reported, so a fallback that applies
+has to report `applied` and the cases go red rather than green. Whether that
+fallback is the right behaviour is a separate question from whether the run
+is allowed to stay silent about it — and the point of the row is that the
+cases force that question to be asked out loud instead of answered by a
+symptom disappearing.
+
 ### What this does NOT fix
 
 - **The receipt names a tier promotion; nothing yet makes one.**

@@ -193,6 +193,109 @@ breaks every downstream reader, including CI log greps that have nothing to do
 with it. A directory whose parent is a file throws `ENOTDIR` and forces the
 same error in text.
 
+### Before you believe an empty search over a store you did not write (#646, #657)
+
+Everything above is about a battery you run. This is about **evidence you
+gather by hand**, and it needs its own section because the two instruments
+either side of it cannot reach it.
+
+- *Before you believe a 0, check the instrument (#60)* is one section up, and
+  its tell is **the baseline row**. A battery has a baseline; a grep does not,
+  so the diagnostic it offers is unavailable the moment you are searching
+  rather than mutating.
+- *The artifact everyone reaches for as ground truth (#530)* is the mirror
+  case: a permissive store answers **yes** to every question of the form "is
+  this here", because you put it there. Positive result, and the direction of
+  the error is toward believing something happened. **This one is negative** —
+  zero hits — and the direction is toward believing nothing happened, which
+  is the direction nobody investigates.
+
+Three sessions in one night read an empty grep over an artifact store as
+evidence that a subsystem had never fired. An absent instrument and an absent
+problem produce byte-identical output: no hits, exit 1, nothing to look at.
+
+**The check, in one line: before believing an empty search over a store you
+did not write, name a string that must be PRESENT if the store has anything
+in it at all, and go and find it.**
+
+Phrased after the property deliberately, because the proxy version — "check
+the path exists" — is satisfiable without answering the question. The path
+below exists. It has fourteen directories in it. It contains none of the data.
+
+#### The instance, with the command beside every number
+
+Measured 2026-10-19 against `~/.claude/projects/-Users-jhorn`. Every count
+here is the output of the command printed with it, re-run on the day this was
+written. Earlier readings of the same searches returned smaller numbers
+against a smaller store, which is the other reason a number travels with its
+command: a count with no command is not reproducible and not datable.
+
+```bash
+# The search that read as "the subsystem never fired":
+grep -rl "HILL-CLIMB skipped" "$STORE"/*/workflows/        # → 1
+```
+
+One hit. The conclusion drawn from it was that hill-climb skips essentially
+never happen. Now the control — a string that cannot be absent from a
+transcript store containing anything:
+
+```bash
+ls -d "$STORE"/*/workflows/                                # → 14 directories
+grep -rl '"type":"assistant"' "$STORE"/*/workflows/        # → 0
+```
+
+**Zero assistant messages across fourteen directories of transcripts.** That
+is impossible, and it is the whole finding: the search was pointed one level
+too shallow. The transcripts live a directory deeper.
+
+```bash
+grep -rl '"type":"assistant"' "$STORE"/*/subagents/workflows/wf_*/   # → 4218
+grep -rl "HILL-CLIMB skipped" "$STORE"/*/subagents/workflows/wf_*/   # → 62
+grep -rl "compliance data written to workflow-state.json" \
+     "$STORE"/*/subagents/workflows/wf_*/                            # → 56
+```
+
+62, not 1. The subsystem fires constantly.
+
+Note what the control bought and what it did not. It did not find the right
+path — a human did, afterwards. It established that **the reading was not a
+reading**, which is the only thing that makes anyone go looking.
+
+#### The inverse, in the same store: a populated result that is not evidence
+
+Same section, because the two are one habit and splitting them lets a reader
+adopt the half that is easier. A non-empty result is not automatically a
+measurement either:
+
+```bash
+grep -rl "persist-compliance" "$STORE"/*/workflows/        # → 108
+```
+
+108 hits on the shallow path that had 0 assistant messages — so whatever
+these are, they are not transcripts of the script running. They are workflow
+summary JSON whose `script` field embeds the whole of `ship.js`, which
+contains the string. **The store is quoting the subject back.**
+
+```bash
+grep -rl "persist-compliance" "$STORE"/*/workflows/ \
+  | xargs grep -l "HILL-CLIMB skipped"                     # → 1
+```
+
+One of the 108 is evidence of execution. 107 are the code naming itself.
+
+This is adjacent to #530 and not the same: there the store says yes because
+**you** wrote the value; here it says yes because it archives the code that
+mentions it. Same remedy either way — ask for a string only a RUN produces,
+never one the subject contains.
+
+#### What to do
+
+1. Name a control string that must be present if the store holds anything.
+2. Run it over the exact path you are about to conclude from.
+3. If the control is zero, your reading is `UNMEASURED` — not "no problem".
+4. Record the command beside the count. A number without its command cannot
+   be re-run, and the store underneath it moves.
+
 ### Search the slice, not the document (#297, #484, #60)
 
 A claim scoped to one section of a string, asserted against the whole string,
