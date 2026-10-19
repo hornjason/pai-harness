@@ -44,11 +44,23 @@ import { isCommitSha } from "./commit-sha";
  * Not the whole tree. A dirty `README.md` does not change a verdict, and a
  * check that refused on one would be a refusal everybody learns to click
  * past — which is worse than no check, because it trains people past the
- * cases that matter. These three are what `ship.js` loads: `gates/` is the
- * gate machinery, `lib/` is everything the gates import, and `workflows/`
- * is the run script itself.
+ * cases that matter. These four are what a run's verdict comes out of:
+ * `gates/` is the gate machinery, `lib/` is everything the gates import,
+ * `workflows/` is the run script itself, and `scripts/` is where that
+ * script's every measurement actually happens — `ship.js` has no
+ * filesystem and no subprocess (#69), so it reaches a verdict by having an
+ * agent run `scripts/record-suite-measurement.ts`,
+ * `scripts/grade-deterministic.ts`, `scripts/rook-review-scope.ts` and
+ * `scripts/verify-no-deleted-cases.ts`, among sixteen.
+ *
+ * `scripts/` was missing from the first draft of this list, which is the
+ * defect this module is about with the scope one directory too narrow: a
+ * harness whose deletion check had been edited in place would have
+ * reported MEASURED and clean. `test/unit/harness-provenance.test.ts`
+ * holds the list against what `ship.js` actually invokes, so a new grading
+ * directory cannot fall outside the reading unnoticed.
  */
-export const GRADING_PATHS = ["gates", "lib", "workflows"] as const;
+export const GRADING_PATHS = ["gates", "lib", "scripts", "workflows"] as const;
 
 export type HarnessProvenance =
   | {

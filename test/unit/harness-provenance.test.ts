@@ -123,6 +123,63 @@ describe("#602: the harness records which version graded the run", () => {
     expect(harnessProvenanceWarning(r)).toContain("is not the code at");
   });
 
+  /**
+   * The scope, held against what the run actually loads.
+   *
+   * `GRADING_PATHS` shipped as `gates`/`lib`/`workflows` and omitted
+   * `scripts/` — which is where a ship run's every measurement happens,
+   * because `ship.js` has no filesystem and no subprocess (#69) and
+   * reaches a verdict by having an agent run `record-suite-measurement`,
+   * `grade-deterministic`, `rook-review-scope` and `verify-no-deleted-cases`.
+   * A harness with an edited deletion check would have read MEASURED and
+   * clean: the defect this module exists to catch, with its scope one
+   * directory too narrow.
+   *
+   * So the list is not a list any more; it is a claim about `ship.js`, and
+   * this reads `ship.js` to check it. A hand-maintained constant beside a
+   * file that keeps growing new invocations is two statements that agree
+   * only until someone adds the seventeenth script.
+   *
+   * ## Why EXECUTED and not "mentioned"
+   *
+   * `ship.js` also names `${HARNESS_ROOT}/test/fixtures/...`,
+   * `${HARNESS_ROOT}/prompts/quinn-ui-brief.md` and
+   * `${HARNESS_ROOT}/.claude/worktrees`. Those are read as data or passed
+   * as path arguments; none is loaded as code. Including `test/` would
+   * make the warning fire on essentially every development run, and a
+   * refusal everybody learns to click past is worse than no refusal — it
+   * trains people past the cases that matter. The cut is a property
+   * (`bun <path>`, `import from <path>`, `scriptPath:`), not a list of
+   * exceptions, so nothing is exempted by being written down here.
+   */
+  test("every directory ship.js LOADS CODE from is in GRADING_PATHS", () => {
+    const ship = readFileSync(join(import.meta.dir, "..", "..", "workflows", "ship.js"), "utf-8");
+    const executed = new Set<string>();
+    for (const m of ship.matchAll(
+      /(?:bun (?:run )?|from '|scriptPath: `)\$\{HARNESS_ROOT\}\/([a-zA-Z0-9_.-]+)\//g,
+    )) {
+      executed.add(m[1]);
+    }
+
+    // A pattern that stopped matching would make this case green over a
+    // ship.js loading code from anywhere it liked.
+    expect(executed.size, "the scan found no executed paths at all — it is not reading ship.js")
+      .toBeGreaterThan(2);
+    expect([...executed].sort()).toEqual([...GRADING_PATHS].sort());
+  });
+
+  test("a dirty scripts/ file is reported — that is where the measuring happens", () => {
+    // The behavioural half of the case above. That one reads `ship.js` and
+    // would stay green over a reading that never looked at `scripts/`;
+    // this one takes a reading. Two questions, two cases (#484).
+    const { root } = harnessWithUpstream("dirty-scripts");
+    writeFileSync(join(root, "scripts", "record-suite-measurement.ts"), "// the grader, edited\n");
+    const r = harnessProvenance(root);
+    if (r.reading !== "MEASURED") throw new Error("expected MEASURED");
+    expect(r.dirty).toEqual(["scripts/record-suite-measurement.ts"]);
+    expect(harnessProvenanceWarning(r)).toContain("scripts/record-suite-measurement.ts");
+  });
+
   test("an UNTRACKED file under a grading path counts — it is loadable code the commit lacks", () => {
     const { root } = harnessWithUpstream("untracked");
     writeFileSync(join(root, "lib", "brand-new.ts"), "export const x = 1;\n");
