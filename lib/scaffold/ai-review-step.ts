@@ -661,11 +661,23 @@ fi
 # write a findings file writes a NEW file, and a new file is untracked, so
 # neither \`git diff\` sees it. \`--untracked-files=all\` descends into new
 # directories as well — the default stops at the directory name.
-changed=$(git status --porcelain --untracked-files=all | tr '\\n' ' ')
+#
+# The status is checked on its own line. \`changed=$(...)\` DISCARDS the
+# command's exit code — \`pipefail\` does not reach it, because the assignment
+# is what the shell reports — so a git that failed for any reason at all
+# produces an empty string, which is the same empty string a clean tree
+# produces. "The tree is clean" and "the tree was never read" would be one
+# value, and the second one must not pass.
+if ! changed=$(git status --porcelain --untracked-files=all 2>&1); then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed, so the tree was never read and this check is UNMEASURED: \${changed}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
 
 if [ -z "\${changed}" ]; then
   exit 0
 fi
+
+changed=$(printf '%s' "\${changed}" | tr '\\n' ' ')
 
 echo "::error title=${AI_REVIEW_DRIFT_TITLE}::The reviewer modified the tree it was reviewing: \${changed}. A review that edits the code under review is not a result." >&2
 exit ${AI_REVIEW_REQUIRED_EXIT}

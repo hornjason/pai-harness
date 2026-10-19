@@ -489,11 +489,16 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     script: string = buildDriftScript(),
   ): Run {
     const dir = scratchDir("ai-review-drift-");
-    const git = (...args: string[]) =>
-      Bun.spawnSync(["git", ...args], { cwd: dir, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
-    git("init", "-q");
-    git("config", "user.email", "t@example.invalid");
-    git("config", "user.name", "t");
+    const genv = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args], { env: genv });
+    Bun.spawnSync(["git", "init", "-q", dir], { env: genv });
+    // The identity writes name `-C dir` at the CALL SITE rather than through
+    // `git()`. #84's guard reads source text, so a wrapper that binds the
+    // directory is invisible to it — and it is right not to guess: a
+    // `git config user.*` whose target is not on the line is one refactor
+    // from writing the developer's own identity into their own repo.
+    Bun.spawnSync(["git", "-C", dir, "config", "user.email", "t@example.invalid"], { env: genv });
+    Bun.spawnSync(["git", "-C", dir, "config", "user.name", "t"], { env: genv });
     writeFileSync(join(dir, "tracked.ts"), "export const a = 1;\n");
     git("add", "-A");
     git("commit", "-qm", "base");
@@ -555,6 +560,30 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
       run.stderr,
       "the refusal named the directory but not the file inside it",
     ).toContain("nested/planted.ts");
+  });
+
+  test("AC-10: a git that could not read the tree is refused, not read as clean", () => {
+    // `changed=$(git status ...)` discards git's exit code, so a git that
+    // failed produces the empty string — the same value a clean tree
+    // produces. The input: a directory that is not a git repository at all,
+    // which is what a checkout step that silently did nothing leaves behind.
+    const dir = scratchDir("ai-review-drift-nonrepo-");
+    writeFileSync(join(dir, "tracked.ts"), "export const a = 1;\n");
+    const sh = join(scratchDir("ai-review-drift-nonrepo-script-"), "drift.sh");
+    writeFileSync(sh, buildDriftScript());
+    const r = Bun.spawnSync(["bash", sh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? dir,
+        AI_REVIEW_MODE: "vertex",
+      },
+    });
+    const stderr = new TextDecoder().decode(r.stderr);
+    expect(r.exitCode, `an unreadable tree reported clean:\n${stderr}`).toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(stderr, "the refusal does not say the tree was never read").toContain("UNMEASURED");
   });
 
   test("AC-10: mode none does not run the check at all", () => {
