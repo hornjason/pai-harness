@@ -6953,6 +6953,117 @@ mis-reports its own reach is exactly the decorative check this rule is about,
 and it is recorded here because the fix — count occurrences, not lines — is
 not obvious from output that reads like a moved anchor.
 
+### #728 — the hook asked `--show-toplevel` where the dependencies are
+
+`--show-toplevel` answers *"where is this working tree"*. The hook needed
+*"where are this repository's installed dependencies"*, and in a **linked
+worktree** those are two different directories: `node_modules` is gitignored,
+so it exists only in the main checkout and a worktree has none. `ln -s` does
+not look at its target, so the link succeeded, the temp checkout got a
+dangling `node_modules`, and the suite died with
+`Cannot find module 'rungate/lib/conformity'`. Every worktree push was
+refused as UNMEASURED. **The refusal was correct and its wording is
+unchanged** — what it could not say is that the cause was the worktree, so
+the cheapest available action was `--no-verify`, and three agent sessions in
+`agentgrit` took it on 2026-10-19.
+
+The same wrong root made the lockfile arm vacuous. `cmp "$TOPLEVEL/bun.lock"
+"$tmp/bun.lock"` compares the pushing worktree's working-tree lockfile with
+the pushed commit's copy of it, and those are the same file whenever you push
+what you committed. The arm exists to check that the modules being linked
+were installed from the pushed lockfile, so it has to read the lockfile
+**beside those modules**. (It is vacuous in the normal case rather than
+unable to fail: an uncommitted lockfile edit, or pushing an older commit,
+still makes them differ.)
+
+`MODULES_ROOT=$(cd "$TOPLEVEL" && cd "$(git rev-parse --git-common-dir)/.."
+&& pwd)` is the main checkout from any worktree and plain `.git` in the main
+checkout itself, so the non-worktree case is unchanged — asserted, not
+assumed, by a control case that pushes the same fixture from its primary
+checkout. `lib/scaffold/steps.ts:2944` already distinguished the two for the
+pre-commit hook; the pre-push hook was the last generated hook still asking
+the wrong question.
+
+An absent `$MODULES_ROOT/node_modules` is now refused **by name** rather than
+linked anyway, because a dangling link turns a statement about a missing
+directory into an import error that names no cause. One shell function,
+`link_modules`, is the only site that links, so there is one binding to
+mutate.
+
+The criteria below need ids allocating against the spec registry; they are
+described by their test names in `test/pre-push-hook.test.ts`, under
+`#728: the hook links the MAIN checkout's dependencies, not the pushing
+worktree's`:
+
+1. A push from a linked worktree resolves its dependencies from the main
+   checkout and is allowed, driven against a planted main-checkout/worktree
+   pair whose conformity suite imports a package installed only in the main
+   checkout.
+2. The same push from the primary checkout is still allowed — the control
+   that the worktree case was not bought by breaking the case that worked.
+3. The lockfile the arm compares is the one beside the `node_modules` being
+   linked, witnessed by a fixture whose worktree lockfile matches the pushed
+   commit while the main checkout's differs.
+4. A `node_modules` absent from the main checkout is refused naming that
+   directory and the remedy, and is distinguishable in the hook's output from
+   an unexplained import error.
+5. `--git-common-dir` is asked exactly once, and no `$TOPLEVEL/node_modules`
+   or `$TOPLEVEL/bun.lock` remains.
+
+#### What was broken to prove it
+
+Run and counted over `test/pre-push-hook.test.ts`,
+`test/unit/pre-push-pushed-sha.test.ts` and
+`test/unit/generated-shell-syntax.test.ts` (37 tests). **Every count was
+predicted before the battery ran, and the baseline row was read before any
+mutation row** — an instrument that has stopped reporting takes the baseline
+down with it, and that is the row nobody checks. None of the mutations is
+left in the tree; all were run and reverted, and both files were confirmed
+byte-identical to the measured source afterwards by checksum.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 37 pass, 0 fail | **37 pass, 0 fail** |
+| `MODULES_ROOT` restored to `$TOPLEVEL`, absent-target guard KEPT — the pre-#728 root, and the cheapest wrong fix | 6 | **6 of 37** |
+| the absent-target guard removed (`if false`) — the link dangles again | 2 | **2 of 37** |
+| the genuinely pre-#728 `lib/scaffold/pre-push-hook.ts`, from this branch's merge-base | 7 | **7 of 37** |
+| the fixture's `addWorktree` neutered to return the main checkout | 2 | **2 of 27** |
+
+Before believing any of those, the input on which mutant and original
+differ, named and run rather than assumed: the `wt-dep` fixture — a main
+checkout holding `node_modules/dep-under-test`, a linked worktree holding
+none, and a conformity suite that imports it. The real source prints
+`1 pass / 0 fail` and exits 0; `MODULES_ROOT=$TOPLEVEL` prints
+`no node_modules at <worktree>/node_modules — run bun install there` and
+exits 1; the pre-#728 source prints
+`Cannot find package 'dep-under-test'` and exits 1. For the lockfile row the
+input is `wt-lock`: the worktree and the pushed commit both carry
+`committed lockfile` while the main checkout carries
+`the lockfile the modules came from`, and only the fixed source reaches
+`dependencies differ from the working tree`.
+
+**The cheapest wrong fix, named: check the link target exists and skip the
+symlink, leaving `--show-toplevel` in place.** It is the 5pm repair — the
+import error becomes a sentence about `node_modules` — and the lockfile arm
+goes on reading the pushed tree against itself. That is the second row of the
+table, and the cases do not survive it: three of them go red, including the
+by-name refusal, because it names the *worktree's* path rather than the main
+checkout's.
+
+**The last row is the instrument, not the hook,** and it is the one worth
+reading carefully. With `addWorktree` degraded to the main checkout, the
+three behavioural cases stay GREEN — they are witnesses of the fix (row
+three reds all three) but not of the fixture being a linked worktree. The two
+mutation cases go red, loudly, so a fixture that silently stopped being a
+worktree would not leave the file quietly passing. Say which cases are
+witnesses of what, or the next reader counts five.
+
+**Consumers are in two populations, and they are indistinguishable from
+outside.** `lib/scaffold/steps.ts:3015` overwrites `.git/hooks/pre-push` only
+when it carries `PRE_PUSH_MANAGED_MARKER`, so an already-scaffolded repo
+keeps the old hook until it is re-scaffolded: `bunx rungate scaffold .`. A
+repo that looks fixed and a repo that is fixed read the same until then.
+
 ## #398 — audit reported 0 changes on a tree `--fix` rewrote in 28 places
 
 `rungate scaffold <path>` without `--fix` printed
