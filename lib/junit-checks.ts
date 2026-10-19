@@ -232,6 +232,58 @@ export function readJunitCheckNames(path: string): JunitReading {
   return parseJunitCheckNames(xml);
 }
 
+/** What one JUnit report says about which checks PASSED (#659). */
+export interface JunitOutcomeReading {
+  /**
+   * Full names of the testcases that ran and did not fail. `null` when the
+   * report could not be read — a different answer from `[]`, which says the
+   * report ran nothing, and the two must stay different all the way to the
+   * consumer.
+   */
+  passed: string[] | null;
+  /** Full names of the testcases that ran and failed. Empty when unreadable. */
+  failed: string[];
+  /** Why `passed` is null. */
+  reason?: string;
+}
+
+/**
+ * Pass and fail, off the SAME scan the names reading uses (#659).
+ *
+ * `lib/test-case-deletion.ts` needs to prove a deleted case was GREEN before
+ * it was deleted, and `parseJunitCheckNames` answers "did it run", which is
+ * satisfied by a case that ran and failed. A second scanner for the second
+ * question would be two deciders for one document: both would agree on every
+ * report anyone has, and a mutation of either would leave the other holding
+ * the answer up (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth
+ * shape). So the answer comes out of `scanJunitTestcases`, which already
+ * records each testcase's `<failure>`.
+ *
+ * A `<skipped />` testcase is in NEITHER list. It did not run, so it did not
+ * pass — and reading a filtered-out case as green is exactly the trap #532
+ * records about this report format.
+ */
+export function parseJunitOutcomes(xml: string): JunitOutcomeReading {
+  const scan = scanJunitTestcases(xml);
+  if (scan === null) return { passed: null, failed: [], reason: NOT_A_REPORT };
+  const ran = scan.cases.filter(c => c.ran);
+  return {
+    passed: ran.filter(c => c.failure === null).map(c => c.name),
+    failed: ran.filter(c => c.failure !== null).map(c => c.name),
+  };
+}
+
+/** `parseJunitOutcomes` over a file, with the read failure as a reading. */
+export function readJunitOutcomes(path: string): JunitOutcomeReading {
+  let xml: string;
+  try {
+    xml = readFileSync(path, "utf-8");
+  } catch (e: any) {
+    return { passed: null, failed: [], reason: `the JUnit report could not be read (${e?.code || e?.name || "unknown"})` };
+  }
+  return parseJunitOutcomes(xml);
+}
+
 /**
  * The full witness: every check the gate reported a verdict for.
  *
