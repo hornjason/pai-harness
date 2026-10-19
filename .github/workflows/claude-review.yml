@@ -115,7 +115,11 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Review
-        uses: anthropics/claude-code-action@f27be6b65a4652f08a2ba3cff79114829b588967 # v1
+        # The pin is declared in lib/claude-code-action.ts and checked by
+        # `action-pin-parity` in scripts/contract-parity.ts (#689). YAML cannot
+        # import, so the agreement is checked rather than substituted — edit
+        # the declaration, not this line.
+        uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           use_vertex: "true"
