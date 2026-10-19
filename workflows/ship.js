@@ -5928,7 +5928,7 @@ if (verifyResult?.result === 'FAIL') {
       const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
 cd ${commitDir}
-git rev-parse HEAD   # this is parentSha
+prevBuild=$(git rev-parse HEAD)   # this is parentSha, and the buildCommit the gate graded
 ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push origin HEAD:${shipBranch}
 sha=$(git rev-parse HEAD)   # this is commitSha
 
@@ -5952,7 +5952,18 @@ It prints one JSON receipt on stdout. Report its "ok" field as stateRecorded.
 This round MOVED the branch, so the buildCommit written by the commit step now
 names a commit that is not the tip. Do NOT edit workflow-state.json by hand,
 and do NOT report true if the command failed (#166, #169).
-      `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' }, parentSha: { type: 'string' }, stateRecorded: { type: 'boolean' } }, required: ['commitSha', 'parentSha', 'stateRecorded'] } })
+
+Then check what this repair round removed. Run exactly this:
+  bun ${shellQuote(`${HARNESS_ROOT}/scripts/verify-no-deleted-cases.ts`)} --project ${shellQuote(commitDir)} --previous "$prevBuild" --current "$sha" --ledger ${shellQuote(`${WORK_DIR}/gate-verify-junit.xml`)} --out ${shellQuote(`${WORK_DIR}/deleted-cases.json`)}
+
+It compares the two BUILD COMMITS by test case NAME and exits non-zero when a
+case that was green before this round is gone. Report its "verdict" field as
+deletionVerdict and the names under "cases" as deletedCases — report them even
+when the command exits non-zero, which is the outcome this run needs to see.
+Do NOT restore, re-add or edit any test to make it exit zero: the verdict is a
+reading of what you already committed, and repairing the reading is the defect
+it exists to catch (#659). Report what it printed.
+      `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' }, parentSha: { type: 'string' }, stateRecorded: { type: 'boolean' }, deletionVerdict: { type: 'string', enum: ['CLEAN', 'DELETED', 'UNMEASURED'] }, deletedCases: { type: 'array', items: { type: 'string' } } }, required: ['commitSha', 'parentSha', 'stateRecorded', 'deletionVerdict'] } })
       if (!reCommit || !reCommit.commitSha || reCommit.commitSha === reCommit.parentSha) {
         // A SHA equal to the parent means nothing was committed. The old
         // schema asked only for `commitSha`, so echoing the HEAD that was
@@ -5964,11 +5975,25 @@ and do NOT report true if the command failed (#166, #169).
       // early return here would skip the retry gate below (#155's reasoning).
       const reVerifyStateRefusal = commitStateRefusal(reCommit)
       if (reVerifyStateRefusal) log(`${reVerifyStateRefusal} — buildCommit still names the pre-regression commit (#169)`)
+      // #659. What this round DELETED, read between the two build commits.
+      // Absent is UNMEASURED and not CLEAN: a step that did not report a
+      // verdict looked at nothing, and "nothing was deleted" is the one
+      // answer nobody may infer from silence here — it is the answer the
+      // whole run produced on wf_2abbe96f-546.
+      const deletionVerdict = reCommit?.deletionVerdict || 'UNMEASURED'
+      if (deletionVerdict !== 'CLEAN') {
+        log(`REPAIR_DELETED_TESTS (${deletionVerdict}): the verify repair round's effect on the test suite was ` +
+          `${deletionVerdict === 'DELETED' ? 'to remove cases that passed at the previous build commit' : 'not established'}` +
+          `${(reCommit?.deletedCases || []).length ? ` — ${reCommit.deletedCases.join('; ')}` : ''} (#659)`)
+      }
       const retryVerify = await runGateWithHeal('verify', 'Verify',
         'Fix remaining verify gate failures.',
         { cwd: commitDir })
       if (retryVerify?.result === 'PASS') {
-        log('Verify passed after BUILD regression fix')
+        log(deletionVerdict === 'CLEAN'
+          ? 'Verify passed after BUILD regression fix'
+          : `Verify gate passed after BUILD regression fix, but the round's deletions are ${deletionVerdict} — ` +
+            'a gate that passes because its test is gone is not a gate that passed (#659)')
       }
       }
     } else {
