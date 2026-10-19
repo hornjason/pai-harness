@@ -586,6 +586,20 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     expect(stderr, "the refusal does not say the tree was never read").toContain("UNMEASURED");
   });
 
+  test("AC-10: a path the branch chose cannot forge a workflow command", () => {
+    // The path in the refusal came out of the branch under review, so it is
+    // a string an attacker picks. git quotes a path containing a newline, so
+    // the reachable character here is `%` — which GitHub decodes in an
+    // annotation body, making `%0A` in a filename a line break in the
+    // rendered message. One encoder, applied where the value is captured.
+    const run = runDrift(dir => writeFileSync(join(dir, "a%0Ab.json"), "{}"));
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    const lines = run.stderr.split("\n").filter(l => l.length > 0);
+    expect(lines.length, `the refusal spans ${lines.length} lines:\n${run.stderr}`).toBe(1);
+    expect(lines[0], "the percent was not encoded").toContain("a%250Ab.json");
+    expect(lines[0], "the raw sequence survived into the annotation").not.toContain("a%0Ab");
+  });
+
   test("AC-10: mode none does not run the check at all", () => {
     // No credential means no reviewer ran, so there is nothing to attribute a
     // dirty tree to. Refusing here would blame the reviewer for the runner.
@@ -600,10 +614,13 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     // the first draft used. It passes over the untracked file above, which is
     // the shape the reviewer is most likely to produce.
     const mutant = buildDriftScript().replace(
-      /changed=\$\(git status --porcelain --untracked-files=all[^)]*\)/,
-      "changed=$(git diff --name-only; git diff --cached --name-only)",
+      /raw=\$\(git status --porcelain --untracked-files=all[^)]*\)/,
+      "raw=$(git diff --name-only; git diff --cached --name-only)",
     );
-    expect(mutant, "the mutation did not apply").not.toBe(buildDriftScript());
+    expect(
+      mutant,
+      "could not build the mutant: the status reading appears 0 times in the script",
+    ).not.toBe(buildDriftScript());
 
     // The same planted file, the same fixture, one thing varied: which
     // command does the reading. The real script refuses it two cases above.
