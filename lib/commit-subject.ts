@@ -21,16 +21,45 @@
  */
 
 /**
- * GitHub's closing syntax, as documented: one of nine keywords, optional
- * colon, whitespace, then an issue reference in any of the forms GitHub
- * resolves.
+ * GitHub's closing syntax: one of nine keywords, a colon or whitespace, then
+ * an issue reference in any of the four forms GitHub resolves — `#N`, `GH-N`,
+ * `owner/repo#N`, and a `github.com/owner/repo/(issues|pull)/N` URL.
+ *
+ * **This is deliberately a SECOND spelling of the grammar in
+ * `scripts/check-state-record-closes.ts`, not a shared literal.** That script
+ * detects closing references in a session record (#590, filed after
+ * `Filed and not fixed: #586` closed #586 one second after a merge); this
+ * neutralises them. They are exact duals, so sharing a regex literal would
+ * make a mutation of the grammar move both and leave the comparison green —
+ * two deciders that agree (`.claude/rules/checks-must-be-able-to-fail.md`,
+ * fourth shape). Instead the two are compared over a corpus, with the
+ * detector as the oracle, in `test/commit-subject-quoting.test.ts`.
+ *
+ * The script cannot be the owner either: `test/state-record-closes-mutation.ts`
+ * runs a mutant copy of it from a temp directory, and that only works while it
+ * has no relative imports. Same shape as #69 forcing ship.js's copy — the
+ * duplication is structural, so the answer is a comparator.
+ *
+ * Three details come from that grammar rather than from first principles, and
+ * each was wrong in this file's first draft:
+ *
+ *   - `\b` AFTER the stem, so `closing #586` is not a keyword.
+ *   - `\s*:\s*` as an alternative to `\s+`, because `fixed:#586` with no
+ *     space is the form that shipped #586's defect.
+ *   - the URL pinned to `github.com` and to `issues|pull`, where the first
+ *     draft had `https?://\S*?/issues/` and would have mangled a link to any
+ *     other tracker.
  *
  * The capture ends at the character before the digits so the fix can insert a
- * space there — see `neutraliseClosingKeywords`. Written with a lookahead on
- * the digits rather than consuming them, so a reference is never truncated.
+ * space there, and the digits are a lookahead rather than consumed, so a
+ * reference is never truncated.
  */
-export const CLOSING_REFERENCE =
-  /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)((?:[\w.-]+\/[\w.-]+)?#|GH-|https?:\/\/\S*?\/issues\/)(?=\d)/gi;
+const SLUG = "[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9][A-Za-z0-9._-]*";
+export const CLOSING_REFERENCE = new RegExp(
+  `\\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b(\\s*:\\s*|\\s+)` +
+    `((?:${SLUG})?#|GH-|https?:\\/\\/github\\.com\\/${SLUG}\\/(?:issues|pull)\\/)(?=\\d)`,
+  "gi",
+);
 
 /**
  * Break the adjacency GitHub parses, leaving the keyword and the number both

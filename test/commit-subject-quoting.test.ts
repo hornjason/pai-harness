@@ -1,5 +1,6 @@
 /**
- * Covers AC-1, AC-2, AC-3, AC-5 (#696).
+ * Covers AC-1, AC-2, AC-3, AC-5, AC-6 (#696).
+ * Covers SC-2119, SC-2120, SC-2121, SC-2122 (HARNESS-STANDARD.md).
  *
  * `workflows/ship.js` composed the COMMIT phase's command as
  *
@@ -47,6 +48,7 @@ import { tmpdir } from "node:os";
 
 import { structuralCut } from "../lib/source-slice";
 import { commitSubject } from "../lib/commit-subject";
+import { closingReferences } from "../scripts/check-state-record-closes";
 
 const SHIP = join(import.meta.dir, "..", "workflows", "ship.js");
 const shipSource = readFileSync(SHIP, "utf8");
@@ -203,15 +205,22 @@ describe("AC-1: an issue title cannot become a second command", () => {
 
 describe("AC-3: a closing keyword in the title is neutralised", () => {
   /**
-   * GitHub's parser, written out rather than imported: one of the nine
-   * documented keywords, an optional colon, then a reference in any of the
-   * forms GitHub resolves — `#N`, `GH-N`, `owner/repo#N`, and a full issue
-   * URL. Deliberately a SPEC here and an implementation there; importing the
-   * library's own regex would make the assertion say "the code agrees with
-   * itself".
+   * The oracle is `closingReferences` from
+   * `scripts/check-state-record-closes.ts` — this repository's existing
+   * answer to "which issues would GitHub close from this text", written for
+   * #590 after `Filed and not fixed: #586` closed #586 one second after a
+   * merge.
+   *
+   * Deliberately NOT the library's own regex, and no longer a hand-written
+   * one either. The first draft of this file carried a third spelling of the
+   * grammar, which is how it shipped with `fixed:#586` unhandled and a URL
+   * pattern that would have mangled a link to any other tracker: a spec
+   * regex written beside the implementation tends to agree with the
+   * implementation's blind spots. The detector was written against a real
+   * incident and is independently covered by
+   * `test/closing-keywords.test.ts`.
    */
-  const GITHUB_CLOSES =
-    /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+((?:[\w.-]+\/[\w.-]+)?#|GH-|https?:\/\/\S*?\/issues\/)\d/i;
+  const closesFrom = (text: string) => closingReferences(text).map(r => r.number);
 
   test.each([
     // All nine keywords GitHub documents, each in a plausible title.
@@ -235,28 +244,57 @@ describe("AC-3: a closing keyword in the title is neutralised", () => {
     "closes GH-77",
     "fixes hornjason/pai-harness#88",
     "resolves https://github.com/hornjason/pai-harness/issues/99",
-  ])("AC-3: %j no longer reads as a reference", (title) => {
-    const subject = shipCommitSubject(696, title);
-    // Break the adjacency and the link is gone; the keyword and the number
-    // both stay readable, which is the point — this is not redaction.
-    expect(subject).not.toMatch(GITHUB_CLOSES);
-    expect(subject, "the digits were eaten, not the adjacency").toMatch(/\d/);
+    // The colon with no space after it. This is the exact form that closed
+    // #586 — `Filed and not fixed: #586` — and the first draft of the
+    // separator, `\s*:?\s+`, required whitespace and so missed it.
+    "fixed:#586",
+    "a PR link: fixes https://github.com/hornjason/pai-harness/pull/55",
+  ])("AC-3: %j closes nothing but the run's own issue", (title) => {
+    // The oracle decides, not a regex written next to the implementation:
+    // after the transform, the ONLY issue GitHub would close from this
+    // subject is 696, which is the one the run means.
+    expect(closesFrom(shipCommitSubject(696, title))).toEqual([]);
+    expect(shipCommitSubject(696, title), "the digits were eaten, not the adjacency")
+      .toMatch(/\d/);
   });
 
-  test("AC-3: the fixtures really do trip GitHub's parser before the transform", () => {
-    // Vacuity control. If the spec regex matched none of them, every case
-    // above would pass over a transform that does nothing at all.
+  test("AC-3: the fixtures really do trip the detector before the transform", () => {
+    // Vacuity control, and the one that caught the real gaps. If the oracle
+    // saw nothing in a fixture, that fixture's case above would pass over a
+    // transform that does nothing at all.
+    const corpus: [string, number][] = [
+      ["Fixes #500", 500],
+      ["CLOSE #31", 31],
+      ["Fixes: #632", 632],
+      ["wave 2\nfixes #44", 44],
+      ["closes GH-77", 77],
+      ["fixes hornjason/pai-harness#88", 88],
+      ["resolves https://github.com/hornjason/pai-harness/issues/99", 99],
+      ["fixed:#586", 586],
+      ["a PR link: fixes https://github.com/hornjason/pai-harness/pull/55", 55],
+    ];
+    for (const [title, number] of corpus) {
+      expect(closesFrom(title), `${title} is not a closing reference — the fixture is inert`)
+        .toContain(number);
+    }
+  });
+
+  test("AC-3: the detector and the neutraliser agree about what is NOT a reference", () => {
+    // The other direction, and the one that stops the neutraliser buying
+    // green by mangling everything. Text the oracle reads as closing nothing
+    // must come through the transform completely unchanged — otherwise a
+    // `replace(/.*/, '')` would pass every case above.
     for (const title of [
-      "Fixes #500",
-      "CLOSE #31",
-      "Fixes: #632",
-      "wave 2\nfixes #44",
-      "closes GH-77",
-      "fixes hornjason/pai-harness#88",
-      "resolves https://github.com/hornjason/pai-harness/issues/99",
+      "#630 Phase 2: the three credentialed modes",
+      "prefix fixtures #5 suffix",
+      "closing #586 is the next job",
+      "fixed that for itself in #510",
+      "resolves the flake, see #12",
+      "an ordinary title",
     ]) {
-      expect(title, `${title} is not a closing reference — the fixture is inert`)
-        .toMatch(GITHUB_CLOSES);
+      expect(closesFrom(title), `the oracle reads ${title} as a close`).toEqual([]);
+      expect(shipCommitSubject(696, title), `${title} was altered and should not have been`)
+        .toBe(`fix(#696): ${title}`);
     }
   });
 
@@ -296,18 +334,35 @@ describe("AC-6: the two positions that compose a commit subject are one decider"
    * defeated by a reformat and satisfied by two regexes that differ in a
    * comment.
    */
+  /**
+   * One fixture per dimension the two copies could disagree on, which is a
+   * stricter requirement than "a plausible set of titles" and is the thing
+   * this list got wrong first time round.
+   *
+   * Measured: with the separator mutated back to the first draft's
+   * `\s*:?\s+` in ship.js's copy only, this case stayed GREEN at eleven
+   * fixtures and the whole battery row came back 1 where 2 was predicted.
+   * The corpus had no colon-with-no-space in it, so the one dimension the
+   * two spellings differed on was outside what the comparison could reach —
+   * a parity case is only as wide as its corpus, and nothing but the count
+   * said so.
+   */
   const FIXTURES = [
     "an ordinary title",
-    "Fixes #500",
-    "Fixes: #632",
-    "closes GH-77",
-    "fixes hornjason/pai-harness#88",
-    "resolves https://github.com/hornjason/pai-harness/issues/99",
-    "#630 Phase 2: the three credentialed modes",
-    "wave 2\nfixes #44",
+    "Fixes #500", // keyword + bare reference
+    "Fixes: #632", // colon, with a space
+    "fixed:#586", // colon, NO space — the #586 form, and row I's dimension
+    "closes   #7", // more than one space
+    "closes GH-77", // the GH- form
+    "fixes hornjason/pai-harness#88", // owner/repo
+    "resolves https://github.com/hornjason/pai-harness/issues/99", // issue URL
+    "fixes https://github.com/hornjason/pai-harness/pull/55", // pull URL
+    "closing #586 is next", // the \b after the stem
+    "#630 Phase 2: the three credentialed modes", // a reference, no keyword
+    "wave 2\nfixes #44", // across a newline
     'x" ; echo PWNED ; : "',
     "it's a title",
-    "prefix fixtures #5 suffix",
+    "prefix fixtures #5 suffix", // the \b before the stem
     "",
   ];
 

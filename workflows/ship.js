@@ -489,8 +489,12 @@ function shellQuote(word) {
 // when a merged commit message carries a closing keyword beside an issue
 // reference, it does not care about markdown, and an issue title is written
 // by whoever filed the issue.
-const CLOSING_REFERENCE =
-  /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)((?:[\w.-]+\/[\w.-]+)?#|GH-|https?:\/\/\S*?\/issues\/)(?=\d)/gi
+const SUBJECT_SLUG = '[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9][A-Za-z0-9._-]*'
+const CLOSING_REFERENCE = new RegExp(
+  `\\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b(\\s*:\\s*|\\s+)` +
+    `((?:${SUBJECT_SLUG})?#|GH-|https?:\\/\\/github\\.com\\/${SUBJECT_SLUG}\\/(?:issues|pull)\\/)(?=\\d)`,
+  'gi',
+)
 
 /** The commit subject for a ship run, from an untrusted issue title (#696). */
 function shipCommitSubject(issue, title) {
