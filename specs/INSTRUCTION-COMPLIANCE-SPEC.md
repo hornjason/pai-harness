@@ -794,3 +794,187 @@ Neither mutation is left in the tree; both were run and reverted, and
   and reports the result as if it were the patched one — *Silent Default
   Substitution* in `.claude/rules/config-access.md`, and it has to move in the
   same change that flips the default.
+
+## #646 — the hill-climb skip was a sentence, so the decision was readable and not usable
+
+`applyHillClimb` decides exactly three things about an action it declines to
+apply — the rule is past the tier-1 threshold and wants a promotion, the
+reinforcement is already in the brief, or the brief has no section to splice
+it into — and it reported all three as English in one `skipped: string[]`:
+
+```
+COMP-7: TIER 3 PROMOTION needed — Deploy BashToolGuard hook
+COMP-7: reinforcement already present in brief
+COMP-9: no suitable section found in brief
+```
+
+A caller that wanted the tier it was being told to promote to had to recover
+it from the middle of a sentence. That is the same defect as the unsourced
+verdict at the top of this spec: the decision was legible to a human reading
+stderr and not available to anything else, so nothing downstream of
+`scripts/persist-compliance.ts` could act on a promotion recommendation
+without a regex.
+
+### The outcome model
+
+- **One discriminated union, `HillClimbSkipOutcome`, with a `kind` covering
+  the three states and nothing else.** `TIER_PROMOTION`,
+  `REINFORCEMENT_PRESENT`, `NO_SECTION`. An applied action is not a state in
+  it: `applied` already says so, and a fourth `kind` nobody switches on would
+  be a second answer to a question already answered.
+- **The promotion case carries `tier` and `promotion` as FIELDS.** That is the
+  whole point of the change — a caller reads `outcome.tier`, not
+  `/TIER (\d)/`.
+- **`promotion` is `string | undefined`, not optional.** An action at tier 2
+  or 3 may carry no promotion, and the sentence rendered that as the word
+  `undefined`. Preserving the byte means the outcome has to be able to hold
+  the state, so the key is always present and its absence is a value.
+- **`applyHillClimb` returns `skipOutcomes` alongside `skipped`, and `skipped`
+  is DERIVED from it** — `skipOutcomes.map(hillClimbSkipSentence)`, one
+  expression, at the single return. The typed answer and the human-readable
+  one cannot disagree, because there is only one of them.
+- **`hillClimbSkipSentence` is the only producer of those sentences.** One
+  exported binding, spelled once, with no copy anywhere else under `lib/` or
+  `scripts/` — a second producer would hold a case up through any mutation of
+  the first (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+- **The strings are unchanged, byte for byte.** `scripts/persist-compliance.ts`
+  prints them as `HILL-CLIMB skipped: …`; the three above are recovered from
+  run transcripts under `~/.claude/projects` and `~/.rungate` and are asserted
+  verbatim, so no current reader of that stderr changes behaviour.
+
+### The cheapest wrong fix, and whether the cases survive it
+
+**Named: parse the tier back out of the sentence at the call site.** It is
+what somebody reaches for when the complaint is "I cannot get the tier" — a
+one-line regex in `scripts/persist-compliance.ts`, no change to this module,
+and the symptom goes away. The three state cases do **not** survive it: they
+read `result.skipOutcomes[0].kind` and `.tier` off the returned value, and
+under that repair `skipOutcomes` does not exist. They stay red, which is what
+makes them witnesses rather than decoration.
+
+The second wrong fix is cheaper still and arrives later: **a new skip state
+gets its sentence written at the branch instead of in the binding.** SC-2093
+is the only thing that catches it, and it is why the case counts the sentence
+literals across the module rather than only asserting that the binding exists.
+
+### What was broken to make each new case fail (SC-2092, SC-2093, SC-2094)
+
+Measured over `test/compliance-report.test.ts` (30 tests). Baseline before any
+mutation: **30 pass, 0 fail.** Every count was predicted before the row ran.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the pre-#646 shape: the three sentences pushed straight into `skipped`, `skipOutcomes` never populated | 4 | **4 of 30** — the three state cases and SC-2093 |
+| the `TIER_PROMOTION` outcome keeps its `kind` and drops `tier` and `promotion` | 2 | **2 of 30** — SC-2092's promotion case and SC-2094 |
+| `hillClimbSkipSentence` collapsed to one sentence for all three kinds | 3 | **3 of 30** — SC-2094, SC-2093, and the pre-existing "skips if reinforcement already present" case |
+| a second producer of the already-present sentence added beside the binding | 1 | **1 of 30** — SC-2093, and only that one |
+| the `sectionIdx === -1` refusal rewritten so it can never fire | 2 | **2 of 30** — SC-2092's no-section case and SC-2094 |
+
+Before believing any of those, the input on which mutant and original differ,
+named and run rather than assumed:
+
+- **row 1** — a brief with `## Efficiency Rules` and a tier-3 `COMP-7` action.
+  The original returns `skipOutcomes: [{kind: "TIER_PROMOTION", tier: 3, …}]`;
+  the mutant returns `skipOutcomes: []` and the identical `skipped` string, so
+  the row measures the typed half and nothing else.
+- **row 2** — the same action. The original's sentence is
+  `COMP-7: TIER 3 PROMOTION needed — Deploy BashToolGuard hook`; the mutant's
+  is `COMP-7: TIER undefined PROMOTION needed — undefined`, which is why the
+  byte-identity case is red beside the field case.
+- **row 3** — any skipped action: the original returns the state's own
+  sentence, the mutant returns `COMP-7: skipped` for all three.
+- **row 4** — no input at all, and that is the point. The mutant is
+  behaviourally identical to the original on every input; SC-2093 is a
+  source-text case because the defect it guards against is a source-text
+  defect, and a behavioural case cannot see it.
+- **row 5** — a brief carrying none of `## Efficiency Rules`,
+  `## Testing Rules` or `## Never Do`. The original skips with `NO_SECTION`
+  and leaves the file untouched; the mutant splices the bullet at
+  `content.indexOf("\n## ", 0)` and writes the brief.
+
+None of the five mutations is left in the tree; all were run and reverted, and
+`lib/compliance-report.ts` was confirmed byte-identical afterwards.
+
+- [x] SC-2092: lib/compliance-report.ts contains [HillClimbSkipOutcome, skipOutcomes] — applyHillClimb returns a typed outcome per declined action with a kind discriminant covering TIER_PROMOTION, REINFORCEMENT_PRESENT and NO_SECTION, and the promotion case carries tier and promotion as fields a caller reads rather than substrings of a sentence
+- [x] SC-2093: lib/compliance-report.ts contains [hillClimbSkipSentence] — the human-readable skip sentence is derived from the typed outcome in exactly one exported binding, spelled once in the module and copied nowhere else under lib/ or scripts/, so no second producer can survive a mutation of the first
+- [x] SC-2094: test/compliance-report.test.ts contains [TIER 3 PROMOTION needed] — the skipped strings are byte-identical to the three sentences recovered from the run transcripts, so no current reader of the HILL-CLIMB skipped stderr changes behaviour
+
+### The consumer reads the decision; it does not re-derive it (SC-2095)
+
+The receipt above was built in one pass and the typed outcome in another, and
+the two passes disagreed about the interface. `scripts/persist-compliance.ts`
+classified each skip by matching the sentence `applyHillClimb` had just
+composed — `/TIER \d+ PROMOTION needed/` and two more rows like it — so the
+producer's typed answer was computed, rendered, and then thrown away in
+favour of re-reading the English.
+
+That is the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`
+exactly: **two deciders that agree.** `applyHillClimb` already knew which of
+the three a skip was, the table re-derived the same answer, and no
+behavioural case over the five receipt states could tell them apart —
+measured below, the three prose rows reproduce every state the typed map
+produces. It was also a second position spelling the sentences, which is what
+SC-2093 refuses.
+
+- **One map, `SKIP_OUTCOME_STATE`, from `HillClimbSkipOutcome["kind"]` to
+  `HillClimbState`.** A total `Record`, not a lookup with a fallback: a kind
+  added upstream and not mapped is a type error at the build rather than an
+  `UNCLASSIFIED_SKIP` at the end of a ship run.
+- **`classifySkip` takes the outcome.** It accepts a bare string too, and
+  answers `null` for one — because a string is a reported line that arrived
+  with no outcome beside it and therefore carries no decision to read. It is
+  not a classifier that gave up; there was nothing to classify.
+- **`UNCLASSIFIED_SKIP` stays reachable and stays meaningful.** The loop
+  iterates `skipped` and pairs index-wise with `skipOutcomes`, so a
+  `skipped.push` upstream that bypasses `skipOutcomes` is reported as
+  unclassified and raises the reading to UNMEASURED, instead of being guessed
+  at from its wording or dropped.
+- **`skipCompId` is gone.** The COMP came out of the sentence with a regex;
+  it is now `outcome.compId`.
+
+The witness is a NEGATIVE one, and it has to be: with the table gone, the
+rendered sentence classifies as nothing at all. Any prose matcher put back
+turns that red, because a sentence matcher matches its own sentence.
+
+**The cheapest wrong fix, named: put the table back "just for the tier".**
+The five state cases survive it — all five are green on the mutant, which is
+the whole point of the shape — so the case that refuses it is the one that
+hands `classifySkip` the sentence and expects `null`.
+
+Measured over `test/unit/hill-climb-receipt.test.ts` (12 tests). Every count
+predicted before the row ran.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 12 pass, 0 fail | **12 pass, 0 fail** |
+| the prose table restored and the call site handed the sentence — the defect verbatim | 3 | **3 of 12** — the three AC-9 cases, and SC-2093 in `test/compliance-report.test.ts` goes red beside them. The five state cases stay GREEN |
+| `classifySkip` short-circuited to `return null` | 5 | **5 of 12** — the three skip states and two AC-9 cases; `NO_ACTIONS_DETECTED` and `GRADER_ACCURACY_DROP` are raised before any skip and stay green |
+| the call site handed `s` instead of `outcome ?? s`, classifier unchanged | 3 | **3 of 12** — the three skip states only, which is what makes the call site a separate witness from the classifier |
+
+Before believing any of those, the input on which mutant and original differ,
+named and run rather than assumed: the outcome
+`{kind: "TIER_PROMOTION", compId: "COMP-13", tier: 3, promotion: "Deploy BashToolGuard hook"}`
+and the sentence it renders to. The original answers
+`TIER_PROMOTION_RECOMMENDED` for the outcome and `null` for the sentence; the
+restored table answers `null` for the outcome — it stringifies to no matching
+prose — and `TIER_PROMOTION_RECOMMENDED` for the sentence. The two are exact
+mirrors, which is why the sentence case is the one that cannot be satisfied
+by the wrong fix.
+
+None of the three mutations is left in the tree; all were run and reverted,
+and `scripts/persist-compliance.ts` was confirmed byte-identical afterwards.
+
+- [x] SC-2095: scripts/persist-compliance.ts contains [SKIP_OUTCOME_STATE, skipOutcomes] — the receipt state for a skip is read off applyHillClimb's typed outcome through one total map and no sentence-matching table decides it a second time, so UNCLASSIFIED_SKIP is reachable only for a reported line that genuinely arrived with no outcome beside it
+
+### What this does NOT fix
+
+- **The receipt names a tier promotion; nothing yet makes one.**
+  `scripts/persist-compliance.ts` reads `skipOutcomes` — it is the sole
+  consumer, and `classifySkip` renames the producer's `kind` rather than
+  matching its sentence — so a tier-2 or tier-3 recommendation now reaches
+  the operator as `TIER_PROMOTION_RECOMMENDED` on the receipt instead of only
+  as stderr. Deploying the hook or the prompt change the promotion asks for
+  is still manual, and that is a separate change.
+- **An applied action has no outcome of its own.** `applied` is still a
+  `string[]` carrying the consecutive-fail count and the destination inside a
+  sentence, which is the same defect one state over.

@@ -132,6 +132,111 @@ the withholding and all four stay green (measured: 1 of 15 red, and it is the
 unit case). The only witness is the unit case over `overallQualityOf` with
 file scores in hand. If you copy this pattern, copy that case with it.
 
+## Worked instance: the hill-climb that had nowhere to write (#646)
+
+The two above are a scan that could not authenticate and a tool that was not
+installed. This is the same shape with **nothing external missing at all** —
+every input was present, the code ran to completion, and the thing it was
+asked to do still did not happen.
+
+`scripts/persist-compliance.ts` ends a role five different ways without
+applying a reinforcement: no COMP reached the consecutive-fail threshold, the
+grader-accuracy gate dropped the action, the action needs a tier promotion a
+text patch cannot make, the reinforcement was already in the brief, or **the
+brief contained none of the three headings the inserter writes under**. Each
+one was a `logger()` line and a `continue`, and the receipt said
+`hillClimbApplied: 0` for all five — which is the number a role with nothing
+wrong with it produces. Measured, before the change: a run whose every
+detected action was skipped and a run in which nothing was detected returned
+**byte-identical receipts**.
+
+The last of the five is the one that is not a pass in any reading. The
+reinforcement was composed, the brief was read, and the text was dropped
+because `indexOf` found no `## Efficiency Rules`, `## Testing Rules` or
+`## Never Do`. Nobody knows what that patch would have scored, so it is
+`UNMEASURED`, and the receipt now says so by name.
+
+What it does, and the parts worth copying:
+
+- **One list per state, always present.** `states` is a
+  `Record<HillClimbState, HillClimbOccurrence[]>` built by
+  `emptyHillClimbStates()`, so an empty list is a reading rather than a key
+  nobody wrote. A count alone would not have been enough: *which* state was
+  reached is the actionable part, and "0 applied" was already being printed.
+- **Keep the producing code's own sentence.** An occurrence carries
+  `{role, compId, detail}` where `detail` is the line `applyHillClimb`
+  emitted. The receipt reports a decision; it does not re-derive one.
+- **Do not recompute the classification, and that includes re-reading the
+  sentence.** `classifySkip` renames `applyHillClimb`'s own
+  `HillClimbSkipOutcome["kind"]` through one total `Record`. The first wave
+  of this change matched the rendered prose with a three-row regex table
+  instead, which is two deciders for one question — they always agreed, and
+  **all five state cases are green on that version**, measured. Only a case
+  that hands `classifySkip` a real sentence and expects `null` can see it
+  (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). A total
+  `Record` also turns a newly added `kind` into a build error rather than an
+  `UNCLASSIFIED_SKIP` at the end of a ship run.
+- **An answer nothing decided raises the reading.** A string arriving with no
+  outcome beside it — a `skipped.push` upstream that bypasses `skipOutcomes`
+  — carries no decision to read, so it must not read as nothing having
+  happened: it lands in `unclassified` and makes the receipt `UNMEASURED`
+  with `UNCLASSIFIED_SKIP` named in the reasons.
+- **One discriminator.** `reading === "UNMEASURED"` is the whole answer, and
+  `reading` and `unmeasuredReasons` are both projections of the same lists
+  computed in `hillClimbReceipt` and nowhere else, so they cannot disagree.
+
+`test/unit/hill-climb-receipt.test.ts` drives the real `persistCompliance`
+once per state and reads the **returned receipt** — not the logger. Reading
+the logger would assert that a sentence was printed, which is exactly what
+the defective version already did. Its AC-B3 case is the one to copy: it
+asserts the pre-#646 fields of the two runs are EQUAL, and then that the two
+receipts as wholes are NOT, so the thing it witnesses is the distinction and
+not merely the presence of a new field.
+
+What was broken to prove it, run and counted over
+`test/unit/hill-climb-receipt.test.ts` + `test/unit/persist-compliance.test.ts`
+(32 tests), every count predicted before the battery ran. **Re-measured
+against the shipped tree**, not carried over: an earlier wave recorded these
+rows over 29 tests and a classifier built from regexes, and a row measured on
+a tree nobody can check out is a claim rather than a count
+(`.claude/rules/parallel-sessions.md`).
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 32 pass, 0 fail | **32 pass, 0 fail** | — |
+| the `NO_ACTIONS_DETECTED` accumulator removed | 1 | **1 of 32** | a clean grade with no history: original lists the role, mutant lists nothing |
+| the `GRADER_ACCURACY_DROP` accumulator removed | 1 | **1 of 32** | history `[N/A,N/A,N/A,IGNORED,VIOLATED]` + a `VIOLATED` current run: original records `3/4 recent verdicts are N/A`, mutant records nothing |
+| the `TIER_PROMOTION` row deleted from `SKIP_OUTCOME_STATE` | 3 | **3 of 32** | five consecutive `IGNORED` on a COMP with a tier-2 promotion |
+| the `REINFORCEMENT_PRESENT` row deleted | 2 | **2 of 32** | a brief already carrying the reinforcement, written by a prior real run |
+| the `NO_SECTION` row deleted | 2 | **2 of 32** | a brief with none of the three headings: original names the state, mutant reports `UNCLASSIFIED_SKIP` |
+| every skip occurrence dropped — pre-#646 behaviour for those three | 3 | **3 of 32** | the three inputs above. AC-B3 stays GREEN, because the no-actions side still carries its own state: that case witnesses the distinction, not the skip lists |
+| `reading` hardcoded to `"MEASURED"` | 3 | **3 of 32** | the no-section input |
+| `hillClimb` dropped from the returned receipt — the genuine pre-#646 shape | 8 | **8 of 32** | every state input, and AC-B3's two runs, which become byte-identical |
+
+The three map rows are higher than the earlier wave's 1 for a reason worth
+stating rather than filing as noise: every one of them also turns the AC-9
+case *"every outcome kind applyHillClimb can return maps to a state"* red,
+and the `TIER_PROMOTION` row additionally turns *"the decision classifies;
+the sentence it renders to does not"* red. Those cases did not exist when the
+classifier read prose, and they are squarely about the mutated behaviour —
+the check is better than it was, not noisier.
+
+The two unit cases over `hillClimbReceipt` stay green in the last row, which
+is why they are not the witnesses — the witnesses are the seven cases that go
+through `persistCompliance`. None of the mutations is left in the tree; all
+were run and reverted, and `scripts/persist-compliance.ts` was confirmed
+byte-identical to the measured source afterwards.
+
+**The cheapest wrong fix, named: make the inserter fall back to appending at
+the end of the brief when no heading matches.** The symptom disappears — the
+reinforcement is written, `hillClimbApplied` goes to 1 — and a rule lands at
+the bottom of a brief under whatever section happens to be last, which is the
+`Reference` table in every brief this repo generates. The cases here survive
+it: they assert the STATE the run reported, and a fallback that applies would
+have to report `applied`, so the no-section case goes red rather than green.
+Deciding whether that fallback is the right behaviour is a separate question
+from whether the run is allowed to stay silent about it.
+
 ## Enforced by
 
 `runConfigAccessValidation` (CONFIG-1, TypeScript sources) and

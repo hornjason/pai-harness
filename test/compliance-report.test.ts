@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
   appendComplianceHistory,
@@ -8,12 +8,14 @@ import {
   formatComplianceReport,
   detectHillClimbNeeds,
   applyHillClimb,
+  hillClimbSkipSentence,
   setComplianceProjectRoot,
   calculatePromotionPrecision,
   getPromotionCandidates,
   type ComplianceEntry,
   type ComplianceReport,
   type HillClimbAction,
+  type HillClimbSkipOutcome,
   type PromotionFinding,
 } from "../lib/compliance-report.js";
 import { loadRungateConfig } from "../lib/config-loader.js";
@@ -358,6 +360,231 @@ name: marcus
       expect(actions[0].promotion).toContain("CustomGuard");
 
       setComplianceProjectRoot("");
+    });
+  });
+
+  /**
+   * Covers SC-2092, SC-2093, SC-2094 (INSTRUCTION-COMPLIANCE-SPEC.md).
+   *
+   * `applyHillClimb` decided three things about an action it declined to
+   * apply and reported all three as English in one `skipped: string[]`. A
+   * caller that wanted the tier it was being told to promote to had to parse
+   * it back out of a sentence. The decision is now a discriminated outcome
+   * and the sentence is derived from it in one place.
+   */
+  describe("hill-climb skip outcomes (#646)", () => {
+    const COMP9_REINFORCEMENT =
+      "Total tool calls must stay under 40. Batch related reads, use targeted tests.";
+    const COMP7_REINFORCEMENT =
+      "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.";
+
+    /** A brief with a section a tier-1 reinforcement can be spliced into. */
+    function briefWithSections(): string {
+      const briefPath = join(TMP, "marcus.md");
+      writeFileSync(briefPath, `---
+name: marcus
+---
+
+## Efficiency Rules
+- Don't run pwd
+
+## Workflow
+1. Write test first
+`);
+      return briefPath;
+    }
+
+    test("SC-2092: a tier promotion is a typed outcome carrying tier and promotion as fields", () => {
+      const briefPath = briefWithSections();
+      const actions: HillClimbAction[] = [{
+        compId: "COMP-7",
+        rule: "No cat/head via Bash",
+        reinforcement: COMP7_REINFORCEMENT,
+        consecutiveFails: 5,
+        tier: 3,
+        promotion: "Deploy BashToolGuard hook",
+      }];
+
+      const result = applyHillClimb(briefPath, actions);
+
+      expect(result.skipOutcomes.length).toBe(1);
+      const outcome = result.skipOutcomes[0]!;
+      expect(outcome.kind).toBe("TIER_PROMOTION");
+      // The fields, read without parsing them back out of a sentence.
+      if (outcome.kind !== "TIER_PROMOTION") throw new Error("narrowing");
+      expect(outcome.compId).toBe("COMP-7");
+      expect(outcome.tier).toBe(3);
+      expect(outcome.promotion).toBe("Deploy BashToolGuard hook");
+      expect(result.applied.length).toBe(0);
+    });
+
+    test("SC-2092: a reinforcement already in the brief is its own outcome kind", () => {
+      const briefPath = join(TMP, "marcus.md");
+      writeFileSync(briefPath, `---
+name: marcus
+---
+
+## Efficiency Rules
+- ${COMP7_REINFORCEMENT}
+
+## Workflow
+1. Write test first
+`);
+      const actions: HillClimbAction[] = [{
+        compId: "COMP-7",
+        rule: "No cat/head via Bash",
+        reinforcement: COMP7_REINFORCEMENT,
+        consecutiveFails: 4,
+        tier: 1,
+      }];
+
+      const result = applyHillClimb(briefPath, actions);
+
+      expect(result.skipOutcomes.length).toBe(1);
+      const outcome = result.skipOutcomes[0]!;
+      expect(outcome.kind).toBe("REINFORCEMENT_PRESENT");
+      expect(outcome.compId).toBe("COMP-7");
+      expect(result.applied.length).toBe(0);
+    });
+
+    test("SC-2092: a brief with no section the rule belongs in is its own outcome kind", () => {
+      const briefPath = join(TMP, "marcus.md");
+      const brief = `---
+name: marcus
+---
+
+## Core Principles
+- Verify before asserting
+
+## Workflow
+1. Write test first
+`;
+      writeFileSync(briefPath, brief);
+      // The precondition this case is about, established rather than assumed:
+      // none of the three headings the splice looks for is in the brief.
+      expect(brief).not.toContain("## Efficiency Rules");
+      expect(brief).not.toContain("## Testing Rules");
+      expect(brief).not.toContain("## Never Do");
+
+      const actions: HillClimbAction[] = [{
+        compId: "COMP-9",
+        rule: "Tool call budget",
+        reinforcement: COMP9_REINFORCEMENT,
+        consecutiveFails: 3,
+        tier: 1,
+      }];
+
+      const result = applyHillClimb(briefPath, actions);
+
+      expect(result.skipOutcomes.length).toBe(1);
+      const outcome = result.skipOutcomes[0]!;
+      expect(outcome.kind).toBe("NO_SECTION");
+      expect(outcome.compId).toBe("COMP-9");
+      expect(result.applied.length).toBe(0);
+      // Nothing was spliced, so nothing was written.
+      expect(readFileSync(briefPath, "utf-8")).toBe(brief);
+    });
+
+    test("SC-2094: the skip sentences are byte-identical to the three recovered from the transcripts", () => {
+      // Recovered verbatim from run transcripts under ~/.claude/projects and
+      // ~/.rungate — these are the lines `scripts/persist-compliance.ts`
+      // prints as `HILL-CLIMB skipped: …`, so a reader of that stderr sees
+      // exactly the same bytes after this change as before it.
+      const RECOVERED = {
+        promotion: "COMP-7: TIER 3 PROMOTION needed — Deploy BashToolGuard hook",
+        present: "COMP-7: reinforcement already present in brief",
+        noSection: "COMP-9: no suitable section found in brief",
+      };
+
+      const promotion: HillClimbSkipOutcome = {
+        kind: "TIER_PROMOTION",
+        compId: "COMP-7",
+        tier: 3,
+        promotion: "Deploy BashToolGuard hook",
+      };
+      const present: HillClimbSkipOutcome = { kind: "REINFORCEMENT_PRESENT", compId: "COMP-7" };
+      const noSection: HillClimbSkipOutcome = { kind: "NO_SECTION", compId: "COMP-9" };
+
+      expect(hillClimbSkipSentence(promotion)).toBe(RECOVERED.promotion);
+      expect(hillClimbSkipSentence(present)).toBe(RECOVERED.present);
+      expect(hillClimbSkipSentence(noSection)).toBe(RECOVERED.noSection);
+
+      // …and the strings `applyHillClimb` actually hands its caller are those
+      // same bytes, driven through the function rather than asserted of the
+      // formatter alone.
+      const promoted = applyHillClimb(briefWithSections(), [{
+        compId: "COMP-7",
+        rule: "No cat/head via Bash",
+        reinforcement: COMP7_REINFORCEMENT,
+        consecutiveFails: 5,
+        tier: 3,
+        promotion: "Deploy BashToolGuard hook",
+      }]);
+      expect(promoted.skipped).toEqual([RECOVERED.promotion]);
+
+      const alreadyThere = join(TMP, "present.md");
+      writeFileSync(alreadyThere, `## Efficiency Rules\n- ${COMP7_REINFORCEMENT}\n`);
+      const presentRun = applyHillClimb(alreadyThere, [{
+        compId: "COMP-7",
+        rule: "No cat/head via Bash",
+        reinforcement: COMP7_REINFORCEMENT,
+        consecutiveFails: 4,
+        tier: 1,
+      }]);
+      expect(presentRun.skipped).toEqual([RECOVERED.present]);
+
+      const sectionless = join(TMP, "sectionless.md");
+      writeFileSync(sectionless, "## Core Principles\n- Verify before asserting\n");
+      const noSectionRun = applyHillClimb(sectionless, [{
+        compId: "COMP-9",
+        rule: "Tool call budget",
+        reinforcement: COMP9_REINFORCEMENT,
+        consecutiveFails: 3,
+        tier: 1,
+      }]);
+      expect(noSectionRun.skipped).toEqual([RECOVERED.noSection]);
+    });
+
+    test("SC-2093: one exported binding produces the sentence, and it is spelled once", () => {
+      const libDir = join(import.meta.dir, "..", "lib");
+      const source = readFileSync(join(libDir, "compliance-report.ts"), "utf-8");
+
+      const occurrences = (haystack: string, needle: string) =>
+        haystack.split(needle).length - 1;
+
+      // The binding itself.
+      expect(occurrences(source, "export function hillClimbSkipSentence(")).toBe(1);
+      // …and the one site that turns outcomes into the reported strings.
+      expect(occurrences(source, ".map(hillClimbSkipSentence)")).toBe(1);
+
+      // No second producer. A mutation of the binding above cannot be held up
+      // by a copy of the sentence somewhere else in the module…
+      const SENTENCES = [
+        "PROMOTION needed",
+        "reinforcement already present in brief",
+        "no suitable section found in brief",
+      ];
+      for (const sentence of SENTENCES) {
+        expect(occurrences(source, sentence)).toBe(1);
+      }
+
+      // …nor by a copy in another module that reports the same decisions.
+      const scanned: string[] = [];
+      for (const dir of [libDir, join(import.meta.dir, "..", "scripts")]) {
+        for (const name of readdirSync(dir)) {
+          if (!name.endsWith(".ts")) continue;
+          if (dir === libDir && name === "compliance-report.ts") continue;
+          scanned.push(join(dir, name));
+        }
+      }
+      // A scan that read nothing agrees with every file in it (#492).
+      expect(scanned.length).toBeGreaterThan(10);
+      for (const file of scanned) {
+        const text = readFileSync(file, "utf-8");
+        for (const sentence of SENTENCES) {
+          expect({ file, hits: occurrences(text, sentence) }).toEqual({ file, hits: 0 });
+        }
+      }
     });
   });
 

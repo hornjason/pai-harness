@@ -7274,6 +7274,110 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
   // already wrote that file and the agent's return value is a restatement of
   // it, so reading the file keeps a language model out of the data path (#81).
   // Nothing agent-derived is interpolated into the command below.
+  // ──── PERSIST-RECEIPT-START ────
+  // The receipt `scripts/persist-compliance.ts` returns, declared as the
+  // schema it has to survive on the way back through an agent (#646).
+  //
+  // A structured-output schema is not a description of the reply, it is a
+  // FILTER on it: every field it does not declare is dropped silently. #646
+  // made the script say WHICH of five outcomes a hill-climb reached instead
+  // of printing `0` for all of them — and a schema declaring only
+  // `hillClimbApplied` would have deleted that on the last hop, leaving a
+  // receipt byte-identical to the one the issue exists to replace.
+  //
+  // The states are spelled out here rather than imported because a workflow
+  // script cannot import (#69), which makes this a second position naming
+  // them. That is the parity shape #626 is about, so the two positions are
+  // COMPARED: `test/persist-receipt-relay.test.ts` walks a receipt the real
+  // `persistCompliance` produced and refuses any field this literal would
+  // drop. Adding a state to `HILL_CLIMB_STATES` and not here is red.
+  const PERSIST_RECEIPT_OCCURRENCE = {
+    type: 'object',
+    properties: {
+      role: { type: 'string' },
+      compId: { type: 'string' },
+      detail: { type: 'string' }
+    }
+  }
+  const PERSIST_RECEIPT_SCHEMA = {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      persisted: { type: 'boolean' },
+      graded: { type: 'number' },
+      hillClimbApplied: { type: 'number' },
+      verified: { type: 'array', items: { type: 'string' } },
+      hillClimb: {
+        type: 'object',
+        properties: {
+          states: {
+            type: 'object',
+            properties: {
+              NO_ACTIONS_DETECTED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+              GRADER_ACCURACY_DROP: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+              TIER_PROMOTION_RECOMMENDED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+              REINFORCEMENT_ALREADY_PRESENT: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+              NO_SUITABLE_SECTION: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE }
+            }
+          },
+          unclassified: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+          reading: { type: 'string' },
+          unmeasuredReasons: { type: 'array', items: { type: 'string' } }
+        }
+      },
+      error: { type: 'string' }
+    },
+    required: ['ok']
+  }
+
+  /**
+   * What the operator is told about the receipt, as lines.
+   *
+   * Composed in one function so the sentences can be observed rather than
+   * described: a case that asserted the SOURCE said something would stay
+   * green over a block that had stopped saying it.
+   *
+   * `hill-climb reinforcements=0` was the whole of the old line, and it is
+   * the number a role with nothing wrong with it produces. Every state that
+   * occurred is named with its count, so a run that detected five actions
+   * and applied none no longer prints what a clean run prints.
+   */
+  function persistReceiptLines(persistResult) {
+    // Reported, not swallowed. The whole #69 defect was a failure that only
+    // ever existed as a WARN nobody read, so a persist failure says so
+    // plainly and names the measurement that is missing as a result.
+    if (!persistResult || !persistResult.ok) {
+      return [`WARN: compliance persistence FAILED — trends, hill-climb and re-grading did not run for this issue: ${(persistResult && persistResult.error) || 'no receipt returned'}`]
+    }
+    const lines = []
+    const hillClimb = persistResult.hillClimb
+    const states = (hillClimb && hillClimb.states) || {}
+    const named = Object.keys(states)
+      .filter(s => Array.isArray(states[s]) && states[s].length > 0)
+      .map(s => `${s}=${states[s].length}`)
+    const unclassified = (hillClimb && Array.isArray(hillClimb.unclassified)) ? hillClimb.unclassified.length : 0
+    if (unclassified > 0) named.push(`UNCLASSIFIED_SKIP=${unclassified}`)
+    lines.push(
+      `COMPLIANCE: ${persistResult.graded ?? 0} role(s) graded, persisted=${persistResult.persisted}, ` +
+      `hill-climb reinforcements=${persistResult.hillClimbApplied ?? 0}` +
+      (named.length ? `, not applied: ${named.join(', ')}` : ''),
+    )
+    // An absent reading is the relay having dropped it, which is the one
+    // thing this block exists to make visible. It is never a clean run:
+    // `0`, `{}`, `null` and silence are all indistinguishable from success
+    // (`.claude/rules/config-access.md`).
+    if (!hillClimb) {
+      lines.push('UNMEASURED hill-climb — the receipt carried no hillClimb reading at all, so which of the five outcomes each role reached is unknown for this run (#646)')
+    } else if (hillClimb.reading === 'UNMEASURED') {
+      lines.push(`UNMEASURED hill-climb — ${(hillClimb.unmeasuredReasons || []).join('; ')}`)
+    }
+    if (persistResult.verified?.length) {
+      lines.push(`HILL-CLIMB VERIFIED: ${persistResult.verified.join(', ')}`)
+    }
+    return lines
+  }
+  // ──── PERSIST-RECEIPT-END ────
+
   const persistResult = await timedAgent(`
 Run exactly this command and report its result:
 
@@ -7284,30 +7388,9 @@ It prints human-readable progress on stderr and a single JSON receipt on stdout.
 Return that receipt. If the command exits non-zero, return ok:false with the
 error text from stderr — do NOT retry it and do NOT edit any file to make it
 pass. Change nothing else.
-  `, { label: 'persist-compliance', phase: 'Grade', model: 'sonnet', schema: {
-    type: 'object',
-    properties: {
-      ok: { type: 'boolean' },
-      persisted: { type: 'boolean' },
-      graded: { type: 'number' },
-      hillClimbApplied: { type: 'number' },
-      verified: { type: 'array', items: { type: 'string' } },
-      error: { type: 'string' }
-    },
-    required: ['ok']
-  }})
+  `, { label: 'persist-compliance', phase: 'Grade', model: 'sonnet', schema: PERSIST_RECEIPT_SCHEMA })
 
-  // Reported, not swallowed. The whole #69 defect was a failure that only ever
-  // existed as a WARN nobody read, so a persist failure says so plainly and
-  // names the measurement that is missing as a result.
-  if (persistResult?.ok) {
-    log(`COMPLIANCE: ${persistResult.graded ?? 0} role(s) graded, persisted=${persistResult.persisted}, hill-climb reinforcements=${persistResult.hillClimbApplied ?? 0}`)
-    if (persistResult.verified?.length) {
-      log(`HILL-CLIMB VERIFIED: ${persistResult.verified.join(', ')}`)
-    }
-  } else {
-    log(`WARN: compliance persistence FAILED — trends, hill-climb and re-grading did not run for this issue: ${persistResult?.error || 'no receipt returned'}`)
-  }
+  for (const line of persistReceiptLines(persistResult)) log(line)
 } else {
   log('GRADE: skipped (skipGrade=true)')
 }
