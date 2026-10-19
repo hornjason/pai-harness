@@ -981,8 +981,12 @@ absent optional key is valid.
 #### The erasure, closed (#494)
 
 The guard's memory and the guarded party's write access were the same file,
-and `workflows/ship.js:3513` hands the scope-heal agent that file by name
-with a working `writeWorkflowState` recipe. Two halves close it, and
+and `workflows/ship.js` hands the scope-heal agent that file by name with a
+working `writeWorkflowState` recipe — the instruction
+`Edit workflow-state.json ONLY via writeWorkflowState():` and the one-liner
+under it, at both heal sites. No line number: #541's measurement is that
+three of four unguarded line citations in this tree were already stale, and
+this one was too by the time the fix was written. Two halves close it, and
 **neither works alone**:
 
 1. **The census is signed.** `signCensus` (`gates/witness.ts`) HMACs the

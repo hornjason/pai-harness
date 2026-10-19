@@ -437,8 +437,10 @@ describe("#307: what a gate run does about it", () => {
 /**
  * #494 — the guard's memory lived where the guarded party writes.
  *
- * `workflows/ship.js:3513` hands the scope-heal agent a working recipe for
- * editing `workflow-state.json`, by name. The banked census lived in that
+ * `workflows/ship.js` hands the scope-heal agent a working recipe for
+ * editing `workflow-state.json`, by name — `Edit workflow-state.json ONLY
+ * via writeWorkflowState():` followed by the one-liner, at both heal sites.
+ * The banked census lived in that
  * file, `testCensus` is `.optional()` so an absent key validates, and an
  * absent census answered `first-reading`, which does not increment `fails`
  * or `warns`. Deleting a test and the census together was therefore a pass.
@@ -495,7 +497,7 @@ describe("#494: a census the heal agent can erase is a guard with an off switch"
       withWorkDir(work, () => writeWitness(slug, "scope", "PASS", "3 pass 0 fail", 494));
 
       // The heal round deletes a test AND the census, which is exactly what
-      // the recipe at workflows/ship.js:3513 makes available.
+      // the writeWorkflowState recipe in workflows/ship.js makes available.
       const tampered = JSON.parse(readFileSync(sf, "utf-8"));
       delete tampered.gateContract.testCensus;
       delete tampered.gateContract.testCensusSignature;

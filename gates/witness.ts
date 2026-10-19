@@ -121,7 +121,9 @@ export function censusSigningInput(slug: string, census: Record<string, number>)
  * Sign a banked test census (#494).
  *
  * #307's census lived in the run's `workflow-state.json` — a file the heal
- * agent is handed a write recipe for, by name, at `workflows/ship.js:3513`.
+ * agent is handed a write recipe for, by name: `workflows/ship.js` tells it
+ * `Edit workflow-state.json ONLY via writeWorkflowState():` and then hands
+ * over a working one-liner, at both heal sites.
  * An agent that deleted a test and the census together saw `first-reading`
  * on the next round, which increments neither `fails` nor `warns`.
  *
