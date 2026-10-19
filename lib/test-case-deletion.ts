@@ -412,3 +412,155 @@ export function deletionReading(
 
   return { verdict: "DELETED", cases: green, ...extra };
 }
+
+// ── The artefact, and the token that lets a restatement be checked ───────
+
+/**
+ * What `--out` writes, and what the recommit-verify agent relays (#684).
+ *
+ * One composing binding rather than an object literal inside the script, so
+ * the signature is computed over the SAME object that reaches the disk. A
+ * script that built the artefact and then signed a second literal would be
+ * two deciders that agree (`.claude/rules/checks-must-be-able-to-fail.md`,
+ * the fourth shape), and a mutation of either would leave the other holding
+ * every case up.
+ */
+export interface DeletionArtefact {
+  verdict: "CLEAN" | "DELETED" | "UNMEASURED";
+  previous: string;
+  current: string;
+  cases: DeletedCase[];
+  /** Why the reading is UNMEASURED, or null when it is not. */
+  reason: string | null;
+  waived?: WaivedCase[];
+  unusedWaivers?: string[];
+  /** @see deletionSignature */
+  signature: string;
+}
+
+/**
+ * A deterministic 32-bit fold, mirrored byte-for-byte in `workflows/ship.js`.
+ *
+ * FNV-1a and not a cryptographic hash, deliberately — see the
+ * `deletionSignature` docblock for what the signature does and does not
+ * claim. Its job is to make LIST CONTENTS part of the compared value at a
+ * fixed width, so the signature covers membership and not only counts.
+ *
+ * Simple enough to reimplement exactly in a workflow script that cannot
+ * import (#69), which is the actual constraint; anything needing a real
+ * digest would need a crypto primitive the workflow sandbox does not have.
+ */
+export function deletionFold(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * The script's own canonical summary of the reading it wrote (#684).
+ *
+ * WHAT THIS IS FOR. `workflows/ship.js` never opens `deleted-cases.json`. It
+ * asks the repair agent to run the command and report the result, then
+ * branches the whole REPAIR_DELETED_TESTS decision off what came back. Before
+ * #684 that was `reCommit?.deletionVerdict || 'UNMEASURED'` and nothing
+ * compared the restatement against the thing restated — the agent whose
+ * verdict was being read is the agent the check exists to catch (#659).
+ *
+ * WHY A SIGNATURE RATHER THAN READING THE FILE, which is what #684 asks for
+ * in as many words. `ship.js` CANNOT read a file: it runs in a sandbox with
+ * no filesystem and no module loading (#69), and every `readFileSync` in it
+ * is inside a prompt string or a `bun -e` subprocess. Routing the read
+ * through a second agent would make the comparison itself a restatement,
+ * which is the defect wearing a fix. A signature moves the comparison into
+ * `ship.js`'s OWN process: the agent copies one opaque token, `ship.js`
+ * recomputes it from the structured fields it was handed, and a disagreement
+ * is UNMEASURED. This is #663's fix for `persistReceiptLines`, in the second
+ * place the same defect lives.
+ *
+ * THE COVERAGE IS THE RULE, and it is the first thing to check when adding a
+ * field to the operator line: **everything printed as evidence is in the
+ * signature, or it is not printed as evidence.** `cases`, `waived` (with each
+ * case's `ledgerReading` and `acceptedReason`), `unusedWaivers` and `reason`
+ * are all printed by `deletionVerdictReading`, so all of them are in here.
+ *
+ * Lists are covered by MEMBERSHIP and not by length: a restatement can swap
+ * an entry without changing a count, which is the trap
+ * `.claude/rules/checks-must-be-able-to-fail.md` names about #532. They are
+ * sorted first so the token is canonical rather than order-dependent — the
+ * question is which cases, not which order a summariser listed them in.
+ *
+ * WHICH OF #684'S THREE DOORS THIS CLOSES, stated rather than left for a
+ * reader to discover:
+ *
+ *   1. report CLEAN and never run the command  — NOT closed. Fabricating a
+ *      consistent token means reimplementing this function, and no in-process
+ *      check can do better while #69 holds.
+ *   2. run it, read DELETED, report CLEAN      — CLOSED. Altering the verdict
+ *      breaks the token; copying the token and altering the one-word
+ *      restatement breaks the comparison against it.
+ *   3. re-run it with --accept per case (#661) — never a hole, and now
+ *      VISIBLE: a waived CLEAN logs as a waived CLEAN.
+ *
+ * The honest claim is "a restatement cannot drift SILENTLY", not "the
+ * artefact is authenticated".
+ *
+ * The format is versioned because `ship.js` carries a second implementation
+ * it cannot import, and two positions that must agree need a way to say they
+ * are talking about the same thing.
+ */
+export function deletionSignature(a: {
+  verdict: string;
+  cases: DeletedCase[];
+  reason?: string | null;
+  waived?: WaivedCase[];
+  unusedWaivers?: string[];
+}): string {
+  const cases = a.cases ?? [];
+  const waived = a.waived ?? [];
+  const unused = a.unusedWaivers ?? [];
+  const count = (reading: LedgerReading) => waived.filter(w => w.ledgerReading === reading).length;
+  // The three ledger readings are counted separately because the operator
+  // line distinguishes them: a waived case the ledger proved green and one
+  // nothing could judge are different acts (#661), and a token that reported
+  // them identically would let a restatement move a case between the two.
+  const readable =
+    `v1:${a.verdict}:c${cases.length}:w${waived.length}:s${unused.length}` +
+    `:g${count("green")}:r${count("red")}:j${count("unjudged")}`;
+  const caseIds = cases.map(c => `${c.file}${WAIVER_SEPARATOR}${c.name}`).sort();
+  const waivedIds = waived
+    .map(w => `${w.file}${WAIVER_SEPARATOR}${w.name}${WAIVER_SEPARATOR}${w.ledgerReading}${WAIVER_SEPARATOR}${w.acceptedReason}`)
+    .sort();
+  const members = [
+    ...caseIds,
+    "\u0000",
+    ...waivedIds,
+    "\u0000",
+    ...[...unused].sort(),
+    "\u0000",
+    a.reason ?? "",
+  ].join("\u0001");
+  return `${readable}:h${deletionFold(members)}`;
+}
+
+/** The reading, as the artefact on disk and in the agent's reply. */
+export function deletionArtefact(
+  reading: DeletionReading,
+  previous: string,
+  current: string,
+): DeletionArtefact {
+  const base = {
+    verdict: reading.verdict,
+    previous,
+    current,
+    cases: reading.cases.map(c => ({ name: c.name, file: c.file })),
+    reason: reading.verdict === "UNMEASURED" ? reading.reason : null,
+    // Recorded unconditionally when present, so a CLEAN reached by waiving
+    // and a CLEAN reached by deleting nothing are different records.
+    ...(reading.waived ? { waived: reading.waived } : {}),
+    ...(reading.unusedWaivers ? { unusedWaivers: reading.unusedWaivers } : {}),
+  };
+  return { ...base, signature: deletionSignature(base) };
+}

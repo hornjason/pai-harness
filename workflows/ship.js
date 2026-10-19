@@ -6459,6 +6459,234 @@ if (verifyResult?.result === 'FAIL') {
       // completed fix. Staging from git status removes the file list from
       // the path entirely, so there is nothing left to relativize.
       const reimplGitAdd = gathered.staged ? 'git diff --cached --quiet; true' : gitDerivedStaging(commitDir)
+      // ──── DELETION-VERDICT-START ────
+      /**
+       * What the recommit-verify agent is allowed to hand back (#684).
+       *
+       * `deletion` is the artefact the deleted-cases check wrote to its
+       * `--out` path, copied field for field, and a structured-output
+       * schema is a FILTER: anything not declared here is dropped on the way
+       * back, silently, which is #646 one hop over. `deletionVerdict` is the
+       * agent's own one-word restatement, kept so the two can be COMPARED —
+       * it is no longer the input to any decision.
+       */
+      const DELETION_VERDICT_SCHEMA = {
+        type: 'object',
+        properties: {
+          commitSha: { type: 'string' },
+          parentSha: { type: 'string' },
+          stateRecorded: { type: 'boolean' },
+          // The restatement. Collected and compared, never read as the verdict.
+          deletionVerdict: { type: 'string', enum: ['CLEAN', 'DELETED', 'UNMEASURED'] },
+          deletion: {
+            type: 'object',
+            properties: {
+              verdict: { type: 'string', enum: ['CLEAN', 'DELETED', 'UNMEASURED'] },
+              previous: { type: 'string' },
+              current: { type: 'string' },
+              cases: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: { file: { type: 'string' }, name: { type: 'string' } }
+                }
+              },
+              // Null on CLEAN and DELETED. Declared nullable because a
+              // `{ type: 'string' }` over a null is the same silent drop one
+              // level down, in the field that explains an UNMEASURED round.
+              reason: { type: ['string', 'null'] },
+              waived: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    file: { type: 'string' },
+                    name: { type: 'string' },
+                    // The three states SC-4 is about. Undeclared here and a
+                    // waived-unjudged round is indistinguishable from a
+                    // waived-green one by the time it reaches the operator.
+                    ledgerReading: { type: 'string', enum: ['green', 'red', 'unjudged'] },
+                    acceptedReason: { type: 'string' }
+                  }
+                }
+              },
+              unusedWaivers: { type: 'array', items: { type: 'string' } },
+              // The script's own canonical summary of the fields above,
+              // copied verbatim rather than restated.
+              signature: { type: 'string' }
+            }
+          }
+        },
+        required: ['commitSha', 'parentSha', 'stateRecorded', 'deletion']
+      }
+
+      /** The three verdicts the script can emit. A fourth string is not a fourth verdict. */
+      const DELETION_VERDICTS = ['CLEAN', 'DELETED', 'UNMEASURED']
+      /** The separator every report and every waiver in that module uses. One spelling. */
+      const DELETION_WAIVER_SEPARATOR = ' :: '
+
+      /**
+       * `deletionFold`, mirrored byte-for-byte from `lib/test-case-deletion.ts`.
+       *
+       * A second implementation because `workflows/*.js` cannot import (#69).
+       * The parity is not left to inspection —
+       * `test/deletion-verdict-relay.test.ts` drives this function and the
+       * library's `deletionSignature` over one matrix of artefacts and
+       * refuses any disagreement, which is the shape #171's `rookScopeCommand`
+       * and #663's `recomputeReceiptSignature` already use.
+       */
+      function deletionSignatureFold(s) {
+        let h = 0x811c9dc5
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i)
+          h = Math.imul(h, 0x01000193) >>> 0
+        }
+        return (h >>> 0).toString(16).padStart(8, '0')
+      }
+
+      /**
+       * The signature this artefact SHOULD carry, rebuilt from what arrived.
+       *
+       * Everything under `deletion` is an agent's copy of what the script
+       * wrote. This recomputes the script's own canonical string from the
+       * copied fields, so a copy that altered the verdict, a case name, a
+       * waiver's ledger reading or its reason no longer agrees with the token
+       * beside it.
+       *
+       * It is NOT authentication — see the `deletionSignature` docblock in
+       * `lib/test-case-deletion.ts` for which of #684's three doors this
+       * closes and which it does not. What it buys is that a restatement
+       * cannot drift SILENTLY.
+       */
+      function recomputeDeletionSignature(artefact) {
+        const a = artefact || {}
+        const cases = Array.isArray(a.cases) ? a.cases : []
+        const waived = Array.isArray(a.waived) ? a.waived : []
+        const unused = Array.isArray(a.unusedWaivers) ? a.unusedWaivers : []
+        const count = reading => waived.filter(w => w && w.ledgerReading === reading).length
+        const readable =
+          `v1:${a.verdict}:c${cases.length}:w${waived.length}:s${unused.length}` +
+          `:g${count('green')}:r${count('red')}:j${count('unjudged')}`
+        const sep = DELETION_WAIVER_SEPARATOR
+        const caseIds = cases.map(c => `${c.file}${sep}${c.name}`).sort()
+        const waivedIds = waived
+          .map(w => `${w.file}${sep}${w.name}${sep}${w.ledgerReading}${sep}${w.acceptedReason}`)
+          .sort()
+        const members = [
+          ...caseIds, '\u0000', ...waivedIds, '\u0000', ...unused.slice().sort(), '\u0000',
+          a.reason === null || a.reason === undefined ? '' : a.reason
+        ].join('\u0001')
+        return `${readable}:h${deletionSignatureFold(members)}`
+      }
+
+      /**
+       * THE verdict this run acts on, and the lines the operator is told (#684).
+       *
+       * One binding, so there is one thing to mutate. What it replaces was
+       * `const deletionVerdict = reCommit?.deletionVerdict || 'UNMEASURED'` —
+       * the whole REPAIR_DELETED_TESTS decision branched off a word supplied
+       * by the agent the check exists to catch (#659), while the artefact the
+       * command had just written was opened by nothing.
+       *
+       * Never returns CLEAN on a reading it could not take. An absent
+       * `deletion`, an absent or unparseable signature, a verdict the script
+       * cannot emit, and a restatement that disagrees with the artefact are
+       * all UNMEASURED — `0`, `{}`, `null` and silence are indistinguishable
+       * from success, and UNMEASURED is the only reading that is not
+       * (`.claude/rules/config-access.md`).
+       *
+       * A disagreement is resolved in favour of NEITHER side and both values
+       * are printed. Preferring the relayed one is the defect; preferring the
+       * recomputed one asserts the fields are right and only the token is
+       * wrong, which is the same assumption pointed the other way.
+       */
+      function deletionVerdictReading(reply) {
+        const r = reply || {}
+        const restated = r.deletionVerdict
+        const a = r.deletion
+        const lines = []
+        const unmeasured = line => ({ verdict: 'UNMEASURED', lines: lines.concat([line]) })
+
+        if (!a || typeof a !== 'object' || Array.isArray(a)) {
+          return unmeasured(
+            `UNMEASURED deletion — the round reported no deleted-cases reading at all, so nothing ` +
+            `says what it removed. A step that wrote no artefact looked at nothing, and "nothing was ` +
+            `deleted" is the one answer nobody may infer from silence here (#684, #659)`)
+        }
+        if (!DELETION_VERDICTS.includes(a.verdict)) {
+          return unmeasured(
+            `UNMEASURED deletion — the artefact's verdict is ${JSON.stringify(a.verdict)}, which is ` +
+            `none of ${DELETION_VERDICTS.join(', ')}. The script emits only those three, so this is ` +
+            `the relay restating the verdict rather than carrying it (#684)`)
+        }
+        const expected = recomputeDeletionSignature(a)
+        if (typeof a.signature !== 'string' || a.signature === '') {
+          // Absent is not agreement. A missing token and a matching one are
+          // the same silence.
+          return unmeasured(
+            `UNMEASURED deletion — the reading carried no signature, so nothing could be compared ` +
+            `against what the script computed. The verdict reached this run through an agent ` +
+            `restatement that no position checked (#684)`)
+        }
+        if (a.signature !== expected) {
+          return unmeasured(
+            `DELETION_SIGNATURE_DISAGREEMENT: the reading's own signature \`${a.signature}\` does ` +
+            `not match \`${expected}\` recomputed from the fields that arrived. One of the two is a ` +
+            `restatement that drifted, and which one is not knowable from here — so neither is used ` +
+            `and this round's effect on the test suite is UNMEASURED (#684)`)
+        }
+        if (restated !== undefined && restated !== a.verdict) {
+          return unmeasured(
+            `DELETION_VERDICT_DISAGREEMENT: the round reported ${JSON.stringify(restated)} and the ` +
+            `artefact it was reading says ${JSON.stringify(a.verdict)}. Both values are recorded and ` +
+            `neither is adopted — a verdict supplied by the party being gated is not a gate, and the ` +
+            `disagreement is itself the signature of the behaviour this check is about (#684, #659)`)
+        }
+
+        const cases = Array.isArray(a.cases) ? a.cases : []
+        const waived = Array.isArray(a.waived) ? a.waived : []
+        const unused = Array.isArray(a.unusedWaivers) ? a.unusedWaivers : []
+        const named = list => list.map(c => `${c.file}${DELETION_WAIVER_SEPARATOR}${c.name}`).join('; ')
+        // Reported before the verdict lines, because a waiver that matched
+        // nothing means either the deletion is gone or the case was renamed
+        // and the waiver has silently stopped applying — and it is true of a
+        // CLEAN round and a DELETED one alike.
+        if (unused.length > 0) {
+          lines.push(
+            `DELETION_STALE_WAIVER: ${unused.join(', ')} matched no deleted case. Either the ` +
+            `deletion is gone and the waiver should go with it, or the case was renamed and the ` +
+            `waiver has silently stopped applying (#661)`)
+        }
+        if (a.verdict !== 'CLEAN') {
+          lines.push(
+            `REPAIR_DELETED_TESTS (${a.verdict}): the verify repair round's effect on the test suite ` +
+            `was ${a.verdict === 'DELETED' ? 'to remove cases that passed at the previous build commit' : 'not established'}` +
+            `${cases.length ? ` — ${named(cases)}` : ''}` +
+            `${a.verdict === 'UNMEASURED' && a.reason ? ` — ${a.reason}` : ''} (#659)`)
+          return { verdict: a.verdict, lines }
+        }
+        // The three CLEANs, which the pre-#684 run could not tell apart: the
+        // only branch was `if (deletionVerdict !== 'CLEAN')`, so all three
+        // printed nothing at all.
+        if (waived.length === 0) {
+          lines.push('DELETION_CLEAN: no test case that passed at the previous build commit is gone (#659)')
+          return { verdict: 'CLEAN', lines }
+        }
+        lines.push(
+          `DELETION_CLEAN_BY_WAIVER: ${waived.length} deleted case(s) were accepted rather than ` +
+          `absent — ${waived.map(w => `${w.file}${DELETION_WAIVER_SEPARATOR}${w.name} [ledger: ${w.ledgerReading}]`).join('; ')}` +
+          ` — reason: ${waived[0].acceptedReason}. A CLEAN reached by waiving is not a CLEAN reached ` +
+          `by deleting nothing (#661)`)
+        const unjudged = waived.filter(w => w && w.ledgerReading === 'unjudged')
+        if (unjudged.length > 0) {
+          lines.push(
+            `DELETION_WAIVED_UNJUDGED: ${unjudged.length} of them were waived without the ledger ` +
+            `being able to say whether they were passing. The waiver records that it was deliberate; ` +
+            `it does not establish that nothing green was lost (#661)`)
+        }
+        return { verdict: 'CLEAN', lines }
+      }
+      // ──── DELETION-VERDICT-END ────
       const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
 cd ${commitDir}
@@ -6491,13 +6719,27 @@ Then check what this repair round removed. Run exactly this:
   bun ${shellQuote(`${HARNESS_ROOT}/scripts/verify-no-deleted-cases.ts`)} --project ${shellQuote(commitDir)} --previous "$prevBuild" --current "$sha" --ledger ${shellQuote(`${WORK_DIR}/gate-verify-junit.xml`)} --out ${shellQuote(`${WORK_DIR}/deleted-cases.json`)}
 
 It compares the two BUILD COMMITS by test case NAME and exits non-zero when a
-case that was green before this round is gone. Report its "verdict" field as
-deletionVerdict and the names under "cases" as deletedCases — report them even
-when the command exits non-zero, which is the outcome this run needs to see.
-Do NOT restore, re-add or edit any test to make it exit zero: the verdict is a
-reading of what you already committed, and repairing the reading is the defect
-it exists to catch (#659). Report what it printed.
-      `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' }, parentSha: { type: 'string' }, stateRecorded: { type: 'boolean' }, deletionVerdict: { type: 'string', enum: ['CLEAN', 'DELETED', 'UNMEASURED'] }, deletedCases: { type: 'array', items: { type: 'string' } } }, required: ['commitSha', 'parentSha', 'stateRecorded', 'deletionVerdict'] } })
+case that was green before this round is gone. It prints one JSON object on
+stdout and writes the same object to the --out path above.
+
+Return that object as "deletion", copying every field EXACTLY as it is
+written — "verdict", "previous", "current", "cases", "reason", "waived" (with
+each case's "ledgerReading" and "acceptedReason"), "unusedWaivers", and
+"signature". In particular "signature" is an opaque token the script computed
+from the other fields: copy it CHARACTER FOR CHARACTER and do not normalise,
+re-derive or tidy it, and do not adjust any other field to agree with it. It
+is recomputed from the fields you return, so an edit to either side is
+reported as an unmeasured relay rather than silently believed.
+
+Also report the verdict word on its own as "deletionVerdict". It is compared
+against "deletion.verdict" and a disagreement is recorded with both values.
+
+Report all of this even when the command exits non-zero, which is the outcome
+this run needs to see. Do NOT restore, re-add or edit any test to make it exit
+zero, and do NOT re-run it with --accept to change the verdict: the verdict is
+a reading of what you already committed, and repairing the reading is the
+defect it exists to catch (#659). Report what it printed.
+      `, { label: 'recommit-verify', phase: 'Verify', schema: DELETION_VERDICT_SCHEMA })
       if (!reCommit || !reCommit.commitSha || reCommit.commitSha === reCommit.parentSha) {
         // A SHA equal to the parent means nothing was committed. The old
         // schema asked only for `commitSha`, so echoing the HEAD that was
@@ -6509,17 +6751,16 @@ it exists to catch (#659). Report what it printed.
       // early return here would skip the retry gate below (#155's reasoning).
       const reVerifyStateRefusal = commitStateRefusal(reCommit)
       if (reVerifyStateRefusal) log(`${reVerifyStateRefusal} — buildCommit still names the pre-regression commit (#169)`)
-      // #659. What this round DELETED, read between the two build commits.
-      // Absent is UNMEASURED and not CLEAN: a step that did not report a
-      // verdict looked at nothing, and "nothing was deleted" is the one
-      // answer nobody may infer from silence here — it is the answer the
-      // whole run produced on wf_2abbe96f-546.
-      const deletionVerdict = reCommit?.deletionVerdict || 'UNMEASURED'
-      if (deletionVerdict !== 'CLEAN') {
-        log(`REPAIR_DELETED_TESTS (${deletionVerdict}): the verify repair round's effect on the test suite was ` +
-          `${deletionVerdict === 'DELETED' ? 'to remove cases that passed at the previous build commit' : 'not established'}` +
-          `${(reCommit?.deletedCases || []).length ? ` — ${reCommit.deletedCases.join('; ')}` : ''} (#659)`)
-      }
+      // #659, through #684's one binding. What this round DELETED, read
+      // between the two build commits — and then read a second time, because
+      // the verdict crosses an agent and the agent is the one the check
+      // exists to catch. Absent is UNMEASURED and not CLEAN: a step that did
+      // not report a reading looked at nothing, and "nothing was deleted" is
+      // the one answer nobody may infer from silence here — it is the answer
+      // the whole run produced on wf_2abbe96f-546.
+      const deletionReadingOfRound = deletionVerdictReading(reCommit)
+      const deletionVerdict = deletionReadingOfRound.verdict
+      for (const line of deletionReadingOfRound.lines) log(line)
       const retryVerify = await runGateWithHeal('verify', 'Verify',
         'Fix remaining verify gate failures.',
         { cwd: commitDir })

@@ -43,7 +43,14 @@
  * judge, because an unreadable ledger is UNMEASURED and UNMEASURED is not
  * clean (`.claude/rules/config-access.md`).
  *
- * TWO PROPERTIES THIS FILE MUST KEEP, for the reason
+ * The artefact carries a canonical `signature` over its own fields (#684).
+ * `workflows/ship.js` reads this verdict off an AGENT'S REPLY — it has no
+ * filesystem (#69) and cannot open the file this `--out` writes — so the
+ * token is what lets it compare the restatement against the thing restated.
+ * See `deletionSignature` in `lib/test-case-deletion.ts` for which of #684's
+ * three doors that closes and which it does not.
+ *
+ * THREE PROPERTIES THIS FILE MUST KEEP, for the reason
  * `scripts/verify-merge-content.ts` states at greater length:
  *
  *   1. Every refusal exits through `REFUSE_EXIT`, declared exactly once. A
@@ -53,6 +60,9 @@
  *      from `lib/test-case-deletion.ts`, so there is ONE binding to mutate
  *      rather than a script and a library that agree
  *      (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ *   3. It composes nothing itself either. The artefact comes from
+ *      `deletionArtefact`, so the signature covers the object that reaches
+ *      the disk rather than a second literal that agrees with it today.
  */
 
 import { writeFileSync } from "fs";
@@ -60,6 +70,7 @@ import { writeFileSync } from "fs";
 import {
   WAIVER_SEPARATOR,
   deletedCases,
+  deletionArtefact,
   deletionReading,
   ledgerFromJunit,
   parseWaiver,
@@ -141,17 +152,13 @@ if (import.meta.main) {
       reason: String(args.reason ?? ""),
     });
 
-    const result = {
-      verdict: reading.verdict,
-      previous: args.previous,
-      current: args.current,
-      cases: reading.cases.map((c: { name: string; file: string }) => ({ name: c.name, file: c.file })),
-      reason: reading.verdict === "UNMEASURED" ? reading.reason : null,
-      // Recorded unconditionally when present, so a CLEAN reached by waiving
-      // and a CLEAN reached by deleting nothing are different records.
-      ...(reading.waived ? { waived: reading.waived } : {}),
-      ...(reading.unusedWaivers ? { unusedWaivers: reading.unusedWaivers } : {}),
-    };
+    // Composed by the library, not here. The artefact carries a canonical
+    // `signature` over its own fields, and the only consumer that matters —
+    // `workflows/ship.js` — cannot open the file (#69), so it recomputes the
+    // token from the fields an agent relayed and refuses a disagreement
+    // (#684). A second literal built in this script would be signed over an
+    // object that is not the one written to disk.
+    const result = deletionArtefact(reading, args.previous, args.current);
     const json = JSON.stringify(result, null, 2);
     if (args.out) writeFileSync(args.out, json);
     console.log(json);
