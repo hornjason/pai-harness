@@ -10803,3 +10803,153 @@ afterwards by checksum.
 - [x] SC-2098: test/fixed-window-record.test.ts contains [the two record files carry the same block, byte for byte] — the spec and the rule are compared against each other rather than each against itself, because two documents stating one measurement with nothing comparing them is the defect (#621), not the record
 - [x] SC-2099: test/fixed-window-record.test.ts contains [both red counts are present and equal] — the predicted and measured counts of the whole-document mutation are read as numbers from the recorded table, because a mutation row with its measured column dropped is indistinguishable from one that was never run
 - [x] SC-2100: test/fixed-window-record.test.ts contains [the wrong fix is recorded as applied, with numbers] — the 6000, the 9000 and the scan's surviving window count are asserted as parsed integers, so the record cannot decay into prose that says a fix was considered
+
+## Four checks over an AC set nothing had checked against itself (#669)
+
+Run `wf_448af2c4-6c1` (#664) returned FAIL on three of six acceptance
+criteria over correct and complete work, and two of the three could not have
+passed it. Every one of the three defects was in the **instrument**: a unit
+that named a different quantity from the one the command counts, an `awk`
+range opened on a heading DISCOVERY invented and nobody carried into the
+implementer's brief, and a `--grep` that `bun test` accepts and ignores.
+
+#669 answers each with a check. Proving each check fires on the AC it was
+written for is four observations; what nobody had was the set. This section
+is the AC set replayed as a set — which cells fire, which stay silent, and
+which of them are witnesses rather than company.
+
+**The AC set is `test/fixtures/ac-set-664.json`, committed, and never
+`~/.rungate`.** The run directory is deleted between runs, and a scan over an
+absent AC set finds no defects, which is indistinguishable from a clean one.
+
+### A cell is attributed by an input, not by reading the refusal
+
+`satisfiabilityRefusal` returns one string joining whatever reasons fired, so
+the cheap attribution is a regex table over the sentences it renders. That is
+two deciders for one question — the classifier always agrees with the
+producer, and it survives any mutation of it
+(`.claude/rules/config-access.md`). Each check here is isolated by varying
+exactly ONE input and diffing the two refusals:
+
+| check | the input varied | what it proves |
+|---|---|---|
+| unit | the threshold's `unit`, emptied | the clause reads the declared quantity |
+| literal | the tree reader withheld, so the clause can refuse nothing | the refusal is about the tree at run start |
+| flag | `--grep` rewritten to `--test-name-pattern` | the clause reads the flag, not the file list |
+| banner | the recorded evidence itself, through `baselineUnmeasuredReason` | the run observed nothing at all |
+
+The attribution is then cross-checked for TOTALITY against the number of
+reasons the real refusal carries — a different question asked of a different
+reading — so a clause this file cannot isolate shows up as a mismatch instead
+of vanishing. Two further guards sit on the instrument rather than the code:
+every neutralised input must remove **exactly** its own reason and leave the
+rest, and every fired cell must carry the input on which the two readings
+differ.
+
+**The tree the literal clause reads is NOT this repository.**
+`test/evidence-literal-interface.test.ts` declares the invented heading as a
+constant, so the live tree holds the string #664's gate bet on, and the
+clause would correctly go silent — a check certified by the file written to
+check it. The reader runs over a tree shaped like the one #664 started from:
+the spec file exists, that heading does not.
+
+### The twenty-four cells
+
+| AC | unit | literal | flag | banner | the AC's own defect |
+|---|---|---|---|---|---|
+| AC-1 | · | · | · | **fires** | the recorded evidence is bun's version banner and nothing else |
+| AC-2 | · | · | **fires** | **fires** | `--grep`, so the command is byte-equivalent to AC-1's |
+| AC-4 | · | · | · | **fires** | banner only |
+| AC-5 | · | · | **fires** | **fires** | `--grep`, and a banner for evidence |
+| AC-6 | **fires** | **fires** | · | · | counts lines of prose against a threshold of test cases, through an invented heading |
+| AC-7 | · | **fires** | · | · | the invented heading; its recorded `0` is a real reading that misses `== 1` |
+
+### Firing because the instrument is broken, versus a threshold merely unmet
+
+The two are different facts and the whole cost of #664 was conflating them. A
+cell fires here only when the verdict could not have been about the code. An
+AC whose number is real and simply has not reached its bar yet is **silent on
+all four**, and that is the #659 shape — the run whose FAIL verdict was right
+about the work, and whose repair cycle then deleted three passing tests.
+
+AC-7 is the cell where both states sit on one criterion, which is why it is
+the one to read: its literal clause fires, AND its recorded `0` is MEASURED,
+compared against `== 1`, and missed. The second fact is not a defect. The
+replay drives a #659-shaped criterion of its own to hold the line —
+`grep -c deletedCaseNames lib/trajectory.ts` against `>= 1`, run rather than
+fabricated, printing `0` and exiting 1, which `grepNoMatchIsResult` reads as
+a result and not a broken command. All four checks stay silent on it.
+
+### Witnesses and controls, so the 24 is not read as 24
+
+Of the twenty-four cells, **9** are witnesses — a check firing on a real
+defect of the real AC set — and **15** are controls, cells in which a check
+must stay silent and does. The controls are not coverage of the four checks;
+they are what stops a clause that refused everything from satisfying every
+witness. Counting the matrix as twenty-four proofs would overstate it by
+nearly three times.
+
+### The cheapest wrong fix, applied and measured
+
+#669 names it: **widen #664 AC-7's threshold from `== 1` to `>= 1` and leave
+the unit mismatch alone.** It is the 5pm repair — one operator, and the AC
+that demanded exactly one recorded line stops demanding it.
+
+Applied to a COPY of the fixture on disk and re-read from that file, measured
+through the same bindings the gate runs, and reverted; the committed fixture
+still declares `== 1`, which is asserted rather than promised. **The baseline
+row was read before any mutation row**, because an instrument that has
+stopped reporting takes the baseline down with it and nobody mutates anything
+to produce that row.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **EVIDENCE-CHECK-669-1 — baseline**, unmutated: cells in which a check fires, of the matrix, then unit / literal / flag / banner | 9 of 24 (1 / 2 / 2 / 4) | **9 of 24 (1 / 2 / 2 / 4)** |
+| **EVIDENCE-CHECK-669-2** — the widening applied: cells of the twenty-four whose firing moves | 0 | **0** |
+| **EVIDENCE-CHECK-669-3** — AC-7's verdict on the tree as delivered, command verbatim: verdicts that move FAIL to PASS | 0 | **0** |
+| **EVIDENCE-CHECK-669-4** — AC-7's verdict with the heading repaired to the one the implementer wrote: verdicts that move FAIL to PASS | 1 | **1** |
+| **EVIDENCE-CHECK-669-5** — AC-6 under the widening, heading repaired: verdicts or refusals that move | 0 | **0** |
+
+Baseline for the battery itself, read first:
+`bun test test/evidence-664-replay.test.ts` → **29 pass, 0 fail**.
+
+Before believing any of the three zeros, the input on which mutant and
+original differ, named and run rather than assumed:
+
+- **EVIDENCE-CHECK-669-2** — the input on which mutant and original differ:
+  the string `3`, which is what the repaired command prints.
+  `thresholdSatisfiedBy("3", {op:"==",value:1})` is **false** and
+  `thresholdSatisfiedBy("3", {op:">=",value:1})` is **true**, so the widening
+  really was applied. The four checks do not move anyway: none of them reads
+  the operator.
+- **EVIDENCE-CHECK-669-3** — the input on which mutant and original differ:
+  there is none, and that is the row. The verbatim command prints `0`
+  because `awk` never opens its range, and `0` fails `>= 1` exactly as it
+  failed `== 1`. **The wrong fix cannot reach its own symptom until the
+  LITERAL defect is repaired**, which is not in #669's statement of it and is
+  the sharpest thing the replay measures.
+- **EVIDENCE-CHECK-669-5** — the input on which mutant and original differ:
+  the repaired AC-6 command, which prints `4` against a threshold of
+  `>= 11`. AC-6 fails before and after, and its unit refusal is unchanged —
+  the class is untouched, which is what makes the fix wrong rather than
+  merely insufficient.
+
+Measured against this repository, with the three commands run rather than
+described: AC-7's
+verbatim command prints `0`, the repaired one prints `3`, and AC-6's prints `4`.
+The repaired half is DERIVED from the spec's own heading rather than typed,
+so the pair cannot carry a second difference the comparison was not meant to
+vary (#585).
+
+So the wrong fix works, on one AC, once something else is fixed, and it works
+by lowering the bar to the number an unsatisfiable instrument happens to
+produce. Nothing about the unit mismatch, the invented literal, the ignored
+flag or the banner-only evidence changes. None of it is left in the tree.
+
+### Success Criteria
+
+- [x] SC-2101: test/evidence-664-replay.test.ts contains [the replay reads the committed fixture and never ~/.rungate] — the AC set is asserted to be a tracked file and the replay's own source is asserted to contain no read of a run directory, because a scan over an absent AC set finds no defects and reads exactly like a clean one
+- [x] SC-2102: test/evidence-664-replay.test.ts contains [each of the four checks fires, attributed by an input difference] — every cell is attributed by varying one input and diffing the refusal rather than by matching the sentence it renders, and the attribution is cross-checked for totality against the number of reasons the decider actually produced
+- [x] SC-2103: test/evidence-664-replay.test.ts contains [a correct AC whose threshold is merely unmet is silent on all four] — the #659 shape is driven with a command that is RUN, not a fabricated output, because a check that fired there would make every unfinished criterion look like a broken instrument
+- [x] SC-2104: test/evidence-664-replay.test.ts contains [the cheapest wrong fix is applied, measured and reverted] — the widening is written to a copy of the fixture on disk and re-read from it, so the case cannot assert its own premise, and the committed fixture is asserted to still carry the original operator
+- [x] SC-2105: test/evidence-664-replay.test.ts contains [the five EVIDENCE-CHECK-669 rows agree with the live measurement] — the recorded rows are parsed out of the spec as data and compared against the numbers this run measures, so a record that drifts from the measurement it claims is red rather than merely out of date
