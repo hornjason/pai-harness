@@ -11,29 +11,53 @@
 # success is the defect `.claude/rules/checks-must-be-able-to-fail.md` is
 # about. #630 builds the version that can fail.
 #
-# MANUAL DISPATCH ONLY, deliberately. It ran automatically on `pull_request`
-# for three commits, proved the Vertex path, and is parked because the review
-# of its own PR found the finding that ends the argument:
-# `create_inline_comment` is an EGRESS SINK. An agent that can read the
-# credentials file can post its contents as a review comment, using the one
-# tool this job exists to use. No Bash, no network, no fork needed.
+# MANUAL DISPATCH ONLY, still. It ran automatically on `pull_request` for
+# three commits, proved the Vertex path, and was parked because the review of
+# its own PR found the finding that ended the argument: `create_inline_comment`
+# is an EGRESS SINK. An agent that can read the credentials file can post its
+# contents as a review comment, using the one tool this job exists to use. No
+# Bash, no network, no fork needed.
 #
-# That cannot be closed by a denylist, and two attempts demonstrate why rather
-# than assert it: the first missed `Task`, the second missed `SlashCommand`.
-# An incomplete enumeration is indistinguishable from a complete one until
-# somebody checks.
+# That could not be closed by a denylist, and two attempts demonstrate why
+# rather than assert it: the first missed `Task`, the second missed
+# `SlashCommand`. An incomplete enumeration is indistinguishable from a
+# complete one until somebody checks.
 #
-# Re-enable `pull_request:` when AC-15 lands and no credential is readable
-# from the tree the agent walks. Not before.
+# #677 closes it from the other side instead — by removing the thing the sink
+# could carry. See the auth step below: there is no service-account key, and
+# no service account. What the runner holds is an access token that expires in
+# an hour, scoped to one project and one role.
 #
-# Verified 2026-10-18: the service account
-# `claude-ci@itpc-gcp-global-revenue-claude.iam.gserviceaccount.com`, holding
-# only `roles/aiplatform.user`, returns HTTP 200 from
+# WHY THE TRIGGER IS STILL `workflow_dispatch`, stated so the next reader does
+# not take the credential fix as the whole job: the fork guard below reads
+# `inputs.pr`, which exists only for a dispatch. Re-pointing it at
+# `github.event.pull_request` is #631/#675's work, not a line to slip into a
+# credential change — and a guard edited in passing is how this file acquired
+# the tautological `github.event_name == 'workflow_dispatch'` check that #630
+# had to remove.
+#
+# THE RESIDUAL, named rather than left to be discovered. `auth` still writes a
+# credential CONFIGURATION file, and the agent can still read it. That file is
+# not usable off the runner on its own — it carries no key material and
+# redeems against GitHub's OIDC endpoint using `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
+# from the environment, which the file does not contain. So the exposure is a
+# one-hour, one-project, one-role token rather than a permanent credential.
+# Smaller by a lot. Not zero, and nobody should read it as zero.
+#
+# Verified 2026-10-19 on `jhorn-pai`: `claude-sonnet-5` returns HTTP 200 from
 # `publishers/anthropic/models/claude-sonnet-5:rawPredict` at location
-# `global`. An earlier 403 was IAM propagation, not configuration.
+# `global`, authenticated with no service-account key of any kind.
 #
-# Region `global`: `us-east5` returned 429, the project's per-minute token
-# quota being already contended, and Anthropic's guidance for 429s is global.
+# The previous identity was
+# `claude-ci@itpc-gcp-global-revenue-claude.iam.gserviceaccount.com`, holding
+# only `roles/aiplatform.user`, verified 2026-10-18. Recorded because the
+# project moved with this change and a reader comparing against an older run
+# should know which project a 200 was measured on.
+#
+# Region `global`: `us-east5` returned 429 on the previous project, its
+# per-minute token quota being already contended, and Anthropic's guidance for
+# 429s is global. `jhorn-pai` has its own quota; `global` is kept because it is
+# the configuration that has been measured.
 #
 # Model PINNED: unpinned, the `opus` alias resolves to Opus 5.5 on Vertex and
 # every review bills at the Opus rate.
@@ -109,10 +133,39 @@ jobs:
           # the files, not the ability to push.
           persist-credentials: false
 
+      # Workload Identity Federation, and NO service-account key (#677, AC-15).
+      #
+      # What this replaces: `credentials_json: ${{ secrets.GCP_SA_KEY }}`, which
+      # made `google-github-actions/auth` write a PERMANENT service-account key
+      # into the runner workspace and point GOOGLE_APPLICATION_CREDENTIALS at
+      # it. The review agent reads files and can post review comments. Those two
+      # facts together are the egress sink this file's header describes, and no
+      # denylist closed it — two attempts missed `Task`, then `SlashCommand`.
+      #
+      # What happens instead: GitHub mints a short-lived OIDC token for THIS
+      # run, GCP's STS exchanges it for an access token that expires in an hour,
+      # and no long-lived credential exists anywhere on the runner. The sink is
+      # still a sink; what it can carry is now a token scoped to one project and
+      # one role, which dies on its own.
+      #
+      # The trust is NOT "any GitHub Action". The provider carries an attribute
+      # condition — `assertion.repository_owner == 'hornjason'` — so a workflow
+      # in any other account on GitHub presents a valid OIDC token and is
+      # refused at the exchange. The IAM grant is narrower still: it names
+      # `attribute.repository/hornjason/pai-harness` specifically, and the only
+      # role on it is `roles/aiplatform.user`.
+      #
+      # There is no service account in this chain at all. The federated identity
+      # holds the Vertex role directly, so there is nothing to impersonate and
+      # no key that could be created for it even by someone who wanted one.
+      #
+      # Verified 2026-10-19 on jhorn-pai: claude-sonnet-5 returned HTTP 200 from
+      # `rawPredict` at location `global`.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          project_id: jhorn-pai
+          workload_identity_provider: projects/939083080179/locations/global/workloadIdentityPools/github/providers/github-actions
 
       - name: Review
         # The pin is declared in lib/claude-code-action.ts and checked by
@@ -135,6 +188,6 @@ jobs:
             --max-turns 25
         env:
           CLAUDE_CODE_USE_VERTEX: "1"
-          ANTHROPIC_VERTEX_PROJECT_ID: itpc-gcp-global-revenue-claude
+          ANTHROPIC_VERTEX_PROJECT_ID: jhorn-pai
           CLOUD_ML_REGION: global
           ANTHROPIC_MODEL: claude-sonnet-5
