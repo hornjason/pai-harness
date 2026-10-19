@@ -1215,7 +1215,7 @@ Two consequences worth stating rather than leaving to be discovered:
 - **No brief in this tree carries the region yet** — #655 made it a
   preference and deliberately not a creation, which is #648's decision. So
   the replay below is unchanged by #655, and `NO_SECTION` is still
-  reachable, which is what makes SC-2176 witnessable at all.
+  reachable, which is what makes SC-2303 witnessable at all.
 
 ### The re-measurement, with the command beside every count
 
@@ -1260,17 +1260,17 @@ by 84, and #645's table printed the first under a heading that reads like
 the second. That is why the script prints both.
 
 The one action still refused after the fix is quinn's, and `quinn.md`
-carries none of the three headings — so the live store witnesses SC-2176
+carries none of the three headings — so the live store witnesses SC-2303
 rather than only the fixtures.
 
 ### Success criteria
 
-- [x] SC-2173: one exported binding maps a COMP id to a destination heading and it has exactly one call site, so there is a single thing to mutate
-- [x] SC-2174: every COMP id the grader can emit has a declared preference covering every heading, durable region first (#655), read off `lib/transcript-checker.ts` and `.claude/rungate/compliance.json` rather than typed into the test
-- [x] SC-2175: a brief carrying any ONE of the headings accepts a reinforcement for every COMP id, and `## Project Constraints` outranks the COMP's own primary when both are present, measured over the real `applyHillClimb` and not a copy
-- [x] SC-2176: a brief carrying NONE of the headings still reports `NO_SUITABLE_SECTION`, applies nothing, and leaves the brief on disk byte-identical
-- [x] SC-2177: a COMP id with no declared heading is refused by name as `UNMAPPED_COMP` and reaches the receipt as its own UNMEASURED state, never as a brief with no heading
-- [x] SC-2178: the reinforcement is inserted INSIDE the resolved section — asserted by position relative to the next heading, not by the string being present somewhere
+- [x] SC-2300: one exported binding maps a COMP id to a destination heading and it has exactly one call site, so there is a single thing to mutate
+- [x] SC-2301: every COMP id the grader can emit has a declared preference covering every heading, durable region first (#655), read off `lib/transcript-checker.ts` and `.claude/rungate/compliance.json` rather than typed into the test
+- [x] SC-2302: a brief carrying any ONE of the headings accepts a reinforcement for every COMP id, and `## Project Constraints` outranks the COMP's own primary when both are present, measured over the real `applyHillClimb` and not a copy
+- [x] SC-2303: a brief carrying NONE of the headings still reports `NO_SUITABLE_SECTION`, applies nothing, and leaves the brief on disk byte-identical
+- [x] SC-2304: a COMP id with no declared heading is refused by name as `UNMAPPED_COMP` and reaches the receipt as its own UNMEASURED state, never as a brief with no heading
+- [x] SC-2305: the reinforcement is inserted INSIDE the resolved section — asserted by position relative to the next heading, not by the string being present somewhere
 
 All six are covered by `test/hill-climb-section-selector.test.ts` and
 `test/unit/zero-reinforcement-baseline.test.ts`, and the command is
@@ -1366,7 +1366,7 @@ existing, and none of them is a row that stopped witnessing:
   claim about this module's SOURCE TEXT and cannot see a runtime
   short-circuit. Correctly green, and the prediction simply counted both.
 - **The fallback row came back HIGH, 4 against a predicted 3.** The extra
-  is SC-2174's *"each one has a declared preference covering every
+  is SC-2301's *"each one has a declared preference covering every
   heading"*, which the revision dropped by accident; it is squarely about
   the mutation, since the mutant's preference no longer covers every
   heading.
@@ -1412,7 +1412,7 @@ subject.
 
 **Does the shipped set survive the cheapest wrong fix? Yes, NON-vacuously,
 and 8 of 60 is the measurement rather than the argument.** Three of the
-eight are SC-2176's pair and the zero-reinforcement refusal case, and they
+eight are SC-2303's pair and the zero-reinforcement refusal case, and they
 survive because they assert the STATE the run reported and whether the
 brief on disk changed — not whether the reinforcement text appears
 somewhere, which the wrong fix also satisfies. The other five are #646's

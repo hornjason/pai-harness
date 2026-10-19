@@ -83,7 +83,7 @@ function runOne(brief: string, compId: string): { applied: string[]; kinds: stri
   return { applied, kinds: skipOutcomes.map((o) => o.kind) };
 }
 
-describe("SC-2116 / SC-2175: one heading in a brief is enough, for every COMP", () => {
+describe("SC-2116 / SC-2302: one heading in a brief is enough, for every COMP", () => {
   const TESTING_ONLY = `# Marcus\n\n## Testing Rules\n\n- Write the test first.\n`;
 
   test("COMP-2 reaches the Testing Rules heading and inserts", () => {

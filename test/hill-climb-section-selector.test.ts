@@ -1,5 +1,5 @@
 /**
- * Covers SC-2173..SC-2178 (INSTRUCTION-COMPLIANCE-SPEC.md), #704.
+ * Covers SC-2300..SC-2305 (INSTRUCTION-COMPLIANCE-SPEC.md), #704.
  *
  * The hill-climb's section selector used to be a nested conditional inside
  * `applyHillClimb`: `## Testing Rules` if the id was literally `COMP-2`,
@@ -95,7 +95,7 @@ function runOne(
 const briefWithOnly = (heading: string) =>
   `# Marcus\n\n## Context\n\n- Read the issue.\n\n${heading}\n\n- An existing bullet.\n\n## Reference\n\n| a | b |\n`;
 
-describe("SC-2173: one binding maps a COMP id to a heading, with one call site", () => {
+describe("SC-2300: one binding maps a COMP id to a heading, with one call site", () => {
   const SOURCE = readFileSync(join(REPO_ROOT, "lib", "compliance-report.ts"), "utf-8");
 
   test("the selector is called from exactly one place in the module", () => {
@@ -139,7 +139,7 @@ describe("SC-2173: one binding maps a COMP id to a heading, with one call site",
   });
 });
 
-describe("SC-2174: every COMP id the grader can emit resolves to a heading", () => {
+describe("SC-2301: every COMP id the grader can emit resolves to a heading", () => {
   test("the id population is non-empty and read from the two declaring positions", () => {
     // The closure claim below is vacuous over an empty set, and an empty set
     // is exactly what a renamed field or a moved config produces.
@@ -160,7 +160,7 @@ describe("SC-2174: every COMP id the grader can emit resolves to a heading", () 
   });
 });
 
-describe("SC-2175: a brief carrying ANY one of the headings accepts every COMP", () => {
+describe("SC-2302: a brief carrying ANY one of the headings accepts every COMP", () => {
   test("each heading, alone, accepts a reinforcement for each id", () => {
     const ids = graderCompIds();
     let insertions = 0;
@@ -226,7 +226,7 @@ describe("SC-2175: a brief carrying ANY one of the headings accepts every COMP",
   });
 });
 
-describe("SC-2176: a brief with none of the three still refuses — #646's state survives", () => {
+describe("SC-2303: a brief with none of the three still refuses — #646's state survives", () => {
   const NONE = "# Quinn\n\n## Core Rule\n\n- Test it.\n\n## Report Format\n\n- Say what ran.\n";
 
   test("nothing is applied and the outcome is NO_SECTION", () => {
@@ -247,7 +247,7 @@ describe("SC-2176: a brief with none of the three still refuses — #646's state
   });
 });
 
-describe("SC-2177: an unmapped COMP id is refused BY NAME, not as a missing heading", () => {
+describe("SC-2304: an unmapped COMP id is refused BY NAME, not as a missing heading", () => {
   const ALL_THREE =
     "# Marcus\n\n## Efficiency Rules\n\n- e\n\n## Testing Rules\n\n- t\n\n## Never Do\n\n- n\n";
 
@@ -307,7 +307,7 @@ describe("SC-2177: an unmapped COMP id is refused BY NAME, not as a missing head
   });
 });
 
-describe("SC-2178: the reinforcement lands INSIDE the resolved section", () => {
+describe("SC-2305: the reinforcement lands INSIDE the resolved section", () => {
   test("it is before the next heading, not after the document", () => {
     // Asserted by POSITION, not by presence. Appending at the end of the
     // brief — the cheapest wrong fix, named in #704 and in
