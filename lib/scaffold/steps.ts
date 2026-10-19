@@ -27,7 +27,7 @@ import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep } from "./ai-rev
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
-import { tier1Ere } from "../secret-patterns";
+import { TIER2_ALLOWED_VALUE_ERE, tier1Ere, tier2Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
@@ -2823,7 +2823,7 @@ ${bunStep}
           # assignment itself succeed, so $? is always 0 and the error branch
           # becomes dead code — the scan would fail open on a git error.
           set +e
-          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- .)
+          tier2=$(git grep -I -hoE '${tier2Ere()}' -- .)
           rc=$?
           set -e
           # git grep: 0 = match, 1 = no match, >1 = real error.
@@ -2834,7 +2834,7 @@ ${bunStep}
           # Exclusion applies to the extracted VALUE, not the whole line.
           # Matching anywhere on the line let a trailing "# placeholder"
           # launder a real secret past the check.
-          if printf '%s\\n' "$tier2" | grep -qvE '^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
+          if printf '%s\\n' "$tier2" | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi
@@ -3052,10 +3052,17 @@ fi
 # Exclusions are env lookups and explicit non-values. password =
 # process.env.DB_PASSWORD is a reference, not a secret, and flagging it would
 # only train people to reach for --no-verify.
+#
+# Both expressions are interpolated from lib/secret-patterns.ts, never
+# written here. A hardcoded copy is a second binding for one string, and
+# #489's narrowing then has to be applied in places nothing compares. The
+# allowlist's leading \`^$|\` alternative cannot fire on this pipeline —
+# grep -oE emits no empty lines — so using the one constant is the same
+# behaviour with one fewer decider.
 if printf '%s\\n' "$staged_diff" \\
   | grep '^+' \\
-  | grep -oE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' \\
-  | grep -qvE '[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
+  | grep -oE '${tier2Ere()}' \\
+  | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
   echo "ERROR: Potential credential assignment in staged changes"
   exit 1
 fi
