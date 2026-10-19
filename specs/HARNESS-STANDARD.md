@@ -10256,16 +10256,36 @@ the battery ran, and **the baseline row was read before any mutation row** —
 an instrument that has stopped reporting takes the baseline down with it, and
 that is the row nobody checks.
 
+Three trees are the inputs throughout, all real git repositories so that
+`readScNamespace`'s own two legs are clean: **NO-dirs** (no `test/`, `lib/`,
+`scripts/` or `gates/`), **FOUR-empty** (all four present and empty), and
+**PARTIAL** (`test/` present and holding one id, the other three absent).
+Every "differ" column below is the probe's printed output on those trees, run
+under the mutant and under the real source, not an argument about them.
+
 | Row | Predicted | Measured | The input on which mutant and original differ |
 |---|---|---|---|
-| **baseline** — unmutated | 17 pass, 0 fail | TBD | — |
-| the genuinely pre-#606 leg composition: all three `status: "read"`, no `unmeasured` append | 6 | TBD | TBD |
-| **the cheapest wrong fix**, on top of that source: `skipped` when `found === 0` | 6 | TBD | TBD |
-| the walk's `catch` stops recording — `walk` always returns `true`, `unwalkable` always empty | 4 | TBD | TBD |
-| `readScRegistry` returns `buildScRegistry([])` for an absent `specs/` — the pre-#606 producer | 1 | TBD | TBD |
-| `buildScRegistry` stamps `unenumerated` — the enumerated direction, inverted | 4 | TBD | TBD |
-| the `unmeasured` append dropped from `allocateScNumber`, legs otherwise intact | 3 | TBD | TBD |
-| the partial-read branch collapsed into `skipped` | 1 | TBD | TBD |
+| **baseline** — unmutated | 17 pass, 0 fail | **17 pass, 0 fail** | — |
+| the genuinely pre-#606 leg composition: all three `status: "read"`, no `unmeasured` append | 6 | **6 of 17** — SC-2151..SC-2156 | NO-dirs: the original is `status=skipped found=0` with a reason naming all four and 4 named `unmeasured` entries; the mutant is `status=read found=0 reason=""` with 0 |
+| **the cheapest wrong fix**, on top of that source: `skipped` when `found === 0` | 6 | **6 of 17** — SC-2151..SC-2156 | FOUR-empty: the original is `status=read found=0`, the mutant `status=skipped found=0` — **identical to its own NO-dirs output**, which is the swap stated rather than argued |
+| the walk's `catch` stops recording — `walk` always returns `true`, `unwalkable` always empty | 4 | **4 of 17** — SC-2151, SC-2152, SC-2153, SC-2158 | NO-dirs: the original reports `walked=[]` and four `unwalkable` entries; the mutant reports `walked=[test, lib, scripts, gates]` over four directories that do not exist |
+| `readScRegistry` returns `buildScRegistry([])` for an absent `specs/` — the pre-#606 producer | 1 | **1 of 17** — SC-2155 | `readScRegistry(<a path with no specs/>)`: the original returns `{status:"unenumerated", reason:"… does not exist"}`, the mutant `{status:"enumerated"}` |
+| `buildScRegistry` stamps `unenumerated` — the enumerated direction, inverted | 4 | **4 of 17** — SC-2154, SC-2155, SC-2156, and #593's *the reading names the legs consulted* | FOUR-empty with `buildScRegistry([])`: the original's registry leg is `status=read found=0 reason=""`, the mutant's is `status=skipped found=0 reason="mutant"` |
+| the `unmeasured` append dropped from `allocateScNumber`, legs otherwise intact | 3 | **3 of 17** — SC-2152, SC-2153, SC-2154 | PARTIAL: both report `status=read found=1` with the same reason, and `unmeasured` carries 3 named entries on the original and 0 on the mutant |
+| the partial-read branch collapsed into `skipped` | 1 | **1 of 17** — SC-2153 | PARTIAL: the original is `status=read found=1`, the mutant `status=skipped found=1` — a leg that read one directory of four reporting the same word as one that read none |
+
+Every row matched its prediction; none came back high or low. None of the
+seven mutations is left in the tree — all were run and reverted, and
+`lib/create-sc.ts`, `lib/sc-ids.ts` and `scripts/sync-sc-status.ts` were
+confirmed byte-identical to the measured source afterwards by checksum.
+
+**The fifth row names the reason #593's case was UPDATED rather than
+deleted.** As it stood, `expect(registryLeg!.status).toBe("read")` was
+satisfied by a leg that hardcoded the string, which is the defect. It now
+asserts `registryOnly.enumeration.status === "enumerated"` first, so the
+`read` is a conclusion from a premise the case states — and that is why
+inverting `buildScRegistry` reds it. The same case was green under every
+other row in this table.
 
 ### Success Criteria
 
