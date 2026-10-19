@@ -829,12 +829,19 @@ export function verifyRegressionElseViolations(source: string = shipSource): str
 const ELSE_SITE = "} else {\n      // #218: this `if` had no else";
 
 export function buildDeletedElseMutant(source: string = shipSource): string {
-  const hits = source.split(ELSE_SITE).length - 1;
-  if (hits !== 1) {
-    throw new Error(
-      `could not build the mutant: the #218 else branch appears ${hits} times in workflows/ship.js, expected exactly 1`,
-    );
-  }
+  // The uniqueness check used to be a hand-written split-and-count right
+  // here, over this same anchor. (Not quoted: a guard asserting that the
+  // expression is gone is satisfied by a comment containing it, which is
+  // this repository's self-reference trap and caught three times already.)
+  // `structuralCut` now
+  // refuses a duplicated anchor by name and with the count (#668), so the
+  // count is asked in one place instead of two — two deciders answering one
+  // question are behaviourally one, and mutating either would leave the
+  // other refusing (`.claude/rules/checks-must-be-able-to-fail.md`).
+  //
+  // The loud abort this function needs is unchanged: `AmbiguousAnchorError`
+  // propagates, so a second copy of the site still aborts the file rather
+  // than letting a mutant that removed the wrong branch read as a mutant.
   const branch = structuralCut(source, ELSE_SITE, { balanced: "{" });
   const out = source.replace(branch, "}");
   if (out === source) throw new Error("could not build the mutant: the removal changed nothing");
