@@ -80,7 +80,12 @@ const action = () => ({
 describe("#624 AC-2: an UNTRACKED reinforcement does not touch the repository", () => {
   test("the reinforcement is applied, and no tracked brief is modified", () => {
     const { root, brief } = scratchRepo();
-    const untrackedDir = join(root, "..", `out-${Date.now()}`);
+    // Its own `mkdtempSync` root, not `join(root, "..", Date.now())`.
+    // `root`'s parent IS the shared temp directory, so that spelling put a
+    // predictable, world-writable path on the end of a recursive delete —
+    // and the destination only has to be outside the *checkout*, which an
+    // exclusive 0700 directory satisfies without being guessable.
+    const untrackedDir = mkdtempSync(join(tmpdir(), "hillclimb-out-"));
     made.push(untrackedDir);
 
     // The run must be CLEAN before the write, or "nothing modified"
