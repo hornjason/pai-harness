@@ -95,6 +95,11 @@ export const HILL_CLIMB_STATES = [
   // second is the discovery that its answer does not account for its input.
   "NO_BRIEF_REGISTERED",
   "OUTCOMES_UNACCOUNTED",
+  // #704 — the COMP reached the threshold, survived the grader gate, and no
+  // destination heading is declared for it. Folded into NO_SUITABLE_SECTION
+  // it reads as a brief that needs a heading added, which is the wrong file
+  // to go and edit.
+  "COMP_HAS_NO_SECTION_MAPPING",
 ] as const;
 
 export type HillClimbState = (typeof HILL_CLIMB_STATES)[number];
@@ -118,6 +123,9 @@ export const UNMEASURED_HILL_CLIMB_STATES: readonly HillClimbState[] = [
   // than it was asked about.
   "NO_BRIEF_REGISTERED",
   "OUTCOMES_UNACCOUNTED",
+  // #704. Same sentence again: the reinforcement was composed and nobody
+  // ever found out what applying it would have done.
+  "COMP_HAS_NO_SECTION_MAPPING",
 ];
 
 /** One occurrence of a state, carrying the producing code's own reason. */
@@ -175,6 +183,7 @@ export function emptyHillClimbStates(): Record<HillClimbState, HillClimbOccurren
     NO_SUITABLE_SECTION: [],
     NO_BRIEF_REGISTERED: [],
     OUTCOMES_UNACCOUNTED: [],
+    COMP_HAS_NO_SECTION_MAPPING: [],
   };
 }
 
@@ -198,6 +207,7 @@ const SKIP_OUTCOME_STATE: Record<HillClimbSkipOutcome["kind"], HillClimbState> =
   TIER_PROMOTION: "TIER_PROMOTION_RECOMMENDED",
   REINFORCEMENT_PRESENT: "REINFORCEMENT_ALREADY_PRESENT",
   NO_SECTION: "NO_SUITABLE_SECTION",
+  UNMAPPED_COMP: "COMP_HAS_NO_SECTION_MAPPING",
 };
 
 /**

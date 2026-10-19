@@ -69,7 +69,15 @@ const UNCLAIMED_RATCHET = 153;
 // `test.todo` was being counted as claimed, and a todo claims nothing: 34
 // of the 100 were ids named by a test that can never run. The number moved
 // because the question got stricter, not because anything was bound.
-const CLAIMED_UNBINDABLE = 66;
+//
+// 66 -> 72 on 2026-10-19 (#704). Six criteria about the hill-climb's section
+// selector, every one of them driven by `test/hill-climb-section-selector.test.ts`
+// against the real `applyHillClimb`, and none of them expressible as a claim
+// about the state of the tree: "one binding with exactly one call site",
+// "`## Project Constraints` outranks the COMP's own primary", "the brief on
+// disk is byte-identical after a refusal". This is the number rising for the
+// reason the docblock above says it rises for.
+const CLAIMED_UNBINDABLE = 72;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

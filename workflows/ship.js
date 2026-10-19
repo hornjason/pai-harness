@@ -7893,7 +7893,11 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
               // leaving an occurrence. Declared here or the relay drops
               // them, which is this issue one hop later.
               NO_BRIEF_REGISTERED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
-              OUTCOMES_UNACCOUNTED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE }
+              OUTCOMES_UNACCOUNTED: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
+              // #704 — a COMP with no destination heading declared. Same
+              // reason as the two above: undeclared here and the relay
+              // drops it.
+              COMP_HAS_NO_SECTION_MAPPING: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE }
             }
           },
           unclassified: { type: 'array', items: PERSIST_RECEIPT_OCCURRENCE },
@@ -7928,7 +7932,8 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
     'REINFORCEMENT_ALREADY_PRESENT',
     'NO_SUITABLE_SECTION',
     'NO_BRIEF_REGISTERED',
-    'OUTCOMES_UNACCOUNTED'
+    'OUTCOMES_UNACCOUNTED',
+    'COMP_HAS_NO_SECTION_MAPPING'
   ]
 
   /** The two values `hillClimb.reading` is allowed to be. Anything else is UNMEASURED. */
