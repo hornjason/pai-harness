@@ -468,11 +468,34 @@ function buildSafeSSHCommand(host, command) {
   return ['ssh', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no', '--', host, command]
 }
 
-// Single-quote a shell word. Only ever applied to argv produced by the
-// workflow-security builders, never to raw agent output.
+// Single-quote a shell word. Single quotes are the only shell quoting with no
+// interior expansion at all, so this is safe for untrusted text as well as for
+// argv produced by the workflow-security builders — the issue title reaches it
+// through `shipCommitSubject` (#696).
 function shellQuote(word) {
   return `'${String(word).replace(/'/g, "'\\''")}'`
 }
+
+// ──── COMMIT-SUBJECT-START ────
+// GitHub closes an issue when a merged commit message contains
+// `<keyword> #<number>`, and it does not care about markdown: `cfc1415d`
+// quoted `Fixes #644` inside a backtick code span as a SAMPLE INPUT on
+// 2026-10-19, and #644 was closed three seconds after the merge. Backticks
+// are not an escape.
+//
+// An issue title is arbitrary text written by whoever opened the issue, so a
+// title that mentions another issue must not close it. The adjacency is what
+// GitHub parses, so the adjacency is what this breaks — the keyword and the
+// number both stay readable. The run's own `fix(#N):` prefix is composed
+// AFTER the transform and is deliberately untouched: that reference is the
+// one this commit means.
+const CLOSING_KEYWORD = /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)#(?=\d)/gi
+
+/** The commit subject for a ship run, from an untrusted issue title (#696). */
+function shipCommitSubject(issue, title) {
+  return `fix(#${issue}): ${String(title ?? '').replace(CLOSING_KEYWORD, '$1$2# ')}`
+}
+// ──── COMMIT-SUBJECT-END ────
 
 // ──── RECORDER-COMMAND-START ────
 /**
@@ -6037,7 +6060,7 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    branch=$(git branch --show-current)
    case "$branch" in main|master) echo "REFUSING: on $branch — ship never commits to the default branch"; exit 1;; esac
    ${gitAddForCommit}
-   git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
+   git commit -m ${shellQuote(shipCommitSubject(ISSUE, goalData.issueTitle))}
    git push -u origin ${pushTarget}
 
    The branch check is not optional and is not a formality. #136: a run pushed
