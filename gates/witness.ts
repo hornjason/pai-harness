@@ -53,11 +53,11 @@ export interface WitnessRecord {
 
 // ── Internal helpers ────────────────────────────────────────────────
 
-function getSalt(): string {
-  if (!existsSync(GATE_SALT_PATH)) {
-    throw new Error(`Gate salt not found at ${GATE_SALT_PATH}`);
+function getSalt(saltPath: string = GATE_SALT_PATH): string {
+  if (!existsSync(saltPath)) {
+    throw new Error(`Gate salt not found at ${saltPath}`);
   }
-  return readFileSync(GATE_SALT_PATH, "utf-8").trim();
+  return readFileSync(saltPath, "utf-8").trim();
 }
 
 function gitSha(cwd?: string): string {
@@ -87,6 +87,63 @@ function computeHmac(record: Omit<WitnessRecord, "hmac">): string {
     record.testOutputHash,
   ].join(":");
   return createHmac("sha256", salt).update(input).digest("hex").slice(0, 16);
+}
+
+/**
+ * The exact bytes a census signature is taken over (#494).
+ *
+ * Named and exported so there is ONE definition of what is signed. A signer
+ * and a verifier that each built their own string would agree on every
+ * census anyone had tried and disagree on the first one nobody had.
+ *
+ * Three properties, each because of something an erasing agent could
+ * otherwise do:
+ *
+ * - **Sorted keys**, so the signature is over the READING and not over the
+ *   order `censusOf` happened to walk the tree in. A signature that moved
+ *   when the walk order moved would read as tampering on every platform
+ *   whose `readdir` order differs.
+ * - **The slug**, so a census and signature lifted out of another run's
+ *   state file on the same machine do not verify here. The salt is shared
+ *   across runs; without the slug, every run's signature is every other
+ *   run's signature.
+ * - **The file count**, so two different censuses cannot produce the same
+ *   signing input through a path containing the separator.
+ */
+export function censusSigningInput(slug: string, census: Record<string, number>): string {
+  const entries = Object.keys(census)
+    .sort()
+    .map(file => `${file}=${census[file]}`);
+  return [`slug=${slug}`, `files=${entries.length}`, ...entries].join("\n");
+}
+
+/**
+ * Sign a banked test census (#494).
+ *
+ * #307's census lived in the run's `workflow-state.json` — a file the heal
+ * agent is handed a write recipe for, by name, at `workflows/ship.js:3513`.
+ * An agent that deleted a test and the census together saw `first-reading`
+ * on the next round, which increments neither `fails` nor `warns`.
+ *
+ * Tamper-EVIDENT, not tamper-proof, and that is the intended goal: the salt
+ * is readable by anything running as this user, so a determined agent can
+ * re-sign. What it can no longer do is make the erasure look like an
+ * ordinary first round.
+ *
+ * Throws when the salt is absent, like every other reader here. A silently
+ * unsigned census is the same hole one layer down —
+ * `persistTestCensus` records that it could not sign instead of pretending
+ * it did, and the next round reads the unsigned census as UNMEASURED.
+ */
+export function signCensus(
+  slug: string,
+  census: Record<string, number>,
+  saltPath: string = GATE_SALT_PATH,
+): string {
+  return createHmac("sha256", getSalt(saltPath))
+    .update(censusSigningInput(slug, census))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 // ── Public API ──────────────────────────────────────────────────────

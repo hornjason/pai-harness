@@ -891,6 +891,23 @@ export const WorkflowStateSchema = z.object({
      * is found — see `nextCensus`.
      */
     testCensus: z.record(z.string(), z.number()).optional(),
+    /**
+     * The gate's HMAC over `testCensus` and the run's slug (#494).
+     *
+     * Declared because a `z.object` is a FILTER, not a description: a field
+     * the schema does not name is stripped from every parsed state, so an
+     * undeclared signature would reach the next gate run looking exactly
+     * like one an agent had deleted.
+     *
+     * `.optional()` on purpose, and it is not a hole. Making it required
+     * would refuse the state file rather than report the erasure, which
+     * turns a detectable tamper into a crashed run — and the heal agent
+     * writes this file through `writeWorkflowState`, so the refusal would
+     * land on the wrong party. The detection is in `readPersistedCensus`
+     * and `censusVerdict`, where an absent signature beside an existing
+     * witness reads UNMEASURED.
+     */
+    testCensusSignature: z.string().optional(),
     environments: z.any().optional(),
     verdicts: z.any().optional(),
     evidence: z.any().optional(),

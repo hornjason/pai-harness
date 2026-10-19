@@ -21,20 +21,40 @@
  * This module is the counting and the comparison; `gates/gate-executor.ts`
  * holds the refusal and decides when to bank a new reading.
  *
- * ## What this guard does NOT do, stated rather than implied
+ * ## The erasure this used to permit, and what closed it (#494)
  *
  * The banked census lives in the run's `workflow-state.json`, which is a
- * file the heal agent can write. A heal agent that deleted a test AND the
- * census would see `first-reading` on the next round and pass. This guard
- * raises the cost of an accidental deletion, which is the failure mode that
- * actually happened on `wf_5cdce852-1e2`; it is not tamper-evident against a
- * deliberate one, and `writeWorkflowState`'s Zod validation does not make it
- * so, because an absent optional key is valid.
+ * file the heal agent can write — `workflows/ship.js` hands it the file by
+ * name, with a working `writeWorkflowState` recipe. A heal agent that
+ * deleted a test AND the census saw `first-reading` on the next round and
+ * passed, because `first-reading` increments neither `fails` nor `warns`.
+ * `writeWorkflowState`'s Zod validation did not help: an absent optional
+ * key is valid.
  *
- * Closing that properly means putting the reading somewhere the guarded
- * party does not write — the witness, or an HMAC over it — and is filed
- * separately rather than half-done here. A guard whose limit is written down
- * is a guard somebody can finish; one whose limit is implied is one everybody
+ * Since #494 the gate SIGNS the banked census — `signCensus` in
+ * `gates/witness.ts`, HMAC over the sorted reading and the run's slug —
+ * and stores the signature beside it. The signature alone cannot close the
+ * hole, because an agent erasing the census erases the signature with it
+ * and the two absences are identical. The second half is a fact the state
+ * file does not hold: `~/.rungate/<slug>/witnesses/`, written by
+ * `writeWitness` on every gate run and named by no prompt. An unsigned or
+ * mismatched census where a witness already exists is UNMEASURED, which is
+ * a WARN in this gate, and no longer a first reading.
+ *
+ * ## What it still does NOT do, stated rather than implied
+ *
+ * Tamper-EVIDENT, not tamper-proof, and that is the intended goal. The gate
+ * salt is readable by anything running as this user, so an agent that knows
+ * where it lives can re-sign a census it rewrote. It can also delete the
+ * witness directory, which puts the run back to looking like a first round.
+ * Both are a different and louder act than deleting a key out of a file the
+ * prompt told it to edit, and neither is what the accidental deletion on
+ * `wf_5cdce852-1e2` looked like.
+ *
+ * Closing THAT means a store the run cannot write at all — an append-only
+ * log off the machine, or a signing key the gate process does not hold.
+ * Filed rather than half-done here. A guard whose limit is written down is
+ * a guard somebody can finish; one whose limit is implied is one everybody
  * assumes is complete.
  *
  * ## Why a declaration count and not a run

@@ -32,11 +32,29 @@ import {
   MAX_CENSUS_FILE_BYTES,
 } from "../lib/test-census";
 import {
+  censusReport,
   censusVerdict,
   nextCensus,
   persistTestCensus,
+  priorGateRun,
   readPersistedCensus,
+  verifiedCensus,
+  type PersistedCensus,
+  type PriorGateRun,
 } from "../gates/gate-executor";
+import { signCensus, writeWitness } from "../gates/witness";
+import { ensureGateSalt } from "../lib/paths";
+import { WorkflowStateSchema } from "../gates/schema";
+
+/**
+ * A banked census the signature check accepted, written as a helper so the
+ * cases below say which of the three readings they mean (#494).
+ */
+const banked = (census: Record<string, number>): PersistedCensus => ({ kind: "verified", census });
+/** Nothing under `gateContract` at all — the state of a run before its first gate. */
+const NOTHING_BANKED: PersistedCensus = { kind: "absent" };
+/** No witness for this slug, on a machine whose witness writer works. */
+const FIRST_GATE_RUN: PriorGateRun = { kind: "first" };
 
 describe("#307: counting what a file declares", () => {
   test("SC-1684: skipped and todo tests are counted - converting one is removing it", () => {
@@ -185,15 +203,21 @@ describe("#307: what a gate run does about it", () => {
     // Nothing to compare is not the same as nothing was removed, and a
     // verdict that collapsed them would be the reading nobody took wearing
     // the answer's clothes.
-    expect(censusVerdict(undefined, { "test/a.test.ts": 3 })).toEqual({ kind: "first-reading", files: 1 });
-    expect(censusVerdict({}, { "test/a.test.ts": 3 })).toEqual({ kind: "first-reading", files: 1 });
+    expect(censusVerdict(NOTHING_BANKED, { "test/a.test.ts": 3 }, FIRST_GATE_RUN)).toEqual({
+      kind: "first-reading",
+      files: 1,
+    });
+    expect(censusVerdict(banked({}), { "test/a.test.ts": 3 }, FIRST_GATE_RUN)).toEqual({
+      kind: "first-reading",
+      files: 1,
+    });
 
     // ...and with something to compare, the two real answers are distinct.
-    expect(censusVerdict({ "test/a.test.ts": 3 }, { "test/a.test.ts": 3 })).toEqual({
+    expect(censusVerdict(banked({ "test/a.test.ts": 3 }), { "test/a.test.ts": 3 }, FIRST_GATE_RUN)).toEqual({
       kind: "no-regression",
       files: 1,
     });
-    expect(censusVerdict({ "test/a.test.ts": 3 }, { "test/a.test.ts": 2 })).toEqual({
+    expect(censusVerdict(banked({ "test/a.test.ts": 3 }), { "test/a.test.ts": 2 }, FIRST_GATE_RUN)).toEqual({
       kind: "regression",
       regressions: ["test/a.test.ts: 3 test(s) before, 2 after"],
     });
@@ -205,14 +229,14 @@ describe("#307: what a gate run does about it", () => {
     // to `{}`; `{}` compares clean against `{}` on every subsequent round,
     // so without this the guard is dead and indistinguishable from a guard
     // that keeps finding nothing wrong.
-    const v = censusVerdict({ "test/a.test.ts": 3 }, {});
+    const v = censusVerdict(banked({ "test/a.test.ts": 3 }), {}, FIRST_GATE_RUN);
     expect(v.kind).toBe("unmeasured");
     if (v.kind !== "unmeasured") throw new Error("unreachable");
     expect(v.reason).toContain("could not be seen");
 
-    // An empty tree on the FIRST round too — `{}` against `undefined` must
+    // An empty tree on the FIRST round too — `{}` against nothing banked must
     // not slip through as `first-reading`, which reads as ordinary.
-    expect(censusVerdict(undefined, {}).kind).toBe("unmeasured");
+    expect(censusVerdict(NOTHING_BANKED, {}, FIRST_GATE_RUN).kind).toBe("unmeasured");
   });
 
   test("SC-1692: an unmeasured round keeps the previous reading - no amnesia", () => {
@@ -246,7 +270,7 @@ describe("#307: what a gate run does about it", () => {
     // The arm the two deciders share, kept as a case in its own right: the
     // empty census that arrives through `censusVerdict` must also keep the
     // previous reading, whichever of the two branches answers it.
-    expect(nextCensus(before, {}, censusVerdict(before, {}))).toEqual(before);
+    expect(nextCensus(before, {}, censusVerdict(banked(before), {}, FIRST_GATE_RUN))).toEqual(before);
   });
 
   test("SC-1689: a refused round does not bank the reduced census", () => {
@@ -256,17 +280,19 @@ describe("#307: what a gate run does about it", () => {
     // it was until the test comes back.
     const before = { "test/a.test.ts": 3 };
     const after = { "test/a.test.ts": 2 };
-    const verdict = censusVerdict(before, after);
+    const verdict = censusVerdict(banked(before), after, FIRST_GATE_RUN);
 
     expect(nextCensus(before, after, verdict)).toEqual(before);
     // Restoring the test clears it, so the refusal is not permanent — a
     // guard with no way out gets deleted rather than satisfied.
     const restored = { "test/a.test.ts": 3 };
-    expect(nextCensus(before, restored, censusVerdict(before, restored))).toEqual(restored);
+    expect(nextCensus(before, restored, censusVerdict(banked(before), restored, FIRST_GATE_RUN))).toEqual(
+      restored,
+    );
     // And an ordinary round banks what it saw, which is what makes the
     // comparison move forward at all.
     const grown = { "test/a.test.ts": 5 };
-    expect(nextCensus(before, grown, censusVerdict(before, grown))).toEqual(grown);
+    expect(nextCensus(before, grown, censusVerdict(banked(before), grown, FIRST_GATE_RUN))).toEqual(grown);
   });
 
   test("SC-1694: the banked census reaches the state FILE - and clobbers nothing", () => {
@@ -276,6 +302,7 @@ describe("#307: what a gate run does about it", () => {
     // by accident — and did not. Every subsequent run would have found no
     // census, answered `first-reading`, logged a reassuring line, and
     // compared nothing, forever.
+    ensureGateSalt();
     const dir = mkdtempSync(join(tmpdir(), "rg-persist-"));
     try {
       const sf = join(dir, "workflow-state.json");
@@ -291,7 +318,7 @@ describe("#307: what a gate run does about it", () => {
         }),
       );
 
-      persistTestCensus(sf, { "test/a.test.ts": 7 });
+      persistTestCensus(sf, { "test/a.test.ts": 7 }, "x");
 
       const after = JSON.parse(readFileSync(sf, "utf-8"));
       expect(after.gateContract.testCensus).toEqual({ "test/a.test.ts": 7 });
@@ -304,7 +331,9 @@ describe("#307: what a gate run does about it", () => {
       // Written in a form the next run can read back, which is the whole
       // point — a census persisted as `[object Object]` would compare clean
       // against everything.
-      expect(censusVerdict(after.gateContract.testCensus, { "test/a.test.ts": 4 })).toEqual({
+      expect(
+        censusVerdict(readPersistedCensus(sf, "x"), { "test/a.test.ts": 4 }, { kind: "ran", witnesses: 1 }),
+      ).toEqual({
         kind: "regression",
         regressions: ["test/a.test.ts: 7 test(s) before, 4 after"],
       });
@@ -319,27 +348,35 @@ describe("#307: what a gate run does about it", () => {
     // Comparing against the stale copy and then persisting over the fresh
     // one is how a round's reading quietly disappears, and the direction it
     // disappears in is toward not refusing.
+    ensureGateSalt();
     const dir = mkdtempSync(join(tmpdir(), "rg-stale-"));
     try {
       const sf = join(dir, "workflow-state.json");
-      writeFileSync(sf, JSON.stringify({ gateContract: { testCensus: { "a.test.ts": 9 } } }));
-      expect(readPersistedCensus(sf)).toEqual({ "a.test.ts": 9 });
-
-      // The three shapes that must read as "nothing banked" rather than as
-      // a census — each would otherwise reach `censusRegressions` and
-      // compare against nonsense.
       writeFileSync(sf, JSON.stringify({ gateContract: {} }));
-      expect(readPersistedCensus(sf)).toBeUndefined();
-      writeFileSync(sf, JSON.stringify({ gateContract: { testCensus: [] } }));
-      expect(readPersistedCensus(sf), "an array was accepted as a census").toBeUndefined();
-      writeFileSync(sf, "{ not json");
-      expect(readPersistedCensus(sf)).toBeUndefined();
-      expect(readPersistedCensus(join(dir, "nope.json"))).toBeUndefined();
+      persistTestCensus(sf, { "a.test.ts": 9 }, "stale");
+      expect(readPersistedCensus(sf, "stale")).toEqual({ kind: "verified", census: { "a.test.ts": 9 } });
+      expect(verifiedCensus(readPersistedCensus(sf, "stale"))).toEqual({ "a.test.ts": 9 });
 
-      // ...and `undefined` becomes first-reading, which is reported rather
-      // than passed quietly. The catch above is the one place this guard
-      // swallows an error, so the thing it hands on must not read as clean.
-      expect(censusVerdict(readPersistedCensus(sf), { "a.test.ts": 1 }).kind).toBe("first-reading");
+      // The three shapes that must NOT reach `censusRegressions`, each of
+      // which would otherwise compare against nonsense. None of them is
+      // `verified`, so none of them is a census this guard will compare —
+      // and none is silently clean either (#494): where a gate run already
+      // happened they are UNMEASURED, asserted in the #494 block below.
+      writeFileSync(sf, JSON.stringify({ gateContract: {} }));
+      expect(readPersistedCensus(sf, "stale")).toEqual({ kind: "absent" });
+      writeFileSync(sf, JSON.stringify({ gateContract: { testCensus: [] } }));
+      expect(readPersistedCensus(sf, "stale").kind, "an array was accepted as a census").toBe("unverified");
+      writeFileSync(sf, "{ not json");
+      expect(readPersistedCensus(sf, "stale").kind).toBe("unverified");
+      expect(readPersistedCensus(join(dir, "nope.json"), "stale").kind).toBe("unverified");
+
+      // ...and with no earlier gate run to contradict it, an unreadable file
+      // becomes first-reading, which is reported rather than passed quietly.
+      // The catch above is the one place this guard swallows an error, so the
+      // thing it hands on must not read as clean.
+      expect(censusVerdict(readPersistedCensus(sf, "stale"), { "a.test.ts": 1 }, FIRST_GATE_RUN).kind).toBe(
+        "first-reading",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -394,5 +431,274 @@ describe("#307: what a gate run does about it", () => {
     expect(Object.keys(real).length, "the census found suspiciously few test files").toBeGreaterThan(250);
     expect(real["test/test-census.test.ts"], "the census cannot see this file").toBeGreaterThan(5);
     expect(Object.values(real).reduce((a, b) => a + b, 0)).toBeGreaterThan(5000);
+  });
+});
+
+/**
+ * #494 — the guard's memory lived where the guarded party writes.
+ *
+ * `workflows/ship.js:3513` hands the scope-heal agent a working recipe for
+ * editing `workflow-state.json`, by name. The banked census lived in that
+ * file, `testCensus` is `.optional()` so an absent key validates, and an
+ * absent census answered `first-reading`, which does not increment `fails`
+ * or `warns`. Deleting a test and the census together was therefore a pass.
+ *
+ * Ids need allocating for these cases — they are deliberately written with
+ * no `SC-` prefix (`.claude/rules/claiming-sc-coverage.md`, and four id
+ * collisions in one day).
+ */
+describe("#494: a census the heal agent can erase is a guard with an off switch", () => {
+  /**
+   * Run the body with `RUNGATE_WORK_DIR` pointed at a scratch tree.
+   *
+   * Both `writeWitness` and `workDir()` resolve it at call time, so the
+   * witness the producer writes and the witness `priorGateRun` counts are
+   * the same file — which is the point of using the real producer here
+   * rather than planting a JSON file the consumer would agree with whatever
+   * it contained (`.claude/rules/checks-must-be-able-to-fail.md`, #530).
+   */
+  function withWorkDir<T>(dir: string, fn: () => T): T {
+    const prior = process.env.RUNGATE_WORK_DIR;
+    process.env.RUNGATE_WORK_DIR = dir;
+    try {
+      return fn();
+    } finally {
+      if (prior === undefined) delete process.env.RUNGATE_WORK_DIR;
+      else process.env.RUNGATE_WORK_DIR = prior;
+    }
+  }
+
+  test("erasing the banked census between gate runs is not a first reading - and a genuine first run still is", () => {
+    // The two halves are in ONE test deliberately: a detection that refused
+    // every first round would be deleted within a week, and a detection that
+    // agreed with the first-run case is not a detection. They cannot drift
+    // into agreeing while they are asserted side by side.
+    ensureGateSalt();
+    const dir = mkdtempSync(join(tmpdir(), "rg-census-erase-"));
+    try {
+      const work = join(dir, "work");
+      const slug = "wf_census-erase";
+      const sf = join(dir, "workflow-state.json");
+      writeFileSync(sf, JSON.stringify({ slug, gateContract: {} }));
+
+      // THE CONTROL. Nothing banked, no gate run yet: first-reading, which
+      // is neither a FAIL nor a WARN.
+      withWorkDir(work, () => {
+        expect(priorGateRun(slug)).toEqual({ kind: "first" });
+        const v = censusVerdict(readPersistedCensus(sf, slug), { "a.test.ts": 3 }, priorGateRun(slug));
+        expect(v).toEqual({ kind: "first-reading", files: 1 });
+        expect(censusReport(v, dir)).toMatchObject({ fails: 0, warns: 0, results: [] });
+      });
+
+      // Round one: the gate banks a signed census and writes its witness.
+      persistTestCensus(sf, { "a.test.ts": 3 }, slug);
+      withWorkDir(work, () => writeWitness(slug, "scope", "PASS", "3 pass 0 fail", 494));
+
+      // The heal round deletes a test AND the census, which is exactly what
+      // the recipe at workflows/ship.js:3513 makes available.
+      const tampered = JSON.parse(readFileSync(sf, "utf-8"));
+      delete tampered.gateContract.testCensus;
+      delete tampered.gateContract.testCensusSignature;
+      writeFileSync(sf, JSON.stringify(tampered));
+
+      withWorkDir(work, () => {
+        const prior = priorGateRun(slug);
+        expect(prior, "the witness the gate wrote was not counted").toEqual({ kind: "ran", witnesses: 1 });
+
+        const v = censusVerdict(readPersistedCensus(sf, slug), { "a.test.ts": 2 }, prior);
+        expect(v.kind, "an erased census still read as a first run").toBe("census-unverified");
+
+        // ...and the gate does not stay silent about it. UNMEASURED is a
+        // WARN here, which is the gate's existing precedent for a reading
+        // that could not be taken.
+        const report = censusReport(v, dir);
+        expect(report.fails, "an erased census must not FAIL — the round may be a legitimate first one").toBe(0);
+        expect(report.warns, "an erased census passed with nothing recorded").toBe(1);
+        expect(report.results).toHaveLength(1);
+        expect(report.results[0].result).toBe("WARN");
+        expect(report.results[0].check).toContain("UNMEASURED");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a banked count edited in place does not verify - the signature is over the reading", () => {
+    // The erasure above is the loud version. The quiet one is editing the
+    // number downward so the next round compares against a census that
+    // already contains the deletion, which would be `no-regression` forever.
+    ensureGateSalt();
+    const dir = mkdtempSync(join(tmpdir(), "rg-census-edit-"));
+    try {
+      const slug = "wf_census-edit";
+      const sf = join(dir, "workflow-state.json");
+      writeFileSync(sf, JSON.stringify({ slug, gateContract: {} }));
+      persistTestCensus(sf, { "a.test.ts": 3, "b.test.ts": 4 }, slug);
+
+      const edited = JSON.parse(readFileSync(sf, "utf-8"));
+      edited.gateContract.testCensus["a.test.ts"] = 1;
+      writeFileSync(sf, JSON.stringify(edited));
+
+      const reading = readPersistedCensus(sf, slug);
+      expect(reading.kind, "a rewritten count verified against the old signature").toBe("unverified");
+      expect(
+        censusVerdict(reading, { "a.test.ts": 1, "b.test.ts": 4 }, { kind: "ran", witnesses: 2 }).kind,
+        "an edited census was compared as if it had been banked",
+      ).toBe("census-unverified");
+
+      // Dropping a whole file from the census is the same question asked the
+      // other way, and must not verify either.
+      const dropped = JSON.parse(readFileSync(sf, "utf-8"));
+      dropped.gateContract.testCensus = { "b.test.ts": 4 };
+      writeFileSync(sf, JSON.stringify(dropped));
+      expect(readPersistedCensus(sf, slug).kind).toBe("unverified");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a signature from another run does not transfer - the slug is signed with the census", () => {
+    // Without the slug in the signed input, a census and signature lifted
+    // out of any other run's state file on the same machine would verify,
+    // and the salt is shared across runs.
+    ensureGateSalt();
+    const dir = mkdtempSync(join(tmpdir(), "rg-census-replay-"));
+    try {
+      const census = { "a.test.ts": 3 };
+      const donor = join(dir, "donor.json");
+      writeFileSync(donor, JSON.stringify({ gateContract: {} }));
+      persistTestCensus(donor, census, "wf_donor");
+
+      const lifted = JSON.parse(readFileSync(donor, "utf-8")).gateContract;
+      const victim = join(dir, "victim.json");
+      writeFileSync(victim, JSON.stringify({ gateContract: lifted }));
+
+      expect(readPersistedCensus(victim, "wf_donor")).toEqual({ kind: "verified", census });
+      expect(
+        readPersistedCensus(victim, "wf_victim").kind,
+        "another run's signature verified against this run's census",
+      ).toBe("unverified");
+      expect(signCensus("wf_donor", census)).not.toBe(signCensus("wf_victim", census));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a machine that cannot write witnesses reads UNMEASURED - not a first run", () => {
+    // The off switch one layer down. `writeWitness` is wrapped in a
+    // try/catch at gates/gate-executor.ts that only logs, and it throws when
+    // the gate salt is absent — so on such a machine NO witness is ever
+    // written and "no witnesses" would mean "every round is a first round"
+    // forever. That is the cheapest wrong fix for this whole issue, named:
+    // fall back to `first-reading` whenever the witness count cannot be
+    // read. This case is what refuses it.
+    const dir = mkdtempSync(join(tmpdir(), "rg-census-nosalt-"));
+    try {
+      const slug = "wf_census-nosalt";
+      const absentSalt = join(dir, "no-such-salt");
+      const prior = withWorkDir(join(dir, "work"), () => priorGateRun(slug, { saltPath: absentSalt }));
+      expect(prior.kind, "an unwritable witness read as a confirmed first run").toBe("unreadable");
+
+      const v = censusVerdict(NOTHING_BANKED, { "a.test.ts": 1 }, prior);
+      expect(v.kind, "a run that could not rule out an earlier round passed as a first reading").toBe(
+        "census-unverified",
+      );
+      expect(censusReport(v, dir).warns).toBe(1);
+
+      // ...and the gate still runs: an unsignable census is banked unsigned
+      // with the reason recorded, rather than throwing out of the gate.
+      const sf = join(dir, "workflow-state.json");
+      writeFileSync(sf, JSON.stringify({ gateContract: {} }));
+      persistTestCensus(sf, { "a.test.ts": 1 }, slug, { saltPath: absentSalt });
+      const after = JSON.parse(readFileSync(sf, "utf-8"));
+      expect(after.gateContract.testCensus).toEqual({ "a.test.ts": 1 });
+      expect(after.gateContract.testCensusSignature, "a census was signed with no salt").toBeUndefined();
+      expect(readPersistedCensus(sf, slug).kind).toBe("unverified");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the signature travels in the state file's declared shape - the schema does not drop it", () => {
+    // A schema is a filter, not a description: `z.object` strips what it
+    // does not declare, so an undeclared signature is removed on the way
+    // through every reader that parses the state (#530).
+    ensureGateSalt();
+    const dir = mkdtempSync(join(tmpdir(), "rg-census-schema-"));
+    try {
+      const slug = "wf_census-schema";
+      const sf = join(dir, "workflow-state.json");
+      writeFileSync(sf, JSON.stringify({ gateContract: {} }));
+      persistTestCensus(sf, { "a.test.ts": 3 }, slug);
+      const onDisk = JSON.parse(readFileSync(sf, "utf-8"));
+      expect(typeof onDisk.gateContract.testCensusSignature).toBe("string");
+
+      const parsed = WorkflowStateSchema.parse({
+        schemaVersion: 2,
+        issue: 494,
+        slug,
+        issueGoal: "the heal-round test census is stored where the heal agent can erase it",
+        acs: [],
+        phase: "SCOPE",
+        gateContract: onDisk.gateContract,
+      });
+      expect(
+        parsed.gateContract?.testCensusSignature,
+        "the schema strips the signature, so a parsed state reads as erased",
+      ).toBe(onDisk.gateContract.testCensusSignature);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the witness directory the gate writes is the one the prior-run reading counts", () => {
+    // The positive control for the reading itself. A consumer that resolved
+    // a different directory would report `first` forever and the detection
+    // would be off with nothing in the output saying so — an empty search
+    // over a store nobody checked (`.claude/rules/checks-must-be-able-to-fail.md`).
+    ensureGateSalt();
+    const dir = mkdtempSync(join(tmpdir(), "rg-census-witness-"));
+    try {
+      const slug = "wf_census-witness";
+      withWorkDir(dir, () => {
+        expect(priorGateRun(slug)).toEqual({ kind: "first" });
+        const path = writeWitness(slug, "scope", "PASS", "ok", 494);
+        expect(path.startsWith(join(dir, slug, "witnesses"))).toBe(true);
+        expect(priorGateRun(slug)).toEqual({ kind: "ran", witnesses: 1 });
+        writeWitness(slug, "verify", "PASS", "ok", 494);
+        expect(priorGateRun(slug)).toEqual({ kind: "ran", witnesses: 2 });
+        // A different run's witnesses say nothing about this one.
+        expect(priorGateRun("wf_census-other")).toEqual({ kind: "first" });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the gate's report is a projection of the verdict - every arm accounted for", () => {
+    // One binding turns a verdict into what the gate counts, so there is one
+    // thing to mutate. A `FAIL` that forgot to increment `fails`, or an
+    // UNMEASURED arm that pushed no result, is the silent pass this issue is
+    // about, one layer further down.
+    expect(censusReport({ kind: "no-regression", files: 4 }, "/t")).toMatchObject({
+      fails: 0,
+      warns: 0,
+      results: [],
+    });
+    expect(censusReport({ kind: "first-reading", files: 4 }, "/t")).toMatchObject({
+      fails: 0,
+      warns: 0,
+      results: [],
+    });
+    const regression = censusReport({ kind: "regression", regressions: ["a.test.ts: 3 before, 2 after"] }, "/t");
+    expect(regression.fails).toBe(1);
+    expect(regression.results[0].result).toBe("FAIL");
+    const unmeasured = censusReport({ kind: "unmeasured", reason: "no test file" }, "/t");
+    expect(unmeasured.warns).toBe(1);
+    expect(unmeasured.results[0].result).toBe("WARN");
+    const unverified = censusReport({ kind: "census-unverified", reason: "no signature" }, "/t");
+    expect(unverified.warns).toBe(1);
+    expect(unverified.results[0].result).toBe("WARN");
+    expect(unverified.fails, "an unverified census was counted as a failure").toBe(0);
   });
 });
