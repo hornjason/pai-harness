@@ -20,7 +20,7 @@ import { commentClaimForm, titleCall, type ClaimForm } from "../lib/sc-claim-for
 import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
-import { readFreshCache } from "../lib/behavioral-cache";
+import { behavioralCachePath, readFreshCache } from "../lib/behavioral-cache";
 import { detectDrift } from "./detect-sc-drift";
 import {
   ambiguityOf,
@@ -524,9 +524,10 @@ export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): C
   const failing = new Set<string>();
   const unmatchable = new Set<string>();
 
-  // Read behavioral cache for behavioral SCs
-  const cachePath = join(root, ".rungate", "behavioral-results.json");
-  const behavioralCache = readFreshCache(cachePath);
+  // Read behavioral cache for behavioral SCs. Same binding the conformity
+  // suite asserts through, so the tick-decider and the gate cannot disagree
+  // about where the evidence lives (#328).
+  const behavioralCache = readFreshCache(behavioralCachePath(root));
 
   for (const sc of uncheckedSCs) {
     const statement = sc.statement || "";
