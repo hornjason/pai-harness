@@ -12,6 +12,7 @@
  *   bun scripts/test-brief.ts marcus "task" --score-only
  *   bun scripts/test-brief.ts marcus "task" <transcript-dir>
  *   bun scripts/test-brief.ts marcus --prompt=path/to/prompt.md
+ *   bun scripts/test-brief.ts marcus --prompt=p.md --brief=path/to/patched.md
  *
  * SC-400: test-brief CLI: isolated worktree compliance test
  * SC-471: --prompt flag for replay prompt with COMP grading
@@ -32,7 +33,7 @@ import {
   formatHillClimbReport,
   type HillClimbResult,
 } from "../lib/hill-climb.js";
-import { writeCache, type BehavioralCache } from "../lib/behavioral-cache.js";
+import { behavioralCachePath, writeCache, type BehavioralCache } from "../lib/behavioral-cache.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -88,6 +89,8 @@ const targetFlag = flags.find((f) => f.startsWith("--target="));
 const targetScore = targetFlag ? parseInt(targetFlag.split("=")[1], 10) : DEFAULT_TARGET_SCORE;
 const promptFlag = flags.find((f) => f.startsWith("--prompt=") || f === "--prompt");
 const promptFile = promptFlag?.startsWith("--prompt=") ? promptFlag.split("=")[1] : undefined;
+const briefFlag = flags.find((f) => f.startsWith("--brief="));
+const briefOverride = briefFlag ? briefFlag.slice("--brief=".length) : undefined;
 
 if (!role) {
   console.error("Usage: bun scripts/test-brief.ts <role> [task] [options]");
@@ -100,6 +103,7 @@ if (!role) {
   console.error("  --hill-climb    Run up to 5 iterations to improve score");
   console.error("  --target=N      Set target score (default: 80)");
   console.error("  --prompt=FILE   Replay exact prompt file for COMP grading");
+  console.error("  --brief=FILE    Grade this brief instead of the one role config names");
   console.error("");
   console.error("When task is omitted, standardTask from rungate.json is used as fallback.");
   console.error("");
@@ -125,8 +129,15 @@ if (!isValidRole(role)) {
   process.exit(1);
 }
 
+// `--brief=` overrides the role-config lookup (#648).
+//
+// `scripts/persist-compliance.ts` re-grades after a hill-climb write, and
+// since #648 the destination of that write is a choice — so the patched
+// brief is not necessarily at the path role config names. Re-deriving the
+// target here would score the UNPATCHED file and report the number as the
+// patched one. The caller passes the path `writeReinforcedBrief` reported.
 const briefRelPath = roleConfig[role]?.brief || `.claude/agents/${role}.md`;
-const briefPath = join(ROOT, briefRelPath);
+const briefPath = briefOverride ? resolve(briefOverride) : join(ROOT, briefRelPath);
 
 if (!existsSync(briefPath)) {
   console.error(`Brief not found: ${briefPath}`);
@@ -313,8 +324,7 @@ function writeBehavioralResults(agentRole: string, transcriptContent: string): v
     }
 
     if (Object.keys(cacheData).length > 0) {
-      const cachePath = join(ROOT, ".rungate", "behavioral-results.json");
-      writeCache(cachePath, cacheData);
+      writeCache(behavioralCachePath(ROOT), cacheData);
       console.log(`  Behavioral cache: ${Object.keys(cacheData).length} entries written`);
     }
   } catch (err) {

@@ -26,19 +26,22 @@ import {
   OWNED_FILES,
   SCAFFOLD_REFUSE,
   bytesIdentical,
-  commentSha,
   decideOwnedWrite,
-  declaredCommentSha,
   ownedFilesTable,
-  stampComment,
 } from "../lib/scaffold/owned-files";
 import {
+  createCiWorkflows,
   generateConformityTest,
   ownedSections,
   ownedStrategy,
   regenerateOwned,
   safeWrite,
 } from "../lib/scaffold/steps";
+// The truth about what a generated workflow contains. `jobNames` is the
+// parser `mergeJobsSection` itself uses, so a case built on it reads the
+// same job list the preservation logic does rather than a second opinion.
+import { jobNames } from "../lib/scaffold/managed-workflow";
+import { bodySha, declaredSha, decideRuleWrite, stampProvenance } from "../lib/rule-provenance";
 // From its owner, not re-exported. #208 shipped a second copy of this
 // predicate in steps.ts; importing from the one place SC-811 names means a
 // mutation of it reaches both callers.
@@ -308,43 +311,39 @@ describe("#208 SC-840: a hand-edited owned file is preserved and reported", () =
   // resolved implicitly. It is preserve-and-report, matching #370's answer
   // to the same question: the skipped file is still on disk, the
   // overwritten one is gone, and only one of those is recoverable.
+  //
+  // **Repointed by #759.** These five cases used to drive
+  // `decideOwnedWrite("provenance", …)` and a `//` line-comment marker.
+  // That branch was never reached by any run — `.claude/rules/*.md` is the
+  // only row declaring `provenance` and it is written by `decideRuleWrite`,
+  // which uses a frontmatter key because a markdown file has no line
+  // comments. The policy is real and worth asserting; the binding under it
+  // was not the one the generator uses, so a case here could go green over
+  // a tree in which the behaviour had been deleted outright.
   test("a stamped file the harness wrote is updated", () => {
-    const existing = stampComment("old body\n");
-    const d = decideOwnedWrite("provenance", existing, "new body\n");
-    expect(d.action).toBe("changed");
-    expect(d.content).toBe(stampComment("new body\n"));
+    const existing = stampProvenance("old body\n");
+    const d = decideRuleWrite(existing, "new body\n");
+    expect(d.action).toBe("update");
+    expect(d.content).toBe(stampProvenance("new body\n"));
   });
 
   test("a hand-edited stamped file is preserved", () => {
-    const tampered = stampComment("old body\n").replace("old body", "a human's edit");
-    const d = decideOwnedWrite("provenance", tampered, "new body\n");
+    const tampered = stampProvenance("old body\n").replace("old body", "a human's edit");
+    const d = decideRuleWrite(tampered, "new body\n");
     expect(d.action).toBe("preserve");
     expect(d.reason).toContain("hand-edited");
   });
 
   test("a file with no marker at all is preserved, not adopted", () => {
-    const d = decideOwnedWrite("provenance", "hand-authored\n", "generated\n");
+    const d = decideRuleWrite("hand-authored\n", "generated\n");
     expect(d.action).toBe("preserve");
     expect(d.reason).toContain("no harness provenance marker");
   });
 
-  test("the refusal is reported in the actions, with a way out", () => {
-    const d = dir();
-    const p = join(d, "edited.ts");
-    writeFileSync(p, "hand-authored\n");
-    const actions: string[] = [];
-    regenerateOwned(p, "generated\n", "edited.ts", actions, "provenance");
-    const line = actions.join("\n");
-    expect(line).toContain(`${SCAFFOLD_REFUSE}: edited.ts`);
-    expect(line, "the report does not say how to accept the generator's version")
-      .toContain("delete the file and re-run");
-    expect(readFileSync(p, "utf-8"), "a hand-edit was destroyed").toBe("hand-authored\n");
-  });
-
   test("the stamp round-trips and the marker is not part of the body", () => {
-    const stamped = stampComment("x\n");
-    expect(declaredCommentSha(stamped)).toBe(commentSha("x\n"));
-    expect(stampComment(stamped), "re-stamping changed the bytes").toBe(stamped);
+    const stamped = stampProvenance("x\n");
+    expect(declaredSha(stamped)).toBe(bodySha("x\n"));
+    expect(stampProvenance(stamped), "re-stamping changed the bytes").toBe(stamped);
   });
 });
 
@@ -387,6 +386,137 @@ describe("#208 SC-841: the doc table is generated, not written", () => {
       expect(table).toContain(`| \`${f.path}\` | ${f.strategy} |`);
     }
     expect(table, "the strategy column is missing").toContain("| Strategy |");
+  });
+});
+
+/**
+ * #739, the unguarded half of #618. Ids need allocating — these cases carry
+ * no SC- prefix on purpose (`.claude/rules/parallel-sessions.md`: an id
+ * chosen against this tree cannot see another session's unmerged branch).
+ *
+ * The three cases above all compare the shipped `.md` against
+ * `ownedFilesTable()`, and **both sides are derived from `OWNED_FILES`**.
+ * They prove the doc and the source agree; they say nothing about what the
+ * source SAYS. Revert both `avoid` strings to "Don't edit the YAML — it
+ * regenerates", re-scaffold, and every one of them stays green over a rule
+ * that again tells consumers not to edit a file rungate only partly owns —
+ * which is the whole of #618.
+ *
+ * So the truth here is not `OWNED_FILES`. It is what the generator EMITS:
+ * `createCiWorkflows` is driven into a temp dir, each generated file is
+ * read back, and `jobNames()` is the list the row has to name. That binds
+ * the doc to the workflow rather than to itself, so renaming a generated
+ * job without updating the row goes red too.
+ *
+ * **The precondition these fixtures hold, named** — the config declares no
+ * `ci.shards`, which is the shape every consumer gets until they opt in.
+ * At `shards > 1` the generator emits `test-shard` ALONGSIDE `test`
+ * (`lib/scaffold/steps.ts`, and `test-shard` is in `HARNESS_OWNED_JOBS`),
+ * and the row names only `test`. That is the same under-description #618
+ * was filed over, surviving conditionally, and closing it means editing a
+ * row in `lib/scaffold/owned-files.ts` — which #739 explicitly excludes.
+ * Reported on the PR rather than pinned green here.
+ */
+describe("#739: a job-preserving row names the job the generator actually emits", () => {
+  const RULE = join(ROOT, ".claude", "rules", "harness-managed.md");
+  const JOB_PRESERVING = OWNED_FILES.filter(f => f.strategy === "job-preserving");
+
+  /** The unsharded workflow set, read off disk rather than described. */
+  const emitted = (): Map<string, string[]> => {
+    const root = dir();
+    mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "rungate", "config.json"),
+      JSON.stringify({ slug: "owned739", test: { command: "bun test", timeout: 300000 }, ci: {} }),
+    );
+    createCiWorkflows(root, [], { force: true });
+
+    const out = new Map<string, string[]>();
+    for (const f of JOB_PRESERVING) {
+      const p = join(root, f.path);
+      // Not a skip. A job-preserving row whose file this generator does not
+      // write is a row nothing here can measure, and an unmeasured row must
+      // not read as a satisfied one.
+      if (!existsSync(p)) {
+        throw new Error(
+          `${f.path} is declared job-preserving and createCiWorkflows wrote no such file. ` +
+            `UNMEASURED, not a pass — point this case at whatever generator owns it.`,
+        );
+      }
+      out.set(f.path, jobNames(readFileSync(p, "utf-8")));
+    }
+    return out;
+  };
+
+  test("there are job-preserving rows to check at all", () => {
+    // "Delete the entry" is one of the two cheap wrong fixes this repo keeps
+    // seeing (`.claude/rules/checks-must-be-able-to-fail.md`). With an empty
+    // filter every loop below is vacuously green, so the population is
+    // asserted before anything is asserted about it.
+    expect(JOB_PRESERVING.length, "no job-preserving rows — the cases below check nothing")
+      .toBeGreaterThanOrEqual(2);
+  });
+
+  test("every emitted job name appears in the row's avoid and customize text", () => {
+    const jobs = emitted();
+    for (const f of JOB_PRESERVING) {
+      const names = jobs.get(f.path)!;
+      // A file the parser found no jobs in is an empty list, and every name
+      // in an empty list trivially appears anywhere. Same reason the slice
+      // cases assert their cut is non-empty.
+      expect(names.length, `${f.path} was generated with no jobs in it — nothing to check`)
+        .toBeGreaterThan(0);
+      for (const name of names) {
+        // The BACKTICKED name, not a substring. A bare `includes("test")`
+        // is satisfied by the word "latest", so a row reading "Don't edit —
+        // the latest scaffold rewrites it" would certify the regression
+        // this case exists to block.
+        expect(f.avoid, `${f.path}: avoid does not name the generated \`${name}\` job — ${JSON.stringify(f.avoid)}`)
+          .toContain(`\`${name}\``);
+        expect(
+          f.customize,
+          `${f.path}: customize does not name the generated \`${name}\` job — ${JSON.stringify(f.customize)}`,
+        ).toContain(`\`${name}\``);
+      }
+    }
+  });
+
+  test("the shipped CELL in harness-managed.md names it too, not merely the row", () => {
+    // Sliced twice, and the second slice is the one that matters.
+    //
+    // Not the page: `harness-managed.md` says in prose further down that
+    // "rungate owns the `test` job in `ci.yml`", so a whole-file search is
+    // satisfied by that sentence whatever the table says.
+    //
+    // And not the ROW either: a row whose `avoid` cell has been reverted to
+    // "Don't edit the YAML" still carries "`test`" in its `customize` cell,
+    // so a row-level search goes green over exactly the #618 state. One
+    // cell answering for the other is the same defect as one document
+    // answering for a section — `.claude/rules/checks-must-be-able-to-fail.md`,
+    // "search the slice, not the document".
+    const shipped = readFileSync(RULE, "utf-8").split("\n");
+    const jobs = emitted();
+    for (const f of JOB_PRESERVING) {
+      const row = shipped.find(l => l.startsWith(`| \`${f.path}\` |`));
+      expect(row, `${f.path} has no table row in harness-managed.md`).toBeDefined();
+      // `| path | strategy | customize | avoid |` — leading and trailing
+      // empties from the outer pipes, so the two cells are 3 and 4.
+      const cells = row!.split("|").map(c => c.trim());
+      expect(cells.length, `${f.path}'s row is not the four-column shape this reads`).toBe(6);
+      const names = jobs.get(f.path)!;
+      // Its own non-empty guard, not the one in the case above. Measured:
+      // with `jobNames` short-circuited to `return []` this case was GREEN
+      // and only its sibling went red — an instrument that stopped
+      // reporting, leaving a vacuous loop behind it.
+      expect(names.length, `${f.path} was generated with no jobs in it — nothing to check`)
+        .toBeGreaterThan(0);
+      for (const name of names) {
+        expect(cells[3], `${f.path}'s shipped customize cell does not name the generated \`${name}\` job`)
+          .toContain(`\`${name}\``);
+        expect(cells[4], `${f.path}'s shipped avoid cell does not name the generated \`${name}\` job`)
+          .toContain(`\`${name}\``);
+      }
+    }
   });
 });
 

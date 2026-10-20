@@ -15,12 +15,14 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+
+import { walkTestFiles } from "../lib/walk-test-files";
 import { commentMask, enclosingComment, stripJsComments } from "../lib/strip-js-comments";
 import { commentClaimForm, titleCall, type ClaimForm } from "../lib/sc-claim-forms";
 import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
-import { readFreshCache } from "../lib/behavioral-cache";
+import { behavioralCachePath, readFreshCache } from "../lib/behavioral-cache";
 import { detectDrift } from "./detect-sc-drift";
 import {
   ambiguityOf,
@@ -337,7 +339,7 @@ export function findTestFilesForSCs(
     wanted.set(sc.id, specs);
   }
 
-  for (const file of readdirSync(dir).filter(f => f.endsWith(".test.ts"))) {
+  for (const file of walkTestFiles(dir)) {
     const source = readFileSync(join(dir, file), "utf-8");
     const credits: ScCredit[] = [];
     for (const { id, at, kind, form } of coverageClaimSites(source)) {
@@ -377,7 +379,7 @@ export function intendedOnly(testDir: string): Map<string, string[]> {
   if (!existsSync(testDir)) return out;
   const measured = new Set<string>();
   const intended = new Map<string, string[]>();
-  for (const file of readdirSync(testDir).filter(f => f.endsWith(".test.ts"))) {
+  for (const file of walkTestFiles(testDir)) {
     for (const site of coverageClaimSites(readFileSync(join(testDir, file), "utf-8"))) {
       if (site.kind === "unrun-title") {
         const files = intended.get(site.id) ?? [];
@@ -524,9 +526,10 @@ export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): C
   const failing = new Set<string>();
   const unmatchable = new Set<string>();
 
-  // Read behavioral cache for behavioral SCs
-  const cachePath = join(root, ".rungate", "behavioral-results.json");
-  const behavioralCache = readFreshCache(cachePath);
+  // Read behavioral cache for behavioral SCs. Same binding the conformity
+  // suite asserts through, so the tick-decider and the gate cannot disagree
+  // about where the evidence lives (#328).
+  const behavioralCache = readFreshCache(behavioralCachePath(root));
 
   for (const sc of uncheckedSCs) {
     const statement = sc.statement || "";
@@ -677,7 +680,7 @@ if (isDirectExecution) {
   // Mentions that look like claims and are not credited. Visible on purpose:
   // under-crediting is the safe direction and still a measurement error.
   const unqualified = new Map<string, string>();
-  for (const file of readdirSync(TEST_DIR).filter(f => f.endsWith(".test.ts"))) {
+  for (const file of walkTestFiles(TEST_DIR)) {
     for (const u of unqualifiedClaims(readFileSync(join(TEST_DIR, file), "utf-8"), registry)) {
       unqualified.set(`${file} ${u.id}`, `  ${file}: ${u.id} — ${u.reason}`);
     }

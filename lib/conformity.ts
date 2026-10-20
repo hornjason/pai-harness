@@ -22,7 +22,16 @@ import { spawnSync } from "child_process";
 import { join, dirname, sep } from "path";
 import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
-import { readFreshCache } from "./behavioral-cache";
+import {
+  type BehavioralCacheState,
+  type BehavioralCensus,
+  type BehavioralReadingKind,
+  behavioralCachePath,
+  behavioralCensus,
+  behavioralCensusLine,
+  behavioralReading,
+  readCache,
+} from "./behavioral-cache";
 import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
@@ -187,6 +196,11 @@ export function clearFindings(): void {
   _candidates.length = 0;
   _staleness.length = 0;
   _behavioralCount = 0;
+  for (const k of Object.keys(_behavioralReadings) as BehavioralReadingKind[]) {
+    _behavioralReadings[k] = 0;
+  }
+  _behavioralCacheStates = [];
+  _behavioralUnmeasured.length = 0;
 }
 
 export function addBehavioralCount(count: number): void {
@@ -195,6 +209,56 @@ export function addBehavioralCount(count: number): void {
 
 export function getBehavioralCount(): number {
   return _behavioralCount;
+}
+
+/**
+ * Every ticked `(behavioral)` criterion the run saw, and what the cache said
+ * about it (#758).
+ *
+ * `_behavioralCount` counts the ones that were ROUTED — the ones with no
+ * fresh reading — and a criterion that was measured and passed never reaches
+ * it. So `behavioralCount: 0` is produced by a run in which everything was
+ * measured AND by a run in which there are no behavioral criteria at all,
+ * and the number that matters — how many went unread — was never written
+ * down anywhere.
+ */
+const _behavioralReadings: Record<BehavioralReadingKind, number> = {
+  "fresh-pass": 0, "fresh-fail": 0, stale: 0, absent: 0,
+};
+let _behavioralCacheStates: BehavioralCacheState[] = [];
+const _behavioralUnmeasured: string[] = [];
+
+export function addBehavioralCensus(c: BehavioralCensus): void {
+  for (const k of Object.keys(_behavioralReadings) as BehavioralReadingKind[]) {
+    _behavioralReadings[k] += c.counts[k];
+  }
+  if (!_behavioralCacheStates.includes(c.cacheState)) _behavioralCacheStates.push(c.cacheState);
+  _behavioralUnmeasured.push(...c.unmeasured);
+}
+
+/**
+ * The run's whole behavioral reading, as a figure.
+ *
+ * `reading` is derived here and nowhere else, from the same lists the counts
+ * are projections of — a second boolean beside it would always agree with it.
+ * An empty population is UNMEASURED, because zero unread criteria out of zero
+ * criteria is the number a scan that collected nothing also produces.
+ */
+export function getBehavioralReading(): {
+  reading: "MEASURED" | "UNMEASURED";
+  counts: Record<BehavioralReadingKind, number>;
+  unmeasured: string[];
+  cacheStates: BehavioralCacheState[];
+  total: number;
+} {
+  const total = Object.values(_behavioralReadings).reduce((a, b) => a + b, 0);
+  return {
+    reading: total > 0 && _behavioralUnmeasured.length === 0 ? "MEASURED" : "UNMEASURED",
+    counts: { ..._behavioralReadings },
+    unmeasured: [..._behavioralUnmeasured],
+    cacheStates: [..._behavioralCacheStates],
+    total,
+  };
 }
 
 // ── Auto-flip: track passing SCs and flip checkboxes ────────
@@ -265,6 +329,7 @@ export function writeFindingsReport(root: string): string {
     warnings: _findings.filter(f => f.severity === "WARN").length,
     candidateCount: _candidates.length,
     behavioralCount: _behavioralCount,
+    behavioral: getBehavioralReading(),
     staleCount: _staleness.length,
     findings: _findings,
     constraintCandidates: _candidates,
@@ -329,8 +394,12 @@ export function getBehavioralRouting(sc: ParsedSC): string | null {
  * Stale entries (>= 7 days old) return null so they're treated as unmatchable.
  */
 export function behavioralPattern(sc: ParsedSC, cachePath: string): ((root: string) => void) | null {
-  const cache = readFreshCache(cachePath);
-  const entry = cache[sc.id];
+  const entry = readCache(cachePath)[sc.id];
+  // One decider for "is there a fresh reading", shared with the census that
+  // reports how many there are (#758). Asking `readFreshCache` here and
+  // `behavioralReading` there would be two guards over one question, always
+  // agreeing, and the count would be unfalsifiable against the routing.
+  if (!behavioralReading(entry).startsWith("fresh")) return null;
   if (!entry) return null;
 
   return (_root: string) => {
@@ -1240,7 +1309,28 @@ export type SCPlanEntry =
  */
 export function planSCTests(scs: ParsedSC[], projectRoot?: string): SCPlanEntry[] {
   return scs.map((sc): SCPlanEntry => {
-    if (isBehavioralSC(sc)) return { kind: "behavioral", sc, routing: getBehavioralRouting(sc) };
+    if (isBehavioralSC(sc)) {
+      // Ask the cache BEFORE classifying. This line used to classify first,
+      // which made `behavioralPattern` — the function that turns a recorded
+      // runtime result into an assertion that throws — unreachable from any
+      // real run: defined, exported, unit-tested, and called by nothing but
+      // its own tests. Meanwhile `scripts/sync-sc-status.ts` DID read the
+      // cache and would move a `passed: false` criterion into `failing`, so
+      // the decider that TICKS a checkbox looked at the evidence and the
+      // suite that decides the build's colour did not (#328).
+      //
+      // `behavioralPattern` returns null for an absent entry and for a stale
+      // one — `behavioralReading` calls both `absent` and `stale` — so a
+      // criterion with no current reading falls through to `behavioral` as
+      // before: reported, ratcheted, UNMEASURED. A stale PASS must not
+      // certify, because a measurement taken a fortnight ago read as one
+      // taken now is the silent default this whole subsystem exists to avoid.
+      const assertion = projectRoot
+        ? behavioralPattern(sc, behavioralCachePath(projectRoot))
+        : null;
+      if (assertion) return { kind: "assert", sc, assertion };
+      return { kind: "behavioral", sc, routing: getBehavioralRouting(sc) };
+    }
     if (!sc.checked) return { kind: "todo", sc };
     const outcome = resolveMatcher(sc, projectRoot);
     if (outcome.kind === "assert") return { kind: "assert", sc, assertion: outcome.assertion };
@@ -1300,6 +1390,25 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
         // and it was not hypothetical: the planted-project test in
         // test/matcher-registry-parity.test.ts reported its criterion as
         // `unmatched` until this argument was supplied.
+        // The census over EVERY ticked behavioral criterion in this spec,
+        // measured or not (#758).
+        //
+        // It cannot be read off `behavioral` below: that list is appended to
+        // only when the plan routed a criterion, which happens only when the
+        // cache had nothing fresh — so it is already the unmeasured half and
+        // carries no denominator. A criterion that was measured and passed is
+        // an ordinary `assert` entry and is invisible to it.
+        //
+        // No second decider: `behavioralCensus` classifies through
+        // `behavioralReading`, which is the function `planSCTests` routed on
+        // one line above.
+        const tickedBehavioral = metadata.scs.filter(sc => sc.checked && isBehavioralSC(sc));
+        if (tickedBehavioral.length > 0) {
+          const census = behavioralCensus(tickedBehavioral.map(sc => sc.id), behavioralCachePath(root));
+          addBehavioralCensus(census);
+          console.log(`${specFile} — ${behavioralCensusLine(census)}`);
+        }
+
         for (const entry of planSCTests(metadata.scs, root)) {
           const { sc } = entry;
           if (entry.kind === "behavioral") {

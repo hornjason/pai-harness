@@ -413,6 +413,7 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
     "establishRunRef",
     "integrateWave",
     "waveNeedsIntegration",
+    "measureLaunchBase",
     `${shapeBlock}\n${block}\nreturn runDecomposedShip;`,
   );
 
@@ -435,6 +436,7 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
     async () => ({ branch: "rungate/run-66", refusal: null }),
     async () => ({ ok: true, integrated: 0 }),
     sliced("RUN-REF", "waveNeedsIntegration"),
+    async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
   ) as (subIssues: unknown[]) => Promise<unknown>;
 
   return { runDecomposedShip, logs };

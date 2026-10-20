@@ -56,6 +56,111 @@ export function runBranchName(issue: number | string): string {
   return `rungate/run-${issue}`;
 }
 
+/**
+ * The shell that puts the checkout on this run's branch (#702).
+ *
+ * **Extracted so it can be EXECUTED, which is the whole point.** #702 asks
+ * for the resume-or-refuse property to be "asserted by driving a run against
+ * a planted repo in that state, not by reading the branch-setup code" — and
+ * while this lived inside an agent prompt's template literal in
+ * `workflows/ship.js`, reading it was the only thing anyone could do. The
+ * behaviour was correct; nothing held it, so an edit to the `case` arms
+ * could reintroduce the discard with every test still green.
+ *
+ * ## What the two arms mean, because they are easy to read backwards
+ *
+ * - `git switch -c <ref>` **fails** when the branch already exists. That
+ *   failure is the load-bearing part: `|| git switch <ref>` then ADOPTS the
+ *   existing branch, so a run re-entering an issue commits onto the work
+ *   already there instead of a fresh branch cut from the base. Measured on a
+ *   planted repo carrying six commits: HEAD after is the prior tip.
+ * - The `case` guard means a checkout already on some other branch is left
+ *   alone entirely. A run must not move a shared checkout off work somebody
+ *   else is doing.
+ *
+ * ## The cheapest wrong fix, named here because this is where it would go
+ *
+ * **Drop the `-c` and always `git switch <ref>`.** It "obviously" resumes,
+ * and it breaks every run of an issue whose branch does not exist yet —
+ * which is most of them — because there is nothing to switch to. The pair of
+ * cases over this binding is what makes that visible: the resume case passes
+ * under it and the first-run case does not.
+ *
+ * `ref` arrives ALREADY SHELL-QUOTED. Quoting is the caller's, because
+ * `workflows/ship.js` owns `shellQuote` and a second quoter here would be a
+ * second decider for how a branch name reaches a command line.
+ */
+export function runBranchSetupScript(quotedRef: string): string {
+  return `case "$branch" in
+  ""|main|master)
+    git switch -c ${quotedRef} 2>/dev/null || git switch ${quotedRef} ;;
+esac`;
+}
+
+/**
+ * What a branch-setup actually did, from the two HEADs and the two branches.
+ *
+ * `leftoverRunBranch` says what was THERE before the run; this says what the
+ * run DID about it. They are different questions — a leftover can be present
+ * and resumed, present and discarded, or present and never reached — and
+ * #702's AC-2 is that the three outcomes are distinguishable in the
+ * artefact rather than all reading as a branch name.
+ *
+ * An unreadable input is `UNMEASURED` and never `NO_PRIOR_BRANCH`. Those are
+ * the two that must not collapse: "there was no prior work" and "nobody
+ * looked" are the byte-identical pair #702 is about.
+ */
+export type RunBranchStart =
+  | "NO_PRIOR_BRANCH"
+  | "PRIOR_BRANCH_RESUMED"
+  | "PRIOR_BRANCH_DISCARDED"
+  | "UNMEASURED";
+
+export interface RunBranchStartInput {
+  /** The branch the checkout was on before, `""` for a detached HEAD. */
+  branchBefore: string;
+  /** The branch it is on after. */
+  branchAfter: string;
+  /** The tip the run's branch is now at. */
+  headAfter: string;
+  /**
+   * The tip the run's branch held BEFORE setup, or `null` when it did not
+   * exist. `undefined` means nobody read it — which is not the same thing.
+   */
+  priorTip: string | null | undefined;
+}
+
+export function runBranchStart(input: RunBranchStartInput): RunBranchStart {
+  const { branchAfter, headAfter, priorTip } = input;
+  if (priorTip === undefined) return "UNMEASURED";
+  if (!branchAfter || !headAfter) return "UNMEASURED";
+  if (priorTip === null) return "NO_PRIOR_BRANCH";
+  return priorTip === headAfter ? "PRIOR_BRANCH_RESUMED" : "PRIOR_BRANCH_DISCARDED";
+}
+
+/** The sentence a run logs for a start that lost work, or `null`. */
+export function runBranchStartRefusal(
+  reading: RunBranchStart,
+  branch: string,
+  discarded: string[] = [],
+): string | null {
+  if (reading === "PRIOR_BRANCH_DISCARDED") {
+    return (
+      `${branch} already existed with ${discarded.length} commit(s) that are not on this run's ` +
+      `base, and this run started somewhere else — ${discarded.join(", ")}. Starting from the ` +
+      `base is a reasonable default and taking it SILENTLY makes "there was no prior work" and ` +
+      `"there was prior work and it was dropped" identical from the outside (#702).`
+    );
+  }
+  if (reading === "UNMEASURED") {
+    return (
+      `the branch this run started on could not be read, so whether it discarded prior work on ` +
+      `${branch} is unknown. That is not "there was no prior branch" (#702).`
+    );
+  }
+  return null;
+}
+
 /** A path the branch changed, and what each side holds there. */
 export interface ContainmentDivergence {
   path: string;

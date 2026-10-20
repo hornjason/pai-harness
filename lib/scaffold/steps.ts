@@ -12,6 +12,7 @@ import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
 import { isHarnessItself } from "../harness-identity";
+import { projectStateDerivation, projectStateKeyFileNote } from "../project-state-derivation";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
@@ -27,16 +28,19 @@ import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep } from "./ai-rev
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
-import { tier1Ere } from "../secret-patterns";
+import { TIER2_ALLOWED_VALUE_ERE, tier1Ere, tier2Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
+import { actionRef } from "../workflow-actions";
+import { ciSetupStep } from "../ci-setup-step";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
 import { scanDocsDirectory } from "../doc-routing";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { declaredBunVersion, setupBunWith } from "../bun-version";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
+import { censusReport, stampWorkflow, workflowBody, workflowCensus } from "./workflow-census";
 import {
   readSuccessDoc,
   readSuccessTemplate,
@@ -377,7 +381,7 @@ export function generateAgentsMdContent(
   // Scan key files
   const keyFiles: Array<{ file: string; what: string; when: string }> = [
     { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
-    { file: "PROJECT-STATE.md", what: "Live status + handoff (generated from project-state.json — don't edit directly)", when: "Session start, always first after AGENTS.md" },
+    { file: "PROJECT-STATE.md", what: projectStateKeyFileNote(projectStateDerivation(projectPath)), when: "Session start, always first after AGENTS.md" },
     { file: "project-state.json", what: "Source of truth for project status", when: "When editing state" },
   ];
   const conditionalPatterns: Array<{ pattern: string; what: string; when: string }> = [
@@ -2372,27 +2376,59 @@ const MANAGED_BANNER_PREFIX = "# Managed by rungate";
  * Throws on refusal. Callers decide whether a refusal aborts the run or is
  * recorded and reported; what they may not do is write anyway.
  */
+/**
+ * How a managed file carries the record of who wrote it (#767).
+ *
+ * Optional, because most managed files have no marker. When present it is
+ * applied LAST, to the bytes that land on disk, and stripped from both sides
+ * of every comparison — a marker that describes anything other than the file
+ * it is attached to is worse than no marker, because the census believes it.
+ */
+export interface WriteProvenance {
+  /** The document with its marker line removed. */
+  body(text: string): string;
+  /** The document with a marker describing its own body. */
+  stamp(text: string): string;
+}
+
 export function writeManagedFile(
   filePath: string,
   generated: string,
   label: string,
   actions: string[],
   opts: { force?: boolean } = {},
+  provenance?: WriteProvenance,
 ): void {
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
-  const resolved = resolveManagedWrite(existing, generated);
+  const raw = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
+  // The marker is stripped from BOTH sides before anything compares them, and
+  // re-applied to whatever is about to be written (#767).
+  //
+  // It has to be both sides and it has to be last. `resolveManagedWrite`
+  // treats every line outside a job as the consumer's, so the OLD marker —
+  // which differs from the new one exactly when the generator changed — read
+  // as content about to be dropped and REFUSED the write. And stamping the
+  // generated text before the merge produced a file whose marker described
+  // bytes that were never written, so a workflow with one preserved job was
+  // classified `generated-and-hand-edited` for ever, about bytes the harness
+  // itself had just written.
+  const existing = raw === null ? null : (provenance ? provenance.body(raw) : raw);
+  const incoming = provenance ? provenance.body(generated) : generated;
+  const resolved = resolveManagedWrite(existing, incoming);
+  /** The bytes that land on disk: the decision's content, then the marker. */
+  const stamped = (content: string): string => (provenance ? provenance.stamp(content) : content);
 
   if (opts.force) {
     // The escape hatch, and it still reports a measured verb: --force changes
     // what is ALLOWED, not what gets claimed about it. The dropped jobs are
     // still named, because an operator who overrides the refusal should be
     // told in the report exactly what they overrode.
-    const { verb, lineDelta } = measureWrite(existing, generated);
-    if (verb === "SKIP") { actions.push(`SKIP: ${label} (unchanged)`); return; }
+    const bytes = stamped(incoming);
+    if (bytes === raw) { actions.push(`SKIP: ${label} (unchanged)`); return; }
+    const { verb, lineDelta } = measureWrite(existing, incoming);
     const dropped = resolved.droppedJobs.length > 0 ? `, dropped ${resolved.droppedJobs.join(", ")}` : "";
     mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, generated);
-    actions.push(`${verb}: ${label} (--force, ${signed(lineDelta)} lines${dropped})`);
+    writeFileSync(filePath, bytes);
+    actions.push(`${verb === "SKIP" ? "UPDATED" : verb}: ${label} (--force, ${signed(lineDelta)} lines${dropped})`);
     return;
   }
 
@@ -2415,13 +2451,26 @@ export function writeManagedFile(
       `${over.slice(0, 2).map(l => JSON.stringify(l)).join(", ")}` +
       `${over.length > 2 ? ` and ${over.length - 2} more` : ""}`;
 
-  if (resolved.verb === "SKIP") {
+  const bytes = stamped(resolved.content);
+
+  // Compared as BYTES, not as a verb. `resolved.verb` is a statement about
+  // the bodies, and a file whose body is unchanged can still need writing —
+  // its marker may be absent or describe something else. Reporting SKIP on
+  // that file is how the stamp stayed wrong across every later run.
+  if (bytes === raw) {
     actions.push(`SKIP: ${label} (unchanged${kept})`);
     return;
   }
 
   mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, resolved.content);
+  writeFileSync(filePath, bytes);
+  if (resolved.verb === "SKIP") {
+    // Body identical, marker not. Said plainly rather than as `UPDATED (+0
+    // lines)`, which is the line an operator reads as "my generator change
+    // landed" (#767).
+    actions.push(`UPDATED: ${label} (provenance marker refreshed, +0 lines${kept})`);
+    return;
+  }
   actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
 }
 
@@ -2707,12 +2756,38 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
 name: CI
 
 on:
+  # merge_group carries NO branches: filter, deliberately. A merge queue builds
+  # a temporary \`gh-readonly-queue/<base>/...\` ref, which no branch list here
+  # would match — so filtering it is the same as not handling the event, and a
+  # trigger that is present and inert is worse than an absent one because the
+  # file then reads as handling it.
+  #
+  # Without this trigger a merge queue cannot work at all, and it fails in the
+  # worst available way: the queue waits for a required check that will never
+  # report, every entry sits pending with no error anywhere, and the repo looks
+  # like it has simply stopped merging. UNMEASURED, not red.
+  #
+  # This is the SHARDED body, and it is the one that matters most: the required
+  # context is the \`test\` aggregate below, which only exists here. The first
+  # draft of #765 added the trigger to the unsharded body only — 91 tests passed
+  # and the repo that needed it was untouched.
+  merge_group:
   push:
     branches:
 ${branchList}
   pull_request:
     branches:
 ${branchList}
+
+permissions:
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
 
 jobs:
   test-shard:
@@ -2724,12 +2799,12 @@ jobs:
       matrix:
         shard: [${Array.from({ length: shards }, (_, i) => i + 1).join(", ")}]
     steps:
-      - uses: actions/checkout@v4
+      - uses: ${actionRef("actions/checkout")}
 ${baseRefStep}
-      - uses: oven-sh/setup-bun@v2
+      - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
-      - run: bun install${globalTools.step}
+      - run: bun install${globalTools.step}${ciSetupStep()}
       - run: ${test.command} --shard=\${{ matrix.shard }}/${shards}${typecheckStep}
 
   # The aggregate. Named "test" because that is the context branch protection
@@ -2756,6 +2831,9 @@ ${bunStep}
 name: CI
 
 on:
+  # See the sharded body above: no branches: filter, and its absence hangs a
+  # merge queue silently rather than failing it.
+  merge_group:
   push:
     branches:
 ${branchList}
@@ -2763,16 +2841,26 @@ ${branchList}
     branches:
 ${branchList}
 
+permissions:
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
+
 jobs:
   test:
     runs-on: ${runsOn}
     steps:
-      - uses: actions/checkout@v4
+      - uses: ${actionRef("actions/checkout")}
 ${baseRefStep}
-      - uses: oven-sh/setup-bun@v2
+      - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
-      - run: bun install${globalTools.step}
+      - run: bun install${globalTools.step}${ciSetupStep()}
       - run: ${test.command}${typecheckStep}
 `;
 
@@ -2780,6 +2868,9 @@ ${bunStep}
 name: Gates
 
 on:
+  # See ci.yml above: a merge queue builds a ref no branch list matches, so
+  # this trigger carries no filter and its absence hangs the queue silently.
+  merge_group:
   push:
     branches:
 ${branchList}
@@ -2787,12 +2878,22 @@ ${branchList}
     branches:
 ${branchList}
 
+permissions:
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
+
 jobs:
   gates:
     runs-on: ${runsOn}
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: ${actionRef("actions/checkout")}
+      - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
       - run: bun install
@@ -2823,7 +2924,7 @@ ${bunStep}
           # assignment itself succeed, so $? is always 0 and the error branch
           # becomes dead code — the scan would fail open on a git error.
           set +e
-          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- .)
+          tier2=$(git grep -I -hoE '${tier2Ere()}' -- .)
           rc=$?
           set -e
           # git grep: 0 = match, 1 = no match, >1 = real error.
@@ -2834,7 +2935,7 @@ ${bunStep}
           # Exclusion applies to the extracted VALUE, not the whole line.
           # Matching anywhere on the line let a trailing "# placeholder"
           # launder a real secret past the check.
-          if printf '%s\\n' "$tier2" | grep -qvE '^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
+          if printf '%s\\n' "$tier2" | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi
@@ -2898,11 +2999,26 @@ ${buildAuthDetectStep()}${buildReviewRunStep()}`;
   for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml]] as const) {
     const label = `.github/workflows/${name}`;
     try {
-      writeManagedFile(join(workflowsDir, name), content, label, actions, opts);
+      // Stamped, so the file says who wrote it. The owned-path list is a list
+      // of files this generator writes, which is precisely why it could never
+      // describe a file it does not write — ownership has to travel with the
+      // bytes for an unowned workflow to be visible at all (#722). The marker
+      // is a YAML comment, so nothing that parses the workflow can see it.
+      writeManagedFile(join(workflowsDir, name), content, label, actions, opts, {
+        body: workflowBody,
+        stamp: stampWorkflow,
+      });
     } catch (e) {
       actions.push(`REFUSED: ${(e as Error).message}`);
     }
   }
+
+  // Everything else in the directory, named. This generator writes three
+  // files; a consumer's CI may run any number, and until #722 the ones it did
+  // not write were not merely unmanaged but unreported — a clean run over 2 of
+  // 7 workflow files, which reads exactly like a clean run over 7 of 7.
+  // Reporting only: what a consumer does with a NOT-OWNED workflow is theirs.
+  actions.push(...censusReport(workflowCensus(root)));
 }
 
 // ── Consumer hook deployment ─────────────────────────────────
@@ -3194,10 +3310,17 @@ fi
 # Exclusions are env lookups and explicit non-values. password =
 # process.env.DB_PASSWORD is a reference, not a secret, and flagging it would
 # only train people to reach for --no-verify.
+#
+# Both expressions are interpolated from lib/secret-patterns.ts, never
+# written here. A hardcoded copy is a second binding for one string, and
+# #489's narrowing then has to be applied in places nothing compares. The
+# allowlist's leading \`^$|\` alternative cannot fire on this pipeline —
+# grep -oE emits no empty lines — so using the one constant is the same
+# behaviour with one fewer decider.
 if printf '%s\\n' "$staged_diff" \\
   | grep '^+' \\
-  | grep -oE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' \\
-  | grep -qvE '[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
+  | grep -oE '${tier2Ere()}' \\
+  | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
   echo "ERROR: Potential credential assignment in staged changes"
   exit 1
 fi
@@ -3766,15 +3889,64 @@ export function writtenPath(line: string): string | null {
   return m?.[1] ?? null;
 }
 
-export function reportScaffoldActions(actions: string[]): number {
+/**
+ * What an action line carries when the run that produced it was a rehearsal.
+ *
+ * **A TRAILING marker, and that is a constraint rather than a preference.**
+ * `writtenPath` above matches `^(?:CREATED|UPDATED|…): path` after a trim,
+ * and two callers depend on it: `postScaffoldCommit` stages by it, and
+ * `test/scaffold-audit-agreement.test.ts` compares the paths audit NAMES
+ * against the paths `--fix` WROTE. A leading `REHEARSED ` prefix — the form
+ * #642 suggests — makes `writtenPath` return null for every audit line, so
+ * that comparison would go green with nothing in it on both sides. Agreement
+ * by both sides reporting nothing is the vacuous shape #398 built it to
+ * avoid.
+ *
+ * Square brackets rather than parentheses on purpose: most action lines
+ * already end in a parenthetical (`(security template)`, `(rungate devDep)`),
+ * and a marker that looks like one more of those is one a reader skims past.
+ *
+ * One exported binding, so there is one thing to mutate and one string for a
+ * consumer to grep.
+ */
+export const REHEARSAL_MARKER = " [REHEARSAL — not applied]";
+
+/**
+ * ## Every line, because a line is the unit a reader consumes (#642)
+ *
+ * The mode was announced exactly once, by `rehearsalNotice`, at the top of
+ * the run — and then no line of the report carried it. Measured on two
+ * planted repositories: **all 56 of an audit's report lines were
+ * byte-identical to the lines `--fix` printed for the same work.** So
+ * `grep ci.yml`, `| tail -25`, a scrolled terminal, and an agent reading the
+ * last N lines of a tool result all received `REPLACED: … (+114 lines)` with
+ * no way to tell it from a write that landed. The issue's author read one
+ * four times and filed a missing-write bug off it. The report never lied;
+ * its unit of qualification was wider than its unit of consumption.
+ *
+ * `mode` is REQUIRED rather than defaulted. A default of `false` is a silent
+ * default substitution (`.claude/rules/config-access.md`): a future call site
+ * that forgets to say which mode it is in would print unqualified lines and
+ * look exactly like one that meant to.
+ *
+ * **Not sufficient: marking the `Total:` line, or the first line.** That is
+ * the cheapest repair and it leaves every grep/tail/scrolled consumer in
+ * precisely the position the issue is about. The `Total:` line is marked as
+ * well, but after the per-line marking, not instead of it.
+ */
+export function reportScaffoldActions(actions: string[], mode: { rehearsed: boolean }): number {
+  const qualify = (line: string) => (mode.rehearsed ? `${line}${REHEARSAL_MARKER}` : line);
   console.log("\n=== Scaffold Report ===");
-  for (const action of actions) console.log(`  ${action}`);
+  for (const action of actions) console.log(`  ${qualify(action)}`);
   const count = (verb: string) => actions.filter(a => a.startsWith(verb)).length;
   // AUTO-FIXED is reported separately from AUDITED on purpose (#42 SC-3).
   // What the scaffold CHANGED and what it merely NOTICED are different facts,
   // and a reader who cannot tell them apart has to diff the tree to find out
   // which of the reported gaps are still gaps.
-  console.log(`\nTotal: ${count("CREATED")} created, ${count("REPLACED")} replaced, ${count("AUTO-FIXED")} auto-fixed, ${count("SKIP")} skipped, ${count("REFUSED")} refused`);
+  // The marker goes on the END of this line rather than into the `Total:`
+  // token: `test/scaffold-auto-fix.test.ts` finds it with
+  // `startsWith("\nTotal:")`, and a reader's eye finds it the same way.
+  console.log(qualify(`\nTotal: ${count("CREATED")} created, ${count("REPLACED")} replaced, ${count("AUTO-FIXED")} auto-fixed, ${count("SKIP")} skipped, ${count("REFUSED")} refused`));
   return count("REFUSED");
 }
 

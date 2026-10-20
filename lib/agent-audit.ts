@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { auditAgent, type Role } from '../scripts/audit-transcript';
-import { writeCache, type BehavioralCache } from './behavioral-cache';
+import { behavioralCachePath, writeCache, type BehavioralCache } from './behavioral-cache';
 
 export interface AgentAuditResult {
   role: Role;
@@ -109,8 +109,7 @@ export function populateBehavioralCache(
     }
 
     if (Object.keys(cacheData).length > 0) {
-      const cachePath = join(projectRoot, '.rungate', 'behavioral-results.json');
-      writeCache(cachePath, cacheData);
+      writeCache(behavioralCachePath(projectRoot), cacheData);
       return Object.keys(cacheData).length;
     }
   } catch {

@@ -23,6 +23,36 @@
  * #420 never considered: the shared checkout is shared, so a peer session can
  * move it between the moment the ref is established and the moment a wave
  * commits onto it.
+ *
+ * ## #653: the battery behind SC-2084..SC-2091, re-measured against this tree
+ *
+ * The ten rows recorded in `specs/HARNESS-STANDARD.md` were taken on a
+ * `git archive` export carrying an implementation the repository did not yet
+ * hold, and the spec said so and asked for a re-run. **All ten reproduce
+ * here — same counts, same named criteria** — and the spec now records that
+ * rather than the promise.
+ *
+ * Two rows needed their mutation re-cut before they were faithful, which is
+ * the reusable part: a prose description of a mutant is not a mutant.
+ *
+ * - The pre-#652 row is the whole pre-#652 tree. Mutating only
+ *   `waveCommitFailure` is 3, not 6, because nothing touched the re-read the
+ *   three dispatch criteria measure.
+ * - The composed-message row must leave the `!landedOn` early return INSIDE
+ *   the committed-false arm. Hoisted ahead of both arms it also intercepts
+ *   `{committed: true, branch: ""}`, which SC-1565 owns, and the row reads 3
+ *   with an extra red that is about the mutant rather than its subject.
+ *
+ * **The cheapest wrong fix was applied and counted, and its GREENS are the
+ * finding.** Appending the branch to the generic sentence without moving the
+ * check makes the dead run's symptom go away, and SC-2084, SC-2086 and
+ * SC-2087 are green over it — three cells that only ask whether the branch
+ * is named are satisfied by a repair that names it and distinguishes
+ * nothing. What catches it is SC-2088 alone: an empty branch becomes
+ * `(branch , run ref …)`, and SC-2088 demands nothing about a branch AT ALL
+ * rather than merely no branch name. It was written as the
+ * unconditional-clause control and it is the whole protection against the
+ * cheap repair.
  */
 
 import { describe, test, expect } from "bun:test";
@@ -499,6 +529,11 @@ describe("#420 — the dispatch path", () => {
     // unchanged for every caller that passes none, so the #420 cases are
     // driven by exactly the harness they were written against.
     refReplies?: Array<{ branch: string; refusal: string | null }>;
+    // #592. One reply per time the dispatcher asks which TREE the session is
+    // in; the last entry is reused if it asks more often. Defaulting to a
+    // clean reading leaves every #420/#652 case driven by exactly the
+    // harness it was written against.
+    baseReplies?: Array<{ reading: string; refusal: string | null }>;
   }) {
     const spawns: Spawn[] = [];
     const integrations: Array<{ waveIndex: number; total: number; accepted: number; runRef: unknown }> = [];
@@ -506,6 +541,8 @@ describe("#420 — the dispatch path", () => {
     // than against the other reads: "before wave 2's agents" is the claim
     // #652 AC-3 makes, and a count of reads cannot witness it.
     const refReads: Array<{ at: number; branch: string }> = [];
+    /** #592: ordered against the same spawn clock, for the same reason. */
+    const baseReads: Array<{ at: number; reading: string }> = [];
     const logs: string[] = [];
     let clock = 0;
 
@@ -513,6 +550,7 @@ describe("#420 — the dispatch path", () => {
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
       "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
+      "measureLaunchBase",
       `${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
     );
 
@@ -559,9 +597,17 @@ describe("#420 — the dispatch path", () => {
       // loop and the block disagree about which waves hand output forward
       // and nothing would notice.
       loadRunRef({}).fns.waveNeedsIntegration,
+      async () => {
+        const seq = opts.baseReplies;
+        const reply = seq && seq.length > 0
+          ? seq[Math.min(baseReads.length, seq.length - 1)]
+          : { reading: "SAME_CHECKOUT", refusal: null };
+        baseReads.push({ at: clock, reading: reply.reading });
+        return reply;
+      },
     ) as (subIssues: unknown[]) => Promise<any>;
 
-    return { runDecomposedShip, spawns, integrations, refReads, logs };
+    return { runDecomposedShip, spawns, integrations, refReads, baseReads, logs };
   }
 
   const LAYERED = [
@@ -627,6 +673,7 @@ describe("#420 — the dispatch path", () => {
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
       "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
+      "measureLaunchBase",
       `${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
     );
     const spawns: string[] = [];
@@ -647,6 +694,7 @@ describe("#420 — the dispatch path", () => {
       },
       async () => ({ ok: true, integrated: 1 }),
       loadRunRef({}).fns.waveNeedsIntegration,
+      async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
     ) as (subIssues: unknown[]) => Promise<any>;
 
     const result = await run(LAYERED);
@@ -762,5 +810,221 @@ describe("#420 — the dispatch path", () => {
     expect(d.integrations.map(i => i.runRef)).toEqual([
       "rungate/run-420", "rungate/run-420-reestablished",
     ]);
+  });
+
+  /*
+   * #592 — an isolated agent resolves its worktree from ambient cwd, not the
+   * run's projectRoot.
+   *
+   * Run `wf_680eb8a6-29a` was launched with `projectRoot` pointing at one
+   * project and `repo` at another, and the implement agent cut its worktree
+   * inside a THIRD — the harness repository, which is where the launching
+   * session's shell happened to be. Twelve agents, ~570k tokens, fourteen
+   * minutes, then `IMPLEMENT_FAILED` from #218's guard comparing the remote
+   * the checkout actually had.
+   *
+   * **The issue's suggested fix is not available to this file**, and saying
+   * so is the point. "Resolve the worktree parent from projectRoot" is the
+   * runtime's decision, not rungate's: `opts.cwd` is applied to the spawned
+   * agent AFTER `isolation: 'worktree'` has been resolved against the
+   * session's directory, so the explicit argument is passed and overridden
+   * (#644). What rungate can do is the issue's second sentence — refuse at
+   * spawn time rather than fall back to cwd.
+   *
+   * #644 did that once, at Goal. These cases are about the gap that leaves:
+   * the session is SHARED, the reading is taken minutes or hours before the
+   * spawn it governs, and a `cd` in between moves every worktree the wave is
+   * about to create. #652 is the same shape one field over — it re-reads the
+   * BRANCH before each wave; this re-reads the TREE.
+   *
+   * ## The cheapest wrong fix, named before the repair
+   *
+   * **Trust the Goal reading and skip the re-check** — it already passed, so
+   * why pay for another agent call per wave. That is the pre-#592 behaviour
+   * exactly, and it is correct on every run where nobody moves the session.
+   * `AC-2` is the case it does not survive: a first reading that is clean and
+   * a second that is not, which no single-reading run can tell from two clean
+   * ones.
+   *
+   * ## What was broken to prove these can fail
+   *
+   * Run over this file + `test/unit/launch-base.test.ts`. Counts predicted in
+   * `/tmp/592-battery/predictions.md` before the battery ran, and **the
+   * baseline row read first.**
+   *
+   * | Row | Predicted | Measured | The input on which mutant and original differ |
+   * |---|---|---|---|
+   * | **baseline** | 45 pass, 0 fail | **45 pass, 0 fail** | — |
+   * | M1 **the cheapest wrong fix / the defect**: the per-wave block deleted, Goal's one reading trusted | 4 | **4 of 45** | a second reading that refuses: the original never spawns wave 2, the mutant dispatches it into the wrong tree |
+   * | M2 the re-check moved BELOW the wave's spawns | 3 | **3 of 45** | the same, with the refusal arriving after the agents started |
+   * | M3 the drift logged, and the wave spawns anyway | 2 | **2 of 45** | the same: the original settles the sub-issues unstarted, the mutant runs them |
+   * | M4 the refusal sentence replaced by a locally composed one | 1 | **1 of 45** | a NOT_A_REPO reading: the original logs the decider's own sentence, the mutant logs "the launch base moved" |
+   * | M5 `readLaunchBase`'s absent-reading branch removed | 0, then **1 of 49** | a reply with no `reading` field: the original is UNMEASURED and refuses, the mutant returns an empty reading inside a composed sentence |
+   *
+   * **AC-5 stays green in M1, and that is the finding rather than a gap.** A
+   * run where nobody moves the session is byte-identical with and without
+   * the re-check — which is exactly why the defect was invisible until a
+   * guard fired 570k tokens later. A control that went red under the defect
+   * would mean the re-check was changing clean runs too.
+   *
+   * **M5 measured 0 first, and the zero was real.** Before recording it the
+   * rule is to name an input on which mutant and original differ, and there
+   * is one — so it was not a collapsed pair, it was a branch nothing
+   * witnessed. The four `readLaunchBase` cases at the foot of this file are
+   * what closed it, and the row is 1.
+   *
+   * Mutations run and reverted from a `cp` backup, never `git checkout --`;
+   * `workflows/ship.js` confirmed byte-identical by sha256 after every row.
+   */
+  describe("#592 — the tree is re-read before each wave, not only at Goal", () => {
+    test("AC-1: every wave asks, and each ask is before that wave's spawns", async () => {
+      // Ordered against the spawn clock, not counted. A count is satisfied by
+      // a reading taken after the wave had already started, which is the one
+      // arrangement that measures nothing — #652's SC-2089 makes the same
+      // argument about the branch.
+      const d = loadDispatch({});
+      const result = await d.runDecomposedShip(LAYERED);
+      expect(result.success, JSON.stringify(result.failed || [])).toBe(true);
+      expect(d.baseReads.length, "a wave was dispatched without asking").toBe(2);
+      expect(d.spawns.map(s => s.at)).toEqual([0, 1]);
+      expect(d.baseReads.map(r => r.at), "a reading was taken after its own wave spawned")
+        .toEqual([0, 1]);
+    });
+
+    test("AC-2: a session that moved between waves refuses, and that wave spawns nothing", async () => {
+      // The case the cheapest wrong fix does not survive. Reading one is
+      // clean, so a run that trusts Goal dispatches wave 2 into the wrong
+      // tree and finds out from #218 afterwards.
+      const d = loadDispatch({
+        baseReplies: [
+          { reading: "SAME_CHECKOUT", refusal: null },
+          {
+            reading: "DIFFERENT_CHECKOUT",
+            refusal: "LAUNCH_BASE_DIFFERENT_CHECKOUT: /Users/x/Projects/rungate is not /tmp/project",
+          },
+        ],
+      });
+      const result = await d.runDecomposedShip(LAYERED);
+      expect(result.success).toBe(false);
+      // Wave 1 ran; wave 2's agent never started. The count is the property:
+      // a refusal taken after the spawn would leave two labels here.
+      expect(d.spawns.map(s => s.label)).toEqual(["marcus-sub-420001"]);
+      expect(JSON.stringify(result.failed)).toContain("wrong one");
+    });
+
+    test("AC-3: the refusal carries the reading's own sentence, not a rewrite of it", async () => {
+      // The decider is `lib/launch-base.ts` through `readLaunchBase`. A
+      // second sentence composed here would be a second decider about why
+      // the run stopped, and the two would drift (#484).
+      const d = loadDispatch({
+        baseReplies: [
+          {
+            reading: "NOT_A_REPO",
+            refusal: "LAUNCH_BASE_NOT_A_REPO: the launching session is not in a git repository",
+          },
+        ],
+      });
+      await d.runDecomposedShip(LAYERED);
+      expect(d.logs.join("\n")).toContain("LAUNCH_BASE_NOT_A_REPO");
+      expect(d.logs.join("\n")).toContain("not in a git repository");
+    });
+
+    test("AC-4: wave ONE is covered too — Goal is not the spawn it governs", async () => {
+      // The reading #644 takes at Goal happens before the issue is read,
+      // before discovery, before decomposition. Treating it as current at
+      // the first spawn is the same assumption this issue is about, one wave
+      // earlier, so the first wave asks as well.
+      const d = loadDispatch({
+        baseReplies: [
+          { reading: "DIFFERENT_CHECKOUT", refusal: "LAUNCH_BASE_DIFFERENT_CHECKOUT: moved before wave 1" },
+        ],
+      });
+      const result = await d.runDecomposedShip(INDEPENDENT);
+      expect(result.success).toBe(false);
+      expect(d.spawns, "the first wave spawned into a tree nobody had re-checked").toEqual([]);
+    });
+
+    test("AC-5: a clean reading costs nothing — the control", async () => {
+      // Without this, every case above is satisfied by a dispatcher that
+      // refuses every wave.
+      const d = loadDispatch({ baseReplies: [{ reading: "SAME_CHECKOUT", refusal: null }] });
+      const result = await d.runDecomposedShip(INDEPENDENT);
+      expect(result.success, JSON.stringify(result.failed || [])).toBe(true);
+      expect(d.spawns.map(s => s.label).sort()).toEqual(["marcus-sub-420001", "marcus-sub-420002"]);
+    });
+  });
+});
+
+/*
+ * #592 — the reply reader, which row M5 of the battery found unwitnessed.
+ *
+ * `readLaunchBase` turns an agent's restatement of the check's output into a
+ * reading and a refusal. Short-circuiting its absent-reading branch measured
+ * **0 red** across every case in this file and `test/unit/launch-base.test.ts`,
+ * and the mutant and the original genuinely differ — a reply with no
+ * `reading` field returns UNMEASURED and a refusal on one, and an empty
+ * reading with a composed sentence on the other. So the zero was a gap, not
+ * a collapsed pair, and these are the cases that close it.
+ *
+ * The block is extracted rather than imported: ship.js runs in the Workflow
+ * sandbox and is not a module (#69).
+ */
+describe("#592 — an absent or self-contradicting launch-base reply is UNMEASURED", () => {
+  const readLaunchBase = (() => {
+    const START = "// ──── LAUNCH-BASE-CHECK-START ────";
+    const END = "// ──── LAUNCH-BASE-CHECK-END ────";
+    const a = shipSource.indexOf(START);
+    const b = shipSource.indexOf(END);
+    if (a < 0 || b < 0) throw new Error("ship.js is missing the LAUNCH-BASE-CHECK markers");
+    // Up to `measureLaunchBase` and no further. That function contains a
+    // top-level `await`, which is a syntax error inside a non-async
+    // `new Function` body — and the cut has to be ANCHORED rather than sized,
+    // because the first draft of this cut named `const launchBaseReply`, a
+    // binding #592 had just renamed away. `indexOf` returned -1, the slice
+    // ran to the end of the block, and the whole describe died at module
+    // scope with one unhandled error and zero reported failures (#664).
+    const stop = shipSource.indexOf("async function measureLaunchBase", a);
+    if (stop < 0 || stop > b) {
+      throw new Error("ship.js no longer defines measureLaunchBase inside the LAUNCH-BASE-CHECK block");
+    }
+    const body = shipSource.slice(a, stop);
+    const fn = new Function("PROJECT_ROOT", `${body}\nreturn readLaunchBase`)("/tmp/project");
+    if (typeof fn !== "function") throw new Error("the block does not define readLaunchBase");
+    return fn as (reply: unknown) => { reading: string; refusal: string | null };
+  })();
+
+  test("a reply with no reading at all is UNMEASURED and refuses", () => {
+    // The silent-fallback shape this whole issue is about: a run launched by
+    // the absence of an answer is launched by nothing.
+    for (const empty of [undefined, null, {}, { cwd: "/tmp/x" }]) {
+      const r = readLaunchBase(empty);
+      expect(r.reading, `${JSON.stringify(empty)} was read as a measurement`).toBe("UNMEASURED");
+      expect(r.refusal, "an unmeasured launch base did not stop the run").toBeTruthy();
+    }
+  });
+
+  test("SAME_CHECKOUT with a non-zero exit is a contradiction, not a pass", () => {
+    // The script exits non-zero for every reading but this one, so a reply
+    // asserting both restated something that cannot have happened.
+    const r = readLaunchBase({ reading: "SAME_CHECKOUT", exitCode: 1 });
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.refusal).toContain("SAME_CHECKOUT");
+  });
+
+  test("...and the control: SAME_CHECKOUT with exit 0 proceeds", () => {
+    // Without this the two cases above are satisfied by a reader that
+    // refuses everything.
+    const r = readLaunchBase({ reading: "SAME_CHECKOUT", exitCode: 0 });
+    expect(r.reading).toBe("SAME_CHECKOUT");
+    expect(r.refusal).toBeNull();
+  });
+
+  test("a refusing reading with no reason still names the two trees", () => {
+    // An operator reading "LAUNCH_BASE_DIFFERENT_CHECKOUT:" and nothing else
+    // cannot act on it, and the reason is the only part that says what to
+    // change.
+    const r = readLaunchBase({ reading: "DIFFERENT_CHECKOUT", cwd: "/Users/x/other", refusal: null });
+    expect(r.refusal).toContain("/Users/x/other");
+    expect(r.refusal).toContain("/tmp/project");
   });
 });

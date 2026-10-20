@@ -1551,6 +1551,38 @@ from memory, and a path-existence check passes for both. Resolution asserts
 the **symbol**, so a check that moves out of its file is caught rather than
 inherited.
 
+## What a gate RETRY means, and which attempt the verdict comes from (#737)
+
+**Last attempt wins.** When a gate is retried, the runner buffer holds more
+than one `bun test` run, and the result reported for that gate is the LAST
+run's — its summary counts and its per-check markers, together.
+
+Written down here rather than left in the parser, because it is a decision
+about semantics and the parser is a bad place to learn one.
+
+**Why last and not accumulated.** A retry exists precisely so the later
+attempt is the verdict: the branch moved between attempts, and attempt 1's
+failures describe a tree that has been superseded. Reporting them under
+attempt 2's heading sends an operator to reasons that may already be fixed.
+Accumulating every attempt has the opposite failure — a gate that eventually
+passed still reports failures, with nothing distinguishing those from
+failures that are still live.
+
+**The defect this replaced.** `parseGateResults` read the buffer two ways
+with two different scopes: the summary took the last `N pass` / `N fail` in
+the whole buffer, while `parseTestResults` was handed the whole buffer and
+pushed a result for every `(fail)` marker anywhere in it. On run
+`39325676895` that printed `1 fail` and `2 failures` eleven lines apart, the
+same check named twice, and #700 was being diagnosed off the second number.
+
+Both readings now derive from one binding, `splitGateRuns` in
+`lib/gate-run-split.ts`, so they cannot be scoped differently again.
+
+**A final run with no summary is UNMEASURED.** Not zero failures, and not the
+previous run's numbers — #469's shape, which `lib/suite-run-reading.ts`
+already refuses. The gate reports the refusal by name and fails rather than
+reporting a superseded attempt as this one's result.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:

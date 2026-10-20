@@ -89,7 +89,21 @@ describe("SC-1604: the prefix list is derived from the suites, never listed", ()
     expect(uniqueScratchPrefixes(
       readFileSync(join(REAL_ROOT, "test", "scratch-paths-unique.test.ts"), "utf-8"),
     ), "the fixture file does declare .x-, so the exclusion is load-bearing").toContain(".x-");
-  });
+    // A whole-tree scan, so its cost is a function of how many suites the
+    // repository has rather than of anything this case asserts. It died on
+    // CI at 5219ms against the 5000ms default in #323's own PR, for no
+    // reason but two new test files — `bunfig.toml` is explicit that the
+    // number there DECLARES the budget and does not set it, and that a per
+    // test argument is how a case is given a different one.
+    //
+    // Measured 2026-10-20 over 375 files and 5.67 MB: 3.3s locally, of
+    // which `repoRootIdents` is 1606ms and the `DECL` match is 1579ms,
+    // because neither pattern has a literal the engine can anchor a
+    // prescan on. That is a real defect and it is NOT repaired here: these
+    // regexes build a recursive-delete allowlist, and rewriting one at
+    // speed is the wrong risk to take for a budget. Filed separately with
+    // the profile.
+  }, 60_000);
 
   test("SC-1606: the two readings of a scratch root come from one parse", () => {
     // SC-5. `fixedScratchRoots` (is this path shared?) and
@@ -343,7 +357,10 @@ describe("SC-1610: no suite in test/ creates a filesystem path at module scope",
       violations,
       `these run at import, before any afterAll can be registered (#437):\n${violations.join("\n")}`,
     ).toEqual([]);
-  });
+    // The same whole-tree scan and the same reasoning as SC-1605 above.
+    // Measured at 2801ms on the CI run where its sibling died at 5219ms, so
+    // it is the next one over the line rather than a case that is fine.
+  }, 60_000);
 
   test("the detector sees the form #437 removed and not the form it installed", () => {
     // Without this the test above is satisfied by a detector that stopped

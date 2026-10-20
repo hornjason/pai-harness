@@ -2538,7 +2538,24 @@ function readLaunchBase(reply) {
   return { reading, refusal: `LAUNCH_BASE_${reading}: ${why}` }
 }
 
-const launchBaseReply = await timedAgent(`
+/**
+ * Take the reading. One function, called at Goal and again before every wave
+ * of isolated spawns (#592).
+ *
+ * Goal is not enough on its own, and that is the whole of #592's residual.
+ * The runtime resolves `isolation: 'worktree'` against the SESSION's
+ * directory at the moment of the spawn, and the shared session is shared:
+ * on 2026-10-19 a `cd` out of the repository killed worktree creation hours
+ * later in a run that had passed its launch check cleanly. A reading taken
+ * once at the top of a run and trusted at the bottom is a reading about a
+ * different moment.
+ *
+ * No `cd`, here or at any caller. Everywhere else in this file a command is
+ * pinned to a directory because ambient state is the defect; here the
+ * ambient state IS the measurement.
+ */
+async function measureLaunchBase(phase, label) {
+  const reply = await timedAgent(`
 Run exactly this, in the directory you are already in, and report what it printed:
 
 ${launchBaseCheckShell()}
@@ -2557,9 +2574,11 @@ when the JSON carried none. Report the EXIT: value as exitCode, as a number.
 Do not fix anything, do not create any directory, and do not re-run the
 command from somewhere else to get a different answer. If it refuses, report
 the refusal.
-`, { label: 'launch-base', phase: 'Goal', schema: launchBaseCheckSchema() })
+`, { label, phase, schema: launchBaseCheckSchema() })
+  return readLaunchBase(reply)
+}
 
-const launchBase = readLaunchBase(launchBaseReply)
+const launchBase = await measureLaunchBase('Goal', 'launch-base')
 if (launchBase.refusal) {
   log(launchBase.refusal)
   return await terminalFailure('LAUNCH_BASE_FAILED', {
@@ -2889,6 +2908,67 @@ function applyScopeDenylist(disc, say, goalText) {
 function withoutDenied(files, denied) {
   return (files || []).filter(f => !(denied || []).some(d => matchesDenied(f, d)))
 }
+
+// ──── PLAN-COVERAGE-START ────
+// #751. The mirror of `denylistViolations`: that one asks whether the plan
+// claims a file it must not, this one whether it OMITS a file it must claim.
+// `discovery.filesToModify` is interpolated into the to-issues prompt as
+// "Files to modify" and nothing compared the answer's union back to it, so a
+// file nobody claimed reached Commit and was refused there by SC-413 — after
+// the whole agent budget was spent.
+//
+// Inside the deny-list block deliberately: `normalisePath` decides whether
+// two spellings are one file, and a second copy of that decision would agree
+// on every input anyone has and diverge on the one that matters. Kept in
+// parity with `lib/plan-coverage.ts` by `test/plan-coverage.test.ts`.
+function planCoverage(discoveryFiles, subIssues) {
+  const discovered = (discoveryFiles || []).map(f => String(f)).filter(f => f.trim() !== '')
+  const subs = subIssues || []
+
+  const claimedSet = new Set()
+  for (const s of subs) {
+    for (const f of (s.filesToModify || [])) {
+      const n = normalisePath(f)
+      if (n !== '') claimedSet.add(n)
+    }
+  }
+
+  const reasons = []
+  if (discovered.length === 0) {
+    reasons.push(
+      'discovery named no files to modify, so there is nothing to compare the plan against. ' +
+      'The union of an empty list is covered by any plan at all, which is not "the plan is ' +
+      'complete" — it is "nobody looked" (#751).',
+    )
+  }
+  if (subs.length === 0) {
+    reasons.push(
+      'the decomposition produced no sub-issues, so there is no plan to compare. An empty ' +
+      'plan agrees with every discovery.',
+    )
+  }
+
+  return {
+    reading: reasons.length === 0 ? 'MEASURED' : 'UNMEASURED',
+    unmeasuredReasons: reasons,
+    uncovered: reasons.length === 0 ? discovered.filter(f => !claimedSet.has(normalisePath(f))) : [],
+    discovered: discovered.length,
+    claimed: claimedSet.size,
+  }
+}
+
+function planCoverageRefusal(r) {
+  if (r.reading === 'UNMEASURED') {
+    return `PLAN COVERAGE UNMEASURED: ${r.unmeasuredReasons.join(' ')} ` +
+      `Falling back to single-agent implement, which may touch any file.`
+  }
+  if (r.uncovered.length === 0) return null
+  return `PLAN COVERAGE: ${r.uncovered.length} of ${r.discovered} discovered file(s) are claimed by ` +
+    `no sub-issue — ${r.uncovered.join(', ')}. A file nobody claims is a file two worktrees ` +
+    `may both edit, and the SC-413 claim audit refuses it at Commit after the whole agent ` +
+    `budget is spent (#751). Falling back to single-agent implement.`
+}
+// ──── PLAN-COVERAGE-END ────
 // ──── SCOPE-DENYLIST-END ────
 
 /**
@@ -3727,10 +3807,17 @@ not real serialises the run for nothing.
       }
       if (hasOverlap) break
     }
+    // #751: the union of the plan against what discovery found. The two
+    // checks above ask whether the plan claims too much; this asks whether it
+    // claims too little, which is the half that reached Commit before
+    // anything noticed.
+    const coverageRefusal = planCoverageRefusal(planCoverage(discovery.filesToModify, decompResult.subIssues))
     if (planViolations.length > 0) {
       log(`SCOPE DENY-LIST: to-issues planned work on out-of-scope files — falling back to single-agent implement.\n${planViolations.join('\n')}`)
     } else if (hasOverlap) {
       log(`WARN: to-issues produced overlapping files — falling back to single-agent implement`)
+    } else if (coverageRefusal) {
+      log(coverageRefusal)
     } else {
       mDecomposition = decompResult
       log(`Decomposed into ${mDecomposition.subIssues.length} sub-issues: ${mDecomposition.subIssues.map((s, i) => `S${i + 1}[${s.title}:${s.size}]`).join(' → ')}`)
@@ -4754,6 +4841,43 @@ function waveCommitFailure(reply, waveIndex, runRef) {
  * every agent. Switching costs the operator a `git switch -` and is never
  * pushed from here.
  */
+// ──── RUN-BRANCH-SETUP-START ────
+// #702. Inlined from lib/run-branch.ts because this file runs in a sandbox
+// with no imports (#69); kept in parity by test/run-branch-start.test.ts.
+//
+// `git switch -c` FAILS when the branch already exists, and that failure is
+// the load-bearing part: `|| git switch` then adopts the existing branch, so
+// a run re-entering an issue commits onto the work already there. The `case`
+// guard leaves a checkout already on another branch alone.
+function runBranchSetupScript(quotedRef) {
+  return `case "$branch" in
+  ""|main|master)
+    git switch -c ${quotedRef} 2>/dev/null || git switch ${quotedRef} ;;
+esac`
+}
+function runBranchStart(input) {
+  const { branchAfter, headAfter, priorTip } = input
+  if (priorTip === undefined) return 'UNMEASURED'
+  if (!branchAfter || !headAfter) return 'UNMEASURED'
+  if (priorTip === null) return 'NO_PRIOR_BRANCH'
+  return priorTip === headAfter ? 'PRIOR_BRANCH_RESUMED' : 'PRIOR_BRANCH_DISCARDED'
+}
+
+function runBranchStartRefusal(reading, branch, discarded = []) {
+  if (reading === 'PRIOR_BRANCH_DISCARDED') {
+    return `${branch} already existed with ${discarded.length} commit(s) that are not on this run's ` +
+      `base, and this run started somewhere else — ${discarded.join(', ')}. Starting from the ` +
+      `base is a reasonable default and taking it SILENTLY makes "there was no prior work" and ` +
+      `"there was prior work and it was dropped" identical from the outside (#702).`
+  }
+  if (reading === 'UNMEASURED') {
+    return `the branch this run started on could not be read, so whether it discarded prior work on ` +
+      `${branch} is unknown. That is not "there was no prior branch" (#702).`
+  }
+  return null
+}
+// ──── RUN-BRANCH-SETUP-END ────
+
 async function establishRunRef() {
   const ref = runRefName(ISSUE)
   const reply = await timedAgent(`
@@ -4767,12 +4891,12 @@ if [ -n "$before" ]; then
 else
   echo '{"reading":"UNMEASURED","notice":"the checkout reported no branch, so there is nothing to compare a leftover against (#640)"}'
 fi
+priorTip=$(git rev-parse --verify --quiet ${shellQuote(ref)} || echo NONE)
+echo "PRIOR_TIP: $priorTip"
 branch=$(git branch --show-current)
-case "$branch" in
-  ""|main|master)
-    git switch -c ${shellQuote(ref)} 2>/dev/null || git switch ${shellQuote(ref)} ;;
-esac
+${runBranchSetupScript(shellQuote(ref))}
 git branch --show-current
+echo "HEAD_AFTER: $(git rev-parse HEAD)"
 
 Report the LAST line as branch — the branch the checkout is on after the
 command, not the one it was on before, and not the one the command asked for.
@@ -4787,6 +4911,13 @@ leftoverReading and its "notice" as leftoverNotice — null when it printed no
 notice. It exits zero in every case: an interrupted run's branch is usually
 what you want to resume onto, so it reports and does not refuse.
 
+Report the PRIOR_TIP: line's value as priorTip, EXACTLY as printed, and the
+HEAD_AFTER: line's value as headAfter. priorTip is the literal string NONE
+when the run's branch did not exist. Report NONE as the string NONE — do not
+translate it to null, empty or omit the field. An omitted priorTip means
+nobody read it, which is UNMEASURED, and that is a different state from a
+branch that was genuinely not there (#702).
+
 Do not create, delete or push any other ref, and do not switch again.
   `, { label: 'run-ref', phase: 'Implement', schema: {
     type: 'object',
@@ -4798,11 +4929,40 @@ Do not create, delete or push any other ref, and do not switch again.
       branchBefore: { type: 'string' },
       leftoverReading: { type: 'string' },
       leftoverNotice: { type: ['string', 'null'] },
+      // #702. Declared, because a schema is a filter: an undeclared field is
+      // stripped on the way back and the caller reads a reply missing
+      // exactly what it did not ask for (#646). Without these two the start
+      // reading below is UNMEASURED on every run.
+      priorTip: { type: 'string' },
+      headAfter: { type: 'string' },
     },
     required: ['branch'],
   } })
 
   const branch = reply && typeof reply.branch === 'string' ? reply.branch.trim() : ''
+
+  // ──── RUN-BRANCH-START-START ────
+  // #702. Did this run resume the work already on its branch, or start
+  // somewhere else and leave it behind? Run wf_9d22ecf5-aed discarded six
+  // commits and said nothing — not a refusal, not a warning, not a line in
+  // the journal — because starting from the base is a reasonable default and
+  // taking it silently makes "there was no prior work" and "there was prior
+  // work and it was dropped" byte-identical from the outside.
+  //
+  // An OMITTED priorTip is `undefined` and reads UNMEASURED. The literal
+  // string NONE is the branch genuinely not existing. Those must not
+  // collapse, which is why the prompt above says to report NONE verbatim.
+  const reportedPriorTip = reply && typeof reply.priorTip === 'string' ? reply.priorTip.trim() : undefined
+  const startReading = runBranchStart({
+    branchBefore: reply && typeof reply.branchBefore === 'string' ? reply.branchBefore.trim() : '',
+    branchAfter: branch,
+    headAfter: reply && typeof reply.headAfter === 'string' ? reply.headAfter.trim() : '',
+    priorTip: reportedPriorTip === undefined ? undefined : (reportedPriorTip === 'NONE' ? null : reportedPriorTip),
+  })
+  log(`RUN_BRANCH_START: ${startReading} (${runRefName(ISSUE)})`)
+  const startRefusal = runBranchStartRefusal(startReading, runRefName(ISSUE))
+  if (startRefusal) log(`RUN_BRANCH_START ${startReading}: ${startRefusal}`)
+  // ──── RUN-BRANCH-START-END ────
   // Recorded even when empty. An unread start is what makes the end-of-run
   // comparison UNMEASURED rather than silently equal, and overwriting it
   // with the ref we just switched to would make every run look unchanged.
@@ -5650,6 +5810,45 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         // leave the commit pointed at a ref the run is no longer on.
         runRef = reread.branch
       }
+      // ──── LAUNCH-BASE-PER-WAVE-START ────
+      // #592. The Goal check established which tree this run cuts worktrees
+      // from. It established it THEN. `isolation: 'worktree'` is resolved by
+      // the runtime against the session's directory at the instant of the
+      // spawn, and the session is shared with whoever else is using it — a
+      // `cd` between Goal and here moves every worktree this wave is about
+      // to create, and `opts.cwd` cannot pin it (#644).
+      //
+      // Run `wf_680eb8a6-29a` is what this costs when nothing looks: twelve
+      // agents and ~570k tokens spent cutting worktrees of the wrong
+      // repository, caught afterwards by #218's guard comparing the remote
+      // the checkout actually had. The guard is right and is unchanged; this
+      // asks the question BEFORE the spend instead of after it.
+      //
+      // Refused as a wave rather than as the run, the same way #652's ref
+      // drift is: the sub-issues settle with a finding that says why, so the
+      // run reports which wave never started rather than vanishing.
+      const waveBase = await measureLaunchBase('Implement', `launch-base-wave-${w + 1}`)
+      if (waveBase.refusal) {
+        waveFailed = true
+        log(`Wave ${w + 1} was not dispatched: ${waveBase.refusal}`)
+        for (const i of wave) {
+          settled.push({
+            subIssue: batchIssues[i],
+            buildResult: {
+              success: false,
+              filesChanged: [],
+              findings: [
+                `did not start — the launching session's directory is no longer the tree this ` +
+                `run was handed, so every worktree this wave created would be cut from the ` +
+                `wrong one: ${waveBase.refusal}`,
+              ],
+            },
+            ok: false,
+          })
+        }
+        continue
+      }
+      // ──── LAUNCH-BASE-PER-WAVE-END ────
       const waveResults = await parallel(wave.map(i => () => shipSubIssue(batchIssues[i])))
       for (let k = 0; k < wave.length; k++) {
         const r = waveResults[k]
@@ -6913,6 +7112,7 @@ defect it exists to catch (#659). Report what it printed.
       // not report a reading looked at nothing, and "nothing was deleted" is
       // the one answer nobody may infer from silence here — it is the answer
       // the whole run produced on wf_2abbe96f-546.
+      // ──── DELETION-ENFORCEMENT-START ────
       const deletionReadingOfRound = deletionVerdictReading(reCommit)
       const deletionVerdict = deletionReadingOfRound.verdict
       for (const line of deletionReadingOfRound.lines) log(line)
@@ -6925,6 +7125,49 @@ defect it exists to catch (#659). Report what it printed.
           : `Verify gate passed after BUILD regression fix, but the round's deletions are ${deletionVerdict} — ` +
             'a gate that passes because its test is gone is not a gate that passed (#659)')
       }
+      // #747. The sentence above said the whole of it and then did nothing
+      // about it: there was no refusal between the reading and the end of
+      // the block, so a round that removed passing cases logged
+      // REPAIR_DELETED_TESTS, went green, and shipped. Detection without
+      // enforcement is #530's shape — a recorder and a refusal that were
+      // never connected.
+      //
+      // The REFUSAL IS AFTER THE RETRY, deliberately. Refusing above it
+      // would make the "a gate that passes because its test is gone"
+      // sentence unreachable, and that sentence is the one thing an operator
+      // reads to know WHY the run stopped being trustworthy — deleting it is
+      // the cheapest wrong fix #747 names. The retry also still writes its
+      // own gate record, so the run's verify state is measured rather than
+      // guessed at from an early exit.
+      //
+      // DELETED and UNMEASURED refuse alike, and that is the whole point
+      // rather than an over-reach. `deletionVerdictReading` never returns
+      // CLEAN on a reading it could not take, so UNMEASURED means nothing
+      // established what this round removed — and "nothing was deleted" is
+      // the one answer nobody may infer from silence here (#684, #659). A
+      // round whose agent omits the field now ends the run instead of
+      // completing; that is a behaviour change for runs that pass today, and
+      // it is the behaviour the UNMEASURED doctrine asks for
+      // (`.claude/rules/config-access.md`).
+      //
+      // ONE decider: `deletionVerdict` is `deletionVerdictReading`'s own
+      // verdict, not a second reading of the reply. Reaching into the
+      // agent's restatement again here would be two deciders for one
+      // question — they would always agree, and a mutation of either would
+      // leave the other holding the run up. The field name is deliberately
+      // not spelled in this comment: the check that holds this property
+      // greps the block, and a checker cannot tell a citation from a use.
+      if (deletionVerdict !== 'CLEAN') {
+        return await terminalFailure('VERIFY_FAILED', {
+          reason: `the verify BUILD regression round's deletions are ${deletionVerdict}, so the ` +
+            `verify gate's verdict is not a reading of the suite that was graded — a gate that ` +
+            `passes because its test is gone is not a gate that passed (#659, #747)`,
+          deletionVerdict,
+          deletionLines: deletionReadingOfRound.lines,
+          verifyResult: retryVerify || verifyResult,
+        })
+      }
+      // ──── DELETION-ENFORCEMENT-END ────
       }
     } else {
       // #218: this `if` had no else, so a remediation that did nothing was

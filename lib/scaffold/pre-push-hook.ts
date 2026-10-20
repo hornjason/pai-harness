@@ -30,6 +30,22 @@
  * message is wrong either way — a developer reading "conformity failed" goes
  * and looks at conformity, which is green.
  *
+ * ## What was wrong the second time (#728)
+ *
+ * It asked `--show-toplevel` where the dependencies are. That answers "where
+ * is this working tree", and in a LINKED worktree that is not where
+ * `node_modules` lives — it is gitignored, so it exists only in the main
+ * checkout. `ln -s` does not look at its target, so the link succeeded, the
+ * suite could not resolve its imports, and every worktree push was refused as
+ * UNMEASURED. The refusal was right and is unchanged; what it could not say
+ * is that the cause was the worktree, so three agent sessions in agentgrit
+ * reached for `--no-verify` instead.
+ *
+ * The same wrong root made the lockfile arm vacuous — it compared the pushed
+ * commit's lockfile with its own copy in the temp checkout. `MODULES_ROOT`
+ * answers the right question, and `link_modules` refuses by name rather than
+ * leaving a dangling link.
+ *
  * ## The three outcomes, and why UNMEASURED blocks
  *
  * | what happened | exit | message |
@@ -69,9 +85,30 @@ ${PRE_PUSH_MANAGED_MARKER}
 REFUSE=${PRE_PUSH_REFUSE_EXIT}
 ZERO=0000000000000000000000000000000000000000
 TOPLEVEL=$(git rev-parse --show-toplevel) || exit $REFUSE
+# Where this repository's installed dependencies are, which is NOT "where is
+# this working tree" (#728). node_modules is gitignored, so a LINKED worktree
+# has none and never will. --git-common-dir answers the main checkout's .git
+# from any worktree and plain .git in the main checkout itself, so the
+# non-worktree case is unchanged.
+MODULES_ROOT=$(cd "$TOPLEVEL" && cd "$(git rev-parse --git-common-dir)/.." && pwd) || exit $REFUSE
 conformity=0
 unmeasured=0
 why=""
+
+# Link the main checkout's modules into the temp checkout, or say why not.
+#
+# 'ln -s' does not look at its target: a link to a path that does not exist
+# succeeds, and the suite then dies on an import error that names no cause.
+# That is what a worktree push did before #728 — "the conformity suite did not
+# load" over a repository whose dependencies were installed the whole time.
+link_modules() {
+  if [ ! -d "$MODULES_ROOT/node_modules" ]; then
+    unmeasured=1
+    why="no node_modules at $MODULES_ROOT/node_modules — run bun install there"
+    return 0
+  fi
+  ln -s "$MODULES_ROOT/node_modules" "$1/node_modules" 2>/dev/null
+}
 
 while read -r _lref lsha _rref _rsha; do
   # Branch deletion: there is no commit to check out.
@@ -91,13 +128,20 @@ while read -r _lref lsha _rref _rsha; do
   # checkout has no lockfile" as "the dependencies differ" and installs. But a
   # lockfile absent from the checkout is a lockfile git does not track — it is
   # gitignored, or the project has none — and then there is nothing in this
-  # push that can change the dependency graph. The working tree's modules are
-  # the right ones by definition, and installing is both slower and less
+  # push that can change the dependency graph. The main checkout's modules
+  # are the right ones by definition, and installing is both slower and less
   # accurate.
+  #
+  # The lockfile read here is the one beside the modules being linked, for
+  # the same reason (#728). Rooted at the working tree, a worktree push
+  # compared the PUSHED commit's lockfile against its own copy in the temp
+  # checkout — equal whenever you push what you committed, so the arm that
+  # exists to check the installed modules match the pushed ones never looked
+  # at the installed modules at all.
   if [ ! -f "$tmp/bun.lock" ]; then
-    ln -s "$TOPLEVEL/node_modules" "$tmp/node_modules" 2>/dev/null
-  elif [ -f "$TOPLEVEL/bun.lock" ] && cmp -s "$TOPLEVEL/bun.lock" "$tmp/bun.lock"; then
-    ln -s "$TOPLEVEL/node_modules" "$tmp/node_modules" 2>/dev/null
+    link_modules "$tmp"
+  elif [ -f "$MODULES_ROOT/bun.lock" ] && cmp -s "$MODULES_ROOT/bun.lock" "$tmp/bun.lock"; then
+    link_modules "$tmp"
   else
     echo "pre-push: dependencies differ from the working tree — installing from the pushed lockfile" >&2
     if ! ( cd "$tmp" && bun install --frozen-lockfile ) >&2; then

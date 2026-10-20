@@ -63,6 +63,7 @@ import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
   AI_REVIEW_JOB,
+  AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
   buildAuthDetectScript,
@@ -338,10 +339,58 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     expect(run.code).toBe(0);
   });
 
-  test("AC-7: an unset mode is treated as none, not as a resolved credential", () => {
+  // #677 AC5 supersedes the case that used to sit here, which asserted that
+  // "an unset mode is treated as none". That case borrowed the justification
+  // from the one above it — `none` is silent *because the auth step already
+  // said it* — and the premise is false for an unset mode: an absent output
+  // means the auth step did not run, or ran and could not write. Nothing
+  // annotated anywhere, and the review step exited 0.
+  //
+  // So "the credential check never happened" was reported exactly like "the
+  // check happened and found nothing", which is *Silent Default
+  // Substitution* (`.claude/rules/config-access.md`) in the file that rule's
+  // own UNMEASURED section is about.
+  test("#677 AC5: an absent mode is UNMEASURED, not a silent none", () => {
     const run = runAuthScript(buildReviewRunScript(), {});
-    expect(run.stdout).not.toContain("UNMEASURED");
-    expect(run.code).toBe(0);
+    const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
+    expect(
+      warnings.length,
+      `the auth step produced no reading and the review step said nothing\n${run.stdout}`,
+    ).toBe(1);
+    // Named, so the annotation sends someone somewhere. "UNMEASURED" alone
+    // does not distinguish this from the four states that are measured.
+    expect(warnings[0]).toContain("no mode");
+    expect(run.code, "a tree that has not opted in must not go red").toBe(0);
+  });
+
+  test("#677 AC5: an absent mode and an explicit none are different states", () => {
+    // The pair, varying exactly one thing. Without this the case above is
+    // satisfied by annotating BOTH, which would re-report one state twice
+    // and undo the case directly above this block.
+    const absent = runAuthScript(buildReviewRunScript(), {});
+    const explicit = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: "none" });
+    expect(absent.stdout).not.toBe(explicit.stdout);
+    expect(explicit.stdout, "an explicit none started annotating again").not.toContain("UNMEASURED");
+  });
+
+  test("#677 AC5: a consumer who required a review and got no reading is refused", () => {
+    // The whole point of distinguishing the states. Before this, a repo with
+    // RUNGATE_REQUIRE_AI_REVIEW=true whose auth step failed to produce an
+    // output passed the required check in silence.
+    const run = runAuthScript(buildReviewRunScript(), { RUNGATE_REQUIRE_AI_REVIEW: "true" });
+    expect(run.code, `an absent reading passed a required review\n${run.stdout}${run.stderr}`).toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(run.stderr).toContain("::error");
+  });
+
+  test("#677 AC5: the require switch is still read exactly", () => {
+    // A gate that turns itself on by accident is the other failure. Only the
+    // exact string `true` refuses; the loose readings must not.
+    for (const loose of ["TRUE", "1", "truthy", "yes", ""]) {
+      const run = runAuthScript(buildReviewRunScript(), { RUNGATE_REQUIRE_AI_REVIEW: loose });
+      expect(run.code, `RUNGATE_REQUIRE_AI_REVIEW=${JSON.stringify(loose)} refused`).toBe(0);
+    }
   });
 
   test("AC-7: a consumer who required a review and got none is refused", () => {

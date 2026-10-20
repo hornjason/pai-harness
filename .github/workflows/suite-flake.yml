@@ -1,0 +1,64 @@
+# Not managed by rungate. This repository's own flake instrument for #323.
+#
+# It is deliberately NOT generated into consumers and NOT scheduled:
+#   - not generated, for the reason .github/workflows/action-pins.yml gives
+#     (#789). test/suite-flake.test.ts asserts it stays absent from the
+#     generator's output.
+#   - not scheduled, because a job that runs the whole suite ten times costs
+#     over an hour of runner time. This is an instrument you point at a
+#     question — "is the number in that PR body reliable?" — not a heartbeat.
+name: Suite flake
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Consecutive full-suite runs on one tree (#323 SC-5 asks for 10)"
+        required: true
+        default: "10"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  flake:
+    runs-on: ubuntu-latest
+    # Ten sequential full-suite runs. The default 360 is the thing that would
+    # truncate the series, and a truncated series reads as UNMEASURED rather
+    # than as a clean one — correct, and a wasted hour.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # Pinned by .bun-version — the project's single declaration (#622).
+          bun-version-file: ".bun-version"
+      - run: bun install
+      - name: Install pinned global tools
+        # The suite probes for these, and a run with them absent measures a
+        # different thing than CI does — which is the one difference that
+        # would make this series not about the suite CI runs.
+        run: bun scripts/install-global-tools.ts
+      - name: Run the series
+        # Consecutive on ONE runner, deliberately: the suspected causes are
+        # shared scratch paths and lock contention, and a matrix of N
+        # independent runners cannot observe either.
+        env:
+          # Through the environment, never interpolated into the `run:` text.
+          # A dispatch input is attacker-controlled by anyone who can press
+          # the button, and `${{ inputs.runs }}` on a command line is #696's
+          # shape — the script validates it as an integer, but validation
+          # downstream of an injection point is not the defence.
+          RUNS: ${{ inputs.runs }}
+        run: bun scripts/suite-flake-run.ts --runs "$RUNS" --out flake-logs
+      - name: Keep every log, clean or not
+        # `always()`, because the series this issue is about is the one that
+        # failed, and the run that refuses is the run whose logs are worth
+        # having. An artefact uploaded only on success is the defect.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-flake-logs
+          path: flake-logs/
+          retention-days: 30
