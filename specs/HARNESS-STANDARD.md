@@ -12428,3 +12428,118 @@ None of the mutations is left in the tree; all were run and reverted, and
 `workflows/ship.js`, `scripts/github-op.ts` and both test files were confirmed
 byte-identical to the measured source afterwards by SHA-256, never by
 `git checkout --`.
+
+## The ai-review baseline was read fifteen seconds before the restore (#836)
+
+`.github/workflows/ai-review.yml` reads the tree, then
+`anthropics/claude-code-action` restores `.claude`, `.claude.json`,
+`.mcp.json`, `.gitmodules`, `.ripgreprc`, `CLAUDE.md`, `CLAUDE.local.md` and
+`.husky` from the base because a pull request head is untrusted, and only
+then does the reviewer start. The drift step compares the two readings and
+correctly reports a difference; what it cannot know is that the difference
+was the harness's own.
+
+Measured on PR #815, run 39500604342: baseline 21:28:21, restore 21:28:36,
+reviewer 21:28:41, and at 21:35:45 —
+
+```
+##[error]The reviewer modified the tree it was reviewing:  M .claude/rules/self-referential-tests.md
+```
+
+— a file that pull request legitimately owned. Every PR touching `.claude/`
+fails a check about something the reviewer never did, and the message
+accuses the reviewer, so the two repairs it invites are to debug the
+reviewer or relax its write deny. Both are wrong, and the second is
+measurably destructive.
+
+**The fix is an ORDER, not an exclusion.** The harness performs the same
+restore itself in `ai-review-restore-untrusted`, whose id is strictly before
+the baseline step's, so those edits land in the baseline where they cancel —
+exactly as `google-github-actions/auth`'s credentials file already does
+(#640). The drift reading still compares two readings of the whole tree.
+Widening it to ignore `.claude/` would have put a hole in the only control
+that watches the reviewer's writes, and an exclusion is a pattern nobody
+re-derives.
+
+**The cheapest wrong fix, named: respell `AI_REVIEW_WORKSPACE_WRITE_DENY` as
+`Edit(**)`.** It reads as the strictly safer spelling of the same rule.
+Measured against the real CLI it is the spelling that also blocks writes to
+an `--add-dir` path, which is where the findings payload lives, so the
+repair converts a false drift failure into a reviewer that silently writes
+nothing. `permission_denials_count: 2` on run 39500604342 is the deny
+WORKING. Row M2 applies the respelling to a copy of the source and the case
+refuses it.
+
+### What was broken to prove it
+
+26 tests — `test/ai-review-untrusted-restore.test.ts` plus
+`test/ai-review-write-scope.test.ts`, counted together because M2 is about a
+constant both reason over. Every count was predicted before the battery ran
+and **the baseline row was read before any mutation row**, because an
+instrument that has stopped reporting takes the baseline down with it and
+that is the one row nobody mutates anything to produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 26 pass, 0 fail | **26 pass, 0 fail** | — |
+| M1 the genuinely pre-#836 tree — the restore step removed from the generator AND from the committed workflow | 4 | **4 of 26** | the job's step id list: `ai-review-restore-untrusted` present against absent |
+| M2 **the cheapest wrong fix** — the deny respelled `Edit(**)` | 2 | **2 of 26** | the constant's own value: `Edit(./**)` against `Edit(**)` |
+| M3 the restore step present but emitted AFTER the baseline | 2 | **2 of 26** | the step ORDER. The block's text is unchanged, so AC-7 stays green and only the order cases move |
+| M4 the `git rm -rfq --ignore-unmatch` dropped, bare `git checkout` left | 1 | **2 of 26** | a pull-request commit adding a file inside `.claude/`: the original deletes it, the mutant leaves it for the reviewer to read as a rule |
+| M5 the fetch-failure refusal's `exit` removed | 1 | **2 of 26** | `AI_REVIEW_BASE_REF=no-such-branch-9401`: the original exits 1 with the paths unrestored, the mutant carries on |
+| M6 the empty-base-ref refusal's `exit` removed | 1 | **2 of 26**, and **1** before the repair below | `AI_REVIEW_BASE_REF=""` |
+| M7 `.claude` dropped from `AI_REVIEW_UNTRUSTED_PATHS` | 4 | **4 of 26** | the fixture's `.claude/rules/self-referential-tests.md`: restored to the base's content against left as the pull request's edit |
+| M8 the test's own control neutered — the late-restore case restores EARLY | 1 | **1 of 26** | the order the pair varies, which is the only thing it varies |
+| M9 `stepIds` short-circuited to `return []` | 3 | **3 of 26**, and **2** before the repair below | the committed workflow's text against nothing |
+| M10 the committed workflow hand-edited inside the restore block rather than regenerated | 1 | **1 of 26** | the committed file's bytes against `buildRestoreScript()`'s output |
+
+**The instrument is a PAIR, deliberately.** A fixture that restores early and
+reports no drift proves nothing, because a tree nobody changed also reports
+no drift. AC-2's two cases vary exactly one thing — when the restore runs —
+over the same repository, the same edit and the same scripts (#585). The
+late half must be RED and must name the restored file, and M8 is the row
+that keeps that control honest.
+
+**M4 and M5 came back 2 against a predicted 1, and the extra red is the real
+kind.** Both mutate text that `buildRestoreScript` emits, so the committed
+workflow stops being what the generator produces and AC-7's byte-identity
+case goes red with them. Squarely about the mutated behaviour — AC-7's whole
+subject is that the committed file came out of the generator — and not a
+crashing mutant: 24 cases still pass. Every generator-script row carries
+that +1, stated once here rather than filed as noise beside each.
+
+**M6 came back 1, and the single red was the WRONG one.** The refusal case
+stayed GREEN with the empty-base-ref refusal removed. With an empty ref the
+script carries on, builds `refs/remotes/origin/`, and the FETCH refusal
+exits non-zero — so the case was satisfied by the decider it was not pointed
+at, while its `toContain` assertion still found the message printed by the
+`echo` above the deleted `exit`. Two deciders that agree
+(`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape), and the only
+thing that surfaced it was a row predicted 1 coming back 1 with the wrong
+name beside it. **A count that matches its prediction is not evidence until
+you read which case produced it.** Repaired by that section's second option
+— keep both, give each an input only it reaches: the empty-ref case now
+asserts the refusal happened before any fetch was attempted, which only the
+early refusal can satisfy.
+
+**M9 came back 2 against a predicted 3, and the missing one was vacuous.**
+AC-7's uniqueness case compared `new Set(ids).size` to `ids.length`, which
+over a reader returning nothing is `0 === 0` — an assertion holding
+vacuously, in a file whose subject is assertions that hold vacuously. It
+establishes non-emptiness first now, and the row is 3.
+
+Both repairs are defects the battery found in the CASES, not in the code.
+Neither was visible in the diff, in review, or in a green suite.
+
+**One row is not a reconstruction.** The ai-review job on PR #841 ran the
+new step for real and logged
+`ai-review restored from refs/remotes/origin/main: .claude .claude.json
+.mcp.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky`, with
+`AI_REVIEW_BASE_REF: main` and the whole job green. The fetch, the token
+path through `--config-env`, and the restore all executed on a runner rather
+than only in a fixture.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`lib/scaffold/ai-review-step.ts`, `.github/workflows/ai-review.yml` and
+`test/ai-review-untrusted-restore.test.ts` were confirmed byte-identical to
+the measured source afterwards by SHA-256, never by `git checkout --`.
