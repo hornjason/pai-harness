@@ -5340,9 +5340,10 @@ COMMIT phase's AGENT as text, in a natural-language instruction block, four
 lines above `git push` and directly above the `main|master` guard that
 exists because #136 had an agent improvise a recovery onto the default
 branch. `shellQuote` stops a shell reading it and does nothing about a
-reader that takes the whole block as instructions. `workflows/ship.js:8169`
-already made the opposite choice one phase later — *"do NOT paste the issue
-title into the command"* — and the COMMIT phase was never given it.
+reader that takes the whole block as instructions. The Ship phase's
+`pr-upsert` step in `workflows/ship.js` already made the opposite choice one
+phase later — *"do NOT paste the issue title into the command"* — and the
+COMMIT phase was never given it.
 
 ### The step added to close a fail-open rebuilt it one layer up
 
