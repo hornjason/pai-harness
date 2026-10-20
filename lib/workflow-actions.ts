@@ -47,12 +47,45 @@
  * test that goes red on a day nobody changed anything, which is a test people
  * switch off.
  *
- * `scripts/check-action-pins.ts` is the network check, run deliberately. What
- * the suite can and does hold is the structure: one declaration, every
- * position agreeing with it, every third-party pin a full SHA carrying its
- * version and the date it was read. `RESOLVED_ON` dates a reading; it does
- * not certify it.
+ * `scripts/check-action-pins.ts` is the network check. What the suite can and
+ * does hold is the structure: one declaration, every position agreeing with
+ * it, every third-party pin a full SHA carrying its version and the date it
+ * was read. `resolvedOn` dates a reading; it does not certify it.
+ *
+ * ## When the check runs, and how a pin gets bumped (#789)
+ *
+ * #377 shipped that script and left it *"run deliberately"*, which is the
+ * same sentence as "never": nothing in this repository invoked it, and a
+ * rule nothing executes is not a rule (`.claude/rules/config-access.md` says
+ * this about ADRs; it was true of this line too).
+ *
+ * `.github/workflows/action-pins.yml` runs it weekly and on demand. It is
+ * **this repository's workflow and is not generated into consumers**, on
+ * purpose: a consumer's pin comes from the rungate version they installed,
+ * not from a question they ask GitHub themselves, and a scheduled job in
+ * every scaffolded project would hand each of them a red workflow they
+ * cannot fix. `test/action-pin-freshness-schedule.test.ts` asserts it is
+ * absent from the generator's output, so adding it to the templates is a
+ * scope change rather than a tightening.
+ *
+ * `workflow_dispatch` as well as `schedule`, because GitHub disables a
+ * schedule after 60 days of repository inactivity and a check you cannot
+ * trigger by hand fails silently on exactly the week nobody pushed.
  */
+
+/**
+ * What to do when the freshness check says a pin is stale.
+ *
+ * ONE declaring position. The script prints this and no sentence of its own
+ * — two near-identical procedures is the shape where somebody updates the
+ * copy an operator does not read. It names the three fields together because
+ * bumping `sha` without `resolvedOn` leaves a reading dated to a commit it
+ * was not taken against, which is worse than no date at all.
+ */
+export const BUMP_PROCEDURE =
+  "Update lib/workflow-actions.ts — sha, version and resolvedOn together, in one edit — then " +
+  "re-run the scaffold so every generated position follows in the same commit. Consumers bump " +
+  "by upgrading rungate; they do not carry this check themselves (#789).";
 
 /** How one action is referenced, and why. */
 export type PinStyle =
