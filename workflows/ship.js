@@ -2889,6 +2889,67 @@ function applyScopeDenylist(disc, say, goalText) {
 function withoutDenied(files, denied) {
   return (files || []).filter(f => !(denied || []).some(d => matchesDenied(f, d)))
 }
+
+// ──── PLAN-COVERAGE-START ────
+// #751. The mirror of `denylistViolations`: that one asks whether the plan
+// claims a file it must not, this one whether it OMITS a file it must claim.
+// `discovery.filesToModify` is interpolated into the to-issues prompt as
+// "Files to modify" and nothing compared the answer's union back to it, so a
+// file nobody claimed reached Commit and was refused there by SC-413 — after
+// the whole agent budget was spent.
+//
+// Inside the deny-list block deliberately: `normalisePath` decides whether
+// two spellings are one file, and a second copy of that decision would agree
+// on every input anyone has and diverge on the one that matters. Kept in
+// parity with `lib/plan-coverage.ts` by `test/plan-coverage.test.ts`.
+function planCoverage(discoveryFiles, subIssues) {
+  const discovered = (discoveryFiles || []).map(f => String(f)).filter(f => f.trim() !== '')
+  const subs = subIssues || []
+
+  const claimedSet = new Set()
+  for (const s of subs) {
+    for (const f of (s.filesToModify || [])) {
+      const n = normalisePath(f)
+      if (n !== '') claimedSet.add(n)
+    }
+  }
+
+  const reasons = []
+  if (discovered.length === 0) {
+    reasons.push(
+      'discovery named no files to modify, so there is nothing to compare the plan against. ' +
+      'The union of an empty list is covered by any plan at all, which is not "the plan is ' +
+      'complete" — it is "nobody looked" (#751).',
+    )
+  }
+  if (subs.length === 0) {
+    reasons.push(
+      'the decomposition produced no sub-issues, so there is no plan to compare. An empty ' +
+      'plan agrees with every discovery.',
+    )
+  }
+
+  return {
+    reading: reasons.length === 0 ? 'MEASURED' : 'UNMEASURED',
+    unmeasuredReasons: reasons,
+    uncovered: reasons.length === 0 ? discovered.filter(f => !claimedSet.has(normalisePath(f))) : [],
+    discovered: discovered.length,
+    claimed: claimedSet.size,
+  }
+}
+
+function planCoverageRefusal(r) {
+  if (r.reading === 'UNMEASURED') {
+    return `PLAN COVERAGE UNMEASURED: ${r.unmeasuredReasons.join(' ')} ` +
+      `Falling back to single-agent implement, which may touch any file.`
+  }
+  if (r.uncovered.length === 0) return null
+  return `PLAN COVERAGE: ${r.uncovered.length} of ${r.discovered} discovered file(s) are claimed by ` +
+    `no sub-issue — ${r.uncovered.join(', ')}. A file nobody claims is a file two worktrees ` +
+    `may both edit, and the SC-413 claim audit refuses it at Commit after the whole agent ` +
+    `budget is spent (#751). Falling back to single-agent implement.`
+}
+// ──── PLAN-COVERAGE-END ────
 // ──── SCOPE-DENYLIST-END ────
 
 /**
@@ -3727,10 +3788,17 @@ not real serialises the run for nothing.
       }
       if (hasOverlap) break
     }
+    // #751: the union of the plan against what discovery found. The two
+    // checks above ask whether the plan claims too much; this asks whether it
+    // claims too little, which is the half that reached Commit before
+    // anything noticed.
+    const coverageRefusal = planCoverageRefusal(planCoverage(discovery.filesToModify, decompResult.subIssues))
     if (planViolations.length > 0) {
       log(`SCOPE DENY-LIST: to-issues planned work on out-of-scope files — falling back to single-agent implement.\n${planViolations.join('\n')}`)
     } else if (hasOverlap) {
       log(`WARN: to-issues produced overlapping files — falling back to single-agent implement`)
+    } else if (coverageRefusal) {
+      log(coverageRefusal)
     } else {
       mDecomposition = decompResult
       log(`Decomposed into ${mDecomposition.subIssues.length} sub-issues: ${mDecomposition.subIssues.map((s, i) => `S${i + 1}[${s.title}:${s.size}]`).join(' → ')}`)
