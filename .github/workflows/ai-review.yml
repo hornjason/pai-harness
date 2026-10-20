@@ -1,5 +1,27 @@
-# generated-sha: 163aeda0aab0f15f
+# generated-sha: 9b228a90b05717bb
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
+#
+# THREE OUTCOMES, and only one of them is a review that found nothing.
+#
+#   1. REVIEWED AND BLOCKING — the reviewer ran and wrote a finding at a
+#      severity that blocks. This check must fail.
+#   2. REVIEWED AND CLEAN — the reviewer ran and found nothing blocking.
+#      This check passes, and it is the only outcome that means the code
+#      was looked at and was fine.
+#   3. UNMEASURED FOR WANT OF CREDENTIALS — no credential resolved, so no
+#      reviewer ran. This is NOT outcome 2. The job annotates it on every
+#      run. To activate the gate:
+#        the repository secret `CLAUDE_CODE_OAUTH_TOKEN` or
+#        `ANTHROPIC_API_KEY`, or the Vertex federation this project already
+#        declares.
+#      Set the repository variable RUNGATE_REQUIRE_AI_REVIEW to
+#      'true' to make an unmeasured review FAIL instead of warn.
+#
+# NOT YET: the first outcome is not enforced. The findings reader exists
+# and is reachable as `rungate ai-review-findings`, and no step in this job runs
+# it (#675) — so a blocking finding is reported in the comments and the
+# check is green. The job says so on every run rather than exiting 0 in
+# silence; "reviewed, and nobody read the result" is its own state.
 #
 # This job is deliberately unconditional. A job skipped by a condition reports
 # `skipped`, which a required status check can be configured to accept, and

@@ -163,6 +163,27 @@ export const AI_REVIEW_WORKFLOW_FILE = "ai-review.yml";
 /** The single job in that file. Carries no `if:` — see the header. */
 export const AI_REVIEW_JOB = "ai-review";
 
+/**
+ * Whether anything in the generated job READS the findings payload (#675).
+ *
+ * `false` today, and the one position that says so. The reader exists, is
+ * tested, and is reachable as `rungate ai-review-findings` since #675's first
+ * half — but no step in the emitted workflow runs it, so a `critical` finding
+ * is a green check.
+ *
+ * It is a constant rather than two sentences because two places describe this
+ * state: `buildReviewRunScript`'s warning, which tells an operator mid-run,
+ * and `buildOutcomesHeader` below, which tells a consumer reading the file.
+ * Two independent descriptions of one fact drift the moment the fact changes,
+ * and the direction they drift in is the dangerous one — a header promising
+ * enforcement over a job that has none. `test/ai-review-outcomes-header.test.ts`
+ * holds them to this.
+ *
+ * Flip it when the adjudication step lands, and the caveat leaves the header
+ * in the same commit.
+ */
+export const AI_REVIEW_FINDINGS_ADJUDICATED = false;
+
 export const AI_REVIEW_AUTH_STEP_NAME = "Detect AI review credentials";
 
 /** The annotation title, shared by the warning and the refusal. */
@@ -764,6 +785,115 @@ export function modelAliasViolations(workflowText: string): string[] {
     }
   }
   return found;
+}
+
+/**
+ * Every credential that activates the gate, named from the tables that
+ * declare them rather than restated (#632).
+ *
+ * `AI_REVIEW_AUTH_PRECEDENCE` is the ladder the auth step walks and
+ * `ci.vertex` is the config key that replaces the legacy key with federation,
+ * so a hand-written list here would be a second declaring position for the
+ * thing the script branches on — and the two would agree until somebody added
+ * a mode.
+ */
+function activatingCredentials(vertex: VertexCiDecision): string {
+  const secrets = AI_REVIEW_AUTH_PRECEDENCE.map(c => `\`${c.secret}\``).join(" or ");
+  return vertex.config === null
+    ? `set \`ci.vertex\` in \`.claude/rungate/config.json\` to authenticate on Vertex with Workload Identity Federation, or add the repository secret ${secrets}`
+    : `the repository secret ${secrets}, or the Vertex federation this project already declares`;
+}
+
+/**
+ * Wrap prose into comment lines at 76 columns.
+ *
+ * The credential sentence is built from a table, so its length moves when the
+ * table does — and a header line that runs past a terminal is a header nobody
+ * finishes reading, which is the failure this whole block exists against.
+ * Deterministic: a pure fold over the words, no date and no Set iteration
+ * (#632 AC-15).
+ */
+function wrapComment(text: string, prefix: string): string {
+  const lines: string[] = [];
+  let line = prefix;
+  for (const word of text.split(" ")) {
+    if (line !== prefix && line.length + 1 + word.length > 76) {
+      lines.push(line);
+      line = prefix;
+    }
+    line = line === prefix ? line + word : `${line} ${word}`;
+  }
+  lines.push(line);
+  return lines.map(l => `${l}\n`).join("");
+}
+
+/**
+ * The header block naming every outcome a consumer can get (#632 AC-13).
+ *
+ * The reason this is a block and not a sentence: the three states are not
+ * equally visible from a pull request. "Reviewed and clean" and "reviewed and
+ * blocking" both look like a green check until the blocking one fails, and
+ * UNMEASURED looks like a green check always — so a consumer who has never
+ * configured a credential cannot tell, from the checks list alone, that the
+ * review has never run. #630 is that confusion, and it was expensive.
+ *
+ * `adjudicated` is a parameter with the module constant as its default, so
+ * the caveat has one declaring position and both halves of the seam are
+ * reachable from a test. It is NOT a second reading of the same fact — see
+ * `AI_REVIEW_FINDINGS_ADJUDICATED`.
+ */
+export function buildOutcomesHeader(
+  vertex: VertexCiDecision,
+  adjudicated: boolean = AI_REVIEW_FINDINGS_ADJUDICATED,
+): string {
+  const unenforced = adjudicated
+    ? ""
+    : `#\n# NOT YET: the first outcome is not enforced. The findings reader exists\n` +
+      `# and is reachable as \`rungate ${"ai-review-findings"}\`, and no step in this job runs\n` +
+      `# it (#675) — so a blocking finding is reported in the comments and the\n` +
+      `# check is green. The job says so on every run rather than exiting 0 in\n` +
+      `# silence; "reviewed, and nobody read the result" is its own state.\n`;
+
+  return (
+    `# THREE OUTCOMES, and only one of them is a review that found nothing.\n` +
+    `#\n` +
+    `#   1. REVIEWED AND BLOCKING — the reviewer ran and wrote a finding at a\n` +
+    `#      severity that blocks. This check must fail.\n` +
+    `#   2. REVIEWED AND CLEAN — the reviewer ran and found nothing blocking.\n` +
+    `#      This check passes, and it is the only outcome that means the code\n` +
+    `#      was looked at and was fine.\n` +
+    `#   3. UNMEASURED FOR WANT OF CREDENTIALS — no credential resolved, so no\n` +
+    `#      reviewer ran. This is NOT outcome 2. The job annotates it on every\n` +
+    `#      run. To activate the gate:\n` +
+    wrapComment(`${activatingCredentials(vertex)}.`, "#        ") +
+    `#      Set the repository variable ${AI_REVIEW_REQUIRE_VAR} to\n` +
+    `#      '${AI_REVIEW_REQUIRE_VALUE}' to make an unmeasured review FAIL instead of warn.\n` +
+    unenforced
+  );
+}
+
+/**
+ * The one scaffold action line about this gate (#632 AC-14).
+ *
+ * Emitted on every scaffold, not only the first, and not conditionally on
+ * anything the generator can see. The generator cannot read a consumer's
+ * repository secrets or variables, so a line that tried to say whether the
+ * gate is active would be guessing — and a guess that says "active" over an
+ * inert gate is the whole of #630. It states what is generated and what
+ * activates it, and lets the consumer check their own settings.
+ *
+ * `UNMEASURED:` rather than `CREATED:`, because the file being written is
+ * already reported by `writeManagedFile` and this line is about a different
+ * fact: the gate exists and has not been shown to do anything yet.
+ */
+export function aiReviewScaffoldAction(vertex: VertexCiDecision): string {
+  return (
+    `UNMEASURED: .github/workflows/${AI_REVIEW_WORKFLOW_FILE} is generated but INERT until a ` +
+    `credential resolves — ${activatingCredentials(vertex)}. Until then every pull request ` +
+    `gets an "${AI_REVIEW_UNMEASURED_TITLE}" annotation and a GREEN check, which is not a ` +
+    `review. Set the repository variable ${AI_REVIEW_REQUIRE_VAR} to '${AI_REVIEW_REQUIRE_VALUE}' ` +
+    `to make that state fail instead.`
+  );
 }
 
 /**
