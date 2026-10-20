@@ -173,17 +173,25 @@ describe("AC-3: the generated workflow carries the declared budget", () => {
 // ── AC-4: exhaustion stays UNMEASURED and writes nothing ─────────────────
 
 /** Run the generated reporting step as bash and read what it did. */
-function runReportStep(env: Record<string, string>): {
-  code: number;
-  out: string;
-  err: string;
-} {
+function runReportStep(
+  env: Record<string, string>,
+  payload?: string,
+): { code: number; out: string; err: string } {
   const dir = scratchDir("ai-review-report-");
   const path = join(dir, "report.sh");
   writeFileSync(path, buildReviewRunScript());
+  // Since #816 a successful action with no payload is the SKIP state, not a
+  // completed review. The control below is about a review that finished, so
+  // it has to plant one.
+  const planted: Record<string, string> = {};
+  if (payload !== undefined) {
+    const findings = join(dir, "findings.json");
+    writeFileSync(findings, payload);
+    planted.AI_REVIEW_FINDINGS_PATH = findings;
+  }
   const r = Bun.spawnSync(["bash", path], {
     cwd: dir,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env },
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...planted, ...env },
   });
   return {
     code: r.exitCode,
@@ -216,7 +224,10 @@ describe("AC-4: a review that exhausted its budget is UNMEASURED, not a pass", (
     // Without this, the two cases above are satisfied by a script that
     // annotates every run identically, and nothing could tell a step that
     // distinguishes the states from one that does not.
-    const r = runReportStep({ AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" });
+    const r = runReportStep(
+      { AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" },
+      '{"findings": [], "verdict": "PASS"}',
+    );
     expect(r.out).toContain("wrote a findings payload");
     expect(
       r.out,
@@ -230,10 +241,10 @@ describe("AC-4: a review that exhausted its budget is UNMEASURED, not a pass", (
     // runs — `AI_REVIEW_ACTION_OUTCOME` — so a difference in what they print
     // is a measurement of that reading and of nothing else.
     const failed = runReportStep(EXHAUSTED).out;
-    const ok = runReportStep({
-      AI_REVIEW_MODE: "vertex",
-      AI_REVIEW_ACTION_OUTCOME: "success",
-    }).out;
+    const ok = runReportStep(
+      { AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" },
+      '{"findings": [], "verdict": "PASS"}',
+    ).out;
     expect(failed.length, "the exhausted run printed nothing at all").toBeGreaterThan(0);
     expect(ok.length, "the completed run printed nothing at all").toBeGreaterThan(0);
     expect(failed).not.toBe(ok);

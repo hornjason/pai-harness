@@ -978,6 +978,48 @@ export function buildReviewRunScript(): string {
     `would report green. Failing rather than reporting a passing gate for a ` +
     `verdict nobody read.`;
 
+  // The FOURTH state, and the reason the third one had to be split (#816):
+  // the action exited ZERO having not reviewed anything.
+  //
+  // `anthropics/claude-code-action` refuses to run when the workflow file
+  // differs from the copy on the default branch — an anti-tampering guard,
+  // and a correct one. It then logs `Exiting due to workflow validation skip`
+  // and ends `outcome=success`. So `AI_REVIEW_ACTION_OUTCOME` answers "did the
+  // step exit zero", and the sentence above asks "was a review written", and
+  // those are different questions that were being answered by one reading.
+  //
+  // Measured on run 39465155816: eleven seconds, every step green, no
+  // `num_turns`, no cost, no payload — and this job announced that the review
+  // had completed and written one. The step asserted a fact it had never
+  // checked, which is `.claude/rules/checks-must-be-able-to-fail.md`'s opening
+  // sentence: a check that passed because of what it never looked at.
+  //
+  // Who it costs is not us. A consumer's FIRST scaffold PR introduces
+  // `ai-review.yml`, which by definition is not yet on their default branch,
+  // so the skip is guaranteed — and the first thing a new consumer sees from
+  // this harness is a passing AI review that never ran.
+  //
+  // The payload is the right thing to read because it is the thing the
+  // sentence claims, and because it is this job's OWN artefact. Reading
+  // `num_turns` out of the action's execution file would answer the same
+  // question a second time, and two deciders that agree are behaviourally one
+  // (the fourth shape) — with the added defect that the execution file's shape
+  // belongs to a pinned upstream dependency rather than to us.
+  const skipped =
+    `The review action exited successfully WITHOUT writing a findings ` +
+    `payload, so no AI review ran on this pull request. The usual cause is ` +
+    `the action's own workflow-validation guard, which refuses to run when ` +
+    `${AI_REVIEW_WORKFLOW_FILE} differs from the copy on the default branch — ` +
+    `so a pull request that edits the workflow, including the first one that ` +
+    `adds it, is skipped by design. This check is UNMEASURED, not a passing ` +
+    `review.`;
+
+  const skippedRefusal =
+    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the review ` +
+    `action exited successfully without writing a findings payload, so this ` +
+    `pull request has no AI review. Failing rather than reporting a green ` +
+    `check for a review that never ran.`;
+
   const absent =
     `The credential-detection step produced no mode output, so this job does ` +
     `not know whether a credential was configured and no AI review ran on ` +
@@ -1019,9 +1061,26 @@ if [ "\${AI_REVIEW_MODE}" = none ]; then
 fi
 
 if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
-  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicated}"
+  # An exit code is not a reading. \`-s\` and not \`-f\`: a zero-byte file is a
+  # reviewer that opened the payload and wrote nothing into it, which is not a
+  # review either, and #492's one-byte row is this repository's own record of
+  # what an existence check buys you when the property is content.
+  #
+  # An unset \`${AI_REVIEW_FINDINGS_PATH_VAR}\` takes this branch too, and that
+  # is the honest direction: the prepare step did not run, so nobody can say a
+  # review happened.
+  if [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
+    echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicated}"
+    if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
+      echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicatedRefusal}" >&2
+      exit ${AI_REVIEW_REQUIRED_EXIT}
+    fi
+    exit 0
+  fi
+
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${skipped}"
   if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
-    echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicatedRefusal}" >&2
+    echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${skippedRefusal}" >&2
     exit ${AI_REVIEW_REQUIRED_EXIT}
   fi
   exit 0
