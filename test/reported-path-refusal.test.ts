@@ -383,4 +383,161 @@ describe("#830: a reported path is refused when it is reported", () => {
     expect(real.filesChangedShapeRefusal(annotated, "m"), "the shape check stopped seeing an annotated path").toBeTruthy();
     expect(real.reportedPathRefusal(annotated, "m"), "the path check answers the shape question too").toBeNull();
   });
+
+  test("AC-9: an element at any index is read, and the index it names is that element's", () => {
+    // The loop is this function's own, so it needs its own case — #611's
+    // identical claim is about a different loop in a different function, and
+    // a check that reads only `filesChanged[0]` passes every case above.
+    const innocents = ["lib/zeta.ts", "docs/x.md", "lib/beta.ts"];
+    const report = built([innocents[0]!, innocents[1]!, "/etc/passwd", innocents[2]!]);
+    const refusal = real.reportedPathRefusal(report, "marcus")!;
+    expect(refusal, "an element behind two clean ones is never reached").toBeTruthy();
+    expect(refusal, "the refusal does not name the element it is about").toContain("/etc/passwd");
+    expect(refusal, "the index names a different element than the one refused").toContain("filesChanged[2]");
+
+    // And the clean elements are not blamed. Asserted rather than assumed:
+    // a message that quoted the whole list would satisfy the line above.
+    //
+    // None of the three is `lib/a.ts`, and that is not a style choice — the
+    // boundary sentence carries `"lib/a.ts"` as its EXAMPLE of a path the
+    // agent should have written. A fixture using it reads as the refusal
+    // naming an innocent element when it is the advice doing so, which is
+    // the kind of red that sends the next reader after the wrong code.
+    for (const innocent of innocents) {
+      expect(refusal, `${innocent} is named in a refusal that is not about it`).not.toContain(innocent);
+    }
+
+    // The control, varying exactly one thing: the same four positions with
+    // the refusable element replaced. Without it this is satisfied by a
+    // function that refuses any list of four.
+    expect(
+      real.reportedPathRefusal(built([innocents[0]!, innocents[1]!, "etc/passwd", innocents[2]!]), "marcus"),
+      "a list of four clean paths is refused, so the case measures the element and not the length",
+    ).toBeNull();
+  });
+
+  test("AC-10: a non-string or blank element is skipped here, not refused under a path reason", () => {
+    // `claimKey` of a blank is a blank, and `pathRefusal('')` is null — but
+    // relying on that would make this function's silence an accident of
+    // another function's return value. It skips them itself, and the reason
+    // is AC-8's: whether an agent may report `null` as a changed file is
+    // `implementRefusal`'s question, and answering it here would attach a
+    // path-safety sentence to a report that has no path in it.
+    for (const junk of [[null], [123], [{}], [[]], [""], ["   "]] as unknown[][]) {
+      expect(
+        real.reportedPathRefusal(built(junk), "m"),
+        `${JSON.stringify(junk)} was refused under a path-safety reason`,
+      ).toBeNull();
+    }
+
+    // Non-vacuity, and the property that matters: a skipped element does not
+    // end the walk. A `break` where the code has `continue` passes every
+    // assertion above and lets a refusable path hide behind a blank one.
+    const refusal = real.reportedPathRefusal(built(["", null, "/etc/passwd"]), "m");
+    expect(refusal, "the walk stopped at the first unreadable element").toBeTruthy();
+    expect(refusal).toContain("filesChanged[2]");
+  });
+});
+
+describe("#830: the refusal is delivered, and it ends the sub-issue that reported it", () => {
+  /**
+   * The decomposed path, driven. AC-6 counts two call sites in the source;
+   * a call site is text until something watches the run stop. This is the
+   * shape the dead run had — several sub-issues, one of them reporting a
+   * path the table refuses — and the claim is that it fails HERE, naming
+   * that agent, rather than at the barrier with every worktree's work done.
+   */
+  async function runWith(betaPath: string) {
+    const factory = new Function(
+      "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
+      "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal",
+      "worktreeIdentity", "REPO", "taskSourceRefusal",
+      "establishRunRef", "integrateWave", "waveNeedsIntegration",
+      "measureLaunchBase",
+      `${block("SECURITY-HELPERS")}\n${block("COLLECT-CLAIM")}\n`
+        + `${block("FILES-CHANGED-SHAPE")}\n${block("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
+    );
+    const spawned: string[] = [];
+    const run = factory(
+      () => {},
+      async (p: string, o: { label: string }) => {
+        spawned.push(o.label);
+        return {
+          success: true,
+          worktreePath: WT,
+          worktreeRepo: "git@github.com:owner/project.git",
+          taskSource: "brief",
+          filesChanged: p.includes("beta") ? [betaPath] : ["lib/alpha.ts"],
+          testOutput: "2 pass",
+        };
+      },
+      (thunks: Array<() => Promise<unknown>>) => Promise.all(thunks.map(t => t())),
+      "/tmp/work", 830, REPO_ROOT, {},
+      async () => ({ success: true, buildResult: {} }),
+      new Function(`${block("IMPLEMENT-RESULT")}\nreturn implementRefusal;`)(),
+      new Function(`${block("WORKTREE-IDENTITY")}\nreturn worktreeIdentity;`)(),
+      "owner/project",
+      new Function(`${block("BRIEF-PRECEDENCE")}\nreturn taskSourceRefusal;`)(),
+      async () => ({ branch: "rungate/run-830", refusal: null }),
+      async () => ({ ok: true, integrated: 0 }),
+      new Function(`${block("RUN-REF")}\nreturn waveNeedsIntegration;`)(),
+      async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
+    );
+    const result = await run([
+      { number: 1, title: "alpha", acs: ["a1"], filesToModify: ["lib/alpha.ts"], size: "S" },
+      { number: 2, title: "beta", acs: ["b1"], filesToModify: ["lib/beta.ts"], size: "S" },
+    ]);
+    return {
+      result: result as Decomposed,
+      spawned,
+    };
+  }
+
+  interface Decomposed {
+    success?: boolean;
+    failed?: Array<{ title: string; buildResult?: { findings?: string[] } }>;
+  }
+
+  test("AC-11: the sub-issue that reported the dead run's path fails, naming its own agent", async () => {
+    const { result, spawned } = await runWith("/.github/workflows/ai-review.yml");
+
+    expect(result.success, "the run succeeded while one agent reported an unstageable path").not.toBe(true);
+
+    // Attributed to the sub-issue that did it, and to no other. `alpha`
+    // reported a clean path, and a run that failed both would be the
+    // collection-time blast radius this issue is about, arriving earlier.
+    expect(result.failed?.map(f => f.title)).toEqual(["beta"]);
+
+    const findings = (result.failed?.[0]?.buildResult?.findings ?? []).join("\n");
+    expect(findings, "the refusal did not reach the result the run reads").toContain(
+      "/.github/workflows/ai-review.yml",
+    );
+    expect(findings, "the refusal does not say when it was caught").toContain("report time");
+
+    // Named with the SAME label the spawn carried, read off the timeline
+    // rather than written down here: a refusal naming a label no agent ran
+    // under is a sentence an operator cannot trace to an agent, and ship.js
+    // composes the two from one expression precisely so they cannot drift.
+    const betaLabel = spawned[spawned.length - 1]!;
+    expect(betaLabel, "the fixture's second spawn is not the sub-issue being measured").toContain("sub-");
+    expect(findings, `the refusal does not name ${betaLabel}, the agent that reported it`).toContain(betaLabel);
+
+    // It is the REPORT-time sentence and not collection's. Both are true of
+    // this path, and only one of them arrives before the other agents finish
+    // — so a case that accepted either would be green on the dead run.
+    expect(findings, "this is the collection audit's sentence, which is the two-hour-late one").not.toContain(
+      "not inside its own worktree",
+    );
+  });
+
+  test("AC-12: the control — the same plan with the path the agent should have written", async () => {
+    // Without this, AC-11 is satisfied by a decomposed run that fails for any
+    // reason at all, which is the one thing a refusal case cannot assume.
+    const { result, spawned } = await runWith(".github/workflows/ai-review.yml");
+    expect(
+      result.success,
+      `the correct path fails too: ${(result.failed ?? []).map(f => (f.buildResult?.findings ?? []).join(" ")).join(" | ")}`,
+    ).toBe(true);
+    expect(spawned.length, "the plan did not dispatch both sub-issues").toBe(2);
+  });
 });
