@@ -193,15 +193,15 @@ state.
 
 ### Success Criteria (project-owned region)
 
-- [x] SC-2131: test/scaffold-ownership.test.ts contains [every section-preserving row declares WHICH section] — and that the two rows name different headings, because one spelling for both files would make a rule written in the wrong file look like it was in the right one
-- [x] SC-2132: test/brief-project-region.test.ts contains [a marker written into the region survives a re-scaffold verbatim] — the premise is asserted first: the generator's own output contains neither the marker nor the heading, and the run really regenerated
-- [x] SC-2133: test/brief-project-region.test.ts contains [the merge is idempotent — a third run is byte-identical]
-- [x] SC-2134: test/brief-project-region.test.ts contains [no shipped template emits the project-owned heading]
-- [x] SC-2135: test/brief-project-region.test.ts contains [the write is refused, the lines are named, and the file is untouched] — read off disk, byte-compared against the content before the run
-- [x] SC-2136: test/brief-project-region.test.ts contains [the same colliding templates write freely when no region was planted] — the control, so the refusal is about the region and not about an unreadable template
-- [x] SC-2137: test/brief-project-region.test.ts contains [a COMMIT reinforcement lands in the region and survives a re-scaffold]
-- [x] SC-2138: test/brief-project-region.test.ts contains [with no region the loop still uses a generated heading, and NO_SECTION still fires]
-- [x] SC-2139: test/brief-project-region.test.ts contains [the brief write reads OWNED_FILES rather than naming a strategy] — asserted over a structural cut of the write loop, not a fixed window (#664)
+- [ ] SC-2131: test/scaffold-ownership.test.ts contains [every section-preserving row declares WHICH section] — and that the two rows name different headings, because one spelling for both files would make a rule written in the wrong file look like it was in the right one
+- [ ] SC-2132: test/brief-project-region.test.ts contains [a marker written into the region survives a re-scaffold verbatim] — the premise is asserted first: the generator's own output contains neither the marker nor the heading, and the run really regenerated
+- [ ] SC-2133: test/brief-project-region.test.ts contains [the merge is idempotent — a third run is byte-identical]
+- [ ] SC-2134: test/brief-project-region.test.ts contains [no shipped template emits the project-owned heading]
+- [ ] SC-2135: test/brief-project-region.test.ts contains [the write is refused, the lines are named, and the file is untouched] — read off disk, byte-compared against the content before the run
+- [ ] SC-2136: test/brief-project-region.test.ts contains [the same colliding templates write freely when no region was planted] — the control, so the refusal is about the region and not about an unreadable template
+- [ ] SC-2137: test/brief-project-region.test.ts contains [a COMMIT reinforcement lands in the region and survives a re-scaffold]
+- [ ] SC-2138: test/brief-project-region.test.ts contains [with no region the loop still uses a generated heading, and NO_SECTION still fires]
+- [ ] SC-2139: test/brief-project-region.test.ts contains [the brief write reads OWNED_FILES rather than naming a strategy] — asserted over a structural cut of the write loop, not a fixed window (#664)
 
 ### The mutation battery, predicted and measured
 
