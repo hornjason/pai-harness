@@ -331,6 +331,9 @@ export function findTestFilesForSCs(
   const dir = testDir || TEST_DIR;
   const out = new Map<string, ScCredit[]>();
   if (!existsSync(dir)) return out;
+  // Tree-wide, and taken before any file is read: whether a criterion has a
+  // running test anywhere is not a question a single file can answer (#810).
+  const intended = new Set(intendedOnly(dir).keys());
 
   const wanted = new Map<string, string[]>();
   for (const sc of scs) {
@@ -352,6 +355,21 @@ export function findTestFilesForSCs(
       // crediting, and a todo is the clearest case there is: nothing can go
       // red, so nothing can be measured.
       if (kind === "unrun-title") continue;
+      // #810. That refusal was per-POSITION, so it dropped the todo's own
+      // claim and then accepted a comment in ANOTHER file for the same id —
+      // two statements about one criterion, and the weaker one decided. A
+      // todo is a statement about execution; a comment is not. `intendedOnly`
+      // is the one binding that answers it, so there is one thing to mutate.
+      //
+      // Deliberately NOT `kind === "comment" && intended.has(id)`. The first
+      // draft was, it reads as the narrower and therefore safer form, and it
+      // is unreachable: `intendedOnly` excludes any id with a running title,
+      // so the only kinds that can reach here for an id it names are the ones
+      // the conjunct would have admitted anyway. Measured — the battery row
+      // for widening it to this was 0 of 10, which is the fourth shape in
+      // `.claude/rules/checks-must-be-able-to-fail.md` and the reason AC-2
+      // had no witness until the conjunct came out.
+      if (intended.has(id)) continue;
       for (const specFile of wanted.get(id) ?? []) {
         if (requiresQualification(id, reg) && !(kind === "title" && isQualifiedBy(source, at, specFile))) continue;
         if (!credits.some(c => c.id === id && c.specFile === specFile)) {
@@ -368,11 +386,35 @@ export function findTestFilesForSCs(
  * Ids whose only declaring position in the test tree is a title that never
  * runs (#574), with the files that name them.
  *
- * An id that ALSO has a running title or a declaring comment anywhere is
- * not here: the question is whether anything can measure it, not whether a
- * todo exists. That distinction is the whole report — otherwise every
- * criterion with a todo beside a real test would be listed as unmeasured
- * and the list would be ignored within a week.
+ * An id that ALSO has a running title anywhere is not here: the question is
+ * whether anything can measure it, not whether a todo exists. That
+ * distinction is the whole report — otherwise every criterion with a todo
+ * beside a real test would be listed as unmeasured and the list would be
+ * ignored within a week.
+ *
+ * ## A declaring comment used to count as measurement, and it does not (#810)
+ *
+ * It was the natural reading and it is wrong in one direction only, which is
+ * why nobody noticed: a comment is where this project DECLARES coverage, so a
+ * declaring comment plus a todo read as "somebody wrote the test and left a
+ * stale todo beside it". The population it actually describes is the
+ * opposite — a file about something else quoting the criterion as fixture
+ * input, in a docstring, on its own line, which is a declaring form.
+ *
+ * Measured on this tree at the time of #810: **five** ids were in that state
+ * and **zero** of them had a running title. Four were `SC-1930`, `SC-1940`,
+ * `SC-1943` and `SC-1944`, cited by `audit-specs-fallback-scope.test.ts` and
+ * `audit-specs-rewrite-fidelity.test.ts` — both tests of the spec-rewriting
+ * tool, neither a test of a rule-lifecycle criterion. `sync-sc-status.ts`
+ * ticked all four, and the tick then broke the citing file's own premise,
+ * which asserts the spec still reads `- [ ] SC-1940: …`.
+ *
+ * So the comparison this makes is between a statement about EXECUTION and a
+ * statement about intent. A comment is neither, and crediting it here made
+ * `SC-1957`'s invariant — *"an id is reported unmeasured AND credited by a
+ * test claim"* — true by construction: an id with a declaring comment could
+ * not enter this report, so the two readings could not disagree. Narrowing
+ * `measured` is what gives that case something to see.
  */
 export function intendedOnly(testDir: string): Map<string, string[]> {
   const out = new Map<string, string[]>();
@@ -385,7 +427,7 @@ export function intendedOnly(testDir: string): Map<string, string[]> {
         const files = intended.get(site.id) ?? [];
         if (!files.includes(file)) files.push(file);
         intended.set(site.id, files);
-      } else if (site.kind === "title" || (site.kind === "comment" && site.form)) {
+      } else if (site.kind === "title") {
         measured.add(site.id);
       }
     }
