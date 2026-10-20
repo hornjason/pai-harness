@@ -56,21 +56,21 @@ The constant is in the test file itself unless stated otherwise.
 
 | Tripped by | Edit |
 |---|---|
-| a new `test/consumer-*.ts` | `SCANNED_FILES`, `test/consumer-no-rebuild-delegation.test.ts:60` |
+| a new `test/consumer-*.ts` | `SCANNED_FILES`, `test/consumer-no-rebuild-delegation.test.ts` |
 | a doc gaining or losing a `path:NNN` citation | `.claude/line-citation-ratchet.json` → `documents` |
 | a computed (non-literal) anchor cutting `ship.js` | spell the anchor as a string literal — **no exemption list by design** |
 | a fixed-character `.slice(at, at + N)` in `test/` | use `structuralCut` from `lib/source-slice.ts` — no exemption list |
 | a new direct `.claude/rungate.json` path read | `.claude/config-access-ratchet.json` (absent file = zero allowed) |
-| a new ticked SC with no coverage claim | `BANKED`, `test/ticked-sc-cover.test.ts:44` |
-| a ticked `(behavioral)` SC | `BEHAVIORAL_TICKED_RATCHET`, `test/behavioral-sc-ratchet.test.ts:78` |
-| an unqualified `SC-N` mention in a test | `CENSUS`, `test/sc-id-namespace.test.ts:360` |
-| a new `DailyBriefDashboard` mention in `lib/`,`gates/`,`scripts/` | `KNOWN`, `test/anti.test.ts:31` |
-| a gate check test with no assertion | `WARN_TIER_CHECKS`, `lib/gate-check-audit.ts:41` — reason must exceed 80 chars |
+| a new ticked SC with no coverage claim | `BANKED`, `test/ticked-sc-cover.test.ts` |
+| a ticked `(behavioral)` SC | `BEHAVIORAL_TICKED_RATCHET`, `test/behavioral-sc-ratchet.test.ts` |
+| an unqualified `SC-N` mention in a test | `CENSUS`, `test/sc-id-namespace.test.ts` |
+| a new `DailyBriefDashboard` mention in `lib/`,`gates/`,`scripts/` | `KNOWN`, `test/anti.test.ts` |
+| a gate check test with no assertion | `WARN_TIER_CHECKS`, `lib/gate-check-audit.ts` — reason must exceed 80 chars |
 | a new gate check test | `config/check-registry.json` |
 | a new matcher handler | `config/matcher-registry.json` |
-| a new file in `gates/` | `GATE_FILES`, `test/gate-contracts.test.ts:7` + per-gate SCs in the spec |
-| a writer of a tracked file that does not commit it | `KNOWN_UNDECLARED_WRITES`, `scripts/contract-parity.ts:1112` |
-| a new file the scaffold owns | `OWNED_FILES`, `lib/scaffold/owned-files.ts:100` **and** the table in `.claude/rules/harness-managed.md` — both, or `test/scaffold-ownership.test.ts` fails the one-sided edit |
+| a new file in `gates/` | `GATE_FILES`, `test/gate-contracts.test.ts` + per-gate SCs in the spec |
+| a writer of a tracked file that does not commit it | `KNOWN_UNDECLARED_WRITES`, `scripts/contract-parity.ts` |
+| a new file the scaffold owns | `OWNED_FILES`, `lib/scaffold/owned-files.ts` **and** the table in `.claude/rules/harness-managed.md` — both, or `test/scaffold-ownership.test.ts` fails the one-sided edit |
 | a new hook | the hook file's `SC-` comment, `.claude/rungate/hooks.json`, the table in `specs/HOOK-ARCHITECTURE-SPEC.md`, **and** `.claude/settings.json` |
 | a `test.todo` naming an SC | it will be refused — bind it or do not name the id |
 | a new `specs/` doc with no `- [ ]` criteria | add an explicit "states none" declaration, and say so in the routing row too |
@@ -135,7 +135,7 @@ list above is not theoretical.
 The draft closed by citing a rules file named for exemption-list
 self-reference. No such file exists — the idea does, in `harness-managed.md`
 and in the no-exemption-list rows above, but not under that name.
-`test/rule-provenance.test.ts:305` caught it immediately: *"every
+`test/rule-provenance.test.ts` caught it immediately: *"every
 `.claude/rules/*.md` the repo routes to exists"*. One file added, zero code
 touched, and a test in a file nobody had opened went red.
 
@@ -149,3 +149,25 @@ out in words above.
 
 The check is good: it names the citing file and the missing path, which is
 more than most of Tier 1 does.
+
+**Then CI caught a third one, and this is the one that matters.** The draft
+cited ten `file.ts:NNN` line positions, so `#541`'s citation ratchet refused
+it — *"`.claude/rules/self-referential-tests.md` is not in
+`.claude/line-citation-ratchet.json` and carries 10 line citations. A document
+absent from the ratchet is allowed none."*
+
+Two things to take from it. First, **I did not run the test this very file
+tells you to run**: "added or edited a doc → `test/line-citation-ratchet.test.ts`"
+is a row above, written before the push, and the local run skipped it. Writing
+the rule is not the same as following it, which is the argument for the census
+block in the swarm brief rather than a document.
+
+Second, **the right fix was not to bank an entry in the ratchet.** The ratchet
+exists because line numbers rot, and a rule file is read months after it is
+written. Every citation here now names a stable symbol — `SCANNED_FILES` in
+`test/consumer-no-rebuild-delegation.test.ts` — instead of a line that will be
+wrong by the time someone needs it. The cheap fix was one JSON entry; the
+correct one made the document better and the ratchet entry unnecessary.
+
+And the failure message is genuinely good — it names the file, the count, the
+ratchet, and the policy. It belongs with `SC-1466` as a model, not with Tier 1.
