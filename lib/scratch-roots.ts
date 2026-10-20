@@ -29,7 +29,7 @@ import { stripJsComments } from "./strip-js-comments";
  */
 export function repoRootIdents(src: string): Set<string> {
   const idents = new Set<string>();
-  for (const m of src.matchAll(/(?:const|let|var)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\n]+)/g)) {
+  for (const m of src.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\n]+)/g)) {
     if (/import\.meta\.dir|process\.cwd\(\)/.test(m[2]!)) idents.add(m[1]!);
   }
   return idents;
@@ -38,14 +38,32 @@ export function repoRootIdents(src: string): Set<string> {
 /**
  * The declaration forms a scratch root can arrive in.
  *
- * `const` is matched optionally, and that is #437's doing rather than
- * tidiness. Moving creation out of module scope means writing
+ * The keyword is not matched AT ALL, and that is #437's requirement rather
+ * than tidiness. Moving creation out of module scope means writing
  * `let SCRATCH = ""` at the top and `SCRATCH = mkdtempSync(...)` inside
  * `beforeAll`, and a `const`-only pattern stops seeing both forms at once —
  * so the fix for the leak would have opened a hole in the guard against
- * fixed paths. Measured: it is 3 red without the relaxation.
+ * fixed paths. Measured: it is 3 red if the keyword is required.
+ *
+ * It used to be matched OPTIONALLY — `(?:const|let|var\s+)?\s*` in front of
+ * the identifier — which satisfies #437 and is what #793 is about. An
+ * optional group with nothing required before it starts a backtracking
+ * attempt at essentially every offset: 1716ms over this repository's `test/`,
+ * and still 1712ms with the whole `join(...)` tail deleted, so the cost was
+ * never in the tail. The group was optional AND non-capturing, so it fed no
+ * capture and deleting it changes no output that is not a misparse: 32ms,
+ * with a byte-identical 400-element ident list over the real tree.
+ *
+ * The one input on which the two readings differ is an identifier literally
+ * beginning with a keyword — `letROOT = join(import.meta.dir, "..")`. The old
+ * pattern consumed `let` and captured `ROOT`, a variable nothing declared,
+ * and a root identifier nothing declared puts an unrelated `join(ROOT, ...)`
+ * prefix into a recursive-delete allowlist. Reading the identifier whole
+ * narrows that allowlist. See the #793 cases in `test/scratch-cleanup.test.ts`,
+ * which hold the equivalence element by element against a frozen copy of the
+ * old parse.
  */
-const DECL = /(?:const|let|var\s+)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*"(\.[^"]*)"/g;
+const DECL = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*"(\.[^"]*)"/g;
 
 /** Navigation, not a scratch name. */
 function isNavigation(literal: string): boolean {
