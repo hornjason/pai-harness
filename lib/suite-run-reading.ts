@@ -96,6 +96,27 @@ const TODO_LINE = /^\s*(\d+)\s+todo\s*$/gm;
 const ERROR_LINE = /^\s*(\d+)\s+errors?\s*$/gm;
 
 /**
+ * `13648 expect() calls` — how much work the run actually did (#323 SC-4).
+ *
+ * Read because it is the only surviving lead from the 2026-10-11 reading
+ * this issue is about: three consecutive runs on one tree, one of which
+ * reported a failure, and the only difference between the failing run and
+ * either clean one is that it executed **384 more assertions** against an
+ * almost identical test count. That is not a test flipping its verdict; it
+ * is a test executing a substantially different amount of work.
+ *
+ * Nobody could say so at the time, because the number was in a terminal
+ * scrollback and nowhere else. As a field it is a reading, and
+ * `lib/suite-flake.ts` compares it across a series.
+ *
+ * In the summary block beside `skip`, `todo` and `error`, and for the same
+ * reason: this repository's suite drives `bun test` in subprocesses, so a
+ * last-match over the document walks backward out of the summary into a
+ * nested run's count.
+ */
+const EXPECT_LINE = /^\s*(\d+)\s+expect\(\)\s+calls\s*$/gm;
+
+/**
  * `(fail) suite > case [0.12ms]` — one line per failing test.
  *
  * Anchored to the whole line, and the timing suffix is optional because bun
@@ -175,6 +196,19 @@ export interface MeasuredRun {
    * the point: an error is not a test.
    */
   errors: number | null;
+  /**
+   * Assertions the runner executed, or null when it did not say (#323).
+   *
+   * **null, never 0**, for the reason `skip`, `todo` and `errors` give
+   * above. A runner with no concept of assertion counting and a run that
+   * executed none are opposite facts, and `0` is the one value that would
+   * let a reader compare them.
+   *
+   * It is not part of any verdict. A run executing more assertions than the
+   * one before it is not a failure — see `lib/suite-flake.ts`, which reports
+   * the spread beside a verdict rather than inside one.
+   */
+  expectCalls: number | null;
 }
 
 export interface UnmeasuredRun {
@@ -318,6 +352,7 @@ export function readSuiteRun(output: unknown): SuiteRun {
   // todo are — a captured nested run's `1 error` is not this run's. The
   // NAMES cannot be, and that asymmetry is reported rather than hidden.
   const errorMatch = lastMatch(ERROR_LINE, summary);
+  const expectMatch = lastMatch(EXPECT_LINE, summary);
   const failingTests = [...output.matchAll(FAIL_CASE_LINE)].map(m => m[1].trim()).filter(n => n !== "");
 
   return {
@@ -330,6 +365,7 @@ export function readSuiteRun(output: unknown): SuiteRun {
     todo,
     failingTests,
     errors: errorMatch ? Number(errorMatch[1]) : null,
+    expectCalls: expectMatch ? Number(expectMatch[1]) : null,
   };
 }
 

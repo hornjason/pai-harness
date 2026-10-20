@@ -601,11 +601,14 @@ describe("#224: the schema exports the field list the guide is checked against",
     // the refusal beside it says "a FAIL must name at least one" while the
     // record named nothing. A schema is a FILTER (#646), so a field the
     // recorder writes and the schema does not declare is a field that is
-    // silently lost on the way to the artefact.
+    // silently lost on the way to the artefact. `expectCalls` joined in
+    // #323 SC-4: the 2026-10-11 series left one lead — a 384-assertion delta
+    // between the failing run and two clean ones — and it was lost because
+    // the number was never written anywhere a later reader could reach.
     expect([...SUITE_MEASUREMENT_FIELDS].sort())
       .toEqual([
-        "errors", "failingTests", "failures", "files", "measuredAt", "measuredSha", "ran", "skip",
-        "tests", "todo", "verdict",
+        "errors", "expectCalls", "failingTests", "failures", "files", "measuredAt", "measuredSha",
+        "ran", "skip", "tests", "todo", "verdict",
       ]);
   });
 

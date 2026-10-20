@@ -373,6 +373,19 @@ const SuiteMeasurementShape = {
   // in lib/suite-run-reading.ts is the one place that says so in words.
   failingTests: z.array(z.string()).optional(),
   errors: z.number().int().nonnegative().nullable().optional(),
+  // #323 SC-4 — how much work the run did, beside what it found.
+  //
+  // The 2026-10-11 series this issue is about left exactly one usable lead:
+  // the run that failed executed 384 more assertions than either clean run,
+  // against an almost identical test count. Nobody could say so at the time,
+  // because the number lived in a terminal scrollback. Recorded, it is a
+  // number a reader can compare across two PRs.
+  //
+  // `.nullable()`, for the reason `tests` gives above: absent means a
+  // harness older than this field, null means the runner was asked and did
+  // not say, and a number means it said. No gate reads it — a run executing
+  // more assertions than the one before it is not a failure.
+  expectCalls: z.number().int().nonnegative().nullable().optional(),
 };
 
 /**
