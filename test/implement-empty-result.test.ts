@@ -202,6 +202,16 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
       throw new Error("ship.js is missing the FILES-CHANGED-SHAPE markers");
     }
     const shapeBlock = shipSource.slice(sStart, sEnd);
+    // #830 added a path reading to that block which asks the claim audit's
+    // own `claimKey` and `pathRefusal`. Both blocks are evaluated here, real,
+    // for the reason the five injections above state.
+    const marked = (name: string) => {
+      const a = shipSource.indexOf(`// ──── ${name}-START ────`);
+      const b = shipSource.indexOf(`// ──── ${name}-END ────`);
+      if (a === -1 || b === -1) throw new Error(`ship.js is missing the ${name} markers`);
+      return shipSource.slice(a, b);
+    };
+    const pathTableBlocks = `${marked("SECURITY-HELPERS")}\n${marked("COLLECT-CLAIM")}`;
     const logs: string[] = [];
     const factory = new Function(
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
@@ -211,7 +221,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
       "taskSourceRefusal",
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
     "measureLaunchBase",
-      `${shapeBlock}\n${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
+      `${pathTableBlocks}\n${shapeBlock}\n${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
     );
     const run = factory(
       (m: string) => logs.push(String(m)),

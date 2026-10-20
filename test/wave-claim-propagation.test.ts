@@ -262,7 +262,12 @@ function buildPipeline(root: string, subs: SubFixture[], source: string = shipSo
     "integrateWave",
     "waveNeedsIntegration",
     "measureLaunchBase",
-    `${block("FILES-CHANGED-SHAPE", source)}\n${block("DECOMPOSED-SHIP", source)}\n` +
+    // #830's report-time path reading sits in FILES-CHANGED-SHAPE and asks
+    // `claimKey` and `pathRefusal`, which this file already evaluates for the
+    // audit below. Both come from the SAME `source` as the blocks beside
+    // them, so a mutated source stays wholly mutated.
+    `${block("SECURITY-HELPERS", source)}\n${block("COLLECT-CLAIM", source)}\n` +
+      `${block("FILES-CHANGED-SHAPE", source)}\n${block("DECOMPOSED-SHIP", source)}\n` +
       `return runDecomposedShip;`,
   )(
     log,

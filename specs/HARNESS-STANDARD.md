@@ -12196,3 +12196,120 @@ than silent — but a measurement of the instrument. Varying exactly one thing
 None of the mutations is left in the tree; all were run and reverted, and
 `workflows/ship.js`, `lib/run-branch.ts` and `scripts/check-run-branch.ts`
 were confirmed byte-identical to the measured source afterwards by SHA-256.
+
+## A reported path measured two hours after it was reported (#830)
+
+Run `wf_7ba257c7-b87` spent 6,854 seconds and 1,580,869 subagent tokens across
+24 agents, every one of them succeeding, and collected nothing. One agent
+reported `/.github/workflows/ai-review.yml` — the right file, in repo-root
+notation — and `pathRefusal` refused it as an absolute path at COLLECTION,
+after every agent had finished. Blast radius of one malformed string: the
+whole run, including two worktrees that reported nothing wrong.
+
+**The rule is correct and is not relaxed.** `/x` is absolute on this platform;
+stripping the slash so it "works" turns `/etc/passwd` into a contributable
+`etc/passwd`. #400's shared table stands exactly as it is. #400 unified *what*
+the two guards check and left *when* alone, and the whole of this change is
+the *when*.
+
+`reportedPathRefusal` adds no rule and no normalisation. It asks the SAME two
+functions the collection audit asks, in the same order —
+`pathRefusal(claimKey(worktreePath, element))` — at the moment the element
+arrives, from both `filesChangedShapeRefusal` call sites. So it cannot be
+stricter than collection or looser than it; the only things that change are
+WHEN the answer is taken and WHICH agent is named.
+
+### The two directions it could be wrong in, and why neither is a style choice
+
+The tempting draft reads the raw string and refuses any leading `/`. That is
+STRICTER than collection: `claimKey` strips a worktree prefix, so an element
+spelled `<worktree>/lib/a.ts` reduces to `lib/a.ts` and is accepted today —
+`workflows/ship.js` calls that "the most common reporting style". A
+report-time guard refusing it would turn working runs red on the shape of a
+path rather than on anything wrong with it. The looser direction is the
+cheapest wrong fix below. Rows M5 and M6 are those two directions measured,
+and they red overlapping but different sets.
+
+### Not a second decider
+
+`filesChangedShapeRefusal` (#611) sits beside it and answers a different
+question — "is this a path, or a sentence about a path". The two have inputs
+only they reach: `lib/a.ts (modified by marcus)` for the shape rule,
+`lib/a;rm.ts` for the path table. `reportedPathRefusal` skips any element the
+shape rule already owns, and that skip is not politeness about wording: it is
+what keeps the two from becoming two deciders for one question. Row M2 is
+what notices when it goes.
+
+### The cheapest wrong fix, named before the repair
+
+**Strip the leading `/` and retry.** One `replace`, the reported symptom
+disappears, the dead run would have completed — and `/etc/passwd` becomes a
+contributable `etc/passwd` on the same line. The corpus case is what survives
+it; row M5 applies it and counts.
+
+### What was broken to prove it
+
+Counted over `test/reported-path-refusal.test.ts` +
+`test/claim-path-safety-parity.test.ts` +
+`test/files-changed-path-shape.test.ts` +
+`test/files-changed-shape-mutation.test.ts` (134 tests). Every count was
+predicted before the battery ran, in `/tmp/830-battery/predictions.md`, and
+**the baseline row was read before any mutation row** — an instrument that has
+stopped reporting takes the baseline down with it, and that is the row nobody
+mutates anything to produce. Before each count, the input on which mutant and
+original differ is named.
+
+The last three files are a CONTROL, predicted **0 in every row**: they are
+#400's shared-table guard and #611's report-time shape guard — the two things
+this change calls rather than copies. A red in one of them means a shared
+decider was modified instead of a caller added.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 134 pass, 0 fail | **134 pass, 0 fail** | — |
+| M1 `reportedPathRefusal` short-circuited to `return null` — pre-#830 | 5 | **5 of 134** — AC-1, AC-2, AC-3, AC-3b, AC-5 | `['/.github/workflows/ai-review.yml']`: the original refuses naming `an absolute path`, the mutant returns null |
+| M2 the `filesChangedShapeRule(el)` skip removed | 1 | **2 of 134** — AC-8, and #611's forwarding case | `['lib/a.ts (modified by marcus)']`: the original stays silent and lets the shape guard speak, the mutant refuses it for the `(` |
+| M3 the `!refusal.boundary` branch collapsed — one sentence for both | 1 | **1 of 134** — AC-2 | `['lib/a;rm.ts']`: the original says the path is inside the worktree and cannot be staged, the mutant says it names no location inside the worktree |
+| M4 the `if (!wt) return null` guard removed | 1 | **1 of 134** — AC-7 | `{worktreePath: '', filesChanged: ['/etc/passwd']}`: the original returns null exactly as collection skips a pathless row, the mutant refuses — stricter than collection |
+| M5 **the cheapest wrong fix**, `.replace(/^\/+/, '')` on the key | 5 | **5 of 134** — AC-1, AC-2, AC-3, AC-3b, AC-5 | `['/etc/passwd']`: the original refuses, the mutant accepts it as `etc/passwd` |
+| M6 `claimKey(wt, el)` replaced by the raw `el` — the stricter draft | 2 | **3 of 134** — AC-3, AC-3b, AC-5 | `['<worktree>/lib/a.ts']`: the original accepts it, as collection does; the mutant refuses an absolute path that is inside the worktree |
+| M7 the per-sub-issue call site removed | 1 | **1 of 134** — AC-6 | the source text: two call sites against one |
+
+**M1 and M7 are one wire mutated at each end** (#235) and they red disjoint
+sets: M1 takes the behaviour out, M7 takes one of the two deliveries out, and
+only AC-6 can see the second.
+
+**One row is a control that stays green in every row above, deliberately.**
+AC-4 builds and runs its own mutant inside the case — report time
+short-circuited, collection asked anyway — so it measures that report-time
+checking is an ADDITION rather than a replacement. That is true whatever the
+real `reportedPathRefusal` does, which is why it witnesses no row here.
+
+#### M3 came back 0 the first time, and the case was the defect
+
+AC-2's negative half forbade the string `inside its own worktree` — which is
+the COLLECTION AUDIT's wording, not anything this function emits. So it was
+true of every string it could ever be handed, and collapsing both branches
+into one sentence was **0 of 134**: the third shape
+(`.claude/rules/checks-must-be-able-to-fail.md`), in the case written to
+separate two sentences. It now asserts the clauses these two messages actually
+carry, and the row is 1.
+
+#### Two rows came back HIGH, and both extra reds are the real kind
+
+**M2's extra red is #611's own mutation case** — *"the mutant forwards it, and
+the audit refuses it with the git add sentence"*. That case short-circuits the
+SHAPE guard and asserts an annotated element then reaches the collection
+audit. Remove this function's `filesChangedShapeRule` skip and the element is
+refused here instead, so it never arrives, and #611's proof that its own guard
+is what stops it stops being true.
+
+**M6's extra red is AC-5's mutant builder ABORTING**, not a verdict. Its
+anchor is the line M6 replaces, so the builder finds it zero times and throws
+*"could not build the mutant"*. That is the loud-abort property a mutation
+harness exists for: one that silently no-ops when its target moves reports
+green over a mutation that never happened.
+
+None of the seven mutations is left in the tree; all were run and reverted,
+and `workflows/ship.js` was confirmed byte-identical to the measured source
+after every row by SHA-256, never by `git checkout --`.

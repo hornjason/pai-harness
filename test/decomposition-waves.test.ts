@@ -399,12 +399,15 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
   const shapeBlock = shipSource.slice(shapeA, shapeB);
   const logs: string[] = [];
 
-  const sliced = (name: string, fn: string) => {
+  const marked = (name: string) => {
     const a = shipSource.indexOf(`// ──── ${name}-START ────`);
     const b = shipSource.indexOf(`// ──── ${name}-END ────`);
     if (a === -1 || b === -1) throw new Error(`ship.js is missing the ${name} markers`);
-    return new Function(`${shipSource.slice(a, b)}\nreturn ${fn};`)();
+    return shipSource.slice(a, b);
   };
+
+  const sliced = (name: string, fn: string) =>
+    new Function(`${marked(name)}\nreturn ${fn};`)();
 
   const factory = new Function(
     "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
@@ -414,7 +417,12 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
     "integrateWave",
     "waveNeedsIntegration",
     "measureLaunchBase",
-    `${shapeBlock}\n${block}\nreturn runDecomposedShip;`,
+    // #830's report-time path reading lives in the shape block and asks the
+    // claim audit's own `claimKey` and `pathRefusal`, so those two blocks are
+    // evaluated here too — real, never stubbed, for the reason every other
+    // injection in this factory states.
+    `${marked("SECURITY-HELPERS")}\n${marked("COLLECT-CLAIM")}\n`
+      + `${shapeBlock}\n${block}\nreturn runDecomposedShip;`,
   );
 
   const runDecomposedShip = factory(

@@ -472,7 +472,12 @@ function loadRunDecomposedShip(agent: (p: string, o: { label: string }) => Promi
     "worktreeIdentity", "REPO", "taskSourceRefusal",
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
     "measureLaunchBase",
-    `${marked("FILES-CHANGED-SHAPE")}\n${marked("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
+    // #830's per-sub-issue path check lives in the shape block and asks the
+    // claim audit's own `claimKey` and `pathRefusal`, so those two blocks are
+    // evaluated in too — from `marked`, the same source every other block
+    // here comes from, so a mutant stays wholly a mutant.
+    `${marked("SECURITY-HELPERS")}\n${marked("COLLECT-CLAIM")}\n`
+      + `${marked("FILES-CHANGED-SHAPE")}\n${marked("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
   );
   const run = factory(
     (m: string) => logs.push(String(m)),

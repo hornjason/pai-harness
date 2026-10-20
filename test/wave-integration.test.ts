@@ -89,6 +89,17 @@ const SHAPE_BLOCK = sliceBlock("FILES-CHANGED-SHAPE");
 // ship.js disagree about what the collector is handed, which is precisely the
 // disagreement #627 is.
 const CLAIM_PAIRING_BLOCK = sliceBlock("CLAIM-PAIRING");
+// #830 put a fourth free reference in the decomposed block, and it reaches
+// FURTHER than the three above: the per-sub-issue path check asks the claim
+// audit's own `claimKey` and `pathRefusal`, so the dispatch path now depends
+// on the COLLECT-CLAIM and SECURITY-HELPERS blocks at runtime. Evaluated from
+// their markers, never stubbed, for the reason #611 and #627 already give —
+// and here the dependency IS the point: a stub would let the report-time
+// reading and the collection-time reading disagree about what a path is,
+// which is the disagreement #400 closed and #830 is the timing half of.
+const PATH_TABLE_BLOCK = sliceBlock("SECURITY-HELPERS");
+const COLLECT_CLAIM_BLOCK = sliceBlock("COLLECT-CLAIM");
+const REPORT_PATH_BLOCKS = `${PATH_TABLE_BLOCK}\n${COLLECT_CLAIM_BLOCK}`;
 
 type AgentCall = { label: string; prompt: string };
 
@@ -551,7 +562,7 @@ describe("#420 — the dispatch path", () => {
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
       "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
       "measureLaunchBase",
-      `${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
+      `${REPORT_PATH_BLOCKS}\n${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
     );
 
     const runDecomposedShip = factory(
@@ -674,7 +685,7 @@ describe("#420 — the dispatch path", () => {
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
       "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
       "measureLaunchBase",
-      `${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
+      `${REPORT_PATH_BLOCKS}\n${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
     );
     const spawns: string[] = [];
     const run = factory(

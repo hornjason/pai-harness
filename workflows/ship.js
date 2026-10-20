@@ -4592,6 +4592,95 @@ function filesChangedShapeRefusal(buildResult, label) {
   }
   return null
 }
+
+/**
+ * The claim audit's path reading, taken when the path is reported (#830).
+ *
+ * Run wf_7ba257c7-b87 spent 6,854 seconds and 1,580,869 subagent tokens
+ * across 24 agents, every one of them succeeding, and collected nothing. One
+ * agent reported `/.github/workflows/ai-review.yml` — the right file, in
+ * repo-root notation — and `auditWorktreeClaims` refused it as an absolute
+ * path after every agent had finished. One malformed string voided the
+ * collection of two other worktrees that had reported nothing wrong.
+ *
+ * #400 unified WHAT the guards check. It left WHEN alone, so the first time a
+ * reported path met the table was still collection, and a rule the agent
+ * could have satisfied in one second instead cost the run.
+ *
+ * ## This adds no rule, and that is the design
+ *
+ * It calls `claimKey` and then `pathRefusal` — the same two functions, in the
+ * same order, that `auditWorktreeClaims` calls. So it cannot be stricter than
+ * collection or looser than it; only the phase and the named agent change.
+ *
+ * The tempting version reads the raw element and refuses any leading `/`,
+ * and it would be STRICTER: `claimKey` strips a worktree prefix, so
+ * `/…/worktrees/wf-21/lib/a.ts` reduces to `lib/a.ts` and is accepted today —
+ * "the most common reporting style", per `claimKey`'s own docblock. A guard
+ * that refused it would turn working runs red on notation.
+ *
+ * ## Why it is not folded into filesChangedShapeRefusal
+ *
+ * That one (#611) answers "is this a path, or a sentence about a path", and
+ * its docblock sets out the inputs only each reaches —
+ * `lib/a.ts modified by marcus` for the shape rules, `lib/a;rm.ts` for the
+ * table. Two questions, two sentences. This one stays silent about an
+ * annotated element so the operator gets the shape message, which is the one
+ * that tells them what to do.
+ *
+ * ## What it does NOT do
+ *
+ * Nothing is stripped, normalised or retried. The worktree-relative form of
+ * an absolute report is QUOTED back so the agent can report it, and the path
+ * is re-checked as reported — `claimKey` already strips what is safe to
+ * strip, and anything it left absolute names somewhere else. Stripping the
+ * slash here would turn `/etc/passwd` into a contributable `etc/passwd` in
+ * one `replace`, which is the cheapest wrong fix and is named in
+ * `test/reported-path-refusal.test.ts` with the row that survives it.
+ *
+ * A report with no `worktreePath` returns null deliberately. `claimKey('', p)`
+ * leaves an absolute path absolute, so refusing here would be stricter than
+ * collection, which skips a pathless row outright; whether a pathless report
+ * is allowed at all is `worktreeIdentity`'s question, and answering it twice
+ * under a path-safety reason misattributes the failure.
+ */
+function reportedPathRefusal(buildResult, label) {
+  if (!buildResult || !buildResult.success) return null
+  if (!Array.isArray(buildResult.filesChanged)) return null
+  const wt = typeof buildResult.worktreePath === 'string' ? buildResult.worktreePath.trim() : ''
+  if (!wt) return null
+  const files = buildResult.filesChanged
+  for (let i = 0; i < files.length; i++) {
+    const el = files[i]
+    if (typeof el !== 'string' || el.trim() === '') continue
+    // The shape question belongs to the guard above, and an annotated element
+    // answered here would get the wrong sentence.
+    if (filesChangedShapeRule(el)) continue
+    const key = claimKey(wt, el)
+    if (!key) continue
+    const refusal = pathRefusal(key)
+    if (!refusal) continue
+    const where = `${label} reported filesChanged[${i}] as ${JSON.stringify(el)}`
+    if (!refusal.boundary) {
+      return `${where}, which carries ${refusal.rule}. It does name a location inside the `
+        + `worktree and still cannot be staged — git add would refuse it. Rename the file, or `
+        + `report a path git can stage. Caught at report time (#830); the same reading runs `
+        + `again at collection, where one refused path voids every worktree's collection.`
+    }
+    const relative = key.replace(/^\/+/, '')
+    const instead = relative
+      ? `The worktree-relative form of what you reported is ${JSON.stringify(relative)} — report `
+        + `that if it is the file you meant. Nothing is stripped on your behalf: the path is `
+        + `re-checked exactly as you report it.`
+      : 'No worktree-relative form can be recovered from it.'
+    return `${where}, which carries ${refusal.rule}, so it does not name a location inside `
+      + `${wt}. Every element of filesChanged is a bare path relative to your worktree root — `
+      + `"lib/a.ts", never "/lib/a.ts" and never a path in another worktree. ${instead} `
+      + `Caught at report time (#830); the same reading runs again at collection, where one `
+      + `refused path voids every worktree's collection.`
+  }
+  return null
+}
 // ──── FILES-CHANGED-SHAPE-END ────
 
 async function runImplement() {
@@ -4701,6 +4790,14 @@ what it said rather than omitting the field.
   if (shapeRefusal) {
     log(`IMPLEMENT FAILED: ${shapeRefusal}`)
     return { success: false, buildResult: { ...buildResult, success: false, findings: [shapeRefusal] } }
+  }
+  // #830 — the claim audit's own path reading, taken here instead of ~2 hours
+  // later. Same table, same normalisation; only the phase and the named agent
+  // change. Collection still asks it, which is what AC-4 measures.
+  const pathRefusalFound = reportedPathRefusal(buildResult, 'marcus')
+  if (pathRefusalFound) {
+    log(`IMPLEMENT FAILED: ${pathRefusalFound}`)
+    return { success: false, buildResult: { ...buildResult, success: false, findings: [pathRefusalFound] } }
   }
   // #180 — BEFORE the success log, for the same reason as the guard above. A
   // run that worked from the relayed message instead of the brief reports
@@ -5712,6 +5809,19 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         return {
           subIssue,
           buildResult: { ...buildResult, success: false, findings: [subShapeRefusal] },
+          ok: false,
+        }
+      }
+      // #830 — per sub-issue and BEFORE the union, for the same reason as the
+      // two guards above, and this is the path the dead run took: 24 agents,
+      // one absolute element, and the refusal arrived at collection with
+      // every worktree's work already done.
+      const subPathRefusal = reportedPathRefusal(buildResult, `marcus-sub-${subIssue.number}`)
+      if (subPathRefusal) {
+        log(`Sub-issue FAILED: ${subIssue.title} — ${subPathRefusal}`)
+        return {
+          subIssue,
+          buildResult: { ...buildResult, success: false, findings: [subPathRefusal] },
           ok: false,
         }
       }
