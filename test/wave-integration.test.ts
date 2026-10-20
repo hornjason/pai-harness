@@ -23,6 +23,36 @@
  * #420 never considered: the shared checkout is shared, so a peer session can
  * move it between the moment the ref is established and the moment a wave
  * commits onto it.
+ *
+ * ## #653: the battery behind SC-2084..SC-2091, re-measured against this tree
+ *
+ * The ten rows recorded in `specs/HARNESS-STANDARD.md` were taken on a
+ * `git archive` export carrying an implementation the repository did not yet
+ * hold, and the spec said so and asked for a re-run. **All ten reproduce
+ * here — same counts, same named criteria** — and the spec now records that
+ * rather than the promise.
+ *
+ * Two rows needed their mutation re-cut before they were faithful, which is
+ * the reusable part: a prose description of a mutant is not a mutant.
+ *
+ * - The pre-#652 row is the whole pre-#652 tree. Mutating only
+ *   `waveCommitFailure` is 3, not 6, because nothing touched the re-read the
+ *   three dispatch criteria measure.
+ * - The composed-message row must leave the `!landedOn` early return INSIDE
+ *   the committed-false arm. Hoisted ahead of both arms it also intercepts
+ *   `{committed: true, branch: ""}`, which SC-1565 owns, and the row reads 3
+ *   with an extra red that is about the mutant rather than its subject.
+ *
+ * **The cheapest wrong fix was applied and counted, and its GREENS are the
+ * finding.** Appending the branch to the generic sentence without moving the
+ * check makes the dead run's symptom go away, and SC-2084, SC-2086 and
+ * SC-2087 are green over it — three cells that only ask whether the branch
+ * is named are satisfied by a repair that names it and distinguishes
+ * nothing. What catches it is SC-2088 alone: an empty branch becomes
+ * `(branch , run ref …)`, and SC-2088 demands nothing about a branch AT ALL
+ * rather than merely no branch name. It was written as the
+ * unconditional-clause control and it is the whole protection against the
+ * cheap repair.
  */
 
 import { describe, test, expect } from "bun:test";
