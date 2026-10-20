@@ -536,6 +536,36 @@ export const AI_REVIEW_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Write"].join(",
  * `git diff --exit-code` drift step remains the thing that actually MEASURES
  * whether the tree moved. Do not delete that step on the strength of this
  * rule; a permission is a claim and a diff is a reading.
+ *
+ * ## Four spellings, measured — do not respell this without reading them
+ *
+ * The docblock above ends "What this is NOT: verified." It is verified now.
+ * #836 ran the real CLI against each candidate, asking it to Write both
+ * inside a checkout and to a path supplied with `--add-dir`:
+ *
+ * | pattern | write inside checkout | write to `--add-dir` |
+ * |---|---|---|
+ * | `Edit(./**)` | BLOCKED | WROTE |
+ * | `Edit(**)` | BLOCKED | BLOCKED |
+ * | `Edit(*)` | WROTE | WROTE |
+ * | `Edit(<abs>/**)` | BLOCKED | BLOCKED |
+ *
+ * `Edit(./**)` is the only one of the four that denies the checkout while
+ * leaving the findings payload writable, and the payload lives under
+ * `RUNNER_TEMP` precisely so that it is outside the checkout. The other
+ * three are each wrong in their own direction: `Edit(*)` denies nothing,
+ * and the two absolute forms deny the one write the reviewer is asked for,
+ * which turns every review into an UNMEASURED with no payload.
+ *
+ * **The cheapest wrong fix, named: respell this as `Edit(**)`.** When the
+ * drift step reports that the reviewer modified the tree, the 5pm repair is
+ * to tighten the deny — and `Edit(**)` reads as the strictly safer spelling
+ * of the same idea. It is the row above that measurably breaks the findings
+ * write, so the repair converts a false drift failure into a silent
+ * reviewer that never writes anything. The drift report was never about the
+ * deny at all: `permission_denials_count: 2` on run 39500604342 is the deny
+ * WORKING. `test/ai-review-untrusted-restore.test.ts` applies that
+ * respelling to a copy of this file and observes it refused.
  */
 export const AI_REVIEW_WORKSPACE_WRITE_DENY = "Edit(./**)";
 
@@ -1345,6 +1375,162 @@ echo "path=\${path}" >> "\${GITHUB_OUTPUT}"
 }
 
 /**
+ * The paths `anthropics/claude-code-action` restores from the base before it
+ * starts the reviewer, because a pull request head is untrusted input.
+ *
+ * Read off the action's own log line rather than from its source, so the
+ * provenance is a run anyone can open — PR #815, run 39500604342, 21:28:36:
+ *
+ *   > Restoring .claude, .mcp.json, .claude.json, .gitmodules, .ripgreprc,
+ *   > CLAUDE.md, CLAUDE.local.md, .husky from origin/main (PR head is
+ *   > untrusted)
+ *
+ * The restore is CORRECT and nothing here changes it: a PR that edits
+ * `.claude/settings.json` would otherwise be handing the reviewer its own
+ * permission configuration. What was wrong is only WHEN it happened relative
+ * to the baseline — fifteen seconds after it, so the restore landed in the
+ * reviewer's column and `.claude/rules/self-referential-tests.md`, a file
+ * that PR legitimately owned, was reported as something the reviewer wrote.
+ *
+ * This list must be a SUPERSET of the action's. A path the action restores
+ * and this step does not is restored after the baseline, which is the defect
+ * verbatim. If the action's list grows, this one grows with it — and the
+ * failure mode of being wrong in the other direction is a step that restores
+ * a path nobody needed restored, which costs a line in the baseline and
+ * nothing else.
+ */
+export const AI_REVIEW_UNTRUSTED_PATHS: readonly string[] = [
+  ".claude",
+  ".claude.json",
+  ".mcp.json",
+  ".gitmodules",
+  ".ripgreprc",
+  "CLAUDE.md",
+  "CLAUDE.local.md",
+  ".husky",
+];
+
+export const AI_REVIEW_RESTORE_STEP_ID = "ai-review-restore-untrusted";
+
+export const AI_REVIEW_RESTORE_STEP_NAME =
+  "Restore untrusted paths from the pull request base";
+
+/** The env var carrying the base BRANCH name into the restore step. */
+export const AI_REVIEW_BASE_REF_VAR = "AI_REVIEW_BASE_REF";
+
+/** The env var the auth header is passed through, never a command line. */
+export const AI_REVIEW_GIT_AUTH_VAR = "AI_REVIEW_GIT_AUTH";
+
+/**
+ * The bash that restores the untrusted path set BEFORE the baseline is read.
+ *
+ * ## What it is fixing, measured on a real run
+ *
+ * `.github/workflows/ai-review.yml`'s baseline step runs at 21:28:21 on run
+ * 39500604342. The reviewing action's own restore runs at 21:28:36. The
+ * reviewer starts at 21:28:41. So for fifteen seconds the tree is the PR's,
+ * the baseline records it as the PR's, and the restore's edits appear only in
+ * the post-review reading — where the drift step, correctly comparing the two
+ * readings, attributes them to the only thing that ran in between.
+ *
+ * Every PR touching `.claude/` fails a check accusing the reviewer of
+ * something the harness did. At the scale this repository works at — a swarm
+ * editing agent rules produces such PRs as a matter of course — that is a
+ * permanently red check whose message points away from its cause.
+ *
+ * ## Why restoring here fixes it, and why the fix is the ORDER
+ *
+ * Doing the same restore one step earlier puts those edits in the BASELINE,
+ * where they cancel, exactly as `google-github-actions/auth`'s credentials
+ * file does. The action's restore then finds the paths already at the base
+ * and changes nothing. Nothing is excluded and no pattern is widened: the
+ * drift reading still measures the difference between two readings of the
+ * whole tree, which is the property it has always claimed.
+ *
+ * It restores from `origin/<base branch>` and not from
+ * `pull_request.base.sha`, because the ACTION restores from `origin/main` —
+ * the branch TIP. A PR whose base is behind the tip would be restored twice
+ * from two different commits, and the second restore is the one after the
+ * baseline. The fetch also leaves `refs/remotes/origin/<base>` resolvable,
+ * which is what the action's own restore needs.
+ *
+ * ## It refuses rather than continuing
+ *
+ * A failed fetch means the tree handed to the reviewer still holds the PR's
+ * own `.claude/`, and the drift reading for the run is UNMEASURED. Both are
+ * reasons to stop, and `0`, `{}` and silence are indistinguishable from
+ * success (`.claude/rules/config-access.md`). The baseline step one below
+ * already refuses on an unreadable `git status` for the same reason.
+ *
+ * ## The token
+ *
+ * `persist-credentials: false` on the checkout deliberately leaves no
+ * credential in `.git/config`, so this step supplies one for the length of
+ * one fetch. It goes through `--config-env`, never `-c`, because a value
+ * passed with `-c` is in the process's command line and readable by anything
+ * that can run `ps`. Nothing is written to `.git/config`, so the reviewer —
+ * which runs in a later step, with its own environment — inherits nothing.
+ */
+export function buildRestoreScript(): string {
+  const noRef =
+    `the pull request base ref is empty, so there is no commit to restore the ` +
+    `untrusted paths from. Refusing: an unrestored head is the input this step ` +
+    `exists to replace, and a run that skipped it is UNMEASURED rather than clean.`;
+
+  const quoted = AI_REVIEW_UNTRUSTED_PATHS.map(p => `'${p}'`).join(" ");
+
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+if [ -z "\${${AI_REVIEW_BASE_REF_VAR}:-}" ]; then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::${noRef}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+base_remote="refs/remotes/origin/\${${AI_REVIEW_BASE_REF_VAR}}"
+
+# Through the environment, never \`-c\`: a value passed with \`-c\` is in the
+# command line of the git process and readable by anything that can run \`ps\`.
+${AI_REVIEW_GIT_AUTH_VAR}="AUTHORIZATION: basic $(printf 'x-access-token:%s' "\${GITHUB_TOKEN:-}" | base64 | tr -d '\\n')"
+export ${AI_REVIEW_GIT_AUTH_VAR}
+
+# Checked on its own line, never captured into an assignment, for the reason
+# the baseline step states.
+if ! out=$(git --config-env=http.extraheader=${AI_REVIEW_GIT_AUTH_VAR} fetch --no-tags --depth=1 \\
+  origin "+refs/heads/\${${AI_REVIEW_BASE_REF_VAR}}:\${base_remote}" 2>&1); then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not fetch the pull request base \${${AI_REVIEW_BASE_REF_VAR}}, so the untrusted paths were NOT restored and this run is UNMEASURED: \${out}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+unset ${AI_REVIEW_GIT_AUTH_VAR}
+
+# \`git rm\` first, then restore. A bare \`git checkout <base> -- <dir>\` writes
+# the base's files over the head's and leaves any file the head ADDED inside
+# that directory in place — so a pull request adding a file under the agent
+# rules directory would hand the reviewer a rule the base never had, which is
+# the thing being prevented. (The path is described rather than written: a
+# scanner that greps for a rule filename cannot tell a citation from a
+# sentence about one, and test/rule-provenance.test.ts caught exactly that.)
+for path in ${quoted}; do
+  if ! out=$(git rm -rfq --ignore-unmatch -- "\${path}" 2>&1); then
+    echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not clear \${path} before restoring it from the base, so the reviewer would read the pull request's own copy: \${out}" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+  fi
+  # Absent from the base is a RESULT, not a failure: a path this pull request
+  # introduces is correctly left deleted, and \`git checkout\` would refuse.
+  if git cat-file -e "\${base_remote}:\${path}" 2>/dev/null; then
+    if ! out=$(git checkout "\${base_remote}" -- "\${path}" 2>&1); then
+      echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not restore \${path} from the pull request base, so this run is UNMEASURED: \${out}" >&2
+      exit ${AI_REVIEW_REQUIRED_EXIT}
+    fi
+  fi
+done
+
+echo "ai-review restored from \${base_remote}: ${AI_REVIEW_UNTRUSTED_PATHS.join(" ")}"
+`;
+}
+
+/**
  * The env var naming the file holding the pre-review reading of the tree.
  *
  * One spelling, so the step that writes it and the step that reads it cannot
@@ -1623,6 +1809,24 @@ export function buildReviewRunStep(
     ...buildReviewPrompt().trimEnd().split("\n").map(l => (l ? `      ${l}` : "")),
   ];
 
+  // BEFORE the baseline, and that order is the whole of #836. The reviewing
+  // action restores this same path set from the base as its first act, which
+  // on run 39500604342 happened fifteen seconds AFTER the baseline was taken
+  // — so the harness's own restore landed in the reviewer's column. Doing it
+  // here puts it in the baseline, where it cancels.
+  const restore = [
+    `- name: ${AI_REVIEW_RESTORE_STEP_NAME}`,
+    `  id: ${AI_REVIEW_RESTORE_STEP_ID}`,
+    `  env:`,
+    `    ${AI_REVIEW_BASE_REF_VAR}: \${{ github.event.pull_request.base.ref }}`,
+    // The job's own token, for one fetch. It is not persisted into
+    // `.git/config` and the reviewer runs in a later step with its own
+    // environment, so nothing of it reaches the agent.
+    `    GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`,
+    `  run: |`,
+    ...buildRestoreScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
   // AFTER the auth step and BEFORE the reviewer. That order is the whole
   // fix: `google-github-actions/auth` writes its credentials file into
   // GITHUB_WORKSPACE, so the file is in the baseline and cancels, and the
@@ -1659,6 +1863,7 @@ export function buildReviewRunStep(
     indented(checkout, indent) +
     indented(prepare, indent) +
     (vertexAuth.length === 0 ? "" : indented(vertexAuth, indent)) +
+    indented(restore, indent) +
     indented(baseline, indent) +
     indented(review, indent) +
     indented(report, indent) +
