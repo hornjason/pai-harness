@@ -62,12 +62,14 @@ import { createCiWorkflows } from "../lib/scaffold/steps";
 import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
   buildAuthDetectScript,
   buildAuthDetectStep,
+  buildDriftScript,
   buildReviewRunScript,
   buildReviewRunStep,
 } from "../lib/scaffold/ai-review-step";
@@ -441,6 +443,249 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     const run = runAuthScript(quiet, { AI_REVIEW_MODE: "vertex" });
     expect(run.stdout).not.toContain("UNMEASURED");
     expect(run.code).toBe(0);
+  });
+});
+
+// ── AC-9: a reviewer that completed, with nobody reading its verdict ─────
+
+describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
+  test("AC-9: a successful review warns that its findings are not enforced", () => {
+    // The fail-open the security review named: the reviewer runs, writes a
+    // payload carrying a `critical`, and no step in this job reads it, so the
+    // check is green. Wiring the reader needs a way for a scaffolded consumer
+    // — which has no copy of rungate's sources — to execute it, which is #675.
+    // Until then the state is reported rather than exited-zero in silence.
+    const run = runAuthScript(buildReviewRunScript(), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+    });
+    const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
+    expect(
+      warnings.length,
+      `a completed review with no adjudication passed quietly\n${run.stdout}`,
+    ).toBe(1);
+    expect(warnings[0], "the annotation does not say where the gap is tracked").toContain("#675");
+    expect(run.code, "a tree that has not opted in must not go red").toBe(0);
+  });
+
+  test("AC-9: a consumer who required a review is refused an unenforced one", () => {
+    // RUNGATE_REQUIRE_AI_REVIEW means "a review I cannot read must not report
+    // green". A payload nobody reads is a review nobody read, so the same
+    // variable has to cover it — otherwise the opt-in buys a green check over
+    // a blocking finding, which is the exact thing it was added to prevent.
+    const run = runAuthScript(buildReviewRunScript(), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      RUNGATE_REQUIRE_AI_REVIEW: "true",
+    });
+    expect(run.code, "the opt-in refusal did not fire for an unread payload").toBe(1);
+    expect(run.stderr).toContain("#675");
+  });
+
+  test("AC-9: the two completed/not-completed states say different things", () => {
+    // A pair varying ONE reading. Without this, one sentence could cover both
+    // and "the reviewer never ran" would be indistinguishable from "the
+    // reviewer ran and nobody read it" — different facts, different fixes.
+    const base = { AI_REVIEW_MODE: "vertex" };
+    const ran = runAuthScript(buildReviewRunScript(), {
+      ...base,
+      AI_REVIEW_ACTION_OUTCOME: "success",
+    });
+    const failed = runAuthScript(buildReviewRunScript(), {
+      ...base,
+      AI_REVIEW_ACTION_OUTCOME: "failure",
+    });
+    expect(ran.stdout, "one sentence for two states").not.toBe(failed.stdout);
+    expect(failed.stdout).toContain("#631");
+    expect(failed.stdout).not.toContain("#675");
+    expect(ran.stdout).toContain("#675");
+  });
+
+  test("AC-9: the silent exit is what this would have shipped", () => {
+    // The mutant, run rather than described: restore the bare `exit 0` on the
+    // success path and a review carrying a critical finding is a green check
+    // with nothing in the log saying so.
+    const quiet = buildReviewRunScript().replace(
+      /if \[ "\$\{AI_REVIEW_ACTION_OUTCOME:-\}" = success \]; then\n(?:.*\n)*?fi\n/,
+      'if [ "${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then\n  exit 0\nfi\n',
+    );
+    expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript());
+    const run = runAuthScript(quiet, {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      RUNGATE_REQUIRE_AI_REVIEW: "true",
+    });
+    expect(run.stdout).not.toContain("UNMEASURED");
+    expect(run.code, "the mutant still refused — the mutation measured nothing").toBe(0);
+  });
+});
+
+// ── AC-10: a reviewer that wrote into the tree is refused ────────────────
+
+describe("AC-10: the drift step reads the whole worktree, not just tracked diffs", () => {
+  /**
+   * Run a drift script inside a real git repo, with a real commit.
+   *
+   * The script lives OUTSIDE the repo. Writing it in makes it an untracked
+   * file of its own, which refuses every run — the clean case caught that on
+   * the first draft, and without it the three refusal cases below would all
+   * have passed over a script that could not see what they planted.
+   */
+  function runDrift(
+    plant: (dir: string) => void,
+    env: Record<string, string> = {},
+    script: string = buildDriftScript(),
+  ): Run {
+    const dir = scratchDir("ai-review-drift-");
+    const genv = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args], { env: genv });
+    Bun.spawnSync(["git", "init", "-q", dir], { env: genv });
+    // The identity writes name `-C dir` at the CALL SITE rather than through
+    // `git()`. #84's guard reads source text, so a wrapper that binds the
+    // directory is invisible to it — and it is right not to guess: a
+    // `git config user.*` whose target is not on the line is one refactor
+    // from writing the developer's own identity into their own repo.
+    Bun.spawnSync(["git", "-C", dir, "config", "user.email", "t@example.invalid"], { env: genv });
+    Bun.spawnSync(["git", "-C", dir, "config", "user.name", "t"], { env: genv });
+    writeFileSync(join(dir, "tracked.ts"), "export const a = 1;\n");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    plant(dir);
+    const sh = join(scratchDir("ai-review-drift-script-"), "drift.sh");
+    writeFileSync(sh, script);
+    const r = Bun.spawnSync(["bash", sh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? dir,
+        AI_REVIEW_MODE: "vertex",
+        ...env,
+      },
+    });
+    return {
+      code: r.exitCode,
+      stdout: new TextDecoder().decode(r.stdout),
+      stderr: new TextDecoder().decode(r.stderr),
+    };
+  }
+
+  test("AC-10: a clean tree passes", () => {
+    const run = runDrift(() => {});
+    expect(run.code, `a clean tree was refused:\n${run.stderr}`).toBe(0);
+    expect(run.stderr).toBe("");
+  });
+
+  test("AC-10: a modified tracked file is refused", () => {
+    const run = runDrift(dir => writeFileSync(join(dir, "tracked.ts"), "export const a = 2;\n"));
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(run.stderr).toContain("tracked.ts");
+  });
+
+  test("AC-10: an UNTRACKED file is refused — the case `git diff` cannot see", () => {
+    // The whole reason this step was rewritten. A reviewer told to write a
+    // findings file writes a NEW file, which is untracked, and neither
+    // `git diff` nor `git diff --cached` reports one. The first draft of this
+    // step asked exactly those two questions and would have passed here.
+    const run = runDrift(dir => writeFileSync(join(dir, "ai-review-findings.json"), "{}"));
+    expect(
+      run.code,
+      `an untracked file the reviewer planted went unnoticed:\n${run.stdout}${run.stderr}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(run.stderr).toContain("ai-review-findings.json");
+  });
+
+  test("AC-10: a file inside a NEW directory is refused — `--untracked-files=all`", () => {
+    // Plain `--porcelain` stops at the directory name for a new directory,
+    // which still refuses here — so the assertion is on the NAMED path, not
+    // on the exit code. A refusal that cannot say what changed is a refusal
+    // nobody can act on.
+    const run = runDrift(dir => {
+      mkdirSync(join(dir, "nested"), { recursive: true });
+      writeFileSync(join(dir, "nested", "planted.ts"), "export const b = 1;\n");
+    });
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(
+      run.stderr,
+      "the refusal named the directory but not the file inside it",
+    ).toContain("nested/planted.ts");
+  });
+
+  test("AC-10: a git that could not read the tree is refused, not read as clean", () => {
+    // `changed=$(git status ...)` discards git's exit code, so a git that
+    // failed produces the empty string — the same value a clean tree
+    // produces. The input: a directory that is not a git repository at all,
+    // which is what a checkout step that silently did nothing leaves behind.
+    const dir = scratchDir("ai-review-drift-nonrepo-");
+    writeFileSync(join(dir, "tracked.ts"), "export const a = 1;\n");
+    const sh = join(scratchDir("ai-review-drift-nonrepo-script-"), "drift.sh");
+    writeFileSync(sh, buildDriftScript());
+    const r = Bun.spawnSync(["bash", sh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? dir,
+        AI_REVIEW_MODE: "vertex",
+      },
+    });
+    const stderr = new TextDecoder().decode(r.stderr);
+    expect(r.exitCode, `an unreadable tree reported clean:\n${stderr}`).toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(stderr, "the refusal does not say the tree was never read").toContain("UNMEASURED");
+  });
+
+  test("AC-10: a path the branch chose cannot forge a workflow command", () => {
+    // The path in the refusal came out of the branch under review, so it is
+    // a string an attacker picks. git quotes a path containing a newline, so
+    // the reachable character here is `%` — which GitHub decodes in an
+    // annotation body, making `%0A` in a filename a line break in the
+    // rendered message. One encoder, applied where the value is captured.
+    const run = runDrift(dir => writeFileSync(join(dir, "a%0Ab.json"), "{}"));
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    const lines = run.stderr.split("\n").filter(l => l.length > 0);
+    expect(lines.length, `the refusal spans ${lines.length} lines:\n${run.stderr}`).toBe(1);
+    expect(lines[0], "the percent was not encoded").toContain("a%250Ab.json");
+    expect(lines[0], "the raw sequence survived into the annotation").not.toContain("a%0Ab");
+  });
+
+  test("AC-10: mode none does not run the check at all", () => {
+    // No credential means no reviewer ran, so there is nothing to attribute a
+    // dirty tree to. Refusing here would blame the reviewer for the runner.
+    const run = runDrift(dir => writeFileSync(join(dir, "x.ts"), "1"), {
+      AI_REVIEW_MODE: "none",
+    });
+    expect(run.code).toBe(0);
+  });
+
+  test("AC-10: the tracked-only reading is what this would have shipped", () => {
+    // The mutant, run rather than described: the two-decider `git diff` pair
+    // the first draft used. It passes over the untracked file above, which is
+    // the shape the reviewer is most likely to produce.
+    const mutant = buildDriftScript().replace(
+      /raw=\$\(git status --porcelain --untracked-files=all[^)]*\)/,
+      "raw=$(git diff --name-only; git diff --cached --name-only)",
+    );
+    expect(
+      mutant,
+      "could not build the mutant: the status reading appears 0 times in the script",
+    ).not.toBe(buildDriftScript());
+
+    // The same planted file, the same fixture, one thing varied: which
+    // command does the reading. The real script refuses it two cases above.
+    const plant = (dir: string) => writeFileSync(join(dir, "ai-review-findings.json"), "{}");
+    expect(runDrift(plant).code, "the control stopped refusing").toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(
+      runDrift(plant, {}, mutant).code,
+      "the mutant refused — the mutation measured nothing",
+    ).toBe(0);
+  });
+
+  test("AC-10: the step is in the generated file and carries no `if`", () => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    const step = doc.jobs[AI_REVIEW_JOB].steps.find((s: any) => s.id === AI_REVIEW_DRIFT_STEP_ID);
+    expect(step, `no step with id ${AI_REVIEW_DRIFT_STEP_ID}:\n${generated()}`).toBeDefined();
+    expect(Object.keys(step)).not.toContain("if");
+    expect(step.run).not.toContain("${{");
   });
 });
 
