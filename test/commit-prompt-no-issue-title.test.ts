@@ -118,6 +118,22 @@
  * wherever it sits on the line, so the scan now strips code spans and
  * searches the text. Re-measured against the widened scan, M9 is **2**.
  *
+ * ### Provenance: every row re-measured after CI moved the source
+ *
+ * The first reading was taken before CI ran. CI then reddened two things,
+ * and both repairs edited a file the battery measures: ship.js's prose
+ * (`git push` in backticks is still a bare push to
+ * `test/ship-never-writes-main.test.ts`'s scanner) and AC-2's refusal case
+ * (`run` builds its client before dispatching, so with no token on the
+ * runner the case was green over an `--out` check it never reached).
+ *
+ * So the whole battery was run again — baseline first, then all ten rows —
+ * against the corrected tree, and every row reproduces exactly: 50/0,
+ * 6 of 13 RUN, 6 of 13 RUN, 1, 1, 1, 1, 2, 1, 2, 2. Nothing is carried
+ * over. A row measured on a tree nobody can check out is a claim rather
+ * than a count (`.claude/rules/parallel-sessions.md`), and a CI fix retires
+ * the tree a row was taken on just as surely as a rebase does.
+ *
  * None of the mutations is left in the tree; all were run and reverted, and
  * `workflows/ship.js`, `scripts/github-op.ts` and both test files were
  * confirmed byte-identical to the measured source afterwards by SHA-256,
@@ -423,9 +439,33 @@ describe("#706 AC-2: the subject is composed by a script and read from a file", 
 
   test("AC-2: the command refuses rather than writing somewhere it was not told to", async () => {
     const { run } = await import("../scripts/github-op");
-    await expect(run("commit-subject", { repo: "owner/project", issue: "706" })).rejects.toThrow(
-      /--out is required/,
-    );
+    // A token is planted because `run` builds its client before dispatching,
+    // so with none set every command rejects with a credentials error and
+    // this case would be green over a `--out` check that does not exist.
+    // CI found that: the first draft passed on a laptop with a token and
+    // failed on a runner without one, which is the same case reporting two
+    // different things about the same code (#507 — the margin set from
+    // outside). No request is made: `--out` is read first, and that order is
+    // the property.
+    const had = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+    process.env.GITHUB_TOKEN = "planted-for-this-case";
+    delete process.env.GH_TOKEN;
+    try {
+      await expect(run("commit-subject", { repo: "owner/project", issue: "706" })).rejects.toThrow(
+        /--out is required/,
+      );
+      // The control, over the same planted environment: a command that gets
+      // its `--out` fails on something else entirely, so the refusal above
+      // is about the flag and not about the fixture.
+      await expect(
+        run("commit-subject", { repo: "owner/project", out: "/tmp/x" }),
+      ).rejects.toThrow(/--issue is required/);
+    } finally {
+      for (const [k, v] of Object.entries(had)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 });
 

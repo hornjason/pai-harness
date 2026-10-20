@@ -12411,6 +12411,19 @@ sits on the line, so the scan now strips markdown code spans — the prompt
 legitimately mentions `git commit -m` in prose, telling the agent not to
 substitute one — and searches the text. Re-measured, M9 is 2.
 
+**Provenance: every row was re-measured after CI moved the source.** The
+first reading was taken before CI ran. CI then reddened two things, and both
+repairs edited a file the battery measures — ship.js's prose, because a
+`` `git push` `` inside backticks is still a bare push to
+`test/ship-never-writes-main.test.ts`'s scanner, and AC-2's refusal case,
+because `run` builds its GitHub client before dispatching and the case was
+green on a laptop with a token over an `--out` check it never reached. So the
+whole battery was run again against the corrected tree, baseline first, and
+all ten rows reproduce exactly. Nothing is carried over: a row measured on a
+tree nobody can check out is a claim rather than a count
+(`.claude/rules/parallel-sessions.md`), and a CI fix retires the tree a row
+was taken on just as surely as a rebase does.
+
 None of the mutations is left in the tree; all were run and reverted, and
 `workflows/ship.js`, `scripts/github-op.ts` and both test files were confirmed
 byte-identical to the measured source afterwards by SHA-256, never by
