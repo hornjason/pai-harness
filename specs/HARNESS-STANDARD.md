@@ -6253,17 +6253,35 @@ commit is attempted, so a run with no prompt guard left still fails SC-2090.
 Measured over `test/wave-integration.test.ts` — 22 tests. Every count
 predicted before the battery ran.
 
-The battery was run on a `git archive` export of this branch's HEAD under
-`/tmp`, carrying this sub-issue's test file plus the intended
-`workflows/ship.js` change. **This sub-issue's file scope is the test file and
-this spec**; `workflows/ship.js` belongs beside it and the repository was
-never modified to take these numbers. Re-run them against the tree once the
-implementation lands.
+The battery was first run on a `git archive` export of a branch HEAD under
+`/tmp`, carrying the sub-issue's test file plus the intended
+`workflows/ship.js` change, because that sub-issue's file scope was the test
+file and this spec. A row measured on a tree nobody can check out is a claim
+rather than a count, so this paragraph used to end *"re-run them against the
+tree once the implementation lands."*
+
+**#653 did, and all ten reproduce — same counts and the same named
+criteria.** Nothing is carried over. `Predicted` below is therefore the
+earlier measurement, written down before the re-run as the thing being
+tested; the finding would have been a row that MOVED.
+
+Two of the ten needed their mutation re-cut before they were faithful, and
+that is recorded rather than quietly fixed, because a prose description of a
+mutant is not a mutant:
+
+- **the pre-#652 row** is the whole pre-#652 tree, which lacks the pre-wave
+  re-read as well as the reordered arm. Mutating only `waveCommitFailure` is
+  3 of 22, not 6 — the three dispatch criteria stay green, because nothing
+  touched the thing they measure.
+- **the composed-message row** must leave the `!landedOn` early return INSIDE
+  the committed-false arm. Hoisted ahead of both arms it also intercepts
+  `{committed: true, branch: ""}`, which SC-1565 owns, and the row reads 3
+  with an extra red that is about the mutant rather than about the subject.
 
 | Row | Predicted | Measured |
 |---|---|---|
 | **baseline** — the intended implementation | 22 pass, 0 fail | **22 pass, 0 fail** |
-| the genuinely pre-#652 `workflows/ship.js`, from this branch's HEAD | 6 | **6 of 22** |
+| the genuinely pre-#652 `workflows/ship.js` — the whole pre-#652 tree | 6 | **6 of 22** — SC-2084, SC-2086, SC-2087, SC-2089, SC-2090, SC-2091 |
 | the `committed` arm returns the bare generic sentence again — the defect verbatim | 3 | **3 of 22** — SC-2084, SC-2086, SC-2087 |
 | the clause naming the ref dropped from the cell whose branch AGREES | 1 | **1 of 22** — SC-2087, and only that one |
 | the branch clause appended unconditionally, including where no branch was reported | 1 | **1 of 22** — SC-2088 |
@@ -6273,6 +6291,21 @@ implementation lands.
 | the re-read taken and `runRef` not written back | 1 | **1 of 22** — SC-2091 |
 | the drift observed and logged, and the wave spawns anyway | 1 | **1 of 22** — SC-2090 |
 | the re-read moved BELOW the wave's spawns | 2 | **2 of 22** — SC-2089 and SC-2090 |
+| **the cheapest wrong fix** (#653 AC-6): the branch appended to the existing generic string WITHOUT moving the committed check | 4 | **4 of 22** — SC-2088, SC-2089, SC-2090, SC-2091 |
+
+**The last row is the one to read, and its GREENS are the finding.**
+Appending the branch and the run ref to the generic sentence leaves the check
+where it was, and it makes the reported symptom go away: the dead run's
+`{committed:false, branch:"main"}` now names `main`. SC-2084, SC-2086 and
+SC-2087 are **green over it** — the three cells that only ask whether the
+branch is NAMED are satisfied by a repair that names it while distinguishing
+nothing. SC-2088 alone catches it, because an empty branch renders as
+`(branch , run ref …)` and SC-2088 demands nothing about a branch AT ALL
+rather than merely no branch name. It was written as the
+unconditional-clause control, and it is the whole protection against the
+cheap repair — which is `.claude/rules/checks-must-be-able-to-fail.md`'s
+fifth shape, found by applying the wrong fix and counting rather than by
+naming it in prose.
 
 Before believing any of those, the input on which mutant and original differ,
 named and run rather than assumed. The six commit-reply cells, driven against
