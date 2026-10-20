@@ -71,6 +71,10 @@ import {
   buildAuthDetectStep,
   buildBaselineScript,
   buildDriftScript,
+  AI_REVIEW_APP_INSTALL_401,
+  AI_REVIEW_UNMEASURED_TITLE,
+  AI_REVIEW_APP_INSTALL_CAUSE,
+  AI_REVIEW_APP_INSTALL_URL,
   buildReviewRunScript,
   buildReviewRunStep,
   vertexCiConfig,
@@ -545,6 +549,221 @@ describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
     });
     expect(run.stdout).not.toContain("UNMEASURED");
     expect(run.code, "the mutant still refused — the mutation measured nothing").toBe(0);
+  });
+});
+
+// ── #803: the one remedy a correctly-credentialed failure needs ─────────
+
+/**
+ * #803: with Workload Identity Federation fully working, run 39456331887 ran
+ * all nine steps and then died on
+ * `401 Unauthorized - Claude Code is not installed on this repository`,
+ * retried three times, exit 1. The downstream guard reported UNMEASURED and
+ * nothing was falsely green — but the one thing the consumer had to do, a
+ * one-click app install, was named in a third-party action's log and nowhere
+ * else. No AI review had ever run on any of the three consumer repositories,
+ * and this was the reason in all of them.
+ *
+ * The issue proposed detecting it by greping the action's step output. **A
+ * later step cannot read a previous step's stdout**, so that is not reachable
+ * — see `AI_REVIEW_APP_INSTALL_CAUSE` for what the API route would cost and
+ * why it is not taken. What is shipped is a NAMED CAUSE attached to the
+ * generic non-zero branch, which is the shape the `skipped` branch already
+ * uses for the workflow-validation guard.
+ *
+ * So these cases check the two things a named cause has to get right: it is
+ * on the state it describes and no other, and it survives the shell.
+ *
+ * ## What was broken to prove it
+ *
+ * 55 tests — this file. Every count predicted before the battery ran, in
+ * `/tmp/803-battery/predictions.md`, and **the baseline row was read first.**
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 55 pass, 0 fail | **55 pass, 0 fail** | — |
+ * | P1 the genuinely pre-#803 message — the cause sentence dropped | 3 | **4 of 55** | the annotation text: it names the remedy against not |
+ * | P2 **the cheapest wrong fix** — the cause attached to EVERY unmeasured state | 2 | **2 of 55** | the #816 skip state's annotation: silent about the app against naming it |
+ * | P3 the two quoted fragments respelled with double quotes | 2 | **2 of 55**, and **0** before the repair below | the annotation's text: `'…'` against bare |
+ * | P4 a second declaring position for the install URL | 1 | **1 of 55** | the source's declaration count |
+ * | P5 the require switch deleted from this branch | 2 | **3 of 55** | `RUNGATE_REQUIRE_AI_REVIEW=true`: exit 1 against exit 0 |
+ * | P6 the committed workflow hand-edited inside the report script | — | **1 of 55**, and **0** before the repair below | the committed file's bytes against the generator's output |
+ *
+ * ### P3 came back 0, and the premise of the case was false
+ *
+ * The first draft of the cause sentence spelled the two fragments with
+ * double quotes, and this case asserted the generated `echo "…"` would
+ * break into three lines. **It does not.** Bash closes the string,
+ * concatenates the adjacent segments and strips the quotes, so the
+ * annotation is one line either way — the mutant and the original were
+ * being compared on a property they share
+ * (`.claude/rules/checks-must-be-able-to-fail.md`: before recording a 0,
+ * name an input on which they differ).
+ *
+ * What actually differs is the delimiters around the search string, and for
+ * a message whose whole content is *grep your log for this exact text* that
+ * is the content and not presentation. The case asserts them now, keeps the
+ * line count as a control, and the row is 2. The generator's comment
+ * claiming the echo would break has been corrected too — a false
+ * justification left in place is the next reader's wrong model.
+ *
+ * ### P1 and P2 came back LOW, and the gap was real
+ *
+ * Both were predicted on the assumption that mutating the report script
+ * breaks something about the committed workflow. Nothing did: `AC-1` above
+ * compares the AUTH step, and every other case here drives
+ * `buildReviewRunScript()` directly. So `.github/workflows/ai-review.yml`
+ * could carry a report script the generator no longer produces and this
+ * whole file would stay green. The verbatim case was added for that, and
+ * P1 is 4.
+ *
+ * ### …and its first draft was vacuous, which P6 is the row for
+ *
+ * That new case first read `generated()` — the scratch project this suite
+ * scaffolds in `beforeAll`. Comparing a file the test just generated to the
+ * generator that produced it is the question restated (#530), and it
+ * agrees whatever the committed workflow says: a hand-edit to the real file
+ * was **0 of 55**. It reads this repository's committed file now, and P6 is
+ * 1.
+ *
+ * Three findings, all in the CASES rather than the code, and none visible
+ * in the diff.
+ *
+ * None of the mutations is left in the tree; all were run and reverted, and
+ * `lib/scaffold/ai-review-step.ts`, `.github/workflows/ai-review.yml` and
+ * this file were confirmed byte-identical to the measured source afterwards
+ * by SHA-256, never by `git checkout --`.
+ */
+describe("#803: a non-zero exit with no payload names the app install", () => {
+  const failed = (env: Record<string, string> = {}) =>
+    runAuthScript(buildReviewRunScript(), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "failure",
+      ...env,
+    });
+
+  test("the annotation names the remedy, the URL, and the string to search for", () => {
+    const run = failed();
+    expect(run.stdout).toContain("UNMEASURED");
+    expect(run.stdout).toContain(AI_REVIEW_APP_INSTALL_401);
+    expect(run.stdout).toContain(AI_REVIEW_APP_INSTALL_URL);
+    expect(
+      run.stdout,
+      "the annotation does not say it is a likely cause, so it reads as a detection",
+    ).toContain("naming a likely cause and not reporting a measured one");
+  });
+
+  test("the search string survives the shell WITH its quotes, on one line", () => {
+    // Two claims, and the second one is here because the first was written
+    // on a false premise. The first draft spelled the two fragments with
+    // double quotes and this case asserted the `echo` would break into
+    // three lines. It does not: bash closes the string, concatenates the
+    // adjacent segments and STRIPS the quotes, so the annotation is one
+    // line either way and the mutation row came back 0 of 54.
+    //
+    // What actually differs is the quoting around the search string, and
+    // for a message whose whole content is "grep your log for this exact
+    // text" that is the content rather than presentation. So the case
+    // asserts the delimiters, and the line count stays as the control that
+    // a future respelling has not broken the annotation outright.
+    const run = failed();
+    expect(
+      run.stdout,
+      "the search string lost its delimiters, so a reader cannot tell where it ends",
+    ).toContain(`'${AI_REVIEW_APP_INSTALL_401}'`);
+    const lines = run.stdout.trimEnd().split("\n");
+    expect(lines.length, `the annotation broke into ${lines.length} lines:\n${run.stdout}`).toBe(1);
+    expect(lines[0]).toStartWith(`::warning title=${AI_REVIEW_UNMEASURED_TITLE}::`);
+    expect(run.stderr).toBe("");
+  });
+
+  test("the three other UNMEASURED states do NOT carry it — each has its own cause", () => {
+    // A hint on every state is a hint on none: the skipped state's cause is
+    // the workflow-validation guard and the absent state's is a step that
+    // never ran, and telling all three to go and install an app would send
+    // two of them somewhere useless.
+    const others = [
+      { label: "mode absent", env: {}, payload: undefined },
+      {
+        label: "exited zero, no payload (the #816 skip)",
+        env: { AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" },
+        payload: undefined,
+      },
+      {
+        label: "payload written, nobody adjudicates it",
+        env: { AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" },
+        payload: '{"findings":[]}',
+      },
+    ] as const;
+    for (const o of others) {
+      const run = runAuthScript(buildReviewRunScript(), { ...o.env }, o.payload);
+      expect(run.stdout, `${o.label} carries the app-install cause`).not.toContain(
+        AI_REVIEW_APP_INSTALL_URL,
+      );
+      // Non-vacuity: each of these really did annotate something, so the
+      // absence above is a choice and not a state that printed nothing.
+      expect(run.stdout, `${o.label} annotated nothing at all`).toContain("UNMEASURED");
+    }
+  });
+
+  test("RUNGATE_REQUIRE_AI_REVIEW still decides whether this refuses or warns", () => {
+    // Not special-cased into always-green, and not special-cased into
+    // always-red: the same switch as every other unmeasured state.
+    const warn = failed();
+    expect(warn.code, "the default became a refusal").toBe(0);
+    const refuse = failed({ RUNGATE_REQUIRE_AI_REVIEW: "true" });
+    expect(refuse.code, "the switch no longer refuses this state").toBe(1);
+    expect(refuse.stdout, "the remedy is gone from the refusing path").toContain(
+      AI_REVIEW_APP_INSTALL_URL,
+    );
+  });
+
+  test("the committed workflow carries the generator's report script verbatim", () => {
+    // Added because the battery found its absence. P1 and P2 were predicted
+    // 3 and 2 on the assumption that mutating the report script would also
+    // break an assertion about the committed file; they came back 2 and 1,
+    // because AC-1 above compares the AUTH step and nothing compared this
+    // one. So the committed `ai-review.yml` could hold a report script the
+    // generator no longer produces, and every test here would still pass —
+    // they all drive `buildReviewRunScript()` directly.
+    const indented = buildReviewRunScript()
+      .trimEnd()
+      .split("\n")
+      .map(l => (l ? `          ${l}` : ""))
+      .join("\n");
+    // THIS repository's committed file, not `generated()`. `generated()` is
+    // a scratch project this suite scaffolds in `beforeAll`, so comparing it
+    // to the generator is the question restated — it agrees by construction,
+    // whatever the committed workflow says (#530). The battery caught that
+    // too: a hand-edit to the committed file was 0 of 55 against the first
+    // draft of this case.
+    const committed = readFileSync(
+      join(import.meta.dir, "..", ".github", "workflows", AI_REVIEW_WORKFLOW_FILE),
+      "utf-8",
+    );
+    expect(
+      committed,
+      "the committed ai-review.yml's report step is not the generator's output — it was " +
+        "hand-edited, or the file was not regenerated after the generator changed",
+    ).toContain(indented);
+  });
+
+  test("the URL and the 401 string each have one declaring position", () => {
+    // Two copies of a URL is two things to update and one that gets missed.
+    const source = readFileSync(
+      join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step.ts"),
+      "utf-8",
+    );
+    for (const literal of [AI_REVIEW_APP_INSTALL_URL, AI_REVIEW_APP_INSTALL_401]) {
+      const declarations = [
+        ...source.matchAll(new RegExp(`=\\s*"${literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`, "g")),
+      ].length;
+      expect(declarations, `${literal} is declared ${declarations} times`).toBe(1);
+    }
+    expect(
+      AI_REVIEW_APP_INSTALL_CAUSE,
+      "the cause sentence carries its own copy of the URL rather than the constant",
+    ).toContain(AI_REVIEW_APP_INSTALL_URL);
   });
 });
 

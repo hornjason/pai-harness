@@ -1179,11 +1179,89 @@ the job if \`git diff\` reports anything, so an edit here costs the review.
  * before bash sees it and the convention does not get to have exceptions for
  * the cases we think are safe.
  */
+/** One declaring position for the app-install remedy (#803). */
+export const AI_REVIEW_APP_INSTALL_URL = "https://github.com/apps/claude";
+
+/**
+ * The 401 `anthropics/claude-code-action` prints when the Claude Code GitHub
+ * App is not installed on the repository.
+ *
+ * Quoted from run 39456331887 rather than paraphrased: it is the string a
+ * consumer will be searching their log for, and a paraphrase does not match.
+ */
+export const AI_REVIEW_APP_INSTALL_401 =
+  "Claude Code is not installed on this repository";
+
+/**
+ * Why a correctly-credentialed run still exits non-zero with no payload, and
+ * what to do about it (#803).
+ *
+ * ## The state this names
+ *
+ * The credential resolver answers *"do you have a key?"*. It cannot answer
+ * *"is the app installed?"* — that is only discoverable by attempting the
+ * app-token exchange, which happens inside the pinned action. On run
+ * 39456331887 Workload Identity Federation was fully configured and working:
+ * OIDC minted, the consumer's own project and model resolved from its
+ * `ci.vertex` config, all nine steps ran,
+ * and then the exchange returned
+ * `401 Unauthorized - Claude Code is not installed on this repository`,
+ * retried three times, exit 1. **No AI review had ever run on any of the
+ * three consumer repositories, and this was the reason in all of them.**
+ *
+ * So the remedy is one click, it is named in a third-party action's log, and
+ * it was named nowhere else. Every other unmeasurable state in this job says
+ * what it is and what to do; this one did not.
+ *
+ * ## Why this is a NAMED CAUSE and not a detection
+ *
+ * #803 proposed greping the action's step output for the 401. **A later step
+ * cannot read a previous step's stdout.** The only route to that text is the
+ * REST log endpoint, which needs `actions: read` added to a job that
+ * currently holds `contents: read` and `id-token: write`, a job-id lookup
+ * requiring JSON parsing on a runner whose tooling the consumer chooses, and
+ * a log that may not be served at all while the job is still running. Three
+ * unverified assumptions, in the workflow whose entire subject is not making
+ * unverified claims — and the state cannot be reproduced here any more,
+ * because the app is now installed.
+ *
+ * Rather than ship a detector nobody has watched work, this says the cause
+ * and hands over the string to search for. That is the same shape the
+ * `skipped` branch already uses for the workflow-validation guard: *"the
+ * usual cause is…"*, with the reader left holding the evidence.
+ *
+ * It is attached to the generic non-zero branch unconditionally, so it
+ * cannot misclassify: a reviewer that crashed and a reviewer that was never
+ * allowed to start still produce the same message and the same verdict, and
+ * `${AI_REVIEW_REQUIRE_VAR}` still decides whether that refuses or warns.
+ * Collapsing those two into one DETECTED state is the mistake #803 itself
+ * warns against; naming one of them as a likely cause is not.
+ */
+export const AI_REVIEW_APP_INSTALL_CAUSE =
+  `If every earlier step succeeded — a credential resolved and the action ` +
+  `started — the usual cause is that the Claude Code GitHub App is not ` +
+  // Single quotes around the two fragments, and the reason is narrower than
+  // the first draft claimed. This sentence is interpolated into a bash
+  // `echo "..."`, so a double quote CLOSES the string — and what bash then
+  // does is concatenate the adjacent segments and strip the quotes. The
+  // annotation is still one line; it just no longer shows where the search
+  // string starts and ends, which for a message whose whole content is
+  // "go and grep your log for this exact text" is the content.
+  //
+  // Measured, because the first draft of the comment here asserted that the
+  // echo would break into three lines and a mutation row came back 0 of 54
+  // against a predicted 2. It does not break. The quotes vanish.
+  `installed on this repository. Search the 'Run the AI review' step's log ` +
+  `for '${AI_REVIEW_APP_INSTALL_401}'; if it is there, install the app at ` +
+  `${AI_REVIEW_APP_INSTALL_URL} and re-run. This job cannot read that log, ` +
+  `so it is naming a likely cause and not reporting a measured one.`;
+
 export function buildReviewRunScript(): string {
   const pending =
     `The review action (#631) did not complete, so no AI review ran on this ` +
     `pull request and no findings payload was written. This ` +
-    `check is UNMEASURED, not a passing review.`;
+    `check is UNMEASURED, not a passing review. ` +
+    `${AI_REVIEW_APP_INSTALL_CAUSE}`;
 
   const refusal =
     `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the review ` +
