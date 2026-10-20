@@ -2,6 +2,9 @@
 name: Gates
 
 on:
+  # See ci.yml: no branches: filter, and its absence hangs a merge queue
+  # silently rather than failing it.
+  merge_group:
   push:
     branches:
       - "main"
