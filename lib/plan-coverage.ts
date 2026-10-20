@@ -11,10 +11,13 @@
  * beside `denylistViolations` names for the deny-list and was never extended
  * past.
  *
- * On asaCommandCenter#1585 the file the issue was *about* was claimed by no
- * sub-issue, edited by two worktrees, and the run reached Commit before
- * SC-413 refused with *"no worktree claimed that file"* — 2h06m and 2.03M
- * subagent tokens of correct work ending `SHIP_FAILED` / `NO_PR`. That
+ * On the consumer run that motivated #751, the file the issue was *about* was
+ * claimed by no sub-issue, edited by two worktrees, and the run reached
+ * Commit before SC-413 refused with *"no worktree claimed that file"* —
+ * 2h06m and 2.03M subagent tokens of correct work ending `SHIP_FAILED` /
+ * `NO_PR`. The run is named on the issue; naming a consumer repository in
+ * harness source is what `test/anti.test.ts` SC-A1 refuses, and it is right
+ * to — this module ships to every project rungate scaffolds. That
  * refusal is correct and is not loosened here; widening it is the documented
  * cheapest wrong fix for this family (`.claude/rules/checks-must-be-able-to-fail.md`,
  * the #627 section). This moves the detection to plan time, where it costs
