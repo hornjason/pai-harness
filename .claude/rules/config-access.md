@@ -3,7 +3,7 @@ description: Every rungate config read goes through lib/config-loader.ts — bot
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-14
+updated: 2026-10-19
 ---
 
 ## Config access — one loader
@@ -90,9 +90,19 @@ anything that summarises external tools.
 kept nothing else. Two consequences, both *Silent Default Substitution*:
 
 - A report produced with agnix missing is **byte-indistinguishable** from one
-  produced with agnix installed and silent. CI installs neither tool, which is
-  how #597 was re-run red to green on an identical SHA with nothing in the
-  artefact saying why.
+  produced with agnix installed and silent. CI installed neither tool at the
+  time, which is how #597 was re-run red to green on an identical SHA with
+  nothing in the artefact saying why. **It installs both now, pinned**, and
+  the two statements were allowed to contradict each other in this tree for
+  three weeks — #755 is the issue that noticed. Measured 2026-10-19:
+  `.claude/rungate/config.json` declares both `agnix` and `@reporails/cli`
+  under `ci.globalTools`, each at an exact version, and
+  `.github/workflows/ci.yml:35` is the single `npm install -g` line generated
+  from it, inside the sharded `test` job. The versions are deliberately not
+  quoted here — the config is the one declaring position and
+  `test/ci-global-tools.test.ts` refuses a second one, prose included. So
+  `at least one external tool is available` passing in CI is not a probe
+  reporting availability it does not have.
 - `overallQuality` was the mean of whatever came back. With one tool out that
   is **an average over the files the other tool happened to reach**, and it
   prints as an ordinary number beside an ordinary PASS. A number is

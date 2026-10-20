@@ -25,7 +25,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 
 import {
   DEFAULT_HILL_CLIMB_DESTINATION,
@@ -148,15 +148,50 @@ describe("hill-climb destination", () => {
       "UNTRACKED",
     ]);
 
+    // #648. `write.destination` is the NAME the caller passed, echoed
+    // back, so asserting it is asking the question again rather than
+    // answering it (`.claude/rules/checks-must-be-able-to-fail.md`, #530).
+    // The distinguishing property of a destination is WHERE, and the
+    // earlier version of this loop never asserted one: under a writer that
+    // ignores its destination and always writes the tracked brief, every
+    // iteration still echoed the right name, `write.path` was never null
+    // so the `continue` never fired, and the content check read the file
+    // the mutant had wrongly written. Measured: that mutation was green
+    // here and red in five other cases. So the expected PATH is written
+    // down per destination, and `DISCARD` is asserted to be null rather
+    // than skipped past.
+    const expectedPath = (
+      destination: HillClimbDestination,
+      briefPath: string,
+      untrackedDir: string,
+    ): string | null =>
+      destination === "COMMIT"
+        ? briefPath
+        : destination === "UNTRACKED"
+          ? join(untrackedDir, basename(briefPath))
+          : null;
+
     for (const destination of HILL_CLIMB_DESTINATIONS) {
       const { briefPath, untrackedDir } = fixture();
+      const before = readFileSync(briefPath, "utf-8");
       const write = writeReinforcedBrief(briefPath, "reinforced", {
         destination,
         untrackedDir,
       });
       expect(write.destination).toBe(destination);
-      if (write.path === null) continue;
+      expect(`${destination}:${write.path}`).toBe(
+        `${destination}:${expectedPath(destination, briefPath, untrackedDir)}`,
+      );
+      if (write.path === null) {
+        // Nothing anywhere, not merely nothing reported.
+        expect(readFileSync(briefPath, "utf-8")).toBe(before);
+        expect(existsSync(join(untrackedDir, basename(briefPath)))).toBe(false);
+        continue;
+      }
       expect(readFileSync(write.path, "utf-8")).toBe("reinforced");
+      if (destination !== "COMMIT") {
+        expect(readFileSync(briefPath, "utf-8"), "the tracked brief was written anyway").toBe(before);
+      }
     }
   });
 

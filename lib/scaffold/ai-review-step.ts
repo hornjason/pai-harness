@@ -113,6 +113,87 @@ export const AI_REVIEW_RUN_STEP_NAME = "Run the AI review";
 
 const SECRET_NAMES = AI_REVIEW_AUTH_PRECEDENCE.map(c => c.secret);
 
+// ── The model pin (#685 AC-6) ───────────────────────────
+
+/**
+ * The model-family names that are aliases rather than identifiers.
+ *
+ * One declaration, so there is one thing to mutate. An alias re-points at a
+ * different model the day its owner moves it, which means the gate a consumer
+ * measured is not the gate they keep — and nothing in the workflow records
+ * that it changed. An exact identifier is the only form that pins.
+ */
+export const MODEL_FAMILY_ALIASES: readonly string[] = ["opus", "sonnet", "haiku", "fable"];
+
+/**
+ * An EXACT model identifier: a family plus at least one version segment.
+ *
+ * This is the thing the guard must NOT refuse, and it is the whole reason
+ * `modelAliasViolations` tokenises instead of searching for the family word.
+ * `claude-opus-5-5` CONTAINS the string `opus`, so a substring guard would be
+ * green today — the generated workflow names no model at all — and would make
+ * Phase 1 (#631) unshippable the moment it tried to pin one. A check that
+ * blocks the change it exists to protect looks identical, in a green suite, to
+ * a check that is satisfied.
+ */
+export const EXACT_MODEL_PATTERN = /^claude-(?:[a-z]+)-\d+(?:-\d+)*$/;
+
+/** Anything that could be a model identifier: letters, digits, `.`, `_`, `-`. */
+const TOKEN = /[A-Za-z0-9][A-Za-z0-9._-]*/g;
+
+/**
+ * The part of a workflow that can actually select a model: everything that is
+ * not a comment.
+ *
+ * Measured on `.github/workflows/claude-review.yml`, which pins
+ * `claude-sonnet-5` correctly at its one value position and explains WHY in a
+ * comment — a comment that necessarily names the alias it is warning about.
+ * Scanning the whole document reported that file as two violations, both of
+ * them the documentation of the fix. A document that quotes the thing it
+ * demands is `.claude/rules/checks-must-be-able-to-fail.md`'s "search the
+ * slice, not the document", and a guard that cries on the explanation of its
+ * own rule is one somebody switches off.
+ *
+ * The boundary is a TEST, not this comment — narrowing a detector is the
+ * change most likely to buy green with blindness, so `AC-6g` asserts that a
+ * value on a line which ALSO carries a comment is still caught.
+ */
+export function modelAliasScanSlice(workflowText: string): string {
+  return workflowText
+    .split("\n")
+    .map(line => {
+      const m = /(^|\s)#/.exec(line);
+      return m === null ? line : line.slice(0, m.index + m[1].length);
+    })
+    .join("\n");
+}
+
+/**
+ * Every bare family alias in a generated workflow, named.
+ *
+ * Returns the offending TOKENS rather than a count: "1 violation" does not
+ * send anybody to a line. The rule, per token:
+ *
+ *   - matches `EXACT_MODEL_PATTERN`            → pinned, allowed
+ *   - any `-`-delimited segment IS a family    → an alias, refused
+ *   - otherwise                                → not about a model
+ *
+ * Segment equality rather than substring is what keeps `opusculum` and
+ * `sonnets-and-haikus` out of the report. A guard that cries on ordinary prose
+ * is a guard somebody switches off, and then it is not a guard.
+ */
+export function modelAliasViolations(workflowText: string): string[] {
+  const found: string[] = [];
+  for (const [token] of modelAliasScanSlice(workflowText).matchAll(TOKEN)) {
+    const lower = token.toLowerCase();
+    if (EXACT_MODEL_PATTERN.test(lower)) continue;
+    if (lower.split("-").some(seg => MODEL_FAMILY_ALIASES.includes(seg))) {
+      found.push(token);
+    }
+  }
+  return found;
+}
+
 /**
  * The bash the auth-detect step runs.
  *

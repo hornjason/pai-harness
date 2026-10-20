@@ -31,6 +31,17 @@ export interface FileScore {
   reporailsFindings: number;
   reporailsQuality: number | null;
   findings: InstructionFinding[];
+  /**
+   * Which tools READ this file — not which found something in it (#755).
+   *
+   * A file on the surface gets a `FileScore` whether or not any tool ever
+   * looked at it, so `findings.length` is the only per-file evidence the
+   * report used to carry, and it cannot tell three states apart: the tool
+   * ran and found nothing, the tool ran and returned nothing because it
+   * broke, and the file genuinely improved. All three are zero findings.
+   * This is the reading the count is not.
+   */
+  scoredBy: ComplianceTool[];
 }
 
 /** The external tools Layer 1 scores with, in the order they are reported. */
@@ -326,6 +337,23 @@ export function overallQualityOf(
   return scored.reduce((sum, f) => sum + f.reporailsQuality!, 0) / scored.length;
 }
 
+/**
+ * The tools that read one file, from a per-tool reading of whether they did.
+ *
+ * One binding, so a case can mutate the thing that decides coverage rather
+ * than a boolean each caller re-derives. The two tools report their having
+ * read a file by different routes and neither is a finding count:
+ *
+ * - agnix is run ONCE over the whole surface, and `runAgnixBatch` returns
+ *   `null` when it produced nothing parseable. A batch that parsed read every
+ *   file in it, including the clean ones it says nothing about.
+ * - RepoRails is run per file and returns a quality score for each, so its
+ *   receipt is per file: an entry exists or it does not.
+ */
+export function scoredByOf(read: Record<ComplianceTool, boolean>): ComplianceTool[] {
+  return COMPLIANCE_TOOLS.filter(tool => read[tool]);
+}
+
 // ── Layer 1: Template Compliance ───────────────────────────
 
 export interface TemplateComplianceOpts {
@@ -354,9 +382,14 @@ export async function runTemplateCompliance(
   // RepoRails: per-file mode — batch drops findings for small files
   const rrByFile = new Map<string, { quality: number | null; findings: RepoRailsFinding[] }>();
 
+  // Whether the batch answered at all. `agnixAvailable` says the probe found
+  // the binary; this says the run over this surface produced a reading.
+  let agnixRead = false;
+
   if (agnixAvailable && files.length > 0) {
     const results = runAgnixBatch(files);
     if (results) {
+      agnixRead = true;
       for (const d of results) {
         const key = d.file;
         if (!agnixByFile.has(key)) agnixByFile.set(key, []);
@@ -421,6 +454,7 @@ export async function runTemplateCompliance(
       reporailsFindings: findings.filter(f => f.source === "reporails").length,
       reporailsQuality,
       findings,
+      scoredBy: scoredByOf({ agnix: agnixRead, reporails: rrData !== undefined }),
     });
   }
 

@@ -26,6 +26,71 @@ had it finished, reviewed, security-reviewed and rebased five times on an
 unpushed branch. Whoever took it would have rebuilt completed work and
 collided with a branch they could not see.
 
+## Reserve an SC block in the repository before you consume any id
+
+```bash
+# 1. add your entry to specs/sc-reservations.json, on main, and push it
+# 2. then allocate out of it — the owner is your branch by default
+bun scripts/create-sc.ts --spec specs/MY-SPEC.md --pattern file-exists --params '{...}'
+```
+
+`specs/sc-reservations.json` is the registry. `lib/create-sc.ts` reads it and
+treats every declared block as occupied: an owner with a block is handed the
+lowest free id **inside** it, and an owner with no block is handed an id
+**above** every block in the store. A store that is present and unreadable is a
+**refusal**, not an empty reading — `{}` and `{"reservations": []}` are
+different facts, and the `reservations` key is the control string that tells
+them apart.
+
+**Every path that consumes an id is an allocation, including the ones that do
+not feel like one.** A renumber during a repair. A hand-written fixture id. A
+block chosen by eyeballing headroom above the highest number you can see. If
+you are going to write `SC-<N>` anywhere, reserve it first.
+
+**Delete your entry when your branch merges.** A block nobody prunes is
+headroom nobody can use.
+
+### Why this is a file and not a convention
+
+**2026-10-19, four collisions in one day.** The convention existed — five
+sessions were handed disjoint blocks in their briefs — and it worked, and it
+lived entirely in prompts, so nothing in the tree recorded which blocks were
+reserved or by whom.
+
+1. **`SC-2161` and `SC-2162`**, claimed by PR #716 in
+   `specs/HARNESS-STANDARD.md` and by PR #719 in `specs/GATE-CONTRACTS-SPEC.md`.
+   Eight PRs merged in sequence; each was correct on its own branch, each had a
+   green targeted suite, and `main` went red. Repaired in PR #724.
+2. **`SC-2167`/`SC-2168`**, created BY that repair, three hours later, by
+   reading the highest id in the tree by hand (`SC-2166`) and taking the next
+   two. PR #717 was in flight, unmerged, and held `SC-2167..SC-2172`. One
+   person, one renumber, full attention, immediately after diagnosing the
+   first — *the floor is the problem, not the operator.*
+3. **`SC-2173..SC-2178`**, declared by both `fix/704-hill-climb-section-selector`
+   (PR #717) and `fix/640-644-run-branch-base` (PR #731). Found only by sweeping
+   the spec diff of every open branch. Two allocations that were each
+   individually correct.
+4. **`SC-2180..SC-2187`**, hand-written into a new test file by a session that
+   had read the warning about this an hour earlier, and refused by
+   `sc-fixture-namespace` for sitting below the `SC-9000` fixture floor.
+
+That rules out every human-factors explanation in turn: not batch pressure
+(two), not ignorance (four), not carelessness (three). **In three of the four
+the allocator was never run at all**, so no change to what it returns could
+have been consulted. The class is "an id consumed without going through the
+allocator", and the only thing that covers it is a declaration made *before*
+the ids are consumed, in a place every other session reads.
+
+### The collision is only visible in the union
+
+Keep this in view when the store tempts you to relax. On branch A the allocator
+reads a floor that does not contain B's claim and is internally consistent; on
+B the same, mirrored; neither diff contains the other's id. No reviewer, no CI
+run on either PR and no content verification on either merge can see it — the
+first observation is a red `main`. The store removes the two instances that
+were a session deciding for itself what was free. It does not make a check on
+the **merge target** unnecessary, and there is not one yet.
+
 ## Commit before the first long-running step, not after the work is finished
 
 A WIP commit on your branch costs nothing and is the only thing that makes
