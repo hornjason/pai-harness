@@ -122,7 +122,22 @@ function main(): number {
   for (let i = 1; i <= runs; i++) {
     const signature = signTree(root);
     const started = Date.now();
-    const r = spawnSync(command, { cwd: root, encoding: "utf-8", shell: true, timeout: 3_600_000 });
+    const r = spawnSync(command, {
+      cwd: root,
+      encoding: "utf-8",
+      shell: true,
+      timeout: 3_600_000,
+      // The whole point of this script, and the thing its first real
+      // dispatch got wrong. `maxBuffer` defaults to 1 MiB and on overflow
+      // the child is KILLED with SIGTERM, the output is truncated, and
+      // `status` is null. Run 39405680063 died that way ten times at
+      // ~1.08 MB per log, and the series reported CONSISTENT, because the
+      // last summary surviving in each truncated log belonged to a nested
+      // suite. A full run of this repository's own suite is tens of
+      // megabytes; a buffer smaller than the output is an instrument that
+      // silently stops measuring partway (#323).
+      maxBuffer: 512 * 1024 * 1024,
+    });
     const seconds = Math.round((Date.now() - started) / 1000);
     const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     // Written BEFORE the reading, so a parser that throws still leaves the
@@ -130,13 +145,22 @@ function main(): number {
     const log = join(outDir, `run-${String(i).padStart(2, "0")}.log`);
     writeFileSync(log, output);
 
+    // How the process ENDED, which no reading of its text can establish.
+    // Raising the buffer fixes the cause; recording this is what makes the
+    // NEXT cause visible instead of reported as a clean series.
+    const exit = {
+      status: r.status,
+      signal: r.signal === undefined ? null : r.signal,
+      error: r.error ? r.error.message : null,
+    };
     const run = readSuiteRun(output);
-    series.push({ index: i, signature, run, log, seconds });
+    series.push({ index: i, signature, run, log, seconds, exit });
     const line =
       run.status === "MEASURED"
         ? `${run.pass} pass, ${run.fail} fail, ${run.expectCalls ?? "?"} expect() calls`
         : `UNMEASURED — ${run.reason}`;
-    console.log(`run ${i}/${runs} [${seconds}s] exit ${r.status}: ${line}`);
+    const ended = exit.error !== null ? `ERROR ${exit.error}` : exit.signal !== null ? `killed by ${exit.signal}` : `exit ${exit.status}`;
+    console.log(`run ${i}/${runs} [${seconds}s] ${ended}: ${line}`);
   }
 
   const reading = flakeReading(series, runs);
@@ -154,6 +178,7 @@ function main(): number {
           log: s.log,
           signature: s.signature,
           run: s.run,
+          exit: s.exit,
         })),
       },
       null,
