@@ -2559,6 +2559,221 @@ The two disagree, which is exactly what that case exists to detect. The
 prediction was wrong, not the mutant — the binding reaches further than the
 one fixture that was counted for it.
 
+### One exit code, one label, four different facts (#613)
+
+The script above routes every refusal through one exit code, which is the
+property `.claude/rules/checks-must-be-able-to-fail.md` asks of a script whose
+job is to exit non-zero. It then printed every one of them under the same
+label, which is the same defect one level up: **an exit code can say that a
+refusal happened and cannot say what was refused.**
+
+Measured on `origin/main` at `db66dd79`, by running the script rather than by
+reading it:
+
+```
+$ bun scripts/check-installed-hook-currency.ts --project . --harness x
+INSTALLED HOOK STALE: unknown option --harness
+$ bun scripts/check-installed-hook-currency.ts --project . --generator /tmp
+INSTALLED HOOK STALE: could not load the hook generator at /tmp/lib/scaffold/steps.ts: …
+```
+
+The correct flag is `--generator`. Nothing about the installed hook was read
+in either run, and the remedy the label implies — `--install`, or a
+re-scaffold — replaces a hook that was fine.
+
+**The scope is thirteen throw sites across five functions, not one.**
+`currencyRefusal` is the function that produces the five named staleness
+refusals and it **returns**; it never throws. So the print site at the
+`currencyRefusal` verdict was always correct and the catch was wrong for
+every case that reached it — `installedHookPath` (2 sites: git could not
+resolve the hook path), `generatorHook` (4: the generator could not be read
+or run), `installHook` (2: the destination is not a writable regular file),
+`parseArgs` (3: unknown option, missing value, unexpected argument) and
+`readIfPresent` (2: the installed path is not a regular file).
+
+Two of those classes are worse than the typo the issue was filed over:
+
+- **The generator failing is the INSTRUMENT, not the subject.** "The installed
+  hook differs from the generator" is a measurement; "the generator could not
+  be run" is the absence of one. Reporting the absence as a verdict is
+  `.claude/rules/config-access.md`'s UNMEASURED distinction with the sign
+  flipped, and this one does not go silent — it asserts the stalest available
+  answer.
+- **`installHook` failing reported staleness in `--install` mode.** The
+  operator ran `--install` *because* something said the hook was stale, and
+  the message names the command that just failed as the remedy for itself.
+
+So the refusal now carries a CLASS, set by the code that raises it, and one
+exported table — `REFUSAL_PREFIX` — turns the class into a label. Each label
+literal is written exactly once; the catch is the only position that reads a
+class; and the staleness verdict is RAISED rather than printed, so there is
+one position in the file that turns a refusal into a line of output. A second
+print site, or a catch that re-derived the class from the message text, would
+be a second decider that always agrees with the first.
+
+- [x] SC-2141: test/unit/installed-hook-currency.test.ts contains [an unrecognised option, a missing value and an unexpected argument each name the argument] — all three exit non-zero under the ARGUMENTS label, each naming the offending token, and every other label in the table is asserted ABSENT from the line because asserting the expected prefix present is satisfied by a line carrying all of them
+- [x] SC-2142: test/unit/installed-hook-currency.test.ts contains [a refusal raised OUTSIDE parseArgs is not reported as an argument error either] — a generator root holding no hook-generator module is reported UNMEASURED, which is the input the cheapest wrong fix does not survive because all three of SC-2141's inputs are ones parseArgs owns
+- [x] SC-2143: test/unit/installed-hook-currency.test.ts contains [the four readings are four different strings] — the four labels are pairwise distinct, none is a prefix of another, and each literal appears exactly once in the source so no print site can carry its own copy
+- [x] SC-2144: test/unit/installed-hook-currency.test.ts contains [the staleness label belongs to the currencyRefusal return path alone] — the staleness class is raised from exactly one position and that position is the currencyRefusal verdict, which pins the criterion to the binding rather than to a count of messages a reader has to reconstruct
+- [x] SC-2145: test/unit/installed-hook-currency.test.ts contains [every raise names a class, and every class is raised] — every HookRefused construction names a class the table declares and every declared class is raised somewhere, so a refusal added later cannot inherit whatever label the catch defaults to and no row of the table is dead
+- [x] SC-2146: test/unit/installed-hook-currency.test.ts contains [the class is carried on the raise, and the catch is the only reader of it] — the prefix table is indexed from exactly one position and exactly one console.error turns a refusal into output, because a catch that re-derived the class from the message would be a second reading of a fact the raise already holds
+
+#### What was broken to prove it (SC-2141..2146)
+
+Run and counted rather than asserted, over
+`test/unit/installed-hook-currency.test.ts` (20 tests). Every count was
+predicted before the battery ran, and **the baseline row was read before any
+mutation row** — an instrument that has stopped reporting takes the baseline
+down with it, and that is the row nobody mutates anything to produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 20 pass, 0 fail | **20 pass, 0 fail** | — |
+| the defect behaviourally: the catch reads `REFUSAL_PREFIX["STALE"]` instead of the raised class | 4 | **4 of 20** — SC-2141, SC-2142, SC-2146, SC-2045's symlink install | `--project . --harness x`: the original prints `ARGUMENT ERROR: unknown option --harness`, the mutant `INSTALLED HOOK STALE: unknown option --harness` |
+| **the cheapest wrong fix**: the `parseArgs` call wrapped in its own try printing the ARGUMENTS label, outer catch back to staleness | 3 | **3 of 20** — SC-2142, SC-2146, SC-2045's symlink install. **SC-2141 is GREEN** | `--project . --generator /tmp`: the original prints `HOOK CURRENCY UNMEASURED: could not load the hook generator…`, the mutant `INSTALLED HOOK STALE: could not load the hook generator…` |
+| the generator-load raise reclassified `UNMEASURED` → `STALE` | 1 | **2 of 20** — SC-2142 and SC-2144 | the same `--generator /tmp` run |
+| the staleness raise reclassified `STALE` → `UNMEASURED` | 8 | **8 of 20** — all five SC-2043 refusals, SC-2044's linked-worktree stale half, SC-2144 and SC-2145 | a checkout with no installed pre-commit: the original labels it STALE, the mutant UNMEASURED |
+| `REFUSAL_PREFIX` collapsed — all four rows set to the staleness string | 10 | **10 of 20** — SC-2141, SC-2142, SC-2143, the five SC-2043 refusals, SC-2044's linked half, SC-2045's symlink install | `--project . --harness x` again, and every staleness case too: with one string in four rows no case can assert the other labels absent |
+| the test's own mutant builder neutered (`writeFileSync(MUTANT, source)`) | 10 | **10 of 20** — exactly the ten cases that run the mutant | any refusal: the REFUSE_EXIT=0 copy exits 1 instead of 0, so every case asserting the refusal was observed goes red |
+| the genuinely pre-#613 `scripts/check-installed-hook-currency.ts` from `origin/main` | abort | **0 of 20 run** — `SyntaxError: Export named 'REFUSAL_PREFIX' not found` | — the file cannot load, which is the loud abort rather than a quiet pass |
+
+**The third row came back HIGH, and the extra red is the real kind.** The
+prediction counted only SC-2142, the behavioural case. The second is SC-2144,
+whose subject is that the staleness label is attached to one position — the
+mutation ADDS a second staleness raise, which is squarely the mutated
+behaviour. Not a crashing mutant: 18 cases still pass, the file parses, and
+the distinguishing input ran and printed the mutated label. Per
+`.claude/rules/checks-must-be-able-to-fail.md` that is "the prediction was
+wrong and the check is better than you thought", and the fact it records is
+that SC-2144's singleton assertion is load-bearing in two directions — it
+catches the staleness raise being MOVED and it catches one being ADDED.
+
+**The fifth row is 10 and the written prediction said 9, and that was an
+addition slip rather than a surprise.** The enumerated set — three #613 cases,
+five SC-2043 refusals, SC-2044's linked half and SC-2045's symlink install —
+is ten, and it is exactly the set measured. Recorded rather than quietly
+corrected, because a prediction edited after the fact is not a prediction.
+
+**The cheapest wrong fix, named before the repair was written and then
+APPLIED: wrap the `parseArgs` call in its own try and leave the outer catch
+alone.** Three lines. The reported symptom disappears and the issue's
+criterion 1 is satisfiable in full — unrecognised option, missing value and
+unexpected argument all come from `parseArgs` — while ten of the thirteen
+sites stay mislabelled, including all four generator ones. Measured above at
+**3 of 20 red with SC-2141 green**, which is why SC-2142 drives an input from
+outside `parseArgs`: without it, criterion 1 certifies the fix it was written
+to block.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`scripts/check-installed-hook-currency.ts` and
+`test/unit/installed-hook-currency.test.ts` were confirmed byte-identical to
+the measured source afterwards by `shasum -a 256`.
+
+### The hook that inferred which repository it was in from a filename (#610)
+
+The generated pre-commit hook decided WHICH updater to run by sniffing the
+working tree at commit time — `scripts/update-project-state.ts` if that file
+was there, otherwise the vendored copy — and a comment above it said the
+order was deliberate because *"a checkout that has its own `scripts/` copy is
+the harness"*.
+
+**That is an identity inferred from a filename.** "This tree holds a file at
+this path" and "this tree is the rungate harness" are different facts, and
+the hook treated the first as proof of the second. A consumer keeping a
+script at that path for its own reasons was silently reclassified as the
+harness and ran a different program than the one rungate installed; nothing
+in the commit recorded which branch fired, so the two outcomes were
+indistinguishable afterwards. A detector narrower than what it detects, with
+*Silent Default Substitution* underneath it.
+
+The choice is now taken when the hook is GENERATED, and one concrete path is
+baked into the emitted script. Identity comes from the project's own
+declaration — `isHarnessItself`, the single existing binding for that
+question (#380), deliberately not a second reading of the same fact. A
+candidate that is absent at generation time produces the UNMEASURED branch
+and **no lookup at all**: a lookup kept "in case the file turns up later"
+succeeds at some unknown future commit for a reason nobody chose.
+
+`preCommitHookScript(root)` is a pure function of the root and writes
+nothing. That is what lets `scripts/check-installed-hook-currency.ts` ask
+what the generator would produce FOR THE PROJECT it is inspecting — a
+scratch directory would compare every real checkout against the hook for an
+empty consumer, and a generator that could only answer by installing itself
+would make the check the thing it is checking.
+
+- [x] SC-2210: test/unit/pre-commit-updater-resolution.test.ts contains [names the vendored path on exactly one executable line] — the emitted hook carries one updater path on one executable line and no line tests for the existence of a candidate, with comments excluded from the count because the hook's own prose names both paths and a whole-document search would be answered by a sentence
+- [x] SC-2211: test/unit/pre-commit-updater-resolution.test.ts contains [both forms are asserted, and they are not the same text] — generating into a tree that declares itself the harness and into a consumer produce different hook text, each naming its own path, and the live repository is read as a third control that nobody planted
+- [x] SC-2212: test/unit/pre-commit-updater-resolution.test.ts contains [a consumer carrying its own scripts/ copy still runs the vendored updater] — the fixture has scripts/update-project-state.ts PRESENT, without which the case cannot tell the new behaviour from the old, and the two planted copies write different bytes so the evidence is which program ran rather than that something did
+- [x] SC-2213: test/unit/pre-commit-updater-resolution.test.ts contains [a harness checkout carrying a vendored duplicate still runs its own scripts/ copy] — the other direction, which exists because the cheapest wrong fix makes SC-2212 green and this one red: it is the case that is protection rather than the case that reports the symptom
+- [x] SC-2214: test/unit/pre-commit-updater-resolution.test.ts contains [the hook reports UNMEASURED, names where it looked, and stages nothing] — a candidate absent at generation time emits no assignment and no lookup, and planting both copies in the repository the hook later runs in still regenerates nothing, because "performs no lookup" asserted only over the text is a claim about a string
+- [x] SC-2215: test/unit/pre-commit-updater-resolution.test.ts contains [the resolved path is printed to stderr before the updater runs] — the branch that fired is visible in the commit's output rather than inferable from the tree, on stderr and never on stdout, and the announcement is asserted to PRECEDE the invocation because a hook whose updater crashes the shell otherwise records nothing
+- [x] SC-2216: test/unit/pre-commit-updater-resolution.test.ts contains [an updater that appears AFTER generation does not change what runs] — a hook generated against a tree holding one copy and executed in a tree that has since acquired the other still runs the copy it names, which is the whole shape of the defect in one case
+- [x] SC-2217: test/unit/pre-commit-updater-resolution.test.ts contains [createGitHooks writes exactly preCommitHookScript] — the generator writes the template function's output and not a copy of it, and resolving the hook for a root leaves that root byte-for-byte unchanged so the currency check can read a project without installing into it
+- [x] SC-2218: test/unit/pre-commit-updater-resolution.test.ts contains [restoring the runtime sniff turns exactly the consumer-with-own case red] — the defect is rebuilt inside the hook text and the two orderings of it red DIFFERENT named rows, with three controls green, because a count that does not say which case it was is not a measurement
+- [x] SC-2219: test/unit/pre-commit-updater-resolution.test.ts contains [the builder aborts loudly when the baked assignment moves] — zero or two baked assignments throw rather than producing a copy of the original, and the baseline row is read before any mutation row
+- [x] SC-2220: test/unit/pre-commit-updater-resolution.test.ts contains [a consumer whose ONLY updater is its own gets UNMEASURED] — the one fixture that does not hold the precondition every other one here does, and the only case that fails a repair which resolves at generation time and still decides by filename
+
+#### What was broken to prove it (SC-2210..2220)
+
+Run and counted rather than asserted, over
+`test/unit/pre-commit-updater-resolution.test.ts` +
+`test/unit/git-hooks-generator.test.ts` (45 tests). Every count was predicted
+before the battery ran, and **the baseline row was read before any mutation
+row** — an instrument that has stopped reporting takes the baseline down with
+it, and that is the row nobody mutates anything to produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 45 pass, 0 fail | **45 pass, 0 fail** | — |
+| the genuinely pre-#610 `updaterBlock` — the runtime `-f` sniff, scripts first | 15 | **15 of 45** | all six probed tree shapes: the original bakes `updater="scripts/update-project-state.ts"` or `updater="node_modules/rungate/scripts/update-project-state.ts"` per shape, the mutant bakes `updater=""` for every one of them and defers |
+| `resolveUpdater`'s identity hardcoded to `"harness"` | 12 | **12 of 45** | a consumer holding only the vendored copy: the original bakes the vendored path, the mutant emits `UNMEASURED … no updater was present at scripts/update-project-state.ts` |
+| `resolveUpdater`'s identity hardcoded to `"consumer"` | 11 | **12 of 45** | a harness holding only its own copy: the original bakes `scripts/…`, the mutant emits `UNMEASURED … at node_modules/rungate/scripts/…` |
+| the existence check removed — `path: candidate` always | 2 | **2 of 45** | a tree with no updater at all: the original emits UNMEASURED, the mutant bakes `updater="node_modules/rungate/scripts/update-project-state.ts"` for a file that is not there |
+| the stderr announcement line deleted | 1 | **1 of 45** | any resolved tree: the original's run prints `project-state: running node_modules/rungate/scripts/update-project-state.ts (resolved when this hook was generated)`, the mutant prints nothing before invoking it |
+| **the cheapest wrong fix**: resolve at generation time and still decide by filename — bake whichever candidate exists, vendored first | 3 | **4 of 45** | a harness carrying a vendored duplicate: the original bakes `scripts/…`, the mutant bakes `node_modules/rungate/scripts/…` and grades the harness against a stale copy of its own updater |
+
+**The third row came back HIGH, and the extra red is the real kind.** The
+prediction covered the eight #610 cases plus SC-1654, SC-2038's harness case
+and SC-2040's stream case. The fourth is SC-2040's *"no project-state line is
+silenced with `2>/dev/null`"*, which filters the harness hook for executable
+lines mentioning `$updater` and asserts the list is non-empty BEFORE scanning
+it for the redirect. Force every tree to read as a consumer and the harness
+hook resolves nothing, so there is no invocation to scan — squarely about the
+mutated behaviour, and not a crashing mutant: 33 cases still pass and every
+red is resolution-related. The fact it records is that the non-vacuity floor
+on that scan doubles as a witness that the harness hook resolves an updater
+at all, which is further than the prediction reached.
+
+**The sixth row came back HIGH too, and that one cost a case.** The extra red
+was SC-2214 — a TEXT assertion about which path the UNMEASURED message names
+— standing in for a behaviour nothing drove. Reading it exposed the
+precondition every fixture in the file held: *some copy rungate installed is
+present*. A consumer whose ONLY updater is its own is on the other side of
+it, and that is the tree where this repair does its damage — it bakes the
+consumer's own program and runs it, with the one-path criterion satisfied in
+full. SC-2220 is that fixture. Predicted at 3 before it existed and measured
+at 4 with it, and the row is 4 because the case was added, not because the
+prediction was wrong twice.
+
+**The cheapest wrong fix, named before the repair was written.** What an
+operator sees is a consumer running the wrong program, so the 5pm repair is
+to move the vendored branch above the scripts one — one line. Do the cases
+survive it?
+
+- **SC-2212 does NOT.** It goes green under that repair, because the
+  consumer then runs the vendored copy for the wrong reason. On its own it
+  would certify the regression it was written to block.
+- **SC-2213 and SC-2220 do**, non-vacuously. Both are measured above as the
+  rows that stay red: the flipped sniff makes the harness grade itself
+  against a vendored duplicate, and the generation-time-by-filename variant
+  runs a consumer's own program. Neither is reachable from the reported
+  symptom, which is why both had to be constructed deliberately.
+
+None of the six mutations is left in the tree; all were run and reverted with
+a `cp` of a backup taken before the first one, and `lib/scaffold/steps.ts`
+was confirmed byte-identical to the measured source afterwards by
+`shasum -a 256` (`e36061e1886be05420ac2e2bc6da104842981505309b6f62c949a12154e0347d`).
+
 ### A reported path that was a sentence, and no contract that could say so (#611)
 
 Run `wf_68a566ab-500` (issue #599) reached SHIP with all six ACs PASS and rook
@@ -3443,9 +3658,11 @@ both worth nothing.
 
 Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
 every run: the runner OS (CI is ubuntu-latest), a fresh `bun install`
-(node_modules is linked), the pinned bun version, the pull-request merge
-commit `actions/checkout` builds, network and API availability, and files git
-ignores. Naming them is the difference between a model and a promise, and the
+(node_modules is linked), the bun version (reported, not controlled — since
+#622 the run prints the bun it ran under and whether it matches what
+`.bun-version` declares, but nothing here switches runtimes), the pull-request
+merge commit `actions/checkout` builds, network and API availability, and
+files git ignores. Naming them is the difference between a model and a promise, and the
 promise is what failed.
 
 ---
@@ -6207,17 +6424,35 @@ commit is attempted, so a run with no prompt guard left still fails SC-2090.
 Measured over `test/wave-integration.test.ts` — 22 tests. Every count
 predicted before the battery ran.
 
-The battery was run on a `git archive` export of this branch's HEAD under
-`/tmp`, carrying this sub-issue's test file plus the intended
-`workflows/ship.js` change. **This sub-issue's file scope is the test file and
-this spec**; `workflows/ship.js` belongs beside it and the repository was
-never modified to take these numbers. Re-run them against the tree once the
-implementation lands.
+The battery was first run on a `git archive` export of a branch HEAD under
+`/tmp`, carrying the sub-issue's test file plus the intended
+`workflows/ship.js` change, because that sub-issue's file scope was the test
+file and this spec. A row measured on a tree nobody can check out is a claim
+rather than a count, so this paragraph used to end *"re-run them against the
+tree once the implementation lands."*
+
+**#653 did, and all ten reproduce — same counts and the same named
+criteria.** Nothing is carried over. `Predicted` below is therefore the
+earlier measurement, written down before the re-run as the thing being
+tested; the finding would have been a row that MOVED.
+
+Two of the ten needed their mutation re-cut before they were faithful, and
+that is recorded rather than quietly fixed, because a prose description of a
+mutant is not a mutant:
+
+- **the pre-#652 row** is the whole pre-#652 tree, which lacks the pre-wave
+  re-read as well as the reordered arm. Mutating only `waveCommitFailure` is
+  3 of 22, not 6 — the three dispatch criteria stay green, because nothing
+  touched the thing they measure.
+- **the composed-message row** must leave the `!landedOn` early return INSIDE
+  the committed-false arm. Hoisted ahead of both arms it also intercepts
+  `{committed: true, branch: ""}`, which SC-1565 owns, and the row reads 3
+  with an extra red that is about the mutant rather than about the subject.
 
 | Row | Predicted | Measured |
 |---|---|---|
 | **baseline** — the intended implementation | 22 pass, 0 fail | **22 pass, 0 fail** |
-| the genuinely pre-#652 `workflows/ship.js`, from this branch's HEAD | 6 | **6 of 22** |
+| the genuinely pre-#652 `workflows/ship.js` — the whole pre-#652 tree | 6 | **6 of 22** — SC-2084, SC-2086, SC-2087, SC-2089, SC-2090, SC-2091 |
 | the `committed` arm returns the bare generic sentence again — the defect verbatim | 3 | **3 of 22** — SC-2084, SC-2086, SC-2087 |
 | the clause naming the ref dropped from the cell whose branch AGREES | 1 | **1 of 22** — SC-2087, and only that one |
 | the branch clause appended unconditionally, including where no branch was reported | 1 | **1 of 22** — SC-2088 |
@@ -6227,6 +6462,21 @@ implementation lands.
 | the re-read taken and `runRef` not written back | 1 | **1 of 22** — SC-2091 |
 | the drift observed and logged, and the wave spawns anyway | 1 | **1 of 22** — SC-2090 |
 | the re-read moved BELOW the wave's spawns | 2 | **2 of 22** — SC-2089 and SC-2090 |
+| **the cheapest wrong fix** (#653 AC-6): the branch appended to the existing generic string WITHOUT moving the committed check | 4 | **4 of 22** — SC-2088, SC-2089, SC-2090, SC-2091 |
+
+**The last row is the one to read, and its GREENS are the finding.**
+Appending the branch and the run ref to the generic sentence leaves the check
+where it was, and it makes the reported symptom go away: the dead run's
+`{committed:false, branch:"main"}` now names `main`. SC-2084, SC-2086 and
+SC-2087 are **green over it** — the three cells that only ask whether the
+branch is NAMED are satisfied by a repair that names it while distinguishing
+nothing. SC-2088 alone catches it, because an empty branch renders as
+`(branch , run ref …)` and SC-2088 demands nothing about a branch AT ALL
+rather than merely no branch name. It was written as the
+unconditional-clause control, and it is the whole protection against the
+cheap repair — which is `.claude/rules/checks-must-be-able-to-fail.md`'s
+fifth shape, found by applying the wrong fix and counting rather than by
+naming it in prose.
 
 Before believing any of those, the input on which mutant and original differ,
 named and run rather than assumed. The six commit-reply cells, driven against
@@ -7013,6 +7263,117 @@ anchor occurring once was reported as 32 and as 3. A mutation harness that
 mis-reports its own reach is exactly the decorative check this rule is about,
 and it is recorded here because the fix — count occurrences, not lines — is
 not obvious from output that reads like a moved anchor.
+
+### #728 — the hook asked `--show-toplevel` where the dependencies are
+
+`--show-toplevel` answers *"where is this working tree"*. The hook needed
+*"where are this repository's installed dependencies"*, and in a **linked
+worktree** those are two different directories: `node_modules` is gitignored,
+so it exists only in the main checkout and a worktree has none. `ln -s` does
+not look at its target, so the link succeeded, the temp checkout got a
+dangling `node_modules`, and the suite died with
+`Cannot find module 'rungate/lib/conformity'`. Every worktree push was
+refused as UNMEASURED. **The refusal was correct and its wording is
+unchanged** — what it could not say is that the cause was the worktree, so
+the cheapest available action was `--no-verify`, and three agent sessions in
+`agentgrit` took it on 2026-10-19.
+
+The same wrong root made the lockfile arm vacuous. `cmp "$TOPLEVEL/bun.lock"
+"$tmp/bun.lock"` compares the pushing worktree's working-tree lockfile with
+the pushed commit's copy of it, and those are the same file whenever you push
+what you committed. The arm exists to check that the modules being linked
+were installed from the pushed lockfile, so it has to read the lockfile
+**beside those modules**. (It is vacuous in the normal case rather than
+unable to fail: an uncommitted lockfile edit, or pushing an older commit,
+still makes them differ.)
+
+`MODULES_ROOT=$(cd "$TOPLEVEL" && cd "$(git rev-parse --git-common-dir)/.."
+&& pwd)` is the main checkout from any worktree and plain `.git` in the main
+checkout itself, so the non-worktree case is unchanged — asserted, not
+assumed, by a control case that pushes the same fixture from its primary
+checkout. `preCommitHookScript` in `lib/scaffold/steps.ts` already distinguished the
+two for the pre-commit hook; the pre-push hook was the last generated hook still asking
+the wrong question.
+
+An absent `$MODULES_ROOT/node_modules` is now refused **by name** rather than
+linked anyway, because a dangling link turns a statement about a missing
+directory into an import error that names no cause. One shell function,
+`link_modules`, is the only site that links, so there is one binding to
+mutate.
+
+The criteria below need ids allocating against the spec registry; they are
+described by their test names in `test/pre-push-hook.test.ts`, under
+`#728: the hook links the MAIN checkout's dependencies, not the pushing
+worktree's`:
+
+1. A push from a linked worktree resolves its dependencies from the main
+   checkout and is allowed, driven against a planted main-checkout/worktree
+   pair whose conformity suite imports a package installed only in the main
+   checkout.
+2. The same push from the primary checkout is still allowed — the control
+   that the worktree case was not bought by breaking the case that worked.
+3. The lockfile the arm compares is the one beside the `node_modules` being
+   linked, witnessed by a fixture whose worktree lockfile matches the pushed
+   commit while the main checkout's differs.
+4. A `node_modules` absent from the main checkout is refused naming that
+   directory and the remedy, and is distinguishable in the hook's output from
+   an unexplained import error.
+5. `--git-common-dir` is asked exactly once, and no `$TOPLEVEL/node_modules`
+   or `$TOPLEVEL/bun.lock` remains.
+
+#### What was broken to prove it
+
+Run and counted over `test/pre-push-hook.test.ts`,
+`test/unit/pre-push-pushed-sha.test.ts` and
+`test/unit/generated-shell-syntax.test.ts` (37 tests). **Every count was
+predicted before the battery ran, and the baseline row was read before any
+mutation row** — an instrument that has stopped reporting takes the baseline
+down with it, and that is the row nobody checks. None of the mutations is
+left in the tree; all were run and reverted, and both files were confirmed
+byte-identical to the measured source afterwards by checksum.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 37 pass, 0 fail | **37 pass, 0 fail** |
+| `MODULES_ROOT` restored to `$TOPLEVEL`, absent-target guard KEPT — the pre-#728 root, and the cheapest wrong fix | 6 | **6 of 37** |
+| the absent-target guard removed (`if false`) — the link dangles again | 2 | **2 of 37** |
+| the genuinely pre-#728 `lib/scaffold/pre-push-hook.ts`, from this branch's merge-base | 7 | **7 of 37** |
+| the fixture's `addWorktree` neutered to return the main checkout | 2 | **2 of 27** |
+
+Before believing any of those, the input on which mutant and original
+differ, named and run rather than assumed: the `wt-dep` fixture — a main
+checkout holding `node_modules/dep-under-test`, a linked worktree holding
+none, and a conformity suite that imports it. The real source prints
+`1 pass / 0 fail` and exits 0; `MODULES_ROOT=$TOPLEVEL` prints
+`no node_modules at <worktree>/node_modules — run bun install there` and
+exits 1; the pre-#728 source prints
+`Cannot find package 'dep-under-test'` and exits 1. For the lockfile row the
+input is `wt-lock`: the worktree and the pushed commit both carry
+`committed lockfile` while the main checkout carries
+`the lockfile the modules came from`, and only the fixed source reaches
+`dependencies differ from the working tree`.
+
+**The cheapest wrong fix, named: check the link target exists and skip the
+symlink, leaving `--show-toplevel` in place.** It is the 5pm repair — the
+import error becomes a sentence about `node_modules` — and the lockfile arm
+goes on reading the pushed tree against itself. That is the second row of the
+table, and the cases do not survive it: three of them go red, including the
+by-name refusal, because it names the *worktree's* path rather than the main
+checkout's.
+
+**The last row is the instrument, not the hook,** and it is the one worth
+reading carefully. With `addWorktree` degraded to the main checkout, the
+three behavioural cases stay GREEN — they are witnesses of the fix (row
+three reds all three) but not of the fixture being a linked worktree. The two
+mutation cases go red, loudly, so a fixture that silently stopped being a
+worktree would not leave the file quietly passing. Say which cases are
+witnesses of what, or the next reader counts five.
+
+**Consumers are in two populations, and they are indistinguishable from
+outside.** `createGitHooks` in `lib/scaffold/steps.ts` overwrites `.git/hooks/pre-push`
+only when it carries `PRE_PUSH_MANAGED_MARKER`, so an already-scaffolded repo
+keeps the old hook until it is re-scaffolded: `bunx rungate scaffold .`. A
+repo that looks fixed and a repo that is fixed read the same until then.
 
 ## #398 — audit reported 0 changes on a tree `--fix` rewrote in 28 places
 
@@ -10336,6 +10697,139 @@ compiled throws rather than passing.
 - [x] SC-2018: test/sc-id-cross-tree.test.ts contains [the registry leg changes the answer] — driven by an id only the registry knows, asserted as a relation against the no-registry answer rather than as a literal, so the case survives the tree moving
 - [x] SC-2019: test/sc-id-cross-tree.test.ts contains [the reading names the legs consulted] — every composed width is a source with the count it contributed, and `describeReading` names them, because a caller cannot print the number without printing which widths produced it
 
+## The three legs that reported `read` without probing anything (#606)
+
+#593's section above ends by saying the three composed widths "are now
+sources of their own, with the count each contributed". They were. All three
+also carried `status: "read"`, as a literal, and not one of them asked
+whether it could be read. The function's own docstring states the property it
+was breaking, two paragraphs above the code that breaks it.
+
+Measured on a tree holding one spec and none of `test/`, `lib/`, `scripts/`
+or `gates/`:
+
+```
+{"kind":"spec-content","status":"read","found":1,"reason":null}
+{"kind":"registry","status":"read","found":0,"reason":null}
+{"kind":"source-mentions","status":"read","found":0,"reason":null}
+```
+
+`source-mentions: read, found 0` is the output for a tree whose four
+directories were walked and held no SC ids, and the output for a tree where
+four directories were never opened. A consumer whose tests live in `tests/`
+or `src/` was in the second case every single run, and the reading said it
+had asked.
+
+### Two of the three, not three
+
+The title of the issue says three. One of them was right, and rewriting it
+with the others is the repair that looks thorough and adds an unreachable
+branch nothing can go red over.
+
+| Leg | Source of `found` | Could it have failed to read? |
+|---|---|---|
+| `spec-content` | `idsInSpecContent(specContent)` | **No.** `specContent` is a string parameter, already in memory. `0` means "this spec declares no ids", which is a reading |
+| `registry` | `reg.declaredById.size` | Yes — `reg` may be built from a `specs/` the caller could not enumerate |
+| `source-mentions` | the source walk | Yes — four directories, any of which the walk returns silently from |
+
+So `spec-content` is unchanged and SC-2157 is a **control** for that choice
+rather than a witness for the fix: it is green on the defective source, and
+there is no state of the code in which it goes red for the original defect.
+Counting it among the witnesses would overstate this file by one.
+
+### The fix is a return-shape change in the walk, not only in the caller
+
+`scMentionsInSource` holds the `catch { return; }`, so it is the only place
+that knows WHICH directories it could not open — a caller cannot recover that
+from a count. It now returns `{ mentions, walked, unwalkable }`, and
+`scIdsSpelledInSource` is a projection of the same single map-builder, so the
+two are not deciders that can disagree.
+
+The registry half is the same shape one call frame up.
+`ScRegistry.enumeration` says whether the `specs/` behind the maps was
+listed, `unenumeratedScRegistry(reason)` builds the other answer, and
+`readScRegistry` — the one producer the live CLI hands to
+`allocateScNumber` — returned `buildScRegistry([])` for an absent `specs/`.
+A fix on the reading side alone cannot see that: the leg would faithfully
+report a flag nobody had ever set wrong, which is why SC-2155 drives the
+producer (#235).
+
+### A partial read is `read`, and says what it missed
+
+Three directories opened of four is a reading of three. Folding it into
+`skipped` would make it indistinguishable from a leg that opened none, which
+swaps the two cases instead of separating them. `status` stays `read`, the
+`reason` names the directories it could not reach, and every one of them
+appends to `namespace.unmeasured` — the list the CLI actually prints.
+
+That mixed tree is the fixture nobody writing this battery would reach for,
+because every natural example is all-or-nothing (#492). It is also the one
+the cheapest wrong fix cannot satisfy.
+
+### The cheapest wrong fix, named, applied and measured
+
+**Flip `source-mentions` to `skipped` when `found === 0`.** One condition. The
+reported instance — a consumer with none of the four directories — starts
+reporting `skipped`, so the symptom is gone.
+
+It is wrong in the direction the issue exists to close: a tree with four
+readable, present, genuinely empty source directories reports `skipped` too.
+The two cases swap places instead of separating, and the reading goes from
+"always claims it read" to "always claims it did not". Applied to the
+pre-#606 source and measured below; the shipped cases survive it
+NON-vacuously, because every one of them pairs two trees whose `found` is
+EQUAL and asserts the premise before the verdict.
+
+### What was broken to prove it
+
+Seven mutations over `test/sc-allocator-leg-provenance.test.ts` +
+`test/sc-id-cross-tree.test.ts` (17 tests). Every count was predicted before
+the battery ran, and **the baseline row was read before any mutation row** —
+an instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody checks.
+
+Three trees are the inputs throughout, all real git repositories so that
+`readScNamespace`'s own two legs are clean: **NO-dirs** (no `test/`, `lib/`,
+`scripts/` or `gates/`), **FOUR-empty** (all four present and empty), and
+**PARTIAL** (`test/` present and holding one id, the other three absent).
+Every "differ" column below is the probe's printed output on those trees, run
+under the mutant and under the real source, not an argument about them.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 17 pass, 0 fail | **17 pass, 0 fail** | — |
+| the genuinely pre-#606 leg composition: all three `status: "read"`, no `unmeasured` append | 6 | **6 of 17** — SC-2151..SC-2156 | NO-dirs: the original is `status=skipped found=0` with a reason naming all four and 4 named `unmeasured` entries; the mutant is `status=read found=0 reason=""` with 0 |
+| **the cheapest wrong fix**, on top of that source: `skipped` when `found === 0` | 6 | **6 of 17** — SC-2151..SC-2156 | FOUR-empty: the original is `status=read found=0`, the mutant `status=skipped found=0` — **identical to its own NO-dirs output**, which is the swap stated rather than argued |
+| the walk's `catch` stops recording — `walk` always returns `true`, `unwalkable` always empty | 4 | **4 of 17** — SC-2151, SC-2152, SC-2153, SC-2158 | NO-dirs: the original reports `walked=[]` and four `unwalkable` entries; the mutant reports `walked=[test, lib, scripts, gates]` over four directories that do not exist |
+| `readScRegistry` returns `buildScRegistry([])` for an absent `specs/` — the pre-#606 producer | 1 | **1 of 17** — SC-2155 | `readScRegistry(<a path with no specs/>)`: the original returns `{status:"unenumerated", reason:"… does not exist"}`, the mutant `{status:"enumerated"}` |
+| `buildScRegistry` stamps `unenumerated` — the enumerated direction, inverted | 4 | **4 of 17** — SC-2154, SC-2155, SC-2156, and #593's *the reading names the legs consulted* | FOUR-empty with `buildScRegistry([])`: the original's registry leg is `status=read found=0 reason=""`, the mutant's is `status=skipped found=0 reason="mutant"` |
+| the `unmeasured` append dropped from `allocateScNumber`, legs otherwise intact | 3 | **3 of 17** — SC-2152, SC-2153, SC-2154 | PARTIAL: both report `status=read found=1` with the same reason, and `unmeasured` carries 3 named entries on the original and 0 on the mutant |
+| the partial-read branch collapsed into `skipped` | 1 | **1 of 17** — SC-2153 | PARTIAL: the original is `status=read found=1`, the mutant `status=skipped found=1` — a leg that read one directory of four reporting the same word as one that read none |
+
+Every row matched its prediction; none came back high or low. None of the
+seven mutations is left in the tree — all were run and reverted, and
+`lib/create-sc.ts`, `lib/sc-ids.ts` and `scripts/sync-sc-status.ts` were
+confirmed byte-identical to the measured source afterwards by checksum.
+
+**The fifth row names the reason #593's case was UPDATED rather than
+deleted.** As it stood, `expect(registryLeg!.status).toBe("read")` was
+satisfied by a leg that hardcoded the string, which is the defect. It now
+asserts `registryOnly.enumeration.status === "enumerated"` first, so the
+`read` is a conclusion from a premise the case states — and that is why
+inverting `buildScRegistry` reds it. The same case was green under every
+other row in this table.
+
+### Success Criteria
+
+- [ ] SC-2151: test/sc-allocator-leg-provenance.test.ts contains [no source directories and four empty ones differ on more than found] — the equal-`found` premise is asserted BEFORE the verdict, because a case built on the count is green under the repair that only reads the count
+- [ ] SC-2152: test/sc-allocator-leg-provenance.test.ts contains [every source directory that could not be walked is named in unmeasured] — by NAME and not by list length, since `unmeasured` is never empty on any reading and a non-empty list is therefore not evidence
+- [ ] SC-2153: test/sc-allocator-leg-provenance.test.ts contains [a partial walk is read, contributes its ids, and still names what it missed] — the mixed tree, which is the fixture every all-or-nothing battery leaves outside its reach (#492)
+- [ ] SC-2154: test/sc-allocator-leg-provenance.test.ts contains [an unenumerated registry is not a registry that declares nothing] — both registries hold zero declarations and the two readings must still differ
+- [ ] SC-2155: test/sc-allocator-leg-provenance.test.ts contains [readScRegistry reports an absent specs/ as unenumerated] — the producing side, because a reading that faithfully reports a flag nobody sets wrong is a reading of nothing (#235)
+- [ ] SC-2156: test/sc-allocator-leg-provenance.test.ts contains [describeReading says a leg was skipped] — the CLI prints that one binding and the unmeasured list, so a distinction that stops at the data structure never reaches an operator
+- [ ] SC-2157: test/sc-allocator-leg-provenance.test.ts contains [the spec-content leg stays read in the worst reading there is] — a CONTROL against a uniform rewrite of all three legs, green on the defective source and named as such rather than counted as coverage
+- [ ] SC-2158: test/sc-allocator-leg-provenance.test.ts contains [the walk's own reading separates an opened directory from a refused one] — the unit beneath SC-2151, because the `catch` is the only position that knows which directory it refused
+
 ## A containment decision taken on the half of the population it covered (#497)
 
 #439 decided that a `contextDocs` entry resolving outside the project root
@@ -11205,3 +11699,499 @@ flag or the banner-only evidence changes. None of it is left in the tree.
 - [x] SC-2103: test/evidence-664-replay.test.ts contains [a correct AC whose threshold is merely unmet is silent on all four] — the #659 shape is driven with a command that is RUN, not a fabricated output, because a check that fired there would make every unfinished criterion look like a broken instrument
 - [x] SC-2104: test/evidence-664-replay.test.ts contains [the cheapest wrong fix is applied, measured and reverted] — the widening is written to a copy of the fixture on disk and re-read from it, so the case cannot assert its own premise, and the committed fixture is asserted to still carry the original operator
 - [x] SC-2105: test/evidence-664-replay.test.ts contains [the five EVIDENCE-CHECK-669 rows agree with the live measurement] — the recorded rows are parsed out of the spec as data and compared against the numbers this run measures, so a record that drifts from the measurement it claims is red rather than merely out of date
+
+## #640 — the restore ran on the success path only
+
+`scripts/check-run-branch.ts` and all three of its modes shipped in #692, and
+they work: measured 2026-10-19 against the real `rungate/run-631` at
+`4acc0a17` with `origin/main` at `e278cb7b`, `delete` returned
+`NOT_CONTAINED` and exit 1 with the branch still present, `leftover` returned
+`LEFTOVER_UNCONTAINED` naming all seven divergent paths, and `drift` returned
+`MOVED` and exit 1 against a `--before main --after main` control that
+returned `UNCHANGED` and exit 0. Criteria 3, 4 and 6 are satisfied against a
+real branch rather than a constructed pair.
+
+Criterion 1 — *a ship run does not leave the primary checkout on a branch
+other than the one it started on* — was not, and the reason is a POSITION
+rather than a value. The restore was step 5 of the post-prove finalize
+prompt, in the `RUN-BRANCH-RESTORE` section of `workflows/ship.js`. Every
+terminal failure funnels through `shipFailed` or `terminalFailure`, both of
+which call `preserveSeenWorktrees` and neither of which reached step 5. Run
+`wf_9d22ecf5-aed` ended SHIP_FAILED and left the shared primary on
+`rungate/run-631`, where a second session found it the next morning and read
+it as somebody's live branch.
+
+**So the check ran exactly when it was least likely to be needed**, and did
+not run on the path that produced every observed instance. Nothing about the
+shell was wrong; every assertion anyone could have made about it was true of
+the version that never ran on a failing exit. What had to be asserted is
+where it is called FROM, which is why `test/run-branch-restore-exits.test.ts`
+reads the two funnels out of ship.js and asks whether each takes the step.
+
+Three things the fix is deliberately NOT:
+
+- **It deletes nothing on a failing exit.** A run that refused has a branch
+  holding work nothing merged. The delete check refuses exactly that case by
+  name, so attempting it would spend a step to be told no — and the one
+  action here that cannot be undone should not be on the path taken by every
+  run that went wrong.
+- **The switch is conditional on the checkout being on this run's own ref.**
+  An unconditional `git switch` is wrong in one direction that matters: a
+  peer session that moved the shared checkout onto a third branch while this
+  run was working gets it taken away by a run that never put it there. "This
+  run left the checkout somewhere" and "the checkout is somewhere
+  unexpected" are different facts and only the first is this run's to fix.
+  The second is reported as `FOREIGN_BRANCH` and left alone.
+- **It is one binding.** `runBranchRestoreShell`, `runBranchRestoreSchema`
+  and `readRunBranchRestore` are composed once and used by the finalize step
+  and by both exits. The shell was inlined in the finalize prompt before,
+  and that is precisely how the exits ended up without a restore at all:
+  the success path held the only copy, so there was nothing to call from
+  anywhere else.
+
+A fourth thing, which is a hazard rather than a decision: `terminalFailure`
+reads `primaryBranchBefore`, and it is reachable from phases that run long
+before `establishRunRef`'s line is executed. A `let` read before its
+declaration runs throws a ReferenceError — it does not read as empty — so
+the declaration moved to the worktree registry at the top of the file. The
+exits are the last place in this file that should be able to die on the way
+out, and `scripts/validate-workflow.ts` exists because that shape already
+took a run down (#585).
+
+### The remaining gap, recorded here and closed one section below
+
+`lib/run-branch.ts` resolves the branch with
+`git for-each-ref --format=%(refname:short) refs/heads/<branch>` — local
+heads only, with no remote ref consulted anywhere and no argument that
+accepts one. Measured on this pair: `rungate/run-631` resolves to
+`4acc0a17` locally and `92eb88cf` through origin, 2 commits one way and 6
+the other. So every mode can be answering confidently about a commit that is
+not the one the run pushed, and its output does not say which ref it read.
+Both error directions are live — a local ref behind the push reports
+CONTAINED and the delete destroys remote-only commits; a local ref ahead
+refuses and attributes the refusal to the run. **Closed by SC-2170..SC-2176
+below**, which is why this paragraph stays: the measurement that motivated
+the fix is not reproducible once the fix exists.
+
+**The cheapest wrong fix, named and applied: add the restore to `shipFailed`
+only**, because that is the funnel the observed run went through. The
+symptom for the observed instance disappears and `terminalFailure`'s other
+terminal statuses stay broken. Measured: **2 of 17 red** — *"both funnels
+take the restore step"* and *"the restore runs AFTER preservation in each
+funnel"*. The cases do not certify it.
+
+The second cheapest, named but not applied because row 5 below already
+measures it: restore unconditionally, or with `-f` so the switch cannot
+fail. It makes the symptom go away in every case including the one where it
+destroys a peer's checkout state.
+
+### Success Criteria
+
+- [x] SC-2117: test/run-branch-restore-exits.test.ts contains [both funnels take the restore step] — the two terminal funnels are sliced out of ship.js structurally and each is asserted to call the restore, after preservation rather than before, with an unreadable slice counted as a violation because an empty string contains nothing and reads exactly like a funnel that does not restore
+- [x] SC-2118: test/run-branch-restore-exits.test.ts contains [silence is UNMEASURED, on both paths] — the shell and the reading are one binding used by the finalize step and both exits, the failing path is asserted to attempt no delete and to say so, and an empty reply is asserted to read UNMEASURED rather than clean
+
+What was broken to prove the cases fail, run and counted rather than
+asserted, over `test/run-branch-restore-exits.test.ts` (17 tests). Every
+count predicted before the battery ran, and **the baseline row was read
+before any mutation row** — an instrument that has stopped reporting takes
+the baseline down with it, and that is the row nobody mutates anything to
+produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 17 pass, 0 fail | **17 pass, 0 fail** | — |
+| both `await restorePrimaryCheckout(` calls removed — the defect verbatim | 3 | **3 of 17** | `workflows/ship.js` itself: the real source reports both funnels restoring, the mutant reports neither |
+| `readRunBranchRestore` short-circuited to a clean reading with no lines | 8 | **8 of 17** | `{driftReading:"UNCHANGED"}` with `withDelete:false`: the original says ``rungate/run-640 kept — … holds unmerged work``, the mutant says nothing at all |
+| `withDelete` hardcoded true, so the delete is always emitted | 1 | **1 of 17** | `shell({withDelete:false})`: the original carries `DELETE: NOT_ATTEMPTED` and no `--mode delete`, the mutant carries the delete command |
+| the `!primaryBranchBefore` NOT_READ branch removed | 1 | **1 of 17** | `load("").shell({withDelete:true})`: the original prints `RESTORE: NOT_READ` and emits no `git switch`, the mutant emits a switch to the empty string |
+| the switch made unconditional — the pre-phase-2 shape | 2 | **3 of 17** | `load("main").shell({withDelete:true})`: the original carries `FOREIGN_BRANCH`, the mutant does not |
+| the failing path's `!withDelete` arm removed | 1 | **2 of 17** | the same reply as row 2: the original says the branch was kept, the mutant falls through to the shipping path's `RUN_BRANCH_UNMEASURED … was removed` |
+| **the cheapest wrong fix** — the restore added to `shipFailed` only | — | **2 of 17** | `workflows/ship.js`: `terminalFailure` reports no restore while `shipFailed` reports one |
+
+**Both high rows were read by name rather than filed as noise**, because a
+crashing mutant and an unexpectedly load-bearing binding both come back high
+and only one of them is a problem.
+
+- Row 5's third red is *"the shell literal appears exactly once in ship.js"*.
+  The mutation deletes `git switch "$before"` outright, which is the literal
+  that case counts — squarely about the mutated behaviour, and not a
+  crashing mutant: 14 cases still pass and every red is about the switch.
+- Row 6's extra red is *"a clean drift reading says the checkout came
+  back"*, which asserts the clean line carries no `UNMEASURED`. Removing the
+  failing path's own arm makes it fall through to the shipping path's
+  `was removed` line, so a failing run starts reporting an unmeasured delete
+  it never attempted. Also squarely about the subject.
+
+Per the arithmetic in `.claude/rules/checks-must-be-able-to-fail.md`, both
+are "the prediction was wrong and the check is better than you thought", and
+the fact each records is that the one-binding count and the clean-line case
+are load-bearing in a second direction.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`workflows/ship.js` was confirmed byte-identical to the measured source
+afterwards by SHA-256.
+
+## #598 — a detector whose success line claimed more than its character class could see
+
+`scripts/validate-workflow.ts` matched declarations with
+`^(?:let|const)\s+([A-Z_][A-Z_0-9]*)\s*=`. #585 widened it from writes to
+reads and from indented usages to any column, and left the character class
+alone — so every identifier that is not SCREAMING_SNAKE_CASE sat outside the
+check entirely while the output said, in full, *"✓ TDZ check: no temporal
+dead zone issues"*. Not "no SCREAMING_SNAKE TDZ". A reader who trusts that
+line stops looking, which is what cost a day on PR #576.
+
+**The live instance is in this repository and it is not hypothetical.**
+`workflows/ship.js:860` declares `let primaryBranchBefore = ''` beside the
+worktree registry, roughly 3,800 lines above the only line that assigns it,
+with a docblock saying why: `terminalFailure` reads it, and `terminalFailure`
+is reachable from phases that run long before `establishRunRef` executes. The
+declaration was put there deliberately. Had it stayed where it is assigned —
+which is where a reader who had not been told would put it — the run would
+have died on its own exit path, and this validator would have passed the file
+twice: once in CI, once on the way out.
+
+### Which direction a widened detector is allowed to be wrong in
+
+Widening a detector is the change most likely to buy green with blindness,
+and the obvious guard against that is to measure what it now catches. That is
+the wrong half to worry about here. **Over-detection is not the safe
+direction for this script**: a validator that refuses a correct
+`workflows/ship.js` is a validator people route around, and a routed-around
+validator catches nothing at all. A missed TDZ costs one line somebody adds
+later; a false positive costs the check.
+
+So the widening is paired with a refusal to guess. The character class is now
+`[A-Za-z_$][A-Za-z0-9_$]*`, and a tracked name that is **bound anywhere else
+in the file** — as a parameter, an inner `let`/`const`/`var`, a `catch`
+binding, a destructured element or a function name — is DROPPED rather than
+resolved, because this scanner does not resolve scopes and a mention inside a
+scope that re-binds the name is not a mention of the module binding. On
+`ship.js` that is ten names, every one of them a module-scope const that is
+also a parameter on a function declared above it:
+
+```
+agentResults, gradeResult, hasUI, headSha, proveVerdict,
+refusals, scopeVerdict, suiteReading, testCommand, testedSha
+```
+
+The column-zero anchor stays, and it is worth saying that it is not a naming
+restriction: it is the scope test. An indented `let`/`const` is block- or
+function-scoped, its dead zone is bounded by its own block, and tracking it
+would compare a read in one scope against a declaration in another.
+
+### What the drop does to the success line
+
+Dropping names silently would re-create the defect one level up — a PASS over
+141 names and a PASS over 0 names print the same word. So the coverage line
+reports how many of the declarations it FOUND it was able to track, and
+**names every one it declined**, because "10 not tracked" tells a reader the
+scan is partial while the list tells the one person who needs to know which
+ten. On the live tree:
+
+```
+✓ TDZ check: no temporal dead zone issues — 141 of 151 module declaration(s)
+tracked, 652 reference(s) scanned; 10 re-bound elsewhere and NOT checked:
+agentResults, gradeResult, hasUI, headSha, proveVerdict, refusals,
+scopeVerdict, suiteReading, testCommand, testedSha
+```
+
+Before #598 the same file read `62 tracked declaration(s), 238 reference(s)
+scanned`. All six workflow files in the tree exit 0 under the widened
+detector, three of them with nothing dropped at all.
+
+### The cheapest wrong fix, applied and measured
+
+**Named: widen the character class and stop there.** One character class, no
+shadow handling. It is the 5pm repair, it makes the reported symptom go away,
+and the camelCase cases written to prove the widening all go GREEN under it —
+which is the fifth shape in `.claude/rules/checks-must-be-able-to-fail.md`,
+arriving in the file that records it.
+
+Applied. **8 of 29 red**, and the live workflow goes from exit 0 to exit 1
+with ten false positives on a correct file:
+
+```
+✗ TDZ: 'testCommand' read at line 517 but declared at line 3321
+… eight more …
+✗ TDZ check: 10 violation(s) — 151 of 151 module declaration(s) tracked
+```
+
+**Say which cases are witnesses and which are controls, or the next reader
+counts fifteen.** The name-class pair, the lowercase and `$` cases and the
+reachability case WITNESS the widening and are green under the wrong fix —
+they do not protect against it. What catches it is the seven control pairs
+and AC-6's real-`ship.js` case: each is a CORRECT file the naive detector
+refuses, and three of the seven plus three live-tree cases are exactly the 8.
+
+### Every control is a derived pair, in both directions
+
+#585 established that a fixture pair must be DERIVED, not written twice, so
+the two halves cannot gain a second difference on the next edit. #598 applies
+that to the *name class* — one source string with `SHIP_CONFIG`, the other
+`replaceAll`'d to `shipConfig`, with the premise asserted: the pre-#598 class
+admits one and refuses the other, the line counts agree, and exactly the two
+lines the check reasons about differ.
+
+The same discipline runs the other way, which is the part a widening needs
+most. Every "must NOT be reported" control is a pair derived by ONE
+substitution, so the clean half cannot be clean for a reason the caught half
+also has:
+
+| Dimension | Clean half | One substitution away |
+|---|---|---|
+| inside a string literal | `const note = 'shipConfig'` | `const note = shipConfig` |
+| inside a comment | `// shipConfig` | `shipConfig` |
+| a property of another object | `console.log(bag.shipConfig)` | `console.log(shipConfig)` |
+| an object-literal key | `{ shipConfig: 1 }` | `{ shipConfig }` |
+| a parameter re-binding the name | `function render(shipConfig) {` | `function render(given) {` |
+| an inner `const` re-binding it | `const shipConfig = 1` | `const given = 1` |
+| a `catch` binding re-binding it | `catch (shipConfig) {` | `catch (given) {` |
+
+A control with no caught twin proves only that the scanner found nothing,
+which is also what a scanner that reads nothing reports. And for the three
+shadow rows the clean verdict is asserted to SAY the name was dropped: "the
+name was tracked and nothing was wrong" and "the name was never checked" are
+different states, and silence is the second one wearing the first one's
+clothes.
+
+### Success Criteria
+
+- [x] SC-2161: test/validate-workflow-tdz.test.ts contains [both halves are refused] — one source string carries a SCREAMING_SNAKE name and the camelCase half is derived from it by rename so the pair cannot gain a second difference; the premise asserts the pre-#598 character class admits one and refuses the other and that exactly the two lines the check reasons about differ
+- [x] SC-2162: test/validate-workflow-tdz.test.ts contains [an all-lowercase name and a $-prefixed one are refused too] — the property is every shape a JS identifier can take and not camelCase specifically so an all-lowercase and a $-prefixed declaration are each executed against the real script and against the REFUSE_EXIT=0 mutant
+- [x] SC-2163: test/validate-workflow-tdz.test.ts contains [the mutant is refused naming primaryBranchBefore and real ship.js exits 0] — the live hazard is rebuilt by relocating ship.js's own declaration to the line that assigns it and the refusal is asserted to be the reachability one rather than merely a violation because a line-order comparison cannot see this shape
+- [x] SC-2164: test/validate-workflow-tdz.test.ts contains [and the one-substitution twin is refused] — every form that must NOT be reported is a pair derived by one substitution with the clean half asserted to pass and the twin asserted to refuse and the shadow rows additionally asserted to NAME the dropped binding rather than fall silent
+- [x] SC-2165: test/validate-workflow-tdz.test.ts contains [the untracked ones are NAMED] — the coverage line is read off an executed run and asserted to track more than the 62 declarations the pre-#598 class found with every declined name listed individually and the list length equal to the difference between found and tracked
+- [x] SC-2166: test/validate-workflow-tdz.test.ts contains [no name the pre-#598 class covered has been dropped from ship.js] — the widening may not pay for itself by quietly dropping names the check already had so no name matching the pre-#598 class may appear in ship.js's declined list and the list is asserted non-empty first because an empty list satisfies that vacuously
+
+What was broken to prove the cases fail, run and counted rather than
+asserted, over `test/validate-workflow-tdz.test.ts` (29 tests). Every count
+was predicted before the battery ran, and **the baseline row was read before
+any mutation row** — an instrument that has stopped reporting takes the
+baseline down with it, and that is the row nobody mutates anything to
+produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 29 pass, 0 fail | **29 pass, 0 fail** | — |
+| the genuinely pre-#598 `scripts/validate-workflow.ts`, from `origin/main` | 16 | **16 of 29** | `const seen = []` / `seen.push(shipConfig)` / `const shipConfig = 3`: the real script prints ``✗ TDZ: 'shipConfig' read at line 2 but declared at line 3`` and exits 1, the pre-#598 source prints ``✓ TDZ check: no temporal dead zone issues — 0 tracked declaration(s), 0 reference(s) scanned`` and exits 0 |
+| the identifier class alone restored to `[A-Z_][A-Z_0-9]*` | 15 | **15 of 29** | the same three-line file. One red fewer than the row above: the coverage line keeps its #598 shape, so *"ship.js's clean verdict carries non-zero tracked declarations"* can still parse it |
+| **the cheapest wrong fix** — the class widened and the shadow drop removed | 8 | **8 of 29** | `workflows/ship.js`: the real script exits 0 reporting 141 of 151 tracked, the mutant exits 1 with ten violations over a correct file |
+| the parameter rule removed from `bindingSites` | 6 | **6 of 29** | the same file: the real script declines `testCommand`, the mutant tracks it and reports two violations on lines 517 and 547 |
+| the default-value skip removed from `bumpBindings` | 1 | **1 of 29** | the same file: the real script declines 10 names, the mutant declines **12** — `HARNESS_ROOT` and `PROJECT_ROOT`, dropped because `function collectDestination(dir, projectRoot = PROJECT_ROOT, harnessRoot = HARNESS_ROOT)` reads them in a default |
+| the declined names counted but not NAMED in the coverage line | 6 | **6 of 29** | the same file: the real script ends `…NOT checked: agentResults, gradeResult, …`, the mutant ends `…10 re-bound elsewhere` |
+| the test's own name-class derivation neutered (`CAMEL_SOURCE = SNAKE_SOURCE`) | 2 | **2 of 29** | the pair itself: the premise case reads the two as identical, and the camel fixture's run names `SHIP_CONFIG` where the case expects `shipConfig` |
+| the control pairs' own substitution neutered (`exposed = pair.clean`) | 7 | **7 of 29** | all seven: the twin is byte-identical to the clean half, so the premise refuses before any verdict is read |
+
+**The default-value row is the reason this table exists.** It was predicted
+at **0** before the new case was written, and a 0 is the signature
+`.claude/rules/checks-must-be-able-to-fail.md` tells you to read as a
+finding — so the input on which mutant and original differ was named first
+(the two names above, present in one output and absent from the other), which
+established that the mutation really applied and nothing caught it. The
+missing case is SC-2166: a widening is allowed to cost nothing, and it is NOT
+allowed to pay for itself by quietly dropping two names the check had tracked
+since before #598. With that case added the row is 1.
+
+**One row matched its number with a different membership, and that is worth a
+sentence rather than a shrug.** The parameter row was predicted to red
+SC-2166; it reds SC-2165 instead. `bindingSites` still declines names through
+its `const`/destructuring rules when the parameter rule is gone, so ship.js's
+declined list is non-empty — SC-2166's premise and assertion both hold — but
+it no longer contains `testCommand`, which is what SC-2165 asserts by name. A
+count is the proxy; which names are in the list is the property.
+
+None of the eight mutations is left in the tree; all were run and reverted,
+and `scripts/validate-workflow.ts`, `test/validate-workflow-tdz.test.ts` and
+`workflows/ship.js` were confirmed byte-identical to the measured source
+afterwards by SHA-256. `workflows/ship.js` is unmodified by #598.
+
+## #640 + #644 — the run branch resolved from one ref, and the launch base checked by nobody
+
+Two issues, one unit, because #644's own body says it is the mechanism under
+#640 and both edits land in the same worktree-and-branch logic. They are two
+halves of one question — *which tree is this run working on* — asked at the
+two ends of a run.
+
+### #640: `for-each-ref refs/heads/<branch>` is a confident answer about one of two commits
+
+`lib/run-branch.ts` resolved the run branch from LOCAL HEADS ONLY. No remote
+ref was consulted anywhere in the module, no argument accepted one, and no
+output said which ref an answer was about. Measured on the real pair on
+2026-10-19: `rungate/run-631` is `4acc0a17` through `refs/heads` and
+`92eb88cf` through `refs/remotes/origin` — 2 commits one way, 6 the other.
+
+Both error directions are live and they are not equally expensive:
+
+- the local ref **behind** the push → containment reports CONTAINED about a
+  commit the run never pushed, and the delete mode then removes a branch
+  whose remote-only commits nothing else holds;
+- the local ref **ahead** → the check refuses, correctly, and the refusal is
+  then attributed to the run whose work it is not. That misattribution was
+  posted on #640 as fact and corrected an hour later.
+
+`runBranchRefs` resolves both refs in ONE `for-each-ref` over two patterns —
+one call, because two calls are two readings taken at two moments and a fetch
+landing between them produces a pair that was never simultaneously true — and
+reports `ABSENT`, `LOCAL_ONLY`, `REMOTE_ONLY`, `AGREED`, `DIVERGED` or
+`UNMEASURED`. `leftoverRunBranch` and `deleteRunBranch` both resolve through
+it and both act on `resolvedRef`, never on the bare name, so neither can be
+answering about a ref it did not name. `DIVERGED` resolves NOTHING: a
+disagreement is reported, and the thing that must not happen is this module
+choosing.
+
+**The cheapest wrong fix, named before the repair: make `for-each-ref` also
+match `refs/remotes/origin/<branch>` and take whichever it finds.** It is the
+5pm repair, it makes the remote-only symptom disappear, and when both refs
+exist it silently picks one of two commits — which is the state the real pair
+is in. The cases survive it NON-vacuously: the fixture's local head is
+squash-merged onto main and its remote-tracking ref carries a path main has
+never held, so a resolver that takes the local one reports CONTAINED and
+destroys work. Measured below at **4 of 36**.
+
+### #644: an instruction nobody executes is not a rule
+
+`lib/launch-base.ts` and `scripts/check-launch-base.ts` shipped in PR #686
+and are correct: `SAME_CHECKOUT` clears, `CWD_NOT_A_REPO`, `DIFFERENT_REPO`,
+`DIFFERENT_CHECKOUT` and `UNMEASURED` all refuse.
+`.claude/rules/ship-workflow.md` gained a "Check the launch base first" step.
+Measured before this change: **`workflows/ship.js` contained zero references
+to that script.** An unwired control is byte-identical to no control.
+
+`ship.js` now runs it as the first step of the Goal phase — before the issue
+is read and before any role agent, which is before the first
+worktree-isolated spawn, and that spawn is the decision being guarded.
+`SAME_CHECKOUT` proceeds; every other reading ends the run at
+`LAUNCH_BASE_FAILED` through `terminalFailure`, which preserves worktrees and
+restores the shared checkout on the way out. ship.js decides nothing itself:
+it restates the reading, and a second comparison composed there out of `pwd`
+and a toplevel probe would be two deciders that agree.
+
+**#644's SC-1 as filed is not reachable from this repository and is not
+claimed here.** `opts.cwd = PROJECT_ROOT` has pinned every worktree-isolated
+spawn since `804b9a43` (2026-09-23) and is overridden: the agent runtime
+resolves `isolation: 'worktree'` against the SESSION's current directory and
+applies `opts.cwd` to the spawned agent afterwards. Rungate already passes
+the explicit argument. The only point rungate controls is whether the run
+starts.
+
+**The cheapest wrong fix, named: validate that the session's cwd is a git
+repository.** It converts failure 1 — the `WorktreeIsolationError` about a
+directory the message does not name — into a clear error and leaves failure
+2, the silent one, exactly as it was: a run launched from a valid repository
+on an unrelated branch still cuts its worktrees from that tree and succeeds
+onto the wrong base. The cases survive it NON-vacuously, because every
+refusal is driven from a reading and `DIFFERENT_CHECKOUT` is a reading a
+cwd-is-a-repository validation produces no refusal for. Measured below at
+**6 of 13**.
+
+### Success Criteria
+
+- [x] SC-2170: test/unit/run-branch-remote-ref.test.ts contains [the two refs are resolved and a disagreement is reported] — both refs are resolved in one call and a name pointing at two commits is its own reading that names both, because a resolver that picks one is confident about a commit the run may never have pushed
+- [x] SC-2171: test/unit/run-branch-remote-ref.test.ts contains [a diverged pair is refused by the delete mode] — the destructive mode is driven against a fixture whose local head is contained and whose remote ref is not, and the branch is asserted still present afterwards rather than only the exit code being read
+- [x] SC-2172: test/unit/run-branch-remote-ref.test.ts contains [a leftover whose refs disagree is LEFTOVER_DIVERGED] — a disagreement is reported at the start of a run and not folded into UNMEASURED, because "I could not look" and "I looked and the answer is two commits" are different facts and only the second names two commits to reconcile
+- [x] SC-2173: test/unit/run-branch-remote-ref.test.ts contains [a branch that exists only on the remote is not ABSENT] — the other error direction, where a local-heads read makes a branch another session pushed indistinguishable from a clean start, with the delete mode refusing by name rather than reporting a removal git declined
+- [x] SC-2174: test/unit/run-branch-remote-ref.test.ts contains [every reading names which ref it resolved] — the output's own gap on #640, so an agreeing pair carries the full ref and the sha it resolved and a disagreement carries null for both rather than a quiet default
+- [x] SC-2175: test/unit/run-branch-remote-ref.test.ts contains [an agreeing pair is still deleted when it is contained] — the CONTROL against a check that refuses everything, varying exactly one input against SC-2171: the commit the remote ref names
+- [x] SC-2176: test/unit/run-branch-remote-ref.test.ts contains [a repository the refs cannot be read from is UNMEASURED] — an unreadable resolution is not an absent branch, and the leftover reading built on it says so rather than reporting a clean start
+- [x] SC-2177: test/unit/launch-base-wiring.test.ts contains [ship.js runs scripts/check-launch-base.ts as a step of its own] — the script existed and was referenced nowhere, so what is asserted is the invocation and the single binding, not the script's behaviour which test/unit/launch-base.test.ts already covers
+- [x] SC-2178: test/unit/launch-base-wiring.test.ts contains [before the issue is read and before any role agent] — position is the property: the first worktree-isolated spawn is where both of #644's failures are decided, so a check placed after it measures a decision already taken
+- [x] SC-2179: test/unit/launch-base-wiring.test.ts contains [a same-checkout reading clears and the four others each refuse] — driven as one table over the five readings the library can produce, so the clearing one and the refusing ones are one measurement rather than separate assertions that happen to agree
+- [x] SC-2180: test/unit/launch-base-wiring.test.ts contains [a reply that reported nothing is UNMEASURED] — an empty reply is what an agent that did not run the step returns, and a run launched by the absence of an answer is launched by nothing at all
+- [x] SC-2181: test/unit/launch-base-wiring.test.ts contains [every field the reader reads is declared] — a schema is a FILTER on the reply (#646), so the declared property set is asserted exactly and the nullable fields are asserted to admit null rather than dropping it
+- [x] SC-2182: test/unit/launch-base-wiring.test.ts contains [a SAME_CHECKOUT claim carrying a non-zero exit is a contradiction] — the script cannot produce that pair, so a reply asserting both has misread one of them, and the control varying only the exit code is asserted beside it
+- [x] SC-2183: test/unit/launch-base-wiring.test.ts contains [a refusal ends the run through the terminal funnel] — not a warning: the two failures guarded are a run that dies 19 seconds later with a message about the wrong thing and a run that succeeds onto somebody else's branch, and neither is improved by a log line
+
+### The suite's own fixtures were all on the wrong side of the new precondition
+
+Adding the launch-base check turned **eleven** existing cases red, in
+`test/workflow-contracts.test.ts` and `test/terminal-failure-reason.test.ts`,
+and all eleven for one reason: `lib/workflow-test-harness.ts` drives ship.js
+with a `projectRoot` under `/tmp` that has never been a repository, because
+no case before #644 needed it to be. Ten reported
+`Expected "IMPLEMENT_FAILED", received "LAUNCH_BASE_FAILED"` and the
+eleventh — SC-1753, *preload-contexts no longer declares a phase ahead* —
+reported a missing call, because the run it reads terminated before reaching
+it. Neither the cases nor the gate were wrong.
+
+**This is #492's shape arriving from the other side.** There, every fixture
+in a battery met a precondition and the branch where it did not hold was
+outside the battery's reach. Here a precondition was ADDED beneath a suite
+whose every fixture predates it, so all of them landed on the far side at
+once. The tell is the same in both directions: a population of fixtures that
+agrees about something nobody chose.
+
+**Fixed at the harness, not at the gate**, and the distinction is the whole
+of it. The cheapest wrong fix was available in one line — make the check pass
+when the reading is `UNMEASURED`, or skip it when `projectRoot` is under
+`/tmp` — and both delete the point of #644: `UNMEASURED` is precisely the
+reading that must refuse, and a `/tmp` carve-out is a production bypass every
+synthetic caller inherits. Neither was applied.
+
+Both suites now override the `launch-base` label with a `SAME_CHECKOUT`
+reading. The override supplies a READING, which `readLaunchBase` then judges
+exactly as it judges a real one, so a refusing reading injected there still
+stops the run — it is not a flag that turns the gate off.
+
+What stops the override becoming a default nobody notices is SC-2184, which
+runs the real script through the harness with NO override and requires
+`LAUNCH_BASE_FAILED`, asserts the run stopped at the launch-base step rather
+than later (`read-issue` is never called), and pairs it with a control
+varying exactly that one injected reading. It is the one run in the suite
+built deliberately NOT to meet the precondition every other run now asserts
+past.
+
+- [x] SC-2184: test/unit/launch-base-wiring.test.ts contains [with no reading injected the real script refuses] — the seam the rest of the suite needs is proved not to be a bypass by executing the real script without it, with a control varying only the injected reading so the pair is a measurement of the seam rather than of a script that refuses everything
+
+### What was broken to prove the cases fail
+
+Run and counted rather than asserted. Every count predicted before the
+battery ran, and **the baseline row was read before any mutation row** — an
+instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody mutates anything to produce. Before each count, the
+input on which mutant and original differ is named.
+
+Battery A, over `test/unit/run-branch-remote-ref.test.ts` +
+`test/unit/run-branch.test.ts` (36 tests):
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 36 pass, 0 fail | **36 pass, 0 fail** | — |
+| `runBranchRefs` asks for `refs/heads` only — the defect verbatim | 5 | **5 of 36** — SC-2170..SC-2174 | the diverged fixture: the original refuses the delete non-zero with the branch still present, the mutant exits **0** having deleted it |
+| **the cheapest wrong fix**: both patterns matched, whichever is found taken | 4 | **4 of 36** — SC-2170, SC-2171, SC-2172, SC-2174 | the same fixture: the mutant reads `AGREED` off the local head and deletes. SC-2173 stays GREEN, which is the point — the wrong fix repairs the loud half and leaves the destructive one |
+| `leftoverRunBranch` compares the bare branch name instead of `resolvedRef` | 1 | **1 of 36** — SC-2173 | the remote-only fixture: the original reports `LEFTOVER_UNCONTAINED` naming `refs/remotes/origin/…`, the mutant cannot resolve `rungate/run-704` at all and reports UNMEASURED |
+| the `REMOTE_ONLY` refusal removed from `deleteRunBranch` | 1 | **1 of 36** — SC-2173 | the same fixture: the original refuses `REMOTE_ONLY`, the mutant refuses `NOT_CONTAINED: refs/remotes/origin/rungate/run-704 holds 1 of its 1 changed path(s)` — a true sentence about a ref the deletion was never going to touch |
+| the reading dropped from the CLI's refusal line | 2 | **2 of 36** — SC-2171, SC-2173 | both fixtures: the class of a refusal stops being recoverable from anything but the prose |
+
+**One mutation was considered and NOT run, because no input distinguishes
+it.** Pointing `deleteRunBranch`'s containment at the bare branch name rather
+than at `resolvedRef` is a no-op: `DIVERGED` and `REMOTE_ONLY` are refused
+above it, and for `LOCAL_ONLY` and `AGREED` the bare name and
+`refs/heads/<branch>` are the same commit by git's own rules. A row recording
+0 there would be the code run twice, not a mutation
+(`.claude/rules/checks-must-be-able-to-fail.md`).
+
+Battery B, over `test/unit/launch-base-wiring.test.ts` (13 tests):
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 13 pass, 0 fail | **13 pass, 0 fail** | — |
+| the whole `LAUNCH-BASE-CHECK` block deleted — the pre-#644 `ship.js` | abort, 0 run | **the file ABORTS at module scope**, 0 of 13 run, `AnchorNotFoundError: the anchor … does not appear in the document` | `workflows/ship.js` itself. The loud-abort property: a harness whose target has moved must not pass quietly |
+| **the cheapest wrong fix**: only `CWD_NOT_A_REPO` refuses | 6 | **6 of 13** | `{reading:"DIFFERENT_CHECKOUT", refusal:"cwd is on feat/something-else …"}`: the original refuses naming the branch, the mutant returns `refusal: null` and the run proceeds onto the wrong tree |
+| the call-site guard narrowed to one reading, the reader left correct | 1 | **1 of 13** — SC-2183 | `workflows/ship.js`: `if (launchBase.refusal && launchBase.reading === 'CWD_NOT_A_REPO')`. The same wrong fix one hop later, caught because the guard is asserted as a whole expression rather than as a prefix |
+| `cwd` and `exitCode` dropped from the declared schema — the #646 shape | 1 | **1 of 13** — SC-2181 | the schema literal: the original declares four properties and the mutant two, and the two it drops are ones the reader reads |
+| the Goal read moved ABOVE the check — order only | 1 | **1 of 13** — SC-2178 | `workflows/ship.js`: the check is still taken, still correct, and no longer first |
+
+**The order row came back 12 of 13 in its first form, and the composition is
+why it was re-done rather than recorded.** The first mutant moved the step
+OUT of its marker block instead of moving the Goal read above it — two
+changes at once: the position, and which cut the statement belongs to. That
+collapsed the test file's own `BLOCK` and `DECLARATIONS` cuts into one, the
+`new Function` harness then held a top-level `await`, and ten cases died on a
+`SyntaxError` that is about the cuts rather than about the order. Loud rather
+than silent — but a measurement of the instrument. Varying exactly one thing
+(#585) gives 1, and the one is SC-2178.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`workflows/ship.js`, `lib/run-branch.ts` and `scripts/check-run-branch.ts`
+were confirmed byte-identical to the measured source afterwards by SHA-256.

@@ -222,25 +222,25 @@ Source: 4-member adversarial council, 3 rounds, unanimous on all findings. Root 
 
 ### Error Surfacing
 
-Gate failure detail must include actual Zod validation error paths — not hardcoded "failed" strings. The Zod errors (path + message) are computed at `workflow.test.ts:59` but discarded at `run-gate.ts:291` where `detail` is hardcoded to `"failed"`. The heal agent at `ship.js:152-159` receives failures with no specifics, making single-pass repair impossible.
+Gate failure detail must include actual Zod validation error paths — not hardcoded "failed" strings. The Zod errors (path + message) are computed at `gates/workflow.test.ts:59` but discarded at `gates/run-gate.ts:291` where `detail` is hardcoded to `"failed"`. The heal agent at `workflows/ship.js:152-159` receives failures with no specifics, making single-pass repair impossible.
 
 **Rule:** After matching a `(fail)` test line, `run-gate.ts` must capture subsequent non-result lines as the detail string. Detail must include the Zod error path (e.g., `acs.0.threshold.op: Invalid enum value. Expected '==' | '>=' | ..., received 'equals'`).
 
 ### Schema Validation at Write Time
 
-All writes to `workflow-state.json` must go through `writeWorkflowState()` at `orchestrator.ts:414-430` which validates via Zod with enum-specific error formatting. Per ADR-009:417-418: "writeWorkflowState() validates via Zod" — this is a design decision, not optional.
+All writes to `workflow-state.json` must go through `writeWorkflowState()` at `gates/orchestrator.ts:414-430` which validates via Zod with enum-specific error formatting. Per ADR-009:417-418: "writeWorkflowState() validates via Zod" — this is a design decision, not optional.
 
 **Rule:** Agent heal prompts (ship.js) must not instruct agents to use the Write tool for workflow-state.json edits. All writes must route through `writeWorkflowState()` (via `bun -e` or equivalent) so agents get immediate Zod error feedback at write time, not opaque gate failures.
 
 ### DISCOVERY_SCHEMA Enum Constraints
 
-The DISCOVERY_SCHEMA (JSON Schema for Claude structured output) at `ship.js:44` must constrain `threshold.op` and `evidenceMethod.type` to the same enum values as the Zod schema at `schema.ts:16` and `schema.ts:22-25`. Invalid values must be rejected at LLM structured output time, not deferred to gate time.
+The DISCOVERY_SCHEMA (JSON Schema for Claude structured output) at `workflows/ship.js:44` must constrain `threshold.op` and `evidenceMethod.type` to the same enum values as the Zod schema at `gates/schema.ts:16` and `gates/schema.ts:22-25`. Invalid values must be rejected at LLM structured output time, not deferred to gate time.
 
 **Rule:** Enum values must be exported as const arrays from `schema.ts` and referenced in both the Zod schema and DISCOVERY_SCHEMA. A schema-parity test must assert they match.
 
 ### Schema Strictness Consistency
 
-`writeWorkflowState()` at `orchestrator.ts:416` uses `.passthrough()` (allows extra keys) while `workflow.test.ts:57` uses strict `.safeParse()`. State that passes write-time validation can fail gate-time validation if it contains extra keys.
+`writeWorkflowState()` at `gates/orchestrator.ts:416` uses `.passthrough()` (allows extra keys) while `gates/workflow.test.ts:57` uses strict `.safeParse()`. State that passes write-time validation can fail gate-time validation if it contains extra keys.
 
 **Rule:** Both validation paths must use the same strictness level. Recommendation: `.passthrough()` in both, since extra keys are harmless and the schema evolves frequently.
 
@@ -248,7 +248,7 @@ The DISCOVERY_SCHEMA (JSON Schema for Claude structured output) at `ship.js:44` 
 
 The `~/.rungate/` directory accumulates workflow state slugs with no archival mechanism. As of 2026-09-17: 1,065 slugs, 2 archived, 14 stuck in non-DONE phases, 1,001 with no workflow-state.json.
 
-**Rule:** No background cleanup crons or daemons (unanimously rejected — race conditions with active workflows). Cleanup is lazy: `initWorkflow()` at `orchestrator.ts:467` logs a warning when overwriting non-DONE state. One-shot manual cleanup via Makefile target for accumulated slugs.
+**Rule:** No background cleanup crons or daemons (unanimously rejected — race conditions with active workflows). Cleanup is lazy: `initWorkflow()` at `gates/orchestrator.ts:467` logs a warning when overwriting non-DONE state. One-shot manual cleanup via Makefile target for accumulated slugs.
 
 ### Success Criteria
 

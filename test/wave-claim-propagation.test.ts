@@ -261,6 +261,7 @@ function buildPipeline(root: string, subs: SubFixture[], source: string = shipSo
     "establishRunRef",
     "integrateWave",
     "waveNeedsIntegration",
+    "measureLaunchBase",
     `${block("FILES-CHANGED-SHAPE", source)}\n${block("DECOMPOSED-SHIP", source)}\n` +
       `return runDecomposedShip;`,
   )(
@@ -279,6 +280,7 @@ function buildPipeline(root: string, subs: SubFixture[], source: string = shipSo
     async () => ({ branch: RUN_REF, refusal: null }),
     runRef.integrateWave,
     runRef.waveNeedsIntegration,
+    async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
   ) as (subIssues: unknown) => Promise<{ success: boolean; refusal?: string }>;
 
   const plan = subs.map(s => ({

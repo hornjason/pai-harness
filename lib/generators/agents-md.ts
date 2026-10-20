@@ -397,15 +397,46 @@ section is yours, and a re-scaffold carries it forward verbatim —
 including the \`<!-- BEGIN AUTO-EXTRACTED -->\` block, and including any
 lines you wrote outside it.
 
-That is the only user-owned content in the tree that survives
-regeneration, which is a promise \`specs/bootstrap-data-flow/\` makes and
-nothing kept until #568: one run on a consumer removed 37 constraint
-lines and reported \`REGENERATED: AGENTS.md\`, exit 0. Put non-inferable
-project rules there — the ones an agent cannot read off the code — and
-nowhere else in the file.
+It was the only user-owned content in the tree that survived
+regeneration until #655, which is a promise \`specs/bootstrap-data-flow/\`
+makes and nothing kept until #568: one run on a consumer removed 37
+constraint lines and reported \`REGENERATED: AGENTS.md\`, exit 0. Put
+non-inferable project rules there — the ones an agent cannot read off the
+code — and nowhere else in the file.
 
 If a run cannot carry every one of those lines forward it **refuses the
 write**, names the lines, and leaves your file untouched.
+
+### An agent brief is section-owned too (#655)
+
+A rule mined from THIS repository's compliance history — the output of the
+hill-climb loop — is non-inferable by construction, and until #655 it had
+nowhere in the project to live. Every brief surface was rebuilt from
+harness-wide inputs on the next \`bunx rungate scaffold .\`:
+\`templates/agent-briefs/_shared.md\` resolves under the harness's own
+templates directory, so a project rule written there reaches every
+consumer; \`roles.json\`'s \`tiers.reinforcement\` carries section NAMES, not
+rule text; and the write itself was a bare \`writeFileSync\`.
+
+So \`.claude/agents/*.md\` now works the way \`AGENTS.md\` does, through the
+same merge in \`lib/agents-md-sections.ts\`:
+
+- Add a \`## Project Constraints\` heading to a brief and everything under
+  it, up to the next \`##\`, is yours. A re-scaffold carries it forward
+  verbatim and rewrites the rest.
+- The section is **opt-in**. No template emits it, because a generated
+  section would collide with yours and the merge would refuse every run.
+  A heading plus one line is a section; a heading alone is not.
+- If a run cannot carry every one of those lines forward it **refuses the
+  write**, names the lines, and leaves the brief untouched — the same
+  refusal-rather-than-silent-loss property #568 gave AGENTS.md.
+- A reinforcement the hill-climb applies goes there in preference to
+  \`## Efficiency Rules\`, \`## Testing Rules\` or \`## Never Do\`, so what the
+  loop writes is the content a re-scaffold preserves.
+
+The \`## Hard Constraints\` spelling is AGENTS.md's and only AGENTS.md's. A
+brief section is scoped to one role; using one heading for both would make
+a rule written in the wrong file look like it was in the right one.
 
 ### The workflow files are job-owned, not file-owned (#216)
 
@@ -419,6 +450,39 @@ cannot carry a job forward — a flow mapping (\`jobs: {deploy: {...}}\`), or a
 file it cannot parse — it **refuses the write**, names the jobs at risk and
 the line delta, and leaves your file untouched. Re-run with \`--force\` only
 if you mean to discard them.
+
+### Every workflow file is reported, owned or not (#722)
+
+The table above is a list of files this generator **writes**. That is why a
+workflow it did not write could not be added to it: the next scaffold would
+either start generating the file or the row would describe behaviour the
+code does not have, which is #208 exactly.
+
+So ownership travels with the bytes instead. Each generated workflow carries
+a \`# generated-sha:\` marker on its first line — a YAML comment, invisible
+to anything that parses the file — and a re-scaffold reports **every** file
+in \`.github/workflows/\`:
+
+| Status | What it means |
+|--------|---------------|
+| generated-and-unchanged | rungate wrote it and nobody has touched it |
+| generated-and-hand-edited | rungate wrote it and the bytes have moved; preserved, not rewritten |
+| NOT-OWNED | no marker — rungate did not write this and does not manage it |
+
+**A NOT-OWNED workflow is reported by name and otherwise left alone.** What
+you do with it is yours; the harness only refuses to keep quiet about it.
+Each name is printed individually, because "5 unowned workflows" is not
+something anybody can act on.
+
+The line also carries its own coverage — \`read N/M file(s)\` — and a
+directory that could not be read reports \`UNMEASURED\` rather than an empty
+list. A scan that read 2 of 7 files and a scan that read all 7 are otherwise
+the same clean report, and no reader can tell them apart from the output.
+
+This matters on a tree the harness was added to rather than one it created.
+One consumer ran five \`engine: copilot\` workflows that cost money, failed on
+quota and emailed its owner, and every scaffold run reported clean — not
+because anything went wrong, but because nothing had ever looked.
 `,
   });
 

@@ -62,6 +62,18 @@ let dir: string;
 const opts = (extra: Record<string, unknown> = {}) => ({
   lockDir: dir,
   maxRunsPerSession: 2,
+  // Injected by DEFAULT, so a case cannot read the machine by forgetting
+  // (#707). `slotIsStale` reclaims a slot early when no suite is running
+  // anywhere, and `anySuiteRunning` resolves that from `ps` — so without
+  // this, a case's verdict depends on what else happens to be running, and
+  // three of them in this file did. They were green on a busy machine and
+  // red on a quiet one, which is the worse way round: the green is silent.
+  //
+  // `true` is the default because it is the reading every case here wants
+  // unless it says otherwise — it leaves the TTL as the only staleness
+  // rule, which is what the cases about the TTL are about. The cases that
+  // are about the liveness reclaim itself pass their own, through `extra`.
+  suitesRunning: () => true,
   ...extra,
 });
 

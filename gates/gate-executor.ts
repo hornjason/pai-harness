@@ -1,6 +1,8 @@
 import { execSync, execFileSync } from "child_process";
-import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
+import { splitGateRuns } from "../lib/gate-run-split";
+import { gateSaltPath, workDir as slugWorkDir } from "../lib/paths";
 import {
   writeGateResult,
   generateHmac,
@@ -10,7 +12,7 @@ import {
   markCommandlessACsAsSkip,
   type GateResult,
 } from "./orchestrator";
-import { writeWitness } from "./witness";
+import { signCensus, writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { recordEvidenceRewrite } from "../lib/evidence-command-transport";
 import { GATE_SUITE_TIMEOUT_MS } from "../lib/gate-timeouts";
@@ -289,9 +291,93 @@ export function recordTestBaseline(
 /** What a gate run does about the tests that existed when it last looked. */
 export type CensusVerdict =
   | { kind: "unmeasured"; reason: string }
+  /**
+   * There is a banked census, and it is not one this gate wrote (#494).
+   *
+   * Its own arm rather than a second `unmeasured`, because the two are
+   * different facts about the run and only one of them is about an agent:
+   * `unmeasured` is a tree with no suite the walk can see, and this is a
+   * reading that was taken and then went missing. Both are WARNs — see
+   * `censusReport`, which is the single place that decides.
+   */
+  | { kind: "census-unverified"; reason: string }
   | { kind: "first-reading"; files: number }
   | { kind: "no-regression"; files: number }
   | { kind: "regression"; regressions: string[] };
+
+/**
+ * What the state file holds, and whether this gate is the one that put it
+ * there (#494).
+ *
+ * Three readings, not two. `absent` and `unverified` both mean "nothing to
+ * compare against", and collapsing them would be fine for the comparison
+ * and wrong for the report: an absent census on a run whose gate has never
+ * executed is ordinary, and the identical absence one round later is the
+ * erasure this issue exists to detect. The pair that tells them apart is
+ * this reading and `PriorGateRun`.
+ */
+export type PersistedCensus =
+  | { kind: "verified"; census: Record<string, number> }
+  | { kind: "unverified"; reason: string }
+  | { kind: "absent" };
+
+/**
+ * Whether a gate has already run for this slug (#494).
+ *
+ * The signal has to live OUTSIDE `workflow-state.json`: an agent erasing
+ * the census erases the signature with it, so the signature cannot say
+ * whether there was ever anything to erase. `~/.rungate/<slug>/witnesses/`
+ * is the existing store, written by `writeWitness` on every gate run, and
+ * no prompt in this repository names it.
+ *
+ * `unreadable` is the arm that keeps this from having the same off switch
+ * one layer down. `writeWitness` is wrapped in a try/catch at the bottom of
+ * `runGateInternal` that only logs, and it throws when the gate salt is
+ * absent — so on a machine with no salt no witness is ever written, and
+ * "no witnesses" would mean "every round is a first round" forever. A
+ * witness store that cannot be trusted to have recorded an earlier round is
+ * UNMEASURED, not a first run.
+ */
+export type PriorGateRun =
+  | { kind: "ran"; witnesses: number }
+  | { kind: "first" }
+  | { kind: "unreadable"; reason: string };
+
+/**
+ * Read the witness store for evidence that a gate already ran (#494).
+ *
+ * The salt check comes FIRST and deliberately: an empty witness directory
+ * on a machine that cannot write witnesses is indistinguishable from an
+ * empty one on a machine that simply has not run yet, and only one of those
+ * is a first round.
+ */
+export function priorGateRun(
+  slug: string,
+  opts: { saltPath?: string; witnessDir?: string } = {},
+): PriorGateRun {
+  const salt = opts.saltPath ?? gateSaltPath();
+  if (!existsSync(salt)) {
+    return {
+      kind: "unreadable",
+      reason:
+        `the gate salt at ${salt} is absent, so no witness can be written and an earlier ` +
+        `gate run of this slug cannot be ruled out`,
+    };
+  }
+  let dir: string;
+  try {
+    dir = opts.witnessDir ?? join(slugWorkDir(slug), "witnesses");
+  } catch (e: any) {
+    return { kind: "unreadable", reason: `the witness directory for slug "${slug}" could not be resolved: ${e.message}` };
+  }
+  if (!existsSync(dir)) return { kind: "first" };
+  try {
+    const witnesses = readdirSync(dir).filter(f => f.endsWith(".json")).length;
+    return witnesses > 0 ? { kind: "ran", witnesses } : { kind: "first" };
+  } catch (e: any) {
+    return { kind: "unreadable", reason: `${dir} could not be listed: ${e.message}` };
+  }
+}
 
 /**
  * Whether tests disappeared since the last gate run (#307 SC-A19).
@@ -315,10 +401,19 @@ export type CensusVerdict =
  * round, and the guard would be permanently and silently dead for exactly the
  * repos it exists to protect — a polyglot consumer, or one whose suite the
  * walk cannot see. Reported, every run, rather than inferred from silence.
+ *
+ * And neither is `census-unverified` (#494). A banked census that this gate
+ * did not sign is not a census; where a gate run already happened, reading
+ * it as `first-reading` is the erasure wearing the first round's clothes.
+ * The two facts are deliberately decided together here, because neither one
+ * answers the question alone: the signature cannot say whether there was
+ * ever anything to erase, and the witness count cannot say whether what is
+ * there now is what was banked.
  */
 export function censusVerdict(
-  previous: Record<string, number> | undefined,
+  previous: PersistedCensus,
   current: Record<string, number>,
+  prior: PriorGateRun,
 ): CensusVerdict {
   const files = Object.keys(current).length;
   if (files === 0) {
@@ -329,9 +424,117 @@ export function censusVerdict(
         "so a heal round that deleted one could not be seen",
     };
   }
-  if (!previous || Object.keys(previous).length === 0) return { kind: "first-reading", files };
-  const regressions = censusRegressions(previous, current);
-  return regressions.length > 0 ? { kind: "regression", regressions } : { kind: "no-regression", files };
+  if (previous.kind === "verified" && Object.keys(previous.census).length > 0) {
+    const regressions = censusRegressions(previous.census, current);
+    return regressions.length > 0 ? { kind: "regression", regressions } : { kind: "no-regression", files };
+  }
+  // Nothing to compare against. Whether that is ordinary depends entirely on
+  // whether a gate has run for this slug before — the one fact the state
+  // file cannot be asked, because an agent erasing the census erases
+  // everything in it.
+  if (prior.kind === "first") return { kind: "first-reading", files };
+  const why = previous.kind === "unverified" ? previous.reason : "no census was banked in the state file";
+  const since =
+    prior.kind === "ran"
+      ? `${prior.witnesses} witness(es) of an earlier gate run for this slug exist`
+      : `whether an earlier gate run happened could not be read — ${prior.reason}`;
+  return {
+    kind: "census-unverified",
+    reason:
+      `the banked test census could not be verified (${why}), and ${since}. A round that ` +
+      `deleted a test and the census with it cannot be told from a first reading, so this ` +
+      `round is UNMEASURED rather than clean (#494)`,
+  };
+}
+
+/**
+ * The census this gate is willing to compare against (#494).
+ *
+ * `censusVerdict` decides what the round IS; this decides what gets banked
+ * for the next one, and the two are separate questions asked of the same
+ * reading. An unverified census is never carried forward — `nextCensus`
+ * would otherwise keep an attacker's number as "the previous reading".
+ */
+export function verifiedCensus(previous: PersistedCensus): Record<string, number> | undefined {
+  return previous.kind === "verified" ? previous.census : undefined;
+}
+
+/** What the gate counts and prints for a census verdict. */
+export interface CensusReport {
+  fails: number;
+  warns: number;
+  results: Array<{ check: string; result: "FAIL" | "WARN"; detail: string }>;
+  console: Array<{ level: "error" | "warn" | "log"; line: string }>;
+}
+
+/**
+ * Turn a verdict into what the gate counts (#307 SC-A19, #494).
+ *
+ * One binding, so there is one thing to mutate and one place where an arm
+ * can be forgotten. The arm this issue adds is a WARN and not a FAIL on
+ * purpose: a legitimate run on a machine whose witness store cannot be read
+ * reaches it, and a check that refuses rounds nobody can fix is removed
+ * within a week. A WARN that names the state is the difference between
+ * "unmeasured" and "clean", which is the whole claim.
+ */
+export function censusReport(verdict: CensusVerdict, censusRoot: string): CensusReport {
+  if (verdict.kind === "regression") {
+    return {
+      fails: 1,
+      warns: 0,
+      results: [
+        {
+          check: "test-census: a round removed tests",
+          result: "FAIL",
+          detail:
+            `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
+            `is not a gate that passed. Restore the test, or say in the PR which check ` +
+            `replaced it (#307 SC-A19).`,
+        },
+      ],
+      console: [{ level: "error", line: `Test census: REFUSED — ${verdict.regressions.join("; ")}` }],
+    };
+  }
+  // An empty census compares clean against an empty census on every
+  // subsequent round, and an erased one reads as a first round. Both are
+  // readings nobody took, so both are reported rather than inferred from
+  // silence.
+  if (verdict.kind === "unmeasured" || verdict.kind === "census-unverified") {
+    return {
+      fails: 0,
+      warns: 1,
+      results: [
+        {
+          check: "test-census: UNMEASURED",
+          result: "WARN",
+          detail: `${verdict.reason} (tree: ${censusRoot})`,
+        },
+      ],
+      console: [{ level: "warn", line: `Test census: UNMEASURED — ${verdict.reason}` }],
+    };
+  }
+  if (verdict.kind === "first-reading") {
+    // Said out loud rather than passed quietly: a run with nothing to
+    // compare has not been checked, and silence is how that becomes
+    // "checked and clean".
+    return {
+      fails: 0,
+      warns: 0,
+      results: [],
+      console: [
+        {
+          level: "log",
+          line: `Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`,
+        },
+      ],
+    };
+  }
+  return {
+    fails: 0,
+    warns: 0,
+    results: [],
+    console: [{ level: "log", line: `Test census: no test was removed (${verdict.files} file(s) compared)` }],
+  };
 }
 
 /**
@@ -357,11 +560,37 @@ export function censusVerdict(
  * because the gate tests and any heal agent have been writing to it since
  * this process loaded `state`, and clobbering their edits to record a census
  * trades one silent loss for another.
+ *
+ * Signed, since #494. The signature goes beside the census in the same
+ * file — an agent can delete both, which is the point: it cannot delete
+ * them and still look like a first round, because the witness store says a
+ * gate already ran.
+ *
+ * A salt this machine does not have is NOT an excuse to write an unsigned
+ * census quietly. The census is still banked, because the comparison is
+ * worth having even unverified, and the stale signature of a previous
+ * reading is DELETED rather than left beside a census it does not cover —
+ * a signature that verifies the wrong census is worse than none. The next
+ * round reads the result as UNMEASURED.
  */
-export function persistTestCensus(stateFilePath: string, census: Record<string, number>): void {
+export function persistTestCensus(
+  stateFilePath: string,
+  census: Record<string, number>,
+  slug: string,
+  opts: { saltPath?: string } = {},
+): void {
   const fresh = JSON.parse(readFileSync(stateFilePath, "utf-8"));
   fresh.gateContract = fresh.gateContract || {};
   fresh.gateContract.testCensus = census;
+  try {
+    fresh.gateContract.testCensusSignature = signCensus(slug, census, opts.saltPath);
+  } catch (e: any) {
+    delete fresh.gateContract.testCensusSignature;
+    console.warn(
+      `Test census: banked UNSIGNED — ${e.message}. The next gate run will read it as ` +
+        `UNMEASURED rather than as a census this gate wrote (#494).`,
+    );
+  }
   writeFileSync(stateFilePath, JSON.stringify(fresh, null, 2));
 }
 
@@ -374,18 +603,46 @@ export function persistTestCensus(stateFilePath: string, census: Record<string, 
  * how a round's reading quietly disappears. The direction it disappears in
  * is toward not refusing.
  *
- * A file that cannot be read or parsed returns `undefined`, which
- * `censusVerdict` turns into `first-reading` — said out loud rather than
- * passed quietly.
+ * Verified, since #494. Every way of not being a census this gate wrote is
+ * one reading — `unverified`, carrying the reason — and a state file with
+ * nothing banked at all is another. The distinction is not cosmetic: an
+ * absent census before the first gate run is ordinary, and the identical
+ * absence afterwards is the erasure. `censusVerdict` is where the two are
+ * told apart, using the witness store.
+ *
+ * Neither reading is a refusal on its own. A file that cannot be read or
+ * parsed on a run whose gate has never executed is still a first reading —
+ * said out loud rather than passed quietly.
  */
-export function readPersistedCensus(stateFilePath: string): Record<string, number> | undefined {
+export function readPersistedCensus(stateFilePath: string, slug: string): PersistedCensus {
+  let onDisk: any;
   try {
-    const onDisk = JSON.parse(readFileSync(stateFilePath, "utf-8"));
-    const census = onDisk?.gateContract?.testCensus;
-    return census && typeof census === "object" && !Array.isArray(census) ? census : undefined;
-  } catch {
-    return undefined;
+    onDisk = JSON.parse(readFileSync(stateFilePath, "utf-8"));
+  } catch (e: any) {
+    return { kind: "unverified", reason: `the state file could not be read or parsed: ${e.message}` };
   }
+  const census = onDisk?.gateContract?.testCensus;
+  const signature = onDisk?.gateContract?.testCensusSignature;
+  if (census === undefined && signature === undefined) return { kind: "absent" };
+  if (!census || typeof census !== "object" || Array.isArray(census)) {
+    return { kind: "unverified", reason: "the banked census is not an object" };
+  }
+  if (typeof signature !== "string" || signature.length === 0) {
+    return { kind: "unverified", reason: "the banked census carries no signature" };
+  }
+  let expected: string;
+  try {
+    expected = signCensus(slug, census);
+  } catch (e: any) {
+    return { kind: "unverified", reason: `the census signature could not be checked: ${e.message}` };
+  }
+  if (expected !== signature) {
+    return {
+      kind: "unverified",
+      reason: "the banked census does not match its signature — it was rewritten after the gate banked it",
+    };
+  }
+  return { kind: "verified", census };
 }
 
 export function nextCensus(
@@ -668,6 +925,50 @@ export function remoteRefsIn(command: string): string[] {
 }
 
 /**
+ * #705 — a command that printed nothing measured nothing, and `""` says the
+ * wrong one of those.
+ *
+ * The recording below used to write `{ type: "command-output", content: "" }`
+ * whenever an evidence command exited 0 without printing. `hasRecordedEvidence`
+ * in `lib/evidence-required.ts` reads `Boolean("")` as false, so the verify
+ * gate then refused with *"threshold == 0 with NO evidence recorded"* — a
+ * sentence about an AC nobody measured, applied to an AC that was measured and
+ * came back silent. Run `wf_b8f7b077-9cf` AC-3 died that way, and the message
+ * names the AC and its `evidenceMethod.type`, so each occurrence reads as an
+ * authoring mistake three phases after authoring.
+ *
+ * It is not about `GREP_CHECK`. This function has never read `ac.type` or
+ * `evidenceMethod.type` — it keys on `evidenceMethod.command` alone — and two
+ * `GREP_CHECK` ACs in the same batch of runs recorded `"0"` and passed. What
+ * distinguishes them is whether the command PRINTS its count: `grep -c` does,
+ * `grep -n` prints nothing when it matches nothing. A `COMMAND` AC reaches
+ * this branch on identical terms.
+ *
+ * ONE binding, called from both recording sites, so there is a single thing to
+ * mutate. A second site composing its own sentence would survive any mutation
+ * of this one and the gap would go green for the wrong reason.
+ */
+export function emptyOutputUnmeasured(
+  command: string,
+  exitCode: number | null,
+  detail?: string,
+): { type: "unmeasured"; content: string } {
+  const exit = exitCode === null ? "with no status" : `with status ${exitCode}`;
+  return {
+    type: "unmeasured",
+    content:
+      `UNMEASURED: the evidence command exited ${exit} and wrote NOTHING to stdout, so no ` +
+      `value was produced and there is nothing to compare against the threshold. An empty ` +
+      `reading and a measured 0 are different states — recording the empty one as "" made ` +
+      `every reader downstream report this AC as carrying no evidence at all (#705). Make ` +
+      `the command PRINT the value it asserts about: \`grep -c <pattern> <file>\` prints 0 ` +
+      `where \`grep -n\` prints nothing, and a count swallowed by \`$( )\` never reaches ` +
+      `stdout. Command: ${command}` +
+      (detail ? ` — ${detail}` : ""),
+  };
+}
+
+/**
  * Exported for test. This is where evidence commands actually execute, and it
  * is the last place a stale git ref can be caught (#118).
  */
@@ -736,6 +1037,22 @@ export function autoPopulateACs(state: Record<string, any>, sf: string): void {
       const isTestRunner = /bun test\b/.test(cmd);
       const cmdTimeout = isTestRunner ? 300000 : 10000;
       const output = execSync(cmd, { encoding: "utf-8", timeout: cmdTimeout, cwd: evidenceCwd }).trim();
+      // #705. Blocking, not SKIP, and for the reason the missing-ref branch
+      // above gives: gates/orchestrator.ts advances when every AC is PASS or
+      // SKIP, so marking an AC nothing could measure as SKIP would turn a
+      // blocking gate into a passing one.
+      //
+      // `isTestRunner` is carved out because bun writes its summary to stderr:
+      // a `bun test` invocation can leave stdout holding only the version
+      // banner, or nothing at all, and the verdict below does not read the
+      // output anyway. Calling that UNMEASURED would refuse every BUN_TEST AC
+      // in the project.
+      if (!isTestRunner && output === "") {
+        state.acs[i].verdict = "FAIL";
+        state.acs[i].evidence = emptyOutputUnmeasured(cmd, 0);
+        acUpdated = true;
+        continue;
+      }
       const lastLine = output.split("\n").pop() || "";
       let verdict: "PASS" | "FAIL" = "FAIL";
       if (isTestRunner) {
@@ -783,7 +1100,19 @@ export function autoPopulateACs(state: Record<string, any>, sf: string): void {
         state.acs[i].evidence = { type: "command-output", content: lastLine };
         acUpdated = true;
       } else {
+        // #705. The branch that recorded nothing at all, which is the literal
+        // "can never record evidence" the issue title describes: the AC kept a
+        // PENDING verdict and an absent `evidence`, so the gate refused it with
+        // the never-measured sentence and the warning below was the only place
+        // the real cause existed. A warning is not a reading.
         console.warn(`WARN: AC ${ac.id} evidence command failed: ${e.message?.slice(0, 100) || 'unknown'}`);
+        state.acs[i].verdict = "FAIL";
+        state.acs[i].evidence = emptyOutputUnmeasured(
+          cmd,
+          typeof e.status === "number" ? e.status : null,
+          (stderr.trim().split("\n").pop() || e.message || "").slice(0, 200),
+        );
+        acUpdated = true;
       }
     }
   }
@@ -1460,20 +1789,54 @@ function runGateTests(gate: string, workDir: string, state: Record<string, any>,
 
 // ── Result parsing ──────────────────────────────────────────────────────
 
-function parseGateResults(testOutput: string, earlyResults: GateResult[], earlyFails: number): { passes: number; fails: number; warns: number; results: GateResult[] } {
+/**
+ * Exported so a case can drive it (#737 SC-3).
+ *
+ * The two readings it composes were scoped differently for the whole of
+ * this function's life, and nothing could see it because nothing called it
+ * from a test — the scoping was only observable through the two numbers it
+ * printed, eleven lines apart, in a log.
+ */
+export function parseGateResults(testOutput: string, earlyResults: GateResult[], earlyFails: number): { passes: number; fails: number; warns: number; results: GateResult[] } {
   let passes = 0;
   let fails = 0;
   const warns = 0;
   const results: GateResult[] = [];
 
-  const allPassMatches = [...testOutput.matchAll(/^\s*(\d+)\s+pass\s*$/gm)];
-  const allFailMatches = [...testOutput.matchAll(/^\s*(\d+)\s+fail\s*$/gm)];
-  const passMatch = allPassMatches.length > 0 ? allPassMatches[allPassMatches.length - 1] : null;
-  const failMatch = allFailMatches.length > 0 ? allFailMatches[allFailMatches.length - 1] : null;
-  if (passMatch) passes = parseInt(passMatch[1]);
-  if (failMatch) fails = parseInt(failMatch[1]);
+  // One split, two readings off it (#737).
+  //
+  // These used to be scoped differently: the summary took the last `N fail`
+  // in the WHOLE buffer while `parseTestResults` was handed the whole buffer
+  // and pushed a result for every `(fail)` marker in it. On a retried gate
+  // that is `1 fail` beside `2 failures`, eleven lines apart, with one check
+  // named twice — two deciders for one question, agreeing on every
+  // single-run output and diverging only on the retry nobody fixtures.
+  //
+  // Last attempt wins; `lib/gate-run-split.ts` argues why and
+  // `specs/GATE-CONTRACTS-SPEC.md` records it.
+  const buffer = splitGateRuns(testOutput);
 
-  results.push(...parseTestResults(testOutput));
+  if (buffer.verdict === null) {
+    // A run that printed no summary did not report zero failures — it
+    // reported nothing. The pre-#737 code took whichever earlier run had
+    // the last matching line, which is a superseded attempt reported as
+    // this one's result.
+    results.push({
+      check: "test-suite",
+      result: "FAIL",
+      detail: `UNMEASURED: ${buffer.unmeasuredReasons.join("; ")}`,
+    });
+    if (earlyResults.length > 0) {
+      results.push(...earlyResults);
+      fails += earlyFails;
+    }
+    return { passes: 0, fails: fails + 1, warns, results };
+  }
+
+  passes = buffer.verdict.summary!.pass;
+  fails = buffer.verdict.summary!.fail;
+
+  results.push(...parseTestResults(buffer.verdict.text));
 
   if (earlyResults.length > 0) {
     results.push(...earlyResults);
@@ -1576,20 +1939,112 @@ export function readConformityFindings(state: Record<string, any>): void {
 
 // ── Batch diagnosis ─────────────────────────────────────────────────────
 
-function printBatchDiagnosis(fails: number, results: GateResult[]): void {
-  if (fails > 0) {
-    const failResults = results.filter(r => r.result === "FAIL");
-    const infra = failResults.filter(r => /B1|B2|B3|adversary|reproducer|health|port/.test(r.check));
-    const acRelated = failResults.filter(r => /evidence|verdict|AC|ac[- ]|threshold/.test(r.check));
-    const chain = failResults.filter(r => /hash|chain|pushed|merge|spec-trace/.test(r.check));
-    const other = failResults.filter(r => !infra.includes(r) && !acRelated.includes(r) && !chain.includes(r));
+/**
+ * How many lines of one failure's own output the diagnosis relays (#700).
+ *
+ * There is a cap because the diagnosis is read at the END of a very long log,
+ * and an unbounded relay reintroduces the problem it exists to solve from the
+ * other side: #726 removed a 3000-character window because it discarded the
+ * answer, and a reporter that prints a megabyte discards it too — one runaway
+ * failure buries every other check's reason.
+ *
+ * It is a LINE cap and not a character cap on purpose. Bun's excerpts are
+ * source quotes, so a character cut lands mid-token and the operator cannot
+ * tell a truncated line from a short one. And when it fires it SAYS so, with
+ * the number it dropped — a relay that just stops is indistinguishable from a
+ * failure that had nothing more to say.
+ */
+export const DETAIL_LINE_CAP = 12;
 
-    console.log(`\nBATCH DIAGNOSIS: ${failResults.length} failures — fix all before re-running`);
-    if (infra.length) console.log(`  Infrastructure (${infra.length}): ${infra.map(r => r.check.split(" > ").pop()).join(", ")}`);
-    if (acRelated.length) console.log(`  AC/Evidence (${acRelated.length}): ${acRelated.map(r => r.check.split(" > ").pop()).join(", ")}`);
-    if (chain.length) console.log(`  Chain integrity (${chain.length}): ${chain.map(r => r.check.split(" > ").pop()).join(", ")}`);
-    if (other.length) console.log(`  Other (${other.length}): ${other.map(r => r.check.split(" > ").pop()).join(", ")}`);
+/** What a failure carrying no usable detail reports. */
+export const NO_DETAIL_RECORDED = "no detail was recorded for this failure";
+
+/**
+ * The batch diagnosis, as lines, with each failure's own reason under it.
+ *
+ * ONE binding, exported, and `printBatchDiagnosis` is its only caller — so
+ * there is one thing a mutation battery can short-circuit, and a second
+ * composition inlined at the call site cannot hold a case up while this one
+ * is broken (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ *
+ * ## Why this changed (#700)
+ *
+ * `parseTestResults` has recovered bun's error excerpt for every failing
+ * check since #314, and stores it on `GateResult.detail`. This function
+ * printed `r.check` and dropped `detail` on the floor one line later.
+ *
+ * What that cost, with the run beside it. #700's STANDARD-tier trio
+ * reproduces only in CI, which makes a red run the scarce resource. #726
+ * widened `expectGateGreen` so the gate's output survives, and the next red —
+ * `main` at `71e3f413`, run `39325676895` — printed:
+ *
+ *     BATCH DIAGNOSIS: 2 failures — fix all before re-running
+ *       AC/Evidence (2): brief-ac-alignment: brief covers all ACs,
+ *                        brief-ac-alignment: brief covers all ACs
+ *
+ * A name, and only a name. `gates/workflow.test.ts:1212` fails two different
+ * ways — the brief file absent at `:1221`, or present and missing an id at
+ * `:1230` — and those are different bugs with different fixes. `grep -c` over
+ * that entire run gives 0 for `brief missing AC ids` and 0 for `brief file
+ * required when Marcus spawned`. The answer was on the result object and
+ * never reached the log.
+ *
+ * ## The shape of the output, and why it is not a comma list
+ *
+ * The cheapest wrong fix is to append `detail` to the joined name list. One
+ * expression, the detail stops being dropped, and N failures become one
+ * paragraph with no boundary between them — the reason present and still not
+ * attributable, which is this defect wearing a fix. So each failure gets its
+ * own line at one indent and its reason beneath it at another, and
+ * `test/batch-diagnosis-detail.test.ts` asserts attribution by SPAN rather
+ * than by "both strings appear somewhere", because both strings appearing
+ * somewhere is exactly what the wrong fix achieves.
+ */
+export function batchDiagnosisLines(fails: number, results: GateResult[]): string[] {
+  if (fails <= 0) return [];
+  const failResults = results.filter(r => r.result === "FAIL");
+  if (failResults.length === 0) return [];
+
+  const infra = failResults.filter(r => /B1|B2|B3|adversary|reproducer|health|port/.test(r.check));
+  const acRelated = failResults.filter(r => /evidence|verdict|AC|ac[- ]|threshold/.test(r.check));
+  const chain = failResults.filter(r => /hash|chain|pushed|merge|spec-trace/.test(r.check));
+  const other = failResults.filter(r => !infra.includes(r) && !acRelated.includes(r) && !chain.includes(r));
+
+  const lines = [`BATCH DIAGNOSIS: ${failResults.length} failures — fix all before re-running`];
+
+  for (const [label, group] of [
+    ["Infrastructure", infra],
+    ["AC/Evidence", acRelated],
+    ["Chain integrity", chain],
+    ["Other", other],
+  ] as const) {
+    if (group.length === 0) continue;
+    lines.push(`  ${label} (${group.length}):`);
+    for (const r of group) {
+      lines.push(`  - ${r.check.split(" > ").pop()}`);
+      // An empty or whitespace-only detail is reported as absent, never as a
+      // blank line. A blank line under a check name reads as a reason that
+      // was asked for and came back empty — `0`, `{}` and silence are all
+      // indistinguishable from success (`.claude/rules/config-access.md`).
+      const detail = (r.detail ?? "").split("\n").map(l => l.trimEnd()).filter(l => l.trim().length > 0);
+      if (detail.length === 0) {
+        lines.push(`      ${NO_DETAIL_RECORDED}`);
+        continue;
+      }
+      for (const l of detail.slice(0, DETAIL_LINE_CAP)) lines.push(`      ${l}`);
+      if (detail.length > DETAIL_LINE_CAP) {
+        lines.push(`      … ${detail.length - DETAIL_LINE_CAP} more lines truncated`);
+      }
+    }
   }
+  return lines;
+}
+
+function printBatchDiagnosis(fails: number, results: GateResult[]): void {
+  const lines = batchDiagnosisLines(fails, results);
+  if (lines.length === 0) return;
+  console.log("");
+  for (const l of lines) console.log(l);
 }
 
 // ── B1/B2 agent logic ───────────────────────────────────────────────────
@@ -2348,47 +2803,26 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
     // stale copy and then persisting over the fresh one is how a round's
     // reading quietly disappears — and the direction it disappears in is
     // toward not refusing.
-    const previous = readPersistedCensus(sf);
-    const verdict = censusVerdict(previous, current);
-    const banked = nextCensus(previous, current, verdict);
+    const previous = readPersistedCensus(sf, slug);
+    // Whether a gate already ran for this slug comes from the witness store
+    // and not from the state file (#494). An agent erasing the census
+    // erases the signature with it, so the state file cannot be asked
+    // whether there was ever anything to erase.
+    const prior = priorGateRun(slug);
+    const verdict = censusVerdict(previous, current, prior);
+    const banked = nextCensus(verifiedCensus(previous), current, verdict);
     state.gateContract = state.gateContract || {};
     state.gateContract.testCensus = banked;
     // To DISK, not just to `state` — `writeGateResult` below re-reads the
     // file, so an in-memory mutation here never lands and the next run
     // would find no census to compare against. See `persistTestCensus`.
-    persistTestCensus(sf, banked);
+    persistTestCensus(sf, banked, slug);
 
-    if (verdict.kind === "regression") {
-      fails++;
-      results.push({
-        check: "test-census: a round removed tests",
-        result: "FAIL" as const,
-        detail:
-          `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
-          `is not a gate that passed. Restore the test, or say in the PR which check ` +
-          `replaced it (#307 SC-A19).`,
-      });
-      console.error(`Test census: REFUSED — ${verdict.regressions.join("; ")}`);
-    } else if (verdict.kind === "unmeasured") {
-      // A WARN rather than silence. An empty census compares clean against
-      // an empty census on every subsequent round, so a guard that said
-      // nothing here would be permanently dead on a polyglot consumer and
-      // would look exactly like a guard that keeps finding nothing wrong.
-      warns++;
-      results.push({
-        check: "test-census: UNMEASURED",
-        result: "WARN" as const,
-        detail: `${verdict.reason} (tree: ${censusRoot})`,
-      });
-      console.warn(`Test census: UNMEASURED — ${verdict.reason}`);
-    } else if (verdict.kind === "first-reading") {
-      // Said out loud rather than passed quietly: a run with nothing to
-      // compare has not been checked, and silence is how that becomes
-      // "checked and clean".
-      console.log(`Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`);
-    } else {
-      console.log(`Test census: no test was removed (${verdict.files} file(s) compared)`);
-    }
+    const report = censusReport(verdict, censusRoot);
+    fails += report.fails;
+    warns += report.warns;
+    results.push(...report.results);
+    for (const line of report.console) console[line.level](line.line);
   }
 
   console.log(`\nTest results: ${passes} pass, ${fails} fail, ${warns} warn`);

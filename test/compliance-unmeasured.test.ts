@@ -218,8 +218,9 @@ describe("SC-2078: an unavailable tool makes the reading UNMEASURED and is named
 
 describe("SC-2079: the quality score is withheld, not averaged over whoever answered", () => {
   const scored: FileScore[] = [
-    { file: "a.md", agnixFindings: 0, reporailsFindings: 0, reporailsQuality: 8, findings: [] },
-    { file: "b.md", agnixFindings: 0, reporailsFindings: 0, reporailsQuality: 6, findings: [] },
+    // A quality score is RepoRails', so a file carrying one was read by it (#755).
+    { file: "a.md", agnixFindings: 0, reporailsFindings: 0, reporailsQuality: 8, findings: [], scoredBy: ["reporails"] },
+    { file: "b.md", agnixFindings: 0, reporailsFindings: 0, reporailsQuality: 6, findings: [], scoredBy: ["reporails"] },
   ];
 
   test("a MEASURED reading averages the files that carry a score", () => {

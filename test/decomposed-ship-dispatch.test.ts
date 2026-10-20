@@ -206,6 +206,7 @@ const INJECTED = new Set([
   "establishRunRef",
   "integrateWave",
   "waveNeedsIntegration",
+  "measureLaunchBase",
   // supplied as text, from FILES-CHANGED-SHAPE
   "filesChangedShapeRefusal",
 ]);
@@ -298,6 +299,7 @@ function loadRunDecomposedShip(deps: {
     "establishRunRef",
     "integrateWave",
     "waveNeedsIntegration",
+    "measureLaunchBase",
     // #611's element-shape guard, evaluated INTO the block's scope for the
     // same reason the guards above are injected: a stub would let this suite
     // and the real block disagree about what a reported path is.
@@ -322,6 +324,7 @@ function loadRunDecomposedShip(deps: {
     async () => ({ branch: "rungate/run-66", refusal: null }),
     async () => ({ ok: true, integrated: 0 }),
     sliced("RUN-REF", "waveNeedsIntegration"),
+    async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
   );
 
   return { runDecomposedShip, logs, followed };

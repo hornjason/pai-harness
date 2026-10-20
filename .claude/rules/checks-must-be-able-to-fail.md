@@ -1243,16 +1243,39 @@ predicted before the battery ran.
 | the re-read moved BELOW the wave's spawns | 2 | **2 of 22** — SC-2089, SC-2090 | the same plan: the original records its second reading at spawn clock 1, the mutant at clock 2 with wave 2 already dispatched. That is why SC-2089 asserts the ORDER and not the count |
 
 **Provenance, because the two halves were measured differently.** Every row
-except the second was measured by the sub-issue that shipped the cases, on a
-`git archive` export under `/tmp` carrying the test file plus the intended
-`workflows/ship.js` change — which is not in the tree yet, so those rows are
-a measurement of an implementation this repository does not hold. The
-pre-#652 row was re-measured independently here, against the shipped test
-file and the unmodified `workflows/ship.js`, and reproduces at 6 of 22 naming
-the same six cases. Nothing was modified to take it: the file was copied in,
-run, and restored, with `git status` clean afterwards. **Re-run the rest
-against the tree once the implementation lands** — a row measured on a tree
-nobody can check out is a claim, not a count.
+except the second was first measured by the sub-issue that shipped the cases,
+on a `git archive` export under `/tmp` carrying the test file plus the
+intended `workflows/ship.js` change, which was not in the tree at the time. A
+row measured on a tree nobody can check out is a claim rather than a count, so
+this paragraph used to end *"re-run the rest against the tree once the
+implementation lands."* The pre-#652 row was the exception: it was re-measured
+against the shipped test file and the unmodified `workflows/ship.js`, and
+reproduces at 6 of 22 naming the same six cases.
+
+**#653 did, and all ten reproduce — same counts and the same named
+criteria.** Nothing is carried over. `Predicted` above is therefore the
+earlier measurement, written down before the re-run as the thing being
+tested; the finding would have been a row that MOVED.
+
+Two of the ten needed their mutation re-cut before they were faithful, and
+that is recorded rather than quietly fixed, because a prose description of a
+mutant is not a mutant:
+
+- **the pre-#652 row** is the whole pre-#652 tree, which lacks the pre-wave
+  re-read as well as the reordered arm. Mutating only `waveCommitFailure` is
+  3 of 22, not 6 — the three dispatch criteria stay green, because nothing
+  touched the thing they measure.
+- **the composed-message row** must leave the `!landedOn` early return INSIDE
+  the committed-false arm. Hoisted ahead of both arms it also intercepts
+  `{committed: true, branch: ""}`, which SC-1565 owns, and the row reads 3
+  with an extra red that is about the mutant rather than about the subject.
+
+That correction reached `specs/HARNESS-STANDARD.md` in PR #794 and this file
+in #795, which is five days apart and is the reason
+`test/battery-record-currency.test.ts` exists: a measurement written down in
+two places is corrected in one of them, and nothing was comparing the two.
+#666's byte-identity check does compare these same two files — over a
+different block, eleven screens up.
 
 **The two cells the pre-#652 row does not name are the point of this
 section.** SC-2085 (committed TRUE onto a foreign ref) and SC-2088 (no branch
@@ -1399,6 +1422,240 @@ short-circuited, and the pre-#646 schema literal — were re-measured on the
 shipped tree and reproduce exactly (17 pass / 0 fail, 8 of 17, 7 of 17). The
 other three were not re-run; they are rows about `persistReceiptLines`, whose
 source is byte-identical to the measured one.
+
+### When the DERIVATION of a check is the thing being tested (#637, #626)
+
+#626 shipped six parity categories drawn from a twelve-row table of defects
+this harness had already paid for. Phase 1 proved the command RUNS — six
+verdicts, coverage beside each, UNMEASURED where it could not compare. What
+no amount of that establishes is that **category N catches the defect row N
+was derived from**, and without it the six categories are a paraphrase of the
+table rather than a test of it.
+
+The shape this section adds is specific to that: a check derived from a known
+defect, whose defect is now FIXED. Four of the six derivation issues are
+merged, so the live tree cannot witness any of them, and the only honest case
+is one that PLANTS the pre-fix condition. **The trap is reaching for the live
+environment instead**, and category 4 is the sharp instance: #597 merged as
+`41f2e640` and CI now installs a pinned `agnix` before `bun test`, so a case
+probing the ambient environment for a missing `agnix` passes today for a
+reason that has nothing to do with the check. Nothing in
+`test/contract-parity-derivation.test.ts` reads an external tool whose
+installation state can move under it.
+
+**That sentence cost a red test, and the red was correct.** Its first draft
+quoted the pinned `agnix` version, and `test/ci-global-tools.test.ts` refuses
+a version string with more than one declaring position — which is #621 and
+#622's rule, met by the document explaining it. The version lives in
+`.claude/rungate/config.json`'s `ci.globalTools` and nowhere else, prose
+included.
+
+Each of the six is paired with a control varying exactly one thing — the
+config's string, the CI pin, the quoting of one shell word, the routing of one
+spawn, one name in a schema, one row in a table. A case that only shows the
+category refusing is satisfied by a category that refuses everything.
+
+#### The cheapest wrong fix, named before the repair was described
+
+AC-8's words are *"the exported symbol is declared exactly once"*. When that
+goes red because somebody added a second `contractParity`, **the 5pm repair is
+to delete the word `export` from the duplicate.** One word. The scan stops
+seeing it, the violation disappears, and the tree still holds two deciders
+answering one question, each still called from inside its own module — which
+is the fourth shape, reinstated by the fix for the fourth shape.
+
+The three AC-8 decider cases survive that repair **vacuously**: no fixture of
+theirs contains an unexported duplicate, so none of them changes verdict. They
+neither certify the regression nor catch it, and left unstated that reads as
+coverage. What catches it is one further case and one further line of
+`parityBindingViolations`: the ENTRY-POINT name is counted whether or not it is
+exported, while every other parity name stays exported-only, because a
+module-local `const parity` is nobody's second decider. That case survives the
+wrong fix **really** — row M7 below is the repair applied, and it is 1 red.
+
+#### Predicted and measured, over 51 tests
+
+`test/contract-parity-derivation.test.ts` + `test/contract-parity.test.ts`.
+Every count was predicted before the battery ran, in
+`/tmp/637-battery/predictions.md`, and **the baseline row was read before any
+mutation row** — an instrument that has stopped reporting takes the baseline
+down with it, and that is the row nobody mutates anything to produce.
+
+**Re-measured in full against the tree rebased onto `5a4abdc8`**, not carried
+over. Three rows are new (M14–M16) and one was re-run after it turned out not
+to be a mutation at all; the other twelve were run again rather than copied,
+because a row measured against a tree nobody can check out is a claim rather
+than a count (`.claude/rules/parallel-sessions.md`).
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 51 pass, 0 fail | **51 pass, 0 fail** | — |
+| M1 `parityBindingViolations` short-circuited to `return []` | 5 | **5 of 51** | the duplicate tree: the original names both files, the mutant returns `[]` |
+| M2 `declarationsNaming` short-circuited to `return []` | 6 | **6 of 51** | `REPO_ROOT`: the original reads every parity and `preflight` declaration in the tree, the mutant none of either |
+| M3 the `UNMEASURED_PARITY_SCAN` refusal removed | 2 | **2 of 51** | a tree with no `contractParity`: the original refuses, the mutant returns `[]` |
+| M4 the `PREFLIGHT_NAMED_PARITY` clause removed | 2 | **2 of 51** | a tree declaring `export const preflightParity` beside a correct entry point |
+| M5 the `DUPLICATE_PARITY_BINDING` clause removed | 3 | **3 of 51** | a tree declaring `contractParity` in `scripts/` and in `workflows/ship.js` |
+| M6 `commandDisagreement` short-circuited to `return []` | 4 | **4 of 51** | the #621 tree — config `bun test --parallel --no-isolate`, the other two `bun test`: original 1 violation, mutant none |
+| M7 **the cheapest wrong fix**: the duplicate check narrowed back to exported-only | 1 | **1 of 51** | a tree with one exported and one UNEXPORTED `contractParity` |
+| M8 `transportIsFirstParty` → `return true` | 2 | **2 of 51** | a foreign root: original `0/3` with no sites, mutant compiles and runs the library transport |
+| M9 `AVAILABILITY_QUERY` replaced with `/(?!)/g` | 2 | **2 of 51** | a file calling `spawnSync(tool, ["--version"])` directly |
+| M10 `undeclaredReadViolations` short-circuited to `return []` | 2 | **2 of 51** | the #530 tree reading `sf("testsSha")` against a schema that never declared it |
+| M11 the #624 unaccounted-writer violation loop removed | 1 | **1 of 51** | the #624 tree writing `.claude/agents/marcus.md` with nothing declaring it |
+| M12 the #622 unpinned-version violation removed | 1 | **1 of 51** | a `ci.yml` saying `bun-version: "latest"` |
+| M13 a second copy of `testCommandsNamedByCiWorkflow` added to `scripts/` | 1 | **1 of 51** | the grep over `lib`, `scripts`, `gates`, `workflows` |
+| M14 **the rebase row**: the whole of #735 reverted inside the moved module — what `git checkout --ours` produces | 4 | **4 of 51** | a matrix `ci.yml`: original reads `bun test` from `test-shard`, mutant reads `echo aggregate` from the job that now runs nothing |
+| M15 only #735's SECOND change reverted — the shard selector left on the string | 4 | **4 of 51** | a SINGLE-job `ci.yml` running `bun test --shard=2/4`: original `bun test`, mutant `bun test --shard=2/4`. M16 is green on this input |
+| M16 only #735's FIRST change reverted — the suite job name hardcoded to `test` | 4 | **4 of 51** | a matrix `ci.yml` whose shard job runs plain `bun test`: original `bun test`, mutant `echo aggregate`. M15 is green on this input |
+
+#### The row that was not a mutation, and how it was caught
+
+M9's first form edited the leading alternative of `AVAILABILITY_QUERY` —
+`/(?:Bun\.spawnSync|spawnSync|execFileSync|…` — to `zzBun\.spawnSync`, and
+measured **0 red against a predicted 2**. The reflex reading of a zero row is
+"the cases do not cover this", and it is wrong here: `spawnSync` is its own
+alternative three characters later, so the regex still matched every input the
+cases supply. **There is no input on which that mutant and the original behave
+differently.** The code ran twice.
+
+A row that misses LOW is the one to stop on, and the rule that caught this is
+the one stated above rather than any count: *before recording a number, name
+the input on which mutant and original differ*. Re-run as `/(?!)/g` — a regex
+that matches nothing — the row is 2, as predicted. The alternation is why a
+mutation to one branch of a disjunction is nearly always a weak mutation:
+pick the whole binding, or pick the branch and say which other branch covers
+for it.
+
+**Fifteen of sixteen matched on the first reading, which this file says to
+distrust** — and the sixteenth is the reason it says so. So the
+precondition question was asked of the battery rather than of the code (#492):
+every fixture here is a tree the category CAN read, so the branch where it
+cannot is outside the battery's reach entirely. That branch is #626 AC-4's,
+measured by `test/contract-parity.test.ts` and in scope above — which is why
+the two files are counted together rather than the new one alone.
+
+**The battery did find one thing, and it was M2.** *"AC-8: `contractParity` is
+not spelled preflight anywhere the scan can see"* iterates the declarations and
+asserts each name. With the scan short-circuited to `[]` the loop runs zero
+times and the case stayed GREEN — an assertion that holds vacuously, in the
+file whose subject is assertions that hold vacuously. The first measurement of
+M2 was 5. It now asserts the list is non-empty first, and the row is 6.
+
+#### The control that had to become a floor, and why a count is the wrong shape
+
+The instrument check beside M2 asserts the scan can still see this
+repository's `preflight` family. Its first draft asserted **exactly 7**, which
+was true the day it was written and is not a property of anything this case
+owns. Between that measurement and the rebase, #721 landed `actionPinParity`
+and took the parity count from 12 to 13 — a file this case does not name, in
+an issue it has nothing to do with.
+
+The preflight count happened not to move, so the case did not go red; it was
+one unrelated merge away from doing so, and the red would have accused the
+wrong code. This is #507's shape in a control rather than in a fixture: **the
+margin was set by something outside the case.** The assertion is now a floor,
+because what a control has to establish is that the scan READ something, and
+an equality establishes that plus a fact nobody is maintaining.
+
+The general form, since this file already says the mirror of it for refusals:
+**when you assert a number about a collection you do not own, ask whether your
+claim is about the count or about non-emptiness.** It is almost always the
+second, and the second is the one that survives other people's work.
+
+#### A relocation is a copy until something holds it to the original
+
+This change moves ~200 lines out of `scripts/contract-parity.ts` into
+`lib/test-command-positions.ts`. While it sat open, #735 landed CI sharding
+and edited the same lines in their old home: `suiteJobName` became the one
+binding deciding which job runs the suite, and a trailing `--shard=N/M` became
+something the reader strips rather than a different command.
+
+**The resolution that looks obviously right is the one that reverts it.**
+`git checkout --ours` on that hunk resolves the conflict cleanly, compiles,
+typechecks, and leaves a module that is #735's code in its new location only
+by coincidence — it is the PRE-#735 code, and nothing in the diff says so,
+because the diff is a file deletion beside a file addition.
+
+Three things are true of that resolution and worth separating, because only
+the third is protection:
+
+1. **Typecheck does not see it.** Both versions are well-typed.
+2. **The pre-existing suite DOES see it, by luck.** M14 is 4 red, and three
+   of those four are cases that read the repository's own `ci.yml` and would
+   have gone green the moment `ci.shards` went back to 1. Catching a
+   regression because an unrelated config value happens to be set is not
+   coverage; it is a tree that currently disagrees.
+3. **A planted fixture sees it on purpose.** The `AC-9/#735` cases write a
+   matrix `ci.yml` of their own, assert the extracted command is `bun test`
+   rather than `echo aggregate`, and assert the equality the strip exists to
+   produce — `--shard=2/4` equal to no flag, `--parallel` **not** equal, a
+   differing command before the flag **not** equal. The second half is the
+   one that keeps the strip narrow; without it the case is satisfied by a
+   reader that discards every flag.
+
+The general rule for a move: **name the commits that touched the source
+region while your branch was open, and port each one into the destination
+rather than resolving the conflict.** Then prove each carried with a case the
+destination owns. A relocation with no behavioural case over it is #484's
+shape — two expressions of one property, with nothing comparing them.
+
+#### Which cells are witnesses and which are controls
+
+Say which, or the next reader counts twenty-eight.
+
+- **Witnesses** — red on the pre-fix condition, green on the control: the six
+  `AC-6/#NNN` defective cases (one per category), the AC-8 duplicate,
+  preflight-naming and instrument cases, the wrong-fix case, the three AC-9
+  position cases, and the two `AC-9/#735` shard cases.
+- **Controls** — green on BOTH sides by construction, and not evidence of any
+  fix: the six `AC-6/#NNN control` cases, *"this repository reports no
+  unaccounted writer"*, and *"the category reports PASS on this tree"*. They
+  exist to stop a category that refuses everything reading as a category that
+  catches something, and there is no state of the code in which they go red
+  for the original defect.
+- **One case moved from the second list to the first, and the battery is what
+  moved it.** *"The moved bindings behave identically to what the script used
+  to hold"* was written as a control and described here as one. It is red in
+  M14, M15 and M16 — it drives `testCommandAgreement` over the LIVE tree, and
+  this repository's `ci.yml` has been sharded since `c664837a`, so the live
+  tree stopped being a tree on which both readers agree. A control that
+  acquires a witness is better than it was; a control still *described* as
+  one after that is a sentence nobody re-measured, which is the whole subject
+  of this file. The honest reading of its red is narrow, though: it witnesses
+  the shard port **only while `ci.shards` is set**. Set it to 1 and the
+  generated workflow is single-job again, the two readers agree exactly, and
+  this case goes green with nothing else changing — #507's shape, the margin
+  set from outside. That is why the two `AC-9/#735` cases plant their own
+  matrix `ci.yml` instead of reading the repository's.
+- **The #530 artifact case is neither, and is the point of its category**: it
+  asserts the planted `workflow-state.json` DOES carry `testsSha` — so a
+  reading taken off the artifact would say yes — while the schema-based
+  reading refuses. Opposite answers over one tree, which is #530 entire.
+
+#### Provenance
+
+Measured twice. First on the `fix/637-derivation-cases` branch as originally
+written, and then **re-measured in full after rebasing onto `71e3f413`** —
+eleven commits later, including #721's new `action-pin-parity` category inside
+the very file four of these rows mutate. All thirteen rows and the baseline
+reproduce exactly. A row measured on a tree nobody can check out is a claim
+rather than a count (`.claude/rules/parallel-sessions.md`), and a rebase
+retires the tree a row was taken on just as surely as a new commit does.
+
+`lib/parity-binding.ts`, `lib/test-command-positions.ts` and
+`scripts/contract-parity.ts` were restored from a `cp` backup after every row
+and confirmed **byte-identical by sha256**, never by `git checkout --`. None of
+the thirteen mutations is left in the tree. The harness ABORTS a row whose
+anchor appears zero or more than one times rather than measuring nothing —
+which is the property that made the re-measurement worth running at all, since
+#721 added 253 lines to the file holding six of the anchors.
+
+One row is NOT a reconstruction and is worth more than the twelve that are:
+category 1's defect has a real pre-fix tree, and `#626 AC-5` drives the same
+binding over a `git archive` export of `0357c06c^`. M6 reds that case and the
+planted #621 case together, which is the evidence that the reconstruction is
+faithful. **The other five categories have no such tree** — their derivation
+issues are fixed and their pre-fix states were never exported — so those five
+rows measure the case against a reconstruction and not against the defect.
 
 ### Eleven windows converted, and the measurement that says which were about to fail (#664, #666)
 
@@ -1565,3 +1822,90 @@ the row — it is three MORE than the eleven #664 found by hand
 `strip-js-comments.test.ts:211`), which is the argument for a sweep over a
 list of ten edits.
 
+### When the second decider is a COMMENT, and it agrees with itself (#689)
+
+#621 above is N documents naming one string with nothing comparing them. This
+is the same family with the second decider in the cheapest possible position:
+**a trailing comment**, which has no behaviour, is never executed, and is the
+only thing a reader checks.
+
+Two workflows pinned `anthropics/claude-code-action` to two different commits
+and annotated both `# v1`:
+
+| File | Pin | Comment | What it actually was |
+|---|---|---|---|
+| `.github/workflows/ai-review.yml` (#631, unmerged) | `5eb090f3` | `# v1` | v1 |
+| `.github/workflows/claude-review.yml` | `f27be6b6` | `# v1` | v1 as of two releases earlier |
+
+The comments agreed. The pins did not. Nothing compared either pair, and the
+agreement a reader perceived was between two copies of the same assertion.
+
+**The issue's own resolution step is worth a sentence, because it is a second
+instance of this file's subject inside the report of the first.** #689 ran
+`gh api repos/anthropics/claude-code-action/git/ref/tags/v1 --jq .object.sha`,
+got `310805dc…`, and concluded that NEITHER pinned SHA was v1. `v1` is an
+ANNOTATED tag: `refs/tags/v1` points at a tag OBJECT, and the commit is one
+dereference further down — `git/tags/310805dc…` → `5eb090f3…`, which
+`commits/v1` confirms. `310805dc` is not a commit and cannot be a `uses:` pin
+at all. The measurement was taken with an instrument that answers a nearby
+question, and it answered confidently. One of the two pins WAS v1.
+
+The fix is `lib/claude-code-action.ts` — one declaration of the SHA and the
+version — and `action-pin-parity` in `scripts/contract-parity.ts`, which
+compares every `.github/workflows/*.yml` `uses:` line and every literal under
+`lib/` and `scripts/` to it. The comment is compared too, so it is derived
+from the same declaration as the pin rather than asserted beside it.
+
+**The cheapest wrong fix, named: edit the two SHAs so they match, and move
+on.** One character, the symptom goes away, and nothing compares them
+tomorrow. The cases survive it NON-vacuously, and the reason is a design
+choice rather than a happy accident: they never compare the workflows to EACH
+OTHER. Every position is compared to the declaration, so the tree that repair
+produces — two workflows agreeing perfectly, nothing saying what they should
+agree with — reports UNMEASURED. `AC-4` plants exactly that tree.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/action-pin-parity.test.ts` (12 tests). Every count was predicted before
+the battery ran, and **the baseline row was read before any mutation row.**
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 12 pass, 0 fail | **12 pass, 0 fail** | — |
+| `actionPinViolations` short-circuited to `return []` | 5 | **5 of 12** | a tree declaring `5eb090f3` whose two workflows pin `5eb090f3` and `f27be6b6`: the original returns FAIL and one violation naming `claude-review.yml:4` and both SHAs, the mutant returns PASS and none |
+| the `pins.length === 0` refusal removed from `actionPinParity` | 1 | **1 of 12** | a tree declaring the pin whose only workflow is a `ci.yml` naming the action nowhere: the original is UNMEASURED (`unresolved-source`), the mutant is **PASS** — zero pins read as perfect agreement |
+| the `NoActionPinError` throw removed from `actionPinAgreement` | 1 | **1 of 12** | the same tree: the original throws, the mutant returns `{pins: 0, violations: []}` |
+| **the cheapest wrong fix as a CHECK**: the declaration dropped, the pins compared to each other | 5 | **8 of 12** | a tree with no declaration whose two workflows both pin `5eb090f3`: the original is UNMEASURED (`absent-file`), the mutant is PASS |
+| the genuinely pre-#689 `claude-review.yml` — `f27be6b6` restored | 3 | **3 of 12** | the live tree: the original reads `5eb090f3` off `claude-review.yml:122`, the pre-fix source reads `f27be6b6` and the category is FAIL |
+
+**The 8 row came back HIGH, and the three extra reds are the real kind.** The
+prediction covered the five cases that reason about the declaration directly.
+The extra three are:
+
+- `AC-1`'s live-tree case, which asserts `coverage.examined > 1`. With no
+  declaration site pushed, the live tree examines one position instead of two
+  — the coverage control doing exactly its job.
+- both `AC-3` cases, which assert the violation text names
+  `claude-review.yml` and `lib/scaffold/ai-review-step.ts`. A self-comparison
+  can report THAT the pins disagree and cannot say WHERE, so its message
+  carries SHAs and no positions.
+
+All three are squarely about the mutated behaviour and the mutant is not
+broken — four cases still pass and the file parses and runs. Per the
+arithmetic above that is "the prediction was wrong and the check is better
+than you thought", and the fact it records is that **naming the position in a
+violation is load-bearing, not decoration**: three cases depend on it, and a
+check that only reports a count would have satisfied the author's model of
+itself.
+
+**What this does NOT do, said here rather than left as an omission.** Nothing
+fails when the pin goes stale. `v1` is a moving tag upstream, so
+`CLAUDE_CODE_ACTION_RESOLVED_ON` dates the reading rather than certifying it;
+a freshness check needs the network, and whether one belongs in the suite is
+the decision #377 is open for. The guarantee here is narrower and exact: every
+position in the tree follows one declaration, and a tree that follows nothing
+says so.
+
+None of the five mutations is left in the tree; all were run and reverted, and
+`scripts/contract-parity.ts`, `.github/workflows/claude-review.yml`,
+`lib/claude-code-action.ts` and `test/action-pin-parity.test.ts` were confirmed
+byte-identical to the measured source afterwards by checksum.

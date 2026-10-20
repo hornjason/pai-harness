@@ -89,6 +89,18 @@ describe("SC-1604: the prefix list is derived from the suites, never listed", ()
     expect(uniqueScratchPrefixes(
       readFileSync(join(REAL_ROOT, "test", "scratch-paths-unique.test.ts"), "utf-8"),
     ), "the fixture file does declare .x-, so the exclusion is load-bearing").toContain(".x-");
+    // A whole-tree scan, so its cost is a function of how many suites the
+    // repository has rather than of anything this case asserts. It died on
+    // CI at 5219ms against the 5000ms default in #323's own PR, for no
+    // reason but two new test files, and #792 gave it a 60s budget.
+    //
+    // #793 repaired the cost rather than the budget, so the budget is gone
+    // again and this case is back on the default. Measured 2026-10-20 over
+    // the same 375 files and 5.69 MB: `scratchPrefixes(REAL_ROOT)` was
+    // 3477/3452/3501ms before and is 170/164/168ms after, and
+    // `repoRootIdents` over every file went 1698ms -> 31ms. The headroom
+    // against the 5000ms default is now ~29x rather than 1.4x, so the next
+    // file anybody adds is not an event.
   });
 
   test("SC-1606: the two readings of a scratch root come from one parse", () => {
@@ -120,6 +132,236 @@ describe("SC-1604: the prefix list is derived from the suites, never listed", ()
       `const ROOT = join(import.meta.dir, "..");\n` +
       `let SCRATCH = "";\nbeforeAll(() => { SCRATCH = join(ROOT, ".late-fixed"); mkdirSync(SCRATCH); });\n`;
     expect(fixedScratchRoots(assignedFixed)).toEqual(["SCRATCH = .late-fixed"]);
+  });
+});
+
+/**
+ * #793 — the parse is driven from the identifier, and the parse is unchanged.
+ *
+ * Both patterns used to open with a FULLY OPTIONAL, NON-CAPTURING keyword
+ * group followed by `\s*`. An optional head with nothing required in front of
+ * it starts a backtracking attempt at essentially every offset, and measured
+ * over this repository's `test/` that head was the whole cost: the same
+ * pattern with the entire `join(...)` tail removed still took 1712ms, so the
+ * time was never in the tail and never in match volume.
+ *
+ * The group was optional AND non-capturing, so it contributed to no capture.
+ * Deleting it is 1716ms -> 32ms with a byte-identical 400-element ident list
+ * over the real tree.
+ *
+ * The REFERENCE below is `lib/scratch-roots.ts` as it stood before that
+ * change, copied verbatim and frozen. Two copies of one parse is normally the
+ * defect this module's own docblock warns about — here it is the instrument,
+ * because the claim being made is "the fast reading equals the slow one" and
+ * that claim needs both readings present to be checkable at all. It is frozen
+ * deliberately: nothing in production calls it, and it must never be updated
+ * to track the live module, because a reference that follows its subject
+ * agrees with it unconditionally.
+ */
+describe("#793: the scan is driven from the identifier, and reads the same thing", () => {
+  const REF_IDENT_SOURCE = String.raw`(?:const|let|var)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\n]+)`;
+  const REF_DECL_SOURCE = String.raw`(?:const|let|var\s+)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*"(\.[^"]*)"`;
+
+  function refRepoRootIdents(src: string): Set<string> {
+    const idents = new Set<string>();
+    for (const m of src.matchAll(new RegExp(REF_IDENT_SOURCE, "g"))) {
+      if (/import\.meta\.dir|process\.cwd\(\)/.test(m[2]!)) idents.add(m[1]!);
+    }
+    return idents;
+  }
+  function refIsNavigation(literal: string): boolean {
+    return literal === "." || literal === ".." || literal.startsWith("../");
+  }
+  function refFixedScratchRoots(source: string): string[] {
+    const src = stripJsComments(source);
+    const roots = refRepoRootIdents(src);
+    const out: string[] = [];
+    for (const m of src.matchAll(new RegExp(REF_DECL_SOURCE, "g"))) {
+      const [, name, wrapped, rootIdent, literal] = m;
+      if (wrapped) continue;
+      if (!roots.has(rootIdent!)) continue;
+      if (refIsNavigation(literal!)) continue;
+      const mutates = new RegExp(`(?:mkdirSync|rmSync)\\(\\s*(?:join\\(\\s*)?${name}\\b`);
+      if (mutates.test(src)) out.push(`${name} = ${literal}`);
+    }
+    return out;
+  }
+  function refUniqueScratchPrefixes(source: string): string[] {
+    const src = stripJsComments(source);
+    const roots = refRepoRootIdents(src);
+    const out: string[] = [];
+    for (const m of src.matchAll(new RegExp(REF_DECL_SOURCE, "g"))) {
+      const [, , wrapped, rootIdent, literal] = m;
+      if (!wrapped) continue;
+      if (!roots.has(rootIdent!)) continue;
+      if (refIsNavigation(literal!)) continue;
+      if (!out.includes(literal!)) out.push(literal!);
+    }
+    return out;
+  }
+
+  /** Every `.ts` under test/, read once and shared by the cases below. */
+  function treeSources(): { file: string; raw: string; stripped: string }[] {
+    return readdirSync(join(REAL_ROOT, "test"))
+      .filter(f => f.endsWith(".ts"))
+      .sort()
+      .map(f => {
+        const raw = readFileSync(join(REAL_ROOT, "test", f), "utf-8");
+        return { file: f, raw, stripped: stripJsComments(raw) };
+      });
+  }
+
+  test("every file in test/ parses to the same idents, roots and prefixes as the frozen reference", () => {
+    // NOT a witness of the fix — it is GREEN on the pre-#793 module too, and
+    // has to be, because that is the whole claim. It is the equivalence
+    // proof, and it is also the skip-direction guard: an optimisation that
+    // stopped reading a file the reference reads shows up here as a missing
+    // element, in that file, by name. Element by element, never a count — a
+    // count is satisfied by any substitution that preserves the total.
+    const divergences: string[] = [];
+    let identTotal = 0;
+    let prefixTotal = 0;
+    let fixedTotal = 0;
+    for (const { file, raw, stripped } of treeSources()) {
+      const liveIdents = [...repoRootIdents(stripped)].sort();
+      const refIdents = [...refRepoRootIdents(stripped)].sort();
+      identTotal += refIdents.length;
+      if (JSON.stringify(liveIdents) !== JSON.stringify(refIdents)) {
+        divergences.push(`test/${file} idents: live ${JSON.stringify(liveIdents)} vs reference ${JSON.stringify(refIdents)}`);
+      }
+      const livePrefixes = uniqueScratchPrefixes(raw);
+      const refPrefixes = refUniqueScratchPrefixes(raw);
+      prefixTotal += refPrefixes.length;
+      if (JSON.stringify(livePrefixes) !== JSON.stringify(refPrefixes)) {
+        divergences.push(`test/${file} prefixes: live ${JSON.stringify(livePrefixes)} vs reference ${JSON.stringify(refPrefixes)}`);
+      }
+      const liveFixed = fixedScratchRoots(raw);
+      const refFixed = refFixedScratchRoots(raw);
+      fixedTotal += refFixed.length;
+      if (JSON.stringify(liveFixed) !== JSON.stringify(refFixed)) {
+        divergences.push(`test/${file} fixed roots: live ${JSON.stringify(liveFixed)} vs reference ${JSON.stringify(refFixed)}`);
+      }
+    }
+
+    // Vacuity controls, read BEFORE the verdict. Two empty lists are equal,
+    // so a comparison that found nothing to compare is byte-identical to one
+    // that found everything and agreed.
+    expect(identTotal, "the reference parse read no root identifiers at all — the comparison is empty, not clean")
+      .toBeGreaterThan(300);
+    expect(prefixTotal, "the reference parse derived no prefixes at all — the comparison is empty, not clean")
+      .toBeGreaterThanOrEqual(5);
+    expect(fixedTotal, "the reference parse classified no fixed roots at all — it should see this file's own fixtures")
+      .toBeGreaterThan(0);
+
+    expect(
+      divergences,
+      "the live parse and the frozen pre-#793 parse disagree over test/. The one legal\n" +
+      "divergence class is an identifier literally prefixed by const/let/var at the start\n" +
+      "of an assignment — see the two cases below — and if that is what this is, the LIVE\n" +
+      "reading is the correct one and this expectation needs the file carved out by name,\n" +
+      "not the reference relaxed:\n" + divergences.join("\n"),
+    ).toEqual([]);
+  }, 60_000);
+
+  test("the fast reading is an order of magnitude cheaper than the frozen reference", () => {
+    // A ratio, not a wall clock, so it does not move with the machine: both
+    // numbers are taken in the same run over the same strings. The cheapest
+    // wrong fix for this case is to lower the ratio; measured 2026-10-20 it
+    // is ~26x against a floor of 5x, so a lowering is a visible retreat and
+    // not a rounding adjustment.
+    const sources = treeSources().map(s => s.stripped);
+    let refMs = 0;
+    let liveMs = 0;
+    // Two interleaved passes, so a slow patch of machine time cannot land on
+    // one reading and not the other.
+    for (let pass = 0; pass < 2; pass++) {
+      let t = Date.now();
+      for (const s of sources) refRepoRootIdents(s);
+      refMs += Date.now() - t;
+      t = Date.now();
+      for (const s of sources) repoRootIdents(s);
+      liveMs += Date.now() - t;
+    }
+    expect(refMs, `the reference parse took ${refMs}ms — too fast to be the pattern #793 is about, so this case is measuring something else`)
+      .toBeGreaterThan(200);
+    expect(
+      refMs / Math.max(liveMs, 1),
+      `the live scan took ${liveMs}ms against the reference's ${refMs}ms. #793's head group, or something shaped like it, is back.`,
+    ).toBeGreaterThan(5);
+  }, 60_000);
+
+  test("an identifier that merely starts with a keyword is read whole, and cannot invent a root", () => {
+    // The one input on which the live parse and the frozen reference differ,
+    // and the reason the equivalence above is a proof rather than an
+    // assumption. `letROOT = ...` at the head of an assignment: the reference
+    // consumes `let` as the keyword and captures `ROOT`, a variable that was
+    // never declared. The live parse captures `letROOT`.
+    //
+    // This is a WITNESS — red on the pre-#793 module, green after — and the
+    // direction matters more than the equality. The reference's truncated
+    // `ROOT` is a root identifier nothing in the file ever bound, so an
+    // unrelated `join(ROOT, ...)` elsewhere is read as repo-rooted and its
+    // prefix reaches a RECURSIVE-DELETE allowlist on the strength of a
+    // misparse. The fix narrows the allowlist here; it does not widen it.
+    const invented =
+      `letROOT = join(import.meta.${"dir"}, "..");\n` +
+      `const S = mkdtempSync(join(ROOT, ".invented-"));\n`;
+    expect(repoRootIdents(invented), "the whole identifier is the identifier").toContain("letROOT");
+    expect(repoRootIdents(invented), "`ROOT` was never bound by this source").not.toContain("ROOT");
+    expect(uniqueScratchPrefixes(invented), "a prefix reached the deletion allowlist through an identifier nothing declared")
+      .toEqual([]);
+
+    // And the other half of the same misparse: a root the reference could not
+    // see, so its scratch directories were never swept.
+    const missed =
+      `letROOT = join(import.meta.${"dir"}, "..");\n` +
+      `const S = mkdtempSync(join(letROOT, ".missed-"));\n`;
+    expect(uniqueScratchPrefixes(missed)).toEqual([".missed-"]);
+  });
+
+  test("the declaration forms a literal pre-filter would skip are all still read", () => {
+    // #793's rejected attempt 2 was a per-file literal pre-filter, and the
+    // comment on the issue proposes driving the scan from `join(` instead of
+    // the identifier. Either is wrong in the SKIPPING direction the moment it
+    // spells a literal more tightly than the pattern does. These are the
+    // forms that separate the two, and each is a prefix that must arrive.
+    const forms: [string, string][] = [
+      ["plain const", `const A = mkdtempSync(join(ROOT, ".f-plain-"));`],
+      ["space before join", `const B = mkdtempSync( join(ROOT, ".f-spaced-"));`],
+      ["newline before join", `const C = mkdtempSync(\n  join(ROOT, ".f-wrapped-"));`],
+      ["bare assignment", `D = mkdtempSync(join(ROOT, ".f-bare-"));`],
+      ["var with space", `var E = mkdtempSync(join(ROOT, ".f-var-"));`],
+      ["no space around =", `const F=mkdtempSync(join(ROOT,".f-tight-"));`],
+      ["column zero", `\nconst G = mkdtempSync(join(ROOT, ".f-col0-"));`],
+    ];
+    const header = `const ROOT = join(process.${"cwd"}(), "..");\n`;
+    for (const [name, form] of forms) {
+      const literal = form.match(/"(\.[^"]*)"/)![1]!;
+      expect(uniqueScratchPrefixes(header + form + "\n"), `${name}: the parse stopped seeing this form`)
+        .toEqual([literal]);
+    }
+    // Together, too: a pre-filter applied per file has to keep every form in
+    // one file, not each one on its own.
+    expect(uniqueScratchPrefixes(header + forms.map(f => f[1]).join("\n") + "\n").sort())
+      .toEqual(forms.map(f => f[1].match(/"(\.[^"]*)"/)![1]!).sort());
+  });
+
+  test("a navigation literal is refused as a scratch name by both readings", () => {
+    // The refusal that keeps `join(ROOT, "..")` out of a recursive-delete
+    // allowlist. Asserted here because the fast scan reaches the same
+    // isNavigation call, and a faster scan that lost it would be strictly
+    // worse than the slow one.
+    const header = `const ROOT = join(import.meta.${"dir"}, "..");\n`;
+    for (const nav of [".", "..", "../", "../.."]) {
+      const unique = `const S = mkdtempSync(join(ROOT, "${nav}"));\n`;
+      const fixed = `const T = join(ROOT, "${nav}");\nmkdirSync(T);\n`;
+      expect(uniqueScratchPrefixes(header + unique), `"${nav}" reached the deletion allowlist`).toEqual([]);
+      expect(fixedScratchRoots(header + fixed), `"${nav}" was read as a fixed scratch root`).toEqual([]);
+    }
+    // Non-vacuity: the same shapes with a real scratch name do come back, so
+    // the four empties above are a refusal and not a parse that failed.
+    expect(uniqueScratchPrefixes(header + `const S = mkdtempSync(join(ROOT, ".real-"));\n`)).toEqual([".real-"]);
+    expect(fixedScratchRoots(header + `const T = join(ROOT, ".realfixed");\nmkdirSync(T);\n`)).toEqual(["T = .realfixed"]);
   });
 });
 
@@ -343,6 +585,12 @@ describe("SC-1610: no suite in test/ creates a filesystem path at module scope",
       violations,
       `these run at import, before any afterAll can be registered (#437):\n${violations.join("\n")}`,
     ).toEqual([]);
+    // The same whole-tree scan and the same reasoning as SC-1605 above.
+    // Measured at 2801ms on the CI run where its sibling died at 5219ms, so
+    // it was the next one over the line rather than a case that was fine.
+    // #793 repaired the scan — `repoRootIdents`, which is what this case
+    // runs over every file, went 1698ms -> 31ms — so the 60s budget #792
+    // gave it is gone and it is back on the default.
   });
 
   test("the detector sees the form #437 removed and not the form it installed", () => {

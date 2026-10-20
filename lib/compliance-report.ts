@@ -2,6 +2,8 @@ import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } fr
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 
+import { BRIEF_CONSTRAINTS_SECTION } from "./agents-md-sections.js";
+
 /**
  * The history's record shape (#116).
  *
@@ -574,6 +576,170 @@ export function insertReinforcement(
 }
 
 /**
+ * The region a reinforcement goes to whenever the brief has one (#655).
+ *
+ * It outranks every COMP's own preference, and that ordering is #655's
+ * finding rather than a taste: `## Efficiency Rules`, `## Testing Rules` and
+ * `## Never Do` are generated from `templates/agent-briefs/`, so a
+ * reinforcement written into one of them is destroyed by the next
+ * `bunx rungate scaffold .`. `## Project Constraints` is the one region of a
+ * brief a re-scaffold carries forward verbatim, so a rule mined from this
+ * repo's own compliance history survives there and nowhere else in the file.
+ *
+ * Read from `BRIEF_CONSTRAINTS_SECTION` rather than spelled here, because a
+ * second literal naming that heading is a copy that stops agreeing with the
+ * preserver (#621).
+ */
+export const HILL_CLIMB_DURABLE_SECTION = BRIEF_CONSTRAINTS_SECTION.label;
+
+/**
+ * Every heading a reinforcement can be spliced under (#704, #655).
+ *
+ * The durable region first, then the three generated ones. This is the list
+ * the brief is searched for and the order a COMP with no stated preference
+ * tries them in. It is exported because every other position that talks
+ * about "the headings" — the refusal sentence, the spec, the tests — must
+ * name the same set, and a second hand-written copy would be a list that
+ * silently stops agreeing with the one the code reads.
+ *
+ * Preference, not creation. A brief with none of the four still reaches
+ * `NO_SECTION`, which is the state #646 made reportable — writing a heading
+ * in would make that state unreachable and silently change what every
+ * receipt says.
+ */
+export const HILL_CLIMB_SECTIONS = [
+  HILL_CLIMB_DURABLE_SECTION,
+  "## Efficiency Rules",
+  "## Testing Rules",
+  "## Never Do",
+] as const;
+
+export type HillClimbSection = (typeof HILL_CLIMB_SECTIONS)[number];
+
+/**
+ * Which heading each COMP's reinforcement belongs under (#704).
+ *
+ * Before this table the selector was one nested conditional — `## Testing
+ * Rules` if the COMP was literally `COMP-2`, otherwise `## Efficiency Rules`,
+ * otherwise `## Never Do`. Read as a mapping that is: one id reaches one
+ * heading and twelve reach two, so a brief carrying ONLY `## Testing Rules`
+ * — which is `marcus.md`, the role that produces most of the traffic —
+ * accepts a reinforcement for COMP-2 and drops every other COMP on the floor
+ * reporting that the brief had no section. Measured over the recorded history
+ * with `scripts/replay-hill-climb-history.ts`: 51 of marcus's 136 detected
+ * actions were refused by a brief that was carrying a heading the whole time.
+ *
+ * The primary is the section the rule is ABOUT, which is also what
+ * `lib/transcript-checker.ts` records in each criterion's `source` for the
+ * four it names: COMP-2 is `marcus.md § Testing Rules`, COMP-9 is
+ * `marcus.md § Efficiency Rules`, COMP-6 and COMP-7 are `marcus.md § Never
+ * Do`. The rest are classified the same way — a prohibition under `Never Do`,
+ * a tool-economy rule under `Efficiency Rules`, a test-ordering rule under
+ * `Testing Rules`.
+ *
+ * It is a lookup WITHOUT a fallback on purpose. An id nobody classified is a
+ * fact about this table, and `resolveHillClimbSection` says so by name rather
+ * than letting it arrive at the same refusal a brief with no headings
+ * produces — those are different states and only one of them is fixed by
+ * editing a brief.
+ */
+const COMP_PRIMARY_SECTION: Record<string, HillClimbSection> = {
+  "COMP-1": "## Never Do",
+  "COMP-2": "## Testing Rules",
+  "COMP-3": "## Testing Rules",
+  "COMP-4": "## Never Do",
+  "COMP-5": "## Never Do",
+  "COMP-6": "## Never Do",
+  "COMP-7": "## Never Do",
+  "COMP-8": "## Never Do",
+  "COMP-9": "## Efficiency Rules",
+  "COMP-10": "## Efficiency Rules",
+  "COMP-11": "## Never Do",
+  "COMP-12": "## Efficiency Rules",
+  "COMP-13": "## Testing Rules",
+};
+
+/**
+ * The headings to try for `compId`, most preferred first, or `null` when the
+ * id is not classified.
+ *
+ * Three rules, in this order, and the first is #655's rather than this
+ * issue's: DURABILITY BEATS TOPICALITY. A rule spliced into the right
+ * section of a brief that the next scaffold run rewrites is a rule that
+ * does not exist, so `## Project Constraints` is tried first for every
+ * COMP. `COMP_PRIMARY_SECTION` then decides among the generated three, and
+ * the remainder follow in `HILL_CLIMB_SECTIONS` order.
+ *
+ * The tail is DERIVED from `HILL_CLIMB_SECTIONS` rather than written out
+ * per id, so a heading added to that list is reachable from every COMP
+ * without thirteen edits — and so the table above cannot contain a row that
+ * omits one.
+ */
+export function hillClimbSectionPreference(compId: string): readonly HillClimbSection[] | null {
+  const primary = COMP_PRIMARY_SECTION[compId];
+  if (!primary) return null;
+  const ranked: HillClimbSection[] = [HILL_CLIMB_DURABLE_SECTION, primary];
+  return [...ranked, ...HILL_CLIMB_SECTIONS.filter((s) => !ranked.includes(s))];
+}
+
+/**
+ * Where in `content` a level-2 heading starts, or -1.
+ *
+ * Anchored to the start of a line, because `indexOf("## Never Do")` also
+ * matches the last eleven characters of `### Never Do` — and the insertion
+ * arithmetic below then measures from an index that is not where the heading
+ * begins.
+ */
+function headingIndex(content: string, heading: HillClimbSection): number {
+  if (content.startsWith(heading)) return 0;
+  const at = content.indexOf(`\n${heading}`);
+  return at === -1 ? -1 : at + 1;
+}
+
+/**
+ * Where a reinforcement for `compId` goes in `content` (#704).
+ *
+ * The ONE binding that maps a COMP id to a destination heading, with one call
+ * site — `applyHillClimb`. A second place that answered this question would
+ * survive any mutation of this one and hold its cases up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ *
+ * Three answers, and the distinction between the last two is the whole point:
+ *
+ * - `RESOLVED` — the heading, and the index it starts at.
+ * - `UNMAPPED_COMP` — the id is not in `COMP_PRIMARY_SECTION`. Nothing about
+ *   the brief caused this and no edit to a brief fixes it.
+ * - `NO_SECTION` — the id is mapped and the brief carries none of the three.
+ */
+export type HillClimbSectionResolution =
+  | { kind: "RESOLVED"; compId: string; heading: HillClimbSection; index: number }
+  | { kind: "UNMAPPED_COMP"; compId: string; reason: string }
+  | { kind: "NO_SECTION"; compId: string; reason: string };
+
+export function resolveHillClimbSection(
+  compId: string,
+  content: string,
+): HillClimbSectionResolution {
+  const preference = hillClimbSectionPreference(compId);
+  if (!preference) {
+    return {
+      kind: "UNMAPPED_COMP",
+      compId,
+      reason: `${compId} has no destination heading declared, so no brief can accept it`,
+    };
+  }
+  for (const heading of preference) {
+    const index = headingIndex(content, heading);
+    if (index !== -1) return { kind: "RESOLVED", compId, heading, index };
+  }
+  return {
+    kind: "NO_SECTION",
+    compId,
+    reason: `the brief carries none of ${HILL_CLIMB_SECTIONS.join(", ")}`,
+  };
+}
+
+/**
  * What `applyHillClimb` decided about an action it did NOT apply (#646).
  *
  * The function decides exactly three things, and it used to report all three
@@ -588,6 +754,11 @@ export function insertReinforcement(
  * - `REINFORCEMENT_PRESENT` — the brief already carries this reinforcement.
  * - `NO_SECTION` — the brief has none of the headings a reinforcement is
  *   spliced into.
+ * - `UNMAPPED_COMP` — the COMP id has no destination heading declared (#704).
+ *   Separate from `NO_SECTION` because the two have opposite remedies: one is
+ *   fixed by editing a brief and the other by editing
+ *   `COMP_PRIMARY_SECTION`, and a run that reports the first for the second
+ *   sends whoever reads it to the wrong file.
  *
  * `promotion` is `string | undefined` rather than optional because an action
  * at tier 2 or 3 may carry none, and "the action named no promotion" is a
@@ -597,7 +768,8 @@ export function insertReinforcement(
 export type HillClimbSkipOutcome =
   | { kind: "TIER_PROMOTION"; compId: string; tier: 2 | 3; promotion: string | undefined }
   | { kind: "REINFORCEMENT_PRESENT"; compId: string }
-  | { kind: "NO_SECTION"; compId: string };
+  | { kind: "NO_SECTION"; compId: string }
+  | { kind: "UNMAPPED_COMP"; compId: string; reason: string };
 
 /**
  * The one binding that turns a skip outcome into the reported line.
@@ -617,6 +789,8 @@ export function hillClimbSkipSentence(outcome: HillClimbSkipOutcome): string {
       return `${outcome.compId}: reinforcement already present in brief`;
     case "NO_SECTION":
       return `${outcome.compId}: no suitable section found in brief`;
+    case "UNMAPPED_COMP":
+      return `${outcome.compId}: ${outcome.reason}`;
   }
 }
 
@@ -664,21 +838,20 @@ export function applyHillClimb(
       continue;
     }
 
-    const efficiencyIdx = content.indexOf("## Efficiency Rules");
-    const testingIdx = content.indexOf("## Testing Rules");
-    const neverIdx = content.indexOf("## Never Do");
-
-    const sectionIdx =
-      action.compId === "COMP-2" && testingIdx !== -1
-        ? testingIdx
-        : efficiencyIdx !== -1
-          ? efficiencyIdx
-          : neverIdx;
-
-    if (sectionIdx === -1) {
+    // The one call site of the one binding that maps a COMP to a heading
+    // (#704). #655's `## Project Constraints` precedence lives inside it,
+    // not here: asking the question a second time at the call site would
+    // make both copies unmutatable.
+    const resolution = resolveHillClimbSection(action.compId, content);
+    if (resolution.kind === "UNMAPPED_COMP") {
+      skipOutcomes.push(resolution);
+      continue;
+    }
+    if (resolution.kind === "NO_SECTION") {
       skipOutcomes.push({ kind: "NO_SECTION", compId: action.compId });
       continue;
     }
+    const sectionIdx = resolution.index;
 
     const nextSection = content.indexOf("\n## ", sectionIdx + 1);
     const insertIdx = nextSection !== -1 ? nextSection : content.length;

@@ -362,6 +362,30 @@ const SuiteMeasurementShape = {
   ran: z.number().int().nonnegative().optional(),
   skip: z.number().int().nonnegative().nullable().optional(),
   todo: z.number().int().nonnegative().nullable().optional(),
+  // #323 — the names beside the count. `failures` is a number, and the
+  // refusal two fields up says "a FAIL must name at least one" while naming
+  // nothing. A schema is a FILTER (#646): a recorder that writes these and a
+  // schema that does not declare them is a record that silently loses them.
+  //
+  // The list may be SHORTER than `failures` and that is not a contradiction:
+  // a module-scope error counts toward the total and prints no test name,
+  // because the test that would carry it never ran. `describeSuiteFailures`
+  // in lib/suite-run-reading.ts is the one place that says so in words.
+  failingTests: z.array(z.string()).optional(),
+  errors: z.number().int().nonnegative().nullable().optional(),
+  // #323 SC-4 — how much work the run did, beside what it found.
+  //
+  // The 2026-10-11 series this issue is about left exactly one usable lead:
+  // the run that failed executed 384 more assertions than either clean run,
+  // against an almost identical test count. Nobody could say so at the time,
+  // because the number lived in a terminal scrollback. Recorded, it is a
+  // number a reader can compare across two PRs.
+  //
+  // `.nullable()`, for the reason `tests` gives above: absent means a
+  // harness older than this field, null means the runner was asked and did
+  // not say, and a number means it said. No gate reads it — a run executing
+  // more assertions than the one before it is not a failure.
+  expectCalls: z.number().int().nonnegative().nullable().optional(),
 };
 
 /**
@@ -891,6 +915,23 @@ export const WorkflowStateSchema = z.object({
      * is found — see `nextCensus`.
      */
     testCensus: z.record(z.string(), z.number()).optional(),
+    /**
+     * The gate's HMAC over `testCensus` and the run's slug (#494).
+     *
+     * Declared because a `z.object` is a FILTER, not a description: a field
+     * the schema does not name is stripped from every parsed state, so an
+     * undeclared signature would reach the next gate run looking exactly
+     * like one an agent had deleted.
+     *
+     * `.optional()` on purpose, and it is not a hole. Making it required
+     * would refuse the state file rather than report the erasure, which
+     * turns a detectable tamper into a crashed run — and the heal agent
+     * writes this file through `writeWorkflowState`, so the refusal would
+     * land on the wrong party. The detection is in `readPersistedCensus`
+     * and `censusVerdict`, where an absent signature beside an existing
+     * witness reads UNMEASURED.
+     */
+    testCensusSignature: z.string().optional(),
     environments: z.any().optional(),
     verdicts: z.any().optional(),
     evidence: z.any().optional(),

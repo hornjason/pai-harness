@@ -33,7 +33,7 @@
  *               the refusal names, so it is one command rather than a
  *               paragraph.
  *
- * TWO PROPERTIES THIS FILE MUST KEEP, both asserted by
+ * THREE PROPERTIES THIS FILE MUST KEEP, all asserted by
  * test/unit/installed-hook-currency.test.ts (see
  * .claude/rules/checks-must-be-able-to-fail.md, "For a script whose job is to
  * exit non-zero"):
@@ -49,29 +49,64 @@
  *      having been rejected on the merits. The generator is reached through a
  *      path computed from `--generator` instead, which is why that option
  *      exists at all.
+ *   3. Every refusal carries a CLASS, and the class decides the label (#613).
+ *      The exit code says a refusal happened; it cannot say what was refused,
+ *      and one label over every class is the same defect as one exit code
+ *      over every outcome. See REFUSAL_PREFIX below.
  */
 
 import { execFileSync } from "child_process";
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "fs";
-import { tmpdir } from "os";
+import { chmodSync, lstatSync, readFileSync, writeFileSync } from "fs";
 import { isAbsolute, join } from "path";
 import { fileURLToPath } from "url";
 
 /** The one exit code every refusal travels through. See note 1 above. */
 export const REFUSE_EXIT = 1;
 
+/**
+ * What a refusal is ABOUT. See note 3 above.
+ *
+ * Before #613 every refusal in this file was printed under the staleness
+ * label, including the three `parseArgs` raises — so `--harness` instead of
+ * `--generator` reported the installed hook as stale on a checkout whose hook
+ * was current, and the remedy the label implies is `--install`, which replaces
+ * a hook that was fine. Three more classes were collapsed the same way and two
+ * of them are worse than the typo:
+ *
+ *  - the GENERATOR failing to load or run is the INSTRUMENT, not the subject.
+ *    "The installed hook differs from the generator" is a measurement; "the
+ *    generator could not be run" is the ABSENCE of one, and reporting an
+ *    absent measurement as the stalest available verdict is
+ *    `.claude/rules/config-access.md`'s UNMEASURED distinction with the sign
+ *    flipped.
+ *  - `installHook` failing reports STALENESS in `--install` mode, so the
+ *    remedy the message names is the command that just failed.
+ *
+ * `0`, `{}`, `null` and silence are indistinguishable from success. One label
+ * over four classes is the same defect one level up: the reader cannot tell an
+ * argument error from a measured failure from a reading that was never taken.
+ */
+export type RefusalClass = "ARGUMENTS" | "UNMEASURED" | "STALE" | "INSTALL";
+
+/**
+ * The one place a refusal label is written. Each literal appears exactly once
+ * in this file — asserted by the test, because a second copy at a print site
+ * would survive any mutation of this table and both would read as covered
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ */
+export const REFUSAL_PREFIX: Record<RefusalClass, string> = {
+  ARGUMENTS: "ARGUMENT ERROR",
+  UNMEASURED: "HOOK CURRENCY UNMEASURED",
+  STALE: "INSTALLED HOOK STALE",
+  INSTALL: "HOOK INSTALL REFUSED",
+};
+
 export class HookRefused extends Error {
-  constructor(message: string) {
+  readonly refusalClass: RefusalClass;
+  constructor(refusalClass: RefusalClass, message: string) {
     super(message);
     this.name = "HookRefused";
+    this.refusalClass = refusalClass;
   }
 }
 
@@ -97,11 +132,21 @@ export const GUARD_PROPERTIES: GuardProperty[] = [
   },
   {
     name: "the updater resolution (#599)",
-    probe: 'updater="scripts/update-project-state.ts"',
+    probe: "project-state: UNMEASURED",
   },
   {
     name: "the decline on stderr (#599)",
     probe: "are DA-owned (#296); update them from the primary checkout.\" >&2",
+  },
+  {
+    // #610. Deliberately NOT either baked path: the generator emits
+    // `scripts/update-project-state.ts` for the harness and
+    // `node_modules/rungate/scripts/…` for a consumer, so a probe naming
+    // either one reports every tree of the other kind as predating a fix it
+    // carries. This marker is in every form the generator emits, including
+    // the UNMEASURED one.
+    name: "the generation-time updater resolution (#610)",
+    probe: "Which updater runs was decided when this hook was generated (#610)",
   },
 ];
 
@@ -123,10 +168,13 @@ export function installedHookPath(projectRoot: string): string {
     }).trim();
   } catch (e) {
     throw new HookRefused(
+      "UNMEASURED",
       `${projectRoot} is not a git checkout, so it has no installed hook to read: ${firstLine(e)}`,
     );
   }
-  if (!common) throw new HookRefused(`git reported no common dir for ${projectRoot}`);
+  if (!common) {
+    throw new HookRefused("UNMEASURED", `git reported no common dir for ${projectRoot}`);
+  }
   return join(isAbsolute(common) ? common : join(projectRoot, common), "hooks", "pre-commit");
 }
 
@@ -143,32 +191,53 @@ export interface GeneratorOutput {
  * always agrees with the first: the comparison would pass while the generator
  * drifted, and no mutation of either could tell them apart.
  */
-export async function generatorHook(generatorRoot: string): Promise<GeneratorOutput> {
+export async function generatorHook(
+  generatorRoot: string,
+  projectRoot: string,
+): Promise<GeneratorOutput> {
   const modulePath = join(generatorRoot, "lib", "scaffold", "steps.ts");
   let mod: any;
   try {
     mod = await import(modulePath);
   } catch (e) {
     throw new HookRefused(
+      "UNMEASURED",
       `could not load the hook generator at ${modulePath}: ${firstLine(e)}. ` +
         `Pass --generator <rungate checkout> if this project is not the harness.`,
     );
   }
-  if (typeof mod.createGitHooks !== "function" || typeof mod.PRE_COMMIT_MANAGED_MARKER !== "string") {
+  if (
+    typeof mod.preCommitHookScript !== "function" ||
+    typeof mod.PRE_COMMIT_MANAGED_MARKER !== "string"
+  ) {
     throw new HookRefused(
-      `${modulePath} does not export createGitHooks and PRE_COMMIT_MANAGED_MARKER, so there is ` +
-        `nothing to compare the installed hook against`,
+      "UNMEASURED",
+      `${modulePath} does not export preCommitHookScript and PRE_COMMIT_MANAGED_MARKER, so there ` +
+        `is nothing to compare the installed hook against`,
     );
   }
 
-  const scratch = mkdtempSync(join(tmpdir(), "rungate-hookgen-"));
-  try {
-    mkdirSync(join(scratch, ".git", "hooks"), { recursive: true });
-    mod.createGitHooks(scratch, []);
-    const content = readFileSync(join(scratch, ".git", "hooks", "pre-commit"), "utf-8");
+  {
+    let content: string;
+    try {
+      // Generated FOR THE PROJECT, and written nowhere (#610). The hook names
+      // one updater, chosen from what the project declares itself to be — so
+      // a scratch directory would produce the hook for an empty consumer and
+      // report every real checkout as stale. And a generator that could only
+      // answer by installing itself would make this check the thing it is
+      // checking, over a `.git/hooks/pre-commit` that is shared by every
+      // linked worktree of the repository at once.
+      content = mod.preCommitHookScript(projectRoot);
+    } catch (e) {
+      throw new HookRefused(
+        "UNMEASURED",
+        `the hook generator threw for ${projectRoot}: ${firstLine(e)}`,
+      );
+    }
     const marker: string = mod.PRE_COMMIT_MANAGED_MARKER;
     if (!content.includes(marker)) {
       throw new HookRefused(
+        "UNMEASURED",
         `the generator's own output does not carry PRE_COMMIT_MANAGED_MARKER, so no installed ` +
           `hook could ever be recognised as managed`,
       );
@@ -176,6 +245,7 @@ export async function generatorHook(generatorRoot: string): Promise<GeneratorOut
     const blind = GUARD_PROPERTIES.filter(p => !content.includes(p.probe));
     if (blind.length > 0) {
       throw new HookRefused(
+        "UNMEASURED",
         `the generator no longer contains ${blind.map(b => b.name).join(", ")}. The probe` +
           `${blind.length > 1 ? "s" : ""} in GUARD_PROPERTIES ha${blind.length > 1 ? "ve" : "s"} ` +
           `gone stale, and a stale probe reports every installed hook as predating a fix it may ` +
@@ -183,8 +253,6 @@ export async function generatorHook(generatorRoot: string): Promise<GeneratorOut
       );
     }
     return { content, marker };
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -251,12 +319,16 @@ export function installHook(path: string, content: string): void {
   }
   if (link?.isSymbolicLink()) {
     throw new HookRefused(
+      "INSTALL",
       `${path} is a symlink, and the hook is not written through one — the target may be ` +
         `outside this repository. Replace it with a real file, or delete it and re-run.`,
     );
   }
   if (link && !link.isFile()) {
-    throw new HookRefused(`${path} exists but is not a regular file, so it will not be replaced.`);
+    throw new HookRefused(
+      "INSTALL",
+      `${path} exists but is not a regular file, so it will not be replaced.`,
+    );
   }
   writeFileSync(path, content);
   chmodSync(path, 0o755);
@@ -277,6 +349,7 @@ export function parseArgs(argv: string[]): Record<string, string | boolean> {
     const m = /^--([A-Za-z][A-Za-z-]*)$/.exec(arg);
     if (!m) {
       throw new HookRefused(
+        "ARGUMENTS",
         `unexpected argument "${arg.slice(0, 80)}" — every input is a --flag, with a value where one is needed`,
       );
     }
@@ -285,11 +358,11 @@ export function parseArgs(argv: string[]): Record<string, string | boolean> {
       continue;
     }
     if (!VALUE_OPTIONS.has(m[1])) {
-      throw new HookRefused(`unknown option --${m[1]}`);
+      throw new HookRefused("ARGUMENTS", `unknown option --${m[1]}`);
     }
     const value = argv[++i];
     if (value === undefined || value.startsWith("--")) {
-      throw new HookRefused(`--${m[1]} needs a value`);
+      throw new HookRefused("ARGUMENTS", `--${m[1]} needs a value`);
     }
     out[m[1]] = value;
   }
@@ -306,12 +379,13 @@ function readIfPresent(path: string): string | null {
     const link = lstatSync(path);
     if (link.isSymbolicLink()) {
       throw new HookRefused(
+        "UNMEASURED",
         `${path} is a symlink. The hook that runs is the link's target, which may be outside ` +
           `this repository, so this check will not follow it. Replace it with a real file.`,
       );
     }
     if (!link.isFile()) {
-      throw new HookRefused(`${path} exists but is not a regular file`);
+      throw new HookRefused("UNMEASURED", `${path} exists but is not a regular file`);
     }
     return readFileSync(path, "utf-8");
   } catch (e) {
@@ -329,7 +403,7 @@ if (import.meta.main) {
     const generatorRoot = typeof args.generator === "string" ? args.generator : defaultGeneratorRoot();
 
     const path = installedHookPath(project);
-    const { content, marker } = await generatorHook(generatorRoot);
+    const { content, marker } = await generatorHook(generatorRoot, project);
 
     if (args.install === true) {
       installHook(path, content);
@@ -340,15 +414,22 @@ if (import.meta.main) {
       // goes through REFUSE_EXIT" scan has no exception to carve out — an
       // exception is where a literal exit code hides. The scan reads this
       // prose too, which is why the shape is not written out here.
+      //
+      // The staleness verdict is RAISED rather than printed here (#613), so
+      // there is exactly one position in this file that turns a refusal into
+      // a line of output. A second print site would be a second decider
+      // about the label, and a mutation of either would leave the other
+      // holding the case up.
       const refusal = currencyRefusal(readIfPresent(path), content, marker, path);
-      if (refusal) {
-        console.error(`INSTALLED HOOK STALE: ${refusal}`);
-        process.exit(REFUSE_EXIT);
-      }
+      if (refusal) throw new HookRefused("STALE", refusal);
       console.log(`pre-commit is current at ${path}`);
     }
   } catch (e) {
-    console.error(e instanceof HookRefused ? `INSTALLED HOOK STALE: ${e.message}` : String(e));
+    // The class decides the label. `e.refusalClass` is set at the raise, by
+    // the code that knows what it refused; nothing here re-derives it from
+    // the message, because a second reading of the same fact is a second
+    // decider that always agrees.
+    console.error(e instanceof HookRefused ? `${REFUSAL_PREFIX[e.refusalClass]}: ${e.message}` : String(e));
     process.exit(REFUSE_EXIT);
   }
 }

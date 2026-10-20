@@ -20,18 +20,54 @@
  * opened, does the set of issues GitHub would close from its title, body and
  * commit message equal the set the record SAYS it closed?
  *
- * Both directions are refusals:
- *   - a keyword-derived close that is not declared is #586 happening again;
- *   - a declared close with no keyword behind it is a record claiming a
- *     closure the PR will not perform, which reads as done and is not.
+ * Both directions are refusals, and they are two DIFFERENT questions asked of
+ * two different things (#605):
+ *
+ *   - **keyword -> undeclared.** A closing keyword in the title, body or
+ *     commit message that the record never declared is #586 happening again.
+ *     Unchanged since #590; this is the half that has earned its place twice.
+ *   - **declared -> not closed.** An id in `issues_closed` that is not CLOSED
+ *     on GitHub is a record that reads done over an issue that is not.
+ *
+ * ## Why the second question is no longer asked of the text (#605)
+ *
+ * It used to be "a declared close with no keyword behind it". That reads
+ * `issues_closed` as *what this PR will close*, and it is not: it is *what
+ * the session closed*, across days of work and many PRs, almost all of them
+ * merged before the state PR exists. Session 50 declared #274, #585, #586 and
+ * #590 — four issues closed by four of their own PRs — and the check refused
+ * all four, correctly given its model and false about the world.
+ *
+ * The way to make it stop was to write four no-op closing keywords into the
+ * PR body, and then — purer and worse — into `session.summary`, a position
+ * GitHub never parses. Four records in a row did it. That is satisfying the
+ * proxy instead of the property, and the proxy it satisfies is **writing
+ * closing keywords into narrative prose**, which is the exact defect #590 was
+ * filed over. The check was manufacturing its own failure mode.
+ *
+ * So the declared side asks GitHub. A record declaring an id that is already
+ * CLOSED passes with no keyword anywhere, and the incentive disappears.
+ *
+ * ## An unreachable GitHub is UNMEASURED, and UNMEASURED is not clean
+ *
+ * The declared side needs a reading this file cannot take locally, so it has
+ * a third state. `0`, `{}`, `null` and `SKIP` are indistinguishable from
+ * success; UNMEASURED is not. A declared id with no reading behind it refuses
+ * and says so by name — see `.claude/rules/config-access.md`.
  *
  * Usage:
  *   bun scripts/check-state-record-closes.ts --state project-state.json \
  *       [--title "<pr title>"] [--body-file <f>] [--message-file <f>] \
- *       [--repo owner/name]
+ *       [--repo owner/name] [--issue-states github|<file.json>]
  *
- * Exits 0 and prints its own coverage when the sets agree; exits
- * STATE_CLOSES_REFUSE_EXIT and names both sets when they do not.
+ * `--issue-states github` asks the GitHub REST API (needs `--repo`, and
+ * `GITHUB_TOKEN`/`GH_TOKEN` for a private repository). `--issue-states <file>`
+ * reads a JSON object mapping issue number to `OPEN` or `CLOSED`, which is how
+ * the suite drives the declared side without a network. With neither, there is
+ * no reading, and every declared id is UNMEASURED.
+ *
+ * Exits 0 and prints its own coverage when both questions are clean; exits
+ * STATE_CLOSES_REFUSE_EXIT and names what it found when they are not.
  *
  * ## Why this is not called from scripts/update-project-state.ts
  *
@@ -226,30 +262,134 @@ export function parseDeclaredCloses(raw: unknown): number[] {
   return [...new Set(out)].sort((a, b) => a - b);
 }
 
-/** One session record, reduced to the two things the comparison reads. */
+/**
+ * What GitHub says about one declared id.
+ *
+ * `UNMEASURED` is a state, not a missing value. An id nobody could ask about
+ * is not an id that is closed, and it is not an id that is open either.
+ */
+export type IssueState = "OPEN" | "CLOSED" | "UNMEASURED";
+
+/** One reading of GitHub, however it was taken. */
+export interface IssueStateReading {
+  /**
+   * Issue number to state. An id absent from the map is UNMEASURED — the
+   * reading does not get to be silent about an id it never reached.
+   */
+  states: Record<number, IssueState>;
+  /** Why a given id is UNMEASURED, when the reader knows. */
+  reasons?: Record<number, string>;
+  /** How the reading was taken, for the coverage line. */
+  source?: string;
+}
+
+/** One session record, reduced to the things the two questions read. */
 export interface StateRecordCloses {
   /**
    * The texts GitHub will parse. Every one of the PR title, the PR body and
    * the commit message is read, because a keyword in any of them closes.
+   *
+   * Read by the keyword -> undeclared question and by nothing else.
    */
   texts: { label: string; text: string }[];
-  /** The record's own `Issues closed:` list. */
+  /** The record's own `Issues closed:` list. Read by both questions. */
   declared: number[];
   /** `owner/name`, or `null` when it is not known. */
   repo?: string | null;
+  /**
+   * GitHub's state for each declared id, or `null` when no reading was taken.
+   *
+   * Read by the declared -> not closed question and by nothing else, which is
+   * what makes the two questions separable: a record with no keyword anywhere
+   * is reachable only by this one, and a record declaring nothing is
+   * reachable only by the other.
+   */
+  issueStates?: IssueStateReading | null;
 }
 
 const list = (ns: number[]) => (ns.length ? ns.join(", ") : "(none)");
 
+/** The reading, rendered so a refusal says what was known and what was not. */
+function statesLine(declared: number[], reading: IssueStateReading | null): string {
+  const where = reading?.source ? ` (read from ${reading.source})` : "";
+  if (reading === null) return `GitHub states${where}: (no reading was taken)`;
+  const pairs = declared.map(n => `#${n}=${reading.states[n] ?? "UNMEASURED"}`);
+  return `GitHub states${where}: ${pairs.length ? pairs.join(", ") : "(nothing declared)"}`;
+}
+
 /**
- * Every disagreement between what GitHub will close and what the record says,
- * in one list.
+ * Every declared id that is not CLOSED on GitHub, in one list.
  *
- * One decider, one binding to mutate. The CLI below re-checks nothing — two
- * guards answering the same question about the same input are behaviourally
- * one guard, and a mutation of either leaves the other holding the case up.
+ * ONE binding, deliberately: this is the whole declared-side decider, so
+ * `test/closing-keywords.test.ts`'s mutation has exactly one thing to
+ * short-circuit and the count it measures is the count of cases that depend
+ * on it. A second place that re-asked the same question would survive the
+ * mutation and hold those cases up — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * It reads NO text. That is the point of #605: this question cannot be
+ * answered by anything an author writes, so it cannot be satisfied by a
+ * gesture, which is what the keyword version was.
+ */
+export function declaredClosureViolations(
+  declared: number[],
+  reading: IssueStateReading | null,
+): string[] {
+  const ids = [...new Set(declared)].sort((a, b) => a - b);
+  if (ids.length === 0) return [];
+  const context = statesLine(ids, reading);
+  const out: string[] = [];
+  for (const n of ids) {
+    const state: IssueState = reading === null
+      ? "UNMEASURED"
+      : reading.states[n] ?? "UNMEASURED";
+    if (state === "CLOSED") continue;
+    if (state === "OPEN") {
+      out.push(
+        `the record declares #${n} closed, but #${n} is OPEN on GitHub, so the record reads ` +
+          `done while the issue is not. ${context}`,
+      );
+      continue;
+    }
+    const why = reading?.reasons?.[n]
+      ?? (reading === null
+        ? "no reading was taken — pass --issue-states github or --issue-states <file>"
+        : "the reading did not reach it");
+    out.push(
+      `the record declares #${n} closed, and GitHub's state for #${n} is UNMEASURED ` +
+        `(${why}). An unreachable GitHub is not a closed issue and not a clean record. ${context}`,
+    );
+  }
+  return out;
+}
+
+/**
+ * Both questions, asked once each, in one list.
+ *
+ * The CLI below re-checks nothing — two guards answering the same question
+ * about the same input are behaviourally one guard, and a mutation of either
+ * leaves the other holding the case up. The two questions here are not that:
+ * they read disjoint inputs (`texts` and `issueStates`) and each has an input
+ * the other cannot reach, which is the second remedy
+ * `.claude/rules/checks-must-be-able-to-fail.md` prescribes for a pair.
  */
 export function stateRecordCloseViolations(record: StateRecordCloses): string[] {
+  return [
+    ...keywordCloseViolations(record),
+    // The declared side. It reads no text, and the keyword side reads no
+    // GitHub state, so neither can hold the other's cases up.
+    ...declaredClosureViolations(record.declared, record.issueStates ?? null),
+  ];
+}
+
+/**
+ * The keyword -> undeclared question, unchanged since #590.
+ *
+ * The other half of the pair, and the one exported binding for it. Its input
+ * is `texts`; it never looks at `issueStates`, which is what makes a record
+ * declaring nothing an input only this decider can reach.
+ */
+export function keywordCloseViolations(record: StateRecordCloses): string[] {
   const repo = record.repo ?? null;
   const present = record.texts.filter(t => t.text.trim().length > 0);
   if (present.length === 0) {
@@ -285,14 +425,6 @@ export function stateRecordCloseViolations(record: StateRecordCloses): string[] 
     );
   }
 
-  for (const n of declared) {
-    if (keywordSet.includes(n)) continue;
-    out.push(
-      `the record declares #${n} closed, but no closing keyword in the title, body or commit ` +
-        `message will make GitHub close it, so #${n} stays open while the record reads done. ${both}`,
-    );
-  }
-
   return out;
 }
 
@@ -301,15 +433,103 @@ export function coverageLine(record: StateRecordCloses): string {
   const present = record.texts.filter(t => t.text.trim().length > 0);
   const refs = present.flatMap(t => closingReferences(t.text, { label: t.label, repo: record.repo ?? null }));
   const mine = refs.filter(r => r.target === "this-repo");
+  const declared = [...new Set(record.declared)].sort((a, b) => a - b);
+  const reading = record.issueStates ?? null;
+  // A PASS over a record that declared nothing and a PASS over a record whose
+  // five declared ids were each read from GitHub are the same verdict, and no
+  // reader can tell them apart from a verdict alone.
+  const resolved = reading === null
+    ? 0
+    : declared.filter(n => (reading.states[n] ?? "UNMEASURED") !== "UNMEASURED").length;
   return (
     `${present.length} of ${record.texts.length} texts read ` +
     `(${present.map(t => t.label).join(", ") || "none"}), ` +
     `${refs.length} closing references found, ${mine.length} in this repository, ` +
-    `${[...new Set(record.declared)].length} declared`
+    `${declared.length} declared, ` +
+    `${resolved} of ${declared.length} declared ids read from GitHub` +
+    `${reading?.source ? ` via ${reading.source}` : ""}`
   );
 }
 
-const OPTIONS = new Set(["state", "title", "body-file", "message-file", "repo"]);
+/**
+ * Ask GitHub the state of each id.
+ *
+ * `fetchImpl` is the one injection seam, so the suite can drive every branch
+ * — open, closed, 404, a non-JSON body, a thrown request — without a network
+ * and without mutating the environment. An id the call could not resolve is
+ * simply absent from `states`, which `declaredClosureViolations` reads as
+ * UNMEASURED; it is never defaulted to either real state.
+ */
+export async function fetchIssueStates(
+  repo: string | null,
+  ids: number[],
+  opts: { token?: string | null; fetchImpl?: typeof fetch } = {},
+): Promise<IssueStateReading> {
+  const states: Record<number, IssueState> = {};
+  const reasons: Record<number, string> = {};
+  const unique = [...new Set(ids)].sort((a, b) => a - b);
+  if (!repo) {
+    for (const n of unique) reasons[n] = "no --repo was supplied, so there is nothing to ask";
+    return { states, reasons, source: "github" };
+  }
+  const call = opts.fetchImpl ?? fetch;
+  const headers: Record<string, string> = { accept: "application/vnd.github+json" };
+  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
+  for (const n of unique) {
+    try {
+      const res = await call(`https://api.github.com/repos/${repo}/issues/${n}`, { headers });
+      if (!res.ok) {
+        reasons[n] = `GitHub answered HTTP ${res.status}`;
+        continue;
+      }
+      const body = (await res.json()) as { state?: unknown };
+      const raw = typeof body.state === "string" ? body.state.toLowerCase() : "";
+      if (raw === "closed") states[n] = "CLOSED";
+      else if (raw === "open") states[n] = "OPEN";
+      else reasons[n] = `GitHub returned no readable state (${JSON.stringify(body.state)})`;
+    } catch (e) {
+      reasons[n] = `the request failed — ${(e as Error).message}`;
+    }
+  }
+  return { states, reasons, source: `github:${repo}` };
+}
+
+/**
+ * A reading from a JSON file: `{"662": "CLOSED", "640": "OPEN"}`.
+ *
+ * An unreadable value THROWS rather than being dropped, for the reason
+ * `parseDeclaredCloses` throws: a typo must not be the cheapest way past the
+ * comparison. An id simply absent from the file is UNMEASURED, which is a
+ * different thing and is handled by the decider, not here.
+ */
+export function parseIssueStatesFile(raw: string, source: string): IssueStateReading {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new StateCloseRefused(`${source} could not be read as JSON — ${(e as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new StateCloseRefused(`${source} is not a JSON object of issue number to state`);
+  }
+  const states: Record<number, IssueState> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const n = Number(String(key).replace(/^#/, "").trim());
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new StateCloseRefused(`${source} holds the key ${JSON.stringify(key)}, which is not an issue number`);
+    }
+    const state = String(value).toUpperCase();
+    if (state !== "OPEN" && state !== "CLOSED" && state !== "UNMEASURED") {
+      throw new StateCloseRefused(
+        `${source} says #${n} is ${JSON.stringify(value)} — only OPEN, CLOSED or UNMEASURED can be read`,
+      );
+    }
+    states[n] = state as IssueState;
+  }
+  return { states, source };
+}
+
+const OPTIONS = new Set(["state", "title", "body-file", "message-file", "repo", "issue-states"]);
 
 export function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -362,6 +582,34 @@ export function recordFromState(state: unknown, args: Record<string, string>): S
   return { texts, declared: parseDeclaredCloses(s.issues_closed), repo: args.repo ?? null };
 }
 
+/**
+ * Resolve the declared-side reading from whatever the caller asked for.
+ *
+ * `null` is returned only when the caller asked for nothing, and `null` is
+ * the state that makes every declared id UNMEASURED. It is never a quiet
+ * stand-in for "probably all closed".
+ */
+export async function readingFor(
+  args: Record<string, string>,
+  declared: number[],
+  env: Record<string, string | undefined> = process.env,
+): Promise<IssueStateReading | null> {
+  const asked = args["issue-states"];
+  if (!asked) return null;
+  if (asked === "github") {
+    return fetchIssueStates(args.repo ?? null, declared, {
+      token: env.GITHUB_TOKEN ?? env.GH_TOKEN ?? null,
+    });
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(asked, "utf-8");
+  } catch (e) {
+    throw new StateCloseRefused(`--issue-states ${asked} could not be read — ${(e as Error).message}`);
+  }
+  return parseIssueStatesFile(raw, asked);
+}
+
 // CLI entry point. Guarded so the module can be imported by tests without
 // running the comparison and calling process.exit.
 if (import.meta.main) {
@@ -376,11 +624,15 @@ if (import.meta.main) {
     } catch (e) {
       throw new StateCloseRefused(`${args.state} could not be read as JSON — ${(e as Error).message}`);
     }
-    const record = recordFromState(parsed, args);
+    const base = recordFromState(parsed, args);
+    const record: StateRecordCloses = {
+      ...base,
+      issueStates: await readingFor(args, base.declared),
+    };
     const violations = stateRecordCloseViolations(record);
     if (violations.length > 0) {
       console.error(`state-record-closes: ${coverageLine(record)}`);
-      console.error(`state-record-closes: this record and the PR it becomes disagree:`);
+      console.error(`state-record-closes: this record does not hold up:`);
       for (const v of violations) console.error(`  - ${v}`);
       process.exit(STATE_CLOSES_REFUSE_EXIT);
     }

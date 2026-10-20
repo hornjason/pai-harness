@@ -113,6 +113,15 @@ const CONTROL_KEYWORDS = new Set([
   "of", "do", "else", "case", "throw",
 ]);
 
+/**
+ * The keywords that introduce a binding. Declared beside CONTROL_KEYWORDS and
+ * above the module-scope block for the same reason that one is.
+ */
+const DECLARATION_KEYWORDS = new Set(["let", "const", "var"]);
+
+/** Heads whose parenthesised clause is a condition, not a parameter list. */
+const CONDITION_HEADS = new Set(["if", "for", "while", "switch", "with"]);
+
 try {
   const content = readFileSync(resolved, "utf-8");
   // Blanked, not stripped: the offsets and line numbers still line up with
@@ -121,11 +130,46 @@ try {
   const code = stripNonCode(content);
   const lines = code.split("\n");
 
-  const declarations = new Map<string, number>();
+  // #598: the identifier class used to be `[A-Z_][A-Z_0-9]*`, so every name
+  // that is not SCREAMING_SNAKE_CASE sat outside this check entirely while the
+  // success line still said "no temporal dead zone issues". The live instance
+  // is `let primaryBranchBefore` in workflows/ship.js: it is declared beside
+  // the worktree registry, ~3,800 lines above the line that assigns it,
+  // BECAUSE `terminalFailure` reads it and the exits are reachable long before
+  // the assignment runs. Had it stayed where it was assigned, the run would
+  // have died on the way out and this validator would have passed the file.
+  //
+  // The column-zero anchor stays. It is not a naming restriction, it is the
+  // scope test: an indented `let`/`const` is block- or function-scoped, its
+  // TDZ is bounded by its own block, and tracking it would compare a read in
+  // one scope against a declaration in another.
+  const moduleDeclarations = new Map<string, number>();
   for (let i = 0; i < lines.length; i++) {
-    const declMatch = lines[i].match(/^(?:let|const)\s+([A-Z_][A-Z_0-9]*)\s*=/);
-    if (declMatch) declarations.set(declMatch[1], i + 1);
+    const declMatch = lines[i].match(/^(?:let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/);
+    if (declMatch) moduleDeclarations.set(declMatch[1], i + 1);
   }
+
+  // Widening the name class makes collisions ordinary: `testCommand`,
+  // `headSha` and `agentResults` are module-scope consts in ship.js AND
+  // parameter names on functions declared above them. A mention inside a
+  // scope that re-binds the name is not a reference to the module binding at
+  // all, and reporting one is a false positive on a correct workflow — which
+  // is the direction this check must not be wrong in, because a validator
+  // that fails correct files is a validator people route around.
+  //
+  // So a name that is bound anywhere else in the file is DROPPED rather than
+  // resolved. That under-detects, deliberately, and the count of what was
+  // dropped is printed beside the verdict: a scan that reports a verdict has
+  // to report its own coverage, or a PASS over 20 names reads exactly like a
+  // PASS over 62 (#492).
+  const bindings = bindingSites(code);
+  const declarations = new Map<string, number>();
+  const shadowed: string[] = [];
+  for (const [name, declLine] of moduleDeclarations) {
+    if ((bindings.get(name) || 0) > 1) shadowed.push(name);
+    else declarations.set(name, declLine);
+  }
+  shadowed.sort();
 
   const scan: ScanResult = declarations.size > 0
     ? scanSource(code, new Set(declarations.keys()))
@@ -170,8 +214,17 @@ try {
   // read all of — #492 in .claude/rules/checks-must-be-able-to-fail.md — and
   // this check is green on every workflow in the tree, so the coverage number
   // is the only part of its output that can change when it stops working.
+  //
+  // #598: the dropped names are NAMED, not counted. "3 not tracked" tells a
+  // reader the scan is partial; naming them tells the one person who needs to
+  // know which three, and that is the difference between a coverage number
+  // and an actionable one.
   const coverage =
-    `${declarations.size} tracked declaration(s), ${scan.usages.length} reference(s) scanned`;
+    `${declarations.size} of ${moduleDeclarations.size} module declaration(s) tracked, ` +
+    `${scan.usages.length} reference(s) scanned` +
+    (shadowed.length > 0
+      ? `; ${shadowed.length} re-bound elsewhere and NOT checked: ${shadowed.join(", ")}`
+      : "");
   if (violations.length === 0) {
     console.log(`  ✓ TDZ check: no temporal dead zone issues — ${coverage}`);
   } else {
@@ -238,6 +291,154 @@ function moduleScopeReads(scan: ScanResult): ReachedRead[] {
     }
   }
   return out;
+}
+
+/**
+ * How many times each name is BOUND in blanked source — declared, named as a
+ * function, or introduced as a parameter or catch binding.
+ *
+ * It exists to answer one question: is a mention of this name somewhere in
+ * the file certainly a mention of the module-scope binding? A name bound
+ * exactly once has no other binding it could refer to. A name bound twice
+ * might, and this scanner does not resolve scopes, so the caller drops it.
+ *
+ * Every judgement here is biased toward counting MORE bindings than exist,
+ * never fewer. `function f(a, b = LIMIT)` counts `LIMIT` as bound, which is
+ * wrong and harmless: an extra count only ever removes a name from the
+ * tracked set, and a missed TDZ costs one line somebody adds later while a
+ * false positive on a correct workflow costs the validator its credibility.
+ * A binding form nobody thought of is the one failure this ordering cannot
+ * absorb, which is why the parameter rule reads every identifier inside a
+ * parameter list rather than trying to parse the pattern.
+ */
+function bindingSites(src: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  const bump = (name: string) => counts.set(name, (counts.get(name) || 0) + 1);
+  const idChar = (c: string | undefined) => c !== undefined && /[A-Za-z0-9_$]/.test(c);
+
+  /**
+   * Count every identifier in the binding pattern `[from, to)` as bound,
+   * skipping default-value expressions: `projectRoot = PROJECT_ROOT` binds
+   * `projectRoot` and READS `PROJECT_ROOT`, and ship.js has exactly that
+   * twice. Counting the default as a binding would drop a SCREAMING_SNAKE
+   * name this check has tracked since before #598 — under-detection is the
+   * safe direction, but it is not free, and a rule that pays for a widening
+   * by narrowing somewhere else should be made to say so.
+   *
+   * Only a default at the TOP level of the pattern is skipped. A nested one
+   * (`{ a = LIMIT }`) still counts `LIMIT`, which over-counts and is safe. An
+   * arrow inside a default has its own parameter list, and the main loop
+   * reaches it independently of this pass.
+   */
+  const bumpBindings = (from: number, to: number) => {
+    let k = from;
+    let depth = 0;
+    let inDefault = false;
+    while (k < to) {
+      const ch = src[k];
+      if (ch === "(" || ch === "[" || ch === "{") { depth++; k++; continue; }
+      if (ch === ")" || ch === "]" || ch === "}") { depth--; k++; continue; }
+      if (depth === 0 && ch === ",") { inDefault = false; k++; continue; }
+      if (depth === 0 && ch === "=" && src[k + 1] !== "=" && src[k - 1] !== "=") {
+        inDefault = true;
+        k++;
+        continue;
+      }
+      if (/[A-Za-z_$]/.test(ch) && !idChar(src[k - 1])) {
+        let m = k;
+        while (m < to && idChar(src[m])) m++;
+        const w = src.slice(k, m);
+        if (!inDefault && !CONTROL_KEYWORDS.has(w) && !DECLARATION_KEYWORDS.has(w)
+          && w !== "async") {
+          bump(w);
+        }
+        k = m;
+        continue;
+      }
+      k++;
+    }
+  };
+
+  /** Open parens, with the word that preceded each one. */
+  const open: Array<{ at: number; head: string }> = [];
+  let prevWord = "";
+  let i = 0;
+
+  while (i < src.length) {
+    const c = src[i];
+
+    if (/[A-Za-z_$]/.test(c) && !idChar(src[i - 1])) {
+      let j = i;
+      while (j < src.length && idChar(src[j])) j++;
+      const word = src.slice(i, j);
+      let k = j;
+      while (k < src.length && /\s/.test(src[k])) k++;
+
+      // `const x`, `let x`, `var x`, `function f` — the name after the keyword.
+      if (DECLARATION_KEYWORDS.has(prevWord) || prevWord === "function") bump(word);
+      // `const { a, b } = …` and `const [a, b] = …`: every identifier in the
+      // pattern. Property keys are counted too, which over-counts in the safe
+      // direction rather than parsing `{ a: b }` by hand.
+      if (DECLARATION_KEYWORDS.has(word) && (src[k] === "{" || src[k] === "[")) {
+        const close = src[k] === "{"
+          ? matchingClose(src, k, "{", "}")
+          : matchingClose(src, k, "[", "]");
+        if (close > k) bumpBindings(k + 1, close);
+      }
+      // `x => …`, the one parameter list with no parentheses.
+      if (src[k] === "=" && src[k + 1] === ">") bump(word);
+
+      prevWord = word;
+      i = j;
+      continue;
+    }
+
+    if (c === "(") {
+      open.push({ at: i, head: prevWord });
+      prevWord = "";
+      i++;
+      continue;
+    }
+
+    if (c === ")") {
+      const frame = open.pop();
+      if (frame) {
+        let m = i + 1;
+        while (m < src.length && /\s/.test(src[m])) m++;
+        // A parenthesised clause is a binding list when an arrow or a body
+        // follows it, or when it belongs to `catch`. `catch (e) {` is the one
+        // place a `{` is NOT a function body and the parens ARE bindings,
+        // which is why this asks its own question rather than reusing
+        // opensFunctionBody.
+        const isBindingList =
+          frame.head === "catch" ||
+          (src[m] === "=" && src[m + 1] === ">") ||
+          (src[m] === "{" && !CONDITION_HEADS.has(frame.head));
+        if (isBindingList) bumpBindings(frame.at + 1, i);
+      }
+      prevWord = "";
+      i++;
+      continue;
+    }
+
+    if (!/\s/.test(c)) prevWord = "";
+    i++;
+  }
+
+  return counts;
+}
+
+/** Index of the delimiter matching the one at `openIdx`, or -1. */
+function matchingClose(src: string, openIdx: number, o: string, c: string): number {
+  let depth = 0;
+  for (let k = openIdx; k < src.length; k++) {
+    if (src[k] === o) depth++;
+    else if (src[k] === c) {
+      depth--;
+      if (depth === 0) return k;
+    }
+  }
+  return -1;
 }
 
 /**

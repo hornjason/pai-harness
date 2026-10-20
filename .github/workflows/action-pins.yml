@@ -1,0 +1,44 @@
+# Not managed by rungate. This repository's own freshness check for the action
+# pins declared in lib/workflow-actions.ts (#789).
+#
+# It is deliberately NOT generated into consumers: a consumer's pin comes from
+# the rungate version they installed, not from a question they ask GitHub, and
+# a scheduled job in every scaffolded project would hand each of them a red
+# workflow they cannot fix. test/action-pin-freshness-schedule.test.ts asserts
+# it stays absent from the generator's output.
+name: Action pins
+
+on:
+  # Weekly. Staleness is a network fact, so it cannot live in the suite: a
+  # test that asks GitHub a question goes red when GitHub is slow and on a
+  # runner with no egress, which is how a check becomes one people switch off.
+  schedule:
+    - cron: "17 6 * * 1"
+  # GitHub disables a schedule after 60 days of repository inactivity, and a
+  # check nobody can trigger by hand fails silently on exactly the week nobody
+  # pushed. This is also how you get the answer on the day you want it.
+  workflow_dispatch:
+
+permissions:
+  # Reading public tags needs nothing more. The job resolves tags and reports;
+  # it never writes the bump, because a bot that edits the declaration would
+  # be a second position deciding what the pin is.
+  contents: read
+
+jobs:
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # Pinned by .bun-version — the project's single declaration (#622).
+          bun-version-file: ".bun-version"
+      - run: bun install
+      - name: Resolve every declared pin against its tag
+        env:
+          # `gh api` is unauthenticated without this and hits the anonymous
+          # rate limit, which the script reports as UNMEASURED and exits
+          # non-zero for — correct, and a weekly red for the wrong reason.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun scripts/check-action-pins.ts

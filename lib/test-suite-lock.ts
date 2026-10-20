@@ -539,6 +539,50 @@ function segmentIsFullSuite(segment: string, depth = 0): boolean {
 const LIVENESS_GRACE_SECONDS = 25;
 
 /**
+ * The one place a `ps` line is judged to be a running suite (#707).
+ *
+ * Exported so there is exactly one binding to mutate and one thing for a
+ * case to drive over a table of real command lines. `anySuiteRunning` reads
+ * the process table; this decides what a line means, and the two questions
+ * are separable only because they are separate functions.
+ *
+ * **The leading boundary `(^|\/|\s)` is NOT the bug, and widening it buys
+ * nothing.** That was tried and reverted, and the reason is one substring
+ * check: `/tmp/brun test` is the documented workaround for #690, and `brun`
+ * is b-r-u-n. It **does not contain `bun` at all**, so no loosening of a
+ * pattern written over the string `bun` can ever match it. Measured:
+ * `"bun" in "brun"` is false. A widened boundary matches nothing new here
+ * and only makes the detector less specific, which #67 already paid for
+ * once when `pgrep -f bun` matched powerd's bundle paths.
+ *
+ * **The real finding is that the evasion and the detection are the same
+ * mechanism.** #690's workaround exists precisely to make a suite invisible
+ * to `pkill -f "bun test"` — and `anySuiteRunning` looks for the same
+ * string, so the workaround hides the suite from this module too, by
+ * construction. That is not fixable in this regex. It needs either a
+ * workaround name that still contains `bun`, or a liveness signal that is
+ * not the process name at all (the lock file's own heartbeat is the obvious
+ * candidate). Tracked on #707; deliberately not attempted here.
+ *
+ * What the blindness costs is not a flake. `slotIsStale` reclaims a slot
+ * early when NO suite is running, so an invisible suite means slots are
+ * reclaimed after the grace period and `DEFAULT_CAPACITY` — which this
+ * module's header calls "the one doing the protecting" — is switched off
+ * for exactly the runs that use the workaround.
+ *
+ * **Over-detection is the safe direction here.** Reporting a suite that is
+ * not there keeps slots, which at worst wedges one slot for a TTL. Missing
+ * a suite that IS there reclaims a live slot and lets two real suites run
+ * against a cap of one, which is the OOM condition this whole mechanism
+ * prevents. The comment on `noSuiteRunningNow` already says so about an
+ * unreadable process table; a readable one that was misunderstood lands in
+ * the same place.
+ */
+export function psLineIsSuite(line: string): boolean {
+  return /(^|\/|\s)bun\s+(run\s+)?test(\s|$)/.test(line);
+}
+
+/**
  * True when at least one full suite is running anywhere on this machine.
  *
  * ONLY THE ZERO CASE IS USED, deliberately. #67 established that attributing
@@ -547,18 +591,15 @@ const LIVENESS_GRACE_SECONDS = 25;
  * process count. This does not attribute anything: a slot means a running
  * suite, so if NO suite is running at all, every slot is provably false.
  *
- * Matches on the command line rather than the executable name. `pgrep -f bun`
- * is useless here — it matches powerd's bundle paths, mdbulkimport and any
- * other command containing "bun" as a substring.
+ * Matches on the command line rather than the executable name, through the
+ * single `psLineIsSuite` binding above.
  *
  * Throws rather than guessing when the process table cannot be read; the
  * caller treats that as "cannot determine" and keeps the slot.
  */
 export function anySuiteRunning(): boolean {
   const out = execFileSync("ps", ["-axo", "command"], { encoding: "utf-8" });
-  return out
-    .split("\n")
-    .some(line => /(^|\/|\s)bun\s+(run\s+)?test(\s|$)/.test(line));
+  return out.split("\n").some(psLineIsSuite);
 }
 
 /**

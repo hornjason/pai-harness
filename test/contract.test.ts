@@ -120,13 +120,23 @@ describe("#654-adjacent: a gate that never reported is not a gate that passed", 
  * unrelated branches and the logs could not say which check failed, because
  * the assertion did not carry it.
  *
- * The tail rather than the head: `run-gate.ts` prints its batch diagnosis
- * last, so the end of the buffer is where the check names are.
+ * The whole output, not a window on it. `run-gate.ts` prints its batch
+ * diagnosis last, so a tail was the obvious shape — and a fixed tail is a
+ * guess about how long the gate's output will stay that size. The guess
+ * expired: the STANDARD tier prints 158 checks, `brief-ac-alignment: brief
+ * missing AC ids: <ids>` is above the last 3000 characters, and five
+ * reproductions of #700 across five unrelated branches produced no diagnosis
+ * because the instrument discarded the answer before anyone read it.
+ *
+ * Widening the window to some larger number is the cheapest wrong fix and is
+ * the shape `.claude/rules/checks-must-be-able-to-fail.md` names twice (#492's
+ * `bytesScanned < 10`, #664's 6000→9000): it buys green against today's output
+ * and decays silently the next time a check is added. There is no window.
  */
 function expectGateGreen(r: GateRun, what: string): void {
   expect(r.measured, `${what}: the gate printed no pass/fail summary — it did not report a verdict, ` +
-    `which is not the same as reporting a clean one. Output:\n${r.output.slice(-3000)}`).toBe(true);
-  expect(r.fail, `${what}: the gate failed ${r.fail} check(s). Output:\n${r.output.slice(-3000)}`).toBe(0);
+    `which is not the same as reporting a clean one. Output:\n${r.output}`).toBe(true);
+  expect(r.fail, `${what}: the gate failed ${r.fail} check(s). Output:\n${r.output}`).toBe(0);
 }
 
 // Bun ignores a describe-level `timeout` option, so the 30s budget lives on each
@@ -504,7 +514,25 @@ describe("contract: negative cases", () => {
     }, null, 2));
     writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2\n\n## AC-1\nHas evidence\n\n## AC-2\nMissing evidence\n");
     const r = runGate("ship", "broken-evidence", "/tmp/test");
-    expect(r.output).toContain("all-acs-have-evidence");
+    // The run must refuse, and refuse FOR THIS REASON.
+    //
+    // #705 moved the detection earlier. AC-2's command runs and produces no
+    // output, which EVIDENCE PRE-VALIDATION now reports by name — so the gate
+    // refuses before `all-acs-have-evidence` is reached, and that check is
+    // FILTERED OUT rather than red. Asserting the old check name alone would
+    // now fail over a tree whose behaviour improved.
+    //
+    // So the assertion names the property, not whichever check caught it.
+    // `BLOCKED` on its own is not enough: this fixture has unrelated failures
+    // (`code-pushed`, `worktree-repo`) that would satisfy it with AC-2's
+    // evidence never looked at, which is the vacuous pass this case exists to
+    // avoid. Naming AC-2 is what ties the refusal to the missing evidence.
+    expect(r.output).toContain("BLOCKED");
+    expect(
+      r.output,
+      "ship refused, but not for AC-2's missing evidence — the refusal must " +
+        "name the AC, or this case is satisfied by any unrelated failure",
+    ).toMatch(/AC-2: command runs but produces no output|all-acs-have-evidence/);
   });
 });
 

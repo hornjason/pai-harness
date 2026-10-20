@@ -25,6 +25,7 @@ import { join } from "path";
 
 import {
   persistCompliance,
+  hillClimbProposalDir,
   hillClimbReceipt,
   emptyHillClimbStates,
   classifySkip,
@@ -209,14 +210,29 @@ describe("#646 AC-B1/AC-B2: one receipt entry per hill-climb outcome state", () 
   });
 
   test("REINFORCEMENT_ALREADY_PRESENT: a brief that already carries the rule is reported", () => {
-    // The fixture is DERIVED, not typed: the first run writes whatever the
-    // live reinforcement map says into the brief, so this cannot drift into
-    // asserting a sentence the code stopped producing.
+    // The fixture is DERIVED, not typed: the first run composes whatever
+    // the live reinforcement map says, so this cannot drift into asserting
+    // a sentence the code stopped producing.
+    //
+    // #648 changed how that derivation has to be taken, and the change is
+    // the point rather than a detail to work around. The shipped loop
+    // writes its proposal OUTSIDE the checkout, so running twice no longer
+    // produces an already-present brief — the second run reads the same
+    // unpatched file and composes the same rule again. The state is
+    // reached the way it is now reached in production: a human moves the
+    // proposal into the brief, and the NEXT run sees it there. Copying the
+    // run's own proposal over the brief is that hand-off, performed.
     seedHistory([{ [COMP]: "IGNORED" }, { [COMP]: "IGNORED" }]);
     writeGrade({ [COMP]: "IGNORED" });
     const first = run("645");
     expect(first.hillClimbApplied).toBe(1);
-    expect(readFileSync(briefPath, "utf-8")).toContain("REINFORCED (auto)");
+    const proposal = join(hillClimbProposalDir(workDir), `${ROLE}.md`);
+    expect(readFileSync(proposal, "utf-8")).toContain("REINFORCED (auto)");
+    expect(
+      readFileSync(briefPath, "utf-8"),
+      "the shipped destination must not have touched the tracked brief",
+    ).toBe(BRIEF_WITH_SECTION);
+    writeBrief(readFileSync(proposal, "utf-8"));
 
     const r = run();
 

@@ -110,6 +110,7 @@ async function runBlock(scope: Record<string, unknown> = {}): Promise<Outcome> {
     // #232: shipFailed preserves before it returns. Stubbed — see
     // test/preserve-every-exit.test.ts for the claim that it does.
     preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
+    restorePrimaryCheckout: async () => ({ reading: 'UNCHANGED', restoreOutcome: 'ALREADY_ON_START', lines: [] }),
     gradeResult: cleanResult(),
     ...scope,
   };

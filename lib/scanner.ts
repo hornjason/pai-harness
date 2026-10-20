@@ -17,7 +17,9 @@ import { resolveConfig } from "./config-loader";
 // instead of drifting apart (#380).
 import { isHarnessItself } from "./harness-identity";
 import { isSpecFile } from "./spec-listing";
+import { scanDocsDirectory } from "./doc-routing";
 import { testCommandDecision } from "./test-command";
+import { projectStateDerivation, projectStateKeyFileNote } from "./project-state-derivation";
 import type {
   ProjectScan,
   ProjectType,
@@ -233,7 +235,7 @@ function scanKeyFiles(root: string): KeyFile[] {
   // Always include scaffold-generated files for idempotency (SC-364)
   const keyFiles: KeyFile[] = [
     { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
-    { file: "PROJECT-STATE.md", what: "Live status + handoff (generated from project-state.json — don't edit directly)", when: "Session start, always first after AGENTS.md" },
+    { file: "PROJECT-STATE.md", what: projectStateKeyFileNote(projectStateDerivation(root)), when: "Session start, always first after AGENTS.md" },
     { file: "project-state.json", what: "Source of truth for project status", when: "When editing state" },
   ];
 
@@ -348,41 +350,24 @@ function scanDocRouting(root: string, categories: Category[]): DocRoute[] {
     }
   }
 
-  // Docs top-level files
-  const docsDir = join(root, "docs");
-  if (existsSync(docsDir)) {
-    try {
-      const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"));
-      for (const f of allDocs) {
-        const docPath = join(docsDir, f);
-        const content = readFileSync(docPath, "utf-8");
-        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-        let need = f.replace(/\.md$/, "").replace(/-/g, " ");
-        if (fmMatch) {
-          const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-          if (gMatch && gMatch[1].trim() !== "TODO") need = gMatch[1].trim();
-        }
-        docRouting.push({ need, file: `docs/${f}` });
-      }
-      const subDirs = readdirSync(docsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory() && !categories.some(c => c.dir === `docs/${d.name}`))
-        .map(d => d.name);
-      for (const sub of subDirs) {
-        const subPath = join(docsDir, sub);
-        const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md"));
-        if (subFiles.length > 0) {
-          docRouting.push({ need: `${sub} (${subFiles.length} files)`, file: `docs/${sub}/` });
-        }
-      }
-    } catch {}
-  }
+  // Docs top-level files and subdirectories, through the one binding (#617,
+  // #619). This was a complete second copy of `lib/scaffold/steps.ts`'s scan,
+  // with its own inline `governs:` regex — which is how one site could learn
+  // about a new frontmatter field and the other not.
+  try {
+    docRouting.push(...scanDocsDirectory(join(root, "docs"), categories.map(c => c.dir)));
+  } catch {}
 
-  // Filter to non-obvious mappings
-  return docRouting.filter(d => {
-    const slug = d.file.replace(/\.md$/, "").replace(/.*\//, "").toLowerCase().replace(/-/g, " ");
-    const needLower = d.need.toLowerCase();
-    return !needLower.startsWith(slug) || d.need.includes("—") || d.need.includes("(");
-  });
+  // The "filter to non-obvious mappings" that used to end this function is
+  // deleted (#617). It could only ever drop a top-level `docs/*.md`: every
+  // other row's description contains an em dash or a parenthesis, or does not
+  // begin with its own filename. Dropping those IS the defect — 38 of 38 on
+  // one consumer — and a document with no `governs:` is UNMEASURED, not
+  // "governs nothing". Exclusion is the document's own declaration now, read
+  // once in `topLevelDocRoute`. Keeping the filter as well would leave a
+  // second decider that no mutation could distinguish from live code, since
+  // the marker it emits already defeats it.
+  return docRouting;
 }
 
 // ── Identity detection ─────────────────────────────────────────

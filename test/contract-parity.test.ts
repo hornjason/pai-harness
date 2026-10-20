@@ -49,11 +49,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
-  AGENTS_MD,
-  CI_YML,
-  CONFIG_JSON,
   PARITY_CATEGORIES,
   REFUSE_EXIT,
+  actionPinParity,
   commandParity,
   contractParity,
   fieldReachability,
@@ -65,6 +63,9 @@ import {
   writeAccountability,
   type CategoryReport,
 } from "../scripts/contract-parity";
+// #637 AC-9: category one's positions now live in lib/, and this file reads
+// them from there rather than through the script.
+import { AGENTS_MD, CI_YML, CONFIG_JSON } from "../lib/test-command-positions";
 import { TOOL_PROBE_OUTCOMES, probeExternalTool } from "../lib/tool-probe";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -156,12 +157,16 @@ function runCli(args: string[]): { status: number; stdout: string; stderr: strin
 
 // ── AC-1 ────────────────────────────────────────────────────────────────────
 
-describe("#626 AC-1: one command, six category verdicts, and an exit code that follows them", () => {
-  test("AC-1: the run reports a verdict for each of the six parity categories", () => {
+describe("#626 AC-1: one command, a category verdict each, and an exit code that follows them", () => {
+  test("AC-1: the run reports a verdict for each parity category", () => {
     const report = contractParity(REPO_ROOT);
 
     expect(report.categories.map(c => c.category)).toEqual([...PARITY_CATEGORIES]);
-    expect(report.categories.length).toBe(6);
+    // Literal on purpose, and not `PARITY_CATEGORIES.length`: derived from the
+    // list it sits beside, it would be satisfied by the list going empty, and
+    // the assertion above is already the one that compares them. #689 added
+    // the seventh.
+    expect(report.categories.length).toBe(7);
     for (const c of report.categories) {
       expect(["PASS", "FAIL", "UNMEASURED"], `${c.category} reported ${c.verdict}`).toContain(c.verdict);
       // A verdict with no coverage beside it is the reading this issue exists
@@ -199,9 +204,9 @@ describe("#626 AC-1: one command, six category verdicts, and an exit code that f
     }
   });
 
-  test("AC-1: the CLI prints the six category verdicts and refuses a tree that disagrees", () => {
+  test("AC-1: the CLI prints every category verdict and refuses a tree that disagrees", () => {
     const ok = runCli(["--json"]);
-    expect((ok.stdout.match(/"category"/g) || []).length, `stdout was:\n${ok.stdout}\n${ok.stderr}`).toBe(6);
+    expect((ok.stdout.match(/"category"/g) || []).length, `stdout was:\n${ok.stdout}\n${ok.stderr}`).toBe(7);
 
     const divergent = scratchDir("cli-divergent");
     put(divergent, AGENTS_MD, agentsMd("bun test"));
@@ -284,7 +289,12 @@ describe("#626 AC-3: every verdict carries its own coverage", () => {
       probeHonesty(REPO_ROOT),
       fieldReachability(REPO_ROOT),
       writeAccountability(REPO_ROOT),
+      actionPinParity(REPO_ROOT),
     ];
+    // The list is enumerated rather than mapped over the registry on purpose —
+    // but a category added to the registry and not here would be unexamined
+    // while every assertion below stayed green, so the count is bound.
+    expect(categories.length).toBe(PARITY_CATEGORIES.length);
     for (const c of categories) {
       expect(c.coverage.examined, `${c.category} examined more than it could see`).toBeLessThanOrEqual(
         c.coverage.visible,

@@ -728,7 +728,9 @@ likely to be swallowed.
   to is AC-2 and is deliberately not decided here**: flipping it has to move
   `scripts/persist-compliance.ts`'s re-grade step with it, because re-grading
   a brief that was not written measures the old one and reports the number as
-  if it were new.
+  if it were new. *#648 decided it — see "#648 — the shipped loop chooses its
+  destination" below. `DEFAULT_HILL_CLIMB_DESTINATION` is unchanged and is now
+  what its name says: the answer for a caller that does not have one.*
 
 ### The separator rule
 
@@ -784,6 +786,9 @@ Neither mutation is left in the tree; both were run and reverted, and
 
 ### What this does NOT fix
 
+*Both of these were fixed by #648; the section is kept because the mutation
+record below is measured against the tree they describe.*
+
 - **The shipped default still writes the tracked brief.** AC-2 chooses the
   destination the loop runs with and is a separate change; this one makes the
   choice expressible and names what it currently is.
@@ -794,6 +799,145 @@ Neither mutation is left in the tree; both were run and reverted, and
   and reports the result as if it were the patched one — *Silent Default
   Substitution* in `.claude/rules/config-access.md`, and it has to move in the
   same change that flips the default.
+
+## #648 — the shipped loop chooses its destination, and the re-grade follows it
+
+#624 Phase 1 left two things joined: `scripts/persist-compliance.ts` passed no
+destination, so the shipped behaviour was whatever
+`DEFAULT_HILL_CLIMB_DESTINATION` happened to say, and it discarded the `write`
+it got back, so the re-grade re-derived its target from role config
+(`scripts/test-brief.ts`, `roleConfig[role]?.brief`). Those two agreed only
+while the destination was `COMMIT`. Flip one without the other and the loop
+re-grades a file the run did not write.
+
+### The destination, argued rather than inherited
+
+The argument is recorded in full on #648. The three readings it turns on, each
+re-derived against the post-#715 tree rather than copied from the issue's own
+first comment, which is superseded:
+
+- **`COMMIT` is excluded by the committed-or-reverted property, not by
+  durability.** `lib/compliance-report.ts` documents it as "write the tracked
+  brief in place, for a human to review and commit" and nothing downstream
+  commits. Measured live on run `wf_9ab25fd1-6e5`: a reinforcement landed in
+  `.claude/agents/discovery.md` as an uncommitted modification in the shared
+  primary checkout and the run reported `DONE`. Making it satisfy the property
+  means committing from a compliance script onto a ref other runs share, which
+  is #267/#136; reverting instead is `DISCARD` with a dirty window in the
+  middle. This holds even after a re-scaffold adds `## Project Constraints` —
+  durability does not make an uncommitted write safe in a shared checkout.
+- **`DISCARD` is excluded by what it does to the measurement.** `write.path` is
+  `null`, so the re-grade must refuse and the loop can never score its own
+  reinforcement. Detect-and-report, permanently unmeasured, by construction.
+- **`UNTRACKED` is chosen, and the thing that changed its reading is the other
+  half of this issue.** #655's first assessment — "a sidecar read by nobody" —
+  was true while the re-grade re-derived its target. Binding the re-grade to
+  `write.path` makes the proposal a file that IS read, by the re-grade, which
+  now scores the patched directives instead of the unpatched ones.
+
+A mined rule still reaches a brief only by a human moving it into
+`## Project Constraints`, which #715 made the one region a re-scaffold carries
+forward. No brief in this repository carries that heading yet — 0 of 7, and no
+template emits one — so a `COMMIT` write today still lands in a generated
+section the next scaffold rewrites. The hand-off is the honest state of the
+loop; `COMMIT` dressed it up as landed and left the tree dirty instead.
+
+### The contract
+
+- **The destination is passed, not inherited.**
+  `SHIPPED_HILL_CLIMB_DESTINATION` in `scripts/persist-compliance.ts` is what
+  the loop gives `applyHillClimb`. `DEFAULT_HILL_CLIMB_DESTINATION` is
+  unchanged and keeps its own job: the answer for a caller with no opinion.
+- **The proposal goes in the run's own work directory**, via
+  `hillClimbProposalDir(workDir)` — not `defaultUntrackedDir()`, which is
+  `~/.rungate/hill-climb` keyed on the brief's basename and therefore shared
+  by every concurrent run grading the same role.
+- **The re-grade reads `write.path`.** `RegradeRequest.briefPath` is `string`,
+  never `string | null`, because a destination that wrote nothing is refused
+  before a request is built. `scripts/test-brief.ts` takes `--brief=PATH` for
+  this; without it the re-grade cannot be pointed anywhere but the role's
+  tracked brief.
+- **A destination that wrote nothing refuses rather than re-grading**, with a
+  named line, before the transcript lookup — so the refusal does not depend on
+  a run happening to have transcripts, and `0` is not left standing in for it.
+- **The re-grade is the second exported seam.** A case observes which path it
+  was handed and whether it ran at all; the real function shells out to
+  `test-brief.ts`, and a test that let it do so would be asserting that `bun`
+  exists.
+
+### What was broken to prove it
+
+Measured over `test/hill-climb-tracked-brief.test.ts`,
+`test/unit/hill-climb-receipt.test.ts`, `test/compliance-report.test.ts` and
+`test/hill-climb-destination.test.ts` — 55 tests. Every count was predicted
+before the row ran, and **the baseline row was read before any mutation row**:
+an instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody checks.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 55 pass, 0 fail | **55 pass, 0 fail** |
+| `writeReinforcedBrief` ignores its destination and always writes the tracked brief | 9 | **9 of 55** |
+| the genuinely pre-#648 call site — no destination passed, no refusal, re-grade re-derived from role config | 4 | **4 of 55** |
+| the refusal replaced by a fallback to the tracked brief | 1 | **1 of 55** |
+| the re-grade bound back to `briefPath`, refusal kept | 1 | **1 of 55** |
+| `SHIPPED_HILL_CLIMB_DESTINATION` set back to `COMMIT` | 4 | **4 of 55** |
+| the cheapest wrong fix — `SHIPPED_HILL_CLIMB_DESTINATION` set to `DISCARD` | 3 | **3 of 55** |
+
+Before believing any of those, the input on which mutant and original differ,
+named and run rather than assumed:
+
+- **row 1** — `writeReinforcedBrief(brief, "PATCHED", {destination: "DISCARD"})`
+  over a brief reading `ORIGINAL`. The original returns `{destination:
+  "DISCARD", path: null}` and leaves the brief at `ORIGINAL`; the mutant
+  returns the brief's own path and the brief reads `PATCHED`. Printed and
+  compared before the row was counted.
+- **rows 2, 5, 6** — the three-consecutive-fail fixture for `COMP-13` against a
+  tracked `marcus.md`. The original writes `<workDir>/hill-climb/marcus.md` and
+  leaves `git status --porcelain` empty; the pre-#648 and `COMMIT` mutants
+  modify the tracked brief and hand that path to the re-grade; the `DISCARD`
+  mutant writes nothing and the re-grade is refused.
+- **rows 3 and 4** — the same fixture with `DISCARD` forced through the
+  `applyHillClimb` seam. The original records no re-grade; both mutants hand
+  the re-grade the role's unpatched tracked brief.
+
+**Row 1 came back 8 the first time it was run, where 9 was predicted, and the
+missing red is a finding rather than noise.** *"every destination the binding
+names is handled by the writer"* asserted `write.destination` — the name the
+caller passed, echoed back — and the file at `write.path`, with
+`if (write.path === null) continue`. Under a writer that ignores its
+destination every iteration echoes the right name, `path` is never null so the
+`continue` never fires, and the content check reads the file the mutant wrongly
+wrote. The distinguishing property of a destination is WHERE, and the case
+never asserted one: #530's shape, the artefact agreeing with whatever you put
+in it. It now writes down the expected path per destination and asserts
+`DISCARD` wrote nothing anywhere, and the row is 9.
+
+**The cheapest wrong fix, named: default to `DISCARD` so nothing is ever
+written.** It makes the dirty-tree symptom go away permanently and makes any
+`git status` assertion trivially true. The cases do NOT survive it — row 6 is
+3 red — because the scratch-checkout case asserts a non-empty `applied` and a
+written file BEFORE it reads git state, and the re-grade case asserts the
+re-grade ran. Both were written in that order for this reason.
+
+Two existing cases had to move with the behaviour, and both are consequences
+rather than accommodations. `test/unit/hill-climb-receipt.test.ts`'s
+`REINFORCEMENT_ALREADY_PRESENT` fixture derived its already-present brief by
+running the loop twice; under the shipped destination the second run reads the
+same unpatched file and composes the same rule again, so the state is now
+reached the way production reaches it — the run's own proposal is copied over
+the brief, which is the human hand-off, performed. The eight `applyHillClimb`
+call sites in `test/compliance-report.test.ts` now name their destination and
+assert `write`, so none of them depends on what the shipped loop chose.
+
+None of the six mutations is left in the tree; all were run and reverted, and
+`lib/compliance-report.ts` and `scripts/persist-compliance.ts` were confirmed
+byte-identical to the measured source afterwards by `shasum -a 256 -c`.
+
+**Success criteria for this section need ids allocating.** They are deliberately
+not hand-written: ids chosen against one tree cannot see another session's
+unmerged branches, and four collisions in one day is the measured cost. The
+cases carry descriptive names instead.
 
 ## #646 — the hill-climb skip was a sentence, so the decision was readable and not usable
 
@@ -1157,3 +1301,281 @@ loop detected 193 actions, resolved 57 of them to an insertion point, and
 committed none — and that the three gaps are a selector that reaches one
 heading for one COMP, a counter that an N/A resets, and a write whose result
 was never observed. Only the third was Phase 1's subject.
+
+## #704 — the selector reached one heading for one COMP, and now maps every id
+
+The first of #645's three gaps, closed. `applyHillClimb` resolved its
+destination with a nested conditional written inline:
+
+```ts
+const sectionIdx =
+  action.compId === "COMP-2" && testingIdx !== -1 ? testingIdx
+  : efficiencyIdx !== -1 ? efficiencyIdx
+  : neverIdx;
+```
+
+Read as a mapping, that is one id reaching `## Testing Rules` and twelve
+reaching only the other two. `marcus.md` carries `## Testing Rules` and
+neither of the others, and marcus is the role that produces most of the
+traffic — so every COMP except COMP-2 was refused by a brief that was
+holding an insertion point the whole time, and the refusal said *"no
+suitable section found in brief"*, which sends whoever reads it to edit a
+file that is fine.
+
+What replaces it is `resolveHillClimbSection` in `lib/compliance-report.ts`
+— one exported binding with one call site, a total `COMP_PRIMARY_SECTION`
+table over every id the grader can emit, and a fallback order DERIVED from
+`HILL_CLIMB_SECTIONS` rather than written out per row. Three answers:
+`RESOLVED`, `NO_SECTION` (the brief carries none of the headings, #646's
+state unchanged), and `UNMAPPED_COMP` — a new state, because an id nobody
+classified and a brief with no headings have opposite remedies and the run
+has to say which. It reaches the receipt as
+`COMP_HAS_NO_SECTION_MAPPING`, declared in `HILL_CLIMB_STATES`, in
+`UNMEASURED_HILL_CLIMB_STATES`, and in both of `workflows/ship.js`'s
+positions.
+
+### How this composes with #655, which landed first
+
+#655 added a FOURTH heading, `## Project Constraints`, and made it outrank
+the other three — because `## Efficiency Rules`, `## Testing Rules` and
+`## Never Do` are generated from `templates/agent-briefs/`, so a
+reinforcement written into one of them is destroyed by the next
+`bunx rungate scaffold .`, while the project-owned region is carried
+forward verbatim. That ordering is a statement about DURABILITY and this
+issue's table is a statement about TOPICALITY, and they are not in
+competition: `hillClimbSectionPreference` returns
+`[## Project Constraints, <the COMP's primary>, …the rest]`, so a rule goes
+to the surface that survives whenever one exists and to the section it is
+about otherwise. Both halves are asserted, and the pair for the first
+varies only whether the region is present.
+
+Two consequences worth stating rather than leaving to be discovered:
+
+- **`HILL_CLIMB_DURABLE_SECTION` is read from `BRIEF_CONSTRAINTS_SECTION`,
+  never spelled in `lib/compliance-report.ts`.** A literal copy is a second
+  position naming the heading the preserver anchors on, and the two stop
+  agreeing the day it is reworded (#621). A case asserts the string is
+  absent from this module's source.
+- **No brief in this tree carries the region yet** — #655 made it a
+  preference and deliberately not a creation, which is #648's decision. So
+  the replay below is unchanged by #655, and `NO_SECTION` is still
+  reachable, which is what makes SC-2303 witnessable at all.
+
+### The re-measurement, with the command beside every count
+
+```bash
+wc -l ~/.rungate/compliance-history.jsonl                  # → 382   (2026-10-19)
+grep -c '"role"' ~/.rungate/compliance-history.jsonl       # → 382   (the control)
+bun scripts/replay-hill-climb-history.ts
+```
+
+The control first: a store with 382 lines and 382 role-bearing records is a
+store that was read. 382 and not #645's 377 — it grew in the days between,
+which is the reason a count travels with its command.
+
+`scripts/replay-hill-climb-history.ts` is the command, and it is in the tree
+rather than in a transcript so a later reader can re-run it. It walks the
+history in order, grades each entry against the ones before it through the
+real `generateComplianceReport` and `detectHillClimbNeeds`, applies the same
+grader-accuracy gate `scripts/persist-compliance.ts` applies, and drives the
+real `applyHillClimb` at `DISCARD`.
+
+| Reading | Pre-#704 | Post-#704 |
+|---|---|---|
+| history entries | 382 | 382 |
+| runs that detect at least one action | 137 | 137 |
+| actions detected | 193 (marcus 136, discovery 56, quinn 1) | 193 |
+| **the selector asked about every one — `RESOLVED`** | **57** | **192** |
+| **the selector asked about every one — `NO_SECTION`** | **136** | **1** |
+| the live path: applied | 12 | **63** |
+| the live path: `NO_SECTION` | 52 | **1** |
+| the live path: `TIER_PROMOTION` | 129 | 129 |
+
+The pre-#704 column was taken on this tree with the old conditional
+restored inside `resolveHillClimbSection`, then reverted and the source
+confirmed byte-identical by checksum.
+
+**#645's `136` and `57` reproduce exactly, and they are not counts of what
+the live loop did.** The tier-promotion branch runs BEFORE the section is
+resolved, so 129 of the 193 never reach the selector at all; the
+selector-only reading answers *"what would the selector say if asked"* and
+the live reading answers *"what did the run do"*. Both are real, they differ
+by 84, and #645's table printed the first under a heading that reads like
+the second. That is why the script prints both.
+
+The one action still refused after the fix is quinn's, and `quinn.md`
+carries none of the three headings — so the live store witnesses SC-2303
+rather than only the fixtures.
+
+### Success criteria
+
+- [x] SC-2300: one exported binding maps a COMP id to a destination heading and it has exactly one call site, so there is a single thing to mutate
+- [x] SC-2301: every COMP id the grader can emit has a declared preference covering every heading, durable region first (#655), read off `lib/transcript-checker.ts` and `.claude/rungate/compliance.json` rather than typed into the test
+- [x] SC-2302: a brief carrying any ONE of the headings accepts a reinforcement for every COMP id, and `## Project Constraints` outranks the COMP's own primary when both are present, measured over the real `applyHillClimb` and not a copy
+- [x] SC-2303: a brief carrying NONE of the headings still reports `NO_SUITABLE_SECTION`, applies nothing, and leaves the brief on disk byte-identical
+- [x] SC-2304: a COMP id with no declared heading is refused by name as `UNMAPPED_COMP` and reaches the receipt as its own UNMEASURED state, never as a brief with no heading
+- [x] SC-2305: the reinforcement is inserted INSIDE the resolved section — asserted by position relative to the next heading, not by the string being present somewhere
+
+All six are covered by `test/hill-climb-section-selector.test.ts` and
+`test/unit/zero-reinforcement-baseline.test.ts`, and the command is
+`bun test test/hill-climb-section-selector.test.ts
+test/unit/zero-reinforcement-baseline.test.ts`, which reports 24 pass / 0
+fail.
+
+**The selector file sits at the top level of `test/` deliberately, and the
+first draft of it did not.** `findTestFilesForSCs` in
+`scripts/sync-sc-status.ts` enumerates with `readdirSync(TEST_DIR)` and no
+recursion, so a criterion whose only test lives under `test/unit/` can never
+earn a credit — it is ticked, unmatchable and unclaimed, which is exactly the
+population `UNCLAIMED_RATCHET` in `test/sc-binding-split.test.ts` refuses a
+rise in, and the per-spec one in `test/ticked-sc-cover.test.ts` refuses by
+name. Six hand-ticked criteria under `test/unit/` took the first of those
+from 153 to 159 and added `INSTRUCTION-COMPLIANCE-SPEC.md: 18 ticked criteria
+have no cover of any kind, 12 allowed` to the second. Hand-ticking is the
+move that buys green here and banks nothing, so the file moved instead and
+the six are credited by the real scanner. SC-2116 above is still ticked by
+hand for the original reason; it is inside the banked number and this issue
+does not move it.
+
+`CLAIMED_UNBINDABLE` in `test/sc-binding-split.test.ts` goes 66 → 72 in the
+same commit, which is the honest consequence: these six ARE claimed by a
+test and the matcher registry has no vocabulary for *"one binding, one call
+site"* or *"the brief on disk is byte-identical"*. That number is tracked in
+both directions rather than ratcheted, so banking it is an edit somebody
+makes on purpose.
+
+**These ids have been allocated three times, and #507 is why.** The first
+block collided with #715's SC-2131 in `specs/AGENT-BRIEF-TEMPLATE-SPEC.md`;
+the second, SC-2167..SC-2172, collided with the SC-2167/SC-2168 that #724
+minted in `specs/GATE-CONTRACTS-SPEC.md` while repairing a collision of its
+own. Both times the floor was re-derived by running the real
+`allocateScNumber` against the tree rather than reading the highest id in
+this file — which is the narrower reading that agrees right up until a peer
+allocates on a branch you have not fetched.
+
+### The mutation record
+
+Measured over `test/hill-climb-section-selector.test.ts` +
+`test/unit/zero-reinforcement-baseline.test.ts` +
+`test/persist-receipt-relay.test.ts` (60 tests). Every count was predicted
+before the battery ran, and **the baseline row was read before any mutation
+row** — an instrument that has stopped reporting takes the baseline down
+with it, and that is the row nobody checks.
+
+**This table has been measured three times and the one below is the third.**
+A row measured on a tree nobody can check out is a claim rather than a count
+(`.claude/rules/parallel-sessions.md`), and the first two trees no longer
+exist. The first was taken over 58 tests before #711/#714/#715/#716 landed;
+the second after the rebase onto them, where #655's composition added the two
+cases that make 60; the third after the rebase onto #724's repair of main and
+after the test file moved from `test/unit/` to the top level of `test/`.
+
+**No row moved between the second and the third**, and the reason is worth
+stating rather than leaving as a coincidence: #724 touched
+`.claude/rules/checks-must-be-able-to-fail.md`, `lib/doc-routing.ts`,
+`specs/GATE-CONTRACTS-SPEC.md` and four test files, none of which is a
+subject of this battery, and the move changed the test file's path, its
+import depth and the SC ids in its titles — not one assertion. The
+prediction for the third run was therefore "every row reproduces the second
+table exactly", written down before the baseline was read, and all ten did.
+What the re-run buys is not a new number; it is that the ten numbers now
+describe a tree somebody can check out.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 60 pass, 0 fail | **60 pass, 0 fail** | — |
+| the genuinely pre-#704 selector — the four-way conditional, as #715 left it | 4 | **4 of 60** | COMP-7 over a brief whose only heading is `## Testing Rules`: the original returns `{RESOLVED, "## Testing Rules", 10}`, the mutant returns `NO_SECTION`. The brief carrying the region reads identically in both, which is the evidence #715's arm is untouched by this issue |
+| `resolveHillClimbSection` short-circuited to `NO_SECTION` for every input | 12 | **11 of 60** | COMP-2 over the Testing-Rules brief: `RESOLVED` on the original, `NO_SECTION` on the mutant |
+| `COMP_PRIMARY_SECTION` truncated to its single `COMP-2` row | 13 | **13 of 60** | COMP-7 over a brief carrying all three generated headings: the original is `{RESOLVED, "## Never Do"}`, the mutant is `UNMAPPED_COMP` |
+| the fallback dropped — the preference stops at `[durable, primary]` | 3 | **4 of 60** | COMP-7 over the Testing-Rules-only brief: `{RESOLVED, "## Testing Rules"}` against `NO_SECTION`. Its PREFERRED heading is absent and the original falls back; the mutant does not |
+| `headingIndex` reverted to a bare `indexOf` | 1 | **1 of 60** | a brief with `## Efficiency Rules` and `### Never Do`: the original resolves `## Efficiency Rules` at 10, the mutant resolves `## Never Do` at 32 — the last eleven characters of the sub-heading |
+| the durable region demoted out of first place (#655 inverted) | 1 | **1 of 60** | a brief carrying all three generated headings AND `## Project Constraints`: the original resolves the region for every COMP, the mutant resolves each COMP's own primary |
+| `UNMAPPED_COMP` removed from `SKIP_OUTCOME_STATE` | 1 | **1 of 60** | the outcome for COMP-9001: `classifySkip` returns `"COMP_HAS_NO_SECTION_MAPPING"` on the original and `undefined` on the mutant, which lands the refusal in `unclassified` |
+| `COMP_HAS_NO_SECTION_MAPPING` dropped from ship.js's relay schema | 12 | **12 of 60** | a real receipt: the original's `persistReceiptRelayViolations` is `[]`, the mutant names `hillClimb.states.COMP_HAS_NO_SECTION_MAPPING` |
+| the same state dropped from `PERSIST_SIGNATURE_STATES` | 4 | **4 of 60** | any receipt: ship.js's recomputation folds seven counts and the script's folds eight, so the two signatures disagree |
+| **the cheapest wrong fix** — append at the end of the brief when no heading matches | 8 | **8 of 60** | a brief carrying none of the headings: the original returns `applied: [], kinds: ["NO_SECTION"]` and leaves the file byte-identical; the mutant returns `applied: ["COMP-7: added reinforcement (4 consecutive fails) → COMMIT"]`, `kinds: []`, and rewrites the brief |
+
+#### What the rebase moved, and why
+
+Every row that moved is explained by a case being added or by #715's arm
+existing, and none of them is a row that stopped witnessing:
+
+- **The relay-schema row went 9 → 12 and the signature row 2 → 4** between
+  the two measurements only because the first table's predictions were low
+  there; the measured numbers are identical on both trees.
+- **The short-circuit row came back LOW, 11 against a predicted 12.** The
+  two cases added for #655 are not symmetric: *"the durable region outranks
+  every COMP's own preference"* drives the resolver and goes red, while
+  *"the durable heading is read from its owner, never spelled here"* is a
+  claim about this module's SOURCE TEXT and cannot see a runtime
+  short-circuit. Correctly green, and the prediction simply counted both.
+- **The fallback row came back HIGH, 4 against a predicted 3.** The extra
+  is SC-2301's *"each one has a declared preference covering every
+  heading"*, which the revision dropped by accident; it is squarely about
+  the mutation, since the mutant's preference no longer covers every
+  heading.
+
+#### A broken mutant, recorded rather than filed as a high row
+
+The relay-schema row's FIRST attempt came back **27 of 60** against a
+predicted 12. Per the arithmetic in
+`.claude/rules/checks-must-be-able-to-fail.md`, a high row has two causes
+and the count alone does not say which, so the failing names were read
+before anything was concluded — and they were *every* case that loads the
+receipt block, including the four `#663 AC-4` reading cases that have
+nothing to do with a declared state.
+
+The mutation had deleted the trailing comma from the line above instead of
+the declaration itself, leaving two object properties with no separator.
+`loadReceiptBlock` could not parse `ship.js`, so the file aborted. **A
+mutant that crashes is not a mutant** — it measures that the source still
+parses (#485). Re-run with a mutation that removes the declaration and
+leaves valid syntax: 12, matching the prediction. The row above is the
+second reading; the first is recorded here because the two are
+indistinguishable by count.
+
+**Three rows carry extra reds that ARE the real kind, and they are the same
+three as before the rebase.** No mutant crashes in the final table — 47 to
+59 cases pass in every one of them, and every red is about the mutated
+subject.
+
+- The truncated-table row's extras are #646's own relay fixtures — *"the
+  fixtures really reach the skip-state fields"* and *"a run whose only
+  action had nowhere to go says so by name"*. Both drive the real
+  `persistCompliance` to produce a `NO_SUITABLE_SECTION` receipt, and with
+  only COMP-2 classified that state becomes unreachable. The fact it
+  records: #646's receipt fixtures depend on the COMP→section mapping, one
+  module away, and nothing before this said so.
+- The relay-schema row's extras are two #663 type-walk cases and this
+  issue's own `ship.js`-declares-it case. All three assert the real source
+  is clean before asserting a mutant is not, so one real-source removal
+  reds every case carrying that half — the same arithmetic #646 recorded
+  for its own 6 row.
+- The signature row's extras are three #663 parity cases, for the same
+  reason in the other position.
+
+**Does the shipped set survive the cheapest wrong fix? Yes, NON-vacuously,
+and 8 of 60 is the measurement rather than the argument.** Three of the
+eight are SC-2303's pair and the zero-reinforcement refusal case, and they
+survive because they assert the STATE the run reported and whether the
+brief on disk changed — not whether the reinforcement text appears
+somewhere, which the wrong fix also satisfies. The other five are #646's
+relay fixtures again, and they are the sharper evidence: the wrong fix
+makes `NO_SUITABLE_SECTION` permanently unreachable, so the receipt
+machinery built to report it stops being able to.
+
+None of the ten mutations is left in the tree; all were run and reverted,
+and `lib/compliance-report.ts`, `scripts/persist-compliance.ts`,
+`workflows/ship.js` and `test/hill-climb-section-selector.test.ts`
+were confirmed byte-identical to the measured source after every row by
+`shasum -a 256 -c`, with the baseline re-read at 60 pass / 0 fail after the
+last revert.
+
+### What this section does not claim
+
+It does not claim the loop now commits reinforcements. The second of #645's
+three gaps is untouched — 129 of the 193 are stopped by the tier-promotion
+branch before the selector is reached, and whether a tier-2 recommendation
+should also leave a brief bullet is a separate decision. The third gap,
+the 57 that resolved and were never committed, is #624's and is explicitly
+out of scope here.

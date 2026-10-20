@@ -15,12 +15,14 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+
+import { walkTestFiles } from "../lib/walk-test-files";
 import { commentMask, enclosingComment, stripJsComments } from "../lib/strip-js-comments";
 import { commentClaimForm, titleCall, type ClaimForm } from "../lib/sc-claim-forms";
 import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
-import { readFreshCache } from "../lib/behavioral-cache";
+import { behavioralCachePath, readFreshCache } from "../lib/behavioral-cache";
 import { detectDrift } from "./detect-sc-drift";
 import {
   ambiguityOf,
@@ -32,6 +34,7 @@ import {
   requiresQualification,
   scDeclarationPattern,
   scMentionPattern as scIdMentionPattern,
+  unenumeratedScRegistry,
   type ScRegistry,
 } from "../lib/sc-ids";
 
@@ -55,13 +58,28 @@ export interface UncheckedSC {
  * Built from the same spec scan `findUncheckedSCs` walks, so the ids a test
  * can be credited for and the ids a spec declares are the same set by
  * construction rather than by two regexes agreeing.
+ *
+ * ## An absent `specs/` is UNENUMERATED, not "declares nothing" (#606)
+ *
+ * This is the one producer feeding `allocateScNumber` in the live CLI
+ * (`scripts/create-sc.ts`), and it returned `buildScRegistry([])` for a tree
+ * with no `specs/` at all. That registry says "this tree declares nothing",
+ * which the allocator then reported as a consulted width contributing zero
+ * ids. A fix on the reading side alone cannot see this: the registry leg
+ * would faithfully report an enumeration flag nobody had ever set wrong.
  */
 export function readScRegistry(specsDir?: string): ScRegistry {
   const dir = specsDir || SPECS_DIR;
-  if (!existsSync(dir)) return buildScRegistry([]);
+  if (!existsSync(dir)) return unenumeratedScRegistry(`${dir} does not exist`);
   const specs: Array<{ file: string; content: string }> = [];
-  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
-    specs.push({ file, content: readFileSync(join(dir, file), "utf-8") });
+  try {
+    for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
+      specs.push({ file, content: readFileSync(join(dir, file), "utf-8") });
+    }
+  } catch (err) {
+    // A directory that exists and cannot be listed or read. Same fact as an
+    // absent one from the allocator's side, and a different reason.
+    return unenumeratedScRegistry(`${dir} could not be enumerated: ${(err as Error).message}`);
   }
   return buildScRegistry(specs);
 }
@@ -321,7 +339,7 @@ export function findTestFilesForSCs(
     wanted.set(sc.id, specs);
   }
 
-  for (const file of readdirSync(dir).filter(f => f.endsWith(".test.ts"))) {
+  for (const file of walkTestFiles(dir)) {
     const source = readFileSync(join(dir, file), "utf-8");
     const credits: ScCredit[] = [];
     for (const { id, at, kind, form } of coverageClaimSites(source)) {
@@ -361,7 +379,7 @@ export function intendedOnly(testDir: string): Map<string, string[]> {
   if (!existsSync(testDir)) return out;
   const measured = new Set<string>();
   const intended = new Map<string, string[]>();
-  for (const file of readdirSync(testDir).filter(f => f.endsWith(".test.ts"))) {
+  for (const file of walkTestFiles(testDir)) {
     for (const site of coverageClaimSites(readFileSync(join(testDir, file), "utf-8"))) {
       if (site.kind === "unrun-title") {
         const files = intended.get(site.id) ?? [];
@@ -508,9 +526,10 @@ export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): C
   const failing = new Set<string>();
   const unmatchable = new Set<string>();
 
-  // Read behavioral cache for behavioral SCs
-  const cachePath = join(root, ".rungate", "behavioral-results.json");
-  const behavioralCache = readFreshCache(cachePath);
+  // Read behavioral cache for behavioral SCs. Same binding the conformity
+  // suite asserts through, so the tick-decider and the gate cannot disagree
+  // about where the evidence lives (#328).
+  const behavioralCache = readFreshCache(behavioralCachePath(root));
 
   for (const sc of uncheckedSCs) {
     const statement = sc.statement || "";
@@ -661,7 +680,7 @@ if (isDirectExecution) {
   // Mentions that look like claims and are not credited. Visible on purpose:
   // under-crediting is the safe direction and still a measurement error.
   const unqualified = new Map<string, string>();
-  for (const file of readdirSync(TEST_DIR).filter(f => f.endsWith(".test.ts"))) {
+  for (const file of walkTestFiles(TEST_DIR)) {
     for (const u of unqualifiedClaims(readFileSync(join(TEST_DIR, file), "utf-8"), registry)) {
       unqualified.set(`${file} ${u.id}`, `  ${file}: ${u.id} — ${u.reason}`);
     }

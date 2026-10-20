@@ -59,12 +59,61 @@ import {
   applyHillClimb,
   COMPLIANCE_HISTORY_SCHEMA,
   type ComplianceEntry,
+  type HillClimbDestination,
   type HillClimbSkipOutcome,
 } from "../lib/compliance-report";
 import { writeWorkflowState } from "../gates/orchestrator";
 import { loadRoleBriefPaths, type GradeOutput } from "./grade-deterministic";
 
 const COMPLIANCE_THRESHOLD = 70;
+
+/**
+ * The destination the shipped loop passes (#648 AC-1).
+ *
+ * Passed EXPLICITLY rather than inherited from
+ * `DEFAULT_HILL_CLIMB_DESTINATION`, because that constant is #624 Phase 1's
+ * compatibility default — "what every existing caller already had" — and a
+ * shipped behaviour that is whatever a compatibility default happens to say
+ * is a behaviour nobody chose. The argument is recorded on #648; the short
+ * form, because a constant with no reason beside it is the thing this
+ * replaces:
+ *
+ * - `COMMIT` writes the tracked brief in place and NOTHING downstream
+ *   commits or reverts it. Measured live on run `wf_9ab25fd1-6e5`: the
+ *   reinforcement landed as an uncommitted modification in the shared
+ *   primary checkout and the run reported `DONE`. Making it satisfy #648
+ *   AC-3 means committing from a compliance script onto a ref other runs
+ *   share, which is #267/#136; reverting instead is `DISCARD` with a dirty
+ *   window in the middle.
+ * - `DISCARD` composes, reports and writes nothing — so `write.path` is
+ *   `null`, the re-grade below must refuse, and the loop can never measure
+ *   whether its own reinforcement helps. Detect-and-report, permanently
+ *   unmeasured, by construction.
+ * - `UNTRACKED` writes the patched brief to a real path outside the
+ *   checkout. #655's first reading of it — "a sidecar read by nobody" —
+ *   was true while the re-grade re-derived its target from role config.
+ *   Binding the re-grade to `write.path` (AC-2, the other half of this
+ *   change) makes it false: the proposal IS read, by the re-grade, which
+ *   now scores the patched directives instead of the unpatched ones.
+ *
+ * A mined rule still reaches a brief only by a human moving it into
+ * `## Project Constraints`, which #715 made the one region of a brief a
+ * re-scaffold carries forward. That hand-off is the honest state of the
+ * loop; `COMMIT` dressed it up as landed and left the tree dirty instead.
+ */
+export const SHIPPED_HILL_CLIMB_DESTINATION: HillClimbDestination = "UNTRACKED";
+
+/**
+ * Where an `UNTRACKED` proposal for this run goes.
+ *
+ * NOT `defaultUntrackedDir()`. That is `~/.rungate/hill-climb` keyed on the
+ * brief's basename, which is per-user and not per-run: two concurrent ship
+ * runs grading `marcus` overwrite each other's proposal and a re-grade can
+ * read the other run's file. The run's own work directory cannot collide,
+ * sits beside the receipt that names it, and is still outside the
+ * repository checkout — which is the only property #648 AC-3 asks for.
+ */
+export const hillClimbProposalDir = (workDir: string): string => join(workDir, "hill-climb");
 
 type Grade = GradeOutput["grades"][number];
 
@@ -95,6 +144,11 @@ export const HILL_CLIMB_STATES = [
   // second is the discovery that its answer does not account for its input.
   "NO_BRIEF_REGISTERED",
   "OUTCOMES_UNACCOUNTED",
+  // #704 — the COMP reached the threshold, survived the grader gate, and no
+  // destination heading is declared for it. Folded into NO_SUITABLE_SECTION
+  // it reads as a brief that needs a heading added, which is the wrong file
+  // to go and edit.
+  "COMP_HAS_NO_SECTION_MAPPING",
 ] as const;
 
 export type HillClimbState = (typeof HILL_CLIMB_STATES)[number];
@@ -118,6 +172,9 @@ export const UNMEASURED_HILL_CLIMB_STATES: readonly HillClimbState[] = [
   // than it was asked about.
   "NO_BRIEF_REGISTERED",
   "OUTCOMES_UNACCOUNTED",
+  // #704. Same sentence again: the reinforcement was composed and nobody
+  // ever found out what applying it would have done.
+  "COMP_HAS_NO_SECTION_MAPPING",
 ];
 
 /** One occurrence of a state, carrying the producing code's own reason. */
@@ -175,6 +232,7 @@ export function emptyHillClimbStates(): Record<HillClimbState, HillClimbOccurren
     NO_SUITABLE_SECTION: [],
     NO_BRIEF_REGISTERED: [],
     OUTCOMES_UNACCOUNTED: [],
+    COMP_HAS_NO_SECTION_MAPPING: [],
   };
 }
 
@@ -198,6 +256,7 @@ const SKIP_OUTCOME_STATE: Record<HillClimbSkipOutcome["kind"], HillClimbState> =
   TIER_PROMOTION: "TIER_PROMOTION_RECOMMENDED",
   REINFORCEMENT_PRESENT: "REINFORCEMENT_ALREADY_PRESENT",
   NO_SECTION: "NO_SUITABLE_SECTION",
+  UNMAPPED_COMP: "COMP_HAS_NO_SECTION_MAPPING",
 };
 
 /**
@@ -370,8 +429,53 @@ function readEfficiency(workDir: string, logger: (m: string) => void): unknown {
  * Optional and defaulted to the real function, so every existing caller is
  * unchanged and a test that forgets to pass it is testing the real thing.
  */
+/**
+ * What the re-grade is asked to score (#648 AC-2).
+ *
+ * `briefPath` is the path `writeReinforcedBrief` REPORTED it wrote, not a
+ * path re-derived from role config. The two were the same string only
+ * while the destination was `COMMIT`, and the whole of #648 is that the
+ * destination is now a choice — so a re-grade that re-derives its own
+ * target scores the unpatched brief and reports the number as the patched
+ * one, which is *Silent Default Substitution*
+ * (`.claude/rules/config-access.md`).
+ *
+ * It is `string`, never `string | null`: a destination that wrote nothing
+ * is refused by the caller before a request is built, so there is no
+ * "re-grade with no file" state for a reader to wonder about.
+ */
+export interface RegradeRequest {
+  role: string;
+  /** The file the write reported. Scored as-is. */
+  briefPath: string;
+  /** The replayed prompt the role's transcript came from. */
+  promptPath: string;
+  harnessRoot: string;
+}
+
+/** Re-score `req.briefPath` against the replayed prompt. Returns stdout. */
+export function regradeWithWrittenBrief(req: RegradeRequest): string {
+  return execFileSync(
+    "bun",
+    [
+      join(req.harnessRoot, "scripts", "test-brief.ts"),
+      req.role,
+      `--prompt=${req.promptPath}`,
+      `--brief=${req.briefPath}`,
+    ],
+    { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+}
+
 export interface PersistSeams {
   applyHillClimb?: typeof applyHillClimb;
+  /**
+   * The re-grade, so a case can observe WHICH path it was handed and
+   * whether it ran at all, without spawning an agent. The real function
+   * shells out to `test-brief.ts`, and a test that let it do so would be
+   * asserting that `bun` exists.
+   */
+  regrade?: (req: RegradeRequest) => string;
 }
 
 export function persistCompliance(
@@ -382,6 +486,7 @@ export function persistCompliance(
   seams: PersistSeams = {},
 ): PersistResult {
   const applyHillClimbFn = seams.applyHillClimb ?? applyHillClimb;
+  const regradeFn = seams.regrade ?? regradeWithWrittenBrief;
   const gradePath = join(workDir, "compliance-grade.json");
   if (!existsSync(gradePath)) {
     throw new Error(
@@ -524,7 +629,17 @@ export function persistCompliance(
       continue;
     }
 
-    const { applied, skipped, skipOutcomes } = applyHillClimbFn(briefPath, actions);
+    // #648 AC-1. The destination is PASSED, not inherited. Relying on
+    // `DEFAULT_HILL_CLIMB_DESTINATION` made the shipped behaviour whatever
+    // #624 Phase 1's compatibility default happened to say — see
+    // `SHIPPED_HILL_CLIMB_DESTINATION` for the argument, and #648 for the
+    // long form. `write` is read below rather than discarded: a caller that
+    // throws away where the write went has to re-derive it, and the
+    // re-derivation is what scored the wrong file.
+    const { applied, skipped, skipOutcomes, write } = applyHillClimbFn(briefPath, actions, {
+      destination: SHIPPED_HILL_CLIMB_DESTINATION,
+      untrackedDir: hillClimbProposalDir(workDir),
+    });
     // #662. The two arrays are the whole answer about `actions`, and nothing
     // required them to be an answer about all of it. A call that returns
     // both empty for a non-empty input has reported neither an application
@@ -566,7 +681,28 @@ export function persistCompliance(
     });
     if (applied.length === 0) continue;
     hillClimbApplied += applied.length;
-    logger(`brief updated for ${g.role} — ${applied.length} reinforcement(s) applied`);
+    logger(
+      `brief updated for ${g.role} — ${applied.length} reinforcement(s) applied ` +
+        `→ ${write.destination}${write.path ? ` at ${write.path}` : ""}`,
+    );
+
+    // #648 AC-2. A destination that wrote nothing has no patched brief to
+    // score, and the re-grade must say so rather than scoring the file the
+    // role config names. That file is the UNPATCHED brief: re-grading it
+    // produces a real number, about the old text, printed under a line
+    // that says the brief was patched — *Silent Default Substitution*
+    // (`.claude/rules/config-access.md`), and the one thing #624 Phase 1
+    // recorded as having to move with the destination.
+    //
+    // Refused BEFORE the transcript lookup, so the refusal does not depend
+    // on a run happening to have transcripts.
+    if (write.path === null) {
+      logger(
+        `HILL-CLIMB VERIFY refused for ${g.role}: the ${write.destination} destination wrote ` +
+          `no file, so a re-grade would measure the unpatched brief and report it as the patched one`,
+      );
+      continue;
+    }
 
     // Auto-rerun: confirm the patched brief actually scores better.
     //
@@ -582,11 +718,15 @@ export function persistCompliance(
 
       const latest = join(transcriptDir, transcripts[transcripts.length - 1]);
       logger(`HILL-CLIMB VERIFY: re-grading ${g.role} with the patched brief`);
-      const out = execFileSync(
-        "bun",
-        [join(harnessRoot, "scripts", "test-brief.ts"), g.role, `--prompt=${latest}`],
-        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-      );
+      // `write.path`, not `briefPath`. The two are the same string only
+      // under `COMMIT`; under every other destination `briefPath` is the
+      // file the run did NOT write.
+      const out = regradeFn({
+        role: g.role,
+        briefPath: write.path,
+        promptPath: latest,
+        harnessRoot,
+      });
       verified.push(g.role);
       logger(`HILL-CLIMB RESULT (${g.role}): ${out.trim().slice(0, 300)}`);
     } catch (e) {

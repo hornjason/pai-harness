@@ -405,6 +405,15 @@ describe("#673 criterion 3/4/5: one event, one denominator, and it says which", 
     const r = record(MIXED, "full");
     expect(r.state.suiteMeasurement.failures).toBe(MIXED.run.fail);
     expect(r.state.suiteMeasurement.verdict).toBe("FAIL");
-    expect(r.detail.startsWith(`FAIL: ${MIXED.run.fail} failing test(s) of `)).toBe(true);
+    // #323 moved the count in this line behind `describeSuiteFailures`, so
+    // the detail now NAMES the failures as well as counting them. The same
+    // property in the new syntax (#484): the count is still the first thing
+    // said, and the coverage phrase still follows it.
+    expect(r.detail.startsWith(`FAIL: ${MIXED.run.fail} failing test(s)`)).toBe(true);
+    expect(r.detail, "the changelog line no longer carries the coverage phrase").toContain(" of ");
+    for (const name of MIXED.run.failingTests) {
+      expect(r.detail, `the changelog line does not name ${name} (#323)`).toContain(name);
+    }
+    expect(MIXED.run.failingTests, "the mixed fixture names no failing test").not.toEqual([]);
   });
 });

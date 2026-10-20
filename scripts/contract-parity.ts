@@ -81,12 +81,27 @@ import {
   bunVersionSourceLabel,
   declaredBunVersion,
   isPinnedBunVersion,
+  setupBunDeclarations,
   setupBunWith,
 } from "../lib/bun-version";
+import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
+import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
 import { acPayloadReadExpression, acPayloadShellArgument } from "../lib/evidence-command-transport";
 import { shellSingleQuote } from "../lib/phase2-decomposition";
-import { RUNGATE_CONFIG_RELATIVE_PATH, resolveConfig } from "../lib/config-loader";
 import { testCommandDecision } from "../lib/test-command";
+import {
+  AGENTS_MD,
+  CI_YML,
+  CONFIG_JSON,
+  NoTestCommandError,
+  commandDisagreement,
+  rungateConfigPath,
+  testCommandNamedByAgentsWorkflow,
+  testCommandsNamedByAgentsMd,
+  testCommandsNamedByCiWorkflow,
+  testCommandsNamedByConfig,
+  type NamedTestCommand,
+} from "../lib/test-command-positions";
 import { TOOL_PROBE_OUTCOMES, probeExternalTool, type ToolProbeOutcome } from "../lib/tool-probe";
 
 /**
@@ -159,6 +174,7 @@ export const PARITY_CATEGORIES = [
   "probe-honesty",
   "field-reachability",
   "write-accountability",
+  "action-pin-parity",
 ] as const;
 export type ParityCategory = (typeof PARITY_CATEGORIES)[number];
 
@@ -219,190 +235,11 @@ function firstLine(e: unknown): string {
 
 // ── category 1: command parity ──────────────────────────────────────────────
 //
-// The extractors and `testCommandAgreement` below are #621's, moved here from
-// test/test-command-agreement.test.ts so that the test and this script compare
-// the same way. They refuse rather than returning nothing, because three files
-// naming nothing are not three files that agree.
-
-/**
- * The three files, by the name each extractor is pointed at.
- *
- * `CONFIG_JSON` is a LABEL, not a path: the config's location is asked of
- * `lib/config-loader.ts` (`rungateConfigPath` below), because this repository
- * supports two layouts indefinitely and a reader that knows only the directory
- * form silently gets nothing from a consumer on the monolith
- * (`.claude/rules/config-access.md`, and CONFIG-1 enforces it).
- */
-export const AGENTS_MD = "AGENTS.md";
-export const CONFIG_JSON = RUNGATE_CONFIG_RELATIVE_PATH;
-export const CI_YML = join(".github", "workflows", "ci.yml");
-export const AGREEMENT_FILES = [AGENTS_MD, CONFIG_JSON, CI_YML] as const;
-
-/**
- * Where this project's rungate config actually is, or null when it has none.
- *
- * Through `resolveConfig`, so both layouts are honoured and a corrupt config
- * THROWS rather than arriving as an absent one — the distinction #70 lost for
- * a month, and the one AC-4 keeps as two separate UNMEASURED kinds.
- */
-export function rungateConfigPath(root: string): string | null {
-  const resolution = resolveConfig(root);
-  if (resolution.status === "absent") return null;
-  return resolution.source === "directory" ? join(resolution.path, "config.json") : resolution.path;
-}
-
-/** One test command, and the position in the tree that names it. */
-export interface NamedTestCommand {
-  /** Repo-relative path. */
-  file: string;
-  /** Where inside the file — the row, the field, the step. */
-  where: string;
-  command: string;
-}
-
-/** Thrown when a file this check reads names no test command at all. */
-export class NoTestCommandError extends Error {}
-
-function refuse(file: string, why: string): never {
-  throw new NoTestCommandError(
-    `${file} names no test command: ${why}. ` +
-      `Three files naming nothing are not three files that agree — ` +
-      `see .claude/rules/checks-must-be-able-to-fail.md.`,
-  );
-}
-
-/**
- * The `| Test | \`…\` |` row of AGENTS.md's Commands table.
- *
- * The cell must be exactly `Test`: `Test as CI sees it` is a different command
- * on purpose, and matching it here would make the check compare a row against
- * itself. The section is sliced out first — asserting against the whole
- * document is how a claim about one section gets satisfied by a match
- * somewhere else (#297, #484, #60).
- */
-export function testCommandsNamedByAgentsMd(text: string): NamedTestCommand[] {
-  const start = text.indexOf("\n## Commands");
-  if (start === -1) refuse(AGENTS_MD, "it has no `## Commands` section");
-  const rest = text.slice(start + 1);
-  const end = rest.indexOf("\n## ", 1);
-  const section = end === -1 ? rest : rest.slice(0, end);
-  if (section.trim() === "") refuse(AGENTS_MD, "its `## Commands` section is empty");
-
-  const row = /^\|\s*Test\s*\|\s*`([^`]+)`\s*\|/m.exec(section);
-  if (!row) refuse(AGENTS_MD, "its Commands table has no `| Test | \\`…\\` |` row");
-  return [{ file: AGENTS_MD, where: "the Commands table's Test row", command: row![1].trim() }];
-}
-
-/**
- * The `**Test:** \`…\`` line of AGENTS.md's Workflow section.
- *
- * A second position in the same generated file, and the reason the slice above
- * matters: the two have always agreed here, so the live tree cannot witness a
- * reader that confuses them.
- */
-export function testCommandNamedByAgentsWorkflow(text: string): NamedTestCommand[] {
-  const line = /^\s*-?\s*\*\*Test:\*\*\s*`([^`]+)`/m.exec(text);
-  return line ? [{ file: AGENTS_MD, where: "the Workflow section's Test line", command: line[1].trim() }] : [];
-}
-
-/**
- * Every test command the rungate config declares.
- *
- * Both fields, because both are read: `test.command` is what the ship run
- * measures with (`workflows/ship.js`, which cannot import — #69) and
- * `dev.testCmd` is the top rung of `lib/test-command.ts`, which is what the
- * scaffold writes into AGENTS.md and CI.
- */
-export function testCommandsNamedByConfig(text: string): NamedTestCommand[] {
-  // Deliberately not caught: a corrupt config is never a missing config
-  // (.claude/rules/config-access.md).
-  const config = JSON.parse(text) as { test?: { command?: unknown }; dev?: { testCmd?: unknown } };
-  const found: NamedTestCommand[] = [];
-  const declared = (where: string, value: unknown) => {
-    if (typeof value === "string" && value.trim() !== "") {
-      found.push({ file: CONFIG_JSON, where, command: value.trim() });
-    }
-  };
-  declared("test.command", config?.test?.command);
-  declared("dev.testCmd", config?.dev?.testCmd);
-  if (found.length === 0) refuse(CONFIG_JSON, "neither `test.command` nor `dev.testCmd` is set");
-  return found;
-}
-
-/**
- * Steps that are part of running CI but are not the project's test command.
- * Named rather than positional: "the second run step" is a proxy, and a proxy
- * is a thing a template edit can satisfy while the property breaks.
- */
-const NOT_THE_TEST_STEP = new Set(["bun install", "bun run typecheck"]);
-
-/** The test step of the generated `test` job in ci.yml. */
-export function testCommandsNamedByCiWorkflow(text: string): NamedTestCommand[] {
-  const start = text.indexOf("\n  test:");
-  if (start === -1) refuse(CI_YML, "it has no `test:` job");
-  const rest = text.slice(start + 1);
-  // The next job at the same indent ends this one. Jobs a consumer added are
-  // theirs (#216) and must not be read as this project's test command.
-  const end = /\n {2}[A-Za-z_][\w-]*:/.exec(rest.slice("  test:".length));
-  const job = end === null ? rest : rest.slice(0, "  test:".length + end.index);
-  if (job.trim() === "") refuse(CI_YML, "its `test:` job is empty");
-
-  const runs = job
-    .split("\n")
-    .map(line => /^\s+- run:\s*(\S.*)$/.exec(line))
-    .filter((m): m is RegExpExecArray => m !== null)
-    .map(m => m[1].trim())
-    // `run: |` opens a block scalar; the body is not a command on this line.
-    .filter(cmd => cmd !== "|" && !cmd.startsWith("|"))
-    .filter(cmd => !NOT_THE_TEST_STEP.has(cmd));
-
-  if (runs.length === 0) {
-    refuse(CI_YML, "its `test:` job runs nothing but setup and the type check");
-  }
-  return [{ file: CI_YML, where: "the test job's run step", command: runs[0] }];
-}
-
-const EXTRACTORS: Record<string, (text: string) => NamedTestCommand[]> = {
-  [AGENTS_MD]: testCommandsNamedByAgentsMd,
-  [CONFIG_JSON]: testCommandsNamedByConfig,
-  [CI_YML]: testCommandsNamedByCiWorkflow,
-};
-
-export interface TestCommandAgreement {
-  commands: NamedTestCommand[];
-  /** Empty when every position names the same string. */
-  violations: string[];
-}
-
-/** The violation text, shared by the three-file binding and the category. */
-function disagreement(commands: NamedTestCommand[]): string[] {
-  const distinct = [...new Set(commands.map(c => c.command))];
-  if (distinct.length <= 1) return [];
-  return [
-    `the test command is spelled ${distinct.length} different ways: ` +
-      commands.map(c => `${c.file} (${c.where}) says \`${c.command}\``).join("; "),
-  ];
-}
-
-/**
- * The three-file binding #621 shipped. Reads all three files, extracts what
- * each names, and reports a violation when the set of distinct strings is
- * larger than one.
- *
- * A missing file and a file that names nothing both THROW. Neither is a clean
- * reading, and both would otherwise arrive here as "no disagreement".
- */
-export function testCommandAgreement(root: string): TestCommandAgreement {
-  const commands: NamedTestCommand[] = [];
-  for (const file of AGREEMENT_FILES) {
-    const path = file === CONFIG_JSON ? rungateConfigPath(root) : join(root, file);
-    if (path === null || !existsSync(path)) {
-      throw new NoTestCommandError(`${file} does not exist under ${root}, so it names no test command`);
-    }
-    commands.push(...EXTRACTORS[file](readFileSync(path, "utf-8")));
-  }
-  return { commands, violations: disagreement(commands) };
-}
+// The extractors and `testCommandAgreement` are #621's. They were written in
+// test/test-command-agreement.test.ts, moved here by #626, and moved to
+// lib/test-command-positions.ts by #637 (AC-9) so that this script, the three
+// test files and any later consumer all compare through ONE binding. A script
+// cannot be imported by a script; a library can.
 
 /**
  * Category 1, which is `testCommandAgreement` plus the two positions a
@@ -507,7 +344,7 @@ export function commandParity(root: string): CategoryReport {
     // Six: two in AGENTS.md, two in the config, the CI step, and the generator.
     visible: 6,
     sites,
-    violations: disagreement(commands),
+    violations: commandDisagreement(commands),
     unmeasured,
   });
 }
@@ -524,14 +361,6 @@ function workflowFiles(root: string): string[] {
     .map(f => join(".github", "workflows", f));
 }
 
-/** What a `setup-bun` step's `with:` block names, one entry per step. */
-export function setupBunDeclarations(text: string): Array<{ key: "bun-version" | "bun-version-file"; value: string }> {
-  const out: Array<{ key: "bun-version" | "bun-version-file"; value: string }> = [];
-  for (const m of text.matchAll(/^\s*(bun-version|bun-version-file):\s*"?([^"\s#]+)"?\s*$/gm)) {
-    out.push({ key: m[1] as "bun-version" | "bun-version-file", value: m[2] });
-  }
-  return out;
-}
 
 /**
  * Category 2. The runtime a job installs, everywhere it is named — including
@@ -1404,6 +1233,353 @@ export function writeAccountability(root: string): CategoryReport {
   });
 }
 
+// ── category 7: action pin parity ───────────────────────────────────────────
+//
+// #689. Two workflows pinned `anthropics/claude-code-action` to two different
+// commits and annotated both `# v1`. The comment is the only thing a reader
+// checks; it agreed with itself in both files while naming neither commit.
+//
+// This is #621's shape with the consumer in YAML, and it has #621's
+// characteristic way to die: finding nothing in every file is perfect
+// agreement. Zero strings are trivially all equal, and this tree has exactly
+// ONE consumer, so one renamed step converts the check into a ceremony
+// without changing a line of it. `actionPinAgreement` therefore THROWS when
+// the tree names the action nowhere, and the throw escapes the function
+// rather than folding into an empty violation list.
+
+/** The one position that says which commit of the action this tree means. */
+export const ACTION_PIN_DECLARATION = join("lib", "claude-code-action.ts");
+
+/** Where a second literal can hide. YAML cannot import, so a generator can. */
+export const ACTION_PIN_SOURCE_DIRS = ["lib", "scripts"];
+
+export { CLAUDE_CODE_ACTION, GOOGLE_AUTH_ACTION };
+
+/**
+ * An action this tree pins, and the module that declares its pin.
+ *
+ * ## Why this is a list and not one action (#631)
+ *
+ * #689 found the defect in `anthropics/claude-code-action` and fixed it for
+ * that action. The same defect was then found in `google-github-actions/auth`
+ * — `c200f369 # v2` in this repo's `claude-review.yml`, `7c6bc770 # v3` in
+ * agentgrit's generated `ai-review.yml` — and a check scoped to one action
+ * reports that tree clean.
+ *
+ * Worth naming because it is NOT the same failure in one respect: both of
+ * those comments were accurate. Neither lied. They are two different major
+ * versions, chosen independently by two sessions that could not see each
+ * other, so a check that only catches a wrong comment would find nothing. The
+ * property being enforced is that every position follows ONE declaration, and
+ * that property is per action rather than global.
+ *
+ * Adding a third action is a row here. Nothing else.
+ */
+export interface PinnedAction {
+  /** The action, by the name a `uses:` line spells. */
+  action: string;
+  /** Repo-relative path of the module declaring its pin. */
+  declaration: string;
+  /** The three string constants that module exports. */
+  constants: { action: string; sha: string; version: string };
+}
+
+export const PINNED_ACTIONS: readonly PinnedAction[] = [
+  {
+    action: CLAUDE_CODE_ACTION,
+    declaration: ACTION_PIN_DECLARATION,
+    constants: {
+      action: "CLAUDE_CODE_ACTION",
+      sha: "CLAUDE_CODE_ACTION_SHA",
+      version: "CLAUDE_CODE_ACTION_VERSION",
+    },
+  },
+  {
+    action: GOOGLE_AUTH_ACTION,
+    declaration: join("lib", "google-auth-action.ts"),
+    constants: {
+      action: "GOOGLE_AUTH_ACTION",
+      sha: "GOOGLE_AUTH_ACTION_SHA",
+      version: "GOOGLE_AUTH_ACTION_VERSION",
+    },
+  },
+];
+
+/** The row for one action, by its `uses:` name. */
+export function pinnedAction(action: string): PinnedAction {
+  const row = PINNED_ACTIONS.find(a => a.action === action);
+  if (!row) throw new UnreadableSource(`no declaration is registered for ${action}`);
+  return row;
+}
+
+/** Thrown when no position in a tree names the action at all. */
+export class NoActionPinError extends Error {}
+
+/** What the declaration module declares. */
+export interface DeclaredActionPin {
+  action: string;
+  sha: string;
+  version: string;
+}
+
+/** One reference to the action, and the position that carries it. */
+export interface NamedActionPin {
+  /** Repo-relative path. */
+  file: string;
+  /** 1-based. */
+  line: number;
+  /** Whatever follows the `@` — a SHA if the position is pinned, else not. */
+  sha: string;
+  /** The trailing `# …` annotation, or null when the position carries none. */
+  comment: string | null;
+  raw: string;
+}
+
+/**
+ * The declared pin, read from the file rather than imported.
+ *
+ * Text, because `--root` chooses a different tree and a different tree cannot
+ * be imported. The live module's exports and this parser are therefore two
+ * readings of one fact, which is the fourth shape if nothing compares them —
+ * so `test/action-pin-parity.test.ts` compares them in a case of its own.
+ */
+export function declaredActionPin(root: string, of: PinnedAction = PINNED_ACTIONS[0]): DeclaredActionPin {
+  const path = join(root, of.declaration);
+  if (!existsSync(path)) {
+    throw new UnreadableSource(`${of.declaration} does not exist under ${root}`);
+  }
+  const text = readFileSync(path, "utf-8");
+  const read = (name: string): string => {
+    const m = new RegExp(`export const ${name}\\s*=\\s*"([^"]+)"`).exec(text);
+    if (!m) throw new UnreadableSource(`${of.declaration} declares no string \`${name}\``);
+    return m[1];
+  };
+  return {
+    action: read(of.constants.action),
+    sha: read(of.constants.sha),
+    version: read(of.constants.version),
+  };
+}
+
+/** The `# …` trailing annotation of a line, or null when it carries none. */
+function trailingComment(line: string): string | null {
+  const m = /#\s*(\S.*?)\s*$/.exec(line);
+  return m ? m[1] : null;
+}
+
+/**
+ * Every `uses:` step in one workflow that references the action.
+ *
+ * Anchored on `uses:` rather than on the action's name alone: a sentence in a
+ * header comment and a commented-out step are prose, and reading prose as a
+ * position is the defect in the other direction (#235).
+ */
+export function actionPinsNamedByWorkflow(
+  text: string,
+  file: string,
+  action: string = CLAUDE_CODE_ACTION,
+): NamedActionPin[] {
+  const out: NamedActionPin[] = [];
+  const pattern = new RegExp(`^\\s*(?:-\\s+)?uses:\\s*${action.replace("/", "\\/")}@(\\S+)`);
+  text.split("\n").forEach((line, i) => {
+    const m = pattern.exec(line);
+    if (!m) return;
+    out.push({ file, line: i + 1, sha: m[1], comment: trailingComment(line), raw: line.trim() });
+  });
+  return out;
+}
+
+/**
+ * Every literal reference to the action in a TypeScript source file.
+ *
+ * This is the #622c position: the workflows in this tree are not what a
+ * scaffolded consumer gets, the generator is, and a fix that edited only the
+ * checked-in YAML would leave every consumer on whatever a template literal
+ * says. The declaration module is excluded — it is the thing being agreed
+ * with, not a position that has to agree.
+ */
+export function actionPinsNamedBySource(
+  text: string,
+  file: string,
+  action: string = CLAUDE_CODE_ACTION,
+): NamedActionPin[] {
+  const out: NamedActionPin[] = [];
+  const pattern = new RegExp(`${action.replace("/", "\\/")}@([A-Za-z0-9._-]+)`);
+  text.split("\n").forEach((line, i) => {
+    const m = pattern.exec(line);
+    if (!m) return;
+    out.push({ file, line: i + 1, sha: m[1], comment: trailingComment(line), raw: line.trim() });
+  });
+  return out;
+}
+
+/**
+ * Every position in a tree that names the action, workflows and source alike.
+ *
+ * EVERY declaration module is skipped, not just this action's. Each one is
+ * the thing being agreed with for its own action and prose about a sibling
+ * for the others — `lib/google-auth-action.ts`'s header quotes
+ * `claude-code-action`'s resolution trap, and reading a sentence as a
+ * position is the defect in the other direction (#235).
+ */
+export function actionPinsInTree(root: string, of: PinnedAction = PINNED_ACTIONS[0]): NamedActionPin[] {
+  const found: NamedActionPin[] = [];
+  const declarations = new Set(PINNED_ACTIONS.map(a => a.declaration));
+  for (const yml of workflowFiles(root)) {
+    found.push(...actionPinsNamedByWorkflow(readFileSync(join(root, yml), "utf-8"), yml, of.action));
+  }
+  for (const dir of ACTION_PIN_SOURCE_DIRS) {
+    for (const path of walk(join(root, dir))) {
+      const relative = path.slice(root.length + 1);
+      if (declarations.has(relative)) continue;
+      found.push(...actionPinsNamedBySource(readFileSync(path, "utf-8"), relative, of.action));
+    }
+  }
+  return found;
+}
+
+export interface ActionPinAgreement {
+  declared: DeclaredActionPin;
+  pins: NamedActionPin[];
+  violations: string[];
+}
+
+/**
+ * The binding. Every position that names the action is compared to the one
+ * declaration — never to the other positions, which is the whole of AC-4: two
+ * workflows matched by hand agree perfectly and agree with nothing.
+ *
+ * A tree that declares nothing and a tree that names the action nowhere both
+ * THROW. Neither is a clean reading, and both would otherwise arrive as "no
+ * disagreement".
+ */
+export function actionPinAgreement(root: string, of: PinnedAction = PINNED_ACTIONS[0]): ActionPinAgreement {
+  const declared = declaredActionPin(root, of);
+  const pins = actionPinsInTree(root, of);
+  if (pins.length === 0) {
+    throw new NoActionPinError(
+      `no position under ${root} names ${of.action}, so there is nothing to compare the declaration to. ` +
+        `Zero pins are trivially all equal — see .claude/rules/checks-must-be-able-to-fail.md.`,
+    );
+  }
+  return { declared, pins, violations: actionPinViolations(declared, pins, of) };
+}
+
+/** The violation text, shared by the binding above and the category below. */
+function actionPinViolations(
+  declared: DeclaredActionPin,
+  pins: NamedActionPin[],
+  of: PinnedAction = PINNED_ACTIONS[0],
+): string[] {
+  const violations: string[] = [];
+  for (const pin of pins) {
+    if (!/^[0-9a-f]{40}$/.test(pin.sha)) {
+      violations.push(
+        `${pin.file}:${pin.line} references ${of.action} at \`${pin.sha}\`, which is not a commit SHA: ` +
+          `a tag is the action publisher's to repoint at any time, so it names a different thing on two runs of ` +
+          `one commit (#689)`,
+      );
+      continue;
+    }
+    if (pin.sha !== declared.sha) {
+      violations.push(
+        `${pin.file}:${pin.line} pins ${of.action} at ${pin.sha}, and ${of.declaration} declares ` +
+          `${declared.sha}. Two positions naming one action and nothing comparing them is how this tree ended up ` +
+          `running two versions of it (#689)`,
+      );
+      continue;
+    }
+    if (pin.comment !== null && pin.comment !== declared.version) {
+      violations.push(
+        `${pin.file}:${pin.line} annotates the pin \`# ${pin.comment}\` while ${of.declaration} declares ` +
+          `\`${declared.version}\`. The comment is the only thing a reader checks, and a comment that can disagree ` +
+          `with the pin it annotates is worse than no comment (#689)`,
+      );
+    }
+  }
+  return violations;
+}
+
+/**
+ * Category 7. The declaration, every workflow that uses the action, and every
+ * generator literal that could emit one.
+ */
+export function actionPinParity(root: string): CategoryReport {
+  const title =
+    `every position pinning ${PINNED_ACTIONS.map(a => a.action).join(" or ")} ` +
+    `resolves to one declared commit`;
+  const sites: ParitySite[] = [];
+  const unmeasured: Unmeasurable[] = [];
+  const violations: string[] = [];
+  let visible = 0;
+
+  const workflowDir = join(".github", "workflows");
+  const haveWorkflows = existsSync(join(root, workflowDir));
+  if (!haveWorkflows) {
+    unmeasured.push(unmeasurable("absent-file", workflowDir, `${workflowDir} does not exist under ${root}`));
+  }
+
+  // One pass per registered action. An action whose declaration is missing or
+  // whose positions are absent is UNMEASURED for ITSELF — it does not take
+  // the other actions' readings down with it, because "nobody pins the auth
+  // action here" is a true and separate fact from "the review action's pins
+  // disagree", and folding them would report one state as the other.
+  for (const of of PINNED_ACTIONS) {
+    let declared: DeclaredActionPin | null = null;
+    const declarationPath = join(root, of.declaration);
+    if (!existsSync(declarationPath)) {
+      unmeasured.push(
+        unmeasurable(
+          "absent-file",
+          of.declaration,
+          `${of.declaration} does not exist under ${root}, so nothing in this tree says which commit of ` +
+            `${of.action} it means. Workflows that agree with each other are not workflows that agree with ` +
+            `anything (#689)`,
+        ),
+      );
+    } else {
+      try {
+        declared = declaredActionPin(root, of);
+        sites.push({
+          site: `${of.declaration} — the declared pin`,
+          value: `${declared.sha} # ${declared.version}`,
+        });
+      } catch (e) {
+        // A declaration that cannot be parsed is never an absent declaration
+        // (`.claude/rules/config-access.md`).
+        unmeasured.push(unmeasurable("unparseable-file", of.declaration, firstLine(e)));
+      }
+    }
+
+    const pins = actionPinsInTree(root, of);
+    for (const pin of pins) {
+      sites.push({
+        site: `${pin.file}:${pin.line}`,
+        value: `${pin.sha}${pin.comment === null ? "" : ` # ${pin.comment}`}`,
+      });
+    }
+
+    if (haveWorkflows && pins.length === 0) {
+      unmeasured.push(
+        unmeasurable(
+          "unresolved-source",
+          workflowDir,
+          `no position in this tree names ${of.action}, so the comparison could not be performed. ` +
+            `Finding nothing in every file is perfect agreement, which is the way this check dies rather than a ` +
+            `reading it can report (#689)`,
+        ),
+      );
+    }
+
+    if (declared !== null) violations.push(...actionPinViolations(declared, pins, of));
+
+    // The declaration, plus every position that names this action.
+    visible += 1 + pins.length;
+  }
+
+  return categoryReport("action-pin-parity", title, { visible, sites, violations, unmeasured });
+}
+
 // ── the run ─────────────────────────────────────────────────────────────────
 
 const RUNNERS: Record<ParityCategory, (root: string) => CategoryReport> = {
@@ -1413,6 +1589,7 @@ const RUNNERS: Record<ParityCategory, (root: string) => CategoryReport> = {
   "probe-honesty": probeHonesty,
   "field-reachability": fieldReachability,
   "write-accountability": writeAccountability,
+  "action-pin-parity": actionPinParity,
 };
 
 export function contractParity(root: string, only?: ParityCategory[]): ContractParityReport {

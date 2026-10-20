@@ -228,7 +228,7 @@ describe("#42: the report says what changed, separately from what was noticed", 
         "AUTO-FIXED: docs/adr/two.md (doc-type was \"guide\", set to adr)",
         "AUDIT: CONSUMERS: 3 stale consumers in rungate.json not found in source: x, y, z",
         "AUDITED: rungate.json (1 gaps)",
-      ]);
+      ], { rehearsed: false });
     } finally {
       console.log = log;
     }

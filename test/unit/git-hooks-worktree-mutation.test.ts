@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createGitHooks } from '../../lib/scaffold/steps';
 import {
   ORIGINAL,
-  REGENERATED,
+  REGENERATED_BY_SCRIPTS,
+  hookFor,
   runWithStateFiles,
   type HookRun,
 } from '../helpers/pre-commit-fixture';
@@ -108,7 +108,7 @@ const OBSERVATIONS: Observation[] = [
       // staying green is what makes the two reds a measurement of the WORKTREE
       // branch rather than of the block as a whole.
       const { staged, stateMd }: HookRun = runWithStateFiles(script, 'primary');
-      if (stateMd !== REGENERATED) return 'the updater did not run in the primary checkout';
+      if (stateMd !== REGENERATED_BY_SCRIPTS) return 'the updater did not run in the primary checkout';
       if (!staged.includes('PROJECT-STATE.md')) return 'PROJECT-STATE.md was not staged';
       if (!staged.includes('project-state.json')) return 'project-state.json was not staged';
       return null;
@@ -143,19 +143,18 @@ const OBSERVATIONS: Observation[] = [
   },
 ];
 
-let root = '';
 let script = '';
 let mutant = '';
 
 beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), 'rungate-mutgen-'));
-  mkdirSync(join(root, '.git', 'hooks'), { recursive: true });
-  createGitHooks(root, []);
-  script = readFileSync(join(root, '.git', 'hooks', 'pre-commit'), 'utf-8');
+  // The HARNESS layout, because every observation below runs the fixture's
+  // default layout and the updater is baked in at generation time (#610). A
+  // hook generated against an empty tree carries the UNMEASURED branch, and
+  // the primary-arm observation would then be red in the baseline for a
+  // reason that has nothing to do with the worktree guard under test.
+  script = hookFor('harness');
   mutant = buildAlwaysPrimaryMutant(script);
 });
-
-afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 type Row = { name: string; failed: string | null };
 
@@ -246,7 +245,7 @@ describe('#599: the worktree guard is removed and the battery is counted', () =>
     expect(real.err).toContain('project-state: SKIPPED');
 
     expect(broken.staged, 'the mutant declined too, so nothing was mutated').toContain('PROJECT-STATE.md');
-    expect(broken.stateMd).toBe(REGENERATED);
+    expect(broken.stateMd).toBe(REGENERATED_BY_SCRIPTS);
     expect(broken.err).not.toContain('project-state: SKIPPED');
   }, BATTERY_TIMEOUT);
 });

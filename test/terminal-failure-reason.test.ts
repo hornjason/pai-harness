@@ -125,10 +125,18 @@ describe("#524: the terminal funnel always has a reason to give", () => {
     expect(close, "could not slice terminalFailure").toBeGreaterThan(open);
 
     const fn = new Function(
-      "preserveSeenWorktrees", "WORK_DIR", "terminalReason",
+      "preserveSeenWorktrees", "WORK_DIR", "terminalReason", "restorePrimaryCheckout",
       `${SHIP.slice(start, close)}; return terminalFailure;`,
-    )(async () => ({ preserved: [], detail: "" }), "/tmp/work", reasonFn()) as
-      (s: string, e?: unknown) => Promise<Record<string, unknown>>;
+    )(
+      async () => ({ preserved: [], detail: "" }),
+      "/tmp/work",
+      reasonFn(),
+      // #640: the funnel restores the shared checkout on the way out. Stubbed
+      // rather than omitted — an absent binding is a ReferenceError inside the
+      // funnel, which would red this case for a reason that has nothing to do
+      // with the reason floor it is about.
+      async () => ({ reading: "UNCHANGED", restoreOutcome: "ALREADY_ON_START", lines: [] }),
+    ) as (s: string, e?: unknown) => Promise<Record<string, unknown>>;
 
     expect((await fn("COMMIT_FAILED")).reason).toContain(SENTINEL);
     expect((await fn("SCOPE_FAILED", { failures: ["AC-1 has no evidence"] })).reason)
@@ -160,6 +168,13 @@ describe("#524: the exits that carried no reason now carry a specific one", () =
    * #251 and the prior-work detector have their own tests.
    */
   const REACHES_IMPLEMENT: Record<string, (s: any) => unknown> = {
+    // The launch-base check (#644) is the run's first step and refuses
+    // anything but SAME_CHECKOUT — including the UNMEASURED that a synthetic
+    // placeholder reading produces. `/tmp/p` has never been a repository,
+    // because no case before #644 needed it to be, so without this every run
+    // here terminates at LAUNCH_BASE_FAILED and none of the exits below is
+    // ever reached. A third property of the harness, same as the two above.
+    "launch-base": () => ({ reading: "SAME_CHECKOUT", cwd: "/tmp/p", refusal: null, exitCode: 0 }),
     "read-issue": s => ({ ...s, successCriteria: [] }),
     discovery: s => ({ ...s, priorWork: { explicitCommits: [], acStatus: [{ id: "AC-1", status: "UNMET" }] } }),
   };

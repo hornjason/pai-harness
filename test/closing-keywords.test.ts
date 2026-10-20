@@ -24,15 +24,47 @@
  * in `test/state-record-closes-mutation.test.ts` runs a copy of the script
  * from a temp directory, and a relative import would make every mutant die on
  * module resolution rather than on the merits.
+ *
+ * ## #605 — the two questions, separated
+ *
+ * #590 shipped both directions as text comparisons, and the second one was
+ * wrong about what `issues_closed` MEANS. It records what the SESSION closed,
+ * through whatever PRs it merged; the check read it as what THIS PR will
+ * close. Those coincide only when the state PR happens to carry a closing
+ * keyword for every id, which for a session that shipped its work through its
+ * own PRs means writing keywords that close nothing.
+ *
+ * Four records in a row did exactly that, and the last of them wrote
+ * `Closes #669:` as the opening two words of an ordinary narrative sentence
+ * in `session.summary` — a position GitHub never parses, whose only reader is
+ * this file. The check was pushing authors toward #588's shape to satisfy it.
+ *
+ * So the file now exercises two deciders, and each one gets an input the
+ * other cannot reach:
+ *
+ *   | decider | its input | the input only it can reach |
+ *   |---|---|---|
+ *   | `keywordCloseViolations` | `texts` | a record that declares NOTHING |
+ *   | `declaredClosureViolations` | `issueStates` | a record with NO keyword anywhere |
+ *
+ * Both are written down below as separate cases saying which is which, as
+ * `.claude/rules/checks-must-be-able-to-fail.md` requires of a pair kept
+ * rather than collapsed.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
   CLOSING_KEYWORDS,
+  type IssueState,
+  type IssueStateReading,
   StateCloseRefused,
   closingReferences,
+  declaredClosureViolations,
+  fetchIssueStates,
+  keywordCloseViolations,
   parseDeclaredCloses,
+  parseIssueStatesFile,
   stateRecordCloseViolations,
 } from "../scripts/check-state-record-closes";
 
@@ -212,12 +244,31 @@ describe("#590 AC-2/AC-3: the closing-keyword form table", () => {
 
 // ── The comparison ────────────────────────────────────────────────────────
 
-const record = (over: Partial<Parameters<typeof stateRecordCloseViolations>[0]> = {}) => ({
-  texts: [{ label: "commit message", text: "docs: record session 49" }],
-  declared: [] as number[],
-  repo: TABLE_REPO,
-  ...over,
+/** A reading in which every id named is CLOSED on GitHub. */
+const allClosed = (...ids: number[]): IssueStateReading => ({
+  states: Object.fromEntries(ids.map(n => [n, "CLOSED" as IssueState])),
+  source: "fixture",
 });
+
+/**
+ * A record for the KEYWORD question's cases.
+ *
+ * The GitHub reading defaults to "everything this record declares is already
+ * CLOSED", which is held fixed on purpose: every case below varies the TEXT,
+ * so a case that also varied the reading would be measuring two things at
+ * once and could not say which one its verdict came from (#585's pair
+ * discipline). The declared-side cases set the reading explicitly and leave
+ * the text alone.
+ */
+const record = (over: Partial<Parameters<typeof stateRecordCloseViolations>[0]> = {}) => {
+  const base = {
+    texts: [{ label: "commit message", text: "docs: record session 49" }],
+    declared: [] as number[],
+    repo: TABLE_REPO as string | null,
+    ...over,
+  };
+  return { issueStates: allClosed(...base.declared), ...base };
+};
 
 describe("#590 AC-1: the session-49 record is refused", () => {
   test("the session 49 phrase 'Filed and not fixed' puts 586 in the keyword-derived close set", () => {
@@ -265,10 +316,15 @@ describe("#590 AC-4/AC-5: the refusal, in both directions", () => {
     expect(found[0], "the refusal does not name the declared set").toContain("Issues closed:");
   });
 
-  test("a missing declared close is refused, with text distinct from the extra case", () => {
+  test("a declared id that is not closed is refused, with text distinct from the extra case", () => {
+    // #605 replaced "declared with no keyword behind it" with "declared and
+    // not CLOSED on GitHub". The two refusals must still read differently:
+    // one shared message would make the refusal unreadable in exactly the
+    // case a reader has to act on.
     const missing = stateRecordCloseViolations(record({
       texts: [{ label: "pull request body", text: "Closes #478." }],
       declared: [478, 586],
+      issueStates: { states: { 478: "CLOSED", 586: "OPEN" }, source: "fixture" },
     }));
     const extra = stateRecordCloseViolations(record({
       texts: [{ label: "pull request body", text: "Closes #478. Also fixes #586." }],
@@ -276,19 +332,20 @@ describe("#590 AC-4/AC-5: the refusal, in both directions", () => {
     }));
     expect(missing.length).toBe(1);
     expect(missing[0]).toContain("#586");
-    expect(missing[0]).toContain("Issues closed:");
-    expect(missing[0], "the refusal does not name the keyword-derived set").toContain("478");
-    // Two directions, two sentences. One shared message would make the
-    // refusal unreadable in exactly the case a reader has to act on.
+    expect(missing[0]).toContain("OPEN on GitHub");
     expect(missing[0], "the two directions refuse with the same words").not.toBe(extra[0]);
   });
 
   test("the two directions are reported together, not one at a time", () => {
     // A validator that stops at the first finding turns one bad record into
-    // two round-trips, which is lib/project-state-shape.ts's lesson.
+    // two round-trips, which is lib/project-state-shape.ts's lesson. The two
+    // findings here come from the two DIFFERENT deciders — #586 from the
+    // keyword side, #999 from the GitHub side — so this also asserts the
+    // composer runs both rather than returning at the first non-empty list.
     const found = stateRecordCloseViolations(record({
       texts: [{ label: "pull request body", text: "Closes #478. Fixes #586." }],
       declared: [478, 999],
+      issueStates: { states: { 478: "CLOSED", 999: "OPEN" }, source: "fixture" },
     }));
     expect(found.length).toBe(2);
     expect(found.join("\n")).toContain("586");
@@ -380,14 +437,55 @@ describe("#590: the live project-state.json, read by the real comparison", () =>
       .toBeGreaterThan(0);
   });
 
+  /**
+   * ## What `BANKED` means, and what clears an entry (#605)
+   *
+   * An entry is ONE issue number that the LIVE `project-state.json` currently
+   * puts in the keyword-derived close set without declaring it. It is a
+   * grandfathered instance of the #588 defect sitting in a file a worktree
+   * may not write (`project-state.json` is DA-owned, #296), parked here so
+   * the guard can ship red-free while the record is repaired by its owner.
+   *
+   * **An entry means: "this record would close #N, nobody declared it, and
+   * we are knowingly not refusing."** It does not mean "#N is fine", it does
+   * not mean "#N was checked", and it is not a place to put an id to make a
+   * failure stop.
+   *
+   * **What clears an entry:** the DA rewording the live summary so the id is
+   * no longer in the keyword-derived set, or declaring it in
+   * `issues_closed`. Nothing else. In particular a code change cannot clear
+   * one, because nothing in code decides what is in this list.
+   *
+   * **The ratchet runs in BOTH directions, and that is new in #605.** Over
+   * its number fails, as before — a NEW undeclared close is refused. UNDER
+   * its number now fails too: an id banked here that the live record does
+   * not actually produce is refused, naming it, and the fix is to delete the
+   * entry. `.claude/rules/checks-must-be-able-to-fail.md` is blunt about why
+   * — *a ratchet nobody can interpret becomes a number nobody lowers* — and
+   * a one-way bank is exactly that, because adding an id is free and nothing
+   * ever asks whether an old one still earns its place.
+   *
+   * It also closes the cheapest wrong fix for #605 by name. The one-line
+   * repair for any refusal this case produces is to append the id to
+   * `BANKED`. Under the two-way ratchet that only works while the live
+   * record really does produce the violation — the moment it does not, the
+   * stale entry is itself a failure. The #605 cases below are immune to it
+   * for a second, independent reason: they are synthetic records with ids of
+   * their own, and `BANKED` is read only here, against the live file.
+   *
+   * It is `[]` today, measured: the live session-54 summary's five closing
+   * keywords are all declared, so the keyword side finds nothing. #586 — the
+   * entry #590 banked — left the record when session 49 did.
+   */
+  const BANKED: number[] = [];
+
   test("every undeclared close in the live record is one this commit banked", () => {
-    // Banked, not asserted equal: #586 is the live exposure this issue is
-    // about, and project-state.json is DA-owned (#296) so a worktree cannot
-    // rephrase it. A NEW undeclared close turns this red; a record that
-    // becomes clean leaves it green, so the DA is not blocked on deleting an
-    // entry in the same commit that earns it.
-    const BANKED = [586];
-    const found = stateRecordCloseViolations({
+    // The KEYWORD decider only. The declared side asks GitHub, and the suite
+    // takes no network — so this case says nothing about whether the live
+    // record's declared ids are closed, and says so rather than appearing to
+    // have checked. `--issue-states github` is where that question is asked,
+    // before a state PR is opened.
+    const found = keywordCloseViolations({
       texts,
       declared: parseDeclaredCloses(session.issues_closed),
       repo: TABLE_REPO,
@@ -398,5 +496,206 @@ describe("#590: the live project-state.json, read by the real comparison", () =>
     const unexpected = undeclared.filter(n => !BANKED.includes(n));
     expect(unexpected, `the live session record would close issues nobody declared:\n${found.join("\n")}`)
       .toEqual([]);
+
+    // The other direction. A banked id the record no longer produces is a
+    // number nobody will ever lower unless something asks.
+    const stale = BANKED.filter(n => !undeclared.includes(n));
+    expect(
+      stale,
+      `these ids are banked in test/closing-keywords.test.ts but the live record no longer ` +
+        `closes them undeclared — delete them from BANKED in the same commit that reads this`,
+    ).toEqual([]);
+  });
+});
+
+// ── #605: the declared side asks GitHub, not the text ────────────────────
+//
+// `issues_closed` records what the SESSION closed, not what this PR will
+// close. Every case here holds the TEXT fixed at a summary with no closing
+// keyword in it and varies only the GitHub reading, so a verdict can only
+// have come from the declared-side decider.
+
+/** A session summary with no closing keyword anywhere in it. */
+const NO_KEYWORD_SUMMARY =
+  "Session 54 recorded five merges and one reopened issue. The hill-climb receipt now " +
+  "accounts for every action it did not apply, and the absent-claim refusal grew a third arm.";
+
+const noKeywordRecord = (declared: number[], issueStates: IssueStateReading | null) => ({
+  texts: [{ label: "session summary", text: NO_KEYWORD_SUMMARY }],
+  declared,
+  repo: TABLE_REPO,
+  issueStates,
+});
+
+describe("#605 AC-1/AC-2: a declared id is checked against GitHub, not against prose", () => {
+  test("the fixture summary really carries no closing keyword — the premise", () => {
+    // Without this the cases below could be green because the keyword side
+    // happened to agree, which is a verdict from the wrong decider.
+    expect(closesIn(NO_KEYWORD_SUMMARY), "the fixture closes something after all").toEqual([]);
+  });
+
+  test("AC-1: a declared id that is CLOSED on GitHub passes with no keyword anywhere", () => {
+    // The input only the declared-side decider can reach: no keyword exists,
+    // so `keywordCloseViolations` has nothing to iterate. Under #590 this
+    // refused, and the only way to clear it was to write `Fixes #662` into
+    // narrative prose — the #588 shape the check exists to prevent.
+    expect(stateRecordCloseViolations(noKeywordRecord([662], allClosed(662)))).toEqual([]);
+  });
+
+  test("AC-2: a declared id that is still OPEN refuses, naming it", () => {
+    const found = stateRecordCloseViolations(
+      noKeywordRecord([640], { states: { 640: "OPEN" }, source: "fixture" }),
+    );
+    expect(found.length).toBe(1);
+    expect(found[0]).toContain("#640");
+    expect(found[0]).toContain("OPEN on GitHub");
+    // The refusal has to be actionable without re-deriving the reading.
+    expect(found[0], "the refusal does not name the reading it acted on").toContain("GitHub states");
+  });
+
+  test("a record declaring a mix reports only the ids that are not closed", () => {
+    const found = stateRecordCloseViolations(noKeywordRecord(
+      [629, 640, 662],
+      { states: { 629: "CLOSED", 640: "OPEN", 662: "CLOSED" }, source: "fixture" },
+    ));
+    expect(found.length).toBe(1);
+    expect(found[0]).toContain("#640");
+  });
+
+  test("AC-3: a record that declares NOTHING is still refused for an undeclared keyword", () => {
+    // The input only the KEYWORD decider can reach: with `declared` empty,
+    // `declaredClosureViolations` returns [] before it looks at anything, so
+    // this verdict cannot have come from it. The pair is written down as two
+    // cases, which is what stops the next person deleting one of the two
+    // deciders and watching the suite stay green.
+    const found = stateRecordCloseViolations({
+      texts: [{ label: "pull request body", text: "Filed and not fixed: #586, where a scaffold run rewrites text" }],
+      declared: [],
+      repo: TABLE_REPO,
+      issueStates: allClosed(),
+    });
+    expect(found.length).toBe(1);
+    expect(found[0]).toContain("will CLOSE #586");
+    expect(declaredClosureViolations([], allClosed()), "the declared side saw this input at all")
+      .toEqual([]);
+  });
+});
+
+describe("#605: an unreachable GitHub is UNMEASURED, and UNMEASURED is not clean", () => {
+  test("a declared id with no reading behind it refuses, naming the state", () => {
+    const found = stateRecordCloseViolations(noKeywordRecord([662], null));
+    expect(found.length).toBe(1);
+    expect(found[0]).toContain("#662");
+    expect(found[0]).toContain("UNMEASURED");
+  });
+
+  test("a declared id the reading did not reach is UNMEASURED, not CLOSED", () => {
+    // Silent Default Substitution: an id the reader could not resolve must
+    // not inherit the verdict of the ids it could.
+    const found = declaredClosureViolations([629, 662], {
+      states: { 629: "CLOSED" },
+      reasons: { 662: "GitHub answered HTTP 403" },
+      source: "github:hornjason/pai-harness",
+    });
+    expect(found.length).toBe(1);
+    expect(found[0]).toContain("#662");
+    expect(found[0]).toContain("UNMEASURED");
+    expect(found[0], "the refusal does not say why it could not read").toContain("HTTP 403");
+  });
+
+  test("an UNMEASURED refusal reads differently from an OPEN one", () => {
+    const unmeasured = declaredClosureViolations([662], null);
+    const open = declaredClosureViolations([662], { states: { 662: "OPEN" } });
+    expect(unmeasured[0]).not.toBe(open[0]);
+    expect(open[0]).not.toContain("UNMEASURED");
+  });
+
+  test("a record declaring nothing, with no reading, is not refused", () => {
+    // The positive control for the whole declared side. A check that refused
+    // every record would satisfy all three cases above and be worse than
+    // nothing.
+    expect(declaredClosureViolations([], null)).toEqual([]);
+    expect(stateRecordCloseViolations(noKeywordRecord([], null))).toEqual([]);
+  });
+});
+
+describe("#605: the GitHub reading itself", () => {
+  const response = (status: number, body: unknown) =>
+    ({ ok: status >= 200 && status < 300, status, json: async () => body }) as unknown as Response;
+
+  test("open and closed are read, and the URL names the repository and the id", async () => {
+    const asked: string[] = [];
+    const reading = await fetchIssueStates("hornjason/pai-harness", [640, 662], {
+      fetchImpl: (async (url: string) => {
+        asked.push(String(url));
+        return response(200, { state: String(url).endsWith("/640") ? "open" : "closed" });
+      }) as unknown as typeof fetch,
+    });
+    expect(asked).toEqual([
+      "https://api.github.com/repos/hornjason/pai-harness/issues/640",
+      "https://api.github.com/repos/hornjason/pai-harness/issues/662",
+    ]);
+    expect(reading.states).toEqual({ 640: "OPEN", 662: "CLOSED" });
+  });
+
+  test("a non-OK response leaves the id out of the reading rather than guessing", async () => {
+    const reading = await fetchIssueStates("hornjason/pai-harness", [662], {
+      fetchImpl: (async () => response(404, {})) as unknown as typeof fetch,
+    });
+    expect(reading.states[662]).toBeUndefined();
+    expect(reading.reasons?.[662]).toContain("404");
+    expect(declaredClosureViolations([662], reading)[0]).toContain("UNMEASURED");
+  });
+
+  test("a thrown request is UNMEASURED, not a clean record", async () => {
+    const reading = await fetchIssueStates("hornjason/pai-harness", [662], {
+      fetchImpl: (async () => {
+        throw new Error("getaddrinfo ENOTFOUND api.github.com");
+      }) as unknown as typeof fetch,
+    });
+    expect(reading.states[662]).toBeUndefined();
+    expect(reading.reasons?.[662]).toContain("ENOTFOUND");
+  });
+
+  test("no repository to ask is UNMEASURED, and nothing is requested", async () => {
+    let called = 0;
+    const reading = await fetchIssueStates(null, [662], {
+      fetchImpl: (async () => {
+        called++;
+        return response(200, { state: "closed" });
+      }) as unknown as typeof fetch,
+    });
+    expect(called).toBe(0);
+    expect(reading.states[662]).toBeUndefined();
+    expect(reading.reasons?.[662]).toContain("--repo");
+  });
+
+  test("a token is sent when one is supplied, and no header is invented when none is", async () => {
+    const seen: Array<Record<string, string> | undefined> = [];
+    const impl = (async (_u: string, init?: { headers?: Record<string, string> }) => {
+      seen.push(init?.headers);
+      return response(200, { state: "closed" });
+    }) as unknown as typeof fetch;
+    await fetchIssueStates("o/r", [1], { token: "t0ken", fetchImpl: impl });
+    await fetchIssueStates("o/r", [1], { token: null, fetchImpl: impl });
+    expect(seen[0]?.authorization).toBe("Bearer t0ken");
+    expect(seen[1]?.authorization).toBeUndefined();
+  });
+});
+
+describe("#605: the states file, which is how the suite drives the CLI offline", () => {
+  test("an object of issue number to state is read", () => {
+    const reading = parseIssueStatesFile('{"640":"open","662":"CLOSED"}', "states.json");
+    expect(reading.states).toEqual({ 640: "OPEN", 662: "CLOSED" });
+    expect(reading.source).toBe("states.json");
+  });
+
+  test("an unreadable state refuses instead of being dropped", () => {
+    // Dropping it would make a typo the cheapest way past the comparison,
+    // which is the reason parseDeclaredCloses throws.
+    expect(() => parseIssueStatesFile('{"662":"probably"}', "s.json")).toThrow(StateCloseRefused);
+    expect(() => parseIssueStatesFile('{"not-a-number":"OPEN"}', "s.json")).toThrow(StateCloseRefused);
+    expect(() => parseIssueStatesFile("[]", "s.json")).toThrow(StateCloseRefused);
+    expect(() => parseIssueStatesFile("{", "s.json")).toThrow(StateCloseRefused);
   });
 });

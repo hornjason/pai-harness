@@ -37,9 +37,11 @@
  * ## what this does NOT model
  *
  * Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
- * every run: the runner OS, a fresh `bun install`, the pinned bun version,
- * the pull-request merge commit, network and API availability, and files git
- * ignores. The claim this replaces failed by being unqualified, so the
+ * every run: the runner OS, a fresh `bun install`, the bun version (reported,
+ * not controlled — since #622 the run prints the bun it ran under and whether
+ * it matches what `.bun-version` declares, but nothing here switches
+ * runtimes), the pull-request merge commit, network and API availability, and
+ * files git ignores. The claim this replaces failed by being unqualified, so the
  * replacement is qualified, in writing, where a reader of the output sees it.
  *
  * Usage:
@@ -59,12 +61,11 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } fr
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { acquireFullSuiteSlot, isFullSuiteCommand, releaseFullSuiteSlot } from "../lib/test-suite-lock";
-import { CLEAN_ENV_REFUSE_EXIT, prepareCiCheckout, type Runner } from "../lib/ci-checkout";
+import { CLEAN_ENV_REFUSE_EXIT, prepareCiCheckout, suiteJobName, type Runner } from "../lib/ci-checkout";
 import { bunVersionReading, declaredBunVersion } from "../lib/bun-version";
 
 const ROOT = join(import.meta.dir, "..");
 const CI_WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml");
-const CI_JOB = "test";
 
 const argv = process.argv.slice(2);
 const modelCheckout = !argv.includes("--no-ci-checkout");
@@ -126,7 +127,18 @@ function buildCiCheckout(source: string): string {
   const outcome = prepareCiCheckout({
     source,
     workflowPath: CI_WORKFLOW,
-    jobName: CI_JOB,
+    // Read from the workflow, not asserted. This was `const CI_JOB = "test"`,
+    // and when `ci.shards` moved the suite into a `test-shard` matrix the
+    // whole command died on its first line — `refused: job "test" has no
+    // actions/checkout step`, over a workflow that checks out four times,
+    // because `test` had become the aggregate that reads the matrix result.
+    //
+    // #735 had already exported `suiteJobName` for exactly this, and
+    // `lib/test-command-positions.ts` and `test/test-clean-env.test.ts` both
+    // used it. This script did not, so the test file named after the script
+    // asked the question the right way while the script asked it the wrong
+    // way — and stayed green over a command that could not run (#211 SC-F).
+    jobName: suiteJobName(readFileSync(CI_WORKFLOW, "utf-8")),
     tmpRoot: mkdtempSync(join(tmpdir(), "rungate-ci-checkout-")),
     readFile: p => readFileSync(p, "utf-8"),
     run,

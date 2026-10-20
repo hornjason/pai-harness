@@ -28,11 +28,13 @@ import { execFileSync, spawnSync } from "child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { structuralCut } from "../lib/source-slice";
 import {
   ciCheckoutPlan,
   executeCheckoutPlan,
   isSafeRefspec,
   parseCheckoutModel,
+  suiteJobName,
   prepareCiCheckout,
   UNMODELLED,
   type CheckoutModel,
@@ -73,7 +75,7 @@ describe("#168: the checkout model is read from the workflow, not assumed", () =
     // real file means a change to CI shows up here rather than silently
     // widening the gap this issue exists to close.
     const yaml = readFileSync(join(REPO, ".github", "workflows", "ci.yml"), "utf-8");
-    const { model, why } = parseCheckoutModel(yaml, "test");
+    const { model, why } = parseCheckoutModel(yaml, suiteJobName(yaml));
     expect(model, why).not.toBeNull();
     expect(model!.depth).toBe(1);
   });
@@ -84,7 +86,7 @@ describe("#168: the checkout model is read from the workflow, not assumed", () =
     // today, because the job fetches origin/main at depth 200 before the
     // suite runs — and would report failures CI does not have.
     const yaml = readFileSync(join(REPO, ".github", "workflows", "ci.yml"), "utf-8");
-    const { model } = parseCheckoutModel(yaml, "test");
+    const { model } = parseCheckoutModel(yaml, suiteJobName(yaml));
     expect(model!.fetches.length).toBeGreaterThan(0);
     expect(model!.fetches.some(f => f.refspec.includes("refs/heads/main"))).toBe(true);
     expect(model!.fetches[0].depth).toBe(200);
@@ -520,5 +522,94 @@ describe("#168: the harness discriminates, which is the only thing that matters"
     expect(script).toContain("cwd: checkoutDir ?? ROOT");
     expect(script).toContain("checkoutDir = buildCiCheckout(ROOT)");
     expect(script).toContain("prepareCiCheckout(");
+  });
+});
+
+/**
+ * #635: the Bun entry says what the declaration enforces, and the two prose
+ * summaries of the list say the same thing it does.
+ *
+ * #622 resolved the entry rather than deleting it — CI installs what
+ * `.bun-version` declares, the run REPORTS which bun it used and whether that
+ * matches, and nothing here switches runtimes. The list was rewritten; the two
+ * places that summarise the list in prose still said "the pinned bun version",
+ * which is the claim #622 established is not true of this script.
+ *
+ * The case above, "what this does NOT model is written down, not implied", is
+ * not a witness for any of that, and measuring it is how this issue was
+ * scoped: deleting the Bun entry outright is **0 of 25 red** there, because
+ * its length floor is `>= 5` over a six-entry list and none of its four
+ * subject substrings is the Bun one. A list whose Bun entry had reverted to
+ * the pre-#622 sentence is likewise green. So the risk was never a check
+ * pinned to stale text — it was no check at all.
+ *
+ * Ids are deliberately not written here: an id chosen against this tree
+ * cannot see other sessions' unmerged branches, and four collisions in one
+ * day came of guessing one. They need allocating.
+ */
+describe("#635: the UNMODELLED Bun entry, and the prose that summarises it", () => {
+  /** Every summary of the list that lives outside `lib/ci-checkout.ts`. */
+  const SUMMARIES: ReadonlyArray<{ file: string; path: string; anchor: string; end: string }> = [
+    {
+      file: "scripts/test-clean-env.ts",
+      path: SCRIPT,
+      anchor: "## what this does NOT model",
+      end: "Usage:",
+    },
+    {
+      file: "specs/HARNESS-STANDARD.md",
+      path: join(REPO, "specs", "HARNESS-STANDARD.md"),
+      anchor: "#### What a green run here still does not promise",
+      end: "\n---",
+    },
+  ];
+
+  test("exactly one entry is about the Bun version, and it names the declaration rather than a pin", () => {
+    // Worded so that a REVERSION goes red, not only a deletion. The count
+    // catches the deletion; the clauses below catch "the pinned bun version"
+    // coming back, which still matches /bun version/i and would satisfy any
+    // check built on presence alone.
+    const about = UNMODELLED.filter(e => /bun version/i.test(e));
+    expect(about.length, UNMODELLED.join("\n")).toBe(1);
+    const entry = about[0]!;
+
+    // What the declaration enforces: CI installs what the declaration says.
+    expect(entry).toContain(".bun-version");
+    expect(entry).toContain("ci.bunVersion");
+
+    // And what it does not: the run reports the disagreement, it does not
+    // remove it. An entry claiming the version is controlled here would be
+    // the same stale-statement defect pointing the other way.
+    expect(entry).toMatch(/\breports?\b/i);
+    expect(entry).toMatch(/switches runtimes|announced rather than removed/i);
+
+    // The pre-#622 sentence, by name, anywhere in the list.
+    expect(UNMODELLED.join("\n").toLowerCase()).not.toContain("pinned bun version");
+  });
+
+  test("the docstring and the spec summarise the entry the way the list now states it", () => {
+    // Cut the region the claim is about — `lib/source-slice.ts` refuses an
+    // absent or duplicated anchor, so a summary that moved aborts rather than
+    // reporting a clean result over text it never found. The `UNMODELLED`
+    // assertion is the control: a cut that landed on other prose cannot
+    // satisfy it, and an absent search over the wrong region is
+    // indistinguishable from an absent problem.
+    for (const { file, path, anchor, end } of SUMMARIES) {
+      const summary = structuralCut(readFileSync(path, "utf-8"), anchor, { endAnchor: end });
+      // Both summaries are wrapped prose, one of them inside a block comment,
+      // so a phrase is only ever a substring of the FLATTENED text. Asserting
+      // against the raw cut would make a sentence pass or fail on where the
+      // wrap happens to fall, which is a detector narrower than its subject.
+      const flat = summary.replace(/\s*\n\s*\*?\s*/g, " ");
+      // Boundedness, asserted rather than assumed (#664 AC-6): a cut that
+      // returned the whole document would satisfy every `toContain` below,
+      // and the positive assertions would then be about the file rather than
+      // about the summary. The end anchor is exclusive, so reaching it means
+      // the cut did not stop.
+      expect(summary, file).not.toContain(end);
+      expect(flat, file).toContain("UNMODELLED");
+      expect(flat.toLowerCase(), file).not.toContain("pinned bun version");
+      expect(flat, file).toContain("the bun version (reported, not controlled");
+    }
   });
 });

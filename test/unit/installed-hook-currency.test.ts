@@ -13,10 +13,19 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createGitHooks, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
+import { preCommitHookScript, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
+// `import.meta.main` is false under an import, so this loads the table without
+// running the check. Importing the labels rather than retyping them is the
+// point: a test carrying its own copy of the strings asserts that two literals
+// agree, which they do, right up until one of them is edited.
+import {
+  REFUSAL_PREFIX,
+  type RefusalClass,
+} from '../../scripts/check-installed-hook-currency';
 
 /**
  * Covers SC-2043, SC-2044, SC-2045 (HARNESS-STANDARD.md) — #599.
+ * Covers SC-2141..SC-2146 (HARNESS-STANDARD.md) — #613.
  *
  * `scripts/check-installed-hook-currency.ts` — the installed `.git/hooks/pre-commit`
  * read at the SHARED git common dir and compared against what the generator
@@ -46,8 +55,19 @@ const source = readFileSync(SCRIPT, 'utf-8');
 let MUTANT = '';
 let MUTANT_DIR = '';
 let FIX = '';
-/** What the generator produces today, byte for byte. */
+/**
+ * What the generator produces today FOR A FIXTURE REPOSITORY, byte for byte.
+ *
+ * Since #610 the hook names one updater, resolved from what the project
+ * declares itself to be, so "the generator output" is a function of the
+ * project and not a constant. Every fixture built by `repoWithHook` is a bare
+ * temp directory — no package.json, no updater — so they all resolve to the
+ * same consumer-with-nothing form and one reading serves all of them. The
+ * live tree is a different shape and gets its own reading.
+ */
 let CURRENT = '';
+/** The same question asked of this repository, which declares itself rungate. */
+let CURRENT_LIVE = '';
 
 function git(cwd: string, args: string[]) {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf-8' }).trim();
@@ -92,11 +112,19 @@ beforeAll(() => {
 
   FIX = mkdtempSync(join(tmpdir(), 'hook-currency-fix-'));
 
-  const gen = mkdtempSync(join(tmpdir(), 'hook-currency-gen-'));
-  mkdirSync(join(gen, '.git', 'hooks'), { recursive: true });
-  createGitHooks(gen, []);
-  CURRENT = readFileSync(join(gen, '.git', 'hooks', 'pre-commit'), 'utf-8');
-  rmSync(gen, { recursive: true, force: true });
+  // Read, never installed. `preCommitHookScript` writes nothing, which is the
+  // property that lets this file ask what the generator would produce for the
+  // LIVE repository without going near the installed hook — a file every
+  // linked worktree of this repository shares.
+  const shape = join(FIX, 'generator-shape');
+  mkdirSync(shape, { recursive: true });
+  CURRENT = preCommitHookScript(shape);
+  CURRENT_LIVE = preCommitHookScript(REPO_ROOT);
+  expect(
+    CURRENT_LIVE,
+    'the harness and a bare consumer get the same hook, so the fixtures below could not tell ' +
+      'a project-scoped reading from a scratch one',
+  ).not.toBe(CURRENT);
 });
 
 afterAll(() => {
@@ -116,6 +144,46 @@ function expectRefused(args: string[], reason: RegExp) {
   const real = run(SCRIPT, args);
   expect(real.code, `expected a refusal for [${args.join(' ')}]\n${real.err}`).not.toBe(0);
   expect(real.err).toMatch(reason);
+
+  const mutant = run(MUTANT, args);
+  expect(
+    mutant.code,
+    `the mutant (REFUSE_EXIT = 0) still exited ${mutant.code} for [${args.join(' ')}] — ` +
+      `this case is not being caught by the refusal under test.\n${mutant.err}`,
+  ).toBe(0);
+}
+
+/**
+ * #613. The same proof, plus the CLASS the refusal was reported under.
+ *
+ * An exit code says a refusal happened; it cannot say WHAT was refused, and
+ * before #613 every refusal in this script printed the staleness label — so
+ * `expectRefused` above was satisfied by a flag typo reporting the installed
+ * hook as stale on a checkout whose hook was current.
+ *
+ * Two assertions and the second is the one that means something. Asserting the
+ * expected prefix is PRESENT is satisfied by a line carrying every prefix; the
+ * claim is that the reader can TELL the classes apart, so every other prefix
+ * in the table is asserted absent by name. The reason regexp is asserted too,
+ * because a run that died before producing any message has an empty stderr,
+ * which contains no wrong prefix either.
+ */
+function expectRefusedAs(args: string[], cls: RefusalClass, reason: RegExp) {
+  const real = run(SCRIPT, args);
+  expect(real.code, `expected a refusal for [${args.join(' ')}]\n${real.err}`).not.toBe(0);
+  expect(real.err, `the refusal does not say what it is about\n${real.err}`).toMatch(reason);
+  expect(
+    real.err.startsWith(`${REFUSAL_PREFIX[cls]}: `),
+    `[${args.join(' ')}] should be reported as ${cls}, and the line reads:\n${real.err}`,
+  ).toBe(true);
+  for (const [other, prefix] of Object.entries(REFUSAL_PREFIX)) {
+    if (other === cls) continue;
+    expect(
+      real.err.includes(prefix),
+      `[${args.join(' ')}] is a ${cls} refusal and the output also carries the ${other} ` +
+        `label, so the two classes are not distinguishable:\n${real.err}`,
+    ).toBe(false);
+  }
 
   const mutant = run(MUTANT, args);
   expect(
@@ -159,13 +227,118 @@ describe('#599: the refusal is routed through exactly one exit code', () => {
   });
 });
 
+// ── #613: the exit code says a refusal happened; the class says what ─────
+
+describe('#613: an argument error is not a verdict about the installed hook', () => {
+  test('SC-2141: an unrecognised option, a missing value and an unexpected argument each name the argument', () => {
+    // The filed symptom, verbatim: `--harness` instead of `--generator` on a
+    // checkout whose hook was current printed a staleness verdict, and the
+    // remedy that label implies — --install, or a re-scaffold — replaces a
+    // hook that was fine. Nothing about the installed hook had been read.
+    //
+    // All three inputs are `parseArgs`', which is exactly why they are not on
+    // their own sufficient: see SC-2142.
+    expectRefusedAs(['--project', '.', '--harness', 'x'], 'ARGUMENTS', /--harness/);
+    expectRefusedAs(['--project'], 'ARGUMENTS', /--project needs a value/);
+    expectRefusedAs(['not-a-flag'], 'ARGUMENTS', /unexpected argument "not-a-flag"/);
+  });
+
+  test('SC-2142: a refusal raised OUTSIDE parseArgs is not reported as an argument error either', () => {
+    // This is the case the cheapest wrong fix does not survive, and it is here
+    // deliberately (.claude/rules/checks-must-be-able-to-fail.md, fifth shape).
+    //
+    // The 5pm repair for SC-2141 is three lines: wrap the `parseArgs` call in
+    // its own try and leave the outer catch labelling everything else stale.
+    // The reported symptom disappears, SC-2141 goes green in full — all three
+    // of its inputs are ones parseArgs owns — and ten of the thirteen throw
+    // sites stay mislabelled, including all four generator ones.
+    //
+    // A generator root with no lib/scaffold/steps.ts is the cheapest input
+    // outside parseArgs. It is also the class that matters most: "the
+    // installed hook differs from the generator" is a measurement and "the
+    // generator could not be run" is the absence of one, and the defective
+    // version reported the absence as the stalest available verdict.
+    const empty = join(FIX, 'no-generator');
+    mkdirSync(empty, { recursive: true });
+    expectRefusedAs(
+      ['--project', repoWithHook('unmeasurable', CURRENT), '--generator', empty],
+      'UNMEASURED',
+      /could not load the hook generator/,
+    );
+  });
+
+  test('SC-2143: the four readings are four different strings', () => {
+    // `0`, `{}`, `null` and silence are indistinguishable from success. Four
+    // classes sharing one label is the same defect one level up, and it is
+    // what this file shipped with: an argument error, a measured difference
+    // and a reading that was never taken all printed the same sentence.
+    const prefixes = Object.values(REFUSAL_PREFIX);
+    expect(new Set(prefixes).size, 'two classes share a label and cannot be told apart').toBe(
+      prefixes.length,
+    );
+    // No prefix may be a prefix of another, or startsWith() cannot separate
+    // them and neither can a reader scanning the start of a line.
+    for (const a of prefixes) {
+      for (const b of prefixes) {
+        if (a === b) continue;
+        expect(a.startsWith(b), `"${a}" starts with "${b}"`).toBe(false);
+      }
+    }
+    // Each literal is written once, in the table. A second copy at a print
+    // site would survive any mutation of the table and both would read as
+    // covered — the fourth shape.
+    for (const p of prefixes) {
+      expect(source.split(p).length - 1, `the ${p} label is written in more than one place`).toBe(1);
+    }
+  });
+
+  test('SC-2145: every raise names a class, and every class is raised', () => {
+    // Without this a new refusal added later takes whatever label the catch
+    // happens to default to, which is how all thirteen came to share one.
+    const raises = source.match(/new HookRefused\(\s*("[A-Z_]+")?/g) || [];
+    expect(raises.length, 'no HookRefused is raised at all — nothing can refuse').toBeGreaterThan(0);
+    const classes = Object.keys(REFUSAL_PREFIX);
+    for (const r of raises) {
+      const named = /"([A-Z_]+)"/.exec(r)?.[1];
+      expect(
+        named && classes.includes(named),
+        `${r.replace(/\s+/g, ' ')} does not name a class from REFUSAL_PREFIX, so whatever it ` +
+          `refuses will be reported under some other class's label`,
+      ).toBe(true);
+    }
+    // And the table has no dead rows: a class nothing raises is a label that
+    // can never appear, which no behavioural case could notice.
+    for (const c of classes) {
+      expect(
+        (source.match(new RegExp(`new HookRefused\\(\\s*"${c}"`, 'g')) || []).length,
+        `the ${c} class is declared in REFUSAL_PREFIX and raised nowhere`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  test('SC-2146: the class is carried on the raise, and the catch is the only reader of it', () => {
+    // One decider. A catch that re-derived the class by matching the message
+    // text would be a second reading of a fact the raise already holds — two
+    // deciders that agree, which no behavioural test can tell apart.
+    const lookups = source.match(/REFUSAL_PREFIX\[/g) || [];
+    expect(lookups.length, 'the prefix table is indexed from more than one position').toBe(1);
+    expect(source, 'the catch no longer reads the class off the refusal').toContain(
+      'REFUSAL_PREFIX[e.refusalClass]',
+    );
+    // Exactly one position turns a refusal into a line of output. The
+    // pre-#613 file had two, and only one of them was entitled to its label.
+    const prints = source.match(/console\.error\(/g) || [];
+    expect(prints.length, 'a second print site is a second decider about the label').toBe(1);
+  });
+});
+
 // ── What it refuses ──────────────────────────────────────────────────────
 
 describe('#599: an installed hook that is not the generator output is refused', () => {
   test('SC-2043: a checkout with no installed pre-commit is refused', () => {
     // Not "clean". A hook nobody installed is a hook that enforces nothing,
     // and silence there is indistinguishable from a current one.
-    expectRefused(against(repoWithHook('absent', null)), /no .*pre-commit|not installed/i);
+    expectRefusedAs(against(repoWithHook('absent', null)), 'STALE', /no .*pre-commit|not installed/i);
   });
 
   test('SC-2043: a hook that predates the worktree guard is refused, and the refusal names it', () => {
@@ -181,7 +354,7 @@ describe('#599: an installed hook that is not the generator output is refused', 
       '',
     ].join('\n');
     const dir = repoWithHook('pre-450', pre450);
-    expectRefused(against(dir), /worktree guard/i);
+    expectRefusedAs(against(dir), 'STALE', /worktree guard/i);
     expect(run(SCRIPT, against(dir)).err, 'the refusal does not say how to fix it').toMatch(/--install/);
   });
 
@@ -189,18 +362,28 @@ describe('#599: an installed hook that is not the generator output is refused', 
     // The #599 shape: #450 landed, the primary arm did not. This is the case
     // that separates "has a worktree guard" from "is current", and without it
     // the check would certify every hook installed between the two fixes.
-    const pre599 = CURRENT
-      .replace(/updater=""[\s\S]*?\n    fi\n/, '')
-      .replace(/elif bun "\$updater" --skip-tests >&2; then/, 'if true; then');
+    const GUARD = 'if [ -n "$gitdir" ] && [ "$gitdir" = "$commondir" ]; then\n';
+    const pre599 = CURRENT.split('\n')
+      .filter(l => !l.includes('project-state: UNMEASURED') && !l.includes('(#610)'))
+      .join('\n')
+      .replace(
+        GUARD,
+        GUARD +
+          '    bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true\n' +
+          '    git add PROJECT-STATE.md project-state.json 2>/dev/null || true\n',
+      );
     expect(pre599, 'the pre-#599 fixture is identical to the current hook').not.toBe(CURRENT);
     expect(pre599, 'the fixture lost the worktree guard too, so it cannot isolate the updater leg')
       .toContain('--git-common-dir');
-    expectRefused(against(repoWithHook('pre-599', pre599)), /updater resolution/i);
+    expect(pre599, 'the fixture still carries the UNMEASURED reading it is meant to predate')
+      .not.toContain('project-state: UNMEASURED');
+    expectRefusedAs(against(repoWithHook('pre-599', pre599)), 'STALE', /updater resolution/i);
   });
 
   test('SC-2043: a hand-written hook is refused rather than silently compared', () => {
-    expectRefused(
+    expectRefusedAs(
       against(repoWithHook('hand-written', '#!/bin/sh\n# mine\nexit 0\n')),
+      'STALE',
       /hand-written|not managed/i,
     );
   });
@@ -210,12 +393,34 @@ describe('#599: an installed hook that is not the generator output is refused', 
     // that asked only for the guards would be satisfiable by pasting three
     // strings into a hook that does nothing with them.
     const drifted = `${CURRENT}\n# a line somebody added by hand\n`;
-    expectRefused(against(repoWithHook('drifted', drifted)), /not byte-identical|differs/i);
+    expectRefusedAs(against(repoWithHook('drifted', drifted)), 'STALE', /not byte-identical|differs/i);
   });
 
   test('an unknown option and a missing value are both refused', () => {
     expectRefused(['--nonsense', 'x'], /unknown option/i);
     expectRefused(['--project'], /needs a value/i);
+  });
+
+  test('SC-2144: the staleness label belongs to the currencyRefusal return path alone', () => {
+    // Criterion 2 of #613 pinned to the BINDING rather than to a count. There
+    // are five refusal classes produced by one `return` path and thirteen
+    // throw sites that are not refusals of that kind at all, so "the five
+    // existing refusals keep their prefix" is a claim about where the label is
+    // attached, not about how many messages carry it.
+    const raises = source.match(/new HookRefused\(\s*"STALE"/g) || [];
+    expect(raises.length, 'the staleness class is raised from more than one position').toBe(1);
+
+    const at = source.indexOf('new HookRefused("STALE"');
+    const line = source.slice(source.lastIndexOf('\n', at) + 1, source.indexOf('\n', at));
+    expect(
+      line,
+      'the staleness raise is no longer the currencyRefusal verdict, so the label has ' +
+        'detached from the only decider entitled to it',
+    ).toContain('if (refusal)');
+    expect(
+      source.slice(0, at),
+      'currencyRefusal is not called above the staleness raise',
+    ).toContain('currencyRefusal(readIfPresent(path)');
   });
 });
 
@@ -252,7 +457,7 @@ describe('#599: a current hook passes, and the read is at the shared common dir'
     // And the same worktree over a STALE shared hook must refuse, or the case
     // above would pass for a check that never read anything.
     writeFileSync(join(primary, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\n# mine\nexit 0\n');
-    expectRefused(against(linked), /hand-written|not managed/i);
+    expectRefusedAs(against(linked), 'STALE', /hand-written|not managed/i);
   });
 
   test('SC-2045: --install writes the generator output and the next run is current', () => {
@@ -275,7 +480,11 @@ describe('#599: a current hook passes, and the read is at the shared common dir'
     writeFileSync(outside, 'not a hook\n');
     symlinkSync(outside, join(dir, '.git', 'hooks', 'pre-commit'));
 
-    expectRefused([...against(dir), '--install'], /symlink/i);
+    // #613: an --install that cannot write is an INSTALL refusal, not a
+    // staleness verdict. The operator ran --install BECAUSE something said the
+    // hook was stale; saying it again names the command that just failed as
+    // the remedy for the command that just failed.
+    expectRefusedAs([...against(dir), '--install'], 'INSTALL', /symlink/i);
     expect(readFileSync(outside, 'utf-8'), 'the generator was written through the link').toBe('not a hook\n');
   });
 });
@@ -298,7 +507,7 @@ describe('#599: the live tree', () => {
     const installed = existsSync(path) ? readFileSync(path, 'utf-8') : null;
 
     const r = run(SCRIPT, ['--project', REPO_ROOT]);
-    const shouldPass = installed === CURRENT;
+    const shouldPass = installed === CURRENT_LIVE;
     expect(
       r.code === 0,
       shouldPass

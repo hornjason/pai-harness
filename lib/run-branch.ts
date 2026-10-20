@@ -56,6 +56,111 @@ export function runBranchName(issue: number | string): string {
   return `rungate/run-${issue}`;
 }
 
+/**
+ * The shell that puts the checkout on this run's branch (#702).
+ *
+ * **Extracted so it can be EXECUTED, which is the whole point.** #702 asks
+ * for the resume-or-refuse property to be "asserted by driving a run against
+ * a planted repo in that state, not by reading the branch-setup code" — and
+ * while this lived inside an agent prompt's template literal in
+ * `workflows/ship.js`, reading it was the only thing anyone could do. The
+ * behaviour was correct; nothing held it, so an edit to the `case` arms
+ * could reintroduce the discard with every test still green.
+ *
+ * ## What the two arms mean, because they are easy to read backwards
+ *
+ * - `git switch -c <ref>` **fails** when the branch already exists. That
+ *   failure is the load-bearing part: `|| git switch <ref>` then ADOPTS the
+ *   existing branch, so a run re-entering an issue commits onto the work
+ *   already there instead of a fresh branch cut from the base. Measured on a
+ *   planted repo carrying six commits: HEAD after is the prior tip.
+ * - The `case` guard means a checkout already on some other branch is left
+ *   alone entirely. A run must not move a shared checkout off work somebody
+ *   else is doing.
+ *
+ * ## The cheapest wrong fix, named here because this is where it would go
+ *
+ * **Drop the `-c` and always `git switch <ref>`.** It "obviously" resumes,
+ * and it breaks every run of an issue whose branch does not exist yet —
+ * which is most of them — because there is nothing to switch to. The pair of
+ * cases over this binding is what makes that visible: the resume case passes
+ * under it and the first-run case does not.
+ *
+ * `ref` arrives ALREADY SHELL-QUOTED. Quoting is the caller's, because
+ * `workflows/ship.js` owns `shellQuote` and a second quoter here would be a
+ * second decider for how a branch name reaches a command line.
+ */
+export function runBranchSetupScript(quotedRef: string): string {
+  return `case "$branch" in
+  ""|main|master)
+    git switch -c ${quotedRef} 2>/dev/null || git switch ${quotedRef} ;;
+esac`;
+}
+
+/**
+ * What a branch-setup actually did, from the two HEADs and the two branches.
+ *
+ * `leftoverRunBranch` says what was THERE before the run; this says what the
+ * run DID about it. They are different questions — a leftover can be present
+ * and resumed, present and discarded, or present and never reached — and
+ * #702's AC-2 is that the three outcomes are distinguishable in the
+ * artefact rather than all reading as a branch name.
+ *
+ * An unreadable input is `UNMEASURED` and never `NO_PRIOR_BRANCH`. Those are
+ * the two that must not collapse: "there was no prior work" and "nobody
+ * looked" are the byte-identical pair #702 is about.
+ */
+export type RunBranchStart =
+  | "NO_PRIOR_BRANCH"
+  | "PRIOR_BRANCH_RESUMED"
+  | "PRIOR_BRANCH_DISCARDED"
+  | "UNMEASURED";
+
+export interface RunBranchStartInput {
+  /** The branch the checkout was on before, `""` for a detached HEAD. */
+  branchBefore: string;
+  /** The branch it is on after. */
+  branchAfter: string;
+  /** The tip the run's branch is now at. */
+  headAfter: string;
+  /**
+   * The tip the run's branch held BEFORE setup, or `null` when it did not
+   * exist. `undefined` means nobody read it — which is not the same thing.
+   */
+  priorTip: string | null | undefined;
+}
+
+export function runBranchStart(input: RunBranchStartInput): RunBranchStart {
+  const { branchAfter, headAfter, priorTip } = input;
+  if (priorTip === undefined) return "UNMEASURED";
+  if (!branchAfter || !headAfter) return "UNMEASURED";
+  if (priorTip === null) return "NO_PRIOR_BRANCH";
+  return priorTip === headAfter ? "PRIOR_BRANCH_RESUMED" : "PRIOR_BRANCH_DISCARDED";
+}
+
+/** The sentence a run logs for a start that lost work, or `null`. */
+export function runBranchStartRefusal(
+  reading: RunBranchStart,
+  branch: string,
+  discarded: string[] = [],
+): string | null {
+  if (reading === "PRIOR_BRANCH_DISCARDED") {
+    return (
+      `${branch} already existed with ${discarded.length} commit(s) that are not on this run's ` +
+      `base, and this run started somewhere else — ${discarded.join(", ")}. Starting from the ` +
+      `base is a reasonable default and taking it SILENTLY makes "there was no prior work" and ` +
+      `"there was prior work and it was dropped" identical from the outside (#702).`
+    );
+  }
+  if (reading === "UNMEASURED") {
+    return (
+      `the branch this run started on could not be read, so whether it discarded prior work on ` +
+      `${branch} is unknown. That is not "there was no prior branch" (#702).`
+    );
+  }
+  return null;
+}
+
 /** A path the branch changed, and what each side holds there. */
 export interface ContainmentDivergence {
   path: string;
@@ -275,13 +380,164 @@ export function checkoutDriftRefusal(d: CheckoutDrift): string | null {
   return d.reading === "UNCHANGED" ? null : d.refusal;
 }
 
+/**
+ * WHICH commit `rungate/run-<issue>` names, asked of both refs that can hold
+ * it (#640).
+ *
+ * The first cut of this module asked `git for-each-ref refs/heads/<branch>`
+ * and nothing else. No remote ref was consulted anywhere, there was no
+ * argument that accepted one, and no output said which ref an answer was
+ * about. Measured on the real pair on 2026-10-19: `rungate/run-631` is
+ * `4acc0a17` through `refs/heads` and `92eb88cf` through
+ * `refs/remotes/origin` — 2 commits one way and 6 the other. Both error
+ * directions are live, and they are not symmetric in cost:
+ *
+ *   - the local ref BEHIND the push → containment reports CONTAINED about a
+ *     commit the run never pushed, and `--mode delete` destroys the commits
+ *     that exist only under the remote name;
+ *   - the local ref AHEAD → the check refuses, correctly, and the refusal is
+ *     then attributed to the run whose work it is not.
+ *
+ * **The cheapest wrong fix, named here because this is the function it would
+ * be applied to: match `refs/remotes/origin/<branch>` as well and take
+ * whichever `for-each-ref` returns first.** It makes the remote-only symptom
+ * disappear and silently picks one of two commits whenever both exist, which
+ * is precisely the state the real pair is in. So a disagreement is its own
+ * reading here: this function resolves BOTH and, when they differ, refuses to
+ * be the thing that chose.
+ */
+export type RunBranchRefsReading =
+  /** Neither ref exists. The ordinary start-of-run state. */
+  | { reading: "ABSENT"; branch: string; local: null; remote: null; resolvedRef: null; resolvedSha: null }
+  /** Exactly one ref exists, or both exist at one commit. `resolvedRef` names it. */
+  | {
+      reading: "LOCAL_ONLY" | "REMOTE_ONLY" | "AGREED";
+      branch: string;
+      local: string | null;
+      remote: string | null;
+      resolvedRef: string;
+      resolvedSha: string;
+    }
+  /** Both exist, at different commits. Nothing is resolved; the caller is told. */
+  | {
+      reading: "DIVERGED";
+      branch: string;
+      local: string;
+      remote: string;
+      resolvedRef: null;
+      resolvedSha: null;
+      refusal: string;
+    }
+  /** The question could not be asked. Not the same as a clean answer. */
+  | {
+      reading: "UNMEASURED";
+      branch: string;
+      local: null;
+      remote: null;
+      resolvedRef: null;
+      resolvedSha: null;
+      refusal: string;
+    };
+
+const NOTHING = { local: null, remote: null, resolvedRef: null, resolvedSha: null } as const;
+
+/**
+ * Both refs that can carry the run branch, and what each names.
+ *
+ * ONE `for-each-ref` over two patterns rather than two calls: two calls are
+ * two readings taken at two moments, and a fetch landing between them would
+ * produce a pair that was never simultaneously true.
+ *
+ * `%(refname)` is the FULL ref, deliberately. `%(refname:short)` abbreviates
+ * `refs/remotes/origin/rungate/run-631` to `origin/rungate/run-631` and
+ * `refs/heads/rungate/run-631` to `rungate/run-631` — two spellings a reader
+ * has to know the rules for, where the whole complaint on #640 is that the
+ * output never said which ref it read.
+ */
+export function runBranchRefs(repo: string, branch: string, remoteName = "origin"): RunBranchRefsReading {
+  const named = { branch, ...NOTHING };
+  if (!String(repo || "").trim() || !String(branch || "").trim()) {
+    return {
+      ...named,
+      reading: "UNMEASURED",
+      refusal:
+        `could not ask for ${branch || "an unnamed branch"} without both a repository and a branch name — ` +
+        "unknown is not absent (#640)",
+    };
+  }
+
+  const localRef = `refs/heads/${branch}`;
+  const remoteRef = `refs/remotes/${remoteName}/${branch}`;
+  let lines: string[];
+  try {
+    const { out } = gitRead(repo, ["for-each-ref", "--format=%(refname) %(objectname)", localRef, remoteRef]);
+    lines = out.split("\n").map(l => l.trim()).filter(Boolean);
+  } catch (e: any) {
+    return {
+      ...named,
+      reading: "UNMEASURED",
+      refusal:
+        `could not ask ${repo} which commit ${branch} names ` +
+        `(${String(e?.message || e).split("\n")[0]}) — unknown is not absent (#640)`,
+    };
+  }
+
+  let local: string | null = null;
+  let remote: string | null = null;
+  for (const line of lines) {
+    const space = line.indexOf(" ");
+    if (space === -1) continue;
+    const ref = line.slice(0, space);
+    const sha = line.slice(space + 1).trim();
+    if (ref === localRef) local = sha;
+    else if (ref === remoteRef) remote = sha;
+  }
+
+  if (local === null && remote === null) return { ...named, reading: "ABSENT" };
+  if (local !== null && remote === null) {
+    return { branch, local, remote: null, reading: "LOCAL_ONLY", resolvedRef: localRef, resolvedSha: local };
+  }
+  if (local === null && remote !== null) {
+    return { branch, local: null, remote, reading: "REMOTE_ONLY", resolvedRef: remoteRef, resolvedSha: remote };
+  }
+  if (local === remote) {
+    return { branch, local, remote, reading: "AGREED", resolvedRef: localRef, resolvedSha: local! };
+  }
+  return {
+    branch,
+    local: local!,
+    remote: remote!,
+    reading: "DIVERGED",
+    resolvedRef: null,
+    resolvedSha: null,
+    refusal:
+      `${branch} names two different commits: ${localRef} is ${local!.slice(0, 12)} and ${remoteRef} is ` +
+      `${remote!.slice(0, 12)}. Nothing here chooses between them — an answer about one of them would be ` +
+      "confident about a commit the run may never have pushed, in either direction (#640)",
+  };
+}
+
 export type LeftoverReading =
-  /** No branch of that name. The ordinary start-of-run state. */
+  /** No branch of that name, under either ref. The ordinary start-of-run state. */
   | { reading: "ABSENT"; branch: string }
   /** A branch exists, and it is safe to reuse or remove. */
-  | { reading: "LEFTOVER_CONTAINED"; branch: string; notice: string }
+  | { reading: "LEFTOVER_CONTAINED"; branch: string; notice: string; resolvedRef: string; resolvedSha: string }
   /** A branch exists and holds work. Reusing it silently would bury it. */
-  | { reading: "LEFTOVER_UNCONTAINED"; branch: string; notice: string; divergent: ContainmentDivergence[] }
+  | {
+      reading: "LEFTOVER_UNCONTAINED";
+      branch: string;
+      notice: string;
+      divergent: ContainmentDivergence[];
+      resolvedRef: string;
+      resolvedSha: string;
+    }
+  /**
+   * The name resolves to two commits. Reported as its own reading rather than
+   * folded into UNMEASURED: "I could not look" and "I looked and the answer
+   * is two different things" are different facts, and only the second names
+   * two commits somebody has to reconcile.
+   */
+  | { reading: "LEFTOVER_DIVERGED"; branch: string; notice: string; local: string; remote: string }
   | { reading: "UNMEASURED"; branch: string; notice: string };
 
 /**
@@ -298,44 +554,59 @@ export type LeftoverReading =
  */
 export function leftoverRunBranch(repo: string, issue: number | string, base: string): LeftoverReading {
   const branch = runBranchName(issue);
-  let exists: boolean;
-  try {
-    const { out } = gitRead(repo, ["for-each-ref", "--format=%(refname:short)", `refs/heads/${branch}`]);
-    exists = out.trim() === branch;
-  } catch (e: any) {
+  // Resolution is `runBranchRefs`'s, not a second `for-each-ref` here. A
+  // local-heads read beside it would be two deciders for one question, and
+  // the one this file shipped with was the local-only one
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+  const refs = runBranchRefs(repo, branch);
+  if (refs.reading === "UNMEASURED") {
+    return { reading: "UNMEASURED", branch, notice: refs.refusal };
+  }
+  if (refs.reading === "ABSENT") return { reading: "ABSENT", branch };
+  if (refs.reading === "DIVERGED") {
     return {
-      reading: "UNMEASURED",
+      reading: "LEFTOVER_DIVERGED",
       branch,
+      local: refs.local,
+      remote: refs.remote,
       notice:
-        `could not ask ${repo} whether ${branch} already exists ` +
-        `(${String(e?.message || e).split("\n")[0]}) — unknown is not absent (#640)`,
+        `${refs.refusal} This run will commit onto the LOCAL one. Fetch and reconcile the two before ` +
+        "treating either as this issue's work (#640)",
     };
   }
-  if (!exists) return { reading: "ABSENT", branch };
 
-  const containment = branchContainment(repo, branch, base);
+  // The resolved ref, not the bare name: the bare name resolves to the local
+  // head by git's own rules, which is the reading this function used to take
+  // and the one that can be about the wrong commit.
+  const ref = refs.resolvedRef;
+  const where = `${ref} (${refs.resolvedSha.slice(0, 12)})`;
+  const containment = branchContainment(repo, ref, base);
   if (containment.reading === "UNMEASURED") {
     return {
       reading: "UNMEASURED",
       branch,
-      notice: `${branch} already exists and ${containment.refusal}`,
+      notice: `${branch} already exists as ${where} and ${containment.refusal}`,
     };
   }
   if (containment.reading === "CONTAINED") {
     return {
       reading: "LEFTOVER_CONTAINED",
       branch,
+      resolvedRef: ref,
+      resolvedSha: refs.resolvedSha,
       notice:
-        `${branch} already exists and everything on it is already on ${base} — ` +
+        `${branch} already exists as ${where} and everything on it is already on ${base} — ` +
         "a leftover from an earlier run of this issue, not work in progress (#640)",
     };
   }
   return {
     reading: "LEFTOVER_UNCONTAINED",
     branch,
+    resolvedRef: ref,
+    resolvedSha: refs.resolvedSha,
     divergent: containment.divergent,
     notice:
-      `${branch} already exists and ${containment.refusal} This run will commit onto it. ` +
+      `${branch} already exists as ${where} and ${containment.refusal} This run will commit onto it. ` +
       "If that is not an interrupted run of this issue, stop and look (#640)",
   };
 }

@@ -424,3 +424,20 @@ export function prepareCiCheckout(opts: PrepareOptions): PrepareOutcome {
 
   return { ok: true, dir: dest, model, refs: result.refs, carried };
 }
+
+/**
+ * The job in a generated ci.yml that actually checks out and runs the suite
+ * (#735).
+ *
+ * `test` normally. When `ci.shards > 1` the suite moves to the `test-shard`
+ * matrix and `test` becomes the aggregate that reads the matrix result and
+ * runs no tests — so a reader that only knows `test` reports "no
+ * actions/checkout step" for a workflow that checks out four times.
+ *
+ * One exported binding, because the same question is asked by
+ * `scripts/contract-parity.ts`. Two readers that agree today are one decider
+ * too many (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ */
+export function suiteJobName(workflowYaml: string): string {
+  return /^ {2}test-shard:\s*$/m.test(workflowYaml) ? "test-shard" : "test";
+}

@@ -47,10 +47,21 @@ The check reports `DIFFERENT_CHECKOUT` for exactly that, and
 `SAME_CHECKOUT` is the only reading that clears — `UNMEASURED` refuses with
 the rest, because a reading that could not be taken is not one that passed.
 
-**This line is a documented step, not a check.** Nothing in this repository
-launches ship — the launcher is `Skill("ship")`, which lives in user-level
-config outside the tree — so there is no code path here to wire the gate
-into, and an instruction nobody executes is not a rule
-(`.claude/rules/config-access.md` says this about ADRs; it is true of this
-line too). Wiring it into the skill so the launch actually fails closed is
-Jason's call, because the file is his.
+**This is now executed, and it is the run's first step.** It used to be a
+documented step with nothing behind it: `workflows/ship.js` contained zero
+references to the script, and an instruction nobody executes is not a rule
+(`.claude/rules/config-access.md` says this about ADRs; it was true of this
+line too).
+
+`workflows/ship.js` runs it as the first step of the Goal phase, before the
+issue is read and before any role agent — so before the first
+worktree-isolated spawn, which is the decision being guarded. `SAME_CHECKOUT`
+proceeds; every other reading ends the run at `LAUNCH_BASE_FAILED` through
+`terminalFailure`, naming the reading. A reply that reported nothing is
+`UNMEASURED` and refuses with the rest. ship.js decides none of this itself:
+`lib/launch-base.ts` holds the one binding and ship.js restates its reading
+(#644).
+
+Running the command yourself before launching is still worth it — it is the
+same reading, one agent spawn earlier, and it tells you to `cd` before the
+run has spent anything.
