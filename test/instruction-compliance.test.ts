@@ -1,10 +1,13 @@
 import { describe, test, expect, beforeAll } from "bun:test";
+import { mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import {
   runTemplateCompliance,
   collectComplianceSurface,
   type ComplianceReport,
 } from "../lib/compliance";
+import { toolProbe, type ToolProbe } from "../lib/tool-probe";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -55,17 +58,58 @@ describe("Instruction Compliance — Layer 1 (Template Quality)", () => {
     expect(report.toolsAvailable).toBeDefined();
   });
 
-  test("agent briefs scored by at least one tool", () => {
+  // #755: these two asked for FINDINGS, so they were green only while the
+  // files were bad — they turn red the day an agent brief improves, and they
+  // cannot tell three states apart: the tool ran and found nothing, the tool
+  // ran and returned nothing because it broke, and the file genuinely got
+  // better. All three are `findings.length === 0`. What the name claims —
+  // "scored by at least one tool" — is `scoredBy`, which is a reading of
+  // which tools READ the file and is unaffected by how good it is.
+  test("#755: agent briefs are read by at least one tool", () => {
     const agentFiles = report.files.filter(f => f.file.includes(".claude/agents/"));
     expect(agentFiles.length).toBeGreaterThan(0);
-    const hasFindings = agentFiles.some(f => f.findings.length > 0);
-    expect(hasFindings).toBe(true);
+    for (const f of agentFiles) {
+      expect(
+        f.scoredBy,
+        `${f.file} is on the surface and no tool read it — ${report.reading.reason ?? "both tools answered"}`,
+      ).not.toEqual([]);
+    }
   });
 
-  test("AGENTS.md scored by at least one tool", () => {
+  test("#755: AGENTS.md is read by at least one tool", () => {
     const agentsMd = report.files.find(f => f.file === "AGENTS.md");
     expect(agentsMd).toBeDefined();
-    expect(agentsMd!.findings.length).toBeGreaterThan(0);
+    expect(
+      agentsMd!.scoredBy,
+      `AGENTS.md is on the surface and no tool read it — ${report.reading.reason ?? "both tools answered"}`,
+    ).not.toEqual([]);
+  });
+
+  // The other direction, and the reason the two cases above are not vacuous:
+  // a file nobody read still gets a `FileScore`, with an empty findings list.
+  // Both probes are injected absent, so nothing spawns and the case is the
+  // same on any machine.
+  test("#755: a file no tool read reports an empty coverage, not a clean one", async () => {
+    const root = mkdtempSync(join(tmpdir(), "compliance-scoredby-"));
+    const file = join(root, "AGENTS.md");
+    writeFileSync(file, "# agents\n\nDo the thing.\n");
+
+    const absent = (tool: string): ToolProbe =>
+      toolProbe({ outcome: "absent", tool, exitCode: null, reason: `PLANTED-${tool}-absent` });
+
+    const unread = await runTemplateCompliance(root, {
+      surface: [file],
+      writeReport: false,
+      probes: { agnix: absent("agnix"), reporails: absent("reporails") },
+    });
+
+    const score = unread.files.find(f => f.file === "AGENTS.md");
+    expect(score, "the file must still be reported, or there is nothing to read").toBeDefined();
+    // This is the pair the old assertion could not see: zero findings on both
+    // sides, opposite coverage.
+    expect(score!.findings).toEqual([]);
+    expect(score!.scoredBy).toEqual([]);
+    expect(unread.reading.reading).toBe("UNMEASURED");
   });
 
   test("SC-183: tools not installed produce WARN, not silence", () => {
