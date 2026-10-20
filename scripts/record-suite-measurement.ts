@@ -309,6 +309,9 @@ export function buildMeasurement(
     // `failures` and prints no test name at all.
     failingTests: run.failingTests,
     errors: run.errors,
+    // #323 SC-4. The only surviving lead from the 2026-10-11 series was an
+    // assertion-count delta nobody had written down. No gate reads it.
+    expectCalls: run.expectCalls,
     measuredAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
 }
@@ -423,6 +426,7 @@ if (import.meta.main) {
       files: run.files,
       failingTests: run.failingTests,
       errors: run.errors,
+      expectCalls: run.expectCalls,
     }));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

@@ -208,7 +208,7 @@ describe("#323 AC-2: a failure with no name is reported as one, not dropped", ()
     // make the reader confident about a cause nobody measured.
     const synthetic: MeasuredRun = {
       status: "MEASURED", pass: 1, fail: 2, tests: 3, files: 1, skip: 0, todo: 0,
-      failingTests: ["only one"], errors: null,
+      failingTests: ["only one"], errors: null, expectCalls: null,
     };
     const said = describeSuiteFailures(synthetic);
     expect(said).toContain("1 of them unnamed");
