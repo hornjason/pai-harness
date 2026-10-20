@@ -728,7 +728,9 @@ likely to be swallowed.
   to is AC-2 and is deliberately not decided here**: flipping it has to move
   `scripts/persist-compliance.ts`'s re-grade step with it, because re-grading
   a brief that was not written measures the old one and reports the number as
-  if it were new.
+  if it were new. *#648 decided it — see "#648 — the shipped loop chooses its
+  destination" below. `DEFAULT_HILL_CLIMB_DESTINATION` is unchanged and is now
+  what its name says: the answer for a caller that does not have one.*
 
 ### The separator rule
 
@@ -784,6 +786,9 @@ Neither mutation is left in the tree; both were run and reverted, and
 
 ### What this does NOT fix
 
+*Both of these were fixed by #648; the section is kept because the mutation
+record below is measured against the tree they describe.*
+
 - **The shipped default still writes the tracked brief.** AC-2 chooses the
   destination the loop runs with and is a separate change; this one makes the
   choice expressible and names what it currently is.
@@ -794,6 +799,145 @@ Neither mutation is left in the tree; both were run and reverted, and
   and reports the result as if it were the patched one — *Silent Default
   Substitution* in `.claude/rules/config-access.md`, and it has to move in the
   same change that flips the default.
+
+## #648 — the shipped loop chooses its destination, and the re-grade follows it
+
+#624 Phase 1 left two things joined: `scripts/persist-compliance.ts` passed no
+destination, so the shipped behaviour was whatever
+`DEFAULT_HILL_CLIMB_DESTINATION` happened to say, and it discarded the `write`
+it got back, so the re-grade re-derived its target from role config
+(`scripts/test-brief.ts`, `roleConfig[role]?.brief`). Those two agreed only
+while the destination was `COMMIT`. Flip one without the other and the loop
+re-grades a file the run did not write.
+
+### The destination, argued rather than inherited
+
+The argument is recorded in full on #648. The three readings it turns on, each
+re-derived against the post-#715 tree rather than copied from the issue's own
+first comment, which is superseded:
+
+- **`COMMIT` is excluded by the committed-or-reverted property, not by
+  durability.** `lib/compliance-report.ts` documents it as "write the tracked
+  brief in place, for a human to review and commit" and nothing downstream
+  commits. Measured live on run `wf_9ab25fd1-6e5`: a reinforcement landed in
+  `.claude/agents/discovery.md` as an uncommitted modification in the shared
+  primary checkout and the run reported `DONE`. Making it satisfy the property
+  means committing from a compliance script onto a ref other runs share, which
+  is #267/#136; reverting instead is `DISCARD` with a dirty window in the
+  middle. This holds even after a re-scaffold adds `## Project Constraints` —
+  durability does not make an uncommitted write safe in a shared checkout.
+- **`DISCARD` is excluded by what it does to the measurement.** `write.path` is
+  `null`, so the re-grade must refuse and the loop can never score its own
+  reinforcement. Detect-and-report, permanently unmeasured, by construction.
+- **`UNTRACKED` is chosen, and the thing that changed its reading is the other
+  half of this issue.** #655's first assessment — "a sidecar read by nobody" —
+  was true while the re-grade re-derived its target. Binding the re-grade to
+  `write.path` makes the proposal a file that IS read, by the re-grade, which
+  now scores the patched directives instead of the unpatched ones.
+
+A mined rule still reaches a brief only by a human moving it into
+`## Project Constraints`, which #715 made the one region a re-scaffold carries
+forward. No brief in this repository carries that heading yet — 0 of 7, and no
+template emits one — so a `COMMIT` write today still lands in a generated
+section the next scaffold rewrites. The hand-off is the honest state of the
+loop; `COMMIT` dressed it up as landed and left the tree dirty instead.
+
+### The contract
+
+- **The destination is passed, not inherited.**
+  `SHIPPED_HILL_CLIMB_DESTINATION` in `scripts/persist-compliance.ts` is what
+  the loop gives `applyHillClimb`. `DEFAULT_HILL_CLIMB_DESTINATION` is
+  unchanged and keeps its own job: the answer for a caller with no opinion.
+- **The proposal goes in the run's own work directory**, via
+  `hillClimbProposalDir(workDir)` — not `defaultUntrackedDir()`, which is
+  `~/.rungate/hill-climb` keyed on the brief's basename and therefore shared
+  by every concurrent run grading the same role.
+- **The re-grade reads `write.path`.** `RegradeRequest.briefPath` is `string`,
+  never `string | null`, because a destination that wrote nothing is refused
+  before a request is built. `scripts/test-brief.ts` takes `--brief=PATH` for
+  this; without it the re-grade cannot be pointed anywhere but the role's
+  tracked brief.
+- **A destination that wrote nothing refuses rather than re-grading**, with a
+  named line, before the transcript lookup — so the refusal does not depend on
+  a run happening to have transcripts, and `0` is not left standing in for it.
+- **The re-grade is the second exported seam.** A case observes which path it
+  was handed and whether it ran at all; the real function shells out to
+  `test-brief.ts`, and a test that let it do so would be asserting that `bun`
+  exists.
+
+### What was broken to prove it
+
+Measured over `test/hill-climb-tracked-brief.test.ts`,
+`test/unit/hill-climb-receipt.test.ts`, `test/compliance-report.test.ts` and
+`test/hill-climb-destination.test.ts` — 55 tests. Every count was predicted
+before the row ran, and **the baseline row was read before any mutation row**:
+an instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody checks.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 55 pass, 0 fail | **55 pass, 0 fail** |
+| `writeReinforcedBrief` ignores its destination and always writes the tracked brief | 9 | **9 of 55** |
+| the genuinely pre-#648 call site — no destination passed, no refusal, re-grade re-derived from role config | 4 | **4 of 55** |
+| the refusal replaced by a fallback to the tracked brief | 1 | **1 of 55** |
+| the re-grade bound back to `briefPath`, refusal kept | 1 | **1 of 55** |
+| `SHIPPED_HILL_CLIMB_DESTINATION` set back to `COMMIT` | 4 | **4 of 55** |
+| the cheapest wrong fix — `SHIPPED_HILL_CLIMB_DESTINATION` set to `DISCARD` | 3 | **3 of 55** |
+
+Before believing any of those, the input on which mutant and original differ,
+named and run rather than assumed:
+
+- **row 1** — `writeReinforcedBrief(brief, "PATCHED", {destination: "DISCARD"})`
+  over a brief reading `ORIGINAL`. The original returns `{destination:
+  "DISCARD", path: null}` and leaves the brief at `ORIGINAL`; the mutant
+  returns the brief's own path and the brief reads `PATCHED`. Printed and
+  compared before the row was counted.
+- **rows 2, 5, 6** — the three-consecutive-fail fixture for `COMP-13` against a
+  tracked `marcus.md`. The original writes `<workDir>/hill-climb/marcus.md` and
+  leaves `git status --porcelain` empty; the pre-#648 and `COMMIT` mutants
+  modify the tracked brief and hand that path to the re-grade; the `DISCARD`
+  mutant writes nothing and the re-grade is refused.
+- **rows 3 and 4** — the same fixture with `DISCARD` forced through the
+  `applyHillClimb` seam. The original records no re-grade; both mutants hand
+  the re-grade the role's unpatched tracked brief.
+
+**Row 1 came back 8 the first time it was run, where 9 was predicted, and the
+missing red is a finding rather than noise.** *"every destination the binding
+names is handled by the writer"* asserted `write.destination` — the name the
+caller passed, echoed back — and the file at `write.path`, with
+`if (write.path === null) continue`. Under a writer that ignores its
+destination every iteration echoes the right name, `path` is never null so the
+`continue` never fires, and the content check reads the file the mutant wrongly
+wrote. The distinguishing property of a destination is WHERE, and the case
+never asserted one: #530's shape, the artefact agreeing with whatever you put
+in it. It now writes down the expected path per destination and asserts
+`DISCARD` wrote nothing anywhere, and the row is 9.
+
+**The cheapest wrong fix, named: default to `DISCARD` so nothing is ever
+written.** It makes the dirty-tree symptom go away permanently and makes any
+`git status` assertion trivially true. The cases do NOT survive it — row 6 is
+3 red — because the scratch-checkout case asserts a non-empty `applied` and a
+written file BEFORE it reads git state, and the re-grade case asserts the
+re-grade ran. Both were written in that order for this reason.
+
+Two existing cases had to move with the behaviour, and both are consequences
+rather than accommodations. `test/unit/hill-climb-receipt.test.ts`'s
+`REINFORCEMENT_ALREADY_PRESENT` fixture derived its already-present brief by
+running the loop twice; under the shipped destination the second run reads the
+same unpatched file and composes the same rule again, so the state is now
+reached the way production reaches it — the run's own proposal is copied over
+the brief, which is the human hand-off, performed. The eight `applyHillClimb`
+call sites in `test/compliance-report.test.ts` now name their destination and
+assert `write`, so none of them depends on what the shipped loop chose.
+
+None of the six mutations is left in the tree; all were run and reverted, and
+`lib/compliance-report.ts` and `scripts/persist-compliance.ts` were confirmed
+byte-identical to the measured source afterwards by `shasum -a 256 -c`.
+
+**Success criteria for this section need ids allocating.** They are deliberately
+not hand-written: ids chosen against one tree cannot see another session's
+unmerged branches, and four collisions in one day is the measured cost. The
+cases carry descriptive names instead.
 
 ## #646 — the hill-climb skip was a sentence, so the decision was readable and not usable
 
