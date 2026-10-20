@@ -172,9 +172,27 @@ function summary(opts: { pass: number; fail: number; expectCalls?: number; names
     .join("\n");
 }
 
-/** One entry in a series. The reading is taken by the REAL parser. */
+/**
+ * One entry in a series. The reading is taken by the REAL parser.
+ *
+ * The exit record is DERIVED from that reading rather than typed beside it:
+ * bun exits 0 for a clean suite and 1 for a failing one, so a fixture whose
+ * text says `1 fail` and whose exit says 0 is a state no runner produces,
+ * and a fixture that cannot occur proves nothing about one that can.
+ * `test/suite-flake-truncation.test.ts` is where exits are set by hand,
+ * because its whole subject is a process ending in a way its text denies.
+ */
 function run(index: number, output: string, signature: TreeSignature = CLEAN_TREE): FlakeRun {
-  return { index, signature, run: readSuiteRun(output), log: `run-${index}.log`, seconds: 412 };
+  const parsed = readSuiteRun(output);
+  const status = parsed.status === "MEASURED" && parsed.fail > 0 ? 1 : 0;
+  return {
+    index,
+    signature,
+    run: parsed,
+    log: `run-${index}.log`,
+    seconds: 412,
+    exit: { status, signal: null, error: null },
+  };
 }
 
 /** N clean runs, every one identical. */

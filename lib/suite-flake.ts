@@ -26,6 +26,22 @@ export interface TreeSignature {
   dirty: string[];
 }
 
+/**
+ * How the process ended, which no reading of its TEXT can establish.
+ *
+ * `readSuiteRun` deliberately takes no exit code: #469's run exited 0 having
+ * measured nothing and run `39405680063` exited `null` having measured
+ * nothing, and nothing in either output says which way to resolve that. A
+ * SIGNAL is not ambiguous — but only the process's caller ever sees one, so
+ * it is carried here and read by the series.
+ */
+export interface RunExit {
+  status: number | null;
+  signal: string | null;
+  /** The spawn's own error, e.g. `ENOBUFS`, which names the cause. */
+  error: string | null;
+}
+
 export interface FlakeRun {
   /** 1-based, so a reason can name the run an operator will look for. */
   index: number;
@@ -34,6 +50,35 @@ export interface FlakeRun {
   /** Where the full output was kept. A failure that is not kept is #323. */
   log: string;
   seconds: number;
+  exit: RunExit;
+}
+
+/**
+ * Why a run's ENDING disqualifies it, or null.
+ *
+ * `bun test` exits 0 for a clean suite and 1 for a failing one. **1 must not
+ * be refused**: refusing every non-zero exit would turn every FLAKY and
+ * FAILING series into UNMEASURED and leave the instrument unable to report
+ * its own subject.
+ */
+export function exitRefusal(exit: RunExit): string | null {
+  if (exit.error !== null && exit.error !== "") {
+    return `the spawn failed: ${exit.error}`;
+  }
+  if (exit.signal !== null) {
+    return (
+      `it was killed by ${exit.signal}, so its log ends wherever the process did — and a truncated log ` +
+      "still parses as a clean reading when the output it captured contains a nested suite's summary, " +
+      "which is how run 39405680063 reported CONSISTENT over ten killed runs (#323)"
+    );
+  }
+  if (exit.status === null) {
+    return "the spawn reported no exit status and no signal, so nothing says how it ended";
+  }
+  if (exit.status !== 0 && exit.status !== 1) {
+    return `it exited ${exit.status}, which is not a verdict about the tests — bun uses 0 for a clean suite and 1 for a failing one`;
+  }
+  return null;
 }
 
 /**
@@ -108,6 +153,16 @@ export function flakeReading(runs: FlakeRun[], minimum: number): FlakeReading {
       `only ${runs.length} of ${minimum} run(s) completed, so the series was cut short — ` +
         "a short series is not a clean series, however green the runs in it were (#323 SC-5)",
     );
+  }
+
+  // Every run that did not FINISH, before anything is read off its text.
+  // This is the guard run 39405680063 did not have: ten children killed by
+  // SIGTERM on a 1 MiB `maxBuffer` overflow, ten truncated logs whose only
+  // surviving summary belonged to a nested suite, and a CONSISTENT verdict
+  // over a suite of 5,500 tests reporting one pass.
+  for (const r of runs) {
+    const why = exitRefusal(r.exit);
+    if (why !== null) reasons.push(`run ${r.index} did not finish (log ${r.log}): ${why}`);
   }
 
   // Every unreadable run, by index. An UNMEASURED run is not a clean run:
