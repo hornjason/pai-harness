@@ -25,12 +25,15 @@
  *
  * `c200f369` is the pin on `.github/workflows/claude-review.yml`, which is the
  * only configuration in this fleet that has ever authenticated to Vertex at
- * all: verified 2026-10-19 on `jhorn-pai`, `claude-sonnet-5` returning HTTP
- * 200 from `rawPredict` at location `global`, with no service-account key.
- * agentgrit's v3 pin has never run — that repository holds no `GCP_SA_KEY`
- * and its generated job resolves mode `none` on every run — so adopting it
- * would be adopting the untested half of a disagreement because it has the
- * larger number on it.
+ * all: verified 2026-10-19 against the project named by this repository's own
+ * `ci.vertex` block, `claude-sonnet-5` returning HTTP 200 from `rawPredict` at
+ * location `global`, with no service-account key. The project is not named
+ * here on purpose — `SC-A1` refuses a consumer's name in the harness and a
+ * sentence quoting one is indistinguishable, to a scanner, from a value. The
+ * other repository's v3 pin has never run — it holds no `GCP_SA_KEY` and its
+ * generated job resolves mode `none` on every run — so adopting it would be
+ * adopting the untested half of a disagreement because it has the larger
+ * number on it.
  *
  * Both majors accept `workload_identity_provider` and neither accepts a
  * directory for the credentials file, so the choice buys no behaviour either

@@ -25,8 +25,8 @@ import {
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
 import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep, vertexCiConfig } from "./ai-review-step";
-import { claudeCodeActionRef } from "../claude-code-action";
-import { googleAuthActionRef } from "../google-auth-action";
+import { CLAUDE_CODE_ACTION } from "../claude-code-action";
+import { GOOGLE_AUTH_ACTION } from "../google-auth-action";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
@@ -3004,8 +3004,9 @@ jobs:
     runs-on: ${runsOn}
     steps:
 ${buildAuthDetectStep(vertex)}${buildReviewRunStep(vertex, {
-    auth: googleAuthActionRef(),
-    review: claudeCodeActionRef(),
+    checkout: actionRef("actions/checkout"),
+    auth: actionRef(GOOGLE_AUTH_ACTION),
+    review: actionRef(CLAUDE_CODE_ACTION),
   })}`;
 
   // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does

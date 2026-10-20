@@ -66,11 +66,19 @@ import {
   ACTION_PIN_DECLARATION,
   CLAUDE_CODE_ACTION,
   NoActionPinError,
+  PINNED_ACTIONS,
   actionPinAgreement,
   actionPinParity,
   actionPinsNamedByWorkflow,
   declaredActionPin,
+  pinnedAction,
 } from "../scripts/contract-parity";
+import {
+  GOOGLE_AUTH_ACTION,
+  GOOGLE_AUTH_ACTION_SHA,
+  GOOGLE_AUTH_ACTION_VERSION,
+  googleAuthActionRef,
+} from "../lib/google-auth-action";
 import {
   CLAUDE_CODE_ACTION as CLAUDE_CODE_ACTION_NAME,
   CLAUDE_CODE_ACTION_SHA,
@@ -110,6 +118,24 @@ function declaration(sha: string, version: string): string {
   ].join("\n");
 }
 
+/**
+ * The second registered action's declaration module (#631).
+ *
+ * Planted in every fixture, correct and agreeing, so that each case below
+ * varies exactly ONE action. Without it the category is UNMEASURED for
+ * `google-github-actions/auth` in every fixture, and a verdict asserted about
+ * the review action would be reading the auth action's absence instead —
+ * #585's pair discipline, applied to a category that now has two subjects.
+ */
+function authDeclaration(): string {
+  return [
+    `export const GOOGLE_AUTH_ACTION = "${GOOGLE_AUTH_ACTION}";`,
+    `export const GOOGLE_AUTH_ACTION_SHA = "${GOOGLE_AUTH_ACTION_SHA}";`,
+    `export const GOOGLE_AUTH_ACTION_VERSION = "${GOOGLE_AUTH_ACTION_VERSION}";`,
+    "",
+  ].join("\n");
+}
+
 /** A workflow whose review step pins the action at `ref` (sha plus comment). */
 function reviewWorkflow(ref: string): string {
   return [
@@ -120,6 +146,8 @@ function reviewWorkflow(ref: string): string {
     "    runs-on: ubuntu-latest",
     "    steps:",
     "      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6",
+    "      - name: Authenticate",
+    `        uses: ${googleAuthActionRef()}`,
     "      - name: Review",
     `        uses: ${ref}`,
     "        with:",
@@ -137,6 +165,7 @@ function plantedTree(
   opts: { declare?: { sha: string; version: string } | null; workflows: Record<string, string> },
 ): string {
   const root = scratchDir(label);
+  put(root, pinnedAction(GOOGLE_AUTH_ACTION).declaration, authDeclaration());
   if (opts.declare !== null) {
     const d = opts.declare ?? { sha: A, version: "v1" };
     put(root, ACTION_PIN_DECLARATION, declaration(d.sha, d.version));
@@ -355,6 +384,11 @@ describe("#689 AC-4: finding nothing is not agreement, and matching by hand is n
 
     const corrupt = scratchDir("corrupt-declaration");
     put(corrupt, ACTION_PIN_DECLARATION, "export const CLAUDE_CODE_ACTION_SHA = computeIt();\n");
+    // The SECOND registered action's declaration is planted and correct, so
+    // the only unreadable position is the one this case is about. Without it
+    // the fixture also carries an `absent-file`, and the assertion that the
+    // two kinds stay distinct would be satisfied by the wrong file.
+    put(corrupt, pinnedAction(GOOGLE_AUTH_ACTION).declaration, authDeclaration());
     put(corrupt, join(".github", "workflows", "a.yml"), reviewWorkflow(pinned(A, "v1")));
     const unreadable = actionPinParity(corrupt);
     expect(unreadable.verdict).toBe("UNMEASURED");

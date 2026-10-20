@@ -198,9 +198,11 @@ export const AI_REVIEW_ACTION_STEP_NAME = "Run the AI review";
  * declaration module, so a consumer position cannot carry half an update.
  */
 export interface AiReviewActionRefs {
-  /** `googleAuthActionRef()` from `lib/google-auth-action.ts`. */
+  /** `actionRef("actions/checkout")` from `lib/workflow-actions.ts`. */
+  checkout: string;
+  /** `actionRef("google-github-actions/auth")`, declared by `lib/google-auth-action.ts`. */
   auth: string;
-  /** `claudeCodeActionRef()` from `lib/claude-code-action.ts`. */
+  /** `actionRef("anthropics/claude-code-action")`, declared by `lib/claude-code-action.ts`. */
   review: string;
 }
 
@@ -480,14 +482,16 @@ export function aiReviewClaudeArgs(vertex: VertexCiDecision): string {
  * `persist-credentials: false` because the default writes `GITHUB_TOKEN` into
  * `.git/config`, which puts a credential inside the tree the agent is about to
  * read. The review needs the files; it does not need the ability to push.
+ *
+ * Its reference, like the other two, now arrives through `AiReviewActionRefs`
+ * from `actionRef()` in `lib/workflow-actions.ts`. This module used to pin it
+ * at `d23441a4 # v6` while the registry every other generated workflow reads
+ * declared `actions/checkout` as a `v4` TAG — two positions, two values, and
+ * `test/generated-workflow-pins.test.ts` is the thing that noticed. The
+ * tag-versus-SHA argument is #377's and is settled there; what is settled
+ * here is that this job does not get its own opinion.
  */
 export const AI_REVIEW_CHECKOUT_STEP_NAME = "Check out the pull request";
-
-export const AI_REVIEW_CHECKOUT_ACTION = "actions/checkout";
-
-export const AI_REVIEW_CHECKOUT_SHA = "d23441a48e516b6c34aea4fa41551a30e30af803";
-
-export const AI_REVIEW_CHECKOUT_VERSION = "v6";
 
 /** The step that reports the reviewer having written outside its one file. */
 export const AI_REVIEW_DRIFT_STEP_ID = "ai-review-drift";
@@ -677,7 +681,13 @@ export function buildAuthDetectScript(vertex: VertexCiDecision): string {
   // first: it is the only mode that bills a project the consumer already
   // owns, and a tree carrying both a declared federation and a personal OAuth
   // token means the organisation's credential, not the individual's.
-  const vertexBranch = vertex.config === null ? "" : `mode=vertex\n`;
+  const vertexBranch =
+    vertex.config === null
+      ? "# No ci.vertex, so there is no vertex branch here to take.\n"
+      : "# ci.vertex is declared, so this job reviews on Vertex. Decided when the\n" +
+        "# file was generated — there is nothing here for a secret to change, and\n" +
+        "# no service-account key exists anywhere in this job (#677 AC-15).\n" +
+        "mode=vertex\n";
 
   const secretBranches = AI_REVIEW_AUTH_PRECEDENCE.map((c, i) => {
     const keyword = i === 0 ? "if" : "elif";
@@ -1228,7 +1238,7 @@ export function buildReviewRunStep(
 
   const checkout = [
     `- name: ${AI_REVIEW_CHECKOUT_STEP_NAME}`,
-    `  uses: ${AI_REVIEW_CHECKOUT_ACTION}@${AI_REVIEW_CHECKOUT_SHA} # ${AI_REVIEW_CHECKOUT_VERSION}`,
+    `  uses: ${refs.checkout}`,
     `  with:`,
     `    fetch-depth: 1`,
     // The default writes GITHUB_TOKEN into .git/config, which is a credential

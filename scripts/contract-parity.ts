@@ -85,6 +85,7 @@ import {
   setupBunWith,
 } from "../lib/bun-version";
 import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
+import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
 import { acPayloadReadExpression, acPayloadShellArgument } from "../lib/evidence-command-transport";
 import { shellSingleQuote } from "../lib/phase2-decomposition";
 import { testCommandDecision } from "../lib/test-command";
@@ -1252,7 +1253,64 @@ export const ACTION_PIN_DECLARATION = join("lib", "claude-code-action.ts");
 /** Where a second literal can hide. YAML cannot import, so a generator can. */
 export const ACTION_PIN_SOURCE_DIRS = ["lib", "scripts"];
 
-export { CLAUDE_CODE_ACTION };
+export { CLAUDE_CODE_ACTION, GOOGLE_AUTH_ACTION };
+
+/**
+ * An action this tree pins, and the module that declares its pin.
+ *
+ * ## Why this is a list and not one action (#631)
+ *
+ * #689 found the defect in `anthropics/claude-code-action` and fixed it for
+ * that action. The same defect was then found in `google-github-actions/auth`
+ * — `c200f369 # v2` in this repo's `claude-review.yml`, `7c6bc770 # v3` in
+ * agentgrit's generated `ai-review.yml` — and a check scoped to one action
+ * reports that tree clean.
+ *
+ * Worth naming because it is NOT the same failure in one respect: both of
+ * those comments were accurate. Neither lied. They are two different major
+ * versions, chosen independently by two sessions that could not see each
+ * other, so a check that only catches a wrong comment would find nothing. The
+ * property being enforced is that every position follows ONE declaration, and
+ * that property is per action rather than global.
+ *
+ * Adding a third action is a row here. Nothing else.
+ */
+export interface PinnedAction {
+  /** The action, by the name a `uses:` line spells. */
+  action: string;
+  /** Repo-relative path of the module declaring its pin. */
+  declaration: string;
+  /** The three string constants that module exports. */
+  constants: { action: string; sha: string; version: string };
+}
+
+export const PINNED_ACTIONS: readonly PinnedAction[] = [
+  {
+    action: CLAUDE_CODE_ACTION,
+    declaration: ACTION_PIN_DECLARATION,
+    constants: {
+      action: "CLAUDE_CODE_ACTION",
+      sha: "CLAUDE_CODE_ACTION_SHA",
+      version: "CLAUDE_CODE_ACTION_VERSION",
+    },
+  },
+  {
+    action: GOOGLE_AUTH_ACTION,
+    declaration: join("lib", "google-auth-action.ts"),
+    constants: {
+      action: "GOOGLE_AUTH_ACTION",
+      sha: "GOOGLE_AUTH_ACTION_SHA",
+      version: "GOOGLE_AUTH_ACTION_VERSION",
+    },
+  },
+];
+
+/** The row for one action, by its `uses:` name. */
+export function pinnedAction(action: string): PinnedAction {
+  const row = PINNED_ACTIONS.find(a => a.action === action);
+  if (!row) throw new UnreadableSource(`no declaration is registered for ${action}`);
+  return row;
+}
 
 /** Thrown when no position in a tree names the action at all. */
 export class NoActionPinError extends Error {}
@@ -1285,18 +1343,22 @@ export interface NamedActionPin {
  * readings of one fact, which is the fourth shape if nothing compares them —
  * so `test/action-pin-parity.test.ts` compares them in a case of its own.
  */
-export function declaredActionPin(root: string): DeclaredActionPin {
-  const path = join(root, ACTION_PIN_DECLARATION);
+export function declaredActionPin(root: string, of: PinnedAction = PINNED_ACTIONS[0]): DeclaredActionPin {
+  const path = join(root, of.declaration);
   if (!existsSync(path)) {
-    throw new UnreadableSource(`${ACTION_PIN_DECLARATION} does not exist under ${root}`);
+    throw new UnreadableSource(`${of.declaration} does not exist under ${root}`);
   }
   const text = readFileSync(path, "utf-8");
   const read = (name: string): string => {
     const m = new RegExp(`export const ${name}\\s*=\\s*"([^"]+)"`).exec(text);
-    if (!m) throw new UnreadableSource(`${ACTION_PIN_DECLARATION} declares no string \`${name}\``);
+    if (!m) throw new UnreadableSource(`${of.declaration} declares no string \`${name}\``);
     return m[1];
   };
-  return { action: read("CLAUDE_CODE_ACTION"), sha: read("CLAUDE_CODE_ACTION_SHA"), version: read("CLAUDE_CODE_ACTION_VERSION") };
+  return {
+    action: read(of.constants.action),
+    sha: read(of.constants.sha),
+    version: read(of.constants.version),
+  };
 }
 
 /** The `# …` trailing annotation of a line, or null when it carries none. */
@@ -1312,9 +1374,13 @@ function trailingComment(line: string): string | null {
  * header comment and a commented-out step are prose, and reading prose as a
  * position is the defect in the other direction (#235).
  */
-export function actionPinsNamedByWorkflow(text: string, file: string): NamedActionPin[] {
+export function actionPinsNamedByWorkflow(
+  text: string,
+  file: string,
+  action: string = CLAUDE_CODE_ACTION,
+): NamedActionPin[] {
   const out: NamedActionPin[] = [];
-  const pattern = new RegExp(`^\\s*(?:-\\s+)?uses:\\s*${CLAUDE_CODE_ACTION.replace("/", "\\/")}@(\\S+)`);
+  const pattern = new RegExp(`^\\s*(?:-\\s+)?uses:\\s*${action.replace("/", "\\/")}@(\\S+)`);
   text.split("\n").forEach((line, i) => {
     const m = pattern.exec(line);
     if (!m) return;
@@ -1332,9 +1398,13 @@ export function actionPinsNamedByWorkflow(text: string, file: string): NamedActi
  * says. The declaration module is excluded — it is the thing being agreed
  * with, not a position that has to agree.
  */
-export function actionPinsNamedBySource(text: string, file: string): NamedActionPin[] {
+export function actionPinsNamedBySource(
+  text: string,
+  file: string,
+  action: string = CLAUDE_CODE_ACTION,
+): NamedActionPin[] {
   const out: NamedActionPin[] = [];
-  const pattern = new RegExp(`${CLAUDE_CODE_ACTION.replace("/", "\\/")}@([A-Za-z0-9._-]+)`);
+  const pattern = new RegExp(`${action.replace("/", "\\/")}@([A-Za-z0-9._-]+)`);
   text.split("\n").forEach((line, i) => {
     const m = pattern.exec(line);
     if (!m) return;
@@ -1343,17 +1413,26 @@ export function actionPinsNamedBySource(text: string, file: string): NamedAction
   return out;
 }
 
-/** Every position in a tree that names the action, workflows and source alike. */
-export function actionPinsInTree(root: string): NamedActionPin[] {
+/**
+ * Every position in a tree that names the action, workflows and source alike.
+ *
+ * EVERY declaration module is skipped, not just this action's. Each one is
+ * the thing being agreed with for its own action and prose about a sibling
+ * for the others — `lib/google-auth-action.ts`'s header quotes
+ * `claude-code-action`'s resolution trap, and reading a sentence as a
+ * position is the defect in the other direction (#235).
+ */
+export function actionPinsInTree(root: string, of: PinnedAction = PINNED_ACTIONS[0]): NamedActionPin[] {
   const found: NamedActionPin[] = [];
+  const declarations = new Set(PINNED_ACTIONS.map(a => a.declaration));
   for (const yml of workflowFiles(root)) {
-    found.push(...actionPinsNamedByWorkflow(readFileSync(join(root, yml), "utf-8"), yml));
+    found.push(...actionPinsNamedByWorkflow(readFileSync(join(root, yml), "utf-8"), yml, of.action));
   }
   for (const dir of ACTION_PIN_SOURCE_DIRS) {
     for (const path of walk(join(root, dir))) {
       const relative = path.slice(root.length + 1);
-      if (relative === ACTION_PIN_DECLARATION) continue;
-      found.push(...actionPinsNamedBySource(readFileSync(path, "utf-8"), relative));
+      if (declarations.has(relative)) continue;
+      found.push(...actionPinsNamedBySource(readFileSync(path, "utf-8"), relative, of.action));
     }
   }
   return found;
@@ -1374,25 +1453,29 @@ export interface ActionPinAgreement {
  * THROW. Neither is a clean reading, and both would otherwise arrive as "no
  * disagreement".
  */
-export function actionPinAgreement(root: string): ActionPinAgreement {
-  const declared = declaredActionPin(root);
-  const pins = actionPinsInTree(root);
+export function actionPinAgreement(root: string, of: PinnedAction = PINNED_ACTIONS[0]): ActionPinAgreement {
+  const declared = declaredActionPin(root, of);
+  const pins = actionPinsInTree(root, of);
   if (pins.length === 0) {
     throw new NoActionPinError(
-      `no position under ${root} names ${CLAUDE_CODE_ACTION}, so there is nothing to compare the declaration to. ` +
+      `no position under ${root} names ${of.action}, so there is nothing to compare the declaration to. ` +
         `Zero pins are trivially all equal — see .claude/rules/checks-must-be-able-to-fail.md.`,
     );
   }
-  return { declared, pins, violations: actionPinViolations(declared, pins) };
+  return { declared, pins, violations: actionPinViolations(declared, pins, of) };
 }
 
 /** The violation text, shared by the binding above and the category below. */
-function actionPinViolations(declared: DeclaredActionPin, pins: NamedActionPin[]): string[] {
+function actionPinViolations(
+  declared: DeclaredActionPin,
+  pins: NamedActionPin[],
+  of: PinnedAction = PINNED_ACTIONS[0],
+): string[] {
   const violations: string[] = [];
   for (const pin of pins) {
     if (!/^[0-9a-f]{40}$/.test(pin.sha)) {
       violations.push(
-        `${pin.file}:${pin.line} references ${CLAUDE_CODE_ACTION} at \`${pin.sha}\`, which is not a commit SHA: ` +
+        `${pin.file}:${pin.line} references ${of.action} at \`${pin.sha}\`, which is not a commit SHA: ` +
           `a tag is the action publisher's to repoint at any time, so it names a different thing on two runs of ` +
           `one commit (#689)`,
       );
@@ -1400,7 +1483,7 @@ function actionPinViolations(declared: DeclaredActionPin, pins: NamedActionPin[]
     }
     if (pin.sha !== declared.sha) {
       violations.push(
-        `${pin.file}:${pin.line} pins ${CLAUDE_CODE_ACTION} at ${pin.sha}, and ${ACTION_PIN_DECLARATION} declares ` +
+        `${pin.file}:${pin.line} pins ${of.action} at ${pin.sha}, and ${of.declaration} declares ` +
           `${declared.sha}. Two positions naming one action and nothing comparing them is how this tree ended up ` +
           `running two versions of it (#689)`,
       );
@@ -1408,7 +1491,7 @@ function actionPinViolations(declared: DeclaredActionPin, pins: NamedActionPin[]
     }
     if (pin.comment !== null && pin.comment !== declared.version) {
       violations.push(
-        `${pin.file}:${pin.line} annotates the pin \`# ${pin.comment}\` while ${ACTION_PIN_DECLARATION} declares ` +
+        `${pin.file}:${pin.line} annotates the pin \`# ${pin.comment}\` while ${of.declaration} declares ` +
           `\`${declared.version}\`. The comment is the only thing a reader checks, and a comment that can disagree ` +
           `with the pin it annotates is worse than no comment (#689)`,
       );
@@ -1422,33 +1505,13 @@ function actionPinViolations(declared: DeclaredActionPin, pins: NamedActionPin[]
  * generator literal that could emit one.
  */
 export function actionPinParity(root: string): CategoryReport {
-  const title = `every position pinning ${CLAUDE_CODE_ACTION} resolves to one declared commit`;
+  const title =
+    `every position pinning ${PINNED_ACTIONS.map(a => a.action).join(" or ")} ` +
+    `resolves to one declared commit`;
   const sites: ParitySite[] = [];
   const unmeasured: Unmeasurable[] = [];
-  let violations: string[] = [];
-
-  let declared: DeclaredActionPin | null = null;
-  const declarationPath = join(root, ACTION_PIN_DECLARATION);
-  if (!existsSync(declarationPath)) {
-    unmeasured.push(
-      unmeasurable(
-        "absent-file",
-        ACTION_PIN_DECLARATION,
-        `${ACTION_PIN_DECLARATION} does not exist under ${root}, so nothing in this tree says which commit of ` +
-          `${CLAUDE_CODE_ACTION} it means. Workflows that agree with each other are not workflows that agree with ` +
-          `anything (#689)`,
-      ),
-    );
-  } else {
-    try {
-      declared = declaredActionPin(root);
-      sites.push({ site: `${ACTION_PIN_DECLARATION} — the declared pin`, value: `${declared.sha} # ${declared.version}` });
-    } catch (e) {
-      // A declaration that cannot be parsed is never an absent declaration
-      // (`.claude/rules/config-access.md`).
-      unmeasured.push(unmeasurable("unparseable-file", ACTION_PIN_DECLARATION, firstLine(e)));
-    }
-  }
+  const violations: string[] = [];
+  let visible = 0;
 
   const workflowDir = join(".github", "workflows");
   const haveWorkflows = existsSync(join(root, workflowDir));
@@ -1456,30 +1519,65 @@ export function actionPinParity(root: string): CategoryReport {
     unmeasured.push(unmeasurable("absent-file", workflowDir, `${workflowDir} does not exist under ${root}`));
   }
 
-  const pins = actionPinsInTree(root);
-  for (const pin of pins) sites.push({ site: `${pin.file}:${pin.line}`, value: `${pin.sha}${pin.comment === null ? "" : ` # ${pin.comment}`}` });
+  // One pass per registered action. An action whose declaration is missing or
+  // whose positions are absent is UNMEASURED for ITSELF — it does not take
+  // the other actions' readings down with it, because "nobody pins the auth
+  // action here" is a true and separate fact from "the review action's pins
+  // disagree", and folding them would report one state as the other.
+  for (const of of PINNED_ACTIONS) {
+    let declared: DeclaredActionPin | null = null;
+    const declarationPath = join(root, of.declaration);
+    if (!existsSync(declarationPath)) {
+      unmeasured.push(
+        unmeasurable(
+          "absent-file",
+          of.declaration,
+          `${of.declaration} does not exist under ${root}, so nothing in this tree says which commit of ` +
+            `${of.action} it means. Workflows that agree with each other are not workflows that agree with ` +
+            `anything (#689)`,
+        ),
+      );
+    } else {
+      try {
+        declared = declaredActionPin(root, of);
+        sites.push({
+          site: `${of.declaration} — the declared pin`,
+          value: `${declared.sha} # ${declared.version}`,
+        });
+      } catch (e) {
+        // A declaration that cannot be parsed is never an absent declaration
+        // (`.claude/rules/config-access.md`).
+        unmeasured.push(unmeasurable("unparseable-file", of.declaration, firstLine(e)));
+      }
+    }
 
-  if (haveWorkflows && pins.length === 0) {
-    unmeasured.push(
-      unmeasurable(
-        "unresolved-source",
-        workflowDir,
-        `no position in this tree names ${CLAUDE_CODE_ACTION}, so the comparison could not be performed. ` +
-          `Finding nothing in every file is perfect agreement, which is the way this check dies rather than a ` +
-          `reading it can report (#689)`,
-      ),
-    );
+    const pins = actionPinsInTree(root, of);
+    for (const pin of pins) {
+      sites.push({
+        site: `${pin.file}:${pin.line}`,
+        value: `${pin.sha}${pin.comment === null ? "" : ` # ${pin.comment}`}`,
+      });
+    }
+
+    if (haveWorkflows && pins.length === 0) {
+      unmeasured.push(
+        unmeasurable(
+          "unresolved-source",
+          workflowDir,
+          `no position in this tree names ${of.action}, so the comparison could not be performed. ` +
+            `Finding nothing in every file is perfect agreement, which is the way this check dies rather than a ` +
+            `reading it can report (#689)`,
+        ),
+      );
+    }
+
+    if (declared !== null) violations.push(...actionPinViolations(declared, pins, of));
+
+    // The declaration, plus every position that names this action.
+    visible += 1 + pins.length;
   }
 
-  if (declared !== null) violations = actionPinViolations(declared, pins);
-
-  return categoryReport("action-pin-parity", title, {
-    // The declaration, plus every position that names the action.
-    visible: 1 + pins.length,
-    sites,
-    violations,
-    unmeasured,
-  });
+  return categoryReport("action-pin-parity", title, { visible, sites, violations, unmeasured });
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────

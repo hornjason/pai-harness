@@ -61,8 +61,9 @@ import {
   vertexCiConfig,
   type VertexCiDecision,
 } from "../lib/scaffold/ai-review-step";
-import { CLAUDE_CODE_ACTION, CLAUDE_CODE_ACTION_SHA, claudeCodeActionRef } from "../lib/claude-code-action";
-import { GOOGLE_AUTH_ACTION, GOOGLE_AUTH_ACTION_SHA, googleAuthActionRef } from "../lib/google-auth-action";
+import { CLAUDE_CODE_ACTION, CLAUDE_CODE_ACTION_SHA } from "../lib/claude-code-action";
+import { GOOGLE_AUTH_ACTION, GOOGLE_AUTH_ACTION_SHA } from "../lib/google-auth-action";
+import { actionRef } from "../lib/workflow-actions";
 
 /**
  * The fixture's `ci` block, and the one reading of it every case shares.
@@ -87,7 +88,11 @@ const FIXTURE_CI = {
 };
 
 const VERTEX: VertexCiDecision = vertexCiConfig(FIXTURE_CI);
-const REFS = { auth: googleAuthActionRef(), review: claudeCodeActionRef() };
+const REFS = {
+  checkout: actionRef("actions/checkout"),
+  auth: actionRef(GOOGLE_AUTH_ACTION),
+  review: actionRef(CLAUDE_CODE_ACTION),
+};
 
 const SOURCE_PATH = join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step.ts");
 const source = readFileSync(SOURCE_PATH, "utf-8");

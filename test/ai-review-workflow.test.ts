@@ -75,8 +75,9 @@ import {
   buildReviewRunStep,
   vertexCiConfig,
 } from "../lib/scaffold/ai-review-step";
-import { claudeCodeActionRef } from "../lib/claude-code-action";
-import { googleAuthActionRef } from "../lib/google-auth-action";
+import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
+import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
+import { actionRef } from "../lib/workflow-actions";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
 
 /** Four patterns, including a bare `*` and a `**` glob — AC-3's fixture. */
@@ -90,7 +91,11 @@ const RUNNER = "ubuntu-latest";
  * and could never notice the generator stopping at one of them.
  */
 const NO_VERTEX = vertexCiConfig({ runner: RUNNER, bunVersion: "1.2.0", branches: BRANCHES });
-const REFS = { auth: googleAuthActionRef(), review: claudeCodeActionRef() };
+const REFS = {
+  checkout: actionRef("actions/checkout"),
+  auth: actionRef(GOOGLE_AUTH_ACTION),
+  review: actionRef(CLAUDE_CODE_ACTION),
+};
 
 const scratch: string[] = [];
 afterAll(() => {
