@@ -10,7 +10,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
-import { dirname } from "path";
+import { dirname, join } from "path";
 
 // ── Types ───────────────────────────────────────────────
 
@@ -27,6 +27,20 @@ export type BehavioralCache = Record<string, CacheEntry>;
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // ── Public API ──────────────────────────────────────────
+
+/**
+ * Where the behavioral results cache lives, for a given project root.
+ *
+ * One binding, because this path had three. `lib/agent-audit.ts` and
+ * `scripts/test-brief.ts` WRITE it and `scripts/sync-sc-status.ts` READS it,
+ * and each one assembled `join(root, ".rungate", "behavioral-results.json")`
+ * for itself with nothing comparing the three. A drift in any one of them
+ * writes where nobody reads — and the symptom, an empty cache, is
+ * indistinguishable from "no behavioral results recorded yet" (#328).
+ */
+export function behavioralCachePath(projectRoot: string): string {
+  return join(projectRoot, ".rungate", "behavioral-results.json");
+}
 
 /**
  * Read the behavioral results cache from disk.

@@ -33,7 +33,7 @@ import {
   formatHillClimbReport,
   type HillClimbResult,
 } from "../lib/hill-climb.js";
-import { writeCache, type BehavioralCache } from "../lib/behavioral-cache.js";
+import { behavioralCachePath, writeCache, type BehavioralCache } from "../lib/behavioral-cache.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -324,8 +324,7 @@ function writeBehavioralResults(agentRole: string, transcriptContent: string): v
     }
 
     if (Object.keys(cacheData).length > 0) {
-      const cachePath = join(ROOT, ".rungate", "behavioral-results.json");
-      writeCache(cachePath, cacheData);
+      writeCache(behavioralCachePath(ROOT), cacheData);
       console.log(`  Behavioral cache: ${Object.keys(cacheData).length} entries written`);
     }
   } catch (err) {
