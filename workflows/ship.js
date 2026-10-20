@@ -6913,6 +6913,7 @@ defect it exists to catch (#659). Report what it printed.
       // not report a reading looked at nothing, and "nothing was deleted" is
       // the one answer nobody may infer from silence here — it is the answer
       // the whole run produced on wf_2abbe96f-546.
+      // ──── DELETION-ENFORCEMENT-START ────
       const deletionReadingOfRound = deletionVerdictReading(reCommit)
       const deletionVerdict = deletionReadingOfRound.verdict
       for (const line of deletionReadingOfRound.lines) log(line)
@@ -6925,6 +6926,49 @@ defect it exists to catch (#659). Report what it printed.
           : `Verify gate passed after BUILD regression fix, but the round's deletions are ${deletionVerdict} — ` +
             'a gate that passes because its test is gone is not a gate that passed (#659)')
       }
+      // #747. The sentence above said the whole of it and then did nothing
+      // about it: there was no refusal between the reading and the end of
+      // the block, so a round that removed passing cases logged
+      // REPAIR_DELETED_TESTS, went green, and shipped. Detection without
+      // enforcement is #530's shape — a recorder and a refusal that were
+      // never connected.
+      //
+      // The REFUSAL IS AFTER THE RETRY, deliberately. Refusing above it
+      // would make the "a gate that passes because its test is gone"
+      // sentence unreachable, and that sentence is the one thing an operator
+      // reads to know WHY the run stopped being trustworthy — deleting it is
+      // the cheapest wrong fix #747 names. The retry also still writes its
+      // own gate record, so the run's verify state is measured rather than
+      // guessed at from an early exit.
+      //
+      // DELETED and UNMEASURED refuse alike, and that is the whole point
+      // rather than an over-reach. `deletionVerdictReading` never returns
+      // CLEAN on a reading it could not take, so UNMEASURED means nothing
+      // established what this round removed — and "nothing was deleted" is
+      // the one answer nobody may infer from silence here (#684, #659). A
+      // round whose agent omits the field now ends the run instead of
+      // completing; that is a behaviour change for runs that pass today, and
+      // it is the behaviour the UNMEASURED doctrine asks for
+      // (`.claude/rules/config-access.md`).
+      //
+      // ONE decider: `deletionVerdict` is `deletionVerdictReading`'s own
+      // verdict, not a second reading of the reply. Reaching into the
+      // agent's restatement again here would be two deciders for one
+      // question — they would always agree, and a mutation of either would
+      // leave the other holding the run up. The field name is deliberately
+      // not spelled in this comment: the check that holds this property
+      // greps the block, and a checker cannot tell a citation from a use.
+      if (deletionVerdict !== 'CLEAN') {
+        return await terminalFailure('VERIFY_FAILED', {
+          reason: `the verify BUILD regression round's deletions are ${deletionVerdict}, so the ` +
+            `verify gate's verdict is not a reading of the suite that was graded — a gate that ` +
+            `passes because its test is gone is not a gate that passed (#659, #747)`,
+          deletionVerdict,
+          deletionLines: deletionReadingOfRound.lines,
+          verifyResult: retryVerify || verifyResult,
+        })
+      }
+      // ──── DELETION-ENFORCEMENT-END ────
       }
     } else {
       // #218: this `if` had no else, so a remediation that did nothing was
