@@ -227,6 +227,15 @@
   ],
   "sessions": [
     {
+      "date": "2026-10-20 session 55 (#755 merged: a compliance check that was green only while the files were bad)",
+      "items": [
+        "#761 landed #755. test/instruction-compliance.test.ts had two cases named \"scored by at least one tool\" that asserted findings.length > 0. That is green only while the file is bad — clean AGENTS.md up, which is what the whole instruction-compliance subsystem exists to encourage, and the check certifying the subsystem goes red. It also cannot tell three states apart, because all three are zero findings: the tool ran and found nothing, the tool ran and returned nothing because it broke, and the file genuinely improved. FileScore now carries scoredBy — which tools READ the file, not which disliked it — derived in one place, scoredByOf. agnix reports at batch granularity, since a batch that parsed read every file in it including the clean ones it says nothing about; RepoRails reports per file. This is #597's reading applied to the per-file row rather than a second way of deciding whether a tool contributed.",
+        "The cheapest wrong fix is named because it is the original defect under a new name: derive scoredBy from findings.length. Every other case in the file survives it. The only thing that refuses it is a file that was READ and came back CLEAN, and no file in this tree is in that state — all 28 on the surface carry findings — so the case plants one and probes agnix for real, asserting the UNMEASURED reading rather than skipping on a machine without it. Battery over 11 tests, every count predicted before the run and the baseline row read first: baseline 11/0; scoredByOf -> [] is 3; scoredByOf -> every tool is 2; coverage derived from findings is 1; agnixRead never set is 1.",
+        "The issue's last criterion was a contradiction in the tree rather than in the code: .claude/rules/config-access.md said \"CI installs neither tool\" in the present tense while test/instruction-compliance.test.ts's \"at least one external tool is available\" passed in CI. Both could not be true. CI installs both, pinned, generated from ci.globalTools into one npm install -g line in the sharded test job — stated without quoting the versions, because the config is the one declaring position and test/ci-global-tools.test.ts refuses a second one, prose included. That refusal caught the first draft of that very paragraph, which is the #637/#621 rule meeting the document that explains it.",
+        "Also this session, outside the ship pipeline and recorded here because the PR trail is thin on it: #729 landed #630 AC-15 — the generated reviewer authenticates to Vertex through Workload Identity Federation with no service-account key. Pool github / provider github-actions in jhorn-pai, attribute condition assertion.repository_owner == 'hornjason', roles/aiplatform.user granted directly to the hornjason/pai-harness principalSet so there is no service account to impersonate or mint a key for. Verified live: rawPredict returned HTTP 200 with no key on the runner. Two predictions made publicly before measuring were wrong and are recorded as such — Red Hat's org policy does NOT block service-account key creation (all three constraints measured open), and the fork-PR injection risk does not exist because GitHub passes no secrets to fork-PR workflows. The real finding, which the workflow header now carries, is that the exposure needs no Bash, no network and no fork."
+      ]
+    },
+    {
       "date": "2026-10-19 session 54 (#662, #654, #663, #629, #645 merged; #640's criterion 1 found NOT met and fixed)",
       "items": [
         "Five merges, each verified by blob per path rather than by ancestry. #695 landed #662 (6af54fad), #697 landed #654 (2213bc54), #698 landed the contract gate reading (d54e827c), #699 landed #663 (e278cb7b), #701 landed #629 (6debf40a) and #703 landed #645 (e02afd46). Two needed a waiver and both were the same cause, stated rather than clicked through: the branch was cut before an earlier ship.js change landed, so the merged blob is base-plus-this-change and the head-versus-merged divergence is the other issue's content the branch never had. Verified by hand in each case -- for #629 the merged-versus-base diff is 44 lines and the only base-side line removed is the two-arm claim-refusal detail replaced by the three-arm version -- and recorded with --accept and a --reason.",
@@ -812,21 +821,13 @@
     }
   ],
   "session": {
-    "number": 54,
-    "date": "2026-10-19",
-    "suite": "Full suite 13406 pass / 0 fail / 13 skip / 818 todo across 406 tests files, exit 0, 507s, on 79a12f73 (PR #709, open). Typecheck 0 errors. Caveat stated rather than buried: three cases in test/test-suite-lock.test.ts read the real lock directory and are a function of whether another full suite is in flight -- red in an earlier run with a concurrent suite, green here with none. Filed as #707. Earlier full run on fix/645 before merge: 13360 pass / 0 fail across 405 files, 491s.",
-    "issues_created": [
-      700,
-      704,
-      707
-    ],
+    "number": 55,
+    "date": "2026-10-20",
+    "suite": "Targeted rather than full, and saying so: test/instruction-compliance.test.ts + test/compliance-unmeasured.test.ts 27 pass / 0 fail; test/scaffold-conformity.test.ts 1195 pass / 0 fail; test/ci-global-tools.test.ts 17 pass / 0 fail; typecheck 0 errors. The full suite was run by CI as four shards on the merge commit, all green. No full local suite was taken — .claude/rules/parallel-sessions.md and the no-concurrent-suites rule, with other sessions merging throughout.",
+    "issues_created": [],
     "issues_closed": [
-      629,
-      645,
-      654,
-      662,
-      663
+      755
     ],
-    "summary": "Fixes #662 by accounting for every hill-climb action in the persist receipt. Fixes #654 by distinguishing a created brief from an updated one in the scaffold probe. Fixes #663 by carrying a receipt signature every operator-printed field is covered by. Fixes #629 by giving the absent-claim refusal a third arm that names the upstream cause. Fixes #645 by measuring the zero-reinforcement baseline rather than transcribing the hypothesis, and recording that both of the issue's stated causes are false. #640 stays open: its criterion 1 was found NOT met for failing runs and the fix is in PR #709."
+    "summary": "Fixes #755 by asserting the compliance surface was READ rather than that it scored badly, and settles the CI-installs-neither contradiction the issue found in .claude/rules/config-access.md. #729 shipped #630 AC-15 earlier in the day: the reviewer authenticates with no service-account key."
   }
 }
