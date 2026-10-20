@@ -43,6 +43,22 @@ const UNRESOLVABLE_SUITE = `import { thing } from "./a-module-that-is-not-here";
 import { test } from "bun:test";
 test("conformity", () => { thing(); });
 `;
+/**
+ * A suite that can only load if `node_modules` reached the temp checkout.
+ *
+ * `PASSING_SUITE` imports nothing but `bun:test`, so it is green over a
+ * dangling symlink and over no symlink at all — it cannot witness #728.
+ */
+const DEP_SUITE = `import { expect, test } from "bun:test";
+import { answer } from "dep-under-test";
+test("conformity", () => { expect(answer).toBe(42); });
+`;
+const DEP_MODULE: Record<string, string> = {
+  "dep-under-test/package.json": JSON.stringify({
+    name: "dep-under-test", version: "1.0.0", type: "module", main: "index.js",
+  }),
+  "dep-under-test/index.js": "export const answer = 42;\n",
+};
 
 interface Plant {
   /** Contents of `test/scaffold-conformity.test.ts`, or null to omit the file. */
@@ -51,6 +67,16 @@ interface Plant {
   tracked?: Record<string, string>;
   /** Written and left untracked — the `.gitignore`d lockfile case. */
   untracked?: Record<string, string>;
+  /**
+   * Files under `node_modules/`, written into the MAIN checkout after the
+   * commit. A repository being pushed from has installed dependencies, and
+   * since #728 the hook refuses by name when it cannot find them — so the
+   * default is an empty `node_modules/`, which is what every pre-#728 fixture
+   * was implicitly relying on the hook not looking at.
+   */
+  modules?: Record<string, string>;
+  /** Omit `node_modules/` entirely — the "nothing is installed" case (#728). */
+  noModules?: boolean;
 }
 
 /** A real repository with one commit, returned with its HEAD sha. */
@@ -80,18 +106,45 @@ function plant(name: string, p: Plant): { root: string; sha: string } {
   // After the commit, so they are genuinely absent from the checkout the hook
   // makes — writing them earlier would track them and prove nothing.
   for (const [rel, body] of Object.entries(p.untracked ?? {})) write(rel, body);
+  if (!p.noModules) {
+    mkdirSync(join(root, "node_modules"), { recursive: true });
+    for (const [rel, body] of Object.entries(p.modules ?? {})) write(join("node_modules", rel), body);
+  }
 
   return { root, sha: git("rev-parse", "HEAD").trim() };
 }
 
+/**
+ * A LINKED worktree of a planted repo — the shape #728 is about.
+ *
+ * It has no `node_modules` of its own and never will: `node_modules` is
+ * gitignored, so it exists only in the main checkout. `--show-toplevel` from
+ * in here answers the worktree's own root, which is the wrong root.
+ */
+function addWorktree(repo: { root: string; sha: string }, name: string): string {
+  const wt = mkdtempSync(join(tmpdir(), `prepush-wt-${name}-`));
+  roots.push(wt);
+  rmSync(wt, { recursive: true, force: true }); // git worktree add wants a path that is not there
+  const r = spawnSync("git", ["worktree", "add", "--detach", "--quiet", wt, repo.sha],
+    { cwd: repo.root, encoding: "utf-8" });
+  if (r.status !== 0) throw new Error(`git worktree add: ${r.stderr}`);
+  return wt;
+}
+
 interface Run { code: number; out: string }
 
-/** Run a hook script in a planted repo as git would: push line on stdin. */
-function runHook(repo: { root: string; sha: string }, script: string): Run {
-  const path = join(repo.root, `hook-${Math.abs(hash(script))}.sh`);
+/**
+ * Run a hook script in a planted repo as git would: push line on stdin.
+ *
+ * `cwd` defaults to the main checkout. Git runs a hook from the top level of
+ * the working tree the push came from, so a linked worktree is modelled by
+ * passing that worktree's path.
+ */
+function runHook(repo: { root: string; sha: string }, script: string, cwd = repo.root): Run {
+  const path = join(cwd, `hook-${Math.abs(hash(script))}.sh`);
   writeFileSync(path, script, { mode: 0o755 });
   const r = spawnSync("sh", [path], {
-    cwd: repo.root,
+    cwd,
     encoding: "utf-8",
     input: `refs/heads/main ${repo.sha} refs/heads/main 0000000000000000000000000000000000000000\n`,
     timeout: 120_000,
@@ -135,6 +188,8 @@ const REFUSE_DECL = "REFUSE=1";
 const LOCKFILE_ARM = `if [ ! -f "$tmp/bun.lock" ]; then`;
 const COUNTED_ERRORS = `if echo "$out" | grep -qE '^[[:space:]]*[1-9][0-9]* error'; then`;
 const COUNTED_TESTS = `elif echo "$out" | grep -qE '^[[:space:]]*[1-9][0-9]* (pass|fail)'; then`;
+const MODULES_ROOT_DECL = `MODULES_ROOT=$(cd "$TOPLEVEL" && cd "$(git rev-parse --git-common-dir)/.." && pwd) || exit $REFUSE`;
+const MODULES_ABSENT_GUARD = `  if [ ! -d "$MODULES_ROOT/node_modules" ]; then`;
 
 describe("SC-1504: a gitignored lockfile does not block a passing push", () => {
   // agentgrit's shape, reproduced rather than approximated: the lockfile is
@@ -310,6 +365,122 @@ describe("SC-1509: the generator writes this script, and not a copy of it", () =
     expect(steps).toContain("writeFileSync(prePush, prePushHookScript());");
     expect(steps).not.toContain("bun install --frozen-lockfile");
     expect(steps).not.toContain("Conformity tests failed");
+  });
+});
+
+/**
+ * #728 — the hook asked `--show-toplevel` where the dependencies are.
+ *
+ * In a linked worktree that is the worktree's own root, which has no
+ * `node_modules` and never will: it is gitignored and lives only in the main
+ * checkout. `ln -s` does not look at its target, so the link succeeded, the
+ * suite died on an import error, and the hook refused every worktree push
+ * with "the conformity suite did not load". Three agent sessions in agentgrit
+ * reached for `--no-verify` instead.
+ *
+ * The same wrong root makes the lockfile arm vacuous: `cmp` read the
+ * WORKTREE's `bun.lock` against the pushed commit's copy of itself, which
+ * agree whenever you push what you committed. The guard exists to check that
+ * the modules being linked were installed from the pushed lockfile, so it has
+ * to read the lockfile beside those modules.
+ *
+ * These ids need allocating against the spec registry; the criteria are
+ * described by the test names.
+ */
+describe("#728: the hook links the MAIN checkout's dependencies, not the pushing worktree's", () => {
+  /** A main checkout with the dependency installed, pushed from a linked worktree. */
+  const depRepo = () => plant("wt-dep", { suite: DEP_SUITE, modules: DEP_MODULE });
+
+  test("a push from a linked worktree resolves its dependencies and is allowed", () => {
+    const repo = depRepo();
+    const wt = addWorktree(repo, "dep");
+    const r = runHook(repo, prePushHookScript(), wt);
+    expect(r.out).not.toContain("did NOT run the conformity suite");
+    expect(r.out).not.toContain("Conformity tests failed");
+    expect(r.code).toBe(0);
+  });
+
+  test("the same push from the main checkout is allowed too — the non-worktree case is unchanged", () => {
+    // --git-common-dir resolves to plain `.git` in a primary checkout, so this
+    // is the control that the fix did not buy the worktree case by breaking
+    // the one that already worked.
+    const r = runHook(depRepo(), prePushHookScript());
+    expect(r.out).not.toContain("did NOT run the conformity suite");
+    expect(r.code).toBe(0);
+  });
+
+  test("the lockfile compared is the one beside the node_modules being linked", () => {
+    // The worktree's lockfile IS the pushed commit's lockfile, so a `cmp`
+    // rooted at --show-toplevel compares the pushed tree against itself and
+    // passes. The main checkout's lockfile is what those modules were
+    // installed from, and here it differs — so the hook must install rather
+    // than reuse them.
+    const repo = plant("wt-lock", {
+      suite: PASSING_SUITE,
+      tracked: { "bun.lock": "committed lockfile\n" },
+    });
+    const wt = addWorktree(repo, "lock");
+    writeFileSync(join(repo.root, "bun.lock"), "the lockfile the modules came from\n");
+
+    const r = runHook(repo, prePushHookScript(), wt);
+    expect(r.out, "a cmp rooted at the worktree compares the pushed tree with itself")
+      .toContain("dependencies differ from the working tree");
+  });
+
+  test("node_modules absent from the main checkout is refused BY NAME, not left dangling", () => {
+    const repo = plant("wt-nomodules", { suite: DEP_SUITE, noModules: true });
+    const wt = addWorktree(repo, "nomodules");
+    const r = runHook(repo, prePushHookScript(), wt);
+    expect(r.out).toContain("no node_modules at ");
+    expect(r.out).toContain(join(repo.root, "node_modules"));
+    expect(r.out).toContain("did NOT run the conformity suite");
+    // The whole point of naming it: an import error tells the developer
+    // nothing about which directory is missing or where to run bun install.
+    expect(r.out).not.toContain("the conformity suite did not load");
+    expect(r.out).not.toContain("Conformity tests failed");
+    expect(r.code).toBe(REFUSES);
+  });
+
+  test("MUTATION: the modules root restored to --show-toplevel refuses the worktree push", () => {
+    // The pre-#728 source, and the cheapest wrong fix at the same time: the
+    // absent-target guard above stays in place, so this is "check the link
+    // target exists and skip the symlink" with the wrong root underneath it.
+    // The symptom changes wording; the worktree push is still refused.
+    const repo = depRepo();
+    const wt = addWorktree(repo, "dep-mutant");
+    const r = runHook(repo, mutate(MODULES_ROOT_DECL, "MODULES_ROOT=$TOPLEVEL"), wt);
+    expect(r.out).toContain("did NOT run the conformity suite");
+    expect(r.code).toBe(REFUSES);
+  });
+
+  test("MUTATION: with the wrong root, the lockfile arm compares the pushed tree with itself", () => {
+    const repo = plant("wt-lock-mutant", {
+      suite: PASSING_SUITE,
+      tracked: { "bun.lock": "committed lockfile\n" },
+    });
+    const wt = addWorktree(repo, "lock-mutant");
+    writeFileSync(join(repo.root, "bun.lock"), "the lockfile the modules came from\n");
+    const r = runHook(repo, mutate(MODULES_ROOT_DECL, "MODULES_ROOT=$TOPLEVEL"), wt);
+    expect(r.out).not.toContain("dependencies differ from the working tree");
+  });
+
+  test("MUTATION: with the absent-target guard removed, the link dangles and says nothing", () => {
+    const repo = plant("wt-nomodules-mutant", { suite: DEP_SUITE, noModules: true });
+    const wt = addWorktree(repo, "nomodules-mutant");
+    const r = runHook(repo, mutate(MODULES_ABSENT_GUARD, "  if false; then"), wt);
+    expect(r.out).not.toContain("no node_modules at ");
+    expect(r.out).toContain("the conformity suite did not load");
+    expect(r.code).toBe(REFUSES);
+  });
+
+  test("the hook asks --git-common-dir, and asks it once", () => {
+    // A second root computation would survive any mutation of the first, and
+    // both would read correctly in the diff
+    // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+    const src = prePushHookScript();
+    expect(src.split("git rev-parse --git-common-dir").length - 1).toBe(1);
+    expect(src).not.toContain(`"$TOPLEVEL/node_modules"`);
+    expect(src).not.toContain(`"$TOPLEVEL/bun.lock"`);
   });
 });
 
