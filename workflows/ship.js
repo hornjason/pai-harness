@@ -4822,6 +4822,43 @@ function waveCommitFailure(reply, waveIndex, runRef) {
  * every agent. Switching costs the operator a `git switch -` and is never
  * pushed from here.
  */
+// ──── RUN-BRANCH-SETUP-START ────
+// #702. Inlined from lib/run-branch.ts because this file runs in a sandbox
+// with no imports (#69); kept in parity by test/run-branch-start.test.ts.
+//
+// `git switch -c` FAILS when the branch already exists, and that failure is
+// the load-bearing part: `|| git switch` then adopts the existing branch, so
+// a run re-entering an issue commits onto the work already there. The `case`
+// guard leaves a checkout already on another branch alone.
+function runBranchSetupScript(quotedRef) {
+  return `case "$branch" in
+  ""|main|master)
+    git switch -c ${quotedRef} 2>/dev/null || git switch ${quotedRef} ;;
+esac`
+}
+function runBranchStart(input) {
+  const { branchAfter, headAfter, priorTip } = input
+  if (priorTip === undefined) return 'UNMEASURED'
+  if (!branchAfter || !headAfter) return 'UNMEASURED'
+  if (priorTip === null) return 'NO_PRIOR_BRANCH'
+  return priorTip === headAfter ? 'PRIOR_BRANCH_RESUMED' : 'PRIOR_BRANCH_DISCARDED'
+}
+
+function runBranchStartRefusal(reading, branch, discarded = []) {
+  if (reading === 'PRIOR_BRANCH_DISCARDED') {
+    return `${branch} already existed with ${discarded.length} commit(s) that are not on this run's ` +
+      `base, and this run started somewhere else — ${discarded.join(', ')}. Starting from the ` +
+      `base is a reasonable default and taking it SILENTLY makes "there was no prior work" and ` +
+      `"there was prior work and it was dropped" identical from the outside (#702).`
+  }
+  if (reading === 'UNMEASURED') {
+    return `the branch this run started on could not be read, so whether it discarded prior work on ` +
+      `${branch} is unknown. That is not "there was no prior branch" (#702).`
+  }
+  return null
+}
+// ──── RUN-BRANCH-SETUP-END ────
+
 async function establishRunRef() {
   const ref = runRefName(ISSUE)
   const reply = await timedAgent(`
@@ -4835,12 +4872,12 @@ if [ -n "$before" ]; then
 else
   echo '{"reading":"UNMEASURED","notice":"the checkout reported no branch, so there is nothing to compare a leftover against (#640)"}'
 fi
+priorTip=$(git rev-parse --verify --quiet ${shellQuote(ref)} || echo NONE)
+echo "PRIOR_TIP: $priorTip"
 branch=$(git branch --show-current)
-case "$branch" in
-  ""|main|master)
-    git switch -c ${shellQuote(ref)} 2>/dev/null || git switch ${shellQuote(ref)} ;;
-esac
+${runBranchSetupScript(shellQuote(ref))}
 git branch --show-current
+echo "HEAD_AFTER: $(git rev-parse HEAD)"
 
 Report the LAST line as branch — the branch the checkout is on after the
 command, not the one it was on before, and not the one the command asked for.
@@ -4855,6 +4892,13 @@ leftoverReading and its "notice" as leftoverNotice — null when it printed no
 notice. It exits zero in every case: an interrupted run's branch is usually
 what you want to resume onto, so it reports and does not refuse.
 
+Report the PRIOR_TIP: line's value as priorTip, EXACTLY as printed, and the
+HEAD_AFTER: line's value as headAfter. priorTip is the literal string NONE
+when the run's branch did not exist. Report NONE as the string NONE — do not
+translate it to null, empty or omit the field. An omitted priorTip means
+nobody read it, which is UNMEASURED, and that is a different state from a
+branch that was genuinely not there (#702).
+
 Do not create, delete or push any other ref, and do not switch again.
   `, { label: 'run-ref', phase: 'Implement', schema: {
     type: 'object',
@@ -4866,11 +4910,40 @@ Do not create, delete or push any other ref, and do not switch again.
       branchBefore: { type: 'string' },
       leftoverReading: { type: 'string' },
       leftoverNotice: { type: ['string', 'null'] },
+      // #702. Declared, because a schema is a filter: an undeclared field is
+      // stripped on the way back and the caller reads a reply missing
+      // exactly what it did not ask for (#646). Without these two the start
+      // reading below is UNMEASURED on every run.
+      priorTip: { type: 'string' },
+      headAfter: { type: 'string' },
     },
     required: ['branch'],
   } })
 
   const branch = reply && typeof reply.branch === 'string' ? reply.branch.trim() : ''
+
+  // ──── RUN-BRANCH-START-START ────
+  // #702. Did this run resume the work already on its branch, or start
+  // somewhere else and leave it behind? Run wf_9d22ecf5-aed discarded six
+  // commits and said nothing — not a refusal, not a warning, not a line in
+  // the journal — because starting from the base is a reasonable default and
+  // taking it silently makes "there was no prior work" and "there was prior
+  // work and it was dropped" byte-identical from the outside.
+  //
+  // An OMITTED priorTip is `undefined` and reads UNMEASURED. The literal
+  // string NONE is the branch genuinely not existing. Those must not
+  // collapse, which is why the prompt above says to report NONE verbatim.
+  const reportedPriorTip = reply && typeof reply.priorTip === 'string' ? reply.priorTip.trim() : undefined
+  const startReading = runBranchStart({
+    branchBefore: reply && typeof reply.branchBefore === 'string' ? reply.branchBefore.trim() : '',
+    branchAfter: branch,
+    headAfter: reply && typeof reply.headAfter === 'string' ? reply.headAfter.trim() : '',
+    priorTip: reportedPriorTip === undefined ? undefined : (reportedPriorTip === 'NONE' ? null : reportedPriorTip),
+  })
+  log(`RUN_BRANCH_START: ${startReading} (${runRefName(ISSUE)})`)
+  const startRefusal = runBranchStartRefusal(startReading, runRefName(ISSUE))
+  if (startRefusal) log(`RUN_BRANCH_START ${startReading}: ${startRefusal}`)
+  // ──── RUN-BRANCH-START-END ────
   // Recorded even when empty. An unread start is what makes the end-of-run
   // comparison UNMEASURED rather than silently equal, and overwriting it
   // with the ref we just switched to would make every run look unchanged.
