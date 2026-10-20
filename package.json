@@ -27,6 +27,7 @@
     "scripts/create-spec.ts",
     "scripts/create-success.ts",
     "scripts/create-sc.ts",
+    "scripts/ai-review-findings.ts",
     "scripts/split-spec.ts",
     "scripts/sync-sc-status.ts",
     "scripts/audit-transcript.ts",
