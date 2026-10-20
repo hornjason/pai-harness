@@ -5253,8 +5253,8 @@ mutation of the grammar move both and leave the comparison green — the
 fourth shape, in the file arguing against it.
 
 - [x] SC-2119: lib/commit-subject.ts contains [export function neutraliseClosingKeywords] — the closing-keyword transform is one exported binding covering all four reference forms GitHub documents, breaking the adjacency GitHub parses rather than deleting the reference, so the keyword and the number both stay readable in the subject
-- [x] SC-2120: test/commit-subject-quoting.test.ts contains [AC-6: every fixture composes identically on both sides] — ship.js's forced inline copy and the library are driven over one fixture carrying a case per dimension the two could disagree on, with a vacuity case requiring that the transform actually alters more than three of them, so two identity functions cannot agree their way to green
-- [x] SC-2121: workflows/ship.js contains [shellQuote(shipCommitSubject(ISSUE, goalData.issueTitle))] — the COMMIT phase's subject crosses the shell single-quoted, and the case that proves it lifts shellQuote, the subject builder AND the commit line itself out of ship.js and runs them against a stub `git` on PATH that records argv
+- [x] SC-2120: test/commit-subject-quoting.test.ts contains [AC-6: ship.js composes no commit subject and carries no copy of the grammar] — #696 compared ship.js's forced inline copy against the library over one fixture per dimension the two could disagree on; #706 removed the issue title from the COMMIT prompt, which left that copy with no caller, so the copy is gone and the claim is that it has not come back — the builder AND the grammar it closed over, with a control asserting the source read is ship.js and still runs the commit step
+- [x] SC-2121: workflows/ship.js contains [git commit -F ${shellQuote(commitSubjectPath)}] — the COMMIT phase reads its subject from a file rather than composing one, so the issue title crosses neither a shell nor the agent's context (#706 superseding #696's quoted `-m` line); the case that proves it lifts shellQuote AND the commit line itself out of ship.js, writes a hostile title into the path ship.js's own expression names, and runs the line against a stub `git` on PATH that records argv
 - [x] SC-2122: test/commit-subject-quoting.test.ts contains [AC-3: the detector and the neutraliser agree about what is NOT a reference] — `closingReferences` from the #590 detector is the oracle in both directions: a composed subject closes nothing but the run's own issue, and text the detector reads as closing nothing comes through byte-unchanged, so a transform that mangled everything could not buy green
 
 What was broken to prove the cases fail, run and counted rather than
@@ -12313,3 +12313,118 @@ green over a mutation that never happened.
 None of the seven mutations is left in the tree; all were run and reverted,
 and `workflows/ship.js` was confirmed byte-identical to the measured source
 after every row by SHA-256, never by `git checkout --`.
+
+## The commit prompt pasted an issue title four lines above `git push` (#706)
+
+`workflows/ship.js`'s COMMIT phase interpolated `goalData.issueTitle` into the
+natural-language instruction block it hands an agent, under a heading reading
+*"Run these in order, exactly as written"*. #696 made that line safe against a
+**shell** — it did nothing about the **agent**, which reads the whole block as
+instructions. An issue title is arbitrary text chosen by whoever filed the
+issue, and a title shaped like an instruction is an instruction.
+
+The repo had already decided this one phase later. The PR step passes
+`--title-from-issue` and `scripts/github-op.ts` fetches the title itself, so it
+never enters the prompt. The COMMIT phase was the same problem with the same
+fix available.
+
+Note the asymmetry in the two refusals that block already carried. The
+`main|master` guard is there because #136 had a run push to the default branch
+after an agent improvised a recovery — so the thing that guard exists to stop
+is an agent deciding to do something else, which is exactly the capability the
+interpolation handed to whoever opens an issue.
+
+### What replaced it
+
+`scripts/github-op.ts commit-subject` composes the subject through
+`lib/commit-subject.ts` from the API and writes it to a file; the agent runs
+`git commit -F <quoted path>`. The title crosses neither a shell nor the
+agent's context.
+
+One consequence is worth stating because it removes a check rather than adding
+one: **ship.js's inline copy of the subject builder is gone.** It existed only
+because a workflow script cannot import (#69), and #696 shipped a behavioural
+parity case comparing the copy against the library over sixteen fixtures. With
+the title out of the prompt the copy had no caller, so it was deleted with the
+call, and the parity case has nothing left to compare. What replaced it asserts
+the copy has not come back — the builder and the grammar it closed over. A
+comparator over a second copy is worse than not having the second copy.
+
+### The cheapest wrong fix, named before the repair
+
+**`String(title).replace(/[\r\n]+/g, ' ')`.** Collapsing newlines makes the
+title stop LOOKING like its own instruction line while leaving it in the
+prompt, one space after `git commit -m`. An agent does not need a newline to
+read a sentence. Row M2 applies it and the population scan still refuses.
+
+### What was broken to prove it
+
+Counted over `test/commit-prompt-no-issue-title.test.ts` +
+`test/commit-subject-quoting.test.ts` (50 tests). Every count was predicted
+before the battery ran and **the baseline row was read before any mutation
+row**. Before each count, the input on which mutant and original differ is
+named.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 50 pass, 0 fail | **50 pass, 0 fail** | — |
+| M1 the genuinely pre-#706 tree — the `-m` line AND ship.js's inline subject block restored | 10 | **6 of 13 RUN** | the prompt text: the original names no title, the mutant interpolates one |
+| M2 **the cheapest wrong fix** — the `-m` line with its newlines collapsed | 10 | **6 of 13 RUN**, the same six | the same text with the newline gone: it still names the title |
+| M3 `writeCommitSubjectFile` writes the raw title instead of composing it | 1 | **1 of 50** | `"Fixes #500 and also: a title"`: the original writes `fix(#706): Fixes # 500 …`, the mutant writes the title alone, which closes #500 on merge |
+| M4 the trailing newline dropped from the written file | 1 | **1 of 50** | the same title: the file ends in a newline against not |
+| M5 the `--out` refusal removed — `flags.out ?? ''` | 1 | **1 of 50** | the command with no `--out`: the original throws, the mutant writes to the empty path |
+| M6 the subject path interpolated unquoted into `git commit -F` | 1 | **1 of 50** | the prompt text |
+| M7 the `main\|master` guard deleted from the prompt | 3 | **2 of 50** | the prompt text: the guard line present against absent |
+| M7b the `#136` prose deleted and the guard LEFT | — | **1 of 50** | the same text, the other way round |
+| M8 the taint scan narrowed to the bare `${name}` form — the test's own first draft | 1 | **2 of 50** | the cheapest-wrong-fix line: the narrowed scan scores 0, the shipped scan 1 |
+| M9 the prompt cut widened from the START marker to the end of ship.js | 2 | **1, then 2** | the cut: ~1,500 characters against ~400,000 |
+
+**M1 and M2 came back 6 against a predicted 10, and the shortfall is the
+prediction's.** Not a collapsed pair: the prediction counted a case inventory
+the file does not have — three AC-3 cases where there are two, and two AC-1
+population cases where there is one. Every one of the six is about the mutated
+behaviour.
+
+**The row says "of 13 RUN" and not "of 50" on purpose.** The pre-#706 tree has
+no `git commit -F` line, so `test/commit-subject-quoting.test.ts`'s
+`structuralCut` refuses in `beforeAll` and 38 of its cases never execute. That
+is the loud abort a cut is supposed to produce — and a reader taking the
+accompanying "7 pass" as reassurance would be reading a file that never opened.
+
+**M7 came back 2 against a predicted 3, and the prediction was wrong rather
+than the check.** Deleting the guard line does not delete the paragraph
+explaining it, and the prose case stayed green. That is the better design —
+two claims, each with an input only it reaches — so M7b was added to measure
+the other direction and is 1.
+
+**M8 came back 2 against a predicted 1, and the extra red is the real kind.**
+The narrowed scan also stops seeing the genuine pre-#706 line:
+`${shellQuote(shipCommitSubject(ISSUE, goalData.issueTitle))}` does not spell
+`${goalData.issueTitle}` either, so a scan matching only the bare
+interpolation form could not see the defect the issue is about.
+
+**M9 came back 1 against a predicted 2, and that one found a real gap.** The
+widened cut was supposed to drag in ship.js's three other `git commit -m`
+sites; it did not, because they are spelled `${reimplGitAdd} && git commit -m …`
+and the scan was anchored on a line start. A command is a command wherever it
+sits on the line, so the scan now strips markdown code spans — the prompt
+legitimately mentions `git commit -m` in prose, telling the agent not to
+substitute one — and searches the text. Re-measured, M9 is 2.
+
+**Provenance: every row was re-measured after CI moved the source.** The
+first reading was taken before CI ran. CI then reddened two things, and both
+repairs edited a file the battery measures — ship.js's prose, because a
+`` `git push` `` inside backticks is still a bare push to
+`test/ship-never-writes-main.test.ts`'s scanner, and AC-2's refusal case,
+because `run` builds its GitHub client before dispatching and the case was
+green on a laptop with a token over an `--out` check it never reached. So the
+whole battery was run again against the corrected tree, baseline first, and
+all ten rows reproduce exactly. Nothing is carried over: a row measured on a
+tree nobody can check out is a claim rather than a count
+(`.claude/rules/parallel-sessions.md`), and a CI fix retires the tree a row
+was taken on just as surely as a rebase does.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`workflows/ship.js`, `scripts/github-op.ts` and both test files were confirmed
+byte-identical to the measured source afterwards by SHA-256, never by
+`git checkout --`.

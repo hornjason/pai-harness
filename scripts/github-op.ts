@@ -50,7 +50,7 @@
  *   bun scripts/github-op.ts ci-status    --repo o/n --sha SHA [--timeout-ms N] [--interval-ms N]
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import {
   addComment,
   addLabels,
@@ -130,6 +130,34 @@ function titleFrom(flags: Flags): string {
   return required(flags, "title");
 }
 
+/**
+ * Compose a commit subject and write it where `git commit -F` reads it (#706).
+ *
+ * Separate from the `commit-subject` case, and exported, for one reason: the
+ * case's only other statement is an API call, so a test driving the case
+ * would be testing Octokit. This is the part with behaviour in it — the
+ * composition goes through `lib/commit-subject.ts`, which is the tree's one
+ * composer, and the write lands exactly where the caller said.
+ *
+ * The subject is deliberately NOT in the receipt. The receipt is printed to
+ * an agent and the agent's reply is read back by the run, so echoing the
+ * title would put it straight back into the context this command exists to
+ * keep it out of. `bytes` is what a caller needs to tell a written file from
+ * an empty one.
+ */
+export function writeCommitSubjectFile(
+  issue: number,
+  title: unknown,
+  out: string,
+): { number: number; out: string; bytes: number } {
+  // A trailing newline: `git commit -F` takes the file verbatim, and a file
+  // with no terminator is one line to git and a truncated file to everything
+  // that reads it afterwards.
+  const text = `${commitSubject(issue, title)}\n`;
+  writeFileSync(out, text, "utf-8");
+  return { number: issue, out, bytes: Buffer.byteLength(text, "utf-8") };
+}
+
 function issueNumber(flags: Flags): number {
   const raw = required(flags, "issue");
   const n = Number(raw);
@@ -177,6 +205,7 @@ export const COMMANDS = [
   "issue-get",
   "issue-create",
   "ci-status",
+  "commit-subject",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -318,6 +347,29 @@ export async function run(command: string, flags: Flags): Promise<unknown> {
         timeoutMs: positiveMs(flags, "timeout-ms", 15 * 60 * 1000),
         intervalMs: positiveMs(flags, "interval-ms", 15 * 1000),
       });
+    }
+
+    case "commit-subject": {
+      // The commit subject, composed from the API and written to a FILE that
+      // `git commit -F` reads. The title never enters a command line and
+      // never enters a prompt (#706).
+      //
+      // #696 made the COMMIT phase's `git commit -m` safe against a SHELL
+      // and did nothing about the AGENT, which reads the whole prompt block
+      // as instructions. An issue title is arbitrary text chosen by whoever
+      // filed the issue, and a title shaped like an instruction was sitting
+      // four lines above `git push` — under a heading that says "Run these
+      // in order, exactly as written", beside a branch guard that exists
+      // because #136 had an agent improvise a recovery onto main. The PR
+      // phase already refused to paste it (`--title-from-issue` above); this
+      // is the same fix for the remaining position.
+      // `--out` is read BEFORE the API call, so a caller that built the
+      // command wrong learns it without spending a request — and so a test
+      // can reach the refusal without a network.
+      const out = required(flags, "out");
+      const n = issueNumber(flags);
+      const issue = await getIssue(client, flags["issue-repo"] || repo, n);
+      return writeCommitSubjectFile(n, issue.title, out);
     }
   }
 }
