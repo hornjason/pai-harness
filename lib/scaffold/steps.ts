@@ -12,6 +12,7 @@ import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
 import { isHarnessItself } from "../harness-identity";
+import { projectStateDerivation, projectStateKeyFileNote } from "../project-state-derivation";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
@@ -379,7 +380,7 @@ export function generateAgentsMdContent(
   // Scan key files
   const keyFiles: Array<{ file: string; what: string; when: string }> = [
     { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
-    { file: "PROJECT-STATE.md", what: "Live status + handoff (generated from project-state.json — don't edit directly)", when: "Session start, always first after AGENTS.md" },
+    { file: "PROJECT-STATE.md", what: projectStateKeyFileNote(projectStateDerivation(projectPath)), when: "Session start, always first after AGENTS.md" },
     { file: "project-state.json", what: "Source of truth for project status", when: "When editing state" },
   ];
   const conditionalPatterns: Array<{ pattern: string; what: string; when: string }> = [
