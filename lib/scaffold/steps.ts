@@ -12,6 +12,7 @@ import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
 import { isHarnessItself } from "../harness-identity";
+import { scanSpecs } from "../scanner";
 import { projectStateDerivation, projectStateKeyFileNote } from "../project-state-derivation";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
@@ -417,53 +418,15 @@ export function generateAgentsMdContent(
     }
   }
 
-  // Scan specs
-  const specsDir = join(projectPath, "specs");
-  const specEntries: SpecEntry[] = [];
-  if (existsSync(specsDir)) {
-    const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
-    for (const f of specFiles) {
-      const content = readFileSync(join(specsDir, f), "utf-8");
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      let governs = "";
-      let testable = "TODO";
-      if (fmMatch) {
-        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-        if (gMatch && gMatch[1].trim() !== "TODO" && gMatch[1].trim().length > 5) {
-          governs = gMatch[1].trim().replace(/\|/g, "—").slice(0, 120);
-        }
-        const tMatch = fmMatch[1].match(/testable:\s*(.+)/);
-        if (tMatch) testable = tMatch[1].trim();
-      }
-      specEntries.push({ file: f, governs, testable });
-    }
-
-    // Also scan specs subdirectories
-    try {
-      const specSubDirs = readdirSync(specsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name);
-      for (const sub of specSubDirs) {
-        const subPath = join(specsDir, sub);
-        const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md") && f !== "INDEX.md");
-        if (subFiles.length > 0) {
-          const indexPath = join(subPath, "INDEX.md");
-          let groupGoverns = `${sub} (${subFiles.length} specs)`;
-          if (existsSync(indexPath)) {
-            const indexContent = readFileSync(indexPath, "utf-8");
-            const fmMatch = indexContent.match(/^---\n([\s\S]*?)\n---/);
-            if (fmMatch) {
-              const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-              if (gMatch && gMatch[1].trim().length > 5) {
-                groupGoverns = gMatch[1].trim().replace(/\|/g, "—").slice(0, 120);
-              }
-            }
-          }
-          specEntries.push({ file: `${sub}/ (${subFiles.length} specs)`, governs: groupGoverns, testable: "yes" });
-        }
-      }
-    } catch {}
-  }
+  // Scan specs — delegated to `lib/scanner.ts`, which is the one derivation.
+  // This function used to carry its own copy, and the copy drifted three
+  // times (#827): it never set `criteriaNone`, so `STATES NO CRITERIA` was
+  // dropped from every row that earned it; it hardcoded `testable: "yes"` on
+  // group rows, a word `scanner.ts` notes "means false to the code and true
+  // to a reader"; and it filtered spec files by name instead of `isSpecFile`,
+  // which is how #382's two scans disagreed about `SPEC-TEMPLATE.md`. All
+  // three were fixed in `scanner.ts` alone, because nobody knew this existed.
+  const specEntries: SpecEntry[] = scanSpecs(projectPath);
 
   // Scan tests
   const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
