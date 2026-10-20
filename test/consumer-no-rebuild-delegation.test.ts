@@ -65,6 +65,10 @@ const SCANNED_FILES = [
   "test/consumer-no-rebuild-delegation.test.ts",
   // Not #274's. Added by #44 and swept in by the on-disk check below.
   "test/consumer-fixture-gates.test.ts",
+  // Not #274's either. Added by THIS branch (#740), and the on-disk check
+  // caught it the same way — a PR that adds a consumer-* file has to say so
+  // here or the scan silently stops covering the file it just created.
+  "test/consumer-requirements-ownership.test.ts",
   "test/helpers/consumer-ship-sites.ts",
   "test/fixtures/consumer-ui-project/.claude/rungate.json",
   "test/fixtures/consumer-ui-project/workflow-state.json",
