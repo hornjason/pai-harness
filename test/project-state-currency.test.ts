@@ -33,6 +33,8 @@ import { execFileSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
+import { localCalendarDay } from "../lib/local-calendar-day";
+
 const ROOT = join(import.meta.dir, "..");
 const STATE = join(ROOT, "project-state.json");
 
@@ -93,15 +95,105 @@ const state = JSON.parse(readFileSync(STATE, "utf-8"));
 const latestDate: string = state.session?.date ?? "";
 
 /**
+ * The one timezone every date in this comparison is resolved in (#766).
+ *
+ * Both sides of the comparison are calendar days, and a calendar day has no
+ * meaning without a zone. Before this was declared, the two sides were
+ * computed in two DIFFERENT zones and neither was this one:
+ *
+ *   - the session date is stamped by `scripts/update-project-state.ts`
+ *     through `localCalendarDay()` (#600), which uses the PROCESS zone — the
+ *     DA's machine;
+ *   - the probe took `%cI`.slice(0, 10), and `%cI` renders each commit in
+ *     ITS OWN RECORDED OFFSET, which varies commit to commit on one branch.
+ *
+ * A third frame then arrived for free: the comparison runs in CI, where the
+ * process zone is UTC, so the same probe over the same tree could answer
+ * differently locally and in CI.
+ *
+ * This is the zone the stamper runs in. If that ever stops being true, both
+ * must move together — which is the argument for there being exactly one
+ * place to change, rather than a `slice(0, 10)` at each use site.
+ */
+export const CURRENCY_ZONE = "America/New_York";
+
+/**
+ * The calendar day a commit instant falls on, in the one frame.
+ *
+ * The INSTANT is zone-free and every spelling of it is equally correct;
+ * `new Date()` parses the offset and discards it, which is the whole point.
+ * What must not survive into the verdict is the offset the committer's
+ * machine happened to record.
+ */
+export function commitDay(isoInstant: string): string {
+  const at = new Date(isoInstant);
+  if (Number.isNaN(at.getTime())) {
+    // Loud. A day key of "Invalid Date" sorts below every real date, so a
+    // commit nobody could parse would silently read as ancient and clear.
+    throw new Error(`commitDay: unparseable commit instant ${JSON.stringify(isoInstant)}`);
+  }
+  return localCalendarDay(at, CURRENCY_ZONE);
+}
+
+/**
+ * The decision, as one binding over data, so a case can drive it with
+ * commits that do not exist.
+ *
+ * The real path feeds it `git log`; the frame cases feed it a synthetic pair
+ * whose real-time order is the reverse of their recorded-offset order. That
+ * pair cannot be built out of this repository's history — the property is
+ * about a spelling, and the tree has whichever spellings it has.
+ */
+export function landedAfter(merges: Merge[], sessionDay: string): string[] {
+  return merges
+    .filter(m => m.pr !== null && commitDay(m.date) > sessionDay)
+    .map(m => `${commitDay(m.date)} ${m.sha.slice(0, 8)} ${m.subject.slice(0, 70)}`);
+}
+
+/**
+ * How far before the session day the git window opens (#766).
+ *
+ * `--since` is parsed by git in the RUNNER's zone, so handing it the session
+ * day makes the WINDOW a third frame on top of the two the comparison
+ * already had — and the window silently decides the verdict, because a
+ * commit outside it is a commit the filter never sees.
+ *
+ * Measured on `main` at `7de6c4e6` on 2026-10-19, session day 2026-10-19:
+ *
+ *     --since=2026-10-19           ->  0 commits   (TZ=America/New_York)
+ *     TZ=UTC --since=2026-10-19    -> 53 commits
+ *
+ * Zero. So `prsLandedAfter(latestDate)` returned `[]` on every local run and
+ * the case below passed having read nothing, which is indistinguishable from
+ * passing because the state file is current. CI, running in UTC, read 53 and
+ * went red — the same probe, the same tree, opposite answers.
+ *
+ * The fix is to stop asking the window to be exact. It is an optimisation to
+ * avoid walking the whole history; the DECISION belongs to `landedAfter`,
+ * which resolves one frame. Three days of slack is far more than any zone
+ * difference can account for, and the case below asserts the window is not
+ * empty, so a window that stopped reading cannot read as a clean result.
+ */
+const WINDOW_MARGIN_DAYS = 3;
+
+/** The `--since` argument: the session day, less the margin, in UTC. */
+export function windowStart(sessionDay: string): string {
+  const at = new Date(`${sessionDay}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) {
+    throw new Error(`windowStart: unparseable session day ${JSON.stringify(sessionDay)}`);
+  }
+  at.setUTCDate(at.getUTCDate() - WINDOW_MARGIN_DAYS);
+  return localCalendarDay(at, "UTC");
+}
+
+/**
  * PRs that landed on `main` after `dateStr`, as one-line descriptions.
  * `null` means the log could not be read.
  */
 function prsLandedAfter(dateStr: string): string[] | null {
-  const r = mergesOnMain(dateStr);
+  const r = mergesOnMain(windowStart(dateStr));
   if (!r.ok) return null;
-  return r.merges
-    .filter(m => m.pr !== null && m.date.slice(0, 10) > dateStr)
-    .map(m => `${m.date.slice(0, 10)} ${m.sha.slice(0, 8)} ${m.subject.slice(0, 70)}`);
+  return landedAfter(r.merges, dateStr);
 }
 
 describe("project-state currency", () => {
@@ -193,13 +285,33 @@ describe("project-state currency", () => {
     // The case above passes when nothing has landed today, which is also what
     // it looks like when the comparison stops comparing. Neutralising the
     // date test scored 0 red without this.
-    const stale = prsLandedAfter("2026-10-01");
-    if (stale === null) return; // reported by the readability case
-    if (isShallow() && stale.length === 0) return; // no history to compare against
+    // The escape hatch keys on the RAW READ, not on the answer (#766).
+    //
+    // It used to be `isShallow() && stale.length === 0`, and `stale.length
+    // === 0` is both of the states this case exists to tell apart: "a shallow
+    // clone has no history to compare" and "the comparison stopped
+    // comparing". So the guard disabled the control at exactly the moment the
+    // control was needed. Measured: `git rev-parse --is-shallow-repository`
+    // is TRUE in a worktree of this repo and in CI's `actions/checkout@v4`,
+    // so short-circuiting `landedAfter` to `return []` scored 0 red here
+    // where 1 was predicted — the case silently returned.
+    //
+    // Whether commits were READ is a different question from whether any of
+    // them are late, and only the first one can honestly excuse the case.
+    const r = mergesOnMain(windowStart("2026-10-01"));
+    if (!r.ok) return; // reported by the readability case
+    if (r.merges.length === 0) {
+      console.warn(
+        "project-state currency: UNMEASURED — the staleness control read no commits at all. " +
+          "A shallow clone with no origin/main history cannot answer this.",
+      );
+      return;
+    }
     expect(
-      stale.length,
-      "no PR has landed since 2026-10-01 — either the probe stopped reading or this " +
-        "repo has been quiet for the whole window, and the first is far likelier.",
+      landedAfter(r.merges, "2026-10-01").length,
+      `the window read ${r.merges.length} commits and none of them keyed later than ` +
+        `2026-10-01 — either the comparison stopped comparing or this repo has been ` +
+        `quiet for the whole window, and the first is far likelier.`,
     ).toBeGreaterThan(0);
   });
 
@@ -213,6 +325,109 @@ describe("project-state currency", () => {
       `PROJECT-STATE.md does not mention ${latestDate}, the latest session in project-state.json. ` +
         `Run \`bun scripts/update-project-state.ts\` — the markdown is generated, never hand-edited.`,
     ).toBe(true);
+  });
+
+  test("#766: the window the real comparison reads is not empty", () => {
+    // The subject, established before the absence is asserted. The main case
+    // below asserts an empty list, and an empty list is what a window that
+    // read nothing also produces — which is exactly what happened: locally
+    // `--since=<session day>` returned 0 commits and the case was green on
+    // every run, while CI read 53 and went red.
+    const r = mergesOnMain(windowStart(latestDate));
+    expect(r.ok, `git log failed: ${r.detail}`).toBe(true);
+    if (isShallow() && r.merges.length === 0) return; // reported as UNMEASURED above
+    expect(
+      r.merges.length,
+      `the window opening at ${windowStart(latestDate)} read no commits at all, so the ` +
+        `currency comparison below has nothing to decide over and passes vacuously`,
+    ).toBeGreaterThan(0);
+  });
+
+  test("#766: the window opens strictly before the session day", () => {
+    // A margin of zero restores the defect, and a margin computed in the
+    // wrong direction is worse than none — it would open the window AFTER
+    // the session and read nothing by construction.
+    expect(windowStart("2026-10-19")).toBe("2026-10-16");
+    expect(windowStart("2026-01-01")).toBe("2025-12-29"); // across a year boundary
+    expect(windowStart("2026-03-01")).toBe("2026-02-26"); // across a short month
+    expect(windowStart(latestDate) < latestDate).toBe(true);
+  });
+
+  test("#766: one instant spelled two ways is one day", () => {
+    // The pair varies EXACTLY one thing — the recorded offset — and holds the
+    // instant fixed, which is the only way to measure the frame rather than
+    // the clock (#585's pair discipline). These two strings are the same
+    // moment, and they are not invented: `990688a0` landed at
+    // 2026-10-19T20:34:21-04:00 and `7de6c4e6` five minutes later at
+    // 2026-10-20T00:39:26Z, and the probe flagged the second and cleared the
+    // first.
+    const asOffset = "2026-10-19T20:34:21-04:00";
+    const asUtc = "2026-10-20T00:34:21Z";
+
+    // Establish that the two spellings really are one instant before
+    // asserting anything about how they are collapsed. If they were not, the
+    // case below would be comparing two different moments and would pass for
+    // a reason that has nothing to do with the frame.
+    expect(new Date(asOffset).getTime()).toBe(new Date(asUtc).getTime());
+
+    // And that the naive reading — the defect — genuinely disagrees. Without
+    // this the case is green on a tree where `slice(0, 10)` happens to work,
+    // and the mutation it exists to catch would be invisible.
+    expect(asOffset.slice(0, 10)).not.toBe(asUtc.slice(0, 10));
+
+    expect(commitDay(asOffset)).toBe(commitDay(asUtc));
+  });
+
+  test("#766: the day key is monotonic in real time", () => {
+    // The consequence that makes the frame bug more than strictness. Day keys
+    // derived from per-commit offsets are not ordered by instant, so the
+    // probe could refuse an EARLIER commit while clearing a later one.
+    //
+    // `earlier` is 00:05Z; `later` is 02:00Z the same morning, spelled in the
+    // zone its committer was in. On the naive reading `earlier` keys to
+    // 2026-10-20 and `later` keys to 2026-10-19 — backwards.
+    const earlier = "2026-10-20T00:05:00Z";
+    const later = "2026-10-19T22:00:00-04:00";
+    expect(new Date(earlier).getTime()).toBeLessThan(new Date(later).getTime());
+    expect(earlier.slice(0, 10) > later.slice(0, 10), "the naive keys are already ordered — this pair witnesses nothing").toBe(true);
+
+    expect(commitDay(earlier) <= commitDay(later)).toBe(true);
+  });
+
+  test("#766: the verdict does not depend on how a commit spells its offset", () => {
+    // Driven through the decision the real path uses, not through the helper
+    // alone — a correct `commitDay` beside a `landedAfter` that still slices
+    // is the same defect wearing a fix.
+    const mk = (date: string, sha: string): Merge =>
+      ({ sha, date, subject: `fix(#1): a change (#${sha.slice(0, 2)})`, pr: "1" });
+
+    const sessionDay = "2026-10-19";
+    const offsetSpelling = landedAfter([mk("2026-10-19T20:34:21-04:00", "aaaaaaaa")], sessionDay);
+    const utcSpelling = landedAfter([mk("2026-10-20T00:34:21Z", "aaaaaaaa")], sessionDay);
+
+    expect(utcSpelling, "a commit at 20:34 local, spelled in UTC, was read as a later day").toEqual([]);
+    expect(offsetSpelling).toEqual(utcSpelling);
+  });
+
+  test("#766: a commit on a genuinely later day is still flagged", () => {
+    // The control against the cheapest wrong fix in the other direction —
+    // making the comparison never fire. Satisfying SC-1 by widening the frame
+    // until nothing is ever late would turn every case above green.
+    //
+    // 2026-10-21T12:00Z is midday in every zone on earth, so this is late by
+    // two days in any frame the constant could name.
+    const late: Merge = {
+      sha: "bbbbbbbb", date: "2026-10-21T12:00:00Z",
+      subject: "fix(#2): a later change (#2)", pr: "2",
+    };
+    expect(landedAfter([late], "2026-10-19").length).toBe(1);
+  });
+
+  test("#766: an unparseable commit instant refuses rather than reading as ancient", () => {
+    // A day key of "Invalid Date" sorts below every real date, so a commit
+    // nobody could parse would clear the gate silently. `0`, `{}` and a
+    // string that is not a date are all indistinguishable from success.
+    expect(() => commitDay("not-a-date")).toThrow(/unparseable/);
   });
 
   test("the renderer reports what it changed, not that it ran", () => {
