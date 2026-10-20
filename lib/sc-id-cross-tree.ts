@@ -60,15 +60,21 @@ import { isFixtureScId, scDeclarationPattern, scHeadingDeclarationPattern } from
 /**
  * One place ids were looked for, and whether the look succeeded.
  *
- * `worktree` and `refs` are this module's own two sources. The other three
- * are the legs `allocateScNumber` composes on top of them (#593) — the
- * spec's own content, the spec registry, and the ids spelled in source. They
- * live in the same shape because the question a reader asks is one question:
- * which widths produced this number, and did any of them fail to run.
+ * `worktree` and `refs` are this module's own two sources. The other four
+ * are the legs `allocateScNumber` composes on top of them (#593, #725) — the
+ * spec's own content, the spec registry, the ids spelled in source, and the
+ * reservation store. They live in the same shape because the question a
+ * reader asks is one question: which widths produced this number, and did any
+ * of them fail to run.
+ *
+ * `reservations` is the only leg that is not a reading of ids somebody has
+ * already written down. It is a reading of ids somebody has DECLARED they are
+ * about to write down, which is the half the other five structurally cannot
+ * see (#725).
  */
 export interface SourceReading {
   label: string;
-  kind: "worktree" | "refs" | "spec-content" | "registry" | "source-mentions";
+  kind: "worktree" | "refs" | "spec-content" | "registry" | "source-mentions" | "reservations";
   /** `read` means the ids below came from here; `skipped` means they did not. */
   status: "read" | "skipped";
   /**
