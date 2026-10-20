@@ -209,6 +209,11 @@ const INJECTED = new Set([
   "measureLaunchBase",
   // supplied as text, from FILES-CHANGED-SHAPE
   "filesChangedShapeRefusal",
+  // #830, supplied as text from the same block. SECURITY-HELPERS is
+  // prepended with it, because it calls `pathRefusal` from there — without
+  // the name here the resolver follows it to module scope and prepends a
+  // second copy of `FILES_CHANGED_SHAPE_RULES`, which does not parse.
+  "reportedPathRefusal",
 ]);
 
 function loadRunDecomposedShip(deps: {
@@ -244,7 +249,18 @@ function loadRunDecomposedShip(deps: {
   if (shapeStart === -1 || shapeEnd === -1) {
     throw new Error("ship.js is missing the FILES-CHANGED-SHAPE-START/END markers");
   }
-  const shapeBlock = shipSource.slice(shapeStart, shapeEnd);
+  // #830 put `reportedPathRefusal` in those same markers, and it reaches
+  // into SECURITY-HELPERS for `pathRefusal`. The real table is evaluated
+  // beneath the block rather than stubbed, for the reason above — and
+  // because a stub would let this suite and ship.js disagree about which
+  // paths may be contributed, which is the disagreement #830 is.
+  const helpersStart = shipSource.indexOf("// ──── SECURITY-HELPERS-START ────");
+  const helpersEnd = shipSource.indexOf("// ──── SECURITY-HELPERS-END ────");
+  if (helpersStart === -1 || helpersEnd === -1) {
+    throw new Error("ship.js is missing the SECURITY-HELPERS-START/END markers");
+  }
+  const shapeBlock =
+    `${shipSource.slice(helpersStart, helpersEnd)}\n${shipSource.slice(shapeStart, shapeEnd)}`;
 
   // #218's guard, injected for the same reason as the one above: a stub
   // would let this block and the real one disagree about which repository a

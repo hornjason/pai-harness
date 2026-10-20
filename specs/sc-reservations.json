@@ -26,6 +26,12 @@
       "from": 2420,
       "to": 2439,
       "note": "#541, PR #730. Already holds 2230-2246 on its branch. Headroom only."
+    },
+    {
+      "owner": "#830",
+      "from": 2440,
+      "to": 2459,
+      "note": "#830 — report-time contributability of a reported path. Consumes 2440-2445 in specs/HARNESS-STANDARD.md on the run branch; the rest is headroom. Declared in the same commit that consumes the first id, which is the earliest position this worktree can declare from — it cannot push to main."
     }
   ]
 }

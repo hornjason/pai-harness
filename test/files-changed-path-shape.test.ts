@@ -76,10 +76,20 @@ function block(name: string): string {
 
 type ShapeRefusal = (r: unknown, label: string) => string | null;
 
+/**
+ * SECURITY-HELPERS is prepended because the block now also holds #830's
+ * `reportedPathRefusal`, which reaches into that block for `pathRefusal`.
+ * `filesChangedShapeRefusal` itself does not — the two answer different
+ * questions and the cases below pin that — but a block loaded without the
+ * bindings it references is one call away from a `ReferenceError` that
+ * reads like a broken guard.
+ */
 function loadShapeGuard(): ShapeRefusal {
   return new Function(
-    `${block("FILES-CHANGED-SHAPE")}\nreturn filesChangedShapeRefusal;`,
-  )() as ShapeRefusal;
+    "PROJECT_ROOT",
+    "log",
+    `${block("SECURITY-HELPERS")}\n${block("FILES-CHANGED-SHAPE")}\nreturn filesChangedShapeRefusal;`,
+  )("/repo", () => {}) as ShapeRefusal;
 }
 
 const filesChangedShapeRefusal = loadShapeGuard();
@@ -472,7 +482,11 @@ function loadRunDecomposedShip(agent: (p: string, o: { label: string }) => Promi
     "worktreeIdentity", "REPO", "taskSourceRefusal",
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
     "measureLaunchBase",
-    `${marked("FILES-CHANGED-SHAPE")}\n${marked("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
+    // SECURITY-HELPERS beneath the shape block: #830's `reportedPathRefusal`
+    // lives there too and calls `pathRefusal`, and the decomposed block calls
+    // it on every sub-issue reply.
+    `${marked("SECURITY-HELPERS")}\n${marked("FILES-CHANGED-SHAPE")}\n`
+      + `${marked("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
   );
   const run = factory(
     (m: string) => logs.push(String(m)),

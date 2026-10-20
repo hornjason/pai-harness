@@ -4592,6 +4592,104 @@ function filesChangedShapeRefusal(buildResult, label) {
   }
   return null
 }
+
+/**
+ * The worktree-relative path a leading-slash element would have been, or `''`
+ * when none can be recovered (#830).
+ *
+ * This is for QUOTING ONLY. Nothing in the pipeline consumes it: the element
+ * is refused either way, and the agent re-reports. A function that returned
+ * it to a caller which then staged it would be the strip this whole block
+ * exists to refuse.
+ *
+ * Deliberately conservative, for the same reason `barePathCandidate` is: a
+ * suggestion is advice, and advice that is itself uncontributable is worse
+ * than silence. `../x` has no relative form at all and gets none.
+ */
+function worktreeRelativeSuggestion(p) {
+  if (!p.startsWith('/')) return ''
+  const s = p.replace(/^\/+/, '')
+  if (!s) return ''
+  return pathRefusal(s) ? '' : s
+}
+
+/**
+ * Why a reported element, though path-SHAPED, may not be contributed (#830).
+ *
+ * A ship run spent 6,854 seconds and 1,580,869 subagent tokens across 24
+ * agents, every one of them succeeding, and collected nothing. One agent
+ * reported one path with a leading slash.
+ *
+ * `pathRefusal` was RIGHT to refuse it and is not loosened: stripping the
+ * leading slash would turn `/etc/passwd` into a contributable `etc/passwd`.
+ * What was wrong is WHEN the question was asked. Until this function existed
+ * the only site that asked it was `auditWorktreeClaims`, which runs after
+ * every agent has finished — so a mistake the reporting agent could have
+ * corrected in one second voided the whole run's collection.
+ *
+ * ## One decider, two phases — not two deciders
+ *
+ * This calls `pathRefusal`, the same table staging and the claim audit ask.
+ * There is no second copy of its rules here and there must never be one: two
+ * guards answering one question are behaviourally one, and a mutation of
+ * either leaves the other holding every case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). The only
+ * thing this adds is the phase and the sentence.
+ *
+ * It is a different question from `filesChangedShapeRefusal`'s, and the two
+ * domains are disjoint on purpose:
+ *
+ *   only the shape guard: `lib/a.ts (modified)` — not a path at all. It
+ *                         carries `(` and `)`, so `pathRefusal` refuses it
+ *                         too; answering here would print "cannot be staged"
+ *                         about a sentence, which is #611's cost exactly.
+ *                         Hence the `filesChangedShapeRule` skip below.
+ *   only this one:        `/.github/workflows/ai-review.yml` — one token,
+ *                         shaped exactly like a path, not contributable.
+ *
+ * ## The sentence
+ *
+ * Split by the table's own `boundary` column, because the two halves are
+ * different things for an agent to act on, and for a leading-slash path the
+ * worktree-relative form is QUOTED — "an absolute path" alone tells an agent
+ * what is wrong and not what to report instead. Quoted, never substituted:
+ * #114 already cost this repo one run filed under a different project
+ * because something repaired a path on an agent's behalf.
+ */
+function reportedPathRefusal(buildResult, label) {
+  if (!buildResult || !buildResult.success) return null
+  if (!Array.isArray(buildResult.filesChanged)) return null
+  const files = buildResult.filesChanged
+  for (let i = 0; i < files.length; i++) {
+    const el = files[i]
+    // Not this function's question — `filesChangedShapeRefusal` owns both,
+    // and both carry their own explanation. The call sites ask it first, so
+    // these are domain boundaries rather than reachable branches.
+    if (typeof el !== 'string' || el.trim() === '') continue
+    if (filesChangedShapeRule(el)) continue
+    const refusal = pathRefusal(el)
+    if (!refusal) continue
+    const where = `${label} reported filesChanged[${i}] as ${JSON.stringify(el)}`
+    if (!refusal.boundary) {
+      return `${where}, which is inside your worktree and still cannot be staged: it carries `
+        + `${refusal.rule}. Rename the file, or report the paths you can and say what happened `
+        + `to this one in findings — it is refused here and refused again at collection, and a `
+        + `run that reaches collection first loses every other file it was carrying.`
+    }
+    const suggestion = worktreeRelativeSuggestion(el)
+    const instead = suggestion
+      ? `If you meant the file at that location inside your worktree, report `
+        + `${JSON.stringify(suggestion)} — a bare path relative to your worktree root. `
+        + `Nothing is stripped for you: ${JSON.stringify(el)} and ${JSON.stringify(suggestion)} `
+        + `are different files, and dropping the slash on your behalf would turn a path outside `
+        + `the repository into one inside it. `
+      : `No worktree-relative path can be recovered from it. `
+    return `${where}, which does not name a location inside your worktree: it is ${refusal.rule}. `
+      + `${instead}Report bare repo-relative paths only; this element is refused here and would `
+      + `be refused again at collection, after every agent in the run has finished.`
+  }
+  return null
+}
 // ──── FILES-CHANGED-SHAPE-END ────
 
 async function runImplement() {
@@ -4701,6 +4799,15 @@ what it said rather than omitting the field.
   if (shapeRefusal) {
     log(`IMPLEMENT FAILED: ${shapeRefusal}`)
     return { success: false, buildResult: { ...buildResult, success: false, findings: [shapeRefusal] } }
+  }
+  // #830 — and whether each one may be CONTRIBUTED, asked of the same table
+  // staging and the claim audit ask. Until this line the only site asking it
+  // was the collection audit, which runs after every agent has finished: one
+  // leading slash cost a run 6,854 seconds and its entire collection.
+  const contributabilityRefusal = reportedPathRefusal(buildResult, 'marcus')
+  if (contributabilityRefusal) {
+    log(`IMPLEMENT FAILED: ${contributabilityRefusal}`)
+    return { success: false, buildResult: { ...buildResult, success: false, findings: [contributabilityRefusal] } }
   }
   // #180 — BEFORE the success log, for the same reason as the guard above. A
   // run that worked from the relayed message instead of the brief reports
@@ -5712,6 +5819,19 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         return {
           subIssue,
           buildResult: { ...buildResult, success: false, findings: [subShapeRefusal] },
+          ok: false,
+        }
+      }
+      // #830 AC-1 — per sub-issue and BEFORE the union, for the same reason
+      // the two guards above are: `allFilesChanged` flattens every list
+      // together, so one sub-issue's absolute element is invisible the
+      // moment the lists are merged.
+      const subContributabilityRefusal = reportedPathRefusal(buildResult, `marcus-sub-${subIssue.number}`)
+      if (subContributabilityRefusal) {
+        log(`Sub-issue FAILED: ${subIssue.title} — ${subContributabilityRefusal}`)
+        return {
+          subIssue,
+          buildResult: { ...buildResult, success: false, findings: [subContributabilityRefusal] },
           ok: false,
         }
       }

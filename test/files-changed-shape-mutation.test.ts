@@ -105,12 +105,24 @@ export function buildShapeRemovalMutant(src: string = shipSource): string {
   return out;
 }
 
-/** Extract the guard from an arbitrary ship.js source. */
+/**
+ * Extract the guard from an arbitrary ship.js source.
+ *
+ * SECURITY-HELPERS is prepended because the block also holds #830's
+ * `reportedPathRefusal`, which calls `pathRefusal` from that block.
+ */
 function guardFrom(src: string): (r: unknown, label: string) => string | null {
   const start = src.indexOf("// ──── FILES-CHANGED-SHAPE-START ────");
   const end = src.indexOf("// ──── FILES-CHANGED-SHAPE-END ────");
   if (start < 0 || end < 0) throw new Error("FILES-CHANGED-SHAPE markers not found");
-  return new Function(`${src.slice(start, end)}\nreturn filesChangedShapeRefusal;`)() as never;
+  const helpersStart = src.indexOf("// ──── SECURITY-HELPERS-START ────");
+  const helpersEnd = src.indexOf("// ──── SECURITY-HELPERS-END ────");
+  if (helpersStart < 0 || helpersEnd < 0) throw new Error("SECURITY-HELPERS markers not found");
+  return new Function(
+    "PROJECT_ROOT",
+    "log",
+    `${src.slice(helpersStart, helpersEnd)}\n${src.slice(start, end)}\nreturn filesChangedShapeRefusal;`,
+  )("/repo", () => {}) as never;
 }
 
 /** The element measured on wf_68a566ab-500. */
@@ -297,7 +309,10 @@ describe("#611 AC-6: under the mutant, the annotated element reaches the collect
       "worktreeIdentity", "REPO", "taskSourceRefusal",
       "establishRunRef", "integrateWave", "waveNeedsIntegration",
       "measureLaunchBase",
-      `${slice("FILES-CHANGED-SHAPE")}\n${slice("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
+      // SECURITY-HELPERS beneath the shape block: #830's
+      // `reportedPathRefusal` lives there too and calls `pathRefusal`.
+      `${slice("SECURITY-HELPERS")}\n${slice("FILES-CHANGED-SHAPE")}\n`
+        + `${slice("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
     );
     const run = factory(
       () => {},

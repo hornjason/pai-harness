@@ -12196,3 +12196,129 @@ than silent — but a measurement of the instrument. Varying exactly one thing
 None of the mutations is left in the tree; all were run and reverted, and
 `workflows/ship.js`, `lib/run-branch.ts` and `scripts/check-run-branch.ts`
 were confirmed byte-identical to the measured source afterwards by SHA-256.
+
+### A contributability question asked only after every agent had finished (#830)
+
+A ship run spent 6,854 seconds and 1,580,869 subagent tokens across 24
+agents, every one of them succeeding, and collected nothing. One agent
+reported one path with a leading slash.
+
+`pathRefusal` was RIGHT to refuse it and is not loosened: stripping a leading
+slash would turn `/etc/passwd` into a contributable `etc/passwd`. The defect
+is WHEN the check runs. Reported paths met `CONTRIBUTABLE_PATH_RULES` only at
+collection, inside `auditWorktreeClaims`, which runs after every agent has
+finished — so a mistake the reporting agent could have corrected in one
+second voided the whole run's collection.
+
+Report-time validation already existed. `filesChangedShapeRefusal` (#611) has
+read every element at both implement sites since that issue, and it applies
+`FILES_CHANGED_SHAPE_RULES` — *is this a path-like string* — and not
+`CONTRIBUTABLE_PATH_RULES` — *may this path be contributed*. Both guards were
+already at both points in time; one simply did not ask the second question.
+
+`reportedPathRefusal` asks it, at the same two sites, and **calls
+`pathRefusal`** rather than carrying regexes of its own. That is the whole
+design constraint: two guards answering one question about one input are
+behaviourally one, and a mutation of either leaves the other holding every
+case up (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). One
+decider, asked at two phases. The structural proof is that the
+FILES-CHANGED-SHAPE block can no longer be loaded on its own — it throws a
+`ReferenceError` reaching for `pathRefusal` — and both pre-existing suites
+that build it in isolation now prepend SECURITY-HELPERS.
+
+It stays a different question from #611's, and the domains are disjoint:
+`lib/a.ts (modified)` is the shape guard's alone — `pathRefusal` refuses it
+too, for the `(` and `)`, and answering here would print "cannot be staged"
+about a sentence, which is #611's cost verbatim — and
+`/.github/workflows/ai-review.yml` is this one's alone.
+
+The sentence splits on the table's own `boundary` column, and for a
+leading-slash path the worktree-relative form is **quoted**: "an absolute
+path" tells an agent what is wrong and not what to report instead. Quoted,
+never substituted — #114 already cost this repo one run filed under a
+different project because something repaired a path on an agent's behalf.
+
+- [x] SC-2440: test/reported-path-contributability.test.ts contains [every reported element is measured against CONTRIBUTABLE_PATH_RULES at report time] — the guard is extracted from its markers and EXECUTED, over an element at a non-zero index, a sub-issue label, and one fixture per row of the table read off the table itself, so a rule added to `CONTRIBUTABLE_PATH_RULES` with no report-time fixture turns the case red rather than going silently unasked
+- [x] SC-2441: test/reported-path-contributability.test.ts contains [a boundary rule and a non-boundary rule get different sentences] — the split is driven by the table's own `boundary` column row by row rather than by two sentences chosen here, with a vacuity case asserting this tree's table actually produces both values, and the leading-slash refusal quotes the worktree-relative path and says the slash is not dropped on the agent's behalf
+- [x] SC-2442: test/reported-path-contributability.test.ts contains [refused at report time and again at collection time] — `/etc/passwd`, `/.github/workflows/ai-review.yml` and `../x` are each refused by the guard, refused by the real `auditWorktreeClaims` with the leading slash still on the violation's `path`, and refused by the REAL decomposed-ship block run end to end, with the stripped form shown to be ACCEPTED at both phases so the wrong fix is performed rather than described
+- [x] SC-2443: test/reported-path-contributability.test.ts contains [the collection-time check still refuses when the report-time check is short-circuited] — `reportedPathRefusal` short-circuited in a mutant copy of ship.js forwards the absolute path to the real audit again, proving the report-time check is an addition and not a replacement; the builder aborts when the anchor moves, and the real source's forward is asserted beside it so the refusal has a believable baseline
+- [x] SC-2444: test/reported-path-contributability.test.ts contains [the mutation battery record names a differing input beside every row] — the record below is read back as DATA: the section refuses rather than returning an empty slice, the row parser is fired on a planted table and refused on one with no rows, the baseline is asserted to sit above every mutation row, and the wrong fix is named with the case that refuses it
+- [x] SC-2445: test/reported-path-contributability.test.ts contains [the shape block alone throws ReferenceError until SECURITY-HELPERS is prepended] — performed rather than asserted, and it is also the structural proof that the report-time check reaches the shared table instead of keeping a copy of two of its rows; every `new Function` loader in both pre-existing suites that builds FILES-CHANGED-SHAPE is asserted to prepend SECURITY-HELPERS above it
+
+#### What was broken to prove it (SC-2440..SC-2445)
+
+Run and counted rather than asserted, over
+`test/reported-path-contributability.test.ts` (39 tests),
+`test/files-changed-path-shape.test.ts` (29) and
+`test/files-changed-shape-mutation.test.ts` (14) — 82 together. Every count
+was predicted before the battery ran, and **the baseline row was read before
+any mutation row**: an instrument that has stopped reporting takes the
+baseline down with it, and that is the row nobody mutates anything to
+produce.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 82 pass, 0 fail | **82 pass, 0 fail** | — a baseline is not a mutation |
+| `reportedPathRefusal` short-circuited to `return null` — the pre-#830 pipeline | 19 | **19 of 82** — SC-2440 ×5, SC-2441 ×5, SC-2442 ×5, SC-2443 ×2, SC-2445 ×2 | `{success: true, filesChanged: ["/.github/workflows/ai-review.yml"]}`: the original returns a sentence naming `an absolute path` and quoting `".github/workflows/ai-review.yml"`, the mutant returns `null` |
+| `pathRefusal` short-circuited to `return null` | 27 | **29 of 82** — SC-2440 ×6, SC-2441 ×5, SC-2442 ×8, SC-2443 ×3, SC-2445 ×1, SC-2048's control, SC-2050 ×2, SC-2051 ×3 | `pathRefusal("/etc/passwd")`: the original returns `{rule: "an absolute path", boundary: true}`, the mutant `null` — and `reportedPathRefusal` then accepts the element, which is what says the report-time check reads that table rather than a copy of it |
+| the boundary split collapsed — both arms return the non-boundary sentence | 3 | **3 of 82** — all SC-2441 | `/etc/passwd`: the original says it *does not name a location inside your worktree*, the mutant says it *is inside your worktree and still cannot be staged* — a false sentence about a path outside the repository |
+| `worktreeRelativeSuggestion` short-circuited to `return ''` | 2 | **2 of 82** — SC-2441's two quoting cases | `/etc/passwd`: the original quotes `"etc/passwd"` and says the slash is not dropped for you, the mutant says *No worktree-relative path can be recovered from it* |
+| the `runImplement` call site deleted | 1 | **1 of 82** — SC-2440's call-site case | `workflows/ship.js` itself: the original's `runImplement` body contains `reportedPathRefusal(buildResult, 'marcus')` and the mutant's does not. A source read, and the only row here that is one |
+| the decomposed call site deleted | 3 | **3 of 82** — SC-2440's call-site case, SC-2442's end-to-end run, SC-2443's baseline | a two-sub-issue run whose `beta` agent replies `filesChanged: ["/etc/passwd"]`: the original fails the sub-issue and forwards `["lib/alpha.ts"]`, the mutant forwards `/etc/passwd` into the collection audit |
+| `buildReportCheckRemovalMutant` neutered to `return src` | 3 | **3 of 82** — all SC-2443 except its baseline | a source with the guard renamed to `reportedRefusal`: the original throws `could not build the mutant`, the neutered builder returns an unmutated copy and reports green over a mutation that never happened |
+
+**The cheapest wrong fix, named: strip the leading slash and retry.** It is
+the 5pm repair — the symptom is one element refused, and
+`el.replace(/^\/+/, '')` upstream makes it stop. It works, and it is wrong:
+`/etc/passwd` becomes a contributable `etc/passwd`, and a path the agent
+never reported is staged under its name (#114).
+
+Which cases survive it is three different answers, and saying so is the
+point:
+
+- a direct call on `reportedPathRefusal("/etc/passwd")` survives it
+  **vacuously** — a strip upstream of the guard leaves the guard refusing,
+  and the case never changes verdict. It is not protection.
+- *the real decomposed run refuses it, and forwards nothing* survives it
+  **really**: the element enters as the agent reported it, so a strip
+  anywhere between the reply and the guard makes the run succeed and the
+  case red.
+- *`/etc/passwd` is refused by the claim audit, and not normalised away*
+  survives it **really** from the collection side: it asserts the violation
+  still carries the leading slash, so a `claimKey` that normalised it away
+  is red whether or not anything downstream accepts the result.
+
+And *the stripped form is ACCEPTED, which is why nothing strips it* runs both
+halves of the wrong fix rather than describing it: `etc/passwd` and
+`.github/workflows/ai-review.yml` sail through both phases, measured, which
+is what makes the repair destructive rather than merely inelegant.
+
+**One row came back HIGH, and the extra reds are the real kind.** The
+`pathRefusal` row predicted 27 and measured 29. The prediction covered the 23
+cases in the new file and the 3 in `test/files-changed-path-shape.test.ts`
+that ask the path table directly, plus one in
+`test/files-changed-shape-mutation.test.ts`. The two it missed are that
+file's own instrument guards — *the BASELINE is believable: the real spawn
+ran every case and all are green* and *the positive controls stay GREEN under
+the mutation*. Both spawn the observation suite against the REAL `ship.js`,
+so a mutation of `pathRefusal` in the real source is exactly what they exist
+to report. Squarely about the mutated behaviour, and not a crashing mutant:
+53 cases still pass and every red names a path-table case. Per
+`.claude/rules/checks-must-be-able-to-fail.md` that is "the prediction was
+wrong and the check is better than you thought", and the fact it records is
+that #611's spawned baseline is load-bearing for `pathRefusal` too, not only
+for the shape guard.
+
+**The two rows that say these are not one decider.** The
+`reportedPathRefusal` row is 19 and the `pathRefusal` row is 29, and the 19
+is a strict SUBSET of the 29 — which is the shape "one decider, called from
+two phases" produces, and is NOT what two agreeing deciders produce. The
+inclusion is the measurement: everything the report-time check refuses, it
+refuses because the table said so, so removing the table removes those
+refusals too. The 10 the table row adds and the shape row does not are the
+collection-time half and the two instrument guards above.
+
+None of the eight mutations is left in the tree; all were run and reverted,
+and `workflows/ship.js` and
+`test/reported-path-contributability.test.ts` were confirmed byte-identical
+to the measured source afterwards by SHA-256.

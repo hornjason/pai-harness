@@ -81,7 +81,11 @@ const DECOMPOSED_BLOCK = sliceBlock("DECOMPOSED-SHIP");
 // #611 put a free reference in the decomposed block. The real block text is
 // evaluated alongside it rather than stubbed — a stub would let this suite
 // and ship.js disagree about what a reported path is.
-const SHAPE_BLOCK = sliceBlock("FILES-CHANGED-SHAPE");
+// #830 put `reportedPathRefusal` in those same markers, and it calls
+// `pathRefusal` from SECURITY-HELPERS, so the real table is evaluated
+// beneath the block: one decider for contributability, asked at the report
+// and again at collection, never a second copy of two of its rules.
+const SHAPE_BLOCK = `${sliceBlock("SECURITY-HELPERS")}\n${sliceBlock("FILES-CHANGED-SHAPE")}`;
 // #627 put a third free reference in the RUN-REF block: the wave path pairs
 // each settled sub-issue with the claim the plan issued for it, through the
 // same binding the end-of-run collect uses. Evaluated from its own markers

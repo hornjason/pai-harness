@@ -396,7 +396,16 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
   if (shapeA === -1 || shapeB === -1) {
     throw new Error("ship.js is missing the FILES-CHANGED-SHAPE markers");
   }
-  const shapeBlock = shipSource.slice(shapeA, shapeB);
+  // #830 put `reportedPathRefusal` in that same block, and it calls
+  // `pathRefusal` from SECURITY-HELPERS. The real table is evaluated
+  // beneath it for the reason above — and because without it the dispatch
+  // dies on a ReferenceError the first time an agent reports anything.
+  const helpersA = shipSource.indexOf("// ──── SECURITY-HELPERS-START ────");
+  const helpersB = shipSource.indexOf("// ──── SECURITY-HELPERS-END ────");
+  if (helpersA === -1 || helpersB === -1) {
+    throw new Error("ship.js is missing the SECURITY-HELPERS markers");
+  }
+  const shapeBlock = `${shipSource.slice(helpersA, helpersB)}\n${shipSource.slice(shapeA, shapeB)}`;
   const logs: string[] = [];
 
   const sliced = (name: string, fn: string) => {

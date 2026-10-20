@@ -201,7 +201,16 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     if (sStart === -1 || sEnd === -1) {
       throw new Error("ship.js is missing the FILES-CHANGED-SHAPE markers");
     }
-    const shapeBlock = shipSource.slice(sStart, sEnd);
+    // #830's contributability guard shares those markers and calls
+    // `pathRefusal`, so SECURITY-HELPERS is evaluated beneath the block for
+    // the same reason — and because without it the dispatch dies on a
+    // ReferenceError the first time an agent reports a file.
+    const hStart = shipSource.indexOf("// ──── SECURITY-HELPERS-START ────");
+    const hEnd = shipSource.indexOf("// ──── SECURITY-HELPERS-END ────");
+    if (hStart === -1 || hEnd === -1) {
+      throw new Error("ship.js is missing the SECURITY-HELPERS markers");
+    }
+    const shapeBlock = `${shipSource.slice(hStart, hEnd)}\n${shipSource.slice(sStart, sEnd)}`;
     const logs: string[] = [];
     const factory = new Function(
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",

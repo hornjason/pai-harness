@@ -262,8 +262,11 @@ function buildPipeline(root: string, subs: SubFixture[], source: string = shipSo
     "integrateWave",
     "waveNeedsIntegration",
     "measureLaunchBase",
-    `${block("FILES-CHANGED-SHAPE", source)}\n${block("DECOMPOSED-SHIP", source)}\n` +
-      `return runDecomposedShip;`,
+    // SECURITY-HELPERS beneath the shape block: #830's
+    // `reportedPathRefusal` shares those markers and calls `pathRefusal`,
+    // which lives there.
+    `${block("SECURITY-HELPERS", source)}\n${block("FILES-CHANGED-SHAPE", source)}\n`
+      + `${block("DECOMPOSED-SHIP", source)}\nreturn runDecomposedShip;`,
   )(
     log,
     briefedAgent,

@@ -336,6 +336,14 @@ function slicedFunction(header: string): string {
 function loadRunImplement(buildResult: unknown) {
   const guard = (name: string, fn: string) =>
     new Function(`${slice(`// ──── ${name}-START ────`, `// ──── ${name}-END ────`)}\nreturn ${fn};`)();
+  /** A guard that reaches into SECURITY-HELPERS, built over the real table. */
+  const sharedGuard = (name: string, fn: string) =>
+    new Function(
+      "PROJECT_ROOT",
+      "log",
+      `${slice("// ──── SECURITY-HELPERS-START ────", "// ──── SECURITY-HELPERS-END ────")}\n` +
+        `${slice(`// ──── ${name}-START ────`, `// ──── ${name}-END ────`)}\nreturn ${fn};`,
+    )(REPO_ROOT, () => {});
 
   return new Function(
     "runCeremonyOnce", "briefedAgent", "log", "WORK_DIR", "testTimeout",
@@ -343,6 +351,9 @@ function loadRunImplement(buildResult: unknown) {
     // #611's element-shape guard, from its own markers for the same reason
     // as the three above.
     "filesChangedShapeRefusal",
+    // #830's contributability guard, which shares those markers. Built
+    // with SECURITY-HELPERS beneath it, because it calls `pathRefusal`.
+    "reportedPathRefusal",
     // #676's selected-test command. A resolved STRING, which is the whole
     // reason it is resolved at ship.js's module scope rather than built
     // inside runImplement: a builder here would be four free names and a
@@ -361,6 +372,7 @@ function loadRunImplement(buildResult: unknown) {
     "owner/project",
     guard("BRIEF-PRECEDENCE", "taskSourceRefusal"),
     guard("FILES-CHANGED-SHAPE", "filesChangedShapeRefusal"),
+    sharedGuard("FILES-CHANGED-SHAPE", "reportedPathRefusal"),
     "bun test $(bun /h/scripts/select-affected-tests.ts --work '/tmp/work/selection'/\"$(basename \"$PWD\")\")",
   ) as () => Promise<unknown>;
 }
@@ -390,8 +402,11 @@ function loadRunDecomposedShip(
     "measureLaunchBase",
     // #611 added a free reference too; its block text is evaluated into the
     // scope rather than injected, because ship.js declares it at module
-    // scope beside the decomposed block.
-    `${slice("// ──── FILES-CHANGED-SHAPE-START ────", "// ──── FILES-CHANGED-SHAPE-END ────")}\n${block}\nreturn runDecomposedShip;`,
+    // scope beside the decomposed block. SECURITY-HELPERS goes beneath it:
+    // #830's `reportedPathRefusal` shares those markers and calls
+    // `pathRefusal`, which lives there.
+    `${slice("// ──── SECURITY-HELPERS-START ────", "// ──── SECURITY-HELPERS-END ────")}\n`
+      + `${slice("// ──── FILES-CHANGED-SHAPE-START ────", "// ──── FILES-CHANGED-SHAPE-END ────")}\n${block}\nreturn runDecomposedShip;`,
   )(
     (m: string) => logs.push(String(m)),
     briefedAgent,
