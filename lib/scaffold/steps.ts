@@ -31,6 +31,7 @@ import { TIER2_ALLOWED_VALUE_ERE, tier1Ere, tier2Ere } from "../secret-patterns"
 import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
+import { actionRef } from "../workflow-actions";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
 import { scanDocsDirectory } from "../doc-routing";
@@ -2796,9 +2797,9 @@ jobs:
       matrix:
         shard: [${Array.from({ length: shards }, (_, i) => i + 1).join(", ")}]
     steps:
-      - uses: actions/checkout@v4
+      - uses: ${actionRef("actions/checkout")}
 ${baseRefStep}
-      - uses: oven-sh/setup-bun@v2
+      - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
       - run: bun install${globalTools.step}
@@ -2852,9 +2853,9 @@ jobs:
   test:
     runs-on: ${runsOn}
     steps:
-      - uses: actions/checkout@v4
+      - uses: ${actionRef("actions/checkout")}
 ${baseRefStep}
-      - uses: oven-sh/setup-bun@v2
+      - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
       - run: bun install${globalTools.step}
@@ -2889,8 +2890,8 @@ jobs:
   gates:
     runs-on: ${runsOn}
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: ${actionRef("actions/checkout")}
+      - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
       - run: bun install
