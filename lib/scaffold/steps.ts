@@ -38,7 +38,7 @@ import { GOOGLE_AUTH_ACTION } from "../google-auth-action";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
-import { TIER2_ALLOWED_VALUE_ERE, tier1Ere, tier2Ere } from "../secret-patterns";
+import { TIER2_ALLOWED_VALUE_ERE, TIER2_GREP_CASE_FLAG, tier1Ere, tier2Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
@@ -2895,8 +2895,14 @@ ${bunStep}
           # NOTE: do NOT append "|| true" to the assignment below. It makes the
           # assignment itself succeed, so $? is always 0 and the error branch
           # becomes dead code — the scan would fail open on a git error.
+          # -i on tier 2 only, never on the tier-1 scan above: tier 1 matches
+          # anchored key FORMATS whose case is part of the format, and it has
+          # no allowlist to absorb a false positive. The flag is interpolated
+          # from lib/secret-patterns.ts rather than typed here, because four
+          # hand-written flags are four things that can disagree about what
+          # counts as a secret (#844).
           set +e
-          tier2=$(git grep -I -hoE '${tier2Ere()}' -- .)
+          tier2=$(git grep -I -hoE ${TIER2_GREP_CASE_FLAG} '${tier2Ere()}' -- .)
           rc=$?
           set -e
           # git grep: 0 = match, 1 = no match, >1 = real error.
@@ -2907,7 +2913,11 @@ ${bunStep}
           # Exclusion applies to the extracted VALUE, not the whole line.
           # Matching anywhere on the line let a trailing "# placeholder"
           # launder a real secret past the check.
-          if printf '%s\\n' "$tier2" | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
+          # It reads case the same way the capture does, for a reason
+          # recorded in lib/secret-patterns.ts: the population the capture
+          # newly sees is mostly .env.example, where a non-value is spelled
+          # CHANGEME and PLACEHOLDER (#844).
+          if printf '%s\\n' "$tier2" | grep -qvE ${TIER2_GREP_CASE_FLAG} '${TIER2_ALLOWED_VALUE_ERE}'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi
@@ -3324,10 +3334,15 @@ fi
 # allowlist's leading \`^$|\` alternative cannot fire on this pipeline —
 # grep -oE emits no empty lines — so using the one constant is the same
 # behaviour with one fewer decider.
+#
+# -i is on both tier-2 greps and on neither tier-1 one, interpolated from the
+# same constant the CI job uses. Without it the vocabulary could only see
+# lowercase, which is the spelling an environment variable or a shell default
+# is least often written in (#844).
 if printf '%s\\n' "$staged_diff" \\
   | grep '^+' \\
-  | grep -oE '${tier2Ere()}' \\
-  | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
+  | grep -oE ${TIER2_GREP_CASE_FLAG} '${tier2Ere()}' \\
+  | grep -qvE ${TIER2_GREP_CASE_FLAG} '${TIER2_ALLOWED_VALUE_ERE}'; then
   echo "ERROR: Potential credential assignment in staged changes"
   exit 1
 fi

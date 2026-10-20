@@ -89,19 +89,53 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
  * with blindness, so the boundary is a mutation battery in
  * test/unit/secret-patterns.test.ts rather than this comment.
  *
- * TWO BLIND SPOTS THAT ARE NOT #489 AND MUST NOT BE FIXED HERE
+ * ONE BLIND SPOT THAT IS NOT #489 AND MUST NOT BE FIXED HERE
  *
  * The charset excludes `"` and `'`, so a quoted literal — the normal way a
  * credential is written in TS, JS, Python and JSON — stops the match at the
- * opening quote; and the generated `grep -E` carries no `-i`, so `PASSWORD`
- * and `DB_PASSWORD` are invisible. Only an unquoted lowercase key with a
- * colon or an equals is detectable at all. Both are real gaps and both are
- * separate issues: widening the charset in the same change would make this
- * narrowing unmeasurable, because the minified fixtures would then match for
- * a new reason. The test file pins them so a widening cannot ride along.
+ * opening quote. That is a real gap and a separate issue: widening the
+ * charset in the same change would make this narrowing unmeasurable, because
+ * the minified fixtures would then match for a new reason. The test file pins
+ * it so a widening cannot ride along.
+ *
+ * The second blind spot recorded here — no `-i`, so `PASSWORD` and
+ * `DB_PASSWORD` were invisible — is closed by `TIER2_GREP_CASE_FLAG` below
+ * (#844). It is kept out of the expression itself deliberately: spelling the
+ * vocabulary as `[Pp][Aa][Ss][Ss]...` would quadruple the length of a string
+ * that is read in a generated workflow by whoever is debugging a blocked
+ * commit, for no behaviour a flag does not already buy.
  */
 export const TIER2_ASSIGNMENT_ERE =
   "(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}";
+
+/**
+ * The flag every tier-2 grep carries, and tier 1 carries nowhere (#844).
+ *
+ * Environment variables and shell defaults are conventionally UPPERCASE, so
+ * the spelling a case-sensitive `(password|passwd|api[_-]?key|secret)` can
+ * see is the one real credentials are least often written in. Measured on
+ * six realistic inputs, tier 2 scored 0 on all three uppercase spellings and
+ * 1 on all three lowercase ones; `-i` takes all six to 1. asaCommandCenter
+ * #1683 is the live instance — a real API key in a shell default,
+ * `SAPLING_KEY="${SAPLING_API_KEY:-<key>}"`, green on a scaffolded gate for
+ * as long as it sat on `main`, because the pattern could not see an
+ * uppercase variable name.
+ *
+ * **It is a constant and not a literal in the generators for the reason the
+ * rest of this file exists.** Four positions consume it — the capture and
+ * the allowlist, in `gates.yml` and in the generated pre-commit hook — and
+ * four hand-typed flags are four things that can disagree about what counts
+ * as a secret. The cheapest wrong fix for #844 is to add `-i` to the
+ * committed `gates.yml` and stop: the symptom disappears for the repository
+ * that noticed it, every consumer's next scaffold writes the gate back
+ * without it, and so does this one's.
+ *
+ * **Tier 1 must never carry it.** Its patterns are anchored key FORMATS —
+ * `AKIA`, `ghp_`, a PEM header — whose case is part of the format. A
+ * case-insensitive tier 1 is a widening of the one tier that has no
+ * allowlist to absorb a false positive.
+ */
+export const TIER2_GREP_CASE_FLAG = "-i";
 
 /**
  * Values that look like credentials but are not.
@@ -109,6 +143,23 @@ export const TIER2_ASSIGNMENT_ERE =
  * Applied to the extracted VALUE, never the whole line. Matching anywhere on
  * the line was an allowlist escape: appending `# placeholder` to a line
  * holding a real secret laundered it past the scan.
+ *
+ * READ CASE-INSENSITIVELY TOO, AND THAT IS A WIDENING (#844)
+ *
+ * The exclusion carries `TIER2_GREP_CASE_FLAG` in the same positions the
+ * capture does. This widens what is let through, which is the direction that
+ * fails open, so it is a deliberate choice rather than symmetry for its own
+ * sake: the population newly visible to the capture is dominated by `.env`
+ * and `.env.example` files, where the conventional spelling of a non-value
+ * is `API_KEY=CHANGEME` and `SECRET=PLACEHOLDER`. Closing the case gap
+ * without it would hard-fail CI — the generated job's branch is `exit 1`,
+ * not a warning — for every consumer who committed the example env file the
+ * documentation told them to, which is a gate consumers delete.
+ *
+ * The exclusion stays anchored at `[:=][[:space:]]*`, so a value is only let
+ * through when it STARTS with one of these tokens. A credential beginning
+ * with the letters of `getenv` or `placeholder` is the laundering this
+ * widens, and no form of it was detectable before either.
  */
 export const TIER2_ALLOWED_VALUE_ERE =
   "^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)";

@@ -1,4 +1,4 @@
-# generated-sha: d705534c07a4832a
+# generated-sha: e6b0ef323c3bb872
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: Gates
 
@@ -60,8 +60,14 @@ jobs:
           # NOTE: do NOT append "|| true" to the assignment below. It makes the
           # assignment itself succeed, so $? is always 0 and the error branch
           # becomes dead code — the scan would fail open on a git error.
+          # -i on tier 2 only, never on the tier-1 scan above: tier 1 matches
+          # anchored key FORMATS whose case is part of the format, and it has
+          # no allowlist to absorb a false positive. The flag is interpolated
+          # from lib/secret-patterns.ts rather than typed here, because four
+          # hand-written flags are four things that can disagree about what
+          # counts as a secret (#844).
           set +e
-          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}' -- .)
+          tier2=$(git grep -I -hoE -i '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}' -- .)
           rc=$?
           set -e
           # git grep: 0 = match, 1 = no match, >1 = real error.
@@ -72,7 +78,11 @@ jobs:
           # Exclusion applies to the extracted VALUE, not the whole line.
           # Matching anywhere on the line let a trailing "# placeholder"
           # launder a real secret past the check.
-          if printf '%s\n' "$tier2" | grep -qvE '^$|[:=][[:space:]]*(process\.env|os\.environ|Deno\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
+          # It reads case the same way the capture does, for a reason
+          # recorded in lib/secret-patterns.ts: the population the capture
+          # newly sees is mostly .env.example, where a non-value is spelled
+          # CHANGEME and PLACEHOLDER (#844).
+          if printf '%s\n' "$tier2" | grep -qvE -i '^$|[:=][[:space:]]*(process\.env|os\.environ|Deno\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi
