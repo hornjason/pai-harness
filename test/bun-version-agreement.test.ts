@@ -126,20 +126,32 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
   test("every setup-bun step is read, and the scan says how many it read", () => {
     // The coverage assertion, first and on its own. Every case below is
     // satisfied by an empty reading, so the reading is established before any
-    // of them run. Five workflow files carry a setup-bun step today: ci,
-    // claude-review, gates, issue-audit and release. `claude-review` joined
-    // in #732, which needs bun on PATH for the post-step that reads what the
-    // review actually did.
+    // of them run. Seven workflow files carry a setup-bun step today:
+    // action-pins, ci, claude-review, gates, issue-audit, release and
+    // suite-flake. `claude-review` joined in #732, which needs bun on PATH
+    // for the post-step that reads what the review actually did;
+    // `action-pins` joined in #789, the weekly freshness check for the pins
+    // this file is about; `suite-flake` joined in #323, which runs the suite
+    // ten times on one tree and reads the series.
+    //
+    // The floor and the list are two different claims, deliberately:
+    // the floor says the scan read SOMETHING, so no case below is satisfied
+    // by an empty reading; the list says WHICH, so a workflow that quietly
+    // stops installing bun — or a new one that installs it from a tag nobody
+    // reviewed — is named here rather than absorbed. Adding a workflow is
+    // meant to turn this red once.
     const steps = setupBunStepsUnder(WORKFLOW_DIR);
     expect(steps.length, "fewer setup-bun steps than this repo has workflows that install bun")
-      .toBeGreaterThanOrEqual(5);
+      .toBeGreaterThanOrEqual(7);
     const files = new Set(steps.map(s => s.file));
     expect([...files].sort()).toEqual([
+      "action-pins.yml",
       "ci.yml",
       "claude-review.yml",
       "gates.yml",
       "issue-audit.yml",
       "release.yml",
+      "suite-flake.yml",
     ]);
   });
 

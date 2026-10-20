@@ -20,7 +20,17 @@
  * others' work has to survive.
  */
 
-import { copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync } from "fs";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+} from "fs";
+import { tmpdir } from "os";
 import { dirname, isAbsolute, join, relative, resolve } from "path";
 
 export interface AgentBuildResult {
@@ -140,12 +150,94 @@ export function groupFilesByWorktree(results: AgentBuildResult[]): WorktreeGroup
 }
 
 /**
- * Copy each group's files from its worktree into `projectRoot`.
+ * One write this call made, and what undoing it means (#750).
+ *
+ * Recorded BEFORE the write, not after. A `copyFileSync` that throws partway
+ * has already truncated the destination, so an entry appended afterwards
+ * would never exist for exactly the write that needs undoing most.
+ */
+type CollectUndo =
+  /** The destination did not exist: undoing it means REMOVING, not restoring. */
+  | { kind: "created-file"; dest: string }
+  /** The destination existed: its bytes and timestamps are held aside. */
+  | { kind: "overwritten-file"; dest: string; backup: string; atime: Date; mtime: Date }
+  /** The topmost directory `mkdirSync(recursive)` created for a destination. */
+  | { kind: "created-dir"; dir: string };
+
+/**
+ * Where a rollback holds the previous bytes of a destination it overwrote.
+ *
+ * **Outside the project root, and exported so that is checkable.** A backup
+ * staged inside the tree being collected into is a file the caller stages,
+ * commits and pushes the moment the cleanup that removes it does not run.
+ * Inlining `mkdtempSync` at the one call site made that property true and
+ * unobservable: the directory is removed on the success path and on the
+ * failure path, so every post-call assertion reads the same either way —
+ * measured as battery row M8, **0 red**, which is what a vacuous case looks
+ * like from the outside. One binding, so there is one thing to mutate.
+ */
+export function collectBackupRoot(): string {
+  return mkdtempSync(join(tmpdir(), "rungate-collect-undo-"));
+}
+
+/** Raised when the copy failed AND putting the tree back also failed. */
+export class CollectRollbackError extends Error {
+  constructor(
+    readonly cause: unknown,
+    readonly rollbackFailures: string[],
+  ) {
+    super(
+      `${cause instanceof Error ? cause.message : String(cause)}\n` +
+        `AND the project root could NOT be put back: ${rollbackFailures.join("; ")}. ` +
+        `The tree is in an unknown state — do not stage or commit it.`,
+    );
+    this.name = "CollectRollbackError";
+  }
+}
+
+/**
+ * Copy each group's files from its worktree into `projectRoot`, atomically in
+ * the only sense that matters here: **a throw leaves the project root as it
+ * was.**
  *
  * Throws rather than skipping when a destination would land outside
  * `projectRoot`. A traversal here is not a path to sanitise away quietly — it
  * means the inputs cannot be trusted, and the caller must abort the commit
  * rather than proceed with a partially-collected tree.
+ *
+ * ## Why a journal, and not the two cheaper designs (#750)
+ *
+ * Eleven throw sites sit between the group loop and the `copyFileSync`. Any
+ * that fires after the first successful copy used to leave copied files in
+ * the project root with nothing putting them back, and `workflows/ship.js`
+ * then reported a failed collect over a half-written tree.
+ *
+ * #750 offered three designs and asked for one with a reason.
+ *
+ * - **Validate every file before copying anything** is the issue's own named
+ *   cheapest wrong fix, and it is wrong for a reason that survives careful
+ *   implementation: every one of these checks is an `lstat` of a path the
+ *   AGENT controls. Answering at T1 and copying at T2 lets the answer change
+ *   in between, and the property asked for is about the resulting tree, not
+ *   about the order the checks run in.
+ * - **Stage into a temp directory and move into place in one pass** narrows
+ *   the window without closing it: N renames are N operations, and a throw
+ *   during the Nth leaves N−1 done. It also degrades silently when the
+ *   staging directory is on another filesystem, where `renameSync` raises
+ *   `EXDEV` and the "one atomic move" becomes a copy again.
+ * - **A journal** — this one — delivers the property for a throw from
+ *   ANYWHERE, including one this function did not generate: an `ENOSPC` from
+ *   `copyFileSync`, an `EACCES` from `mkdirSync`, a race that no amount of
+ *   pre-validation can see.
+ *
+ * ## Undoing can itself fail, and that is a different state
+ *
+ * A rollback that cannot complete leaves a tree nobody has validated, which
+ * is worse than the original failure and must not be reported as it. It
+ * raises `CollectRollbackError` carrying both the original cause and every
+ * undo that failed. Swallowing them would make a half-restored tree
+ * indistinguishable from a clean refusal — `0`, `{}` and silence are
+ * indistinguishable from success (`.claude/rules/config-access.md`).
  */
 export function collectWorktreeFiles(
   groups: WorktreeGroup[],
@@ -155,6 +247,67 @@ export function collectWorktreeFiles(
   const copied: string[] = [];
   const missing: string[] = [];
 
+  /** Every write this call has made, oldest first. Undone in reverse. */
+  const journal: CollectUndo[] = [];
+  /** Created on the first OVERWRITE, so a run that overwrites nothing makes none. */
+  let backupDir: string | null = null;
+
+  const backupOf = (dest: string): string => {
+    backupDir ??= collectBackupRoot();
+    const slot = join(backupDir, String(journal.length));
+    copyFileSync(dest, slot);
+    return slot;
+  };
+
+  const undoAll = (): string[] => {
+    const failures: string[] = [];
+    // Reverse order, so a file created inside a directory this call also
+    // created is removed before the directory is.
+    for (const entry of [...journal].reverse()) {
+      try {
+        if (entry.kind === "created-file") {
+          rmSync(entry.dest, { force: true });
+        } else if (entry.kind === "overwritten-file") {
+          copyFileSync(entry.backup, entry.dest);
+          // Bytes alone are not "as it was" for anything keyed on mtime — a
+          // build cache, a watcher, `make`. Restored from the stat taken
+          // before the overwrite.
+          utimesSync(entry.dest, entry.atime, entry.mtime);
+        } else {
+          // Recursive is safe here and only here: `mkdirSync(recursive)`
+          // returns a path only when it CREATED it, so everything beneath
+          // this directory was created by this call, and the files among
+          // them have already been removed by the entries above.
+          rmSync(entry.dir, { recursive: true, force: true });
+        }
+      } catch (e) {
+        failures.push(`${entry.kind} ${"dest" in entry ? entry.dest : entry.dir}: ${String(e)}`);
+      }
+    }
+    return failures;
+  };
+
+  try {
+    collect();
+  } catch (cause) {
+    const failures = undoAll();
+    cleanupBackups();
+    throw failures.length > 0 ? new CollectRollbackError(cause, failures) : cause;
+  }
+  cleanupBackups();
+  return { copied: [...new Set(copied)], missing };
+
+  function cleanupBackups(): void {
+    // Best effort, and genuinely best effort: a leftover temp directory is
+    // litter, not a correctness problem, and raising from here would mask
+    // the error being propagated.
+    if (backupDir) {
+      try { rmSync(backupDir, { recursive: true, force: true }); } catch { /* litter only */ }
+      backupDir = null;
+    }
+  }
+
+  function collect(): void {
   // `allowedWorktrees` is required, and an empty list authorises nothing.
   // Making it optional with an "allow anything" default would restore exactly
   // the hole it exists to close, in the quietest possible way.
@@ -251,7 +404,11 @@ export function collectWorktreeFiles(
         if (!realIsInside(projectRoot, dirname(dest))) {
           throw new Error(`destination directory escapes the project root: ${rel}`);
         }
-        mkdirSync(dirname(dest), { recursive: true });
+        // The return value is the TOPMOST directory it created, or undefined
+        // when every component already existed. Journaling it is what makes
+        // an empty directory tree not survive a refusal.
+        const createdDir = mkdirSync(dirname(dest), { recursive: true });
+        if (createdDir) journal.push({ kind: "created-dir", dir: createdDir });
         // And again after: mkdir resolved and created real directories, but a
         // symlinked component could have been introduced between the two.
         if (!realIsInside(projectRoot, dirname(dest))) {
@@ -273,11 +430,26 @@ export function collectWorktreeFiles(
         if (dst && dst.nlink > 1) {
           throw new Error(`refusing to overwrite a hard link: ${rel}`);
         }
+
+        // Journal BEFORE the write. `copyFileSync` truncates the destination
+        // before it finishes, so an entry appended after a successful copy
+        // would be missing for precisely the case that needs it most — a
+        // copy that threw partway and left a truncated file.
+        journal.push(
+          dst
+            ? {
+                kind: "overwritten-file",
+                dest,
+                backup: backupOf(dest),
+                atime: dst.atime,
+                mtime: dst.mtime,
+              }
+            : { kind: "created-file", dest },
+        );
         copyFileSync(src, dest);
       }
       copied.push(relative(projectRoot, dest));
     }
   }
-
-  return { copied: [...new Set(copied)], missing };
+  }
 }

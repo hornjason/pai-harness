@@ -8,7 +8,7 @@ paths:
   - ".claude/rules/**"
   - "test/scaffold-conformity.test.ts"
   - "CODE-MAP.md"
-generated-sha: 520e1ca830ac7ea6
+generated-sha: 5c9c9cb87f5f036f
 ---
 
 These files are managed by rungate. **Do not edit them directly.** What
@@ -26,7 +26,7 @@ forever.
 | `test/scaffold-conformity.test.ts` | regenerate | Runs automatically | Don't edit |
 | `CODE-MAP.md` | regenerate | Auto-generated from code scan | Don't edit |
 | `project-state.json` | create-only | DA-owned (#296) — seeded once, then yours | Don't expect re-scaffold to update it; an agent in a worktree must never write it |
-| `PROJECT-STATE.md` | create-only | DA-owned (#296) — generated from project-state.json by the DA | Don't edit directly; don't expect re-scaffold to update it |
+| `PROJECT-STATE.md` | create-only | DA-owned (#296) — maintained by the DA; whether this project derives it from the state JSON is reported per project in .claude/rules/key-files.md | Don't edit directly; don't expect re-scaffold to update it |
 | `SUCCESS.md` | create-only | Seeded as a template (#485) — fill in the claims; `bunx rungate create-success` re-seeds | Don't leave it as the seed; SUCCESS-1 refuses a template, and re-scaffold will not fill it in |
 
 | Strategy | What re-scaffold does |

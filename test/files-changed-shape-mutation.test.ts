@@ -296,6 +296,7 @@ describe("#611 AC-6: under the mutant, the annotated element reaches the collect
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal",
       "worktreeIdentity", "REPO", "taskSourceRefusal",
       "establishRunRef", "integrateWave", "waveNeedsIntegration",
+      "measureLaunchBase",
       `${slice("FILES-CHANGED-SHAPE")}\n${slice("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
     );
     const run = factory(
@@ -318,6 +319,7 @@ describe("#611 AC-6: under the mutant, the annotated element reaches the collect
       async () => ({ branch: "rungate/run-611", refusal: null }),
       async () => ({ ok: true, integrated: 0 }),
       new Function(`${slice("RUN-REF")}\nreturn waveNeedsIntegration;`)(),
+      async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
     );
     const result: any = await run([
       { number: 1, title: "alpha", acs: ["a1"], filesToModify: ["lib/alpha.ts"], size: "S" },

@@ -471,6 +471,7 @@ function loadRunDecomposedShip(agent: (p: string, o: { label: string }) => Promi
     "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal",
     "worktreeIdentity", "REPO", "taskSourceRefusal",
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
+    "measureLaunchBase",
     `${marked("FILES-CHANGED-SHAPE")}\n${marked("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
   );
   const run = factory(
@@ -486,6 +487,7 @@ function loadRunDecomposedShip(agent: (p: string, o: { label: string }) => Promi
     async () => ({ branch: "rungate/run-611", refusal: null }),
     async () => ({ ok: true, integrated: 0 }),
     waveNeedsIntegration,
+    async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
   );
   return { run, logs };
 }

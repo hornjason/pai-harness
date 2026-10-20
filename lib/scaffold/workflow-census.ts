@@ -55,6 +55,17 @@ export const workflowMarker = YAML_COMMENT.declared;
 /** The digest the file's body actually hashes to. */
 export const workflowBodySha = YAML_COMMENT.sha;
 
+/**
+ * The workflow without its provenance marker (#767).
+ *
+ * The marker is harness bookkeeping, and `resolveManagedWrite` treats every
+ * line outside a job as the consumer's. Those two facts met in #722 and the
+ * merge began refusing its own first line — *"1 line(s) the harness did not
+ * author would be dropped from content outside any job"* — so a generator
+ * change could not land on any workflow holding a preserved job.
+ */
+export const workflowBody = YAML_COMMENT.body;
+
 // ── The reading ─────────────────────────────────────────
 
 export type WorkflowStatus =
