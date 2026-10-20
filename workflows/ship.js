@@ -2538,7 +2538,24 @@ function readLaunchBase(reply) {
   return { reading, refusal: `LAUNCH_BASE_${reading}: ${why}` }
 }
 
-const launchBaseReply = await timedAgent(`
+/**
+ * Take the reading. One function, called at Goal and again before every wave
+ * of isolated spawns (#592).
+ *
+ * Goal is not enough on its own, and that is the whole of #592's residual.
+ * The runtime resolves `isolation: 'worktree'` against the SESSION's
+ * directory at the moment of the spawn, and the shared session is shared:
+ * on 2026-10-19 a `cd` out of the repository killed worktree creation hours
+ * later in a run that had passed its launch check cleanly. A reading taken
+ * once at the top of a run and trusted at the bottom is a reading about a
+ * different moment.
+ *
+ * No `cd`, here or at any caller. Everywhere else in this file a command is
+ * pinned to a directory because ambient state is the defect; here the
+ * ambient state IS the measurement.
+ */
+async function measureLaunchBase(phase, label) {
+  const reply = await timedAgent(`
 Run exactly this, in the directory you are already in, and report what it printed:
 
 ${launchBaseCheckShell()}
@@ -2557,9 +2574,11 @@ when the JSON carried none. Report the EXIT: value as exitCode, as a number.
 Do not fix anything, do not create any directory, and do not re-run the
 command from somewhere else to get a different answer. If it refuses, report
 the refusal.
-`, { label: 'launch-base', phase: 'Goal', schema: launchBaseCheckSchema() })
+`, { label, phase, schema: launchBaseCheckSchema() })
+  return readLaunchBase(reply)
+}
 
-const launchBase = readLaunchBase(launchBaseReply)
+const launchBase = await measureLaunchBase('Goal', 'launch-base')
 if (launchBase.refusal) {
   log(launchBase.refusal)
   return await terminalFailure('LAUNCH_BASE_FAILED', {
@@ -5791,6 +5810,45 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         // leave the commit pointed at a ref the run is no longer on.
         runRef = reread.branch
       }
+      // ──── LAUNCH-BASE-PER-WAVE-START ────
+      // #592. The Goal check established which tree this run cuts worktrees
+      // from. It established it THEN. `isolation: 'worktree'` is resolved by
+      // the runtime against the session's directory at the instant of the
+      // spawn, and the session is shared with whoever else is using it — a
+      // `cd` between Goal and here moves every worktree this wave is about
+      // to create, and `opts.cwd` cannot pin it (#644).
+      //
+      // Run `wf_680eb8a6-29a` is what this costs when nothing looks: twelve
+      // agents and ~570k tokens spent cutting worktrees of the wrong
+      // repository, caught afterwards by #218's guard comparing the remote
+      // the checkout actually had. The guard is right and is unchanged; this
+      // asks the question BEFORE the spend instead of after it.
+      //
+      // Refused as a wave rather than as the run, the same way #652's ref
+      // drift is: the sub-issues settle with a finding that says why, so the
+      // run reports which wave never started rather than vanishing.
+      const waveBase = await measureLaunchBase('Implement', `launch-base-wave-${w + 1}`)
+      if (waveBase.refusal) {
+        waveFailed = true
+        log(`Wave ${w + 1} was not dispatched: ${waveBase.refusal}`)
+        for (const i of wave) {
+          settled.push({
+            subIssue: batchIssues[i],
+            buildResult: {
+              success: false,
+              filesChanged: [],
+              findings: [
+                `did not start — the launching session's directory is no longer the tree this ` +
+                `run was handed, so every worktree this wave created would be cut from the ` +
+                `wrong one: ${waveBase.refusal}`,
+              ],
+            },
+            ok: false,
+          })
+        }
+        continue
+      }
+      // ──── LAUNCH-BASE-PER-WAVE-END ────
       const waveResults = await parallel(wave.map(i => () => shipSubIssue(batchIssues[i])))
       for (let k = 0; k < wave.length; k++) {
         const r = waveResults[k]

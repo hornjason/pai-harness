@@ -387,6 +387,7 @@ function loadRunDecomposedShip(
     // predicate comes from its own markers, for the reason the guards above
     // do: a stub would let the two copies disagree and nothing would notice.
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
+    "measureLaunchBase",
     // #611 added a free reference too; its block text is evaluated into the
     // scope rather than injected, because ship.js declares it at module
     // scope beside the decomposed block.
@@ -404,6 +405,7 @@ function loadRunDecomposedShip(
     async () => ({ branch: "rungate/run-180", refusal: null }),
     async () => ({ ok: true, integrated: 0 }),
     guard("RUN-REF", "waveNeedsIntegration"),
+    async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
   ) as (subIssues: unknown[]) => Promise<unknown>;
 
   return { run, logs };
