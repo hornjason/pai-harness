@@ -2731,6 +2731,14 @@ ${branchList}
     branches:
 ${branchList}
 
+permissions:
+  # Least privilege, and it matters most on the consumers. This repo and
+  # agentgrit default to a read-only GITHUB_TOKEN, but asaCommandCenter's
+  # repository default is WRITE — measured 2026-10-20 — so a generated job
+  # with no permissions: block runs there holding a token that can push.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
+
 jobs:
   test-shard:
     runs-on: ${runsOn}
@@ -2783,6 +2791,14 @@ ${branchList}
     branches:
 ${branchList}
 
+permissions:
+  # Least privilege, and it matters most on the consumers. This repo and
+  # agentgrit default to a read-only GITHUB_TOKEN, but asaCommandCenter's
+  # repository default is WRITE — measured 2026-10-20 — so a generated job
+  # with no permissions: block runs there holding a token that can push.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
+
 jobs:
   test:
     runs-on: ${runsOn}
@@ -2809,6 +2825,14 @@ ${branchList}
   pull_request:
     branches:
 ${branchList}
+
+permissions:
+  # Least privilege, and it matters most on the consumers. This repo and
+  # agentgrit default to a read-only GITHUB_TOKEN, but asaCommandCenter's
+  # repository default is WRITE — measured 2026-10-20 — so a generated job
+  # with no permissions: block runs there holding a token that can push.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
 
 jobs:
   gates:

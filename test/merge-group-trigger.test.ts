@@ -168,6 +168,40 @@ describe("#765: a merge queue cannot hang on a check that never reports", () => 
     }
   });
 
+  // Not strictly about merge_group, but found by the security review of the
+  // commit that added it and fixed in the same pass, so the evidence lives
+  // beside the change that prompted it.
+  //
+  // `ci.yml` and `gates.yml` carried no `permissions:` block at all, so both
+  // jobs ran with whatever the repository default is. Measured 2026-10-20 via
+  // `gh api repos/<r>/actions/permissions/workflow`: pai-harness `read`,
+  // agentgrit `read`, **asaCommandCenter `write`**. So on the one consumer that
+  // runs credentialed third-party workflows, every generated CI job held a
+  // GITHUB_TOKEN that could push, for no reason — both jobs only check out,
+  // install and run tests.
+  //
+  // The cheapest wrong fix: set it on this repo's checked-in ci.yml and stop.
+  // The two consumers keep the write token, and this case survives that fix
+  // non-vacuously because it reads what the generator emits, not the file.
+  test("every generated workflow declares least-privilege permissions", () => {
+    for (const shards of [4, 1]) {
+      const files = generate(shards);
+      for (const name of ["ci.yml", "gates.yml", "ai-review.yml"]) {
+        const yml = files[name];
+        expect(yml, `${name} (shards=${shards}) was not generated`).toBeDefined();
+        expect(yml, `${name} (shards=${shards}) has no permissions: block — it inherits the repository default, which is write on at least one consumer`)
+          .toMatch(/\npermissions:\n(?:\s*#[^\n]*\n)*\s+contents: read\n/);
+        // No job may quietly widen it back. A job-level permissions: block
+        // overrides the top-level one, so a check that only reads the top is
+        // satisfied by a file that grants write one level down.
+        const jobsAt = yml.indexOf("\njobs:\n");
+        expect(jobsAt, `${name} has no jobs: block`).toBeGreaterThan(-1);
+        expect(yml.slice(jobsAt), `${name} (shards=${shards}) widens permissions at job level`)
+          .not.toMatch(/\bcontents:\s*write\b/);
+      }
+    }
+  });
+
   test("ai-review.yml does NOT handle merge_group, deliberately", () => {
     // Not an oversight. The job reviews a pull request and a merge group has
     // none, so the run's outcome would mean nothing — the generator says so in
