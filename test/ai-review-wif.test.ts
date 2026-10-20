@@ -35,6 +35,74 @@
  * `lib/`, `gates/` or `scripts/`. One case below measures exactly that, and it
  * would be defeated by a fixture that reused the real values — so the fixture
  * uses a project nobody owns.
+ *
+ * ## What was broken to prove these can fail
+ *
+ * Over this file + `test/ai-review-workflow.test.ts` +
+ * `test/ai-review-scaffold.test.ts` + `test/ai-review-credentialed-job.test.ts`
+ * + `test/action-pin-parity.test.ts` + `test/scaffold-ownership.test.ts` (161
+ * tests). Every count predicted before the row ran, and **the baseline row
+ * read before any mutation row** — an instrument that has stopped reporting
+ * takes the baseline down with it, and that is the row nobody mutates
+ * anything to produce.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 161 pass, 0 fail | **161 pass, 0 fail** | — |
+ * | M1 `vertexCiConfig` always reports no federation | 14 | **12 of 161** | the CONFIGURED fixture's `ci.vertex`: the original emits an auth step and `id-token: write`, the mutant neither |
+ * | M2 `vertexCiConfig` always reports a federation | 18 | **17 of 161** | the UNCONFIGURED fixture's absent block: the original resolves `mode=none` and emits no auth step, the mutant emits a full one |
+ * | M3 the baseline step dropped from `buildReviewRunStep` — pre-#631 | 4, then 2 | **0 of 158**, then **2 of 161** | the generated job: 7 steps against 6, with no `ai-review-baseline`. See below |
+ * | M4 the `GCP_SA_KEY` migration branch removed | 3 | **1 of 161** | the UNCONFIGURED script run with `GCP_SA_KEY_PRESENT=true`: the original annotates the migration, the mutant says nothing |
+ * | M5 `id-token: write` granted unconditionally | 2 | **2 of 161** | the UNCONFIGURED workflow: the original grants `contents: read` alone |
+ * | M6 the auth action's row deleted from `PINNED_ACTIONS` | 14 | **11 of 161** | `pinnedAction("google-github-actions/auth")` — the original returns the row, the mutant throws; and a tree with a disagreeing auth pin goes FAIL to PASS |
+ * | M7 `actionPinViolations` short-circuited to `return []` | 7 | **7 of 161** | a tree pinning the auth action at `7c6bc770`: one violation against none |
+ * | M8 `GOOGLE_AUTH_ACTION_SHA` moved to forty zeroes | 2 | **1 of 161** | this repository's own `claude-review.yml`. See below |
+ * | M9 **the cheapest wrong fix**: accept any resolved mode and return early | 3 | **3 of 161** | a federated script beside a job with no auth step: the original refuses, the mutant returns `[]` |
+ * | M10 the `ai-review.yml` row renamed in `OWNED_FILES` — the one-sided edit | 2 | **5 of 161** | the shipped prose table against the generated one |
+ * | M11 the baseline step moved BELOW the review action | 1 | **1 of 161** | the generated job's step order |
+ *
+ * **M3 is the row that found something, and it found it by coming back 0.**
+ * Before recording that zero the mutant was checked rather than assumed: the
+ * original emits seven steps including `ai-review-baseline`, the mutant six
+ * without it, printed and compared. So the mutation was real and nothing
+ * caught it — the three drift cases in `test/ai-review-workflow.test.ts` call
+ * `buildBaselineScript()` and `buildDriftScript()` directly, which witnesses
+ * the SCRIPTS and not whether the generator emits the step that runs one. The
+ * three cases under *"the generated job reads the tree BEFORE the reviewer
+ * touches it"* were written in response, and the re-run row is 2. M11 is the
+ * silent half of the same gap: a baseline taken after the reviewer contains
+ * whatever the reviewer wrote, so nothing can ever be drift.
+ *
+ * **M8 is 1 and not 2 for a reason worth keeping.** Every fixture here
+ * DERIVES its expected pin from the declaration, so moving the declaration
+ * moves the fixture with it and the two stay in agreement. That is #689's
+ * design — every position is compared to the declaration, never to another
+ * position — and its consequence is that only a position which does NOT
+ * derive from the declaration can witness the declaration changing. There is
+ * one such position in the tree: the checked-in `claude-review.yml`.
+ *
+ * **M4 is 1 and not 3, and the two halves are covered one case each.** The
+ * migration is an `env:` entry the runner computes from `secrets.X != ''` and
+ * a branch in the script that reads it. M4 removes the branch and leaves the
+ * entry, which only the executed case can see; the inverse — the entry
+ * removed, the branch kept — is what `test/ai-review-scaffold.test.ts`
+ * asserts the exact line for. One witness per direction, neither redundant.
+ *
+ * **M10 came back HIGH, and the extra reds are the real kind.** The
+ * prediction covered the two reconciliation cases; the extra three are #739's
+ * *"a job-preserving row names the job the generator actually emits"*, which
+ * the renamed path breaks for the same reason. 156 cases still pass and every
+ * red is about ownership, so the prediction was wrong and the check reaches
+ * further than it did.
+ *
+ * M6's first form spread the array with `...[] as any[]` and produced a
+ * SYNTAX error — 15 tests never ran, and 145 pass / 1 fail does not sum to
+ * 161. A mutant that crashes is not a mutant; re-run as a plain deletion of
+ * the row, it is 11.
+ *
+ * None of the eleven mutations is left in the tree. Every row restored from a
+ * `cp` backup and confirmed byte-identical by sha256 afterwards, never by
+ * `git checkout --`.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
