@@ -67,9 +67,41 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
  * Tier 2 — credential assignments.
  *
  * Shape-based rather than format-based, so it needs the allowlist below.
+ *
+ * THE FIRST VALUE CHARACTER MAY NOT BE `=` (#489)
+ *
+ * `=` is in the value charset because base64 pads with it. Minified
+ * JavaScript collapses whitespace, so `if (e.password === t.password) {...}`
+ * — which does NOT match, the space after `===` ends the value at two
+ * characters — comes out of a minifier with the spaces gone and then
+ * presented as `password` -> `=` -> `==t.password`, twelve characters all
+ * inside the charset, matched by nothing in the allowlist, and the generated
+ * job's branch is `exit 1` rather than a warning. Every consumer with
+ * committed minified build output hard-failed CI on a comparison.
+ *
+ * So the value is split: one leading character from the charset WITHOUT `=`,
+ * then eleven or more from the full charset. Twelve total, unchanged. Every
+ * `===`, `==` or `=>` comparison produces a value beginning with `=` and is
+ * now excluded; no real credential form this pattern can see begins with one
+ * — measured against the detectable control set, not assumed.
+ *
+ * This narrows the detector, which is the change most likely to buy green
+ * with blindness, so the boundary is a mutation battery in
+ * test/unit/secret-patterns.test.ts rather than this comment.
+ *
+ * TWO BLIND SPOTS THAT ARE NOT #489 AND MUST NOT BE FIXED HERE
+ *
+ * The charset excludes `"` and `'`, so a quoted literal — the normal way a
+ * credential is written in TS, JS, Python and JSON — stops the match at the
+ * opening quote; and the generated `grep -E` carries no `-i`, so `PASSWORD`
+ * and `DB_PASSWORD` are invisible. Only an unquoted lowercase key with a
+ * colon or an equals is detectable at all. Both are real gaps and both are
+ * separate issues: widening the charset in the same change would make this
+ * narrowing unmeasurable, because the minified fixtures would then match for
+ * a new reason. The test file pins them so a widening cannot ride along.
  */
 export const TIER2_ASSIGNMENT_ERE =
-  "(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}";
+  "(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}";
 
 /**
  * Values that look like credentials but are not.
@@ -84,6 +116,19 @@ export const TIER2_ALLOWED_VALUE_ERE =
 /** Tier 1 as one alternation, parenthesised and ready to embed in `grep -E '...'`. */
 export function tier1Ere(): string {
   return `(${TIER1_SECRET_PATTERNS.map(p => p.ere).join("|")})`;
+}
+
+/**
+ * Tier 2, ready to embed in `grep -E '...'`.
+ *
+ * Mirrors `tier1Ere()` so the generator has ONE binding to interpolate for
+ * each tier. It had `tier1Ere()` and then a hardcoded copy of the tier-2
+ * string, which is the two-deciders shape this file's header says the
+ * registry exists to prevent — and it cost #489: the narrowing had to be
+ * applied in three places that nothing compared.
+ */
+export function tier2Ere(): string {
+  return TIER2_ASSIGNMENT_ERE;
 }
 
 /**
