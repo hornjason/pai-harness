@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { assertMarkedBlockReachable, enclosingChain, UNCONDITIONAL_TERMINATORS } from "../lib/reachability";
+import { structuralCut } from "../lib/source-slice";
 import {
   PRESERVED_VERDICTS,
   PRESERVE_MEASURED_ENVIRONMENTS,
@@ -396,6 +397,51 @@ describe("#169 recommit: both remediation rounds re-record the commit", () => {
     return shipSource.slice(start, end === -1 ? shipSource.length : end);
   }
 
+  /**
+   * The step's declared schema, inline or resolved through its name (#684).
+   *
+   * A schema is declared two ways in this file — as an object literal in the
+   * options, and as `schema: SOME_CONST` naming a literal declared above. The
+   * property is the same either way, and a reader that knew only one syntax
+   * would report a step with no required fields the moment somebody extracted
+   * the literal, which is `.claude/rules/checks-must-be-able-to-fail.md`'s
+   * #484: a guard that answers the right question in the wrong syntax.
+   *
+   * An unresolvable reference THROWS. A step whose schema this cannot read is
+   * UNMEASURED and never a pass — returning "" would make every assertion
+   * below vacuous for exactly the step that moved.
+   */
+  function schemaTextOf(label: string): string {
+    const s = step(label);
+    if (/required:\s*\[/.test(s)) return s;
+    const named = s.match(/schema:\s*([A-Z][A-Z0-9_]*)/);
+    if (!named) {
+      throw new Error(
+        `${label} declares no schema this reader can resolve — neither an inline literal nor a ` +
+          `named one. That is UNMEASURED, not a step with no required fields (#684)`,
+      );
+    }
+    // The anchor is spelled as a LITERAL, one branch per schema this reader
+    // can resolve, rather than composed from the name just matched. A computed
+    // anchor cutting `ship.js` is refused by `#668`'s scan in
+    // `test/unit/ambiguous-anchor.test.ts`, and deliberately has no exemption
+    // list: an anchor assembled at run time cannot be checked for occurring
+    // exactly once, so a rename in `ship.js` would silently cut a different
+    // block instead of going red.
+    //
+    // Only one named schema exists today — `recommit-ship` declares its schema
+    // inline and returns above. A second one is a two-line addition here, and
+    // the throw below is what makes the omission loud rather than silent.
+    if (named[1] === "DELETION_VERDICT_SCHEMA") {
+      return structuralCut(shipSource, "const DELETION_VERDICT_SCHEMA = {", { balanced: "{" });
+    }
+    throw new Error(
+      `${label} names schema ${named[1]}, which has no literal anchor in this file. Add a branch ` +
+        `spelling "const ${named[1]} = {" as a string literal — not a template, which #668 refuses ` +
+        `(#684). UNMEASURED, not a step with no required fields`,
+    );
+  }
+
   for (const label of ["recommit-verify", "recommit-ship"]) {
     test(`${label} runs the recorder`, () => {
       expect(step(label), `${label} moves the branch and records nothing`).toContain(
@@ -406,7 +452,7 @@ describe("#169 recommit: both remediation rounds re-record the commit", () => {
     test(`${label} requires stateRecorded in its reply`, () => {
       // Not merely present: REQUIRED. An optional field is one the agent can
       // omit, and then the workflow cannot tell a skipped step from a done one.
-      const s = step(label);
+      const s = schemaTextOf(label);
       expect(s).toContain("stateRecorded");
       const required = s.match(/required:\s*\[([^\]]*)\]/)?.[1] ?? "";
       expect(required, `${label} required fields were: ${required}`).toContain("stateRecorded");

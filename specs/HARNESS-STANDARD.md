@@ -10693,10 +10693,10 @@ compiled throws rather than passing.
 
 ### Success Criteria
 
-- [x] SC-2016: test/sc-id-cross-tree.test.ts contains [the registry argument is required] — a two-argument probe is compiled by the pinned tsc and must be refused; a three-argument probe is compiled FIRST and must be clean, or an error from an unrelated cause reads exactly like the refusal
-- [x] SC-2017: test/sc-id-cross-tree.test.ts contains [an explicit undefined registry is rejected too] — the cheapest repair for SC-2016 is to type `undefined` at every call site, which satisfies the arity and restores the defect
-- [x] SC-2018: test/sc-id-cross-tree.test.ts contains [the registry leg changes the answer] — driven by an id only the registry knows, asserted as a relation against the no-registry answer rather than as a literal, so the case survives the tree moving
-- [x] SC-2019: test/sc-id-cross-tree.test.ts contains [the reading names the legs consulted] — every composed width is a source with the count it contributed, and `describeReading` names them, because a caller cannot print the number without printing which widths produced it
+- [ ] SC-2016: test/sc-id-cross-tree.test.ts contains [the registry argument is required] — a two-argument probe is compiled by the pinned tsc and must be refused; a three-argument probe is compiled FIRST and must be clean, or an error from an unrelated cause reads exactly like the refusal
+- [ ] SC-2017: test/sc-id-cross-tree.test.ts contains [an explicit undefined registry is rejected too] — the cheapest repair for SC-2016 is to type `undefined` at every call site, which satisfies the arity and restores the defect
+- [ ] SC-2018: test/sc-id-cross-tree.test.ts contains [the registry leg changes the answer] — driven by an id only the registry knows, asserted as a relation against the no-registry answer rather than as a literal, so the case survives the tree moving
+- [ ] SC-2019: test/sc-id-cross-tree.test.ts contains [the reading names the legs consulted] — every composed width is a source with the count it contributed, and `describeReading` names them, because a caller cannot print the number without printing which widths produced it
 
 ## The three legs that reported `read` without probing anything (#606)
 
