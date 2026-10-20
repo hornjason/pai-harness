@@ -1,3 +1,4 @@
+# generated-sha: 71997782bf6265b9
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # This job is deliberately unconditional. A job skipped by a condition reports
@@ -73,9 +74,25 @@ jobs:
           #
           # Mode `none` has already annotated itself in the previous step. Annotating
           # it again here would report one state as two.
+          #
+          # An ABSENT mode is a different state and is annotated here, because nothing
+          # else has (#677). `none` means the auth step ran and found no credential;
+          # empty means the auth step did not run, or could not write its output. The
+          # previous form read `${AI_REVIEW_MODE:-none}`, which collapsed the two —
+          # so "the credential check never happened" exited 0 in total silence, which
+          # is the Silent Default Substitution this file's own header is about.
           set -uo pipefail
 
-          if [ "${AI_REVIEW_MODE:-none}" = none ]; then
+          if [ -z "${AI_REVIEW_MODE:-}" ]; then
+            echo "::warning title=AI review UNMEASURED::The credential-detection step produced no mode output, so this job does not know whether a credential was configured and no AI review ran on this pull request. This check is UNMEASURED, not a passing review. The step may not have run, or may have failed before writing its output. Set the repository variable RUNGATE_REQUIRE_AI_REVIEW to 'true' to make an unmeasured review fail instead."
+            if [ "${RUNGATE_REQUIRE_AI_REVIEW:-}" = "true" ]; then
+              echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and the credential-detection step produced no mode output, so this pull request has no AI review and this job cannot say why. Failing rather than reporting a green check for a review that never happened." >&2
+              exit 1
+            fi
+            exit 0
+          fi
+
+          if [ "${AI_REVIEW_MODE}" = none ]; then
             exit 0
           fi
 
