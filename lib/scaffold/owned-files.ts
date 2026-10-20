@@ -143,6 +143,20 @@ export const OWNED_FILES: OwnedFile[] = [
     avoid: "Don't edit the generated `gates` job",
   },
   {
+    // Absent from this list, and from the prose table, for the whole life of
+    // the file (#630 through #631). `createCiWorkflows` has written it since
+    // #630 — through the same `writeManagedFile` its two siblings above use
+    // — so a consumer's hand edit to the `ai-review` job was overwritten on
+    // every scaffold and reported as nothing, while the two files beside it
+    // reported the overwrite by name. The ownership did not travel with the
+    // bytes, which is #722's property met from the other side.
+    path: ".github/workflows/ai-review.yml",
+    strategy: "job-preserving",
+    servedBy: "writeManagedFile (lib/scaffold/steps.ts) via mergeManagedWorkflow — the harness owns named jobs, not the file",
+    customize: "Set `ci.vertex` in `.claude/rungate/config.json` to authenticate on Vertex with Workload Identity Federation; add your own jobs alongside the generated `ai-review` job",
+    avoid: "Don't edit the generated `ai-review` job",
+  },
+  {
     // `regenerate` until #655, and the declaration was never consulted:
     // `generateAgentBriefsStep` called `writeFileSync` directly, so the row
     // described behaviour that a bare overwrite happened to coincide with.
