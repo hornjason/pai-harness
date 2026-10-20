@@ -4,26 +4,37 @@
  *
  * ## What was broken to prove these can fail
  *
- * | Mutation | Result |
- * |---|---|
- * | `ruleDocPointer` returns its sentence unconditionally | 1 fail — the absent-root case |
- * | `ruleDocPointer` returns `""` unconditionally | 2 fail — the present-root case and the composition case |
- * | one `remedyMessage` in `lib/conformity.ts` reverted to a bare `.toEqual([])` | 1 fail — the population guard, naming the check |
- * | the population constant emptied | 1 fail — the non-vacuity floor |
+ * Baseline 19 pass / 0 fail; restored and re-verified at 19 pass / 0 fail.
  *
- * The third row is the one that matters. The population guard is the only
- * assertion here that notices a check LOSING its remedy, and a guard over an
- * empty population would pass over nothing at all — which is why the floor is
- * asserted rather than assumed.
+ * | # | Mutation | Result |
+ * |---|---|---|
+ * | M1 | `ruleDocPointer` returns its sentence unconditionally | **2 fail** |
+ * | M2 | `ruleDocPointer` returns `""` unconditionally | **3 fail** |
+ * | M3 | `HYGIENE-4`'s `check:` field renamed | **1 fail** |
+ * | M4 | one row deleted from `TIER_1` | **1 fail** |
+ * | M5 | the `expect` proximity test removed from `routedCheckIds` | **1 fail** |
+ * | M6 | `stripJsComments` removed from `routedCheckIds` | **1 fail** |
+ * | M7 | `HYGIENE-4` reverted to an unasserted message | **2 fail** |
+ * | M8 | the `FIX:` line dropped from `remedyMessage` | **2 fail** |
  *
- * ## The scan reads code, not prose
+ * M7 is the row that matters, and it is the one the issue is about: it is
+ * what a future agent does when a remedy gets in the way. It separates from
+ * M3 on the count — renaming a check loses one row, un-asserting it loses the
+ * named row AND the call-site total, because the total counts only asserted
+ * calls.
  *
- * The guard greps for `remedyMessage(` call sites in three real files, and
- * this very docblock names that symbol. A raw scan would count this file's
- * own commentary and the paragraph above as call sites — a checker that greps
- * for a string cannot tell a use from a mention of one, the trap recorded in
- * the rule document under discussion. `stripJsComments` blanks comments and
- * preserves offsets, so what remains is code.
+ * **M5 and M6 measured 0 red in the first battery**, when the scan lived in
+ * this file and ran only over the three real sources. Both guards were
+ * written as obviously necessary and neither changed a single result,
+ * because no file in this repo mentions the symbol in a comment or composes
+ * a remedy without asserting it. The scan moved into `lib/check-remedy.ts`
+ * as `routedCheckIds` so that a planted source could reach them. The
+ * mechanism did not change; what changed is that it can now be shown to
+ * work.
+ *
+ * Each of those two has a control beside its witness. A scan that returned
+ * `[]` for every input would satisfy both witnesses on its own, which would
+ * make this section a description of a test rather than a measurement of one.
  */
 
 import { describe, expect, test } from "bun:test";

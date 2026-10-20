@@ -121,7 +121,33 @@ Say what to do in the failure message. `SC-1466` is the best in the tree —
 *"…or add it to `WARN_TIER_CHECKS` in `lib/gate-check-audit.ts` with why"* —
 and it is the difference between a check and an obstacle. A bare
 `expect(violations).toEqual([])` makes the next agent re-derive the whole
-mechanism, and most of Tier 1 is still that.
+mechanism.
+
+**Use `remedyMessage` from `lib/check-remedy.ts`** (#813). It composes the
+violation list, the remedy, and a pointer back to this file:
+
+```ts
+expect(
+  unlisted,
+  remedyMessage({ root, check: "HYGIENE-4", violations: unlisted, fix: "add a row to …" }),
+).toEqual([]);
+```
+
+Two things about it are deliberate. The `fix` has no default, because a
+default would let a check look as though it had a remedy when it had none.
+And the pointer to this file is DERIVED — emitted only when this file exists
+under the project root — because `lib/conformity.ts` is published and this
+document has no template copy, so a hardcoded path would send every consumer
+to something they do not have.
+
+Every Tier 1 check above now carries one, and `test/check-remedy.test.ts`
+holds the population: delete a remedy and that test goes red naming the check
+that lost it. Adding a Tier 1 check means adding its row there too.
+
+Before #813 none of them did, and the number is worth keeping: two references
+to this file from the whole executable tree, both prose inside a docblock,
+against 321 for `checks-must-be-able-to-fail`. A document the stuck agent
+cannot reach from the thing that stopped them is not reaching anyone.
 
 Related: `.claude/rules/checks-must-be-able-to-fail.md`,
 `.claude/rules/claiming-sc-coverage.md`,
