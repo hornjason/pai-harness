@@ -1,6 +1,7 @@
 import { execSync, execFileSync } from "child_process";
-import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
+import { gateSaltPath, workDir as slugWorkDir } from "../lib/paths";
 import {
   writeGateResult,
   generateHmac,
@@ -10,7 +11,7 @@ import {
   markCommandlessACsAsSkip,
   type GateResult,
 } from "./orchestrator";
-import { writeWitness } from "./witness";
+import { signCensus, writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { recordEvidenceRewrite } from "../lib/evidence-command-transport";
 import { GATE_SUITE_TIMEOUT_MS } from "../lib/gate-timeouts";
@@ -289,9 +290,93 @@ export function recordTestBaseline(
 /** What a gate run does about the tests that existed when it last looked. */
 export type CensusVerdict =
   | { kind: "unmeasured"; reason: string }
+  /**
+   * There is a banked census, and it is not one this gate wrote (#494).
+   *
+   * Its own arm rather than a second `unmeasured`, because the two are
+   * different facts about the run and only one of them is about an agent:
+   * `unmeasured` is a tree with no suite the walk can see, and this is a
+   * reading that was taken and then went missing. Both are WARNs — see
+   * `censusReport`, which is the single place that decides.
+   */
+  | { kind: "census-unverified"; reason: string }
   | { kind: "first-reading"; files: number }
   | { kind: "no-regression"; files: number }
   | { kind: "regression"; regressions: string[] };
+
+/**
+ * What the state file holds, and whether this gate is the one that put it
+ * there (#494).
+ *
+ * Three readings, not two. `absent` and `unverified` both mean "nothing to
+ * compare against", and collapsing them would be fine for the comparison
+ * and wrong for the report: an absent census on a run whose gate has never
+ * executed is ordinary, and the identical absence one round later is the
+ * erasure this issue exists to detect. The pair that tells them apart is
+ * this reading and `PriorGateRun`.
+ */
+export type PersistedCensus =
+  | { kind: "verified"; census: Record<string, number> }
+  | { kind: "unverified"; reason: string }
+  | { kind: "absent" };
+
+/**
+ * Whether a gate has already run for this slug (#494).
+ *
+ * The signal has to live OUTSIDE `workflow-state.json`: an agent erasing
+ * the census erases the signature with it, so the signature cannot say
+ * whether there was ever anything to erase. `~/.rungate/<slug>/witnesses/`
+ * is the existing store, written by `writeWitness` on every gate run, and
+ * no prompt in this repository names it.
+ *
+ * `unreadable` is the arm that keeps this from having the same off switch
+ * one layer down. `writeWitness` is wrapped in a try/catch at the bottom of
+ * `runGateInternal` that only logs, and it throws when the gate salt is
+ * absent — so on a machine with no salt no witness is ever written, and
+ * "no witnesses" would mean "every round is a first round" forever. A
+ * witness store that cannot be trusted to have recorded an earlier round is
+ * UNMEASURED, not a first run.
+ */
+export type PriorGateRun =
+  | { kind: "ran"; witnesses: number }
+  | { kind: "first" }
+  | { kind: "unreadable"; reason: string };
+
+/**
+ * Read the witness store for evidence that a gate already ran (#494).
+ *
+ * The salt check comes FIRST and deliberately: an empty witness directory
+ * on a machine that cannot write witnesses is indistinguishable from an
+ * empty one on a machine that simply has not run yet, and only one of those
+ * is a first round.
+ */
+export function priorGateRun(
+  slug: string,
+  opts: { saltPath?: string; witnessDir?: string } = {},
+): PriorGateRun {
+  const salt = opts.saltPath ?? gateSaltPath();
+  if (!existsSync(salt)) {
+    return {
+      kind: "unreadable",
+      reason:
+        `the gate salt at ${salt} is absent, so no witness can be written and an earlier ` +
+        `gate run of this slug cannot be ruled out`,
+    };
+  }
+  let dir: string;
+  try {
+    dir = opts.witnessDir ?? join(slugWorkDir(slug), "witnesses");
+  } catch (e: any) {
+    return { kind: "unreadable", reason: `the witness directory for slug "${slug}" could not be resolved: ${e.message}` };
+  }
+  if (!existsSync(dir)) return { kind: "first" };
+  try {
+    const witnesses = readdirSync(dir).filter(f => f.endsWith(".json")).length;
+    return witnesses > 0 ? { kind: "ran", witnesses } : { kind: "first" };
+  } catch (e: any) {
+    return { kind: "unreadable", reason: `${dir} could not be listed: ${e.message}` };
+  }
+}
 
 /**
  * Whether tests disappeared since the last gate run (#307 SC-A19).
@@ -315,10 +400,19 @@ export type CensusVerdict =
  * round, and the guard would be permanently and silently dead for exactly the
  * repos it exists to protect — a polyglot consumer, or one whose suite the
  * walk cannot see. Reported, every run, rather than inferred from silence.
+ *
+ * And neither is `census-unverified` (#494). A banked census that this gate
+ * did not sign is not a census; where a gate run already happened, reading
+ * it as `first-reading` is the erasure wearing the first round's clothes.
+ * The two facts are deliberately decided together here, because neither one
+ * answers the question alone: the signature cannot say whether there was
+ * ever anything to erase, and the witness count cannot say whether what is
+ * there now is what was banked.
  */
 export function censusVerdict(
-  previous: Record<string, number> | undefined,
+  previous: PersistedCensus,
   current: Record<string, number>,
+  prior: PriorGateRun,
 ): CensusVerdict {
   const files = Object.keys(current).length;
   if (files === 0) {
@@ -329,9 +423,117 @@ export function censusVerdict(
         "so a heal round that deleted one could not be seen",
     };
   }
-  if (!previous || Object.keys(previous).length === 0) return { kind: "first-reading", files };
-  const regressions = censusRegressions(previous, current);
-  return regressions.length > 0 ? { kind: "regression", regressions } : { kind: "no-regression", files };
+  if (previous.kind === "verified" && Object.keys(previous.census).length > 0) {
+    const regressions = censusRegressions(previous.census, current);
+    return regressions.length > 0 ? { kind: "regression", regressions } : { kind: "no-regression", files };
+  }
+  // Nothing to compare against. Whether that is ordinary depends entirely on
+  // whether a gate has run for this slug before — the one fact the state
+  // file cannot be asked, because an agent erasing the census erases
+  // everything in it.
+  if (prior.kind === "first") return { kind: "first-reading", files };
+  const why = previous.kind === "unverified" ? previous.reason : "no census was banked in the state file";
+  const since =
+    prior.kind === "ran"
+      ? `${prior.witnesses} witness(es) of an earlier gate run for this slug exist`
+      : `whether an earlier gate run happened could not be read — ${prior.reason}`;
+  return {
+    kind: "census-unverified",
+    reason:
+      `the banked test census could not be verified (${why}), and ${since}. A round that ` +
+      `deleted a test and the census with it cannot be told from a first reading, so this ` +
+      `round is UNMEASURED rather than clean (#494)`,
+  };
+}
+
+/**
+ * The census this gate is willing to compare against (#494).
+ *
+ * `censusVerdict` decides what the round IS; this decides what gets banked
+ * for the next one, and the two are separate questions asked of the same
+ * reading. An unverified census is never carried forward — `nextCensus`
+ * would otherwise keep an attacker's number as "the previous reading".
+ */
+export function verifiedCensus(previous: PersistedCensus): Record<string, number> | undefined {
+  return previous.kind === "verified" ? previous.census : undefined;
+}
+
+/** What the gate counts and prints for a census verdict. */
+export interface CensusReport {
+  fails: number;
+  warns: number;
+  results: Array<{ check: string; result: "FAIL" | "WARN"; detail: string }>;
+  console: Array<{ level: "error" | "warn" | "log"; line: string }>;
+}
+
+/**
+ * Turn a verdict into what the gate counts (#307 SC-A19, #494).
+ *
+ * One binding, so there is one thing to mutate and one place where an arm
+ * can be forgotten. The arm this issue adds is a WARN and not a FAIL on
+ * purpose: a legitimate run on a machine whose witness store cannot be read
+ * reaches it, and a check that refuses rounds nobody can fix is removed
+ * within a week. A WARN that names the state is the difference between
+ * "unmeasured" and "clean", which is the whole claim.
+ */
+export function censusReport(verdict: CensusVerdict, censusRoot: string): CensusReport {
+  if (verdict.kind === "regression") {
+    return {
+      fails: 1,
+      warns: 0,
+      results: [
+        {
+          check: "test-census: a round removed tests",
+          result: "FAIL",
+          detail:
+            `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
+            `is not a gate that passed. Restore the test, or say in the PR which check ` +
+            `replaced it (#307 SC-A19).`,
+        },
+      ],
+      console: [{ level: "error", line: `Test census: REFUSED — ${verdict.regressions.join("; ")}` }],
+    };
+  }
+  // An empty census compares clean against an empty census on every
+  // subsequent round, and an erased one reads as a first round. Both are
+  // readings nobody took, so both are reported rather than inferred from
+  // silence.
+  if (verdict.kind === "unmeasured" || verdict.kind === "census-unverified") {
+    return {
+      fails: 0,
+      warns: 1,
+      results: [
+        {
+          check: "test-census: UNMEASURED",
+          result: "WARN",
+          detail: `${verdict.reason} (tree: ${censusRoot})`,
+        },
+      ],
+      console: [{ level: "warn", line: `Test census: UNMEASURED — ${verdict.reason}` }],
+    };
+  }
+  if (verdict.kind === "first-reading") {
+    // Said out loud rather than passed quietly: a run with nothing to
+    // compare has not been checked, and silence is how that becomes
+    // "checked and clean".
+    return {
+      fails: 0,
+      warns: 0,
+      results: [],
+      console: [
+        {
+          level: "log",
+          line: `Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`,
+        },
+      ],
+    };
+  }
+  return {
+    fails: 0,
+    warns: 0,
+    results: [],
+    console: [{ level: "log", line: `Test census: no test was removed (${verdict.files} file(s) compared)` }],
+  };
 }
 
 /**
@@ -357,11 +559,37 @@ export function censusVerdict(
  * because the gate tests and any heal agent have been writing to it since
  * this process loaded `state`, and clobbering their edits to record a census
  * trades one silent loss for another.
+ *
+ * Signed, since #494. The signature goes beside the census in the same
+ * file — an agent can delete both, which is the point: it cannot delete
+ * them and still look like a first round, because the witness store says a
+ * gate already ran.
+ *
+ * A salt this machine does not have is NOT an excuse to write an unsigned
+ * census quietly. The census is still banked, because the comparison is
+ * worth having even unverified, and the stale signature of a previous
+ * reading is DELETED rather than left beside a census it does not cover —
+ * a signature that verifies the wrong census is worse than none. The next
+ * round reads the result as UNMEASURED.
  */
-export function persistTestCensus(stateFilePath: string, census: Record<string, number>): void {
+export function persistTestCensus(
+  stateFilePath: string,
+  census: Record<string, number>,
+  slug: string,
+  opts: { saltPath?: string } = {},
+): void {
   const fresh = JSON.parse(readFileSync(stateFilePath, "utf-8"));
   fresh.gateContract = fresh.gateContract || {};
   fresh.gateContract.testCensus = census;
+  try {
+    fresh.gateContract.testCensusSignature = signCensus(slug, census, opts.saltPath);
+  } catch (e: any) {
+    delete fresh.gateContract.testCensusSignature;
+    console.warn(
+      `Test census: banked UNSIGNED — ${e.message}. The next gate run will read it as ` +
+        `UNMEASURED rather than as a census this gate wrote (#494).`,
+    );
+  }
   writeFileSync(stateFilePath, JSON.stringify(fresh, null, 2));
 }
 
@@ -374,18 +602,46 @@ export function persistTestCensus(stateFilePath: string, census: Record<string, 
  * how a round's reading quietly disappears. The direction it disappears in
  * is toward not refusing.
  *
- * A file that cannot be read or parsed returns `undefined`, which
- * `censusVerdict` turns into `first-reading` — said out loud rather than
- * passed quietly.
+ * Verified, since #494. Every way of not being a census this gate wrote is
+ * one reading — `unverified`, carrying the reason — and a state file with
+ * nothing banked at all is another. The distinction is not cosmetic: an
+ * absent census before the first gate run is ordinary, and the identical
+ * absence afterwards is the erasure. `censusVerdict` is where the two are
+ * told apart, using the witness store.
+ *
+ * Neither reading is a refusal on its own. A file that cannot be read or
+ * parsed on a run whose gate has never executed is still a first reading —
+ * said out loud rather than passed quietly.
  */
-export function readPersistedCensus(stateFilePath: string): Record<string, number> | undefined {
+export function readPersistedCensus(stateFilePath: string, slug: string): PersistedCensus {
+  let onDisk: any;
   try {
-    const onDisk = JSON.parse(readFileSync(stateFilePath, "utf-8"));
-    const census = onDisk?.gateContract?.testCensus;
-    return census && typeof census === "object" && !Array.isArray(census) ? census : undefined;
-  } catch {
-    return undefined;
+    onDisk = JSON.parse(readFileSync(stateFilePath, "utf-8"));
+  } catch (e: any) {
+    return { kind: "unverified", reason: `the state file could not be read or parsed: ${e.message}` };
   }
+  const census = onDisk?.gateContract?.testCensus;
+  const signature = onDisk?.gateContract?.testCensusSignature;
+  if (census === undefined && signature === undefined) return { kind: "absent" };
+  if (!census || typeof census !== "object" || Array.isArray(census)) {
+    return { kind: "unverified", reason: "the banked census is not an object" };
+  }
+  if (typeof signature !== "string" || signature.length === 0) {
+    return { kind: "unverified", reason: "the banked census carries no signature" };
+  }
+  let expected: string;
+  try {
+    expected = signCensus(slug, census);
+  } catch (e: any) {
+    return { kind: "unverified", reason: `the census signature could not be checked: ${e.message}` };
+  }
+  if (expected !== signature) {
+    return {
+      kind: "unverified",
+      reason: "the banked census does not match its signature — it was rewritten after the gate banked it",
+    };
+  }
+  return { kind: "verified", census };
 }
 
 export function nextCensus(
@@ -2512,47 +2768,26 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
     // stale copy and then persisting over the fresh one is how a round's
     // reading quietly disappears — and the direction it disappears in is
     // toward not refusing.
-    const previous = readPersistedCensus(sf);
-    const verdict = censusVerdict(previous, current);
-    const banked = nextCensus(previous, current, verdict);
+    const previous = readPersistedCensus(sf, slug);
+    // Whether a gate already ran for this slug comes from the witness store
+    // and not from the state file (#494). An agent erasing the census
+    // erases the signature with it, so the state file cannot be asked
+    // whether there was ever anything to erase.
+    const prior = priorGateRun(slug);
+    const verdict = censusVerdict(previous, current, prior);
+    const banked = nextCensus(verifiedCensus(previous), current, verdict);
     state.gateContract = state.gateContract || {};
     state.gateContract.testCensus = banked;
     // To DISK, not just to `state` — `writeGateResult` below re-reads the
     // file, so an in-memory mutation here never lands and the next run
     // would find no census to compare against. See `persistTestCensus`.
-    persistTestCensus(sf, banked);
+    persistTestCensus(sf, banked, slug);
 
-    if (verdict.kind === "regression") {
-      fails++;
-      results.push({
-        check: "test-census: a round removed tests",
-        result: "FAIL" as const,
-        detail:
-          `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
-          `is not a gate that passed. Restore the test, or say in the PR which check ` +
-          `replaced it (#307 SC-A19).`,
-      });
-      console.error(`Test census: REFUSED — ${verdict.regressions.join("; ")}`);
-    } else if (verdict.kind === "unmeasured") {
-      // A WARN rather than silence. An empty census compares clean against
-      // an empty census on every subsequent round, so a guard that said
-      // nothing here would be permanently dead on a polyglot consumer and
-      // would look exactly like a guard that keeps finding nothing wrong.
-      warns++;
-      results.push({
-        check: "test-census: UNMEASURED",
-        result: "WARN" as const,
-        detail: `${verdict.reason} (tree: ${censusRoot})`,
-      });
-      console.warn(`Test census: UNMEASURED — ${verdict.reason}`);
-    } else if (verdict.kind === "first-reading") {
-      // Said out loud rather than passed quietly: a run with nothing to
-      // compare has not been checked, and silence is how that becomes
-      // "checked and clean".
-      console.log(`Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`);
-    } else {
-      console.log(`Test census: no test was removed (${verdict.files} file(s) compared)`);
-    }
+    const report = censusReport(verdict, censusRoot);
+    fails += report.fails;
+    warns += report.warns;
+    results.push(...report.results);
+    for (const line of report.console) console[line.level](line.line);
   }
 
   console.log(`\nTest results: ${passes} pass, ${fails} fail, ${warns} warn`);
