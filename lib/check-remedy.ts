@@ -42,6 +42,8 @@
 import { existsSync } from "fs";
 import { join } from "path";
 
+import { stripJsComments } from "./strip-js-comments";
+
 /**
  * The document, relative to a project root.
  *
@@ -92,4 +94,47 @@ export function remedyMessage(opts: {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * How far before a call site an `expect(` may open and still be counted as
+ * the assertion it belongs to.
+ *
+ * Generous on purpose. The cost of being too wide is a call site credited to
+ * a nearby assertion it does not serve; the cost of being too narrow is a
+ * correctly-wired check reported as missing, which trains the next agent to
+ * widen the number rather than read it.
+ */
+const EXPECT_WINDOW = 200;
+
+/** How far into a call site to look for its `check:` field. */
+const FIELD_WINDOW = 600;
+
+/**
+ * The `check:` value of every ASSERTED `remedyMessage(...)` call in a source.
+ *
+ * Pure, and over text rather than a path, because the two properties below
+ * are the whole point and neither can be witnessed against the live tree —
+ * the live tree has no violating file to find, so a scan that silently lost
+ * both would return the right answer today and nothing the day it mattered.
+ * `test/check-remedy.test.ts` plants a source for each.
+ *
+ *  - **Comments are not code.** The scan looks for a symbol that this very
+ *    docblock names. Counting prose would let a file satisfy the guard by
+ *    describing the call it does not make — a checker that greps for a string
+ *    cannot tell a use from a mention of one.
+ *  - **A composed message is not an asserted one.** Building the string and
+ *    never passing it to `expect` leaves the check failing with nothing while
+ *    the guard reads green, which is the cheapest wrong way to go green here.
+ */
+export function routedCheckIds(source: string): string[] {
+  const src = stripJsComments(source);
+  const found: string[] = [];
+  const CALL = "remedyMessage(";
+  for (let i = src.indexOf(CALL); i !== -1; i = src.indexOf(CALL, i + 1)) {
+    if (!src.slice(Math.max(0, i - EXPECT_WINDOW), i).includes("expect(")) continue;
+    const field = /check:\s*"([^"]+)"/.exec(src.slice(i, i + FIELD_WINDOW));
+    if (field) found.push(field[1]!);
+  }
+  return found;
 }
