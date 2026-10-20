@@ -3838,15 +3838,64 @@ export function writtenPath(line: string): string | null {
   return m?.[1] ?? null;
 }
 
-export function reportScaffoldActions(actions: string[]): number {
+/**
+ * What an action line carries when the run that produced it was a rehearsal.
+ *
+ * **A TRAILING marker, and that is a constraint rather than a preference.**
+ * `writtenPath` above matches `^(?:CREATED|UPDATED|…): path` after a trim,
+ * and two callers depend on it: `postScaffoldCommit` stages by it, and
+ * `test/scaffold-audit-agreement.test.ts` compares the paths audit NAMES
+ * against the paths `--fix` WROTE. A leading `REHEARSED ` prefix — the form
+ * #642 suggests — makes `writtenPath` return null for every audit line, so
+ * that comparison would go green with nothing in it on both sides. Agreement
+ * by both sides reporting nothing is the vacuous shape #398 built it to
+ * avoid.
+ *
+ * Square brackets rather than parentheses on purpose: most action lines
+ * already end in a parenthetical (`(security template)`, `(rungate devDep)`),
+ * and a marker that looks like one more of those is one a reader skims past.
+ *
+ * One exported binding, so there is one thing to mutate and one string for a
+ * consumer to grep.
+ */
+export const REHEARSAL_MARKER = " [REHEARSAL — not applied]";
+
+/**
+ * ## Every line, because a line is the unit a reader consumes (#642)
+ *
+ * The mode was announced exactly once, by `rehearsalNotice`, at the top of
+ * the run — and then no line of the report carried it. Measured on two
+ * planted repositories: **all 56 of an audit's report lines were
+ * byte-identical to the lines `--fix` printed for the same work.** So
+ * `grep ci.yml`, `| tail -25`, a scrolled terminal, and an agent reading the
+ * last N lines of a tool result all received `REPLACED: … (+114 lines)` with
+ * no way to tell it from a write that landed. The issue's author read one
+ * four times and filed a missing-write bug off it. The report never lied;
+ * its unit of qualification was wider than its unit of consumption.
+ *
+ * `mode` is REQUIRED rather than defaulted. A default of `false` is a silent
+ * default substitution (`.claude/rules/config-access.md`): a future call site
+ * that forgets to say which mode it is in would print unqualified lines and
+ * look exactly like one that meant to.
+ *
+ * **Not sufficient: marking the `Total:` line, or the first line.** That is
+ * the cheapest repair and it leaves every grep/tail/scrolled consumer in
+ * precisely the position the issue is about. The `Total:` line is marked as
+ * well, but after the per-line marking, not instead of it.
+ */
+export function reportScaffoldActions(actions: string[], mode: { rehearsed: boolean }): number {
+  const qualify = (line: string) => (mode.rehearsed ? `${line}${REHEARSAL_MARKER}` : line);
   console.log("\n=== Scaffold Report ===");
-  for (const action of actions) console.log(`  ${action}`);
+  for (const action of actions) console.log(`  ${qualify(action)}`);
   const count = (verb: string) => actions.filter(a => a.startsWith(verb)).length;
   // AUTO-FIXED is reported separately from AUDITED on purpose (#42 SC-3).
   // What the scaffold CHANGED and what it merely NOTICED are different facts,
   // and a reader who cannot tell them apart has to diff the tree to find out
   // which of the reported gaps are still gaps.
-  console.log(`\nTotal: ${count("CREATED")} created, ${count("REPLACED")} replaced, ${count("AUTO-FIXED")} auto-fixed, ${count("SKIP")} skipped, ${count("REFUSED")} refused`);
+  // The marker goes on the END of this line rather than into the `Total:`
+  // token: `test/scaffold-auto-fix.test.ts` finds it with
+  // `startsWith("\nTotal:")`, and a reader's eye finds it the same way.
+  console.log(qualify(`\nTotal: ${count("CREATED")} created, ${count("REPLACED")} replaced, ${count("AUTO-FIXED")} auto-fixed, ${count("SKIP")} skipped, ${count("REFUSED")} refused`));
   return count("REFUSED");
 }
 
