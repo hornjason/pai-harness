@@ -1,12 +1,17 @@
 #!/usr/bin/env bun
 /**
- * Is each declared action pin still the commit its tag points at? (#377)
+ * Is each declared action pin still the commit its tag points at? (#377, #789)
  *
  * A SCRIPT and not a test, deliberately. Staleness is a network fact, and a
  * suite that asks GitHub a question fails when GitHub is slow, when a runner
  * has no egress, and on an aeroplane — which is how a check becomes a thing
  * people switch off. A refusal keyed to a date instead would go red on a day
  * nobody changed anything, which is the same problem wearing a calendar.
+ *
+ * #377 left it there, and "run deliberately" turned out to mean never:
+ * nothing in the repository invoked it. `.github/workflows/action-pins.yml`
+ * runs it weekly and on demand (#789). That workflow is this repository's
+ * and is not generated into consumers.
  *
  * So the division is: the SUITE holds the structure — one declaration, every
  * position agreeing with it, every SHA pin a full commit carrying its version
@@ -21,7 +26,7 @@
  * Exit 0: every SHA pin matches its tag. Exit 1: one is stale, or one could
  * not be read.
  */
-import { PINNING, type ActionPin } from "../lib/workflow-actions";
+import { BUMP_PROCEDURE, PINNING, type ActionPin } from "../lib/workflow-actions";
 
 /** The one non-zero exit, so a test can prove a refusal is what it observed. */
 export const REFUSE_EXIT = 1;
@@ -96,10 +101,12 @@ if (import.meta.main) {
     if (r.state === "current") { console.log(`current: ${r.action}@${r.sha}`); continue; }
     bad++;
     if (r.state === "stale") {
+      // The procedure is NOT spelled here. One declaring position, so a
+      // reader of this refusal and a reader of the module are told the same
+      // thing (#789).
       console.error(
         `STALE: ${r.action} is pinned to ${r.declared}, but ${r.version} now points at ` +
-          `${r.actual}. Update lib/workflow-actions.ts — pin, version and resolvedOn together — ` +
-          `and every position follows in the same commit.`,
+          `${r.actual}. ${BUMP_PROCEDURE}`,
       );
     } else {
       console.error(`UNMEASURED: ${r.why}. This is not "the pin is current"; nobody looked.`);
