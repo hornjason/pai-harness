@@ -1,0 +1,31 @@
+{
+  "_readme": [
+    "SC id reservations. Read by lib/sc-reservations.ts and enforced by lib/create-sc.ts.",
+    "Declare your block HERE, on main, before you consume any id — including a renumber",
+    "during a repair, a hand-written fixture id, or a block chosen by eyeballing headroom.",
+    "A renumber is an allocation. See .claude/rules/parallel-sessions.md and issue #725.",
+    "",
+    "Shape: every entry needs owner (branch name or issue ref), from and to (inclusive,",
+    "positive integers below the 9000 fixture floor). note is optional. Blocks must not",
+    "overlap — the reader refuses the whole store if two do, because a store that hands",
+    "one id to two owners is worse than no store at all.",
+    "",
+    "The `reservations` key is the control string: an object without it is UNREADABLE,",
+    "not empty, and the allocator refuses rather than returning a number. Delete your",
+    "entry when your branch merges; a block nobody prunes is headroom nobody can use."
+  ],
+  "reservations": [
+    {
+      "owner": "fix/640-644-run-branch-base",
+      "from": 2400,
+      "to": 2419,
+      "note": "#640 + #644, PR #731. Already holds 2170-2184 on its branch, which is the block that overlapped PR #717's 2173-2178 on 2026-10-19 (instance three). This is headroom for anything it still needs; the consumed half is history and lives in .claude/rules/parallel-sessions.md, not here."
+    },
+    {
+      "owner": "fix/541-line-citation-check",
+      "from": 2420,
+      "to": 2439,
+      "note": "#541, PR #730. Already holds 2230-2246 on its branch. Headroom only."
+    }
+  ]
+}

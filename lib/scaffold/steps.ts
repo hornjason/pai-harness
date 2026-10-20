@@ -27,7 +27,7 @@ import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep } from "./ai-rev
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
-import { tier1Ere } from "../secret-patterns";
+import { TIER2_ALLOWED_VALUE_ERE, tier1Ere, tier2Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
@@ -37,6 +37,7 @@ import { scanDocsDirectory } from "../doc-routing";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { declaredBunVersion, setupBunWith } from "../bun-version";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
+import { censusReport, stampWorkflow, workflowCensus } from "./workflow-census";
 import {
   readSuccessDoc,
   readSuccessTemplate,
@@ -2707,12 +2708,38 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
 name: CI
 
 on:
+  # merge_group carries NO branches: filter, deliberately. A merge queue builds
+  # a temporary \`gh-readonly-queue/<base>/...\` ref, which no branch list here
+  # would match — so filtering it is the same as not handling the event, and a
+  # trigger that is present and inert is worse than an absent one because the
+  # file then reads as handling it.
+  #
+  # Without this trigger a merge queue cannot work at all, and it fails in the
+  # worst available way: the queue waits for a required check that will never
+  # report, every entry sits pending with no error anywhere, and the repo looks
+  # like it has simply stopped merging. UNMEASURED, not red.
+  #
+  # This is the SHARDED body, and it is the one that matters most: the required
+  # context is the \`test\` aggregate below, which only exists here. The first
+  # draft of #765 added the trigger to the unsharded body only — 91 tests passed
+  # and the repo that needed it was untouched.
+  merge_group:
   push:
     branches:
 ${branchList}
   pull_request:
     branches:
 ${branchList}
+
+permissions:
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
 
 jobs:
   test-shard:
@@ -2756,12 +2783,25 @@ ${bunStep}
 name: CI
 
 on:
+  # See the sharded body above: no branches: filter, and its absence hangs a
+  # merge queue silently rather than failing it.
+  merge_group:
   push:
     branches:
 ${branchList}
   pull_request:
     branches:
 ${branchList}
+
+permissions:
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
 
 jobs:
   test:
@@ -2780,12 +2820,25 @@ ${bunStep}
 name: Gates
 
 on:
+  # See ci.yml above: a merge queue builds a ref no branch list matches, so
+  # this trigger carries no filter and its absence hangs the queue silently.
+  merge_group:
   push:
     branches:
 ${branchList}
   pull_request:
     branches:
 ${branchList}
+
+permissions:
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
+  # Neither job needs it: both check out, install and run tests.
+  contents: read
 
 jobs:
   gates:
@@ -2823,7 +2876,7 @@ ${bunStep}
           # assignment itself succeed, so $? is always 0 and the error branch
           # becomes dead code — the scan would fail open on a git error.
           set +e
-          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- .)
+          tier2=$(git grep -I -hoE '${tier2Ere()}' -- .)
           rc=$?
           set -e
           # git grep: 0 = match, 1 = no match, >1 = real error.
@@ -2834,7 +2887,7 @@ ${bunStep}
           # Exclusion applies to the extracted VALUE, not the whole line.
           # Matching anywhere on the line let a trailing "# placeholder"
           # launder a real secret past the check.
-          if printf '%s\\n' "$tier2" | grep -qvE '^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
+          if printf '%s\\n' "$tier2" | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi
@@ -2898,11 +2951,23 @@ ${buildAuthDetectStep()}${buildReviewRunStep()}`;
   for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml]] as const) {
     const label = `.github/workflows/${name}`;
     try {
-      writeManagedFile(join(workflowsDir, name), content, label, actions, opts);
+      // Stamped, so the file says who wrote it. The owned-path list is a list
+      // of files this generator writes, which is precisely why it could never
+      // describe a file it does not write — ownership has to travel with the
+      // bytes for an unowned workflow to be visible at all (#722). The marker
+      // is a YAML comment, so nothing that parses the workflow can see it.
+      writeManagedFile(join(workflowsDir, name), stampWorkflow(content), label, actions, opts);
     } catch (e) {
       actions.push(`REFUSED: ${(e as Error).message}`);
     }
   }
+
+  // Everything else in the directory, named. This generator writes three
+  // files; a consumer's CI may run any number, and until #722 the ones it did
+  // not write were not merely unmanaged but unreported — a clean run over 2 of
+  // 7 workflow files, which reads exactly like a clean run over 7 of 7.
+  // Reporting only: what a consumer does with a NOT-OWNED workflow is theirs.
+  actions.push(...censusReport(workflowCensus(root)));
 }
 
 // ── Consumer hook deployment ─────────────────────────────────
@@ -3194,10 +3259,17 @@ fi
 # Exclusions are env lookups and explicit non-values. password =
 # process.env.DB_PASSWORD is a reference, not a secret, and flagging it would
 # only train people to reach for --no-verify.
+#
+# Both expressions are interpolated from lib/secret-patterns.ts, never
+# written here. A hardcoded copy is a second binding for one string, and
+# #489's narrowing then has to be applied in places nothing compares. The
+# allowlist's leading \`^$|\` alternative cannot fire on this pipeline —
+# grep -oE emits no empty lines — so using the one constant is the same
+# behaviour with one fewer decider.
 if printf '%s\\n' "$staged_diff" \\
   | grep '^+' \\
-  | grep -oE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' \\
-  | grep -qvE '[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
+  | grep -oE '${tier2Ere()}' \\
+  | grep -qvE '${TIER2_ALLOWED_VALUE_ERE}'; then
   echo "ERROR: Potential credential assignment in staged changes"
   exit 1
 fi
