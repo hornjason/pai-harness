@@ -297,7 +297,14 @@ describe("#611 AC-6: under the mutant, the annotated element reaches the collect
       "worktreeIdentity", "REPO", "taskSourceRefusal",
       "establishRunRef", "integrateWave", "waveNeedsIntegration",
       "measureLaunchBase",
-      `${slice("FILES-CHANGED-SHAPE")}\n${slice("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
+      // #830 added a per-sub-issue path check to the decomposed block, and it
+      // asks the claim audit's own `claimKey` and `pathRefusal` rather than
+      // keeping a copy — so those two blocks are evaluated here, from the
+      // SAME `src` the rest of this factory reads. Pulling them from the real
+      // source instead would let the mutant run half-real, which is the thing
+      // this file exists to rule out.
+      `${slice("SECURITY-HELPERS")}\n${slice("COLLECT-CLAIM")}\n`
+        + `${slice("FILES-CHANGED-SHAPE")}\n${slice("DECOMPOSED-SHIP")}\nreturn runDecomposedShip;`,
     );
     const run = factory(
       () => {},

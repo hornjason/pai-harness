@@ -209,6 +209,12 @@ const INJECTED = new Set([
   "measureLaunchBase",
   // supplied as text, from FILES-CHANGED-SHAPE
   "filesChangedShapeRefusal",
+  // #830, supplied as text from the same block. It is listed here rather
+  // than left to the resolver because the block it lives in is ALREADY
+  // prepended whole: following it as well would declare it twice, and the
+  // second copy would be the thing a later reader mutates while the first
+  // one holds the case up — two deciders that agree, built by the loader.
+  "reportedPathRefusal",
 ]);
 
 function loadRunDecomposedShip(deps: {
@@ -245,6 +251,19 @@ function loadRunDecomposedShip(deps: {
     throw new Error("ship.js is missing the FILES-CHANGED-SHAPE-START/END markers");
   }
   const shapeBlock = shipSource.slice(shapeStart, shapeEnd);
+
+  // #830 put a path reading inside that block, and it asks the claim audit's
+  // own `claimKey` and `pathRefusal` rather than keeping a copy. Both live in
+  // other marked blocks, so both are evaluated here — from the REAL source,
+  // for the reason every injection above states: a stub would let this suite
+  // and ship.js disagree about which reported paths are refusable.
+  const marked = (name: string) => {
+    const a = shipSource.indexOf(`// ──── ${name}-START ────`);
+    const b = shipSource.indexOf(`// ──── ${name}-END ────`);
+    if (a === -1 || b === -1) throw new Error(`ship.js is missing the ${name}-START/END markers`);
+    return shipSource.slice(a, b);
+  };
+  const pathTableBlocks = `${marked("SECURITY-HELPERS")}\n${marked("COLLECT-CLAIM")}`;
 
   // #218's guard, injected for the same reason as the one above: a stub
   // would let this block and the real one disagree about which repository a
@@ -303,7 +322,7 @@ function loadRunDecomposedShip(deps: {
     // #611's element-shape guard, evaluated INTO the block's scope for the
     // same reason the guards above are injected: a stub would let this suite
     // and the real block disagree about what a reported path is.
-    `${shapeBlock}\n${followed.join("\n")}\n${block}\nreturn runDecomposedShip;`,
+    `${pathTableBlocks}\n${shapeBlock}\n${followed.join("\n")}\n${block}\nreturn runDecomposedShip;`,
   );
 
   const runDecomposedShip = factory(

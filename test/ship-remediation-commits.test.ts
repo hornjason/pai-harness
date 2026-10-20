@@ -316,6 +316,24 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     `${shipSource.slice(sStart, sEnd)}\nreturn filesChangedShapeRefusal;`,
   )();
 
+  // #830 added a fifth, injected for the same reason. It lives in the same
+  // block as the one above but asks the claim audit's own `claimKey` and
+  // `pathRefusal`, so those two blocks are evaluated alongside it — a stub
+  // here would let report time and collection time disagree about which
+  // reported paths are refusable, which is the one thing #830 is about.
+  const marked = (name: string) => {
+    const a = shipSource.indexOf(`// ──── ${name}-START ────`);
+    const b = shipSource.indexOf(`// ──── ${name}-END ────`);
+    if (a === -1 || b === -1) throw new Error(`ship.js is missing the ${name}-START/END markers`);
+    return shipSource.slice(a, b);
+  };
+  const reportedPathRefusal = new Function(
+    "PROJECT_ROOT",
+    "log",
+    `${marked("SECURITY-HELPERS")}\n${marked("COLLECT-CLAIM")}\n`
+      + `${marked("FILES-CHANGED-SHAPE")}\nreturn reportedPathRefusal;`,
+  )(REPO_ROOT, () => {});
+
   return new Function(
     "runCeremonyOnce",
     "briefedAgent",
@@ -328,6 +346,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     "REPO",
     "taskSourceRefusal",
     "filesChangedShapeRefusal",
+    "reportedPathRefusal",
     // #676: the selected-test command, resolved at ship.js's module scope
     // and interpolated into the prompt as a plain string.
     "SELECTED_TESTS_COMMAND",
@@ -344,6 +363,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     RUN_REPO,
     taskSourceRefusal,
     filesChangedShapeRefusal,
+    reportedPathRefusal,
     "bun test $(bun /h/scripts/select-affected-tests.ts --work '/tmp/work/selection'/\"$(basename \"$PWD\")\")",
   ) as () => Promise<{ success?: boolean; status?: string; buildResult?: any }>;
 }

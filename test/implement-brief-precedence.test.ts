@@ -333,6 +333,19 @@ function slicedFunction(header: string): string {
  * own markers. Same extraction as `test/ship-remediation-commits.test.ts`'s
  * loader, which is where the pattern comes from.
  */
+/**
+ * #830's report-time path check, with the two deciders it asks evaluated into
+ * the same scope from their own markers.
+ */
+function reportedPathRefusalFromSource(): (b: unknown, label: string) => string | null {
+  const b = (name: string) => slice(`// ──── ${name}-START ────`, `// ──── ${name}-END ────`);
+  return new Function(
+    "PROJECT_ROOT",
+    "log",
+    `${b("SECURITY-HELPERS")}\n${b("COLLECT-CLAIM")}\n${b("FILES-CHANGED-SHAPE")}\nreturn reportedPathRefusal;`,
+  )("/repo", () => {}) as (b: unknown, label: string) => string | null;
+}
+
 function loadRunImplement(buildResult: unknown) {
   const guard = (name: string, fn: string) =>
     new Function(`${slice(`// ──── ${name}-START ────`, `// ──── ${name}-END ────`)}\nreturn ${fn};`)();
@@ -343,6 +356,12 @@ function loadRunImplement(buildResult: unknown) {
     // #611's element-shape guard, from its own markers for the same reason
     // as the three above.
     "filesChangedShapeRefusal",
+    // #830's report-time path check, from its own markers alongside the two
+    // deciders it asks — `claimKey` and `pathRefusal`, which live in
+    // COLLECT-CLAIM and SECURITY-HELPERS. Not stubbed, for the reason every
+    // guard above is not: a stub would let report time and collection time
+    // disagree about what a path is, which is the disagreement it closes.
+    "reportedPathRefusal",
     // #676's selected-test command. A resolved STRING, which is the whole
     // reason it is resolved at ship.js's module scope rather than built
     // inside runImplement: a builder here would be four free names and a
@@ -361,6 +380,7 @@ function loadRunImplement(buildResult: unknown) {
     "owner/project",
     guard("BRIEF-PRECEDENCE", "taskSourceRefusal"),
     guard("FILES-CHANGED-SHAPE", "filesChangedShapeRefusal"),
+    reportedPathRefusalFromSource(),
     "bun test $(bun /h/scripts/select-affected-tests.ts --work '/tmp/work/selection'/\"$(basename \"$PWD\")\")",
   ) as () => Promise<unknown>;
 }
@@ -391,7 +411,12 @@ function loadRunDecomposedShip(
     // #611 added a free reference too; its block text is evaluated into the
     // scope rather than injected, because ship.js declares it at module
     // scope beside the decomposed block.
-    `${slice("// ──── FILES-CHANGED-SHAPE-START ────", "// ──── FILES-CHANGED-SHAPE-END ────")}\n${block}\nreturn runDecomposedShip;`,
+    // #830 added a fifth, and it reaches further: the shape block's new path
+    // check asks COLLECT-CLAIM's `claimKey` and SECURITY-HELPERS'
+    // `pathRefusal`, so both are evaluated in here too.
+    `${slice("// ──── SECURITY-HELPERS-START ────", "// ──── SECURITY-HELPERS-END ────")}\n`
+      + `${slice("// ──── COLLECT-CLAIM-START ────", "// ──── COLLECT-CLAIM-END ────")}\n`
+      + `${slice("// ──── FILES-CHANGED-SHAPE-START ────", "// ──── FILES-CHANGED-SHAPE-END ────")}\n${block}\nreturn runDecomposedShip;`,
   )(
     (m: string) => logs.push(String(m)),
     briefedAgent,
