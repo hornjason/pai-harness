@@ -52,6 +52,7 @@
  */
 
 import { createHash } from "crypto";
+import { PROJECT_STATE_OWNERSHIP } from "../project-state-derivation";
 
 import {
   BRIEF_CONSTRAINTS_SECTION,
@@ -182,7 +183,10 @@ export const OWNED_FILES: OwnedFile[] = [
   {
     path: "PROJECT-STATE.md",
     strategy: "create-only",
-    customize: "DA-owned (#296) — generated from project-state.json by the DA",
+    // #781: whether this project GENERATES the file is a reading, not a
+    // constant — see lib/project-state-derivation.ts. This table has no
+    // root to scan, so it states only the part that is true everywhere.
+    customize: `${PROJECT_STATE_OWNERSHIP} — maintained by the DA; whether this project derives it from the state JSON is reported per project in .claude/rules/key-files.md`,
     avoid: "Don't edit directly; don't expect re-scaffold to update it",
   },
   {
