@@ -108,7 +108,14 @@ function detectTechStack(root: string): string[] {
 
 // ── Spec scanning ──────────────────────────────────────────────
 
-function scanSpecs(root: string): SpecEntry[] {
+/**
+ * Exported for `lib/scaffold/steps.ts`, which used to answer this question
+ * with its own copy. The copy drifted three times — #382's `SPEC-TEMPLATE.md`
+ * filter and #579's `criteriaNone` and `testable` derivation — each time
+ * because a fix landed here and nobody knew a second implementation existed.
+ * One derivation, so the next fix cannot land in only half of them (#827).
+ */
+export function scanSpecs(root: string): SpecEntry[] {
   const specsDir = join(root, "specs");
   if (!existsSync(specsDir)) return [];
 
