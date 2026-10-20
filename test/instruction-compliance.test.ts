@@ -5,6 +5,7 @@ import { join } from "path";
 import {
   runTemplateCompliance,
   collectComplianceSurface,
+  COMPLIANCE_TOOLS,
   type ComplianceReport,
 } from "../lib/compliance";
 import { toolProbe, type ToolProbe } from "../lib/tool-probe";
@@ -65,24 +66,31 @@ describe("Instruction Compliance — Layer 1 (Template Quality)", () => {
   // better. All three are `findings.length === 0`. What the name claims —
   // "scored by at least one tool" — is `scoredBy`, which is a reading of
   // which tools READ the file and is unaffected by how good it is.
+  /**
+   * A refusal that only says "no coverage" is a refusal nobody can act on:
+   * installing something fixes `absent` and does nothing for `errored`. So
+   * the message names the file and every tool's own outcome and reason, which
+   * is the reading #597 put on the report for exactly this.
+   */
+  const unread = (file: string) =>
+    `${file} is on the surface and no tool read it. ` +
+    COMPLIANCE_TOOLS.map(
+      t => `${t}: ${report.toolProbes[t].outcome} (${report.toolProbes[t].reason})`,
+    ).join("; ") +
+    ` — ${report.reading.reason ?? "both tools answered, so this is not a missing tool"}`;
+
   test("#755: agent briefs are read by at least one tool", () => {
     const agentFiles = report.files.filter(f => f.file.includes(".claude/agents/"));
     expect(agentFiles.length).toBeGreaterThan(0);
     for (const f of agentFiles) {
-      expect(
-        f.scoredBy,
-        `${f.file} is on the surface and no tool read it — ${report.reading.reason ?? "both tools answered"}`,
-      ).not.toEqual([]);
+      expect(f.scoredBy, unread(f.file)).not.toEqual([]);
     }
   });
 
   test("#755: AGENTS.md is read by at least one tool", () => {
     const agentsMd = report.files.find(f => f.file === "AGENTS.md");
     expect(agentsMd).toBeDefined();
-    expect(
-      agentsMd!.scoredBy,
-      `AGENTS.md is on the surface and no tool read it — ${report.reading.reason ?? "both tools answered"}`,
-    ).not.toEqual([]);
+    expect(agentsMd!.scoredBy, unread("AGENTS.md")).not.toEqual([]);
   });
 
   // The other direction, and the reason the two cases above are not vacuous:
@@ -91,14 +99,17 @@ describe("Instruction Compliance — Layer 1 (Template Quality)", () => {
   // same on any machine.
   test("#755: a file no tool read reports an empty coverage, not a clean one", async () => {
     const root = mkdtempSync(join(tmpdir(), "compliance-scoredby-"));
-    const file = join(root, "AGENTS.md");
-    writeFileSync(file, "# agents\n\nDo the thing.\n");
+    writeFileSync(join(root, "AGENTS.md"), "# agents\n\nDo the thing.\n");
 
     const absent = (tool: string): ToolProbe =>
       toolProbe({ outcome: "absent", tool, exitCode: null, reason: `PLANTED-${tool}-absent` });
 
     const unread = await runTemplateCompliance(root, {
-      surface: [file],
+      // A surface entry is a path RELATIVE to the root, not an absolute one —
+      // `collectComplianceSurface` joins it and skips what does not exist, so
+      // an absolute path here would silently scan nothing and the case would
+      // be asserting over an empty report.
+      surface: ["AGENTS.md"],
       writeReport: false,
       probes: { agnix: absent("agnix"), reporails: absent("reporails") },
     });
@@ -111,6 +122,51 @@ describe("Instruction Compliance — Layer 1 (Template Quality)", () => {
     expect(score!.scoredBy).toEqual([]);
     expect(unread.reading.reading).toBe("UNMEASURED");
   });
+
+  // The half of that pair that the live surface cannot supply: every file in
+  // this repository currently carries findings, so nothing in the tree can
+  // witness a file that was READ and came back CLEAN. That is the state the
+  // old assertion called unscored, and it is the state this repo is trying to
+  // reach — so the fix has to be measured against it before it arrives.
+  //
+  // Named, because it is the cheapest wrong fix available here: deriving
+  // `scoredBy` from `findings.length > 0` passes every other case in this
+  // file and is the original defect under a new name. This case is the only
+  // thing that refuses it.
+  test("#755: a file that was read and is clean reports coverage, not silence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "compliance-clean-"));
+    writeFileSync(join(root, "AGENTS.md"), "# Project\n\nRun `bun test` before every commit.\n");
+
+    // Only RepoRails is injected — agnix is probed for real, so the case is a
+    // measurement of a tool that genuinely read the file rather than of an
+    // injected reading.
+    const clean = await runTemplateCompliance(root, {
+      surface: ["AGENTS.md"],
+      writeReport: false,
+      probes: {
+        reporails: toolProbe({
+          outcome: "absent",
+          tool: "reporails",
+          exitCode: null,
+          reason: "PLANTED-reporails-absent",
+        }),
+      },
+    });
+
+    const score = clean.files.find(f => f.file === "AGENTS.md");
+    expect(score).toBeDefined();
+    expect(score!.findings, "the fixture must be clean, or it witnesses nothing").toEqual([]);
+
+    if (clean.toolProbes.agnix.available) {
+      expect(score!.scoredBy).toEqual(["agnix"]);
+    } else {
+      // agnix is not installed on this machine. That is not a pass: there is
+      // nothing here that read the file, so the only honest reading is the
+      // one the report already gives, asserted rather than skipped.
+      expect(clean.reading.reading).toBe("UNMEASURED");
+      expect(score!.scoredBy).toEqual([]);
+    }
+  }, 60_000);
 
   test("SC-183: tools not installed produce WARN, not silence", () => {
     // If both tools available, this test just verifies the field exists
