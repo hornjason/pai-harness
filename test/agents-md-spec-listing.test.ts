@@ -17,6 +17,7 @@ import { spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { remedyMessage } from "../lib/check-remedy";
 
 import { refreshAgentsMd } from "../lib/scaffold/steps";
 import {
@@ -65,8 +66,19 @@ describe("#382: the audit reads the surfaces the generator writes to", () => {
     // The live case, and the one the issue is about: 23 filenames and a
     // CODE-MAP line on every scaffold run, all false, none clearable.
     const issues = auditIssues(REPO);
-    expect(issues.filter(i => i.startsWith("UNLISTED specs")), "a spec this repo lists is still reported")
-      .toEqual([]);
+    const unlisted = issues.filter(i => i.startsWith("UNLISTED specs"));
+    expect(
+      unlisted,
+      remedyMessage({
+        root: REPO,
+        check: "SC-1891",
+        violations: unlisted,
+        fix:
+          "name each spec in AGENTS.md or in a file under .claude/rules/ — the same row " +
+          "HYGIENE-4 wants in .claude/rules/specs-routing.md satisfies both, and these two " +
+          "checks read the same population from different surfaces.",
+      }),
+    ).toEqual([]);
     expect(issues.filter(i => i.includes("CODE-MAP")), "CODE-MAP is routed and still reported")
       .toEqual([]);
 
