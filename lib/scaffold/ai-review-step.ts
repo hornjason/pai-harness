@@ -49,11 +49,25 @@ export const AI_REVIEW_REQUIRED_EXIT = 1;
 /** The four states the step can resolve. Exactly one is reached per run. */
 export type AiReviewAuthMode = "vertex" | "oauth" | "api-key" | "none";
 
+/**
+ * The state "no credential is configured", spelled once.
+ *
+ * The generated script tests for it, prints it, and AIREVIEW-1 reads it back
+ * out of a real run to decide which claim applies to this consumer (#631). A
+ * second literal would be a second decider for one question, and the one
+ * that drifted would be invisible — the script would still run and the check
+ * would simply stop recognising the state it is about.
+ */
+export const AI_REVIEW_MODE_NONE: AiReviewAuthMode = "none";
+
+/** Federation. Decided when the file is written, not read from a secret. */
+export const AI_REVIEW_MODE_VERTEX: AiReviewAuthMode = "vertex";
+
 export const AI_REVIEW_MODES: readonly AiReviewAuthMode[] = [
-  "vertex",
+  AI_REVIEW_MODE_VERTEX,
   "oauth",
   "api-key",
-  "none",
+  AI_REVIEW_MODE_NONE,
 ];
 
 export interface AiReviewCredential {
@@ -687,7 +701,7 @@ export function buildAuthDetectScript(vertex: VertexCiDecision): string {
       : "# ci.vertex is declared, so this job reviews on Vertex. Decided when the\n" +
         "# file was generated — there is nothing here for a secret to change, and\n" +
         "# no service-account key exists anywhere in this job (#677 AC-15).\n" +
-        "mode=vertex\n";
+        `mode=${AI_REVIEW_MODE_VERTEX}\n`;
 
   const secretBranches = AI_REVIEW_AUTH_PRECEDENCE.map((c, i) => {
     const keyword = i === 0 ? "if" : "elif";
@@ -735,9 +749,9 @@ fi
 #   ${vertex.reason}
 set -uo pipefail
 
-mode=none
+mode=${AI_REVIEW_MODE_NONE}
 ${vertexBranch}
-if [ "\${mode}" = none ]; then
+if [ "\${mode}" = ${AI_REVIEW_MODE_NONE} ]; then
 ${secretBranches}
   fi
 fi
@@ -747,7 +761,7 @@ if [ -n "\${GITHUB_OUTPUT:-}" ]; then
   echo "mode=\${mode}" >> "\${GITHUB_OUTPUT}"
 fi
 
-if [ "\${mode}" != none ]; then
+if [ "\${mode}" != ${AI_REVIEW_MODE_NONE} ]; then
   exit 0
 fi
 

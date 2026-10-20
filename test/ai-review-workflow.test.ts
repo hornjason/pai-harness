@@ -267,8 +267,12 @@ describe("AC-4: no credential configured is UNMEASURED, not a passing review", (
     const reading = aiReviewAuthScript(PROJECT);
     expect(reading.failure, `${reading.failure}`).toBeNull();
     expect(reading.unmeasured, `${reading.unmeasured}`).toBeNull();
-    const violations = aiReviewUnmeasuredViolations(reading.script!);
+    const violations = aiReviewUnmeasuredViolations(reading.script!, reading.federation);
     expect(violations, violations.join("\n")).toEqual([]);
+    // This fixture declares no `ci.vertex`, so the credential-free claim is
+    // the one being made. Said out loud because #631 added a second claim and
+    // a case that silently took the other one would assert nothing here.
+    expect(reading.federation.authStep, "the unconfigured fixture emitted an auth step").toBeNull();
   });
 
   test("AC-4: the count is one, and it is read off a real run of the generated script", () => {

@@ -41,10 +41,12 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "os";
 import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
+import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
 import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
   AI_REVIEW_JOB,
+  AI_REVIEW_VERTEX_AUTH_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
   modelAliasViolations,
 } from "../lib/scaffold/ai-review-step";
@@ -324,6 +326,92 @@ describe("the harness carries no consumer's project or provider", () => {
         `\`${needle}\` is this repository's own value and belongs in .claude/rungate/config.json (SC-A1)`,
       ).toEqual([]);
     }
+  });
+});
+
+// ── AIREVIEW-1 on a federated consumer ──────────────────────────────────────
+
+describe("AIREVIEW-1 keeps measuring a consumer whose credential is generated", () => {
+  /**
+   * `aiReviewUnmeasuredViolations` ran the generated script with an EMPTY
+   * environment and demanded exactly one UNMEASURED annotation. Every fixture
+   * it has ever had takes its credential from a secret, so unsetting the
+   * secrets really did produce the credential-free state — and #631 puts a
+   * credential in the file itself. `mode=vertex` is decided when the workflow
+   * is WRITTEN, no environment can move it, and the check's whole premise
+   * became unreachable on the one tree that ships it.
+   *
+   * That is `.claude/rules/checks-must-be-able-to-fail.md`'s precondition trap
+   * (#492): every fixture meets a condition, so the branch on the other side
+   * of it is outside the battery's reach rather than merely under-tested.
+   *
+   * **The cheapest wrong fix, named: let the check accept any resolved mode
+   * and return early.** It is one `if`, the red conformity run goes green, and
+   * a workflow saying `mode=vertex` with no auth step, no `id-token: write`
+   * and nothing to federate WITH is then a passing AIREVIEW-1 for a review
+   * that cannot authenticate — which is the exact defect AIREVIEW-1 exists to
+   * refuse, wearing the new mode's clothes. The last three cases here are red
+   * under that repair.
+   */
+  test("the configured consumer's own generated workflow satisfies the check", () => {
+    const reading = aiReviewAuthScript(CONFIGURED);
+    expect(reading.failure, `${reading.failure}`).toBeNull();
+    expect(reading.unmeasured, `${reading.unmeasured}`).toBeNull();
+    // The evidence is read off the same parse as the script, so a check that
+    // ran the script could not be handed a federation reading from elsewhere.
+    expect(reading.federation.authStep, "the parse found no vertex auth step").not.toBeNull();
+    expect(reading.federation.idTokenWrite).toBe(true);
+
+    const violations = aiReviewUnmeasuredViolations(reading.script!, reading.federation);
+    expect(violations, violations.join("\n")).toEqual([]);
+  });
+
+  test("the unconfigured consumer still reaches the UNMEASURED claim", () => {
+    // The other side of the branch, varying only `ci.vertex` (#585). Without
+    // this half, moving the check could satisfy the federated tree by
+    // dropping the credential-free claim entirely.
+    const reading = aiReviewAuthScript(UNCONFIGURED);
+    expect(reading.federation.authStep, "an unconfigured consumer emitted an auth step").toBeNull();
+    expect(reading.federation.idTokenWrite, "an unconfigured consumer was granted id-token: write").toBe(false);
+    const violations = aiReviewUnmeasuredViolations(reading.script!, reading.federation);
+    expect(violations, violations.join("\n")).toEqual([]);
+  });
+
+  test("a resolved mode with no step that could mint it is REFUSED", () => {
+    const reading = aiReviewAuthScript(CONFIGURED);
+    const violations = aiReviewUnmeasuredViolations(reading.script!, {
+      idTokenWrite: true,
+      authStep: null,
+    });
+    expect(violations.length, "mode=vertex with no auth step was accepted").toBeGreaterThan(0);
+    expect(violations.join("\n")).toContain(AI_REVIEW_VERTEX_AUTH_STEP_ID);
+  });
+
+  test("a federated mode with no id-token: write is REFUSED", () => {
+    // Without the OIDC grant the exchange cannot happen at all, so the job
+    // reports a mode it will never hold.
+    const reading = aiReviewAuthScript(CONFIGURED);
+    const violations = aiReviewUnmeasuredViolations(reading.script!, {
+      idTokenWrite: false,
+      authStep: reading.federation.authStep,
+    });
+    expect(violations.length, "a federated job with no OIDC grant was accepted").toBeGreaterThan(0);
+    expect(violations.join("\n")).toContain("id-token");
+  });
+
+  test("a federated mode whose auth step carries credentials_json is REFUSED", () => {
+    // #677 AC-15 from the direction AIREVIEW-1 can see: a step that writes a
+    // permanent key into the workspace the reviewer reads is not the
+    // credential this mode claims.
+    const reading = aiReviewAuthScript(CONFIGURED);
+    const keyed = { ...(reading.federation.authStep as any) };
+    keyed.with = { ...keyed.with, credentials_json: "${{ secrets.GCP_SA_KEY }}" };
+    const violations = aiReviewUnmeasuredViolations(reading.script!, {
+      idTokenWrite: true,
+      authStep: keyed,
+    });
+    expect(violations.length, "a service-account key was accepted").toBeGreaterThan(0);
+    expect(violations.join("\n")).toContain("credentials_json");
   });
 });
 
