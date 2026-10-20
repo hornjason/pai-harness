@@ -126,13 +126,21 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
   test("every setup-bun step is read, and the scan says how many it read", () => {
     // The coverage assertion, first and on its own. Every case below is
     // satisfied by an empty reading, so the reading is established before any
-    // of them run. Four workflow files carry a setup-bun step today: ci,
-    // gates, issue-audit and release.
+    // of them run. Five workflow files carry a setup-bun step today: ci,
+    // claude-review, gates, issue-audit and release. `claude-review` joined
+    // in #732, which needs bun on PATH for the post-step that reads what the
+    // review actually did.
     const steps = setupBunStepsUnder(WORKFLOW_DIR);
     expect(steps.length, "fewer setup-bun steps than this repo has workflows that install bun")
-      .toBeGreaterThanOrEqual(4);
+      .toBeGreaterThanOrEqual(5);
     const files = new Set(steps.map(s => s.file));
-    expect([...files].sort()).toEqual(["ci.yml", "gates.yml", "issue-audit.yml", "release.yml"]);
+    expect([...files].sort()).toEqual([
+      "ci.yml",
+      "claude-review.yml",
+      "gates.yml",
+      "issue-audit.yml",
+      "release.yml",
+    ]);
   });
 
   test("no step names latest or canary", () => {
