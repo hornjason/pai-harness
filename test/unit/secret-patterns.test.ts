@@ -399,6 +399,74 @@ describe("the tier-2 scan does not read a minified comparison as an assignment (
  * shell default, `SAPLING_KEY="${SAPLING_API_KEY:-<key>}"`, on `main`, with a
  * scaffolded `gates.yml` reporting a clean scan the whole time. Not because
  * the value was exempt: because the pattern could not see the variable name.
+ *
+ * ### The cheapest wrong fix, named before the repair was written
+ *
+ * **Add `-i` to the committed `.github/workflows/gates.yml` and stop.** The
+ * symptom disappears for the repository that noticed it, in one character,
+ * and no consumer ever sees the fix — the next `scaffold` writes the gate
+ * back without it, in this repository too. Every behavioural case in this
+ * file is GREEN under that repair, because they all read the artifact. The
+ * one case that is not is "the case flag is interpolated into all four
+ * tier-2 greps", measured at M2 below: 1 of 24, and it is the only witness.
+ *
+ * The other cheap repair is to put `-i` on the whole step, tier 1 included,
+ * and M4 is that one.
+ *
+ * ### What was broken to prove it
+ *
+ * Over this file (24 tests). Every count predicted before the battery ran, in
+ * `/tmp/844-battery/predictions.md`, and **the baseline row was read first** —
+ * an instrument that has stopped reporting takes the baseline down with it,
+ * and that is the row nobody mutates anything to produce.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 24 pass, 0 fail | **24 pass, 0 fail** | — |
+ * | M1 the genuinely pre-#844 generator: all four interpolations removed, `gates.yml` regenerated | 5 | **5 of 24** | `API_KEY=sk_live_abcdefghijklmnop` — original FAIL, mutant CLEAN |
+ * | M2 **the cheapest wrong fix**: generator reverted as in M1, `gates.yml` hand-edited to keep `-i` | 1 | **1 of 24** | the generator source — four interpolations against zero |
+ * | M3 `-i` dropped from the ALLOWLIST only, the capture keeping it | 3 | **3 of 24** | `API_KEY=Placeholder_value_here` — original CLEAN, mutant FAIL |
+ * | M4 `-i` added to the tier-1 `git grep` as well | 1 | **2 of 24** | `akia` + 16 `a` — original no match, mutant matches |
+ * | M5 PAIR: `gatesTier2Scan` short-circuited to return the registry constants, AND `gates.yml` reverted | 1 | **1 of 24** | `gates.yml`'s capture line |
+ * | M6 `gates.yml` alone reverted to no `-i`; generator and test untouched | 4 | **4 of 24** | the same `API_KEY=sk_live_…`, read off the artifact rather than the constant |
+ *
+ * Each differing input above was run through the real `grep` and printed
+ * before its row was recorded, not inferred from the diff.
+ *
+ * **M4 came back 2 against a predicted 1, and the extra red is the real
+ * kind.** It is the interpolation-count case: five interpolations where the
+ * assertion says four. The prediction treated that case as guarding against a
+ * MISSING interpolation only; it equally forbids a surplus one, and a surplus
+ * one is precisely the "put `-i` on the whole step" repair. Not a crashing
+ * mutant — 22 cases still pass and both reds are about the mutated behaviour.
+ * The fact it records is that writing `toBe(4)` rather than a floor is what
+ * buys the second direction, and it is affordable here only because this
+ * change owns all four positions; a count over a population other sessions
+ * extend should still be a floor.
+ *
+ * **M5b is the row that is not a measurement, and it is recorded rather than
+ * dropped.** Short-circuiting the cut while leaving `gates.yml` alone is
+ * 0 of 24 — with the real artifact agreeing with the constants there is no
+ * input on which mutant and original differ, so that run is the code
+ * executed twice. Only the pair says anything.
+ *
+ * None of the mutations is left in the tree; all were run and restored from a
+ * `cp` backup, and `lib/secret-patterns.ts`, `lib/scaffold/steps.ts`,
+ * `.github/workflows/gates.yml` and this file were confirmed byte-identical
+ * to the measured source afterwards by SHA-256, never by `git checkout --`.
+ *
+ * ### What this change does NOT do, said here rather than left as an omission
+ *
+ * A `${NAME:-value}` whose variable name carries no credential vocabulary is
+ * still invisible, and #844 proposed a pattern anchored at `${`…`:-` with a
+ * length floor instead of a name. Measured over this repository's tracked
+ * files before declining it: that pattern with no vocabulary returns **2**
+ * hits, both `${2:-hornjason/pai-config}` positional-parameter defaults and
+ * both false positives, and with a credential vocabulary it returns **0** —
+ * while `${KEYSTORE_PATH:-/usr/local/share/keystore}` is a false positive
+ * anyone can construct, since the value charset carries `/`, `.` and `-`.
+ * A gate that fires on a path default is a gate consumers delete, which is
+ * the issue's own argument. It is a separate pattern and a separate decision.
  */
 describe("#844: the tier-2 scan reads case the way credentials are written", () => {
   test("an UPPERCASE or mixed-case credential name is no longer invisible", () => {
