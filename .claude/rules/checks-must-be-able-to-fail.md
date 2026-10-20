@@ -1243,16 +1243,39 @@ predicted before the battery ran.
 | the re-read moved BELOW the wave's spawns | 2 | **2 of 22** — SC-2089, SC-2090 | the same plan: the original records its second reading at spawn clock 1, the mutant at clock 2 with wave 2 already dispatched. That is why SC-2089 asserts the ORDER and not the count |
 
 **Provenance, because the two halves were measured differently.** Every row
-except the second was measured by the sub-issue that shipped the cases, on a
-`git archive` export under `/tmp` carrying the test file plus the intended
-`workflows/ship.js` change — which is not in the tree yet, so those rows are
-a measurement of an implementation this repository does not hold. The
-pre-#652 row was re-measured independently here, against the shipped test
-file and the unmodified `workflows/ship.js`, and reproduces at 6 of 22 naming
-the same six cases. Nothing was modified to take it: the file was copied in,
-run, and restored, with `git status` clean afterwards. **Re-run the rest
-against the tree once the implementation lands** — a row measured on a tree
-nobody can check out is a claim, not a count.
+except the second was first measured by the sub-issue that shipped the cases,
+on a `git archive` export under `/tmp` carrying the test file plus the
+intended `workflows/ship.js` change, which was not in the tree at the time. A
+row measured on a tree nobody can check out is a claim rather than a count, so
+this paragraph used to end *"re-run the rest against the tree once the
+implementation lands."* The pre-#652 row was the exception: it was re-measured
+against the shipped test file and the unmodified `workflows/ship.js`, and
+reproduces at 6 of 22 naming the same six cases.
+
+**#653 did, and all ten reproduce — same counts and the same named
+criteria.** Nothing is carried over. `Predicted` above is therefore the
+earlier measurement, written down before the re-run as the thing being
+tested; the finding would have been a row that MOVED.
+
+Two of the ten needed their mutation re-cut before they were faithful, and
+that is recorded rather than quietly fixed, because a prose description of a
+mutant is not a mutant:
+
+- **the pre-#652 row** is the whole pre-#652 tree, which lacks the pre-wave
+  re-read as well as the reordered arm. Mutating only `waveCommitFailure` is
+  3 of 22, not 6 — the three dispatch criteria stay green, because nothing
+  touched the thing they measure.
+- **the composed-message row** must leave the `!landedOn` early return INSIDE
+  the committed-false arm. Hoisted ahead of both arms it also intercepts
+  `{committed: true, branch: ""}`, which SC-1565 owns, and the row reads 3
+  with an extra red that is about the mutant rather than about the subject.
+
+That correction reached `specs/HARNESS-STANDARD.md` in PR #794 and this file
+in #795, which is five days apart and is the reason
+`test/battery-record-currency.test.ts` exists: a measurement written down in
+two places is corrected in one of them, and nothing was comparing the two.
+#666's byte-identity check does compare these same two files — over a
+different block, eleven screens up.
 
 **The two cells the pre-#652 row does not name are the point of this
 section.** SC-2085 (committed TRUE onto a foreign ref) and SC-2088 (no branch
