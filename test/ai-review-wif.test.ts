@@ -43,9 +43,13 @@ import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
 import {
+  AI_REVIEW_ACTION_STEP_ID,
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_BASELINE_STEP_ID,
+  AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
+  AI_REVIEW_TREE_BEFORE_VAR,
   AI_REVIEW_VERTEX_AUTH_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
   modelAliasViolations,
@@ -326,6 +330,90 @@ describe("the harness carries no consumer's project or provider", () => {
         `\`${needle}\` is this repository's own value and belongs in .claude/rungate/config.json (SC-A1)`,
       ).toEqual([]);
     }
+  });
+});
+
+// ── the drift baseline, in the file rather than in the builder ──────────────
+
+describe("the generated job reads the tree BEFORE the reviewer touches it", () => {
+  /**
+   * The `gha-creds-*` false positive is what makes this a #631 case rather
+   * than a #630 one. `google-github-actions/auth` defaults
+   * `create_credentials_file` to `'true'` and writes the file into
+   * `$GITHUB_WORKSPACE` — confirmed against the action's own `action.yml` at
+   * the pinned SHA, where no input relocates it and disabling it stops
+   * `GOOGLE_APPLICATION_CREDENTIALS` being exported, so the auth would simply
+   * break. A drift gate that reads the whole tree after the review therefore
+   * refuses every federated run for a file the reviewer never touched.
+   *
+   * **The cheapest wrong fix is to widen the drift reading to ignore
+   * `gha-creds-*`** — one pattern, the symptom goes, and the gate now has an
+   * exclusion list that rots the next time the action renames its artefact.
+   * The fix here is a baseline instead: the question becomes *what appeared
+   * while the reviewer was running*, which has no list to maintain.
+   *
+   * **These cases exist because a battery row said they were missing.**
+   * Removing the baseline step from `buildReviewRunStep` — the pre-#631
+   * emission, 7 steps down to 6 — measured **0 red of 158**. The three drift
+   * cases in `test/ai-review-workflow.test.ts` call `buildBaselineScript()`
+   * and `buildDriftScript()` directly, so they witness the SCRIPTS and not
+   * whether the generator emits the step that runs one. A generated job with
+   * no baseline is the whole defect, and nothing read the generated job.
+   */
+  const idsOf = (root: string): string[] =>
+    stepsOf(workflowOf(root)).map(s => (typeof s?.id === "string" ? s.id : ""));
+
+  test("every consumer's generated job carries the baseline step", () => {
+    for (const [label, root] of [
+      ["configured", CONFIGURED],
+      ["unconfigured", UNCONFIGURED],
+      ["half-configured", HALF],
+    ] as const) {
+      expect(
+        idsOf(root),
+        `the ${label} consumer's job has no \`${AI_REVIEW_BASELINE_STEP_ID}\` step, so its drift ` +
+          `gate compares the post-review tree against nothing`,
+      ).toContain(AI_REVIEW_BASELINE_STEP_ID);
+    }
+  });
+
+  test("the baseline is read after authentication and before the review runs", () => {
+    /**
+     * The ORDER is the property, not the presence. A baseline taken before
+     * the auth step does not contain the credentials file and the gate
+     * refuses it as drift — the defect, restored. A baseline taken after the
+     * review contains whatever the reviewer wrote and the gate can never
+     * refuse anything — the defect inverted, which is worse because it is
+     * silent.
+     */
+    const ids = idsOf(CONFIGURED);
+    const at = (id: string) => ids.indexOf(id);
+
+    for (const id of [AI_REVIEW_VERTEX_AUTH_STEP_ID, AI_REVIEW_BASELINE_STEP_ID, AI_REVIEW_ACTION_STEP_ID, AI_REVIEW_DRIFT_STEP_ID]) {
+      expect(at(id), `the configured job has no \`${id}\` step, so the order below reads nothing`).toBeGreaterThanOrEqual(0);
+    }
+    expect(
+      at(AI_REVIEW_VERTEX_AUTH_STEP_ID) < at(AI_REVIEW_BASELINE_STEP_ID),
+      "the baseline is read before the credentials file is written, so the gate refuses it as drift",
+    ).toBe(true);
+    expect(
+      at(AI_REVIEW_BASELINE_STEP_ID) < at(AI_REVIEW_ACTION_STEP_ID),
+      "the baseline is read after the reviewer ran, so it contains whatever the reviewer wrote",
+    ).toBe(true);
+    expect(at(AI_REVIEW_ACTION_STEP_ID) < at(AI_REVIEW_DRIFT_STEP_ID)).toBe(true);
+  });
+
+  test("the drift step is handed the baseline step's own output", () => {
+    // A baseline nobody reads is a step that costs a second and proves
+    // nothing. The two are bound by the step id, through `steps.<id>.outputs`.
+    const drift = stepsOf(workflowOf(CONFIGURED)).find(s => s?.id === AI_REVIEW_DRIFT_STEP_ID);
+    expect(drift, "the configured job has no drift step").toBeDefined();
+    expect(drift.env?.[AI_REVIEW_TREE_BEFORE_VAR]).toBe(
+      `\${{ steps.${AI_REVIEW_BASELINE_STEP_ID}.outputs.path }}`,
+    );
+    // …and the script really consults it, rather than carrying the variable
+    // in `env:` and reading the whole tree anyway.
+    expect(String(drift.run)).toContain(AI_REVIEW_TREE_BEFORE_VAR);
   });
 });
 
