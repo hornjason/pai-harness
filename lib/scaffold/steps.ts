@@ -24,7 +24,9 @@ import {
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
-import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep } from "./ai-review-step";
+import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep, vertexCiConfig } from "./ai-review-step";
+import { claudeCodeActionRef } from "../claude-code-action";
+import { googleAuthActionRef } from "../google-auth-action";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
@@ -2955,6 +2957,21 @@ ${bunStep}
   // `pull_request` only. A review of a pull request has nothing to say about
   // a push to a branch, and a trigger that fires where the job cannot do its
   // work is a run whose outcome means nothing.
+  // #631. Workload Identity Federation, read from the consumer's own config.
+  // One reading, taken here and threaded into both the permission block and
+  // the steps — a second `vertexCiConfig(...)` call beside either would be a
+  // decider that always agrees with this one and could never be told apart
+  // from it (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+  const vertex = vertexCiConfig(harness?.ci);
+
+  // `id-token: write` is what lets the runner mint the OIDC token GCP's STS
+  // exchanges. Granted ONLY when there is a federation to use it, because a
+  // permission nobody consumes is a permission nobody audits.
+  const aiReviewPermissions =
+    vertex.config === null
+      ? `permissions:\n  contents: read`
+      : `permissions:\n  contents: read\n  # Mint the OIDC token Workload Identity Federation exchanges (#631).\n  id-token: write`;
+
   const aiReviewYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # This job is deliberately unconditional. A job skipped by a condition reports
@@ -2965,6 +2982,14 @@ ${bunStep}
 # The second step says the same thing for the other door: a credential that
 # resolved with no reviewer wired to use it (#631) has also not produced a
 # review, and a check that stays quiet about that is the same defect.
+#
+# AUTHENTICATION. There is no service-account key in this file and no input
+# that could carry one. Vertex authenticates with Workload Identity
+# Federation: GitHub mints a short-lived OIDC token for this run, GCP's STS
+# exchanges it for an access token that expires in an hour, and no long-lived
+# credential exists anywhere on the runner (#677 AC-15). What this job holds
+# as read from this consumer's config:
+#   ${vertex.reason}
 name: AI Review
 
 on:
@@ -2972,14 +2997,16 @@ on:
     branches:
 ${branchList}
 
-permissions:
-  contents: read
+${aiReviewPermissions}
 
 jobs:
   ${AI_REVIEW_JOB}:
     runs-on: ${runsOn}
     steps:
-${buildAuthDetectStep()}${buildReviewRunStep()}`;
+${buildAuthDetectStep(vertex)}${buildReviewRunStep(vertex, {
+    auth: googleAuthActionRef(),
+    review: claudeCodeActionRef(),
+  })}`;
 
   // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does
   // not own the file, and a consumer's own jobs have to survive the update

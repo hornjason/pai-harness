@@ -66,17 +66,65 @@ export interface AiReviewCredential {
 }
 
 /**
- * The credentials, in the order the script tries them.
+ * The SECRETS, in the order the script tries them.
  *
- * Vertex first: it is the only one that bills a GCP project the consumer
- * already owns, and a tree carrying both a service-account key and a personal
- * OAuth token means the organisation credential, not the individual's.
+ * `GCP_SA_KEY` is deliberately not here, and its absence is the whole of
+ * #677 AC-15 applied to the generated job (#631).
+ *
+ * Vertex is no longer resolved from a secret at all. A service-account key is
+ * a PERMANENT credential, and `google-github-actions/auth` writes it into
+ * `$GITHUB_WORKSPACE` — the tree an autonomous reviewer then reads, on a
+ * trigger whose diff an outside contributor can influence. Those two facts
+ * together are an egress sink, and no denylist closed it: two attempts at one
+ * were needed to notice `Task`, then `SlashCommand`, and an incomplete
+ * enumeration is indistinguishable from a complete one until somebody checks.
+ *
+ * What resolves `vertex` instead is `ci.vertex` in the consumer's own
+ * `.claude/rungate/config.json` — a Workload Identity Federation provider and
+ * a project, neither of which is a secret, both of which are emitted into the
+ * workflow as generated literals. See `vertexCiConfig` below.
+ *
+ * The consequence for this list is that it carries only the two credentials
+ * that still have to arrive as secret VALUES, because the action they are
+ * handed to takes a token rather than minting one.
  */
 export const AI_REVIEW_AUTH_PRECEDENCE: readonly AiReviewCredential[] = [
-  { secret: "GCP_SA_KEY", mode: "vertex", describes: "Vertex AI" },
   { secret: "CLAUDE_CODE_OAUTH_TOKEN", mode: "oauth", describes: "a Claude Code OAuth token" },
   { secret: "ANTHROPIC_API_KEY", mode: "api-key", describes: "the Anthropic API" },
 ];
+
+/**
+ * The secret this job used to authenticate with, named so a consumer sitting
+ * on it is not silently downgraded.
+ *
+ * pai-harness holds this secret today. agentgrit's generated workflow reads
+ * it and the secret does not exist there. Both repositories' AI review would
+ * change behaviour under this commit, and a review that quietly stops running
+ * is the exact defect #630 and #631 exist against — so the state is named.
+ *
+ * **This is a read, and only a read.** It must never reach an auth input.
+ */
+export const AI_REVIEW_LEGACY_VERTEX_SECRET = "GCP_SA_KEY";
+
+/**
+ * The env var carrying WHETHER that secret exists — never the secret.
+ *
+ * `${{ secrets.GCP_SA_KEY != '' }}` is an expression GitHub evaluates before
+ * the runner starts the step, so what lands in the environment is the literal
+ * string `true` or `false`. The key itself is never materialised on the
+ * runner, never written to a credentials file, and never reachable by the
+ * reviewer that runs four steps later.
+ *
+ * The asymmetry with `AI_REVIEW_AUTH_PRECEDENCE` above is deliberate and
+ * worth stating rather than leaving as an inconsistency: those two secrets are
+ * read for presence AND THEN USED, so their values have to arrive. This one
+ * is read for presence and must never be used, so its value must not.
+ *
+ * (`secrets` is unavailable in an `if:` expression at any level. It IS
+ * available in `env:`, which is why this works and why the mode is still
+ * resolved inside `run:` — see the module header.)
+ */
+export const AI_REVIEW_LEGACY_PRESENCE_VAR = "GCP_SA_KEY_PRESENT";
 
 /** The repository variable a consumer sets to make UNMEASURED a failure. */
 export const AI_REVIEW_REQUIRE_VAR = "RUNGATE_REQUIRE_AI_REVIEW";
@@ -114,48 +162,217 @@ export const AI_REVIEW_RUN_STEP_NAME = "Report whether the AI review ran";
 // ── The reviewer that actually runs (#631) ───────────────────────────────
 
 /**
- * The vertex auth step's `id:`, and the action it runs.
+ * The vertex auth step's `id:` and name.
  *
- * SHA-pinned, like everything else this job uses. A tag is a mutable pin: the
- * same `@v3` can point at new code tomorrow, and this step is handed a GCP
- * service-account key. The tag the sha was read from is a trailing comment on
- * the generated line, so a reader can see what it was without the pin floating.
+ * ## Why this module no longer declares the SHA it is pinned to
+ *
+ * It did: `AI_REVIEW_VERTEX_AUTH_SHA = "7c6bc770…" # v3`, beside
+ * `AI_REVIEW_ACTION_SHA = "5eb090f3…" # v1`. Both were accurate. Both were
+ * also a SECOND declaration of a pin this repository already declares once,
+ * and because this module ASSEMBLES the `uses:` value out of two constants,
+ * neither literal was in a form `actionPinParity` could see — the scan looks
+ * for `action@sha` on one line, and `${A}@${B}` is not that. So the generator
+ * held two pins that no check compared to anything, which is #689 reproduced
+ * inside the fix for #689.
+ *
+ * The refs now arrive as arguments from `lib/claude-code-action.ts` and
+ * `lib/google-auth-action.ts`. This module keeps its property of having NO
+ * relative imports — `test/ai-review-scaffold.test.ts` AC-6b asserts that,
+ * because the mutant copy it builds runs from a temp directory — and the two
+ * declarations stay the only positions in the tree carrying a SHA.
  */
 export const AI_REVIEW_VERTEX_AUTH_STEP_ID = "ai-review-vertex-auth";
 
 export const AI_REVIEW_VERTEX_AUTH_STEP_NAME = "Authenticate to Vertex AI";
 
-export const AI_REVIEW_VERTEX_AUTH_ACTION = "google-github-actions/auth";
-
-export const AI_REVIEW_VERTEX_AUTH_SHA = "7c6bc770dae815cd3e89ee6cdf493a5fab2cc093";
-
-export const AI_REVIEW_VERTEX_AUTH_VERSION = "v3";
-
-/** The review action's `id:`, and the action it runs. Also SHA-pinned. */
+/** The review action's `id:` and name. Its pin arrives as an argument too. */
 export const AI_REVIEW_ACTION_STEP_ID = "ai-review-action";
 
 export const AI_REVIEW_ACTION_STEP_NAME = "Run the AI review";
 
-export const AI_REVIEW_ACTION = "anthropics/claude-code-action";
-
-export const AI_REVIEW_ACTION_SHA = "5eb090f3c3afd701a0672cd32981197ca27688f6";
-
-export const AI_REVIEW_ACTION_VERSION = "v1";
+/**
+ * The two action references the generated job pins, supplied by the caller.
+ *
+ * Strings rather than imports, for the no-relative-imports property above.
+ * Each is the full `owner/repo@<40-hex> # vN` rendering produced by its own
+ * declaration module, so a consumer position cannot carry half an update.
+ */
+export interface AiReviewActionRefs {
+  /** `googleAuthActionRef()` from `lib/google-auth-action.ts`. */
+  auth: string;
+  /** `claudeCodeActionRef()` from `lib/claude-code-action.ts`. */
+  review: string;
+}
 
 /**
- * The one model identifier this job reviews with.
+ * The model identifier this job reviews with when the consumer names none.
  *
  * Exact, and declared once. A bare family alias — `opus`, `sonnet`, `haiku` —
  * floats: two runs of the same workflow on two days review with two different
  * models and nothing in the file records which, so a review that got worse is
- * indistinguishable from a tree that got worse.
+ * indistinguishable from a tree that got worse. `modelAliasViolations` below
+ * refuses one, in the default and in a consumer's override alike.
  *
  * It carries no `-YYYYMMDD` suffix because the current generation has none:
- * the exact ids ARE `claude-opus-5-5` and friends, and appending a date
- * produces a model identifier that does not resolve. On Vertex the current
- * generation uses the bare first-party id, which is what this job needs.
+ * the exact ids ARE `claude-sonnet-5` and friends, and appending a date
+ * produces a model identifier that does not resolve.
+ *
+ * **Why `claude-sonnet-5` and not `claude-opus-5-5`,** which an earlier wave
+ * of this issue chose: this is the only model identifier anybody has measured
+ * against a federated identity on Vertex. Verified 2026-10-19 — HTTP 200 from
+ * `publishers/anthropic/models/claude-sonnet-5:rawPredict` at location
+ * `global`, with no service-account key of any kind. `claude-opus-5-5` was an
+ * exact id, which is the property the guard checks, and an unmeasured one,
+ * which is the property that matters on the first run. A consumer who wants
+ * the larger model sets `ci.vertex.model` and measures it themselves.
  */
-export const AI_REVIEW_MODEL = "claude-opus-5-5";
+export const AI_REVIEW_MODEL = "claude-sonnet-5";
+
+/**
+ * The Vertex location this job addresses when the consumer names none.
+ *
+ * `global` rather than a region, and the reason is a reading rather than a
+ * preference: `us-east5` returned 429 on the project this was first measured
+ * against, its per-minute token quota being already contended, and Anthropic's
+ * guidance for 429s is `global`. It is also the location the 200 above was
+ * taken at, so it is the configuration that has been measured.
+ */
+export const AI_REVIEW_DEFAULT_REGION = "global";
+
+// ── ci.vertex: the consumer's federation, which is not a secret ─────────────
+
+/**
+ * What a consumer must declare to get a working review, in one shape.
+ *
+ * ## Why these live in the consumer's config and not in this file
+ *
+ * They are consumer identity. `SC-A1` refuses a consumer's name in the
+ * harness and it is right to: a provider path names a GCP project number, a
+ * pool and a provider, all of which belong to whoever owns the repository.
+ * pai-harness's own values go in pai-harness's own
+ * `.claude/rungate/config.json`, and `test/ai-review-wif.test.ts` greps
+ * `lib/`, `gates/` and `scripts/` to keep them out of here.
+ *
+ * ## Why they are not secrets
+ *
+ * Nothing in this block authenticates. A provider path is a trust ANCHOR: it
+ * names the pool GitHub's OIDC token is exchanged at, and the exchange
+ * succeeds only for a token GitHub minted for a repository the provider's
+ * attribute condition admits. Knowing the path buys an attacker nothing they
+ * can present a token for. Putting it in `secrets` would buy no security and
+ * cost the one property that makes this reviewable: a generated literal is a
+ * value a reader of the workflow can see and a test can assert.
+ *
+ * ## Why all four travel as one block
+ *
+ * A provider with no project cannot authenticate, and a project with no
+ * location cannot address a model. Declaring half of it is not a partial
+ * configuration, it is a job that fails on the runner for a reason nothing in
+ * the consumer's tree explains — so `vertexCiConfig` refuses the block as a
+ * whole and NAMES the field that was missing. `region` and `model` are the
+ * two with harness defaults, because unlike the first two they are policy
+ * rather than identity, and the default is emitted into the workflow as a
+ * literal a reader can see rather than applied silently
+ * (`.claude/rules/config-access.md`: *Silent Default Substitution*).
+ */
+export interface VertexCiConfig {
+  /** The GCP project billed for the review. */
+  project: string;
+  /** The full `projects/N/locations/global/workloadIdentityPools/…` path. */
+  workloadIdentityProvider: string;
+  /** The Vertex location. Defaults to `AI_REVIEW_DEFAULT_REGION`. */
+  region: string;
+  /** An EXACT model id. Defaults to `AI_REVIEW_MODEL`. */
+  model: string;
+}
+
+/** The reading, which always carries a reason — never silence. */
+export interface VertexCiDecision {
+  /** The resolved block, or `null` when the consumer gets no vertex mode. */
+  config: VertexCiConfig | null;
+  /** Why, in one sentence, for the generated workflow to carry verbatim. */
+  reason: string;
+}
+
+/** A GCP project id: 6–30 chars, lowercase, starts with a letter. */
+const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+/** A workload identity provider resource path, and nothing else. */
+const WIF_PROVIDER =
+  /^projects\/\d+\/locations\/[a-z0-9-]+\/workloadIdentityPools\/[A-Za-z0-9_-]+\/providers\/[A-Za-z0-9_-]+$/;
+
+/** A Vertex location: `global`, or a region like `us-east5`. */
+const VERTEX_REGION = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/;
+
+/**
+ * Read `ci.vertex` off a consumer's config, and say what was read.
+ *
+ * Same shape as `shardCount` and `globalToolInstallStep` in
+ * `lib/scaffold/steps.ts`: a pure function over `unknown`, so this module
+ * keeps no relative imports and a test can drive every state without a
+ * filesystem.
+ *
+ * Every refusal is VALIDATED rather than quoted. The two required values are
+ * emitted into YAML as `with:` inputs; a value that could carry a newline
+ * could carry a second input, so the charsets above admit nothing that needs
+ * escaping and the absence of escaping is therefore not a gap.
+ */
+export function vertexCiConfig(ci: unknown): VertexCiDecision {
+  const raw = (ci as { vertex?: unknown } | null | undefined)?.vertex;
+
+  if (raw === undefined || raw === null) {
+    return {
+      config: null,
+      reason:
+        `the config declares no ci.vertex, so this job has no Workload Identity ` +
+        `Federation provider and cannot review on Vertex AI`,
+    };
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { config: null, reason: `ci.vertex is not an object, so nothing in it could be read` };
+  }
+
+  const block = raw as Record<string, unknown>;
+  const str = (k: string): string => (typeof block[k] === "string" ? (block[k] as string).trim() : "");
+
+  const project = str("project");
+  const provider = str("workloadIdentityProvider");
+  const region = str("region") || AI_REVIEW_DEFAULT_REGION;
+  const model = str("model") || AI_REVIEW_MODEL;
+
+  // Named one at a time and in a fixed order, because "ci.vertex is invalid"
+  // sends nobody to a line. The first failure wins: a reader fixes one field,
+  // re-scaffolds, and is told about the next.
+  const refuse = (detail: string): VertexCiDecision => ({
+    config: null,
+    reason: `ci.vertex was refused as a whole and no auth step was emitted: ${detail}`,
+  });
+
+  if (project === "") return refuse(`ci.vertex.project is missing`);
+  if (!PROJECT_ID.test(project)) return refuse(`ci.vertex.project is not a GCP project id`);
+  if (provider === "") return refuse(`ci.vertex.workloadIdentityProvider is missing`);
+  if (!WIF_PROVIDER.test(provider)) {
+    return refuse(
+      `ci.vertex.workloadIdentityProvider is not a provider resource path ` +
+        `(projects/N/locations/L/workloadIdentityPools/P/providers/R)`,
+    );
+  }
+  if (!VERTEX_REGION.test(region)) return refuse(`ci.vertex.region is not a Vertex location`);
+  if (!EXACT_MODEL_PATTERN.test(model)) {
+    return refuse(
+      `ci.vertex.model is not an exact model identifier — a bare family alias ` +
+        `re-points the day its owner moves it, so the gate measured is not the gate kept`,
+    );
+  }
+
+  return {
+    config: { project, workloadIdentityProvider: provider, region, model },
+    reason:
+      `ci.vertex declares project ${project} and a Workload Identity Federation ` +
+      `provider, so this job mints a short-lived federated credential and holds ` +
+      `no service-account key`,
+  };
+}
 
 /**
  * The environment variable carrying the path the reviewer writes its findings
@@ -228,10 +445,28 @@ export const AI_REVIEW_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Write"].join(",
 
 export const AI_REVIEW_MAX_TURNS = 25;
 
-export const AI_REVIEW_CLAUDE_ARGS =
-  `--model ${AI_REVIEW_MODEL} --max-turns ${AI_REVIEW_MAX_TURNS} ` +
-  `--allowedTools ${AI_REVIEW_ALLOWED_TOOLS} ` +
-  `--disallowedTools ${AI_REVIEW_DISALLOWED_TOOLS}`;
+/**
+ * The `claude_args` line, with the model the consumer's config resolved.
+ *
+ * A function rather than a constant because the model is now a `ci.vertex`
+ * field with a harness default, and a constant would have frozen the default
+ * into the only position a consumer could not override. One binding either
+ * way: the args are composed here and nowhere else, so a mutation of this has
+ * exactly one thing to mutate.
+ *
+ * An unconfigured consumer still gets the default pinned id. `--model` is not
+ * vertex-specific — the oauth and api-key modes take it too — and omitting it
+ * would let the action's own default float, which is `AI_REVIEW_MODEL`'s
+ * whole subject.
+ */
+export function aiReviewClaudeArgs(vertex: VertexCiDecision): string {
+  const model = vertex.config?.model ?? AI_REVIEW_MODEL;
+  return (
+    `--model ${model} --max-turns ${AI_REVIEW_MAX_TURNS} ` +
+    `--allowedTools ${AI_REVIEW_ALLOWED_TOOLS} ` +
+    `--disallowedTools ${AI_REVIEW_DISALLOWED_TOOLS}`
+  );
+}
 
 /**
  * The checkout the reviewer reads. Pinned, like everything else here.
@@ -431,15 +666,29 @@ export function modelAliasViolations(workflowText: string): string[] {
  * secret interpolates to the empty string, so absent and empty have to be the
  * same case anyway.
  */
-export function buildAuthDetectScript(): string {
-  const branches = AI_REVIEW_AUTH_PRECEDENCE.map((c, i) => {
+export function buildAuthDetectScript(vertex: VertexCiDecision): string {
+  // Vertex is a GENERATED LITERAL, not a runtime reading. The provider is
+  // declared in the consumer's config at scaffold time, so the question "is
+  // federation configured" is answered when the file is WRITTEN and the
+  // script carries the answer. There is nothing to detect and nothing a
+  // secret could change.
+  //
+  // It stays FIRST in precedence, for the reason the secret version was
+  // first: it is the only mode that bills a project the consumer already
+  // owns, and a tree carrying both a declared federation and a personal OAuth
+  // token means the organisation's credential, not the individual's.
+  const vertexBranch = vertex.config === null ? "" : `mode=vertex\n`;
+
+  const secretBranches = AI_REVIEW_AUTH_PRECEDENCE.map((c, i) => {
     const keyword = i === 0 ? "if" : "elif";
-    return `${keyword} [ -n "\${${c.secret}:-}" ]; then\n  mode=${c.mode}`;
+    return `  ${keyword} [ -n "\${${c.secret}:-}" ]; then\n    mode=${c.mode}`;
   }).join("\n");
+
+  const credentials = [...SECRET_NAMES, "a ci.vertex federation provider"].join(", ");
 
   const warning =
     `No Claude credential is configured ` +
-    `(${SECRET_NAMES.join(", ")}), so no AI review ran on this pull request. ` +
+    `(${credentials}), so no AI review ran on this pull request. ` +
     `This check is UNMEASURED, not a passing review. ` +
     `Set the repository variable ${AI_REVIEW_REQUIRE_VAR} to ` +
     `'${AI_REVIEW_REQUIRE_VALUE}' to make an unmeasured review fail instead.`;
@@ -449,17 +698,40 @@ export function buildAuthDetectScript(): string {
     `is configured, so this pull request has no AI review. Failing rather than ` +
     `reporting a green check for a review that never happened.`;
 
+  // The migration. Emitted ONLY when federation is unconfigured, because that
+  // is the only state in which a consumer's review changed behaviour: with
+  // `ci.vertex` declared the job reviews on Vertex either way and the stale
+  // secret is merely unused.
+  //
+  // The branch reads a BOOLEAN the runner computed from `secrets.X != ''`.
+  // The key never arrives. That is the difference between naming a state and
+  // authenticating with it, and it is the whole point of the read.
+  const migration =
+    vertex.config !== null
+      ? ""
+      : `
+if [ "\${${AI_REVIEW_LEGACY_PRESENCE_VAR}:-}" = "true" ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::This repository still holds the ${AI_REVIEW_LEGACY_VERTEX_SECRET} secret, and this job no longer reads it. A service-account key is a permanent credential written into the workspace an autonomous reviewer then reads (#677), so Vertex now authenticates with Workload Identity Federation instead. Declare ci.vertex (project + workloadIdentityProvider) in .claude/rungate/config.json and re-scaffold, then delete ${AI_REVIEW_LEGACY_VERTEX_SECRET}."
+fi
+`;
+
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 #
 # Resolves exactly one of ${AI_REVIEW_MODES.length} modes: ${AI_REVIEW_MODES.join(", ")}.
 # The decision is here and not in an \`if:\` expression on purpose — \`secrets\`
 # is unavailable in \`if:\`, and a skipped step can satisfy a required check.
+#
+# Vertex, as read from this consumer's config when the file was generated:
+#   ${vertex.reason}
 set -uo pipefail
 
 mode=none
-${branches}
+${vertexBranch}
+if [ "\${mode}" = none ]; then
+${secretBranches}
+  fi
 fi
-
+${migration}
 echo "ai-review auth mode: \${mode}"
 if [ -n "\${GITHUB_OUTPUT:-}" ]; then
   echo "mode=\${mode}" >> "\${GITHUB_OUTPUT}"
@@ -489,11 +761,23 @@ exit 0
  * secret could break out of, and `${{ vars.X }}` inside `run:` is a shell
  * injection a repository variable can carry.
  */
-export function buildAuthDetectStep(indent = "      "): string {
+export function buildAuthDetectStep(vertex: VertexCiDecision, indent = "      "): string {
   const env = [
     ...AI_REVIEW_AUTH_PRECEDENCE.map(c => `${c.secret}: \${{ secrets.${c.secret} }}`),
     `${AI_REVIEW_REQUIRE_VAR}: \${{ vars.${AI_REVIEW_REQUIRE_VAR} }}`,
   ];
+
+  // The migration read, and the one value in this file that arrives as a
+  // COMPARISON rather than as itself. `secrets.X != ''` is evaluated by the
+  // runner before the step starts, so what lands in the environment is the
+  // string `true` or `false` — never the key. Emitted only in the state the
+  // script branches on, so a workflow that cannot use it does not name it.
+  if (vertex.config === null) {
+    env.push(
+      `${AI_REVIEW_LEGACY_PRESENCE_VAR}: ` +
+        `\${{ secrets.${AI_REVIEW_LEGACY_VERTEX_SECRET} != '' }}`,
+    );
+  }
 
   const lines = [
     `- name: ${AI_REVIEW_AUTH_STEP_NAME}`,
@@ -501,7 +785,7 @@ export function buildAuthDetectStep(indent = "      "): string {
     `  env:`,
     ...env.map(e => `    ${e}`),
     `  run: |`,
-    ...buildAuthDetectScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+    ...buildAuthDetectScript(vertex).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
   return lines.map(l => (l ? `${indent}${l}` : "")).join("\n") + "\n";
@@ -745,13 +1029,100 @@ echo "path=\${path}" >> "\${GITHUB_OUTPUT}"
 }
 
 /**
+ * The env var naming the file holding the pre-review reading of the tree.
+ *
+ * One spelling, so the step that writes it and the step that reads it cannot
+ * drift apart.
+ */
+export const AI_REVIEW_TREE_BEFORE_VAR = "AI_REVIEW_TREE_BEFORE";
+
+export const AI_REVIEW_BASELINE_STEP_ID = "ai-review-baseline";
+
+export const AI_REVIEW_BASELINE_STEP_NAME = "Read the tree before the reviewer runs";
+
+export const AI_REVIEW_BASELINE_BASENAME = "ai-review-tree-before";
+
+/**
+ * The bash that records what the tree looked like BEFORE the reviewer ran.
+ *
+ * ## Why this step exists, measured rather than argued
+ *
+ * The drift step below used to ask one question — *is the tree clean?* — and
+ * that was a correctness defect in exactly the mode this issue is about.
+ * `google-github-actions/auth` defaults `create_credentials_file: true`, and
+ * at every pinned SHA of it the file lands in `$GITHUB_WORKSPACE`, which is
+ * the checkout root. Nothing in `.gitignore` covers it, and the action removes
+ * it in a POST step, which runs after every ordinary step — so the file is
+ * present when the drift step reads the tree. One line reproduces it:
+ *
+ * ```
+ * $ printf '{}' > gha-creds-0123456789abcdef.json
+ * $ git status --porcelain --untracked-files=all
+ * ?? gha-creds-0123456789abcdef.json
+ * ```
+ *
+ * The gate therefore reported *"The reviewer modified the tree it was
+ * reviewing"* on EVERY credentialed run, naming a file the reviewer did not
+ * create. A false positive that is also a red herring: it accuses the agent
+ * of precisely the thing the gate exists to catch, and it would have been
+ * permanently red in vertex mode. Note that Workload Identity Federation does
+ * NOT remove it — the file carries no key material under WIF, but it is still
+ * a file, and `git status` does not read JSON.
+ *
+ * ## Why a baseline and not an exclusion
+ *
+ * The 5pm repair is to widen the drift reading to ignore `gha-creds-*`. It
+ * works, and it puts a hole in the only control that watches the reviewer's
+ * writes: an agent that can write a file can write one named to match, and
+ * the exclusion is a pattern nobody re-derives.
+ *
+ * A baseline has no exclusion list to rot. The question becomes *what
+ * appeared while the reviewer was running*, which is the property the gate
+ * always claimed to measure. The credentials file is in both readings and
+ * cancels; a file the reviewer wrote is in one.
+ *
+ * An absent or unreadable baseline is UNMEASURED and refuses. "The tree did
+ * not change" and "nobody looked before" must not be the same answer.
+ */
+export function buildBaselineScript(): string {
+  const noTemp =
+    `RUNNER_TEMP is not set, so there is nowhere outside the checkout to record ` +
+    `the pre-review state of the tree. Refusing: a baseline written into the ` +
+    `branch under review is a baseline the reviewer can edit.`;
+
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+if [ -z "\${RUNNER_TEMP:-}" ]; then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::${noTemp}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+nonce="\${GITHUB_RUN_ID:-0}-\${GITHUB_RUN_ATTEMPT:-0}"
+before="\${RUNNER_TEMP}/${AI_REVIEW_BASELINE_BASENAME}-\${nonce}.txt"
+
+# Checked on its own line, never captured into an assignment: \`x=$(...)\`
+# DISCARDS the exit code, so a git that failed produces the same empty string
+# a clean tree produces, and "unreadable" would pass as "clean".
+if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed before the review, so there is no baseline and the drift check is UNMEASURED: \${raw}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+printf '%s\\n' "\${raw}" > "\${before}"
+echo "ai-review tree baseline: \${before}"
+echo "path=\${before}" >> "\${GITHUB_OUTPUT}"
+`;
+}
+
+/**
  * The bash that refuses a reviewer which modified the tree.
  *
  * The prompt tells the agent to write one file and touch nothing else, and
  * the tool grant above narrows what it can reach. Both are claims. This is
- * the reading: the payload now lives outside the checkout, so a clean
- * `git diff` is the whole statement, and anything the reviewer wrote into the
- * branch — including the workflow reviewing it — shows up here.
+ * the reading: the payload lives outside the checkout, so anything that
+ * appeared in the branch while the reviewer was running — including the
+ * workflow reviewing it — shows up here.
  *
  * It refuses unconditionally, not under ${AI_REVIEW_REQUIRE_VAR}. That
  * variable governs whether an ABSENT review is fatal, which is a consumer's
@@ -759,6 +1130,11 @@ echo "path=\${path}" >> "\${GITHUB_OUTPUT}"
  * reviewing is not an absent review; it is a review nobody should read.
  */
 export function buildDriftScript(): string {
+  const noBaseline =
+    `the pre-review reading of the tree is missing, so there is nothing to ` +
+    `compare this run against and the drift check is UNMEASURED. A tree that ` +
+    `nobody read before the review is not a tree that did not change.`;
+
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
 
@@ -783,25 +1159,29 @@ if [ "\${AI_REVIEW_MODE:-none}" = none ]; then
   exit 0
 fi
 
-# ONE reading, and it is the widest one. The first draft asked
-# \`git diff --quiet && git diff --quiet --cached\`, which is two deciders for
-# one question and blind to the case most likely to occur: a reviewer told to
-# write a findings file writes a NEW file, and a new file is untracked, so
-# neither \`git diff\` sees it. \`--untracked-files=all\` descends into new
-# directories as well — the default stops at the directory name.
-#
-# The status is checked on its own line. \`changed=$(...)\` DISCARDS the
-# command's exit code — \`pipefail\` does not reach it, because the assignment
-# is what the shell reports — so a git that failed for any reason at all
-# produces an empty string, which is the same empty string a clean tree
-# produces. "The tree is clean" and "the tree was never read" would be one
-# value, and the second one must not pass.
-if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
-  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed, so the tree was never read and this check is UNMEASURED: $(escape_annotation "\${raw}")" >&2
+if [ -z "\${${AI_REVIEW_TREE_BEFORE_VAR}:-}" ] || [ ! -f "\${${AI_REVIEW_TREE_BEFORE_VAR}}" ]; then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::${noBaseline}" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
-if [ -z "\${raw}" ]; then
+# \`--untracked-files=all\` because the case most likely to occur is a NEW
+# file, which neither \`git diff\` nor the default \`-unormal\` fully sees: the
+# default stops at a new directory's name.
+#
+# Checked on its own line, for the reason the baseline step states.
+if ! after=$(git status --porcelain --untracked-files=all 2>&1); then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed, so the tree was never read and this check is UNMEASURED: $(escape_annotation "\${after}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# The DIFFERENCE, not the total. A line present before the reviewer started is
+# not something the reviewer did — \`google-github-actions/auth\` writes its
+# credentials file into GITHUB_WORKSPACE, and a total reading accused the
+# agent of it on every credentialed run. There is no pattern here to widen and
+# no name to exclude: the comparison is the whole statement.
+added=$(printf '%s\\n' "\${after}" | grep -F -x -v -f "\${${AI_REVIEW_TREE_BEFORE_VAR}}" || true)
+
+if [ -z "\${added}" ]; then
   exit 0
 fi
 
@@ -810,7 +1190,7 @@ fi
 # encoder as git's error output above, for the same reason and on the same
 # line as its capture — the first draft encoded only the second use, and a
 # value that is safe at one of its two uses is not encoded, it is lucky.
-echo "::error title=${AI_REVIEW_DRIFT_TITLE}::The reviewer modified the tree it was reviewing: $(escape_annotation "\${raw}"). A review that edits the code under review is not a result." >&2
+echo "::error title=${AI_REVIEW_DRIFT_TITLE}::The reviewer modified the tree it was reviewing: $(escape_annotation "\${added}"). A review that edits the code under review is not a result." >&2
 exit ${AI_REVIEW_REQUIRED_EXIT}
 `;
 }
@@ -836,7 +1216,11 @@ function indented(lines: string[], indent: string): string {
  * `if:`: a step skipped by `if:` reports `skipped`, and a skipped required
  * check can be treated as satisfied.
  */
-export function buildReviewRunStep(indent = "      "): string {
+export function buildReviewRunStep(
+  vertex: VertexCiDecision,
+  refs: AiReviewActionRefs,
+  indent = "      ",
+): string {
   const modeIs = (mode: string) =>
     `steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode == '${mode}'`;
   const credential = (mode: string, secret: string) =>
@@ -859,27 +1243,58 @@ export function buildReviewRunStep(indent = "      "): string {
     ...buildPrepareScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
-  const vertexAuth = [
-    `- name: ${AI_REVIEW_VERTEX_AUTH_STEP_NAME}`,
-    `  id: ${AI_REVIEW_VERTEX_AUTH_STEP_ID}`,
-    // Not a condition: the job may carry none. In every other mode the key is
-    // empty, the action fails, and the reporting step below says so.
-    `  continue-on-error: true`,
-    `  uses: ${AI_REVIEW_VERTEX_AUTH_ACTION}@${AI_REVIEW_VERTEX_AUTH_SHA} # ${AI_REVIEW_VERTEX_AUTH_VERSION}`,
-    `  with:`,
-    `    credentials_json: ${credential("vertex", "GCP_SA_KEY")}`,
-  ];
+  // Workload Identity Federation, and NO service-account key (#677 AC-15).
+  //
+  // Emitted only when `ci.vertex` resolved. A step that authenticates with
+  // nothing configured is a step that can only fail, and the generator knows
+  // which it is — so an unconfigured consumer gets no auth step rather than a
+  // broken one, and the auth-detect script above says why in the file.
+  //
+  // Both values are GENERATED LITERALS read from the consumer's own config,
+  // validated by `vertexCiConfig`. Neither is a secret: a provider path is a
+  // trust anchor, and the exchange succeeds only for an OIDC token GitHub
+  // minted for a repository the provider's attribute condition admits.
+  //
+  // There is no `service_account:` here, deliberately. The federated identity
+  // holds `roles/aiplatform.user` directly, so there is nothing to impersonate
+  // and no identity a key could be created for by someone who wanted one.
+  //
+  // `continue-on-error: true` for the same reason every other step carries it:
+  // nothing in this job may have an `if:`, and a step that fails hard turns an
+  // unauthenticated run into a red check rather than an UNMEASURED one. The
+  // reporting step reads the review action's outcome and says so.
+  const vertexAuth =
+    vertex.config === null
+      ? []
+      : [
+          `- name: ${AI_REVIEW_VERTEX_AUTH_STEP_NAME}`,
+          `  id: ${AI_REVIEW_VERTEX_AUTH_STEP_ID}`,
+          `  continue-on-error: true`,
+          `  uses: ${refs.auth}`,
+          `  with:`,
+          `    project_id: ${vertex.config.project}`,
+          `    workload_identity_provider: ${vertex.config.workloadIdentityProvider}`,
+        ];
+
+  // Vertex needs a project, a location and a model. None is a secret and none
+  // is inferable by the reviewer, so all three are generated literals from
+  // `ci.vertex` rather than `vars.*` — a `vars` reading is a second declaring
+  // position a consumer can set to disagree with the one the auth step used.
+  const vertexEnv =
+    vertex.config === null
+      ? []
+      : [
+          `    ANTHROPIC_VERTEX_PROJECT_ID: ${vertex.config.project}`,
+          `    CLOUD_ML_REGION: ${vertex.config.region}`,
+        ];
 
   const review = [
     `- name: ${AI_REVIEW_ACTION_STEP_NAME}`,
     `  id: ${AI_REVIEW_ACTION_STEP_ID}`,
     `  continue-on-error: true`,
-    `  uses: ${AI_REVIEW_ACTION}@${AI_REVIEW_ACTION_SHA} # ${AI_REVIEW_ACTION_VERSION}`,
+    `  uses: ${refs.review}`,
     `  env:`,
-    // Vertex needs a project and a region; neither is a secret, and neither
-    // is inferable from the service-account key by the reviewer.
-    `    ANTHROPIC_VERTEX_PROJECT_ID: \${{ vars.ANTHROPIC_VERTEX_PROJECT_ID }}`,
-    `    CLOUD_ML_REGION: \${{ vars.CLOUD_ML_REGION }}`,
+    ...vertexEnv,
     // The payload path, through `env:` like every other value here. An
     // expression inside `prompt:` is substituted before the action sees it.
     `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
@@ -887,9 +1302,20 @@ export function buildReviewRunStep(indent = "      "): string {
     `    use_vertex: \${{ ${modeIs("vertex")} }}`,
     `    claude_code_oauth_token: ${credential("oauth", "CLAUDE_CODE_OAUTH_TOKEN")}`,
     `    anthropic_api_key: ${credential("api-key", "ANTHROPIC_API_KEY")}`,
-    `    claude_args: ${AI_REVIEW_CLAUDE_ARGS}`,
+    `    claude_args: ${aiReviewClaudeArgs(vertex)}`,
     `    prompt: |`,
     ...buildReviewPrompt().trimEnd().split("\n").map(l => (l ? `      ${l}` : "")),
+  ];
+
+  // AFTER the auth step and BEFORE the reviewer. That order is the whole
+  // fix: `google-github-actions/auth` writes its credentials file into
+  // GITHUB_WORKSPACE, so the file is in the baseline and cancels, and the
+  // drift reading is left measuring what the REVIEWER did.
+  const baseline = [
+    `- name: ${AI_REVIEW_BASELINE_STEP_NAME}`,
+    `  id: ${AI_REVIEW_BASELINE_STEP_ID}`,
+    `  run: |`,
+    ...buildBaselineScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
   const drift = [
@@ -897,6 +1323,7 @@ export function buildReviewRunStep(indent = "      "): string {
     `  id: ${AI_REVIEW_DRIFT_STEP_ID}`,
     `  env:`,
     `    AI_REVIEW_MODE: \${{ steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode }}`,
+    `    ${AI_REVIEW_TREE_BEFORE_VAR}: \${{ steps.${AI_REVIEW_BASELINE_STEP_ID}.outputs.path }}`,
     `  run: |`,
     ...buildDriftScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
@@ -915,7 +1342,8 @@ export function buildReviewRunStep(indent = "      "): string {
   return (
     indented(checkout, indent) +
     indented(prepare, indent) +
-    indented(vertexAuth, indent) +
+    (vertexAuth.length === 0 ? "" : indented(vertexAuth, indent)) +
+    indented(baseline, indent) +
     indented(review, indent) +
     indented(report, indent) +
     indented(drift, indent)

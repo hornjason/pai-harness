@@ -46,8 +46,6 @@ import { join } from "path";
 
 import { createCiWorkflows } from "../lib/scaffold/steps";
 import {
-  AI_REVIEW_ACTION,
-  AI_REVIEW_ACTION_SHA,
   AI_REVIEW_ACTION_STEP_ID,
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
@@ -56,13 +54,40 @@ import {
   AI_REVIEW_JOB,
   AI_REVIEW_MODEL,
   AI_REVIEW_RUN_STEP_ID,
-  AI_REVIEW_VERTEX_AUTH_ACTION,
-  AI_REVIEW_VERTEX_AUTH_SHA,
   AI_REVIEW_VERTEX_AUTH_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
   buildReviewPrompt,
   buildReviewRunStep,
+  vertexCiConfig,
+  type VertexCiDecision,
 } from "../lib/scaffold/ai-review-step";
+import { CLAUDE_CODE_ACTION, CLAUDE_CODE_ACTION_SHA, claudeCodeActionRef } from "../lib/claude-code-action";
+import { GOOGLE_AUTH_ACTION, GOOGLE_AUTH_ACTION_SHA, googleAuthActionRef } from "../lib/google-auth-action";
+
+/**
+ * The fixture's `ci` block, and the one reading of it every case shares.
+ *
+ * `ci.vertex` declares only the two REQUIRED fields, so the harness defaults
+ * for `region` and `model` are the ones under test here — a fixture that
+ * named a model would make `AI_REVIEW_MODEL` unreachable from this file and
+ * the AC-6 cases below would be asserting their own input.
+ *
+ * The values are nobody's: `test/ai-review-wif.test.ts` greps `lib/` for this
+ * repository's real project and provider, and a fixture carrying them would
+ * defeat that case.
+ */
+const FIXTURE_CI = {
+  runner: "ubuntu-latest",
+  bunVersion: "1.2.0",
+  vertex: {
+    project: "fixture-vertex-project",
+    workloadIdentityProvider:
+      "projects/111122223333/locations/global/workloadIdentityPools/fixture-pool/providers/fixture-provider",
+  },
+};
+
+const VERTEX: VertexCiDecision = vertexCiConfig(FIXTURE_CI);
+const REFS = { auth: googleAuthActionRef(), review: claudeCodeActionRef() };
 
 const SOURCE_PATH = join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step.ts");
 const source = readFileSync(SOURCE_PATH, "utf-8");
@@ -107,7 +132,7 @@ beforeAll(() => {
   writeFileSync(
     join(PROJECT, ".claude", "rungate", "config.json"),
     JSON.stringify(
-      { project: "ai-review-fixture", ci: { runner: "ubuntu-latest", bunVersion: "1.2.0" } },
+      { project: "ai-review-fixture", ci: FIXTURE_CI },
       null,
       2,
     ) + "\n",
@@ -124,7 +149,7 @@ beforeAll(() => {
 
 interface Mutant {
   buildReviewPrompt: () => string;
-  buildReviewRunStep: (indent?: string) => string;
+  buildReviewRunStep: (vertex: VertexCiDecision, refs: typeof REFS, indent?: string) => string;
 }
 
 let mutantSeq = 0;
@@ -150,19 +175,18 @@ async function mutate(name: string, from: string, to: string): Promise<Mutant> {
 describe("AC-1: the job authenticates vertex and runs the review, both SHA-pinned", () => {
   test("AC-1: the vertex auth step is a SHA-pinned google-github-actions/auth", () => {
     const auth = step(AI_REVIEW_VERTEX_AUTH_STEP_ID);
-    expect(AI_REVIEW_VERTEX_AUTH_SHA, "the pin is not a 40-character commit sha").toMatch(SHA40);
+    expect(GOOGLE_AUTH_ACTION_SHA, "the pin is not a 40-character commit sha").toMatch(SHA40);
     expect(auth.uses, "the vertex auth step is not pinned to a commit").toBe(
-      `${AI_REVIEW_VERTEX_AUTH_ACTION}@${AI_REVIEW_VERTEX_AUTH_SHA}`,
+      `${GOOGLE_AUTH_ACTION}@${GOOGLE_AUTH_ACTION_SHA}`,
     );
-    // A tag pin is a mutable pin: the same tag can point at new code tomorrow,
-    // and this job holds a service-account key while it runs.
+    // A tag pin is a mutable pin: the same tag can point at new code tomorrow.
     expect(auth.uses).not.toMatch(/@v\d/);
   });
 
   test("AC-1: the review step is a SHA-pinned anthropics/claude-code-action", () => {
     const run = step(AI_REVIEW_ACTION_STEP_ID);
-    expect(AI_REVIEW_ACTION_SHA, "the pin is not a 40-character commit sha").toMatch(SHA40);
-    expect(run.uses).toBe(`${AI_REVIEW_ACTION}@${AI_REVIEW_ACTION_SHA}`);
+    expect(CLAUDE_CODE_ACTION_SHA, "the pin is not a 40-character commit sha").toMatch(SHA40);
+    expect(run.uses).toBe(`${CLAUDE_CODE_ACTION}@${CLAUDE_CODE_ACTION_SHA}`);
     expect(run.uses).not.toMatch(/@v\d/);
   });
 
@@ -241,8 +265,9 @@ describe("AC-2/AC-3: each resolved mode supplies its own repository secret", () 
       const lines = generated()
         .split("\n")
         .filter(l => l.includes(`secrets.${secret}`));
-      // One in the auth step's env:, and for the two action-borne credentials
-      // one in the action's with:. GCP_SA_KEY also reaches the auth action.
+      // One in the auth step's env:, and one in the action's with:. Vertex is
+      // not in this list any more — it resolves from ci.vertex, not from a
+      // secret, and the job holds no key at all (#677 AC-15).
       expect(lines.length, `${secret} is read on ${lines.length} lines:\n${lines.join("\n")}`).toBe(
         2,
       );
@@ -363,7 +388,7 @@ describe("AC-6b: the review prompt interpolates the findings path and key", () =
       `the prompt still names ${AI_REVIEW_FINDINGS_PATH_VAR} after the constant changed — ` +
         `the path is typed into the prompt a second time`,
     ).not.toContain(AI_REVIEW_FINDINGS_PATH_VAR);
-    expect(mutant.buildReviewRunStep()).toContain("mutant.json");
+    expect(mutant.buildReviewRunStep(VERTEX, REFS)).toContain("mutant.json");
   });
 
   test("AC-6b: changing the key constant moves the prompt — no second spelling", async () => {
@@ -384,7 +409,7 @@ describe("AC-6b: the review prompt interpolates the findings path and key", () =
   });
 
   test("AC-6b: the prompt reaches the generated file through the builder, verbatim", () => {
-    expect(generated()).toContain(buildReviewRunStep());
+    expect(generated()).toContain(buildReviewRunStep(VERTEX, REFS));
     const prompt = String(step(AI_REVIEW_ACTION_STEP_ID).with?.prompt ?? "");
     expect(
       prompt.trimEnd(),

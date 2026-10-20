@@ -9,8 +9,11 @@ import {
   AI_REVIEW_MODES,
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_REQUIRE_VAR,
+  AI_REVIEW_LEGACY_PRESENCE_VAR,
+  AI_REVIEW_LEGACY_VERTEX_SECRET,
   buildAuthDetectScript,
   buildAuthDetectStep,
+  vertexCiConfig,
 } from "../lib/scaffold/ai-review-step";
 
 /**
@@ -36,7 +39,27 @@ import {
 const SOURCE_PATH = join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step.ts");
 const source = readFileSync(SOURCE_PATH, "utf-8");
 
-const SECRETS = ["GCP_SA_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+/**
+ * The secrets whose VALUES still reach the runner.
+ *
+ * `GCP_SA_KEY` is deliberately not among them any more (#631/#677 AC-15):
+ * vertex resolves from `ci.vertex` in the consumer's config rather than from
+ * a service-account key, so the key has no mode to resolve and no input to
+ * reach. The one place it is still named is the migration read, which arrives
+ * as `secrets.GCP_SA_KEY != ''` — a boolean the runner computes — and is
+ * asserted separately below precisely because it is the exception.
+ */
+const SECRETS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+
+/**
+ * The reading every case in this file drives the builder with: a consumer who
+ * has declared no `ci.vertex`.
+ *
+ * That is the state this file has always measured — it predates federation
+ * and its subject is the credential-less branch. The configured state is
+ * `test/ai-review-wif.test.ts`'s, which generates a whole workflow for it.
+ */
+const NO_VERTEX = vertexCiConfig(undefined);
 
 // ── Running the generated script ─────────────────────────────────────────
 
@@ -127,8 +150,8 @@ beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "ai-review-mutant-"));
   const path = join(dir, "ai-review-step.ts");
   writeFileSync(path, mutated);
-  const mod = (await import(path)) as { buildAuthDetectScript: () => string };
-  mutantScript = mod.buildAuthDetectScript();
+  const mod = (await import(path)) as { buildAuthDetectScript: (v: unknown) => string };
+  mutantScript = mod.buildAuthDetectScript(NO_VERTEX);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -178,7 +201,7 @@ describe("AC-6b: the non-zero exit is routed through one exported constant", () 
 // ── AC-1: exactly one of four modes, in precedence order ─────────────────
 
 describe("AC-1: the builder resolves exactly one of four modes", () => {
-  test("AC-1: the precedence list is the three credentials, in order, plus none", () => {
+  test("AC-1: the precedence list is the secret credentials, in order, plus none", () => {
     expect(AI_REVIEW_AUTH_PRECEDENCE.map(e => e.secret)).toEqual([...SECRETS]);
     expect(AI_REVIEW_MODES.length).toBe(4);
     expect(AI_REVIEW_MODES[AI_REVIEW_MODES.length - 1]).toBe("none");
@@ -186,7 +209,7 @@ describe("AC-1: the builder resolves exactly one of four modes", () => {
   });
 
   test("AC-1: each credential alone resolves its own mode", () => {
-    const script = buildAuthDetectScript();
+    const script = buildAuthDetectScript(NO_VERTEX);
     for (const { secret, mode } of AI_REVIEW_AUTH_PRECEDENCE) {
       const r = runScript(script, { [secret]: "x" });
       expect(r.mode, `${secret} alone should resolve ${mode}\n${r.stdout}${r.stderr}`).toBe(mode);
@@ -195,12 +218,12 @@ describe("AC-1: the builder resolves exactly one of four modes", () => {
   });
 
   test("AC-1: no credential resolves none", () => {
-    const r = runScript(buildAuthDetectScript(), {});
+    const r = runScript(buildAuthDetectScript(NO_VERTEX), {});
     expect(r.mode).toBe("none");
   });
 
-  test("AC-1: precedence is GCP_SA_KEY, then CLAUDE_CODE_OAUTH_TOKEN, then ANTHROPIC_API_KEY", () => {
-    const script = buildAuthDetectScript();
+  test("AC-1: precedence is CLAUDE_CODE_OAUTH_TOKEN, then ANTHROPIC_API_KEY", () => {
+    const script = buildAuthDetectScript(NO_VERTEX);
     // Each case sets the winner AND every credential below it, so a script
     // that simply checked them in the wrong order would resolve the loser.
     for (let i = 0; i < AI_REVIEW_AUTH_PRECEDENCE.length; i++) {
@@ -220,12 +243,15 @@ describe("AC-1: the builder resolves exactly one of four modes", () => {
   test("AC-1: an empty secret is an absent secret", () => {
     // An unset GitHub secret interpolates to the empty string, so `-n` rather
     // than `-v` is the only reading that matches what the runner produces.
-    const r = runScript(buildAuthDetectScript(), { GCP_SA_KEY: "", ANTHROPIC_API_KEY: "x" });
+    const r = runScript(buildAuthDetectScript(NO_VERTEX), {
+      CLAUDE_CODE_OAUTH_TOKEN: "",
+      ANTHROPIC_API_KEY: "x",
+    });
     expect(r.mode).toBe("api-key");
   });
 
   test("AC-1: no mode is decided in an `if:` expression", () => {
-    const step = buildAuthDetectStep();
+    const step = buildAuthDetectStep(NO_VERTEX);
     const conditions = step
       .split("\n")
       .map(l => l.trim())
@@ -252,6 +278,24 @@ describe("AC-1: the builder resolves exactly one of four modes", () => {
         ).toMatch(new RegExp(`^${secret}:\\s*\\$\\{\\{\\s*(secrets|vars)\\.${secret}\\s*\\}\\}$`));
       }
     }
+
+    // The migration read, and the one value in the step that is a COMPARISON
+    // rather than the thing itself. It is asserted here, in the case about
+    // where credentials may appear, because an exception recorded nowhere is
+    // an exception nobody re-checks.
+    const legacy = head.split("\n").filter(l => l.includes(AI_REVIEW_LEGACY_VERTEX_SECRET));
+    expect(
+      legacy.length,
+      `the migration notice reads ${AI_REVIEW_LEGACY_VERTEX_SECRET} on ${legacy.length} lines`,
+    ).toBe(1);
+    expect(
+      legacy[0].trim(),
+      `${AI_REVIEW_LEGACY_VERTEX_SECRET} must arrive as a presence COMPARISON. Interpolating ` +
+        `the secret itself puts a permanent service-account key on the runner the reviewer ` +
+        `reads, which is the whole of #677 AC-15`,
+    ).toBe(
+      `${AI_REVIEW_LEGACY_PRESENCE_VAR}: \${{ secrets.${AI_REVIEW_LEGACY_VERTEX_SECRET} != '' }}`,
+    );
   });
 });
 
@@ -259,7 +303,7 @@ describe("AC-1: the builder resolves exactly one of four modes", () => {
 
 describe("AC-5: mode none is UNMEASURED, not silence", () => {
   test("AC-5: a warning annotation naming UNMEASURED is emitted", () => {
-    const r = runScript(buildAuthDetectScript(), {});
+    const r = runScript(buildAuthDetectScript(NO_VERTEX), {});
     const annotations = r.stdout.split("\n").filter(l => l.startsWith("::warning"));
     expect(
       annotations.length,
@@ -274,7 +318,7 @@ describe("AC-5: mode none is UNMEASURED, not silence", () => {
     // Without this the annotation could be unconditional, and "UNMEASURED"
     // would stop meaning anything.
     for (const { secret } of AI_REVIEW_AUTH_PRECEDENCE) {
-      const r = runScript(buildAuthDetectScript(), { [secret]: "x" });
+      const r = runScript(buildAuthDetectScript(NO_VERTEX), { [secret]: "x" });
       expect(r.stdout, `${secret} resolved a mode and still warned`).not.toContain("UNMEASURED");
     }
   });
@@ -305,7 +349,7 @@ describe("AC-5: mode none is UNMEASURED, not silence", () => {
 
 describe("AC-6: mode none fails only when RUNGATE_REQUIRE_AI_REVIEW is the string true", () => {
   test("AC-6: the string true with no credential exits non-zero", () => {
-    const r = runScript(buildAuthDetectScript(), { [AI_REVIEW_REQUIRE_VAR]: "true" });
+    const r = runScript(buildAuthDetectScript(NO_VERTEX), { [AI_REVIEW_REQUIRE_VAR]: "true" });
     expect(r.code, `expected a refusal\n${r.stdout}${r.stderr}`).toBe(AI_REVIEW_REQUIRED_EXIT);
     expect(r.mode).toBe("none");
 
@@ -319,7 +363,7 @@ describe("AC-6: mode none fails only when RUNGATE_REQUIRE_AI_REVIEW is the strin
   });
 
   test("AC-6: every other value of the variable exits zero", () => {
-    const script = buildAuthDetectScript();
+    const script = buildAuthDetectScript(NO_VERTEX);
     const cases: Array<[string, Record<string, string>]> = [
       ["unset", {}],
       ["empty", { [AI_REVIEW_REQUIRE_VAR]: "" }],
@@ -346,7 +390,7 @@ describe("AC-6: mode none fails only when RUNGATE_REQUIRE_AI_REVIEW is the strin
     // script that read the variable first would fail every job on a tree that
     // sets it, which is the cheapest wrong fix for "make it required".
     for (const { secret } of AI_REVIEW_AUTH_PRECEDENCE) {
-      const r = runScript(buildAuthDetectScript(), {
+      const r = runScript(buildAuthDetectScript(NO_VERTEX), {
         [secret]: "x",
         [AI_REVIEW_REQUIRE_VAR]: "true",
       });
