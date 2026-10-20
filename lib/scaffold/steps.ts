@@ -2732,10 +2732,12 @@ ${branchList}
 ${branchList}
 
 permissions:
-  # Least privilege, and it matters most on the consumers. This repo and
-  # agentgrit default to a read-only GITHUB_TOKEN, but asaCommandCenter's
-  # repository default is WRITE — measured 2026-10-20 — so a generated job
-  # with no permissions: block runs there holding a token that can push.
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
   # Neither job needs it: both check out, install and run tests.
   contents: read
 
@@ -2792,10 +2794,12 @@ ${branchList}
 ${branchList}
 
 permissions:
-  # Least privilege, and it matters most on the consumers. This repo and
-  # agentgrit default to a read-only GITHUB_TOKEN, but asaCommandCenter's
-  # repository default is WRITE — measured 2026-10-20 — so a generated job
-  # with no permissions: block runs there holding a token that can push.
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
   # Neither job needs it: both check out, install and run tests.
   contents: read
 
@@ -2827,10 +2831,12 @@ ${branchList}
 ${branchList}
 
 permissions:
-  # Least privilege, and it matters most on the consumers. This repo and
-  # agentgrit default to a read-only GITHUB_TOKEN, but asaCommandCenter's
-  # repository default is WRITE — measured 2026-10-20 — so a generated job
-  # with no permissions: block runs there holding a token that can push.
+  # Least privilege, and it matters most on the consumers. A workflow with
+  # no permissions: block inherits the REPOSITORY default, which is a setting
+  # the harness does not control and cannot read at generation time. Measured
+  # 2026-10-20 across the consumers this harness serves: the default is
+  # read-only on some and WRITE on others, so a generated job that declares
+  # nothing holds a push-capable GITHUB_TOKEN wherever the default is write.
   # Neither job needs it: both check out, install and run tests.
   contents: read
 
