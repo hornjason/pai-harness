@@ -85,7 +85,13 @@ describe("#323 SC-6: no suite plants its fixtures at a path another run shares",
       }
     }
     expect(violations, `shared scratch roots:\n${violations.join("\n")}`).toEqual([]);
-  });
+    // 60s, because this reads every .ts in test/ and the cost grows with the
+    // tree rather than with anything this case is about. Measured 2026-10-20:
+    // 3.48s over 378 files locally, and 5600ms on a CI shard — past the 5000ms
+    // bunfig default, which DECLARES the budget rather than setting one here.
+    // It went red on a PR that added one unrelated test file. The scan cost
+    // itself is #793; this stops an unrelated author paying for it.
+  }, 60_000);
 
   test("skipping this file is safe, because it creates nothing", () => {
     // The exemption, checked. If someone later adds a real scratch directory
