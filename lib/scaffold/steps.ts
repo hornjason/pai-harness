@@ -33,6 +33,7 @@ import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
 import { actionRef } from "../workflow-actions";
+import { ciSetupStep } from "../ci-setup-step";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
 import { scanDocsDirectory } from "../doc-routing";
@@ -2803,7 +2804,7 @@ ${baseRefStep}
       - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
-      - run: bun install${globalTools.step}
+      - run: bun install${globalTools.step}${ciSetupStep()}
       - run: ${test.command} --shard=\${{ matrix.shard }}/${shards}${typecheckStep}
 
   # The aggregate. Named "test" because that is the context branch protection
@@ -2859,7 +2860,7 @@ ${baseRefStep}
       - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
-      - run: bun install${globalTools.step}
+      - run: bun install${globalTools.step}${ciSetupStep()}
       - run: ${test.command}${typecheckStep}
 `;
 

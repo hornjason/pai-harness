@@ -1,3 +1,4 @@
+# generated-sha: fc7b2ebb1fbe7038
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
@@ -59,6 +60,19 @@ jobs:
       # Pinned by ci.globalTools in .claude/rungate/config.json — one declaration (#597).
       - name: Install pinned global tools
         run: npm install -g 'agnix@0.59.0' '@reporails/cli@0.6.4'
+      - name: Consumer setup (scripts/ci-setup.sh, optional)
+        run: |
+          # rungate's one extension point inside this managed job (#529).
+          # The script is yours; this file is not. Re-scaffolding rewrites the
+          # YAML around this step and never touches scripts/ci-setup.sh.
+          # Both branches print: a step that is silent when the file is absent
+          # cannot be told from one that ran and did nothing.
+          if [ -f scripts/ci-setup.sh ]; then
+            echo "rungate: running scripts/ci-setup.sh before the suite (#529)"
+            bash scripts/ci-setup.sh
+          else
+            echo "rungate: no scripts/ci-setup.sh in this tree, so no consumer setup ran (#529)"
+          fi
       - run: bun test --shard=${{ matrix.shard }}/4
       - run: bun run typecheck
 
