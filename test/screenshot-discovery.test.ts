@@ -29,17 +29,38 @@
  *
  * ## What was broken to prove these can fail
  *
+ * Baseline 14 pass / 0 fail; restored and re-verified at 14 pass / 0 fail.
+ *
  * | # | Mutation | Result |
  * |---|---|---|
- * | M1 | `readdirSync(dir)` widened to the parent | 2 fail |
- * | M2 | the `.png` filter dropped | 1 fail |
- * | M3 | `missing` folded into `none` | 2 fail |
- * | M4 | `none` returned whenever the list is empty, before the exists check | 1 fail |
- * | M5 | paths returned relative instead of absolute | 1 fail |
+ * | M1 | the listing widened to the parent directory | **3 fail** |
+ * | M2 | the `.png` filter dropped | **1 fail** |
+ * | M3 | `missing` folded into `none` | **2 fail** |
+ * | M4 | `none` returned before the exists check | **3 fail** |
+ * | M5 | paths returned relative instead of absolute | **4 fail** |
+ * | M6 | `.sort()` deleted | **1 fail** |
+ * | M7 | the `isFile` filter dropped | **1 fail** |
+ * | M8 | the injected lister ignored, `readdirSync` used anyway | **1 fail** |
  *
- * Baseline and restore both 13 pass / 0 fail. M3 and M4 are the pair that
- * matters: they are the two ways to collapse "Quinn took no screenshots" into
- * "we never looked", which is the silence that hid this for as long as it hid.
+ * M1 is the row that refuses the cheapest wrong fix — tightening the filename
+ * pattern instead of scoping the directory. M3 and M4 are the pair that
+ * matters most: they are the two ways to collapse "Quinn took no screenshots"
+ * into "we never looked", which is the silence that hid this for as long as
+ * it hid.
+ *
+ * **M6 and M7 measured 0 red in the first battery.** `readdirSync` returns
+ * sorted names on this filesystem, so deleting the sort changed no result,
+ * and nothing in the suite created a directory named `*.png`. Both mechanisms
+ * were present and unprovable. The `DirLister` seam and the `decoy.png`
+ * fixture exist for those two rows alone; the mechanisms did not change, only
+ * whether they can be shown to work. M8 is the control on the seam, because
+ * a lister that is accepted and then ignored would leave M6 passing.
+ *
+ * Twice now a battery here has been run against a tree that was not what it
+ * looked like — the first time because `git checkout --` aborts on an
+ * unmatched pathspec, the second because the restore reverted uncommitted
+ * work from the same session. Commit before the battery, and read the
+ * baseline row before trusting any other.
  */
 
 import { describe, expect, test } from "bun:test";
