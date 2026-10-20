@@ -1,6 +1,7 @@
 import { execSync, execFileSync } from "child_process";
 import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
+import { splitGateRuns } from "../lib/gate-run-split";
 import { gateSaltPath, workDir as slugWorkDir } from "../lib/paths";
 import {
   writeGateResult,
@@ -1788,20 +1789,54 @@ function runGateTests(gate: string, workDir: string, state: Record<string, any>,
 
 // ── Result parsing ──────────────────────────────────────────────────────
 
-function parseGateResults(testOutput: string, earlyResults: GateResult[], earlyFails: number): { passes: number; fails: number; warns: number; results: GateResult[] } {
+/**
+ * Exported so a case can drive it (#737 SC-3).
+ *
+ * The two readings it composes were scoped differently for the whole of
+ * this function's life, and nothing could see it because nothing called it
+ * from a test — the scoping was only observable through the two numbers it
+ * printed, eleven lines apart, in a log.
+ */
+export function parseGateResults(testOutput: string, earlyResults: GateResult[], earlyFails: number): { passes: number; fails: number; warns: number; results: GateResult[] } {
   let passes = 0;
   let fails = 0;
   const warns = 0;
   const results: GateResult[] = [];
 
-  const allPassMatches = [...testOutput.matchAll(/^\s*(\d+)\s+pass\s*$/gm)];
-  const allFailMatches = [...testOutput.matchAll(/^\s*(\d+)\s+fail\s*$/gm)];
-  const passMatch = allPassMatches.length > 0 ? allPassMatches[allPassMatches.length - 1] : null;
-  const failMatch = allFailMatches.length > 0 ? allFailMatches[allFailMatches.length - 1] : null;
-  if (passMatch) passes = parseInt(passMatch[1]);
-  if (failMatch) fails = parseInt(failMatch[1]);
+  // One split, two readings off it (#737).
+  //
+  // These used to be scoped differently: the summary took the last `N fail`
+  // in the WHOLE buffer while `parseTestResults` was handed the whole buffer
+  // and pushed a result for every `(fail)` marker in it. On a retried gate
+  // that is `1 fail` beside `2 failures`, eleven lines apart, with one check
+  // named twice — two deciders for one question, agreeing on every
+  // single-run output and diverging only on the retry nobody fixtures.
+  //
+  // Last attempt wins; `lib/gate-run-split.ts` argues why and
+  // `specs/GATE-CONTRACTS-SPEC.md` records it.
+  const buffer = splitGateRuns(testOutput);
 
-  results.push(...parseTestResults(testOutput));
+  if (buffer.verdict === null) {
+    // A run that printed no summary did not report zero failures — it
+    // reported nothing. The pre-#737 code took whichever earlier run had
+    // the last matching line, which is a superseded attempt reported as
+    // this one's result.
+    results.push({
+      check: "test-suite",
+      result: "FAIL",
+      detail: `UNMEASURED: ${buffer.unmeasuredReasons.join("; ")}`,
+    });
+    if (earlyResults.length > 0) {
+      results.push(...earlyResults);
+      fails += earlyFails;
+    }
+    return { passes: 0, fails: fails + 1, warns, results };
+  }
+
+  passes = buffer.verdict.summary!.pass;
+  fails = buffer.verdict.summary!.fail;
+
+  results.push(...parseTestResults(buffer.verdict.text));
 
   if (earlyResults.length > 0) {
     results.push(...earlyResults);
