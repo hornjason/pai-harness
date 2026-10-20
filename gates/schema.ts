@@ -362,6 +362,17 @@ const SuiteMeasurementShape = {
   ran: z.number().int().nonnegative().optional(),
   skip: z.number().int().nonnegative().nullable().optional(),
   todo: z.number().int().nonnegative().nullable().optional(),
+  // #323 — the names beside the count. `failures` is a number, and the
+  // refusal two fields up says "a FAIL must name at least one" while naming
+  // nothing. A schema is a FILTER (#646): a recorder that writes these and a
+  // schema that does not declare them is a record that silently loses them.
+  //
+  // The list may be SHORTER than `failures` and that is not a contradiction:
+  // a module-scope error counts toward the total and prints no test name,
+  // because the test that would carry it never ran. `describeSuiteFailures`
+  // in lib/suite-run-reading.ts is the one place that says so in words.
+  failingTests: z.array(z.string()).optional(),
+  errors: z.number().int().nonnegative().nullable().optional(),
 };
 
 /**

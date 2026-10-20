@@ -186,6 +186,8 @@ and **absent means UNMEASURED** — not "clean".
 | `skip` | number \| null | Tests the runner skipped, or `null` when it reports no skip count. Absent only on a record older than #673 |
 | `todo` | number \| null | Tests marked todo, or `null` when the runner reports no todo count. Absent only on a record older than #673 |
 | `files` | number \| null | Test files the runner said it discovered, or `null` when it did not say. Never `0` — a run over no files is refused, not recorded (#490) |
+| `failingTests` | string[] | The names the runner printed, in order. May be SHORTER than `failures` — a module-scope error counts toward the total and has no test name (#323) |
+| `errors` | number \| null | Unhandled errors between tests, or `null` when the runner reports no error count. This is *how* a failure loses its name (#323) |
 
 **`tests` and `ran` are different quantities and both are recorded (#673).**
 On run `wf_62d68d55-81c` they were `13915` and `13084`; the changelog line carried

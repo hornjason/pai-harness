@@ -85,6 +85,32 @@ const RAN_LINE = /^Ran\s+(\d+)\s+tests?\s+across\s+(\d+)\s+files?\./gm;
 const SKIP_LINE = /^\s*(\d+)\s+skip\s*$/gm;
 const TODO_LINE = /^\s*(\d+)\s+todo\s*$/gm;
 
+/**
+ * `1 error` — unhandled errors between tests (#323).
+ *
+ * In the summary block beside `skip` and `todo`, and omitted at zero like
+ * they are. It is read for one reason: **it is how a failure loses its
+ * name.** A module-scope throw counts toward `fail` and prints no `(fail)`
+ * line, because the test that would have carried the name never ran.
+ */
+const ERROR_LINE = /^\s*(\d+)\s+errors?\s*$/gm;
+
+/**
+ * `(fail) suite > case [0.12ms]` — one line per failing test.
+ *
+ * Anchored to the whole line, and the timing suffix is optional because bun
+ * omits it for a case that never started. The name is everything between.
+ *
+ * This cannot be cut to the summary block the way `skip` and `todo` are:
+ * bun prints these as the run goes, throughout the output. That is a real
+ * limitation and it is reported rather than papered over — see
+ * `describeSuiteFailures`, which refuses to list names when there are more
+ * of them than the summary counts, because this repository's own suite
+ * captures nested `bun test` output and a nested run's `(fail)` lines sit at
+ * column zero like everybody else's.
+ */
+const FAIL_CASE_LINE = /^\s*\(fail\)\s+(\S.*?)(?:\s+\[[\d.]+\s*m?s\])?\s*$/gm;
+
 export interface MeasuredRun {
   status: "MEASURED";
   pass: number;
@@ -120,6 +146,35 @@ export interface MeasuredRun {
    * *Silent Default Substitution*, pointed at the number #490 is about.
    */
   files: number | null;
+  /**
+   * The names of failing tests the runner printed, in the order it printed
+   * them (#323).
+   *
+   * Beside `fail` and not instead of it, because the two can disagree and
+   * the disagreement is the finding. Measured on bun 1.3.14: two test files,
+   * one ordinary failing assertion and one module-scope `throw`, report
+   * `2 fail` and **one** `(fail)` line — the throw's test never ran, so
+   * there is no name to print. The same shape appeared in this repository's
+   * own CI on 2026-10-20: `1 fail`, `1 error`, and `1 tests failed:`
+   * followed by an empty list.
+   *
+   * An empty array therefore does not mean "nothing failed" — `fail` means
+   * that. It means the runner named nothing, which over a non-zero `fail` is
+   * a fact an operator needs rather than a hole to fill in with silence.
+   * `describeSuiteFailures` is the one place that turns the two numbers into
+   * a sentence.
+   */
+  failingTests: string[];
+  /**
+   * Unhandled errors between tests, or null when the runner did not say.
+   *
+   * **null, never 0**, for the reason `skip` and `todo` give one field up: a
+   * runner that reports no error count and a runner that hit none are
+   * opposite facts. Unlike those two there is no total to resolve an absence
+   * against — bun's `Ran N tests` does not include errors, which is itself
+   * the point: an error is not a test.
+   */
+  errors: number | null;
 }
 
 export interface UnmeasuredRun {
@@ -201,10 +256,21 @@ export function readSuiteRun(output: unknown): SuiteRun {
   // prints `pass`, then `skip` and `todo` when non-zero, then `fail`, so the
   // span between those two anchors is where a skip count belongs and
   // anywhere else in the output is somebody else's run.
+  //
+  // #323 extended the END of the span to the `Ran N tests` line when there
+  // is one. Measured on bun 1.3.14 rather than assumed: `skip` and `todo`
+  // are printed BEFORE `fail` and `error` is printed AFTER it, so a span
+  // that stops at the `fail` line cannot see an error count at all — the
+  // first draft of this read `null` for a run that plainly said `1 error`.
+  // `Ran N tests across M files.` closes the block, so it is the anchor.
   const at = (m: RegExpMatchArray) => m.index ?? 0;
   const summary = output.slice(
     Math.min(at(passMatch), at(failMatch)),
-    Math.max(at(passMatch) + passMatch[0].length, at(failMatch) + failMatch[0].length),
+    Math.max(
+      at(passMatch) + passMatch[0].length,
+      at(failMatch) + failMatch[0].length,
+      ran ? at(ran) + ran[0].length : 0,
+    ),
   );
   const skipMatch = lastMatch(SKIP_LINE, summary);
   const todoMatch = lastMatch(TODO_LINE, summary);
@@ -243,7 +309,80 @@ export function readSuiteRun(output: unknown): SuiteRun {
     );
   }
 
-  return { status: "MEASURED", pass, fail, tests, files, skip, todo };
+  // #323. Read AFTER every refusal above, so a run with no result cannot
+  // arrive carrying a list of names: an UNMEASURED reading has no failures
+  // to name, and offering some would make the absence of a measurement look
+  // like a measurement with detail.
+  //
+  // The error count is read from the summary slice for the reason skip and
+  // todo are — a captured nested run's `1 error` is not this run's. The
+  // NAMES cannot be, and that asymmetry is reported rather than hidden.
+  const errorMatch = lastMatch(ERROR_LINE, summary);
+  const failingTests = [...output.matchAll(FAIL_CASE_LINE)].map(m => m[1].trim()).filter(n => n !== "");
+
+  return {
+    status: "MEASURED",
+    pass,
+    fail,
+    tests,
+    files,
+    skip,
+    todo,
+    failingTests,
+    errors: errorMatch ? Number(errorMatch[1]) : null,
+  };
+}
+
+/**
+ * The sentence a caller prints instead of `N fail` (#323).
+ *
+ * One binding, because the interesting part is not any one of the numbers —
+ * it is the relationship between `fail` and the names, and a caller that
+ * composed its own sentence would get that relationship right on the runs it
+ * had seen and wrong on the one that matters.
+ *
+ * Four readings, and the last two are the ones this exists for:
+ *
+ *  - nothing failed;
+ *  - every failure is named;
+ *  - **the runner counted more failures than it named** — a module-scope
+ *    error is the usual cause, so the error count travels with the sentence;
+ *  - **more names were found than the summary counts**, which means the
+ *    output contains another runner's `(fail)` lines. The names are not this
+ *    run's to report, so they are withheld and the contradiction is stated.
+ *    This repository's own suite drives `bun test` in subprocesses, so it is
+ *    not hypothetical.
+ */
+export function describeSuiteFailures(run: SuiteRun): string {
+  if (run.status !== "MEASURED") return run.reason;
+  const { fail, failingTests, errors } = run;
+  const named = failingTests.length;
+
+  if (named > fail) {
+    return (
+      `the output names ${named} failing test(s) but the summary counts ${fail} — it carries another ` +
+      "runner's output as well as this one's, so the names cannot be attributed to this run (#323)"
+    );
+  }
+  if (fail === 0) {
+    return named === 0
+      ? "0 failing tests"
+      : `0 failing tests by the summary, yet the output names ${named} — the counts contradict each other (#323)`;
+  }
+
+  const unnamed = fail - named;
+  const names = named === 0 ? "" : `: ${failingTests.join(", ")}`;
+  if (unnamed === 0) return `${fail} failing test(s)${names}`;
+
+  // The case a bare count cannot express, and the one #323 was filed over.
+  const why =
+    errors === null
+      ? "and the runner reported no error count, so what happened to the other name(s) is unrecorded"
+      : errors === 0
+        ? "and the runner reported 0 unhandled errors, so the missing name(s) are unexplained"
+        : `and the runner reported ${errors} unhandled error(s) between tests — a module-scope ` +
+          "failure has no test name, because the test that would carry it never ran";
+  return `${fail} failing test(s), ${unnamed} of them unnamed${names} — ${why} (#323)`;
 }
 
 /**
