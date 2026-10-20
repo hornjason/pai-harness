@@ -125,6 +125,12 @@ const HARNESS_ROOT = parsedArgs.harnessRoot
 const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || ''
 const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
 const WORK_DIR = parsedArgs.workDir || `${HOME}/.rungate/${SLUG}`
+// #809: UI evidence is read from a directory this run owns, never from a glob
+// over /tmp. `screenshotDirFor` in lib/screenshot-discovery.ts is the one
+// binding for the name; it is spelled here only because a prompt is a string
+// and cannot import. Keep the two in step — test/screenshot-discovery.test.ts
+// asserts this workflow names the helper.
+const SCREENSHOT_DIR = `${WORK_DIR}/screenshots`
 const PROVE_PROMPT = `${HARNESS_ROOT}/gates/prompts/prove-reproducer.md`
 
 // ── Agent brief loader (config-driven) ────────────────────
@@ -409,8 +415,21 @@ ${reproSteps ? `## Reproduction Steps (from issue)\n${reproSteps}\n` : ''}${inpu
 - browser_snapshot() — get accessibility tree (text, fast, preferred over screenshots)
 - browser_click(element) — click by ref from snapshot
 - browser_type(element, text) — type text into element
-- browser_take_screenshot() — capture PNG evidence
+- browser_take_screenshot({ filename }) — capture PNG evidence
 - browser_verify_text_visible(text) — assert text on page
+
+## Where screenshots MUST go (#809)
+BEFORE your first screenshot, run: mkdir -p ${SCREENSHOT_DIR}
+Create it even if you end up taking none — an absent directory means nobody
+looked, an empty one means you looked and had nothing to show, and the two
+are reported differently.
+
+Then pass an explicit absolute filename to EVERY screenshot:
+  browser_take_screenshot({ filename: "${SCREENSHOT_DIR}/<ac-id>-<what-it-shows>.png" })
+
+With no filename the tool writes .playwright-mcp/page-{timestamp}.png under
+its own workspace root, which is not this directory and will not be collected.
+Only files in the directory above are attached to the pull request.
 
 ## Target URLs
 Read ${PROJECT_ROOT}/.claude/rungate.json for page paths and container config.
@@ -426,7 +445,7 @@ ${quinnACs}
    b. browser_snapshot() — verify page loaded
    c. Perform action (browser_click, browser_type, etc.)
    d. browser_snapshot() or browser_verify_text_visible() to verify
-   e. browser_take_screenshot() for evidence
+   e. browser_take_screenshot({ filename: "${SCREENSHOT_DIR}/<ac-id>.png" }) for evidence
 3. Test as a brand-new user — use actual data from the prove container
 4. Report PASS/FAIL per AC with tool output as evidence
 
@@ -457,35 +476,43 @@ Report verdict and criteriaResults.
 // Upload Quinn screenshots to GitHub
 let screenshotMarkdown = ''
 if (needsQuinn) {
+  // #809: read ONE directory this run owns. The previous form globbed all of
+  // /tmp for two filename patterns and published every match as a public
+  // gist — unscoped by run, issue or project, on a machine that carries a
+  // dozen concurrent worktrees. It had also never once matched, because
+  // Playwright writes .playwright-mcp/page-{timestamp}.png and neither
+  // pattern describes that, so UI evidence had never been attached to
+  // anything while the phase reported success.
+  //
+  // The decision lives in lib/screenshot-discovery.ts because a string inside
+  // a prompt cannot be tested; this is the thin call to it.
   const screenshotUploadResult = await agent(`
-Find all screenshot files from Quinn's Playwright session and upload them to GitHub:
+Run this command and return its JSON output verbatim:
 
 bun -e "
 import { uploadScreenshotsToIssue } from '${HARNESS_ROOT}/lib/screenshot-upload.ts';
-import { readdirSync } from 'fs';
-import { join } from 'path';
+import { discoverScreenshots, describeScan } from '${HARNESS_ROOT}/lib/screenshot-discovery.ts';
 
-// Find all screenshot files in /tmp
-const tmpDir = '/tmp';
-const files = readdirSync(tmpDir);
-const screenshotFiles = files
-  .filter(f => f.match(/playwright-screenshot.*\\.png$|browser-screenshot.*\\.png$/))
-  .map(f => join(tmpDir, f));
-
-if (screenshotFiles.length === 0) {
-  console.log(JSON.stringify({ uploaded: [], failed: [], markdownLinks: [] }));
+const scan = discoverScreenshots('${SCREENSHOT_DIR}');
+if (scan.kind !== 'found') {
+  console.log(JSON.stringify({ uploaded: [], failed: [], markdownLinks: [], scan: scan.kind, note: describeScan(scan) }));
 } else {
-  const result = await uploadScreenshotsToIssue(${ISSUE}, '${ISSUE_REPO}', screenshotFiles);
-  console.log(JSON.stringify(result));
+  const result = await uploadScreenshotsToIssue(${ISSUE}, '${ISSUE_REPO}', scan.files);
+  console.log(JSON.stringify({ ...result, scan: scan.kind, note: describeScan(scan) }));
 }
 "
 
-Report the JSON result with uploaded, failed, and markdownLinks arrays.
+Return only the raw JSON object. Do not look for screenshots anywhere else.
   `, { label: 'upload-screenshots', phase: 'Validate' })
 
   if (screenshotUploadResult?.markdownLinks?.length > 0) {
     screenshotMarkdown = '\n\n## Evidence Screenshots\n\n' + screenshotUploadResult.markdownLinks.join('\n\n')
     log(`Uploaded ${screenshotUploadResult.markdownLinks.length} screenshots`)
+  } else {
+    // The silence that hid this. An empty result used to fall out of the `if`
+    // with nothing written anywhere, so a feature that had never worked read
+    // exactly like a run with nothing to show.
+    log(`No evidence screenshots attached — ${screenshotUploadResult?.note || `no reading returned from the upload step for ${SCREENSHOT_DIR}`}`)
   }
 }
 
