@@ -238,24 +238,52 @@ export function bytesIdentical(existing: string | null, generated: string): bool
  * "has anyone touched this since?" with nothing that can desync from the
  * tree it describes.
  */
-const MARKER = /^\/\/ generated-sha: ([0-9a-f]{16})\n/;
+/**
+ * The provenance marker for one line-comment syntax.
+ *
+ * A factory rather than a second copy, because `.github/workflows/*.yml`
+ * needs the same marker with `#` and the digest logic is the part that must
+ * not fork (#722). Two independent implementations of "has anyone touched
+ * this since" are two deciders answering one question, and a mutation of
+ * either leaves the other holding the case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ */
+export function lineCommentProvenance(prefix: string) {
+  const marker = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&")} generated-sha: ([0-9a-f]{16})\\n`);
+  const body = (text: string): string => text.replace(marker, "");
+  const sha = (text: string): string =>
+    createHash("sha256").update(body(text)).digest("hex").slice(0, 16);
+  return {
+    body,
+    sha,
+    declared: (text: string): string | null => {
+      const m = marker.exec(text);
+      return m ? m[1] : null;
+    },
+    /** Idempotent: stamping an already-stamped document re-stamps the body. */
+    stamp: (generated: string): string => {
+      const b = body(generated);
+      return `${prefix} generated-sha: ${sha(b)}\n${b}`;
+    },
+  };
+}
+
+const JS_COMMENT = lineCommentProvenance("//");
 
 export function commentBody(text: string): string {
-  return text.replace(MARKER, "");
+  return JS_COMMENT.body(text);
 }
 
 export function commentSha(text: string): string {
-  return createHash("sha256").update(commentBody(text)).digest("hex").slice(0, 16);
+  return JS_COMMENT.sha(text);
 }
 
 export function declaredCommentSha(text: string): string | null {
-  const m = MARKER.exec(text);
-  return m ? m[1] : null;
+  return JS_COMMENT.declared(text);
 }
 
 export function stampComment(generated: string): string {
-  const body = commentBody(generated);
-  return `// generated-sha: ${commentSha(body)}\n${body}`;
+  return JS_COMMENT.stamp(generated);
 }
 
 export interface WriteDecision {
