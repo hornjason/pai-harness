@@ -81,6 +81,16 @@
  * #702 is written about — stays GREEN, and only the first-run case goes red.
  * A battery with the resume case alone would have certified the wrong fix.
  *
+ * **M1 has a third witness that is not in the table, and it is not mine.**
+ * #640's `test/unit/run-branch-wiring.test.ts` anchored on the literal
+ * `git switch -c ${shellQuote(ref)}` inside the prompt, which this change
+ * moved behind the binding — CI shard 2 went red, correctly, on a file this
+ * branch had not opened. Its anchor moved to the interpolation and it now
+ * asserts the binding's OUTPUT still contains the checkout, which is the
+ * same property in the new syntax (#484) rather than a weakened one.
+ * Re-measured over all three files: baseline **61 pass, 0 fail**, M1
+ * **3 of 61** — the two above plus that pin.
+ *
  * **M7 is 3 and the ship.js impl row stays green**, which is what makes the
  * matrix a measurement of divergence rather than a second copy of the
  * behavioural cases. Each `IMPLS` row drives its own script AND its own
