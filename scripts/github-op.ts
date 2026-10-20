@@ -62,6 +62,7 @@ import {
   upsertPR,
   waitForCi,
 } from "../lib/github";
+import { commitSubject } from "../lib/commit-subject";
 
 export type Flags = Record<string, string>;
 
@@ -207,7 +208,14 @@ export async function run(command: string, flags: Flags): Promise<unknown> {
           throw new Error(`--title-from-issue must be a positive integer, got "${fromIssue}"`);
         }
         const issue = await getIssue(client, flags["issue-repo"] || repo, n);
-        title = `fix(#${n}): ${issue.title}`;
+        // Keeping the title off the command line stops a SHELL reading it.
+        // It does not stop GITHUB reading it: this title becomes the
+        // squash-merge commit subject, and a merged commit message carrying
+        // `Fixes #N` closes issue N — which is how `cfc1415d` closed #644 on
+        // 2026-10-19 from inside a backtick code span. `commitSubject` breaks
+        // that adjacency (#696); the `fix(#N):` prefix it composes is the one
+        // reference this PR does mean.
+        title = commitSubject(n, issue.title);
       } else {
         title = titleFrom(flags);
       }

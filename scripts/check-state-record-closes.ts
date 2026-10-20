@@ -155,6 +155,12 @@ const SLUG = "[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9][A-Za-z0-9._-]*";
 const CLOSING_REFERENCE = new RegExp(
   `\\b(?<keyword>${KEYWORD_STEM})\\b(?:\\s*:\\s*|\\s+)` +
     `(?:(?<slug>${SLUG})?#(?<num>\\d+)` +
+    // `GH-N` is the third form GitHub documents beside `#N` and
+    // `owner/repo#N`, and this detector did not read it (#696). A record
+    // saying `fixes GH-586` closed #586 and the coverage comparison called it
+    // undeclared-free. Over-detection is the safe direction here — see the
+    // grammar note above — so the absent form is the one that costs.
+    `|GH-(?<ghNum>\\d+)` +
     `|https?:\\/\\/github\\.com\\/(?<urlSlug>${SLUG})\\/(?:issues|pull)\\/(?<urlNum>\\d+))`,
   "gi",
 );
@@ -205,7 +211,7 @@ export function closingReferences(
   for (const m of text.matchAll(CLOSING_REFERENCE)) {
     const g = m.groups ?? {};
     const slug = (g.slug ?? g.urlSlug ?? null) as string | null;
-    const num = Number(g.num ?? g.urlNum);
+    const num = Number(g.num ?? g.ghNum ?? g.urlNum);
     if (!Number.isFinite(num)) continue;
     const target: ReferenceTarget = slug === null
       ? "this-repo"

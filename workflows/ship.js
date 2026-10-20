@@ -468,11 +468,39 @@ function buildSafeSSHCommand(host, command) {
   return ['ssh', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no', '--', host, command]
 }
 
-// Single-quote a shell word. Only ever applied to argv produced by the
-// workflow-security builders, never to raw agent output.
+// Single-quote a shell word. Single quotes are the only shell quoting with no
+// interior expansion at all, so this is safe for untrusted text as well as for
+// argv produced by the workflow-security builders — the issue title reaches it
+// through `shipCommitSubject` (#696).
 function shellQuote(word) {
   return `'${String(word).replace(/'/g, "'\\''")}'`
 }
+
+// ──── COMMIT-SUBJECT-START ────
+// An inline copy of `lib/commit-subject.ts`, which is the owner. A workflow
+// script cannot import (#69), so the duplication is forced — and a second
+// copy that nothing compares is the defect, not the copy
+// (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape; #621).
+// `test/commit-subject-quoting.test.ts` lifts this block out, runs it, and
+// asserts it agrees with the library over every fixture, so a change to
+// either side without the other turns the suite red.
+//
+// Read the library for why this exists. In one line: GitHub closes an issue
+// when a merged commit message carries a closing keyword beside an issue
+// reference, it does not care about markdown, and an issue title is written
+// by whoever filed the issue.
+const SUBJECT_SLUG = '[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9][A-Za-z0-9._-]*'
+const CLOSING_REFERENCE = new RegExp(
+  `\\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b(\\s*:\\s*|\\s+)` +
+    `((?:${SUBJECT_SLUG})?#|GH-|https?:\\/\\/github\\.com\\/${SUBJECT_SLUG}\\/(?:issues|pull)\\/)(?=\\d)`,
+  'gi',
+)
+
+/** The commit subject for a ship run, from an untrusted issue title (#696). */
+function shipCommitSubject(issue, title) {
+  return `fix(#${issue}): ${String(title ?? '').replace(CLOSING_REFERENCE, '$1$2$3 ')}`
+}
+// ──── COMMIT-SUBJECT-END ────
 
 // ──── RECORDER-COMMAND-START ────
 /**
@@ -6625,7 +6653,7 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    branch=$(git branch --show-current)
    case "$branch" in main|master) echo "REFUSING: on $branch — ship never commits to the default branch"; exit 1;; esac
    ${gitAddForCommit}
-   git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
+   git commit -m ${shellQuote(shipCommitSubject(ISSUE, goalData.issueTitle))}
    git push -u origin ${pushTarget}
 
    The branch check is not optional and is not a formality. #136: a run pushed
