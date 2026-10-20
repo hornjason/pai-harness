@@ -61,7 +61,7 @@ const BLOCK = structuralCut(SHIP, "// ──── LAUNCH-BASE-CHECK-START ─�
  * is asserted as a position, by the cases below.
  */
 const DECLARATIONS = structuralCut(SHIP, "// ──── LAUNCH-BASE-CHECK-START ────", {
-  endAnchor: "const launchBaseReply = await timedAgent(",
+  endAnchor: "const launchBase = await measureLaunchBase(",
 });
 
 interface LaunchRead {
@@ -122,7 +122,10 @@ describe("SC-2177: the launch base is checked by the run, before any worktree is
     // succeeds there, so by the time any role agent is running the base has
     // already been chosen. A check placed after that measures a decision
     // already taken.
-    const callAt = SHIP.indexOf("label: 'launch-base'");
+    // #592 extracted the step into `measureLaunchBase(phase, label)`, so the
+    // Goal reading is now a call with the label as an argument rather than an
+    // inline `label:` property. Same position claim, the new syntax (#484).
+    const callAt = SHIP.indexOf("await measureLaunchBase('Goal', 'launch-base')");
     const readIssueAt = SHIP.indexOf("label: 'read-issue'");
     const firstRoleSpawn = SHIP.indexOf("await briefedAgent(");
     expect(callAt, "the launch-base step is never invoked").toBeGreaterThan(-1);
@@ -138,7 +141,7 @@ describe("SC-2177: the launch base is checked by the run, before any worktree is
     // of it: an agent that helpfully moves into the project root before
     // running the command measures the answer the run wanted rather than the
     // one it has.
-    const call = structuralCut(SHIP, "const launchBaseReply = await timedAgent(", { balanced: "(" });
+    const call = structuralCut(SHIP, "async function measureLaunchBase(", { balanced: "{" });
     expect(call.length).toBeGreaterThan(300);
     expect(call).toMatch(/Do NOT \\`cd\\` anywhere first/);
     expect(load().shell()).not.toContain("cd ");
@@ -251,7 +254,7 @@ describe("SC-2181: the reply shape is declared, and the refusal is terminal", ()
     // succeeds onto somebody else's branch — neither is improved by a log
     // line. `terminalFailure` is the funnel that preserves worktrees and
     // restores the shared checkout on the way out.
-    const call = structuralCut(SHIP, "const launchBase = readLaunchBase(launchBaseReply)", {
+    const call = structuralCut(SHIP, "const launchBase = await measureLaunchBase(", {
       endAnchor: "// ──── LAUNCH-BASE-CHECK-END ────",
     });
     expect(call.length).toBeGreaterThan(100);
