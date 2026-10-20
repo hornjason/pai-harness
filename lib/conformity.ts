@@ -43,7 +43,11 @@ import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
   AI_REVIEW_JOB,
+  AI_REVIEW_MODES,
+  AI_REVIEW_MODE_NONE,
+  AI_REVIEW_MODE_VERTEX,
   AI_REVIEW_REQUIRE_VAR,
+  AI_REVIEW_VERTEX_AUTH_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
 } from "./scaffold/ai-review-step";
 
@@ -4249,7 +4253,28 @@ export interface AiReviewReading {
    * the fifth shape).
    */
   failure: string | null;
+  /**
+   * What the same parse found about Workload Identity Federation (#631).
+   *
+   * Read HERE rather than by a second parse, because the question
+   * `aiReviewUnmeasuredViolations` has to answer about a federated consumer
+   * is "does the job that resolved `mode=vertex` also carry the step that
+   * mints the credential" — two readings of one file, and two parses would be
+   * two deciders with nothing comparing them.
+   */
+  federation: AiReviewFederation;
 }
+
+/** The federation evidence in a generated ai-review job. */
+export interface AiReviewFederation {
+  /** Whether the job may mint an OIDC token at all. */
+  idTokenWrite: boolean;
+  /** The `google-github-actions/auth` step, or null when the job has none. */
+  authStep: Record<string, any> | null;
+}
+
+/** No evidence read. The direction this has to be wrong in: it refuses. */
+const NO_FEDERATION: AiReviewFederation = { idTokenWrite: false, authStep: null };
 
 /**
  * Read the auth-detect script out of a project's generated ai-review workflow.
@@ -4262,7 +4287,7 @@ export interface AiReviewReading {
 export function aiReviewAuthScript(root: string): AiReviewReading {
   const dir = join(root, ".github", "workflows");
   const path = join(dir, AI_REVIEW_WORKFLOW_FILE);
-  const none = { script: null, unmeasured: null, failure: null };
+  const none = { script: null, unmeasured: null, failure: null, federation: NO_FEDERATION };
 
   if (!existsSync(path)) {
     if (!existsSync(join(dir, "ci.yml"))) {
@@ -4324,7 +4349,23 @@ export function aiReviewAuthScript(root: string): AiReviewReading {
         `id ${AI_REVIEW_AUTH_STEP_ID}, so nothing resolves a credential mode`,
     };
   }
-  return { script: auth.run, unmeasured: null, failure: null };
+  // The federation evidence, off the SAME parse (#631). `permissions:` is
+  // legal at workflow level and at job level and the job's wins, so both are
+  // read — a check that looked at only one would report a correctly granted
+  // job as ungranted, or the reverse.
+  const permissions = (job as any).permissions ?? (doc as any)?.permissions;
+  const idTokenWrite =
+    permissions === "write-all" ||
+    (!!permissions && typeof permissions === "object" && (permissions as any)["id-token"] === "write");
+  const authStep =
+    steps.find((s: any) => s && typeof s === "object" && s.id === AI_REVIEW_VERTEX_AUTH_STEP_ID) ?? null;
+
+  return {
+    script: auth.run,
+    unmeasured: null,
+    failure: null,
+    federation: { idTokenWrite, authStep },
+  };
 }
 
 /** One execution of a generated script, under an environment built from scratch. */
@@ -4355,6 +4396,93 @@ function unmeasuredWarnings(stdout: string): string[] {
 }
 
 /**
+ * The claims that apply when the generated script resolves a credential with
+ * no environment at all (#631).
+ *
+ * The credential-free claim is unreachable for this consumer, so this is the
+ * claim that replaces it rather than the absence of one. `mode=vertex` is a
+ * statement that a review WILL run, and a job that makes it while carrying no
+ * step that could mint the credential is a green check for a review that
+ * cannot authenticate — AIREVIEW-1's own subject, reached through the new
+ * mode. **It is also the cheapest wrong fix: accept any resolved mode and
+ * return early.** These are the assertions that repair would skip.
+ */
+function aiReviewGeneratedCredentialViolations(
+  mode: string,
+  bare: { code: number; stdout: string },
+  federation: AiReviewFederation,
+): string[] {
+  const out: string[] = [];
+
+  if (!(AI_REVIEW_MODES as readonly string[]).includes(mode)) {
+    out.push(
+      `the ai-review step resolved \`${mode}\`, which is not one of the ${AI_REVIEW_MODES.length} ` +
+        `modes it declares (${AI_REVIEW_MODES.join(", ")})`,
+    );
+  }
+
+  const stillWarned = unmeasuredWarnings(bare.stdout);
+  if (stillWarned.length !== 0) {
+    out.push(
+      `the ai-review step resolved \`${mode}\` from the generated file and still emitted ` +
+        `${stillWarned.length} UNMEASURED annotation(s) — a configured review that reports ` +
+        `itself unmeasured makes the word mean nothing\n${bare.stdout.trim()}`,
+    );
+  }
+  if (bare.code !== 0) {
+    out.push(`the ai-review step exited ${bare.code} with \`${mode}\` resolved from the generated file`);
+  }
+
+  if (mode !== AI_REVIEW_MODE_VERTEX) {
+    // `oauth` and `api-key` come from secrets, and this run had none. A
+    // script that resolved one anyway is reading a credential from somewhere
+    // nobody declared.
+    out.push(
+      `the ai-review step resolved \`${mode}\` with an EMPTY environment. That mode is ` +
+        `supposed to come from a repository secret, so a run with no secrets set must not ` +
+        `reach it — something in the generated file is standing in for a credential`,
+    );
+    return out;
+  }
+
+  const step = federation.authStep;
+  if (step === null) {
+    out.push(
+      `the ai-review step resolved \`${AI_REVIEW_MODE_VERTEX}\` and the ${AI_REVIEW_JOB} job has no ` +
+        `\`${AI_REVIEW_VERTEX_AUTH_STEP_ID}\` step, so nothing in it mints the credential the mode ` +
+        `claims. A review that cannot authenticate is UNMEASURED, and this one reports a mode`,
+    );
+    return out;
+  }
+  if (!federation.idTokenWrite) {
+    out.push(
+      `the ${AI_REVIEW_JOB} job federates to Vertex without \`id-token: write\`, so the runner ` +
+        `cannot mint the OIDC token the exchange consumes and the job resolves a mode it will ` +
+        `never hold`,
+    );
+  }
+  const inputs = (step.with ?? {}) as Record<string, unknown>;
+  if ("credentials_json" in inputs) {
+    out.push(
+      `the ${AI_REVIEW_VERTEX_AUTH_STEP_ID} step passes \`credentials_json\`, which writes a ` +
+        `permanent service-account key into the workspace the review agent then reads (#677 ` +
+        `AC-15). Federation exists so that key does not have to be anywhere`,
+    );
+  }
+  for (const required of ["workload_identity_provider", "project_id"]) {
+    if (!(required in inputs)) {
+      out.push(
+        `the ${AI_REVIEW_VERTEX_AUTH_STEP_ID} step declares no \`${required}\`, so the exchange ` +
+          `has nothing to present and the resolved mode is a claim about a credential that ` +
+          `cannot be obtained`,
+      );
+    }
+  }
+
+  return out;
+}
+
+/**
  * Execute a generated auth-detect script and report what it got wrong.
  *
  * Two runs, and the second one is what makes the first mean anything: a script
@@ -4362,10 +4490,34 @@ function unmeasuredWarnings(stdout: string): string[] {
  * case while telling a consumer nothing, so the word has to be absent when a
  * credential IS configured.
  */
-export function aiReviewUnmeasuredViolations(script: string): string[] {
+export function aiReviewUnmeasuredViolations(
+  script: string,
+  federation: AiReviewFederation = NO_FEDERATION,
+): string[] {
   const out: string[] = [];
 
   const bare = runAiReviewScript(script, {});
+
+  // Which claim applies is a READING, not an assumption (#631). Every fixture
+  // this check ever had took its credential from a secret, so emptying the
+  // environment really did produce the credential-free state. A consumer who
+  // declares `ci.vertex` gets `mode=vertex` written into the file, no
+  // environment can move it, and demanding an UNMEASURED annotation of that
+  // tree is demanding a state it cannot enter.
+  const resolved = /^ai-review auth mode: (.*)$/m.exec(bare.stdout);
+  if (!resolved) {
+    out.push(
+      `the ai-review step printed no \`ai-review auth mode:\` line, so which credential it ` +
+        `resolved cannot be read at all. A mode nobody can read is UNMEASURED, and the ` +
+        `credential-free claims below are being applied to it unverified`,
+    );
+  }
+  const mode = resolved ? resolved[1].trim() : AI_REVIEW_MODE_NONE;
+
+  if (mode !== AI_REVIEW_MODE_NONE) {
+    return [...out, ...aiReviewGeneratedCredentialViolations(mode, bare, federation)];
+  }
+
   const warnings = unmeasuredWarnings(bare.stdout);
   if (warnings.length !== 1) {
     out.push(
@@ -4426,7 +4578,7 @@ export function runAiReviewValidation(root: string) {
       }
       const violations = reading.failure
         ? [reading.failure]
-        : aiReviewUnmeasuredViolations(reading.script!);
+        : aiReviewUnmeasuredViolations(reading.script!, reading.federation);
       for (const v of violations) {
         addFinding({
           ruleId: "AIREVIEW-1",

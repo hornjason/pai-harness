@@ -107,6 +107,29 @@ export type FlakeVerdict = "CONSISTENT" | "FLAKY" | "FAILING" | "UNMEASURED";
  */
 export type AssertionStability = "STABLE" | "VARIED" | "UNREPORTED";
 
+/**
+ * What `treeSignatureKey` can and cannot see, carried in the reading itself.
+ *
+ * A `CONSISTENT` verdict says the runs agreed over one tree, and a reader
+ * naturally hears "one set of inputs". It is not: the signature is HEAD plus
+ * `git status --porcelain`, so a gitignored path, anything under `/tmp` or
+ * `~/.rungate`, and `node_modules` can all change between runs with the
+ * signature unmoved.
+ *
+ * #799 is the measured instance rather than a worry. Series `39412289321`
+ * reported ten runs over one tree and was right to — while `test/phase-0.test.ts`
+ * collected its test list from a `/tmp` fixture the PREVIOUS run had left, so
+ * run 1 executed 15,194 tests and runs 2 through 10 executed 15,250.
+ *
+ * In the reading and not only in the printed sentence, because `flake.json`
+ * is what anybody reads months later, and a caveat that exists only in a
+ * console line is a caveat the artefact does not carry.
+ */
+export const SIGNATURE_SCOPE =
+  "the tree signature is HEAD plus `git status --porcelain`, so it covers the working tree and nothing " +
+  "else — a gitignored path, anything under /tmp or ~/.rungate, and node_modules can all differ between " +
+  "runs while this series reports one tree (#799)";
+
 export interface FlakeReading {
   verdict: FlakeVerdict;
   /** Why it is not CONSISTENT. Empty exactly when it is. */
@@ -115,6 +138,8 @@ export interface FlakeReading {
   /** One entry per run, in order, `null` where the runner did not say. */
   assertionCounts: Array<number | null>;
   runs: number;
+  /** What the tree comparison covered. Always present; see `SIGNATURE_SCOPE`. */
+  signatureScope: string;
 }
 
 /**
@@ -205,7 +230,7 @@ export function flakeReading(runs: FlakeRun[], minimum: number): FlakeReading {
         : "VARIED";
 
   if (reasons.length > 0) {
-    return { verdict: "UNMEASURED", reasons, assertions, assertionCounts, runs: runs.length };
+    return { verdict: "UNMEASURED", reasons, assertions, assertionCounts, runs: runs.length, signatureScope: SIGNATURE_SCOPE };
   }
 
   const readable = measured(runs);
@@ -219,7 +244,7 @@ export function flakeReading(runs: FlakeRun[], minimum: number): FlakeReading {
   const verdict: FlakeVerdict =
     failing.length === 0 ? "CONSISTENT" : failing.length === readable.length ? "FAILING" : "FLAKY";
 
-  return { verdict, reasons, assertions, assertionCounts, runs: runs.length };
+  return { verdict, reasons, assertions, assertionCounts, runs: runs.length, signatureScope: SIGNATURE_SCOPE };
 }
 
 /** The sentence a caller prints instead of the verdict on its own. */
@@ -245,5 +270,9 @@ export function describeFlakeReading(reading: FlakeReading): string {
           ? `FAILING: all ${runs} run(s) failed. The suite is red; this is not flake.`
           : `UNMEASURED: the series does not support a verdict.`;
 
-  return [head, ...reasons.map(r => `  - ${r}`), spread.trim()].join("\n");
+  // The scope goes on EVERY verdict, not only CONSISTENT. A reader who sees
+  // it once beside a clean series and never again would reasonably conclude
+  // the other verdicts had looked harder, and they did not — it is the same
+  // comparison in all four cases.
+  return [head, ...reasons.map(r => `  - ${r}`), spread.trim(), `Scope: ${reading.signatureScope}`].join("\n");
 }

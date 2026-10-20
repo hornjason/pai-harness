@@ -97,7 +97,7 @@
  * and `lib/scaffold/steps.ts` were confirmed byte-identical by sha256.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -118,6 +118,29 @@ function generated(): { name: string; text: string }[] {
   const root = mkdtempSync(join(tmpdir(), "rungate-377-"));
   try {
     mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+    // `ci.vertex` is declared so the ai-review job emits its auth step. An
+    // unconfigured fixture emits no `google-github-actions/auth` at all, and
+    // the cases below would then be measuring a tree in which two of the
+    // three declared SHA pins never appear — the precondition trap (#492):
+    // every fixture meeting one configuration makes the other unreachable.
+    mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "rungate", "config.json"),
+      JSON.stringify(
+        {
+          project: "pins-fixture",
+          ci: {
+            vertex: {
+              project: "fixture-vertex-project",
+              workloadIdentityProvider:
+                "projects/111122223333/locations/global/workloadIdentityPools/fixture-pool/providers/fixture-provider",
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
     createCiWorkflows(root, []);
     const dir = join(root, ".github", "workflows");
     return readdirSync(dir)
