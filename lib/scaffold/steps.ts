@@ -37,7 +37,7 @@ import { scanDocsDirectory } from "../doc-routing";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { declaredBunVersion, setupBunWith } from "../bun-version";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
-import { censusReport, stampWorkflow, workflowCensus } from "./workflow-census";
+import { censusReport, stampWorkflow, workflowBody, workflowCensus } from "./workflow-census";
 import {
   readSuccessDoc,
   readSuccessTemplate,
@@ -2373,27 +2373,59 @@ const MANAGED_BANNER_PREFIX = "# Managed by rungate";
  * Throws on refusal. Callers decide whether a refusal aborts the run or is
  * recorded and reported; what they may not do is write anyway.
  */
+/**
+ * How a managed file carries the record of who wrote it (#767).
+ *
+ * Optional, because most managed files have no marker. When present it is
+ * applied LAST, to the bytes that land on disk, and stripped from both sides
+ * of every comparison — a marker that describes anything other than the file
+ * it is attached to is worse than no marker, because the census believes it.
+ */
+export interface WriteProvenance {
+  /** The document with its marker line removed. */
+  body(text: string): string;
+  /** The document with a marker describing its own body. */
+  stamp(text: string): string;
+}
+
 export function writeManagedFile(
   filePath: string,
   generated: string,
   label: string,
   actions: string[],
   opts: { force?: boolean } = {},
+  provenance?: WriteProvenance,
 ): void {
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
-  const resolved = resolveManagedWrite(existing, generated);
+  const raw = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
+  // The marker is stripped from BOTH sides before anything compares them, and
+  // re-applied to whatever is about to be written (#767).
+  //
+  // It has to be both sides and it has to be last. `resolveManagedWrite`
+  // treats every line outside a job as the consumer's, so the OLD marker —
+  // which differs from the new one exactly when the generator changed — read
+  // as content about to be dropped and REFUSED the write. And stamping the
+  // generated text before the merge produced a file whose marker described
+  // bytes that were never written, so a workflow with one preserved job was
+  // classified `generated-and-hand-edited` for ever, about bytes the harness
+  // itself had just written.
+  const existing = raw === null ? null : (provenance ? provenance.body(raw) : raw);
+  const incoming = provenance ? provenance.body(generated) : generated;
+  const resolved = resolveManagedWrite(existing, incoming);
+  /** The bytes that land on disk: the decision's content, then the marker. */
+  const stamped = (content: string): string => (provenance ? provenance.stamp(content) : content);
 
   if (opts.force) {
     // The escape hatch, and it still reports a measured verb: --force changes
     // what is ALLOWED, not what gets claimed about it. The dropped jobs are
     // still named, because an operator who overrides the refusal should be
     // told in the report exactly what they overrode.
-    const { verb, lineDelta } = measureWrite(existing, generated);
-    if (verb === "SKIP") { actions.push(`SKIP: ${label} (unchanged)`); return; }
+    const bytes = stamped(incoming);
+    if (bytes === raw) { actions.push(`SKIP: ${label} (unchanged)`); return; }
+    const { verb, lineDelta } = measureWrite(existing, incoming);
     const dropped = resolved.droppedJobs.length > 0 ? `, dropped ${resolved.droppedJobs.join(", ")}` : "";
     mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, generated);
-    actions.push(`${verb}: ${label} (--force, ${signed(lineDelta)} lines${dropped})`);
+    writeFileSync(filePath, bytes);
+    actions.push(`${verb === "SKIP" ? "UPDATED" : verb}: ${label} (--force, ${signed(lineDelta)} lines${dropped})`);
     return;
   }
 
@@ -2416,13 +2448,26 @@ export function writeManagedFile(
       `${over.slice(0, 2).map(l => JSON.stringify(l)).join(", ")}` +
       `${over.length > 2 ? ` and ${over.length - 2} more` : ""}`;
 
-  if (resolved.verb === "SKIP") {
+  const bytes = stamped(resolved.content);
+
+  // Compared as BYTES, not as a verb. `resolved.verb` is a statement about
+  // the bodies, and a file whose body is unchanged can still need writing —
+  // its marker may be absent or describe something else. Reporting SKIP on
+  // that file is how the stamp stayed wrong across every later run.
+  if (bytes === raw) {
     actions.push(`SKIP: ${label} (unchanged${kept})`);
     return;
   }
 
   mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, resolved.content);
+  writeFileSync(filePath, bytes);
+  if (resolved.verb === "SKIP") {
+    // Body identical, marker not. Said plainly rather than as `UPDATED (+0
+    // lines)`, which is the line an operator reads as "my generator change
+    // landed" (#767).
+    actions.push(`UPDATED: ${label} (provenance marker refreshed, +0 lines${kept})`);
+    return;
+  }
   actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
 }
 
@@ -2956,7 +3001,10 @@ ${buildAuthDetectStep()}${buildReviewRunStep()}`;
       // describe a file it does not write — ownership has to travel with the
       // bytes for an unowned workflow to be visible at all (#722). The marker
       // is a YAML comment, so nothing that parses the workflow can see it.
-      writeManagedFile(join(workflowsDir, name), stampWorkflow(content), label, actions, opts);
+      writeManagedFile(join(workflowsDir, name), content, label, actions, opts, {
+        body: workflowBody,
+        stamp: stampWorkflow,
+      });
     } catch (e) {
       actions.push(`REFUSED: ${(e as Error).message}`);
     }
