@@ -3,20 +3,19 @@ import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
-import { scaffoldFixture, seedRolesConfig, ROLES_CANARY_MODEL, checkSpecDrift, generatedProseWords } from "./helpers/scaffold-fixture";
+import { scaffoldFixture, freshFixtureRoot, seedRolesConfig, ROLES_CANARY_MODEL, checkSpecDrift, generatedProseWords } from "./helpers/scaffold-fixture";
 
+// Scaffolded at module scope, because the conformity list is COLLECTED there.
+// `test/phase-0-collection-stability.test.ts` has what a `beforeAll` cost (#799).
+const OUTPUT = freshFixtureRoot("rungate-phase0-");
+const ROLES_OUTPUT = freshFixtureRoot("rungate-phase0-roles-");
 
-const OUTPUT = "/tmp/rungate-phase0-test";
-const ROLES_OUTPUT = "/tmp/rungate-phase0-roles-test";
+// --commit, because SC-99/SC-100 below are about the commit. It became
+// opt-in in #216; a fixture that wants it has to ask, like a consumer does.
+scaffoldFixture(OUTPUT, undefined, { commit: true });
 
-beforeAll(() => {
-  // --commit, because SC-99/SC-100 below are about the commit. It became
-  // opt-in in #216; a fixture that wants it has to ask, like a consumer does.
-  scaffoldFixture(OUTPUT, undefined, { commit: true });
-  scaffoldFixture(ROLES_OUTPUT, seedRolesConfig(ROLES_OUTPUT));
-  // 60s: two scaffolds, ~6.2s each. The 5s default only passed before because
-  // the fixture commit died first (#71).
-}, 60_000);
+// 60s: a scaffold is ~6.2s; the 5s default only passed because #71 died first.
+beforeAll(() => { scaffoldFixture(ROLES_OUTPUT, seedRolesConfig(ROLES_OUTPUT)); }, 60_000);
 
 describe("Phase 0: Pre-flight + static files", () => {
   test("spec-drift: governing specs haven't changed", () => { checkSpecDrift(); });

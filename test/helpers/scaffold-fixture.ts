@@ -5,8 +5,10 @@
  * the 200-line deep-modules cap (AC-1 in the phase test conformity check).
  * The fixture mechanics live here; the test file asserts.
  */
+import { afterAll } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { initFixtureRepo, commitFixture } from "./git-fixture";
 import { readHardConstraints, type SectionReading } from "../../lib/agents-md-sections";
@@ -65,6 +67,30 @@ export function scaffoldPipelineSource(): string {
 export const ROLES_CANARY_MODEL = "canary-model-from-roles-json";
 
 /** Copy the golden project to `dest`, optionally seed it, then scaffold it. */
+/**
+ * A scratch root nothing has used before, removed when the process exits.
+ *
+ * Unique per run, deliberately. `runScaffoldConformity` builds its test list
+ * at module-EVALUATION time, so a caller that both collects from a root and
+ * scaffolds it in `beforeAll` is collecting from whatever the PREVIOUS run of
+ * the suite left at that path. With a fixed path that is exactly what
+ * happened: 15,194 tests on a machine that had never run the suite and 15,250
+ * on every run after it, with CI always being the first (#799, #86).
+ *
+ * A caller that needs a populated root must still scaffold it itself, at the
+ * same scope it collects from. This only guarantees the root is its own.
+ */
+export function freshFixtureRoot(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  // `afterAll`, not `process.on("exit")`. Measured: the exit handler does not
+  // run under `bun test`, and a scaffolded fixture is not small — three runs
+  // left three roots behind, which is how /tmp reached 934 MB once before.
+  // `force` rather than a catch: a root a test already removed is not an
+  // error, and a catch here would swallow a real one (#70).
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
 export function scaffoldFixture(
   dest: string,
   seed?: () => void,
