@@ -192,13 +192,40 @@ describe("#789 AC-3: the procedure reaches an operator, proved by provoking the 
    * green when the named site was deleted (#484). A refusal's text is a
    * behaviour.
    */
-  function runWithStubbedGh(sha: string): { code: number | null; out: string } {
+  /**
+   * `moved` names the ONE action whose tag the stub reports as having moved.
+   * Every other declared action answers with the sha it declares.
+   *
+   * It used to answer one sha to every call, which was correct while exactly
+   * one action was SHA-pinned and became a fixture varying three things at
+   * once the moment #631 declared two more: the control run reported the
+   * other two STALE and the case failed for a reason that had nothing to do
+   * with what it measures. One reading varies (#585).
+   */
+  function runWithStubbedGh(moved?: { action: string; sha: string }): {
+    code: number | null;
+    out: string;
+  } {
     const dir = mkdtempSync(join(tmpdir(), "rg-789-"));
     scratch.push(dir);
     const bin = join(dir, "bin");
     mkdirSync(bin, { recursive: true });
     const gh = join(bin, "gh");
-    writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(sha)}\n`);
+    // Keyed on the action name as it appears in the `repos/<action>/…` path
+    // the script asks for, so the stub answers per action rather than per
+    // call. An unmatched call exits non-zero rather than printing a default:
+    // a stub that answers a question nobody asked it is a stub that hides a
+    // changed call site.
+    const arms = PINNING.filter(a => a.style === "sha")
+      .map(a => {
+        const sha = moved && moved.action === a.action ? moved.sha : a.sha!;
+        return `  *${a.action}*) printf '%s\\n' ${JSON.stringify(sha)} ;;`;
+      })
+      .join("\n");
+    writeFileSync(
+      gh,
+      `#!/bin/sh\ncase "$*" in\n${arms}\n  *) echo "stub gh: unexpected call: $*" >&2; exit 9 ;;\nesac\n`,
+    );
     chmodSync(gh, 0o755);
     const r = spawnSync("bun", [join(ROOT, SCRIPT)], {
       cwd: ROOT,
@@ -216,7 +243,7 @@ describe("#789 AC-3: the procedure reaches an operator, proved by provoking the 
     const moved = "1".repeat(40);
     expect(moved, "the stub returns the declared sha, so nothing has moved").not.toBe(declared!.sha);
 
-    const r = runWithStubbedGh(moved);
+    const r = runWithStubbedGh({ action: declared!.action, sha: moved });
     expect(r.code, `a moved tag did not refuse: ${r.out}`).not.toBe(0);
     expect(r.out).toContain("STALE");
     expect(r.out, "the refusal tells an operator nothing about what to do").toContain(BUMP_PROCEDURE);
@@ -225,7 +252,7 @@ describe("#789 AC-3: the procedure reaches an operator, proved by provoking the 
   test("the control: a tag that has not moved reports current and exits 0", () => {
     // Without this the case above is satisfied by a script that refuses
     // everything, and the weekly workflow would be red from the first run.
-    const r = runWithStubbedGh(declared!.sha!);
+    const r = runWithStubbedGh();
     expect(r.code, `an unmoved tag refused: ${r.out}`).toBe(0);
     expect(r.out).toContain("current:");
     expect(r.out, "an unmoved tag printed the bump procedure").not.toContain(BUMP_PROCEDURE);

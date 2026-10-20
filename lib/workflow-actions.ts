@@ -2,10 +2,19 @@
  * Every action the scaffold's generated workflows reference, and how each is
  * pinned (#377).
  *
- * A LEAF module with no relative imports, in the shape `lib/bun-version.ts`
- * (#622) and `lib/claude-code-action.ts` (#689) established: one declaration,
- * so there is one thing to mutate and every position is CHECKED against it
- * rather than agreeing with it by coincidence.
+ * In the shape `lib/bun-version.ts` (#622) and `lib/claude-code-action.ts`
+ * (#689) established: one declaration, so there is one thing to mutate and
+ * every position is CHECKED against it rather than agreeing with it by
+ * coincidence.
+ *
+ * It imports two per-action declaration modules and nothing else, and that is
+ * the point rather than an exception (#631). `lib/claude-code-action.ts` and
+ * `lib/google-auth-action.ts` each carry their own SHA, the date it was
+ * resolved and the trap in resolving it, and `actionPinParity` compares every
+ * position in the tree to them. Re-typing either value here would make this
+ * file a second position — #689's defect reinstated inside the registry that
+ * exists to prevent it. So this list says WHICH actions the generator may
+ * emit and HOW each is pinned; the two modules say WHAT the pin is.
  *
  * **This reaches every consumer.** `createCiWorkflows` writes `ci.yml` and
  * `gates.yml` into every scaffolded project, so an unpinned action here is an
@@ -72,6 +81,18 @@
  * schedule after 60 days of repository inactivity and a check you cannot
  * trigger by hand fails silently on exactly the week nobody pushed.
  */
+import {
+  CLAUDE_CODE_ACTION,
+  CLAUDE_CODE_ACTION_RESOLVED_ON,
+  CLAUDE_CODE_ACTION_SHA,
+  CLAUDE_CODE_ACTION_VERSION,
+} from "./claude-code-action";
+import {
+  GOOGLE_AUTH_ACTION,
+  GOOGLE_AUTH_ACTION_RESOLVED_ON,
+  GOOGLE_AUTH_ACTION_SHA,
+  GOOGLE_AUTH_ACTION_VERSION,
+} from "./google-auth-action";
 
 /**
  * What to do when the freshness check says a pin is stale.
@@ -140,6 +161,31 @@ export const PINNING: readonly ActionPin[] = [
     sha: "0c5077e51419868618aeaa5fe8019c62421857d6",
     resolvedOn: "2026-10-19",
     why: "third-party, executes setup code in the job, and one action is a maintenance cost this project can honour",
+  },
+  // The two actions the ai-review job runs (#631). Their SHAs are IMPORTED,
+  // never re-typed: `lib/claude-code-action.ts` and `lib/google-auth-action.ts`
+  // are each the one declaration for their action, and `actionPinParity`
+  // compares every position in the tree to them. A literal here would be a
+  // second position, which is #689's defect reinstated inside the registry
+  // that exists to prevent it. What this list adds is the OTHER property —
+  // that an action the generator emits is an action somebody decided on, and
+  // that the weekly freshness check in `scripts/check-action-pins.ts` asks
+  // GitHub about it without anyone remembering to add it.
+  {
+    action: CLAUDE_CODE_ACTION,
+    style: "sha",
+    version: CLAUDE_CODE_ACTION_VERSION,
+    sha: CLAUDE_CODE_ACTION_SHA,
+    resolvedOn: CLAUDE_CODE_ACTION_RESOLVED_ON,
+    why: "third-party, runs an autonomous agent over pull-request content, and a repointable tag would change what reviews a consumer's code without a commit saying so (#689)",
+  },
+  {
+    action: GOOGLE_AUTH_ACTION,
+    style: "sha",
+    version: GOOGLE_AUTH_ACTION_VERSION,
+    sha: GOOGLE_AUTH_ACTION_SHA,
+    resolvedOn: GOOGLE_AUTH_ACTION_RESOLVED_ON,
+    why: "third-party, and it is the step that mints the federated credential — a repointable tag on the one action holding the token is the pin that matters most (#631)",
   },
 ] as const;
 

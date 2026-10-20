@@ -65,6 +65,25 @@ export function repoRootIdents(src: string): Set<string> {
  */
 const DECL = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*"(\.[^"]*)"/g;
 
+/**
+ * The same pattern, un-anchored and non-global, used only to decide whether
+ * the expensive path is worth entering.
+ *
+ * DERIVED FROM `DECL`, never written out a second time. A hand-copied probe
+ * that drifts from the real pattern is how a guard goes quiet: it would skip
+ * the file the real regex was about to match on, report `[]`, and read as a
+ * clean scan. Building it from `DECL.source` means the two cannot disagree.
+ *
+ * Non-global on purpose — `.test()` on a `/g` regex advances `lastIndex` and
+ * returns a different answer on the next call with the same input.
+ *
+ * Sound because `stripJsComments` only ever REMOVES text: if the raw source
+ * cannot match, the stripped source cannot match either. The converse is not
+ * true — a match inside a comment enters the slow path and is then discarded
+ * there, which costs time and never costs correctness.
+ */
+const DECL_PROBE = new RegExp(DECL.source);
+
 /** Navigation, not a scratch name. */
 function isNavigation(literal: string): boolean {
   return literal === "." || literal === ".." || literal.startsWith("../");
@@ -72,6 +91,14 @@ function isNavigation(literal: string): boolean {
 
 /** Scratch roots declared at a fixed path under the shared checkout. */
 export function fixedScratchRoots(source: string): string[] {
+  // 379 test files, 5.8MB, and 75 of them can possibly match. Stripping
+  // comments from the other 304 cost 3.5s of the 5s budget and found nothing
+  // — enough that this test timed out on a Mini running five CI jobs while
+  // passing in milliseconds on an idle laptop. Skipping them is 906ms.
+  //
+  // A timeout bump was the other option and is the wrong one: it makes the
+  // red slower to arrive without making the scan any more able to finish.
+  if (!DECL_PROBE.test(source)) return [];
   const src = stripJsComments(source);
   const roots = repoRootIdents(src);
   const out: string[] = [];

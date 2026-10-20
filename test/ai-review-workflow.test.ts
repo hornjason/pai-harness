@@ -62,20 +62,40 @@ import { createCiWorkflows } from "../lib/scaffold/steps";
 import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
   buildAuthDetectScript,
   buildAuthDetectStep,
+  buildBaselineScript,
+  buildDriftScript,
   buildReviewRunScript,
   buildReviewRunStep,
+  vertexCiConfig,
 } from "../lib/scaffold/ai-review-step";
+import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
+import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
+import { actionRef } from "../lib/workflow-actions";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
 
 /** Four patterns, including a bare `*` and a `**` glob — AC-3's fixture. */
 const BRANCHES = ["main", "*", "*-dev", "release/**"];
 const RUNNER = "ubuntu-latest";
+
+/**
+ * This file's fixture declares no `ci.vertex`, so every builder call below is
+ * driven with the same reading the generator used. A case that passed a
+ * DIFFERENT decision would be comparing two renderings of two configurations
+ * and could never notice the generator stopping at one of them.
+ */
+const NO_VERTEX = vertexCiConfig({ runner: RUNNER, bunVersion: "1.2.0", branches: BRANCHES });
+const REFS = {
+  checkout: actionRef("actions/checkout"),
+  auth: actionRef(GOOGLE_AUTH_ACTION),
+  review: actionRef(CLAUDE_CODE_ACTION),
+};
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -117,11 +137,11 @@ function triggersOf(doc: any): any {
 }
 
 describe("AC-1: the scaffold writes ai-review.yml carrying the builder's step verbatim", () => {
-  test("AC-1: exactly one generated workflow contains buildAuthDetectStep() byte for byte", () => {
+  test("AC-1: exactly one generated workflow contains buildAuthDetectStep(NO_VERTEX) byte for byte", () => {
     const files = readdirSync(workflowsDir()).sort();
     expect(files, "the scaffold wrote no ai-review.yml at all").toContain(AI_REVIEW_WORKFLOW_FILE);
 
-    const step = buildAuthDetectStep();
+    const step = buildAuthDetectStep(NO_VERTEX);
     const carrying = files.filter(f =>
       readFileSync(join(workflowsDir(), f), "utf-8").includes(step),
     );
@@ -140,7 +160,7 @@ describe("AC-1: the scaffold writes ai-review.yml carrying the builder's step ve
     const steps = doc.jobs[AI_REVIEW_JOB].steps as any[];
     const auth = steps.find(s => s.id === AI_REVIEW_AUTH_STEP_ID);
     expect(auth, `no step with id ${AI_REVIEW_AUTH_STEP_ID}`).toBeDefined();
-    expect(auth.run.trimEnd()).toBe(buildAuthDetectScript().trimEnd());
+    expect(auth.run.trimEnd()).toBe(buildAuthDetectScript(NO_VERTEX).trimEnd());
   });
 
   test("AC-1: every credential reaches the step through env:, never interpolated", () => {
@@ -247,8 +267,12 @@ describe("AC-4: no credential configured is UNMEASURED, not a passing review", (
     const reading = aiReviewAuthScript(PROJECT);
     expect(reading.failure, `${reading.failure}`).toBeNull();
     expect(reading.unmeasured, `${reading.unmeasured}`).toBeNull();
-    const violations = aiReviewUnmeasuredViolations(reading.script!);
+    const violations = aiReviewUnmeasuredViolations(reading.script!, reading.federation);
     expect(violations, violations.join("\n")).toEqual([]);
+    // This fixture declares no `ci.vertex`, so the credential-free claim is
+    // the one being made. Said out loud because #631 added a second claim and
+    // a case that silently took the other one would assert nothing here.
+    expect(reading.federation.authStep, "the unconfigured fixture emitted an auth step").toBeNull();
   });
 
   test("AC-4: the count is one, and it is read off a real run of the generated script", () => {
@@ -263,9 +287,12 @@ describe("AC-4: no credential configured is UNMEASURED, not a passing review", (
 });
 
 describe("AC-5: a configured credential emits no UNMEASURED annotation", () => {
-  test("AC-5: GCP_SA_KEY present means zero UNMEASURED annotations", () => {
+  test("AC-5: a credential present means zero UNMEASURED annotations", () => {
+    // Read off the precedence list rather than named. `GCP_SA_KEY` used to be
+    // this list's first entry and is no longer in it at all (#631/#677
+    // AC-15): vertex resolves from `ci.vertex`, not from a key.
     const reading = aiReviewAuthScript(PROJECT);
-    const run = runAuthScript(reading.script!, { GCP_SA_KEY: "x" });
+    const run = runAuthScript(reading.script!, { [AI_REVIEW_AUTH_PRECEDENCE[0].secret]: "x" });
     const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
     expect(warnings.length, `a resolved mode still warned\n${run.stdout}`).toBe(0);
     expect(run.code).toBe(0);
@@ -278,7 +305,7 @@ describe("AC-5: a configured credential emits no UNMEASURED annotation", () => {
     const always = '#!/bin/bash\necho "::warning title=AI review UNMEASURED::UNMEASURED always"\nexit 0\n';
     const violations = aiReviewUnmeasuredViolations(always);
     expect(violations.length, "an unconditional warning was accepted").toBeGreaterThan(0);
-    expect(violations.join("\n")).toContain("GCP_SA_KEY");
+    expect(violations.join("\n")).toContain(AI_REVIEW_AUTH_PRECEDENCE[0].secret);
   });
 
   test("AC-4/AC-5: a script that never warns is REFUSED by the check", () => {
@@ -414,7 +441,7 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
   });
 
   test("AC-7: the step is in the generated file, verbatim, and carries no `if`", () => {
-    expect(generated()).toContain(buildReviewRunStep());
+    expect(generated()).toContain(buildReviewRunStep(NO_VERTEX, REFS));
     const doc = Bun.YAML.parse(generated()) as any;
     const steps = doc.jobs[AI_REVIEW_JOB].steps;
     const step = steps.find((s: any) => s.id === AI_REVIEW_RUN_STEP_ID);
@@ -444,6 +471,358 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
   });
 });
 
+// ── AC-9: a reviewer that completed, with nobody reading its verdict ─────
+
+describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
+  test("AC-9: a successful review warns that its findings are not enforced", () => {
+    // The fail-open the security review named: the reviewer runs, writes a
+    // payload carrying a `critical`, and no step in this job reads it, so the
+    // check is green. Wiring the reader needs a way for a scaffolded consumer
+    // — which has no copy of rungate's sources — to execute it, which is #675.
+    // Until then the state is reported rather than exited-zero in silence.
+    const run = runAuthScript(buildReviewRunScript(), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+    });
+    const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
+    expect(
+      warnings.length,
+      `a completed review with no adjudication passed quietly\n${run.stdout}`,
+    ).toBe(1);
+    expect(warnings[0], "the annotation does not say where the gap is tracked").toContain("#675");
+    expect(run.code, "a tree that has not opted in must not go red").toBe(0);
+  });
+
+  test("AC-9: a consumer who required a review is refused an unenforced one", () => {
+    // RUNGATE_REQUIRE_AI_REVIEW means "a review I cannot read must not report
+    // green". A payload nobody reads is a review nobody read, so the same
+    // variable has to cover it — otherwise the opt-in buys a green check over
+    // a blocking finding, which is the exact thing it was added to prevent.
+    const run = runAuthScript(buildReviewRunScript(), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      RUNGATE_REQUIRE_AI_REVIEW: "true",
+    });
+    expect(run.code, "the opt-in refusal did not fire for an unread payload").toBe(1);
+    expect(run.stderr).toContain("#675");
+  });
+
+  test("AC-9: the two completed/not-completed states say different things", () => {
+    // A pair varying ONE reading. Without this, one sentence could cover both
+    // and "the reviewer never ran" would be indistinguishable from "the
+    // reviewer ran and nobody read it" — different facts, different fixes.
+    const base = { AI_REVIEW_MODE: "vertex" };
+    const ran = runAuthScript(buildReviewRunScript(), {
+      ...base,
+      AI_REVIEW_ACTION_OUTCOME: "success",
+    });
+    const failed = runAuthScript(buildReviewRunScript(), {
+      ...base,
+      AI_REVIEW_ACTION_OUTCOME: "failure",
+    });
+    expect(ran.stdout, "one sentence for two states").not.toBe(failed.stdout);
+    expect(failed.stdout).toContain("#631");
+    expect(failed.stdout).not.toContain("#675");
+    expect(ran.stdout).toContain("#675");
+  });
+
+  test("AC-9: the silent exit is what this would have shipped", () => {
+    // The mutant, run rather than described: restore the bare `exit 0` on the
+    // success path and a review carrying a critical finding is a green check
+    // with nothing in the log saying so.
+    const quiet = buildReviewRunScript().replace(
+      /if \[ "\$\{AI_REVIEW_ACTION_OUTCOME:-\}" = success \]; then\n(?:.*\n)*?fi\n/,
+      'if [ "${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then\n  exit 0\nfi\n',
+    );
+    expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript());
+    const run = runAuthScript(quiet, {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      RUNGATE_REQUIRE_AI_REVIEW: "true",
+    });
+    expect(run.stdout).not.toContain("UNMEASURED");
+    expect(run.code, "the mutant still refused — the mutation measured nothing").toBe(0);
+  });
+});
+
+// ── AC-10: a reviewer that wrote into the tree is refused ────────────────
+
+describe("AC-10: the drift step reads the whole worktree, not just tracked diffs", () => {
+  /**
+   * Run a drift script inside a real git repo, with a real commit.
+   *
+   * The script lives OUTSIDE the repo. Writing it in makes it an untracked
+   * file of its own, which refuses every run — the clean case caught that on
+   * the first draft, and without it the three refusal cases below would all
+   * have passed over a script that could not see what they planted.
+   */
+  /**
+   * Run a drift script inside a real git repo, with a real commit, AFTER a
+   * real baseline reading.
+   *
+   * The baseline is taken BEFORE `plant` runs and the drift script after it,
+   * which is the order the generated job has — and it is what makes "the
+   * reviewer wrote this" mean anything. `before` plants something while the
+   * baseline is still being established, which is how the credentials-file
+   * case below says "this was already here".
+   */
+  function runDrift(
+    plant: (dir: string) => void,
+    env: Record<string, string> = {},
+    script: string = buildDriftScript(),
+    before: (dir: string) => void = () => {},
+  ): Run {
+    const dir = scratchDir("ai-review-drift-");
+    const genv = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args], { env: genv });
+    Bun.spawnSync(["git", "init", "-q", dir], { env: genv });
+    // The identity writes name `-C dir` at the CALL SITE rather than through
+    // `git()`. #84's guard reads source text, so a wrapper that binds the
+    // directory is invisible to it — and it is right not to guess: a
+    // `git config user.*` whose target is not on the line is one refactor
+    // from writing the developer's own identity into their own repo.
+    Bun.spawnSync(["git", "-C", dir, "config", "user.email", "t@example.invalid"], { env: genv });
+    Bun.spawnSync(["git", "-C", dir, "config", "user.name", "t"], { env: genv });
+    writeFileSync(join(dir, "tracked.ts"), "export const a = 1;\n");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+
+    // Everything the runner already had when the reviewer started.
+    before(dir);
+
+    // The real baseline step, run rather than simulated. A hand-written
+    // "before" file would be a fixture asserting its own input.
+    const runnerTemp = scratchDir("ai-review-drift-temp-");
+    const baselineSh = join(scratchDir("ai-review-drift-baseline-"), "baseline.sh");
+    writeFileSync(baselineSh, buildBaselineScript());
+    const baselineOut = join(runnerTemp, "github-output");
+    writeFileSync(baselineOut, "");
+    const b = Bun.spawnSync(["bash", baselineSh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? dir,
+        RUNNER_TEMP: runnerTemp,
+        GITHUB_OUTPUT: baselineOut,
+      },
+    });
+    const bErr = new TextDecoder().decode(b.stderr);
+    expect(b.exitCode, `the baseline step refused, so no case below measured anything:\n${bErr}`).toBe(0);
+    const beforePath = /^path=(.*)$/m.exec(readFileSync(baselineOut, "utf-8"))?.[1] ?? "";
+    expect(beforePath, "the baseline step wrote no path output").not.toBe("");
+
+    plant(dir);
+    const sh = join(scratchDir("ai-review-drift-script-"), "drift.sh");
+    writeFileSync(sh, script);
+    const r = Bun.spawnSync(["bash", sh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? dir,
+        AI_REVIEW_MODE: "vertex",
+        AI_REVIEW_TREE_BEFORE: beforePath,
+        ...env,
+      },
+    });
+    return {
+      code: r.exitCode,
+      stdout: new TextDecoder().decode(r.stdout),
+      stderr: new TextDecoder().decode(r.stderr),
+    };
+  }
+
+  test("AC-10: a clean tree passes", () => {
+    const run = runDrift(() => {});
+    expect(run.code, `a clean tree was refused:\n${run.stderr}`).toBe(0);
+    expect(run.stderr).toBe("");
+  });
+
+  test("AC-10: a modified tracked file is refused", () => {
+    const run = runDrift(dir => writeFileSync(join(dir, "tracked.ts"), "export const a = 2;\n"));
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(run.stderr).toContain("tracked.ts");
+  });
+
+  test("AC-10: an UNTRACKED file is refused — the case `git diff` cannot see", () => {
+    // The whole reason this step was rewritten. A reviewer told to write a
+    // findings file writes a NEW file, which is untracked, and neither
+    // `git diff` nor `git diff --cached` reports one. The first draft of this
+    // step asked exactly those two questions and would have passed here.
+    const run = runDrift(dir => writeFileSync(join(dir, "ai-review-findings.json"), "{}"));
+    expect(
+      run.code,
+      `an untracked file the reviewer planted went unnoticed:\n${run.stdout}${run.stderr}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(run.stderr).toContain("ai-review-findings.json");
+  });
+
+  test("AC-10: a file inside a NEW directory is refused — `--untracked-files=all`", () => {
+    // Plain `--porcelain` stops at the directory name for a new directory,
+    // which still refuses here — so the assertion is on the NAMED path, not
+    // on the exit code. A refusal that cannot say what changed is a refusal
+    // nobody can act on.
+    const run = runDrift(dir => {
+      mkdirSync(join(dir, "nested"), { recursive: true });
+      writeFileSync(join(dir, "nested", "planted.ts"), "export const b = 1;\n");
+    });
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(
+      run.stderr,
+      "the refusal named the directory but not the file inside it",
+    ).toContain("nested/planted.ts");
+  });
+
+  test("AC-10: a git that could not read the tree is refused, not read as clean", () => {
+    // `changed=$(git status ...)` discards git's exit code, so a git that
+    // failed produces the empty string — the same value a clean tree
+    // produces. The input: a directory that is not a git repository at all,
+    // which is what a checkout step that silently did nothing leaves behind.
+    const dir = scratchDir("ai-review-drift-nonrepo-");
+    writeFileSync(join(dir, "tracked.ts"), "export const a = 1;\n");
+    const sh = join(scratchDir("ai-review-drift-nonrepo-script-"), "drift.sh");
+    writeFileSync(sh, buildDriftScript());
+    // A baseline IS present. Without it the step refuses for a different and
+    // correct reason, and this case would pass over a script that had stopped
+    // reading git at all — two refusals, one assertion, neither isolated.
+    const beforePath = join(scratchDir("ai-review-drift-nonrepo-temp-"), "before.txt");
+    writeFileSync(beforePath, "");
+    const r = Bun.spawnSync(["bash", sh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? dir,
+        AI_REVIEW_MODE: "vertex",
+        AI_REVIEW_TREE_BEFORE: beforePath,
+      },
+    });
+    const stderr = new TextDecoder().decode(r.stderr);
+    expect(r.exitCode, `an unreadable tree reported clean:\n${stderr}`).toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(stderr, "the refusal does not say the tree was never read").toContain("UNMEASURED");
+    expect(stderr, "the refusal blamed the missing baseline, not the unreadable tree").toContain(
+      "git status failed",
+    );
+  });
+
+  test("AC-10: a path the branch chose cannot forge a workflow command", () => {
+    // The path in the refusal came out of the branch under review, so it is
+    // a string an attacker picks. git quotes a path containing a newline, so
+    // the reachable character here is `%` — which GitHub decodes in an
+    // annotation body, making `%0A` in a filename a line break in the
+    // rendered message. One encoder, applied where the value is captured.
+    const run = runDrift(dir => writeFileSync(join(dir, "a%0Ab.json"), "{}"));
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    const lines = run.stderr.split("\n").filter(l => l.length > 0);
+    expect(lines.length, `the refusal spans ${lines.length} lines:\n${run.stderr}`).toBe(1);
+    expect(lines[0], "the percent was not encoded").toContain("a%250Ab.json");
+    expect(lines[0], "the raw sequence survived into the annotation").not.toContain("a%0Ab");
+  });
+
+  test("AC-10: mode none does not run the check at all", () => {
+    // No credential means no reviewer ran, so there is nothing to attribute a
+    // dirty tree to. Refusing here would blame the reviewer for the runner.
+    const run = runDrift(dir => writeFileSync(join(dir, "x.ts"), "1"), {
+      AI_REVIEW_MODE: "none",
+    });
+    expect(run.code).toBe(0);
+  });
+
+  test("AC-10: the tracked-only reading is what this would have shipped", () => {
+    // The mutant, run rather than described: the two-decider `git diff` pair
+    // the first draft used. It passes over the untracked file above, which is
+    // the shape the reviewer is most likely to produce.
+    const mutant = buildDriftScript().replace(
+      /after=\$\(git status --porcelain --untracked-files=all[^)]*\)/,
+      "after=$(git diff --name-only; git diff --cached --name-only)",
+    );
+    expect(
+      mutant,
+      "could not build the mutant: the status reading appears 0 times in the script",
+    ).not.toBe(buildDriftScript());
+
+    // The same planted file, the same fixture, one thing varied: which
+    // command does the reading. The real script refuses it two cases above.
+    const plant = (dir: string) => writeFileSync(join(dir, "ai-review-findings.json"), "{}");
+    expect(runDrift(plant).code, "the control stopped refusing").toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(
+      runDrift(plant, {}, mutant).code,
+      "the mutant refused — the mutation measured nothing",
+    ).toBe(0);
+  });
+
+  /**
+   * #631. The confirmed defect this baseline closes, reproduced and measured.
+   *
+   * `google-github-actions/auth` defaults `create_credentials_file: true` and
+   * writes that file into `$GITHUB_WORKSPACE` — the checkout root — removing
+   * it only in a POST step, which runs after every ordinary step. So in
+   * vertex mode the file is present when the drift step reads the tree, and
+   * the previous total reading reported "The reviewer modified the tree it
+   * was reviewing" on EVERY credentialed run, naming a file the reviewer did
+   * not create. Permanently red in exactly the mode this issue is about.
+   *
+   * Workload Identity Federation does not remove the file. It removes the KEY
+   * MATERIAL in it, which is a different and smaller problem.
+   */
+  test("AC-10/#631: the credentials file the auth step wrote is not the reviewer's doing", () => {
+    const run = runDrift(
+      () => {},
+      {},
+      buildDriftScript(),
+      dir => writeFileSync(join(dir, "gha-creds-0123456789abcdef.json"), '{"type":"external_account"}'),
+    );
+    expect(
+      run.code,
+      `the drift gate accused the reviewer of the auth step's own file:\n${run.stderr}`,
+    ).toBe(0);
+  });
+
+  test("AC-10/#631: a reviewer's file is still refused while that one is present", () => {
+    // The control for the case above, and the thing that stops it reading as
+    // "the gate stopped refusing". One input varies: who wrote the file.
+    const run = runDrift(
+      dir => writeFileSync(join(dir, "planted-by-the-reviewer.json"), "{}"),
+      {},
+      buildDriftScript(),
+      dir => writeFileSync(join(dir, "gha-creds-0123456789abcdef.json"), '{"type":"external_account"}'),
+    );
+    expect(run.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(run.stderr).toContain("planted-by-the-reviewer.json");
+    expect(
+      run.stderr,
+      "the refusal named the credentials file, which was there before the reviewer ran",
+    ).not.toContain("gha-creds");
+  });
+
+  test("AC-10/#631: an absent baseline is UNMEASURED, not a tree that did not change", () => {
+    // "Nobody looked before" and "nothing changed" must not be one answer.
+    const dir = scratchDir("ai-review-drift-nobaseline-");
+    const sh = join(scratchDir("ai-review-drift-nobaseline-script-"), "drift.sh");
+    writeFileSync(sh, buildDriftScript());
+    const r = Bun.spawnSync(["bash", sh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? dir,
+        AI_REVIEW_MODE: "vertex",
+        AI_REVIEW_TREE_BEFORE: join(dir, "does-not-exist.txt"),
+      },
+    });
+    const stderr = new TextDecoder().decode(r.stderr);
+    expect(r.exitCode, `a missing baseline passed:\n${stderr}`).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(stderr).toContain("UNMEASURED");
+  });
+
+  test("AC-10: the step is in the generated file and carries no `if`", () => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    const step = doc.jobs[AI_REVIEW_JOB].steps.find((s: any) => s.id === AI_REVIEW_DRIFT_STEP_ID);
+    expect(step, `no step with id ${AI_REVIEW_DRIFT_STEP_ID}:\n${generated()}`).toBeDefined();
+    expect(Object.keys(step)).not.toContain("if");
+    expect(step.run).not.toContain("${{");
+  });
+});
+
 describe("AC-4: the reading refuses rather than reporting a clean tree it never read", () => {
   test("a scaffolded project with no ai-review.yml is a FAILURE, not UNMEASURED", () => {
     // The cheapest repair for a red AIREVIEW-1 is to delete the file. It has
@@ -464,7 +843,7 @@ describe("AC-4: the reading refuses rather than reporting a clean tree it never 
     const yml =
       `name: AI Review\non:\n  pull_request:\n    branches:\n      - "main"\n\njobs:\n` +
       `  ${AI_REVIEW_JOB}:\n    if: \${{ vars.RUNGATE_AI_REVIEW == 'true' }}\n` +
-      `    runs-on: "ubuntu-latest"\n    steps:\n${buildAuthDetectStep()}`;
+      `    runs-on: "ubuntu-latest"\n    steps:\n${buildAuthDetectStep(NO_VERTEX)}`;
     const reading = aiReviewAuthScript(plant(yml));
     expect(reading.failure, "a job-level if: was accepted").not.toBeNull();
     expect(reading.failure).toContain("if");
@@ -473,7 +852,7 @@ describe("AC-4: the reading refuses rather than reporting a clean tree it never 
   test("a renamed job is a FAILURE, not an absent-and-therefore-clean job", () => {
     const yml =
       `name: AI Review\non:\n  pull_request:\n    branches:\n      - "main"\n\njobs:\n` +
-      `  review:\n    runs-on: "ubuntu-latest"\n    steps:\n${buildAuthDetectStep()}`;
+      `  review:\n    runs-on: "ubuntu-latest"\n    steps:\n${buildAuthDetectStep(NO_VERTEX)}`;
     const reading = aiReviewAuthScript(plant(yml));
     expect(reading.failure).not.toBeNull();
     expect(reading.failure).toContain(AI_REVIEW_JOB);
