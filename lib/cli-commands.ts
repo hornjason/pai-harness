@@ -105,6 +105,21 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     summary: "Extract constraints from a project's docs into agent rules",
     usage: "rungate extract-constraints",
   },
+  // Registered so the GENERATED ai-review workflow has something to run. The
+  // reader has existed and been tested since #631 and nothing executed it:
+  // `lib/scaffold/ai-review-step.ts` emitted a warning saying so by name,
+  // because a scaffolded consumer has no copy of rungate's sources at a path
+  // the workflow could hardcode. This registry is the path (#675).
+  //
+  // No `projectRootFlag`: the argument is the findings payload, which lives
+  // outside the checkout by design (`RUNNER_TEMP`), and appending
+  // `--project-root <cwd>` would arrive as a second positional and be read as
+  // a second payload.
+  "ai-review-findings": {
+    script: "scripts/ai-review-findings.ts",
+    summary: "Adjudicate an AI review's findings payload — exits non-zero on a blocking finding",
+    usage: "rungate ai-review-findings <path-to-findings.json>",
+  },
 };
 
 /** The commands the AGENTS.md generator may publish to a consumer. */

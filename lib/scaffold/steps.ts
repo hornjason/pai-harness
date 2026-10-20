@@ -24,7 +24,14 @@ import {
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
-import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep, vertexCiConfig } from "./ai-review-step";
+import {
+  AI_REVIEW_JOB,
+  aiReviewScaffoldAction,
+  buildAuthDetectStep,
+  buildOutcomesHeader,
+  buildReviewRunStep,
+  vertexCiConfig,
+} from "./ai-review-step";
 import { CLAUDE_CODE_ACTION } from "../claude-code-action";
 import { GOOGLE_AUTH_ACTION } from "../google-auth-action";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
@@ -2974,6 +2981,7 @@ ${bunStep}
 
   const aiReviewYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
+${buildOutcomesHeader(vertex)}#
 # This job is deliberately unconditional. A job skipped by a condition reports
 # \`skipped\`, which a required status check can be configured to accept, and
 # that is a green check for a review that never ran. The credential check
@@ -3040,6 +3048,14 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(vertex, {
       actions.push(`REFUSED: ${(e as Error).message}`);
     }
   }
+
+  // #632 AC-14. One line, every scaffold, unconditional. `writeManagedFile`
+  // above already reported that the FILE was written; this reports the thing
+  // writing it does not establish — that the gate it contains is inert until
+  // a credential resolves, which the generator cannot see and must therefore
+  // not guess at. A consumer who reads only the checks list sees a green
+  // `ai-review` and has no reason to look further, and that is #630.
+  actions.push(aiReviewScaffoldAction(vertex));
 
   // Everything else in the directory, named. This generator writes three
   // files; a consumer's CI may run any number, and until #722 the ones it did

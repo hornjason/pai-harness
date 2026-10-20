@@ -158,6 +158,24 @@ const FORM_TABLE: FormRow[] = [
     text: "fixes other-owner/other-repo#586",
     closes: [],
   },
+  {
+    // The third form GitHub documents beside `#N` and `owner/repo#N`, added
+    // in #696. The detector read neither of the other two spellings of it
+    // before then, so `fixes GH-586` closed #586 and the coverage comparison
+    // reported nothing undeclared — a false NEGATIVE, which this file's
+    // grammar note calls the direction that costs.
+    name: "FORM: `fixes GH-586` — the GH- form",
+    text: "fixes GH-586",
+    closes: [586],
+  },
+  {
+    // Not the keyword form: a bare `GH-586` closes nothing, same as a bare
+    // `#586`. Without this the row above is satisfied by a detector that
+    // matches `GH-\d+` anywhere.
+    name: "FORM: `GH-586` — the GH- form with no keyword",
+    text: "see GH-586 for the detail",
+    closes: [],
+  },
 
   // The non-closing half. Every one of these appears in ordinary session
   // prose, and a detector that flagged any of them would be worse than none.

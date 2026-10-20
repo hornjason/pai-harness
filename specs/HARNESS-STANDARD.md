@@ -5173,6 +5173,178 @@ None of the mutations is left in the tree; all were run and reverted, and
 - [x] SC-871: workflows/ship.js contains [PRIOR-WORK-REFUSAL-START, PRIOR_WORK_OPEN_PR] — a run refuses before IMPLEMENT when the issue has an open PR this run is not standing on, and resuming that PR's own branch is not refused
 - [x] SC-872: workflows/ship.js contains [function lookupTargets, function normalizeExistingPr] — the issue number and repo slug are validated before they are interpolated into the lookup command, and only a positive outcome of "none" is read as "no open PR"
 
+### An issue title is attacker-supplied text, and it reaches two shells and one parser (#696)
+
+`workflows/ship.js`'s COMMIT phase composed
+
+```
+git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
+```
+
+with the title interpolated unquoted into a double-quoted shell string, two
+lines under the prompt's own instruction *"Run these in order, exactly as
+written"*. `shellQuote` was declared in the same file and applied at six
+other sites, including the wave commit one function away.
+
+Two consequences, and they are not one bug:
+
+- **A shell reads it.** A title of `x" ; … ; : "` composes to a line `bash`
+  accepts and parses as three commands. The gate is an operator choosing to
+  ship an issue; the title is chosen by whoever filed it.
+- **GitHub reads it.** A merged commit message carrying a closing keyword
+  beside an issue reference closes that issue, and **markdown is not an
+  escape**: on 2026-10-19 commit `cfc1415d` quoted ``Fixes #644`` inside a
+  backtick code span, as a SAMPLE INPUT in a message about this very class
+  of bug, and #644 was closed three seconds after the merge.
+
+The second has a third position that the first does not.
+`scripts/github-op.ts --title-from-issue` composes the PR title, and its
+comment — *"The title then never crosses a shell at all"* — is true and is
+half the problem: that title becomes the squash-merge commit subject, which
+is the position that closed #644. Keeping text away from a shell says
+nothing about keeping it away from a parser.
+
+So the transform is one binding, `lib/commit-subject.ts`, which
+`scripts/github-op.ts` imports. `workflows/ship.js` carries an inline copy
+because a workflow script cannot import (#69) — and a second copy nothing
+compares is #621 verbatim, so the copies are compared by BEHAVIOUR over a
+fixture table rather than by source text, which a reformat defeats and which
+two regexes differing in a comment satisfy.
+
+#### The grammar already existed, and the first draft reinvented it worse
+
+`scripts/check-state-record-closes.ts` has held this grammar since #590,
+which was filed after PR #588's squash commit carried `Filed and not fixed:
+#586` and closed #586 one second after the merge. Its `CLOSING_REFERENCE`
+and this one are exact duals — one asks *which issues would GitHub close
+from this text*, the other makes the answer empty.
+
+**It cannot be the owner, and that is structural rather than an oversight.**
+`test/state-record-closes-mutation.test.ts` runs a mutant copy of that
+script from a temp directory, and the comment on the mutant builder says
+why: a later `from "../lib/…"` would make every mutant die on module
+resolution, exiting non-zero, which reads as *"the mutation was rejected on
+the merits"* when the mutant never ran. Adding an import to collapse the
+duplication would delete that property. Same shape as #69 forcing ship.js's
+copy — **when duplication is structural, the answer is a comparator, not a
+merge.**
+
+Three details are taken from that grammar, and all three were wrong in the
+first draft of `lib/commit-subject.ts` — which is the argument for looking
+for the existing answer before writing one:
+
+| Detail | First draft | Why it matters |
+|---|---|---|
+| `\b` AFTER the keyword stem | absent | `closing #586` is not a keyword |
+| `(?:\s*:\s*\|\s+)` | `(\s*:?\s+)` — a space REQUIRED after the colon | `fixed:#586` is the form that shipped #586's defect, and it was unhandled |
+| the URL pinned to `github.com` and `issues\|pull` | `https?:\/\/\S*?\/issues\/` | the draft would have mangled a link to any other tracker, and missed `/pull/N` |
+
+The traffic ran the other way too. GitHub documents **four** reference forms
+and the detector read three: `GH-N` was missing, so a record saying
+`fixes GH-586` closed #586 and #590's coverage comparison reported nothing
+undeclared. A false negative, in the direction that script's own grammar
+note calls the one that costs. It is in both spellings now, with a form row
+and a no-keyword control in `test/closing-keywords.test.ts`.
+
+So the two are **two deliberate spellings and one comparator**: the test
+drives the neutraliser and reads the result with `closingReferences`, so the
+detector is the oracle. Sharing a regex literal instead would make a
+mutation of the grammar move both and leave the comparison green — the
+fourth shape, in the file arguing against it.
+
+- [x] SC-2119: lib/commit-subject.ts contains [export function neutraliseClosingKeywords] — the closing-keyword transform is one exported binding covering all four reference forms GitHub documents, breaking the adjacency GitHub parses rather than deleting the reference, so the keyword and the number both stay readable in the subject
+- [x] SC-2120: test/commit-subject-quoting.test.ts contains [AC-6: every fixture composes identically on both sides] — ship.js's forced inline copy and the library are driven over one fixture carrying a case per dimension the two could disagree on, with a vacuity case requiring that the transform actually alters more than three of them, so two identity functions cannot agree their way to green
+- [x] SC-2121: workflows/ship.js contains [shellQuote(shipCommitSubject(ISSUE, goalData.issueTitle))] — the COMMIT phase's subject crosses the shell single-quoted, and the case that proves it lifts shellQuote, the subject builder AND the commit line itself out of ship.js and runs them against a stub `git` on PATH that records argv
+- [x] SC-2122: test/commit-subject-quoting.test.ts contains [AC-3: the detector and the neutraliser agree about what is NOT a reference] — `closingReferences` from the #590 detector is the oracle in both directions: a composed subject closes nothing but the run's own issue, and text the detector reads as closing nothing comes through byte-unchanged, so a transform that mangled everything could not buy green
+
+What was broken to prove the cases fail, run and counted rather than
+asserted, over `test/commit-subject-quoting.test.ts` +
+`test/closing-keywords.test.ts` (86 tests). Every count predicted before the
+battery ran. **The baseline row was read before any mutation row**, because
+an instrument that has stopped reporting takes the baseline down with it,
+and it is the one row nobody mutates anything to produce.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 86 pass, 0 fail | **86 pass, 0 fail** |
+| the genuinely pre-#696 source — raw line restored, the whole block deleted | abort | **ABORTS in `beforeAll`, 0 run** — `AnchorNotFoundError` naming the block |
+| `shellQuote` dropped from the commit line, the block kept | 5 | **5 of 86** |
+| the keyword neutralisation removed from ship.js's copy | 19 | **19 of 86** |
+| the LIBRARY narrowed back to the `#N` form only | 2 | **2 of 35**, measured on the narrower tree |
+| ship.js's copy narrowed back to the `#N` form only | 4 | **4 of 35**, measured on the narrower tree |
+| ship.js's separator back to the draft's `\s*:?\s+` | 2 | **2 of 86** |
+| `GH-` removed from the DETECTOR — its pre-#696 state | 2 | **2 of 86** |
+| `scripts/github-op.ts` reverted to hand composition | 1 | **1 of 35**, measured on the narrower tree |
+| the test's own stub `git` stops recording argv | 8 | **8 of 35**, measured on the narrower tree |
+
+Before believing the `shellQuote` row, the input on which mutant and
+original differ, named and run rather than assumed: a title of
+`x$(echo_injected PWNED)`. The real source composes a single-quoted message
+and `git` is invoked once with it verbatim; the mutant executes
+`echo_injected`, observed through a marker file the stub writes rather than
+inferred from the absence of an error. For the `GH-` row: `fixes GH-586`,
+which the real detector reports as closing 586 and the mutant reports as
+closing nothing.
+
+**That first row is 5 and not 7 on purpose.** Seven hostile titles are in
+the battery; a single quote and an embedded newline are both harmless inside
+the double quotes the mutant keeps. They are there as cases asserting the
+message survives VERBATIM — quoting that mangles the subject is not the fix
+either — not as injections, and reading 5 as a shortfall would send someone
+hunting a case that is doing its job.
+
+**The library row is 2 and ship.js's is 4, and the asymmetry is the
+measurement.** AC-3 drives ship.js's copy, so narrowing the library is
+invisible to it and surfaces only in the parity case and in the vacuity
+control, whose "more than three fixtures are altered" drops to exactly
+three. Two copies that were not compared would give 0 there.
+
+#### Two rows that did not behave, and what each one was
+
+Recorded because the arithmetic is the only thing that found either, and
+both are shapes this file already names.
+
+**The separator row came back 1 where 2 was predicted, and the missing red
+was the parity case.** `fixed:#586` was in AC-3's fixtures and not in
+AC-6's, so the one dimension the two spellings disagreed on sat outside what
+the comparison could reach. A parity case is exactly as wide as its corpus,
+and a corpus assembled as "a plausible set of titles" is not the same thing
+as one carrying a case per dimension. The corpus now has sixteen entries
+with a comment naming the dimension each one is for, and the row is 2.
+
+**An earlier run of this whole battery produced an EMPTY baseline**, and
+every row under it was void. The runner was a zsh function doing
+`bun test $FILES`; zsh does not word-split an unquoted parameter, so bun
+received one argument naming no file, matched nothing, and printed a filter
+warning instead of a summary. Four rows came back blank beside a correct
+tree and a correct mutation. That is #60's instrument failure in a new
+costume, and the tell was the same one: **the baseline was wrong too.** The
+`GH-` row in the same run additionally reported a mutation that had never
+been applied — `grep -c ghNum` still returned a hit — which is the other
+reading of a 0 this file names. Both were re-run with the instrument fixed
+and the mutation verified present before the row was believed.
+
+**The cheapest wrong fix, named: strip `"` from the title and keep the
+double quotes.** What an operator sees is a double quote breaking the line.
+It works on the case that motivated the fix, and it leaves a backtick title
+and a `$(…)` title executing — asserted in the file, with the counterfactual
+run rather than described, so a green there would mean the counterfactual is
+wrong and not that the repair is adequate.
+
+None of the mutations is left in the tree; all were run and reverted, and
+`workflows/ship.js`, `lib/commit-subject.ts` and `scripts/github-op.ts` were
+confirmed byte-identical to the measured sources afterwards by checksum.
+
+**What this does NOT fix, filed as #706.** The title still reaches the
+COMMIT phase's AGENT as text, in a natural-language instruction block, four
+lines above `git push` and directly above the `main|master` guard that
+exists because #136 had an agent improvise a recovery onto the default
+branch. `shellQuote` stops a shell reading it and does nothing about a
+reader that takes the whole block as instructions. The Ship phase's
+`pr-upsert` step in `workflows/ship.js` already made the opposite choice one
+phase later — *"do NOT paste the issue title into the command"* — and the
+COMMIT phase was never given it.
+
 ### The step added to close a fail-open rebuilt it one layer up
 
 Security review of `93ff36a8` raised five findings; three were real and two

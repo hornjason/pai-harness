@@ -473,6 +473,9 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
 
 // ── AC-9: a reviewer that completed, with nobody reading its verdict ─────
 
+/** A findings payload, so these cases are about #675 and not about #816's skip. */
+const PAYLOAD = '{"findings": [], "verdict": "PASS"}';
+
 describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
   test("AC-9: a successful review warns that its findings are not enforced", () => {
     // The fail-open the security review named: the reviewer runs, writes a
@@ -483,7 +486,7 @@ describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
     const run = runAuthScript(buildReviewRunScript(), {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
-    });
+    }, PAYLOAD);
     const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
     expect(
       warnings.length,
@@ -502,7 +505,7 @@ describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
       RUNGATE_REQUIRE_AI_REVIEW: "true",
-    });
+    }, PAYLOAD);
     expect(run.code, "the opt-in refusal did not fire for an unread payload").toBe(1);
     expect(run.stderr).toContain("#675");
   });
@@ -515,7 +518,7 @@ describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
     const ran = runAuthScript(buildReviewRunScript(), {
       ...base,
       AI_REVIEW_ACTION_OUTCOME: "success",
-    });
+    }, PAYLOAD);
     const failed = runAuthScript(buildReviewRunScript(), {
       ...base,
       AI_REVIEW_ACTION_OUTCOME: "failure",
@@ -879,17 +882,37 @@ interface Run {
  * for the same reason: inheriting `process.env` is a fixture that can satisfy
  * the assertion without the feature.
  */
-function runAuthScript(script: string, env: Record<string, string>): Run {
+/**
+ * `payload` plants a findings file and points the script at it.
+ *
+ * Since #816 the report step distinguishes "the action exited zero and wrote
+ * a payload" from "the action exited zero and wrote nothing" — the second is
+ * the workflow-validation self-skip, which was reading as a completed review.
+ * So a case about the ADJUDICATION gap has to supply a payload, or it is
+ * really a case about the skip wearing the wrong name.
+ */
+function runAuthScript(
+  script: string,
+  env: Record<string, string>,
+  payload?: string,
+): Run {
   const dir = scratchDir("ai-review-run-");
   const sh = join(dir, "auth-detect.sh");
   writeFileSync(sh, script);
   const out = join(dir, "github_output");
   writeFileSync(out, "");
+  const planted: Record<string, string> = {};
+  if (payload !== undefined) {
+    const findings = join(dir, "ai-review-findings.json");
+    writeFileSync(findings, payload);
+    planted.AI_REVIEW_FINDINGS_PATH = findings;
+  }
   const r = Bun.spawnSync(["bash", sh], {
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? dir,
       GITHUB_OUTPUT: out,
+      ...planted,
       ...env,
     },
   });
