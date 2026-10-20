@@ -31,8 +31,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { SELF_REFERENTIAL_RULES, remedyMessage, ruleDocPointer } from "../lib/check-remedy";
-import { stripJsComments } from "../lib/strip-js-comments";
+import {
+  SELF_REFERENTIAL_RULES,
+  remedyMessage,
+  routedCheckIds,
+  ruleDocPointer,
+} from "../lib/check-remedy";
 
 const REPO = join(import.meta.dir, "..");
 
@@ -136,25 +140,51 @@ const TIER_1 = [
   { file: "test/agents-md-spec-listing.test.ts", check: "SC-1891" },
 ];
 
-/**
- * The `check:` value of every `remedyMessage(...)` call site in a file.
- *
- * A call site is counted only when an `expect(` opens within the 200
- * characters before it. Composing a message and never asserting it would
- * otherwise satisfy this guard while the check still failed with nothing —
- * the cheapest wrong way to go green here, and the one worth closing.
- */
 function routedChecks(relPath: string): string[] {
-  const src = stripJsComments(readFileSync(join(REPO, relPath), "utf-8"));
-  const found: string[] = [];
-  const CALL = "remedyMessage(";
-  for (let i = src.indexOf(CALL); i !== -1; i = src.indexOf(CALL, i + 1)) {
-    if (!src.slice(Math.max(0, i - 200), i).includes("expect(")) continue;
-    const field = /check:\s*"([^"]+)"/.exec(src.slice(i, i + 600));
-    if (field) found.push(field[1]!);
-  }
-  return found;
+  return routedCheckIds(readFileSync(join(REPO, relPath), "utf-8"));
 }
+
+describe("#813: the scan reads asserted code, not prose and not a dangling call", () => {
+  // Both cases exist because the first battery measured them at 0 red. The
+  // comment stripping and the `expect` proximity test were each written as
+  // obviously-necessary, and against the live tree neither one changed a
+  // single result — there is no file in this repo that mentions the symbol
+  // in a comment or composes a message without asserting it. A mechanism
+  // nothing exercises is a mechanism nobody can show works, so each gets the
+  // input that separates it from its own absence.
+
+  test("a call named only in a comment is not a call", () => {
+    const planted = [
+      "// expect( ... ) remedyMessage({ check: \"GHOST-1\" })",
+      "/* expect(x, remedyMessage({ check: \"GHOST-2\" })).toEqual([]); */",
+      "const unrelated = 1;",
+    ].join("\n");
+    expect(
+      routedCheckIds(planted),
+      "prose describing a call was counted as the call",
+    ).toEqual([]);
+  });
+
+  test("the same two lines as code ARE counted, or the case above proves nothing", () => {
+    // The control. Without it the assertion above is satisfied by a scan that
+    // finds nothing in anything.
+    const planted = 'expect(x, remedyMessage({ check: "GHOST-2" })).toEqual([]);';
+    expect(routedCheckIds(planted)).toEqual(["GHOST-2"]);
+  });
+
+  test("a message composed but never asserted is not counted", () => {
+    const planted = 'const msg = remedyMessage({ check: "GHOST-3", fix: "x" });\n';
+    expect(
+      routedCheckIds(planted),
+      "a check that composes a remedy and never asserts it passed the guard",
+    ).toEqual([]);
+  });
+
+  test("the same call under an expect IS counted", () => {
+    const planted = 'expect(v, remedyMessage({ check: "GHOST-3", fix: "x" })).toEqual([]);';
+    expect(routedCheckIds(planted)).toEqual(["GHOST-3"]);
+  });
+});
 
 describe("#813: every Tier 1 check carries a remedy, and losing one is red", () => {
   test("the scan finds call sites at all, or every row below passes over nothing", () => {
