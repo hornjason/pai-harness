@@ -7087,8 +7087,8 @@ still makes them differ.)
 && pwd)` is the main checkout from any worktree and plain `.git` in the main
 checkout itself, so the non-worktree case is unchanged — asserted, not
 assumed, by a control case that pushes the same fixture from its primary
-checkout. `lib/scaffold/steps.ts:2944` already distinguished the two for the
-pre-commit hook; the pre-push hook was the last generated hook still asking
+checkout. `preCommitHookScript` in `lib/scaffold/steps.ts` already distinguished the
+two for the pre-commit hook; the pre-push hook was the last generated hook still asking
 the wrong question.
 
 An absent `$MODULES_ROOT/node_modules` is now refused **by name** rather than
@@ -7166,8 +7166,8 @@ worktree would not leave the file quietly passing. Say which cases are
 witnesses of what, or the next reader counts five.
 
 **Consumers are in two populations, and they are indistinguishable from
-outside.** `lib/scaffold/steps.ts:3015` overwrites `.git/hooks/pre-push` only
-when it carries `PRE_PUSH_MANAGED_MARKER`, so an already-scaffolded repo
+outside.** `createGitHooks` in `lib/scaffold/steps.ts` overwrites `.git/hooks/pre-push`
+only when it carries `PRE_PUSH_MANAGED_MARKER`, so an already-scaffolded repo
 keeps the old hook until it is re-scaffolded: `bunx rungate scaffold .`. A
 repo that looks fixed and a repo that is fixed read the same until then.
 
