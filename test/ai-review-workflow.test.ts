@@ -853,6 +853,43 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     };
   }
 
+  test("#843 finding 5: an EMPTY mode is compared, an explicit `none` is skipped", () => {
+    // A pair that varies exactly one thing: the value of AI_REVIEW_MODE.
+    // The same repository, the same post-baseline write, the same script.
+    //
+    // `${AI_REVIEW_MODE:-none}` substituted `none` for empty and exited 0
+    // without comparing anything, so a tree that moved while the auth step's
+    // output was unreadable was waved through — the Silent Default
+    // Substitution #677 removed from the report step, still in place here.
+    //
+    // Both halves are asserted. Empty alone would be satisfied by a script
+    // that stopped skipping anything at all, which would turn every
+    // unconfigured consumer's drift step into a comparison nobody asked for.
+    const plant = (dir: string) => writeFileSync(join(dir, "reviewer-wrote-this.ts"), "x\n");
+    const empty = runDrift(plant, { AI_REVIEW_MODE: "" });
+    expect(empty.code, "an unreadable mode skipped the comparison").not.toBe(0);
+    expect(empty.stderr).toContain("reviewer-wrote-this.ts");
+
+    const explicit = runDrift(plant, { AI_REVIEW_MODE: "none" });
+    expect(
+      explicit.code,
+      "an explicit `none` now runs the comparison — no credential means no reviewer to police",
+    ).toBe(0);
+    expect(explicit.stderr).toBe("");
+
+    // Measured, 56 tests, predicted before the run and baseline read first:
+    //   Q1 the pre-#843 `${AI_REVIEW_MODE:-none}` restored — predicted 2,
+    //      measured 1 of 56. The prediction counted the two HALVES of this
+    //      case as two cases; they are one. Differing input: an empty mode
+    //      over a tree with a post-baseline write.
+    //   Q2 the cheapest wrong fix, the skip deleted outright — predicted 2,
+    //      measured 2 of 56: this case and AC-10's `mode none does not run
+    //      the check at all`.
+    // The asymmetry is the thing to carry away. Q2 has two witnesses; Q1 has
+    // exactly ONE, and it is this case. Nothing else in the tree can see the
+    // empty-mode direction, so do not delete it as redundant with AC-10's.
+  });
+
   test("AC-10: a clean tree passes", () => {
     const run = runDrift(() => {});
     expect(run.code, `a clean tree was refused:\n${run.stderr}`).toBe(0);

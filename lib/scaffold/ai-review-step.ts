@@ -1735,7 +1735,23 @@ escape_annotation() {
   printf '%s' "\${v}"
 }
 
-if [ "\${AI_REVIEW_MODE:-none}" = none ]; then
+# An EXPLICIT \`none\` skips: the auth step ran, found no credential, said so,
+# and no reviewer existed to police. An EMPTY mode is a different fact and
+# must not reach the same branch — the auth step did not run, or could not
+# write its output, so nobody knows whether a reviewer ran (#843 finding 5).
+#
+# The previous form was \`\${AI_REVIEW_MODE:-none}\`, which substituted \`none\`
+# for empty and exited 0 without comparing anything. That is the SAME default
+# substitution #677 removed from the report step, left in place one step
+# below it — one script distinguishing the two states while the other
+# collapsed them, with nothing comparing the two scripts.
+#
+# Falling through is the tight direction and costs nothing. The comparison is
+# baseline-against-after and is valid whatever the mode says: with no reviewer
+# the two readings agree and this exits 0 anyway, so no consumer goes newly
+# red. What changes is that a tree which DID move while the mode was
+# unreadable is now reported instead of waved through.
+if [ "\${AI_REVIEW_MODE:-}" = none ]; then
   exit 0
 fi
 
