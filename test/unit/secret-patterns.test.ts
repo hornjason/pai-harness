@@ -183,6 +183,13 @@ describe("deduplication must not narrow coverage", () => {
  * that proves a scanner works must not be a file that scanner blocks. The
  * refusal was correct, so the fixtures moved rather than the hook.
  *
+ * **It is not only the fixtures.** #844's battery table named its differing
+ * input in PROSE — one cell reading `API` + `_KEY=` joined to a twenty-
+ * character value — and the Gates secret scan refused the branch, correctly,
+ * over a documentation table. The fixtures had been assembled from fragments
+ * all along; the evidence recording them had not. Every position in this file
+ * is in the scanned population, comments included.
+ *
  * WHY THESE CASES RUN `grep`, NOT `RegExp`
  *
  * The pattern is POSIX ERE consumed by `grep -E`. `[[:space:]]` is not a
@@ -423,7 +430,7 @@ describe("the tier-2 scan does not read a minified comparison as an assignment (
  * | Row | Predicted | Measured | The input on which mutant and original differ |
  * |---|---|---|---|
  * | **baseline** — unmutated | 24 pass, 0 fail | **24 pass, 0 fail** | — |
- * | M1 the genuinely pre-#844 generator: all four interpolations removed, `gates.yml` regenerated | 5 | **5 of 24** | `API_KEY=sk_live_abcdefghijklmnop` — original FAIL, mutant CLEAN |
+ * | M1 the genuinely pre-#844 generator: all four interpolations removed, `gates.yml` regenerated | 5 | **5 of 24** | an uppercase `API` + `_KEY=` joined to a 20-character value — original FAIL, mutant CLEAN |
  * | M2 **the cheapest wrong fix**: generator reverted as in M1, `gates.yml` hand-edited to keep `-i` | 1 | **1 of 24** | the generator source — four interpolations against zero |
  * | M3 `-i` dropped from the ALLOWLIST only, the capture keeping it | 3 | **3 of 24** | `API_KEY=Placeholder_value_here` — original CLEAN, mutant FAIL |
  * | M4 `-i` added to the tier-1 `git grep` as well | 1 | **2 of 24** | `akia` + 16 `a` — original no match, mutant matches |

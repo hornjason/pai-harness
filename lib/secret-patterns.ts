@@ -115,11 +115,13 @@ export const TIER2_ASSIGNMENT_ERE =
  * the spelling a case-sensitive `(password|passwd|api[_-]?key|secret)` can
  * see is the one real credentials are least often written in. Measured on
  * six realistic inputs, tier 2 scored 0 on all three uppercase spellings and
- * 1 on all three lowercase ones; `-i` takes all six to 1. asaCommandCenter
- * #1683 is the live instance — a real API key in a shell default,
- * `SAPLING_KEY="${SAPLING_API_KEY:-<key>}"`, green on a scaffolded gate for
- * as long as it sat on `main`, because the pattern could not see an
- * uppercase variable name.
+ * 1 on all three lowercase ones; `-i` takes all six to 1. The live instance
+ * is a consumer repository that committed a real API key in a shell default
+ * of the form `<NAME>_KEY="${<NAME>_API_KEY:-<key>}"`; the scaffolded gate
+ * reported clean for as long as it sat on the default branch, because the
+ * pattern could not see an uppercase variable name. The consumer and the
+ * issue are named in `test/unit/secret-patterns.test.ts` — a module under
+ * `lib/` may carry no consumer-specific value (SC-A1).
  *
  * **It is a constant and not a literal in the generators for the reason the
  * rest of this file exists.** Four positions consume it — the capture and
