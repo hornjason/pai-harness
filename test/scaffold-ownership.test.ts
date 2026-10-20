@@ -26,11 +26,8 @@ import {
   OWNED_FILES,
   SCAFFOLD_REFUSE,
   bytesIdentical,
-  commentSha,
   decideOwnedWrite,
-  declaredCommentSha,
   ownedFilesTable,
-  stampComment,
 } from "../lib/scaffold/owned-files";
 import {
   createCiWorkflows,
@@ -44,6 +41,7 @@ import {
 // parser `mergeJobsSection` itself uses, so a case built on it reads the
 // same job list the preservation logic does rather than a second opinion.
 import { jobNames } from "../lib/scaffold/managed-workflow";
+import { bodySha, declaredSha, decideRuleWrite, stampProvenance } from "../lib/rule-provenance";
 // From its owner, not re-exported. #208 shipped a second copy of this
 // predicate in steps.ts; importing from the one place SC-811 names means a
 // mutation of it reaches both callers.
@@ -313,43 +311,39 @@ describe("#208 SC-840: a hand-edited owned file is preserved and reported", () =
   // resolved implicitly. It is preserve-and-report, matching #370's answer
   // to the same question: the skipped file is still on disk, the
   // overwritten one is gone, and only one of those is recoverable.
+  //
+  // **Repointed by #759.** These five cases used to drive
+  // `decideOwnedWrite("provenance", …)` and a `//` line-comment marker.
+  // That branch was never reached by any run — `.claude/rules/*.md` is the
+  // only row declaring `provenance` and it is written by `decideRuleWrite`,
+  // which uses a frontmatter key because a markdown file has no line
+  // comments. The policy is real and worth asserting; the binding under it
+  // was not the one the generator uses, so a case here could go green over
+  // a tree in which the behaviour had been deleted outright.
   test("a stamped file the harness wrote is updated", () => {
-    const existing = stampComment("old body\n");
-    const d = decideOwnedWrite("provenance", existing, "new body\n");
-    expect(d.action).toBe("changed");
-    expect(d.content).toBe(stampComment("new body\n"));
+    const existing = stampProvenance("old body\n");
+    const d = decideRuleWrite(existing, "new body\n");
+    expect(d.action).toBe("update");
+    expect(d.content).toBe(stampProvenance("new body\n"));
   });
 
   test("a hand-edited stamped file is preserved", () => {
-    const tampered = stampComment("old body\n").replace("old body", "a human's edit");
-    const d = decideOwnedWrite("provenance", tampered, "new body\n");
+    const tampered = stampProvenance("old body\n").replace("old body", "a human's edit");
+    const d = decideRuleWrite(tampered, "new body\n");
     expect(d.action).toBe("preserve");
     expect(d.reason).toContain("hand-edited");
   });
 
   test("a file with no marker at all is preserved, not adopted", () => {
-    const d = decideOwnedWrite("provenance", "hand-authored\n", "generated\n");
+    const d = decideRuleWrite("hand-authored\n", "generated\n");
     expect(d.action).toBe("preserve");
     expect(d.reason).toContain("no harness provenance marker");
   });
 
-  test("the refusal is reported in the actions, with a way out", () => {
-    const d = dir();
-    const p = join(d, "edited.ts");
-    writeFileSync(p, "hand-authored\n");
-    const actions: string[] = [];
-    regenerateOwned(p, "generated\n", "edited.ts", actions, "provenance");
-    const line = actions.join("\n");
-    expect(line).toContain(`${SCAFFOLD_REFUSE}: edited.ts`);
-    expect(line, "the report does not say how to accept the generator's version")
-      .toContain("delete the file and re-run");
-    expect(readFileSync(p, "utf-8"), "a hand-edit was destroyed").toBe("hand-authored\n");
-  });
-
   test("the stamp round-trips and the marker is not part of the body", () => {
-    const stamped = stampComment("x\n");
-    expect(declaredCommentSha(stamped)).toBe(commentSha("x\n"));
-    expect(stampComment(stamped), "re-stamping changed the bytes").toBe(stamped);
+    const stamped = stampProvenance("x\n");
+    expect(declaredSha(stamped)).toBe(bodySha("x\n"));
+    expect(stampProvenance(stamped), "re-stamping changed the bytes").toBe(stamped);
   });
 });
 
