@@ -1,4 +1,4 @@
-# generated-sha: cb6b448ff1cfadc8
+# generated-sha: 9e398e95f09d9aaf
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -344,7 +344,7 @@ jobs:
             exit 0
           fi
 
-          echo "::warning title=AI review UNMEASURED::The review action (#631) did not complete, so no AI review ran on this pull request and no findings payload was written. This check is UNMEASURED, not a passing review."
+          echo "::warning title=AI review UNMEASURED::The review action (#631) did not complete, so no AI review ran on this pull request and no findings payload was written. This check is UNMEASURED, not a passing review. If every earlier step succeeded — a credential resolved and the action started — the usual cause is that the Claude Code GitHub App is not installed on this repository. Search the 'Run the AI review' step's log for 'Claude Code is not installed on this repository'; if it is there, install the app at https://github.com/apps/claude and re-run. This job cannot read that log, so it is naming a likely cause and not reporting a measured one."
 
           if [ "${RUNGATE_REQUIRE_AI_REVIEW:-}" = "true" ]; then
             echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and the review action (#631) did not complete, so this pull request has no AI review. Failing rather than reporting a green check for a review that never happened." >&2
