@@ -22,7 +22,7 @@ import { spawnSync } from "child_process";
 import { join, dirname, sep } from "path";
 import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
-import { readFreshCache } from "./behavioral-cache";
+import { behavioralCachePath, readFreshCache } from "./behavioral-cache";
 import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
@@ -1240,7 +1240,28 @@ export type SCPlanEntry =
  */
 export function planSCTests(scs: ParsedSC[], projectRoot?: string): SCPlanEntry[] {
   return scs.map((sc): SCPlanEntry => {
-    if (isBehavioralSC(sc)) return { kind: "behavioral", sc, routing: getBehavioralRouting(sc) };
+    if (isBehavioralSC(sc)) {
+      // Ask the cache BEFORE classifying. This line used to classify first,
+      // which made `behavioralPattern` — the function that turns a recorded
+      // runtime result into an assertion that throws — unreachable from any
+      // real run: defined, exported, unit-tested, and called by nothing but
+      // its own tests. Meanwhile `scripts/sync-sc-status.ts` DID read the
+      // cache and would move a `passed: false` criterion into `failing`, so
+      // the decider that TICKS a checkbox looked at the evidence and the
+      // suite that decides the build's colour did not (#328).
+      //
+      // `behavioralPattern` returns null for an absent entry and for a stale
+      // one — `readFreshCache` drops anything 7 days old — so a criterion
+      // with no current reading falls through to `behavioral` exactly as
+      // before: reported, ratcheted, UNMEASURED. A stale PASS must not
+      // certify, because a measurement taken a fortnight ago read as one
+      // taken now is the silent default this whole subsystem exists to avoid.
+      const assertion = projectRoot
+        ? behavioralPattern(sc, behavioralCachePath(projectRoot))
+        : null;
+      if (assertion) return { kind: "assert", sc, assertion };
+      return { kind: "behavioral", sc, routing: getBehavioralRouting(sc) };
+    }
     if (!sc.checked) return { kind: "todo", sc };
     const outcome = resolveMatcher(sc, projectRoot);
     if (outcome.kind === "assert") return { kind: "assert", sc, assertion: outcome.assertion };
