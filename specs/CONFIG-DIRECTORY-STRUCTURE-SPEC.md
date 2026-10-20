@@ -968,20 +968,103 @@ shipped six instances of it.
    name on every run. "No test was removed" is a sentence about the files
    that were read, and a reader is owed the list it is not about.
 
-**What this guard does not do.** The banked census lives in the run's
-`workflow-state.json`, which the heal agent can write. An agent that deleted
-a test AND the census would see `first-reading` next round and pass. This
-raises the cost of an *accidental* deletion — the failure mode that actually
-happened on `wf_5cdce852-1e2` — and is not tamper-evident against a
-deliberate one. `writeWorkflowState`'s Zod validation does not help: an
+**What this guard did not do, until #494.** The banked census lives in the
+run's `workflow-state.json`, which the heal agent can write. An agent that
+deleted a test AND the census saw `first-reading` next round and passed.
+That raised the cost of an *accidental* deletion — the failure mode that
+actually happened on `wf_5cdce852-1e2` — and was not tamper-evident against
+a deliberate one. `writeWorkflowState`'s Zod validation does not help: an
 absent optional key is valid.
 
-Closing that means putting the reading where the guarded party does not
-write — the witness, or an HMAC over it — and is filed separately rather than
-half-done here. A guard whose limit is written down is a guard somebody can
-finish; one whose limit is implied is one everybody assumes is complete.
-
 - [x] SC-1697: test/test-census.test.ts contains [the previous census is read off disk - not off a stale in-memory copy] — an array, unparseable JSON and a missing file all read as nothing banked, and the `undefined` they produce is asserted to become `first-reading` rather than anything that reads as clean
+
+#### The erasure, closed (#494)
+
+The guard's memory and the guarded party's write access were the same file,
+and `workflows/ship.js` hands the scope-heal agent that file by name with a
+working `writeWorkflowState` recipe — the instruction
+`Edit workflow-state.json ONLY via writeWorkflowState():` and the one-liner
+under it, at both heal sites. No line number: #541's measurement is that
+three of four unguarded line citations in this tree were already stale, and
+this one was too by the time the fix was written. Two halves close it, and
+**neither works alone**:
+
+1. **The census is signed.** `signCensus` (`gates/witness.ts`) HMACs the
+   sorted reading together with the run's slug, using the gate salt
+   `writeWitness` already uses, and `persistTestCensus` stores the signature
+   in `gateContract.testCensusSignature`. The slug is in the signed input
+   because the salt is shared across runs: without it, any other run's
+   signature on this machine verifies here.
+2. **"Has a gate already run?" is asked outside the state file.** An agent
+   erasing the census erases the signature with it, so the two absences are
+   identical and the signature cannot tell "nothing was banked yet" from
+   "something was banked and is gone". `~/.rungate/<slug>/witnesses/` can:
+   `writeWitness` writes one per gate run and no prompt in this repository
+   names the directory. `priorGateRun` reads it.
+
+An unsigned or mismatched census where a witness already exists is
+`census-unverified`, which `censusReport` counts as a **WARN**, not a FAIL —
+`UNMEASURED`, in this gate's existing vocabulary. Not a FAIL because a
+legitimate run on a machine whose witness store cannot be read reaches the
+same arm, and a check that refuses rounds nobody can fix is removed within a
+week. The claim is only that the erasure stops being indistinguishable from
+an ordinary first round.
+
+**The off switch one layer down, named because it is the thing that would
+have made this ceremony.** `writeWitness` is called inside a `try/catch` at
+the bottom of `runGateInternal` that only logs, and it throws when the gate
+salt is absent. On a machine with no salt no witness is ever written, so
+"no witnesses" must NOT read as "first run" — `priorGateRun` checks the salt
+BEFORE it counts, and returns `unreadable`, which reaches the same WARN.
+
+**The cheapest wrong fix, named: make the new arm fall back to
+`first-reading` whenever the witness count cannot be read.** It is the 5pm
+repair — the symptom is a WARN on a developer machine with no salt, and one
+condition makes it go away, with the detection switched off for exactly the
+tree where the witness store is broken. The cases survive it
+non-vacuously: the no-salt case asserts `census-unverified` on an
+`unreadable` prior reading, and goes red under that fix (row 1 below,
+measured).
+
+**Tamper-evident, not tamper-proof, and that is the goal.** The salt is
+readable by anything running as this user, so an agent that knows where it
+lives can re-sign a census it rewrote, and it can delete the witness
+directory. Both are louder acts than deleting a key out of a file the prompt
+told it to edit. A store the run cannot write at all is a different issue.
+
+**Ids need allocating for the cases below.** They are written with no `SC-`
+prefix deliberately: an id chosen against this tree cannot see other
+sessions' unmerged branches, and four collisions happened in one day.
+
+| test/test-census.test.ts case | What it is for |
+|---|---|
+| erasing the banked census between gate runs is not a first reading - and a genuine first run still is | the erasure and its control, in ONE case so they cannot drift into agreeing; the control is asserted first and the witness is written by the real `writeWitness` |
+| a banked count edited in place does not verify - the signature is over the reading | the quiet version: editing the number downward would otherwise be `no-regression` forever |
+| a signature from another run does not transfer - the slug is signed with the census | the salt is shared across runs, so without the slug every run's signature is every other run's |
+| a machine that cannot write witnesses reads UNMEASURED - not a first run | the off switch one layer down, and the case that refuses the cheapest wrong fix |
+| the signature travels in the state file's declared shape - the schema does not drop it | a `z.object` is a filter, not a description: an undeclared field is stripped from every parsed state |
+| the witness directory the gate writes is the one the prior-run reading counts | the positive control — a consumer resolving a different directory would report `first` forever with nothing in the output saying so |
+| the gate's report is a projection of the verdict - every arm accounted for | one binding turns a verdict into what the gate counts, so a forgotten arm is one mutation away rather than invisible |
+
+#### What was broken to prove #494
+
+Run over `test/test-census.test.ts` (22 tests). Every count predicted before
+the row ran, and **the baseline was read before any mutation row** — an
+instrument that has stopped reporting takes the baseline down with it, and
+that is the row nobody checks.
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **baseline** — unmutated | 22 pass, 0 fail | **22 pass, 0 fail** | — |
+| the cheapest wrong fix: `prior.kind !== "ran"` falls back to `first-reading` | 1 | **1 of 22** | an absent salt path: original answers `census-unverified` on an `unreadable` prior reading, mutant answers `first-reading` |
+| the genuinely pre-#494 verdict: `first-reading` whenever nothing verified is banked | 3 | **3 of 22** | a state file whose `testCensus` and signature were deleted after a witness was written: original `census-unverified`, mutant `first-reading` |
+| `persistTestCensus` banks the census unsigned | 4 | **4 of 22** | any banked census: `readPersistedCensus` returns `unverified` where the original returns `verified` |
+| `readPersistedCensus` accepts a signature that does not match | 2 | **2 of 22** | a census whose count was rewritten in place, and a census+signature lifted out of another run |
+| `priorGateRun` skips its salt check | 1 | **1 of 22** | an absent salt path: original `unreadable`, mutant `first` |
+| the `census-unverified` arm dropped from `censusReport`'s WARN | 3 | **3 of 22** | the erased census: original warns 1, mutant warns 0 with no result pushed — the silent pass, one layer down |
+
+None is left in the tree; all were run and reverted, and the suite was
+re-read at 22 pass / 0 fail afterwards with `bun run typecheck` at 0 errors.
 
 ## Five readers that each knew where the config lives (#311)
 

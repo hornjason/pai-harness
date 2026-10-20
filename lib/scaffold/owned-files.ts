@@ -52,6 +52,7 @@
  */
 
 import { createHash } from "crypto";
+import { PROJECT_STATE_OWNERSHIP } from "../project-state-derivation";
 
 import {
   BRIEF_CONSTRAINTS_SECTION,
@@ -89,6 +90,24 @@ export interface OwnedFile {
    * place the declaration is supposed to be the whole answer.
    */
   sections?: SectionSpec;
+  /**
+   * The binding that implements this row's strategy, when it is NOT
+   * `decideOwnedWrite` (#759).
+   *
+   * `decideOwnedWrite` is the one decider for files written through
+   * `regenerateOwned`, and for a while the table read as though it were the
+   * one decider for EVERY owned file. It is not: `.claude/rules/*.md` go
+   * through `decideRuleWrite` because a markdown file has no `//` comments,
+   * and the two workflow rows go through `writeManagedFile` because YAML
+   * jobs merge rather than replace.
+   *
+   * A row that names no `servedBy` is claiming `decideOwnedWrite` handles
+   * it, and `test/owned-strategy-reachability.test.ts` refuses that claim
+   * when the function has no branch for the strategy. Unset is therefore a
+   * claim, not an absence — which is the direction this has to be wrong in,
+   * because the silent version is what #759 is about.
+   */
+  servedBy?: string;
 }
 
 /**
@@ -112,12 +131,14 @@ export const OWNED_FILES: OwnedFile[] = [
   {
     path: ".github/workflows/ci.yml",
     strategy: "job-preserving",
+    servedBy: "writeManagedFile (lib/scaffold/steps.ts) via mergeManagedWorkflow — the harness owns named jobs, not the file",
     customize: "Set `ci` fields in `.claude/rungate/config.json`; add your own jobs alongside the generated `test` job",
     avoid: "Don't edit the generated `test` job",
   },
   {
     path: ".github/workflows/gates.yml",
     strategy: "job-preserving",
+    servedBy: "writeManagedFile (lib/scaffold/steps.ts) via mergeManagedWorkflow — the harness owns named jobs, not the file",
     customize: "Settings from `.claude/rungate/config.json`; add your own jobs alongside the generated `gates` job",
     avoid: "Don't edit the generated `gates` job",
   },
@@ -137,6 +158,7 @@ export const OWNED_FILES: OwnedFile[] = [
   {
     path: ".claude/rules/*.md",
     strategy: "provenance",
+    servedBy: "decideRuleWrite (lib/rule-provenance.ts) — a frontmatter `generated-sha:` key, because a markdown file has no line comments",
     customize: "Edit freely — a hand-edited rule is preserved and reported (#370)",
     avoid: "Don't expect edits to survive if you also delete the `generated-sha` marker",
   },
@@ -161,7 +183,10 @@ export const OWNED_FILES: OwnedFile[] = [
   {
     path: "PROJECT-STATE.md",
     strategy: "create-only",
-    customize: "DA-owned (#296) — generated from project-state.json by the DA",
+    // #781: whether this project GENERATES the file is a reading, not a
+    // constant — see lib/project-state-derivation.ts. This table has no
+    // root to scan, so it states only the part that is true everywhere.
+    customize: `${PROJECT_STATE_OWNERSHIP} — maintained by the DA; whether this project derives it from the state JSON is reported per project in .claude/rules/key-files.md`,
     avoid: "Don't edit directly; don't expect re-scaffold to update it",
   },
   {
@@ -230,33 +255,38 @@ export function bytesIdentical(existing: string | null, generated: string): bool
 }
 
 /**
- * The provenance marker for a file whose comment syntax is `//`.
+ * The provenance marker for one line-comment syntax.
  *
- * The frontmatter form in `lib/rule-provenance.ts` is the same idea and
- * cannot be reused verbatim: a TypeScript file has no `---` block. Both
- * stamp a digest of the body the generator wrote, so the next run can ask
- * "has anyone touched this since?" with nothing that can desync from the
- * tree it describes.
+ * A factory rather than a second copy, because `.github/workflows/*.yml`
+ * needs the same marker with `#` and the digest logic is the part that must
+ * not fork (#722). Two independent implementations of "has anyone touched
+ * this since" are two deciders answering one question, and a mutation of
+ * either leaves the other holding the case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
  */
-const MARKER = /^\/\/ generated-sha: ([0-9a-f]{16})\n/;
-
-export function commentBody(text: string): string {
-  return text.replace(MARKER, "");
+export function lineCommentProvenance(prefix: string) {
+  const marker = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&")} generated-sha: ([0-9a-f]{16})\\n`);
+  const body = (text: string): string => text.replace(marker, "");
+  const sha = (text: string): string =>
+    createHash("sha256").update(body(text)).digest("hex").slice(0, 16);
+  return {
+    body,
+    sha,
+    declared: (text: string): string | null => {
+      const m = marker.exec(text);
+      return m ? m[1] : null;
+    },
+    /** Idempotent: stamping an already-stamped document re-stamps the body. */
+    stamp: (generated: string): string => {
+      const b = body(generated);
+      return `${prefix} generated-sha: ${sha(b)}\n${b}`;
+    },
+  };
 }
 
-export function commentSha(text: string): string {
-  return createHash("sha256").update(commentBody(text)).digest("hex").slice(0, 16);
-}
 
-export function declaredCommentSha(text: string): string | null {
-  const m = MARKER.exec(text);
-  return m ? m[1] : null;
-}
 
-export function stampComment(generated: string): string {
-  const body = commentBody(generated);
-  return `// generated-sha: ${commentSha(body)}\n${body}`;
-}
+
 
 export interface WriteDecision {
   action: "create" | "unchanged" | "changed" | "preserve" | "refuse";
@@ -285,17 +315,54 @@ export interface WriteDecision {
  * never reports a hand-edit, because there is no edit to report — the
  * content was never the harness's.
  */
+/**
+ * The strategies `decideOwnedWrite` actually has a branch for.
+ *
+ * Declared once and asserted against the branches by
+ * `test/owned-strategy-reachability.test.ts`, so a strategy cannot be added
+ * to the union, declared on a row, and left with no code behind it.
+ */
+export const DECIDED_HERE: readonly WriteStrategy[] = [
+  "regenerate",
+  "create-only",
+  "section-preserving",
+];
+
 export function decideOwnedWrite(
   strategy: WriteStrategy,
   existing: string | null,
   generated: string,
   sections: SectionSpec = HARD_CONSTRAINTS_SECTION,
 ): WriteDecision {
+  // Refuse a strategy this function does not implement, BEFORE anything
+  // else looks at the file (#759).
+  //
+  // `job-preserving` and `provenance` are served elsewhere — `servedBy` on
+  // their rows says where — and neither has a branch below. Until this
+  // throw they fell through to the regenerate tail, so a caller that let
+  // `ownedStrategy()` supply the default for `.github/workflows/ci.yml`
+  // would have replaced a consumer's whole file, every job in it, and
+  // reported `CHANGED: regenerated output differs`. Nothing does that
+  // today; `regenerateOwned` defaults to exactly that expression, so it is
+  // one forgotten argument away.
+  //
+  // A dead branch and a silently wrong one look identical in a green suite.
+  // This is the loud version.
+  if (!DECIDED_HERE.includes(strategy)) {
+    const row = OWNED_FILES.find(f => f.strategy === strategy);
+    throw new Error(
+      `decideOwnedWrite does not implement the '${strategy}' strategy. ` +
+        (row?.servedBy
+          ? `It is served by ${row.servedBy}. Route this write there, or pass a strategy this function implements.`
+          : `No OWNED_FILES row says what serves it, which means nothing does.`),
+    );
+  }
+
   if (existing === null) {
     return {
       action: "create",
       reason: "no such file",
-      content: strategy === "provenance" ? stampComment(generated) : generated,
+      content: generated,
     };
   }
 
@@ -328,21 +395,6 @@ export function decideOwnedWrite(
           : `regenerated output differs; ${merged.preserved.lines.length} line(s) of user-owned content carried forward`,
       content: merged.content,
     };
-  }
-
-  if (strategy === "provenance") {
-    const stamped = stampComment(generated);
-    if (bytesIdentical(existing, stamped)) {
-      return { action: "unchanged", reason: "identical to generator output" };
-    }
-    const declared = declaredCommentSha(existing);
-    if (declared === null) {
-      return { action: "preserve", reason: "hand-authored — no harness provenance marker" };
-    }
-    if (declared !== commentSha(existing)) {
-      return { action: "preserve", reason: "hand-edited since the harness wrote it" };
-    }
-    return { action: "changed", reason: "harness-written and untouched since", content: stamped };
   }
 
   if (bytesIdentical(existing, generated)) {

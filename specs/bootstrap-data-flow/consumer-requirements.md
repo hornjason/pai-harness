@@ -55,16 +55,18 @@ This replaces the previous 14-day/50-commit heuristic. One changed route file tr
 
 The scan paths (`src/ lib/ gates/ hooks/`) are the same directories CODE-MAP scans for routes, components, and modules. Changes outside these paths (docs, specs, reference) don't affect CODE-MAP.
 
-### rungate.json
+### .claude/rungate/config.json
 
 Produced by: `scripts/scaffold-project.ts` → `generateOrAuditProjectHarness()`
 Read by: AGENTS.md, agents/*.md, ship.js, prove.js, verify.js, gates, CI workflows
 
 **Ownership: Hybrid (field-level merge).** Auto-detected fields are regenerated from scan on every re-scaffold. Manual fields are preserved — never overwritten. New fields added as null.
 
+The scaffold writes the **directory** layout — `config.json`, `roles.json`, `hooks.json`, `compliance.json` under `.claude/rungate/`. A pre-ADR-001 monolith is still read as a fallback and split into the directory form on the next scaffold; `resolveConfig` in `lib/config-loader.ts` is the only reader that decides between them, and `.claude/rules/config-access.md` is the rule. Do not construct either path anywhere else.
+
 **Re-scaffold behavior:**
 ```
-1. Read existing rungate.json
+1. Read existing .claude/rungate/config.json
 2. Re-scan code (CODE-MAP, Makefile, package.json, git remote)
 3. Auto-detected fields → OVERWRITE with fresh scan data
 4. Manual fields → PRESERVE existing value
@@ -117,17 +119,17 @@ Read by: All agents (explicitly — "Read AGENTS.md first"), copilot-instruction
 |---------|--------|---------|-----------|
 | Project Identity | README.md first paragraph (skip frontmatter + HTML) | Agent knows what the project is | Never — always present |
 | Hard Constraints | Preserved from existing AGENTS.md + extract-constraints | Rules agents can't discover from code | Empty placeholder on new project |
-| Commands | rungate.json testCmd + Makefile targets + CLI commands | Agent knows how to build/test/deploy/create files | Never — at minimum has "bun test" |
+| Commands | .claude/rungate/config.json testCmd + Makefile targets + CLI commands | Agent knows how to build/test/deploy/create files | Never — at minimum has "bun test" |
 | Where to Create Things | Static table (from File Location Contract) | Agent knows correct location for every file type | Never |
-| Harness-Managed Files | Static table (from File Ownership Model) | Agent knows what NOT to edit + how to customize | Never |
-| Available MCP Servers | rungate.json mcp field | Agent knows what tools are available | No MCP servers configured |
+| Harness-Managed Files | Not in AGENTS.md — generated into `.claude/rules/harness-managed.md` from `OWNED_FILES` | Agent knows the ownership strategy per file and how to customize | Never |
+| Available MCP Servers | .claude/rungate/config.json mcp field | Agent knows what tools are available | No MCP servers configured |
 | Project Structure | Directory scan | Agent knows where to put code | Never — at minimum has src/ |
 | Code Style | Detected: runtime (Bun/Node), language (TS/JS), module system (ESM/CJS) | Agent follows conventions | Never |
 | Documentation Routing | docs/ scan (top 10 by relevance priority) + CODE-MAP first | Agent finds the right doc fast | No docs/ dir |
 | Specs | specs/ frontmatter scan | Agent knows governing specs | No specs |
-| Environment | rungate.json dev/prod sections | Agent knows ports, commands | All values null |
-| Pages | rungate.json pages map | Agent knows URL paths | No pages detected |
-| Consumers | rungate.json consumers | Agent knows cascade impact | No consumers detected |
+| Environment | .claude/rungate/config.json dev/prod sections | Agent knows ports, commands | All values null |
+| Pages | .claude/rungate/config.json pages map | Agent knows URL paths | No pages detected |
+| Consumers | .claude/rungate/config.json consumers | Agent knows cascade impact | No consumers detected |
 | Boundaries | Static (never rebuild, never commit creds) | What agents must not do | Never |
 | Workflow | git remote + Makefile targets | Agent knows how to ship | No git remote |
 | Reference Files | reference/ scan | Historical docs index | reference/ empty |
@@ -137,7 +139,7 @@ Read by: All agents (explicitly — "Read AGENTS.md first"), copilot-instruction
 Produced by: `scripts/scaffold-project.ts` → `generateAgentBriefs()`
 Read by: Claude Code (auto-loaded as system prompt when agent is spawned via subagent_type)
 
-| Agent | Config from rungate.json | Layer 1 templates embedded | Purpose |
+| Agent | Config from .claude/rungate/config.json | Layer 1 templates embedded | Purpose |
 |-------|-------------------------|---------------------------|---------|
 | marcus.md | Source dirs, consumers, test commands, fallow step, envVars | RCA protocol, blast radius checklist, regression prevention, read-before-write protocol, prevention-oriented fix, evidence hierarchy | Implementation: code, tests, evidence |
 | quinn.md | Pages map, dev/test ports, viewport, components | Quinn journey decision tree, evidence hierarchy | QA: typed journey testing, a11y-first assertions |
@@ -145,7 +147,7 @@ Read by: Claude Code (auto-loaded as system prompt when agent is spawned via sub
 | serena.md | ADR location (docs/adr/), specs location (specs/), module boundaries from CODE-MAP | Evidence hierarchy | Architecture: ADR review, cross-boundary analysis |
 | aditi.md | Component paths from CODE-MAP, pages map | Evidence hierarchy | Design: component specs, a11y requirements |
 
-These briefs are ALWAYS regenerated on re-scaffold — they're harness-owned templates, not user-customized. Config values come from rungate.json. Layer 1 methodology templates come from the harness `prompts/` directory. Null config values shown as "not configured — edit .claude/rungate.json."
+These briefs are `section-preserving` since #655: everything but `## Project Constraints` is regenerated on re-scaffold, and that one section carries forward verbatim. Config values come from `.claude/rungate/config.json` and `.claude/rungate/roles.json`. Layer 1 methodology templates come from the harness `prompts/` directory. Null config values shown as "not configured — edit `.claude/rungate/config.json`."
 
 ### Cross-Tool Bridge
 
@@ -169,11 +171,11 @@ AGENTS.md is the single source of truth for all AI tools working on this project
 ### CI/CD Workflows
 
 Produced by: Harness-owned templates in Phase 0
-Ownership: **Harness-owned** — always regenerated. Customizable settings come from rungate.json, not from editing the workflow file.
+Ownership: **`job-preserving`** — the harness owns the generated `test` and `gates` jobs and rewrites them on every re-scaffold; jobs you add alongside them are carried forward. Customizable settings come from `.claude/rungate/config.json`, not from editing the generated job.
 
 The harness provides two workflow files that enforce gates in the CI pipeline. Local gates can be skipped (agent ignores WARN, user bypasses). CI gates can't — they block merge mechanically.
 
-#### rungate.json CI config
+#### .claude/rungate/config.json CI config
 
 ```json
 {
@@ -195,12 +197,10 @@ All fields optional — defaults used when null.
 
 #### `.github/workflows/ci.yml` (Phase 0.15)
 
-Runs on every PR and push to configured branches. Always regenerated from template + rungate.json config.
+Runs on every PR and push to configured branches. The generated `test` job is rewritten from template + `.claude/rungate/config.json` on every re-scaffold; jobs you add to the same file are carried forward.
 
 ```yaml
-# Managed by rungate — do not edit manually.
-# Customize runner/version in .claude/rungate.json under "ci".
-# For additional CI steps, create a separate workflow file.
+# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 
 name: CI
 on:
@@ -231,12 +231,10 @@ jobs:
 
 #### `.github/workflows/gates.yml` (Phase 0.16)
 
-Runs on PRs only. Always regenerated from template + rungate.json config.
+Runs on PRs only. The generated `gates` job is rewritten from template + `.claude/rungate/config.json` on every re-scaffold; jobs you add to the same file are carried forward.
 
 ```yaml
-# Managed by rungate — do not edit manually.
-# Customize runner/version in .claude/rungate.json under "ci".
-# For additional gate checks, create a separate workflow file.
+# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 
 name: Harness Gates
 on:
@@ -272,10 +270,10 @@ jobs:
 | Scenario | What happens |
 |----------|-------------|
 | File doesn't exist | Created from template |
-| File exists | **Regenerated** — harness owns these files |
-| User wants different runner | Set `ci.runner` in rungate.json — picked up on next scaffold |
-| User wants custom CI steps | Create a separate workflow file (e.g., `deploy.yml`) — harness never touches it |
-| Harness adds new gate checks | Next re-scaffold regenerates workflows with new steps |
+| File exists | The generated `test` / `gates` job is **rewritten**; your own jobs in the same file are preserved |
+| User wants different runner | Set `ci.runner` in `.claude/rungate/config.json` — picked up on next scaffold |
+| User wants custom CI steps | Add a job alongside the generated one, or create a separate workflow file (e.g., `deploy.yml`) — the harness never touches user-created workflow files |
+| Harness adds new gate checks | Next re-scaffold rewrites the generated jobs with new steps |
 | Branch protection setup | User configures in GitHub settings — harness doesn't touch |
 
 #### What the harness does NOT create
@@ -291,7 +289,7 @@ These are out of scope for the harness. The harness provides the quality gates. 
 
 ### Prompt Templates (`prompts/`)
 
-All prompt templates live in the **harness repo** (`prompts/`), not in projects. The brief-assembler reads templates, fills them with project config (from rungate.json) and issue data (from workflow-state.json), and generates complete briefs at ship time.
+All prompt templates live in the **harness repo** (`prompts/`), not in projects. The brief-assembler reads templates, fills them with project config (from .claude/rungate/config.json) and issue data (from workflow-state.json), and generates complete briefs at ship time.
 
 #### Ship workflow prompts (per-issue, filled at ship time)
 
@@ -339,7 +337,7 @@ These are the research-derived templates that get embedded into per-agent briefs
 
 1. Templates ship with the harness npm package
 2. Projects get them via `bun install` (devDependency)
-3. Brief-assembler reads templates + rungate.json + issue ACs → generates filled briefs
+3. Brief-assembler reads templates + .claude/rungate/config.json + issue ACs → generates filled briefs
 4. Template improvements in harness → projects get them on next `bun install`
 5. No project-level prompts/ directory needed — everything comes from the harness
 
@@ -353,18 +351,18 @@ Every project integrated with the harness has these files. On new projects, scaf
 |------|-----------|-------------------|---------|
 | `AGENTS.md` | Phase 2.1 | Refreshed (HC preserved) | Cross-tool agent context (<150 lines) |
 | `CODE-MAP.md` | Phase 1.1 | Refreshed if src/ changed (git SHA) | Code structure scan |
-| `.claude/rungate.json` | Phase 1.2 | Audited (gaps reported) | Project config (ports, commands, pages) |
-| `.claude/agents/marcus.md` | Phase 2.2 | Always regenerated | Engineer brief — source dirs, test cmds, consumers |
-| `.claude/agents/quinn.md` | Phase 2.2 | Always regenerated | QA brief — ports, pages, viewport, methodology ref |
-| `.claude/agents/rook.md` | Phase 2.2 | Always regenerated | Security brief — scan targets, security baseline |
-| `.claude/agents/serena.md` | Phase 2.2 | Always regenerated | Architect brief — ADR location, module boundaries |
-| `.claude/agents/aditi.md` | Phase 2.2 | Always regenerated | Designer brief — component paths, design system |
+| `.claude/rungate/` | Phase 1.2 | Audited (gaps reported) | Project config directory: `config.json`, `roles.json`, `hooks.json`, `compliance.json` |
+| `.claude/agents/marcus.md` | Phase 2.2 | Rewritten except `## Project Constraints` | Engineer brief — source dirs, test cmds, consumers |
+| `.claude/agents/quinn.md` | Phase 2.2 | Rewritten except `## Project Constraints` | QA brief — ports, pages, viewport, methodology ref |
+| `.claude/agents/rook.md` | Phase 2.2 | Rewritten except `## Project Constraints` | Security brief — scan targets, security baseline |
+| `.claude/agents/serena.md` | Phase 2.2 | Rewritten except `## Project Constraints` | Architect brief — ADR location, module boundaries |
+| `.claude/agents/aditi.md` | Phase 2.2 | Rewritten except `## Project Constraints` | Designer brief — component paths, design system |
 | `package.json` | Phase 0.18 | Required fields added if missing | name, type:module, scripts.test, devDep |
 | `tsconfig.json` | Phase 0.19 | Created if missing when the project has TypeScript source; NEVER overwritten (#72) | strict:true, target/module:ESNext, moduleResolution:bundler, include = source dirs holding .ts |
 | `.gitignore` | Phase 0.11 | Verified, missing entries appended | node_modules, dist, .env*, .rungate, secrets |
 | `.github/copilot-instructions.md` | Phase 0.14 | Skip if exists | Tool-bridge: points Copilot to AGENTS.md |
-| `.github/workflows/ci.yml` | Phase 0.15 | Always regenerated (harness-owned) | CI pipeline: bun test + typecheck on PR/push |
-| `.github/workflows/gates.yml` | Phase 0.16 | Always regenerated (harness-owned) | Gate enforcement: secret scan + conformity + spec drift |
+| `.github/workflows/ci.yml` | Phase 0.15 | Generated `test` job rewritten; your jobs preserved | CI pipeline: bun test + typecheck on PR/push |
+| `.github/workflows/gates.yml` | Phase 0.16 | Generated `gates` job rewritten; your jobs preserved | Gate enforcement: secret scan + conformity + spec drift |
 | `test/scaffold-conformity.test.ts` | Phase 0.13 | Always regenerated | Conformity + hygiene + drift tests (harness-owned) |
 | `specs/SPEC-TEMPLATE.md` | Phase 0.12 | Updated to latest | Template for creating new specs |
 | `CLAUDE.md` (bridge) | Phase 0.17 | Add @AGENTS.md if missing | Claude Code reads this → imports AGENTS.md |
@@ -431,19 +429,30 @@ SCs must follow parseable patterns (see template for examples).
 
 ## Harness-Managed Files
 
-These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**
+Some files in a consumer project are written by the scaffold, and **"managed"
+means something different for each of them**. Five strategies are in use —
+`regenerate`, `job-preserving`, `section-preserving`, `provenance` and
+`create-only` — so a single "do not edit them directly" is wrong about most of
+the set. That blanket claim lived here until #740.
 
-| File | How to customize | What NOT to do |
-|------|-----------------|----------------|
-| `.github/workflows/ci.yml` | Set `ci.runner`, `ci.bunVersion`, `ci.branches` in `.claude/rungate.json` | Don't edit the YAML — it regenerates |
-| `.github/workflows/gates.yml` | Settings from `.claude/rungate.json` `ci` section | Don't edit the YAML — it regenerates |
-| `.claude/agents/*.md` | Settings from `.claude/rungate.json` (ports, pages, consumers) | Don't edit briefs — they regenerate |
-| `test/scaffold-conformity.test.ts` | Runs automatically — no config needed | Don't edit — it regenerates |
-| `CODE-MAP.md` | Auto-generated from code scan | Don't edit — it regenerates |
+**`.claude/rules/harness-managed.md` is the source of truth.** It ships into
+every consumer project, its table is generated by `ownedFilesTable()` from the
+`OWNED_FILES` declaration in `lib/scaffold/owned-files.ts`, and
+`test/scaffold-ownership.test.ts` reconciles the shipped file against the
+declaration in both directions — so a row there cannot describe behaviour the
+code does not have (#208, #216).
 
-**To add custom CI steps:** Create a separate workflow file (e.g., `.github/workflows/deploy.yml`). The harness never touches user-created workflow files.
+This spec deliberately does not copy that table. A hand-maintained snapshot of
+a generated table is a second answer to a question that already has one, and
+nothing can tell the two apart when they drift. `test/consumer-requirements-ownership.test.ts`
+holds the population of copies in this document at zero.
 
-**To change project config:** Edit `.claude/rungate.json` then re-scaffold. Changes flow into agent briefs, AGENTS.md, and CI workflows.
+**To add custom CI steps:** add your own job to the generated workflow
+alongside the harness's `test` / `gates` job, or create a separate workflow
+file (e.g., `.github/workflows/deploy.yml`). The harness never touches
+user-created workflow files, and it rewrites only the job it generated.
+
+**To change project config:** Edit `.claude/rungate/config.json` then re-scaffold. Changes flow into agent briefs, AGENTS.md, and CI workflows.
 
 ## Where to Create Things
 
@@ -456,7 +465,7 @@ Everything must be self-contained in the repo. No global installs.
 | A git pre-commit hook | `package.json` scripts or `.husky/pre-commit` | Not ~/.gitconfig or global hooks |
 | A git pre-push hook | `package.json` scripts or `.husky/pre-push` | Not ~/.gitconfig or global hooks |
 | A project script | `scripts/my-script.ts` | Not root, not src/ |
-| A custom CI workflow | `.github/workflows/my-workflow.yml` | Don't edit ci.yml or gates.yml |
+| A custom CI workflow | `.github/workflows/my-workflow.yml`, or a new job in the generated file | Not inside the generated `test` / `gates` job |
 | A Claude Code hook | `.claude/settings.json` in the repo | Not global Claude settings |
 | Documentation | `docs/my-doc.md` | Not root (HYGIENE-7 enforces) |
 | Test files | `test/my-test.test.ts` | Not src/ |
@@ -473,13 +482,13 @@ Every file type has ONE correct location. Agents and developers follow this cont
 | Documentation | `docs/*.md` | NOT root (except AGENTS.md, CODE-MAP.md, README.md, CLAUDE.md, CONTRIBUTING.md, ARCHITECTURE.md, PRINCIPLES.md) | HYGIENE-7: FAIL |
 | Archived docs | `reference/` | NOT docs/ (moved when stale) | Staleness audit |
 | Agent briefs | `.claude/agents/*.md` | NOT root, NOT docs/ | Agent validation |
-| Project config | `.claude/rungate.json` | NOT root | Schema check |
+| Project config | `.claude/rungate/config.json` | NOT root, NOT `.claude/` directly | Schema check |
 | Test files | `test/*.test.ts` | NOT src/ | Convention |
 | Source code | `src/` | NOT root | Convention |
 | Harness hooks/prompts | In harness (npm package) | NOT in project repo | Self-containment |
 | Project git hooks | `package.json` scripts or `.husky/` | NOT global (~/.git/hooks) | Must be in-repo |
 | Project scripts | `scripts/` | NOT root, NOT src/ | Convention |
-| CI/CD workflows (harness) | `.github/workflows/ci.yml`, `gates.yml` | Don't edit — harness-owned | Regenerated |
+| CI/CD workflows (harness) | `.github/workflows/ci.yml`, `gates.yml` | Not inside the generated `test` / `gates` job | `job-preserving` (see `.claude/rules/harness-managed.md`) |
 | CI/CD workflows (project) | `.github/workflows/*.yml` (user-created) | NOT outside .github/workflows/ | Convention |
 | Claude Code hooks | `.claude/settings.json` | NOT global settings | In-repo for portability |
 

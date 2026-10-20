@@ -114,4 +114,11 @@ if (fix) {
 // ── Report ─────────────────────────────────────────────────────
 
 // A refusal that only prints is one nobody's CI notices (#216).
-if (reportScaffoldActions(actions) > 0) process.exit(1);
+//
+// `!fix` is the mode, read from the same flag the branch above dispatches on
+// rather than from a second variable that could disagree with it (#642). The
+// notice at the top of the run is not enough on its own: a report line is
+// what a grep, a `| tail`, a scrolled terminal and an agent reading the last
+// N lines of a tool result each receive, and without this every one of them
+// was byte-identical to the line a run that really wrote the file prints.
+if (reportScaffoldActions(actions, { rehearsed: !fix }) > 0) process.exit(1);

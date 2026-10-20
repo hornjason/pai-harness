@@ -5,7 +5,12 @@
  * Usage:
  *   bun scripts/create-sc.ts --pattern file-exists --params '{"file":"AGENTS.md"}'
  *   bun scripts/create-sc.ts --pattern file-exists --params '{"file":"AGENTS.md"}' --spec specs/MY-SPEC.md
+ *   bun scripts/create-sc.ts --pattern file-exists --params '{...}' --spec specs/X.md --owner '#725'
  *   bun scripts/create-sc.ts --list
+ *
+ * `--owner` names the entry in `specs/sc-reservations.json` to allocate from.
+ * It defaults to this checkout's branch. An owner holding no block allocates
+ * above every block in the store, which is the safe direction.
  *
  * Thin CLI consumer — all logic lives in lib/create-sc.ts.
  */
@@ -18,6 +23,7 @@ import {
 } from "../lib/create-sc";
 import { readScRegistry } from "./sync-sc-status";
 import { describeReading } from "../lib/sc-id-cross-tree";
+import { currentScOwner } from "../lib/sc-reservations";
 import { join } from "path";
 
 /** Same resolution sync-sc-status uses, so both halves read one tree. */
@@ -91,7 +97,20 @@ try {
     //
     // All three widths compose inside `allocateScNumber`, so this CLI cannot
     // assemble two of them and believe it asked.
-    const { number: scNumber, namespace } = allocateScNumber(ROOT, content, readScRegistry());
+    //
+    // And a FOURTH, which none of the first three can be (#725): every one of
+    // them reads ids that are already written down somewhere, and the four
+    // collisions of 2026-10-19 were ids that had been decided on and not yet
+    // typed. `specs/sc-reservations.json` is where a session declares a block
+    // before consuming it; the owner is this checkout's branch, so a session
+    // that reserved one is handed an id out of it and a session that did not
+    // is handed one above every block in the store.
+    //
+    // `--owner` overrides the branch for the case the store is keyed by issue
+    // rather than by branch. An owner matching no block is not an error: it
+    // is the no-block path, which is the safe one.
+    const owner = getFlag("owner") ?? currentScOwner(ROOT);
+    const { number: scNumber, namespace } = allocateScNumber(ROOT, content, readScRegistry(), { owner });
     const scLine = formatSCLine(scNumber, statement);
 
     // Append SC line to the end of the file
@@ -103,6 +122,7 @@ try {
     // allocator that printed only the number would be claiming a guarantee it
     // cannot give (`.claude/rules/config-access.md`).
     console.log(`  namespace: ${describeReading(namespace)}`);
+    console.log(`  owner: ${owner ?? "(none — allocated above every reserved block)"}`);
     for (const gap of namespace.unmeasured) console.log(`  UNMEASURED: ${gap}`);
   } else {
     // Output to stdout for piping

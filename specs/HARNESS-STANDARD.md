@@ -6239,31 +6239,49 @@ and what catches it is SC-1564, which reads the prompt text. The three
 dispatch cases survive it non-vacuously: their refusal is raised before any
 commit is attempted, so a run with no prompt guard left still fails SC-2090.
 
-- [ ] SC-2084: test/wave-integration.test.ts contains [all four committed-by-branch cells are separate outcomes] — exactly one cell succeeds, both disagreeing cells name the branch AND the run ref, and the pair that differs only in `committed` while reporting the same branch says different things
-- [ ] SC-2085: test/wave-integration.test.ts contains [committed true onto another ref names both, and does not claim the commit failed] — a commit DID happen in this cell, so asserting the absence of "did not report success" is what stops the repair of appending the generic sentence to every failure
-- [ ] SC-2086: test/wave-integration.test.ts contains [committed false naming main names main and the run ref] — the reply `wf_9bb6f96d-200` recorded, with the regression stated as the exact string the two dead runs carried
-- [ ] SC-2087: test/wave-integration.test.ts contains [committed false on the run ref reports the commit, and invents no branch] — the cell with nothing to disagree about, so the branch clause cannot become unconditional
-- [ ] SC-2088: test/wave-integration.test.ts contains [committed false with no branch at all names no branch] — nothing about a branch AT ALL, not merely no branch name: an empty clause names nothing and would pass a `not.toContain`
-- [ ] SC-2089: test/wave-integration.test.ts contains [the shared checkout is re-read before each wave after the first] — ordered against the spawn clock, because a count alone is satisfied by a read taken after the wave had already started, and carrying the single-wave control that must read nothing
-- [ ] SC-2090: test/wave-integration.test.ts contains [a checkout that moved off the run ref refuses, and that wave spawns nothing] — the refusal text comes from the real decider and the spawn list for the refused wave is asserted EMPTY
-- [ ] SC-2091: test/wave-integration.test.ts contains [a re-established ref is the one the next wave commits onto] — the fixture gives the second reading a DIFFERENT ref name on purpose, because `runRefName` is deterministic and a re-read returning the same string is indistinguishable from the `let runRef` #420 sets once
+- [x] SC-2084: test/wave-integration.test.ts contains [all four committed-by-branch cells are separate outcomes] — exactly one cell succeeds, both disagreeing cells name the branch AND the run ref, and the pair that differs only in `committed` while reporting the same branch says different things
+- [x] SC-2085: test/wave-integration.test.ts contains [committed true onto another ref names both, and does not claim the commit failed] — a commit DID happen in this cell, so asserting the absence of "did not report success" is what stops the repair of appending the generic sentence to every failure
+- [x] SC-2086: test/wave-integration.test.ts contains [committed false naming main names main and the run ref] — the reply `wf_9bb6f96d-200` recorded, with the regression stated as the exact string the two dead runs carried
+- [x] SC-2087: test/wave-integration.test.ts contains [committed false on the run ref reports the commit, and invents no branch] — the cell with nothing to disagree about, so the branch clause cannot become unconditional
+- [x] SC-2088: test/wave-integration.test.ts contains [committed false with no branch at all names no branch] — nothing about a branch AT ALL, not merely no branch name: an empty clause names nothing and would pass a `not.toContain`
+- [x] SC-2089: test/wave-integration.test.ts contains [the shared checkout is re-read before each wave after the first] — ordered against the spawn clock, because a count alone is satisfied by a read taken after the wave had already started, and carrying the single-wave control that must read nothing
+- [x] SC-2090: test/wave-integration.test.ts contains [a checkout that moved off the run ref refuses, and that wave spawns nothing] — the refusal text comes from the real decider and the spawn list for the refused wave is asserted EMPTY
+- [x] SC-2091: test/wave-integration.test.ts contains [a re-established ref is the one the next wave commits onto] — the fixture gives the second reading a DIFFERENT ref name on purpose, because `runRefName` is deterministic and a re-read returning the same string is indistinguishable from the `let runRef` #420 sets once
 
 ### What was broken to prove it (SC-2084..SC-2091)
 
 Measured over `test/wave-integration.test.ts` — 22 tests. Every count
 predicted before the battery ran.
 
-The battery was run on a `git archive` export of this branch's HEAD under
-`/tmp`, carrying this sub-issue's test file plus the intended
-`workflows/ship.js` change. **This sub-issue's file scope is the test file and
-this spec**; `workflows/ship.js` belongs beside it and the repository was
-never modified to take these numbers. Re-run them against the tree once the
-implementation lands.
+The battery was first run on a `git archive` export of a branch HEAD under
+`/tmp`, carrying the sub-issue's test file plus the intended
+`workflows/ship.js` change, because that sub-issue's file scope was the test
+file and this spec. A row measured on a tree nobody can check out is a claim
+rather than a count, so this paragraph used to end *"re-run them against the
+tree once the implementation lands."*
+
+**#653 did, and all ten reproduce — same counts and the same named
+criteria.** Nothing is carried over. `Predicted` below is therefore the
+earlier measurement, written down before the re-run as the thing being
+tested; the finding would have been a row that MOVED.
+
+Two of the ten needed their mutation re-cut before they were faithful, and
+that is recorded rather than quietly fixed, because a prose description of a
+mutant is not a mutant:
+
+- **the pre-#652 row** is the whole pre-#652 tree, which lacks the pre-wave
+  re-read as well as the reordered arm. Mutating only `waveCommitFailure` is
+  3 of 22, not 6 — the three dispatch criteria stay green, because nothing
+  touched the thing they measure.
+- **the composed-message row** must leave the `!landedOn` early return INSIDE
+  the committed-false arm. Hoisted ahead of both arms it also intercepts
+  `{committed: true, branch: ""}`, which SC-1565 owns, and the row reads 3
+  with an extra red that is about the mutant rather than about the subject.
 
 | Row | Predicted | Measured |
 |---|---|---|
 | **baseline** — the intended implementation | 22 pass, 0 fail | **22 pass, 0 fail** |
-| the genuinely pre-#652 `workflows/ship.js`, from this branch's HEAD | 6 | **6 of 22** |
+| the genuinely pre-#652 `workflows/ship.js` — the whole pre-#652 tree | 6 | **6 of 22** — SC-2084, SC-2086, SC-2087, SC-2089, SC-2090, SC-2091 |
 | the `committed` arm returns the bare generic sentence again — the defect verbatim | 3 | **3 of 22** — SC-2084, SC-2086, SC-2087 |
 | the clause naming the ref dropped from the cell whose branch AGREES | 1 | **1 of 22** — SC-2087, and only that one |
 | the branch clause appended unconditionally, including where no branch was reported | 1 | **1 of 22** — SC-2088 |
@@ -6273,6 +6291,21 @@ implementation lands.
 | the re-read taken and `runRef` not written back | 1 | **1 of 22** — SC-2091 |
 | the drift observed and logged, and the wave spawns anyway | 1 | **1 of 22** — SC-2090 |
 | the re-read moved BELOW the wave's spawns | 2 | **2 of 22** — SC-2089 and SC-2090 |
+| **the cheapest wrong fix** (#653 AC-6): the branch appended to the existing generic string WITHOUT moving the committed check | 4 | **4 of 22** — SC-2088, SC-2089, SC-2090, SC-2091 |
+
+**The last row is the one to read, and its GREENS are the finding.**
+Appending the branch and the run ref to the generic sentence leaves the check
+where it was, and it makes the reported symptom go away: the dead run's
+`{committed:false, branch:"main"}` now names `main`. SC-2084, SC-2086 and
+SC-2087 are **green over it** — the three cells that only ask whether the
+branch is NAMED are satisfied by a repair that names it while distinguishing
+nothing. SC-2088 alone catches it, because an empty branch renders as
+`(branch , run ref …)` and SC-2088 demands nothing about a branch AT ALL
+rather than merely no branch name. It was written as the
+unconditional-clause control, and it is the whole protection against the
+cheap repair — which is `.claude/rules/checks-must-be-able-to-fail.md`'s
+fifth shape, found by applying the wrong fix and counting rather than by
+naming it in prose.
 
 Before believing any of those, the input on which mutant and original differ,
 named and run rather than assumed. The six commit-reply cells, driven against
@@ -7059,6 +7092,117 @@ anchor occurring once was reported as 32 and as 3. A mutation harness that
 mis-reports its own reach is exactly the decorative check this rule is about,
 and it is recorded here because the fix — count occurrences, not lines — is
 not obvious from output that reads like a moved anchor.
+
+### #728 — the hook asked `--show-toplevel` where the dependencies are
+
+`--show-toplevel` answers *"where is this working tree"*. The hook needed
+*"where are this repository's installed dependencies"*, and in a **linked
+worktree** those are two different directories: `node_modules` is gitignored,
+so it exists only in the main checkout and a worktree has none. `ln -s` does
+not look at its target, so the link succeeded, the temp checkout got a
+dangling `node_modules`, and the suite died with
+`Cannot find module 'rungate/lib/conformity'`. Every worktree push was
+refused as UNMEASURED. **The refusal was correct and its wording is
+unchanged** — what it could not say is that the cause was the worktree, so
+the cheapest available action was `--no-verify`, and three agent sessions in
+`agentgrit` took it on 2026-10-19.
+
+The same wrong root made the lockfile arm vacuous. `cmp "$TOPLEVEL/bun.lock"
+"$tmp/bun.lock"` compares the pushing worktree's working-tree lockfile with
+the pushed commit's copy of it, and those are the same file whenever you push
+what you committed. The arm exists to check that the modules being linked
+were installed from the pushed lockfile, so it has to read the lockfile
+**beside those modules**. (It is vacuous in the normal case rather than
+unable to fail: an uncommitted lockfile edit, or pushing an older commit,
+still makes them differ.)
+
+`MODULES_ROOT=$(cd "$TOPLEVEL" && cd "$(git rev-parse --git-common-dir)/.."
+&& pwd)` is the main checkout from any worktree and plain `.git` in the main
+checkout itself, so the non-worktree case is unchanged — asserted, not
+assumed, by a control case that pushes the same fixture from its primary
+checkout. `preCommitHookScript` in `lib/scaffold/steps.ts` already distinguished the
+two for the pre-commit hook; the pre-push hook was the last generated hook still asking
+the wrong question.
+
+An absent `$MODULES_ROOT/node_modules` is now refused **by name** rather than
+linked anyway, because a dangling link turns a statement about a missing
+directory into an import error that names no cause. One shell function,
+`link_modules`, is the only site that links, so there is one binding to
+mutate.
+
+The criteria below need ids allocating against the spec registry; they are
+described by their test names in `test/pre-push-hook.test.ts`, under
+`#728: the hook links the MAIN checkout's dependencies, not the pushing
+worktree's`:
+
+1. A push from a linked worktree resolves its dependencies from the main
+   checkout and is allowed, driven against a planted main-checkout/worktree
+   pair whose conformity suite imports a package installed only in the main
+   checkout.
+2. The same push from the primary checkout is still allowed — the control
+   that the worktree case was not bought by breaking the case that worked.
+3. The lockfile the arm compares is the one beside the `node_modules` being
+   linked, witnessed by a fixture whose worktree lockfile matches the pushed
+   commit while the main checkout's differs.
+4. A `node_modules` absent from the main checkout is refused naming that
+   directory and the remedy, and is distinguishable in the hook's output from
+   an unexplained import error.
+5. `--git-common-dir` is asked exactly once, and no `$TOPLEVEL/node_modules`
+   or `$TOPLEVEL/bun.lock` remains.
+
+#### What was broken to prove it
+
+Run and counted over `test/pre-push-hook.test.ts`,
+`test/unit/pre-push-pushed-sha.test.ts` and
+`test/unit/generated-shell-syntax.test.ts` (37 tests). **Every count was
+predicted before the battery ran, and the baseline row was read before any
+mutation row** — an instrument that has stopped reporting takes the baseline
+down with it, and that is the row nobody checks. None of the mutations is
+left in the tree; all were run and reverted, and both files were confirmed
+byte-identical to the measured source afterwards by checksum.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 37 pass, 0 fail | **37 pass, 0 fail** |
+| `MODULES_ROOT` restored to `$TOPLEVEL`, absent-target guard KEPT — the pre-#728 root, and the cheapest wrong fix | 6 | **6 of 37** |
+| the absent-target guard removed (`if false`) — the link dangles again | 2 | **2 of 37** |
+| the genuinely pre-#728 `lib/scaffold/pre-push-hook.ts`, from this branch's merge-base | 7 | **7 of 37** |
+| the fixture's `addWorktree` neutered to return the main checkout | 2 | **2 of 27** |
+
+Before believing any of those, the input on which mutant and original
+differ, named and run rather than assumed: the `wt-dep` fixture — a main
+checkout holding `node_modules/dep-under-test`, a linked worktree holding
+none, and a conformity suite that imports it. The real source prints
+`1 pass / 0 fail` and exits 0; `MODULES_ROOT=$TOPLEVEL` prints
+`no node_modules at <worktree>/node_modules — run bun install there` and
+exits 1; the pre-#728 source prints
+`Cannot find package 'dep-under-test'` and exits 1. For the lockfile row the
+input is `wt-lock`: the worktree and the pushed commit both carry
+`committed lockfile` while the main checkout carries
+`the lockfile the modules came from`, and only the fixed source reaches
+`dependencies differ from the working tree`.
+
+**The cheapest wrong fix, named: check the link target exists and skip the
+symlink, leaving `--show-toplevel` in place.** It is the 5pm repair — the
+import error becomes a sentence about `node_modules` — and the lockfile arm
+goes on reading the pushed tree against itself. That is the second row of the
+table, and the cases do not survive it: three of them go red, including the
+by-name refusal, because it names the *worktree's* path rather than the main
+checkout's.
+
+**The last row is the instrument, not the hook,** and it is the one worth
+reading carefully. With `addWorktree` degraded to the main checkout, the
+three behavioural cases stay GREEN — they are witnesses of the fix (row
+three reds all three) but not of the fixture being a linked worktree. The two
+mutation cases go red, loudly, so a fixture that silently stopped being a
+worktree would not leave the file quietly passing. Say which cases are
+witnesses of what, or the next reader counts five.
+
+**Consumers are in two populations, and they are indistinguishable from
+outside.** `createGitHooks` in `lib/scaffold/steps.ts` overwrites `.git/hooks/pre-push`
+only when it carries `PRE_PUSH_MANAGED_MARKER`, so an already-scaffolded repo
+keeps the old hook until it is re-scaffolded: `bunx rungate scaffold .`. A
+repo that looks fixed and a repo that is fixed read the same until then.
 
 ## #398 — audit reported 0 changes on a tree `--fix` rewrote in 28 places
 

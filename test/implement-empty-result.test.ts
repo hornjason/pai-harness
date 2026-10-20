@@ -210,6 +210,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     "REPO",
       "taskSourceRefusal",
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
+    "measureLaunchBase",
       `${shapeBlock}\n${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
     );
     const run = factory(
@@ -225,6 +226,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
       async () => ({ branch: "rungate/run-181", refusal: null }),
       async () => ({ ok: true, integrated: 0 }),
       waveNeedsIntegration,
+      async () => ({ reading: "SAME_CHECKOUT", refusal: null }),
     );
     return { run, logs };
   }

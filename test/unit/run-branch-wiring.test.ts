@@ -20,7 +20,11 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { runBranchSetupScript } from "../../lib/run-branch";
 import { structuralCut } from "../../lib/source-slice";
+
+/** The position the branch-setup shell occupies in the prompt since #702. */
+const SETUP_CALL = "${runBranchSetupScript(shellQuote(ref))}";
 
 const SHIP = readFileSync(join(import.meta.dir, "..", "..", "workflows", "ship.js"), "utf-8");
 
@@ -74,7 +78,16 @@ describe("#640 SC-1/SC-2: the checkout's starting branch is read before anything
    * and should be rewritten — which is the point of pinning it.
    */
   test("the pin: the run branch IS checked out in the shared primary, and here is why", () => {
-    expect(ESTABLISH).toContain("git switch -c ${shellQuote(ref)}");
+    // The shell moved behind `runBranchSetupScript` in #702, so the anchor
+    // moved with it — the property is unchanged and is now asserted in two
+    // links: the prompt interpolates the binding, and the binding emits a
+    // checkout. Keeping the old literal here would be a source-text
+    // assertion that has stopped describing the code (#235), and asserting
+    // only the interpolation would let the binding stop switching entirely.
+    expect(ESTABLISH).toContain(SETUP_CALL);
+    expect(runBranchSetupScript("${shellQuote(ref)}")).toContain(
+      "git switch -c ${shellQuote(ref)}",
+    );
     expect(ESTABLISH).toContain("cd ${shellQuote(PROJECT_ROOT)}");
     // And the wave commit really does run in the primary, which is the
     // reason the checkout is needed. Without this the claim above is a
@@ -90,7 +103,7 @@ describe("#640 SC-1/SC-2: the checkout's starting branch is read before anything
     // restore to, and every run would then report UNCHANGED while having
     // moved the checkout. Order is the whole property, so order is asserted.
     const before = ESTABLISH.indexOf("before=$(git branch --show-current)");
-    const theSwitch = ESTABLISH.indexOf("git switch -c ${shellQuote(ref)}");
+    const theSwitch = ESTABLISH.indexOf(SETUP_CALL);
     expect(before, "the BEFORE read is missing").toBeGreaterThan(-1);
     expect(theSwitch, "the switch is missing").toBeGreaterThan(-1);
     expect(before, "the branch must be read before the command that changes it").toBeLessThan(theSwitch);

@@ -8,7 +8,7 @@ paths:
   - ".claude/rules/**"
   - "test/scaffold-conformity.test.ts"
   - "CODE-MAP.md"
-generated-sha: 2cc4b0ad0daa53df
+generated-sha: 5c9c9cb87f5f036f
 ---
 
 These files are managed by rungate. **Do not edit them directly.** What
@@ -26,7 +26,7 @@ forever.
 | `test/scaffold-conformity.test.ts` | regenerate | Runs automatically | Don't edit |
 | `CODE-MAP.md` | regenerate | Auto-generated from code scan | Don't edit |
 | `project-state.json` | create-only | DA-owned (#296) — seeded once, then yours | Don't expect re-scaffold to update it; an agent in a worktree must never write it |
-| `PROJECT-STATE.md` | create-only | DA-owned (#296) — generated from project-state.json by the DA | Don't edit directly; don't expect re-scaffold to update it |
+| `PROJECT-STATE.md` | create-only | DA-owned (#296) — maintained by the DA; whether this project derives it from the state JSON is reported per project in .claude/rules/key-files.md | Don't edit directly; don't expect re-scaffold to update it |
 | `SUCCESS.md` | create-only | Seeded as a template (#485) — fill in the claims; `bunx rungate create-success` re-seeds | Don't leave it as the seed; SUCCESS-1 refuses a template, and re-scaffold will not fill it in |
 
 | Strategy | What re-scaffold does |
@@ -120,3 +120,36 @@ cannot carry a job forward — a flow mapping (`jobs: {deploy: {...}}`), or a
 file it cannot parse — it **refuses the write**, names the jobs at risk and
 the line delta, and leaves your file untouched. Re-run with `--force` only
 if you mean to discard them.
+
+### Every workflow file is reported, owned or not (#722)
+
+The table above is a list of files this generator **writes**. That is why a
+workflow it did not write could not be added to it: the next scaffold would
+either start generating the file or the row would describe behaviour the
+code does not have, which is #208 exactly.
+
+So ownership travels with the bytes instead. Each generated workflow carries
+a `# generated-sha:` marker on its first line — a YAML comment, invisible
+to anything that parses the file — and a re-scaffold reports **every** file
+in `.github/workflows/`:
+
+| Status | What it means |
+|--------|---------------|
+| generated-and-unchanged | rungate wrote it and nobody has touched it |
+| generated-and-hand-edited | rungate wrote it and the bytes have moved; preserved, not rewritten |
+| NOT-OWNED | no marker — rungate did not write this and does not manage it |
+
+**A NOT-OWNED workflow is reported by name and otherwise left alone.** What
+you do with it is yours; the harness only refuses to keep quiet about it.
+Each name is printed individually, because "5 unowned workflows" is not
+something anybody can act on.
+
+The line also carries its own coverage — `read N/M file(s)` — and a
+directory that could not be read reports `UNMEASURED` rather than an empty
+list. A scan that read 2 of 7 files and a scan that read all 7 are otherwise
+the same clean report, and no reader can tell them apart from the output.
+
+This matters on a tree the harness was added to rather than one it created.
+One consumer ran five `engine: copilot` workflows that cost money, failed on
+quota and emailed its owner, and every scaffold run reported clean — not
+because anything went wrong, but because nothing had ever looked.
