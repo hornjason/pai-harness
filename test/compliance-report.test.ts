@@ -247,11 +247,18 @@ name: marcus
         consecutiveFails: 3,
         tier: 1,
       }];
-      const result = applyHillClimb(briefPath, actions);
+      // #648 AC-6: the destination is NAMED, and the file read back is the
+      // one the write REPORTED. Reading `briefPath` and inheriting
+      // `DEFAULT_HILL_CLIMB_DESTINATION` was the same assertion only while
+      // that default was `COMMIT` — this case is about the splice, so it
+      // says which destination it wants rather than depending on the
+      // shipped loop's choice, which #648 moved.
+      const result = applyHillClimb(briefPath, actions, { destination: "COMMIT" });
       expect(result.applied.length).toBe(1);
       expect(result.applied[0]).toContain("COMP-7");
 
-      const updated = readFileSync(briefPath, "utf-8");
+      expect(result.write).toEqual({ destination: "COMMIT", path: briefPath });
+      const updated = readFileSync(result.write.path as string, "utf-8");
       expect(updated).toContain("REINFORCED (auto)");
       expect(updated).toContain("NEVER use cat");
     });
@@ -275,10 +282,15 @@ name: marcus
         consecutiveFails: 4,
         tier: 1,
       }];
-      const result = applyHillClimb(briefPath, actions);
+      const result = applyHillClimb(briefPath, actions, { destination: "COMMIT" });
       expect(result.applied.length).toBe(0);
       expect(result.skipped.length).toBe(1);
       expect(result.skipped[0]).toContain("already present");
+      // #648 AC-6: "nothing was written" asked of the binding rather than
+      // left implicit. Under `COMMIT` — the destination that DOES write —
+      // a skip must still report no path, which is the claim the earlier
+      // version of this case made by saying nothing at all.
+      expect(result.write).toEqual({ destination: "COMMIT", path: null });
     });
 
     test("detectHillClimbNeeds maps DIR-L29 to COMP-2 for escalation", () => {
@@ -405,9 +417,10 @@ name: marcus
         promotion: "Deploy BashToolGuard hook",
       }];
 
-      const result = applyHillClimb(briefPath, actions);
+      const result = applyHillClimb(briefPath, actions, { destination: "COMMIT" });
 
       expect(result.skipOutcomes.length).toBe(1);
+      expect(result.write).toEqual({ destination: "COMMIT", path: null });
       const outcome = result.skipOutcomes[0]!;
       expect(outcome.kind).toBe("TIER_PROMOTION");
       // The fields, read without parsing them back out of a sentence.
@@ -438,9 +451,10 @@ name: marcus
         tier: 1,
       }];
 
-      const result = applyHillClimb(briefPath, actions);
+      const result = applyHillClimb(briefPath, actions, { destination: "COMMIT" });
 
       expect(result.skipOutcomes.length).toBe(1);
+      expect(result.write).toEqual({ destination: "COMMIT", path: null });
       const outcome = result.skipOutcomes[0]!;
       expect(outcome.kind).toBe("REINFORCEMENT_PRESENT");
       expect(outcome.compId).toBe("COMP-7");
@@ -474,14 +488,19 @@ name: marcus
         tier: 1,
       }];
 
-      const result = applyHillClimb(briefPath, actions);
+      const result = applyHillClimb(briefPath, actions, { destination: "COMMIT" });
 
       expect(result.skipOutcomes.length).toBe(1);
       const outcome = result.skipOutcomes[0]!;
       expect(outcome.kind).toBe("NO_SECTION");
       expect(outcome.compId).toBe("COMP-9");
       expect(result.applied.length).toBe(0);
-      // Nothing was spliced, so nothing was written.
+      // Nothing was spliced, so nothing was written — asked of the binding
+      // AND of the file, because the two are different questions (#648
+      // AC-6): a `write` reporting no path beside a brief that changed
+      // anyway is exactly the state the destination binding exists to make
+      // visible.
+      expect(result.write).toEqual({ destination: "COMMIT", path: null });
       expect(readFileSync(briefPath, "utf-8")).toBe(brief);
     });
 
@@ -512,6 +531,14 @@ name: marcus
       // …and the strings `applyHillClimb` actually hands its caller are those
       // same bytes, driven through the function rather than asserted of the
       // formatter alone.
+      //
+      // #648 AC-6: every call here names `DISCARD`. These three cases are
+      // about the SENTENCES and apply nothing, so the destination they
+      // inherited was invisible to them — and an invisible dependency on
+      // `DEFAULT_HILL_CLIMB_DESTINATION` is what made the shipped loop's
+      // own destination something nobody had chosen. Naming the
+      // non-writing destination also keeps these fixtures from writing
+      // into `TMP` for a reason no assertion covers.
       const promoted = applyHillClimb(briefWithSections(), [{
         compId: "COMP-7",
         rule: "No cat/head via Bash",
@@ -519,8 +546,9 @@ name: marcus
         consecutiveFails: 5,
         tier: 3,
         promotion: "Deploy BashToolGuard hook",
-      }]);
+      }], { destination: "DISCARD" });
       expect(promoted.skipped).toEqual([RECOVERED.promotion]);
+      expect(promoted.write).toEqual({ destination: "DISCARD", path: null });
 
       const alreadyThere = join(TMP, "present.md");
       writeFileSync(alreadyThere, `## Efficiency Rules\n- ${COMP7_REINFORCEMENT}\n`);
@@ -530,8 +558,9 @@ name: marcus
         reinforcement: COMP7_REINFORCEMENT,
         consecutiveFails: 4,
         tier: 1,
-      }]);
+      }], { destination: "DISCARD" });
       expect(presentRun.skipped).toEqual([RECOVERED.present]);
+      expect(presentRun.write).toEqual({ destination: "DISCARD", path: null });
 
       const sectionless = join(TMP, "sectionless.md");
       writeFileSync(sectionless, "## Core Principles\n- Verify before asserting\n");
@@ -541,8 +570,9 @@ name: marcus
         reinforcement: COMP9_REINFORCEMENT,
         consecutiveFails: 3,
         tier: 1,
-      }]);
+      }], { destination: "DISCARD" });
       expect(noSectionRun.skipped).toEqual([RECOVERED.noSection]);
+      expect(noSectionRun.write).toEqual({ destination: "DISCARD", path: null });
     });
 
     test("SC-2093: one exported binding produces the sentence, and it is spelled once", () => {
