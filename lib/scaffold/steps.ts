@@ -2708,6 +2708,22 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
 name: CI
 
 on:
+  # merge_group carries NO branches: filter, deliberately. A merge queue builds
+  # a temporary \`gh-readonly-queue/<base>/...\` ref, which no branch list here
+  # would match — so filtering it is the same as not handling the event, and a
+  # trigger that is present and inert is worse than an absent one because the
+  # file then reads as handling it.
+  #
+  # Without this trigger a merge queue cannot work at all, and it fails in the
+  # worst available way: the queue waits for a required check that will never
+  # report, every entry sits pending with no error anywhere, and the repo looks
+  # like it has simply stopped merging. UNMEASURED, not red.
+  #
+  # This is the SHARDED body, and it is the one that matters most: the required
+  # context is the \`test\` aggregate below, which only exists here. The first
+  # draft of #765 added the trigger to the unsharded body only — 91 tests passed
+  # and the repo that needed it was untouched.
+  merge_group:
   push:
     branches:
 ${branchList}
@@ -2757,6 +2773,9 @@ ${bunStep}
 name: CI
 
 on:
+  # See the sharded body above: no branches: filter, and its absence hangs a
+  # merge queue silently rather than failing it.
+  merge_group:
   push:
     branches:
 ${branchList}
@@ -2781,6 +2800,9 @@ ${bunStep}
 name: Gates
 
 on:
+  # See ci.yml above: a merge queue builds a ref no branch list matches, so
+  # this trigger carries no filter and its absence hangs the queue silently.
+  merge_group:
   push:
     branches:
 ${branchList}
