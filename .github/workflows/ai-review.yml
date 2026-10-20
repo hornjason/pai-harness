@@ -1,4 +1,4 @@
-# generated-sha: 2f511b2206c72165
+# generated-sha: 6882b99d391893b3
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # This job is deliberately unconditional. A job skipped by a condition reports
@@ -151,7 +151,7 @@ jobs:
           use_vertex: ${{ steps.ai-review-auth.outputs.mode == 'vertex' }}
           claude_code_oauth_token: ${{ steps.ai-review-auth.outputs.mode == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           anthropic_api_key: ${{ steps.ai-review-auth.outputs.mode == 'api-key' && secrets.ANTHROPIC_API_KEY || '' }}
-          claude_args: --model claude-sonnet-5 --max-turns 25 --allowedTools Read,Grep,Glob,Write --disallowedTools Bash,BashOutput,KillShell,Task,SlashCommand,ExitPlanMode,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch
+          claude_args: --model claude-sonnet-5 --max-turns 50 --allowedTools Read,Grep,Glob,Write --disallowedTools Bash,BashOutput,KillShell,Task,SlashCommand,ExitPlanMode,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch
           prompt: |
             Review the changes on this branch for correctness defects: bugs that
             produce a wrong result, a crash, or data loss on some input you can name.

@@ -209,7 +209,7 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 
 ### Tiers and ownership
 
-- [ ] SC-1930: Baseline rules carry no `paths:` key in frontmatter
+- [x] SC-1930: Baseline rules carry no `paths:` key in frontmatter
 - [ ] SC-1931: Baseline rule bodies contain no repo-specific identifier — no issue number, date, file path or incident from a single project
 - [ ] SC-1932: Every mined rule carries a `paths:` list scoped to the code it governs
 
@@ -225,14 +225,14 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 
 - [ ] SC-1938: A scaffold run with zero human interaction produces a populated, scoped rule set
 - [ ] SC-1939: Promotion ranks on the mechanical evidence score — a candidate with no evidence never outranks one with evidence
-- [ ] SC-1940: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
+- [x] SC-1940: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
 - [ ] SC-1941: A rule whose cited `file:line` no longer resolves is auto-retired, not warned about
 - [ ] SC-1942: Eval-gated retention is disabled until its delta measurement has a mutation test proving it goes red
 
 ### Sources
 
-- [ ] SC-1943: Makefile targets, `package.json` scripts and CI workflow files are scanned for constraints alongside markdown
-- [ ] SC-1944: `CODE-MAP.md` is excluded from constraint sources
+- [x] SC-1943: Makefile targets, `package.json` scripts and CI workflow files are scanned for constraints alongside markdown
+- [x] SC-1944: `CODE-MAP.md` is excluded from constraint sources
 - [ ] SC-1945: A consumer scaffolded with zero mined rules is reported as such, not as a complete rule set
 
 ### Idempotency

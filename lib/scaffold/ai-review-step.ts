@@ -459,7 +459,34 @@ export const AI_REVIEW_DISALLOWED_TOOLS = [
 
 export const AI_REVIEW_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Write"].join(",");
 
-export const AI_REVIEW_MAX_TURNS = 25;
+/**
+ * The reviewer's turn budget. One declaring position; see `aiReviewClaudeArgs`.
+ *
+ * 25 was chosen in the docblock above before any run had ever executed, and
+ * the first one that did exhausted it. Run `39461944884` on
+ * `fix/696-shellquote-title` is the first ai-review run in this repository's
+ * history to get past the app-token exchange — every earlier run died on
+ * `401 Unauthorized - Claude Code is not installed on this repository` — and
+ * it ended `"subtype": "error_max_turns", "num_turns": 26`, having written no
+ * payload, at `"duration_ms": 171233` and `"total_cost_usd": 1.2685924`.
+ *
+ * So the number is now measured rather than guessed, and the measurement is a
+ * floor and not a distribution: n is ONE, and the one observation is a lower
+ * bound, because an exhausted run tells you the budget was too small and not
+ * by how much. 50 is twice the only reading there is, which bounds the worst
+ * case at roughly 340s and \$2.50 per pull request. The reason not to go
+ * further is unchanged and is the sentence above: a reviewer with no turn
+ * budget is a job with no upper bound on what it costs.
+ *
+ * **The cheapest wrong fix is not to raise this at all — it is to make the
+ * prompt write a payload in its first turns and refine it afterwards**, so an
+ * exhausted run leaves a file behind. That turns an honest UNMEASURED into a
+ * PASS over a review that never finished, which is the fifth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` and strictly worse than
+ * producing nothing. `test/ai-review-turn-budget.test.ts` asserts that
+ * exhaustion keeps writing nothing, so that repair goes red.
+ */
+export const AI_REVIEW_MAX_TURNS = 50;
 
 /**
  * The `claude_args` line, with the model the consumer's config resolved.
