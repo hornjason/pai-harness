@@ -69,6 +69,7 @@ import {
   PINNED_ACTIONS,
   actionPinAgreement,
   actionPinParity,
+  actionPinsNamedBySource,
   actionPinsNamedByWorkflow,
   declaredActionPin,
   pinnedAction,
@@ -411,5 +412,139 @@ describe("#689 AC-4: finding nothing is not agreement, and matching by hand is n
     // A file that names the action in prose is not a pin — a commented-out
     // step and a sentence about the action must not be read as positions.
     expect(actionPinsNamedByWorkflow(`# we use ${CLAUDE_CODE_ACTION}@v1 one day\n`, "x.yml")).toEqual([]);
+  });
+});
+
+// ── #631: the second registered action ──────────────────────────────────────
+
+describe("#631: the auth action is a second subject, measured on its own", () => {
+  /** The fixture workflow with its AUTH step repointed and nothing else moved. */
+  function workflowWithAuth(authRef: string): string {
+    const base = reviewWorkflow(pinned(A, "v1"));
+    const replaced = base.replace(`uses: ${googleAuthActionRef()}`, `uses: ${authRef}`);
+    // #585: the pair must differ in exactly one line, and the derivation says
+    // so rather than two hand-written literals promising it.
+    if (authRef !== googleAuthActionRef()) {
+      expect(replaced, "the auth step was not found, so this pair varies nothing").not.toBe(base);
+    }
+    return replaced;
+  }
+
+  /** A tree with both declarations planted and one workflow at `authRef`. */
+  function treeWithAuth(label: string, authRef: string): string {
+    const root = scratchDir(label);
+    put(root, pinnedAction(GOOGLE_AUTH_ACTION).declaration, authDeclaration());
+    put(root, ACTION_PIN_DECLARATION, declaration(A, "v1"));
+    put(root, join(".github", "workflows", "a.yml"), workflowWithAuth(authRef));
+    return root;
+  }
+
+  test("#631: a workflow pinning the auth action at another SHA is reported, naming the file", () => {
+    /**
+     * The fleet state #631 found: `c200f369 # v2` in `claude-review.yml` and
+     * `7c6bc770 # v3` in another repo's generated `ai-review.yml`. **Both
+     * comments were accurate** — two different majors, chosen independently —
+     * so a check that only catches a lying comment reports this clean. What is
+     * varied here is the pin alone; the review action agrees in both halves.
+     */
+    const V3 = "7c6bc770dae815cd3e89ee6cdf493a5fab2cc093";
+    expect(V3, "the fixture pins the declared SHA, so it varies nothing").not.toBe(GOOGLE_AUTH_ACTION_SHA);
+
+    const agreeing = treeWithAuth("auth-agrees", googleAuthActionRef());
+    const green = actionPinParity(agreeing);
+    expect(green.verdict, JSON.stringify(green, null, 2)).toBe("PASS");
+
+    const disagreeing = treeWithAuth("auth-disagrees", `${GOOGLE_AUTH_ACTION}@${V3} # v3`);
+    const red = actionPinParity(disagreeing);
+    expect(red.verdict, JSON.stringify(red, null, 2)).toBe("FAIL");
+    const text = red.violations.join("\n");
+    expect(text).toContain(V3);
+    expect(text).toContain(GOOGLE_AUTH_ACTION);
+    expect(text, "the violation does not name the position").toContain(".github/workflows/a.yml");
+    // …and it is the AUTH action's row that is red, not the review action's,
+    // which is the whole of "per action rather than global".
+    expect(text).not.toContain(CLAUDE_CODE_ACTION);
+  });
+
+  test("#631: a tree declaring one action and not the other is UNMEASURED for the one it omits", () => {
+    /**
+     * Two subjects in one category means two ways to be unreadable, and a
+     * category that folded them together would report a tree carrying a
+     * perfect review-action declaration as fully measured while nothing in it
+     * says what the auth pin should be. `AC-4`'s tree has no declaration at
+     * all; this one has exactly half.
+     */
+    const half = scratchDir("auth-undeclared");
+    put(half, ACTION_PIN_DECLARATION, declaration(A, "v1"));
+    put(half, join(".github", "workflows", "a.yml"), reviewWorkflow(pinned(A, "v1")));
+
+    const reading = actionPinParity(half);
+    expect(reading.verdict, JSON.stringify(reading, null, 2)).toBe("UNMEASURED");
+    expect(reading.unmeasured.map(u => u.reason).join("\n")).toContain(
+      pinnedAction(GOOGLE_AUTH_ACTION).declaration,
+    );
+    // Not a FAIL: the auth pin in that workflow is the right one. The reading
+    // is that nothing in the tree can say so.
+    expect(reading.violations).toEqual([]);
+    // The review action WAS measured in the same run, so the UNMEASURED above
+    // is one subject's and not the category giving up.
+    expect(reading.coverage.examined).toBeGreaterThan(0);
+  });
+
+  test("#631: EVERY declaration module is skipped as a position, not just its own action's", () => {
+    /**
+     * A declaration spells its own action and SHA, so skipping it is obvious.
+     * What is not obvious is that it also carries PROSE about the SIBLING
+     * action — `lib/google-auth-action.ts`'s header quotes #689's annotated-tag
+     * trap, naming `claude-code-action` at a superseded commit — and the source
+     * scan matches `action@sha` anywhere on a line. A skip list that held only
+     * each action's own module would read that sentence as a generator literal
+     * pinning the review action at the wrong SHA, which is #235 exactly:
+     * prose read as a position.
+     */
+    const root = treeWithAuth("sibling-prose", googleAuthActionRef());
+    const withProse =
+      authDeclaration() +
+      `// #689's trap: \`${CLAUDE_CODE_ACTION}@${B}\` was v1 two releases ago.\n`;
+    put(root, pinnedAction(GOOGLE_AUTH_ACTION).declaration, withProse);
+
+    // The sentence IS a match for the source scanner — stated by running it,
+    // so "skipped" means skipped rather than never seen.
+    expect(
+      actionPinsNamedBySource(withProse, "probe.ts", CLAUDE_CODE_ACTION).map(p => p.sha),
+      "the fixture sentence is not something the scanner would pick up, so this proves nothing",
+    ).toEqual([B]);
+
+    const reading = actionPinParity(root);
+    expect(reading.verdict, JSON.stringify(reading, null, 2)).toBe("PASS");
+    for (const of of PINNED_ACTIONS) {
+      const asPosition = reading.sites.filter(s => /:\d+$/.test(s.site) && s.site.startsWith(of.declaration));
+      expect(
+        asPosition.map(s => s.site),
+        `${of.declaration} was read as a position that must follow a declaration`,
+      ).toEqual([]);
+    }
+    // …and the same sentence in an ordinary source file IS a position, so the
+    // clean reading above is the skip and not a scanner that sees nothing.
+    put(root, join("lib", "scaffold", "elsewhere.ts"), withProse);
+    const red = actionPinParity(root);
+    expect(red.verdict, JSON.stringify(red.sites, null, 2)).toBe("FAIL");
+    expect(red.violations.join("\n")).toContain("lib/scaffold/elsewhere.ts");
+  });
+
+  test("#631: the auth parser and the auth module are the same answer", () => {
+    // The sibling of AC-1's case, for the second row. The parser is generic
+    // over `PinnedAction`, so a row whose `constants` names were mistyped
+    // would throw rather than silently reading the other action's values.
+    const declared = declaredActionPin(REPO_ROOT, pinnedAction(GOOGLE_AUTH_ACTION));
+    expect(declared.sha).toBe(GOOGLE_AUTH_ACTION_SHA);
+    expect(declared.version).toBe(GOOGLE_AUTH_ACTION_VERSION);
+    expect(declared.action).toBe(GOOGLE_AUTH_ACTION);
+    expect(googleAuthActionRef()).toBe(
+      `${GOOGLE_AUTH_ACTION}@${GOOGLE_AUTH_ACTION_SHA} # ${GOOGLE_AUTH_ACTION_VERSION}`,
+    );
+    expect(GOOGLE_AUTH_ACTION_SHA, "a pin that is not a full commit SHA is repointable").toMatch(
+      /^[0-9a-f]{40}$/,
+    );
   });
 });
