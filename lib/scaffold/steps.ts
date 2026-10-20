@@ -37,6 +37,7 @@ import { scanDocsDirectory } from "../doc-routing";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { declaredBunVersion, setupBunWith } from "../bun-version";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
+import { censusReport, stampWorkflow, workflowCensus } from "./workflow-census";
 import {
   readSuccessDoc,
   readSuccessTemplate,
@@ -2898,11 +2899,23 @@ ${buildAuthDetectStep()}${buildReviewRunStep()}`;
   for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml]] as const) {
     const label = `.github/workflows/${name}`;
     try {
-      writeManagedFile(join(workflowsDir, name), content, label, actions, opts);
+      // Stamped, so the file says who wrote it. The owned-path list is a list
+      // of files this generator writes, which is precisely why it could never
+      // describe a file it does not write — ownership has to travel with the
+      // bytes for an unowned workflow to be visible at all (#722). The marker
+      // is a YAML comment, so nothing that parses the workflow can see it.
+      writeManagedFile(join(workflowsDir, name), stampWorkflow(content), label, actions, opts);
     } catch (e) {
       actions.push(`REFUSED: ${(e as Error).message}`);
     }
   }
+
+  // Everything else in the directory, named. This generator writes three
+  // files; a consumer's CI may run any number, and until #722 the ones it did
+  // not write were not merely unmanaged but unreported — a clean run over 2 of
+  // 7 workflow files, which reads exactly like a clean run over 7 of 7.
+  // Reporting only: what a consumer does with a NOT-OWNED workflow is theirs.
+  actions.push(...censusReport(workflowCensus(root)));
 }
 
 // ── Consumer hook deployment ─────────────────────────────────
