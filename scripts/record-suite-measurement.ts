@@ -91,7 +91,7 @@
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { writeWorkflowState } from "../gates/orchestrator";
-import { readSuiteRun, type MeasuredRun } from "../lib/suite-run-reading";
+import { describeSuiteFailures, readSuiteRun, type MeasuredRun } from "../lib/suite-run-reading";
 
 /**
  * The one exit code every refusal goes through.
@@ -303,6 +303,12 @@ export function buildMeasurement(
     todo: run.todo,
     tests: run.tests,
     files: run.files,
+    // #323. The count is what a gate reads; the names are what a human needs,
+    // and a record that carries only the count sends every reader back to a
+    // log that may not contain them — a module-scope error counts toward
+    // `failures` and prints no test name at all.
+    failingTests: run.failingTests,
+    errors: run.errors,
     measuredAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
 }
@@ -399,7 +405,7 @@ if (import.meta.main) {
       ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
       event: "suite-measurement",
       detail:
-        `${measurement.verdict}: ${run.fail} failing test(s) of ${coverageSentence(run)} at ${sha}`,
+        `${measurement.verdict}: ${describeSuiteFailures(run)} of ${coverageSentence(run)} at ${sha}`,
       actor: "gate-runner",
     });
 
@@ -415,6 +421,8 @@ if (import.meta.main) {
       todo: run.todo,
       tests: run.tests,
       files: run.files,
+      failingTests: run.failingTests,
+      errors: run.errors,
     }));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
