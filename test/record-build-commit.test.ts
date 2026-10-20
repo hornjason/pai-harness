@@ -421,7 +421,25 @@ describe("#169 recommit: both remediation rounds re-record the commit", () => {
           `named one. That is UNMEASURED, not a step with no required fields (#684)`,
       );
     }
-    return structuralCut(shipSource, `const ${named[1]} = {`, { balanced: "{" });
+    // The anchor is spelled as a LITERAL, one branch per schema this reader
+    // can resolve, rather than composed from the name just matched. A computed
+    // anchor cutting `ship.js` is refused by `#668`'s scan in
+    // `test/unit/ambiguous-anchor.test.ts`, and deliberately has no exemption
+    // list: an anchor assembled at run time cannot be checked for occurring
+    // exactly once, so a rename in `ship.js` would silently cut a different
+    // block instead of going red.
+    //
+    // Only one named schema exists today — `recommit-ship` declares its schema
+    // inline and returns above. A second one is a two-line addition here, and
+    // the throw below is what makes the omission loud rather than silent.
+    if (named[1] === "DELETION_VERDICT_SCHEMA") {
+      return structuralCut(shipSource, "const DELETION_VERDICT_SCHEMA = {", { balanced: "{" });
+    }
+    throw new Error(
+      `${label} names schema ${named[1]}, which has no literal anchor in this file. Add a branch ` +
+        `spelling "const ${named[1]} = {" as a string literal — not a template, which #668 refuses ` +
+        `(#684). UNMEASURED, not a step with no required fields`,
+    );
   }
 
   for (const label of ["recommit-verify", "recommit-ship"]) {
