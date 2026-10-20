@@ -105,6 +105,56 @@ describe("#809: discovery reads one directory and reports what it saw", () => {
     }
   });
 
+  test("a lister returning reverse order still yields sorted paths", () => {
+    // The sort measured 0 red without this: readdirSync happens to return
+    // sorted names here, so deleting `.sort()` changed nothing and the
+    // mechanism was unprovable. The seam exists for exactly this row.
+    const root = scratch();
+    try {
+      const dir = join(root, "shots");
+      mkdirSync(dir, { recursive: true });
+      for (const n of ["a.png", "b.png", "c.png"]) writeFileSync(join(dir, n), "x");
+      const scan = discoverScreenshots(dir, () => ["c.png", "b.png", "a.png"]);
+      if (scan.kind !== "found") throw new Error(`expected found, got ${scan.kind}`);
+      expect(scan.files.map(f => f.split("/").pop())).toEqual(["a.png", "b.png", "c.png"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the lister is really what gets read, or the row above proves nothing", () => {
+    // The control. If the injected lister were ignored and readdirSync used
+    // anyway, the sorted assertion above would still pass.
+    const root = scratch();
+    try {
+      const dir = join(root, "shots");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "real.png"), "x");
+      expect(discoverScreenshots(dir, () => []).kind, "the injected lister was ignored").toBe(
+        "none",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a directory named like a screenshot is not a screenshot", () => {
+    // Witnesses the isFile filter, which also measured 0 red. Playwright
+    // will not create one, but `scan.files` is handed straight to an
+    // uploader that calls existsSync — which a directory satisfies.
+    const root = scratch();
+    try {
+      const dir = join(root, "shots");
+      mkdirSync(join(dir, "decoy.png"), { recursive: true });
+      writeFileSync(join(dir, "real.png"), "x");
+      const scan = discoverScreenshots(dir);
+      if (scan.kind !== "found") throw new Error(`expected found, got ${scan.kind}`);
+      expect(scan.files.map(f => f.split("/").pop())).toEqual(["real.png"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("non-png files in my own directory are ignored", () => {
     const root = scratch();
     try {

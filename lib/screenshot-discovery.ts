@@ -72,6 +72,20 @@ function isScreenshot(name: string): boolean {
 }
 
 /**
+ * Lists the names in a directory. A seam, for one reason: the sort below.
+ *
+ * `readdirSync` returns sorted order on the filesystem this was written on,
+ * so a battery row that deleted the `.sort()` measured **0 red** — the
+ * mechanism was present and unprovable, and a sort nothing can witness is a
+ * sort somebody later deletes as dead code. Handing the lister in lets a case
+ * return names in the wrong order on purpose. Same shape as `GistCreator` in
+ * `lib/screenshot-upload.ts`.
+ */
+export type DirLister = (dir: string) => string[];
+
+const realLister: DirLister = dir => readdirSync(dir);
+
+/**
  * Reads exactly one directory, non-recursively, and reports what is in it.
  *
  * Returns absolute paths because the only consumer hands them to
@@ -82,10 +96,10 @@ function isScreenshot(name: string): boolean {
  * Sorted, so the order evidence appears in a PR comment is the order the
  * filenames imply rather than the order the filesystem offers.
  */
-export function discoverScreenshots(dir: string): ScreenshotScan {
+export function discoverScreenshots(dir: string, list: DirLister = realLister): ScreenshotScan {
   if (!existsSync(dir)) return { kind: "missing", dir };
 
-  const files = readdirSync(dir)
+  const files = list(dir)
     .filter(isScreenshot)
     .map(name => join(dir, name))
     .filter(path => statSync(path).isFile())
