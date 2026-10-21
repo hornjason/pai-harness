@@ -1503,14 +1503,30 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
           // to — 54 of them on the day they first became visible (#209).
           //
           // Failing 54 specs at once would get the whole file skipped, so the
-          // teeth live in a single repo-wide ratchet instead:
-          // test/conformity-sc-binding.test.ts asserts the total may fall but
-          // never rise. Here we name them, per spec, so they are findable.
+          // teeth live in a repo-wide ratchet instead. That ratchet has MOVED:
+          // `UNMATCHED_CHECKED_RATCHET` in test/conformity-sc-binding.test.ts
+          // is gone (#441, and that file's line 44 says so), replaced by the
+          // two-sided bounds named below. Here we name the SCs, per spec, so
+          // they are findable.
+          //
+          // A report, not a test (#211). This slot held
+          // `expect(unmatched.length).toBeGreaterThan(0)` INSIDE
+          // `if (unmatched.length > 0)` — true by construction, with no input
+          // on which it could go red. That is #328's defect verbatim, twenty
+          // lines below the branch #328 repaired, and it was minting one
+          // passing test per strict spec out of a number nothing asserts.
+          //
+          // The repair is #328's: the block says what it found and stops
+          // claiming to have checked it. The teeth stay where #441 put them —
+          // test/sc-binding-split.test.ts bounds UNCLAIMED_RATCHET above and
+          // CLAIMED_UNBINDABLE in both directions — deliberately NOT a
+          // per-spec ratchet to zero, because that number measures the
+          // matcher's vocabulary and the only way to lower it is to make the
+          // specs say less.
           const level = metadata.compliance === "permissive" ? "WARN" : "WARN (strict)";
-          test(`${level}: ${unmatched.length} checked SCs have no pattern matcher`, () => {
-            console.warn(`Unmatched checked SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
-            expect(unmatched.length).toBeGreaterThan(0);
-          });
+          console.warn(
+            `${level}: ${unmatched.length} checked SCs have no pattern matcher in ${specFile}:\n  ${unmatched.join("\n  ")}`,
+          );
         }
         // Deliberately BELOW the unmatched branch, not between it and the
         // behavioral report. #328's guard slices the source from the
@@ -1593,25 +1609,51 @@ export function runSpecDiscovery(root: string) {
       expect(missing).toEqual([]);
     });
 
-    test("at least one testable spec exists", () => {
-      if (!existsSync(specsDir)) return;
-      const testable = collectSpecFiles(specsDir).filter(f => {
-        const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
-        return fm?.testable === "true";
+    const countTestable = () => collectSpecFiles(specsDir).filter(f => {
+      const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
+      return fm?.testable === "true";
+    }).length;
+
+    // #211. This test had three paths and no failing input:
+    //
+    //   specs/ absent           -> `if (!existsSync(specsDir)) return;`  -> PASS
+    //   specs/ with 0 testable  -> addFinding(WARN) + console.warn       -> PASS
+    //   specs/ with N testable  -> expect(N).toBeGreaterThan(0)          -> PASS
+    //
+    // The third is #328's tautology — the assertion sat in the `else` of
+    // `testable.length === 0`, so the only branch that reached it already knew
+    // the answer. The first two are worse than vacuous: a test NAMED "at least
+    // one testable spec exists" reported green on the two trees where no
+    // testable spec exists. A tree that could not be measured had not passed,
+    // and a gap that was tolerated had not been checked; both were being read
+    // as evidence.
+    //
+    // The zero-testable grace is kept, because it is load-bearing: a scaffolded
+    // consumer gets `testable: no` (lib/scaffold/write-steps.ts), so failing
+    // here would turn every fresh consumer red on day one. It is kept as
+    // `test.todo` — the honest report of a known-false property — rather than
+    // as a pass.
+    const measured = existsSync(specsDir) ? countTestable() : null;
+
+    if (measured === 0) {
+      addFinding({
+        ruleId: "SPEC-DISCOVERY-TESTABLE",
+        severity: "WARN",
+        file: "specs/",
+        message: "No spec has testable: true. Add testable: true to a spec when ready for conformity testing.",
+        fixCommand: `Add "testable: true" to frontmatter of a spec in specs/`,
       });
-      if (testable.length === 0) {
-        addFinding({
-          ruleId: "SPEC-DISCOVERY-TESTABLE",
-          severity: "WARN",
-          file: "specs/",
-          message: "No spec has testable: true. Add testable: true to a spec when ready for conformity testing.",
-          fixCommand: `Add "testable: true" to frontmatter of a spec in specs/`,
-        });
-        console.warn("SPEC-DISCOVERY: No testable specs found — skipping (add testable: true when ready)");
-      } else {
-        expect(testable.length).toBeGreaterThan(0);
-      }
-    });
+      test.todo("at least one testable spec exists (none marked testable: true yet)");
+    } else {
+      test("at least one testable spec exists", () => {
+        // Deliberately duplicates the "specs/ directory exists" check above.
+        // That one answers "is the directory there"; this one refuses to
+        // answer its OWN question over a tree it could not read, which is the
+        // early `return` this replaces. Unmeasured is a failure, not a pass.
+        expect(existsSync(specsDir), "specs/ is absent, so testability was never measured").toBe(true);
+        expect(countTestable()).toBeGreaterThan(0);
+      });
+    }
   });
 }
 
