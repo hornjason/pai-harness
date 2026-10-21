@@ -287,6 +287,7 @@ import {
   AI_REVIEW_DRIFT_TITLE,
   AI_REVIEW_OUTSIDE_MAXDEPTH,
   AI_REVIEW_OUTSIDE_TITLE,
+  AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS,
   AI_REVIEW_RUNTIME_CONFIG_PATHS,
   AI_REVIEW_RUNTIME_CONFIG_UNMEASURED,
   AI_REVIEW_RUNTIME_INERT_PATHS,
@@ -295,6 +296,7 @@ import {
   AI_REVIEW_UNMEASURED_TITLE,
   buildBaselineScript,
   buildDriftScript,
+  runnerDiagnosticExclusion,
 } from "../lib/scaffold/ai-review-step";
 
 /**
@@ -687,6 +689,168 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     );
   });
 
+  // ── #877: the CI runner's own diagnostics are not the reviewer ──────────
+  //
+  // The floor #866 measured and #871 split was measured on GitHub-HOSTED
+  // runners, where `$HOME` is fresh per job and exactly one runner process
+  // exists. Every fixture met that precondition, so the branch where it is
+  // false was outside the measurement entirely — the shape
+  // `.claude/rules/checks-must-be-able-to-fail.md` records against #492.
+  //
+  // On asaCommandCenter's self-hosted pool ten runner processes share one
+  // home directory and each writes its own `_diag` logs continuously, by
+  // design. Run `39564143967` refused with 30 paths, every one matching
+  // `/home/gharunner/runner-*/_diag/*` or `/home/gharunner/actions-runner/_diag/*`,
+  // and the job itself ran on `runner-4` while the list named runner-2, -3,
+  // -5, -7, -9 and `actions-runner`. Six SIBLING processes, building other
+  // repositories, concurrently. Not one of the 30 is the reviewer, there is
+  // no run in which they are absent, and no correct pull request can clear
+  // them (#877).
+  //
+  // THE CHEAPEST WRONG FIX, named before the repair: drop
+  // `AI_REVIEW_OUTSIDE_MAXDEPTH` from 4 to 2. The 30 paths sit at depth 3 and
+  // 4, so they all vanish and the gate goes green. It is wrong because it
+  // trades a false positive for blindness at exactly the depth a real write
+  // sits — and the real write #843 finding 1 is about, a reviewer reaching
+  // into another repository's checkout on the same host, is
+  // `$HOME/<sibling-runner>/_work/<other-repo>/<file>` at depth 4.
+  //
+  // AC-15c is the case that does not survive it, and it is the reason this
+  // block subtracts `_diag` rather than subtracting sibling runners
+  // wholesale: a sibling's `_work` is another repository's source tree, so a
+  // write there is the finding, not the floor.
+  describe("AC-15 (#877): a sibling runner's diagnostics are subtracted, its checkout is not", () => {
+    test("the runner-diagnostic list is the measurement, and the cases below are generated from it", () => {
+      // The pin, for the reason the two above it exist: the per-entry cases
+      // are generated from this list, so emptying it DELETES them rather
+      // than reddening them.
+      expect([...AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS]).toEqual(["*/_diag"]);
+    });
+
+    test("it is disjoint from both runtime lists, and nests with neither", () => {
+      // A third list is a third thing that can collide with the other two.
+      // `*/_diag` shares no prefix with anything under `.claude`, `.npm` or
+      // `.bun` — asserted rather than eyeballed, because the next entry
+      // somebody adds here is the one that will.
+      const diag = [...AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS];
+      const others = [...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS];
+      expect(diag.filter(p => others.includes(p)), "a path is in two lists").toEqual([]);
+      const nested = (a: string, b: string) => b === a || b.startsWith(`${a}/`);
+      expect(
+        diag.flatMap(d => others.filter(o => nested(d, o) || nested(o, d)).map(o => `${d} ~ ${o}`)),
+        "the runner-diagnostic list nests with a runtime list",
+      ).toEqual([]);
+    });
+
+    for (const [name, rel] of [
+      // Depth 3: `$HOME/runner-3/_diag/Runner_<utc>.log`, the shape most of
+      // the 30 took.
+      ["a sibling runner's log", join("runner-3", "_diag", "Runner_20261020-225157-utc.log")],
+      // Depth 4: the `blocks/` and `pages/` entries, which is why the
+      // subtraction cannot be a single-level one.
+      ["a sibling runner's paged log", join("runner-4", "_diag", "pages", "2123a4b4-545928fe_1.log")],
+      // The runner that is not numbered. The pool's tenth is called
+      // `actions-runner`, so a subtraction keyed on `runner-<n>` would miss
+      // it — which is why the entry names `_diag` and not the parent.
+      ["the unnumbered runner's log", join("actions-runner", "_diag", "Worker_20261021-074555-utc.log")],
+    ] as const) {
+      test(`AC-15a: ${name} is exit 0 and SILENT`, () => {
+        const f = fixture();
+        const { path, sha } = runBaseline(f);
+        const target = join(f.home, rel);
+        mkdirSync(join(target, ".."), { recursive: true });
+        writeFileSync(target, "runner diagnostics\n");
+        const r = runDrift(f, path, sha);
+        const text = r.stdout + r.stderr;
+        expect(r.code, `${rel} is runner diagnostics and refused:\n${r.stderr}`).toBe(0);
+        expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+        // Silent, not merely unrefused. A runner log annotated as runtime
+        // config would be a reading nobody can act on, fired every run.
+        expect(text, `${rel} was reported as runtime config`).not.toContain(CONFIG_UNMEASURED_TEXT);
+      });
+    }
+
+    test("AC-15c: a sibling runner's CHECKOUT still refuses, and is named", () => {
+      // The witness against the maxdepth repair, and against subtracting
+      // sibling runner trees wholesale. `$HOME/runner-9/_work/other-repo/x.ts`
+      // is depth 4 — inside the bound — and it is another repository's source
+      // tree on the same host, which is #843 finding 1 verbatim.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, "runner-9", "_work", "other-repo", "payload.ts");
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "export const owned = 1;\n");
+      const r = runDrift(f, path, sha);
+      expect(r.code, "a write into a sibling runner's checkout was not refused").not.toBe(0);
+      expect(r.stderr).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      expect(r.stderr, "the refusal does not name the sibling checkout write").toContain(target);
+    });
+
+    test("AC-15d: a runner log beside an unlisted write refuses, and only the unlisted one is named", () => {
+      // The discrimination case. A subtraction that silenced the whole walk
+      // would pass AC-15a and this is the input that tells the two apart.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const log = join(f.home, "runner-7", "_diag", "Worker_20261021-074446-utc.log");
+      mkdirSync(join(log, ".."), { recursive: true });
+      writeFileSync(log, "runner diagnostics\n");
+      const escaped = join(f.home, "escaped.sh");
+      writeFileSync(escaped, "#!/bin/sh\necho owned\n");
+
+      const r = runDrift(f, path, sha);
+      expect(r.code, "the unlisted write was not refused").not.toBe(0);
+      const refusal = r.stderr.slice(r.stderr.indexOf(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`));
+      const line = refusal.slice(0, refusal.indexOf("\n"));
+      expect(line, "the refusal does not name the unlisted write").toContain(escaped);
+      // Compared against the ABSOLUTE path for AC-14's reason: the refusal's
+      // prose enumerates what it subtracted, so a search for `_diag` over the
+      // message matches the sentence rather than the finding.
+      expect(line, "a runner diagnostic reached the refusal").not.toContain(log);
+    });
+
+    test("AC-15f: a _diag DEEPER than the runner install directory still refuses", () => {
+      // The anchor, and the reason this list is not emitted with the shared
+      // two-predicate form. `find -path` globs are fnmatch without
+      // FNM_PATHNAME, so a star matches a slash: an unanchored
+      // `$HOME/*/_diag/*` subtracts a `_diag` at ANY depth, and a reviewer
+      // that wants a write unseen only has to name a directory. Inside the
+      // depth bound, `$HOME/<runner>/_work/_diag/<file>` is that bypass.
+      //
+      // Raised by the automated security review of this branch's first push,
+      // whose emission had exactly that hole.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, "runner-9", "_work", "_diag", "payload.ts");
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "export const owned = 1;\n");
+      const r = runDrift(f, path, sha);
+      expect(r.code, "a _diag below the runner work root was subtracted").not.toBe(0);
+      expect(r.stderr, "the refusal does not name the deeper _diag write").toContain(target);
+    });
+
+    test("AC-15e: the subtraction is emitted from the declared list, not typed", () => {
+      // One emitter, and the clause the script carries is the one the
+      // emitter returns — not a second copy that happens to agree.
+      const drift = buildDriftScript();
+      for (const entry of AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS) {
+        const clause = runnerDiagnosticExclusion(entry);
+        expect(drift, `pass 1 does not carry the anchored clause for ${entry}`).toContain(clause);
+        // The shared two-predicate form must NOT be used for this list: it is
+        // the unanchored emission AC-15f exists to keep out, and it would be
+        // invisible in a diff beside the correct one.
+        expect(drift, `${entry} is emitted with the unanchored shared form`).not.toContain(
+          `-not -path "\${HOME}/${entry}" -not -path "\${HOME}/${entry}/*"`,
+        );
+        // And pass 2 must NOT match it. A runner log annotated as runtime
+        // config is the noise this block exists to remove, arriving under a
+        // different title.
+        expect(drift, `pass 2 matches ${entry}, so a runner log is annotated`).not.toContain(
+          `      -o -path "\${HOME}/${entry}"`,
+        );
+      }
+    });
+  });
+
   test("AC-9: the shapes a literal allowlist could not hold read CLEAN", () => {
     // Four of the twelve paths in the measured floor carry a uuid, an epoch
     // or an ISO timestamp, and a fifth is intermittent. These are the reason
@@ -775,6 +939,11 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     // nothing else. A hand-written extra exclusion is a second declaring
     // position for a list whose whole value is that there is one.
     const script = buildDriftScript();
+    // The runner-diagnostic list is NOT in `both`: it is emitted by its own
+    // anchored clause rather than the shared two-predicate form (#877), so it
+    // contributes four `-path` terms and no `-not -path` ones. The arithmetic
+    // below counts them explicitly — a list left out of the accounting is a
+    // list whose terms could be anything.
     const both = [...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS];
     // Without this the loops below run zero times against empty lists and the
     // counts compare 0 to 0 — the assertions hold vacuously, in the case
@@ -787,8 +956,13 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       AI_REVIEW_RUNTIME_CONFIG_PATHS.length,
       "the config list is empty, so everything below this line asserts nothing",
     ).toBeGreaterThan(0);
+    expect(
+      AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.length,
+      "the runner-diagnostic list is empty, so everything below this line asserts nothing",
+    ).toBeGreaterThan(0);
 
-    // Pass 1 excludes BOTH lists: a config path must not reach the refusal.
+    // Pass 1 excludes ALL THREE lists: neither a config path nor a runner
+    // diagnostic may reach the refusal.
     for (const entry of both) {
       expect(script, `${entry} is declared but not excluded from the refusal`).toContain(
         `-not -path "\${HOME}/${entry}" -not -path "\${HOME}/${entry}/*"`,
@@ -797,7 +971,7 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     const excluded = (script.match(/-not -path "\$\{HOME\}\//g) || []).length;
     expect(
       excluded,
-      "an exclusion under $HOME is in the script that neither declared list names",
+      "an exclusion under $HOME is in the script that no declared list names",
     ).toBe(both.length * 2);
 
     // Pass 2 MATCHES the config list, and only it. Counting the positive
@@ -809,10 +983,15 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       );
     }
     const allPathTerms = (script.match(/-path "\$\{HOME\}\//g) || []).length;
+    // Pass 2's positive terms, plus the runner-diagnostic clause's four per
+    // entry — two for the shallow shape it subtracts and two for the deeper
+    // shape it refuses to subtract.
     expect(
       allPathTerms - excluded,
-      "pass 2 matches a path under $HOME that AI_REVIEW_RUNTIME_CONFIG_PATHS does not declare",
-    ).toBe(AI_REVIEW_RUNTIME_CONFIG_PATHS.length * 2);
+      "a -path term under $HOME is in the script that no declared list accounts for",
+    ).toBe(
+      AI_REVIEW_RUNTIME_CONFIG_PATHS.length * 2 + AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.length * 4,
+    );
   });
 });
 
