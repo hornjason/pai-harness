@@ -2669,6 +2669,54 @@ export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToo
   };
 }
 
+/**
+ * The top-level concurrency block for the CI workflow.
+ *
+ * `cancel-in-progress` is an EXPRESSION, not `true`. A flat `true` cancels
+ * main-branch runs as well as pull-request runs, and those are not the same
+ * event:
+ *
+ *   - A pull request's ref is `refs/pull/<n>/merge`, unique to that PR, so a
+ *     new push to PR #5 can only ever cancel PR #5. Superseding it is the
+ *     point: the older commit's result is about code nobody will merge.
+ *
+ *   - A push to main shares ONE ref with every other push to main. Two merges
+ *     landing within a few minutes cancel the first, and the first is the only
+ *     run that ever builds that commit — a gap in main's history with no red
+ *     check anywhere to say so. Measured on one consumer: five cancelled runs,
+ *     all of them main pushes, and the `test` job runs on main push there, so
+ *     what was lost was a test result and not just a container build. The repo
+ *     and the run IDs are on #937 — the harness does not name its consumers
+ *     (#304), and `test/anti.test.ts` SC-A1 is the check that says so.
+ *
+ *   - `merge_group` must also resolve false. A queue entry builds its own
+ *     `gh-readonly-queue/...` ref and cancelling one mid-flight dequeues the
+ *     PR behind it.
+ *
+ * Only `pull_request` is safe to cancel, so only `pull_request` is named.
+ *
+ * This is a SUB-KEY merge under `mergeManagedWorkflow`: a consumer that already
+ * declares `cancel-in-progress` keeps its own value, and this reaches only the
+ * consumers that have no concurrency block at all.
+ */
+export const CI_CONCURRENCY = `# cancel-in-progress is an EXPRESSION and not \`true\`, deliberately.
+#
+# A pull request's ref is \`refs/pull/<n>/merge\`, unique to that PR, so a new
+# push to PR #5 can only cancel PR #5 — and superseding it is the point.
+#
+# A push to \`main\` shares ONE ref with every other push to main. Under a flat
+# \`true\`, two merges a few minutes apart cancel the first, and the first is the
+# only run that will ever build that commit: a gap in main's history with no
+# red check anywhere saying so. Measured on a consumer repo, every one of its
+# five cancelled runs was a main push.
+#
+# \`merge_group\` must resolve false for the same reason plus one more —
+# cancelling a queue entry mid-flight dequeues the PR behind it.
+concurrency:
+  group: ci-\${{ github.ref }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
+`;
+
 export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {
   const workflowsDir = join(root, ".github", "workflows");
   if (!existsSync(workflowsDir)) {
@@ -2828,6 +2876,7 @@ ${branchList}
     branches:
 ${branchList}
 
+${CI_CONCURRENCY}
 permissions:
   # Least privilege, and it matters most on the consumers. A workflow with
   # no permissions: block inherits the REPOSITORY default, which is a setting
@@ -2890,6 +2939,7 @@ ${branchList}
     branches:
 ${branchList}
 
+${CI_CONCURRENCY}
 permissions:
   # Least privilege, and it matters most on the consumers. A workflow with
   # no permissions: block inherits the REPOSITORY default, which is a setting
