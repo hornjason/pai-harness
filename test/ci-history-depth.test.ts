@@ -30,6 +30,46 @@
  * defect, reintroduced by its own regression test. Every fixture builds its
  * own repository; none reads the repository this file lives in, and none is
  * conditional.
+ *
+ * ## What was broken to prove it
+ *
+ * Run and counted over this file + `test/commit-classifier-rates.test.ts`
+ * (38 tests), under `HOME` at an empty `mkdtemp`. Every count AND the named
+ * set of reddened assertions was predicted before the battery ran. **The
+ * baseline row was read first** — and had to be read twice, because the first
+ * instrument reported a blank: the harness word-split its file list in zsh,
+ * which does not split an unquoted variable, so bun received one argument
+ * naming no file. A blank is not a zero.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** | 38 pass, 0 fail | **38 pass, 0 fail** | — |
+ * | M1 `ciHistoryReading` short-circuited to MEASURED | 9 | **9 of 38** | `{depth: 1, fetches: []}` — original UNMEASURED, mutant MEASURED |
+ * | M2 `CI_SUITE_FETCH_DEPTH` back to `1`, the pre-#987 value | 4 | **4 of 38** | the freshly generated `ci.yml` — original emits full history, mutant emits depth 1 and a bounded fetch |
+ * | M3 `baseRefFetchDepth` always `200` | 4 | **4 of 38** | `baseRefFetchDepth(0)` — original `null`, mutant `200`: the inert fix, generated |
+ * | M4 the `RESHALLOWED_BY_FETCH` loop deleted | 3 | **3 of 38** | `{depth: null, fetches: [{depth: 200}]}` — original UNMEASURED, mutant MEASURED |
+ * | M5 the `SHALLOW_CHECKOUT` branch deleted | 7 | **7 of 38** | `{depth: 1, fetches: []}`, as M1 |
+ *
+ * Every row reddened exactly the assertions predicted. M2 is the issue's own
+ * acceptance — *"setting the depth back to 1 reds the case, with the count
+ * recorded"* — and M3 is the inert fix, which is the repair a reader of #987
+ * would reach for first.
+ *
+ * **Which cells are witnesses and which are controls.** `AC-4: the control:
+ * the source repository itself is MEASURED` is a positive control: it reds
+ * only if the fixture broke, and it DID red in the classifier battery next
+ * door, which is the control doing its job rather than a finding.
+ * `AC-3: the emitted depth is the declaration` is an INSTRUMENT control — it
+ * compares the emitted YAML to `CI_SUITE_FETCH_DEPTH` on both sides, so M2
+ * cannot red it; it witnesses that the generator reads the declaration, never
+ * that the value is right. `AC-1: #987's own proposal` spells
+ * `MAX_COMMITS_SCANNED` on both sides and is likewise insensitive to that
+ * constant's VALUE; the assertion bound to the number is AC-4's
+ * `expect(MAX_COMMITS_SCANNED).toBeGreaterThan(COMMITS)`.
+ *
+ * None of the five mutations is left in the tree; all were run and reverted,
+ * and `lib/ci-history-depth.ts` was confirmed byte-identical by sha256
+ * afterwards.
  */
 import { describe, test, expect, afterAll } from "bun:test";
 import { spawnSync } from "child_process";

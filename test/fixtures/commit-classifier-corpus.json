@@ -1,0 +1,4012 @@
+{
+ "window": {
+  "repo": "this repository",
+  "ref": "main",
+  "head": "c573b96e3b41363b78b0a1ff194d4f85c6044d54",
+  "commits": 500,
+  "selector": "git log --no-merges -n500 --format=%H%x1f%cI%x1f%s"
+ },
+ "measuredOn": "2026-10-21",
+ "rows": [
+  {
+   "n": 1,
+   "sha": "c573b96e3b41",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#893): the Read deny was INERT — measured against the real CLI, and widened to Grep (#996)"
+  },
+  {
+   "n": 2,
+   "sha": "2c209e1be47b",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#939, #824, #893): three guards in ai-review-step that could not fail (#994)"
+  },
+  {
+   "n": 3,
+   "sha": "26d48b58abde",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#979): delete the managed-write path nothing calls, and prove #906's comparison cases bite (#991)"
+  },
+  {
+   "n": 4,
+   "sha": "95f76b2c919b",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#545, #544): mine the commit log for observed failures, and refuse to promote a rule nothing observed (#985)"
+  },
+  {
+   "n": 5,
+   "sha": "1d519c358720",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#903, #523): a sandbox detector as wide as the sandbox, and a determinism comparator that refuses the series it cannot measure (#982)"
+  },
+  {
+   "n": 6,
+   "sha": "8ac257dac14a",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#976 review 5): the AC-3b runner arm was a tautology; refuse bare flags (#986)"
+  },
+  {
+   "n": 7,
+   "sha": "b7cbabd9a1c4",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#827): date AGENTS.md by its content, so the harness is a fixed point of its own generator (#980)"
+  },
+  {
+   "n": 8,
+   "sha": "f7601e2fe947",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#923, #679): withdraw a grant whose reason is gone, and stop reporting a runner as empty (#973)"
+  },
+  {
+   "n": 9,
+   "sha": "b155b02141c6",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#970 review): close AC-4's CI fail-open, match hooks by name, redact the evidence (#976)"
+  },
+  {
+   "n": 10,
+   "sha": "2f51031171d9",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#505): the scaffold stops writing its config where git treats it as disposable (#978)"
+  },
+  {
+   "n": 11,
+   "sha": "4767fb076532",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#968): each detector matches its whole subject, measured both ways (#974)"
+  },
+  {
+   "n": 12,
+   "sha": "7ed8f1e440c2",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "feat(#875): compare the published artifact by CONTENT, not by version string (#977)"
+  },
+  {
+   "n": 13,
+   "sha": "4e2fd7a5073f",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#506): CONFIG-1 reads the source it could not reach, instead of refusing over it (#975)"
+  },
+  {
+   "n": 14,
+   "sha": "78a94f634ed4",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#957, #955): the merge can tell its own old output from the consumer's, and puts back what #941 dropped (#972)"
+  },
+  {
+   "n": 15,
+   "sha": "962bcd8f6f12",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#910, #713): read every settings scope, and make a fired hook leave evidence (#970)"
+  },
+  {
+   "n": 16,
+   "sha": "92d671b31fef",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#952): key a push on its own sha, so no two main runs share a concurrency group (#959)"
+  },
+  {
+   "n": 17,
+   "sha": "99d3ee178f11",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#960): the drift reading stops consulting a config the reviewer can write (#965)"
+  },
+  {
+   "n": 18,
+   "sha": "b770adbb0a5f",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#804, #323): the scan says what it was reading when it ran out of time (#966)"
+  },
+  {
+   "n": 19,
+   "sha": "072c2364e742",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#926, #962): give the bookkeeping list a reachability witness, and drop a dead import (#964)"
+  },
+  {
+   "n": 20,
+   "sha": "b3ee1269d22c",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#958): the config alone decides ownership, and a partial scan still reports its drift (#963)"
+  },
+  {
+   "n": 21,
+   "sha": "41d287c5c54b",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#947, #949): name a plant in a consumed directory, and classify the residue (#953)"
+  },
+  {
+   "n": 22,
+   "sha": "4615ad89357c",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#941): a top-level section the merge adds arrives with the comment introducing it (#956)"
+  },
+  {
+   "n": 23,
+   "sha": "e227025b4238",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#690): say which of the three conditions each candidate met, and record the ppid-1 false positive (#961)"
+  },
+  {
+   "n": 24,
+   "sha": "80c56313514e",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#940): the generated CI workflows can be re-run on demand (#945)"
+  },
+  {
+   "n": 25,
+   "sha": "e79f300281e7",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "fix(#924): every assertion in anti.test.ts says what to write instead (#954)"
+  },
+  {
+   "n": 26,
+   "sha": "b73b5d24a368",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "feat(#892): the collect refusal says whether the copies it refuses are the same bytes (#950)"
+  },
+  {
+   "n": 27,
+   "sha": "526630c26c62",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#707, #690): decide suite liveness from the executable, and reap orphans by pid rather than by pattern (#938)"
+  },
+  {
+   "n": 28,
+   "sha": "394461fb9bea",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "fix(#915): wire #722's workflow census into a consumer check, override-aware (#928)"
+  },
+  {
+   "n": 29,
+   "sha": "f0d8e717daa5",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#946): remove the five Copilot subtractions; their writer is deleted (#948)"
+  },
+  {
+   "n": 30,
+   "sha": "6e1a8ae83d9b",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#932): the generator consults isPinnedBunVersion, so a moving tag is emitted as UNPINNED (#944)"
+  },
+  {
+   "n": 31,
+   "sha": "e082ce4ba77f",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#935): one fallow budget, and a timeout that does not claim the tool is missing (#943)"
+  },
+  {
+   "n": 32,
+   "sha": "1ce7512ab86d",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#937): emit a concurrency block from both CI templates, cancelling only pull requests (#942)"
+  },
+  {
+   "n": 33,
+   "sha": "6a8b1ad20dc6",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#931): a directory at a file-shaped entry no longer exempts its contents (#934)"
+  },
+  {
+   "n": 34,
+   "sha": "a95b312a9734",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#921): take the containment reading off $HOME (#936)"
+  },
+  {
+   "n": 35,
+   "sha": "769397c93066",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#925): the bypass lane lets the PR close the issue, checked against the audit's own reader (#933)"
+  },
+  {
+   "n": 36,
+   "sha": "17b15103902b",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#867): ai-review reports on merge_group, so a required check cannot hang the queue (#930)"
+  },
+  {
+   "n": 37,
+   "sha": "ae0d24cc4a68",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#889): a terminal refusal says resume will replay it from cache (#920)"
+  },
+  {
+   "n": 38,
+   "sha": "d514ff50c13c",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#905): decide regex-vs-division on a token, not on one character (#927)"
+  },
+  {
+   "n": 39,
+   "sha": "c1515621340b",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#834): let the write deliver the permissions the merge computed (#916)"
+  },
+  {
+   "n": 40,
+   "sha": "f43bd1750af6",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#907, #913): two more owners of a shared self-hosted $HOME (#922)"
+  },
+  {
+   "n": 41,
+   "sha": "89144e8ed29d",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "feat(#909): refuse strict:true where no merge queue is possible (#914)"
+  },
+  {
+   "n": 42,
+   "sha": "bf9e6b8347de",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(#900): the commit-subject reading gets a case that executes it (#919)"
+  },
+  {
+   "n": 43,
+   "sha": "d9bf23eacbfe",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#839, #840): merge a workflow's top-level keys sub-key by sub-key, so a CI fix reaches repos already scaffolded (#917)"
+  },
+  {
+   "n": 44,
+   "sha": "6ca5dc534552",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#911): make ship mode a declared project fact, so a bypass is not a standing rule conflict (#918)"
+  },
+  {
+   "n": 45,
+   "sha": "1f524971b6e3",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#898): the four hook positions agree by name, because five floors could not see an absence (#912)"
+  },
+  {
+   "n": 46,
+   "sha": "17ad9a2352ec",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#872): say in the schema what worktreeRepo is, and name the mistake when it is not (#902)"
+  },
+  {
+   "n": 47,
+   "sha": "9322fdeadea0",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#897): a sibling runner's _work/_temp is runner scratch, and is subtracted (#901)"
+  },
+  {
+   "n": 48,
+   "sha": "73bb61f353ee",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#887): a PR body must declare it closes an issue, not merely cite it (#899)"
+  },
+  {
+   "n": 49,
+   "sha": "148ff095b613",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#879): a SessionStart hook takes the installed-hook currency reading (#895)"
+  },
+  {
+   "n": 50,
+   "sha": "a70b0e667eaf",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#891): the currency check reports on every hook the scaffold installs (#894)"
+  },
+  {
+   "n": 51,
+   "sha": "a943d03caf3d",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#883): one binding decides what a test declaration is (#890)"
+  },
+  {
+   "n": 52,
+   "sha": "012d2b7dd9e0",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#885): a deny rule that matches no known tool now says so, and the suite refuses a new one (#888)"
+  },
+  {
+   "n": 53,
+   "sha": "641727c2ac7f",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#884): a brief reference into a package that is not installed is UNMEASURED, not broken (#886)"
+  },
+  {
+   "n": 54,
+   "sha": "0e306e676221",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#880): a renamed test case is a rename, not a deletion (#882)"
+  },
+  {
+   "n": 55,
+   "sha": "7b8443508cde",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#877): the CI runner's own diagnostics are not the reviewer (#881)"
+  },
+  {
+   "n": 56,
+   "sha": "624f5698986e",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#874): the hook currency check reads the file git will run, and names the patterns it lacks (#878)"
+  },
+  {
+   "n": 57,
+   "sha": "bb0581b66b69",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(#865): measure the tier-2 exclusion separately from #489, and record its battery (#876)"
+  },
+  {
+   "n": 58,
+   "sha": "dcf8d33da14f",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#863: a dotted path is not a credential, and a JWT is not a dotted path (#868)"
+  },
+  {
+   "n": 59,
+   "sha": "608fa7c8586e",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#871: the ai-review noise floor splits by what a write there can DO (#873)"
+  },
+  {
+   "n": 60,
+   "sha": "2ee3c626942e",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#866: the outside-the-checkout noise floor is measured, so the reading refuses (#870)"
+  },
+  {
+   "n": 61,
+   "sha": "2d0bbefdb3fd",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#848: a credential in a shell default, caught by shape when the name says nothing (#864)"
+  },
+  {
+   "n": 62,
+   "sha": "27bdd9a1b952",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#813): the Tier 1 conformity checks name the rule file that explains them (#815)"
+  },
+  {
+   "n": 63,
+   "sha": "a0dc5f51429e",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#857: the committed workflow came out of the generator, and the surface grew (#859)"
+  },
+  {
+   "n": 64,
+   "sha": "cff7aa8e5477",
+   "date": "2026-10-21",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "session 56: record 2026-10-21, and lower PROJECT-STATE.md's citation bank (#860)"
+  },
+  {
+   "n": 65,
+   "sha": "c175b9bcd6d9",
+   "date": "2026-10-21",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#856: the annotation encoder, the head's .gitignore, and the hash-object filter (#858)"
+  },
+  {
+   "n": 66,
+   "sha": "ab2c32b2c201",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#853: the ai-review drift reading measures content, not index state (#855)"
+  },
+  {
+   "n": 67,
+   "sha": "bc56a7c2c08c",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Read outside the checkout after the review, and correct #843 finding 1 (#854)"
+  },
+  {
+   "n": 68,
+   "sha": "9008ec887a08",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Move the cloud credential out of the directory the reviewer reads (#852)"
+  },
+  {
+   "n": 69,
+   "sha": "70e4083496ef",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Seal the ai-review drift baseline so the reviewer cannot forge it (#850)"
+  },
+  {
+   "n": 70,
+   "sha": "ba69a7afa66a",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#826): the report step reads the payload, and names the route it measured (#849)"
+  },
+  {
+   "n": 71,
+   "sha": "47fe6ccabddd",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#844): the tier-2 secret scan reads case the way credentials are written (#847)"
+  },
+  {
+   "n": 72,
+   "sha": "daf91c0e86ab",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#843): the drift step stops substituting `none` for an unreadable mode (#846)"
+  },
+  {
+   "n": 73,
+   "sha": "96866edd0f2b",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#803): name the app-install remedy on a correctly-credentialed failure (#845)"
+  },
+  {
+   "n": 74,
+   "sha": "4207be464bd3",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#837): record the #836 battery in HARNESS-STANDARD.md, and check its shape (#842)"
+  },
+  {
+   "n": 75,
+   "sha": "0e77c4e4b7e4",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#836): restore the untrusted paths BEFORE the baseline, not after it (#841)"
+  },
+  {
+   "n": 76,
+   "sha": "de32009af7ef",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#706): the COMMIT phase stops pasting the issue title into an agent prompt (#838)"
+  },
+  {
+   "n": 77,
+   "sha": "a9b6026202de",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "test(#832): the AC case census is run, not greped — and half the premise was false (#835)"
+  },
+  {
+   "n": 78,
+   "sha": "dbc9ad67a7e9",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#830): a reported path is measured when it is reported, not two hours later (#833)"
+  },
+  {
+   "n": 79,
+   "sha": "141400b1497f",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#827): one spec scan, not two — restore STATES NO CRITERIA and the testable boolean (#829)"
+  },
+  {
+   "n": 80,
+   "sha": "ff46c944c3dc",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#810): a todo declaration outranks a comment that cites the criterion (#828)"
+  },
+  {
+   "n": 81,
+   "sha": "61992152fb52",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#684): compare the deleted-tests verdict against the artefact's own signature (#745)"
+  },
+  {
+   "n": 82,
+   "sha": "561e76a7e86e",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#696): ship.js interpolates the GitHub issue title into a shell command unquoted — command injection, and a closing keyword as the mild case (#708)"
+  },
+  {
+   "n": 83,
+   "sha": "c1e07d8fc2e9",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#632): the generated review gate explains itself (#823)"
+  },
+  {
+   "n": 84,
+   "sha": "9b7c563f47bf",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#809): prove reads UI evidence from a directory it owns, and the glob never matched Playwright's output (#821)"
+  },
+  {
+   "n": 85,
+   "sha": "5384d059b9f2",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#812): the ai-review turn budget, measured instead of guessed (#814)"
+  },
+  {
+   "n": 86,
+   "sha": "c63abc21b4ac",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#675): the findings reader becomes a command a consumer can run (#819)"
+  },
+  {
+   "n": 87,
+   "sha": "e0429b828c48",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#804): a suite margin reading over reports that exist (#811)"
+  },
+  {
+   "n": 88,
+   "sha": "1222742bce48",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#806): the screenshot test published a public gist per case (#807)"
+  },
+  {
+   "n": 89,
+   "sha": "b5ffabca46b3",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#631): the AI review authenticates with Workload Identity Federation, no service-account key (#800)"
+  },
+  {
+   "n": 90,
+   "sha": "548de8ae44a4",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#793): delete the optional keyword head from both scratch-root patterns (#798)"
+  },
+  {
+   "n": 91,
+   "sha": "194d8837e328",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#799: a series says what its tree signature covered (#802)"
+  },
+  {
+   "n": 92,
+   "sha": "0e9b4b3f2a70",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#799): phase-0 collects from a fixture it built, not one a previous run left (#801)"
+  },
+  {
+   "n": 93,
+   "sha": "9334087be1c9",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#795): carry #653's re-measurement into the rules file, and compare the two records (#797)"
+  },
+  {
+   "n": 94,
+   "sha": "bff1a4355a33",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#653): put the re-measurement in the spec, not only in a commit message (#794)"
+  },
+  {
+   "n": 95,
+   "sha": "6ba9df3a6412",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#728): the pre-push hook resolves node_modules from the main checkout (#742)"
+  },
+  {
+   "n": 96,
+   "sha": "cf21bf1cdfa1",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#323: the flake series reported CONSISTENT over ten killed runs — fix the cause and the blindness (#792)"
+  },
+  {
+   "n": 97,
+   "sha": "07def1bf92ac",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "#323 SC-5: ten consecutive runs read as a series, and the assertion count written down (#791)"
+  },
+  {
+   "n": 98,
+   "sha": "c05fe35705a8",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "#789: schedule the action-pin freshness check, and declare the bump procedure once (#790)"
+  },
+  {
+   "n": 99,
+   "sha": "d595a36d6a33",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "feat(323): a failing suite run says WHICH test failed, and when it cannot (#788)"
+  },
+  {
+   "n": 100,
+   "sha": "8b7ef37cf149",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(529): one extension point inside the managed CI job (#787)"
+  },
+  {
+   "n": 101,
+   "sha": "a1609431fe0a",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#592): re-read the launch base before every wave, not only at Goal (#786)"
+  },
+  {
+   "n": 102,
+   "sha": "a74d0d46edec",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#781): make the PROJECT-STATE.md derivation claim a reading, not a constant (#785)"
+  },
+  {
+   "n": 103,
+   "sha": "4cc90cc61e1c",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#653): re-measure #652's battery against the live tree and tick its criteria (#784)"
+  },
+  {
+   "n": 104,
+   "sha": "08459ae1a730",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(#671): hold the collect refusal's atomicity, which was true and unwitnessed (#783)"
+  },
+  {
+   "n": 105,
+   "sha": "0413ced46767",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#702): hold the run-branch resume behaviourally, and report what the run did about a prior branch (#782)"
+  },
+  {
+   "n": 106,
+   "sha": "9b9cc7e2eac5",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#751: compare the plan's union against discovery, and refuse the gap at plan time (#780)"
+  },
+  {
+   "n": 107,
+   "sha": "aa1a8b6773d2",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#750: make collectWorktreeFiles atomic — a throw leaves the project root as it was (#779)"
+  },
+  {
+   "n": 108,
+   "sha": "87f997acc06e",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#713: assert which hook tree a registration names, and ratchet the duplicates (#778)"
+  },
+  {
+   "n": 109,
+   "sha": "d840a806f238",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(377): one declaration for every action a generated workflow uses (#777)"
+  },
+  {
+   "n": 110,
+   "sha": "0a453aa72751",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(737): one split, so the two counts cannot disagree (#776)"
+  },
+  {
+   "n": 111,
+   "sha": "0aefe987fd8d",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(759): a strategy nothing passes, and one that would have clobbered (#775)"
+  },
+  {
+   "n": 112,
+   "sha": "0362a7331b8c",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(758): a behavioral criterion with no reading says so (#774)"
+  },
+  {
+   "n": 113,
+   "sha": "824f0cae3cd6",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#677 AC5): an absent ai-review mode is UNMEASURED, not a silent none (#773)"
+  },
+  {
+   "n": 114,
+   "sha": "c13cce64cbc4",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#767): apply the provenance marker to the bytes that are written (#772)"
+  },
+  {
+   "n": 115,
+   "sha": "bb7a92495211",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#733): walk test directories recursively, through one binding (#771)"
+  },
+  {
+   "n": 116,
+   "sha": "11c021ea2911",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#740): point consumer-requirements at the generated ownership table (#754)"
+  },
+  {
+   "n": 117,
+   "sha": "f2c834b489cc",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#648: choose the hill-climb destination deliberately, and move the re-grade with it (#756)"
+  },
+  {
+   "n": 118,
+   "sha": "0518b6fff18e",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(#739): bind the job-preserving rows to the jobs the generator emits (#753)"
+  },
+  {
+   "n": 119,
+   "sha": "4da8c9d6abf3",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#642): mark every audit report line as a rehearsal, not just the notice (#752)"
+  },
+  {
+   "n": 120,
+   "sha": "db810c24d969",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#494): sign the heal-round test census, and read \"a gate already ran\" from the witness store (#744)"
+  },
+  {
+   "n": 121,
+   "sha": "29dccf10ac3f",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#765): generated CI and gates workflows handle merge_group (#768)"
+  },
+  {
+   "n": 122,
+   "sha": "eb3612a3f056",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#211 SC-F): clean-env read the aggregate job, so the command never ran (#763)"
+  },
+  {
+   "n": 123,
+   "sha": "033886e51bd1",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#766): resolve the currency comparison in one timezone frame (#769)"
+  },
+  {
+   "n": 124,
+   "sha": "ef3f8796f073",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#732): the reviewer's prompt was unexecutable for four reasons, and SlashCommand was none of them (#746)"
+  },
+  {
+   "n": 125,
+   "sha": "9e65ade6d3b5",
+   "date": "2026-10-20",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "chore: session 55 state record (#764)"
+  },
+  {
+   "n": 126,
+   "sha": "7de6c4e6c6e4",
+   "date": "2026-10-20",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#755): assert the compliance surface was READ, not that it scored badly (#761)"
+  },
+  {
+   "n": 127,
+   "sha": "990688a0eb01",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#685 AC-6): refuse a bare model-family alias in the generated review job (#762)"
+  },
+  {
+   "n": 128,
+   "sha": "9f0acc1ae0ae",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#722): report every workflow file, not only the two the harness writes (#760)"
+  },
+  {
+   "n": 129,
+   "sha": "68051d691668",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#328): the behavioral verification path had no production call site (#757)"
+  },
+  {
+   "n": 130,
+   "sha": "9b98596213d9",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#489): the tier-2 secret scan read a minified `===` as an assignment (#743)"
+  },
+  {
+   "n": 131,
+   "sha": "ba4ba038b44d",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "#725: make the SC reservation a file the allocator reads (#748)"
+  },
+  {
+   "n": 132,
+   "sha": "efa90984082c",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#640 + #644: resolve the run branch from both refs, and make the launch-base check something the run executes (#731)"
+  },
+  {
+   "n": 133,
+   "sha": "8e3412f56c36",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#635): witness the resolved UNMODELLED Bun entry, and the prose that summarises it (#741)"
+  },
+  {
+   "n": 134,
+   "sha": "a2e865c561da",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#707): the suite-liveness reading is injected, and the regex is not the bug (#727)"
+  },
+  {
+   "n": 135,
+   "sha": "1c866abce2c9",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#700): resolve this run's artifacts from the directory the gate passed, not from a global (#749)"
+  },
+  {
+   "n": 136,
+   "sha": "55b75667f731",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "#637: derivation cases, mutation evidence, and one named binding (#723)"
+  },
+  {
+   "n": 137,
+   "sha": "897652df0da7",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#541: read every line citation in the tree, and refuse to call one valid (#730)"
+  },
+  {
+   "n": 138,
+   "sha": "52c4c8e6579a",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(scaffold): resolve the pre-commit updater at generation time, not from a filename at commit time (#734)"
+  },
+  {
+   "n": 139,
+   "sha": "b2929a713352",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#700): relay each failing check's own reason, and name the path the brief check resolved (#738)"
+  },
+  {
+   "n": 140,
+   "sha": "3c7df291384b",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#704): map every COMP id to a destination heading (#717)"
+  },
+  {
+   "n": 141,
+   "sha": "5a4abdc8b74a",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Authenticate the reviewer with no service-account key (#630 AC-15) (#729)"
+  },
+  {
+   "n": 142,
+   "sha": "c664837a27be",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "perf(ci): shard the suite across runners, keeping `test` as the required check (#735) (#736)"
+  },
+  {
+   "n": 143,
+   "sha": "71e3f413546b",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: stop expectGateGreen discarding the diagnosis it exists to print (#700) (#726)"
+  },
+  {
+   "n": 144,
+   "sha": "eaf4bf244d82",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: repair main after eight parallel merges — one SC collision, three ratchets, two contract assertions (#724)"
+  },
+  {
+   "n": 145,
+   "sha": "e1b39c8c1b97",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#689): one declaration for the claude-code-action pin, and a check that refuses (#721)"
+  },
+  {
+   "n": 146,
+   "sha": "1e8160b1e8de",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#605: ask GitHub whether a declared id is closed, not the prose (#720)"
+  },
+  {
+   "n": 147,
+   "sha": "94b4c2995271",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#705): an empty evidence reading says so, instead of reading as an absence (#719)"
+  },
+  {
+   "n": 148,
+   "sha": "4b87582a0a89",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#617,#619): emit every top-level doc, and route both sites through one binding (#718)"
+  },
+  {
+   "n": 149,
+   "sha": "e79ee4f79c34",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#598): the TDZ check reads every identifier, and names the ones it declines (#716)"
+  },
+  {
+   "n": 150,
+   "sha": "99979fb7b72b",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#655): a brief carries one region a re-scaffold does not own (#715)"
+  },
+  {
+   "n": 151,
+   "sha": "044bb5e3c59c",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#606: a leg that was not probed reports UNMEASURED by name (#714)"
+  },
+  {
+   "n": 152,
+   "sha": "0b8511dad333",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#613): the class decides the label, not the catch that happened to see it (#711)"
+  },
+  {
+   "n": 153,
+   "sha": "45cccfe416db",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "chore: session 54 state record (#710)"
+  },
+  {
+   "n": 154,
+   "sha": "db66dd7992dc",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#640): restore the shared checkout from both terminal funnels (#709)"
+  },
+  {
+   "n": 155,
+   "sha": "e02afd4637a9",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#645): the zero-reinforcement baseline, measured rather than estimated (#703)"
+  },
+  {
+   "n": 156,
+   "sha": "6debf40a08f0",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#629): an absent claim says WHICH absence it is (#701)"
+  },
+  {
+   "n": 157,
+   "sha": "e278cb7b35a1",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#663): the relay is compared against what the script computed, and the declaration admits the type (#699)"
+  },
+  {
+   "n": 158,
+   "sha": "d54e827c73ba",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: a contract gate that never reported is not a gate that passed (#698)"
+  },
+  {
+   "n": 159,
+   "sha": "2213bc54c4c4",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#654): take the existence probe before the write it describes (#697)"
+  },
+  {
+   "n": 160,
+   "sha": "6af54fad86b6",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#662): name the two paths that reached a continue without a state (#695)"
+  },
+  {
+   "n": 161,
+   "sha": "08dec313132a",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#673): one denominator per measurement, and a partial reading that says so (#694)"
+  },
+  {
+   "n": 162,
+   "sha": "1bc2d824325f",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#668): an anchor naming two places is a refusal, not a guess — and three sites were live (#693)"
+  },
+  {
+   "n": 163,
+   "sha": "e1b2b9982d2f",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#640): put the shared checkout back, and delete the run branch only when its content already landed (#692)"
+  },
+  {
+   "n": 164,
+   "sha": "3edde9d17bc4",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#602): record which harness graded the run, and say when it diverges (#688)"
+  },
+  {
+   "n": 165,
+   "sha": "cfc1415dd32f",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#687): read an issue reference in prose as `#N`, in a ref as a bare number (#691)"
+  },
+  {
+   "n": 166,
+   "sha": "2ead8c9f60e4",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#644): refuse a launch whose session cwd is not the tree it was handed (#686)"
+  },
+  {
+   "n": 167,
+   "sha": "22b39d372cd7",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#661): per-case deletion waiver, measured against the wrong fix (#683)"
+  },
+  {
+   "n": 168,
+   "sha": "fb5d48b338cf",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#659): land Phase 1 — a wrong AC verdict triggered a repair that deleted the tests proving the criterion (#682)"
+  },
+  {
+   "n": 169,
+   "sha": "f88d4bddf663",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#624): observe the working tree, not the return value, when a reinforcement says it went elsewhere (#681)"
+  },
+  {
+   "n": 170,
+   "sha": "9b37bf175ca0",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#657): an empty search over a store you did not write needs a control, and the number needs its command (#680)"
+  },
+  {
+   "n": 171,
+   "sha": "19d9ebbd5010",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#676): select tests by what the change can reach, and refuse when the graph cannot tell (#678)"
+  },
+  {
+   "n": 172,
+   "sha": "875f9014e60b",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 53 — the evidence check fired on this repo's own fixture (#674)"
+  },
+  {
+   "n": 173,
+   "sha": "d48b9a7e5280",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#669): check an AC evidence command against the thing it claims to measure (#672)"
+  },
+  {
+   "n": 174,
+   "sha": "7f65654bec8d",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 52 — eleven source-slice windows converted, and three gates that failed correct work (#670)"
+  },
+  {
+   "n": 175,
+   "sha": "66a74648b903",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#664): Ten source-slice guards cut a fixed character count instead of a construct, and one with 650 characters of headroom just reddened on an unrelated insertion (#667)"
+  },
+  {
+   "n": 176,
+   "sha": "3a1229030068",
+   "date": "2026-10-19",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 51 — #646 merged partially, two runs stopped for deleting their own evidence (#665)"
+  },
+  {
+   "n": 177,
+   "sha": "430df61bc3c5",
+   "date": "2026-10-19",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#646): The hill-climb receipt cannot distinguish 'nothing to reinforce' from 'could not reinforce anything', and three sessions mistook an absent instrument for an absent problem (#660)"
+  },
+  {
+   "n": 178,
+   "sha": "3b10f7458d54",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#652): A wave commit refused because the shared primary was on main, and the failure detail threw away the branch it had been handed (#656)"
+  },
+  {
+   "n": 179,
+   "sha": "20a8aa624876",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#649): pin the spawned seed writer's timezone, so §3 is not red five hours a night (#651)"
+  },
+  {
+   "n": 180,
+   "sha": "cab219708b1e",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#624): name where a reinforcement goes, and stop it emitting broken markdown (#650)"
+  },
+  {
+   "n": 181,
+   "sha": "ad674763849f",
+   "date": "2026-10-18",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#630): home the PR review gate tooling research in docs/research/ (#647)"
+  },
+  {
+   "n": 182,
+   "sha": "421c4b000118",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#630): A scaffolded AI review gate with no credentials must report UNMEASURED, not a green required check (#641)"
+  },
+  {
+   "n": 183,
+   "sha": "41f2e640ce32",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#597): install agnix and @reporails/cli in CI, and report UNMEASURED when a probe cannot run (#643)"
+  },
+  {
+   "n": 184,
+   "sha": "2d09f8a63a02",
+   "date": "2026-10-18",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.6.0 is on the registry, and the tarball was checked against the artifact"
+  },
+  {
+   "n": 185,
+   "sha": "2cda84b0e489",
+   "date": "2026-10-18",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.6.0"
+  },
+  {
+   "n": 186,
+   "sha": "a0a9e08dfc7c",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#626): Eight defects this session were one shape: a producer and consumer that must agree, with nothing comparing them (#639)"
+  },
+  {
+   "n": 187,
+   "sha": "f87b58f2abe5",
+   "date": "2026-10-18",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#630): AI review auth ladder — an absent credential is UNMEASURED (#638)"
+  },
+  {
+   "n": 188,
+   "sha": "ad702420a317",
+   "date": "2026-10-18",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "Trial: Vertex-backed Claude review workflow (#630) (#633)"
+  },
+  {
+   "n": 189,
+   "sha": "45495ccadfe2",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#622): nothing pinned Bun, and release.yml pinned it to the one version CI never used (#636)"
+  },
+  {
+   "n": 190,
+   "sha": "147172998e97",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#627): wave integration stripped file claims, so a non-final wave with two or more worktrees refused its own correct work (#634)"
+  },
+  {
+   "n": 191,
+   "sha": "0357c06cecfc",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#621): every ship run reported SUITE_FAILED because the configured test command starved I/O-bound tests past bun's 5s timeout (#628)"
+  },
+  {
+   "n": 192,
+   "sha": "26565f89aecb",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#614): an agent-authored evidence command lost every $ on the way to the state file (#623)"
+  },
+  {
+   "n": 193,
+   "sha": "e983fc27a07d",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#611): A ship run lost its whole collection because filesChanged entries carried prose annotations (#616)"
+  },
+  {
+   "n": 194,
+   "sha": "08092225bb98",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#600): stamp the local calendar day, not the UTC one (#615)"
+  },
+  {
+   "n": 195,
+   "sha": "5d93d98caa5c",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#599): the pre-commit hook's primary arm, and the installed copy nobody could see (#612)"
+  },
+  {
+   "n": 196,
+   "sha": "289d267fe4b8",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#589): The loose file-exists fallback turns a behavioural criterion into a presence one (#608)"
+  },
+  {
+   "n": 197,
+   "sha": "4e50ccfee919",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#593): the allocator's registry leg is required, and the reading says which legs ran (#603)"
+  },
+  {
+   "n": 198,
+   "sha": "2cd32863444c",
+   "date": "2026-10-18",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 50 — #274, #586, #590 and #585 merged (#604)"
+  },
+  {
+   "n": 199,
+   "sha": "0e263704511b",
+   "date": "2026-10-18",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#585): the TDZ check reads reads, not just assignments (#601)"
+  },
+  {
+   "n": 200,
+   "sha": "917e7a836e01",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#590): refuse a state record whose text closes issues it never declared (#596)"
+  },
+  {
+   "n": 201,
+   "sha": "b4c2e69fb731",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "fix(#274): exercise the five tier-gated subsystems a consumer run uses, on a consumer fixture (#595)"
+  },
+  {
+   "n": 202,
+   "sha": "8d2697916759",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#586): A scaffold run rewrites a spec criterion into an unrelated one, and discards the original exactly when it is most confident (#591)"
+  },
+  {
+   "n": 203,
+   "sha": "2860b361bd23",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 49 — #508, #478, #581 and #579 merged (#588)"
+  },
+  {
+   "n": 204,
+   "sha": "7200f973f703",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#579): a document the routing table calls a spec states something (#587)"
+  },
+  {
+   "n": 205,
+   "sha": "6715ba23247d",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#581: resolve fallow locally on the scaffold path, and name the gap when it is absent (#584)"
+  },
+  {
+   "n": 206,
+   "sha": "854a6f20280c",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#478: calibrate the scaffold budget, and report an over-budget run as UNMEASURED (#583)"
+  },
+  {
+   "n": 207,
+   "sha": "26b832604d53",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#508: two full-suite-only failures — one slowness removed, one budget made honest (#582)"
+  },
+  {
+   "n": 208,
+   "sha": "6a5898060c83",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record #568, #574 and #572 in session 48 (#580)"
+  },
+  {
+   "n": 209,
+   "sha": "6fe320f862c9",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#572): the handoff renders the newest sessions by date, not by array position (#578)"
+  },
+  {
+   "n": 210,
+   "sha": "3a70e74818a2",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#574): a test that never runs does not tick a criterion — 38 false ticks removed (#577)"
+  },
+  {
+   "n": 211,
+   "sha": "6ae7b45fbe31",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: move COLLECT-CLAIM above the decomposed-ship call to clear a TDZ (#576)"
+  },
+  {
+   "n": 212,
+   "sha": "ccee30f6def2",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#568): AGENTS.md is section-owned, and the section the spec guarantees now survives (#575)"
+  },
+  {
+   "n": 213,
+   "sha": "b98d3befadce",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record #507 in session 48, and put session 48 where the renderer looks (#573)"
+  },
+  {
+   "n": 214,
+   "sha": "469ef0842edc",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#507): the owned-file symlink refusal, measured on the strategies it actually covers (#571)"
+  },
+  {
+   "n": 215,
+   "sha": "6faa22940c8d",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#568): claim 6's standing — the pipeline's output has a half-life (#569)"
+  },
+  {
+   "n": 216,
+   "sha": "6c67eda429fb",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "spec(#544): rule lifecycle, path-scoped loading, and the concurrent-load budget (#548)"
+  },
+  {
+   "n": 217,
+   "sha": "fc4b4f5c3521",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record #510 and #553 in session 48"
+  },
+  {
+   "n": 218,
+   "sha": "7ef0c53388a9",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#553): a report states the tree it measured (#567)"
+  },
+  {
+   "n": 219,
+   "sha": "1e122b129f1a",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#510): the suite budget belongs to this repository's suite (#566)"
+  },
+  {
+   "n": 220,
+   "sha": "a8df72afb70e",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record #503, #497 and #471 in session 48"
+  },
+  {
+   "n": 221,
+   "sha": "f1318fbab364",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#471): catch a path that is tracked and ignored, and the link that neither sees (#565)"
+  },
+  {
+   "n": 222,
+   "sha": "878ca23409b8",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#497): a declared doc may not leave the project unless something outside it says so (#564)"
+  },
+  {
+   "n": 223,
+   "sha": "2fe9e4c39d3b",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#503): allocate SC ids from the machine, not the checkout (#563)"
+  },
+  {
+   "n": 224,
+   "sha": "5c412b867c95",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record #382, #552, #501, #506 and #488 in session 48"
+  },
+  {
+   "n": 225,
+   "sha": "083a74a98457",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#488): one binding decides a project's test command (#562)"
+  },
+  {
+   "n": 226,
+   "sha": "bef9ee73b393",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#506, partial): the config scan reads every extension the evidence walk counts (#561)"
+  },
+  {
+   "n": 227,
+   "sha": "34e84767044e",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#501): CONFIG-2 reads TypeScript workflows, and CONFIG-1 hands them off (#560)"
+  },
+  {
+   "n": 228,
+   "sha": "b3456dfdc4dd",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#382, #552): the AGENTS.md audit reads the surfaces the generator writes to (#559)"
+  },
+  {
+   "n": 229,
+   "sha": "49ca5d80ffec",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: session 48 records #543, #531 and #549, and SUCCESS.md's suite figure"
+  },
+  {
+   "n": 230,
+   "sha": "f0e397a40cd6",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#549): exclude during the rehearsal copy, and clear BSD flags before discarding (#558)"
+  },
+  {
+   "n": 231,
+   "sha": "9c628cb9943e",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The changed-file list carried the other side of the fork (#531) (#557)"
+  },
+  {
+   "n": 232,
+   "sha": "51805b3719e0",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip(#543): pin the cost guard in declinedIsDir (#556)"
+  },
+  {
+   "n": 233,
+   "sha": "c361ba0ca9e8",
+   "date": "2026-10-17",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record #550 and #532 in session 48"
+  },
+  {
+   "n": 234,
+   "sha": "741522391df6",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A refusal a later gate re-ran and did not reproduce (#532) (#555)"
+  },
+  {
+   "n": 235,
+   "sha": "4e354b74bb5b",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The gate outlives what it starts, and a timeout keeps its reason (#550) (#554)"
+  },
+  {
+   "n": 236,
+   "sha": "9004d6764732",
+   "date": "2026-10-17",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Give environments.local a producer that always runs (#530) (#551)"
+  },
+  {
+   "n": 237,
+   "sha": "caac9fd993c1",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.5.0 is on the registry, and the tarball was checked this time"
+  },
+  {
+   "n": 238,
+   "sha": "745bc58afb2f",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.5.0"
+  },
+  {
+   "n": 239,
+   "sha": "90951be5ed1a",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Refuse a suite run that measured nothing (#469, #490) (#546)"
+  },
+  {
+   "n": 240,
+   "sha": "14f396c09de3",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#492): CONFIG-1 says what it did not read, and stops missing src/ (#540)"
+  },
+  {
+   "n": 241,
+   "sha": "daccf86c4bff",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#517): a finding's file field is produced, not parsed back out of prose (#528)"
+  },
+  {
+   "n": 242,
+   "sha": "c4cdacefadfd",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#516): verify a merge landed the reviewed content, not just that it merged (#527)"
+  },
+  {
+   "n": 243,
+   "sha": "2141a9f01f6d",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#515): the residue check survives a reflow of the template prose (#525)"
+  },
+  {
+   "n": 244,
+   "sha": "bca0714dca85",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Cite source by what it says, not by where it sits (#514) (#542)"
+  },
+  {
+   "n": 245,
+   "sha": "170e88bc542d",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Check the four shell-bound arguments before they reach a shell (#533) (#539)"
+  },
+  {
+   "n": 246,
+   "sha": "524707205f76",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#518): a declined entry is written down as the kind it actually is (#521)"
+  },
+  {
+   "n": 247,
+   "sha": "ce16f8c1f6cb",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A terminal status that says nothing about why (#524) (#537)"
+  },
+  {
+   "n": 248,
+   "sha": "7922614a234c",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "Auto-fix during re-scaffold, and the one fix that stays opt-in (#42) (#536)"
+  },
+  {
+   "n": 249,
+   "sha": "412010bb1f61",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A fixture directory four scanners were told to ignore (#44) (#535)"
+  },
+  {
+   "n": 250,
+   "sha": "5d8e45ae749d",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "CI's verdict, read rather than assumed (#46) (#534)"
+  },
+  {
+   "n": 251,
+   "sha": "7f138253a0ac",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The workflow, executed with no agents in it (#61) (#526)"
+  },
+  {
+   "n": 252,
+   "sha": "eafa4477fefd",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#519): a fifth shape — a case that goes green under the WRONG fix (#522)"
+  },
+  {
+   "n": 253,
+   "sha": "a4e99325447d",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The run's trajectory, and the ways a timeline lies (#60) (#520)"
+  },
+  {
+   "n": 254,
+   "sha": "c5661360791d",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#500): four review findings that did not make the #500 merge (#512)"
+  },
+  {
+   "n": 255,
+   "sha": "e6d714afb3c0",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#485): four review findings that did not make the #502 merge (#511)"
+  },
+  {
+   "n": 256,
+   "sha": "285681697676",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A dry run reports what its evidence is worth (#59) (#513)"
+  },
+  {
+   "n": 257,
+   "sha": "2e722b246f79",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "fix(#485): seed SUCCESS.md, and refuse one that is still a template (#502)"
+  },
+  {
+   "n": 258,
+   "sha": "9e2573242aea",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The #476 waiver was narrower than the scan, and nothing tested the fix (#500)"
+  },
+  {
+   "n": 259,
+   "sha": "f641f3aadd10",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "Record in writing whether a consumer's test-environment gate is expressible (#297) (#509)"
+  },
+  {
+   "n": 260,
+   "sha": "aa65dc940c51",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A heal command and the script it calls, contradicting each other in writing (#312) (#504)"
+  },
+  {
+   "n": 261,
+   "sha": "f3789f9ce146",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#475): the guard read one key, so re-scaffolding added a second declaration (#498)"
+  },
+  {
+   "n": 262,
+   "sha": "f90302626d74",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Five readers that each knew where the config lives (#311) (#499)"
+  },
+  {
+   "n": 263,
+   "sha": "b0aaf7e17418",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#474): the append path wrote credentials.json/, which cannot match a file (#495)"
+  },
+  {
+   "n": 264,
+   "sha": "9f1570895998",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#307): the test baseline says what it measured, the heal prompt carries the URL, and a heal round cannot delete a test (#496)"
+  },
+  {
+   "n": 265,
+   "sha": "d7bb9024e824",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The postflight's retry budget is a guess against a pipeline that announces itself (#472) (#493)"
+  },
+  {
+   "n": 266,
+   "sha": "0362a59ff58a",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#476): an empty scan is two situations, and nothing decided which (#491)"
+  },
+  {
+   "n": 267,
+   "sha": "a32fb9426dd7",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#484): a path built from the module's own directory is a closure question too (#486)"
+  },
+  {
+   "n": 268,
+   "sha": "966777b6343b",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#482): the consumer's top-level keys keep their place, and movement refuses (#487)"
+  },
+  {
+   "n": 269,
+   "sha": "b9434947e8e9",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "scaffold with a relative root: dirname, and an audit that names the input it substituted (#481) (#483)"
+  },
+  {
+   "n": 270,
+   "sha": "450a1f143825",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Scope the hook inventory so the half the repo owns becomes checkable (#479) (#480)"
+  },
+  {
+   "n": 271,
+   "sha": "4db7b715576e",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(#454): pin the reason-carrying-map shape #415 fixed and nothing drove (#477)"
+  },
+  {
+   "n": 272,
+   "sha": "62eae8f5a175",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#450): the generated pre-commit stops writing DA-owned state from a worktree (#470)"
+  },
+  {
+   "n": 273,
+   "sha": "7158dce19fb6",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(#449): --profile=minimal scaffolds the repo without the ship harness (#452)"
+  },
+  {
+   "n": 274,
+   "sha": "97300b6a7eff",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.4.1 is on the registry, and the tarball was checked this time"
+  },
+  {
+   "n": 275,
+   "sha": "97327bacb527",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.4.1"
+  },
+  {
+   "n": 276,
+   "sha": "bfb2c8094c65",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#445): the postflight stops naming a cause it has not established (#468)"
+  },
+  {
+   "n": 277,
+   "sha": "c4e85cd41297",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#446): four published modules imported scripts the tarball never carried (#447)"
+  },
+  {
+   "n": 278,
+   "sha": "063704b2b252",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "chore: PROJECT-STATE session 47, and land 35 coverage ticks nobody was letting through (#467)"
+  },
+  {
+   "n": 279,
+   "sha": "37367bab0a66",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#442): make external adoption able to fire (#466)"
+  },
+  {
+   "n": 280,
+   "sha": "1d99ebc0ae3a",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#441): split the unmatched-SC ratchet by whether a test claims it (#465)"
+  },
+  {
+   "n": 281,
+   "sha": "e34d2220cdb4",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#440): derive the doc scan from the project's routing table (#464)"
+  },
+  {
+   "n": 282,
+   "sha": "22f247f17ea5",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: contextDocs reports what it did with every entry (#439) (#463)"
+  },
+  {
+   "n": 283,
+   "sha": "69be930bd5cb",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: create test scratch dirs in a hook, and sweep the ones already leaked (#437) (#462)"
+  },
+  {
+   "n": 284,
+   "sha": "788d4925c3a6",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: give a pruned worktree a bucket instead of an error forever (#436) (#461)"
+  },
+  {
+   "n": 285,
+   "sha": "78ce70e91cff",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#426): a criterion the matcher cannot parse is not a criterion to delete (#460)"
+  },
+  {
+   "n": 286,
+   "sha": "d5966fd64448",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#423): three counted gate checks, settled in two directions (#459)"
+  },
+  {
+   "n": 287,
+   "sha": "8772d997bade",
+   "date": "2026-10-16",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "chore: PROJECT-STATE session 46 — six merges and the fourth shape (#458)"
+  },
+  {
+   "n": 288,
+   "sha": "cfa3aad18174",
+   "date": "2026-10-16",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#420): wave N's output reaches wave N+1's worktree, and never main (#457)"
+  },
+  {
+   "n": 289,
+   "sha": "ff4a28727b50",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#415): a path a sentence names is not a path a reader opens (#456)"
+  },
+  {
+   "n": 290,
+   "sha": "2664043e8514",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#414): a gate reads the worktree's origin off the disk, not off the reply (#455)"
+  },
+  {
+   "n": 291,
+   "sha": "dd2d95ca1e0a",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#400): one path-safety decider, asked by staging and by the claim audit (#453)"
+  },
+  {
+   "n": 292,
+   "sha": "5d0d46e52123",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#399: the SC namespace has two halves and only one was guarded (#451)"
+  },
+  {
+   "n": 293,
+   "sha": "5dcabf4298bc",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#398: audit rehearses the real write steps against a clone instead of predicting them (#448)"
+  },
+  {
+   "n": 294,
+   "sha": "f6b923250ff7",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.4.0 is on the registry — close the standing line (#444)"
+  },
+  {
+   "n": 295,
+   "sha": "01e96ce09543",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "release: 0.4.0 (#443)"
+  },
+  {
+   "n": 296,
+   "sha": "5f6f7c964cf1",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#397): the pre-push hook could not pass, and named the wrong cause (#438)"
+  },
+  {
+   "n": 297,
+   "sha": "f9f1697e7e68",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#431): 149 worktrees, none removable, and the totals did not sum (#435)"
+  },
+  {
+   "n": 298,
+   "sha": "0ecc9b876dad",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#429,#430): the harness pushed to main from a feature branch during test runs (#432)"
+  },
+  {
+   "n": 299,
+   "sha": "d04d8566d95c",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#433): the prior-branch matcher read digits inside generated run ids (#434)"
+  },
+  {
+   "n": 300,
+   "sha": "cef1ed372f63",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#405): the prove-label gate refuses when it cannot read the labels (#428)"
+  },
+  {
+   "n": 301,
+   "sha": "18a8b8976dd7",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #405 checkpoint, seam removed"
+  },
+  {
+   "n": 302,
+   "sha": "bcd353715583",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #405 checkpoint before re-measuring with the fixture seam"
+  },
+  {
+   "n": 303,
+   "sha": "ab7f46a57b30",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #405 checkpoint before re-measuring mutations"
+  },
+  {
+   "n": 304,
+   "sha": "788e37f1d996",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #405 checkpoint before mutations"
+  },
+  {
+   "n": 305,
+   "sha": "f97322ca8dc4",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#79): record the measured mutation counts and the mutation zero (#427)"
+  },
+  {
+   "n": 306,
+   "sha": "0453a43ad506",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #79 checkpoint 3"
+  },
+  {
+   "n": 307,
+   "sha": "ed3507993cee",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #79 checkpoint 2"
+  },
+  {
+   "n": 308,
+   "sha": "a3e52039e4e0",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #79 checkpoint before mutations"
+  },
+  {
+   "n": 309,
+   "sha": "e83b1cd67749",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#87): one decider for \"is this a TypeScript project\", and a pinned compiler (#425)"
+  },
+  {
+   "n": 310,
+   "sha": "9e985b81cb92",
+   "date": "2026-10-15",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#116): the compliance history keeps the evidence behind its verdicts (#424)"
+  },
+  {
+   "n": 311,
+   "sha": "c5b0229a3983",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #87 checkpoint 3"
+  },
+  {
+   "n": 312,
+   "sha": "b1011119e240",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #87 checkpoint 2"
+  },
+  {
+   "n": 313,
+   "sha": "fb9445d98556",
+   "date": "2026-10-15",
+   "label": "not-incident",
+   "category": "wip",
+   "subject": "wip: #87 checkpoint before mutations"
+  },
+  {
+   "n": 314,
+   "sha": "86091556fe80",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#180): the brief outranks the relayed request, and the agent says which it used (#422)"
+  },
+  {
+   "n": 315,
+   "sha": "424bfc82a194",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#183): audit the ported gate-check list, and fix the one verdict a curl wrote (#421)"
+  },
+  {
+   "n": 316,
+   "sha": "56127ff5f605",
+   "date": "2026-10-14",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "fix(#189): dispatch decomposed sub-issues in dependency waves (#419)"
+  },
+  {
+   "n": 317,
+   "sha": "b357d16bf830",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(test): read the refusal's consumption off the parse, not off the text (#204) (#418)"
+  },
+  {
+   "n": 318,
+   "sha": "012061e883f8",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(goal): read the issue, not the lines that look like one (#210, #202) (#417)"
+  },
+  {
+   "n": 319,
+   "sha": "84df9eb62a06",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Migrate nine config reads to the loader — the first decrement off the single-loader ratchet (#214) (#416)"
+  },
+  {
+   "n": 320,
+   "sha": "3bc765a2c1fe",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(ship): refuse a worktree in the wrong repository, and a dead remediation (#218) (#413)"
+  },
+  {
+   "n": 321,
+   "sha": "2e015e3c28b5",
+   "date": "2026-10-14",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(ship): hold the PR step reachable, not merely well-placed (#266) (#412)"
+  },
+  {
+   "n": 322,
+   "sha": "257eac4f7d1d",
+   "date": "2026-10-14",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(claim-guard): prove the three refusal kinds are distinguishable (#300) (#411)"
+  },
+  {
+   "n": 323,
+   "sha": "9a16c1df0300",
+   "date": "2026-10-14",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "feat(conformity): build the config-access checks ADR-001 never shipped (#309) (#410)"
+  },
+  {
+   "n": 324,
+   "sha": "b0dc45319ec9",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(ship): keep out-of-scope files out of the plan (#306) (#409)"
+  },
+  {
+   "n": 325,
+   "sha": "cccfd0e859c2",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(release): poll the registry in postflight instead of reading once (#407) (#408)"
+  },
+  {
+   "n": 326,
+   "sha": "f255af641d32",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(gates): read prove labels through Octokit, not a gh subprocess (#395) (#406)"
+  },
+  {
+   "n": 327,
+   "sha": "df685a130689",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Publish by OIDC rather than by token (#364) (#404)"
+  },
+  {
+   "n": 328,
+   "sha": "d216401979ef",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Fetch the ratchets' comparison base in the release job (#364) (#403)"
+  },
+  {
+   "n": 329,
+   "sha": "81d6455f359b",
+   "date": "2026-10-14",
+   "label": "not-incident",
+   "category": "release",
+   "subject": "Make a minor bump releasable, and set the version to 0.3.0 (#364) (#402)"
+  },
+  {
+   "n": 330,
+   "sha": "1b67d37f5aa5",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Renumber GATE-CONTRACTS headings out of the shared range (#392 follow-up) (#401)"
+  },
+  {
+   "n": 331,
+   "sha": "32d0e5431a17",
+   "date": "2026-10-14",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: session 43 — three merges, and the defect class found itself twice inside its own fix"
+  },
+  {
+   "n": 332,
+   "sha": "a94fe897c55a",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#327): rule on the eight unproven ticks, and bank the 161 behind them (#396)"
+  },
+  {
+   "n": 333,
+   "sha": "a491fcf84b12",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#392): read the whole SC id namespace, and allocate out of it (#394)"
+  },
+  {
+   "n": 334,
+   "sha": "478964399518",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#229): collapse dot segments anywhere in a claim key, not just at the front (#393)"
+  },
+  {
+   "n": 335,
+   "sha": "f70e87e39452",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#232): no exit path discards an uncommitted worktree (#391)"
+  },
+  {
+   "n": 336,
+   "sha": "218904bb5645",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#288): make a run's artefacts attributable to it (#390)"
+  },
+  {
+   "n": 337,
+   "sha": "e72fcf467a7e",
+   "date": "2026-10-14",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#223): find prior work by what it says, and refuse a second PR (#389)"
+  },
+  {
+   "n": 338,
+   "sha": "0c0c9fe20f9a",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#244): a stale security FAIL gets a review that reads the flagged code (#388)"
+  },
+  {
+   "n": 339,
+   "sha": "0c08616e7ca6",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#280): the ship gate measures its own tree (#387)"
+  },
+  {
+   "n": 340,
+   "sha": "c814f2b0b099",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#217): refuse an AC whose evidence cannot satisfy its own threshold (#386)"
+  },
+  {
+   "n": 341,
+   "sha": "2bb69dadabae",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#181): an implement that changed nothing is a failure, not a logged zero (#385)"
+  },
+  {
+   "n": 342,
+   "sha": "f7d1a38ca822",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#121): the audit branch repairs an empty config instead of calling it aligned (#384)"
+  },
+  {
+   "n": 343,
+   "sha": "074d94c397a0",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#380): a backtick span is not a path (#383)"
+  },
+  {
+   "n": 344,
+   "sha": "d829f03be7af",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: \"is this project the harness?\" was decided in four places, and they had drifted (#381)"
+  },
+  {
+   "n": 345,
+   "sha": "e25c394451ac",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#208): harness-managed.md promised regeneration for a file the scaffold skipped forever (#379)"
+  },
+  {
+   "n": 346,
+   "sha": "842885b87d3d",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Stop predicting the command; read the outcome (#144) (#378)"
+  },
+  {
+   "n": 347,
+   "sha": "d23c40dd8ce2",
+   "date": "2026-10-13",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "A release pipeline, and the two readings that stop it reporting nothing (#364) (#376)"
+  },
+  {
+   "n": 348,
+   "sha": "53ed3b48bc67",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "VerifyPhaseLock's override was satisfied by a word in the title (#365) (#375)"
+  },
+  {
+   "n": 349,
+   "sha": "4fd09794dd2b",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Say which software SUCCESS.md's numbers describe (#366) (#374)"
+  },
+  {
+   "n": 350,
+   "sha": "8164c498698c",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The re-scaffold command destroyed the rule it was told to preserve (#370) (#373)"
+  },
+  {
+   "n": 351,
+   "sha": "a2494b0a846e",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A scaffolded project could not install its own dependencies (#362) (#372)"
+  },
+  {
+   "n": 352,
+   "sha": "e25c9b8941a9",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The documented consumer interface did not exist (#363) (#371)"
+  },
+  {
+   "n": 353,
+   "sha": "00ed7d2adaed",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A coverage claim is a position, not a mention (#360) (#369)"
+  },
+  {
+   "n": 354,
+   "sha": "ec329d00eff8",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Raise the full-suite rate 4 → 8, and keep the clamp it would have retired (#368)"
+  },
+  {
+   "n": 355,
+   "sha": "44e260f8d7c0",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "A registry for the nine gate checks nobody could locate (#339) (#367)"
+  },
+  {
+   "n": 356,
+   "sha": "ecec17b085c2",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Measure first: evidence-target-valid does not survive its own measurement (#338) (#361)"
+  },
+  {
+   "n": 357,
+   "sha": "1ce11874f9c4",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "One namespace for two kinds of id, and four regexes about it (#330, #352, #358) (#359)"
+  },
+  {
+   "n": 358,
+   "sha": "3e482db44d88",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Four ways of not knowing, all spelled PASS (#341) (#357)"
+  },
+  {
+   "n": 359,
+   "sha": "d17109c5282c",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#346): the prove gate recorded liveness UNMEASURED and nothing read it (#356)"
+  },
+  {
+   "n": 360,
+   "sha": "4acfb3498a14",
+   "date": "2026-10-13",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#354): the project-state renderer crashed with a raw TypeError where a refusal belonged (#355)"
+  },
+  {
+   "n": 361,
+   "sha": "7b93585be883",
+   "date": "2026-10-12",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 40"
+  },
+  {
+   "n": 362,
+   "sha": "659216c30cb4",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#168): test-clean-env modelled the environment and not the checkout, so it reported clean on a tree CI failed (#353)"
+  },
+  {
+   "n": 363,
+   "sha": "90a5ea13e881",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#197): the scope gate cried SPEC DRIFT for \"there is no suite\", and skipGrade was never traced to its caller (#351)"
+  },
+  {
+   "n": 364,
+   "sha": "07a9595691ae",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#195): the blocking-grade check believed the summary it was handed (#350)"
+  },
+  {
+   "n": 365,
+   "sha": "751522e411a0",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#194): the full-suite rate was per worker, and nothing was per run (#349)"
+  },
+  {
+   "n": 366,
+   "sha": "f180fe057e1a",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#287): COMP-4 was satisfied by running shasum on any file, and fired on specs with no hash (#348)"
+  },
+  {
+   "n": 367,
+   "sha": "04a3c9013aa8",
+   "date": "2026-10-12",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 39 through PR #347"
+  },
+  {
+   "n": 368,
+   "sha": "87db58c9b4a4",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#277, #343, #344): a check that exempted 11 of 13 types, and the hardcoding found behind it (#347)"
+  },
+  {
+   "n": 369,
+   "sha": "8fd4465d2e31",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#304): a liveness probe reads its route from config, or reports UNMEASURED (#345)"
+  },
+  {
+   "n": 370,
+   "sha": "d078026e8f16",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#299): a doc stamp adds fields, it never replaces the block (#342)"
+  },
+  {
+   "n": 371,
+   "sha": "dbed109afa6e",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#315): code-committed stops gating on a config key nobody authors (#340)"
+  },
+  {
+   "n": 372,
+   "sha": "adab597c72c2",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#213): the gate's auto-push records its outcome instead of swallowing it (#337)"
+  },
+  {
+   "n": 373,
+   "sha": "77acbb558a27",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#302): the exemption ratchet now turns both ways — an allowlist cannot grow silently (#336)"
+  },
+  {
+   "n": 374,
+   "sha": "9a3c968f0268",
+   "date": "2026-10-12",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(#310): carry the documented config layout all the way to the tier control (#335)"
+  },
+  {
+   "n": 375,
+   "sha": "06fbcd3b7333",
+   "date": "2026-10-12",
+   "label": "not-incident",
+   "category": "test-only",
+   "subject": "test(#229): cover claimKey's normalisation, which was asserted nowhere (#334)"
+  },
+  {
+   "n": 376,
+   "sha": "9f20a41ee912",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#212): reconcile the matcher registry with its handlers, and stop reporting \"recognised but unimplemented\" as \"unrecognised\" (#333)"
+  },
+  {
+   "n": 377,
+   "sha": "484dace25add",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#220): a compound success criterion now asserts every clause it states (#332)"
+  },
+  {
+   "n": 378,
+   "sha": "90cc1445a35f",
+   "date": "2026-10-12",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#328): bound the behavioral population, and stop reporting it as a check (#331)"
+  },
+  {
+   "n": 379,
+   "sha": "8df7e5d9c1d8",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#158, #174): two checks that could not fire, and the fixture that hid one (#329)"
+  },
+  {
+   "n": 380,
+   "sha": "b6fef3f5d044",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#149): a coverage claim is a comment or a title, not a mention (#326)"
+  },
+  {
+   "n": 381,
+   "sha": "ada08f325fea",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#323 SC-6): a scratch root that two runs share is not scratch (#325)"
+  },
+  {
+   "n": 382,
+   "sha": "8041946837de",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#323): HYGIENE-11 makes one git call, not one per markdown file (#324)"
+  },
+  {
+   "n": 383,
+   "sha": "fd8a678ef7dc",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#199): reconcile the hook inventory against what is actually registered (#322)"
+  },
+  {
+   "n": 384,
+   "sha": "98d3375fe0ac",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#272): a prompt never tells an agent to read a doc this repo does not ship (#321)"
+  },
+  {
+   "n": 385,
+   "sha": "f67fc01fc049",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#295): a pre-validation refusal names the broken ACs, because it reads the key the producer writes (#320)"
+  },
+  {
+   "n": 386,
+   "sha": "9668ca0735a1",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#225): spec collectors descend into subdirectories, so 254 SCs stop being invisible (#319)"
+  },
+  {
+   "n": 387,
+   "sha": "49ee7e3d9298",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#317): reconcile the workflow-state contract with its producers and consumers (#318)"
+  },
+  {
+   "n": 388,
+   "sha": "cd647770669d",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#314): a gate must measure the tree it is shipping, and read its own failure's detail (#316)"
+  },
+  {
+   "n": 389,
+   "sha": "e9560ccf3e09",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "#307 Phase 1: resolveConfig, the schema declares what the harness reads, and the three guards the heal loop deleted (#313)"
+  },
+  {
+   "n": 390,
+   "sha": "3dc12e1eb709",
+   "date": "2026-10-11",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "ADR-002: single config loader and unresolved-config semantics (#308)"
+  },
+  {
+   "n": 391,
+   "sha": "2c220e5e7f79",
+   "date": "2026-10-11",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: session 39 state — the blocker under #274 was the harness, not the issue (#303)"
+  },
+  {
+   "n": 392,
+   "sha": "312b420be420",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#296): two ownership classes in the collection claim guard (#301)"
+  },
+  {
+   "n": 393,
+   "sha": "c870f5207a32",
+   "date": "2026-10-11",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs(#296): PROJECT-STATE.md is DA-owned — stop instructing agents to write it (#298)"
+  },
+  {
+   "n": 394,
+   "sha": "5ccff31a07c4",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#215): Ceremony tier has a downgrade and no floor: a UI project sized XS gets LIGHT, so Quinn, container verify and prove are all skipped and the run still reports DONE (#293)"
+  },
+  {
+   "n": 395,
+   "sha": "af6ce5d0b11e",
+   "date": "2026-10-11",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: #185 and #254 landed; the tier floor is now the head of the chain (#292)"
+  },
+  {
+   "n": 396,
+   "sha": "333a199e325d",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#254): ship.js opens no PR at all when a container is configured, so the whole draft mechanism is inert on that path (#291)"
+  },
+  {
+   "n": 397,
+   "sha": "e313187f004c",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#185): Prior-branch detection nominated a merged branch 4 behind main, and its consumer cannot run (#290)"
+  },
+  {
+   "n": 398,
+   "sha": "a0998e5edf33",
+   "date": "2026-10-11",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: #276 merged, and #254 re-chained behind a blocker found by attempting it (#289)"
+  },
+  {
+   "n": 399,
+   "sha": "d0d1047833ea",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#276): A skipped scope gate reports PASS and an unreported one reports SKIPPED — the two words are swapped (#286)"
+  },
+  {
+   "n": 400,
+   "sha": "d9abb79e4118",
+   "date": "2026-10-11",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: three more merges, and the best argument yet for running the pipeline"
+  },
+  {
+   "n": 401,
+   "sha": "eba80415dbb1",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#273): Six phase-ordering checks assert on comments, so they pass whatever the code does (#284)"
+  },
+  {
+   "n": 402,
+   "sha": "0a42a94576ba",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#271): a grep that selected nothing is a measurement, not a broken command (#282)"
+  },
+  {
+   "n": 403,
+   "sha": "24fdbd9f9abe",
+   "date": "2026-10-11",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: session 38 state, and claim 5 restated as measured rather than untried (#275)"
+  },
+  {
+   "n": 404,
+   "sha": "7fb4864b9ebc",
+   "date": "2026-10-11",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#279): a collection that resolved nothing refuses instead of exiting 0 (#281)"
+  },
+  {
+   "n": 405,
+   "sha": "c73d566bdf09",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#269): Discovery refuses an AC set the state schema will reject (#270)"
+  },
+  {
+   "n": 406,
+   "sha": "91eb044cf9e2",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#267): the collection lands where the commit step may commit (#268)"
+  },
+  {
+   "n": 407,
+   "sha": "f67d38f91019",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#264): the reading is taken where the evidence is, and re-taken when it heals (#265)"
+  },
+  {
+   "n": 408,
+   "sha": "8001dcf1e5d9",
+   "date": "2026-10-10",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: SUCCESS.md standing table through 2026-10-10"
+  },
+  {
+   "n": 409,
+   "sha": "92a9b55c071f",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#261): the pre-validation reading exists wherever the gate checks it (#262)"
+  },
+  {
+   "n": 410,
+   "sha": "b0597a090e6f",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#258): the coverage check reads what Discovery writes (#259)"
+  },
+  {
+   "n": 411,
+   "sha": "6326913d66a9",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "chore: the agent briefs stop restating the full-suite rate (#257)"
+  },
+  {
+   "n": 412,
+   "sha": "2dfb6ae4e875",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#251): scope cannot defer the criterion that proves the work (#256)"
+  },
+  {
+   "n": 413,
+   "sha": "127e4e295e06",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#126): the Verify fan-out leaves a trace, or the gate refuses (#255)"
+  },
+  {
+   "n": 414,
+   "sha": "83b9a3867e03",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#252): a failed run reports every refusal, and leaves no mergeable PR (#253)"
+  },
+  {
+   "n": 415,
+   "sha": "33f4fa503730",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#216): Re-scaffold destroys a consumer's CI: DDB's 480-line self-hosted workflow is replaced with a 22-line ubuntu-latest stub, auto-committed, and reported as CREATED (#250)"
+  },
+  {
+   "n": 416,
+   "sha": "59c7c81f7fd1",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#239): a ship run's parallel sub-agents shared one suite budget (#248)"
+  },
+  {
+   "n": 417,
+   "sha": "55b65aa9ccd0",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#171): re-review the remediation commit instead of ending the run (#245)"
+  },
+  {
+   "n": 418,
+   "sha": "ca9e91e0ea2a",
+   "date": "2026-10-10",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: session 37 standing — the blocking gate itself refused correct work (#243)"
+  },
+  {
+   "n": 419,
+   "sha": "f5a5d957016f",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#240): the TDD check blocked correct work, and could not see gates/ or workflows/ (#242)"
+  },
+  {
+   "n": 420,
+   "sha": "b55324239bd6",
+   "date": "2026-10-10",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#235): evidence pre-validation was an orphaned promise; a 231s agent duplicated it more weakly (#241)"
+  },
+  {
+   "n": 421,
+   "sha": "12b1f933f08f",
+   "date": "2026-10-09",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: session 36 standing — claims 2 and 3 move, four defects closed (#237)"
+  },
+  {
+   "n": 422,
+   "sha": "49f95550eff9",
+   "date": "2026-10-09",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#224): bind the suite result to the commit it was measured against (#236)"
+  },
+  {
+   "n": 423,
+   "sha": "89f953dd8bdc",
+   "date": "2026-10-09",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#222): A run reports SHIPPED without merging anything, and a SKIPPED prove step produces the most affirmative status in the system (#234)"
+  },
+  {
+   "n": 424,
+   "sha": "989d45996e8e",
+   "date": "2026-10-09",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: session 36 standing — claim 4 has a counter-example, claim 3 fails in both directions (#233)"
+  },
+  {
+   "n": 425,
+   "sha": "e9465ff183f4",
+   "date": "2026-10-09",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#227): instrument all 35 agent call sites; delete mtime-derived timing (#231)"
+  },
+  {
+   "n": 426,
+   "sha": "73c056ab4fc3",
+   "date": "2026-10-09",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#228): A single-worktree run refuses its own work on a multi-worktree guard, then strands it uncommitted (#230)"
+  },
+  {
+   "n": 427,
+   "sha": "d738343f6217",
+   "date": "2026-10-09",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: claim 1 — a success criterion can now fail, and 45% of them still aren't collected (#226)"
+  },
+  {
+   "n": 428,
+   "sha": "c60a7b00b08d",
+   "date": "2026-10-09",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#209): No success criterion can fail the conformity suite — bind checked SCs, delete the swallow (#219)"
+  },
+  {
+   "n": 429,
+   "sha": "8cd01bab95ef",
+   "date": "2026-10-09",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: claim 1 — a disabled guard is now caught by its own suite (#206)"
+  },
+  {
+   "n": 430,
+   "sha": "43dd99978322",
+   "date": "2026-10-09",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#201): #200 Phase 2: retrofit the three defeatable suites onto the reachability check (#205)"
+  },
+  {
+   "n": 431,
+   "sha": "22aa5b209f94",
+   "date": "2026-10-08",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: state what success is, and make it falsifiable (#198)"
+  },
+  {
+   "n": 432,
+   "sha": "64e5ac1a7b12",
+   "date": "2026-10-08",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#200): Marker extraction cannot detect a disabled guard: wrapping any marked refusal in if(false) leaves its whole suite green (#203)"
+  },
+  {
+   "n": 433,
+   "sha": "62fb8a76eab9",
+   "date": "2026-10-08",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#188): Compliance grading detects TDD_SEQUENCE_VIOLATED before the PR exists and has no authority to stop the ship (#196)"
+  },
+  {
+   "n": 434,
+   "sha": "3343f44df7eb",
+   "date": "2026-10-08",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#190): the gate's root comes from the run, not from whoever imported it (#193)"
+  },
+  {
+   "n": 435,
+   "sha": "36ada1611379",
+   "date": "2026-10-08",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#105): harnessRoot states the run's root or refuses, never guesses HOME (#191)"
+  },
+  {
+   "n": 436,
+   "sha": "7dd1081516f9",
+   "date": "2026-10-08",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#169): the Ship regression round's commit is checked against the review too (#186)"
+  },
+  {
+   "n": 437,
+   "sha": "56363c5aba9c",
+   "date": "2026-10-08",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#176): Three gate checks cannot fail: tsc-pass has no assertion, local-api/ui-validated read a verdict only config writes (#184)"
+  },
+  {
+   "n": 438,
+   "sha": "ae1915a037fc",
+   "date": "2026-10-08",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#178): Decomposed collection silently keeps one of three parallel edits to workflows/ship.js (#182)"
+  },
+  {
+   "n": 439,
+   "sha": "888f3b15185c",
+   "date": "2026-10-07",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: project state through #169, #173, and the four defects the runs exposed (#179)"
+  },
+  {
+   "n": 440,
+   "sha": "bd0b91b9cd5e",
+   "date": "2026-10-07",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#169): the security PASS is compared against the commit being shipped (#177)"
+  },
+  {
+   "n": 441,
+   "sha": "bea1acc39d6c",
+   "date": "2026-10-07",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#173): record-build-commit.ts writes hardcoded PASS verdicts over measured ones, at two new call sites that run after the gates (#175)"
+  },
+  {
+   "n": 442,
+   "sha": "db2a569c57be",
+   "date": "2026-10-07",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: project state through #162, #164, #166 and the two defects they exposed (#170)"
+  },
+  {
+   "n": 443,
+   "sha": "8680cc4f31fd",
+   "date": "2026-10-07",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#164): detectPriorBranch scans every remote, so a sibling project's branch is adopted as this issue's prior work (#167)"
+  },
+  {
+   "n": 444,
+   "sha": "8f79d63660ee",
+   "date": "2026-10-07",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#162): collectAgentWork is handed agentResults, which only the sub-issue path produces — a single-Marcus remediation silently loses its work (#165)"
+  },
+  {
+   "n": 445,
+   "sha": "060b8021b5b5",
+   "date": "2026-10-07",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: the security gate can fail a run, and #162 replaces it as the blocker (#163)"
+  },
+  {
+   "n": 446,
+   "sha": "ae04da67ed17",
+   "date": "2026-10-07",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#129): Rook's FAIL verdict does not block the merge — the security gate cannot fail the run (#161)"
+  },
+  {
+   "n": 447,
+   "sha": "2c3f776aaee3",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record the first end-to-end pipeline runs and promote #129 to P0 (#159)"
+  },
+  {
+   "n": 448,
+   "sha": "b64c124cd355",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#143): IssueCloseGuard defaults to hornjason/pai-config, so a close with no --repo is vetted against the wrong repository (#157)"
+  },
+  {
+   "n": 449,
+   "sha": "27412ce654d7",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#155): Remediation loops commit from the first Marcus's worktree while the re-implementation runs in a new one, so every retry's work is discarded (#156)"
+  },
+  {
+   "n": 450,
+   "sha": "903c53f134ad",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 34's second half and reorder the priority list (#151)"
+  },
+  {
+   "n": 451,
+   "sha": "64b76f07f469",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#141): the spec generator reads this repo, and the SC flipper stops certifying criteria nothing tests (#150)"
+  },
+  {
+   "n": 452,
+   "sha": "99329991b448",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#136): the ship workflow stops writing to the default branch (#147)"
+  },
+  {
+   "n": 453,
+   "sha": "5afb2bb7286c",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#137): workflow steps reach GitHub instead of naming tools that do not exist (#146)"
+  },
+  {
+   "n": 454,
+   "sha": "f8c789d52a16",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record session 34 and reorder the blockers behind #137 (#145)"
+  },
+  {
+   "n": 455,
+   "sha": "ebda1b2fa562",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Resolve the GitHub token, and stop permitting closes we could not check (#139, #140) (#142)"
+  },
+  {
+   "n": 456,
+   "sha": "d5ace3d31c80",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "docs: record the AFK pipeline-readiness session and reset priorities (#138)"
+  },
+  {
+   "n": 457,
+   "sha": "ce842a732c3a",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "fix(#72): #65 Phase 2: Scaffold generates tsconfig.json for consumer projects"
+  },
+  {
+   "n": 458,
+   "sha": "835fb333b8e3",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#114): the run slug comes from the repo, never from a literal (#135)"
+  },
+  {
+   "n": 459,
+   "sha": "7043f701eb75",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Staging and worktree authorisation come from git, not from an agent (#115, #120) (#134)"
+  },
+  {
+   "n": 460,
+   "sha": "67a028cdaf4a",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#132): stop archiving a live run directory out from under itself (#133)"
+  },
+  {
+   "n": 461,
+   "sha": "1d24105545c1",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The review scope cannot point outside the project (#127 follow-up) (#131)"
+  },
+  {
+   "n": 462,
+   "sha": "37789daef871",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Evidence commands name origin/main, not a drifted local main (#118) (#130)"
+  },
+  {
+   "n": 463,
+   "sha": "5278e764fe92",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "The security review is not a function of having a UI (#127) (#128)"
+  },
+  {
+   "n": 464,
+   "sha": "384a54461ddb",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: the configured model never reached the agent call (#125)"
+  },
+  {
+   "n": 465,
+   "sha": "637f11b9523a",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "feat: recover 149 discarded compliance grades into the history (#124)"
+  },
+  {
+   "n": 466,
+   "sha": "a9d09129f815",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "One secret-pattern registry, and close the config split behind AGENT-8 (#90) (#122)"
+  },
+  {
+   "n": 467,
+   "sha": "98a838a3de76",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#75): greenfield scaffold emits real roles and hooks, not {} and [] (#119)"
+  },
+  {
+   "n": 468,
+   "sha": "4c73c1ec795a",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#103): evaluateFullSuiteRequest acquires a concurrency slot as a side effect of being asked (#117)"
+  },
+  {
+   "n": 469,
+   "sha": "cdbab6bc3f5f",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Make worktree cleanup actually remove worktrees (#68)"
+  },
+  {
+   "n": 470,
+   "sha": "88983a753d7c",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "Name the defect class that produced five of today's eight issues"
+  },
+  {
+   "n": 471,
+   "sha": "38454f769b4d",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "scaffold",
+   "subject": "scaffold: regenerate harness files"
+  },
+  {
+   "n": 472,
+   "sha": "8a035cf33b00",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#70): quote CI YAML scalars, resolve directory config, merge roles into briefs (#110)"
+  },
+  {
+   "n": 473,
+   "sha": "a8f25acc1abd",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#86): stop conformity collection mutating the specs it collects from (#108)"
+  },
+  {
+   "n": 474,
+   "sha": "c7cd8cae04c8",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "feature",
+   "subject": "Teach the scaffold how concurrent sessions claim and ship work"
+  },
+  {
+   "n": 475,
+   "sha": "71a78b7055fc",
+   "date": "2026-10-06",
+   "label": "not-incident",
+   "category": "scaffold",
+   "subject": "scaffold: regenerate harness files"
+  },
+  {
+   "n": 476,
+   "sha": "f74832fe0fba",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Drive the type check from 88 errors to 0 (#65) (#107)"
+  },
+  {
+   "n": 477,
+   "sha": "2fb66b25a9c2",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Make the DIR-L29 suite budget a rolling window (#73) (#102)"
+  },
+  {
+   "n": 478,
+   "sha": "c23016666c73",
+   "date": "2026-10-06",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Move the Grade phase tail out of the sandbox so it actually runs (#69)"
+  },
+  {
+   "n": 479,
+   "sha": "35adf079a3c1",
+   "date": "2026-10-05",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "Record session 32b state (#101)"
+  },
+  {
+   "n": 480,
+   "sha": "dce853cd0a1b",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Stop the syntax witness failing open on unparseable input (#89 review 2) (#100)"
+  },
+  {
+   "n": 481,
+   "sha": "bbac39449449",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Tokenize instead of regex so the #69 guard can see ship.js (#89) (#99)"
+  },
+  {
+   "n": 482,
+   "sha": "ee83972ce76c",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Reclaim a leaked suite slot when nothing is running (#74) (#98)"
+  },
+  {
+   "n": 483,
+   "sha": "010812366e0c",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Check the commits being pushed, not the working tree (#85) (#97)"
+  },
+  {
+   "n": 484,
+   "sha": "e1064cf4cb40",
+   "date": "2026-10-05",
+   "label": "not-incident",
+   "category": "docs",
+   "subject": "Record session 32 state (#96)"
+  },
+  {
+   "n": 485,
+   "sha": "18d945ea73ce",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Make the prompt-immutability check able to fail (#92), and fix the worktree base I got wrong in #93 (#95)"
+  },
+  {
+   "n": 486,
+   "sha": "40bd4544e5df",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Collect every worktree's files so parallel ship can commit (#81) (#93)"
+  },
+  {
+   "n": 487,
+   "sha": "5c1f8ac88a1f",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Count docs-routing categories recursively (#91) (#94)"
+  },
+  {
+   "n": 488,
+   "sha": "4ec1196ecb6b",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Make the gates real: close #71, #65/#76, and the defects they were hiding (#88)"
+  },
+  {
+   "n": 489,
+   "sha": "48c6fefb28da",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Fix the session handoff: PROJECT-STATE.md rendered the three OLDEST sessions"
+  },
+  {
+   "n": 490,
+   "sha": "ee48cc84a274",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Report conformity checks that skip, instead of returning silently (#80)"
+  },
+  {
+   "n": 491,
+   "sha": "a72266dad245",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Fix #80 regression: HYGIENE-3 turned Gates red; scope allowlists to the project"
+  },
+  {
+   "n": 492,
+   "sha": "9699c1399014",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Fix #80: make six conformity checks able to fail, remove the test-passes matcher"
+  },
+  {
+   "n": 493,
+   "sha": "09dabe7e8a25",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "Fix #67 guard: wrong registration scope and wrong ownership unit"
+  },
+  {
+   "n": 494,
+   "sha": "5e256dbb982e",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: memoise fallow availability per root, not globally"
+  },
+  {
+   "n": 495,
+   "sha": "392e3d220534",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: fallow conformity checks timed out instead of skipping, blocking every push"
+  },
+  {
+   "n": 496,
+   "sha": "f8e358d96487",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix: fallow conformity checks timed out instead of skipping, blocking every push"
+  },
+  {
+   "n": 497,
+   "sha": "e4e9fe348363",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#69): inline security helpers — ship.js died on a require() the sandbox has never provided"
+  },
+  {
+   "n": 498,
+   "sha": "02980a1912f8",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#67): close nine more guard bypasses found by code review"
+  },
+  {
+   "n": 499,
+   "sha": "0d173140c2ea",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#67): close four guard bypasses found by security review"
+  },
+  {
+   "n": 500,
+   "sha": "43d6f4c261f5",
+   "date": "2026-10-05",
+   "label": "incident",
+   "category": "incident",
+   "subject": "fix(#67): cap concurrent full test suites across sessions"
+  }
+ ]
+}
