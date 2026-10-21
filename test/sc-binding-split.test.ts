@@ -77,7 +77,16 @@ const UNCLAIMED_RATCHET = 153;
 // "`## Project Constraints` outranks the COMP's own primary", "the brief on
 // disk is byte-identical after a refusal". This is the number rising for the
 // reason the docblock above says it rises for.
-const CLAIMED_UNBINDABLE = 72;
+//
+// 72 -> 73 on 2026-10-21 (#544/#545). One criterion, about the ORDER two
+// candidates come back in: a candidate carrying no observed failure never
+// outranks one that does. `test/failure-intake-promotion.test.ts` drives the
+// real `rankForPromotion` and `promoteCandidates` over a pair built to make
+// both a string compare and a hash-order sort get it wrong, so it is bound by
+// an executed test — and it is unmatchable for the reason the docblock gives,
+// because no claim about the state of the tree expresses a comparator's
+// answer. Same rise, same cause as #704's six.
+const CLAIMED_UNBINDABLE = 73;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });
