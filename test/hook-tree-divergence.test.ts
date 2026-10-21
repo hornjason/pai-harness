@@ -757,6 +757,47 @@ describe("#713 SC-3: AgentBriefGuard is wired, and the issue's premise was a one
  * `${CLAUDE_PROJECT_DIR}` to the repo root in every scope.** It removes a
  * refusal and reads as a simplification. AC-R6 is the pair that varies only
  * the scope and goes red under it.
+ *
+ * ## What was broken to prove these can fail
+ *
+ * Run over this file + `test/hook-registration-evidence.test.ts` (59 tests).
+ * Every count predicted in `/tmp/713-battery/predictions.md` before the
+ * battery ran, naming **which cases** each row should redden rather than only
+ * how many — and **the baseline row read first**, because an instrument that
+ * has stopped reporting takes the baseline down with it. Every mutation is to
+ * `lib/hook-target-tree.ts`.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 59 pass, 0 fail | **59 pass, 0 fail** | — |
+ * | M1 **the cheapest wrong fix, APPLIED**: `${RUNGATE_HOOKS_DIR}` and `${CLAUDE_PROJECT_DIR}/hooks` accepted by SPELLING, pushed `in-repo` unresolved | 5 — AC-R1, AC-R3, AC-R6, AC-R7, live | **5 of 59**, those five | `bun ${RUNGATE_HOOKS_DIR}/ProjectStateSync.hook.ts` with the variable pointing outside the checkout: the original reads `foreign` and names the directory, the mutant reads `in-repo` |
+ * | M2 the second wrong fix: `PROJECT_DIR_SCOPES` widened to every scope | 1 — AC-R6 | **1 of 59**, AC-R6 | the same `${CLAUDE_PROJECT_DIR}` command in `user-settings`: original `unresolved`/UNMEASURED, mutant `in-repo`/MEASURED |
+ * | M3 the `examined === 0` refusal removed | 1 — AC-R4 | **1 of 59**, AC-R4 | a scope registering only a hook this repo does not own: original UNMEASURED, mutant MEASURED with an empty violation list |
+ * | M4 unresolved readings no longer raise the reading | 3 — AC-R3, AC-R6, AC-R7 | **3 of 59**, those three | an undefined `RUNGATE_HOOKS_DIR`: original UNMEASURED carrying a reason, mutant MEASURED carrying none |
+ * | M5 the env `assertEveryScopeRead` call removed | 1 — AC-R8 | **1 of 59**, AC-R8 | an env reading covering one scope: original throws `IncompleteScopeReadingError`, mutant returns a verdict |
+ * | M6 a variable with two values takes the first | 1 — AC-R7 | **1 of 59**, AC-R7 | `RUNGATE_HOOKS_DIR` defined as the repo's hooks dir in one scope and another checkout in a second: original UNMEASURED, mutant `in-repo` |
+ * | M7 `settingsEnv` catches the parse error and returns `{}` | 1 — AC-R9 | **1 of 59**, AC-R9 | `"{not json"`: original throws, mutant returns `{}`, so a corrupt file reads as one defining nothing |
+ * | M8 the unreadable-scope reasons loop removed | 1 — AC-R5 | **1 of 59**, AC-R5 | `user-settings` unreadable beside a clean project-scope reading: original UNMEASURED, mutant MEASURED |
+ *
+ * **Every row matched, which this repo's own rule says to distrust** — a
+ * battery that agrees with its author is the shape a battery that never ran
+ * also has. Two things make these readings rather than agreement: each row
+ * predicted the NAMED cases and not just a count, and all eight name an input
+ * on which mutant and original differ, run rather than described. M1 in
+ * particular is the wrong fix applied against the real binding, not a
+ * sentence about it, and the live case is among its five.
+ *
+ * **The live reading, measured 2026-10-21 on the author's machine**:
+ * `MEASURED`, 37 registrations examined, 4 `in-repo`, **33 `foreign`**, 0
+ * unresolved, every foreign one reached through `RUNGATE_HOOKS_DIR` and
+ * landing in a single directory outside this checkout. That is what
+ * `FOREIGN_SPELLING_RATCHET` banks, and it is the number the ratchet refuses
+ * to let move in either direction.
+ *
+ * None of the eight mutations is left in the tree. All were applied and
+ * reverted from a `cp` backup, never `git checkout --`, and
+ * `lib/hook-target-tree.ts` was confirmed byte-identical to the measured
+ * source afterwards by sha256.
  */
 describe("#713 point 4: the tree the settings REGISTER is the tree the repo TESTS", () => {
   const ALL: RegistrationScope[] = [...REGISTRATION_SCOPES];
