@@ -64,7 +64,9 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
     expect(scs.length).toBeGreaterThan(0);
     // A bare `SC-1933` mid-sentence is a citation, not a claim — see
     // .claude/rules/claiming-sc-coverage.md. The count below is of claims.
-    // 19 -> 27 on 2026-10-21: #1009's eight, SC-2440..SC-2447.
+    // 19 -> 27 on 2026-10-21: #1009's eight, SC-2440..SC-2447. #544 ticks
+    // five of the original nineteen rather than adding any, so the count is
+    // unchanged and the enumeration below is what moved.
     expect(scs.length).toBe(27);
   });
 
@@ -100,8 +102,14 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
     // by `test/instruction-surface-budget.test.ts` against the real script
     // and a mutant of it, so the enumeration grows rather than the list being
     // replaced by a count.
+    //
+    // #544 adds SC-1933..SC-1937, the concurrent-load budget. Every one is
+    // driven by `test/instruction-surface-budget.test.ts` against the real
+    // script and a mutant of it, and the battery is recorded in the spec's
+    // "Proving it" section with the count and the assertion each mutation
+    // reddened.
     expect(checked.sort((a, b) => a - b)).toEqual([
-      1939, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447,
+      1933, 1934, 1935, 1936, 1937, 1939, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447,
     ]);
   });
 
@@ -129,11 +137,11 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: behaviour (unimplemented)", ()
   test.todo("SC-1930: baseline rules carry no `paths:` key in frontmatter");
   test.todo("SC-1931: baseline rule bodies contain no repo-specific identifier");
   test.todo("SC-1932: every mined rule carries a `paths:` list scoped to the code it governs");
-  test.todo("SC-1933: scaffold computes and reports max-concurrent-load per file");
-  test.todo("SC-1934: over-budget concurrent load FAILs and names the overlapping rules");
-  test.todo("SC-1935: total rule count is not capped — only concurrent load is");
-  test.todo("SC-1936: a mined rule matching every file is reported as unscoped");
-  test.todo("SC-1937: glob expansion stays within 1,000 patterns and 4 MiB per rule");
+  // SC-1933..SC-1937 are implemented and covered in
+  // `test/instruction-surface-budget.test.ts` (#544). Their todos are
+  // deleted rather than left here: since #810 a todo declaration OUTRANKS a
+  // comment citing the same criterion, so leaving them would keep five ids
+  // reading as unimplemented while their tests ran green.
   test.todo("SC-1938: a zero-interaction scaffold run produces a populated, scoped rule set");
   // SC-1939 is implemented and covered in
   // `test/failure-intake-promotion.test.ts` (#544/#545). Its todo is deleted
