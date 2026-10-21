@@ -26,6 +26,7 @@ import {
   movedTopLevelKeys,
   WORKFLOW_OVERRIDE_COMMENT,
   workflowOverrides,
+  type MergeProvenance,
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
@@ -2193,7 +2194,7 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
  * test/scaffold-ci-preservation-mutation.test.ts performs, so that
  * "preservation works" is a claim with a demonstrated way of being false.
  */
-export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = []): ManagedWrite {
+export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = [], provenance: MergeProvenance = "UNPROVEN"): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
     preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], refusal: null,
@@ -2225,7 +2226,7 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
   // A refusal that is structurally incapable of firing on the thing being
   // destroyed is the defect class .claude/rules/checks-must-be-able-to-fail.md
   // exists for, and it was in the fix written to prevent a data-loss bug.
-  const content = mergeManagedWorkflow(existing, generated, overrides);
+  const content = mergeManagedWorkflow(existing, generated, overrides, provenance);
   const lineDelta = lineCount(content) - before;
 
   const preservedJobs = existingJobs.filter(j => !generatedJobs.includes(j));
@@ -2451,7 +2452,23 @@ export function writeManagedFile(
   // itself had just written.
   const existing = raw === null ? null : (provenance ? provenance.body(raw) : raw);
   const incoming = provenance ? provenance.body(generated) : generated;
-  const resolved = resolveManagedWrite(existing, incoming, opts.workflowOverrides ?? []);
+  // What the marker proves about the bytes on disk, read HERE because here is
+  // the only layer that still holds them (#957). Everything below this line
+  // has had the marker stripped, which is the whole reason #941 could not
+  // repair the residue it left: the merge was handed a file with no way of
+  // telling its own old output from the consumer's.
+  //
+  // One expression, over the `WriteProvenance` the caller already supplies:
+  // re-stamping the body reproduces the file exactly when the marker is
+  // present AND describes that body. An absent marker and a stale one are both
+  // UNPROVEN, which is the only distinction the merge acts on, and a managed
+  // file with no provenance at all reads as UNPROVEN too — the fail-closed
+  // direction and the pre-#957 behaviour unchanged.
+  const proven: MergeProvenance =
+    provenance !== undefined && raw !== null && provenance.stamp(provenance.body(raw)) === raw
+      ? "VERIFIED"
+      : "UNPROVEN";
+  const resolved = resolveManagedWrite(existing, incoming, opts.workflowOverrides ?? [], proven);
   /** The bytes that land on disk: the decision's content, then the marker. */
   const stamped = (content: string): string => (provenance ? provenance.stamp(content) : content);
 
