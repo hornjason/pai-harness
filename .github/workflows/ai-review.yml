@@ -1,4 +1,4 @@
-# generated-sha: eb71e979eaecea2d
+# generated-sha: 19fbad97bed41b31
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -726,7 +726,7 @@ jobs:
               -not -path "${HOME}/.claude/backups" -not -path "${HOME}/.claude/backups/*" \
               -not -path "${HOME}/.claude/state" -not -path "${HOME}/.claude/state/*" \
               -not -path "${HOME}/.npm/_npx" -not -path "${HOME}/.npm/_npx/*" \
-              -not -path "${HOME}/*/_diag" -not -path "${HOME}/*/_diag/*" \
+              ! \( \( -path "${HOME}/*/_diag" -o -path "${HOME}/*/_diag/*" \) -a ! \( -path "${HOME}/*/*/_diag" -o -path "${HOME}/*/*/_diag/*" \) \) \
               2>/dev/null | head -50 || true)
 
             # Pass 2: the config half of the floor, reported by name and NOT refused.

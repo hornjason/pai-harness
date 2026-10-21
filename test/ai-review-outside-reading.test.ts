@@ -296,6 +296,7 @@ import {
   AI_REVIEW_UNMEASURED_TITLE,
   buildBaselineScript,
   buildDriftScript,
+  runnerDiagnosticExclusion,
 } from "../lib/scaffold/ai-review-step";
 
 /**
@@ -807,17 +808,44 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       expect(line, "a runner diagnostic reached the refusal").not.toContain(log);
     });
 
-    test("AC-15e: the subtraction is interpolated from the declared list, not typed", () => {
+    test("AC-15f: a _diag DEEPER than the runner install directory still refuses", () => {
+      // The anchor, and the reason this list is not emitted with the shared
+      // two-predicate form. `find -path` globs are fnmatch without
+      // FNM_PATHNAME, so a star matches a slash: an unanchored
+      // `$HOME/*/_diag/*` subtracts a `_diag` at ANY depth, and a reviewer
+      // that wants a write unseen only has to name a directory. Inside the
+      // depth bound, `$HOME/<runner>/_work/_diag/<file>` is that bypass.
+      //
+      // Raised by the automated security review of this branch's first push,
+      // whose emission had exactly that hole.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, "runner-9", "_work", "_diag", "payload.ts");
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "export const owned = 1;\n");
+      const r = runDrift(f, path, sha);
+      expect(r.code, "a _diag below the runner work root was subtracted").not.toBe(0);
+      expect(r.stderr, "the refusal does not name the deeper _diag write").toContain(target);
+    });
+
+    test("AC-15e: the subtraction is emitted from the declared list, not typed", () => {
+      // One emitter, and the clause the script carries is the one the
+      // emitter returns — not a second copy that happens to agree.
       const drift = buildDriftScript();
       for (const entry of AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS) {
-        expect(drift, `pass 1 does not exclude ${entry}`).toContain(
-          `-not -path "\${HOME}/${entry}/*"`,
+        const clause = runnerDiagnosticExclusion(entry);
+        expect(drift, `pass 1 does not carry the anchored clause for ${entry}`).toContain(clause);
+        // The shared two-predicate form must NOT be used for this list: it is
+        // the unanchored emission AC-15f exists to keep out, and it would be
+        // invisible in a diff beside the correct one.
+        expect(drift, `${entry} is emitted with the unanchored shared form`).not.toContain(
+          `-not -path "\${HOME}/${entry}" -not -path "\${HOME}/${entry}/*"`,
         );
         // And pass 2 must NOT match it. A runner log annotated as runtime
         // config is the noise this block exists to remove, arriving under a
         // different title.
         expect(drift, `pass 2 matches ${entry}, so a runner log is annotated`).not.toContain(
-          `-o -path "\${HOME}/${entry}/*"`,
+          `      -o -path "\${HOME}/${entry}"`,
         );
       }
     });
@@ -911,15 +939,12 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     // nothing else. A hand-written extra exclusion is a second declaring
     // position for a list whose whole value is that there is one.
     const script = buildDriftScript();
-    // All THREE declared lists (#877). The runner-diagnostic list is excluded
-    // by pass 1 and deliberately absent from pass 2, so the subtraction below
-    // — `allPathTerms - excluded` against the config length — is what holds
-    // it out of the annotation, arithmetically rather than by assertion.
-    const both = [
-      ...AI_REVIEW_RUNTIME_INERT_PATHS,
-      ...AI_REVIEW_RUNTIME_CONFIG_PATHS,
-      ...AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS,
-    ];
+    // The runner-diagnostic list is NOT in `both`: it is emitted by its own
+    // anchored clause rather than the shared two-predicate form (#877), so it
+    // contributes four `-path` terms and no `-not -path` ones. The arithmetic
+    // below counts them explicitly — a list left out of the accounting is a
+    // list whose terms could be anything.
+    const both = [...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS];
     // Without this the loops below run zero times against empty lists and the
     // counts compare 0 to 0 — the assertions hold vacuously, in the case
     // whose whole job is to hold the lists to what the script emits.
@@ -958,10 +983,15 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       );
     }
     const allPathTerms = (script.match(/-path "\$\{HOME\}\//g) || []).length;
+    // Pass 2's positive terms, plus the runner-diagnostic clause's four per
+    // entry — two for the shallow shape it subtracts and two for the deeper
+    // shape it refuses to subtract.
     expect(
       allPathTerms - excluded,
-      "pass 2 matches a path under $HOME that AI_REVIEW_RUNTIME_CONFIG_PATHS does not declare",
-    ).toBe(AI_REVIEW_RUNTIME_CONFIG_PATHS.length * 2);
+      "a -path term under $HOME is in the script that no declared list accounts for",
+    ).toBe(
+      AI_REVIEW_RUNTIME_CONFIG_PATHS.length * 2 + AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.length * 4,
+    );
   });
 });
 

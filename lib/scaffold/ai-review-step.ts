@@ -986,7 +986,8 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
  *
  * ## The measurement
  *
- * asaCommandCenter PR #1816, run `39564143967`, job `ai-review`: exit 1 with
+ * A consumer's self-hosted Linux pool, run `39564143967`, job `ai-review`:
+ * exit 1 with
  * **30 paths**, every one under a `_diag` directory two levels below the
  * shared home — `runner-3` and `actions-runner` are two of the parents. The
  * job ran on `runner-4` and the list
@@ -1026,8 +1027,35 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
  * because the directory above
  * `_diag` is the runner's install name, which the pool operator chooses —
  * `runner-3` and `actions-runner` in the same home. A subtraction keyed on
- * `runner-<n>` would miss the tenth. A star in `find -path` matches a slash
- * too, so one entry covers both measured depths.
+ * `runner-<n>` would miss the tenth.
+ *
+ * ## It is emitted ANCHORED, and that is not cosmetic
+ *
+ * A star in `find -path` matches a slash, so the two-predicate emission the
+ * other two lists use would subtract a `_diag` directory at ANY position, not
+ * just one directly below the home. Inside the depth bound that includes
+ * `<home>/<runner>/_work/_diag/<file>` — a directory a reviewer can create,
+ * inside another repository's work root, whose only qualifying property is
+ * its name. A detection control with a bypass you can type is not a
+ * detection control, and this one would have been nameable in five
+ * characters.
+ *
+ * So this list gets its own clause rather than the shared one: subtract when
+ * the path is a `_diag` ONE component below the home AND is not a `_diag`
+ * two or more components below it. The second half is what the star cannot
+ * express on its own, and it is expressed with plain `-path` rather than
+ * `-regex` because the two `find` implementations this runs under spell
+ * regular expressions differently and a generator cannot know which it got.
+ * `runnerDiagnosticExclusion` is the single emitter, and
+ * `test/ai-review-outside-reading.test.ts` AC-15f plants the deeper file and
+ * requires the refusal.
+ *
+ * Found by the automated security review of this change's first push. That
+ * push's docblock said the slash-spanning star "covers both measured depths"
+ * — the width was known and written down as a convenience. A subtraction
+ * wider than what it was measured to subtract is the same defect as a
+ * detector narrower than what it detects, and the direction it is wrong in
+ * is the one nobody investigates.
  *
  * ## The cheapest wrong fix, named
  *
@@ -1050,19 +1078,20 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
  *
  * ## What was broken to prove the cases fail
  *
- * Run and counted over `test/ai-review-outside-reading.test.ts` (35 tests).
+ * Run and counted over `test/ai-review-outside-reading.test.ts` (36 tests).
  * Every count predicted before the battery ran, and THE BASELINE ROW WAS READ
  * FIRST. Each fixture is a real bash run of the generated step against a fake
  * `$HOME`, so a row is a measurement of behaviour and not of a string.
  *
  * | Row | Predicted | Measured | The input on which mutant and original differ |
  * |---|---|---|---|
- * | baseline — unmutated | 35 pass, 0 fail | 35 pass, 0 fail | — |
- * | N1 the genuinely pre-#877 tree: this list emptied | 3 red, 32 cases | 6 of 35 | a `_diag` log three levels under the home: the original exits 0 silently, the mutant refuses and names it |
- * | N2 THE CHEAPEST WRONG FIX: the depth bound dropped from 4 to 2 | 1 | 2 of 35 | a file four levels down in a sibling runner's `_work` checkout: the original refuses and names it, the mutant never sees it |
- * | N3 this list added to pass 2 as well, so a runner log is annotated | 5 | 5 of 35 | the same log: the original is silent, the mutant reports it as runtime config UNMEASURED |
- * | N4 the entry narrowed to the numbered runners only | 2 | 2 of 35 | a log under the pool's tenth runner, which is named `actions-runner`: the original is silent, the mutant refuses |
- * | N5 the entry widened to every sibling directory under the home | 6 | 11 of 35 | a file in a sibling's `_work` checkout, and nine other writes the suite plants anywhere below a directory in the home |
+ * | baseline — unmutated | 36 pass, 0 fail | 36 pass, 0 fail | — |
+ * | N1 the genuinely pre-#877 tree: this list emptied | 3 red, 32 cases | 6 of 36 | a `_diag` log three levels under the home: the original exits 0 silently, the mutant refuses and names it |
+ * | N2 THE CHEAPEST WRONG FIX: the depth bound dropped from 4 to 2 | 1 | 3 of 36 | a file four levels down in a sibling runner's `_work` checkout: the original refuses and names it, the mutant never sees it |
+ * | N3 this list added to pass 2 as well, so a runner log is annotated | 5 | 5 of 36 | the same log: the original is silent, the mutant reports it as runtime config UNMEASURED |
+ * | N4 the entry narrowed to the numbered runners only | 2 | 3 of 36 | a log under the pool's tenth runner, which is named `actions-runner`: the original is silent, the mutant refuses |
+ * | N5 the entry widened to every sibling directory under the home | 6 | 12 of 36 | a file in a sibling's `_work` checkout, and ten other writes the suite plants anywhere below a directory in the home |
+ * | N6 the anchored emitter replaced by the shared two-predicate form | 3 | 3 of 36 | `<home>/<runner>/_work/_diag/<file>`: the original refuses and names it, the mutant subtracts it as a runner diagnostic |
  *
  * **N1 came back 6 where 3 was predicted, and the prediction was wrong about
  * this file's own test.** The three per-shape cases were expected to be
@@ -1071,30 +1100,57 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
  * so they go red instead. The pin case above them is still load-bearing: N4
  * is the row where it earns its place.
  *
- * **N2 came back 2, and the extra red is the real kind.** The prediction
- * covered the sibling-checkout case. The second is `AC-9`, whose config
+ * **N2 came back 3, and the extra reds are the real kind.** The prediction
+ * covered the sibling-checkout case. The others include `AC-9`, whose config
  * fixtures sit three levels down — so the shallow bound does not merely blind
  * the REFUSAL, it blinds the UNMEASURED annotation too, and the run reports
- * nothing about trust-bearing paths it is supposed to name. That is a worse
+ * nothing about trust-bearing paths it is supposed to name. A worse
  * consequence of the wrong fix than the one predicted, not a broken mutant:
  * 33 cases still pass.
  *
- * **N5 came back 11 where 6 was predicted**, and the five extra reds are the
+ * **N5 came back 12 where 6 was predicted**, and the extra reds are the
  * argument against the wider generalisation stated above, measured rather
- * than asserted: subtracting every sibling directory blinds `AC-1`, `AC-2`,
- * `AC-4`, `AC-6`, `AC-7`, `AC-11` and `AC-14` as well — most of the reading,
- * not just the sibling checkout. 24 cases still pass, so the mutant runs.
+ * than asserted: subtracting every sibling directory blinds most of the
+ * reading, not just the sibling checkout. 24 cases still pass, so the mutant
+ * runs.
  *
- * None of the five mutations is left in the tree; all were run and reverted,
+ * **N6 is the row the first push did not have.** Its mutant is exactly what
+ * that push shipped, and `AC-15f` — the bypass the security review named — is
+ * one of its three reds. A row whose mutant is a real previous state of the
+ * tree is worth more than a reconstruction, and this one says the anchor is
+ * load-bearing rather than tidy.
+ *
+ * None of the six mutations is left in the tree; all were run and reverted,
  * and this file was confirmed byte-identical to the measured source
  * afterwards by sha256, restored from a `cp` backup and never by
  * `git checkout --`.
  */
 export const AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS: readonly string[] = [
-  // The Actions runner's own diagnostic logs. `*` is the runner's install
-  // directory, which the pool operator names.
+  // The Actions runner's own diagnostic logs. The star is the runner's
+  // install directory, which the pool operator names, and it is anchored to
+  // ONE component by the emitter below — see the docblock.
   "*/_diag",
 ];
+
+/**
+ * The pass-1 exclusion for one runner-diagnostic entry, anchored to a single
+ * path component (#877).
+ *
+ * `find -path` globs are `fnmatch` without `FNM_PATHNAME`, so a star matches
+ * a slash and there is no glob that says "one component". The anchor is
+ * therefore a difference of two shapes: the entry's own, minus the entry's
+ * own with an extra component in front of it. A path matching both is deeper
+ * than the measurement and is NOT subtracted.
+ *
+ * One exported emitter so there is one binding to mutate. A second copy of
+ * this expression at the call site would survive any mutation of this one and
+ * both would read as covered.
+ */
+export function runnerDiagnosticExclusion(entry: string): string {
+  const shallow = `-path "\${HOME}/${entry}" -o -path "\${HOME}/${entry}/*"`;
+  const deeper = `-path "\${HOME}/*/${entry}" -o -path "\${HOME}/*/${entry}/*"`;
+  return `    ! \\( \\( ${shallow} \\) -a ! \\( ${deeper} \\) \\) \\`;
+}
 
 /**
  * What the config half of the floor reports, under
@@ -2755,11 +2811,7 @@ else
     -newer "\${${AI_REVIEW_TREE_BEFORE_VAR}}" \\
     -not -path "\${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \\
     -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
-${[
-  ...AI_REVIEW_RUNTIME_INERT_PATHS,
-  ...AI_REVIEW_RUNTIME_CONFIG_PATHS,
-  ...AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS,
-]
+${[...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS]
   .map(
     // Two shapes per entry, with no special case for one that happens to name
     // a file today: the `/*` form is simply a no-op against `.claude.json`,
@@ -2767,6 +2819,7 @@ ${[
     p => `    -not -path "\${HOME}/${p}" -not -path "\${HOME}/${p}/*" \\`,
   )
   .join("\n")}
+${AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.map(runnerDiagnosticExclusion).join("\n")}
     2>/dev/null | head -50 || true)
 
   # Pass 2: the config half of the floor, reported by name and NOT refused.
