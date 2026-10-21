@@ -76,13 +76,22 @@
  * at once. See `hooks/StaleTTLCleanup.hook.ts` for the one-line flip.
  *
  * **It shipped disarmed and it should stay that way until the dry-run log has
- * been read.** `RUNGATE_REAP_ORPHANS=1` is the only thing that arms it: there
- * is no config key, nothing in the scaffold writes it, and `hooks/` is not in
+ * been read.** `armedFromEnv` is the only thing that arms it: there is no
+ * config key, nothing in the scaffold writes it, and `hooks/` is not in
  * `package.json` `files[]`, so no consumer inherits the caller. The two
  * reasons to leave it disarmed are measurements, not caution — see `INIT_PID`
  * and `MIN_ORPHAN_AGE_SECONDS` below. Arm it by reading a few days of
  * `conditions` lines and checking that every row it would have signalled was
  * in fact dead.
+ *
+ * **"Disarmed" was an assumption until #690's last wave.** The claim rested
+ * on a `===` spelled inline in a hook — nothing executed it with the values
+ * that must NOT arm it, and nothing in the tree would have noticed a commit
+ * adding the variable to a workflow `env:` block or a settings file. Both
+ * halves are now cases: `armedFromEnv` is driven over the values, and
+ * `test/orphan-reaper.test.ts` holds the population of committed ARMING
+ * positions at zero over the file types that can set an environment
+ * variable.
  */
 
 import {
@@ -296,6 +305,36 @@ export interface ReapOptions extends OrphanDecisionOptions {
 const defaultKill = (pid: number, signal: "SIGTERM" | "SIGKILL") => {
   process.kill(pid, signal);
 };
+
+/** The one variable that can arm the reaper, and the one value that does it. */
+export const ARM_ENV_VAR = "RUNGATE_REAP_ORPHANS";
+export const ARM_ENV_VALUE = "1";
+
+/**
+ * Whether the environment arms the reaper. The ONE arming decider.
+ *
+ * It was `process.env.RUNGATE_REAP_ORPHANS === '1'`, spelled inline at the
+ * hook's call site. That is the same comparison and it could not be driven:
+ * a hook module runs its work at import, so the only way to ask "does an
+ * empty environment arm this" was to read the source and agree with it. The
+ * repository's claim about its own kill switch was the one claim with no
+ * instrument behind it, on the one switch where being wrong costs somebody
+ * else's three-hour run.
+ *
+ * Read EXACTLY, for the reason `.claude/rules/config-access.md` gives about
+ * `RUNGATE_REQUIRE_AI_REVIEW`: a loose reading of a variable that turns a
+ * gate on is a gate that turns itself on by accident. `true`, `TRUE`, `yes`,
+ * `01` and a leading space are all disarmed, and each is a case.
+ *
+ * `env` is a parameter so a case can pass a table instead of mutating the
+ * live `process.env` — a suite that armed its own environment and then threw
+ * would leave the variable set for every later file in the same process.
+ */
+export function armedFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env[ARM_ENV_VAR] === ARM_ENV_VALUE;
+}
 
 /**
  * Judge every process, and — only when `armed` — signal the orphans by pid.

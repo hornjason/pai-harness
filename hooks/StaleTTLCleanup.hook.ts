@@ -90,10 +90,14 @@ if (PROJECT_ROOT) try {
 // from the shared checkout at every SessionStart and a merge that armed it
 // would arm it for every live peer at once. Set RUNGATE_REAP_ORPHANS=1 to
 // signal; the log line is identical except that it says `armed`.
+//
+// The arming read is `armedFromEnv` and not an inline `===`, so there is one
+// binding a case can drive over the values that must NOT arm it. A call site
+// that stops passing it is itself a case — see test/orphan-reaper.test.ts.
 let orphansSignalled = 0;
 try {
-  const { reapOrphans, reapReportLines } = await import('../lib/orphan-reaper.ts');
-  const report = reapOrphans({ armed: process.env.RUNGATE_REAP_ORPHANS === '1' });
+  const { reapOrphans, reapReportLines, armedFromEnv } = await import('../lib/orphan-reaper.ts');
+  const report = reapOrphans({ armed: armedFromEnv() });
   const candidates = report.decisions.length;
   orphansSignalled = report.signalled.length;
   // Silence is reserved for "nothing to say about any process". A reading
