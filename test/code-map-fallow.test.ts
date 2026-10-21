@@ -164,7 +164,7 @@ describe("#581: the scaffold path does not reach for the network", () => {
     // second call site added without the fix; a test over the two files that
     // exist today would not have caught it either.
     const spawning: string[] = [];
-    for (const rel of ["lib/conformity.ts", "scripts/generate-code-map.ts", "lib/scaffold/steps.ts", "lib/scanner.ts"]) {
+    for (const rel of ["lib/conformity.ts", "scripts/generate-code-map.ts", "lib/scaffold/steps.ts", "lib/scanner.ts", "lib/fallow-availability.ts"]) {
       const src = readFileSync(join(REPO_ROOT, rel), "utf-8");
       // `"npx", "fallow"` as a spawn argument list — the form both callers
       // use. Prose mentioning `npx fallow` is not a spawn and is how this
@@ -175,12 +175,20 @@ describe("#581: the scaffold path does not reach for the network", () => {
 
     // The positive control: the detector must find the spawns that ARE
     // there, or it reports an empty list for a tree it cannot read.
-    const seen = ["lib/conformity.ts", "scripts/generate-code-map.ts"].filter(rel =>
-      /\[\s*"npx",\s*"fallow"/.test(readFileSync(join(REPO_ROOT, rel), "utf-8")),
-    );
-    expect(seen, "the detector found no fallow spawns at all, so it is not detecting").toEqual([
+    //
+    // It named `lib/conformity.ts` and `scripts/generate-code-map.ts` until
+    // #935, and it went red when the two spawns were collapsed into one —
+    // which is the control doing exactly its job rather than a regression.
+    // Both files still CALL fallow; neither spawns it, so a detector looking
+    // for `["npx", "fallow"` correctly finds nothing in either. The control
+    // follows the spawn rather than the callers, and there is now one.
+    const seen = [
       "lib/conformity.ts",
       "scripts/generate-code-map.ts",
+      "lib/fallow-availability.ts",
+    ].filter(rel => /\[\s*"npx",\s*"fallow"/.test(readFileSync(join(REPO_ROOT, rel), "utf-8")));
+    expect(seen, "the detector found no fallow spawns at all, so it is not detecting").toEqual([
+      "lib/fallow-availability.ts",
     ]);
   });
 });

@@ -13,9 +13,8 @@ import { join, basename } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
 import {
   fallowAvailable,
-  fallowNotInstalled,
-  fallowRunFailed,
   fallowUnmeasuredNotice,
+  runFallowJson,
   type FallowUnavailable,
 } from "../lib/fallow-availability";
 
@@ -55,34 +54,28 @@ function runFallow(): FallowOutcome {
   // path — once per consumer, forever, including behind a proxy and in an
   // air-gapped CI. `lib/conformity.ts` fixed this for itself in #510 and
   // this caller never got it.
-  if (!fallowAvailable(projectPath) && !fallowAvailable(process.cwd())) {
-    return { unavailable: fallowNotInstalled() };
-  }
-  const result = Bun.spawnSync(
-    ["npx", "fallow", "dead-code", "--format", "json", "--quiet"],
-    { cwd: projectPath, timeout: 30_000 }
-  );
-  const stdout = result.stdout.toString().trim();
-  if (!stdout) return { unavailable: fallowRunFailed(`exit ${result.exitCode}, no output`) };
-  if (stdout.startsWith("{\"error\"")) {
-    return { unavailable: fallowRunFailed(stdout.slice(0, 200)) };
-  }
-  try {
-    const d = JSON.parse(stdout);
-    return { data: {
-      entryPoints: d.entry_points?.total || 0,
-      unusedFiles: (d.unused_files || []).map((f: any) => f.path),
-      unusedExports: (d.unused_exports || []).map((e: any) => ({
-        path: e.path, export_name: e.export_name, line: e.line
-      })),
-      circularDeps: (d.circular_dependencies || []).map((c: any) => ({
-        files: c.files || [c.path]
-      })),
-      elapsed: d.elapsed_ms || 0,
-    } };
-  } catch (e) {
-    return { unavailable: fallowRunFailed(`output did not parse as JSON (${(e as Error).name})`) };
-  }
+  //
+  // The spawn, the budget and the classification are no longer here: they
+  // were a second copy of `lib/conformity.ts`'s, with a second `30_000`
+  // literal, and the two disagreed about what to do with a killed run. One
+  // binding now, in `lib/fallow-availability.ts` (#935). What stays here is
+  // the SHAPING of fallow's JSON into the fields CODE-MAP.md needs, which is
+  // this script's own business and nobody else's.
+  const root = fallowAvailable(projectPath) ? projectPath : process.cwd();
+  const reading = runFallowJson<any>(root, ["dead-code"]);
+  if ("unavailable" in reading) return { unavailable: reading.unavailable };
+  const d = reading.data;
+  return { data: {
+    entryPoints: d.entry_points?.total || 0,
+    unusedFiles: (d.unused_files || []).map((f: any) => f.path),
+    unusedExports: (d.unused_exports || []).map((e: any) => ({
+      path: e.path, export_name: e.export_name, line: e.line
+    })),
+    circularDeps: (d.circular_dependencies || []).map((c: any) => ({
+      files: c.files || [c.path]
+    })),
+    elapsed: d.elapsed_ms || 0,
+  } };
 }
 
 // ── Route scanning ───────────────────────────────────────────
