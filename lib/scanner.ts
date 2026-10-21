@@ -8,7 +8,8 @@
  * no generation logic (agents-md, agent-briefs, code-map) is imported here
  * (SC-365, AC-3).
  */
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
+import { readdirSorted } from "./readdir-sorted";
 import { join, basename } from "path";
 import { resolveConfig } from "./config-loader";
 // A leaf, not a generator. SC-365 / AC-3 keeps generation logic out of the
@@ -115,33 +116,6 @@ function detectTechStack(root: string): string[] {
  * because a fix landed here and nobody knew a second implementation existed.
  * One derivation, so the next fix cannot land in only half of them (#827).
  */
-/**
- * `readdirSync`, sorted (#827).
- *
- * Directory enumeration order is the filesystem's, and it is not an order:
- * APFS hands entries back in a different sequence from ext4. Every table in
- * this module is rendered straight from one of these reads, so three
- * generated files — `.claude/rules/specs-routing.md` and the prompt-routing
- * tables in two agent briefs — were a different PERMUTATION on Linux and on
- * macOS, with byte-identical rows. The repository could therefore be a fixed
- * point of its own generator on the machine its files were last written on
- * and on no other, which is why #827 reported five drifting files from a Mac
- * and CI found three more.
- *
- * One binding, so a new call site cannot reintroduce the class by reaching
- * for the raw import — `test/harness-fixed-point.test.ts` asserts that
- * `readdirSync` appears in this file exactly once, which is here.
- *
- * Plain `.sort()`: the default lexicographic order over UTF-16 code units is
- * locale-independent, unlike `localeCompare`, and a generator whose output
- * depends on the runner's locale is the same defect in a different coat.
- */
-interface ReaddirSortedOptions { recursive?: boolean }
-
-function readdirSorted(dir: string, opts?: ReaddirSortedOptions): string[] {
-  return (opts ? readdirSync(dir, opts) : readdirSync(dir)).map(String).sort();
-}
-
 export function scanSpecs(root: string): SpecEntry[] {
   const specsDir = join(root, "specs");
   if (!existsSync(specsDir)) return [];

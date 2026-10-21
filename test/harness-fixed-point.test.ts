@@ -40,7 +40,6 @@ import { mkdtempSync, mkdirSync, rmSync, cpSync, existsSync, readFileSync, write
 import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { generateAgentsMd } from "../lib/generators/agents-md";
-import { structuralCut } from "../lib/source-slice";
 import { mockProjectScan } from "../lib/generators/types";
 
 const ROOT = join(import.meta.dir, "..");
@@ -292,43 +291,36 @@ describe("#827: the harness is a fixed point of its own generator", () => {
   });
 
   test("#827 / AC-5b: nothing in the scan reads a directory in filesystem order", () => {
-    // The class CI found and macOS cannot: three generated files were a
-    // different PERMUTATION on ext4 and on APFS, with byte-identical rows,
-    // because every table in `lib/scanner.ts` is rendered straight from a
-    // `readdirSync`. AC-2 catches it only on the platform that disagrees
-    // with whoever last committed the files, which is why this is asserted
-    // structurally as well as behaviourally.
-    const src = readFileSync(join(ROOT, "lib", "scanner.ts"), "utf-8");
-    const helper = structuralCut(src, "function readdirSorted(", { balanced: "{" });
-    // The cut must be non-empty and must be the thing it claims to be, or
-    // the subtraction below removes nothing and the assertion holds
-    // vacuously over a file that never had a helper.
-    expect(helper).toContain("readdirSync");
-    expect(
-      src.replace(helper, ""),
-      "`lib/scanner.ts` calls `readdirSync` outside `readdirSorted`. Directory enumeration " +
-      "order is the filesystem's, not an order, and this module renders tables straight from " +
-      "it — so the generated file is a different permutation on Linux and on macOS and the " +
-      "repository stops being a fixed point of its own generator on every machine but one.",
-    ).not.toContain("readdirSync(");
-
-    // …and the helper must actually impose an order. The structural half
-    // above only establishes that one binding does the reading; a helper
-    // reading through a single site and returning filesystem order would
-    // satisfy it exactly.
+    // The class CI found and this machine could not: three generated files
+    // were a different PERMUTATION on ext4 and on APFS, with byte-identical
+    // rows, because the scan renders tables straight from `readdirSync`.
     //
-    // AC-2 does catch a non-sorting helper — measured, 2 red, on APFS as
-    // well as on ext4. But only because this machine's enumeration order
-    // happens to differ from sorted: on a filesystem that already returns
-    // names alphabetically there is no input on which a sorting helper and
-    // a non-sorting one differ, so AC-2 would be green over the defect with
-    // nothing in the run saying which case it was in. That is the margin
-    // being set from outside the fixture, so the sort is also asserted
-    // where it is written, and AC-5c asserts the order in the artifact.
+    // BOTH copies of the scan are asserted. `lib/scanner.ts` and
+    // `lib/scaffold/steps.ts` carry parallel enumerations — the duplication
+    // #829 removed for the spec scan and which is still there for the rest
+    // — and fixing one of them is what put this PR's second CI run red with
+    // the briefs still unsorted while `specs-routing.md` was clean.
+    const helperSrc = readFileSync(join(ROOT, "lib", "readdir-sorted.ts"), "utf-8");
     expect(
-      helper,
+      helperSrc,
       "`readdirSorted` no longer sorts, so it is `readdirSync` with extra steps.",
     ).toContain(".sort()");
+
+    for (const rel of ["lib/scanner.ts", "lib/scaffold/steps.ts"]) {
+      const src = readFileSync(join(ROOT, rel), "utf-8");
+      // Non-empty, and really the scan: a file that failed to load, or that
+      // stopped enumerating anything at all, would satisfy the refusal below
+      // while reading nothing.
+      expect(src, `${rel} no longer enumerates any directory`).toContain("readdirSorted(");
+      expect(
+        src,
+        `${rel} calls \`readdirSync\` directly. Directory enumeration order is the ` +
+        `filesystem's, not an order, and this module renders generated tables straight from ` +
+        `it — so the output is a different permutation on Linux and on macOS, and the ` +
+        `repository stops being a fixed point of its own generator on every machine but one. ` +
+        `Use \`readdirSorted\` from \`lib/readdir-sorted.ts\`.`,
+      ).not.toContain("readdirSync(");
+    }
   });
 
   test("#827 / AC-5c: the generated spec table is in a stated order, not the filesystem's", () => {
