@@ -67,6 +67,7 @@ import { join } from "path";
 import {
   MIN_IDENTIFYING_BODY,
   caseDeclarations,
+  literalSpans,
   normalisedBody,
   renamePairs,
   type CaseDeclaration,
@@ -243,18 +244,18 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
 
   test("AC-5: two disappeared cases sharing a body do not pair with one survivor", () => {
     const before: CaseDeclaration[] = [
-      { name: "alpha", body: BODY },
-      { name: "beta", body: BODY },
+      { name: "alpha", body: BODY, modifier: "" },
+      { name: "beta", body: BODY, modifier: "" },
     ];
-    const after: CaseDeclaration[] = [{ name: "gamma", body: BODY }];
+    const after: CaseDeclaration[] = [{ name: "gamma", body: BODY, modifier: "" }];
     expect(renamePairs(before, after)).toEqual([]);
   });
 
   test("AC-6: one disappeared case matching two added cases does not pair", () => {
-    const before: CaseDeclaration[] = [{ name: "alpha", body: BODY }];
+    const before: CaseDeclaration[] = [{ name: "alpha", body: BODY, modifier: "" }];
     const after: CaseDeclaration[] = [
-      { name: "beta", body: BODY },
-      { name: "gamma", body: BODY },
+      { name: "beta", body: BODY, modifier: "" },
+      { name: "gamma", body: BODY, modifier: "" },
     ];
     expect(renamePairs(before, after)).toEqual([]);
   });
@@ -263,7 +264,7 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
     // Without this the two cases above are satisfied by a `renamePairs`
     // that never pairs anything (`.claude/rules/checks-must-be-able-to-fail.md`,
     // assertions that hold vacuously).
-    expect(renamePairs([{ name: "alpha", body: BODY }], [{ name: "beta", body: BODY }])).toEqual([
+    expect(renamePairs([{ name: "alpha", body: BODY, modifier: "" }], [{ name: "beta", body: BODY, modifier: "" }])).toEqual([
       { from: "alpha", to: "beta" },
     ]);
   });
@@ -275,12 +276,12 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
     // same body at both commits, so the body names no case.
     // test/unit/suite-denominator.test.ts is this input, five times over.
     const before: CaseDeclaration[] = [
-      { name: "alpha", body: BODY },
-      { name: "stayed", body: BODY },
+      { name: "alpha", body: BODY, modifier: "" },
+      { name: "stayed", body: BODY, modifier: "" },
     ];
     const after: CaseDeclaration[] = [
-      { name: "beta", body: BODY },
-      { name: "stayed", body: BODY },
+      { name: "beta", body: BODY, modifier: "" },
+      { name: "stayed", body: BODY, modifier: "" },
     ];
     expect(renamePairs(before, after)).toEqual([]);
   });
@@ -292,7 +293,84 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
     // unique here — only the floor can refuse it.
     const trivial = `, () => { expect(1).toBe(1); }`;
     expect(normalisedBody(trivial).length).toBeLessThan(MIN_IDENTIFYING_BODY);
-    expect(renamePairs([{ name: "gone", body: trivial }], [{ name: "arrived", body: trivial }])).toEqual([]);
+    expect(renamePairs([{ name: "gone", body: trivial, modifier: "" }], [{ name: "arrived", body: trivial, modifier: "" }])).toEqual([]);
+  });
+});
+
+// ── AC-16/AC-17: the two ways a body can lie (security review) ───────────
+
+describe("AC-16 (#880): a case that stopped RUNNING is not a rename", () => {
+  // Found by the security review of this change, and it is this module's
+  // own defect arriving inside the fix for it. The body is byte-identical;
+  // the assertions do not run. Reporting that as a rename says "no coverage
+  // left with them", which is false, and #659's whole sentence is "a gate
+  // that passes because its test is gone is not a gate that passed" — the
+  // test is still in the file and the gate is just as gone.
+  const BODY = `() => {\n  const port = listen(0);\n  expect(port).toBeGreaterThan(0);\n}`;
+  const BEFORE = HEAD + `test("a free port passes", ${BODY});\n`;
+  const QUARANTINED = HEAD + `test.skip("a free port passes, now quarantined", ${BODY});\n`;
+  const RENAMED = HEAD + `test("a free port passes, and the port is OS-assigned", ${BODY});\n`;
+
+  test("the two fixtures differ ONLY in the modifier, so this measures the modifier", () => {
+    // #585's pair discipline: a pair varying two things measures neither.
+    // The titles differ too, which they must — a rename is what is being
+    // tested — so the control below is the half that makes it a reading.
+    const [quarantined] = caseDeclarations(QUARANTINED);
+    const [renamed] = caseDeclarations(RENAMED);
+    expect(quarantined.modifier).toBe(".skip");
+    expect(renamed.modifier).toBe("");
+    expect(normalisedBody(quarantined.body!)).toBe(normalisedBody(renamed.body!));
+  });
+
+  test("a rename to test.skip is reported as a DELETION", () => {
+    const { root, previous, current } = fixture(BEFORE, QUARANTINED);
+    const changes = caseChanges(root, previous, current);
+    expect(changes.renamed).toEqual([]);
+    expect(changes.deleted).toEqual([{ name: "a free port passes", file: "test/subject.test.ts" }]);
+  });
+
+  test("the control: the same rename WITHOUT the modifier pairs", () => {
+    // Without this the case above is satisfied by a pairing that never
+    // pairs anything, and the modifier would be witnessing nothing.
+    const { root, previous, current } = fixture(BEFORE, RENAMED);
+    expect(caseChanges(root, previous, current).renamed).toHaveLength(1);
+  });
+});
+
+describe("AC-17 (#880): a phantom declaration cannot discharge a deletion", () => {
+  // A `test("…"` sequence inside a string literal is a repository writing
+  // about its own tests, not a declaration. They were harmless by ACCIDENT
+  // — a paren never opened as code does not close, so the body came back
+  // null — and accidental protection is what this repo's rules are about.
+  const PHANTOM = `const GATE_CHECK = 'test("a free port passes", () => { const port = listen(0); expect(port).toBeGreaterThan(0); })';`;
+
+  test("the sequence IS found by the declaration PATTERN, so this is not vacuous", () => {
+    // The control: without it, "the scan reports no case" is satisfied by
+    // a pattern that never matched the line at all, and the literal-span
+    // pass would be witnessing nothing.
+    const bare = /(?:^|[^.\w$])(?:test|it)\s*\(\s*(["'`])/;
+    expect(bare.test(PHANTOM)).toBe(true);
+  });
+
+  test("but the scan drops it, so it is neither a case nor a survivor", () => {
+    expect(caseDeclarations(HEAD + PHANTOM + "\n")).toEqual([]);
+  });
+
+  test("a real case deleted beside a phantom of itself is still a deletion", () => {
+    const body = `() => {\n  const port = listen(0);\n  expect(port).toBeGreaterThan(0);\n}`;
+    const before = HEAD + `test("a free port passes", ${body});\n`;
+    const after = HEAD + PHANTOM + "\n";
+    const { root, previous, current } = fixture(before, after);
+    const changes = caseChanges(root, previous, current);
+    expect(changes.renamed).toEqual([]);
+    expect(changes.deleted).toEqual([{ name: "a free port passes", file: "test/subject.test.ts" }]);
+  });
+
+  test("literalSpans covers the shapes the declaration scan has to see through", () => {
+    const src = `const a = "x"; // y\nconst b = \`t\`; /* z */ const c = /re/;`;
+    const spans = literalSpans(src);
+    const cut = spans.map(([s, e]) => src.slice(s, e));
+    expect(cut).toEqual([`"x"`, `// y`, "`t`", `/* z */`, `/re/`]);
   });
 });
 
@@ -319,7 +397,7 @@ describe("AC-7/AC-8/AC-9 (#880): the normalisation is trivia only", () => {
     const one = `() => { expect(compute(2)).toBe(4); }`;
     const two = `() => { expect(compute(2)).toBe(5); }`;
     expect(normalisedBody(one)).not.toBe(normalisedBody(two));
-    expect(renamePairs([{ name: "a", body: one }], [{ name: "b", body: two }])).toEqual([]);
+    expect(renamePairs([{ name: "a", body: one, modifier: "" }], [{ name: "b", body: two, modifier: "" }])).toEqual([]);
   });
 
   test("a comment is removed, not merely shortened — a comment cannot carry the body", () => {
@@ -367,7 +445,7 @@ describe("AC-10/AC-11/AC-12 (#880): cutting the body out of real source", () => 
     const decls = caseDeclarations(truncated);
     expect(decls.map(d => d.name)).toEqual(["unterminated"]);
     expect(decls[0].body).toBeNull();
-    expect(renamePairs(decls, [{ name: "renamed", body: null }])).toEqual([]);
+    expect(renamePairs(decls, [{ name: "renamed", body: null, modifier: "" }])).toEqual([]);
   });
 
   test("AC-10: caseNames is a projection of the same scan, so there is one decider", () => {
@@ -393,20 +471,19 @@ describe("AC-10/AC-11/AC-12 (#880): cutting the body out of real source", () => 
     // own, and `null` bodies simply never pair. Nothing else in this file
     // can see that failure.
     //
-    // A FLOOR and not an equality (#637): the count belongs to the tree,
-    // not to this case, and what has to be established is that the cut
-    // read something rather than that it read exactly 7,620 somethings.
+    // The total is a FLOOR and not an equality (#637): it belongs to the
+    // tree, not to this case. The unreadable list is asserted EMPTY,
+    // because that one is a property of the scanner — every `test(` the
+    // literal-span pass has not already discarded is real code, so a call
+    // that does not close is a gap in `skipBalanced` and nothing else.
     //
-    // Measured 2026-10-21 over 483 files: 7,631 declarations, 11 with no
-    // readable body — 0.144%. All eleven are a `test("…"` sequence sitting
-    // inside a STRING LITERAL in the source rather than being a
-    // declaration at all (`const GATE_CHECK = 'test("prove-label-…"'` in
-    // test/prove-label-gate.test.ts is the clearest), so the call they
-    // appear to open was never opened as code and correctly never closes.
-    // `caseNames` has counted those as cases since #659 and still does —
-    // the declaration pattern reads raw source — and narrowing it is a
-    // separate change with its own blast radius, because the census this
-    // is compared against counts prose too.
+    // Measured 2026-10-21 over 484 files: 7,508 declarations, **0** with
+    // no readable body. The first draft of this case read 11, all of them
+    // a `test("…"` sequence inside a string literal — `const GATE_CHECK =
+    // 'test("prove-label-…"'` in test/prove-label-gate.test.ts — and those
+    // are now dropped as phantoms rather than carried as body-less cases.
+    // A second draft read 620, from a scan budget charged the wrong
+    // number; this case is what found it.
     const files = testFilesUnder(REPO_ROOT);
     let total = 0;
     const unread: string[] = [];
@@ -418,11 +495,11 @@ describe("AC-10/AC-11/AC-12 (#880): cutting the body out of real source", () => 
     }
     expect(total).toBeGreaterThan(5000);
     expect(
-      unread.length,
-      `${unread.length} of ${total} declarations have no readable body. Over 1% means the ` +
-        `scanner in lib/test-case-bodies.ts has stopped closing calls, not that the tree grew ` +
-        `string constants — check it before raising this. Unreadable: ${unread.slice(0, 20).join("; ")}`,
-    ).toBeLessThan(total / 100);
+      unread,
+      `${unread.length} of ${total} declarations have no readable body. Each one is a case the ` +
+        `rename reading can never pair, so it would be reported as a deletion: fix the scanner in ` +
+        `lib/test-case-bodies.ts rather than widening this.`,
+    ).toEqual([]);
   });
 });
 

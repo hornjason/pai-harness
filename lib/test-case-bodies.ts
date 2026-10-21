@@ -62,10 +62,39 @@ export interface CaseDeclaration {
    * paren.
    *
    * `null` when the call never closes, which is the honest reading for a
-   * truncated or unparseable file. A `null` body pairs with nothing, so an
-   * unreadable case is reported as a deletion rather than quietly matched.
+   * truncated or unparseable file, and also when the declaration is not one
+   * — see `caseDeclarations` on phantoms. A `null` body pairs with nothing,
+   * so an unreadable case is reported as a deletion rather than matched.
    */
   body: string | null;
+  /**
+   * `""` for a plain `test(`, or the modifier as written — `.skip`,
+   * `.todo`, `.only`, `.failing`, `.skipIf`, `.todoIf`, `.runIf`.
+   *
+   * ## Why this is part of the case's identity and not metadata
+   *
+   * Found by the security review of this change, and it is the defect this
+   * whole module exists to avoid, arriving inside the fix for it. A round
+   * that turns
+   *
+   *     test("a free port passes", () => { …body… })
+   *
+   * into
+   *
+   *     test.skip("a free port passes, now quarantined", () => { …body… })
+   *
+   * leaves the body byte-identical. Pairing on the body alone reports it as
+   * a rename and says *"no coverage left with them"* — which is false: the
+   * assertions no longer run, which is #659's *"a gate that passes because
+   * its test is gone is not a gate that passed"* with the test still
+   * sitting in the file.
+   *
+   * The pre-#880 title comparison ignored the modifier too, and that was
+   * harmless because it never claimed anything had survived. The claim is
+   * what makes this load-bearing, so the modifier is keyed into the
+   * pairing and a case that changed modifier is reported as a DELETION.
+   */
+  modifier: string;
 }
 
 /**
@@ -86,7 +115,7 @@ export interface CaseDeclaration {
  * raw name, escapes included.
  */
 const CASE_DECLARATION =
-  /(?:^|[^.\w$])(?:test|it)(?:\.(?:skip|only|todo|failing|skipIf|todoIf|runIf))?\s*\(\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
+  /(?:^|[^.\w$])(?:test|it)(\.(?:skip|only|todo|failing|skipIf|todoIf|runIf))?\s*\(\s*(["'`])((?:\\.|(?!\2)[^\\])*)\2/g;
 
 const ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", "0": "\0" };
 
@@ -260,6 +289,52 @@ export function matchingCallParen(src: string, open: number): number | null {
   return end === null ? null : end - 1;
 }
 
+/**
+ * The `[start, end)` ranges of every string, template, comment and regex in
+ * a source file, in ascending order.
+ *
+ * A `test("…"` sequence inside one of those is not a declaration: it is a
+ * repository that writes about its own tests. Measured 2026-10-21, this
+ * tree has eleven, `const GATE_CHECK = 'test("prove-label-…"'` in
+ * `test/prove-label-gate.test.ts` being the clearest.
+ *
+ * They were already harmless BY ACCIDENT — a paren that was never opened as
+ * code does not close, so the body came back `null` and a `null` body pairs
+ * with nothing. Accidental protection is the thing this repository's rules
+ * are mostly about, so it is made deliberate here: a phantom on the AFTER
+ * side whose parens happened to balance could otherwise discharge a real
+ * deletion, which is the reassuring-direction error with no witness.
+ */
+export function literalSpans(source: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    let end: number | null = null;
+    if (c === '"' || c === "'") end = skipQuoted(source, i);
+    else if (c === "`") end = skipTemplate(source, i);
+    else if (c === "/" && source[i + 1] === "/") {
+      const nl = source.indexOf("\n", i);
+      end = nl < 0 ? source.length : nl;
+    } else if (c === "/" && source[i + 1] === "*") end = skipBlockComment(source, i);
+    else if (c === "/" && regexHere(source, i)) end = skipRegex(source, i);
+    else {
+      i++;
+      continue;
+    }
+    // An unterminated literal: step one character rather than giving up on
+    // the file. The rest of the scan is still worth having, and the
+    // declarations inside the unterminated region simply are not marked.
+    if (end === null || end <= i) {
+      i++;
+      continue;
+    }
+    spans.push([i, end]);
+    i = end;
+  }
+  return spans;
+}
+
 // ── The declarations ─────────────────────────────────────────────────────
 
 /**
@@ -271,20 +346,49 @@ export function matchingCallParen(src: string, open: number): number | null {
  */
 export function caseDeclarations(source: string): CaseDeclaration[] {
   const out: CaseDeclaration[] = [];
+  const spans = literalSpans(source);
+  const inLiteral = (at: number) => spans.some(([s, e]) => at >= s && at < e);
+  // A budget across the whole call, so a malformed file cannot turn an
+  // O(n) scan per declaration into a gate that never returns. It cannot be
+  // reached by a well-formed file: every body is scanned once, so the total
+  // is about the length of the source. A declaration past the budget gets
+  // no body and is therefore reported as a deletion — loud, and the safe
+  // direction — rather than silently paired.
+  let budget = Math.max(source.length * 8, 1_000_000);
+
   for (const m of source.matchAll(CASE_DECLARATION)) {
     // A template literal with an interpolation has no single name to record,
     // and reporting its text as a name would make it look deleted the moment
     // the interpolation changed.
-    if (m[1] === "`" && m[2].includes("${")) continue;
+    if (m[2] === "`" && m[3].includes("${")) continue;
     // The FIRST paren in the match is the call's own: the title literal is
     // an argument, so nothing with a paren in it can precede this one.
     const open = m.index! + m[0].indexOf("(");
     const titleEnd = m.index! + m[0].length;
-    const close = matchingCallParen(source, open);
-    out.push({
-      name: unescape(m[2]),
-      body: close === null || close < titleEnd ? null : source.slice(titleEnd, close),
-    });
+    // A phantom — the sequence inside a string, a comment or a regex — is
+    // not a declaration and is DROPPED, not merely left body-less.
+    //
+    // Giving it a null body was the first draft and it is not enough: a
+    // phantom still carries a NAME, and `caseChanges` discharges a deletion
+    // whose name survives. So `const GATE_CHECK = 'test("a free port
+    // passes", …)'` added in the same round that deleted that case would
+    // report nothing gone — the deletion check's own defect, reachable
+    // through the name set rather than through the pairing. Found by the
+    // security review of this change.
+    if (inLiteral(m.index! + m[0].search(/(?:test|it)/))) continue;
+    let body: string | null = null;
+    if (budget > 0) {
+      const close = matchingCallParen(source, open);
+      // Charged what the scan actually READ, not what it might have. The
+      // first draft charged `source.length - open` whether the call closed
+      // after forty characters or never — which spends the budget in
+      // proportion to how early a case appears in the file, and reported
+      // 620 of this tree's 7,650 declarations as unreadable instead of 11.
+      // The instrument case below is what caught it.
+      budget -= (close === null ? source.length : close) - open;
+      if (close !== null && close >= titleEnd) body = source.slice(titleEnd, close);
+    }
+    out.push({ name: unescape(m[3]), body, modifier: m[1] ?? "" });
   }
   return out;
 }
@@ -375,18 +479,32 @@ export interface RenamePair {
  * draft of this module paired them and reported one of three deletions as
  * a rename.
  *
- * Measured over this repository, 2026-10-21 — 7,633 cases in 483 files:
+ * Measured over this repository, 2026-10-21 — 7,508 cases in 484 files.
+ * Every distinct normalised body that two cases in one file share, by
+ * length: **0, 10, 42, 55, 86, 94, 160, 369**. The 5th percentile of all
+ * bodies is **82** and the median is **277**.
  *
- * | reading | value |
- * |---|---|
- * | cases sharing a normalised body with another case in the same file | 161 (2.1%), over 26 files |
- * | longest such shared body that is boilerplate | **30** — `, () => { expect(1).toBe(1); }` |
- * | 5th percentile of all case bodies | **73** |
- * | median | 273 |
+ * 48 sits between the three boilerplate lengths and the five substantial
+ * ones, and below the 5th percentile, so it excludes essentially no real
+ * case from being paired.
  *
- * 48 sits between the two: above every duplicated boilerplate body in the
- * tree, and below the 5th percentile, so it excludes essentially no real
- * case from being paired. Both costs, stated rather than implied:
+ * ## The floor and the uniqueness rule are two guards, and each has an
+ * input only it reaches
+ *
+ * Named, because two guards answering one question are behaviourally one
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape) and
+ * the only thing that makes keeping both honest is being able to say which
+ * input each is for:
+ *
+ *   - **the floor only** — #659's fixture. A 30-character body, unique
+ *     among the disappeared cases AND unique among the appeared ones, so
+ *     the uniqueness rule sees a clean one-to-one match. It is a
+ *     placeholder shared between two unrelated tests.
+ *   - **uniqueness only** — `test/unit/bash-tool-guard.test.ts`, whose two
+ *     cases share a 369-character body. Far above the floor and still
+ *     evidence of nothing, because it names two cases rather than one.
+ *
+ * Both costs of the floor, stated rather than implied:
  *
  *   - too HIGH — a short but genuine rename reads as a deletion, which is
  *     the pre-#880 answer and the direction to be wrong in.
@@ -426,6 +544,28 @@ export const MIN_IDENTIFYING_BODY = 48;
  * a reading that identifies no case must not match another one that
  * identifies no case.
  */
+/**
+ * What a case is compared BY, or `null` when it is comparable to nothing.
+ *
+ * ONE binding, so there is one thing to mutate and one place where a
+ * component of a case's identity can be forgotten. Asking "is the body long
+ * enough" in the index and again in the loop below would be two deciders
+ * that agree, and a mutation of either would leave the other refusing
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ *
+ * The modifier is part of the key and not a side condition for the same
+ * reason: a side condition is a second place a rule can be dropped. `test`
+ * and `test.skip` carrying one body produce two different keys and
+ * therefore never pair, and they do so by the same arithmetic that already
+ * refuses two unrelated bodies.
+ */
+function pairingKey(d: CaseDeclaration): string | null {
+  if (d.body === null) return null;
+  const body = normalisedBody(d.body);
+  if (body.length < MIN_IDENTIFYING_BODY) return null;
+  return `${d.modifier}\u0000${body}`;
+}
+
 export function renamePairs(
   before: readonly CaseDeclaration[],
   after: readonly CaseDeclaration[],
@@ -441,9 +581,8 @@ export function renamePairs(
   const index = (all: readonly CaseDeclaration[]): Map<string, CaseDeclaration[]> => {
     const by = new Map<string, CaseDeclaration[]>();
     for (const d of all) {
-      if (d.body === null) continue;
-      const key = normalisedBody(d.body);
-      if (key.length < MIN_IDENTIFYING_BODY) continue;
+      const key = pairingKey(d);
+      if (key === null) continue;
       const at = by.get(key);
       if (at) at.push(d);
       else by.set(key, [d]);
@@ -458,9 +597,8 @@ export function renamePairs(
 
   const out: RenamePair[] = [];
   for (const d of disappeared) {
-    if (d.body === null) continue;
-    const key = normalisedBody(d.body);
-    if (key.length < MIN_IDENTIFYING_BODY) continue;
+    const key = pairingKey(d);
+    if (key === null) continue;
     const from = wasThere.get(key);
     const to = isThere.get(key);
     if (!from || from.length !== 1 || !to || to.length !== 1) continue;
