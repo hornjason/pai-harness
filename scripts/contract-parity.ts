@@ -452,31 +452,51 @@ export function toolchainParity(root: string, running: string = Bun.version): Ca
 
   // What the scaffold would EMIT, which is the position #622c is about: a fix
   // editing only the checked-in copies leaves every consumer unpinned.
+  const EMITTED_SITE = "lib/bun-version.ts — the step the scaffold would emit";
+  // The same question this category already asks of every checked-in workflow,
+  // asked of the generator that writes them (#932). Without it the category
+  // refused `bun-version: latest` in `ci.yml` and BANKED the identical value as
+  // a pinned position one reading later, because `add` is reached by source
+  // rather than by whether what was declared names a runtime tomorrow — so the
+  // producer of the defect counted toward the coverage of its own detector.
+  const addEmitted = (version: string) => {
+    if (isPinnedBunVersion(version)) {
+      add(EMITTED_SITE, version);
+      return;
+    }
+    violations.push(
+      `${EMITTED_SITE} would install \`${version}\`, which is not a pin: the runtime executing a ` +
+        `given commit can change between two runs of it, with nothing in the diff to explain a ` +
+        `new failure (#622). The generator writes what the declaration says, so the fix is the ` +
+        `declaration: ${bunVersionSourceLabel(decision.source)} (#932)`,
+    );
+    sites.push({ site: EMITTED_SITE, value: version });
+  };
   const emitted = setupBunWith(decision, "");
   const emittedDeclarations = setupBunDeclarations(emitted);
   if (decision.source === "undeclared") {
     unmeasured.push(
       unmeasurable(
         "unresolved-source",
-        "lib/bun-version.ts — the step the scaffold would emit",
+        EMITTED_SITE,
         `${decision.reason}, so the emitted step is an UNPINNED \`latest\` rather than a declaration`,
       ),
     );
   } else {
     for (const declared of emittedDeclarations) {
-      if (declared.key === "bun-version") add("lib/bun-version.ts — the step the scaffold would emit", declared.value);
+      if (declared.key === "bun-version") addEmitted(declared.value);
       else {
         const pointed = join(root, declared.value);
         if (!existsSync(pointed)) {
           unmeasured.push(
             unmeasurable(
               "unresolved-source",
-              "lib/bun-version.ts — the step the scaffold would emit",
+              EMITTED_SITE,
               `it would point CI at \`${declared.value}\`, which is not in this tree`,
             ),
           );
         } else {
-          add("lib/bun-version.ts — the step the scaffold would emit", readFileSync(pointed, "utf-8").trim());
+          addEmitted(readFileSync(pointed, "utf-8").trim());
         }
       }
     }
