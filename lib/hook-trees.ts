@@ -104,6 +104,116 @@ export function settingsCommands(docs: string[]): string[] {
   return out;
 }
 
+/**
+ * The hook file a command actually EXECUTES, as a basename.
+ *
+ * ## Three matchers, each narrower than the last, and why there was a third
+ *
+ * 1. `command.includes("X.hook.ts")` — satisfied by `other-X.hook.ts`, by
+ *    `X.hook.ts.bak`, by the name in any path fragment.
+ * 2. **token membership** — any `.hook.ts`-shaped token anywhere in the
+ *    string. Narrower, and the same class: measured on the #976 branch, all
+ *    four of these returned `true` for `IssueCloseGuard`:
+ *
+ *        bun run x.ts # IssueCloseGuard.hook.ts
+ *        bun run x.ts ; echo IssueCloseGuard.hook.ts
+ *        bun run x.ts && cat IssueCloseGuard.hook.ts
+ *        SOME=1 bun run x.ts --note IssueCloseGuard.hook.ts
+ *
+ *    A hook counted as registered because its name appeared near a command
+ *    that never runs it. Tokenising narrowed the hole; it did not remove it,
+ *    and the diff implied otherwise.
+ * 3. the **executed argument** — what this does now.
+ *
+ * Recorded as three steps deliberately. Three PRs in one day have replaced a
+ * matcher that was wrong about its subject with one carrying the same
+ * property a level down, and the way that keeps happening is a diff that
+ * reads as though the class were closed.
+ *
+ * ## What this does
+ *
+ * Truncate at the first `#`, `;`, `&&`, `||` or `|`; drop leading `VAR=`
+ * assignments, an `env` prefix, a known interpreter and a `run`/`exec`
+ * subcommand; skip flags; basename the **first positional** and compare it
+ * by equality.
+ *
+ * ## What it does NOT close, named rather than left to be inferred
+ *
+ * An argv parse has its own differentials and this closes some of them:
+ *
+ * - **`sh -c "bun X.hook.ts"`** — the real command is inside a quoted string
+ *   and is not parsed. Reads as NOT naming the hook.
+ * - **a wrapper script** that execs the hook. Reads as NOT naming it.
+ * - **a `$VAR`-built path** whose variable holds the hook file name. The
+ *   variable is not expanded here; `lib/hook-scopes.ts` compares the literal.
+ * - **a hook executed in a LATER segment** — `make x && bun X.hook.ts`. The
+ *   truncation stops at the first separator, so this reads as NOT naming it.
+ *
+ * **Every one of those errs toward reporting a registration that exists as
+ * absent**, and that is the direction chosen rather than tolerated. For
+ * `hookRegistration` a missed registration becomes `unregistered` or
+ * `unmeasured`, which `AC-4`/`AC-4b` turn red — loud, and someone fixes the
+ * spelling. The opposite error is a guard reporting clean about its own
+ * subject, which is what #910 cost. Do not "fix" a false red here by
+ * widening this; add the spelling to the parse.
+ *
+ * `wrongTreeViolations` below deliberately still uses a substring match. The
+ * error directions are opposite there: an over-broad match reports a
+ * violation that is not real, which costs an investigation and fails loud,
+ * while a narrow parse could silently stop reporting a hook genuinely wired
+ * to the superseded tree. Tracked as #981 rather than changed here, and that
+ * issue carries the error-direction table — so the cheap generalisation
+ * "reuse this parser everywhere" has a written reason not to.
+ */
+const INTERPRETERS = new Set([
+  "bun", "bunx", "node", "npx", "npm", "pnpm", "yarn", "deno", "ts-node", "tsx",
+]);
+const SUBCOMMANDS = new Set(["run", "exec"]);
+const SEPARATORS = new Set(["#", ";", "&&", "||", "|", "&"]);
+
+export function executedHookFile(command: string): string | null {
+  const tokens: string[] = [];
+  for (const raw of command.split(/\s+/).filter(Boolean)) {
+    // A separator ends the first command, whether it stands alone or is
+    // glued to the token before it (`x.ts;`, `x.ts&&`).
+    if (SEPARATORS.has(raw)) break;
+    const cut = raw.search(/[#;|&]/);
+    if (cut === 0) break;
+    if (cut > 0) {
+      tokens.push(raw.slice(0, cut));
+      break;
+    }
+    tokens.push(raw);
+  }
+
+  let i = 0;
+  // Leading `VAR=value` assignments, and an `env` prefix that introduces more.
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  if (tokens[i] === "env") {
+    i++;
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  }
+  const bare = (t: string) => t.replace(/^['"]+|['"]+$/g, "");
+  if (i < tokens.length && INTERPRETERS.has(bare(tokens[i]).split("/").pop() ?? "")) i++;
+  if (i < tokens.length && SUBCOMMANDS.has(bare(tokens[i]))) i++;
+  while (i < tokens.length && bare(tokens[i]).startsWith("-")) i++;
+  if (i >= tokens.length) return null;
+
+  const arg = bare(tokens[i]);
+  const base = arg.slice(arg.lastIndexOf("/") + 1);
+  return /^[A-Za-z0-9_-]+\.hook\.ts$/.test(base) ? base : null;
+}
+
+/**
+ * Does `command` EXECUTE `<hook>.hook.ts`?
+ *
+ * The single predicate every registration reading goes through, so there is
+ * one binding to mutate and one place a narrowing or a widening lands.
+ */
+export function commandNamesHook(command: string, hook: string): boolean {
+  return executedHookFile(command) === `${hook}.hook.ts`;
+}
+
 export interface TreeViolation {
   hook: string;
   tree: HookTree | "unknown";

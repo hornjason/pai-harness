@@ -44,7 +44,7 @@ import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import { parseHookInput } from "./lib/parseStdin";
-import { recordHookFiring } from "../lib/hook-evidence";
+import { errorFacts, recordHookFiring } from "../lib/hook-evidence";
 
 const HOOK = "ProjectStateSync";
 
@@ -76,6 +76,8 @@ try {
   recordHookFiring(HOOK, "synced", { filePath, cwd, script });
   console.log("✅ PROJECT-STATE.md synced from project-state.json");
 } catch (e: any) {
-  recordHookFiring(HOOK, "sync-failed", { filePath, cwd, script, error: String(e?.message ?? e) });
+  // The generator's message is not recorded: it quotes the argv that
+  // produced it (#970 review, finding 2).
+  recordHookFiring(HOOK, "sync-failed", { filePath, cwd, script, ...errorFacts(e) });
   console.error(`WARN: PROJECT-STATE.md sync failed: ${e.message}`);
 }

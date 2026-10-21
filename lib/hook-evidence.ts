@@ -43,11 +43,87 @@
  * happened, and a caller that wants to know can ask.
  */
 
-import { appendFileSync, mkdirSync } from "fs";
+import { createHash } from "crypto";
+import { appendFileSync, chmodSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
 export const HOOK_EVIDENCE_FILE = "hook-firings.jsonl";
+
+/**
+ * The evidence file holds no raw command and no raw error text.
+ *
+ * A Bash tool call routinely carries leading environment assignments —
+ * `SOME_TOKEN=... bun test` — and an exception message routinely quotes the
+ * path or argv that produced it. Writing either verbatim turns an append-only
+ * log into a credential store that nothing rotates, in a file whose whole
+ * purpose is to be read later by somebody who was not there.
+ *
+ * So a record carries a non-reversible DISCRIMINATOR plus a classification
+ * drawn from a fixed vocabulary. That keeps every question the evidence
+ * exists to answer — did it fire, what did it decide, was it the same command
+ * as last time — and answers none of the questions a secret would.
+ *
+ * Raised by the security review of PR #970, findings 1 and 2.
+ */
+export function digest(value: string): string {
+  // 16 hex characters: enough to correlate two runs of the same command,
+  // far too little to invert, and short enough that nobody is tempted to
+  // paste it anywhere as though it were the original.
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+/**
+ * The runner words a command contains, drawn from a FIXED vocabulary.
+ *
+ * Allowlisted rather than extracted, which is the property that matters: the
+ * output is a subset of this list, so no input can push an unexpected
+ * substring of the command into the record. A classification cannot leak;
+ * a pass-through can.
+ */
+const SUITE_VOCABULARY = [
+  "bun",
+  "npm",
+  "pnpm",
+  "yarn",
+  "npx",
+  "test",
+  "vitest",
+  "jest",
+  "--parallel",
+  "--no-isolate",
+  "--coverage",
+] as const;
+
+export function suiteTokens(command: string): string[] {
+  const seen = new Set(command.split(/\s+/).map(t => t.replace(/^['"]+|['"]+$/g, "")));
+  return SUITE_VOCABULARY.filter(word => seen.has(word));
+}
+
+/**
+ * A command reduced to what the evidence actually needs.
+ *
+ * One binding, so every hook records the same shape and there is one place to
+ * mutate when asking whether redaction is load-bearing.
+ */
+export function commandDigestFacts(command: string): {
+  commandDigest: string;
+  suiteTokens: string[];
+} {
+  return { commandDigest: digest(command), suiteTokens: suiteTokens(command) };
+}
+
+/** An error reduced to a class name and a digest — never its message. */
+export function errorFacts(e: unknown): { errorClass: string; errorDigest: string } {
+  const raw = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  const name = e instanceof Error ? e.name : typeof e;
+  return {
+    // Constructor names are identifiers. Anything else is refused rather
+    // than passed through, because `e.name` is writable.
+    errorClass: /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : "UNCLASSIFIED",
+    errorDigest: digest(raw),
+  };
+}
 
 export interface HookFiring {
   /** ISO-8601, so a record can be compared against a run. */
@@ -126,8 +202,18 @@ export function parseFirings(text: string): HookFiring[] {
  */
 export function appendEvidence(path: string, line: string): boolean {
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, line);
+    // 0o700 / 0o600. The file records which suites ran, when, and from which
+    // worktree, for every session on the machine — a shape worth keeping to
+    // the owning user even with the redaction above. `mode` applies only on
+    // creation, so an existing file is corrected explicitly; a chmod failure
+    // must not lose the record, which is why it is caught separately.
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    appendFileSync(path, line, { mode: 0o600 });
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      /* the record is written; its mode is a hardening, not the evidence */
+    }
     return true;
   } catch {
     return false;

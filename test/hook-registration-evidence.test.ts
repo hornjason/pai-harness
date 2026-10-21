@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 import {
   IncompleteScopeReadingError,
@@ -10,10 +10,18 @@ import {
   readRegistrationScopes,
   registrationCensus,
   settingsScopePaths,
+  unplacedHooks,
   type ScopeReading,
 } from "../lib/hook-scopes";
-import { appendEvidence, firingLine, parseFirings } from "../lib/hook-evidence";
-import { settingsCommands } from "../lib/hook-trees";
+import {
+  appendEvidence,
+  commandDigestFacts,
+  errorFacts,
+  firingLine,
+  parseFirings,
+  suiteTokens,
+} from "../lib/hook-evidence";
+import { commandNamesHook, executedHookFile, settingsCommands } from "../lib/hook-trees";
 
 /**
  * #910 and #713 are one defect read from two sides, and this file holds the
@@ -265,19 +273,33 @@ describe("#910 AC-3: the live reading of the two hooks #910 called unregistered"
   });
 
   test("AC-3b: where the user scope IS readable, it is the scope that names them", () => {
-    // The half that cannot be satisfied by adding a row to the repo registry
-    // — which is the cheapest wrong fix for #910 and is named in this file's
-    // PR. Neither hook appears in `.claude/rungate/hooks.json`, so the only
-    // scope that can produce `registered` is the one #910 never opened.
+    // The half that cannot be satisfied by anything the repo owns: the only
+    // scope that can say these two hooks are WIRED is the one #910 never
+    // opened. `.claude/rungate/hooks.json` now carries a row for each, but a
+    // row is the repo declaring where a hook is supposed to live; it is not a
+    // registration, and this case is what keeps the two apart.
     const readings = liveReadings();
     const user = readings.find(r => r.scope === "user-settings")!;
     if (user.commands === null) {
-      // A runner. The refusal is the observation: UNMEASURED is reported and
-      // the case does not skip, because a silently-skipped check is the same
-      // failure mode as the census that silently read one scope.
+      // A runner. The refusal is the observation: the user-scope half is
+      // reported UNMEASURED and the case does not skip, because a
+      // silently-skipped check is the same failure mode as the census that
+      // silently read one scope.
+      //
+      // NOT `verdict === "unmeasured"`. That is what this arm asserted when
+      // it was written, and the registry rows added for AC-4b made it stale
+      // in CI and nowhere else: `repo-registry` names both hooks now, so a
+      // runner reads `registered` with `user-settings` still unreadable. The
+      // claim this case owns is about the USER scope, so it is the user scope
+      // the assertions are over — a verdict is the wrong grain for it, and a
+      // verdict assertion is the one that an unrelated data edit moves.
       const r = hookRegistration("TestSuiteRelease", readings);
-      expect(r.verdict).toBe("unmeasured");
-      expect(r.unreadable).toContain("user-settings");
+      expect(r.unreadable, `${r.detail}`).toContain("user-settings");
+      expect(
+        r.registeredIn,
+        "a scope reported as unreadable cannot also have been read as naming the hook",
+      ).not.toContain("user-settings");
+      expect(r.verdict, `${r.detail}`).not.toBe("unregistered");
       return;
     }
     for (const hook of ["TestSuiteRelease", "ProjectStateSync"]) {
@@ -344,6 +366,237 @@ describe("#910 AC-4: a fired hook leaves evidence", () => {
       expect(result).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#970 review: the evidence file carries no secret, and the match is by name", () => {
+  test("AC-6a: a command with a leading env assignment is not recorded", () => {
+    // Finding 1. `TOKEN=... bun test` is an ordinary spelling, and the
+    // evidence file is append-only, long-lived, and read by somebody who was
+    // not there. The pair varies exactly one thing: the secret.
+    const secret = "ghp_aaaabbbbccccddddeeeeffff0000111122";
+    const facts = commandDigestFacts(`GITHUB_TOKEN=${secret} bun test --parallel`);
+    const rendered = firingLine("Alpha", "released", facts, new Date());
+
+    expect(rendered, "the raw secret reached the record").not.toContain(secret);
+    expect(rendered, "the env assignment reached the record").not.toContain("GITHUB_TOKEN");
+    // And the questions the record exists to answer still have answers.
+    expect(facts.suiteTokens).toEqual(["bun", "test", "--parallel"]);
+    expect(facts.commandDigest).toHaveLength(16);
+    expect(commandDigestFacts("GITHUB_TOKEN=other bun test --parallel").commandDigest).not.toBe(
+      facts.commandDigest,
+    );
+    expect(commandDigestFacts(`GITHUB_TOKEN=${secret} bun test --parallel`).commandDigest).toBe(
+      facts.commandDigest,
+    );
+  });
+
+  test("AC-6b: suiteTokens draws from a fixed vocabulary, so nothing can be pushed through it", () => {
+    // The property that makes a classification safe where a pass-through is
+    // not: the output is a SUBSET of the vocabulary whatever the input.
+    const hostile = "AWS_SECRET=zzz bun test ./node_modules/.bin/weird --parallel";
+    for (const token of suiteTokens(hostile)) {
+      expect(hostile.split(/\s+/)).toContain(token);
+      expect(token, `${token} is not a vocabulary word`).toMatch(
+        /^(bun|npm|pnpm|yarn|npx|test|vitest|jest|--parallel|--no-isolate|--coverage)$/,
+      );
+    }
+    expect(suiteTokens(hostile)).not.toContain("AWS_SECRET=zzz");
+    // Non-vacuous: it really does find the words it is meant to.
+    expect(suiteTokens(hostile)).toEqual(["bun", "test", "--parallel"]);
+  });
+
+  test("AC-6c: an error is recorded as a class and a digest, never its message", () => {
+    // Finding 2. `execSync`'s message quotes the whole command line.
+    const e = new Error("Command failed: bun /x/scripts/update-project-state.ts --token=sek-ret-9");
+    const facts = errorFacts(e);
+    expect(JSON.stringify(facts)).not.toContain("sek-ret-9");
+    expect(JSON.stringify(facts)).not.toContain("Command failed");
+    expect(facts.errorClass).toBe("Error");
+    expect(facts.errorDigest).toHaveLength(16);
+
+    // `name` is writable, so a hostile or merely odd value is classified
+    // rather than passed through.
+    const odd = new Error("x");
+    odd.name = "tok en: sek-ret-9";
+    expect(errorFacts(odd).errorClass).toBe("UNCLASSIFIED");
+    expect(JSON.stringify(errorFacts(odd))).not.toContain("sek-ret-9");
+  });
+
+  test("AC-6d: the evidence file is 0600 and its directory 0700", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hook-evidence-mode-"));
+    try {
+      const path = join(dir, "nested", "hook-firings.jsonl");
+      expect(appendEvidence(path, firingLine("Alpha", "one", {}, new Date()))).toBe(true);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-6f: the placement predicate has a witness in the suite, not only on a machine", () => {
+    // `AC-4b` in test/hook-traceability.test.ts drives this over the live
+    // tree, where nothing is unplaced — so short-circuiting the predicate to
+    // `[]` is 0 red there and the live case witnesses nothing (battery row
+    // N6). These fixtures are the three ways to be placed and the one way
+    // not to be, so a mutation of the predicate has somewhere to land.
+    const registers = (cmd: string): ScopeReading[] => [
+      { scope: "project-settings", commands: [cmd] },
+      { scope: "repo-registry", commands: [] },
+    ];
+    const base = {
+      hooks: ["Alpha"],
+      repoReadings: registers("bun ${CLAUDE_PROJECT_DIR}/hooks/Other.hook.ts"),
+      declaredUnregistered: [] as string[],
+    };
+
+    // Unplaced: nothing the repo owns mentions it.
+    expect(unplacedHooks(base)).toEqual(["Alpha"]);
+
+    // Each placement, one at a time, so neither is covering for the other.
+    // Both repo-owned scopes are driven, because the registry is one of them
+    // and a reader that only consulted the settings would miss it.
+    expect(
+      unplacedHooks({
+        ...base,
+        repoReadings: registers("bun ${CLAUDE_PROJECT_DIR}/hooks/Alpha.hook.ts"),
+      }),
+    ).toEqual([]);
+    expect(
+      unplacedHooks({
+        ...base,
+        repoReadings: [
+          { scope: "project-settings", commands: [] },
+          { scope: "repo-registry", commands: ["bun ${RUNGATE_HOOKS_DIR}/Alpha.hook.ts"] },
+        ],
+      }),
+    ).toEqual([]);
+    expect(unplacedHooks({ ...base, declaredUnregistered: ["Alpha"] })).toEqual([]);
+
+    // And the fail-open this exists to close: a repo-owned scope read as
+    // unreadable refuses rather than returning an empty list.
+    expect(() =>
+      unplacedHooks({
+        ...base,
+        repoReadings: [
+          { scope: "project-settings", commands: null, unreadable: "gone" },
+          { scope: "repo-registry", commands: [] },
+        ],
+      }),
+    ).toThrow(IncompleteScopeReadingError);
+    expect(() => unplacedHooks({ ...base, repoReadings: [] })).toThrow(IncompleteScopeReadingError);
+  });
+
+  test("AC-6g: a name in a NON-EXECUTING position is not a registration", () => {
+    // The third review of this work. Token membership — the matcher that
+    // replaced `includes` — accepts any `.hook.ts`-shaped token anywhere in
+    // the string, so a hook counted as registered because its name appeared
+    // near a command that never runs it. Measured on that matcher: all four
+    // of these returned true.
+    for (const command of [
+      "bun run x.ts # IssueCloseGuard.hook.ts",
+      "bun run x.ts ; echo IssueCloseGuard.hook.ts",
+      "bun run x.ts && cat IssueCloseGuard.hook.ts",
+      "bun run x.ts || bun IssueCloseGuard.hook.ts",
+      "bun run x.ts | grep IssueCloseGuard.hook.ts",
+      "SOME=1 bun run x.ts --note IssueCloseGuard.hook.ts",
+      "bun run x.ts --hook=IssueCloseGuard.hook.ts",
+      // A separator GLUED to the token before it. This is the input that
+      // distinguishes the truncation from the first-positional rule: with
+      // the truncation removed the whole of `bun;${D}/…` becomes the first
+      // positional, its basename IS the hook file, and the mutant returns
+      // it. Without this case, removing the truncation is 0 red and the
+      // clause is deletable (battery row P1).
+      "bun;${RUNGATE_HOOKS_DIR}/IssueCloseGuard.hook.ts",
+    ]) {
+      expect(executedHookFile(command), command).not.toBe("IssueCloseGuard.hook.ts");
+      expect(commandNamesHook(command, "IssueCloseGuard"), command).toBe(false);
+    }
+
+    // A neighbouring file name is not this hook, asserted on the EXTRACTOR
+    // and not only through `commandNamesHook` — the equality in the
+    // predicate agrees with a looser extractor on this input, so the looser
+    // extractor is only visible here (battery row P6).
+    expect(executedHookFile("bun ${D}/IssueCloseGuard.hook.ts.bak")).toBeNull();
+    expect(executedHookFile("bun ${D}/other-IssueCloseGuard.hook.ts")).toBe(
+      "other-IssueCloseGuard.hook.ts",
+    );
+
+    // The positive controls, in every spelling the tree really uses. Without
+    // them a parse that returned null for everything satisfies the loop.
+    for (const command of [
+      "bun ${RUNGATE_HOOKS_DIR}/IssueCloseGuard.hook.ts",
+      "bun ${CLAUDE_PROJECT_DIR}/hooks/IssueCloseGuard.hook.ts",
+      "TOKEN=x env FOO=2 bun ${D}/IssueCloseGuard.hook.ts",
+      "bun run ${D}/IssueCloseGuard.hook.ts",
+      // A flag between the interpreter and the script. Without this the
+      // flag skip is deletable at 0 red (battery row P3) — and its removal
+      // errs toward reporting a real registration as absent, which is the
+      // loud direction but is still a red nobody could explain.
+      "bun --inspect ${D}/IssueCloseGuard.hook.ts",
+    ]) {
+      expect(executedHookFile(command), command).toBe("IssueCloseGuard.hook.ts");
+    }
+  });
+
+  test("AC-6h: the parse's OWN differentials are the stated ones, and they err loud", () => {
+    // Three PRs in one day replaced a matcher that was wrong about its
+    // subject with one carrying the same property a level down. An argv
+    // parse has its own differentials and this does not close them all — so
+    // the ones left open are asserted, as a boundary a reader can see rather
+    // than coverage they infer. If one of these ever starts returning the
+    // hook, that is a real improvement and this case should be updated.
+    const notClosed = [
+      `sh -c "bun \${D}/IssueCloseGuard.hook.ts"`, // the command is inside a string
+      "/usr/local/bin/run-hook IssueCloseGuard", // a wrapper execs it
+      "bun ${HOOK_PATH}", // the path is built in a variable
+      "make build && bun ${D}/IssueCloseGuard.hook.ts", // a later segment
+    ];
+    for (const command of notClosed) {
+      expect(commandNamesHook(command, "IssueCloseGuard"), command).toBe(false);
+    }
+
+    // The direction matters more than the list. Every one of them reports a
+    // registration that EXISTS as absent, so `hookRegistration` returns
+    // `unregistered` or `unmeasured` and AC-4/AC-4b go red — loud, and
+    // somebody adds the spelling to the parse. The opposite error is a guard
+    // reporting clean about its own subject, which is what #910 cost.
+    expect(
+      hookRegistration(
+        "IssueCloseGuard",
+        complete({ "user-settings": [`sh -c "bun \${D}/IssueCloseGuard.hook.ts"`] }),
+      ).verdict,
+      "an unparsed spelling must fail loud, never read as registered",
+    ).toBe("unregistered");
+  });
+
+  test("AC-6e: a registration is matched by hook NAME, not by substring", () => {
+    // Finding 3. `c.includes("TestSuiteRelease.hook.ts")` is satisfied by a
+    // different file whose name ends in the same characters — so a hook that
+    // is NOT registered reads as registered, and `registered` is the one
+    // verdict conclusive from a single scope.
+    const imposters = [
+      "bun ${RUNGATE_HOOKS_DIR}/other-TestSuiteRelease.hook.ts",
+      "bun ${RUNGATE_HOOKS_DIR}/TestSuiteRelease.hook.ts.bak",
+      "bun ${RUNGATE_HOOKS_DIR}/Other.hook.ts --note=TestSuiteRelease.hook.ts.disabled",
+    ];
+    for (const command of imposters) {
+      expect(commandNamesHook(command, "TestSuiteRelease"), command).toBe(false);
+      expect(
+        hookRegistration("TestSuiteRelease", complete({ "user-settings": [command] })).verdict,
+        command,
+      ).toBe("unregistered");
+    }
+
+    // The positive control, in both spellings the tree really uses. Without
+    // it, a matcher that refused everything satisfies the loop above.
+    for (const command of [
+      "bun ${RUNGATE_HOOKS_DIR}/TestSuiteRelease.hook.ts",
+      "bun ${CLAUDE_PROJECT_DIR}/hooks/TestSuiteRelease.hook.ts",
+    ]) {
+      expect(commandNamesHook(command, "TestSuiteRelease"), command).toBe(true);
     }
   });
 });
