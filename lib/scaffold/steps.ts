@@ -22,6 +22,7 @@ import {
   mergeManagedWorkflow,
   duplicateTopLevelKeys,
   movedTopLevelKeys,
+  WORKFLOW_OVERRIDE_COMMENT,
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
@@ -2187,7 +2188,7 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
  * test/scaffold-ci-preservation-mutation.test.ts performs, so that
  * "preservation works" is a claim with a demonstrated way of being false.
  */
-export function resolveManagedWrite(existing: string | null, generated: string): ManagedWrite {
+export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = []): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
     preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], refusal: null,
@@ -2219,7 +2220,7 @@ export function resolveManagedWrite(existing: string | null, generated: string):
   // A refusal that is structurally incapable of firing on the thing being
   // destroyed is the defect class .claude/rules/checks-must-be-able-to-fail.md
   // exists for, and it was in the fix written to prevent a data-loss bug.
-  const content = mergeManagedWorkflow(existing, generated);
+  const content = mergeManagedWorkflow(existing, generated, overrides);
   const lineDelta = lineCount(content) - before;
 
   const preservedJobs = existingJobs.filter(j => !generatedJobs.includes(j));
@@ -2303,19 +2304,24 @@ export function resolveManagedWrite(existing: string | null, generated: string):
     const block = blocks.get(name);
     if (block !== undefined) for (const l of nonBlankLines(block)) harnessOwned.add(l);
   }
-  // The harness's own banner is the harness's to reword. Without this, the
-  // first run after the banner's text changed refused to update a file the
-  // harness had written itself, naming its own previous sentence as consumer
-  // content it declined to drop — a refusal is only useful if it is about
-  // somebody else's work.
+  // The harness's own bookkeeping lines are the harness's to reword or
+  // withdraw. Without this, the first run after the banner's text changed
+  // refused to update a file the harness had written itself, naming its own
+  // previous sentence as consumer content it declined to drop — a refusal is
+  // only useful if it is about somebody else's work. The override notice is
+  // here for the same reason and one more: it is DELETED, not reworded, the
+  // run after a consumer removes the config entry, so without this the way
+  // back from an override is a refusal (#839).
   for (const l of nonBlankLines(existing)) {
-    if (l.startsWith(MANAGED_BANNER_PREFIX)) harnessOwned.add(l);
+    if (HARNESS_BOOKKEEPING_PREFIXES.some(p => l.startsWith(p))) harnessOwned.add(l);
   }
 
   const kept = new Set(nonBlankLines(content));
   const gone = nonBlankLines(existing).filter(l => !kept.has(l));
   const lostLines = gone.filter(l => !harnessOwned.has(l));
-  const overwrittenLines = gone.filter(l => harnessOwned.has(l) && !l.startsWith(MANAGED_BANNER_PREFIX));
+  const overwrittenLines = gone.filter(
+    l => harnessOwned.has(l) && !HARNESS_BOOKKEEPING_PREFIXES.some(p => l.startsWith(p)),
+  );
   const droppedJobs = existingJobs.filter(j => !resultJobs.includes(j));
 
   if (lostLines.length > 0) {
@@ -2350,6 +2356,15 @@ function nonBlankLines(text: string): string[] {
 const MANAGED_BANNER_PREFIX = "# Managed by rungate";
 
 /**
+ * Lines in a managed file that are the harness talking to the consumer, not
+ * the consumer's content.
+ *
+ * Both are prefixes rather than whole sentences: the rest of each names a
+ * config path, and that tail is exactly the part that changes.
+ */
+const HARNESS_BOOKKEEPING_PREFIXES = [MANAGED_BANNER_PREFIX, WORKFLOW_OVERRIDE_COMMENT];
+
+/**
  * Write a harness-managed file, preserving whatever the harness did not author.
  *
  * Throws on refusal. Callers decide whether a refusal aborts the run or is
@@ -2375,7 +2390,7 @@ export function writeManagedFile(
   generated: string,
   label: string,
   actions: string[],
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; workflowOverrides?: readonly string[] } = {},
   provenance?: WriteProvenance,
 ): void {
   const raw = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
@@ -2392,7 +2407,7 @@ export function writeManagedFile(
   // itself had just written.
   const existing = raw === null ? null : (provenance ? provenance.body(raw) : raw);
   const incoming = provenance ? provenance.body(generated) : generated;
-  const resolved = resolveManagedWrite(existing, incoming);
+  const resolved = resolveManagedWrite(existing, incoming, opts.workflowOverrides ?? []);
   /** The bytes that land on disk: the decision's content, then the marker. */
   const stamped = (content: string): string => (provenance ? provenance.stamp(content) : content);
 
@@ -2555,6 +2570,32 @@ export function shardCount(ci: unknown): number {
   const raw = (ci as { shards?: unknown } | null | undefined)?.shards;
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) return 1;
   return Math.min(raw, 32);
+}
+
+/**
+ * Top-level workflow keys this consumer has taken back from the generator
+ * (#839).
+ *
+ * The escape hatch that makes the key-wise merge safe to turn on. Structural
+ * keys are the harness's by default; a consumer who needs a different CI —
+ * self-hosted runners declared in `on:`, a permission model the generator
+ * cannot know about — names the key here and the merge leaves it alone and
+ * says so in the file.
+ *
+ * `jobs` is refused rather than honoured. Job ownership already has a
+ * mechanism (`HARNESS_OWNED_JOBS` and the job merge), and a second one that
+ * silently freezes `test` and `gates` would leave a consumer with a required
+ * check nothing regenerates. Read through the same `harness?.ci` binding as
+ * `shardCount` and `globalToolInstallStep`; a malformed value yields no
+ * overrides, which is the direction that keeps the harness in charge rather
+ * than the one that quietly hands everything over.
+ */
+export function workflowOverrides(ci: unknown): string[] {
+  const raw = (ci as { workflowOverrides?: unknown } | null | undefined)?.workflowOverrides;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (k): k is string => typeof k === "string" && k !== "jobs" && /^[A-Za-z_][A-Za-z0-9_.\-]*$/.test(k),
+  );
 }
 
 export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToolDecision {
@@ -2722,6 +2763,13 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   // today. `shard` is read from the same `harness?.ci` binding as every
   // sibling above rather than a second reader.
   const shards = shardCount(harness?.ci);
+
+  // #839. Which top-level keys this consumer has taken back, read from the
+  // same binding as every sibling above rather than a second reader. Absent
+  // config means none, and none means the generator's structural keys reach
+  // every workflow it has ever written — which is the whole point of the
+  // change this config exists to make reversible.
+  const declined = workflowOverrides(harness?.ci);
 
   // The required status check is the JOB NAME, and a matrix renames it:
   // `test` becomes `test (1)`, `test (2)`. A repo whose protection requires
@@ -3064,7 +3112,7 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(vertex, {
       // describe a file it does not write — ownership has to travel with the
       // bytes for an unowned workflow to be visible at all (#722). The marker
       // is a YAML comment, so nothing that parses the workflow can see it.
-      writeManagedFile(join(workflowsDir, name), content, label, actions, opts, {
+      writeManagedFile(join(workflowsDir, name), content, label, actions, { ...opts, workflowOverrides: declined }, {
         body: workflowBody,
         stamp: stampWorkflow,
       });

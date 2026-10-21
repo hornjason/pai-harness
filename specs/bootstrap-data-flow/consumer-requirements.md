@@ -173,6 +173,8 @@ AGENTS.md is the single source of truth for all AI tools working on this project
 Produced by: Harness-owned templates in Phase 0
 Ownership: **`job-preserving`** — the harness owns the generated `test` and `gates` jobs and rewrites them on every re-scaffold; jobs you add alongside them are carried forward. Customizable settings come from `.claude/rungate/config.json`, not from editing the generated job.
 
+Outside `jobs:`, ownership is **sub-key by sub-key** (#839). A trigger or a permission the generator emits and your file does not have is added on re-scaffold; a sub-key you both declare keeps YOUR value, and your top-level order never changes. That is what lets a CI fix made once in the harness reach repos it scaffolded months ago — before it, a repo scaffolded prior to the generator learning `on: merge_group:` could never be given it, and turning on a merge queue there would hang every entry on a required check that never reports. To keep a key out, name it in `ci.workflowOverrides`; the written file then carries a comment saying which config key declined it.
+
 The harness provides two workflow files that enforce gates in the CI pipeline. Local gates can be skipped (agent ignores WARN, user bypasses). CI gates can't — they block merge mechanically.
 
 #### .claude/rungate/config.json CI config
@@ -192,6 +194,7 @@ The harness provides two workflow files that enforce gates in the CI pipeline. L
 | `ci.runner` | `"ubuntu-latest"` | GitHub Actions runner (e.g., `"self-hosted"`, `"ubuntu-24.04"`) |
 | `ci.bunVersion` | the bun that ran the scaffold | Bun version in CI, for a project with no `.bun-version`. Detected rather than defaulted (#622): `"latest"` wrote an UNPINNED runtime into every new project's CI, so re-running a red job was also a Bun upgrade |
 | `ci.branches` | `["main"]` | Which branches trigger push CI |
+| `ci.workflowOverrides` | `[]` | Top-level workflow keys this project takes back from the generator, e.g. `["on"]` for a project whose CI runs on self-hosted runners it triggers itself. A named key is left exactly as you wrote it and the file says so. `"jobs"` is refused: job ownership already has a mechanism, and freezing `test` would leave you with a required check nothing regenerates |
 
 All fields optional — defaults used when null.
 
