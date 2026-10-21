@@ -38,6 +38,11 @@ import { join } from "path";
 
 import { localCalendarDay } from "../lib/local-calendar-day";
 import {
+  auditBranchCoverage,
+  extractDiscoveryBranchPoints,
+  formatCoverageReport,
+} from "../lib/discovery-branch-points";
+import {
   compareDiscoveryRuns,
   formatStabilityReport,
   type RunState,
@@ -60,6 +65,37 @@ const onlyIssue = arg("issue") ? Number(arg("issue")) : undefined;
 const measuredOn = arg("date") ?? localCalendarDay();
 
 /**
+ * What this measurement is ABOUT to measure, printed before it measures it.
+ *
+ * The series below compares `STABLE_DISCOVERY_FIELDS`. That list is a claim
+ * about `workflows/ship.js` — the fields the run branches on — and a claim
+ * about code rots silently: a branch added tomorrow on an undeclared field
+ * leaves every number below unchanged and quietly wrong. So the census is
+ * printed here, in the same report, rather than living only in a test nobody
+ * reads next to the output they do. It also names the branched fields the
+ * state file cannot carry, so "0 varied" is never read as "nothing varies".
+ *
+ * A refusal here is printed and the run continues to the series: the census
+ * failing does not make the recorded runs unreadable, and swallowing it would
+ * be the silence this whole module objects to.
+ */
+function printBranchCensus(): void {
+  const workflow = join(import.meta.dir, "..", "workflows", "ship.js");
+  try {
+    const points = extractDiscoveryBranchPoints(readFileSync(workflow, "utf-8"));
+    console.log(formatCoverageReport(auditBranchCoverage(points)));
+  } catch (err) {
+    console.log(`Discovery branch-point census (#523)`);
+    console.log("");
+    console.log(
+      `UNMEASURED — the census could not read ${workflow}: ${(err as Error).message}. ` +
+        `The field list below is therefore unverified against the workflow.`,
+    );
+  }
+  console.log("");
+}
+
+/**
  * An absent work directory is UNMEASURED, not "no variance found".
  *
  * This is the case a CI runner hits: a fresh `HOME` has no `~/.rungate`, so
@@ -71,6 +107,7 @@ const measuredOn = arg("date") ?? localCalendarDay();
 if (!existsSync(workDir)) {
   console.log(`Discovery-output stability (#523) — measured ${measuredOn}`);
   console.log("");
+  printBranchCensus();
   console.log(
     `UNMEASURED — no run work directory at ${workDir}. There are no recorded runs here to ` +
       `compare, so nothing was measured. This is not a clean result.`,
@@ -113,6 +150,8 @@ const series = [...byIssue.entries()].filter(([, v]) => v.length >= 2);
 
 console.log(`Discovery-output stability (#523) — measured ${measuredOn}`);
 console.log(`corpus: ${workDir}`);
+console.log("");
+printBranchCensus();
 console.log(
   `${states.length} recorded run state(s)` +
     (unreadable ? `, ${unreadable} unreadable (reported, not skipped silently)` : "") +
