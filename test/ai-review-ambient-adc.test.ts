@@ -54,29 +54,39 @@
  * ## Mutation battery
  *
  * Over this file plus `ai-review-scaffold`, `ai-review-workflow`,
- * `ai-review-outcomes-header` and `ai-review-credentialed-job` — **111
- * cases**, green unmutated, source restored after each and green again.
+ * `ai-review-outcomes-header`, `ai-review-credentialed-job` and
+ * `ai-review-security-repairs` — **122 cases**, green unmutated, source
+ * restored after each and green again.
  *
  * Counts AND the assertions each row reddens. Cases from THIS file build
- * their own `HOME` and are machine-independent; the rows that also name
- * cases from `ai-review-scaffold` are marked, because that file hands the
- * script the real `$HOME` and those reds only appear on a machine that
- * actually carries ADC. Every row has at least one machine-independent red.
+ * their own `HOME` and plant or withhold the ADC file in it, so they are
+ * machine-independent in both directions; rows that also name cases in
+ * `ai-review-scaffold` are marked, because that file hands the script the
+ * real `$HOME` and those reds appear only on a machine that carries ADC.
+ * Every row has at least one machine-independent red.
  *
  * | mutation | red | the assertions that go red |
  * |---|---|---|
- * | N1 the reading deleted, so `ambient` is always empty | **4 of 111** | `an ADC file at the default path is named in the annotation`; `GOOGLE_APPLICATION_CREDENTIALS pointing at a real file is named`; `CLOUDSDK_CONFIG relocates the default path`; `the ambient reading is reported as its own output` |
- * | N2 `[ -f "${adc_file}" ]` relaxed to `[ -n ... ]` — presence of a PATH rather than of a file, which is the shape #679's note on AC-2 is about | **3 of 111** | `AC-5: no secrets and no ADC still resolves none and still says UNMEASURED`; `a path that points at nothing is not named`; `the ambient reading is reported as its own output` |
- * | N3 **AC-6's mutant** — the file's existence sets `mode=adc` | **11 of 111** | `the ambient reading is not a mode`; `exactly one UNMEASURED annotation ...`; `the require-variable refusal still fires ...`; the three naming cases; and 5 pre-existing cases in `ai-review-scaffold` (machine-dependent) |
- * | N4 the ambient sentence appended unconditionally rather than under `[ -n "${ambient}" ]` | **2 of 111** | `AC-5: no secrets and no ADC ...`; `a path that points at nothing is not named` |
- * | N5 the reading run regardless of mode, so a credentialed job consults the runner anyway | **2 of 111** | `AC-4: a configured secret wins and the runner is not consulted`; `a declared ci.vertex wins and the runner is not consulted` |
- * | N6 the ambient sentence emitted as a SECOND `::warning` annotation | **6 of 111** | `exactly one UNMEASURED annotation, whatever the runner carries` and the three naming cases; plus 2 in `ai-review-scaffold` / `ai-review-workflow` (machine-dependent) — which is the point of N6: that count is what `aiReviewUnmeasuredViolations` enforces, so the mutant turns every scan on a machine carrying ADC into a violation |
- * | N7 `CLOUDSDK_CONFIG` ignored and `~/.config/gcloud` hardcoded | **1 of 111** | `CLOUDSDK_CONFIG relocates the default path` |
+ * | N1 the reading deleted, so `ambient` is always empty | **4 of 122** | the three naming cases + `the ambient reading is reported as its own output` |
+ * | N2 `[ -f "${adc_file}" ]` relaxed to `[ -n ... ]` — presence of a PATH rather than of a file, which is #679's own note on AC-2 | **3 of 122** | `AC-5: ...`; `a path that points at nothing is not named`; the output case |
+ * | N3 **AC-6's mutant** — the file's existence sets `mode=adc` | **11 of 122** | `the ambient reading is not a mode`; `exactly one UNMEASURED annotation ...`; `the require-variable refusal still fires ...`; the three naming cases; + 5 pre-existing cases (machine-dependent) |
+ * | N4 the ambient sentence emitted unconditionally | **2 of 122** | `AC-5: ...`; `a path that points at nothing is not named` |
+ * | N5 the reading run regardless of mode | **2 of 122** | both `... the runner is not consulted` cases |
+ * | N6 the ambient sentence emitted as a SECOND `::warning` annotation | **6 of 122** | `exactly one UNMEASURED annotation, whatever the runner carries` + the three naming cases; + 2 (machine-dependent). That count is what `aiReviewUnmeasuredViolations` enforces, so the mutant turns every scan on a machine carrying ADC into a violation. |
+ * | N7 `CLOUDSDK_CONFIG` ignored and `~/.config/gcloud` hardcoded | **1 of 122** | `CLOUDSDK_CONFIG relocates the default path` |
+ * | N8 **the security row** — the annotation rebuilt around a shell variable, which is how this shipped first | **1 of 122** | `AC-8 (#856/F1) ... every annotation that interpolates a shell value goes through it`, in `ai-review-security-repairs` |
  *
  * N3 is the row AC-6 asks for and it is the largest, which is the argument
  * for the design: resolving a mode from an unvalidated file does not fail
  * subtly here, it breaks the mode ladder, the annotation count and the
  * refusal gate at once.
+ *
+ * N8 is the row review found before CI did. The first draft built the
+ * annotation as `unmeasured="..."` and echoed `${unmeasured}`, which is a
+ * shell value inside a `::warning`; AC-8 is mechanical and does not ask
+ * whether the value is attacker-reachable. Both branches are whole literals
+ * now — this script carries no `escape_annotation`, and adding one to call
+ * on a constant would have been the larger change.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";

@@ -274,8 +274,13 @@ function parseSubKeys(lines: string[]): { head: string[]; blocks: SubBlock[] } {
  * The scalar guard is the same one `mergeTopLevelSection` opens with and for
  * the same reason: `permissions: read-all` has no sub-keys to withdraw.
  */
-function revokedSubKeys(section: string, before: Section, generated: Section): RevokedSubKey[] {
-  const owned = HARNESS_COMPUTED_SUBKEYS.get(section);
+function revokedSubKeys(
+  section: string,
+  before: Section,
+  generated: Section,
+  computed: ComputedSubKeys,
+): RevokedSubKey[] {
+  const owned = computed.get(section);
   if (owned === undefined) return [];
   if (!/^[A-Za-z_][A-Za-z0-9_.\-]*:\s*(#.*)?$/.test(before.lines[0])) return [];
   const emitted = new Set(parseSubKeys(generated.lines).blocks.map(s => s.key));
@@ -329,42 +334,27 @@ function mergeTopLevelSection(before: Section, generated: Section): string[] {
 }
 
 /**
- * Sub-keys the GENERATOR computes, by the top-level key they sit under (#923).
+ * The sub-keys one generated workflow COMPUTES, by the top-level key they sit
+ * under (#923).
  *
- * Same shape as `HARNESS_OWNED_JOBS` and for the same reason: a conditionally
- * emitted thing cannot be recognised from the generated side once it stops
- * being emitted. `mergeTopLevelSection`'s rule — a sub-key only the consumer
- * declares is the consumer's — is right for a LOCAL KNOB and wrong for a
- * DERIVED GRANT. `pull-requests: write` that a consumer added for a job of
- * their own is theirs. `id-token: write` that this generator emitted because
- * `ci.vertex` resolved is nobody's choice; the config made it, and when the
- * config goes the justification goes with it. By the time the merge runs both
- * are just lines in the consumer's file and nothing records which side wrote
- * them, so the list records it instead.
+ * Declared by the caller, never here. `HARNESS_COMPUTED_SUBKEYS` in
+ * `lib/scaffold/steps.ts` names it per FILE, because the scope is the whole
+ * risk: this merge runs over every managed workflow, and a map keyed by
+ * section alone makes `permissions.id-token` revocable in files whose
+ * generator never emits it under any config. A consumer with a deploy job of
+ * their own and `id-token: write` in that workflow's `permissions:` would
+ * have it withdrawn by a feature that was not reasoning about their file.
  *
- * A key here is REMOVED from the consumer's section when the generated side
- * does not declare it. Add a conditionally emitted sub-key to this map in the
- * same commit that makes it conditional.
+ * Which is #923's own defect wearing the other hat: the issue is about a
+ * grant outliving its reason, and an unscoped revoker is a WITHDRAWAL
+ * outliving its reason. The symmetry is the argument for scoping it tightly.
  *
- * Scoped to what the generator COMPUTES, not to everything it emits.
- * `contents: read` is unconditional, so both sides always declare it, #839's
- * rule already settles it, and an entry for it would be one no input can
- * reach. `test/scaffold-permissions-merge.test.ts` holds this map against the
- * generator itself — it scaffolds with and without the config that drives the
- * grant and takes the symmetric difference of the emitted sub-keys — so the
- * population is read off the emitting module rather than off this list.
- *
- * `ci.workflowOverrides` is not the mechanism for this and could not be. It
- * is an opt-OUT: a consumer names a key and the merge stops touching it.
- * Revocation needs the opposite default, because the consumer who has stopped
- * using Vertex is exactly the consumer who will not think to declare anything
- * about it. The override still wins where it is declared — naming the
- * top-level key short-circuits `mergeTopLevelSection` before this is read, so
- * the escape hatch covers this path with no new config surface.
+ * Empty is the default at every seam, so a caller that declares nothing
+ * revokes nothing.
  */
-export const HARNESS_COMPUTED_SUBKEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ["permissions", new Set(["id-token"])],
-]);
+export type ComputedSubKeys = ReadonlyMap<string, ReadonlySet<string>>;
+
+const NO_COMPUTED_SUBKEYS: ComputedSubKeys = new Map();
 
 /** A sub-key the merge withdrew because the generator stopped emitting it (#923). */
 export interface RevokedSubKey {
@@ -632,8 +622,9 @@ export function mergeManagedWorkflow(
   before: string,
   generated: string,
   overrides: readonly string[] = [],
+  computed: ComputedSubKeys = NO_COMPUTED_SUBKEYS,
 ): string {
-  return mergeManagedWorkflowRecording(before, generated, overrides).content;
+  return mergeManagedWorkflowRecording(before, generated, overrides, computed).content;
 }
 
 /**
@@ -661,6 +652,7 @@ export function mergeManagedWorkflowRecording(
   before: string,
   generated: string,
   overrides: readonly string[] = [],
+  computed: ComputedSubKeys = NO_COMPUTED_SUBKEYS,
 ): { content: string; revoked: RevokedSubKey[] } {
   const revoked: RevokedSubKey[] = [];
   const b = splitTopLevel(stripOverrideNotices(before));
@@ -723,7 +715,7 @@ export function mergeManagedWorkflowRecording(
     // to make impossible.
     let merged: string[];
     if (gen !== undefined && !declined.has(section.key)) {
-      const withdrawn = revokedSubKeys(section.key, consumer, gen);
+      const withdrawn = revokedSubKeys(section.key, consumer, gen, computed);
       revoked.push(...withdrawn);
       merged = mergeTopLevelSection(withoutRevoked(consumer, withdrawn), gen);
     } else {

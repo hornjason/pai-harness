@@ -26,6 +26,7 @@ import {
   movedTopLevelKeys,
   WORKFLOW_OVERRIDE_COMMENT,
   workflowOverrides,
+  type ComputedSubKeys,
   type MovedKey,
   type RevokedSubKey,
 } from "./managed-workflow";
@@ -2214,7 +2215,7 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
  * test/scaffold-ci-preservation-mutation.test.ts performs, so that
  * "preservation works" is a claim with a demonstrated way of being false.
  */
-export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = []): ManagedWrite {
+export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = [], computed: ComputedSubKeys = new Map()): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
     preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], revokedGrants: [],
@@ -2247,7 +2248,7 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
   // A refusal that is structurally incapable of firing on the thing being
   // destroyed is the defect class .claude/rules/checks-must-be-able-to-fail.md
   // exists for, and it was in the fix written to prevent a data-loss bug.
-  const { content, revoked: revokedGrants } = mergeManagedWorkflowRecording(existing, generated, overrides);
+  const { content, revoked: revokedGrants } = mergeManagedWorkflowRecording(existing, generated, overrides, computed);
   const lineDelta = lineCount(content) - before;
 
   const preservedJobs = existingJobs.filter(j => !generatedJobs.includes(j));
@@ -2385,14 +2386,35 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
   // the other way and be worse — a line the merge removed and this set did
   // not cover is a REFUSED re-scaffold, and a line this set covered and the
   // merge did not remove is a consumer's own content dropped in silence.
-  const revokedLines = new Set(
-    revokedGrants.flatMap(r => nonBlankLines(r.lines.join("\n"))),
-  );
+  // A MULTISET, and spending it is what makes it one. A `Set` of line TEXT
+  // excuses every line in the file that happens to share that text, and
+  // `  id-token: write` is a line a multi-job workflow plausibly carries more
+  // than once — one legitimately withdrawn occurrence would then silently
+  // excuse an unrelated one the consumer still wants. A set also cannot
+  // count: two revoked and five present is indistinguishable from one and
+  // one. Exactly as many occurrences are forgiven as the merge removed, and
+  // the rest refuse like any other dropped line.
+  const revocationBudget = new Map<string, number>();
+  for (const r of revokedGrants) {
+    for (const l of nonBlankLines(r.lines.join("\n"))) {
+      revocationBudget.set(l, (revocationBudget.get(l) ?? 0) + 1);
+    }
+  }
+  /** Spend one occurrence, or report that there is none left to spend. */
+  const spendRevocation = (line: string): boolean => {
+    const left = revocationBudget.get(line) ?? 0;
+    if (left === 0) return false;
+    revocationBudget.set(line, left - 1);
+    return true;
+  };
 
   const kept = new Set(nonBlankLines(content));
   const gone = nonBlankLines(existing).filter(l => !kept.has(l));
+  // Order matters: `spendRevocation` is reached only when the two cheaper
+  // owners decline, so a line the harness already owns does not burn a
+  // revocation another occurrence may need.
   const lostLines = gone.filter(
-    l => !harnessOwned.has(l) && !harnessPreamble.has(l) && !revokedLines.has(l),
+    l => !harnessOwned.has(l) && !harnessPreamble.has(l) && !spendRevocation(l),
   );
   // Rewording its own header is not overwriting somebody's edit, and this
   // report says "in harness-owned jobs" — which the preamble is not.
@@ -2452,6 +2474,66 @@ function nonBlankLines(text: string): string[] {
 export const HARNESS_BOOKKEEPING_PREFIXES = [MANAGED_BANNER_PREFIX, WORKFLOW_OVERRIDE_COMMENT];
 
 /**
+ * The sub-keys each generated workflow COMPUTES, by file and then by the
+ * top-level key they sit under (#923).
+ *
+ * Same shape as `HARNESS_OWNED_JOBS` and for the same reason: a
+ * conditionally emitted thing cannot be recognised from the generated side
+ * once it stops being emitted. `mergeTopLevelSection`'s rule — a sub-key
+ * only the consumer declares is the consumer's — is right for a LOCAL KNOB
+ * and wrong for a DERIVED GRANT. `pull-requests: write` that a consumer
+ * added for a job of their own is theirs. `id-token: write` that this
+ * generator emitted because `ci.vertex` resolved is nobody's choice; the
+ * config made it, and when the config goes the justification goes with it.
+ * By the time the merge runs both are just lines in the consumer's file and
+ * nothing records which side wrote them, so this records it instead.
+ *
+ * A sub-key named here is REMOVED from the consumer's section when that
+ * file's generated side does not declare it. Add a conditionally emitted
+ * sub-key in the same commit that makes it conditional.
+ *
+ * ## Keyed by FILE, which is the whole of the scoping
+ *
+ * The merge runs over every managed workflow. Keyed by section alone,
+ * `permissions.id-token` becomes revocable in files whose generator never
+ * emits it under any config — and all three of these emit a top-level
+ * `permissions:`, so a consumer with a deploy job of their own would have
+ * the grant withdrawn out of a workflow this feature was not reasoning
+ * about. That is #923's own defect wearing the other hat: the issue is a
+ * grant outliving its reason, and an unscoped revoker is a WITHDRAWAL
+ * outliving its reason.
+ *
+ * Declared HERE rather than in `managed-workflow.ts` because the write loop
+ * below is the only place that knows which file it is writing, and because
+ * this module already spells that tuple as a literal for
+ * `test/release-guard.test.ts`. A file absent from this map revokes nothing.
+ *
+ * ## Scoped to what the generator COMPUTES
+ *
+ * Not to everything it emits. `contents: read` is unconditional in all three
+ * files, so both sides always declare it, #839's rule already settles it,
+ * and an entry for it would be one no input can reach.
+ * `test/scaffold-permissions-merge.test.ts` holds this map against the
+ * generators themselves — it scaffolds every generated workflow with and
+ * without the config that drives the grant and takes the per-file symmetric
+ * difference of the emitted sub-keys — so the population is read off the
+ * emitting module rather than off this list, and an entry for a file whose
+ * generator never computes the sub-key is red.
+ *
+ * ## Not `ci.workflowOverrides`, which could not be the mechanism
+ *
+ * That is an opt-OUT: a consumer names a key and the merge stops touching
+ * it. Revocation needs the opposite default, because the consumer who has
+ * stopped using Vertex is exactly the consumer who will not think to declare
+ * anything about it. The override still wins where it is declared — naming
+ * the top-level key short-circuits `mergeTopLevelSection` before this is
+ * read — so the escape hatch covers the path with no new config surface.
+ */
+export const HARNESS_COMPUTED_SUBKEYS: ReadonlyMap<string, ComputedSubKeys> = new Map([
+  ["ai-review.yml", new Map([["permissions", new Set(["id-token"])]])],
+]);
+
+/**
  * Write a harness-managed file, preserving whatever the harness did not author.
  *
  * Throws on refusal. Callers decide whether a refusal aborts the run or is
@@ -2477,7 +2559,7 @@ export function writeManagedFile(
   generated: string,
   label: string,
   actions: string[],
-  opts: { force?: boolean; workflowOverrides?: readonly string[] } = {},
+  opts: { force?: boolean; workflowOverrides?: readonly string[]; computedSubKeys?: ComputedSubKeys } = {},
   provenance?: WriteProvenance,
 ): void {
   const raw = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
@@ -2494,7 +2576,7 @@ export function writeManagedFile(
   // itself had just written.
   const existing = raw === null ? null : (provenance ? provenance.body(raw) : raw);
   const incoming = provenance ? provenance.body(generated) : generated;
-  const resolved = resolveManagedWrite(existing, incoming, opts.workflowOverrides ?? []);
+  const resolved = resolveManagedWrite(existing, incoming, opts.workflowOverrides ?? [], opts.computedSubKeys ?? new Map());
   /** The bytes that land on disk: the decision's content, then the marker. */
   const stamped = (content: string): string => (provenance ? provenance.stamp(content) : content);
 
@@ -3301,12 +3383,15 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(vertex, {
   for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml], ["ai-review.yml", aiReviewYml]] as const) {
     const label = `.github/workflows/${name}`;
     try {
+      // Keyed by FILE, and the lookup is here because this loop is the only
+      // place that knows which file is being written (#923).
+      const computedSubKeys = HARNESS_COMPUTED_SUBKEYS.get(name) ?? new Map();
       // Stamped, so the file says who wrote it. The owned-path list is a list
       // of files this generator writes, which is precisely why it could never
       // describe a file it does not write — ownership has to travel with the
       // bytes for an unowned workflow to be visible at all (#722). The marker
       // is a YAML comment, so nothing that parses the workflow can see it.
-      writeManagedFile(join(workflowsDir, name), content, label, actions, { ...opts, workflowOverrides: declined }, {
+      writeManagedFile(join(workflowsDir, name), content, label, actions, { ...opts, workflowOverrides: declined, computedSubKeys }, {
         body: workflowBody,
         stamp: stampWorkflow,
       });

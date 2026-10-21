@@ -1885,11 +1885,19 @@ if [ "\${mode}" != ${AI_REVIEW_MODE_NONE} ]; then
   exit 0
 fi
 
-unmeasured="${warning}"
+# Two whole literals rather than one annotation with a variable in it. This
+# script carries no escape_annotation helper — it has never needed one,
+# because every annotation in it is a generated literal — and AC-8 in
+# test/ai-review-security-repairs.test.ts is mechanical by design: any
+# annotation interpolating a shell value must go through the encoder, and it
+# does not ask whether this particular value is attacker-reachable. Keeping
+# both branches literal keeps that true, and keeps the count at one
+# annotation, which is what aiReviewUnmeasuredViolations enforces.
 if [ -n "\${ambient}" ]; then
-  unmeasured="\${unmeasured} ${ambientWarning}"
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${warning} ${ambientWarning}"
+else
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${warning}"
 fi
-echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::\${unmeasured}"
 
 if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
   echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2
