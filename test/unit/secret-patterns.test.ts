@@ -137,9 +137,20 @@ describe("generated scanners use the registry, not their own copy", () => {
     // drift independently. It was the STRONGEST of the three copies; this
     // keeps it from quietly becoming the weakest.
     for (const p of TIER1_SECRET_PATTERNS) {
-      const key = p.ere.split(/[[(\\]/)[0];
-      if (key.length < 4) continue; // too generic to grep for meaningfully
-      expect(repoPreCommit, `scripts/git-hooks/pre-commit no longer covers ${p.id}`).toContain(key);
+      // The derivation cuts the ERE at its first metacharacter. For `jwt`
+      // that is `eyJ` — three characters — and the guard used to `continue`
+      // on anything under four, which SKIPPED the one pattern the hook was
+      // missing. A short derivation is not a reason to waive the check; it
+      // is a reason to demand an explicit probe. Carry `hookProbe`, or be
+      // refused.
+      const derived = p.ere.split(/[[(\\]/)[0];
+      const probe = derived.length >= 4 ? derived : p.hookProbe;
+      expect(
+        probe,
+        `TIER1_SECRET_PATTERNS[${p.id}] derives the probe "${derived}", which is too short to grep for. ` +
+          `Give it a hookProbe: a literal substring of its ERE that also appears in scripts/git-hooks/pre-commit.`,
+      ).toBeTruthy();
+      expect(repoPreCommit, `scripts/git-hooks/pre-commit no longer covers ${p.id}`).toContain(probe!);
     }
   });
 });

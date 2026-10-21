@@ -35,6 +35,19 @@ export interface SecretPattern {
   ere: string;
   /** What it catches, for the humans reading a blocked commit. */
   description: string;
+  /**
+   * A literal substring of this pattern that a parity check can grep the
+   * pre-commit hook for.
+   *
+   * The parity guard derives one by cutting the ERE at its first `[`, `(` or
+   * `\`. That derivation is a heuristic, and for `jwt` it yields `eyJ` —
+   * three characters, which the guard used to treat as "too generic to grep
+   * for" and SKIP. A pattern whose derived key is short is exactly the
+   * pattern most likely to be missing from the hook, so the skip excused the
+   * case it existed to catch. Carry an explicit probe instead; a pattern with
+   * neither a usable derivation nor a probe is REFUSED, not waived.
+   */
+  hookProbe?: string;
 }
 
 /**
@@ -54,7 +67,18 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
   // shorter than 48 chars — a coverage regression smuggled in by a
   // deduplication. When registries disagree, the union is the safe merge, not
   // whichever copy you happened to start from.
-  { id: "openai", ere: "sk-[A-Za-z0-9]{20,}", description: "OpenAI-style API key" },
+  // The hook carried `{48}` against this `{20,}` until #868, and the parity
+  // guard could not say so: `sk-` is the derived probe and three characters
+  // long, so the guard skipped this entry for its whole life. A 30-character
+  // key committed cleanly and was caught in CI, which is the gap the skip was
+  // hiding in the OTHER direction from `jwt` — not a missing pattern, a
+  // narrowed one.
+  {
+    id: "openai",
+    ere: "sk-[A-Za-z0-9]{20,}",
+    description: "OpenAI-style API key",
+    hookProbe: "sk-[A-Za-z0-9]{20,}",
+  },
   { id: "anthropic", ere: "sk-ant-[A-Za-z0-9-]{90,}", description: "Anthropic API key" },
   {
     id: "private-key",
@@ -96,6 +120,7 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
     id: "jwt",
     ere: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{43,}",
     description: "JSON Web Token (signed, three segments)",
+    hookProbe: "eyJ[A-Za-z0-9_-]{10,}",
   },
 ];
 
@@ -141,8 +166,10 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
  * that is read in a generated workflow by whoever is debugging a blocked
  * commit, for no behaviour a flag does not already buy.
  */
+export const TIER2_KEY_ERE = "(password|passwd|api[_-]?key|secret)";
+
 export const TIER2_ASSIGNMENT_ERE =
-  "(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}";
+  `${TIER2_KEY_ERE}[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}`;
 
 /**
  * The flag every tier-2 grep carries, and tier 1 carries nowhere (#844).
@@ -243,8 +270,34 @@ export const TIER2_GREP_CASE_FLAG = "-i";
  * on its own: four generated greps interpolate one allowlist binding, and a
  * second string to interpolate is a second thing that can disagree about what
  * counts as a secret.
+ *
+ * THE ROOT IS A CLOSED VOCABULARY, AND THE FIRST DRAFT'S WAS NOT
+ *
+ * This read `[A-Za-z_][A-Za-z0-9_]*` for the first segment — any identifier —
+ * and the security review of PR #868 was right that it is a hole. The premise
+ * above is that an unquoted value is an EXPRESSION, and that premise is a fact
+ * about source languages, not about every file a `git grep -- .` reaches. In a
+ * dotenv file, a shell script or a YAML document an unquoted dotted value is a
+ * LITERAL, and some credentials are literally shaped like an identifier path:
+ * a key of the form two letters, a dot, a base62 run, a dot, another base62
+ * run — the shape one well-known mail provider issues — walks through an
+ * any-identifier root. Measured on the first draft: it was excused.
+ *
+ * So the root is a fixed list of the words real code roots an expression at.
+ * It is the same decision as the placeholder vocabulary below and for the same
+ * reason: a closed list of words is auditable, and "anything shaped like an
+ * identifier" is a judgement the scanner is not entitled to make. A consumer
+ * whose expression roots at a word not on this list gets a false positive and
+ * a one-line change here, which is the direction this is allowed to be wrong
+ * in — the other direction is a credential nobody sees.
  */
-export const TIER2_DOTTED_PATH_ERE = "[:=][[:space:]]*[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$";
+export const TIER2_EXPRESSION_ROOT_ERE =
+  "(process|os|Deno|globalThis|module|exports|this|self|config|conf|cfg|" +
+  "settings|options|opts|env|deps|current|ctx|context|params|args|argv|" +
+  "input|data|state|store|creds|credentials|auth|secrets|vars)";
+
+export const TIER2_DOTTED_PATH_ERE =
+  `${TIER2_EXPRESSION_ROOT_ERE}(\\.[A-Za-z_][A-Za-z0-9_]*)+`;
 
 /**
  * The FIXED vocabulary of documented non-values (#863).
@@ -286,8 +339,25 @@ export const TIER2_DOTTED_PATH_ERE = "[:=][[:space:]]*[A-Za-z_][A-Za-z0-9_]*(\\.
  * read as a general placeholder heuristic. Adding a word here is adding a
  * word to a gate's blind spot; measure the consumer line that needs it
  * first, the way these four were measured.
+ *
+ * THE TAIL CARRIES NO DIGIT, AND THE FIRST DRAFT'S COULD
+ *
+ * `your[_-]` alone is a PREFIX test, so a value beginning with those five
+ * characters and continuing into thirty-two random ones was excused — the
+ * security review of PR #868 was right, and it reproduced. End-anchoring
+ * alone does not fix it, because the tail is still arbitrary.
+ *
+ * The discriminator is the digit. A documented placeholder is words and
+ * separators (`your` then a dash then `api` then a dash then `key`, and so
+ * on); a credential is not. The grep that consumes this runs `-i`, so case
+ * cannot be the discriminator here even though a real key is usually mixed —
+ * which is worth stating, because reaching for `[a-z]` is the obvious move
+ * and it silently matches everything under that flag.
  */
-export const TIER2_PLACEHOLDER_VOCAB_ERE = "REDACTED|CHANGEME|placeholder|your[_-]|example[_-]";
+export const TIER2_PLACEHOLDER_VOCAB_ERE =
+  "(REDACTED|CHANGEME|placeholder)[A-Za-z_-]*" +
+  "|your[_-][A-Za-z][A-Za-z_-]*" +
+  "|example[_-][A-Za-z][A-Za-z_-]*";
 
 /**
  * The optional `-` is the SHELL DEFAULT separator, not a widening of the
@@ -300,10 +370,13 @@ export const TIER2_PLACEHOLDER_VOCAB_ERE = "REDACTED|CHANGEME|placeholder|your[_
  * reported. The anchor decides WHERE to look; the vocabulary decides what is
  * excused, and only the second of those two is a list anyone can lengthen.
  */
+const TIER2_VALUE_ANCHOR = `^${TIER2_KEY_ERE}[[:space:]]*[:=][[:space:]]*-?`;
+
 export const TIER2_ALLOWED_VALUE_ERE =
-  "^$|[:=][[:space:]]*-?(process\\.env|os\\.environ|Deno\\.env|getenv|" +
-  `${TIER2_PLACEHOLDER_VOCAB_ERE})` +
-  `|${TIER2_DOTTED_PATH_ERE}`;
+  "^$" +
+  `|${TIER2_VALUE_ANCHOR}(process\\.env|os\\.environ|Deno\\.env|getenv)` +
+  `|${TIER2_VALUE_ANCHOR}(${TIER2_PLACEHOLDER_VOCAB_ERE})$` +
+  `|${TIER2_VALUE_ANCHOR}${TIER2_DOTTED_PATH_ERE}$`;
 
 /**
  * Tier 3 — a credential written as a shell default, caught by SHAPE.

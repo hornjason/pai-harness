@@ -264,16 +264,35 @@ describe("SC-D/#863: tier 1 owns the JWT, and the committed job is where that is
     }
   });
 
-  test("the handoff: tier 2 lets the same line through, and only tier 1 reports it", () => {
-    // THE case. A JWT signature with no `-` is a dotted identifier path by
-    // shape, so the SC-A exclusion excuses it — which is exactly why the
-    // format belongs in the tier that has no allowlist. Both verdicts are
-    // asserted on ONE input, because the claim is about the pair.
-    const line = V(K.apiKey, ": ", JWT);
-    expect(tier2Verdict(gatesTier2Scan(), line), "tier 2 stopped excusing the JWT — re-read why tier 1 owns it").toBe(
-      "CLEAN",
-    );
-    expect(tier1Verdict(gatesTier1Scan(), line), "the JWT is now reported by neither tier").toBe("FAIL");
+  test("the handoff: tier 2 cannot see a JWT that carries no tier-2 key, and tier 1 can", () => {
+    // THE case, and it is narrower than the one this file first shipped.
+    //
+    // The original claim was that tier 2 EXCUSES a keyed JWT — a signature
+    // with no `-` is a dotted identifier path by shape, so the dotted-path
+    // exclusion swallowed it. That is no longer true: #868 closed the
+    // exclusion to a fixed vocabulary of expression roots, and `eyJhbGci…`
+    // is not one of them, so a keyed JWT is now reported by BOTH tiers. The
+    // assertion below is asserted rather than the old one, because an
+    // excuse that has been closed is not evidence for anything.
+    //
+    // What still makes tier 1 the owner is the input tier 2 cannot reach at
+    // all: tier 2's capture REQUIRES `password|passwd|api[_-]?key|secret` on
+    // the line. A bearer header and a bare token name carry none of those,
+    // so no hardening of tier 2's allowlist could ever report them — the
+    // format needs a tier that matches on the format alone.
+    const keyless = `Authorization: Bearer ${JWT}`;
+    expect(
+      tier2Verdict(gatesTier2Scan(), keyless),
+      "tier 2 grew a key-free capture — re-read why tier 1 owns the format",
+    ).toBe("CLEAN");
+    expect(tier1Verdict(gatesTier1Scan(), keyless), "the JWT is reported by neither tier").toBe("FAIL");
+
+    // The negative control for the sentence above: with a tier-2 key on the
+    // line, BOTH tiers report it now. Without this, "tier 2 is clean" reads
+    // as tier 2 still excusing JWTs rather than as tier 2 not being asked.
+    const keyed = V(K.apiKey, ": ", JWT);
+    expect(tier2Verdict(gatesTier2Scan(), keyed), "the #868 root vocabulary stopped excusing a keyed JWT").toBe("FAIL");
+    expect(tier1Verdict(gatesTier1Scan(), keyed), "tier 1 stopped reporting a keyed JWT").toBe("FAIL");
   });
 
   test("tier 1 is NOT case-insensitive, read off the committed command and then behaviourally", () => {
@@ -441,5 +460,76 @@ describe("SC-A/SC-B/SC-C/SC-I/#863: what the tier-2 exclusion does and does not 
     expect(scan.captureFlags, "the committed capture dropped the registry's case flag").toContain(
       TIER2_GREP_CASE_FLAG,
     );
+  });
+});
+
+describe("#868: the three ways into the exclusion that the first draft left open", () => {
+  // The security review of PR #868 found all three, and every one of them is
+  // the SAME mistake: the first draft's justification was a fact about SOURCE
+  // LANGUAGES — "an unquoted dotted value is an expression, and an expression
+  // is not a credential" — applied to a corpus that is `git grep -- .`, which
+  // reaches dotenv files, shell scripts and YAML. In those, an unquoted
+  // dotted value is a LITERAL.
+  //
+  // Each case asserts the bypass is REPORTED and is paired, in the next
+  // describe-level case, with the measured consumer line it must not break.
+  // Without the pair, "report everything" scores as the fix.
+
+  test("a credential whose SHAPE is a dotted identifier path is reported", () => {
+    // SendGrid issues `SG.<base62>.<base62>`. Unquoted in a `.env`, the first
+    // draft read it as an expression rooted at `SG` and excused it. The root
+    // is a closed vocabulary now, and `SG` is not in it.
+    const scan = gatesTier2Scan();
+    for (const line of [
+      "SENDGRID_API_KEY=SG.ePqRsTuVwXyZ01.aBcDeFgHiJkLmNoPqRsTuV",
+      "API_KEY=AKIA.IOSFODNN7.EXAMPLEKEYVAL",
+    ]) {
+      expect(tier2Verdict(scan, line), `a dotted-path-shaped credential is still excused: ${line}`).toBe("FAIL");
+    }
+  });
+
+  test("an internal `=` cannot start a match the allowlist then excuses", () => {
+    // The allowlist branches were unanchored, so `[:=][[:space:]]*` could
+    // bind to an `=` INSIDE the value — base64 padding, or a separator — and
+    // excuse the whole line on the fragment after it. Every branch is
+    // anchored to the key now.
+    const scan = gatesTier2Scan();
+    for (const line of [
+      V(K.password, ": ", "hunter2hunter2hunter2=a.b"),
+      V(K.apiKey, ": ", "sk_live_AbCdEfGhIjKlMnOp=cfg.key"),
+    ]) {
+      expect(tier2Verdict(scan, line), `an internal = still launders the value: ${line}`).toBe("FAIL");
+    }
+  });
+
+  test("a placeholder PREFIX does not excuse a random tail", () => {
+    // `your[_-]` matched as a prefix with no end anchor, so any secret
+    // beginning `your_` was excused. The tail must now run to end-of-value
+    // carrying no digit — which is what a placeholder looks like and what a
+    // generated credential does not.
+    const scan = gatesTier2Scan();
+    expect(
+      tier2Verdict(scan, "API_KEY=your_QX7bTk19ZpLmNvRs04WyEdHgUaFc"),
+      "a placeholder prefix still excuses a random tail",
+    ).toBe("FAIL");
+  });
+
+  test("the control: every placeholder and expression the hardening must NOT break", () => {
+    // The negative control for all three cases above. These are the measured
+    // consumer lines from #863 plus the two placeholder spellings the #844
+    // suite already pinned; without them, anchoring the allowlist to nothing
+    // at all would satisfy every assertion in this describe.
+    const scan = gatesTier2Scan();
+    for (const benign of [
+      V(K.apiKey.replace("_", ""), ": ", "config.judge.apiKey"),
+      V(K.apiKey.replace("_", ""), ": ", "env.ANTHROPIC_API_KEY"),
+      V(K.password, ": ", "process.env.DB_PASSWORD"),
+      "API_KEY:-your-api-key-goes-here",
+      "SECRET:-example-value-not-real",
+      "API_KEY=your_key_here",
+      V(K.apiKey.toUpperCase(), "=", "Placeholder_value_here"),
+    ]) {
+      expect(tier2Verdict(scan, benign), `the hardening broke a benign line: ${benign}`).toBe("CLEAN");
+    }
   });
 });
