@@ -1,0 +1,54 @@
+# Gitleaks allowlist.
+#
+# This repository's test suite deliberately contains credential-shaped
+# strings. They are fixtures for the redaction code: a test that proves
+# `redactSecrets` removes a token has to hand it something a detector
+# recognises as a token, or it proves nothing.
+#
+# As of #1036 every one of those fixtures is BUILT at runtime rather than
+# spelled as a literal — `"ghp_" + "A".repeat(20)` — so a scan of the current
+# tree finds nothing. This file exists for the history: the literals are in
+# past commits and will be for ever, and a deep scan reads those.
+#
+# ## Why paths and not regexes
+#
+# Allowlisting by value is normally the better choice, because a path
+# exemption can hide a real secret that lands in that file later. It is the
+# wrong choice here: writing the fixture values into this file would put
+# credential-shaped literals back into the tree, in the repository root, and
+# this file is not read by the other two scanners that cover these paths.
+#
+# That is also what makes the path exemption safe. These seven files remain
+# scanned by `scripts/git-hooks/pre-commit` on every commit and by the
+# `gates.yml` secret scan on every push — both of which use strict patterns
+# and neither of which reads this file. Nothing here reduces the coverage
+# that actually protects the repository; it silences one external scanner on
+# seven files whose fixtures are already known-synthetic.
+#
+# ## Gotchas this file is written around
+#
+#   - It must be in the repository ROOT. Anywhere else it is ignored.
+#   - Only the top-level [allowlist] table is read. [[rules]] and
+#     rules.allowlist are ignored by the scanners that consume this.
+#   - `paths` takes path regexes. `files` is file-NAMES only and cannot
+#     contain path separators; it is also removed in later gitleaks releases.
+#   - Invalid TOML or an invalid regex makes the WHOLE file ignored, silently.
+#     Verify with a run rather than by reading.
+#   - A deep scan only honours this once it is merged to the default branch.
+#
+# Paths are anchored and name individual files rather than `test/`, so the
+# exemption cannot quietly widen as the suite grows.
+
+[allowlist]
+  description = "Synthetic credential fixtures: redaction tests, built at runtime since #1036"
+
+  paths = [
+    '''^test/dev-liveness\.test\.ts$''',
+    '''^test/gate-auto-push\.test\.ts$''',
+    '''^test/github-client\.test\.ts$''',
+    '''^test/hook-registration-evidence\.test\.ts$''',
+    '''^test/issue-close-guard-fail-closed\.test\.ts$''',
+    '''^test/matcher-registry-parity\.test\.ts$''',
+    '''^test/unit/launch-base\.test\.ts$''',
+    '''^test/consumer-fixture-gates\.test\.ts$''',
+  ]
