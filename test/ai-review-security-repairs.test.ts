@@ -72,13 +72,68 @@
  *
  * ## What was broken to prove it
  *
- * The battery is recorded at the bottom of this file, after the cases.
+ * Run and counted over this file + `ai-review-restore-index` +
+ * `ai-review-untrusted-restore` + `ai-review-creds-relocate` +
+ * `ai-review-workflow` (107 tests). Every count predicted before the
+ * battery ran, in `/tmp/856-battery/predictions.md`, and **the baseline row
+ * was read first**.
+ *
+ * | Row | Predicted | Measured |
+ * |---|---|---|
+ * | **baseline** — unmutated | 0 fail | **107 pass, 0 fail** |
+ * | N1 the encoder body becomes `printf '%s' "$1"` — a no-op everywhere | 3 | **4 of 107** |
+ * | N2 the encoder dropped from the baseline refusal only — pre-#856 F1 | 2 | **2 of 107** |
+ * | N3 the encoder helper not interpolated into the baseline script | 2 | **2 of 107** |
+ * | N4 `.gitignore` removed from the restored set | 3 | **4 of 107** |
+ * | N5 `.gitattributes` removed from the restored set | 1 | **2 of 107** |
+ * | N6 `--no-filters` dropped from the reader | 2 | **1 of 107** |
+ * | N7 **cheapest wrong fix**: refuse whenever the tree is non-empty | 5 | **10 of 107** |
+ * | N8 this file's own annotation scan short-circuited to `[]` | 1 | **1 of 107** |
+ *
+ * **N5 was predicted at 1 with a note saying a 0 would be a finding about
+ * my own change, and the first run WAS effectively that.** Its only red was
+ * an assertion that `.gitattributes` appears in `AI_REVIEW_UNTRUSTED_PATHS`
+ * — a restatement of the change, not a witness of any behaviour. So the
+ * obvious attack was tried and **it does not work**: measured, a head
+ * `.gitattributes` declaring `* text eol=lf` does not hide a CRLF-for-LF
+ * worktree edit from `git status`, which still reports ` M`. With
+ * `--no-filters` in the reader there is no reachable attack through
+ * `.gitattributes` that I could construct, and **`--no-filters` is what
+ * closes F3** — N6 is the row that proves it.
+ *
+ * The entry stays, because `.gitattributes` configures how git reads the
+ * tree and the restore is where inputs to the measurement belong. What
+ * changed is the case: it now RUNS the restore and reads the tree, so the
+ * claim made for it is one the step actually performs. That is a weaker
+ * claim than "an attack is caught" and it is labelled as one rather than
+ * dressed up.
+ *
+ * **N6 missed LOW and the prediction was wrong, not the check.** I expected
+ * the clean-tree control to move too; `--no-filters` changes nothing about
+ * a tree nobody edited. The input on which mutant and original differ,
+ * printed rather than assumed: under `* text eol=lf`, `git hash-object`
+ * returns `587be6b4…` for both `x\r\n` and `x\n`, and `--no-filters`
+ * returns `db127bf6…` and `587be6b4…`.
+ *
+ * **N7 came back 10 against 5, and every extra red is a clean-tree control
+ * in a sibling suite.** That is the row's entire purpose: each of the three
+ * repairs is a refusal, and a step that refuses everything satisfies all
+ * three attack cases. 97 cases still pass, so it is not a crashing mutant.
+ *
+ * **N1, N4 and N5 each carry one red that is mechanical rather than
+ * behavioural** — *"the committed restore step is byte-identical to what
+ * the generator emits"*. Any mutation of the generator's emitted text reds
+ * it, in every row, and it is not evidence about the mutated behaviour.
+ *
+ * None of the eight mutations is left in the tree; all were restored from a
+ * `cp` backup — never `git checkout --` — and both mutated files were
+ * confirmed byte-identical after every row by sha256.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 
@@ -88,7 +143,6 @@ import {
   AI_REVIEW_DRIFT_TITLE,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
   AI_REVIEW_TREE_BEFORE_VAR,
-  AI_REVIEW_UNTRUSTED_PATHS,
   buildAuthDetectScript,
   buildBaselineScript,
   buildCredsRelocateScript,
@@ -336,9 +390,35 @@ describe("AC-9 (#856/F2): a head-supplied .gitignore does not hide a write", () 
     expect(runDrift(f, path, sha).code).not.toBe(0);
   });
 
-  test("the restored set names the two files that decide what a reading sees", () => {
-    expect(AI_REVIEW_UNTRUSTED_PATHS).toContain(".gitignore");
-    expect(AI_REVIEW_UNTRUSTED_PATHS).toContain(".gitattributes");
+  test("the restore REMOVES both files the head supplied, measured not listed", () => {
+    // Asserting membership of `AI_REVIEW_UNTRUSTED_PATHS` would restate the
+    // change rather than witness it. This runs the restore step and reads
+    // the tree.
+    //
+    // `.gitattributes` is the honest half of this case and is marked as
+    // such: with `--no-filters` in the reader there is no attack through it
+    // that I could construct. The obvious candidate does not work —
+    // measured, a head `.gitattributes` declaring `* text eol=lf` does NOT
+    // hide a CRLF-for-LF worktree edit from `git status`, which still
+    // reports ` M`. It is in the set because it configures how git reads
+    // the tree and the restore is where inputs to the measurement belong,
+    // and the behavioural claim made for it is exactly this one: the head's
+    // copy does not survive into the reading. `--no-filters` is what closes
+    // F3; see the battery's N6 row.
+    const f = checkout({
+      base: { ".gitignore": "node_modules\n" },
+      head: { ".gitignore": "node_modules\n.claude/**\n", ".gitattributes": "* text eol=lf\n" },
+    });
+    sh(buildRestoreScript(), f, { [AI_REVIEW_BASE_REF_VAR]: "main" });
+
+    expect(
+      readFileSync(join(f.work, ".gitignore"), "utf-8"),
+      "the head's .gitignore survived the restore",
+    ).toBe("node_modules\n");
+    expect(
+      existsSync(join(f.work, ".gitattributes")),
+      "the head's .gitattributes survived the restore — the base declared none",
+    ).toBe(false);
   });
 
   test("AC-11 control: a clean tree with a head .gitignore still passes", () => {
