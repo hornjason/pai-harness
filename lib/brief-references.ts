@@ -38,6 +38,32 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 
+/**
+ * The packages the project says it depends on, or `null` when it does not say.
+ *
+ * This is the evidence that stops the UNMEASURED reading swallowing a real
+ * finding. In a tree that HAS an install, a reference into a package the
+ * manifest never declared cannot be "not installed yet" — it is a wrong
+ * reference, and before #884 it was reported as one. `null` is a third answer
+ * and not an empty set: a project with no readable manifest has told us
+ * nothing, and nothing is not "depends on nothing".
+ */
+export function declaredPackages(root: string): Set<string> | null {
+  let pkg: any;
+  try {
+    pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"));
+  } catch {
+    return null;
+  }
+  if (pkg === null || typeof pkg !== "object") return null;
+  return new Set([
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.devDependencies ?? {}),
+    ...Object.keys(pkg.optionalDependencies ?? {}),
+    ...Object.keys(pkg.peerDependencies ?? {}),
+  ]);
+}
+
 /** The pattern AGENT-6 has always used to find references. Unchanged. */
 export const BRIEF_REFERENCE_PATTERN = /node_modules\/[^\s`*)"']+/g;
 
@@ -84,15 +110,48 @@ export function corpusOf(ref: string): string {
   return "node_modules";
 }
 
-export function classifyBriefReference(root: string, ref: string): BriefReferenceStatus {
-  // The corpus question is asked FIRST. Asked second, every reference into an
-  // absent package is already `broken` by the time anyone looks.
-  if (!existsSync(join(root, corpusOf(ref)))) return "unresolvable";
+/**
+ * Three outcomes, and the order of the three questions is the whole design.
+ *
+ * 1. **A traversal segment is broken, and is never probed.** `node_modules/../..`
+ *    matches the reference pattern, and probing it turns a conformity check
+ *    into a filesystem-existence oracle for paths outside the repository. A
+ *    brief naming one is a wrong reference whatever is on disk, so the answer
+ *    does not need the disk.
+ * 2. **No install at all means no reading, unconditionally.** This is #884's
+ *    case: a ship worktree. Nothing about the project's manifest can make a
+ *    reference checkable when there is nothing to check it against.
+ * 3. **With an install present, the manifest decides.** A declared dependency
+ *    that is not there is a broken or partial install — unknowable. A package
+ *    the project never declared is a wrong reference, and it was reported as
+ *    one before #884. Asking the manifest here is what stops the new
+ *    UNMEASURED reading swallowing that finding: without it, a typo in a
+ *    package name goes silent in a fully installed tree.
+ *
+ * A project with no readable manifest has said nothing, so step 3 cannot run
+ * and the answer is `unresolvable`. That is UNMEASURED by name, not a pass.
+ */
+export function classifyBriefReference(
+  root: string,
+  ref: string,
+  declared: Set<string> | null = declaredPackages(root),
+): BriefReferenceStatus {
+  if (ref.split("/").includes("..")) return "broken";
+  if (!existsSync(join(root, "node_modules"))) return "unresolvable";
+  const corpus = corpusOf(ref);
+  if (!existsSync(join(root, corpus))) {
+    return declared !== null && !declared.has(corpus.replace(/^node_modules\//, ""))
+      ? "broken"
+      : "unresolvable";
+  }
   return existsSync(join(root, ref)) ? "resolved" : "broken";
 }
 
 export function briefReferenceReading(root: string, agentsDir: string): BriefReferenceReading {
   const references: BriefReference[] = [];
+  // Read once per reading, not once per reference: the manifest cannot change
+  // mid-scan, and a second read is a second chance to disagree with the first.
+  const declared = declaredPackages(root);
   if (existsSync(agentsDir)) {
     for (const brief of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
       const content = readFileSync(join(agentsDir, brief), "utf-8");
@@ -102,7 +161,7 @@ export function briefReferenceReading(root: string, agentsDir: string): BriefRef
           brief,
           ref,
           packageRoot: corpusOf(ref),
-          status: classifyBriefReference(root, ref),
+          status: classifyBriefReference(root, ref, declared),
         });
       }
     }

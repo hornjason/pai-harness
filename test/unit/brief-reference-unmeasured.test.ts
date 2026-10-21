@@ -47,7 +47,9 @@ import { dirname, join } from "path";
 
 import {
   briefReferenceReading,
+  classifyBriefReference,
   corpusOf,
+  declaredPackages,
   unmeasuredBriefReferenceNotice,
 } from "../../lib/brief-references";
 import { readJunitOutcomes } from "../../lib/junit-checks";
@@ -151,17 +153,81 @@ describe("#884 AC-1..AC-7: the reading", () => {
     expect(reading(installed).unresolvable).toEqual([]);
   });
 
-  test("AC-6: a partial install — node_modules present, the package absent — is UNMEASURED", () => {
+  test("AC-6: a partial install — a DECLARED package absent from an install — is UNMEASURED", () => {
     // The input a `!existsSync(root/node_modules)` guard cannot see. It is the
     // same question one level down, and the cheap guard answers it wrong.
     const root = project({
       ".claude/agents/quinn.md": BRIEF("node_modules/rungate/prompts/quinn-ui-brief.md"),
+      "package.json": JSON.stringify({ dependencies: { rungate: "^0.6.0" } }),
       "node_modules/zod/package.json": "{}\n",
     });
     const r = reading(root);
     expect(r.broken).toEqual([]);
     expect(r.unresolvable.map(u => u.packageRoot)).toEqual(["node_modules/rungate"]);
     expect(r.reading).toBe("UNMEASURED");
+  });
+
+  test("AC-13: in an INSTALLED tree, an undeclared package is a wrong reference, not an unknowable one", () => {
+    // The detection the UNMEASURED reading must not swallow (sec review of
+    // PR #886). A typo in a package name was reported as broken before #884,
+    // and an install being present is what makes that answer available: a
+    // package the manifest never declared cannot be "not installed yet".
+    // Pairs with AC-6 — one thing varies, whether the manifest declares it.
+    const root = project({
+      ".claude/agents/quinn.md": BRIEF("node_modules/rungaet/prompts/quinn-ui-brief.md"),
+      "package.json": JSON.stringify({ dependencies: { rungate: "^0.6.0" } }),
+      "node_modules/zod/package.json": "{}\n",
+    });
+    const r = reading(root);
+    expect(r.broken.map(b => b.ref)).toEqual(["node_modules/rungaet/prompts/quinn-ui-brief.md"]);
+    expect(r.unresolvable).toEqual([]);
+    expect(r.reading).toBe("MEASURED");
+  });
+
+  test("AC-14: with NO install, even an undeclared package is UNMEASURED", () => {
+    // The worktree case is unconditional. The manifest is a tiebreak between
+    // "not installed yet" and "never a dependency", and that question only
+    // arises once an install exists — asking it here would put every
+    // consuming repo's worktree back where #884 found it.
+    const root = project({
+      ".claude/agents/quinn.md": BRIEF("node_modules/rungaet/prompts/quinn-ui-brief.md"),
+      "package.json": JSON.stringify({ dependencies: { rungate: "^0.6.0" } }),
+    });
+    const r = reading(root);
+    expect(r.broken).toEqual([]);
+    expect(r.unresolvable.map(u => u.packageRoot)).toEqual(["node_modules/rungaet"]);
+  });
+
+  test("AC-15: an install with no readable manifest cannot tell, and says so", () => {
+    // `declaredPackages` returns null, which is a third answer and not an
+    // empty set. An empty set would call every reference broken.
+    const root = project({
+      ".claude/agents/quinn.md": BRIEF("node_modules/rungate/prompts/x.md"),
+      "package.json": "{ this is not json",
+      "node_modules/zod/package.json": "{}\n",
+    });
+    expect(declaredPackages(root)).toBeNull();
+    const r = reading(root);
+    expect(r.broken).toEqual([]);
+    expect(r.reading).toBe("UNMEASURED");
+  });
+
+  test("AC-16: a traversal segment is broken, and is never probed on disk", () => {
+    // `node_modules/../..` matches the reference pattern. Probing it turns a
+    // conformity check into a filesystem-existence oracle for paths outside
+    // the repository, so the answer must not depend on the disk at all — the
+    // two fixtures differ only in whether the escaped path exists, and both
+    // must read the same.
+    const escape = "node_modules/../../../etc/passwd";
+    const absent = project({ ".claude/agents/quinn.md": BRIEF(escape) });
+    const present = project({
+      ".claude/agents/quinn.md": BRIEF(escape),
+      "node_modules/rungate/package.json": "{}\n",
+    });
+    expect(classifyBriefReference(absent, escape)).toBe("broken");
+    expect(classifyBriefReference(present, escape)).toBe("broken");
+    expect(reading(absent).unresolvable).toEqual([]);
+    expect(reading(present).unresolvable).toEqual([]);
   });
 
   test("AC-7: the notice names UNMEASURED, the absent corpus and what to do", () => {
