@@ -46,7 +46,7 @@ const STEPS_DIR = dirname(STEPS);
  * abort this file rather than quietly mutate nothing.
  */
 const BINDING_SIGNATURE =
-  'export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = [], provenance: MergeProvenance = "UNPROVEN"): ManagedWrite {';
+  'export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = [], provenance: MergeProvenance = "UNPROVEN", computed: ComputedSubKeys = new Map()): ManagedWrite {';
 
 /**
  * The mutation: preservation and refusal replaced by unconditional overwrite.
@@ -61,7 +61,7 @@ const BINDING_SIGNATURE =
  * walked straight into. `noThrow` below is the guard that makes it visible.
  */
 const UNCONDITIONAL_OVERWRITE =
-  '\n  return { content: generated, verb: "CREATED", lineDelta: 0, preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], refusal: null }; // MUTANT: preservation removed';
+  '\n  return { content: generated, verb: "CREATED", lineDelta: 0, preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], revokedGrants: [], refusal: null }; // MUTANT: preservation removed';
 
 export function buildMutantSource(src: string, signature = BINDING_SIGNATURE): string {
   const occurrences = src.split(signature).length - 1;

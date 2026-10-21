@@ -90,11 +90,16 @@
  * spelling of it either way — which is the defect M6 was actually probing.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { createCiWorkflows, HARNESS_BOOKKEEPING_PREFIXES, resolveManagedWrite } from "../lib/scaffold/steps";
+import {
+  createCiWorkflows,
+  HARNESS_BOOKKEEPING_PREFIXES,
+  HARNESS_COMPUTED_SUBKEYS,
+  resolveManagedWrite,
+} from "../lib/scaffold/steps";
 import { AI_REVIEW_WORKFLOW_FILE } from "../lib/scaffold/ai-review-step";
 import {
   MANAGED_BANNER_PREFIX,
@@ -497,4 +502,490 @@ describe("#926: every harness bookkeeping prefix is load-bearing somewhere", () 
       ).toEqual([UNOWNED]);
     });
   }
+});
+
+// ── #923 ───────────────────────────────────────────────────────────────────
+
+/**
+ * A derived grant goes when the thing that derived it goes (#923).
+ *
+ * The third row of #923's table, which #834 deliberately did not pin: #834
+ * fixed the write refusal that kept `id-token: write` OFF consumers adding
+ * `ci.vertex`, and its cases above assert that direction only. Removing
+ * `ci.vertex` and re-scaffolding left the grant in place for ever, with no
+ * route to withdraw it — a job keeping the right to mint an OIDC token for a
+ * federation that is no longer configured, which is #631's "a permission
+ * nobody consumes is a permission nobody audits" stuck open in the one
+ * direction nothing closed.
+ *
+ * ## Why the before-state is never hand-written
+ *
+ * Same discipline as #834's block above, inverted. The cheapest wrong fix
+ * here is hand-deleting the line from one consumer's `ai-review.yml`, and a
+ * case whose before-state was built by writing `id-token: write` into a
+ * fixture string would be measuring the fixture. Every before-state below is
+ * whatever `createCiWorkflows` itself produced for a consumer that HAD
+ * `ci.vertex`, the only thing that changes between the two runs is the
+ * config, and no file in this repository is touched — so a hand edit
+ * anywhere cannot move any of these.
+ *
+ * ## Where `HARNESS_COMPUTED_SUBKEYS`'s population comes from
+ *
+ * Not from the map. The ratchet scaffolds the same project with and without
+ * the config that drives the grant and takes the PER-FILE symmetric
+ * difference of the `permissions:` sub-keys each GENERATOR emitted. That is
+ * the definition of "conditionally emitted", read off the emitting module,
+ * and the reason it is read that way is the one #926 records a floor below:
+ * a list checked against a fixture derived from itself matches whatever it
+ * says and cannot see itself drift.
+ *
+ * Per file rather than merged, because the comparison is what catches an
+ * entry for a workflow whose generator never emits the sub-key under any
+ * config — finding 1 below — and a union would hide exactly that.
+ *
+ * Its limit, stated rather than implied: it varies `ci.vertex` and nothing
+ * else, so a sub-key made conditional on some OTHER config key would not
+ * appear in the difference and the case would not demand an entry. That is a
+ * gap in the ratchet, not in the entry it currently holds.
+ *
+ * ## Two findings from review, and the cases that hold them
+ *
+ * Both were in the first draft of this change and both are the SAME SHAPE as
+ * the issue it fixes. #923 is a grant outliving its reason; an unscoped or
+ * over-generous revoker is a WITHDRAWAL outliving its reason.
+ *
+ * 1. `HARNESS_COMPUTED_SUBKEYS` was keyed by SECTION alone, so
+ *    `permissions.id-token` was revocable in every managed workflow. All
+ *    three generated workflows carry a top-level `permissions:` and only one
+ *    ever emits `id-token`, so a consumer with a deploy job of their own in
+ *    a different file would have had the grant deleted by a feature that was
+ *    not reasoning about it. Keyed by FILE now; `a managed workflow the map
+ *    has no entry for keeps a grant the consumer put there` is the case and
+ *    M18 is its control.
+ *
+ * 2. The loss set excused revoked lines through a `Set` of line TEXT. The
+ *    loss set is the single mechanism stopping this generator from eating
+ *    content a consumer wrote, and `  id-token: write` is a line a workflow
+ *    plausibly carries twice — so one legitimate withdrawal silently excused
+ *    every match, and a set cannot tell two-revoked-five-present from
+ *    one-and-one. It is a spent multiset now: exactly as many occurrences
+ *    are forgiven as the merge removed. `a second occurrence of a revoked
+ *    line is still a loss` is the case and M17 is its control.
+ *
+ * ## Mutation battery, measured on this base
+ *
+ * Over this file plus `workflow-top-level-merge`, `workflow-version-skew`,
+ * `managed-workflow-key-order`, `scaffold-ci-preservation`, `ci-shard`,
+ * `ai-review-wif` and `workflow-provenance-merge` — **123 cases**, green
+ * unmutated, source restored after each and green again.
+ *
+ * Counts AND the assertions each row reddens, because a count that is right
+ * about the wrong assertion is not coverage. Every case named below is in
+ * this block and runs against a temporary tree, so no count here depends on
+ * the machine it was measured on.
+ *
+ * | mutation | red | the assertions that go red |
+ * |---|---|---|
+ * | M10 `HARNESS_COMPUTED_SUBKEYS` emptied | **6 of 123** | the five revoking cases + `the map names exactly the sub-keys each generator computes, file by file` |
+ * | M11 the map widened to `{contents, id-token}`, which is direction (1) as #923 drafted it | **1 of 123** | the ratchet — `contents` is emitted unconditionally, so it is in no symmetric difference |
+ * | M12 the revocation budget dropped from `lostLines`' filter | **4 of 123** | the four revoking cases, each via REFUSAL — #834's failure from the other side |
+ * | M13 `revokedSubKeys` drops its `!emitted.has` term | **1 of 123** | `a consumer that keeps ci.vertex is reported as withdrawing nothing` |
+ * | M14 the revocation moved OUTSIDE the `!declined` arm | **1 of 123** | `ci.workflowOverrides takes the grant back` |
+ * | M15 the budget widened to excuse ALL consumer content once anything is revoked | **2 of 123** | `a consumer line the merge drops still refuses a revoking write`; `a second occurrence of a revoked line is still a loss` |
+ * | M16 `withoutRevoked` returns `before` unchanged | **4 of 123** | the four revoking cases — the record is produced and the lines stay |
+ * | M17 **finding 2** — the budget is a `Set` of line text, not a spent multiset | **1 of 123** | `a second occurrence of a revoked line is still a loss` |
+ * | M18 **finding 1** — the file key ignored, the map flattened to sections | **1 of 123** | `a managed workflow the map has no entry for keeps a grant the consumer put there` |
+ * | M19 the wiring dropped, so `writeManagedFile` never passes the map on | **5 of 123** | the five revoking cases |
+ *
+ * **M13 was 0 of 120 and recording it is what closed it.** Its mutant
+ * produces a byte-identical file: the sub-key is withdrawn and
+ * `mergeTopLevelSection` adds it straight back, because the generated side
+ * declares it and the stripped consumer no longer does. Everything that
+ * differs is downstream of the RECORD — a scaffold claiming a withdrawal
+ * that did not happen, and a loss set that quietly stops protecting those
+ * lines. No assertion about the FILE could ever have reached it, which is
+ * why the case that closed it asserts the report.
+ */
+describe("#923: a grant the generator stopped computing is withdrawn", () => {
+  /**
+   * The before-state every case below starts from: a consumer the generator
+   * itself federated. Asserted to carry the grant, or the case that removes
+   * it is measuring nothing.
+   */
+  function federatedConsumer(ci: Record<string, unknown> = {}): string {
+    const { root } = scaffolded({ ...BASE_CI, ...ci, vertex: VERTEX });
+    expect(
+      permissionsOf(root)["id-token"],
+      "the before-state does not carry id-token: write, so removing ci.vertex " +
+        "cannot show anything — this fixture is generator-produced and never hand-written",
+    ).toBe("write");
+    return root;
+  }
+
+  /** The `REVOKED:` lines a scaffold recorded for the ai-review workflow. */
+  const revocations = (actions: string[]) =>
+    actions.filter(a => a.startsWith("REVOKED:") && a.includes(AI_REVIEW_WORKFLOW_FILE));
+
+  /** The headline. #923's third row. */
+  test("a consumer that removes ci.vertex no longer declares id-token: write", () => {
+    const root = federatedConsumer();
+
+    const actions = rescaffoldWith(root, { ...BASE_CI });
+
+    expect(
+      refusals(actions),
+      "the write refused, so the merge's revocation never reached disk — the loss " +
+        "set and the merge are disagreeing about lines the harness itself authored",
+    ).toEqual([]);
+    expect(
+      permissionsOf(root)["id-token"],
+      "ci.vertex is gone and the job still holds the right to mint an OIDC token " +
+        "for a federation that is no longer configured",
+    ).toBeUndefined();
+    expect(permissionsOf(root).contents, "the unconditional grant went with it").toBe("read");
+  });
+
+  /**
+   * #839 does not regress. A sub-key only the consumer declares is still the
+   * consumer's — the whole reason this needed a declared list rather than
+   * "remove whatever the generated side lacks".
+   *
+   * Planted by editing the generated file, which is the only way a consumer
+   * grant can exist: the generator does not emit one, so there is no config
+   * that would produce it.
+   */
+  test("a permission the consumer added for a job of their own is untouched", () => {
+    const root = federatedConsumer();
+    writeFileSync(
+      aiReviewPath(root),
+      aiReviewText(root).replace(/^permissions:\n/m, "permissions:\n  pull-requests: write\n"),
+    );
+    expect(permissionsOf(root)["pull-requests"], "the plant did not land").toBe("write");
+
+    const actions = rescaffoldWith(root, { ...BASE_CI });
+
+    expect(refusals(actions), "the write refused over the consumer's own grant").toEqual([]);
+    expect(
+      permissionsOf(root)["pull-requests"],
+      "a local knob the consumer added was withdrawn along with the derived grant — " +
+        "the revocation is reading `absent from the generated side` instead of " +
+        "`named in HARNESS_COMPUTED_SUBKEYS` for this file",
+    ).toBe("write");
+    expect(permissionsOf(root)["id-token"], "and the derived grant still went").toBeUndefined();
+  });
+
+  /** AC-3. A deletion nothing records is a deletion nobody can audit. */
+  test("the scaffold report names the grant it withdrew and why", () => {
+    const root = federatedConsumer();
+
+    const line = revocations(rescaffoldWith(root, { ...BASE_CI }));
+
+    expect(line.length, "the scaffold withdrew a standing grant and said nothing about it").toBe(1);
+    expect(line[0], "the report does not name the sub-key that went").toContain("id-token");
+    expect(line[0], "the report does not name the key it sat under").toContain("permissions");
+    expect(
+      line[0],
+      "the report does not name the escape hatch, so a consumer who wanted the " +
+        "grant has been told it is gone and not how to keep it",
+    ).toContain("ci.workflowOverrides");
+  });
+
+  /**
+   * AC-4. The escape hatch covers this path, through the mechanism that
+   * already existed: naming the top-level key short-circuits the sub-key
+   * merge before the revocation is read.
+   */
+  test("ci.workflowOverrides takes the grant back", () => {
+    const root = federatedConsumer();
+
+    const actions = rescaffoldWith(root, { ...BASE_CI, workflowOverrides: ["permissions"] });
+
+    expect(refusals(actions), "the write refused").toEqual([]);
+    expect(
+      permissionsOf(root)["id-token"],
+      "a consumer who declared `permissions` theirs had a sub-key deleted out of it " +
+        "anyway — which is the deletion-without-a-route #839's hatch exists to make " +
+        "impossible",
+    ).toBe("write");
+    expect(
+      revocations(actions),
+      "the harness reported withdrawing a grant it left in place",
+    ).toEqual([]);
+    expect(
+      aiReviewText(root),
+      "the key was kept and the file does not say why, so the deviation is implicit",
+    ).toContain(WORKFLOW_OVERRIDE_COMMENT);
+  });
+
+  /**
+   * The negative control for the loss-set widening. The revocation
+   * whitelists the lines the MERGE removed, and nothing else; a consumer's
+   * own line that the merge drops must still refuse, or the whitelist has
+   * stopped being about the revocation and #216 is back.
+   *
+   * Planted beside the job key, which is #926's position: outside the
+   * leading preamble, so `harnessPreamble` does not cover it, and outside
+   * every job, so `harnessOwned` does not either. The only thing that could
+   * excuse it is the revocation whitelist, and the revocation is happening
+   * on this very run.
+   */
+  test("a consumer line the merge drops still refuses a revoking write", () => {
+    const root = federatedConsumer();
+    const planted = "  # our fleet tags the jobs block of every workflow";
+    writeFileSync(
+      aiReviewPath(root),
+      aiReviewText(root).replace(/^jobs:\n/m, `jobs:\n${planted}\n`),
+    );
+
+    const actions = rescaffoldWith(root, { ...BASE_CI });
+
+    expect(
+      refusals(actions).join("\n"),
+      "a line the consumer wrote was dropped by a revoking re-scaffold without a " +
+        "refusal — the revocation whitelist is covering lines the merge did not revoke",
+    ).toContain(planted.trim());
+    expect(aiReviewText(root), "and the line itself is still on disk").toContain(planted);
+  });
+
+  /**
+   * The cost of revocation, pinned rather than left to be discovered.
+   *
+   * `parseSubKeys` gives a sub-key the run of comments immediately above it,
+   * because carrying a key without its reason is how the next person deletes
+   * it. Revoking the key therefore takes any comment a consumer wrote above
+   * it, and the write cannot refuse over that — the whitelist is what stops
+   * the whole re-scaffold failing over the harness's own `# Mint the OIDC
+   * token ...` line, and nothing at revocation time can tell the two apart,
+   * because the generated side no longer declares the key to compare with.
+   *
+   * So the REVOKED line in the report is the only record, and this case is
+   * what makes that a measured statement instead of a hope.
+   */
+  test("a consumer comment riding on the revoked key goes with it, and the report is the record", () => {
+    const root = federatedConsumer();
+    const planted = "  # our quarterly audit signs off on this grant";
+    writeFileSync(
+      aiReviewPath(root),
+      aiReviewText(root).replace(/^(\s*)id-token: write$/m, `${planted}\n$1id-token: write`),
+    );
+    expect(aiReviewText(root), "the plant did not land").toContain(planted);
+
+    const actions = rescaffoldWith(root, { ...BASE_CI });
+
+    expect(refusals(actions), "the write refused rather than revoking").toEqual([]);
+    expect(
+      aiReviewText(root),
+      "the comment outlived the key it introduced, which is the #482 orphan",
+    ).not.toContain(planted);
+    expect(
+      revocations(actions).length,
+      "a consumer's own line went and the scaffold report said nothing — this is the " +
+        "ONLY record of that deletion, so it is not optional",
+    ).toBe(1);
+  });
+
+  /**
+   * Convergence. A managed file has to reach a fixed point, and a revocation
+   * that re-fires is a file that never settles — which is also what a
+   * removal NOTICE written into the file would have been, and the reason
+   * #923 reports this through the scaffold log instead.
+   */
+  test("re-scaffolding a third time changes nothing", () => {
+    const root = federatedConsumer();
+    rescaffoldWith(root, { ...BASE_CI });
+    const settled = aiReviewText(root);
+
+    const actions = rescaffoldWith(root, { ...BASE_CI });
+
+    expect(aiReviewText(root), "the merge did not converge after the revocation").toBe(settled);
+    expect(
+      revocations(actions),
+      "the harness reported withdrawing a grant that was already gone",
+    ).toEqual([]);
+  });
+
+  /**
+   * The other direction of the report, and the case that gave M13 something
+   * to redden.
+   *
+   * M13 — `revokedSubKeys` without its `!emitted` term, so a mapped sub-key
+   * is "withdrawn" even while the generator still emits it — measured **0 of
+   * 120** before this case existed. The output file is identical either way:
+   * the sub-key is taken out and `mergeTopLevelSection` puts it straight
+   * back, because the generated side declares it and the stripped consumer
+   * no longer does. What differs is everything downstream of the RECORD —
+   * the scaffold claims it withdrew a grant that is still in the file, and
+   * the loss set quietly stops protecting those lines. Asserting the file
+   * could never see it; asserting the report can.
+   */
+  test("a consumer that keeps ci.vertex is reported as withdrawing nothing", () => {
+    const root = federatedConsumer();
+
+    const actions = rescaffoldWith(root, { ...BASE_CI, vertex: VERTEX, branches: ["main", "develop"] });
+
+    expect(permissionsOf(root)["id-token"], "the grant went while the config still justifies it").toBe("write");
+    expect(
+      revocations(actions),
+      "the scaffold reported withdrawing a grant that is still in the file. The " +
+        "revocation is firing on `the sub-key is in the map` rather than on `the map " +
+        "names it AND the generator stopped emitting it`, and the file looks right only " +
+        "because the sub-key merge adds back what was taken out",
+    ).toEqual([]);
+  });
+
+  /**
+   * The ratchet, PER FILE, and the fixture comes from the GENERATORS rather
+   * than from the map. See the block docblock.
+   *
+   * Every generated workflow is scaffolded both ways and the per-file
+   * symmetric difference of its `permissions:` sub-keys is taken. That
+   * difference IS the definition of "conditionally emitted", and comparing
+   * the whole map against the whole set of differences is what catches an
+   * entry for a file whose generator never computes the sub-key under any
+   * config — which is the over-reach the file key exists to prevent, not
+   * merely a tidiness check.
+   */
+  test("the map names exactly the sub-keys each generator computes, file by file", () => {
+    const withVertex = scaffolded({ ...BASE_CI, vertex: VERTEX });
+    const without = scaffolded({ ...BASE_CI });
+
+    /** Top-level `permissions:` sub-keys of one generated workflow. */
+    const subKeys = (root: string, file: string): Set<string> => {
+      const doc = Bun.YAML.parse(
+        readFileSync(join(root, ".github", "workflows", file), "utf-8"),
+      ) as any;
+      return new Set(Object.keys((doc?.permissions ?? {}) as Record<string, string>));
+    };
+
+    /** Every workflow the scaffold wrote, read off disk rather than listed. */
+    const files = readdirSync(join(withVertex.root, ".github", "workflows")).sort();
+    expect(files.length, "the scaffold wrote no workflows, so this case is vacuous").toBeGreaterThan(1);
+
+    const measured = new Map<string, string[]>();
+    for (const file of files) {
+      const a = subKeys(withVertex.root, file);
+      const b = subKeys(without.root, file);
+      const diff = [...[...a].filter(k => !b.has(k)), ...[...b].filter(k => !a.has(k))].sort();
+      if (diff.length > 0) measured.set(file, diff);
+    }
+
+    expect(
+      measured.size,
+      "no generated workflow emitted a different permissions block either way, so " +
+        "this case measures nothing about which sub-keys are computed",
+    ).toBeGreaterThan(0);
+
+    const declared = new Map(
+      [...HARNESS_COMPUTED_SUBKEYS].map(
+        ([file, sections]) => [file, [...(sections.get("permissions") ?? [])].sort()] as const,
+      ),
+    );
+
+    expect(
+      Object.fromEntries(declared),
+      "HARNESS_COMPUTED_SUBKEYS (lib/scaffold/steps.ts) disagrees with the generators " +
+        "about which permissions sub-keys each FILE conditionally emits. A sub-key a " +
+        "generator computes and the map omits is a grant that outlives its reason. A " +
+        "sub-key the map names for a file whose generator never emits it is worse: the " +
+        "revocation reaches a workflow it was not reasoning about and deletes a grant " +
+        "the consumer put there. Add or drop the entry in the same commit that makes " +
+        "the sub-key conditional.",
+    ).toEqual(Object.fromEntries(measured));
+  });
+
+  /**
+   * Finding 1. The revocation does not reach a workflow whose generator
+   * never computes the sub-key.
+   *
+   * All three generated workflows carry a top-level `permissions:`, and only
+   * one of them ever emits `id-token`. Keyed by section alone the merge
+   * cannot tell them apart, so a consumer with a deploy job of their own in
+   * a DIFFERENT managed workflow has the grant silently withdrawn by a
+   * feature that was not reasoning about their file. An unscoped revoker is
+   * a withdrawal outliving its reason, which is #923 with the sign flipped.
+   *
+   * The file is chosen off the map rather than named: the point is "a
+   * managed workflow this map has no entry for", and spelling one would
+   * stop being that the moment the map gained a row for it.
+   */
+  test("a managed workflow the map has no entry for keeps a grant the consumer put there", () => {
+    const { root } = scaffolded({ ...BASE_CI, vertex: VERTEX });
+    const others = readdirSync(join(root, ".github", "workflows"))
+      .filter(f => !HARNESS_COMPUTED_SUBKEYS.has(f))
+      .sort();
+    expect(
+      others.length,
+      "every generated workflow has a HARNESS_COMPUTED_SUBKEYS entry, so there is no " +
+        "unmapped file to measure the scope against",
+    ).toBeGreaterThan(0);
+
+    const target = join(root, ".github", "workflows", others[0]);
+    const before = readFileSync(target, "utf-8");
+    expect(before, "the chosen workflow has no permissions block to plant into").toMatch(/^permissions:$/m);
+    writeFileSync(target, before.replace(/^permissions:\n/m, "permissions:\n  id-token: write\n"));
+
+    const actions = rescaffoldWith(root, { ...BASE_CI });
+
+    expect(
+      actions.filter(a => a.startsWith("REFUSED:") && a.includes(others[0])),
+      "the write refused rather than leaving the consumer's grant alone",
+    ).toEqual([]);
+    const after = Bun.YAML.parse(readFileSync(target, "utf-8")) as any;
+    expect(
+      after.permissions["id-token"],
+      `the revocation reached ${others[0]}, whose generator never emits id-token under ` +
+        "any config. The map is keyed too widely and is deleting a grant in a file it " +
+        "was never reasoning about",
+    ).toBe("write");
+    expect(
+      actions.filter(a => a.startsWith("REVOKED:") && a.includes(others[0])),
+      "and it reported doing so",
+    ).toEqual([]);
+  });
+
+  /**
+   * Finding 2. The loss set forgives exactly as many occurrences as the
+   * merge removed — a multiset, not a set of line TEXT.
+   *
+   * `  id-token: write` is a line a workflow plausibly carries more than
+   * once. Excusing by text means one legitimately withdrawn occurrence
+   * silently excuses every other occurrence in the file, and a `Set` cannot
+   * tell two-revoked-five-present from one-and-one. The loss set is the
+   * single mechanism stopping the generator from eating content a consumer
+   * wrote, so widening it by text is a silent deletion through scaffold.
+   *
+   * The second occurrence is planted beside the job key — #926's position,
+   * which the merge drops and which neither `harnessOwned` nor
+   * `harnessPreamble` covers — so the only thing that could excuse it is the
+   * revocation budget. One is revoked; the budget is 1; two occurrences
+   * reach the loss set; one must survive it and refuse.
+   */
+  test("a second occurrence of a revoked line is still a loss", () => {
+    const root = federatedConsumer();
+    const grant = "  id-token: write";
+    expect(aiReviewText(root), "the generated grant is not spelled as planted").toContain(`\n${grant}\n`);
+    writeFileSync(
+      aiReviewPath(root),
+      aiReviewText(root).replace(/^jobs:\n/m, `jobs:\n${grant}\n`),
+    );
+    const planted = aiReviewText(root);
+    expect(
+      planted.split("\n").filter(l => l === grant).length,
+      "the fixture does not actually carry the line twice",
+    ).toBe(2);
+
+    const actions = rescaffoldWith(root, { ...BASE_CI });
+
+    expect(
+      refusals(actions).join("\n"),
+      "one occurrence was revoked and the OTHER was dropped without a refusal — the " +
+        "loss set is excusing by line TEXT, so a single withdrawal forgives every " +
+        "matching line in the file. That is a silent deletion of content the consumer " +
+        "wrote, through scaffold, which is the one thing the loss set exists to stop",
+    ).toContain(grant.trim());
+    expect(
+      aiReviewText(root),
+      "the write refused, so nothing should have changed on disk",
+    ).toBe(planted);
+  });
 });

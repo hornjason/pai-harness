@@ -1,4 +1,4 @@
-# generated-sha: c8b051a9efa2cc1b
+# generated-sha: 7519397571d10280
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -71,6 +71,11 @@ jobs:
           # The decision is here and not in an `if:` expression on purpose — `secrets`
           # is unavailable in `if:`, and a skipped step can satisfy a required check.
           #
+          # It also reports `ambient`, which is NOT a 5th mode and is not a
+          # credential this job uses (#679). It names what the runner was carrying when
+          # no credential resolved, so the UNMEASURED annotation stops saying the
+          # machine is empty when it is not.
+          #
           # Vertex, as read from this consumer's config when the file was generated:
           #   ci.vertex declares project jhorn-pai and a Workload Identity Federation provider, so this job mints a short-lived federated credential and holds no service-account key
           set -uo pipefail
@@ -89,16 +94,43 @@ jobs:
             fi
           fi
 
+          # What the RUNNER has that this job did not use (#679). Read only in the
+          # credential-free state, because that is the only state in which the
+          # annotation makes a claim about it, and read as a PATH rather than as a
+          # credential: this resolves no mode, so a stale or expired file cannot
+          # produce a usable-looking one. Presence is not validity and the annotation
+          # says so.
+          ambient=
+          if [ "${mode}" = none ]; then
+            adc_file="${GOOGLE_APPLICATION_CREDENTIALS:-${CLOUDSDK_CONFIG:-${HOME:-}/.config/gcloud}/application_default_credentials.json}"
+            if [ -f "${adc_file}" ]; then
+              ambient=adc
+            fi
+          fi
+
           echo "ai-review auth mode: ${mode}"
           if [ -n "${GITHUB_OUTPUT:-}" ]; then
             echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
+            echo "ambient=${ambient}" >> "${GITHUB_OUTPUT}"
           fi
 
           if [ "${mode}" != none ]; then
             exit 0
           fi
 
-          echo "::warning title=AI review UNMEASURED::No Claude credential is configured (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, a ci.vertex federation provider), so no AI review ran on this pull request. This check is UNMEASURED, not a passing review. Set the repository variable RUNGATE_REQUIRE_AI_REVIEW to 'true' to make an unmeasured review fail instead."
+          # Two whole literals rather than one annotation with a variable in it. This
+          # script carries no escape_annotation helper — it has never needed one,
+          # because every annotation in it is a generated literal — and AC-8 in
+          # test/ai-review-security-repairs.test.ts is mechanical by design: any
+          # annotation interpolating a shell value must go through the encoder, and it
+          # does not ask whether this particular value is attacker-reachable. Keeping
+          # both branches literal keeps that true, and keeps the count at one
+          # annotation, which is what aiReviewUnmeasuredViolations enforces.
+          if [ -n "${ambient}" ]; then
+            echo "::warning title=AI review UNMEASURED::No Claude credential is configured in this job (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, a ci.vertex federation provider), so no AI review ran on this pull request. This check is UNMEASURED, not a passing review. Set the repository variable RUNGATE_REQUIRE_AI_REVIEW to 'true' to make an unmeasured review fail instead. This runner also carries Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS or CLOUDSDK_CONFIG). ADC alone authenticates to Vertex, so a credential this job could have reviewed on is present on the runner and was not used. It is REPORTED, NOT READ: no mode is resolved from it and nothing here validates it, because validating ADC means exchanging it for an access token and a file that exists is not a token that still refreshes. Reviewing on an ambient login is a separate decision from scaffolding this workflow and there is no route to it today (#679)."
+          else
+            echo "::warning title=AI review UNMEASURED::No Claude credential is configured in this job (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, a ci.vertex federation provider), so no AI review ran on this pull request. This check is UNMEASURED, not a passing review. Set the repository variable RUNGATE_REQUIRE_AI_REVIEW to 'true' to make an unmeasured review fail instead."
+          fi
 
           if [ "${RUNGATE_REQUIRE_AI_REVIEW:-}" = "true" ]; then
             echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and no credential is configured, so this pull request has no AI review. Failing rather than reporting a green check for a review that never happened." >&2
