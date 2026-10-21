@@ -36,6 +36,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 
+import { localCalendarDay } from "../lib/local-calendar-day";
 import {
   compareDiscoveryRuns,
   formatStabilityReport,
@@ -53,7 +54,10 @@ function arg(name: string): string | undefined {
 const workDir =
   arg("dir") || process.env.RUNGATE_WORK_DIR || join(process.env.HOME ?? "", ".rungate");
 const onlyIssue = arg("issue") ? Number(arg("issue")) : undefined;
-const measuredOn = arg("date") ?? new Date().toISOString().slice(0, 10);
+// `localCalendarDay`, not `toISOString().slice(0,10)` (#600): a UTC slice
+// stamps the wrong day for anyone west of Greenwich in the evening, and this
+// output is a DATED measurement whose date is the whole point.
+const measuredOn = arg("date") ?? localCalendarDay();
 
 /**
  * An absent work directory is UNMEASURED, not "no variance found".
