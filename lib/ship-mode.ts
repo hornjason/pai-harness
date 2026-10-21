@@ -204,6 +204,11 @@ and the reason above are the answer.
    touches.
 5. **Open a PR and enable auto-merge.** Review happens there, where it is
    durable and where CI already runs.
+6. **Let the PR close the issue. Do not run \`gh issue close\` yourself.** Put
+   \`Fixes #<N>\` in the PR BODY, naming the issue you claimed in step 1, and
+   the merge closes it. A hand-typed close is attributed to nobody, so
+   \`issue-audit.yml\` records the issue as closed with no ship record — the
+   lane's own output becomes the audit's finding (#925).
 
 ## This is temporary, and reversible in one line
 
