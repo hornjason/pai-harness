@@ -253,37 +253,95 @@ export function setupBunDeclarations(text: string): Array<{ key: "bun-version" |
 }
 
 /**
+ * The `# UNPINNED:` block, spelled in exactly one place (#932).
+ *
+ * Three rungs can now reach it — a moving tag in `.bun-version`, a moving tag
+ * in `ci.bunVersion`, and no declaration at all — and a second copy of the
+ * marker would survive a mutation of the first, leaving a case green over a
+ * rung that had gone quiet (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+function unpinnedComment(indent: string, why: string, remedy: string): string {
+  return (
+    `${indent}# UNPINNED: ${why}, so every run of this job installs whatever\n` +
+    `${indent}# shipped today and re-running a red job is also a Bun upgrade. ${remedy}\n`
+  );
+}
+
+/** How to stop being unpinned, from a rung that already declares something. */
+function repinRemedy(source: Exclude<BunVersionSource, "undeclared">): string {
+  return `Name an exact version in ${bunVersionSourceLabel(source)} and re-scaffold.`;
+}
+
+/**
  * The `with:` body of a generated `oven-sh/setup-bun` step.
  *
  * One function, so the generator has nothing to decide and no second place
  * for a fallback to grow. It returns LINES rather than writing anything,
  * which is what lets a test assert the emission for a declaration no machine
  * has — including one CI cannot resolve.
+ *
+ * ## Why the pin test is asked here and not only by the checker (#932)
+ *
+ * `isPinnedBunVersion` had exactly one consumer — `scripts/contract-parity.ts`
+ * — and the generator was not it. So a consumer declaring
+ * `ci.bunVersion: "latest"` had `bun-version: "latest"` written into a managed
+ * workflow under prose describing a successful declaration, and the only way
+ * to learn otherwise was to run the checker, which then called that same line
+ * a violation. One predicate, two positions, opposite behaviour.
+ *
+ * Worse, it inverted the rungs: a project declaring NOTHING got the loud block
+ * below, and a project declaring a moving tag got silence. Declaring `latest`
+ * was reported strictly better than declaring nothing, while installing the
+ * same runtime.
+ *
+ * The VALUE is still emitted verbatim at every rung. `MOVING_BUN_TAGS` says
+ * declaring one "is a legitimate thing for a consumer to choose", and
+ * substituting a pin here would change a consumer's runtime without being
+ * asked — which is AC-7's forbidden silent fallback wearing a fix. What
+ * changes is only that the file says what it is.
  */
 export function setupBunWith(decision: BunVersionDecision, indent: string): string {
+  const pinned = isPinnedBunVersion(decision.version);
+
   if (decision.source === "bun-version-file") {
-    return (
-      `${indent}# Pinned by ${BUN_VERSION_FILE} — the project's single declaration (#622).\n` +
-      `${indent}# setup-bun reads that file, so there is no version spelled here to drift from it.\n` +
-      `${indent}bun-version-file: "${BUN_VERSION_FILE}"`
-    );
+    // The file still wins and CI still reads it: what is wrong about a
+    // `.bun-version` holding `canary` is the prose, not the mechanism, and
+    // spelling a literal here instead would put a second position naming the
+    // version back into the workflow — #622's defect, repaired into existence.
+    const comment = pinned
+      ? `${indent}# Pinned by ${BUN_VERSION_FILE} — the project's single declaration (#622).\n` +
+        `${indent}# setup-bun reads that file, so there is no version spelled here to drift from it.\n`
+      : unpinnedComment(
+          indent,
+          `${BUN_VERSION_FILE} declares the moving tag \`${decision.version}\``,
+          repinRemedy("bun-version-file"),
+        );
+    return comment + `${indent}bun-version-file: "${BUN_VERSION_FILE}"`;
   }
+
   if (decision.source === "config") {
-    return (
-      `${indent}# From ci.bunVersion in .claude/rungate/config.json — this project declares no\n` +
-      `${indent}# ${BUN_VERSION_FILE}. Add one and re-scaffold to let CI read the declaration directly.\n` +
-      `${indent}bun-version: "${decision.version}"`
-    );
+    const comment = pinned
+      ? `${indent}# From ci.bunVersion in .claude/rungate/config.json — this project declares no\n` +
+        `${indent}# ${BUN_VERSION_FILE}. Add one and re-scaffold to let CI read the declaration directly.\n`
+      : unpinnedComment(
+          indent,
+          `ci.bunVersion in .claude/rungate/config.json declares the moving tag ` +
+            `\`${decision.version}\``,
+          repinRemedy("config"),
+        );
+    return comment + `${indent}bun-version: "${decision.version}"`;
   }
+
   // UNPINNED, said out loud. The value is unchanged from what this generator
   // has always emitted for a project that declares nothing — changing a
   // consumer's runtime without being asked is not this issue's business — but
   // the silence is. An unpinned CI is a state, and a state that is not
   // reportable is one nobody fixes.
   return (
-    `${indent}# UNPINNED: ${decision.reason}, so every run of this job installs whatever\n` +
-    `${indent}# shipped today and re-running a red job is also a Bun upgrade. Declare a version in\n` +
-    `${indent}# ${BUN_VERSION_FILE} (or ci.bunVersion) and re-scaffold.\n` +
-    `${indent}bun-version: "latest"`
+    unpinnedComment(
+      indent,
+      decision.reason,
+      `Declare a version in ${BUN_VERSION_FILE} (or ci.bunVersion) and re-scaffold.`,
+    ) + `${indent}bun-version: "latest"`
   );
 }
