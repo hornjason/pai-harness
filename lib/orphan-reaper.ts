@@ -45,10 +45,19 @@
  * 2. **The parent is gone.** `ppid === 1` means the launching session exited
  *    and the kernel reparented the process to init. A suite with a live
  *    parent belongs to somebody who is still there, and `LIVE_PARENT` is the
- *    reason that keeps a peer's run alive.
+ *    reason that keeps a peer's run alive. **This condition has a known
+ *    false-positive path — read `INIT_PID` below before arming anything.**
  * 3. **It is older than the floor.** A suite started seconds ago is never an
  *    orphan (#690 AC-3), and the floor is set well past any plausible run
  *    rather than at the edge of one.
+ *
+ * Every row is judged against all three, independently, and carries all three
+ * readings into the report. `reason` is the FIRST condition that failed, which
+ * is what an operator wants at a glance and is not enough to diagnose a false
+ * positive: a row reading `LIVE_PARENT` says nothing about whether it was even
+ * a suite or whether it had cleared the floor. `conditions` says, so a
+ * dry-run log can be read without reproducing the machine state that produced
+ * it (#690 AC-4).
  *
  * Signals go to one pid at a time, read off the row that was judged. There is
  * no pattern anywhere: `pkill -f` acts on whatever matches at signal time,
@@ -65,9 +74,22 @@
  * hook that would call this runs from the shared checkout at every
  * `SessionStart` — so a merge that armed it would arm it for every live peer
  * at once. See `hooks/StaleTTLCleanup.hook.ts` for the one-line flip.
+ *
+ * **It shipped disarmed and it should stay that way until the dry-run log has
+ * been read.** `RUNGATE_REAP_ORPHANS=1` is the only thing that arms it: there
+ * is no config key, nothing in the scaffold writes it, and `hooks/` is not in
+ * `package.json` `files[]`, so no consumer inherits the caller. The two
+ * reasons to leave it disarmed are measurements, not caution — see `INIT_PID`
+ * and `MIN_ORPHAN_AGE_SECONDS` below. Arm it by reading a few days of
+ * `conditions` lines and checking that every row it would have signalled was
+ * in fact dead.
  */
 
-import { classifyPsLine, type ExecutableResolver } from "./test-suite-lock";
+import {
+  classifyPsLine,
+  type ExecutableResolver,
+  type PsLineReading,
+} from "./test-suite-lock";
 import { readProcessTable, type ProcessRow } from "./process-table";
 
 /**
@@ -78,10 +100,46 @@ import { readProcessTable, type ProcessRow } from "./process-table";
  * cost of waiting is some CPU, and the cost of being wrong is somebody's
  * measurement. A suite reparented to init and still going after half an hour
  * has no shell left to read its exit code.
+ *
+ * **Thirty minutes was chosen against a healthy machine, and this machine is
+ * not reliably one.** The Linux CI runners live in a Lima VM with 9912 MB of
+ * RAM running nine runner units, each peaking at 3.5–4.0 GB, and a suite
+ * runs 474 files as separate processes under `--isolate`. A legitimate run
+ * under that much memory pressure takes far longer than a run on an idle
+ * host, so the floor that is "well past any plausible run" on a quiet machine
+ * is not obviously past one here. **The dry-run log decides this number**, not
+ * an estimate: read what a few days of it would have signalled, and raise the
+ * floor past the oldest row that turns out to have been alive.
  */
 export const MIN_ORPHAN_AGE_SECONDS = 1800;
 
-/** The pid a process is reparented to when its parent exits. */
+/**
+ * The pid a process is reparented to when its parent exits.
+ *
+ * ## `ppid === 1` is not proof the owner is gone (measured 2026-10-21)
+ *
+ * The design reads "reparented to init" as "the launching session exited",
+ * and on a healthy machine that is what it means. There is a second way to
+ * reach it, and this hardware produces it: **when the kernel OOM-killer kills
+ * a parent, its children are reparented to init exactly like an orphan.**
+ * Three self-hosted CI runners on the Mac Mini's Lima VM were OOM-killed
+ * mid-job on 2026-10-21. Any suite one of them had spawned survived the kill,
+ * kept running, kept doing useful work — and from `ps` it is byte-identical
+ * to residue: `ppid 1`, a `bun test` argv, and an age that climbs.
+ *
+ * So the condition is **necessary and not sufficient**, and the gap is on the
+ * dangerous side: it over-reports orphans rather than under-reporting them.
+ * Whoever arms this is signalling that class too. Nothing here tries to tell
+ * the two apart, because the distinguishing evidence is not in the process
+ * table — it is in whether anything is still reading the suite's output — and
+ * guessing at it would be a second decider that agrees with the first.
+ *
+ * What to do instead of widening this check from first principles: read the
+ * dry-run log. Every candidate line carries the full argv and all three
+ * conditions, so an OOM-reparented survivor is identifiable after the fact.
+ * If the log names a suite that was alive, the OOM case needs handling
+ * BEFORE this goes anywhere near a signal.
+ */
 export const INIT_PID = 1;
 
 /** Why a row was or was not signalled. Every row carries one. */
@@ -93,6 +151,31 @@ export type ReapReason =
   | "LIVE_PARENT"
   | "TOO_YOUNG";
 
+/**
+ * Every condition, read for every row, whether or not an earlier one settled
+ * the answer.
+ *
+ * `reason` is a short-circuit and so cannot carry this: `LIVE_PARENT` is the
+ * first failing condition and says nothing about the other two. Reading a
+ * dry-run log for false positives means asking "what else was true of this
+ * row", and a log that answers only "the first thing that was false" sends
+ * the reader back to a machine state that no longer exists.
+ *
+ * `suite` keeps the classifier's three-state reading rather than a boolean,
+ * because `not-suite` and `unknown` are different facts and collapsing them
+ * is what #707 was about.
+ */
+export interface ReapConditions {
+  /** Condition 1, as `classifyPsLine` read it. Only `suite` can be reaped. */
+  suite: PsLineReading;
+  /** Condition 2 — see `INIT_PID` for the OOM-reparenting false positive. */
+  parentGone: boolean;
+  /** Condition 3, against `floorSeconds`. */
+  olderThanFloor: boolean;
+  /** Not one of the three: this process or one of its ancestors. */
+  protectedPid: boolean;
+}
+
 export interface ReapDecision {
   pid: number;
   ppid: number;
@@ -100,6 +183,22 @@ export interface ReapDecision {
   command: string;
   reap: boolean;
   reason: ReapReason;
+  conditions: ReapConditions;
+  /** The floor `olderThanFloor` was read against, so the log is self-contained. */
+  floorSeconds: number;
+}
+
+/**
+ * The one decider. `reap` is `reason === "ORPHANED"` and nothing else
+ * computes it, so there is no second binding that could disagree.
+ */
+function reasonFrom(c: ReapConditions): ReapReason {
+  if (c.suite === "not-suite") return "NOT_A_SUITE";
+  if (c.suite === "unknown") return "UNCLASSIFIED";
+  if (c.protectedPid) return "SELF_OR_ANCESTOR";
+  if (!c.parentGone) return "LIVE_PARENT";
+  if (!c.olderThanFloor) return "TOO_YOUNG";
+  return "ORPHANED";
 }
 
 export interface OrphanDecisionOptions {
@@ -119,22 +218,27 @@ export function orphanDecision(
   row: ProcessRow,
   options: OrphanDecisionOptions = {},
 ): ReapDecision {
-  const base = {
+  const floorSeconds = options.minAgeSeconds ?? MIN_ORPHAN_AGE_SECONDS;
+  // Every condition is read for every row. A short-circuit here would leave
+  // the later conditions unmeasured, and an unmeasured condition rendered in
+  // a log is indistinguishable from one that was false.
+  const conditions: ReapConditions = {
+    suite: classifyPsLine(row.command, options),
+    parentGone: row.ppid === INIT_PID,
+    olderThanFloor: row.elapsedSeconds >= floorSeconds,
+    protectedPid: options.protectedPids?.has(row.pid) === true,
+  };
+  const reason = reasonFrom(conditions);
+  return {
     pid: row.pid,
     ppid: row.ppid,
     ageSeconds: row.elapsedSeconds,
     command: row.command,
+    reap: reason === "ORPHANED",
+    reason,
+    conditions,
+    floorSeconds,
   };
-  const reading = classifyPsLine(row.command, options);
-  if (reading === "not-suite") return { ...base, reap: false, reason: "NOT_A_SUITE" };
-  if (reading === "unknown") return { ...base, reap: false, reason: "UNCLASSIFIED" };
-  if (options.protectedPids?.has(row.pid)) {
-    return { ...base, reap: false, reason: "SELF_OR_ANCESTOR" };
-  }
-  if (row.ppid !== INIT_PID) return { ...base, reap: false, reason: "LIVE_PARENT" };
-  const floor = options.minAgeSeconds ?? MIN_ORPHAN_AGE_SECONDS;
-  if (row.elapsedSeconds < floor) return { ...base, reap: false, reason: "TOO_YOUNG" };
-  return { ...base, reap: true, reason: "ORPHANED" };
 }
 
 /** Every pid between `pid` and the root of the table, inclusive. */
@@ -278,11 +382,26 @@ export function reapOrphans(options: ReapOptions = {}): ReapReport {
   return report;
 }
 
+/** `yes`/`no`, or the classifier's own word when the reading is three-state. */
+const conditionLine = (d: ReapDecision): string =>
+  [
+    `suite=${d.conditions.suite}`,
+    `parent-gone=${d.conditions.parentGone ? "yes" : "no"}`,
+    `past-floor=${d.conditions.olderThanFloor ? "yes" : "no"}` +
+      `(${d.ageSeconds}s/${d.floorSeconds}s)`,
+    `self=${d.conditions.protectedPid ? "yes" : "no"}`,
+  ].join(" ");
+
 /**
  * The report as lines an operator can act on.
  *
- * Every line names a pid, an age and a reason, because the thing that made
- * #690 expensive was a banner that counted without saying what it counted.
+ * Every line names a pid, a parent, an age, **all three conditions** and the
+ * full argv, because the thing that made #690 expensive was a banner that
+ * counted without saying what it counted — and the thing that would make a
+ * false positive expensive is a line that names only the first condition
+ * that failed. This is the log a decision to arm has to be read off, so it
+ * has to be diagnosable on its own: by the time anyone reads it, the process
+ * table it describes is gone and no repro is available.
  */
 export function reapReportLines(report: ReapReport): string[] {
   if (report.reading === "UNMEASURED") {
@@ -295,7 +414,8 @@ export function reapReportLines(report: ReapReport): string[] {
   ];
   for (const d of report.decisions) {
     lines.push(
-      `  pid=${d.pid} ppid=${d.ppid} age=${d.ageSeconds}s ${d.reason} ` +
+      `  pid=${d.pid} ppid=${d.ppid} age=${d.ageSeconds}s ` +
+        `${conditionLine(d)} ${d.reason} ` +
         `${d.reap && !report.armed ? "(would signal) " : ""}${d.command}`,
     );
   }

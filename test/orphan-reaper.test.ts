@@ -296,6 +296,154 @@ describe("#690 AC-4: the report says what it killed and why, by pid and age", ()
   });
 });
 
+describe("#690 AC-4: every row says which of the three conditions it met", () => {
+  /**
+   * `reason` is the FIRST failing condition. That is the right thing to lead
+   * with and it is not enough to diagnose a false positive: a line reading
+   * `LIVE_PARENT` says nothing about whether the row was even a suite, and a
+   * reader holding only the log cannot go back and look — the process table
+   * is gone by then.
+   *
+   * ## The cheapest wrong fix, named before the repair
+   *
+   * **Render a `conditions` record, but keep the short-circuit and fill the
+   * conditions it never reached with `false`.** It is the smaller diff, the
+   * log grows the three fields the operator asked for, and every reason in
+   * the tree is unchanged. What it produces is a line that reports
+   * `parent-gone=no` for a process whose parent IS gone, which is worse than
+   * saying nothing: a false positive hunted through that log is hunted with
+   * a reading that was never taken.
+   *
+   * The first case below is the one that survives it, and it survives
+   * non-vacuously — the differing input is a row whose unreached condition is
+   * TRUE, so the default and the measurement disagree.
+   */
+  test("a condition after the deciding one is still read, not defaulted", () => {
+    // Not a suite, so `reason` is settled at condition 1 — and the parent IS
+    // gone and the age IS past the floor. A short-circuit filling the rest
+    // with false reports the opposite of both.
+    const d = orphanDecision(
+      row({ pid: 301, ppid: 1, elapsedSeconds: 99_999, command: "/usr/bin/vim notes.md" }),
+      { resolveExecutable: (p) => p },
+    );
+
+    expect(d.reason).toBe("NOT_A_SUITE");
+    expect(d.conditions).toEqual({
+      suite: "not-suite",
+      parentGone: true,
+      olderThanFloor: true,
+      protectedPid: false,
+    });
+  });
+
+  test("two conditions failing are both reported, not just the first", () => {
+    // A live suite that is also young. `reason` can only name one of them.
+    const d = orphanDecision(row({ pid: 302, ppid: 4000, elapsedSeconds: 5 }));
+
+    expect(d.reason).toBe("LIVE_PARENT");
+    expect([d.conditions.parentGone, d.conditions.olderThanFloor]).toEqual([false, false]);
+    expect(d.conditions.suite).toBe("suite");
+  });
+
+  test("the conditions and the reap flag cannot disagree", () => {
+    // `reap` is `reason === "ORPHANED"` and `reason` is computed from the
+    // conditions, so this is one decider read twice rather than two deciders
+    // that agree (the fourth shape). The pair below varies only `ppid`.
+    const shapes = [
+      row({ pid: 401, ppid: 1, elapsedSeconds: 99_999 }),
+      row({ pid: 402, ppid: 4000, elapsedSeconds: 99_999 }),
+      row({ pid: 403, ppid: 1, elapsedSeconds: 1 }),
+      row({ pid: 404, ppid: 1, elapsedSeconds: 99_999, command: "/usr/bin/vim x" }),
+      row({ pid: 405, ppid: 1, elapsedSeconds: 99_999, command: "/opt/mystery/runner test" }),
+      row({ pid: 406, ppid: 1, elapsedSeconds: 99_999 }),
+    ];
+    const decisions = shapes.map((r) =>
+      orphanDecision(r, { protectedPids: new Set([406]), resolveExecutable: (p) => p }),
+    );
+
+    expect(decisions.map((d) => d.reap)).toEqual([true, false, false, false, false, false]);
+    for (const d of decisions) {
+      const conjunction =
+        d.conditions.suite === "suite" &&
+        !d.conditions.protectedPid &&
+        d.conditions.parentGone &&
+        d.conditions.olderThanFloor;
+      expect(d.reap, `pid ${d.pid} reported ${JSON.stringify(d.conditions)}`).toBe(conjunction);
+    }
+  });
+
+  test("the log line carries the pid, the age, all three conditions and the full argv", () => {
+    // This is the line the decision to arm has to be read off, so everything
+    // needed to recognise a false positive has to be IN it.
+    const argv = "/opt/homebrew/Cellar/bun/1.3.14/bin/bun test test/some-suite.test.ts";
+    const report = reapOrphans({
+      rows: [
+        row({ pid: 501, ppid: 1, elapsedSeconds: 7_200, command: argv }),
+        row({ pid: 9, ppid: 1, command: "claude" }),
+      ],
+      selfPid: 9,
+    });
+    const line = reapReportLines(report).find((l) => l.includes("pid=501"));
+
+    expect(line).toBeDefined();
+    for (const part of [
+      "pid=501",
+      "ppid=1",
+      "age=7200s",
+      "suite=suite",
+      "parent-gone=yes",
+      "past-floor=yes",
+      `${MIN_ORPHAN_AGE_SECONDS}s`,
+      "ORPHANED",
+      "(would signal)",
+      argv,
+    ]) {
+      expect(line, `the dry-run line omits ${part}`).toContain(part);
+    }
+  });
+
+  test("a spared row's line still names every condition, so the log is uniform", () => {
+    // The rows worth auditing for a false positive are the ones that were
+    // NOT reaped — an OOM-reparented survivor is spared today only because
+    // of the age floor, and a reader has to be able to see how close it was.
+    const report = reapOrphans({
+      rows: [
+        row({ pid: 502, ppid: 1, elapsedSeconds: 60, command: "bun test" }),
+        row({ pid: 9, ppid: 1, command: "claude" }),
+      ],
+      selfPid: 9,
+    });
+    const line = reapReportLines(report).find((l) => l.includes("pid=502")) ?? "";
+
+    expect(line).toContain(`past-floor=no(60s/${MIN_ORPHAN_AGE_SECONDS}s)`);
+    expect(line).toContain("parent-gone=yes");
+    expect(line).toContain("TOO_YOUNG");
+    expect(line).not.toContain("would signal");
+  });
+});
+
+describe("#690: ppid 1 has a known false-positive path, recorded in the file", () => {
+  /**
+   * Not a test of behaviour — nothing here changes what the reaper does. It
+   * holds the reasoning in the file, which is the whole point: whoever arms
+   * this meets the OOM case in `lib/orphan-reaper.ts` rather than
+   * rediscovering it from a killed suite. A note deleted in a tidy-up is a
+   * note nobody meets.
+   */
+  test("the OOM-reparenting note sits on the constant the condition reads", () => {
+    const src = readFileSync(join(ROOT, "lib/orphan-reaper.ts"), "utf-8");
+    const atInit = src.indexOf("export const INIT_PID");
+    expect(atInit).toBeGreaterThan(0);
+
+    const docblock = src.slice(src.lastIndexOf("/**", atInit), atInit);
+    expect(docblock).toContain("OOM");
+    expect(docblock.toLowerCase()).toContain("reparent");
+    // The floor is the other thing the dry-run log is supposed to decide.
+    const floorAt = src.indexOf("export const MIN_ORPHAN_AGE_SECONDS");
+    expect(src.slice(src.lastIndexOf("/**", floorAt), floorAt)).toContain("dry-run log");
+  });
+});
+
 describe("#712 SC-3: signals go to a measured pid, never to a pattern", () => {
   /**
    * The population is a DIRECTORY LIST, not a file list, and this file lives
