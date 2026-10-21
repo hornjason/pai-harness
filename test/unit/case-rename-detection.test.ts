@@ -215,8 +215,19 @@ describe("AC-3 (#880 scope note): a rename and a real deletion in ONE file", () 
 });
 
 describe("AC-4 (#880): a case renamed AND rewritten is reported as a deletion", () => {
-  const BEFORE = HEAD + `test("the old title", () => {\n  expect(compute(2)).toBe(4);\n});\n`;
-  const AFTER = HEAD + `test("the new title", () => {\n  expect(compute(3)).toBe(9);\n});\n`;
+  // Above `MIN_IDENTIFYING_BODY` on purpose, and the battery is why. With
+  // short bodies this case stays green under the literal-discarding wrong
+  // fix — not because the normalisation held, but because the FLOOR
+  // refuses the shortened pair. A case held up by a guard it is not about
+  // is a case that witnesses nothing (#492).
+  const BEFORE =
+    HEAD +
+    `test("the old title", () => {\n  const reading = compute(2, { strict: true });\n` +
+    `  expect(reading.total).toBe(4);\n});\n`;
+  const AFTER =
+    HEAD +
+    `test("the new title", () => {\n  const reading = compute(3, { strict: true });\n` +
+    `  expect(reading.total).toBe(9);\n});\n`;
 
   test("a body that changed is a case nothing can pair, and the reading says DELETED", () => {
     const { root, previous, current } = fixture(BEFORE, AFTER);
@@ -394,8 +405,14 @@ describe("AC-7/AC-8/AC-9 (#880): the normalisation is trivia only", () => {
     // discards literals — or compares only shape, or counts `expect(` calls
     // — makes these two equal and turns a deleted case into a reassuring
     // "rename". The pair varies exactly one character.
-    const one = `() => { expect(compute(2)).toBe(4); }`;
-    const two = `() => { expect(compute(2)).toBe(5); }`;
+    const one = `, () => { const reading = compute(2, { strict: true }); expect(reading.total).toBe(4); }`;
+    const two = `, () => { const reading = compute(2, { strict: true }); expect(reading.total).toBe(5); }`;
+    // Both halves stay above the floor after the literals are discarded,
+    // so the pairing below is refused by the NORMALISATION and not by
+    // `MIN_IDENTIFYING_BODY`. Measured: without this the row for the
+    // literal-discarding mutation was 1, and the only red was the
+    // `normalisedBody` comparison on the line above.
+    expect(normalisedBody(one).length).toBeGreaterThanOrEqual(MIN_IDENTIFYING_BODY);
     expect(normalisedBody(one)).not.toBe(normalisedBody(two));
     expect(renamePairs([{ name: "a", body: one, modifier: "" }], [{ name: "b", body: two, modifier: "" }])).toEqual([]);
   });

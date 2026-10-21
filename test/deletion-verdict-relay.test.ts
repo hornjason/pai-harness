@@ -796,4 +796,36 @@ describe("#684 SC-4: CLEAN, CLEAN-by-waiver and waived-unjudged are different re
     expect(text).toContain(A.name);
     expect(text).toContain(B.name);
   });
+
+  test("#880: a CLEAN reached by renaming says so, and names both titles", () => {
+    // The whole of #880 at the operator line. A CLEAN round that renamed
+    // seven cases and one that touched nothing printed the same sentence
+    // before this, which is how `wf_99ed276b-cf3`'s reader was sent
+    // looking for coverage that was in front of them.
+    const artefact = renamedArtefact();
+    const reading = read(replyFor(artefact));
+    expect(reading.verdict).toBe("CLEAN");
+    const text = reading.lines.join("\n");
+    expect(text).toContain("DELETION_RENAMED");
+    expect(text).toContain(artefact.renamed![0].from);
+    expect(text).toContain(artefact.renamed![0].to);
+    // and it is a DIFFERENT record from a round that renamed nothing
+    expect(text).not.toBe(textOf(replyFor(cleanArtefact())));
+  });
+
+  test("#880: the rename line is printed on the DELETED arm too, with both facts", () => {
+    // #880's own scope note — a rename and a real deletion in one round —
+    // and the reason the line sits above the verdict branch rather than
+    // inside the CLEAN one. A CLEAN-only line would skip exactly the arm
+    // that is hardest to read, and the operator would be told cases are
+    // gone with nothing saying the other seven are not.
+    const artefact = renamedAndDeletedArtefact();
+    const reading = read(replyFor(artefact));
+    expect(reading.verdict).toBe("DELETED");
+    const text = reading.lines.join("\n");
+    expect(text).toContain("DELETION_RENAMED");
+    expect(text).toContain(artefact.renamed![0].to);
+    expect(text).toContain("REPAIR_DELETED_TESTS");
+    expect(text).toContain(B.name);
+  });
 });

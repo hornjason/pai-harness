@@ -50,6 +50,57 @@
  * call out of a suite, where titles repeat and bodies are full of
  * `toMatch(/[)(]/)`. So the scanner below is its own thing, and
  * `matchingCallParen` is the ONE place that decides where a call ends.
+ *
+ * ## What was broken to prove it
+ *
+ * Run and counted over `test/unit/case-rename-detection.test.ts` +
+ * `test/deletion-verdict-relay.test.ts` +
+ * `test/unit/deleted-case-non-vacuous.test.ts` — 82 tests. Every count was
+ * predicted before the battery ran, and **the baseline row was read before
+ * any mutation row**: an instrument that has stopped reporting takes the
+ * baseline down with it, and that is the row nobody mutates anything to
+ * produce.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 82 pass, 0 fail | **82 pass, 0 fail** | — |
+ * | P1 `renamePairs` short-circuited to `return []` | 7 | **7 of 82** | AC-1's pair: the original returns one `{from, to}`, the mutant none, and the renamed case goes back to being reported deleted |
+ * | P2 the modifier dropped from `pairingKey` | 1 | **1 of 82** | `test("x", BODY)` becoming `test.skip("y", BODY)`: the original reports a deletion, the mutant a rename |
+ * | P3 the phantom `continue` removed | 3 | **3 of 82** | a line reading `const GATE_CHECK = 'test("a free port passes", …)'`: the original reports no case, the mutant one — whose name then discharges a real deletion |
+ * | P4 `MIN_IDENTIFYING_BODY` set to 0 | 4 | **4 of 82** | #659's fixture: a placeholder body disappearing beside an identical one appearing |
+ * | P5 the body index narrowed to the CHANGED cases | 1 | **1 of 82** | a file where one rename is the only change and a third case carries the same body at both commits |
+ * | P6 `normalisedBody` stops stripping comments | 2 | **2 of 82** | one body carrying a line comment and an otherwise identical one that does not |
+ * | P7 **the cheapest wrong fix** — string and numeric literals discarded | 2 | **2 of 82** | `expect(reading.total).toBe(4)` against the same body with `5`: the original calls them different cases, the mutant pairs them |
+ * | P8 `v2` reverted to `v1` in the library only | 4 | **13 of 82** | every artefact: the token the library writes stops matching the one `workflows/ship.js` recomputes |
+ * | P9 `renamedIds` dropped from the signature members, in BOTH positions | 2 | **2 of 82** | one rename with `to` altered and the count unchanged — the `:n1` prefix still agrees, so only membership can see it |
+ * | P10 the `DELETION_RENAMED` block removed from `ship.js` | 2 | **2 of 82** | a CLEAN reply carrying one rename: the original prints both titles, the mutant prints what a round that renamed nothing prints |
+ * | P11 the rename line moved inside the CLEAN arm | 1 | **1 of 82** | a reply carrying one rename AND one deletion — #880's own scope note, and the arm a CLEAN-only line skips |
+ *
+ * **P7's first cut came back 1 against a predicted 2, and the low row was
+ * the finding.** AC-4's two bodies normalise to 39 characters once their
+ * literals are discarded, which is below `MIN_IDENTIFYING_BODY` — so the
+ * FLOOR refused that pair, not the normalisation, and the case witnessed
+ * nothing about the mutation it was written for (#492: a case held up by a
+ * guard it is not about). AC-9 was the same shape one layer in: only its
+ * direct `normalisedBody` comparison went red, while its `renamePairs`
+ * half was held up by the floor too. Both bodies were lengthened past the
+ * floor, and the row is 2 with the pairing as a witness rather than one
+ * unit assertion.
+ *
+ * **P8 came back 13 against a predicted 4, and the extra reds are the real
+ * kind** — read by name before the number was recorded. The prediction
+ * covered the four cases that compare the two signature implementations
+ * directly. The other nine are operator-line cases: a version disagreement
+ * makes `deletionVerdictReading` return `DELETION_SIGNATURE_DISAGREEMENT`
+ * for EVERY reply, so every case that reads a verdict goes red. Squarely
+ * about the mutated behaviour, the mutant parses, and 69 cases still pass.
+ * The fact it records is that a one-sided version bump is caught by the
+ * whole relay suite and not only by the parity cases.
+ *
+ * None of the eleven mutations is left in the tree; all were run and
+ * restored from a `cp` backup, and `lib/test-case-bodies.ts`,
+ * `lib/test-case-deletion.ts` and `workflows/ship.js` were confirmed
+ * byte-identical afterwards by sha256 — never by `git checkout --`.
  */
 
 /** One `test(...)` or `it(...)` declaration, in source order. */
