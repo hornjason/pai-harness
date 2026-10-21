@@ -573,28 +573,37 @@ describe('#599: a current hook passes, and the read is at the shared common dir'
 // ── #874: the file git will run, not the file at the conventional address ──
 //
 // WHAT WAS BROKEN TO PROVE THESE CASES FAIL, run and counted rather than
-// asserted, over this file alone (47 tests). Every count was predicted before
+// asserted, over this file alone (48 tests). Every count was predicted before
 // the battery ran, and THE BASELINE ROW WAS READ FIRST — an instrument that
 // has stopped reporting takes the baseline down with it, and that is the row
 // nobody mutates anything to produce.
 //
 // | Row | Predicted | Measured | The input on which mutant and original differ |
 // |---|---|---|---|
-// | baseline — unmutated | 47 pass, 0 fail | 47 pass, 0 fail | — |
-// | M1 the genuinely pre-#874 resolver: `--git-common-dir` + `join(…, "hooks", "pre-commit")` | 6 | 6 of 47 | a repo whose `core.hooksPath` holds `exit 0` and whose `.git/hooks/pre-commit` holds the generator output: the original refuses naming `…/elsewhere/pre-commit`, the mutant prints `pre-commit is current` and exits 0 |
-// | M2 THE CHEAPEST WRONG FIX for the resolver: old resolver, plus UNMEASURED whenever `core.hooksPath` is set | 6 | 6 of 47 | a repo whose `core.hooksPath` holds the CURRENT generator output: the original exits 0 naming it, the mutant refuses `core.hooksPath is set to elsewhere`. AC-2 and AC-3 are the cases that do not survive it |
-// | M3 `missingPatternIds` short-circuited to `return []` | 14 | 14 of 47 | the hook with tier 1's `jwt` expression deleted: the original names `jwt`, the mutant names no pattern |
-// | M4 THE CHEAPEST WRONG FIX for the naming: a hand table naming only `jwt` | 13 | 13 of 47 | the hook with `aws-access-key` deleted: the original names it, the mutant names nothing. The `jwt` case is the one green of the thirteen, which is the whole argument against the table |
-// | M5 `patternsBlindToGenerator` short-circuited to `return []` | 1 | 1 of 47 | the synthetic generator declaring `invented-pattern` and emitting it nowhere: the original is UNMEASURED, the mutant reaches a verdict about a pattern nothing could carry |
-// | M6 the empty/ill-typed `EMBEDDED_PATTERNS` refusal removed | 1 | 1 of 47 | the synthetic generator exporting `[]`: the original refuses naming the export, the mutant compares against a declaration of nothing and passes |
-// | M7 the `--install` missing-directory refusal removed | 1 | 1 of 47 | `core.hooksPath = nowhere`: the original refuses as INSTALL naming the directory, the mutant throws a bare ENOENT that prints with no class at all |
-// | M8 `EMBEDDED_PATTERNS` truncated to tier 1 — the four tier-2/tier-3 entries dropped | 2 red, 43 cases | 2 of 43 — AC-7's pin and AC-9 | the registry itself |
+// | baseline — unmutated | 48 pass, 0 fail | 48 pass, 0 fail | — |
+// | M1 the genuinely pre-#874 resolver: `--git-common-dir` + `join(…, "hooks", "pre-commit")` | 6 | 7 of 48 | a repo whose `core.hooksPath` holds `exit 0` and whose `.git/hooks/pre-commit` holds the generator output: the original refuses naming `…/elsewhere/pre-commit`, the mutant prints `pre-commit is current` and exits 0 |
+// | M2 THE CHEAPEST WRONG FIX for the resolver: old resolver, plus UNMEASURED whenever `core.hooksPath` is set | 6 | 7 of 48 | a repo whose `core.hooksPath` holds the CURRENT generator output: the original exits 0 naming it, the mutant refuses `core.hooksPath is set to elsewhere`. AC-2 and AC-3 are the cases that do not survive it |
+// | M3 `missingPatternIds` short-circuited to `return []` | 14 | 14 of 48 | the hook with tier 1's `jwt` expression deleted: the original names `jwt`, the mutant names no pattern |
+// | M4 THE CHEAPEST WRONG FIX for the naming: a hand table naming only `jwt` | 13 | 13 of 48 | the hook with `aws-access-key` deleted: the original names it, the mutant names nothing. The `jwt` case is the one green of the thirteen, which is the whole argument against the table |
+// | M5 `patternsBlindToGenerator` short-circuited to `return []` | 1 | 1 of 48 | the synthetic generator declaring `invented-pattern` and emitting it nowhere: the original is UNMEASURED, the mutant reaches a verdict about a pattern nothing could carry |
+// | M6 the empty/ill-typed `EMBEDDED_PATTERNS` refusal removed | 1 | 1 of 48 | the synthetic generator exporting `[]`: the original refuses naming the export, the mutant compares against a declaration of nothing and passes |
+// | M7 the `--install` missing-directory refusal removed | 1 | 1 of 48 | `core.hooksPath = nowhere`: the original refuses as INSTALL naming the directory, the mutant throws a bare ENOENT that prints with no class at all |
+// | M8 `EMBEDDED_PATTERNS` truncated to tier 1 — the four tier-2/tier-3 entries dropped | 2 red, 44 cases | 2 of 44 — AC-7's pin and AC-9 | the registry itself |
+// | M9 the symlinked-hooks-directory refusal removed | 1 | 1 of 48 | `core.hooksPath` pointing at a symlink to a directory outside the repository: the original refuses as INSTALL, the mutant OVERWRITES the file there and prints `pre-commit installed, and current` |
 //
 // M2's first cut measured 35 and was NOT a mutation: it read `core.hooksPath`
 // with a bare `git config --get`, which exits 1 when the key is absent, so
 // `execFileSync` threw for every fixture and the mutant died rather than
 // behaved differently. A mutant that crashes measures that the file still
-// parses. Re-cut with `--default ""`, the row is 6.
+// parses. Re-cut with `--default ""`, the row is 6 — over the 47 cases that
+// existed then.
+//
+// M1 and M2 were 6 of 47 before M9's case was written and are 7 of 48 after.
+// The extra red is the symlinked-directory case, which sets `core.hooksPath`
+// and therefore cannot reach the refusal it is about on either mutant —
+// squarely about the mutated behaviour, and not a crashing mutant: 41 cases
+// still pass in both rows. Every row in the table above is the re-measurement
+// over 48; the predictions are the numbers written down before the first run.
 //
 // M8 is the row that justifies AC-7 existing at all. Four of the thirteen
 // AC-8 cases are GENERATED FROM the list the mutation empties, so they are
@@ -732,6 +741,29 @@ describe('#874: core.hooksPath decides where the hook that runs lives', () => {
     git(dir, ['config', 'core.hooksPath', 'nowhere']);
     expectRefusedAs([...against(dir), '--install'], 'INSTALL', /does not exist/i);
     expect(existsSync(join(dir, 'nowhere')), 'the directory was created anyway').toBe(false);
+  });
+
+  test('AC-5: --install refuses a SYMLINKED core.hooksPath directory', () => {
+    // The leaf has been refused since #599 on the grounds that "the target
+    // may be outside this repository". A symlinked hooks DIRECTORY defeats
+    // that completely, and since #874 the directory is the part
+    // `core.hooksPath` chooses — so it is the half an operator is least
+    // likely to have looked at. Raised by the automated security review of
+    // the first push of this branch; the containment check it also suggested
+    // is declined on the PR, because a hooks directory outside the worktree
+    // is how teams share hooks.
+    const dir = repoWithHook('hookspath-symlinked-dir', null);
+    const outside = join(FIX, 'outside-hooks-dir');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'pre-commit'), 'not the hook\n');
+    symlinkSync(outside, join(dir, 'linked-hooks'));
+    git(dir, ['config', 'core.hooksPath', 'linked-hooks']);
+
+    expectRefusedAs([...against(dir), '--install'], 'INSTALL', /symlink/i);
+    expect(
+      readFileSync(join(outside, 'pre-commit'), 'utf-8'),
+      'the generator was written through the linked directory',
+    ).toBe('not the hook\n');
   });
 
   test('AC-6 control: with core.hooksPath UNSET the reading is the shared common dir, unchanged', () => {

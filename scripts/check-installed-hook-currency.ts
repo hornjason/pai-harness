@@ -473,6 +473,34 @@ export function installHook(path: string, content: string): void {
         `core.hooksPath; create it, or clear the setting, and re-run.`,
     );
   }
+  // The same refusal as the leaf, one level up. Refusing a symlinked
+  // `pre-commit` because "the target may be outside this repository" and then
+  // writing happily into a symlinked `hooks/` is a policy with a hole in it
+  // the exact width of one directory — and since #874 the directory is chosen
+  // by `core.hooksPath`, so it is the half an operator is least likely to
+  // have looked at.
+  //
+  // Deliberately NOT a containment check against the worktree. A hooks
+  // directory outside the repository is the ordinary way a team shares hooks
+  // (`git config core.hooksPath ~/.githooks`), and refusing to install there
+  // is the M2 wrong fix in a different costume: a correct configuration
+  // turned into a refusal, which is how a check becomes one people switch
+  // off. What is refused here is the write whose destination the path does
+  // not state.
+  let dirLink: ReturnType<typeof lstatSync> | null = null;
+  try {
+    dirLink = lstatSync(dir);
+  } catch {
+    dirLink = null;
+  }
+  if (dirLink?.isSymbolicLink()) {
+    throw new HookRefused(
+      "INSTALL",
+      `${dir} is a symlink, and the hook is not written through one — the directory it resolves ` +
+        `to may be nowhere near this repository. Point core.hooksPath at the real directory, or ` +
+        `replace the link, and re-run.`,
+    );
+  }
   writeFileSync(path, content);
   chmodSync(path, 0o755);
 }
