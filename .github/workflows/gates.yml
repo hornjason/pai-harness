@@ -1,8 +1,11 @@
-# generated-sha: 95b00c8ddfbac6a0
+# generated-sha: ed34dd08e341e347
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: Gates
 
 on:
+  # See ci.yml above: without this the Actions API refuses a re-run with a
+  # 422, and the gates are the checks most worth re-running on their own.
+  workflow_dispatch:
   # See ci.yml above: a merge queue builds a ref no branch list matches, so
   # this trigger carries no filter and its absence hangs the queue silently.
   merge_group:
@@ -12,9 +15,6 @@ on:
   pull_request:
     branches:
       - "main"
-  # See ci.yml above: without this the Actions API refuses a re-run with a
-  # 422, and the gates are the checks most worth re-running on their own.
-  workflow_dispatch:
 
 permissions:
   # Least privilege, and it matters most on the consumers. A workflow with
@@ -31,6 +31,12 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history. A bounded depth leaves .git/shallow behind, and
+          # lib/failure-intake.ts refuses on that file rather than on a commit
+          # count — so any bounded value here reports UNMEASURED (#987).
+          # Declared once, in lib/ci-history-depth.ts.
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           # Pinned by .bun-version — the project's single declaration (#622).

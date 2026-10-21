@@ -1,8 +1,8 @@
 ---
 doc-type: code-map
 status: generated
-updated: 2026-10-15
-scanned-at-sha: c5b0229a
+updated: 2026-10-21
+scanned-at-sha: 4d5fee21
 generator: rungate/scripts/generate-code-map.ts
 ---
 
@@ -20,10 +20,10 @@ Regenerate when src/ has commits since scanned-at-sha.
 | Dev dependencies | 2 |
 | API routes | 0 |
 | React components | 0 |
-| Entry points (fallow) | 368 |
-| Unused files | 6 |
-| Unused exports | 32 |
-| Circular dependencies | N/A |
+| Entry points (fallow) | UNMEASURED |
+| Unused files | UNMEASURED |
+| Unused exports | UNMEASURED |
+| Circular dependencies | UNMEASURED |
 | Module import mappings | 0 |
 | Page-component mappings | 0 |
 
@@ -31,31 +31,24 @@ Regenerate when src/ has commits since scanned-at-sha.
 
 | Directory | Files | Types |
 |-----------|-------|-------|
-| .claude/ | 118359 | DS_Store, json, output-styles, agents, rungate |
-| test/ | 366 | ts, unit, types, json, fixtures |
-| evals/ | 151 | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
-| lib/ | 102 | ts, validators, generators, scaffold |
-| scripts/ | 64 | ts, sh, git-hooks, lib, git-hooks/pre-push |
-| docs/ | 45 | research, adr, DS_Store, council, session-log |
-| gates/ | 38 | ts, gate-salt, toml, md, sha256 |
-| specs/ | 32 | md, bootstrap-data-flow, json |
-| hooks/ | 25 | ts, lib |
+| test/ | 622 | ts, unit, types, json, fixtures |
+| lib/ | 194 | ts, validators, generators, scaffold |
+| scripts/ | 87 | ts, sh, git-hooks, lib, git-hooks/pre-push |
+| evals/ | 86 | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
+| docs/ | 46 | research, adr, council, session-log, guides |
+| .claude/ | 39 | json, output-styles, agents, rungate, routines |
+| gates/ | 38 | ts, toml, md, sha256, test-fixtures |
+| specs/ | 34 | md, bootstrap-data-flow, json |
+| hooks/ | 27 | ts, lib |
 | prompts/ | 24 | md |
 | config/ | 9 | json, yaml |
-| templates/ | 8 | agent-briefs, md |
+| templates/ | 9 | agent-briefs, md |
 | workflows/ | 6 | js |
 | bin/ | 1 | ts |
 
 ## Code Health (fallow)
 
-### Unused Files (6)
-
-- test/fixtures/golden-project/src/config.ts
-- test/fixtures/golden-project/src/db.ts
-- test/fixtures/golden-project/src/utils/format.ts
-- test/fixtures/golden-project/src/utils.ts
-- test/fixtures/phase-1-5-project/src/config.ts
-- test/fixtures/phase-1-5-project/src/utils.ts
+**UNMEASURED** — fallow is not installed (it is an optional tool, not a declared dependency) — no static analysis was run, and no registry fetch was attempted.
 
 ## Package Scripts
 
@@ -63,5 +56,6 @@ Regenerate when src/ has commits since scanned-at-sha.
 - `posttest`
 - `sync-scs`
 - `typecheck`
+- `verify-merge`
 - `test:structure`
 - `test:external-deps`

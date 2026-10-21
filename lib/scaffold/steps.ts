@@ -41,6 +41,7 @@ import {
   buildReviewRunStep,
   vertexCiConfig,
 } from "./ai-review-step";
+import { CI_SUITE_FETCH_DEPTH, baseRefFetchDepth } from "../ci-history-depth";
 import { CLAUDE_CODE_ACTION } from "../claude-code-action";
 import { GOOGLE_AUTH_ACTION } from "../google-auth-action";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
@@ -2976,16 +2977,51 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   // is the gap, not the absence of a validator.
   const baseBranch = String(branches[0] ?? "main");
   const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+  // #987. This step used to be unconditionally `--depth=200`, and that flag is
+  // what made `fetch-depth: 0` above it inert: a bounded `git fetch`
+  // RE-SHALLOWS a repository that was already complete. Measured on a complete
+  // 40-commit clone, `is-shallow-repository` goes false → true and
+  // `rev-list --count HEAD` drops 40 → 20. The depth is therefore derived from
+  // the checkout's own, in `lib/ci-history-depth.ts`, rather than written here
+  // as a second number that has to agree with the first.
+  //
+  // Unbounded is not expensive in the full-history case: the objects are
+  // already local, so the fetch updates a ref and transfers nothing.
+  const baseDepth = baseRefFetchDepth(CI_SUITE_FETCH_DEPTH);
+  const baseDepthFlag = baseDepth === null ? "" : `--depth=${baseDepth} `;
+
+  // #987. `actions/checkout` with nothing declared clones ONE commit, so every
+  // generated job that reads git history has been reading one commit since the
+  // first workflow this harness wrote. `lib/failure-intake.ts` refuses a
+  // shallow clone by name, which means its reading was UNMEASURED on every run
+  // on every runner — uniformly absent rather than occasionally missing, and
+  // absence looked like quiet.
+  //
+  // Both generated jobs declare it, not just the suite job. `test/scaffold-
+  // conformity.test.ts` calls `runDocHygiene`, HYGIENE-6 inside it is the
+  // intake's only caller, and the gates job names that file directly while the
+  // suite job reaches it through the test command.
+  //
+  // The cost, measured on this repository three times each: depth 1 is
+  // 1.23–1.64s for 6MB, full history is 1.43–1.64s for 13MB. A bounded middle
+  // was measured too and is the worst of the three — 1.54–2.75s for 9MB, and
+  // still UNMEASURED, because a shallow clone is shallow whatever its depth.
+  const checkoutStep = `      - uses: ${actionRef("actions/checkout")}
+        with:
+          # Full history. A bounded depth leaves .git/shallow behind, and
+          # lib/failure-intake.ts refuses on that file rather than on a commit
+          # count — so any bounded value here reports UNMEASURED (#987).
+          # Declared once, in lib/ci-history-depth.ts.
+          fetch-depth: ${CI_SUITE_FETCH_DEPTH}`;
   const baseRefStep =
     SAFE_BRANCH.test(baseBranch) && !baseBranch.includes("..")
-      ? // `--depth=200`, not `--depth=1`. The conformity ratchet only diffs the
-        // tip and was happy with one commit, but a tip with no history behind
-        // it makes any check that reads the recent log unmeasurable — and an
-        // empty log is indistinguishable from a clean one. Two hundred commits
-        // is a few hundred KB and spans months of this project's history.
+      ? // The conformity ratchet only diffs the tip and was happy with one
+        // commit, but a tip with no history behind it makes any check that
+        // reads the recent log unmeasurable — and an empty log is
+        // indistinguishable from a clean one.
         `      - name: Fetch the comparison base for the conformity ratchet
         run: |
-          git fetch --no-tags --depth=200 origin '+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}' \\
+          git fetch --no-tags ${baseDepthFlag}origin '+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}' \\
             || echo "WARN: could not fetch ${baseBranch}; the conformity allowlist growth check will report UNMEASURED."`
       : // Not a fetchable ref: a glob pattern, a leading dash, or a traversal
         // segment. Emitted as a comment so the omission is visible in the
@@ -3110,7 +3146,7 @@ jobs:
       matrix:
         shard: [${Array.from({ length: shards }, (_, i) => i + 1).join(", ")}]
     steps:
-      - uses: ${actionRef("actions/checkout")}
+${checkoutStep}
 ${baseRefStep}
       - uses: ${actionRef("oven-sh/setup-bun")}
         with:
@@ -3170,7 +3206,7 @@ jobs:
   test:
     runs-on: ${runsOn}
     steps:
-      - uses: ${actionRef("actions/checkout")}
+${checkoutStep}
 ${baseRefStep}
       - uses: ${actionRef("oven-sh/setup-bun")}
         with:
@@ -3210,7 +3246,7 @@ jobs:
   gates:
     runs-on: ${runsOn}
     steps:
-      - uses: ${actionRef("actions/checkout")}
+${checkoutStep}
       - uses: ${actionRef("oven-sh/setup-bun")}
         with:
 ${bunStep}
