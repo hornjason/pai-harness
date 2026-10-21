@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { preCommitHookScript, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
+import { prePushHookScript } from '../../lib/scaffold/pre-push-hook';
 import { EMBEDDED_PATTERNS } from '../../lib/secret-patterns';
 // `import.meta.main` is false under an import, so this loads the table without
 // running the check. Importing the labels rather than retyping them is the
@@ -90,6 +91,21 @@ function initRepo(dir: string) {
  * `--project REPO_ROOT`, so every fixture is compared against the same
  * generator output the live tree is.
  */
+/**
+ * #891. Every fixture measured against the REAL generator plants a current
+ * `pre-push` beside whatever the case is about.
+ *
+ * The checker reports on every hook the generator declares, so a fixture
+ * with only a `pre-commit` is now refused for the missing one — correctly,
+ * and for a reason none of these cases is asking about. Planting the current
+ * one holds the second hook fixed so each case still measures the thing in
+ * its name (#585: vary exactly one reading).
+ */
+function plantCurrentPrePush(hooksDir: string): void {
+  mkdirSync(hooksDir, { recursive: true });
+  writeFileSync(join(hooksDir, 'pre-push'), prePushHookScript(), { mode: 0o755 });
+}
+
 function repoWithHook(name: string, hook: string | null): string {
   const dir = join(FIX, name);
   initRepo(dir);
@@ -97,6 +113,7 @@ function repoWithHook(name: string, hook: string | null): string {
   mkdirSync(join(dir, '.git', 'hooks'), { recursive: true });
   if (hook === null) rmSync(path, { force: true });
   else writeFileSync(path, hook, { mode: 0o755 });
+  plantCurrentPrePush(join(dir, '.git', 'hooks'));
   return dir;
 }
 
@@ -131,6 +148,10 @@ function repoWithHooksPath(
   const hookFile = join(resolved, 'pre-commit');
   if (opts.hook === null) rmSync(hookFile, { force: true });
   else writeFileSync(hookFile, opts.hook, { mode: 0o755 });
+
+  // Into the directory git will actually read, which core.hooksPath has
+  // just moved. The decoy location is left alone on purpose.
+  plantCurrentPrePush(resolved);
 
   git(dir, ['config', 'core.hooksPath', opts.hooksPath]);
   return { dir, hookFile };
@@ -171,7 +192,15 @@ function fakeGenerator(
   writeFileSync(
     join(root, 'lib', 'scaffold', 'steps.ts'),
     `export const PRE_COMMIT_MANAGED_MARKER = ${JSON.stringify(PRE_COMMIT_MANAGED_MARKER)};\n` +
-      `export function preCommitHookScript(_root: string): string { return ${JSON.stringify(hook)}; }\n`,
+      `export function preCommitHookScript(_root: string): string { return ${JSON.stringify(hook)}; }\n` +
+      // #891. The population the checker reads is the generator's own
+      // declaration, so a synthetic generator has to declare one. A single
+      // entry on purpose: these cases are about the pre-commit projection,
+      // and a second hook here would make every count in this file depend
+      // on something none of them is asking about.
+      `export const GENERATED_HOOKS = [{ name: "pre-commit", ` +
+      `script: preCommitHookScript, marker: PRE_COMMIT_MANAGED_MARKER, ` +
+      `describes: "synthetic" }];\n`,
   );
   writeFileSync(
     join(root, 'lib', 'secret-patterns.ts'),
@@ -497,11 +526,26 @@ describe('#599: an installed hook that is not the generator output is refused', 
       line,
       'the staleness raise is no longer the currencyRefusal verdict, so the label has ' +
         'detached from the only decider entitled to it',
-    ).toContain('if (refusal)');
+      // The probe was the literal `if (refusal)` and went red in #891 when
+      // the CLI began collecting a verdict per hook before raising once --
+      // `if (refusals.length > 0)`. The property did not move; the probe was
+      // narrower than the property it stood for, which is this repo's second
+      // shape. It is the guard expression that has to name what
+      // currencyRefusal returned, and the singleton assertion above is what
+      // makes "one position" mean one position.
+    ).toMatch(/^\s*if \(refusals?\b/);
+    // Two clauses, because the call is no longer on one line (#891) and a
+    // single literal spanning it would be asserting the formatting. The
+    // property is that the thing raised is what currencyRefusal returned
+    // about the file on disk.
+    const above = source.slice(0, at);
+    expect(above, 'currencyRefusal is not called above the staleness raise').toContain(
+      'const refusal = currencyRefusal(',
+    );
     expect(
-      source.slice(0, at),
-      'currencyRefusal is not called above the staleness raise',
-    ).toContain('currencyRefusal(readIfPresent(path)');
+      above,
+      'the verdict above the raise is not taken over the INSTALLED file',
+    ).toContain('readIfPresent(path)');
   });
 });
 
