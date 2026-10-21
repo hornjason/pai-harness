@@ -48,7 +48,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { overrideNoticeKeys, topLevelKeyOrder } from "./managed-workflow";
+import { topLevelKeyOrder } from "./managed-workflow";
 import { workflowCensus } from "./workflow-census";
 
 export interface WorkflowDriftFinding {
@@ -156,26 +156,42 @@ export function workflowDrift(root: string, overrides: readonly string[] = []): 
  * The top-level keys of one workflow that are the consumer's, not the
  * generator's.
  *
- * Two sources, unioned, because they answer different questions and either
- * one alone is wrong half the time:
+ * One source: `ci.workflowOverrides`, intersected with the keys this file
+ * actually declares. The config is global and the question is per-file — a
+ * project declining `concurrency` has said nothing about a workflow that has
+ * no `concurrency:` in it, and treating the decline as covering that file
+ * would blind the check to every edit in it.
  *
- *  - `ci.workflowOverrides` intersected with the keys this file actually
- *    declares. The config is global and the question is per-file: a project
- *    declining `concurrency` has said nothing about a workflow that has no
- *    `concurrency:` in it, and treating the decline as covering that file
- *    would blind the check to every edit in it.
- *  - The override notices in the file itself, which record what the LAST
- *    scaffold declined. A consumer who removed the key from the config but
- *    has not re-scaffolded still has a file whose bytes were authored under
- *    the decline.
+ * ## Why the file's own override notices are NOT a second source (#958)
+ *
+ * They were, until #958: the notices `mergeManagedWorkflow` writes were read
+ * back and unioned in, with no reference to the config. A notice is a comment
+ * anybody can type, so that made the file under inspection the authority on
+ * its own exemption — paste one line into a hand-edited workflow and DRIFTED
+ * became consumerOwned. #530's shape: the artifact everyone reaches for as
+ * ground truth, which always agrees.
+ *
+ * #928 reasoned the notice source from #722's "ownership travels with the
+ * bytes". The analogy does not hold. `generated-sha:` is a digest OF the
+ * body — it cannot be written to say something the bytes do not; a notice
+ * carries no such binding.
+ *
+ * Nor does the case it was built for survive inspection. The justification
+ * was "a consumer who removed the key from the config but has not
+ * re-scaffolded still has a file whose bytes were authored under the
+ * decline." That is backwards: if the key is gone from the config the next
+ * scaffold RE-MERGES it, so the edit will be reverted — which is precisely
+ * what DRIFTED means. The config decides what the next scaffold does, and it
+ * is the only authority this reading should have.
+ *
+ * Hardening the notice branch rather than deleting it — accept a notice key
+ * only when the config names it too — is behaviourally identical to this,
+ * because the union then collapses to `{config ∩ declared}`. Same verdicts,
+ * one less branch, and one less thing a consumer can write.
  */
 function consumerKeysIn(text: string, overrides: readonly string[]): string[] {
   const declared = new Set(topLevelKeyOrder(text));
-  const keys = overrides.filter(k => declared.has(k));
-  for (const k of overrideNoticeKeys(text)) {
-    if (!keys.includes(k)) keys.push(k);
-  }
-  return keys;
+  return overrides.filter(k => declared.has(k));
 }
 
 /**

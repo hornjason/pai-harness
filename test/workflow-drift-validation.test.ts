@@ -56,14 +56,13 @@
  * know which this is, is to point it at a tree that must stay green.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import {
   WORKFLOW_OVERRIDE_COMMENT,
   mergeManagedWorkflow,
-  overrideNoticeKeys,
   workflowOverrides,
 } from "../lib/scaffold/managed-workflow";
 import { stampWorkflow } from "../lib/scaffold/workflow-census";
@@ -119,6 +118,64 @@ function plant(): Plant {
     stamped: (name, text) => writeFileSync(join(dir, name), stampWorkflow(text)),
     done: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+
+/**
+ * Run the SHIPPED conformity case over a tree, in a child process, and report
+ * what it did.
+ *
+ * Spawned, not described. `workflowDrift(...).drifted.length === 1` proves the
+ * reading can disagree; it does not prove the CASE fails, and a check that
+ * composed a violation list and never asserted on it would pass either way.
+ * That is the shape #621's counted case exists for, and it is exactly the
+ * defect #915 reports one layer up — detection present, nothing asking.
+ *
+ * #958 is the same trap one level finer. M6 in #928 mutated
+ * `overrideNoticeKeys` to `return []`, measured 1 of 17, and that was read as
+ * coverage; the case it reddened was AC-4's round-trip assertion, not AC-4's
+ * verdict. So every #958 case below pairs its reading-level assertion with a
+ * run through here: nothing but `failed` says the suite goes red.
+ *
+ * `ran` is read before any verdict: a `-t` filter that matches nothing leaves
+ * bun reporting zero failures, which is indistinguishable from the check
+ * passing and is also what a suite that failed to resolve its imports looks
+ * like.
+ *
+ * `findings` comes back too, because "it failed" and "it failed for the
+ * reason you think" are different claims, and because the WARNs a partial
+ * scan emits are not visible in a pass/fail count at all (#958 AC-12c).
+ */
+function runCheckOver(target: string): {
+  ran: number;
+  failed: number;
+  findings: { ruleId: string; severity: string; file: string; message: string }[];
+} {
+  const dir = mkdtempSync(join(tmpdir(), "rg-915-spawn-"));
+  const file = join(dir, "probe.test.ts");
+  const conformity = JSON.stringify(join(REPO, "lib", "conformity.ts"));
+  writeFileSync(
+    file,
+    `import { afterAll } from "bun:test";\n` +
+      `import { getFindings, runWorkflowDriftValidation } from ${conformity};\n` +
+      `runWorkflowDriftValidation(${JSON.stringify(target)});\n` +
+      `afterAll(() => { console.log("FINDINGS:" + JSON.stringify(getFindings())); });\n`,
+  );
+  try {
+    const out = Bun.spawnSync(["bun", "test", file], { cwd: REPO, env: { ...process.env } });
+    const text = new TextDecoder().decode(out.stderr) + new TextDecoder().decode(out.stdout);
+    const pass = /^\s*(\d+) pass$/m.exec(text);
+    const fail = /^\s*(\d+) fail$/m.exec(text);
+    const findings = /^FINDINGS:(.*)$/m.exec(text);
+    if (!pass || !fail) throw new Error(`the spawned run reported no counts:\n${text}`);
+    if (!findings) throw new Error(`the spawned run printed no findings:\n${text}`);
+    return {
+      ran: Number(pass[1]) + Number(fail[1]),
+      failed: Number(fail[1]),
+      findings: JSON.parse(findings[1]),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe("#915 AC-1: a stamped workflow nobody touched is clean, and says what it read", () => {
@@ -226,14 +283,19 @@ describe("#915 AC-4: a key the consumer owns through ci.workflowOverrides is not
   test("AC-4: an override notice the real merge wrote is read back, and the file is not accused", () => {
     const p = plant();
     try {
-      // Derived from the generator's own merge, not written as a literal. A
-      // hand-written notice would assert that this module can parse a string
-      // this test typed — the composer is not exported, so the round trip is
-      // the only thing holding the two halves together.
+      // Derived from the generator's own merge, not written as a literal.
+      //
+      // This used to read the notice back with `overrideNoticeKeys` and
+      // assert the round trip. #958 deleted that parser — the notice is
+      // written for a human reading the file and is not evidence on the way
+      // back in — so what remains to assert is that the merge wrote one and
+      // that it names the key. The verdict below never came from the notice
+      // anyway; it comes from the config, which is why this case was green
+      // under the defect and could not witness it.
       const consumer = GENERATED.replace('      - "main"', '      - "release"');
       const merged = mergeManagedWorkflow(consumer, GENERATED, ["on"]);
       expect(merged, "the merge wrote no override notice").toContain(WORKFLOW_OVERRIDE_COMMENT);
-      expect(overrideNoticeKeys(merged), "the notice names no key this parser can see").toEqual(["on"]);
+      expect(merged, "the notice does not name the key it declined").toContain("`on:`");
 
       // Stamped as the scaffold stamps it, then edited inside the key the
       // consumer owns. A re-scaffold declines `on:` outright, so this edit
@@ -383,38 +445,6 @@ describe("#915 AC-8: NOT-OWNED is reported without being refused", () => {
 });
 
 describe("#915 AC-10: the conformity check FAILS, rather than computing a verdict nobody reads", () => {
-  /**
-   * Spawned, not described. `workflowDrift(...).drifted.length === 1` proves
-   * the reading can disagree; it does not prove the CASE fails, and a check
-   * that composed a violation list and never asserted on it would pass either
-   * way. That is the shape #621's counted case exists for, and it is exactly
-   * the defect #915 reports one layer up — detection present, nothing asking.
-   *
-   * `ran` is read before any verdict: a `-t` filter that matches nothing
-   * leaves bun reporting zero failures, which is indistinguishable from the
-   * check passing and is also what a suite that failed to resolve its imports
-   * looks like.
-   */
-  function runCheckOver(target: string): { ran: number; failed: number } {
-    const dir = mkdtempSync(join(tmpdir(), "rg-915-spawn-"));
-    const file = join(dir, "probe.test.ts");
-    writeFileSync(
-      file,
-      `import { runWorkflowDriftValidation } from ${JSON.stringify(join(REPO, "lib", "conformity.ts"))};\n` +
-        `runWorkflowDriftValidation(${JSON.stringify(target)});\n`,
-    );
-    try {
-      const out = Bun.spawnSync(["bun", "test", file], { cwd: REPO, env: { ...process.env } });
-      const text = new TextDecoder().decode(out.stderr) + new TextDecoder().decode(out.stdout);
-      const pass = /^\s*(\d+) pass$/m.exec(text);
-      const fail = /^\s*(\d+) fail$/m.exec(text);
-      if (!pass || !fail) throw new Error(`the spawned run reported no counts:\n${text}`);
-      return { ran: Number(pass[1]) + Number(fail[1]), failed: Number(fail[1]) };
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
   test("AC-10: a drifted tree turns the conformity case RED", () => {
     const p = plant();
     try {
@@ -458,4 +488,231 @@ describe("#915 AC-9: the negative control", () => {
     expect(r.notOwned.length).toBeGreaterThan(0);
     expect(r.coverage.read).toBe(r.coverage.present);
   });
+});
+
+/**
+ * #958 AC-11 — the file under inspection cannot authorise its own exemption.
+ *
+ * `consumerKeysIn` unioned the configured overrides with the override notices
+ * read back out of the file, and the notice half consulted no config at all.
+ * So a consumer who hand-edited a generated workflow and also pasted the
+ * notice line into it was reported `consumerOwned` (WARN) instead of
+ * `DRIFTED` (FAIL). The artifact everyone reaches for as ground truth, which
+ * always agrees — #530's shape.
+ *
+ * The notice is a comment anybody can type. The `generated-sha:` marker it
+ * was reasoned by analogy from (#722, "ownership travels with the bytes") is
+ * a digest of the body, which is what makes that one unforgeable; the analogy
+ * does not survive the difference.
+ *
+ * The notice line below is lifted from a REAL `mergeManagedWorkflow` run
+ * rather than typed as a literal, so what this case plants is byte-identical
+ * to what the harness itself writes. A forgery a test invented would prove
+ * only that the parser rejects strings this file made up.
+ */
+describe("#958 AC-11: a pasted override notice does not exempt the file", () => {
+  /** A genuine notice line, taken from the generator's own merge. */
+  function realNoticeFor(key: string): string {
+    const consumer = GENERATED.replace('      - "main"', '      - "release"');
+    const merged = mergeManagedWorkflow(consumer, GENERATED, [key]);
+    const line = merged.split("\n").find(l => l.trim().startsWith(WORKFLOW_OVERRIDE_COMMENT));
+    if (!line) throw new Error("the merge wrote no override notice to lift");
+    return line;
+  }
+
+  /** `GENERATED`, stamped, one byte moved, and the notice pasted in. */
+  function forged(notice: string): string {
+    return stampWorkflow(GENERATED).replace("bun test", "bun test --bail").replace(
+      "jobs:",
+      `${notice}\njobs:`,
+    );
+  }
+
+  test("AC-11: a notice with no matching config entry leaves the file DRIFTED", () => {
+    const p = plant();
+    try {
+      // `on:` IS declared in this file — the honest half of the forgery. The
+      // dishonest half is that no `ci.workflowOverrides` names it, so the
+      // next scaffold will re-merge `on:` and revert the edit regardless of
+      // what the comment claims.
+      p.put("ci.yml", forged(realNoticeFor("on")));
+      const r = workflowDrift(p.root, []);
+
+      expect(r.consumerOwned, "a pasted comment exempted the file from the check").toEqual([]);
+      expect(r.drifted.map(f => f.name)).toEqual(["ci.yml"]);
+      expect(r.reading, r.unmeasuredReasons.join("\n")).toBe("MEASURED");
+    } finally {
+      p.done();
+    }
+  });
+
+  test("AC-11b: the VERDICT is red — the shipped conformity case fails over the forged tree", () => {
+    const p = plant();
+    try {
+      // The assertion #928 never had. M6 there mutated `overrideNoticeKeys`
+      // to `return []`, reddened AC-4's round-trip `toEqual(["on"])`, and was
+      // counted as coverage of the notice source. No case anywhere asserted
+      // what the notice source did to a VERDICT, which is why the forgeable
+      // path shipped with a non-zero mutation row over it.
+      p.put("ci.yml", forged(realNoticeFor("on")));
+      const r = runCheckOver(p.root);
+
+      expect(r.ran, "the spawned suite ran no case at all").toBe(1);
+      expect(r.failed, "WORKFLOW-DRIFT-1 passed over a workflow that exempted itself").toBe(1);
+      const fails = r.findings.filter(f => f.severity === "FAIL");
+      expect(fails.map(f => f.file)).toEqual([".github/workflows/ci.yml"]);
+      expect(fails[0].ruleId).toBe("WORKFLOW-DRIFT-1");
+    } finally {
+      p.done();
+    }
+  }, 60_000);
+
+  test("AC-11c: a notice for a key the file does not even declare buys nothing", () => {
+    const p = plant();
+    try {
+      // The notice branch did not intersect against `topLevelKeyOrder`
+      // either, so the cheapest forgery was a key with no section behind it.
+      // The merge will not produce such a notice — it only declines keys that
+      // are there — so the key is substituted into a real one, which is what
+      // a forger does anyway.
+      expect(GENERATED).not.toContain("concurrency");
+      const notice = realNoticeFor("on").replace("`on:`", "`concurrency:`");
+      expect(notice, "the notice shape moved; this substitution no longer applies").toContain(
+        "`concurrency:`",
+      );
+      p.put("ci.yml", forged(notice));
+      const r = workflowDrift(p.root, []);
+
+      expect(r.consumerOwned).toEqual([]);
+      expect(r.drifted.map(f => f.name)).toEqual(["ci.yml"]);
+    } finally {
+      p.done();
+    }
+  });
+
+  test("AC-11d: the control — a key genuinely in ci.workflowOverrides is still not accused", () => {
+    const p = plant();
+    try {
+      // Same bytes as AC-11, same notice, one difference: the config names
+      // the key. A repair that answered AC-11 by refusing every notice-
+      // bearing file would red here, and would be reporting the supported
+      // escape hatch as a defect.
+      p.put("ci.yml", forged(realNoticeFor("on")));
+      const r = workflowDrift(p.root, workflowOverrides({ workflowOverrides: ["on"] }));
+
+      expect(r.drifted, "a key the consumer owns was reported as drift").toEqual([]);
+      expect(r.consumerOwned.map(f => f.name)).toEqual(["ci.yml"]);
+      expect(r.consumerOwned[0].detail).toContain("on");
+    } finally {
+      p.done();
+    }
+  });
+});
+
+/**
+ * #958 AC-12 — a partially unmeasured scan still reports the drift it found.
+ *
+ * `runWorkflowDriftValidation` emitted the UNMEASURED reasons as WARNs and
+ * then `return`ed, so `reading.drifted` was discarded whenever anything
+ * raised the reading to UNMEASURED. One unreadable sibling was enough: the
+ * census pushes `UNREADABLE_WORKFLOW` and skips that file while a DIFFERENT
+ * file in the same directory lands in `drifted`.
+ *
+ * UNMEASURED and DRIFTED are not alternatives. A scan can be partial AND have
+ * already found something, and "I could not fully look" was being rendered as
+ * "I looked and it was fine" — #921's shape. Drift found is a failure
+ * whatever happened to the rest of the reading; the partiality is reported
+ * ALONGSIDE it, naming the file nobody could read, not instead of it.
+ *
+ * `UNREADABLE_WORKFLOW` stays WARN rather than becoming FAIL. The same list
+ * carries `NO_WORKFLOW_FILES` and `WORKFLOWS_DIR_ABSENT`, so promoting the
+ * list wholesale would red every repo without generated CI (AC-2, AC-2b,
+ * AC-2c), and promoting one member by string match would be a second reader
+ * of the same reasons. That is a separate decision with its own blast radius.
+ */
+describe("#958 AC-12: an unreadable sibling does not swallow a drifted file", () => {
+  /** A drifted `ci.yml` beside a `gates.yml` nobody can read. */
+  function partialTree(): Plant {
+    const p = plant();
+    p.put("ci.yml", stampWorkflow(GENERATED).replace("bun test", "bun test --bail"));
+    p.stamped("gates.yml", GENERATED.replace("name: CI", "name: Gates"));
+    chmodSync(join(p.root, ".github", "workflows", "gates.yml"), 0o000);
+    const done = p.done;
+    return {
+      ...p,
+      done: () => {
+        chmodSync(join(p.root, ".github", "workflows", "gates.yml"), 0o644);
+        done();
+      },
+    };
+  }
+
+  test("AC-12: the reading is UNMEASURED and carries drift at the same time", () => {
+    const p = partialTree();
+    try {
+      const r = workflowDrift(p.root, []);
+
+      // Both halves, in one reading. This is the state the wrapper treated as
+      // impossible — if these two ever stopped co-occurring the cases below
+      // would be measuring nothing, so they are asserted here first.
+      expect(r.reading).toBe("UNMEASURED");
+      expect(
+        r.unmeasuredReasons.join("\n"),
+        "chmod 000 did not make the file unreadable — running as root?",
+      ).toContain("UNREADABLE_WORKFLOW: gates.yml");
+      expect(r.drifted.map(f => f.name)).toEqual(["ci.yml"]);
+    } finally {
+      p.done();
+    }
+  });
+
+  test("AC-12b: the VERDICT is red — the drift is asserted, not discarded", () => {
+    const p = partialTree();
+    try {
+      const r = runCheckOver(p.root);
+
+      expect(r.ran, "the spawned suite ran no case at all").toBe(1);
+      expect(r.failed, "one unreadable sibling swallowed a real drift finding").toBe(1);
+      const fails = r.findings.filter(f => f.severity === "FAIL");
+      expect(fails.map(f => f.file)).toEqual([".github/workflows/ci.yml"]);
+    } finally {
+      p.done();
+    }
+  }, 60_000);
+
+  test("AC-12c: the partiality is reported ALONGSIDE the failure, naming the file", () => {
+    const p = partialTree();
+    try {
+      // Reporting the drift must not cost the reader the other half. A run
+      // that failed on `ci.yml` and said nothing about `gates.yml` would have
+      // replaced one silence with another.
+      const warns = runCheckOver(p.root).findings.filter(f => f.severity === "WARN");
+
+      expect(warns.map(f => f.message).join("\n")).toContain("UNREADABLE_WORKFLOW: gates.yml");
+    } finally {
+      p.done();
+    }
+  }, 60_000);
+
+  test("AC-12d: the control — unreadable with nothing drifted stays WARN-only", () => {
+    const p = plant();
+    try {
+      // Partial on its own is not a failure. Without this, "fail whenever the
+      // reading is UNMEASURED" would answer AC-12b and red every repo with no
+      // generated CI in it.
+      p.stamped("ci.yml", GENERATED);
+      p.stamped("gates.yml", GENERATED.replace("name: CI", "name: Gates"));
+      chmodSync(join(p.root, ".github", "workflows", "gates.yml"), 0o000);
+      try {
+        const r = runCheckOver(p.root);
+        expect(r.ran).toBe(1);
+        expect(r.failed, "a partial scan with no drift in it was turned into a failure").toBe(0);
+        expect(r.findings.every(f => f.severity === "WARN")).toBe(true);
+      } finally {
+        chmodSync(join(p.root, ".github", "workflows", "gates.yml"), 0o644);
+      }
+    } finally {
+      p.done();
+    }
+  }, 60_000);
 });

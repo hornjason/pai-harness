@@ -4804,13 +4804,23 @@ export function runWorkflowDriftValidation(root: string) {
       const overrides = workflowOverrides(tryLoadRungateConfig(root)?.ci);
       const reading = workflowDrift(root, overrides);
 
-      if (reading.reading === "UNMEASURED") {
-        // Every cause, named. "UNMEASURED" with no reason beside it is the
-        // silence this check exists to replace.
-        for (const reason of reading.unmeasuredReasons) {
-          addFinding({ ruleId: "WORKFLOW-DRIFT-1", severity: "WARN", file: "", message: reason });
-        }
-        return;
+      // Every cause, named. "UNMEASURED" with no reason beside it is the
+      // silence this check exists to replace.
+      //
+      // Reported, and then execution CONTINUES (#958). UNMEASURED and DRIFTED
+      // are not alternatives: `workflowDrift` pushes `UNREADABLE_WORKFLOW` and
+      // moves on per file, so one unreadable workflow raises the whole reading
+      // while a DIFFERENT file in the same directory lands in `drifted`. This
+      // used to `return` here, which threw that drift away and rendered "I
+      // could not fully look" as "I looked and it was fine" — #921's shape,
+      // and a green suite over drift the check had already found.
+      //
+      // Drift found is a failure whatever happened to the rest of the scan.
+      // The partiality is reported ALONGSIDE it, naming what could not be
+      // read, rather than instead of it. The two readings are independent and
+      // are no longer sequenced.
+      for (const reason of reading.unmeasuredReasons) {
+        addFinding({ ruleId: "WORKFLOW-DRIFT-1", severity: "WARN", file: "", message: reason });
       }
 
       for (const f of reading.consumerOwned) {
