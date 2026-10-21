@@ -297,18 +297,75 @@ export const AI_REVIEW_CREDS_BASENAME = "ai-review-gcp-creds";
  * `mktemp` name is enumerable in one call. The credential also cannot be
  * deleted before the review: the review step is what spends it.
  *
- * So the only lever that bites is the agent's own permission system, and
- * exactly one spelling of it is consulted for reads. Claude Code's
- * documentation, quoted in full at `AI_REVIEW_WORKSPACE_WRITE_DENY`:
- *
- *   > Claude Code checks file permissions against `Edit(path)` and
- *   > `Read(path)` rules only.
- *
- * `Read(<this directory>/**)` is therefore the fix, and the directory exists
- * so that the rule has a region to name that contains the credential and
- * nothing else. A rule naming the credential FILE would have to be rebuilt
- * every time the auth action renamed its output; a rule naming
+ * So the only lever that bites is the agent's own permission system. The
+ * directory exists so the rule has a region to name holding the credential
+ * and nothing else: a rule naming the credential FILE would need rebuilding
+ * every time the auth action renamed its output, and a rule naming
  * `RUNNER_TEMP` would deny the findings payload and the baseline with it.
+ *
+ * ## MEASURED, against the real CLI — do not respell any of this
+ *
+ * The table above this one is #836's and it is for **`Edit`**. There was no
+ * measurement for the content-returning tools, and an adjacent measured
+ * table for a different tool is how a rule that does nothing gets shipped.
+ * Taken the same way #836 took its: real `claude` CLI, version `2.1.306`,
+ * the version `lib/claude-tool-vocabulary.ts` records; a checkout as the
+ * working directory and the credential in a sibling directory outside it.
+ *
+ * | deny rule | Read | Grep | Glob |
+ * |---|---|---|---|
+ * | *(none)* | **READ IT** | **READ IT** | **LISTED IT** |
+ * | `<tool>(/abs/**)`, one slash | **READ IT** | **READ IT** | **LISTED IT** |
+ * | `<tool>(//abs/**)`, two slashes | DENIED | DENIED | DENIED |
+ *
+ * Three things this settles, each of which was wrong in the prose before it:
+ *
+ * - **The one-slash absolute form is INERT.** It is accepted in silence —
+ *   no `matches no known tool` warning — and never fires. The first version
+ *   of this fix shipped that spelling, so the control read as present in
+ *   every review of this file and was worth nothing: the exact artefact
+ *   `.claude/rules/checks-must-be-able-to-fail.md` exists for, reproduced
+ *   inside the file that documents it.
+ * - **`Read` alone is a lock on one door of a three-door room.**
+ *   `AI_REVIEW_ALLOWED_TOOLS` grants `Grep` and `Glob` too, and **`Grep`
+ *   returns MATCHING LINES** — it returns the credential's contents, which
+ *   is the exposure itself rather than a hint of it. `Read` and `Grep` are
+ *   both denied. The file already records this lesson one tool over, at
+ *   `AI_REVIEW_WORKSPACE_WRITE_DENY`: *"a TOOL-level deny — it stops the
+ *   `Edit` tool and says nothing about `Write`."*
+ * - **A `Glob` path rule DOES bind here**, which contradicts the
+ *   documentation quoted at `AI_REVIEW_WORKSPACE_WRITE_DENY` — *"a path
+ *   rule for `Write`, `NotebookEdit`, `Glob`… accepted but never
+ *   consulted"*. That sentence is about file-MODIFICATION checks and the
+ *   other three tools in it are all write tools; it was read as a
+ *   statement about path rules in general and it is not one.
+ *
+ *   **`Glob` is nonetheless NOT denied**, and the reason is not the
+ *   documentation. It returns PATHS, and this path is `RUNNER_TEMP` plus
+ *   the run id plus the attempt — every component already in the agent's
+ *   own environment. A rule protecting information the agent can compute
+ *   protects nothing, and shipping it would cost a measured exception in
+ *   `ai-review-write-scope.test.ts`'s inert-path-rule scan, which refuses
+ *   `Glob(` on documented grounds. Trading a real guard for a decorative
+ *   one, on the strength of a single reading taken against a CLI version
+ *   that is not the one CI runs, is the wrong way round.
+ *
+ * And the control, because a deny that breaks the findings write is the
+ * cheapest wrong fix here and its sibling is already named one table up:
+ * with these three rules live AND `--add-dir <findings dir>` granted, the
+ * reviewer still **WROTE** the payload. The rules name the credential
+ * directory, which is a sibling of the findings directory rather than an
+ * ancestor, so the grant is untouched.
+ *
+ * ## What is still open, and it is the only version of this that lasts
+ *
+ * A denylist over a live credential file is a standing commitment to
+ * enumerate every future content-returning tool. The durable fix is to not
+ * have the file: exchange the WIF credential for a short-lived access token
+ * in the review step's `env:` and delete the file before the agent starts.
+ * That changes the auth flow and depends on whether the pinned action
+ * accepts a bare Vertex access token, which is unmeasured. Tracked
+ * separately; this is the containment, not the cure.
  */
 export const AI_REVIEW_CREDS_DIR_PREFIX = "ai-review-creds";
 
@@ -467,6 +524,18 @@ export function buildCredsRelocateScript(): string {
     `the cloud credential file could not be set to mode 0600 after it was ` +
     `moved. Refusing`;
 
+  const denyWriteFailed =
+    `the deny rule covering the credential directory could not be written ` +
+    `to GITHUB_OUTPUT, so the reviewer would run with nothing keeping it ` +
+    `out of the directory holding a live bearer token. Refusing`;
+
+  const denyNotLanded =
+    `the deny rule covering the credential directory was written to ` +
+    `GITHUB_OUTPUT and is not there when read back, so the reviewer would ` +
+    `run with nothing keeping it out of the directory holding a live ` +
+    `bearer token. A write that returned success and landed nowhere is the ` +
+    `same empty deny list as a write that never happened. Refusing`;
+
   const noOutput =
     `GITHUB_OUTPUT is not set, so this step cannot tell the review step ` +
     `which directory holds the cloud credential and the reviewer would run ` +
@@ -597,14 +666,39 @@ echo "ai-review credential moved out of the workspace: \${dest}"
 # \`AI_REVIEW_CREDS_DENY_OUTPUT\` for why the comma and the glob are part of
 # the value rather than assembled around it in the generator.
 #
-# Spelled against Read, and against nothing else: Claude Code consults path
-# rules for the Edit and Read tools ONLY, and accepts rules naming the other
-# tools while never consulting them. A path rule naming one of those would
-# read as a second barrier and be worth nothing, which is the shape this
-# whole file exists to refuse. The tool names are left bare here on purpose
-# — a parenthesised one in a comment is indistinguishable from a rule to
-# the scan in ai-review-write-scope.test.ts, which this sentence tripped.
-echo "${AI_REVIEW_CREDS_DENY_OUTPUT}=,Read(\${dir}/**)" >> "\${GITHUB_OUTPUT}"
+# One rule per content-returning tool in the grant, and the DOUBLE leading
+# slash. Both were measured against the real CLI — see the table on
+# AI_REVIEW_CREDS_DIR_PREFIX. A single leading slash is accepted in silence
+# and never fires; Read alone leaves Grep, which returns matching lines and
+# so returns the credential itself. The tool names are left unparenthesised
+# in this comment on purpose: a parenthesised one is indistinguishable from
+# a real rule to the scan in ai-review-write-scope.test.ts.
+#
+# \${dir} already begins with a slash, so the leading \`/\` here makes two.
+#
+# Glob is measured to bind too and is deliberately NOT denied — see the
+# table on AI_REVIEW_CREDS_DIR_PREFIX. It returns paths, and this path is
+# derivable from RUNNER_TEMP and the run id, both of which are already in
+# the agent's environment. A rule protecting information the agent can
+# compute is a control that protects nothing.
+rule=",Read(/\${dir}/**),Grep(/\${dir}/**)"
+
+# The transport for a security control is itself a thing that can fail. An
+# unchecked append leaves the review running with no rule published and the
+# step reporting success — the control's own fail-open, one layer below the
+# control.
+if ! out=$( { echo "${AI_REVIEW_CREDS_DENY_OUTPUT}=\${rule}" >> "\${GITHUB_OUTPUT}"; } 2>&1 ); then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${denyWriteFailed}: $(escape_annotation "\${out}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# And read it back. A write that returned 0 and landed nowhere is the same
+# empty deny list as a write that never happened, and only this tells them
+# apart.
+if ! grep -qF "${AI_REVIEW_CREDS_DENY_OUTPUT}=\${rule}" "\${GITHUB_OUTPUT}"; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${denyNotLanded}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
 
 # A READING, not a belief. The move above is correct only while the auth
 # action writes one file, which is measured rather than assumed — and this is

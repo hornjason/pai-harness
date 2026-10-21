@@ -1,4 +1,4 @@
-# generated-sha: b4da0075871fb33e
+# generated-sha: 3a4a532b3954f1c9
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -407,14 +407,39 @@ jobs:
           # `AI_REVIEW_CREDS_DENY_OUTPUT` for why the comma and the glob are part of
           # the value rather than assembled around it in the generator.
           #
-          # Spelled against Read, and against nothing else: Claude Code consults path
-          # rules for the Edit and Read tools ONLY, and accepts rules naming the other
-          # tools while never consulting them. A path rule naming one of those would
-          # read as a second barrier and be worth nothing, which is the shape this
-          # whole file exists to refuse. The tool names are left bare here on purpose
-          # — a parenthesised one in a comment is indistinguishable from a rule to
-          # the scan in ai-review-write-scope.test.ts, which this sentence tripped.
-          echo "denyread=,Read(${dir}/**)" >> "${GITHUB_OUTPUT}"
+          # One rule per content-returning tool in the grant, and the DOUBLE leading
+          # slash. Both were measured against the real CLI — see the table on
+          # AI_REVIEW_CREDS_DIR_PREFIX. A single leading slash is accepted in silence
+          # and never fires; Read alone leaves Grep, which returns matching lines and
+          # so returns the credential itself. The tool names are left unparenthesised
+          # in this comment on purpose: a parenthesised one is indistinguishable from
+          # a real rule to the scan in ai-review-write-scope.test.ts.
+          #
+          # ${dir} already begins with a slash, so the leading `/` here makes two.
+          #
+          # Glob is measured to bind too and is deliberately NOT denied — see the
+          # table on AI_REVIEW_CREDS_DIR_PREFIX. It returns paths, and this path is
+          # derivable from RUNNER_TEMP and the run id, both of which are already in
+          # the agent's environment. A rule protecting information the agent can
+          # compute is a control that protects nothing.
+          rule=",Read(/${dir}/**),Grep(/${dir}/**)"
+
+          # The transport for a security control is itself a thing that can fail. An
+          # unchecked append leaves the review running with no rule published and the
+          # step reporting success — the control's own fail-open, one layer below the
+          # control.
+          if ! out=$( { echo "denyread=${rule}" >> "${GITHUB_OUTPUT}"; } 2>&1 ); then
+            echo "::error title=AI review credential exposure::the deny rule covering the credential directory could not be written to GITHUB_OUTPUT, so the reviewer would run with nothing keeping it out of the directory holding a live bearer token. Refusing: $(escape_annotation "${out}")" >&2
+            exit 1
+          fi
+
+          # And read it back. A write that returned 0 and landed nowhere is the same
+          # empty deny list as a write that never happened, and only this tells them
+          # apart.
+          if ! grep -qF "denyread=${rule}" "${GITHUB_OUTPUT}"; then
+            echo "::error title=AI review credential exposure::the deny rule covering the credential directory was written to GITHUB_OUTPUT and is not there when read back, so the reviewer would run with nothing keeping it out of the directory holding a live bearer token. A write that returned success and landed nowhere is the same empty deny list as a write that never happened. Refusing" >&2
+            exit 1
+          fi
 
           # A READING, not a belief. The move above is correct only while the auth
           # action writes one file, which is measured rather than assumed — and this is
