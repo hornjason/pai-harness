@@ -113,6 +113,32 @@ consequence, not the lesson. The lesson is that the window between starting
 and committing is exactly the window where your work is invisible to everyone
 else, so make it short.
 
+## Take the census before you tidy a worktree, and never run `git worktree prune`
+
+```bash
+bun scripts/worktree-census.ts --older-than 7d   # add --json for the full evidence
+```
+
+Four readings per worktree — a merged PR *at the commit it holds*, a `git
+status` that was read and was empty, no process holding a file under it, and
+nothing modified inside a declared age — and a worktree failing to produce any
+one of them is **UNMEASURED, counted apart from ABANDONED**. It deletes
+nothing; removal stays yours.
+
+**Measured on 173 worktrees, 2026-10-21 (#1021).** At the 7d default: 0
+ABANDONED, 173 IN_USE. At `--older-than 2d`: 7 ABANDONED, 166 IN_USE. 81 held
+uncommitted work, and **9 sat at a commit that is not the one GitHub merged —
+6 of them holding 10 commits between them that the merged head does not**, on
+no other ref, in a tree `git status` calls clean. That is what "merged,
+therefore delete" takes, and it is the shape that cost 500 lines on
+2026-10-16.
+
+`git worktree prune` is not the safe half of this. It drops
+`.git/worktrees/<name>` for **any** registered worktree whose directory is
+already gone, not only yours, so a session whose directory vanished loses the
+registration `git worktree repair` needs. The census warns when there is
+anything for prune to take.
+
 ## Push finished work. Do not park it waiting for review
 
 When the work is done and CI is green: push, open a PR, merge it. Do not hold a
