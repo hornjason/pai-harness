@@ -1074,8 +1074,50 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
  * `_work/<repo>/<repo>` is that source tree and stays unsubtracted;
  * `_work/_temp` is where the runner materialises the `<uuid>.sh` script for
  * each `run:` step of whatever job it is executing, holds no repository
- * source, and is torn down by the runner itself. That is the `_diag` argument
- * word for word, so it gets the same treatment and the same anchored clause.
+ * source, and is torn down by the runner itself.
+ *
+ * ### It is NOT the `_diag` argument, and the difference is a real blind spot
+ *
+ * An earlier revision of this docblock said it was "the `_diag` argument word
+ * for word". That was wrong, and the automated security review of this
+ * change's first push said so. `_diag` holds logs: written, never read back,
+ * **never executed**. `_work/_temp` is an **exec path** — the runner writes
+ * `<uuid>.sh` there and immediately runs it. Subtracting it means a reviewer
+ * that overwrites an existing `<uuid>.sh` in a SIBLING runner's `_temp`,
+ * between that runner writing the file and exec'ing it, is not reported.
+ * That is a TOCTOU window on a shared home, and it is narrow but real.
+ *
+ * It is subtracted anyway, and the reasoning is a tradeoff rather than a
+ * dismissal: before this change the check was red on **every** PR on that
+ * repo — 1 success in 8 runs, and the one predates the pool — so it reported
+ * nothing anybody could act on and nothing anybody read. A detector that
+ * cannot distinguish its own noise is not a weaker detector than one with a
+ * named blind spot; it is a decorative one. `AC-15h` pins the blind spot as a
+ * test so it is VISIBLE rather than silent, and the day the structural fix
+ * lands that case is the thing to delete.
+ *
+ * ### Why the two narrowings that were suggested do not work
+ *
+ * Both were proposed by the security review, and both restore the permanent
+ * red, because the measured noise is itself `.sh` files in a SIBLING's
+ * `_temp`:
+ *
+ * - *"Subtract only this job's own `$RUNNER_TEMP` by exact value and report
+ *   any other runner's."* The three flagged paths were `runner-4`'s while the
+ *   job ran on `runner-5` — they are exactly what this would keep reporting.
+ * - *"Keep script files reportable — `*.sh`, `*.ps1`, mode 0755."* All three
+ *   flagged paths are `<uuid>.sh`.
+ *
+ * There is no path- or name-shaped discriminator here at all: every runner in
+ * the pool is the same uid writing the same filename shape into the same
+ * directory, and `-newer` is satisfied by the sibling and the plant alike.
+ *
+ * ### The structural fix, which this is not
+ *
+ * Give each runner its own `HOME`. That removes `_diag`, `_work/_temp` AND
+ * the sibling-checkout exposure in one move, and makes every subtraction in
+ * this list unnecessary rather than merely justified. Filed as a follow-up;
+ * this change is the stopgap that makes the check readable until then.
  *
  * Measured on the same consumer pool, run `39605785223`: exit 1 with three
  * paths, all `/home/gharunner/runner-4/_work/_temp/<uuid>.sh`, while the job

