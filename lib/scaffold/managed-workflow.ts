@@ -447,6 +447,79 @@ function stripOverrideNotices(text: string): string {
     .join("\n");
 }
 
+/**
+ * What the CALLER was able to prove about the file on disk (#957).
+ *
+ * `VERIFIED` means the bytes handed in as `before` still hash to the digest a
+ * previous harness run stamped on them, so the harness wrote every one of
+ * them. `UNPROVEN` is every other reading — no marker, a marker that no longer
+ * matches, or a caller that did not look — and they are deliberately one
+ * value: a reading nobody took and a reading that came back negative are both
+ * "the harness cannot prove this", which is the only distinction the merge
+ * acts on.
+ *
+ * The merge cannot compute this itself. The marker is stripped one layer up,
+ * before anything is parsed, because `resolveManagedWrite` treats every line
+ * outside a job as the consumer's and the marker line would otherwise refuse
+ * its own update (#722/#767). So the proof has to arrive as an argument, which
+ * is why #957 was filed rather than bundled into #941.
+ */
+export type MergeProvenance = "VERIFIED" | "UNPROVEN";
+
+/**
+ * The generated comment block to write above a key the consumer ALREADY has,
+ * or nothing (#957).
+ *
+ * #941 made a section the merge ADDS arrive with its introducing comment, and
+ * deliberately left a section the consumer already has alone — comments
+ * included. That is right, and it leaves a residue: a consumer who took the
+ * bare key through the defect holds it for ever, because the key is present
+ * from then on and nothing ever puts the reasoning back. **This repository was
+ * one of them.**
+ *
+ * Two conditions, and the second is what makes the first safe to act on.
+ *
+ * - **The harness can prove it wrote these bytes.** Presence is the wrong
+ *   discriminator: "the consumer wrote this section bare" and "the harness
+ *   wrote it bare, through the bug" look identical, and repairing on absence
+ *   re-imposes a comment on every consumer who deliberately DELETED one, every
+ *   run, with no way to opt out short of `ci.workflowOverrides`. A harness that
+ *   cannot be disagreed with is the thing the refusal path exists to avoid.
+ * - **The consumer has written no commentary of their own.** #917's precedent
+ *   one level up: where both sides have said something about the same thing,
+ *   the consumer's stands. A comment is the consumer's statement about their
+ *   own file and replacing one is the data loss #216 exists to prevent.
+ *
+ * Idempotent by the same condition that gates it. After one run the key has a
+ * block, so `consumerIntro` is non-empty on every run after, and the inverse
+ * defect — a copy appended per upgrade, with nothing stripping the last one —
+ * cannot arise.
+ *
+ * **What this does NOT claim**, said here rather than left as an omission. A
+ * verified marker proves the harness WROTE the bytes, not that it AUTHORED
+ * them: the merge carries a consumer's sub-key values forward and re-stamps,
+ * so a consumer who set `cancel-in-progress: true` by hand and re-scaffolded
+ * will receive the generator's explanation of why it is an expression. That is
+ * the generator explaining its own default above a value the consumer chose —
+ * a comment they can delete, after which this never fires again — and it is a
+ * better outcome than the file staying silent. Narrowing it further, to a
+ * section byte-identical to the generated one, would make the repair
+ * unreachable for every consumer the moment the generator changes a value.
+ *
+ * One exported binding, so there is one thing to mutate. It takes plain data
+ * rather than a `Section`, so a case can drive it without constructing the
+ * parser's internals.
+ */
+export function restorableIntro(args: {
+  provenance: MergeProvenance;
+  consumerIntro: readonly string[];
+  generatedIntro: readonly string[];
+}): string[] {
+  if (args.provenance !== "VERIFIED") return [];
+  if (args.consumerIntro.length > 0) return [];
+  return [...args.generatedIntro];
+}
+
 /** Split trailing blank lines off a block. */
 function splitTrailingBlanks(lines: string[]): [string[], string[]] {
   let end = lines.length;
@@ -617,14 +690,19 @@ function mergeJobsSection(before: Section, generated: Section): string[] {
  * `ci.workflowOverrides`. A claimed key is left exactly as the consumer wrote
  * it and carries a comment saying so — deviation is explicit, never implicit,
  * which is the half of #839 that makes the other half safe to ship.
+ *
+ * `provenance` is what the caller could prove about `before` (#957). It
+ * defaults to `UNPROVEN`, which is the fail-closed direction and the
+ * pre-#957 behaviour exactly: a caller that has not looked changes nothing.
  */
 export function mergeManagedWorkflow(
   before: string,
   generated: string,
   overrides: readonly string[] = [],
+  provenance: MergeProvenance = "UNPROVEN",
   computed: ComputedSubKeys = NO_COMPUTED_SUBKEYS,
 ): string {
-  return mergeManagedWorkflowRecording(before, generated, overrides, computed).content;
+  return mergeManagedWorkflowRecording(before, generated, overrides, provenance, computed).content;
 }
 
 /**
@@ -652,6 +730,7 @@ export function mergeManagedWorkflowRecording(
   before: string,
   generated: string,
   overrides: readonly string[] = [],
+  provenance: MergeProvenance = "UNPROVEN",
   computed: ComputedSubKeys = NO_COMPUTED_SUBKEYS,
 ): { content: string; revoked: RevokedSubKey[] } {
   const revoked: RevokedSubKey[] = [];
@@ -742,7 +821,23 @@ export function mergeManagedWorkflowRecording(
     // the consumer already has keeps whatever they wrote above it, and the
     // generator's block for that key is not merged in beside it — the same
     // rule #839 applies to a sub-key both sides declare, one level up.
-    ordered.push(...section.intro, ...sectionFor(section));
+    //
+    // Unless the consumer wrote nothing above it AND the harness can prove it
+    // wrote the section itself, in which case the block it dropped through
+    // #941 is put back (#957). `restorableIntro` returns nothing whenever
+    // `section.intro` is non-empty, so this expression is `section.intro`
+    // in every case but that one — including a declined key, whose generated
+    // counterpart is not consulted at all.
+    const genForIntro = declined.has(section.key) ? undefined : generatedByKey.get(section.key);
+    ordered.push(
+      ...section.intro,
+      ...restorableIntro({
+        provenance,
+        consumerIntro: section.intro,
+        generatedIntro: genForIntro?.intro ?? [],
+      }),
+      ...sectionFor(section),
+    );
     emitted.add(section.key);
   }
   // Generated keys the consumer does not have, appended in generated order.

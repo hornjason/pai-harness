@@ -27,6 +27,7 @@ import {
   WORKFLOW_OVERRIDE_COMMENT,
   workflowOverrides,
   type ComputedSubKeys,
+  type MergeProvenance,
   type MovedKey,
   type RevokedSubKey,
 } from "./managed-workflow";
@@ -2215,7 +2216,7 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
  * test/scaffold-ci-preservation-mutation.test.ts performs, so that
  * "preservation works" is a claim with a demonstrated way of being false.
  */
-export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = [], computed: ComputedSubKeys = new Map()): ManagedWrite {
+export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = [], provenance: MergeProvenance = "UNPROVEN", computed: ComputedSubKeys = new Map()): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
     preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], revokedGrants: [],
@@ -2248,7 +2249,7 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
   // A refusal that is structurally incapable of firing on the thing being
   // destroyed is the defect class .claude/rules/checks-must-be-able-to-fail.md
   // exists for, and it was in the fix written to prevent a data-loss bug.
-  const { content, revoked: revokedGrants } = mergeManagedWorkflowRecording(existing, generated, overrides, computed);
+  const { content, revoked: revokedGrants } = mergeManagedWorkflowRecording(existing, generated, overrides, provenance, computed);
   const lineDelta = lineCount(content) - before;
 
   const preservedJobs = existingJobs.filter(j => !generatedJobs.includes(j));
@@ -2576,7 +2577,23 @@ export function writeManagedFile(
   // itself had just written.
   const existing = raw === null ? null : (provenance ? provenance.body(raw) : raw);
   const incoming = provenance ? provenance.body(generated) : generated;
-  const resolved = resolveManagedWrite(existing, incoming, opts.workflowOverrides ?? [], opts.computedSubKeys ?? new Map());
+  // What the marker proves about the bytes on disk, read HERE because here is
+  // the only layer that still holds them (#957). Everything below this line
+  // has had the marker stripped, which is the whole reason #941 could not
+  // repair the residue it left: the merge was handed a file with no way of
+  // telling its own old output from the consumer's.
+  //
+  // One expression, over the `WriteProvenance` the caller already supplies:
+  // re-stamping the body reproduces the file exactly when the marker is
+  // present AND describes that body. An absent marker and a stale one are both
+  // UNPROVEN, which is the only distinction the merge acts on, and a managed
+  // file with no provenance at all reads as UNPROVEN too — the fail-closed
+  // direction and the pre-#957 behaviour unchanged.
+  const proven: MergeProvenance =
+    provenance !== undefined && raw !== null && provenance.stamp(provenance.body(raw)) === raw
+      ? "VERIFIED"
+      : "UNPROVEN";
+  const resolved = resolveManagedWrite(existing, incoming, opts.workflowOverrides ?? [], proven, opts.computedSubKeys ?? new Map());
   /** The bytes that land on disk: the decision's content, then the marker. */
   const stamped = (content: string): string => (provenance ? provenance.stamp(content) : content);
 
@@ -2839,9 +2856,21 @@ export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToo
 /**
  * The top-level concurrency block for the CI workflow.
  *
- * `cancel-in-progress` is an EXPRESSION, not `true`. A flat `true` cancels
- * main-branch runs as well as pull-request runs, and those are not the same
- * event:
+ * The GROUP does the work here, not the flag. A run can only be cancelled by
+ * another run in the SAME group, so a key that is unique per main commit makes
+ * the question moot — there is never a second occupant to do the cancelling.
+ *
+ * #937 tried the other arrangement: a ref-keyed group with
+ * `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`. It does not
+ * work. Measured on this repository's own main after it shipped (#952): three
+ * push runs cancelled inside eight minutes with that expression in the file,
+ * one of them one second after the next run was created, and every cancelled
+ * run had job count 0 — cancellation at queue time. The mechanism is
+ * UNMEASURED; the leading hypothesis is that the result coerces to the
+ * non-empty string "false", which is truthy. This form does not depend on
+ * knowing which, and that is the point of choosing it.
+ *
+ * The three events:
  *
  *   - A pull request's ref is `refs/pull/<n>/merge`, unique to that PR, so a
  *     new push to PR #5 can only ever cancel PR #5. Superseding it is the
@@ -2856,32 +2885,40 @@ export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToo
  *     and the run IDs are on #937 — the harness does not name its consumers
  *     (#304), and `test/anti.test.ts` SC-A1 is the check that says so.
  *
- *   - `merge_group` must also resolve false. A queue entry builds its own
- *     `gh-readonly-queue/...` ref and cancelling one mid-flight dequeues the
- *     PR behind it.
+ *   - `merge_group` must not be cancelled either. A queue entry builds its own
+ *     `gh-readonly-queue/...` ref, so it is already alone in its group, and
+ *     cancelling one mid-flight dequeues the PR behind it.
  *
- * Only `pull_request` is safe to cancel, so only `pull_request` is named.
+ * So: a push keys on `github.sha`, unique per commit and therefore never
+ * shared. Everything else keys on `github.ref`, which is unique per pull
+ * request and per queue entry but STABLE across pushes to the same PR — which
+ * is what lets a PR supersede itself, the one case where cancelling is right.
  *
  * This is a SUB-KEY merge under `mergeManagedWorkflow`: a consumer that already
  * declares `cancel-in-progress` keeps its own value, and this reaches only the
  * consumers that have no concurrency block at all.
  */
-export const CI_CONCURRENCY = `# cancel-in-progress is an EXPRESSION and not \`true\`, deliberately.
+export const CI_CONCURRENCY = `# The GROUP does the work here, not the flag. A run is only ever cancelled by
+# another run in the SAME group, so keying a push on its own commit makes the
+# question moot: there is never a second occupant to do the cancelling.
 #
-# A pull request's ref is \`refs/pull/<n>/merge\`, unique to that PR, so a new
-# push to PR #5 can only cancel PR #5 — and superseding it is the point.
+# A push to \`main\` keys on \`github.sha\`, unique per commit. Every other main
+# run is in a different group and nothing can cancel it. That matters because
+# a main run is the ONLY run that will ever build that commit, so losing it
+# leaves a gap in main's history with no red check anywhere saying so.
 #
-# A push to \`main\` shares ONE ref with every other push to main. Under a flat
-# \`true\`, two merges a few minutes apart cancel the first, and the first is the
-# only run that will ever build that commit: a gap in main's history with no
-# red check anywhere saying so. Measured on a consumer repo, every one of its
-# five cancelled runs was a main push.
+# Everything else keys on \`github.ref\`: unique per pull request
+# (\`refs/pull/<n>/merge\`) and per merge-queue entry
+# (\`gh-readonly-queue/...\`), but STABLE across pushes to the same pull
+# request — which is what lets a pull request supersede itself, the one case
+# where cancelling is the right answer.
 #
-# \`merge_group\` must resolve false for the same reason plus one more —
-# cancelling a queue entry mid-flight dequeues the PR behind it.
+# Do NOT "simplify" this to a ref-keyed group with an event expression in
+# cancel-in-progress. That was tried and measured: three main-push runs
+# cancelled inside eight minutes with the expression in place.
 concurrency:
-  group: ci-\${{ github.ref }}
-  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
+  group: ci-\${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
 `;
 
 export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {

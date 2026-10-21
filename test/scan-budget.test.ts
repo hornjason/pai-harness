@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { stripJsComments } from "../lib/strip-js-comments";
+import {
+  describeTimeoutDeclarations,
+  perTestTimeoutDeclarations,
+} from "../lib/per-test-timeouts";
 import {
   SCAN_CEILING,
   describeScanBudget,
@@ -268,19 +271,28 @@ describe("#804: the SC-6 scan is visible to the #621 proximity reading", () => {
   const SCAN_FILE = "scratch-paths-unique.test.ts";
 
   /**
-   * The detector, as a pair of literals rather than file edits — so the live
-   * case below cannot be the only thing holding this line, and so a regex
-   * that stopped matching is caught before it makes the live case vacuous.
+   * The detector moved to `lib/per-test-timeouts.ts` in #968, and its
+   * fixtures moved with it to `test/per-test-timeouts.test.ts`.
+   *
+   * It used to be a regex here:
+   * `/\}\s*,\s*([0-9_]+)\s*\)\s*;/g`. MEASURED on bun 1.3.14 under
+   * `--timeout 300` with a 600ms case — the control is killed and all of
+   * `}, TIMEOUT);`, `}, 60 * 1000);`, `}, 60_000)` without a semicolon,
+   * `}, { timeout: 5000 });` and `setDefaultTimeout(5000);` run to
+   * completion. All five raise the budget exactly as the matched form does,
+   * and the regex saw none of them. The guard against reintroducing #802's
+   * override was one `const` away from being walked around.
+   *
+   * The fixtures had to leave this file as well as the regex. They are
+   * `}, 60_000)` text, and the live case below reads a sibling file for
+   * exactly that text — keeping them here is how a detector and its witness
+   * end up being the same bytes.
    */
-  function perTestTimeouts(src: string): string[] {
-    return [...stripJsComments(src).matchAll(/\}\s*,\s*([0-9_]+)\s*\)\s*;/g)].map(m => m[1]!);
-  }
-
-  test("the detector sees a per-test timeout and does not see an ordinary case", () => {
-    const withTimeout = 'test("slow", () => {\n  expect(1).toBe(1);\n}, 60_000);\n';
-    const without = 'test("ordinary", () => {\n  expect(1).toBe(1);\n});\n';
-    expect(perTestTimeouts(withTimeout)).toEqual(["60_000"]);
-    expect(perTestTimeouts(without)).toEqual([]);
+  test("the detector is wired to the live case, and is not vacuous", () => {
+    // A witness that the import above reaches a working reading, without
+    // restating the fixtures that test/per-test-timeouts.test.ts owns.
+    expect(perTestTimeoutDeclarations('test("ordinary", () => {});\n')).toEqual([]);
+    expect(perTestTimeoutDeclarations('test("slow", () => {}, TIMEOUT);\n')).toHaveLength(1);
   });
 
   /**
@@ -296,15 +308,22 @@ describe("#804: the SC-6 scan is visible to the #621 proximity reading", () => {
    * files, 3.5% of the 5000ms budget. The override bought nothing and cost the
    * reading.
    */
-  test("the scan case declares no per-test timeout of its own", () => {
+  test("the scan case declares no budget of its own, in any form", () => {
     const src = readFileSync(join(ROOT, "test", SCAN_FILE), "utf-8");
-    const found = perTestTimeouts(src);
+    const found = perTestTimeoutDeclarations(src);
+    // REFUSAL, kept distinct from `[]` (#968). A parser that stopped parsing
+    // reports exactly as clean as a file with no overrides, and a clean
+    // report from a detector that read nothing is worse than no detector.
     expect(
       found,
-      `test/${SCAN_FILE} declares per-test timeout(s) ${found.join(", ")}. A per-test timeout ` +
-        `deliberately silences timeoutProximityViolations in lib/junit-checks.ts, so the case would be ` +
-        `invisible to the one instrument that warns before a kill — which is how #804 happened. Make ` +
-        `the scan cheaper instead; lib/scan-budget.ts will say by how much.`,
+      `test/${SCAN_FILE} did not parse, so this reading is UNMEASURED rather than clean`,
+    ).not.toBeNull();
+    expect(
+      found,
+      `test/${SCAN_FILE} raises its own budget:\n${describeTimeoutDeclarations(found ?? [])}\n` +
+        `A budget of its own deliberately silences timeoutProximityViolations in lib/junit-checks.ts, ` +
+        `so the case would be invisible to the one instrument that warns before a kill — which is how ` +
+        `#804 happened. Make the scan cheaper instead; lib/scan-budget.ts will say by how much.`,
     ).toEqual([]);
   });
 
