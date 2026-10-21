@@ -297,8 +297,33 @@ The enforcement lives in `scripts/check-instruction-surface.ts`
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1940: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
 <!-- REVIEW: unmatched (rewriting as file-exists would assert only that reference/rejected-constraints.md exists, while the criterion coordinates a further claim (it is never re-promoted) — the file is mentioned, not what the criterion is about) -->
-- [ ] SC-1941: A rule whose cited `file:line` no longer resolves is auto-retired, not warned about
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+- [x] SC-1941: A rule whose cited `file:line` no longer resolves is auto-retired, not warned about
+
+Implemented by #544 in `lib/rule-retirement.ts`, run by
+`scripts/extract-constraints.ts` before promotion and driven by
+`test/rule-retirement.test.ts`.
+
+Retirement is the only step in this lifecycle that REMOVES, and the only one
+that makes the rest safe: a ladder that only adds degrades the thing it feeds.
+It reads both citation forms the miners emit — `git:<sha>` from
+`lib/failure-intake.ts`, `path:line` from `scripts/extract-constraints.ts` —
+and reuses `lib/line-citation.ts` for the second rather than reimplementing
+the resolution it already does.
+
+**The correctness question has a direction, and it is the shallow clone.**
+`git cat-file -e` answers "no" for every commit before a shallow cut,
+including every commit that is fine upstream, and `actions/checkout@v4` with
+no `fetch-depth` puts a CI runner in that state by default. So there are three
+readings and not two — RESOLVES, GONE, UNMEASURED — and UNMEASURED never
+retires anything. A pass that read a shallow clone's "no" as GONE would retire
+the entire mined tier on its first CI run, and the diff would look like the
+system working. Same for a citation form the parser does not recognise: kept,
+and reported as unread.
+
+Retirement happens at the generator. A retired candidate is not emitted on the
+next run, so the rule stops being written. Nothing deletes a `.claude/rules/*.md`
+file, and a hand-edited one is preserved by #370 and is not the generator's to
+retire.
 - [ ] SC-1942: Eval-gated retention is disabled until its delta measurement has a mutation test proving it goes red
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
@@ -379,6 +404,34 @@ budgets and gets opposite verdicts.
 used `\Z` in a regex, which JavaScript reads as a literal `Z`; every rule
 parsed to zero globs and the peak equalled the launch surface on every tree.
 It went red on the fixtures above before it reached review.
+
+### The retirement battery (#544, SC-1941, 2026-10-21)
+
+Eight mutations against `test/rule-retirement.test.ts` and
+`test/failure-intake-promotion.test.ts` together, baseline **43 pass / 0
+fail**. Fixtures are real git repositories built on disk — including a real
+`--depth 1` clone — never hand-written candidate lists, because #545 names
+that requirement and it is the same requirement here.
+
+| Mutation | Red | What it reddened |
+|---|---|---|
+| the resolver never says GONE | 5 | the sha pair, both retirement cases, the summary, and the converted escape |
+| a shallow clone treated as answerable | 3 | the shallow resolver case, the shallow pass, and the UNMEASURED promotion |
+| a BROKEN `path:line` kept | 1 | the `path:line` pair |
+| an unrecognised citation form retired | 1 | the parser-gap case |
+| retired candidates also kept (warn, not retire) | 4 | both retirement cases, the summary, the converted escape |
+| the unmeasured reasons dropped | 3 | the shallow pass, the non-repository pass, the UNMEASURED promotion |
+| `upstream` folded from the first element only | **0 → 1** | see below |
+| the upstream discriminator not authoritative | 1 | the silent-UNMEASURED case |
+
+**The seventh came back 0 red and the test was wrong, not the mutation.** The
+`upstream is a LIST` case asserted only `.reading`, and the verdict survived
+the mutation through the authoritative-discriminator check immediately below
+it while the REASON was silently dropped — two projections of one computation
+disagreeing, which is the shape this module's own docblock warns about. Naming
+the input the two folds differ on (a MEASURED upstream followed by an
+UNMEASURED one carrying a named reason) and asserting the reason list took it
+to 1 red.
 
 ## SUCCESS.md
 

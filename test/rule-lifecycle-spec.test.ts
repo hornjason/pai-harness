@@ -108,8 +108,13 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
     // script and a mutant of it, and the battery is recorded in the spec's
     // "Proving it" section with the count and the assertion each mutation
     // reddened.
+    //
+    // SC-1941 joins them: `lib/rule-retirement.ts`, driven by
+    // `test/rule-retirement.test.ts` against real git fixtures including a
+    // real `--depth 1` clone, with its own eight-mutation battery recorded
+    // in the spec.
     expect(checked.sort((a, b) => a - b)).toEqual([
-      1933, 1934, 1935, 1936, 1937, 1939, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447,
+      1933, 1934, 1935, 1936, 1937, 1939, 1941, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447,
     ]);
   });
 
@@ -155,7 +160,10 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: behaviour (unimplemented)", ()
   // `reference/rejected-constraints.md` — a file this repository does not
   // have. Half a criterion is not a criterion.
   test.todo("SC-1940: a rejected rule's hash is recorded and never re-promoted");
-  test.todo("SC-1941: a rule citing an unresolvable file:line is auto-retired");
+  // SC-1941 is implemented and covered in `test/rule-retirement.test.ts`
+  // (#544). Its todo is deleted rather than left beside the real cases:
+  // since #810 a todo declaration OUTRANKS a comment citing the same
+  // criterion.
   test.todo("SC-1942: eval-gated retention stays disabled until its measurement can fail");
   test.todo("SC-1943: Makefile, package.json scripts and CI workflows are scanned");
   test.todo("SC-1944: CODE-MAP.md is excluded from constraint sources");

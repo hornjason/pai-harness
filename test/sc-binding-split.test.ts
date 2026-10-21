@@ -101,7 +101,13 @@ const UNCLAIMED_RATCHET = 153;
 // a count cap, the glob that matches everything, and the per-rule glob
 // limits. Unmatchable for the same reason — each is a claim about what the
 // predicate returns for a planted tree, which no file-exists pattern states.
-const CLAIMED_UNBINDABLE = 86;
+//
+// 86 -> 87 on 2026-10-21 (#544). SC-1941, auto-retirement: a claim about
+// what `retireUnresolvable` returns for a candidate citing a commit that is
+// not in the history, and for the same candidate against a real shallow
+// clone. Unmatchable for the same reason — no file-exists pattern expresses
+// a three-armed reading over a planted git repository.
+const CLAIMED_UNBINDABLE = 87;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

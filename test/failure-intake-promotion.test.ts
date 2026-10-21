@@ -584,15 +584,24 @@ describe("WHAT THIS DOES NOT COVER — the classifier's measured escapes", () =>
     expect(reading.promoted.every((c) => !("paths" in c))).toBe(true);
   });
 
-  test("ESCAPE: nothing checks whether the cited evidence still resolves", () => {
-    // Auto-retirement of a rule whose citation no longer resolves is a
-    // criterion this spec states and this increment does not implement.
+  test("BOUNDARY: promoteCandidates alone still does not check citations — the retirement pass does", () => {
+    // This was an ESCAPE until #544. `lib/rule-retirement.ts` now drops a
+    // candidate whose citation is demonstrably gone, and
+    // `scripts/extract-constraints.ts` runs it BEFORE this function. The
+    // escape is converted in `test/rule-retirement.test.ts`, including this
+    // exact candidate shape.
+    //
+    // It stays here as a boundary rather than being deleted, because the
+    // division of labour is load-bearing: this function has no repository
+    // root and must not acquire one. A promoter that re-answered "does the
+    // citation resolve" would be a second decider for a question the
+    // retirement pass already answered, and the two could disagree on a
+    // shallow clone — where the pass says UNMEASURED-and-keep.
     const candidate = evidenceCandidate(
       REAL_FIX_SUBJECTS[4],
       MIXED_OFFSET.later.date,
       "0".repeat(40),
     );
-    // A sha that is in no repository anywhere. It is promoted regardless.
     const reading = promoteCandidates([candidate], { budget: PROMOTION_BUDGET_RULES });
     expect(reading.promoted.length).toBe(1);
     expect(reading.reading).toBe("MEASURED");

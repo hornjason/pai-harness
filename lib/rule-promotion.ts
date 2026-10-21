@@ -95,6 +95,8 @@ export interface WithheldCandidate {
 export const PROMOTION_BUDGET_RULES = 16;
 
 export const NON_POSITIVE_BUDGET = "NON_POSITIVE_BUDGET";
+/** An upstream read UNMEASURED without naming a reason. */
+export const UPSTREAM_UNMEASURED = "UPSTREAM_UNMEASURED";
 
 export interface PromotionReading {
   /**
@@ -146,22 +148,43 @@ function epoch(c: PromotableCandidate): number {
  * — a vetoed candidate and an evidence-less one lose for different reasons and
  * a reader can act on only one of them.
  *
- * `upstream` folds in the intake's own reading. A promotion computed over a
- * shallow clone's candidates is not a smaller promotion, it is a promotion
- * over an unknown population, and `0 promoted` from a truncated history reads
- * exactly like `0 promoted` from a repository with nothing to promote.
+ * `upstream` folds in the readings taken before this one — the intake's, and
+ * since #544 the retirement pass's. A promotion computed over a shallow
+ * clone's candidates is not a smaller promotion, it is a promotion over an
+ * unknown population, and `0 promoted` from a truncated history reads exactly
+ * like `0 promoted` from a repository with nothing to promote.
+ *
+ * It takes a LIST because there are now two of them, and folding two readings
+ * into one at the call site would put a third decider between the producers
+ * and this function — one that could report MEASURED while either upstream
+ * said otherwise. A single reading is still accepted; it is the one-element
+ * case.
  */
+export type UpstreamReading = { reading: "MEASURED" | "UNMEASURED"; unmeasuredReasons: string[] };
+
 export function promoteCandidates(
   candidates: PromotableCandidate[],
   options: {
     budget: number;
     rejectedHashes?: ReadonlySet<string>;
-    upstream?: { reading: "MEASURED" | "UNMEASURED"; unmeasuredReasons: string[] };
+    upstream?: UpstreamReading | readonly UpstreamReading[];
   },
 ): PromotionReading {
   const { budget } = options;
   const rejected = options.rejectedHashes ?? new Set<string>();
-  const unmeasuredReasons = [...(options.upstream?.unmeasuredReasons ?? [])];
+  const upstreams: readonly UpstreamReading[] = options.upstream
+    ? Array.isArray(options.upstream)
+      ? options.upstream
+      : [options.upstream as UpstreamReading]
+    : [];
+  const unmeasuredReasons = upstreams.flatMap(u => u.unmeasuredReasons);
+  // The discriminator is authoritative, not the reason list. An upstream that
+  // read UNMEASURED and named no reason is still UNMEASURED, and folding only
+  // the reasons would have let it through as MEASURED — a producer and a
+  // consumer disagreeing about one fact, with the wrong one winning.
+  if (upstreams.some(u => u.reading === "UNMEASURED") && unmeasuredReasons.length === 0) {
+    unmeasuredReasons.push(UPSTREAM_UNMEASURED);
+  }
 
   const withheld: WithheldCandidate[] = [];
   const eligible: PromotableCandidate[] = [];
