@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn, spawnSync, type ChildProcess } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -42,7 +52,7 @@ import { readProcessTable, type ProcessRow } from "../lib/process-table";
  *
  * | role | shape | what it is for |
  * |---|---|---|
- * | `M` | `/bin/sh -c '(<runner> test …); echo EXIT=$? > log'` | the measuring shell. Its command line CONTAINS the suite's, so a pattern kill takes it |
+ * | `M` | `<shell> -c '(<runner> test …); echo EXIT=$? > log'` | the measuring shell. Its command line CONTAINS the suite's, so a pattern kill takes it |
  * | `S` | `<runner> test --measured`, child of `M` | a suite with a live owner — AC-1 |
  * | `C` | `<runner> test --orphan`, reparented to pid 1 | a genuine orphan — the negative control |
  *
@@ -89,13 +99,87 @@ import { readProcessTable, type ProcessRow } from "../lib/process-table";
  *
  * ## The cheapest wrong fix, named before the cases
  *
- * **Spare the wrapper by excluding `/bin/sh` from the reap.** It makes AC-2's
+ * **Spare the wrapper by excluding the launching shell from the reap.** It makes AC-2's
  * symptom go away — the exit line comes back — and leaves a reaper that still
  * kills live suites, because `S` is not a shell. Do these cases survive it?
  * **Yes, non-vacuously:** AC-1 asserts `S` is spared for `LIVE_PARENT`, and an
  * argv[0] exclusion does not give `S` a parent. The second cheapest is to
  * signal nothing at all, which AC-2's `C` assertion is the control against.
  */
+
+/**
+ * What the probe below prints when `exec -a` really set argv[0].
+ *
+ * A string this file invents, so a shell that ignored `-a` and printed
+ * something of its own cannot satisfy it.
+ */
+const EXEC_A_PROBE_OUTPUT = "rg690-exec-a-works";
+
+/** Shells asked, in order, whether their `exec` can set argv[0]. */
+const EXEC_A_CANDIDATES = [
+  "/bin/bash",
+  "/opt/homebrew/bin/bash",
+  "/usr/local/bin/bash",
+  "/bin/sh",
+] as const;
+
+let execAShell: string | null = null;
+
+/**
+ * A shell whose `exec -a` can set argv[0] — resolved by RUNNING it.
+ *
+ * ## Why this is not `/bin/sh` (#993)
+ *
+ * `/bin/sh` was the first spelling and it is the whole of this file's CI
+ * failure. On macOS `/bin/sh` is bash in POSIX mode and `exec -a` works. On
+ * `ubuntu-latest` `/bin/sh` is **dash**, whose `exec` has no `-a` at all:
+ *
+ * ```
+ * $ podman run --rm ubuntu:latest /bin/sh -c '( exec -a X /bin/sleep 3 ) &'
+ * /bin/sh: 1: exec: -a: not found
+ * ```
+ *
+ * The subshell dies before `sleep` is reached, the plant never appears, and
+ * `awaitRow` spends its whole timeout. Three cases called `plantMeasuredPair`
+ * and three reported ~4031ms — one cause wearing three failures.
+ *
+ * **The reader is not implicated, and that was measured rather than
+ * assumed.** The same image, same production `ps` arguments, renders a
+ * bash-launched plant as `/tmp/rg690runner test --measured 3`. So the fix is
+ * to strip the environment difference, not the cases: one shell, chosen by
+ * probing for the capability the plant needs instead of trusting a path.
+ *
+ * A machine with no such shell cannot take this reading. That is UNMEASURED,
+ * and it **fails** — there is no `skipIf` here, because a skipped case and a
+ * passing case are the same green, and these are the only cases in the repo
+ * that watch a real process survive a real reap.
+ */
+function execACapableShell(): string {
+  if (execAShell) return execAShell;
+  const tried: string[] = [];
+  for (const shell of EXEC_A_CANDIDATES) {
+    if (!existsSync(shell)) {
+      tried.push(`${shell}: not on disk`);
+      continue;
+    }
+    const r = spawnSync(shell, ["-c", `exec -a rg690probe /bin/echo ${EXEC_A_PROBE_OUTPUT}`], {
+      encoding: "utf-8",
+    });
+    const out = (r.stdout ?? "").trim();
+    if (out === EXEC_A_PROBE_OUTPUT) return (execAShell = shell);
+    tried.push(
+      `${shell}: exit ${r.status}, stdout ${JSON.stringify(out)}, ` +
+        `stderr ${JSON.stringify((r.stderr ?? "").trim())}`,
+    );
+  }
+  throw new Error(
+    `UNMEASURED: no shell on this machine can set argv[0] with 'exec -a', so a ` +
+      `process whose command line is a suite invocation cannot be planted and #690 ` +
+      `AC-1/AC-2 cannot be observed here. For the reading to count, one of the ` +
+      `candidates must print ${JSON.stringify(EXEC_A_PROBE_OUTPUT)} on stdout and ` +
+      `exit 0. What each one did instead:\n  ${tried.join("\n  ")}`,
+  );
+}
 
 /** `/bin/sleep`, under a name that contains no `bun`. */
 const RUNNER_NAME = "rg690runner";
@@ -128,10 +212,25 @@ class Plantation {
   readonly dir = mkdtempSync(join(tmpdir(), "rg690-live-"));
   readonly runner = join(this.dir, RUNNER_NAME);
   readonly owned = new Set<number>();
+  /** Everything the launching shells wrote to stderr, for the failure message. */
+  readonly launcherLog = join(this.dir, "launcher.err");
+  private readonly shell: string;
   private readonly children: ChildProcess[] = [];
 
   constructor() {
+    // Resolved before anything is spawned, so an unusable shell is reported
+    // as itself rather than as a plant that never appeared.
+    this.shell = execACapableShell();
     symlinkSync("/bin/sleep", this.runner);
+  }
+
+  /** What the launching shells said, if they said anything. */
+  private launcherStderr(): string {
+    try {
+      return readFileSync(this.launcherLog, "utf-8").trim();
+    } catch {
+      return "";
+    }
   }
 
   /**
@@ -172,13 +271,18 @@ class Plantation {
     const script =
       `( exec -a '${this.runner} test --measured' /bin/sleep ${MEASURED_SECONDS} ); ` +
       `echo "EXIT=$?" > '${this.exitLog}'`;
-    const child = spawn("/bin/sh", ["-c", script], { stdio: "ignore" });
+    const errFd = openSync(this.launcherLog, "a");
+    const child = spawn(this.shell, ["-c", script], { stdio: ["ignore", "ignore", errFd] });
+    closeSync(errFd);
     this.children.push(child);
     const measurer = this.own(child.pid ?? 0, "the measuring shell");
     // argv[0] must BE the runner, not merely contain it: the wrapper's own
     // command line contains the runner path too, and a table misread as pid
     // and ppid transposed matches the wrapper on `ppid === measurer`.
-    const row = this.awaitRow((r) => r.ppid === measurer && r.command.startsWith(this.runner));
+    const row = this.awaitRow(
+      (r) => r.ppid === measurer && r.command.startsWith(this.runner),
+      `a child of the measuring shell (pid ${measurer}) with argv[0] ${this.runner}`,
+    );
     const suite = this.own(row.pid, "the planted suite");
     return { measurer, suite };
   }
@@ -189,30 +293,68 @@ class Plantation {
    */
   plantOrphan(): number {
     const pidFile = join(this.dir, "orphan.pid");
-    const r = spawnSync("/bin/sh", [
-      "-c",
-      `( exec -a '${this.runner} test --orphan' /bin/sleep 120 ) & echo $! > '${pidFile}'`,
-    ]);
-    if (r.status !== 0) throw new Error(`the orphan launcher exited ${r.status}`);
+    const r = spawnSync(
+      this.shell,
+      [
+        "-c",
+        `( exec -a '${this.runner} test --orphan' /bin/sleep 120 ) & echo $! > '${pidFile}'`,
+      ],
+      { encoding: "utf-8" },
+    );
+    // The launcher's own stderr joins the log, because the subshell that
+    // fails is a BACKGROUND one: its failure does not move `r.status`, so
+    // this is the only place the reason is written down (#993).
+    if (r.stderr) appendFileSync(this.launcherLog, r.stderr);
+    if (r.status !== 0) {
+      throw new Error(`the orphan launcher exited ${r.status}: ${(r.stderr ?? "").trim()}`);
+    }
     // `$!` is written by a shell this file started, so it is a spawn record
     // and not a reading. The table is then consulted only to WAIT for the
     // reparenting, never to decide which pid is ours.
     const pid = this.own(Number(readFileSync(pidFile, "utf-8").trim()), "the planted orphan");
     this.awaitRow(
       (row) => row.pid === pid && row.ppid === 1 && row.command.startsWith(this.runner),
+      `pid ${pid} reparented to init with argv[0] ${this.runner}`,
     );
     return pid;
   }
 
-  /** A real row matching `want`, or a throw naming what never appeared. */
-  awaitRow(want: (row: ProcessRow) => boolean): ProcessRow {
+  /**
+   * A real row matching `want`, or a throw saying what the reader DID see.
+   *
+   * The message is the whole of this helper's value on a machine nobody can
+   * log into. "A planted process never appeared" names what did not happen
+   * and nothing about what did, so it is consistent with a broken reader, a
+   * broken launcher, a slow machine and a wrong predicate alike — and #993
+   * spent a CI round trip on the ambiguity. The three things that tell those
+   * apart are all cheap to carry: the row count (a reader that works reads
+   * the whole machine, so a small number is the reader failing), the rows
+   * this plantation owns (a plant that started and was not matched is a
+   * wrong predicate, not an absent process), and the launching shell's
+   * stderr (a plant that never started says why).
+   */
+  awaitRow(want: (row: ProcessRow) => boolean, wanted: string): ProcessRow {
     const deadline = Date.now() + APPEAR_TIMEOUT_MS;
+    let rows: ProcessRow[] = [];
     for (;;) {
-      const found = readProcessTable().find(want);
+      rows = readProcessTable();
+      const found = rows.find(want);
       if (found) return found;
-      if (Date.now() > deadline) throw new Error("a planted process never appeared in ps");
+      if (Date.now() > deadline) break;
       sleepFor(0.05);
     }
+    const mine = rows.filter((r) => r.command.includes(this.dir));
+    const stderr = this.launcherStderr();
+    throw new Error(
+      [
+        `no process matching "${wanted}" appeared within ${APPEAR_TIMEOUT_MS}ms.`,
+        `  shell used to plant: ${this.shell}`,
+        `  rows the reader returned: ${rows.length} (a reader that works sees the whole machine)`,
+        `  rows mentioning ${this.dir}: ${mine.length}`,
+        ...mine.map((r) => `    pid=${r.pid} ppid=${r.ppid} age=${r.elapsedSeconds}s ${r.command}`),
+        `  launcher stderr: ${stderr === "" ? "(nothing was written)" : stderr}`,
+      ].join("\n"),
+    );
   }
 
   alive(pid: number): boolean {
@@ -264,6 +406,67 @@ const decisionFor = (decisions: ReapDecision[], pid: number): ReapDecision => {
   if (!found) throw new Error(`pid ${pid} is absent from the reading — the case is vacuous`);
   return found;
 };
+
+describe("#993: the plant's shell is probed for the capability, not assumed", () => {
+  /**
+   * These cases went red on `ubuntu-latest` and green on this laptop, three
+   * at a time, all three inside `plantMeasuredPair`. One cause: `/bin/sh` is
+   * dash there and dash's `exec` has no `-a`.
+   *
+   * **The cheapest wrong fix is `test.skipIf(process.platform === "linux")`.**
+   * Every symptom goes away, the three cases stop being red, and the only
+   * reading in this repo that watches a real process survive a real reap
+   * stops being taken in CI at all — silently, because a skipped case and a
+   * passing case are the same green. The second cheapest is to raise
+   * `APPEAR_TIMEOUT_MS`, which treats a shell that cannot run the command as
+   * a machine that is merely slow, and buys nothing but a slower red.
+   *
+   * These two cases survive both. The first asserts the capability by
+   * RUNNING it, so a shell that cannot do it fails here whatever the
+   * platform; the second asserts the plant really appears, which no timeout
+   * reaches because the plant never started.
+   */
+  test("the resolved shell can really set argv[0], on whatever platform this is", () => {
+    const shell = execACapableShell();
+    const r = spawnSync(shell, ["-c", `exec -a rg690probe /bin/echo ${EXEC_A_PROBE_OUTPUT}`], {
+      encoding: "utf-8",
+    });
+
+    expect(r.status, `${shell} stderr: ${r.stderr}`).toBe(0);
+    expect((r.stdout ?? "").trim()).toBe(EXEC_A_PROBE_OUTPUT);
+    // The control: `/bin/sh` is NOT asserted to be the answer. On macOS it
+    // is bash and would pass; asserting it would re-encode the assumption
+    // that broke in CI.
+    expect([...EXEC_A_CANDIDATES] as string[]).toContain(shell);
+  });
+
+  test("a planted pair really appears in ps, and the failure says what was seen", () => {
+    const p = plant();
+    const { measurer, suite } = p.plantMeasuredPair();
+    const rows = readProcessTable();
+    const planted = rows.find((r) => r.pid === suite);
+
+    // The plant exists as a real row, with the argv the reaper classifies on.
+    expect(planted, `pid ${suite} is not in a table of ${rows.length} rows`).toBeDefined();
+    expect(planted!.ppid).toBe(measurer);
+    expect(planted!.command.startsWith(p.runner)).toBe(true);
+
+    // And the message a future failure would carry names the three things
+    // that tell a broken reader from a broken launcher from a wrong
+    // predicate. A bare "never appeared" is consistent with all three.
+    const message = (() => {
+      try {
+        p.awaitRow(() => false, "a row nothing can match");
+        return "";
+      } catch (e) {
+        return (e as Error).message;
+      }
+    })();
+    expect(message).toContain("rows the reader returned:");
+    expect(message).toContain("launcher stderr:");
+    expect(message).toContain(p.runner);
+  });
+});
 
 describe("#690 AC-1: a planted suite with a live owner survives a real reading", () => {
   test(
