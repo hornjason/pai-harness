@@ -56,8 +56,8 @@
  */
 
 import { execFileSync } from "child_process";
-import { chmodSync, lstatSync, readFileSync, writeFileSync } from "fs";
-import { isAbsolute, join } from "path";
+import { chmodSync, existsSync, lstatSync, readFileSync, writeFileSync } from "fs";
+import { dirname, isAbsolute, join } from "path";
 import { fileURLToPath } from "url";
 
 /** The one exit code every refusal travels through. See note 1 above. */
@@ -153,15 +153,38 @@ export const GUARD_PROPERTIES: GuardProperty[] = [
 /**
  * Where the hook that will actually run lives.
  *
- * `--git-common-dir`, not `--git-dir`: in a linked worktree the latter is
- * `.git/worktrees/<name>`, which has no `hooks/` and never will. A check that
- * joined `<project>/.git/hooks/pre-commit` would report "not installed" from
- * every worktree in the repository, which is exactly where an agent runs it.
+ * `rev-parse --git-path hooks`, which is GIT's answer to this question rather
+ * than a reconstruction of it. Two things make the reconstruction wrong, and
+ * only the first was ever handled here:
+ *
+ *  - In a linked worktree `--git-dir` is `.git/worktrees/<name>`, which has no
+ *    `hooks/` and never will, so a check joining `<project>/.git/hooks` would
+ *    report "not installed" from every worktree in the repository — exactly
+ *    where an agent runs it. `--git-path hooks` answers with the SHARED
+ *    `.git/hooks`, because git treats `hooks` as a common path; measured on
+ *    a real linked worktree, and asserted by AC-6 in the test.
+ *  - `core.hooksPath` redirects git wholesale (#874). With it set,
+ *    `<common-dir>/hooks/pre-commit` is an ordinary untracked file that
+ *    nothing executes, and a verdict taken there is a verdict about a program
+ *    that will never run. Measured 2026-10-21 against the previous version of
+ *    this function: a repository whose hooksPath held `exit 0` and whose
+ *    `.git/hooks/pre-commit` held the current generator output printed
+ *    `pre-commit is current` and exited 0.
+ *
+ * Reading `core.hooksPath` here instead would be a SECOND decider for a
+ * question git already answers, and it would have to re-implement git's own
+ * resolution rules. Those rules are not obvious: a relative value is resolved
+ * against the directory the hook runs from, so `core.hooksPath = relhooks`
+ * means a DIFFERENT directory in each linked worktree. `--git-path` reproduces
+ * that for free — it answered `relhooks` from the toplevel and `../relhooks`
+ * from a subdirectory of the same repository — which is why a relative answer
+ * is resolved against the directory git was asked from, and not against the
+ * worktree toplevel.
  */
 export function installedHookPath(projectRoot: string): string {
-  let common = "";
+  let hooks = "";
   try {
-    common = execFileSync("git", ["-C", projectRoot, "rev-parse", "--git-common-dir"], {
+    hooks = execFileSync("git", ["-C", projectRoot, "rev-parse", "--git-path", "hooks"], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 30_000,
@@ -172,15 +195,66 @@ export function installedHookPath(projectRoot: string): string {
       `${projectRoot} is not a git checkout, so it has no installed hook to read: ${firstLine(e)}`,
     );
   }
-  if (!common) {
-    throw new HookRefused("UNMEASURED", `git reported no common dir for ${projectRoot}`);
+  if (!hooks) {
+    throw new HookRefused("UNMEASURED", `git reported no hooks directory for ${projectRoot}`);
   }
-  return join(isAbsolute(common) ? common : join(projectRoot, common), "hooks", "pre-commit");
+  return join(isAbsolute(hooks) ? hooks : join(projectRoot, hooks), "pre-commit");
+}
+
+/**
+ * One registry expression, as the refusal names it (#874).
+ *
+ * Structurally identical to `EMBEDDED_PATTERNS` in `lib/secret-patterns.ts`,
+ * declared here only because this script may not import it — see note 2 in
+ * the header. The LIST is never rebuilt: it is read out of the registry
+ * module at the path `--generator` names, so there is one declaration of what
+ * the hook's scanner consists of and this file holds a type, not a copy.
+ */
+export interface RegistryPattern {
+  id: string;
+  ere: string;
 }
 
 export interface GeneratorOutput {
   content: string;
   marker: string;
+  patterns: RegistryPattern[];
+}
+
+/**
+ * The registry expressions the generated hook does NOT carry.
+ *
+ * The instrument check for `missingPatternIds` below. A registry entry the
+ * generator never interpolates would be reported missing from every installed
+ * hook on every run — a refusal that names the wrong thing always, which is
+ * the stale-probe failure `GUARD_PROPERTIES` is guarded against one table up.
+ * Separate exported function so it can be driven with a synthetic list, which
+ * is the only way to reach it without editing the real registry.
+ */
+export function patternsBlindToGenerator(
+  generated: string,
+  patterns: RegistryPattern[],
+): string[] {
+  return patterns.filter(p => !generated.includes(p.ere)).map(p => p.id);
+}
+
+/**
+ * Which of the registry's expressions the installed hook is missing, by name
+ * (#874).
+ *
+ * The byte-exact comparison below already catches a hook whose scanner has
+ * drifted. What it could not do is SAY SO: on 2026-10-21 the hook installed in
+ * this repository was missing tier 1's `jwt` and the whole of tiers 2 and 3,
+ * and the refusal reported that it "predates the generation-time updater
+ * resolution (#610)" — true, and the least consequential of the differences.
+ *
+ * Derived from the registry at runtime rather than from a table here. A
+ * hand-written list naming `jwt` is the cheap repair and it is wrong: the
+ * tenth pattern is invisible again, and the table and the registry become two
+ * deciders that agree until one of them is edited.
+ */
+export function missingPatternIds(installed: string, patterns: RegistryPattern[]): string[] {
+  return patterns.filter(p => !installed.includes(p.ere)).map(p => p.id);
 }
 
 /**
@@ -252,7 +326,39 @@ export async function generatorHook(
           `well carry. Update the table in the same change as the generator.`,
       );
     }
-    return { content, marker };
+
+    // #874. Same module path discipline as the generator above: computed from
+    // `--generator`, never imported relatively, so the mutant still runs from
+    // a temp directory.
+    const registryPath = join(generatorRoot, "lib", "secret-patterns.ts");
+    let registry: any;
+    try {
+      registry = await import(registryPath);
+    } catch (e) {
+      throw new HookRefused(
+        "UNMEASURED",
+        `could not load the secret registry at ${registryPath}: ${firstLine(e)}. Without it ` +
+          `nothing here can say WHICH patterns an installed hook is missing.`,
+      );
+    }
+    const patterns = registry.EMBEDDED_PATTERNS;
+    if (!Array.isArray(patterns) || patterns.length === 0) {
+      throw new HookRefused(
+        "UNMEASURED",
+        `${registryPath} does not export a non-empty EMBEDDED_PATTERNS, so the scanner the hook ` +
+          `is supposed to carry has no declaration to be compared against`,
+      );
+    }
+    const unreachable = patternsBlindToGenerator(content, patterns);
+    if (unreachable.length > 0) {
+      throw new HookRefused(
+        "UNMEASURED",
+        `the generator does not interpolate ${unreachable.join(", ")} from the registry, so ` +
+          `every installed hook would be reported as missing ${unreachable.length > 1 ? "them" : "it"}. ` +
+          `A probe the generator cannot satisfy names the wrong thing on every run.`,
+      );
+    }
+    return { content, marker, patterns };
   }
 }
 
@@ -269,6 +375,7 @@ export function currencyRefusal(
   generated: string,
   marker: string,
   path: string,
+  patterns: RegistryPattern[],
 ): string | null {
   if (installed === null) {
     return (
@@ -289,17 +396,38 @@ export function currencyRefusal(
 
   const missing = GUARD_PROPERTIES.filter(p => !installed.includes(p.probe));
   const how = `Re-run this script with --install, or \`bun bin/rungate.ts scaffold .\`.`;
+
+  // The scanner first, and on its own sentence. A hook that predates a fix to
+  // the PROJECT-STATE arm stages the wrong file; a hook whose scanner is short
+  // a pattern commits the credential. Both are differences, and reporting only
+  // the one the GUARD_PROPERTIES table happens to name is how the live hook
+  // here was described as predating #610 while silently missing `jwt` and the
+  // whole of tiers 2 and 3 (#874).
+  const absent = missingPatternIds(installed, patterns);
+  const scanner =
+    absent.length > 0
+      ? `Its secret scanner is missing ${absent.length} of the ${patterns.length} expressions ` +
+        `lib/secret-patterns.ts declares: ${absent.join(", ")}. A commit from this checkout is ` +
+        `not scanned for ${absent.length > 1 ? "those" : "that"}. `
+      : "";
+
   if (missing.length > 0) {
     return (
       `the hook installed at ${path} predates ${missing.map(m => m.name).join(", ")}. ` +
-      `Every commit from this checkout is running the old behaviour, whatever the generator ` +
-      `says. ${how}`
+      `${scanner}Every commit from this checkout is running the old behaviour, whatever the ` +
+      `generator says. ${how}`
+    );
+  }
+  if (absent.length > 0) {
+    return (
+      `the hook installed at ${path} carries every named guard and is not byte-identical to the ` +
+      `generator's output. ${scanner}${how}`
     );
   }
   return (
-    `the hook installed at ${path} carries every named guard but is not byte-identical to the ` +
-    `generator's output, so something edited it or it predates a change this table does not ` +
-    `name. ${how}`
+    `the hook installed at ${path} carries every named guard and every registry pattern but is ` +
+    `not byte-identical to the generator's output, so something edited it or it predates a ` +
+    `change this table does not name. ${how}`
   );
 }
 
@@ -328,6 +456,21 @@ export function installHook(path: string, content: string): void {
     throw new HookRefused(
       "INSTALL",
       `${path} exists but is not a regular file, so it will not be replaced.`,
+    );
+  }
+  // Refused, not created (#874). Since `core.hooksPath` decides this
+  // directory, it can be anywhere on disk and a `mkdir -p` here would create
+  // a tree outside the repository on the strength of one config value. The
+  // honest reading is that git is pointed at a directory that does not exist,
+  // which is a thing to say rather than to repair. Without this the ENOENT
+  // escapes as an unclassified string and the refusal carries no label at
+  // all, which is #613.
+  const dir = dirname(path);
+  if (!existsSync(dir)) {
+    throw new HookRefused(
+      "INSTALL",
+      `${dir} does not exist, so the hook was not written. git is pointed at it by ` +
+        `core.hooksPath; create it, or clear the setting, and re-run.`,
     );
   }
   writeFileSync(path, content);
@@ -403,7 +546,7 @@ if (import.meta.main) {
     const generatorRoot = typeof args.generator === "string" ? args.generator : defaultGeneratorRoot();
 
     const path = installedHookPath(project);
-    const { content, marker } = await generatorHook(generatorRoot, project);
+    const { content, marker, patterns } = await generatorHook(generatorRoot, project);
 
     if (args.install === true) {
       installHook(path, content);
@@ -420,7 +563,7 @@ if (import.meta.main) {
       // a line of output. A second print site would be a second decider
       // about the label, and a mutation of either would leave the other
       // holding the case up.
-      const refusal = currencyRefusal(readIfPresent(path), content, marker, path);
+      const refusal = currencyRefusal(readIfPresent(path), content, marker, path, patterns);
       if (refusal) throw new HookRefused("STALE", refusal);
       console.log(`pre-commit is current at ${path}`);
     }

@@ -568,6 +568,32 @@ export function tier3Ere(): string {
 }
 
 /**
+ * EVERY registry expression that reaches generated shell, each with the id a
+ * refusal names it by.
+ *
+ * One binding, two consumers, because they are one question asked twice.
+ * `unshellSafePatterns()` below asks whether each of these survives the trip
+ * into a single-quoted shell string; `scripts/check-installed-hook-currency.ts`
+ * asks which of them the hook a developer actually commits through is missing
+ * (#874). A second list in the check script would be a second decider that
+ * agrees with this one right up until somebody adds a pattern to one of them
+ * — `.claude/rules/checks-must-be-able-to-fail.md`, fourth shape — and the
+ * failure mode is the one this registry exists to prevent: a scanner position
+ * nothing compares.
+ *
+ * Tier 1 is spread rather than re-listed, so an entry added to
+ * `TIER1_SECRET_PATTERNS` is covered here without a second edit. The four
+ * tier-2 and tier-3 expressions have no list of their own to spread.
+ */
+export const EMBEDDED_PATTERNS: ReadonlyArray<{ id: string; ere: string }> = [
+  ...TIER1_SECRET_PATTERNS.map(p => ({ id: p.id, ere: p.ere })),
+  { id: "tier2-assignment", ere: TIER2_ASSIGNMENT_ERE },
+  { id: "tier2-allowlist", ere: TIER2_ALLOWED_VALUE_ERE },
+  { id: "tier3-shell-default", ere: TIER3_SHELL_DEFAULT_ERE },
+  { id: "tier3-allowlist", ere: TIER3_ALLOWED_VALUE_ERE },
+];
+
+/**
  * Guard against a pattern that cannot survive the trip into generated shell.
  *
  * Every pattern here is interpolated into a single-quoted shell string inside
@@ -581,15 +607,9 @@ export function unshellSafePatterns(): string[] {
   // tier-2 assignment and allowlist expressions are embedded the same way, so
   // checking only tier 1 would have been a validator with a narrower view
   // than the thing it validates.
-  const embedded: Array<{ id: string; ere: string }> = [
-    ...TIER1_SECRET_PATTERNS.map(p => ({ id: p.id, ere: p.ere })),
-    { id: "tier2-assignment", ere: TIER2_ASSIGNMENT_ERE },
-    { id: "tier2-allowlist", ere: TIER2_ALLOWED_VALUE_ERE },
-    { id: "tier3-shell-default", ere: TIER3_SHELL_DEFAULT_ERE },
-    { id: "tier3-allowlist", ere: TIER3_ALLOWED_VALUE_ERE },
-  ];
+  //
   // A single quote ends the shell quoting; a backtick or ${ ends the JS
   // template the shell is built in. Backslashes are legitimate regex escapes,
   // so they are not disqualifying on their own.
-  return embedded.filter(p => /['`]|\$\{/.test(p.ere)).map(p => p.id);
+  return EMBEDDED_PATTERNS.filter(p => /['`]|\$\{/.test(p.ere)).map(p => p.id);
 }

@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { preCommitHookScript, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
+import { EMBEDDED_PATTERNS } from '../../lib/secret-patterns';
 // `import.meta.main` is false under an import, so this loads the table without
 // running the check. Importing the labels rather than retyping them is the
 // point: a test carrying its own copy of the strings asserts that two literals
@@ -97,6 +98,86 @@ function repoWithHook(name: string, hook: string | null): string {
   if (hook === null) rmSync(path, { force: true });
   else writeFileSync(path, hook, { mode: 0o755 });
   return dir;
+}
+
+/**
+ * #874. A fixture whose `core.hooksPath` points somewhere else, with whatever
+ * is at the DEFAULT location given separately.
+ *
+ * The decoy argument is the point of the helper. `core.hooksPath` redirects
+ * git wholesale: `.git/hooks/pre-commit` is then an ordinary untracked file
+ * that nothing executes, and a check reading it reports a verdict about a
+ * program that will never run. A fixture with nothing at the default location
+ * cannot tell "read the right file" from "read nothing and fell through", so
+ * every hooksPath case here says what is sitting at the old address.
+ *
+ * `hooksPath` is written to the config verbatim, so a relative value stays
+ * relative — git resolves one against the working directory it runs the hook
+ * from, and a check that assumed absolute would read a path that does not
+ * exist and call it "no hook installed".
+ */
+function repoWithHooksPath(
+  name: string,
+  opts: { hooksPath: string; hook: string | null; decoy: string | null },
+): { dir: string; hookFile: string } {
+  const dir = join(FIX, name);
+  initRepo(dir);
+  const defaultPath = join(dir, '.git', 'hooks', 'pre-commit');
+  if (opts.decoy === null) rmSync(defaultPath, { force: true });
+  else writeFileSync(defaultPath, opts.decoy, { mode: 0o755 });
+
+  const resolved = opts.hooksPath.startsWith('/') ? opts.hooksPath : join(dir, opts.hooksPath);
+  mkdirSync(resolved, { recursive: true });
+  const hookFile = join(resolved, 'pre-commit');
+  if (opts.hook === null) rmSync(hookFile, { force: true });
+  else writeFileSync(hookFile, opts.hook, { mode: 0o755 });
+
+  git(dir, ['config', 'core.hooksPath', opts.hooksPath]);
+  return { dir, hookFile };
+}
+
+/**
+ * #874. A minimal rungate checkout: a `lib/scaffold/steps.ts` that emits a
+ * hook, and a `lib/secret-patterns.ts` declaring whatever registry the case
+ * wants, with the two deliberately allowed to disagree.
+ *
+ * The script reaches both modules through paths computed from `--generator`,
+ * so a synthetic root is the only way to vary the registry without editing
+ * the real one — and editing the real one is not a test, it is a change to
+ * the thing under test.
+ *
+ * The emitted hook carries the managed marker and every GUARD_PROPERTIES
+ * probe, because a hook missing one of those is refused for a reason that has
+ * nothing to do with the registry, and the case would then pass without ever
+ * reaching the guard it names.
+ */
+function fakeGenerator(
+  name: string,
+  opts: { patterns: Array<{ id: string; ere: string }>; emit: string[] },
+): { root: string; hook: string } {
+  const root = join(FIX, `generator-${name}`);
+  mkdirSync(join(root, 'lib', 'scaffold'), { recursive: true });
+  const hook = [
+    '#!/bin/sh',
+    PRE_COMMIT_MANAGED_MARKER,
+    '# --git-common-dir',
+    '# Which updater runs was decided when this hook was generated (#610), not here.',
+    'echo "project-state: UNMEASURED — synthetic" >&2',
+    'echo "are DA-owned (#296); update them from the primary checkout." >&2',
+    ...opts.emit.map(e => `# ${e}`),
+    'exit 0',
+    '',
+  ].join('\n');
+  writeFileSync(
+    join(root, 'lib', 'scaffold', 'steps.ts'),
+    `export const PRE_COMMIT_MANAGED_MARKER = ${JSON.stringify(PRE_COMMIT_MANAGED_MARKER)};\n` +
+      `export function preCommitHookScript(_root: string): string { return ${JSON.stringify(hook)}; }\n`,
+  );
+  writeFileSync(
+    join(root, 'lib', 'secret-patterns.ts'),
+    `export const EMBEDDED_PATTERNS = ${JSON.stringify(opts.patterns)};\n`,
+  );
+  return { root, hook };
 }
 
 beforeAll(() => {
@@ -489,6 +570,359 @@ describe('#599: a current hook passes, and the read is at the shared common dir'
   });
 });
 
+// ── #874: the file git will run, not the file at the conventional address ──
+//
+// WHAT WAS BROKEN TO PROVE THESE CASES FAIL, run and counted rather than
+// asserted, over this file alone (47 tests). Every count was predicted before
+// the battery ran, and THE BASELINE ROW WAS READ FIRST — an instrument that
+// has stopped reporting takes the baseline down with it, and that is the row
+// nobody mutates anything to produce.
+//
+// | Row | Predicted | Measured | The input on which mutant and original differ |
+// |---|---|---|---|
+// | baseline — unmutated | 47 pass, 0 fail | 47 pass, 0 fail | — |
+// | M1 the genuinely pre-#874 resolver: `--git-common-dir` + `join(…, "hooks", "pre-commit")` | 6 | 6 of 47 | a repo whose `core.hooksPath` holds `exit 0` and whose `.git/hooks/pre-commit` holds the generator output: the original refuses naming `…/elsewhere/pre-commit`, the mutant prints `pre-commit is current` and exits 0 |
+// | M2 THE CHEAPEST WRONG FIX for the resolver: old resolver, plus UNMEASURED whenever `core.hooksPath` is set | 6 | 6 of 47 | a repo whose `core.hooksPath` holds the CURRENT generator output: the original exits 0 naming it, the mutant refuses `core.hooksPath is set to elsewhere`. AC-2 and AC-3 are the cases that do not survive it |
+// | M3 `missingPatternIds` short-circuited to `return []` | 14 | 14 of 47 | the hook with tier 1's `jwt` expression deleted: the original names `jwt`, the mutant names no pattern |
+// | M4 THE CHEAPEST WRONG FIX for the naming: a hand table naming only `jwt` | 13 | 13 of 47 | the hook with `aws-access-key` deleted: the original names it, the mutant names nothing. The `jwt` case is the one green of the thirteen, which is the whole argument against the table |
+// | M5 `patternsBlindToGenerator` short-circuited to `return []` | 1 | 1 of 47 | the synthetic generator declaring `invented-pattern` and emitting it nowhere: the original is UNMEASURED, the mutant reaches a verdict about a pattern nothing could carry |
+// | M6 the empty/ill-typed `EMBEDDED_PATTERNS` refusal removed | 1 | 1 of 47 | the synthetic generator exporting `[]`: the original refuses naming the export, the mutant compares against a declaration of nothing and passes |
+// | M7 the `--install` missing-directory refusal removed | 1 | 1 of 47 | `core.hooksPath = nowhere`: the original refuses as INSTALL naming the directory, the mutant throws a bare ENOENT that prints with no class at all |
+// | M8 `EMBEDDED_PATTERNS` truncated to tier 1 — the four tier-2/tier-3 entries dropped | 2 red, 43 cases | 2 of 43 — AC-7's pin and AC-9 | the registry itself |
+//
+// M2's first cut measured 35 and was NOT a mutation: it read `core.hooksPath`
+// with a bare `git config --get`, which exits 1 when the key is absent, so
+// `execFileSync` threw for every fixture and the mutant died rather than
+// behaved differently. A mutant that crashes measures that the file still
+// parses. Re-cut with `--default ""`, the row is 6.
+//
+// M8 is the row that justifies AC-7 existing at all. Four of the thirteen
+// AC-8 cases are GENERATED FROM the list the mutation empties, so they are
+// DELETED rather than reddened — 43 cases ran, not 47 — and a case population
+// that is a projection of its own subject cannot witness that subject being
+// emptied. The hand-written pin is the only thing that goes red.
+//
+// None of the eight mutations is left in the tree; all were run and reverted,
+// and `scripts/check-installed-hook-currency.ts` and `lib/secret-patterns.ts`
+// were confirmed byte-identical to the measured source afterwards by sha256,
+// restored from a `cp` backup and never by `git checkout --`.
+
+describe('#874: core.hooksPath decides where the hook that runs lives', () => {
+  // The defect, in one sentence: `core.hooksPath` redirects git wholesale, and
+  // a check joining `<common-dir>/hooks/pre-commit` then reports a verdict
+  // about a file nothing executes. Measured on 2026-10-21 against the
+  // pre-#874 script: a repository whose hooksPath pointed at `exit 0` and
+  // whose `.git/hooks/pre-commit` held the current generator output printed
+  // `pre-commit is current` and exited 0.
+  //
+  // THE CHEAPEST WRONG FIX, named before the repair: read
+  // `core.hooksPath` and refuse UNMEASURED whenever it is set. One config read
+  // and one throw; the false CLEAN disappears. It is wrong twice over — it
+  // still never reads the hook that runs, so it trades a false pass for a
+  // permanent non-measurement, and `core.hooksPath` is an ordinary supported
+  // setting, so the check becomes one people switch off.
+  //
+  // AC-2 is the case that does not survive it: a hooksPath pointing at a
+  // CURRENT hook must come back clean. A suite asserting only "non-zero when
+  // hooksPath is set" would go green on that repair and certify it.
+  //
+  // The second-cheapest wrong fix is to read the config value and join it as
+  // if it were always absolute. AC-3 is the case that does not survive THAT:
+  // git resolves a relative hooksPath against the directory it runs the hook
+  // from, and an absolute join of `relhooks` reads a path that does not exist
+  // and reports "no hook installed" on a checkout whose hook is fine.
+
+  test('AC-1: a stale hook at core.hooksPath is refused even when the default address holds a current one', () => {
+    // The decoy is the whole case. `.git/hooks/pre-commit` is byte-identical
+    // to the generator output, so every reading taken at the old address says
+    // CLEAN; the program git actually runs on a commit is three lines of
+    // `exit 0`. Without the decoy this case could pass on a check that read
+    // nothing at all.
+    const { dir, hookFile } = repoWithHooksPath('hookspath-stale', {
+      hooksPath: 'elsewhere',
+      hook: '#!/bin/sh\n# mine\nexit 0\n',
+      decoy: CURRENT,
+    });
+    expect(
+      readFileSync(join(dir, '.git', 'hooks', 'pre-commit'), 'utf-8'),
+      'the decoy is not the generator output, so a reading at the old address would refuse anyway',
+    ).toBe(CURRENT);
+
+    expectRefusedAs(against(dir), 'STALE', /hand-written|not managed/i);
+    expect(
+      run(SCRIPT, against(dir)).err,
+      'the refusal names the decoy rather than the file git will run',
+    ).toContain(hookFile);
+  });
+
+  test('AC-2: a current hook at an ABSOLUTE core.hooksPath is clean, and the verdict names it', () => {
+    const outside = join(FIX, 'hookspath-absolute-dir');
+    mkdirSync(outside, { recursive: true });
+    const { dir } = repoWithHooksPath('hookspath-absolute', {
+      hooksPath: outside,
+      hook: CURRENT,
+      decoy: null,
+    });
+    const r = run(SCRIPT, against(dir));
+    expect(r.code, `a current hook at core.hooksPath was refused:\n${r.err}`).toBe(0);
+    expect(r.out, 'the verdict does not name the hooksPath file').toContain(
+      join(outside, 'pre-commit'),
+    );
+  });
+
+  test('AC-3: a RELATIVE core.hooksPath resolves the way git resolves it', () => {
+    // Measured, not assumed: with `core.hooksPath = relhooks`, git ran
+    // `<toplevel>/relhooks/pre-commit` for a commit issued from the toplevel
+    // AND for one issued from a subdirectory, and `git rev-parse --git-path
+    // hooks` answered `relhooks` and `../relhooks` respectively — relative to
+    // the directory git was asked from, which is why the answer is resolved
+    // against --project and not against the toplevel.
+    const { dir, hookFile } = repoWithHooksPath('hookspath-relative', {
+      hooksPath: 'relhooks',
+      hook: CURRENT,
+      decoy: null,
+    });
+    const r = run(SCRIPT, against(dir));
+    expect(r.code, `a current hook at a relative core.hooksPath was refused:\n${r.err}`).toBe(0);
+    expect(realpathSync(/at (\/.*?)\s*$/m.exec(r.out)?.[1] ?? '/nonexistent')).toBe(
+      realpathSync(hookFile),
+    );
+  });
+
+  test('AC-4: with core.hooksPath set and nothing installed there, the DEFAULT address is not consulted', () => {
+    // A fall-back to `<common-dir>/hooks` when the hooksPath file is absent
+    // would be the fail-open version of this fix: the check would find the
+    // decoy, call it current, and the commit would still run nothing.
+    const { dir, hookFile } = repoWithHooksPath('hookspath-empty', {
+      hooksPath: 'elsewhere',
+      hook: null,
+      decoy: CURRENT,
+    });
+    expectRefusedAs(against(dir), 'STALE', /no .*pre-commit|not installed/i);
+    expect(run(SCRIPT, against(dir)).err).toContain(hookFile);
+  });
+
+  test('AC-5: --install writes where core.hooksPath points, not to the default address', () => {
+    // The remedy the refusal names has to reach the same file the refusal is
+    // about. Installing to `.git/hooks` on a repository that reads its hooks
+    // from elsewhere produces a check that passes and a commit that scans
+    // nothing — strictly worse than the state it replaced, because the
+    // disagreement is now certified.
+    const { dir, hookFile } = repoWithHooksPath('hookspath-install', {
+      hooksPath: 'elsewhere',
+      hook: '#!/bin/sh\n' + PRE_COMMIT_MANAGED_MARKER + '\nexit 0\n',
+      decoy: null,
+    });
+    const installed = run(SCRIPT, [...against(dir), '--install']);
+    expect(installed.code, `--install refused:\n${installed.err}`).toBe(0);
+    expect(readFileSync(hookFile, 'utf-8')).toBe(CURRENT);
+    expect(
+      existsSync(join(dir, '.git', 'hooks', 'pre-commit')),
+      '--install wrote to the default address, which this repository does not read',
+    ).toBe(false);
+    expect(run(SCRIPT, against(dir)).code, 'the installed copy is still not current').toBe(0);
+  });
+
+  test('AC-5: --install refuses a core.hooksPath directory that does not exist', () => {
+    // git can be pointed anywhere on disk by this setting, so a `mkdir -p`
+    // here would build a tree outside the repository on the strength of one
+    // config value. Refusing by name also keeps the message classified: the
+    // bare ENOENT escapes as an unlabelled string, which is #613.
+    const dir = repoWithHook('hookspath-missing-dir', null);
+    git(dir, ['config', 'core.hooksPath', 'nowhere']);
+    expectRefusedAs([...against(dir), '--install'], 'INSTALL', /does not exist/i);
+    expect(existsSync(join(dir, 'nowhere')), 'the directory was created anyway').toBe(false);
+  });
+
+  test('AC-6 control: with core.hooksPath UNSET the reading is the shared common dir, unchanged', () => {
+    // The negative control for the four cases above. git treats `hooks` as a
+    // path shared by every worktree, so `--git-path hooks` has to keep
+    // answering with the primary `.git/hooks` from a linked worktree — the
+    // property SC-2044 pins. A fix that started reading the per-worktree
+    // gitdir would pass every hooksPath case here and break every agent.
+    const primary = repoWithHook('hookspath-control', CURRENT);
+    const linked = join(FIX, 'hookspath-control-linked');
+    git(primary, ['worktree', 'add', '-q', '-b', 'control-side', linked]);
+    for (const where of [primary, linked]) {
+      // git answers relative to the directory it was asked from, so the
+      // answer is resolved against that directory and not against this
+      // process's cwd — the same resolution the script has to perform.
+      const answer = execFileSync('git', ['-C', where, 'rev-parse', '--git-path', 'hooks'], {
+        encoding: 'utf-8',
+      }).trim();
+      expect(
+        realpathSync(answer.startsWith('/') ? answer : join(where, answer)),
+        `git answered a non-shared hooks directory for ${where}`,
+      ).toBe(realpathSync(join(primary, '.git', 'hooks')));
+      expect(run(SCRIPT, against(where)).code, `the control run was refused for ${where}`).toBe(0);
+    }
+  });
+});
+
+// ── #874: which patterns the installed copy is missing, by name ────────────
+
+describe('#874: the refusal names the registry patterns the installed hook lacks', () => {
+  // `lib/secret-patterns.ts` is the registry and the generator interpolates
+  // every tier from it, so a byte-exact comparison already catches a hook
+  // whose scanner has drifted. What it could not do is SAY SO: the live
+  // installed hook on this machine on 2026-10-21 was missing tier 1's `jwt`
+  // and the whole of tiers 2 and 3, and the refusal reported that it
+  // "predates the generation-time updater resolution (#610)" — true, and
+  // about the least important of the differences.
+  //
+  // THE CHEAPEST WRONG FIX, named before the repair: add one GUARD_PROPERTIES
+  // row whose probe is the jwt expression. One line, and the message names
+  // jwt. It is wrong because GUARD_PROPERTIES is hand-maintained and the
+  // registry is the authority — the tenth pattern is invisible again, and the
+  // table and the registry become two deciders that agree until one is
+  // edited.
+  //
+  // AC-8 is the case that does not survive it: it drops each registry id in
+  // turn, reading the list from the registry at runtime, so a row written for
+  // jwt satisfies exactly one of its generated cases and fails the rest.
+
+  test('AC-7: EMBEDDED_PATTERNS is exactly this list', () => {
+    // The pin AC-8 needs. AC-8's cases are generated FROM this list, so
+    // emptying it DELETES them rather than reddening them — a case population
+    // that is a projection of its own subject cannot witness that subject
+    // being emptied. This case is written out by hand for that reason, and
+    // updating it is the cost of adding a pattern.
+    expect(EMBEDDED_PATTERNS.map(p => p.id)).toEqual([
+      'github-pat-classic',
+      'github-oauth',
+      'github-server',
+      'github-pat-fine',
+      'aws-access-key',
+      'openai',
+      'anthropic',
+      'private-key',
+      'jwt',
+      'tier2-assignment',
+      'tier2-allowlist',
+      'tier3-shell-default',
+      'tier3-allowlist',
+    ]);
+  });
+
+  test('AC-7: every registry expression reaches the generated hook', () => {
+    // The instrument check. A registry entry the generator never emits makes
+    // the probe below report every installed hook as missing it, which is a
+    // refusal that names the wrong thing on every run — the stale-probe
+    // failure GUARD_PROPERTIES already guards against, one table over.
+    const blind = EMBEDDED_PATTERNS.filter(p => !CURRENT.includes(p.ere)).map(p => p.id);
+    expect(blind, 'the generator does not interpolate these registry expressions').toEqual([]);
+  });
+
+  EMBEDDED_PATTERNS.forEach((pattern, index) => {
+    test(`AC-8: a hook missing ${pattern.id} is refused, and the refusal names it`, () => {
+      const narrowed = CURRENT.split(pattern.ere).join('');
+      expect(narrowed, `${pattern.ere} is not in the generated hook`).not.toBe(CURRENT);
+      // Collateral damage would make this case measure the wrong id. One
+      // expression being a substring of another would remove two and the
+      // refusal would name both, so the case says which it expects to survive.
+      for (const other of EMBEDDED_PATTERNS) {
+        if (other.id === pattern.id) continue;
+        expect(
+          narrowed.includes(other.ere),
+          `removing ${pattern.id} also removed ${other.id}, so this case cannot isolate either`,
+        ).toBe(true);
+      }
+
+      // The fixture is named by INDEX, never by the id. Its path appears in
+      // the refusal, so a directory called `narrowed-jwt` makes the assertion
+      // below match the path rather than the finding — measured: all thirteen
+      // of these cases passed that way against a script that names no pattern
+      // at all, which is `.claude/rules/checks-must-be-able-to-fail.md`'s
+      // "fixture that reached the assertion without the feature", arriving in
+      // the file that was written to avoid it.
+      const dir = repoWithHook(`narrowed-${index}`, narrowed);
+      expect(dir, 'the fixture path leaks the id the refusal is asserted to name').not.toContain(
+        pattern.id,
+      );
+      expectRefusedAs(against(dir), 'STALE', new RegExp(pattern.id.replace(/[-]/g, '[-]')));
+      const err = run(SCRIPT, against(dir)).err;
+      for (const other of EMBEDDED_PATTERNS) {
+        if (other.id === pattern.id) continue;
+        expect(
+          err.includes(other.id),
+          `the refusal names ${other.id}, which this hook still carries:\n${err}`,
+        ).toBe(false);
+      }
+    });
+  });
+
+  test('AC-11: a registry the generator cannot satisfy is UNMEASURED, not stale', () => {
+    // The witness for `patternsBlindToGenerator`. Without it that refusal and
+    // AC-7's test-side "every registry expression reaches the generated hook"
+    // would be two deciders asking one question of one input — behaviourally
+    // one, with a mutation of either leaving the other holding the case up
+    // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). This
+    // reaches it through an input AC-7 cannot have: a generator checkout
+    // whose registry and whose emitter disagree, which is what `--generator`
+    // pointed at another rungate tree can produce.
+    const { root } = fakeGenerator('blind-registry', {
+      patterns: [{ id: 'invented-pattern', ere: 'ZZZZ[0-9]{9}' }],
+      emit: [],
+    });
+    expectRefusedAs(
+      ['--project', repoWithHook('blind-registry-project', null), '--generator', root],
+      'UNMEASURED',
+      /does not interpolate invented-pattern/,
+    );
+  });
+
+  test('AC-11: a registry exporting no patterns at all is UNMEASURED', () => {
+    // `[]` is not a reading. An empty declaration would make every installed
+    // hook carry every pattern it declares, which is a PASS composed entirely
+    // of things nobody checked — `.claude/rules/config-access.md`'s point
+    // about `0` and `{}` being indistinguishable from success.
+    const { root } = fakeGenerator('empty-registry', { patterns: [], emit: [] });
+    expectRefusedAs(
+      ['--project', repoWithHook('empty-registry-project', null), '--generator', root],
+      'UNMEASURED',
+      /EMBEDDED_PATTERNS/,
+    );
+  });
+
+  test('AC-11: a synthetic generator whose registry it DOES satisfy gets through to a verdict', () => {
+    // The control for the two above. Both of them refuse, and a refusal is
+    // also what a fake generator that simply fails to load produces — so
+    // without an otherwise-identical generator that reaches the comparison,
+    // neither case can tell the registry guard from a broken fixture.
+    const { root, hook } = fakeGenerator('good-registry', {
+      patterns: [{ id: 'invented-pattern', ere: 'ZZZZ[0-9]{9}' }],
+      emit: ['ZZZZ[0-9]{9}'],
+    });
+    const dir = repoWithHook('good-registry-project', hook);
+    const r = run(SCRIPT, ['--project', dir, '--generator', root]);
+    expect(r.code, `the synthetic generator did not reach a verdict:\n${r.err}`).toBe(0);
+  });
+
+  test('AC-9: a hook missing two patterns names both', () => {
+    // One id is satisfied by a message that names the first difference it
+    // finds and stops. The live installed hook was missing four.
+    const [a, b] = [EMBEDDED_PATTERNS[8], EMBEDDED_PATTERNS[11]];
+    const narrowed = CURRENT.split(a.ere).join('').split(b.ere).join('');
+    const err = run(SCRIPT, against(repoWithHook('narrowed-two', narrowed))).err;
+    expect(err).toContain(a.id);
+    expect(err).toContain(b.id);
+  });
+
+  test('AC-10: a hook that differs in bytes but lacks no pattern names no pattern', () => {
+    // The discrimination case. A refusal that always lists the registry is a
+    // refusal that says nothing, and this is the input that tells the two
+    // apart: every expression present, one trailing comment different.
+    const err = run(SCRIPT, against(repoWithHook('drifted-no-patterns', `${CURRENT}\n# hand-edited\n`))).err;
+    expect(err, 'the byte-difference refusal is gone').toMatch(/not byte-identical|differs/i);
+    for (const p of EMBEDDED_PATTERNS) {
+      expect(
+        err.includes(p.id),
+        `the refusal names ${p.id} for a hook that carries every registry expression:\n${err}`,
+      ).toBe(false);
+    }
+  });
+});
+
 // ── The live tree ────────────────────────────────────────────────────────
 
 describe('#599: the live tree', () => {
@@ -500,10 +934,17 @@ describe('#599: the live tree', () => {
     // would make the case report nothing in the environment that runs it
     // most. So it asserts the AGREEMENT: whatever the installed state is, the
     // script's verdict matches it, read from the same place by this test.
-    const common = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', '--git-common-dir'], {
+    // Deliberately a SECOND reading, not a call into the script — the case is
+    // named after an independent one, and importing the script's own resolver
+    // would make this an assertion that one function agrees with itself.
+    // It has to honour core.hooksPath for the same reason the script does
+    // (#874): on a checkout that sets it, a reading at `<common-dir>/hooks`
+    // is about a file nothing runs, and this case would then compare the
+    // script's correct verdict against a wrong oracle and fail.
+    const hooks = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', '--git-path', 'hooks'], {
       encoding: 'utf-8',
     }).trim();
-    const path = join(common.startsWith('/') ? common : join(REPO_ROOT, common), 'hooks', 'pre-commit');
+    const path = join(hooks.startsWith('/') ? hooks : join(REPO_ROOT, hooks), 'pre-commit');
     const installed = existsSync(path) ? readFileSync(path, 'utf-8') : null;
 
     const r = run(SCRIPT, ['--project', REPO_ROOT]);
