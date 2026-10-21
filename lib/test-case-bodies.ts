@@ -121,8 +121,35 @@
  * byte-identical afterwards by sha256 — never by `git checkout --`.
  */
 
-/** One `test(...)` or `it(...)` declaration, in source order. */
-export interface CaseDeclaration {
+/**
+ * One `test(...)` or `it(...)` declaration, in source order, whether or not
+ * its title can be read.
+ *
+ * `CaseDeclaration` below is the half with a readable title. Both come from
+ * `testDeclarations`, which is the one binding deciding what a declaration
+ * is — see its docblock for why that matters (#883).
+ */
+export interface TestDeclaration {
+  /**
+   * The title as the source declared it, escapes resolved, or `null` when
+   * there is no single title to record.
+   *
+   * `null` covers the three forms that declare a test without naming one
+   * statically: `test.each([…])(…)`, a template title carrying `${…}`, and a
+   * title that is an identifier or a call. They are DECLARATIONS — deleting
+   * one removes coverage — and they are not CASES, because a name is what a
+   * rename pairs on and what a deletion is reported by. Counting them and
+   * naming them are different questions, and this field is where the two
+   * part company.
+   */
+  name: string | null;
+  body: string | null;
+  modifier: string;
+  enclosing: string[];
+}
+
+/** A declaration whose title is a plain string literal. */
+export interface CaseDeclaration extends TestDeclaration {
   /** The title as the source declared it, escapes resolved. */
   name: string;
   /**
@@ -198,11 +225,27 @@ export interface CaseDeclaration {
  * is filed separately; this module at least does not add a third.
  *
  * `describe` is deliberately not matched: a renamed describe block is not a
- * renamed case. The first group is the quote character and the second is the
- * raw name, escapes included.
+ * renamed case.
+ *
+ * ## Two differences from the census expression it replaces (#883)
+ *
+ * Both deliberate and both measured on this tree, 2026-10-21:
+ *
+ * - **No bare-backtick alternative.** The census matched ``test` `` as well
+ *   as `test(`, which is not a declaration form bun has. 153 of its 443
+ *   extra matches were the word *test* before a backtick in prose.
+ * - **`each` is in the modifier list.** `test.each([…])(…)` is a real
+ *   declaration — the census counted it and the case reader could not see
+ *   it, 50 times here. It carries no static title, so it is a declaration
+ *   with a `null` name.
+ *
+ * The title is no longer part of this expression. It is read by `titleAfter`
+ * from the open paren, which is what lets one scan answer both "is this a
+ * declaration" and "what is it called" without a declaration having to have
+ * a readable name to be counted.
  */
 const CASE_DECLARATION =
-  /(?:^|[^.\w$])(?:test|it)(\.(?:skip|only|todo|failing|skipIf|todoIf|runIf))?\s*\(\s*(["'`])((?:\\.|(?!\2)[^\\])*)\2/g;
+  /(?:^|[^.\w$])(?:test|it)(\.(?:skip|only|todo|failing|skipIf|todoIf|runIf|each))?\s*\(/g;
 
 const ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", "0": "\0" };
 
@@ -427,14 +470,50 @@ export function literalSpans(source: string): Array<[number, number]> {
 /**
  * Every case a source file declares, with its body, in declaration order.
  *
- * `lib/test-case-deletion.ts`'s `caseNames` is a projection of this, so the
- * list of names and the list of bodies are the same reading seen twice and
- * cannot fall out of step.
+ * `lib/test-case-deletion.ts`'s `caseNames` and `lib/test-census.ts`'s
+ * `countTestDeclarations` are both projections of this, so the count, the
+ * names and the bodies are one reading seen three ways and cannot fall out
+ * of step. Before #883 the count came from its own expression and disagreed
+ * with this one on 174 of this tree's 483 test files.
  */
-export function caseDeclarations(source: string): CaseDeclaration[] {
-  const out: CaseDeclaration[] = [];
+/**
+ * Is this offset inside a string, template or regex literal?
+ *
+ * ONE binding, exported, because the alternative is a reimplementation in
+ * whatever test checks it — and a test comparing two copies it wrote itself
+ * is green under every mutation of the real one. Measured: the first draft
+ * of this did exactly that, and breaking the production probe's boundary
+ * comparison was 0 of 89 red.
+ *
+ * Binary search, not `spans.some`. `literalSpans` scans forward, so its
+ * spans are ascending and disjoint; the probe runs once per declaration, so
+ * a linear one makes the reader quadratic in the number of string literals.
+ * Measured on a 520 KB source with 40,000 declarations: `literalSpans`
+ * itself is 7 ms, and 40,000 linear probes over its 40,000 spans are
+ * 8,854 ms — the entire cost of reading that file. `censusOf` reads every
+ * test file in the tree, with a 2 MB per-file ceiling above it. Found by
+ * the security review of #883, which named a different line as the cause;
+ * the number is what located this one.
+ */
+export function literalProbe(spans: ReadonlyArray<[number, number]>): (at: number) => boolean {
+  return (at: number) => {
+    let lo = 0;
+    let hi = spans.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const [s, e] = spans[mid]!;
+      if (at < s) hi = mid - 1;
+      else if (at >= e) lo = mid + 1;
+      else return true;
+    }
+    return false;
+  };
+}
+
+export function testDeclarations(source: string): TestDeclaration[] {
+  const out: TestDeclaration[] = [];
   const spans = literalSpans(source);
-  const inLiteral = (at: number) => spans.some(([s, e]) => at >= s && at < e);
+  const inLiteral = literalProbe(spans);
   const blocks = blockSpans(source, inLiteral);
   // A budget across the whole call, so a malformed file cannot turn an
   // O(n) scan per declaration into a gate that never returns. It cannot be
@@ -445,14 +524,11 @@ export function caseDeclarations(source: string): CaseDeclaration[] {
   let budget = Math.max(source.length * 8, 1_000_000);
 
   for (const m of source.matchAll(CASE_DECLARATION)) {
-    // A template literal with an interpolation has no single name to record,
-    // and reporting its text as a name would make it look deleted the moment
-    // the interpolation changed.
-    if (m[2] === "`" && m[3].includes("${")) continue;
-    // The FIRST paren in the match is the call's own: the title literal is
-    // an argument, so nothing with a paren in it can precede this one.
-    const open = m.index! + m[0].indexOf("(");
-    const titleEnd = m.index! + m[0].length;
+    // The LAST paren in the match is the call's own. The match now ends at
+    // that paren, so the only other candidate is the single leading
+    // delimiter character the anchor consumes — `;(test(` would otherwise
+    // hand the body scanner the wrong opening bracket.
+    const open = m.index! + m[0].lastIndexOf("(");
     // A phantom — the sequence inside a string, a comment or a regex — is
     // not a declaration and is DROPPED, not merely left body-less.
     //
@@ -475,6 +551,17 @@ export function caseDeclarations(source: string): CaseDeclaration[] {
     // against the raw pattern over every test file in the tree and refuses
     // any file that loses all of its declarations.
     if (inLiteral(m.index! + m[0].search(/(?:test|it)/))) continue;
+    // Read AFTER the phantom drop: a phantom needs no title, so this is
+    // work skipped rather than work capped. The security review of this
+    // change asked for the title scan to be charged against the body
+    // budget too, on the grounds that an unterminated quote makes it scan
+    // to end-of-file. Measured on a 520 KB source with 40,000
+    // declarations: 8,794 ms well-formed against 8,852 ms with a bad quote
+    // at the top — 0.7%. The quadratic was somewhere else (see `inLiteral`
+    // above), budgeting this would have degraded real titles to `null` for
+    // no measured gain, and the draft that did it was reverted.
+    const title = titleAfter(source, open);
+    const titleEnd = title.end;
     let body: string | null = null;
     if (budget > 0) {
       const close = matchingCallParen(source, open);
@@ -488,13 +575,50 @@ export function caseDeclarations(source: string): CaseDeclaration[] {
       if (close !== null && close >= titleEnd) body = source.slice(titleEnd, close);
     }
     out.push({
-      name: unescape(m[3]),
+      name: title.name,
       body,
       modifier: m[1] ?? "",
       enclosing: blocks.filter(b => open > b.start && open < b.end).map(b => b.modifier),
     });
   }
   return out;
+}
+
+/**
+ * The declarations with a readable title — what a rename or a deletion is
+ * reported by.
+ *
+ * A projection and not a second scan. `testDeclarations` is the binding; a
+ * mutation of it moves this, `caseNames` and `countTestDeclarations`
+ * together, which is the property #883 exists to buy.
+ */
+export function caseDeclarations(source: string): CaseDeclaration[] {
+  return testDeclarations(source).filter((d): d is CaseDeclaration => d.name !== null);
+}
+
+/**
+ * The title argument of a call whose open paren is at `open`.
+ *
+ * `null` for every form that declares a test without naming one statically:
+ * `test.each([…])`, where the first argument is the table; a template
+ * carrying `${…}`, whose text would look deleted the moment the
+ * interpolation changed; and an identifier or call, where the name is not in
+ * the source at all.
+ *
+ * `end` is where the body starts, and it is returned rather than recomputed
+ * by the caller — the two are the same scan, and a caller deriving the body
+ * boundary separately would be a second decider for one position.
+ */
+function titleAfter(src: string, open: number): { name: string | null; end: number } {
+  let i = open + 1;
+  while (i < src.length && /\s/.test(src[i]!)) i++;
+  const quote = src[i];
+  if (quote !== '"' && quote !== "'" && quote !== "`") return { name: null, end: i };
+  const end = quote === "`" ? skipTemplate(src, i) : skipQuoted(src, i);
+  if (end === null) return { name: null, end: i };
+  const raw = src.slice(i + 1, end - 1);
+  if (quote === "`" && raw.includes("${")) return { name: null, end };
+  return { name: unescape(raw), end };
 }
 
 /** `describe(` and `suite(`, with the modifier captured. */

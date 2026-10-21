@@ -72,6 +72,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
+import { testDeclarations } from "./test-case-bodies";
 
 /**
  * Directories a census never walks into.
@@ -121,30 +122,77 @@ const TEST_FILE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
 export const MAX_CENSUS_FILE_BYTES = 2_000_000;
 
 /**
- * Declaration forms bun recognises. `test` and `it`, bare or with a modifier.
+ * Which reader took a census, stamped beside it (#883).
  *
- * Anchored on a word boundary so `subtest(` and `omit(` do not count, and
- * requiring the open paren so a bare mention in prose does not. The modifier
- * list is explicit rather than `\w+` because `test.each(...)(...)` and a
- * hypothetical `test.anything` should not silently start counting — an
- * unrecognised form is better as a miss we can see than as a count nobody
- * can explain.
+ * A census is BANKED per run and compared round to round, so the first round
+ * after this module's reader changes compares an old number against a new
+ * one and every file whose count moved reads as a regression. A reading
+ * taken with a different instrument is not comparable with one taken by
+ * this one, and the honest answer to an incomparable pair is UNMEASURED
+ * rather than either verdict.
+ *
+ * `"1"` is the pre-#883 reader and is never written — a banked census with
+ * no stamp IS version 1, which is how the migration is detected at all.
+ *
+ * **Bump this whenever `testDeclarations` changes what it counts.** Not when
+ * it changes how it is spelled: the stamp is about comparability of numbers,
+ * and a refactor that moves no count costs every in-flight run a round of
+ * UNMEASURED for nothing.
+ *
+ * **It IS covered by the signature, and the first draft of #883 said the
+ * opposite.** That draft's docblock read *"It is NOT a security control…
+ * the stamp is not covered by `signCensus`, so an agent that can edit the
+ * state file can edit it — but that agent can already delete the census
+ * outright."* Both halves are wrong, and writing the sentence is what
+ * stopped the question being asked:
+ *
+ * - Flipping this one byte is CHEAPER than deleting the census and much
+ *   quieter. The census still verifies, so the round reports a WARN whose
+ *   text explains an ordinary migration and refuses nothing.
+ * - `nextCensus` banks the current reading on a reader change, by design —
+ *   so the lowered count becomes the baseline and the NEXT round is clean.
+ *   The erasure #494 exists to catch is laundered into the record.
+ *
+ * `signStampedCensus` in `gates/witness.ts` signs the census and this stamp
+ * together. A forged or deleted stamp reads `unverified`; an absent one is
+ * checked against the v1 payload, which is what a real pre-#883 file has.
+ * Still tamper-evident rather than tamper-proof: the boundary is the salt.
  */
-const DECLARATION =
-  /(?<![.\w$])(?:test|it)(?:\.(?:skip|todo|only|failing|each|skipIf|todoIf|only))?\s*[(`]/g;
+export const TEST_CENSUS_READER = "2";
 
 /**
  * How many tests a source file declares.
  *
- * Comments are NOT stripped. A commented-out test is a removed test, and
- * stripping would make "comment the block out" a way past the guard. The
- * cost is that prose saying `test(` counts, which inflates a file's number
- * — and inflation is harmless here, because only a DECREASE is refused.
- * The one direction this may be wrong in is toward not refusing, which is
- * the direction a guard over somebody else's edits has to be wrong in.
+ * A projection of `testDeclarations`, which is the one binding deciding what
+ * a declaration is (#883). Before that it had its own expression, and the
+ * two disagreed on 174 of this tree's 483 test files: `gates/gate-executor.ts`
+ * refused a round on THIS count while the deletion reading named cases from
+ * the other, so an operator handed *"30 test(s) before, 27 after"* beside a
+ * list of 8 case names could not reconcile them.
+ *
+ * ## Comments ARE excluded now, and the old rationale was backwards
+ *
+ * This docblock used to read:
+ *
+ *   > Comments are NOT stripped. A commented-out test is a removed test, and
+ *   > stripping would make "comment the block out" a way past the guard.
+ *
+ * The second sentence is inverted, and it is worth leaving the correction
+ * here rather than quietly deleting it. Only a DECREASE is refused. With
+ * comments counted, commenting a test out leaves the number unchanged, so
+ * the guard does not fire — the hole the sentence describes was the one the
+ * policy created. Measured on the pre-#883 reader:
+ *
+ *     countTestDeclarations('test("a", () => {})')     → 1
+ *     countTestDeclarations('// test("a", () => {})')  → 1
+ *
+ * Excluding comments makes the count drop, which is exactly the refusal the
+ * guard exists for. The same scan also excludes a `test(` sequence inside a
+ * string, a template or a regex, which is where ~225 of the old reader's 443
+ * extra matches on this tree came from — prose, counted as coverage.
  */
 export function countTestDeclarations(source: string): number {
-  return [...source.matchAll(DECLARATION)].length;
+  return testDeclarations(source).length;
 }
 
 /**
