@@ -695,15 +695,40 @@ function bindingNameBefore(src: string, end: number): string | null {
   return name || null;
 }
 
-// 3. Undeclared globals check — workflow sandbox provides specific globals
+// 3. The measured record of what the sandbox PROVIDES — and what governs it
 //
 // This list is MEASURED, not assumed (#69). It comes from running a probe
 // workflow that reports `typeof <name>` for each candidate. Do not add a name
-// here on the belief that it "should" be available — re-run the probe.
+// here on the belief that it "should" be available — re-measure, with the
+// zero-agent probe in FORBIDDEN_SANDBOX_CAPABILITIES' docstring below and one
+// `typeof <name>` line per candidate. That recipe is the single declaring
+// position for how any of this was measured; this list deliberately carries
+// no second account of it (#983).
 //
 // The previous list claimed require, process, Buffer and eval were available.
 // None of them are. That is what let ship.js ship a top-level require() which
 // killed every run: the validator approved it and no test ever executed it.
+// Check 3a below refuses exactly that contradiction, which is the job this
+// list does.
+//
+// WHY THERE IS NO UNDECLARED-GLOBALS CHECK, AND WHY ONE IS NOT COMING (#983).
+// Until #983 this comment announced one and no such check existed — nothing
+// read this list at all, which read to every subsequent reader as if
+// undeclared globals were checked. The reason not to build one is a property
+// of the list rather than of the effort: every entry is a reading that a name
+// IS provided, over a candidate set somebody chose, so the list's COMPLEMENT
+// is UNMEASURED and not ABSENT. `Reflect` is missing beside `Proxy` and
+// `Symbol`, which are here; so are WeakMap, TypeError, ArrayBuffer and
+// structuredClone, and nobody has probed any of them. Refusing a name for
+// being absent from a set of positive readings converts UNMEASURED into FAIL
+// — .claude/rules/config-access.md's Silent Default Substitution, pointed the
+// other way. Measured on workflows/ship.js: of 1,024 distinct identifiers
+// such a check flags 15, and all 15 are locals a binding scan missed. Zero
+// true positives on the only workflow in the tree, against a validator whose
+// stated direction-not-to-be-wrong-in is false positives on correct code.
+//
+// Both deny lists are free of that problem, which is why they are refusals:
+// every entry in them is a construct somebody watched throw.
 const WORKFLOW_GLOBALS = new Set([
   // harness-provided
   "agent", "phase", "log", "parallel", "pipeline", "workflow", "args", "budget",
@@ -771,34 +796,128 @@ const FORBIDDEN_SANDBOX_GLOBALS = new Map([
  *             probe('new Date', () => new Date().toISOString()), probe('typeof require', () => typeof require)]
  *
  * It spawns no agents and costs nothing. A constraint that ships with its own
- * falsification recipe does not rot the way a bare assertion does.
+ * falsification recipe does not rot the way a bare assertion does. It is also
+ * the ONE declaring position for how anything here was measured —
+ * `WORKFLOW_GLOBALS` points at it rather than restating it (#983).
+ *
+ * `base` is the global each form is a member of, and it is what ties this
+ * list to the measured one: a member pattern only makes sense for a global
+ * that IS provided, and check 3a refuses an entry whose base is not. A form
+ * that is syntax rather than a member access declares `null`, which is a
+ * reading — an absent field would not be.
  */
-const FORBIDDEN_SANDBOX_CAPABILITIES: { label: string; pattern: RegExp; reason: string }[] = [
+const FORBIDDEN_SANDBOX_CAPABILITIES: { label: string; base: string | null; pattern: RegExp; reason: string }[] = [
   {
     label: "Date.now()",
+    base: "Date",
     pattern: /(?<![.\w$])Date\s*\.\s*now\s*\(/g,
     reason:
       "the sandbox throws on Date.now() — it would break resume (#69, #903). Stamp the time after the workflow returns, or pass it in through `args`.",
   },
   {
     label: "Math.random()",
+    base: "Math",
     pattern: /(?<![.\w$])Math\s*\.\s*random\s*\(/g,
     reason:
       "the sandbox throws on Math.random() — it would break resume (#69, #903). Vary the agent prompt or label by index instead.",
   },
   {
     label: "new Date()",
+    base: "Date",
     pattern: /(?<![.\w$])new\s+Date\s*\(\s*\)/g,
     reason:
       "the sandbox throws on an ARGLESS new Date() — it would break resume (#69, #903). `new Date(someIso)` is fine and is not matched here; it is reading the clock that is refused.",
   },
   {
     label: "import()",
+    // Syntax, not a member of a global. There is no base to be present.
+    base: null,
     pattern: /(?<![.\w$])import\s*\(/g,
     reason:
       "no dynamic module loading in the sandbox, for the same reason `require` is refused above (#69). Put the code in scripts/ and invoke it through an agent step.",
   },
 ];
+
+/**
+ * Where the three lists above contradict each other, as sentences naming the
+ * entry and what to do about it. Empty is agreement.
+ *
+ * This is the reader `WORKFLOW_GLOBALS` did not have (#983), and the claim it
+ * executes is the one the docstring above makes in prose: a capability form
+ * exists BECAUSE its base global is provided, so a name-shaped detector
+ * cannot see it. Two ways that can be false, and each has already been true
+ * once or would route an entry to the wrong list:
+ *
+ *   - a name in the measured list AND in `FORBIDDEN_SANDBOX_GLOBALS`. That is
+ *     the pre-#69 state verbatim — the measured list claimed require,
+ *     process, Buffer and eval were available while the deny list said they
+ *     throw. Nothing has stopped it recurring since the day it was fixed.
+ *   - a capability form on a base that is not measured-present. If the whole
+ *     NAME is unavailable then banning the name catches every member of it,
+ *     and a pattern catches only the spelling somebody thought of.
+ *
+ * One binding, so there is one thing to mutate. It takes its three lists as
+ * arguments rather than closing over them so a case can hand it a planted
+ * contradiction without rewriting the file.
+ */
+function sandboxListViolations(
+  provided: Set<string>,
+  unavailableNames: Iterable<string>,
+  capabilities: { label: string; base: string | null }[],
+): string[] {
+  const out: string[] = [];
+  for (const name of unavailableNames) {
+    if (!provided.has(name)) continue;
+    out.push(
+      `  ✗ Sandbox lists disagree: \`${name}\` is in the MEASURED global list and in ` +
+        `FORBIDDEN_SANDBOX_GLOBALS. One of the two is wrong, and the measured one ` +
+        `was wrong last time (#69, #983) — re-run the probe before trusting it.`,
+    );
+  }
+  for (const cap of capabilities) {
+    if (cap.base === null || provided.has(cap.base)) continue;
+    out.push(
+      `  ✗ Sandbox lists disagree: the capability form \`${cap.label}\` is keyed on ` +
+        `\`${cap.base}\`, which the measured global list does not provide. If the whole ` +
+        `name is unavailable put \`${cap.base}\` in FORBIDDEN_SANDBOX_GLOBALS, where it ` +
+        `catches every member of it; a pattern catches one spelling (#983).`,
+    );
+  }
+  return out;
+}
+
+// 3a. Sandbox list consistency — run on every invocation, because the thing
+// it compares is this file and not the target.
+{
+  const compared = FORBIDDEN_SANDBOX_GLOBALS.size + FORBIDDEN_SANDBOX_CAPABILITIES.length;
+  if (WORKFLOW_GLOBALS.size === 0 || compared === 0) {
+    // #621: a check that compares what it found in N positions dies by
+    // finding nothing in all of them, because zero strings are trivially all
+    // equal. An empty list is UNMEASURED, never agreement.
+    console.error(
+      `  ✗ Sandbox list consistency: UNMEASURED — ${WORKFLOW_GLOBALS.size} measured global(s) ` +
+        `against ${compared} unavailable name(s) and capability form(s). An empty list agrees ` +
+        `with everything, which is not a reading.`,
+    );
+    errors++;
+  } else {
+    const disagreements = sandboxListViolations(
+      WORKFLOW_GLOBALS,
+      FORBIDDEN_SANDBOX_GLOBALS.keys(),
+      FORBIDDEN_SANDBOX_CAPABILITIES,
+    );
+    if (disagreements.length > 0) {
+      for (const d of disagreements) console.error(d);
+      errors += disagreements.length;
+    } else {
+      console.log(
+        `  ✓ Sandbox lists agree: ${FORBIDDEN_SANDBOX_GLOBALS.size} unavailable name(s) and ` +
+          `${FORBIDDEN_SANDBOX_CAPABILITIES.length} capability form(s) checked against the ` +
+          `${WORKFLOW_GLOBALS.size} measured global(s)`,
+      );
+    }
+  }
+}
 
 /**
  * Blank everything the sandbox never evaluates as script — comments, and the
