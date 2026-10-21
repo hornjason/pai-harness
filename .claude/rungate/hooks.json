@@ -107,6 +107,14 @@
     "description": "Validates new SC lines in spec files have matching patterns"
   },
   {
+    "name": "HookCurrency",
+    "hookFor": "SessionStart",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/HookCurrency.hook.ts",
+    "enabled": true,
+    "scope": "project",
+    "description": "Reports installed git hooks that are not the generator output (#879)"
+  },
+  {
     "name": "StaleTTLCleanup",
     "hookFor": "SessionStart",
     "command": "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",

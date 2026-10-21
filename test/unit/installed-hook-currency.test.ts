@@ -446,9 +446,18 @@ describe('#613: an argument error is not a verdict about the installed hook', ()
 
 describe('#599: an installed hook that is not the generator output is refused', () => {
   test('SC-2043: a checkout with no installed pre-commit is refused', () => {
+    // UNMEASURED, not STALE, since #879. Nothing was compared, so there is no
+    // reading to call stale — and the SessionStart hook has to tell a fresh
+    // clone from a tree whose hook is WRONG. Still a refusal: UNMEASURED has
+    // always meant non-zero-but-unread in this script, the same as the
+    // not-a-regular-file and no-hooks-directory sites.
     // Not "clean". A hook nobody installed is a hook that enforces nothing,
     // and silence there is indistinguishable from a current one.
-    expectRefusedAs(against(repoWithHook('absent', null)), 'STALE', /no .*pre-commit|not installed/i);
+    expectRefusedAs(
+      against(repoWithHook('absent', null)),
+      'UNMEASURED',
+      /no .*pre-commit|not installed/i,
+    );
   });
 
   test('SC-2043: a hook that predates the worktree guard is refused, and the refusal names it', () => {
@@ -491,9 +500,12 @@ describe('#599: an installed hook that is not the generator output is refused', 
   });
 
   test('SC-2043: a hand-written hook is refused rather than silently compared', () => {
+    // UNMEASURED since #879, and for a sharper reason than the absent case:
+    // a hand-written hook is not the generator's to judge. Calling it STALE
+    // told the operator to run --install, which would overwrite it.
     expectRefusedAs(
       against(repoWithHook('hand-written', '#!/bin/sh\n# mine\nexit 0\n')),
-      'STALE',
+      'UNMEASURED',
       /hand-written|not managed/i,
     );
   });
@@ -526,14 +538,39 @@ describe('#599: an installed hook that is not the generator output is refused', 
       line,
       'the staleness raise is no longer the currencyRefusal verdict, so the label has ' +
         'detached from the only decider entitled to it',
-      // The probe was the literal `if (refusal)` and went red in #891 when
-      // the CLI began collecting a verdict per hook before raising once --
-      // `if (refusals.length > 0)`. The property did not move; the probe was
-      // narrower than the property it stood for, which is this repo's second
-      // shape. It is the guard expression that has to name what
-      // currencyRefusal returned, and the singleton assertion above is what
-      // makes "one position" mean one position.
-    ).toMatch(/^\s*if \(refusals?\b/);
+      // THIRD change to this probe, and the first that makes it stronger
+      // rather than merely wider. Stated rather than applied quietly,
+      // because a case edited three times in one session is a case somebody
+      // is bending to fit the code.
+      //
+      //   1. `if (refusal)` -> `if (refusals.length > 0)` (#891): the CLI
+      //      began collecting a verdict per hook before raising once.
+      //   2. the one-line call assertion split into two clauses (#891).
+      //   3. this one. #879 needs the strongest-class comparison in a
+      //      BINDING, because the SessionStart hook has to reach the same
+      //      answer and an inline copy in the hook would be a second
+      //      decider that agrees until it does not.
+      //
+      // 1 and 2 were widenings -- a probe narrower than its property. This
+      // one narrows: the guard must name one binding, that binding must be
+      // assigned from `currencyClass(refusals)`, and `currencyClass` must
+      // hold the ONLY `cls === "STALE"` comparison in the file. The old
+      // probe accepted any expression beginning `if (refusals`, including
+      // an inline `.some(...)` duplicated wherever somebody liked.
+    ).toMatch(/^\s*if \(cls === "STALE"\)/);
+    expect(
+      source.slice(0, at),
+      'the raised class is not the one currencyClass decided from the collected verdicts',
+    ).toContain('const cls = currencyClass(refusals);');
+    expect(
+      (source.match(/\.cls === "STALE"/g) || []).length,
+      'the strongest-class comparison is made from more than one position, so the hook ' +
+        'and the CLI can disagree about what a mixed tree is',
+    ).toBe(1);
+    expect(
+      (source.match(/currencyClass\(/g) || []).length,
+      'currencyClass is not exactly one declaration and one consultation in this file',
+    ).toBe(2);
     // Two clauses, because the call is no longer on one line (#891) and a
     // single literal spanning it would be asserting the formatting. The
     // property is that the thing raised is what currencyRefusal returned
@@ -581,8 +618,14 @@ describe('#599: a current hook passes, and the read is at the shared common dir'
 
     // And the same worktree over a STALE shared hook must refuse, or the case
     // above would pass for a check that never read anything.
-    writeFileSync(join(primary, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\n# mine\nexit 0\n');
-    expectRefusedAs(against(linked), 'STALE', /hand-written|not managed/i);
+    //
+    // The planted hook is MANAGED and drifted, not hand-written. Since #879
+    // a hand-written file is UNMEASURED, which is reachable without ever
+    // comparing bytes — so it would no longer witness that the read reached
+    // the primary AND went through the comparison. A drifted managed hook
+    // needs both.
+    writeFileSync(join(primary, '.git', 'hooks', 'pre-commit'), `${CURRENT}\n# drift\n`);
+    expectRefusedAs(against(linked), 'STALE', /not byte-identical|differs/i);
   });
 
   test('SC-2045: --install writes the generator output and the next run is current', () => {
@@ -693,7 +736,12 @@ describe('#874: core.hooksPath decides where the hook that runs lives', () => {
     // nothing at all.
     const { dir, hookFile } = repoWithHooksPath('hookspath-stale', {
       hooksPath: 'elsewhere',
-      hook: '#!/bin/sh\n# mine\nexit 0\n',
+      // Managed and drifted, not hand-written. The case is named for a STALE
+      // hook and #879 made those different verdicts, so the fixture follows
+      // the name; a hand-written file is now UNMEASURED and would be decided
+      // by the marker alone, without the byte comparison this case wants
+      // reached. The hand-written address-independent case is SC-2043's.
+      hook: `${CURRENT}\n# drift\n`,
       decoy: CURRENT,
     });
     expect(
@@ -701,7 +749,7 @@ describe('#874: core.hooksPath decides where the hook that runs lives', () => {
       'the decoy is not the generator output, so a reading at the old address would refuse anyway',
     ).toBe(CURRENT);
 
-    expectRefusedAs(against(dir), 'STALE', /hand-written|not managed/i);
+    expectRefusedAs(against(dir), 'STALE', /not byte-identical|differs/i);
     expect(
       run(SCRIPT, against(dir)).err,
       'the refusal names the decoy rather than the file git will run',
@@ -751,7 +799,9 @@ describe('#874: core.hooksPath decides where the hook that runs lives', () => {
       hook: null,
       decoy: CURRENT,
     });
-    expectRefusedAs(against(dir), 'STALE', /no .*pre-commit|not installed/i);
+    // UNMEASURED since #879: nothing is installed there, so nothing was
+    // compared. The address the refusal NAMES is the whole claim either way.
+    expectRefusedAs(against(dir), 'UNMEASURED', /no .*pre-commit|not installed/i);
     expect(run(SCRIPT, against(dir)).err).toContain(hookFile);
   });
 
