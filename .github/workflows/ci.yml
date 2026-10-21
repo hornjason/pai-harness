@@ -1,4 +1,4 @@
-# generated-sha: 7f734f48d51810dc
+# generated-sha: c60097cb08a887d7
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
@@ -105,5 +105,5 @@ jobs:
           echo "All 4 shards passed."
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
