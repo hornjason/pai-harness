@@ -63,8 +63,19 @@ const shipSource = readFileSync(SHIP_PATH, "utf-8");
 
 /** The Ship phase marker — the search for the conditional starts here. */
 const SHIP_PHASE = "phase('Ship')";
-/** The conditional whose arms the PR step must not be trapped in. */
-const CONTAINER_IF = "if (containerConfig) {";
+/**
+ * The conditional whose arms the PR step must not be trapped in.
+ *
+ * Three arms since #312, not two: `unmeasured` (a container is declared and
+ * the config says nowhere to reach it) was split out of the container arm,
+ * because folding it in was what made a container nothing had contacted
+ * record as one that had been probed and found down. The checker below reads
+ * `else if` chains of any length, so the count is asserted rather than
+ * assumed — a fourth arm must be looked at, not absorbed.
+ */
+const CONTAINER_IF = "if (containerUnmeasured) {";
+/** The same shape, spelled the way the synthetic sources below spell it. */
+const SYNTHETIC_IF = "if (containerConfig) {";
 /** The command the PR step actually runs. Not `create-pr`, which is a comment. */
 const PR_CALL = "pr-upsert";
 /** The hoisted PR step, start and end, as literals so a rename aborts the build. */
@@ -132,11 +143,17 @@ function shipPhaseStructure(src: string): ShipStructure {
   const shipIdx = code.indexOf(SHIP_PHASE);
   if (shipIdx < 0) throw new Error(`could not locate ${SHIP_PHASE} in the source`);
 
-  const ifIdx = code.indexOf(CONTAINER_IF, shipIdx);
-  if (ifIdx < 0) throw new Error(`could not locate "${CONTAINER_IF}" after the Ship phase`);
+  // Either spelling: the real file opens the chain on the probe kind (#312),
+  // the synthetic sources below open it on `containerConfig`. Whichever is
+  // present, what follows is the same `if … else …` chain.
+  const head = [CONTAINER_IF, SYNTHETIC_IF]
+    .map(lit => ({ lit, at: code.indexOf(lit, shipIdx) }))
+    .filter(h => h.at >= 0)
+    .sort((a, b) => a.at - b.at)[0];
+  if (!head) throw new Error(`could not locate "${CONTAINER_IF}" after the Ship phase`);
 
   const arms: Arm[] = [];
-  let open = ifIdx + CONTAINER_IF.length - 1;
+  let open = head.at + head.lit.length - 1;
   let close = matchBrace(skeleton, open);
   arms.push({ kind: "if", start: open, end: close });
 
@@ -211,14 +228,20 @@ describe("PR-EVERY-PATH: the pr-upsert call site is outside the container condit
     expect(prPlacementViolations(shipSource)).toEqual([]);
   });
 
-  test("PR-EVERY-PATH-2: the conditional really has two arms and the call site sits after both", () => {
+  test("PR-EVERY-PATH-2: the conditional really has three arms and the call site sits after all of them", () => {
     // Without this the check above is satisfiable by a file with no conditional
     // at all, which is the vacuous shape .claude/rules/checks-must-be-able-to-fail.md
     // names: a pass earned by what the detector never looked at.
+    //
+    // Three since #312. The count is asserted and not inferred, because the
+    // way this check fails quietly is a new arm appearing and the PR step
+    // ending up inside it.
     const s = shipPhaseStructure(shipSource);
-    expect(s.arms.map(a => a.kind)).toEqual(["if", "else"]);
-    expect(s.arms[0].end - s.arms[0].start).toBeGreaterThan(200);
-    expect(s.arms[1].end - s.arms[1].start).toBeGreaterThan(200);
+    expect(s.arms.map(a => a.kind)).toEqual(["if", "else", "else"]);
+    for (const [i, arm] of s.arms.entries()) {
+      expect(arm.end - arm.start, `arm ${i} is too small to be a real record-env step`)
+        .toBeGreaterThan(200);
+    }
     expect(s.prCallSites.length).toBe(1);
     expect(s.prCallSites[0]).toBeGreaterThan(s.conditional.end);
   });
@@ -252,8 +275,8 @@ describe("PR-EVERY-PATH: the pr-upsert call site is outside the container condit
       "}",
       "",
     ].join("\n");
-    const naive = matchBrace(stripJsComments(trap), trap.indexOf(CONTAINER_IF) + CONTAINER_IF.length - 1);
-    const sound = matchBrace(stripJsComments(trap, { blankLiterals: true }), trap.indexOf(CONTAINER_IF) + CONTAINER_IF.length - 1);
+    const naive = matchBrace(stripJsComments(trap), trap.indexOf(SYNTHETIC_IF) + SYNTHETIC_IF.length - 1);
+    const sound = matchBrace(stripJsComments(trap, { blankLiterals: true }), trap.indexOf(SYNTHETIC_IF) + SYNTHETIC_IF.length - 1);
     expect(naive).toBeLessThan(sound);
     expect(prPlacementViolations(trap).join("\n")).toContain("sits inside the else arm");
   });
@@ -351,34 +374,46 @@ describe("MUTANT: the check refuses the arrangement #254 was filed about", () =>
 // ── ENV ────────────────────────────────────────────────────────────────────
 
 describe("ENV: both arms keep their own environments write, the PR step has none", () => {
-  const arms = () => {
-    const s = shipPhaseStructure(shipSource);
-    return {
-      container: shipSource.slice(s.arms[0].start, s.arms[0].end + 1),
-      noContainer: shipSource.slice(s.arms[1].start, s.arms[1].end + 1),
-    };
-  };
+  // Over EVERY arm, not over two named ones. #312 added a third and the two
+  // named lookups would have skipped it silently — the shape this file was
+  // written to refuse, one level up.
+  const arms = () =>
+    shipPhaseStructure(shipSource).arms.map((a, i) => ({
+      i,
+      kind: a.kind,
+      text: shipSource.slice(a.start, a.end + 1),
+    }));
 
-  test("ENV-1: the container arm records environments.prod through its own record-env step", () => {
-    const { container } = arms();
-    expect(container).toContain("s.environments.prod");
-    expect(container).toContain("writeWorkflowState");
-    expect(container).toContain("label: 'record-env'");
-  });
-
-  test("ENV-2: the no-container arm records environments.prod through its own record-env step", () => {
+  test("ENV-1: every arm records environments.prod through its own record-env step", () => {
     // gates/SCHEMA-GUIDE.md: the ship gate refuses on missing environments
-    // fields, so neither arm may rely on the PR step to write them.
-    const { noContainer } = arms();
-    expect(noContainer).toContain("s.environments.prod");
-    expect(noContainer).toContain("writeWorkflowState");
-    expect(noContainer).toContain("label: 'record-env'");
+    // fields, so no arm may rely on the PR step to write them.
+    const all = arms();
+    expect(all.length).toBe(3);
+    for (const arm of all) {
+      expect(arm.text, `arm ${arm.i} writes no environments`).toContain("s.environments.prod");
+      expect(arm.text, `arm ${arm.i} does not persist`).toContain("writeWorkflowState");
+      expect(arm.text, `arm ${arm.i} is not a record-env step`).toContain("label: 'record-env'");
+    }
   });
 
-  test("ENV-3: neither arm opens a PR", () => {
-    const { container, noContainer } = arms();
-    expect(container).not.toContain(PR_CALL);
-    expect(noContainer).not.toContain(PR_CALL);
+  test("ENV-2: every arm records a rebuild and a smoke verdict, and says which", () => {
+    // The three differ in WHAT they record, which is the point of there being
+    // three: a probe that came back, a probe that could not be built, and no
+    // container at all. What they may not differ in is recording something.
+    for (const arm of arms()) {
+      expect(arm.text, `arm ${arm.i} records no rebuild verdict`).toMatch(/rebuild\s*[:=]\s*'(PASS|FAIL|SKIP)'/);
+      expect(arm.text, `arm ${arm.i} records no smoke verdict`).toMatch(/smoke\s*[:=]\s*'(PASS|FAIL|SKIP)'/);
+    }
+    // And exactly one of them refuses: the arm for a container the config
+    // gave nowhere to reach (#312). Were that zero, every arm would again be
+    // reporting a clean result for a run that measured nothing.
+    expect(arms().filter(a => /smoke\s*[:=]\s*'FAIL'/.test(a.text)).length).toBe(1);
+  });
+
+  test("ENV-3: no arm opens a PR", () => {
+    for (const arm of arms()) {
+      expect(arm.text, `arm ${arm.i} opens its own PR`).not.toContain(PR_CALL);
+    }
   });
 
   test("ENV-4: the hoisted PR step writes no environments of its own", () => {

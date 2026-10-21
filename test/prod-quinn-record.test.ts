@@ -44,13 +44,13 @@ const fns = new Function(
    ${sliceBlock("PROD-QUINN")}
    return { prodQuinnRecord, prodQuinnAssignment };`,
 )() as {
-  prodQuinnRecord: (ran: boolean, result: unknown, configured: boolean) => Record_;
+  prodQuinnRecord: (ran: boolean, result: unknown, probeKind: string) => Record_;
   prodQuinnAssignment: (r: Record_) => string;
 };
 
 describe("#423 — prod.quinn is a measurement", () => {
   test("SC-1583: a container Quinn PASS records PASS — the arm that did not exist", () => {
-    const r = fns.prodQuinnRecord(true, { result: "PASS" }, true);
+    const r = fns.prodQuinnRecord(true, { result: "PASS" }, "probe");
     expect(r.quinn, "prod.quinn still has no path to PASS").toBe("PASS");
     // No skip reason on a measured verdict: a reason explains an absence, and
     // writing one beside a PASS would read as a run that declined to measure.
@@ -58,9 +58,9 @@ describe("#423 — prod.quinn is a measurement", () => {
   });
 
   test("SC-1584: a FAIL is a FAIL, and a SKIP from the agent keeps its own reason", () => {
-    expect(fns.prodQuinnRecord(true, { result: "FAIL" }, true).quinn).toBe("FAIL");
+    expect(fns.prodQuinnRecord(true, { result: "FAIL" }, "probe").quinn).toBe("FAIL");
 
-    const skipped = fns.prodQuinnRecord(true, { result: "SKIP" }, true);
+    const skipped = fns.prodQuinnRecord(true, { result: "SKIP" }, "probe");
     expect(skipped.quinn).toBe("SKIP");
     expect(skipped.reason).toMatch(/container Quinn ran/);
 
@@ -68,16 +68,16 @@ describe("#423 — prod.quinn is a measurement", () => {
     // `quinnVerdictFor`, which is injected rather than reimplemented, and
     // that is the assertion: "Quinn did not tell us it passed" and "Quinn
     // told us it passed" are different facts.
-    expect(fns.prodQuinnRecord(true, { result: "WEIRD" }, true).quinn).toBe("FAIL");
-    expect(fns.prodQuinnRecord(true, null, true).quinn).toBe("FAIL");
+    expect(fns.prodQuinnRecord(true, { result: "WEIRD" }, "probe").quinn).toBe("FAIL");
+    expect(fns.prodQuinnRecord(true, null, "probe").quinn).toBe("FAIL");
   });
 
   test("SC-1585: no container Quinn is a SKIP that says which case it was", () => {
-    const unreachable = fns.prodQuinnRecord(false, null, true);
+    const unreachable = fns.prodQuinnRecord(false, null, "probe");
     expect(unreachable.quinn).toBe("SKIP");
     expect(unreachable.reason).toMatch(/no reachable test container/);
 
-    const unconfigured = fns.prodQuinnRecord(false, null, false);
+    const unconfigured = fns.prodQuinnRecord(false, null, "unconfigured");
     expect(unconfigured.quinn).toBe("SKIP");
     expect(unconfigured.reason).toMatch(/no container is configured/);
 
@@ -85,6 +85,21 @@ describe("#423 — prod.quinn is a measurement", () => {
     // container could not be reached" are different facts, and a reader who
     // cannot tell them apart cannot say which one to fix.
     expect(unreachable.reason).not.toBe(unconfigured.reason);
+  });
+
+  test("SC-2489: a container nothing could address is a FAIL, not a reachability SKIP", () => {
+    // #312. The third parameter was `!!containerConfig`, so a container
+    // declared with no host and no port fell into the arm below and recorded
+    // `no reachable test container` — which asserts a probe. Nothing was
+    // probed. The two are now three, and only one of them is a measurement
+    // that came back empty.
+    const unmeasured = fns.prodQuinnRecord(false, null, "unmeasured");
+    expect(unmeasured.quinn, "a run that measured nothing recorded a SKIP").toBe("FAIL");
+    expect(unmeasured.reason, "a FAIL carries no skip reason").toBe("");
+
+    const unreachable = fns.prodQuinnRecord(false, null, "probe");
+    expect(unreachable.reason).toMatch(/no reachable test container/);
+    expect(unmeasured.quinn).not.toBe(unreachable.quinn);
   });
 
   test("SC-1586: every reachable record satisfies prod-quinn-pass's contract", () => {
@@ -98,7 +113,7 @@ describe("#423 — prod.quinn is a measurement", () => {
       { result: "WEIRD" }, {}, null, undefined, "PASS", 7,
     ];
     const records: Record_[] = [];
-    for (const configured of [true, false]) {
+    for (const configured of ["probe", "unconfigured", "unmeasured"]) {
       records.push(fns.prodQuinnRecord(false, null, configured));
       for (const reply of replies) records.push(fns.prodQuinnRecord(true, reply, configured));
     }
@@ -131,11 +146,11 @@ describe("#423 — prod.quinn is a measurement", () => {
     expect(shipSource).not.toContain("s.environments.prod.quinn = 'SKIP'");
     expect(shipSource).not.toContain("quinn:'SKIP'");
     expect(shipSource.split("${prodQuinn}").length - 1, "an arm stopped reading the measurement")
-      .toBe(3);
+      .toBe(4);
     // And the value handed to the prompt comes from the recorder, not from
     // anything the record-env step decides for itself.
     expect(shipSource).toContain(
-      "prodQuinnAssignment(\n  prodQuinnRecord(quinnContainerRan, quinnContainerResult, !!containerConfig),\n)",
+      "prodQuinnAssignment(\n  prodQuinnRecord(quinnContainerRan, quinnContainerResult, containerProbe.kind),\n)",
     );
   });
 

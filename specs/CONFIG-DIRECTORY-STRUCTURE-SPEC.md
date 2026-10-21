@@ -1417,3 +1417,125 @@ Until (1) exists the honest statement for a consumer is unchanged: rungate can
 run a container on a configured port and cannot enforce an order between two of
 them. What changed between the two measurements is that it no longer reports
 otherwise.
+
+## Phase 3, SC-A15: the container is the third probe tier
+
+SC-A15 reads: *`container` config is added to DDB's `.claude/rungate.json`
+describing the 7776 test container, so ship.js engages and DDB's own
+"7776 before 7777" hard rule becomes harness-enforced.*
+
+**The consumer half cannot be done from here and is not claimed below.** It is
+a change to another repository's config file, and that repository has
+operational rules about which container is touched in what order. What this
+section covers is the harness half, which is everything that happens the
+moment a `container` key survives load.
+
+It never has. `ProjectHarnessSchema` did not declare `container`, so the
+validator deleted it and both sites in `workflows/ship.js` that read it took
+their no-container arm on every run that has ever happened. SC-A1 declared it.
+So these are branches reachable for the first time, and the first consumer to
+reach them gets, from the Ship phase's `record-env` step:
+
+```
+curl -s -o /dev/null -w "%{http_code}" http://undefined:3000/
+```
+
+from `(containerConfig.hosts || [])[0]` and `containerConfig.port || 3000`,
+for a config as ordinary as `{"container": {"rebuildCommand": "..."}}` — which
+validates, because every field of `ContainerSchema` is optional. No 200 comes
+back, so the step takes its *container is down* branch and records
+`prod.smoke = SKIP` with `smokeSkipReason = test container not running`.
+Nothing contacted the container. A container declared with nowhere to reach it
+and a container probed and found down produce the identical record, and the
+first of those is a run that measured nothing reading like one that did.
+
+The Verify phase has the same gap from the other side: its guard was
+`containerHosts.length > 0 && containerPort` with **no else**, so the same
+config left the phase silent — no env-check, no container Quinn, and no line
+anywhere saying why.
+
+`lib/dev-liveness.ts` settled this question once already, for `dev` and `prod`,
+on the argument that *unconfigured has to mean UNMEASURED* (SC-733, #304). The
+container is the third tier and is the one that never went through
+`probeTarget`. `containerProbeTarget` is that function for it, and it returns
+three outcomes rather than two: `unconfigured` (nothing to measure — SKIP),
+`unmeasured` (a container is declared and the config does not say where to
+reach it — **FAIL**, because SKIP is counted in the gate's pass total and the
+run that measured least would read as the cleanest), and `probe`.
+
+`ship.js` cannot import — the Workflow sandbox has no module loading, and a
+top-level `require()` killed every ship run in ~11ms (#69) — so the copy in its
+`CONTAINER-PROBE` block is held to the library by a parity test over a shared
+matrix, the arrangement `test/workflow-security-integration.test.ts` uses for
+the shell-safety primitives.
+
+- [x] SC-2480: test/container-probe-target.test.ts contains [the library agree on every case] — the inlined copy and the library run over the same matrix, with a positive control asserting all three kinds occur in it, because a matrix where every case came back `unconfigured` would agree with a pair of functions that had both stopped working
+- [x] SC-2481: test/container-probe-target.test.ts contains [a container with nowhere to reach it is UNMEASURED, not a probe] — the exact config that produced `http://undefined:3000/`
+- [x] SC-2482: test/container-probe-target.test.ts contains [no port is invented, and 3000 least of all] — `port || 3000` also swallowed `0`, so both the absent and the zero case are asserted; `?? 3000` is the cheapest wrong fix and this is what refuses it
+- [x] SC-2483: test/container-probe-target.test.ts contains [a host that is not a hostname is refused, not sanitised] — the host is interpolated unquoted into a curl line inside an agent prompt at both sites, and refusing is the only outcome that does not require getting the quoting right somewhere downstream; a usable host later in the list is still used, so a typo does not cost the measurement
+- [x] SC-2484: test/container-probe-target.test.ts contains [a well-formed container yields the URL] — including that an absent `healthPath` means the container root, which is the origin itself and not a guessable route, the one place this differs from `probeTarget`
+- [x] SC-2485: test/container-probe-target.test.ts contains [safeUrl is what may be recorded] — a consumer may put a token in `container.healthPath`, and the Verify phase logs this line
+- [x] SC-2486: test/container-probe-target.test.ts contains [no detail can break the command it is interpolated into] — every detail reaches `record-env` as a single-quoted JS literal inside a double-quoted shell string
+- [x] SC-2487: test/container-probe-target.test.ts contains [a container nothing could address records FAIL, with the reason] — the `record-env` arms are EXECUTED, not read: the block is extracted from its markers and invoked, and what is asserted is the prompt the agent is handed. #312's own SC-A13 is why — four green tests over a command that could never run, because all four read the sentence describing it
+- [x] SC-2488: test/verify-fanout.test.ts contains [a container with nowhere to reach it says so instead of nothing] — the Verify half, run through the same fan-out harness, with the rebuild still firing because it is a command rather than a probe and is the thing most likely to make the container addressable
+- [x] SC-2489: test/prod-quinn-record.test.ts contains [a container nothing could address is a FAIL, not a reachability SKIP] — `prodQuinnRecord`'s third parameter was `!!containerConfig`, so this case reported `no reachable test container`, which asserts a probe
+
+### What was broken to prove it (SC-2480..SC-2489)
+
+Every count predicted before the battery ran, against a baseline of 50 pass /
+0 fail over `test/container-probe-target.test.ts`,
+`test/prod-quinn-record.test.ts` and `test/verify-fanout.test.ts`. All eight
+rows came back at their prediction. No mutation is left in the tree; the
+baseline was re-run after each row and after the last.
+
+| Mutation | Predicted | Red | Which assertion |
+|---|---|---|---|
+| `container.port \|\| 3000` restored, both copies | 2 | 2 | SC-2482, SC-2481 |
+| the hostname charset test dropped, both copies | 1 | 1 | SC-2483 |
+| the Verify phase stops filtering hosts before the curl line | 1 | 1 | SC-2488 host filter |
+| `prodQuinnRecord`'s `unmeasured` arm removed | 1 | 1 | SC-2489 |
+| `record-env`'s `unmeasured` arm made unreachable | 1 | 1 | SC-2487 |
+| the Verify phase's `did not probe` log removed | 1 | 1 | SC-2488 silence |
+| the **inlined copy alone** drops the charset test | 1 | 1 | SC-2480 parity |
+| `safeUrl` swapped for `url` in the Verify log | 1 | 1 | SC-2488 redaction |
+
+An earlier run of the same battery predicted **1** for the first row and got
+**2**, and the miss is worth recording as a miss: `{hosts: ["localhost"]}` with
+no port appears in SC-2481 as well as in SC-2482, so restoring the default
+reddens both. The prediction was wrong in the under-counting direction, which
+is the harmless one, but it was wrong, and the row above is the corrected
+prediction re-run rather than the original one.
+
+Two of these rows change behaviour while leaving the file's text intact — the
+`unmeasured` arm made unreachable with `if (false)`, and the log replaced with
+`void 0`. A source-text assertion that `ship.js` no longer contains `|| 3000`
+would survive both, and would survive the inline-only divergence as well. That
+survival is vacuous, not protection: it is the same detector-pointed-at-a-
+description shape that SC-A13 was written to remove, and it is why nothing here
+asserts on the prompt as a string.
+
+### The cheapest wrong fix
+
+Keep the defaults and make them better ones: `container.port ?? 3000`, and
+`(container.hosts || ["localhost"])[0]`. It is one character and two words, it
+removes the literal `undefined` from the URL, and the run goes green.
+
+It does not survive. SC-2482 asserts that a container with a host and no port
+is `unmeasured` and that no `3000` appears in the result; SC-2481 asserts the
+same for the no-host config. Both are direct assertions on the defaulting, not
+side effects of it, so this is a real refusal rather than a vacuous one.
+
+The second-cheapest is subtler and nearly convincing: keep three arms, but have
+the `unmeasured` arm write `SKIP` with an honest reason. That is strictly more
+truthful than today. It still fails — SC-2487 asserts `FAIL` on both `rebuild`
+and `smoke` and asserts the absence of `smoke = SKIP`, and SC-2489 asserts the
+same for `prod.quinn` — because an honest SKIP is still counted in the gate's
+pass total, and a run that could not address the container has not earned one.
+
+### What is still not done
+
+SC-A15's consumer half. The harness now refuses rather than fabricating, which
+means the consumer change is the thing that turns the refusal into a
+measurement — and it cannot be verified from this repository. A check that
+passes here because the condition cannot arise here would be vacuous, so none
+is claimed.

@@ -80,7 +80,14 @@ type Bindings = {
  * verdict through the log line instead.
  */
 function invokeFanout(b: Bindings): Promise<void> {
-  const block = sliceBlock(BLOCK_START, BLOCK_END);
+  // The fan-out reads `containerProbe`, which ship.js builds at the top of
+  // this block from `containerProbeTarget` (#312). Prepended from ITS own
+  // markers rather than stubbed: a stub deciding differently where to probe
+  // would let this harness agree with something that does not run, which is
+  // the same argument the `shellQuote` extraction above makes.
+  const block =
+    sliceBlock("// ──── CONTAINER-PROBE-START ────", "// ──── CONTAINER-PROBE-END ────") +
+    sliceBlock(BLOCK_START, BLOCK_END);
   const factory = new Function(
     "log",
     "timedAgent",
@@ -284,6 +291,71 @@ describe("Verify fan-out: tier gating of the UI-dependent steps", () => {
     expect(byLabel(calls, "rook")).toBeDefined();
     expect(byLabel(calls, "quinn-container")).toBeUndefined();
     expect(logs.some((l) => /skipping container verify/i.test(l))).toBe(true);
+  });
+
+  test("SC-2488: a container with nowhere to reach it says so instead of nothing", async () => {
+    // #312. The guard here was `containerHosts.length > 0 && containerPort`
+    // with no else, so a declared container the config gave no address for
+    // left the phase silent — and the Ship phase, four hundred lines below,
+    // then curled `http://undefined:3000/` and recorded the resulting
+    // non-200 as `test container not running`. The log line is where a
+    // reader finds out which of the two it was.
+    const { done, calls, logs } = runFanout({
+      ceremonyTier: "THOROUGH",
+      container: { rebuildCommand: "echo rebuild" },
+    });
+    await done;
+    // The rebuild still runs: it is a command, not a probe, and it is the
+    // thing most likely to make the container addressable.
+    expect(byLabel(calls, "container-rebuild")).toBeDefined();
+    expect(byLabel(calls, "env-check"), "nothing can be probed").toBeUndefined();
+    expect(byLabel(calls, "quinn-container")).toBeUndefined();
+    expect(logs.some((l) => /did not probe/.test(l)), logs.join(" | ")).toBe(true);
+    expect(logs.some((l) => /container.hosts names no host/.test(l))).toBe(true);
+    // And it is NOT reported as the no-container case, which is a SKIP.
+    expect(logs.some((l) => /No container config/.test(l))).toBe(false);
+  });
+
+  test("SC-2488: a host that is not a hostname never reaches the curl line", async () => {
+    // Each host is interpolated unquoted into a curl command inside an agent
+    // prompt. The filter is in ship.js, so the assertion is on the prompt.
+    const prompts: string[] = [];
+    await invokeFanout({
+      log: () => {},
+      agent: async (p, o) => {
+        prompts.push(`${o.label}\u0000${p}`);
+        return o.label === "env-check" ? { host0: false } : o.label === "rook-scope" ? GOOD_SCOPE : {};
+      },
+      briefedAgent: async () => ({ result: "PASS" }),
+      discovery: { ceremonyTier: "THOROUGH", acs: [], filesToModify: ["lib/a.ts"] },
+      projectConfig: { container: { hosts: ["a;rm -rf /", "mini.local"], port: 7776 } },
+    });
+    const envCheck = prompts.find((p) => p.startsWith("env-check\u0000"));
+    expect(envCheck, "the env-check never ran").toBeDefined();
+    expect(envCheck).not.toContain("rm -rf");
+    expect(envCheck).toContain("http://mini.local:7776/");
+  });
+
+  test("SC-2488: the probed URL is logged, redacted", async () => {
+    // Without this the probe target's `safeUrl` would be computed and read
+    // by nothing, and SC-2485's redaction assertion would be protecting a
+    // value that never reaches a durable surface — a test passing because
+    // the function returns a field, not because anything records it.
+    const logs: string[] = [];
+    await invokeFanout({
+      log: (m) => logs.push(String(m)),
+      agent: async (_p, o) =>
+        o.label === "env-check" ? { host0: false } : o.label === "rook-scope" ? GOOD_SCOPE : {},
+      briefedAgent: async () => ({ result: "PASS" }),
+      discovery: { ceremonyTier: "THOROUGH", acs: [], filesToModify: ["lib/a.ts"] },
+      projectConfig: {
+        container: { hosts: ["mini.local"], port: 7776, healthPath: "/h?token=ghp_abcdefghij1234567890" },
+      },
+    });
+    const env = logs.find((l) => l.startsWith("Container env:"));
+    expect(env, "the env log line is gone").toBeDefined();
+    expect(env).toContain("probed=http://mini.local:7776/h?token=<redacted>");
+    expect(env, "the raw token reached a durable log").not.toContain("ghp_abcdefghij1234567890");
   });
 
   test("container present but unreachable skips Quinn without failing", async () => {
