@@ -105,11 +105,15 @@ describe('generated pre-commit — structure', () => {
   it('uses no quote characters in the secret pattern', () => {
     // Quotes could not survive JS-template -> single-quoted-shell escaping;
     // the old password="..." form rendered as the malformed class ["\].
-    const grepLines = script.split('\n').filter(l => /grep -q?v?E/.test(l) && !l.trim().startsWith('#'));
+    // The flag group tolerates the ones the registry interpolates — `-i` on
+    // both tier-2 greps since #844. A cut that insisted the quote came
+    // immediately after `-E` reported "the pattern is not there" for a
+    // pattern that had only moved one word to the right.
+    const grepLines = script.split('\n').filter(l => /grep -q?v?o?E/.test(l) && !l.trim().startsWith('#'));
     expect(grepLines.length).toBeGreaterThan(0);
     for (const line of grepLines) {
-      const m = line.match(/grep -q?v?E '([^']*)'/);
-      expect(m).not.toBeNull();
+      const m = line.match(/grep -q?v?o?E (?:-[A-Za-z]+ )*'([^']*)'/);
+      expect(m, `no quoted pattern found in: ${line.trim()}`).not.toBeNull();
       expect(m![1]).not.toContain('"');
       expect(m![1]).not.toContain('["\\]');
     }
