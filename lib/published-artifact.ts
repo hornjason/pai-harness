@@ -62,6 +62,17 @@
  * `artifactViolations` is a projection of it, so they cannot disagree — two
  * deciders that agree are behaviourally one guard and no behavioural test can
  * tell them apart.
+ *
+ * ## The question this does NOT answer
+ *
+ * `artifactViolations` refuses a lying LABEL, so the cheapest way to clear it
+ * is to bump `package.json` — `DIVERGED` becomes `AHEAD`, the refusal goes
+ * away, and the published tree is exactly as stale as it was.
+ * `lib/distribution-currency.ts` asks the consumer's question instead — is the
+ * published artifact the content this tree would publish — which takes no
+ * version string as an input and so does not move under that bump. Run it with
+ * `bun scripts/check-distribution-currency.ts`; it exits non-zero when a
+ * consumer cannot obtain this tree.
  */
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
