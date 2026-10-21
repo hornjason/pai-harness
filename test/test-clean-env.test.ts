@@ -29,6 +29,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 import { structuralCut } from "../lib/source-slice";
+import { CI_SUITE_FETCH_DEPTH, baseRefFetchDepth } from "../lib/ci-history-depth";
 import {
   ciCheckoutPlan,
   executeCheckoutPlan,
@@ -69,27 +70,38 @@ function sourceRepo(): string {
 }
 
 describe("#168: the checkout model is read from the workflow, not assumed", () => {
-  test("this repo's own ci.yml parses, and says depth 1", () => {
+  test("this repo's own ci.yml parses, and says what the declaration says", () => {
     // `actions/checkout@v4` documents its default as 1, and the absence of a
     // `fetch-depth:` key is that default rather than an unknown. Reading the
     // real file means a change to CI shows up here rather than silently
     // widening the gap this issue exists to close.
+    //
+    // #987 moved this repo off that default: the suite job declares
+    // `fetch-depth: 0`, because a shallow clone makes `lib/failure-intake.ts`
+    // report UNMEASURED on every runner. Asserted against the declaration in
+    // `lib/ci-history-depth.ts` rather than against a literal, so the two
+    // cannot drift.
     const yaml = readFileSync(join(REPO, ".github", "workflows", "ci.yml"), "utf-8");
     const { model, why } = parseCheckoutModel(yaml, suiteJobName(yaml));
     expect(model, why).not.toBeNull();
-    expect(model!.depth).toBe(1);
+    expect(model!.depth).toBe(CI_SUITE_FETCH_DEPTH === 0 ? null : CI_SUITE_FETCH_DEPTH);
   });
 
   test("the fetch #347 added to the job is part of the model", () => {
     // The whole argument for parsing rather than hardcoding. A model that
     // said "shallow, detached, no main" would be wrong about THIS repo
-    // today, because the job fetches origin/main at depth 200 before the
-    // suite runs — and would report failures CI does not have.
+    // today, because the job fetches origin/main before the suite runs — and
+    // would report failures CI does not have.
+    //
+    // #987 unbounded that fetch, and the reason is the point of this case: a
+    // bounded `git fetch --depth=N` RE-SHALLOWS a complete clone, so leaving
+    // `--depth=200` here would have made the `fetch-depth: 0` above it inert.
+    // The depth is derived from the checkout's own.
     const yaml = readFileSync(join(REPO, ".github", "workflows", "ci.yml"), "utf-8");
     const { model } = parseCheckoutModel(yaml, suiteJobName(yaml));
     expect(model!.fetches.length).toBeGreaterThan(0);
     expect(model!.fetches.some(f => f.refspec.includes("refs/heads/main"))).toBe(true);
-    expect(model!.fetches[0].depth).toBe(200);
+    expect(model!.fetches[0].depth).toBe(baseRefFetchDepth(CI_SUITE_FETCH_DEPTH));
   });
 
   test("an explicit fetch-depth is read, and 0 means full history", () => {

@@ -1,8 +1,16 @@
-# generated-sha: 6a06fe3d4dd187bd
+# generated-sha: 2fc70c5b677ac1c4
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
 on:
+  # Re-run this workflow on demand, on any ref. Without the trigger the
+  # Actions API refuses with `HTTP 422: Workflow does not have
+  # 'workflow_dispatch' trigger` — measured on 2026-10-21 across the fleet,
+  # where 5 of 6 re-run attempts came back 422. The cost is not the button: a
+  # flake cannot be told from a real failure without pushing an empty commit,
+  # and a fix landed on the default branch cannot be confirmed until unrelated
+  # traffic happens to arrive (#940).
+  workflow_dispatch:
   # merge_group carries NO branches: filter, deliberately. A merge queue builds
   # a temporary `gh-readonly-queue/<base>/...` ref, which no branch list here
   # would match — so filtering it is the same as not handling the event, and a
@@ -25,14 +33,28 @@ on:
   pull_request:
     branches:
       - "main"
-  # Re-run this workflow on demand, on any ref. Without the trigger the
-  # Actions API refuses with `HTTP 422: Workflow does not have
-  # 'workflow_dispatch' trigger` — measured on 2026-10-21 across the fleet,
-  # where 5 of 6 re-run attempts came back 422. The cost is not the button: a
-  # flake cannot be told from a real failure without pushing an empty commit,
-  # and a fix landed on the default branch cannot be confirmed until unrelated
-  # traffic happens to arrive (#940).
-  workflow_dispatch:
+
+# The GROUP does the work here, not the flag. A run is only ever cancelled by
+# another run in the SAME group, so keying a push on its own commit makes the
+# question moot: there is never a second occupant to do the cancelling.
+#
+# A push to `main` keys on `github.sha`, unique per commit. Every other main
+# run is in a different group and nothing can cancel it. That matters because
+# a main run is the ONLY run that will ever build that commit, so losing it
+# leaves a gap in main's history with no red check anywhere saying so.
+#
+# Everything else keys on `github.ref`: unique per pull request
+# (`refs/pull/<n>/merge`) and per merge-queue entry
+# (`gh-readonly-queue/...`), but STABLE across pushes to the same pull
+# request — which is what lets a pull request supersede itself, the one case
+# where cancelling is the right answer.
+#
+# Do NOT "simplify" this to a ref-keyed group with an event expression in
+# cancel-in-progress. That was tried and measured: three main-push runs
+# cancelled inside eight minutes with the expression in place.
+concurrency:
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   # Least privilege, and it matters most on the consumers. A workflow with
@@ -55,9 +77,15 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history. A bounded depth leaves .git/shallow behind, and
+          # lib/failure-intake.ts refuses on that file rather than on a commit
+          # count — so any bounded value here reports UNMEASURED (#987).
+          # Declared once, in lib/ci-history-depth.ts.
+          fetch-depth: 0
       - name: Fetch the comparison base for the conformity ratchet
         run: |
-          git fetch --no-tags --depth=200 origin '+refs/heads/main:refs/remotes/origin/main' \
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main' \
             || echo "WARN: could not fetch main; the conformity allowlist growth check will report UNMEASURED."
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -103,25 +131,3 @@ jobs:
             exit 1
           fi
           echo "All 4 shards passed."
-
-# The GROUP does the work here, not the flag. A run is only ever cancelled by
-# another run in the SAME group, so keying a push on its own commit makes the
-# question moot: there is never a second occupant to do the cancelling.
-#
-# A push to `main` keys on `github.sha`, unique per commit. Every other main
-# run is in a different group and nothing can cancel it. That matters because
-# a main run is the ONLY run that will ever build that commit, so losing it
-# leaves a gap in main's history with no red check anywhere saying so.
-#
-# Everything else keys on `github.ref`: unique per pull request
-# (`refs/pull/<n>/merge`) and per merge-queue entry
-# (`gh-readonly-queue/...`), but STABLE across pushes to the same pull
-# request — which is what lets a pull request supersede itself, the one case
-# where cancelling is the right answer.
-#
-# Do NOT "simplify" this to a ref-keyed group with an event expression in
-# cancel-in-progress. That was tried and measured: three main-push runs
-# cancelled inside eight minutes with the expression in place.
-concurrency:
-  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
-  cancel-in-progress: true
