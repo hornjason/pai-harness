@@ -2,6 +2,11 @@
   "project": "rungate",
   "repo": "hornjason/pai-harness",
   "issueRepo": "hornjason/pai-harness",
+  "ship": {
+    "mode": "direct",
+    "since": "2026-10-19",
+    "reason": "stabilising RunGate and clearing the backlogs, until we get RunGate under control"
+  },
   "contextDocs": {
     "harness": "HARNESS.md",
     "agents": "AGENTS.md"

@@ -11,6 +11,13 @@ updated: 2026-09-22
 
 ## MANDATORY GATE — do these steps IN ORDER before any implementation
 
+**Steps 3 and 4 are SUSPENDED while `ship.mode` is `"direct"` (#911).** Read
+`.claude/rules/ship-workflow.md` first: it is generated from `ship` in
+`.claude/rungate/config.json`, it states the date and the reason, and it says
+what to do instead. Steps 1 and 2 still apply. The steps below are the
+harness-mode gate and come back the moment the mode is set to `"harness"` —
+nothing here has been deleted.
+
 STOP. Do NOT read source code, edit files, or write code until all 4 steps are done:
 
 1. Run `bun test` — confirm 0 failures. If any fail, fix them first.
