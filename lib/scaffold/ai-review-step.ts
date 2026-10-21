@@ -653,19 +653,63 @@ export const AI_REVIEW_FINDINGS_BASENAME = "ai-review-findings";
  *   upper bound on what it costs, and the billing path this whole issue is
  *   about is the one that runs out.
  */
-export const AI_REVIEW_DISALLOWED_TOOLS = [
-  "Bash",
-  "BashOutput",
-  "KillShell",
-  "Task",
-  "SlashCommand",
-  "ExitPlanMode",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
-  "WebFetch",
-  "WebSearch",
-].join(",");
+/**
+ * The deny list, with each entry saying whether it denies anything (#885).
+ *
+ * The CLI validates every `--disallowedTools` entry at startup, warns on a
+ * name it cannot resolve, and carries on — so **a rule that matches no known
+ * tool is indistinguishable from a rule that is holding.** Eleven entries read
+ * as eleven denials; two of them were inert, and nothing said so. The next
+ * person to reason about what the reviewer cannot do counts the list.
+ *
+ * `inert` is a reason string, never a bare flag: an entry kept because it is
+ * worth keeping has to say why, or the list is the same unreadable thing one
+ * level down. Both of them are kept rather than deleted, and the emitted
+ * string is byte-identical to the pre-#885 one — the READING was the defect,
+ * not the behaviour. Dropping either would be a behavioural change on a CLI
+ * version this repo has not measured: the vocabulary record was taken against
+ * `2.1.306` and CI runs `2.1.303`.
+ *
+ * This is ONE declaration and the wire format below is derived from it. A
+ * second literal holding the same names would be a second decider, and the
+ * two would agree right up until somebody edited one of them.
+ *
+ * `test/ai-review-deny-vocabulary.test.ts` holds both halves against
+ * `lib/claude-tool-vocabulary.ts`: an entry with no `inert` must be a tool the
+ * CLI knows, and an entry WITH one must not be. A tool renamed upstream turns
+ * its denial off silently today; after that test it turns the suite red.
+ */
+export const AI_REVIEW_DENY_RULES: ReadonlyArray<{ rule: string; inert?: string }> = [
+  { rule: "Bash" },
+  { rule: "BashOutput" },
+  { rule: "KillShell" },
+  { rule: "Task" },
+  {
+    rule: "SlashCommand",
+    // #732's diagnosis named this entry as the cause of a reviewer that posted
+    // nothing, and `test/claude-review-executable-prompt.test.ts` records the
+    // measurement showing it was not — a slash command supplied as the CLI
+    // PROMPT is expanded before the model ever sees it. That history is worth
+    // not losing, and a bare deletion loses it. What is new is that the entry
+    // now resolves to no tool at all.
+    inert: "#732's entry; the CLI resolves no tool of this name as of 2.1.306",
+  },
+  { rule: "ExitPlanMode" },
+  { rule: "Edit" },
+  {
+    rule: "MultiEdit",
+    // Documented as the LEGACY tool name, so its absence from the vocabulary
+    // is expected rather than a surprise. One word, and it covers a CLI old
+    // enough to still have it.
+    inert: "the legacy edit tool; retained for CLI versions that still have it",
+  },
+  { rule: "NotebookEdit" },
+  { rule: "WebFetch" },
+  { rule: "WebSearch" },
+];
+
+/** The wire format, derived. Byte-identical to the pre-#885 literal. */
+export const AI_REVIEW_DISALLOWED_TOOLS = AI_REVIEW_DENY_RULES.map(r => r.rule).join(",");
 
 export const AI_REVIEW_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Write"].join(",");
 
