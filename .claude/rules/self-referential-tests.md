@@ -64,7 +64,7 @@ The constant is in the test file itself unless stated otherwise.
 | a new ticked SC with no coverage claim | `BANKED`, `test/ticked-sc-cover.test.ts` |
 | a ticked `(behavioral)` SC | `BEHAVIORAL_TICKED_RATCHET`, `test/behavioral-sc-ratchet.test.ts` |
 | an unqualified `SC-N` mention in a test | `CENSUS`, `test/sc-id-namespace.test.ts` |
-| a new `DailyBriefDashboard` mention in `lib/`,`gates/`,`scripts/` | `KNOWN`, `test/anti.test.ts` |
+| a consumer's NAME in `lib/`,`gates/`,`scripts/` | **remove the name** — `CONSUMERS` in `test/anti.test.ts` only shrinks, so delist a file you cleaned and never add one |
 | a gate check test with no assertion | `WARN_TIER_CHECKS`, `lib/gate-check-audit.ts` — reason must exceed 80 chars |
 | a new gate check test | `config/check-registry.json` |
 | a new matcher handler | `config/matcher-registry.json` |
