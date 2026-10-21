@@ -126,10 +126,12 @@ one of them is **UNMEASURED, counted apart from ABANDONED**. It deletes
 nothing; removal stays yours.
 
 **Measured on 173 worktrees, 2026-10-21 (#1021).** At the 7d default: 0
-ABANDONED, 173 IN_USE. At `--older-than 2d`: 7 ABANDONED, 166 IN_USE. 85 held
-uncommitted work, and **9 sat on a branch whose PR had merged and then gained
-commits** — the shape that cost 500 lines on 2026-10-16, and exactly what
-"merged, therefore delete" takes.
+ABANDONED, 173 IN_USE. At `--older-than 2d`: 7 ABANDONED, 166 IN_USE. 81 held
+uncommitted work, and **9 sat at a commit that is not the one GitHub merged —
+6 of them holding 10 commits between them that the merged head does not**, on
+no other ref, in a tree `git status` calls clean. That is what "merged,
+therefore delete" takes, and it is the shape that cost 500 lines on
+2026-10-16.
 
 `git worktree prune` is not the safe half of this. It drops
 `.git/worktrees/<name>` for **any** registered worktree whose directory is
