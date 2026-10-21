@@ -3,8 +3,11 @@ import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 
 import {
+  ARM_ENV_VALUE,
+  ARM_ENV_VAR,
   MIN_ORPHAN_AGE_SECONDS,
   ancestryOf,
+  armedFromEnv,
   orphanDecision,
   reapOrphans,
   reapReportLines,
@@ -35,6 +38,12 @@ import { stripJsComments } from "../lib/strip-js-comments";
  * injected — which is also the only way to assert that a SPECIFIC pid was
  * signalled, and "which pid" is the whole question the old hook could not
  * answer.
+ *
+ * **That is a property of this file and not of the criteria.** #690 AC-1 asks
+ * for a planted RUNNING suite and AC-2 for a measuring wrapper that still
+ * records its exit code; neither can be asserted over a table of literals, so
+ * both live in `test/orphan-reaper-live.test.ts`, which spawns its own
+ * processes and signals nothing it did not spawn.
  *
  * ## The cheapest wrong fix, named before the repair
  *
@@ -623,5 +632,165 @@ describe("arming is a separate decision from deciding", () => {
     expect(dry.decisions).toEqual(armed.decisions);
     expect(calls).toEqual([{ pid: 4001, signal: "SIGTERM" }]);
     expect(reapReportLines(dry).join("\n")).toContain("would signal");
+  });
+});
+
+describe("#690: the reaper is disarmed by default, and that is measured", () => {
+  /**
+   * Everything above proves `reapOrphans` signals nothing without `armed`.
+   * Nothing proved what decides `armed`.
+   *
+   * It was `process.env.RUNGATE_REAP_ORPHANS === '1'` spelled inline at the
+   * hook's call site — unreachable from a case, because a hook module does
+   * its work at import, so the only available instrument was reading the
+   * source and agreeing with it. The repository's claim about its own kill
+   * switch was the one claim with no measurement behind it, on the one
+   * switch where being wrong destroys somebody else's three-hour run.
+   *
+   * Two halves, and both are needed: the decider is driven over the values
+   * that must not arm it, and the tree is scanned for anything that SETS the
+   * variable. Either alone is satisfiable without the other — an exact
+   * decider is no help if a workflow exports the exact value, and an unset
+   * variable is no help if `"true"` arms it.
+   *
+   * The identifier is never written as a literal in this file: every form
+   * below is composed from the imported constant. A scanner whose population
+   * included its own controls would report them, which is the self-reference
+   * trap `.claude/rules/self-referential-tests.md` records this repository
+   * falling into three times.
+   */
+  const NAME = ARM_ENV_VAR;
+
+  /**
+   * Every spelling that SETS an environment variable, and none that reads
+   * one. `=(?!=)` is what separates them: `NAME === '1'` is the legitimate
+   * comparison and `NAME = '1'` is an arming, and a scan that cannot tell
+   * them apart would be red on the decider itself and green on nothing.
+   *
+   * The limit, stated rather than left to be discovered: a set through a
+   * computed key — `process.env[someVariable] = …` — is outside these forms.
+   * Nothing in the tree does that, and a scan wide enough to catch it would
+   * flag every environment write there is.
+   */
+  const armingForms = (name: string): RegExp[] => [
+    new RegExp(`\\b${name}\\b\\s*=(?!=)`), //            NAME=1, env.NAME = "1"
+    new RegExp(`['"]${name}['"]\\s*:`), //               "NAME": "1" — JSON
+    new RegExp(`(^|[\\s{,])${name}\\s*:`, "m"), //       NAME: "1" — YAML, object literal
+    new RegExp(`\\[\\s*['"]${name}['"]\\s*\\]\\s*=(?!=)`), // env["NAME"] = "1"
+  ];
+  const arms = (text: string): boolean => armingForms(NAME).some((re) => re.test(text));
+
+  /** Files that can set an environment variable for a process. */
+  const ENV_CAPABLE = /\.(ts|tsx|js|mjs|cjs|json|ya?ml|sh|bash|zsh|toml)$|^\.env/;
+  const JS_FAMILY = /\.(ts|tsx|js|mjs|cjs)$/;
+  const SCANNED_DIRS = ["lib", "hooks", "scripts", "workflows", "gates", "bin", ".github"];
+
+  const envCapableSources = (): string[] => {
+    const found: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (ENV_CAPABLE.test(entry.name)) found.push(path);
+      }
+    };
+    for (const d of SCANNED_DIRS) {
+      const path = join(ROOT, d);
+      try {
+        if (statSync(path).isDirectory()) walk(path);
+      } catch {
+        // A directory this repository does not have is not a violation.
+      }
+    }
+    for (const entry of readdirSync(ROOT, { withFileTypes: true })) {
+      if (!entry.isDirectory() && ENV_CAPABLE.test(entry.name)) found.push(join(ROOT, entry.name));
+    }
+    return found;
+  };
+
+  /** Comments cannot set a variable, and the docs quote the arming line. */
+  const scannable = (path: string): string => {
+    const raw = readFileSync(path, "utf-8");
+    return JS_FAMILY.test(path) ? stripJsComments(raw) : raw;
+  };
+
+  test("only the exact value arms it", () => {
+    expect(armedFromEnv({ [NAME]: ARM_ENV_VALUE })).toBe(true);
+  });
+
+  test("every neighbouring value leaves it disarmed", () => {
+    // A gate that turns itself on by accident is worse than one nobody can
+    // turn on — `.claude/rules/config-access.md` on RUNGATE_REQUIRE_AI_REVIEW.
+    const disarming = ["", "0", "true", "TRUE", "True", "yes", "on", "2", "01", "11", " 1", "1 "];
+    for (const value of disarming) {
+      expect(armedFromEnv({ [NAME]: value }), `${JSON.stringify(value)} must not arm`).toBe(false);
+    }
+    expect(armedFromEnv({}), "an absent variable must not arm").toBe(false);
+    expect(armedFromEnv({ [`${NAME}_EXTRA`]: ARM_ENV_VALUE })).toBe(false);
+  });
+
+  test("the environment this suite runs in does not arm it", () => {
+    // Read of the live environment, because a committed arming is only one of
+    // the two ways to be armed and the other one is the shell you are in.
+    expect(armedFromEnv()).toBe(false);
+  });
+
+  test("the scanner can see every arming form, and no reading form", () => {
+    // Without this, "nothing arms it" is satisfied by a detector that detects
+    // nothing. Every form is a shape that really does set a variable.
+    expect(arms(`${NAME}=1`), "shell assignment").toBe(true);
+    expect(arms(`export ${NAME}=1`), "exported shell assignment").toBe(true);
+    expect(arms(`  "${NAME}": "1",`), "a JSON env block").toBe(true);
+    expect(arms(`  ${NAME}: "1"`), "a YAML env key").toBe(true);
+    expect(arms(`process.env.${NAME} = "1";`), "a TS assignment").toBe(true);
+    expect(arms(`process.env["${NAME}"] = ARM;`), "a TS computed assignment").toBe(true);
+
+    // And the other direction, which is what stops the scan being red on the
+    // decider it is protecting: a read is not an arming.
+    expect(arms(`process.env.${NAME} === "1"`), "the legitimate read").toBe(false);
+    expect(arms(`if (env.${NAME} !== VALUE) {}`), "a negated read").toBe(false);
+    expect(arms(`export const ARM_ENV_VAR = "${NAME}";`), "the declaration").toBe(false);
+    expect(arms(`${NAME} is the only switch, and nothing sets it`), "prose").toBe(false);
+  });
+
+  test("the scan reads something — the control before the verdict", () => {
+    expect(envCapableSources().length).toBeGreaterThan(50);
+  });
+
+  test("nothing committed in this repository arms the reaper", () => {
+    const offenders = envCapableSources().filter((path) => arms(scannable(path)));
+    expect(
+      offenders.map((p) => p.slice(ROOT.length + 1)),
+      `setting ${NAME} arms the orphan reaper for every session that starts from ` +
+        `this checkout, simultaneously, on a machine where peers run suites that ` +
+        `take hours (#690). Arming is a deployment decision taken by hand after ` +
+        `reading the dry-run log — never a committed one.`,
+    ).toEqual([]);
+  });
+
+  test("the hook's call site still passes the decider", () => {
+    // The rebase failure this repository has hit twice: a clean auto-resolve
+    // keeps a new signature and drops the argument from the call site. It
+    // compiles, the suite passes, and the reaper is armed by whatever the
+    // default is. So the call site is asserted, not just the function.
+    const hook = stripJsComments(
+      readFileSync(join(ROOT, "hooks/StaleTTLCleanup.hook.ts"), "utf-8"),
+    );
+    expect(hook).toMatch(/reapOrphans\(\s*\{\s*armed:\s*armedFromEnv\(\)\s*\}\s*\)/);
+  });
+
+  test("the variable is read in exactly one place", () => {
+    // A separate case and not a second assertion above, because a case that
+    // fails at its first expectation never runs its second: the call-site
+    // regex and this population have different reddening inputs — restoring
+    // the inline comparison reds both, and a second reader elsewhere reds
+    // only this one.
+    const naming = envCapableSources().filter((path) => scannable(path).includes(NAME));
+    expect(
+      naming.map((p) => p.slice(ROOT.length + 1)),
+      `${NAME} is read in exactly one place. A second reader is a second ` +
+        `arming decider — see .claude/rules/checks-must-be-able-to-fail.md on ` +
+        `two deciders that agree.`,
+    ).toEqual(["lib/orphan-reaper.ts"]);
   });
 });
