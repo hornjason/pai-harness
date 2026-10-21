@@ -1,4 +1,4 @@
-# generated-sha: 19fbad97bed41b31
+# generated-sha: e22651a446491cfa
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -727,6 +727,7 @@ jobs:
               -not -path "${HOME}/.claude/state" -not -path "${HOME}/.claude/state/*" \
               -not -path "${HOME}/.npm/_npx" -not -path "${HOME}/.npm/_npx/*" \
               ! \( \( -path "${HOME}/*/_diag" -o -path "${HOME}/*/_diag/*" \) -a ! \( -path "${HOME}/*/*/_diag" -o -path "${HOME}/*/*/_diag/*" \) \) \
+              ! \( \( -path "${HOME}/*/_work/_temp" -o -path "${HOME}/*/_work/_temp/*" \) -a ! \( -path "${HOME}/*/*/_work/_temp" -o -path "${HOME}/*/*/_work/_temp/*" \) \) \
               2>/dev/null | head -50 || true)
 
             # Pass 2: the config half of the floor, reported by name and NOT refused.
@@ -751,7 +752,7 @@ jobs:
             fi
 
             if [ -n "${outside}" ]; then
-              echo "::error title=AI review wrote outside the checkout::the reviewer wrote OUTSIDE the checkout, to a path the runtime does not own. The tool grant anchors at the working directory, so this was permitted; on a shared self-hosted runner \$HOME persists between jobs, so a file here reaches another repository's build (#843 finding 1). The runtime's own directories are subtracted before this fires — .claude/.last-cleanup, .claude/cache, .claude/projects, .npm/_logs, .bun/install/cache as inert state, and .claude.json, .claude/settings.json, .claude/plugins, .claude/backups, .claude/state, .npm/_npx as runtime config reported separately as UNMEASURED (#871) — and those cover every path two measured runs produced (#866). The CI runner's own diagnostics are subtracted too — */_diag — because on a pool whose runners share a home directory those are written by SIBLING runner processes building other repositories, continuously and by design (#877). What is left is neither the runtime nor the runner. A sibling runner's _work checkout is NOT subtracted: a write there is another repository's source tree and is the finding, not the floor. If this runner is self-hosted, whatever else shares its home has still never been read, and the path below is the reading that would start that. Paths: $(escape_annotation "${outside}")" >&2
+              echo "::error title=AI review wrote outside the checkout::the reviewer wrote OUTSIDE the checkout, to a path the runtime does not own. The tool grant anchors at the working directory, so this was permitted; on a shared self-hosted runner \$HOME persists between jobs, so a file here reaches another repository's build (#843 finding 1). The runtime's own directories are subtracted before this fires — .claude/.last-cleanup, .claude/cache, .claude/projects, .npm/_logs, .bun/install/cache as inert state, and .claude.json, .claude/settings.json, .claude/plugins, .claude/backups, .claude/state, .npm/_npx as runtime config reported separately as UNMEASURED (#871) — and those cover every path two measured runs produced (#866). The CI runner's own diagnostics are subtracted too — */_diag, */_work/_temp — because on a pool whose runners share a home directory those are written by SIBLING runner processes building other repositories, continuously and by design (#877). What is left is neither the runtime nor the runner. A sibling runner's _work checkout is NOT subtracted: a write there is another repository's source tree and is the finding, not the floor. If this runner is self-hosted, whatever else shares its home has still never been read, and the path below is the reading that would start that. Paths: $(escape_annotation "${outside}")" >&2
               # The annotation is emitted HERE and the exit is DEFERRED to the end of
               # the step, which is not the same thing as warning. Both readings refuse;
               # exiting here would mean a reviewer that edited the tree AND touched

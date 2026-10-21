@@ -1067,6 +1067,83 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
  * executable, and is written by a process that is definitionally not the
  * reviewer.
  *
+ * ## `_work` is not one category (#897)
+ *
+ * The paragraph above says "a sibling's `_work` checkout is another
+ * repository's source tree", and treats `_work` as a single thing. It is not.
+ * `_work/<repo>/<repo>` is that source tree and stays unsubtracted;
+ * `_work/_temp` is where the runner materialises the `<uuid>.sh` script for
+ * each `run:` step of whatever job it is executing, holds no repository
+ * source, and is torn down by the runner itself.
+ *
+ * ### It is NOT the `_diag` argument, and the difference is a real blind spot
+ *
+ * An earlier revision of this docblock said it was "the `_diag` argument word
+ * for word". That was wrong, and the automated security review of this
+ * change's first push said so. `_diag` holds logs: written, never read back,
+ * **never executed**. `_work/_temp` is an **exec path** — the runner writes
+ * `<uuid>.sh` there and immediately runs it. Subtracting it means a reviewer
+ * that overwrites an existing `<uuid>.sh` in a SIBLING runner's `_temp`,
+ * between that runner writing the file and exec'ing it, is not reported.
+ * That is a TOCTOU window on a shared home, and it is narrow but real.
+ *
+ * It is subtracted anyway, and the reasoning is a tradeoff rather than a
+ * dismissal: before this change the check was red on **every** PR on that
+ * repo — 1 success in 8 runs, and the one predates the pool — so it reported
+ * nothing anybody could act on and nothing anybody read. A detector that
+ * cannot distinguish its own noise is not a weaker detector than one with a
+ * named blind spot; it is a decorative one. `AC-15h` pins the blind spot as a
+ * test so it is VISIBLE rather than silent, and the day the structural fix
+ * lands that case is the thing to delete.
+ *
+ * ### Why the two narrowings that were suggested do not work
+ *
+ * Both were proposed by the security review, and both restore the permanent
+ * red, because the measured noise is itself `.sh` files in a SIBLING's
+ * `_temp`:
+ *
+ * - *"Subtract only this job's own `$RUNNER_TEMP` by exact value and report
+ *   any other runner's."* The three flagged paths were `runner-4`'s while the
+ *   job ran on `runner-5` — they are exactly what this would keep reporting.
+ * - *"Keep script files reportable — `*.sh`, `*.ps1`, mode 0755."* All three
+ *   flagged paths are `<uuid>.sh`.
+ *
+ * There is no path- or name-shaped discriminator here at all: every runner in
+ * the pool is the same uid writing the same filename shape into the same
+ * directory, and `-newer` is satisfied by the sibling and the plant alike.
+ *
+ * ### The structural fix, which this is not
+ *
+ * Give each runner its own `HOME`. That removes `_diag`, `_work/_temp` AND
+ * the sibling-checkout exposure in one move, and makes every subtraction in
+ * this list unnecessary rather than merely justified. Filed as a follow-up;
+ * this change is the stopgap that makes the check readable until then.
+ *
+ * Measured on the same consumer pool, run `39605785223`: exit 1 with three
+ * paths, all `/home/gharunner/runner-4/_work/_temp/<uuid>.sh`, while the job
+ * ran on **runner-5** — the log has 44 occurrences of `runner-5/_work/_temp`
+ * and 3 of `runner-4`'s. Checking the runner NUMBER is what separates "the
+ * current job's own `$RUNNER_TEMP`" from "a sibling's", and the two call for
+ * different fixes, so the reading is stated rather than assumed. `ai-review`
+ * had passed once in eight runs on that repo and the one success predates the
+ * current pool.
+ *
+ * A `_work/_actions` entry is the other runner-owned directory under `_work`
+ * and is
+ * deliberately NOT added: it appeared in that run's log but in none of its
+ * flagged paths, so subtracting it would be wider than what was measured —
+ * the defect this docblock names two sections down, in the direction nobody
+ * investigates.
+ *
+ * The anchor is emitted for this entry too, and AC-15e requires it, but it is
+ * not independently load-bearing here: one extra component in front of
+ * `<runner>/_work/_temp/<file>` is depth 5, outside
+ * `AI_REVIEW_OUTSIDE_MAXDEPTH`, so the walk never reads the shape the anchor
+ * would refuse. `AC-15g` pins the boundary that IS reachable — `_tempest` is
+ * not `_temp` — and it passes both before and after this change, which is
+ * what a guard against a future widening looks like rather than a witness for
+ * this one. The witnesses are the two `AC-15a` rows.
+ *
  * The entry is written in the list below as a glob rather than a literal,
  * because the directory above
  * `_diag` is the runner's install name, which the pool operator chooses —
@@ -1174,6 +1251,9 @@ export const AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS: readonly string[] = [
   // install directory, which the pool operator names, and it is anchored to
   // ONE component by the emitter below — see the docblock.
   "*/_diag",
+  // The runner's per-job scratch (#897). Same owner, same argument, measured
+  // separately — see "`_work` is not one category" in the docblock.
+  "*/_work/_temp",
 ];
 
 /**

