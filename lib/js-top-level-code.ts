@@ -27,12 +27,66 @@
  * not express.
  */
 
-/** Characters after which a `/` begins a regex literal rather than division. */
-function regexCanFollow(prev: string): boolean {
-  // Scanning back over the last significant character is enough in practice:
-  // after a value (identifier, number, closing bracket) a slash is division;
-  // after an operator, keyword or opening bracket it starts a regex.
-  return !/[A-Za-z0-9_$)\]]/.test(prev);
+/**
+ * Every ECMAScript reserved word. A closed list taken from the grammar, not a
+ * selection of the ones that have bitten us — which is the whole point of
+ * #905: the previous decision was "scanning back over the last significant
+ * CHARACTER is enough in practice", and it was not. `return` ends in `n`, so
+ * `return /re/` read as division, and the first `/` the tokenizer then
+ * accepted was one inside the literal.
+ */
+const RESERVED_WORDS = new Set([
+  "await", "break", "case", "catch", "class", "const", "continue", "debugger",
+  "default", "delete", "do", "else", "enum", "export", "extends", "false",
+  "finally", "for", "function", "if", "import", "in", "instanceof", "new",
+  "null", "return", "super", "switch", "this", "throw", "true", "try",
+  "typeof", "var", "void", "while", "with", "yield",
+]);
+
+/**
+ * The reserved words that are themselves VALUES. A `/` after one of these
+ * divides; after every other reserved word it opens a regex literal.
+ *
+ * Stated as the complement on purpose. The set of keywords a regex may follow
+ * is large and open to being under-enumerated one keyword at a time; the set
+ * of keywords that are values is five and closed. The remaining reserved
+ * words either take an expression (`return`, `throw`, `case`, `of`, …) or
+ * cannot be followed by `/` at all in valid source (`if`, `while`, `var`, …),
+ * and both readings want the same answer.
+ *
+ * `of` and `as` are contextual, not reserved. `of` is listed below rather
+ * than here because `for (const c of /re/.source)` is real code; everything
+ * else contextual (`let`, `async`, `static`, `get`, `set`, `from`) is an
+ * ordinary identifier in the positions where a `/` can follow it.
+ */
+const VALUE_KEYWORDS = new Set(["this", "super", "null", "true", "false"]);
+
+/** Contextual keywords that take an expression. */
+const EXPRESSION_CONTEXTUAL = new Set(["of"]);
+
+/**
+ * Whether a `/` immediately after `token` begins a regex literal.
+ *
+ * `token` is a whole token, never a fragment: a word, a numeric run, a single
+ * punctuator, `""` at the start of input, or a word prefixed with `.` when it
+ * was reached through a member access. The one binding that decides this, so
+ * there is one thing to mutate.
+ */
+export function regexCanFollowToken(token: string): boolean {
+  if (token === "") return true; // start of input: expression position
+  // `o.return` is a property read, so the word is a value whatever it spells.
+  if (token.startsWith(".")) return false;
+  if (/^[0-9]/.test(token)) return false; // numeric literal
+  if (/^[A-Za-z_$]/.test(token)) {
+    if (EXPRESSION_CONTEXTUAL.has(token)) return true;
+    // A plain identifier is a value. Only a reserved word that is not itself
+    // a value leaves the parser in expression position.
+    return RESERVED_WORDS.has(token) && !VALUE_KEYWORDS.has(token);
+  }
+  // Punctuators. `)` and `]` close a value; every other one — `=`, `(`, `,`,
+  // `:`, `[`, `!`, `&`, `|`, `?`, `{`, `;`, `+`, `-`, `*`, `%`, `<`, `>`, `~`,
+  // `^` and whitespace at the start of input — leaves expression position.
+  return !/[)\]]/.test(token);
 }
 
 /**
@@ -62,7 +116,8 @@ export function stripStringsAndComments(
   // interpolation the depth counts { } so the template's closing backtick is
   // not confused with a backtick in nested code.
   const templates: number[] = [];
-  let lastSignificant = "\n";
+  // The last significant TOKEN, not the last significant character (#905).
+  let lastSignificant = "";
 
   while (i < src.length) {
     const c = src[i];
@@ -77,7 +132,7 @@ export function stripStringsAndComments(
       if (c === "`") {
         templates.pop();
         out += "`";
-        lastSignificant = "`";
+        lastSignificant = ")"; // a completed template is a value
         i++;
         continue;
       }
@@ -138,12 +193,12 @@ export function stripStringsAndComments(
         out += quote;
         i++;
       }
-      lastSignificant = quote;
+      lastSignificant = ")"; // a completed string is a value
       continue;
     }
 
     // Regex literal. Only when a `/` cannot be division here.
-    if (c === "/" && regexCanFollow(lastSignificant)) {
+    if (c === "/" && regexCanFollowToken(lastSignificant)) {
       let j = i + 1;
       let inClass = false;
       let closed = false;
@@ -177,6 +232,19 @@ export function stripStringsAndComments(
         continue;
       }
       // Fall through: it was division.
+    }
+
+    // Identifier, keyword or numeric run. Consumed WHOLE so that the
+    // regex-vs-division decision above sees a token rather than the character
+    // the token happens to end with (#905).
+    if (/[A-Za-z0-9_$]/.test(c)) {
+      let j = i;
+      while (j < src.length && /[A-Za-z0-9_$]/.test(src[j])) j++;
+      const word = src.slice(i, j);
+      out += word;
+      lastSignificant = lastSignificant === "." ? "." + word : word;
+      i = j;
+      continue;
     }
 
     // Template start.
