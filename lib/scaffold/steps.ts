@@ -2847,6 +2847,14 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
 name: CI
 
 on:
+  # Re-run this workflow on demand, on any ref. Without the trigger the
+  # Actions API refuses with \`HTTP 422: Workflow does not have
+  # 'workflow_dispatch' trigger\` — measured on 2026-10-21 across the fleet,
+  # where 5 of 6 re-run attempts came back 422. The cost is not the button: a
+  # flake cannot be told from a real failure without pushing an empty commit,
+  # and a fix landed on the default branch cannot be confirmed until unrelated
+  # traffic happens to arrive (#940).
+  workflow_dispatch:
   # merge_group carries NO branches: filter, deliberately. A merge queue builds
   # a temporary \`gh-readonly-queue/<base>/...\` ref, which no branch list here
   # would match — so filtering it is the same as not handling the event, and a
@@ -2923,6 +2931,9 @@ ${bunStep}
 name: CI
 
 on:
+  # See the sharded body above: a re-run of this workflow is a 422 without
+  # this trigger, so a flake and a real failure are indistinguishable.
+  workflow_dispatch:
   # See the sharded body above: no branches: filter, and its absence hangs a
   # merge queue silently rather than failing it.
   merge_group:
@@ -2961,6 +2972,9 @@ ${bunStep}
 name: Gates
 
 on:
+  # See ci.yml above: without this the Actions API refuses a re-run with a
+  # 422, and the gates are the checks most worth re-running on their own.
+  workflow_dispatch:
   # See ci.yml above: a merge queue builds a ref no branch list matches, so
   # this trigger carries no filter and its absence hangs the queue silently.
   merge_group:

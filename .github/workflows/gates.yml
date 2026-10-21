@@ -1,4 +1,4 @@
-# generated-sha: 844a220c8cbfc4d7
+# generated-sha: 95b00c8ddfbac6a0
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: Gates
 
@@ -12,6 +12,9 @@ on:
   pull_request:
     branches:
       - "main"
+  # See ci.yml above: without this the Actions API refuses a re-run with a
+  # 422, and the gates are the checks most worth re-running on their own.
+  workflow_dispatch:
 
 permissions:
   # Least privilege, and it matters most on the consumers. A workflow with
