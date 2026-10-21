@@ -1,4 +1,4 @@
-# generated-sha: 00d52471ef0c5d41
+# generated-sha: c57c17a20bd11e6a
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -262,6 +262,40 @@ jobs:
             return 1
           }
 
+          read_tree() {
+            local raw line xy p h
+            # Checked on its own line, never captured into an assignment: `x=$(...)`
+            # DISCARDS the exit code, so a git that failed produces the same empty
+            # string a clean tree produces, and "unreadable" would pass as "clean".
+            if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+              printf '%s' "${raw}"
+              return 1
+            fi
+            [ -n "${raw}" ] || return 0
+            printf '%s\n' "${raw}" | while IFS= read -r line; do
+              [ -n "${line}" ] || continue
+              xy="${line:0:2}"
+              p="${line:3}"
+              # A rename or copy reads `R  old -> new`, and it is the destination that
+              # exists on disk. Keyed off the status letter, not off the arrow: a
+              # filename may contain " -> " and does not get quoted for it.
+              case "${xy}" in
+                R*|C*) p="${p##* -> }" ;;
+              esac
+              case "${p}" in
+                '"'*) h=unquotable ;;
+                *)
+                  if [ -f "${p}" ]; then
+                    h=$(git hash-object -- "${p}" 2>/dev/null) || h=unreadable
+                  else
+                    h=absent
+                  fi
+                  ;;
+              esac
+              printf '%s %s\n' "${h}" "${p}"
+            done
+          }
+
           if [ -z "${RUNNER_TEMP:-}" ]; then
             echo "::error title=AI review modified the tree::RUNNER_TEMP is not set, so there is nowhere outside the checkout to record the pre-review state of the tree. Refusing: a baseline written into the branch under review is a baseline the reviewer can edit." >&2
             exit 1
@@ -273,7 +307,7 @@ jobs:
           # Checked on its own line, never captured into an assignment: `x=$(...)`
           # DISCARDS the exit code, so a git that failed produces the same empty string
           # a clean tree produces, and "unreadable" would pass as "clean".
-          if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+          if ! raw=$(read_tree); then
             echo "::error title=AI review modified the tree::git status failed before the review, so there is no baseline and the drift check is UNMEASURED: ${raw}" >&2
             exit 1
           fi
@@ -476,6 +510,40 @@ jobs:
             return 1
           }
 
+          read_tree() {
+            local raw line xy p h
+            # Checked on its own line, never captured into an assignment: `x=$(...)`
+            # DISCARDS the exit code, so a git that failed produces the same empty
+            # string a clean tree produces, and "unreadable" would pass as "clean".
+            if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+              printf '%s' "${raw}"
+              return 1
+            fi
+            [ -n "${raw}" ] || return 0
+            printf '%s\n' "${raw}" | while IFS= read -r line; do
+              [ -n "${line}" ] || continue
+              xy="${line:0:2}"
+              p="${line:3}"
+              # A rename or copy reads `R  old -> new`, and it is the destination that
+              # exists on disk. Keyed off the status letter, not off the arrow: a
+              # filename may contain " -> " and does not get quoted for it.
+              case "${xy}" in
+                R*|C*) p="${p##* -> }" ;;
+              esac
+              case "${p}" in
+                '"'*) h=unquotable ;;
+                *)
+                  if [ -f "${p}" ]; then
+                    h=$(git hash-object -- "${p}" 2>/dev/null) || h=unreadable
+                  else
+                    h=absent
+                  fi
+                  ;;
+              esac
+              printf '%s %s\n' "${h}" "${p}"
+            done
+          }
+
           # The same rule as escapeAnnotation() in lib/scaffold/ai-review-findings.ts,
           # and the duplication is forced rather than chosen: this runs as bash on a
           # runner and cannot import TypeScript. It is ONE function here, applied the
@@ -547,9 +615,20 @@ jobs:
           # default stops at a new directory's name.
           #
           # Checked on its own line, for the reason the baseline step states.
-          if ! after=$(git status --porcelain --untracked-files=all 2>&1); then
+          if ! after=$(read_tree); then
             echo "::error title=AI review modified the tree::git status failed, so the tree was never read and this check is UNMEASURED: $(escape_annotation "${after}")" >&2
             exit 1
+          fi
+
+          # Both readings, because a path can become unhashable between them and either
+          # side blinds the comparison at that path. Reported, not refused: a filename
+          # git has to quote is a thing a repository is allowed to contain, and a gate
+          # that refuses one is a gate consumers delete. Silence is what would make it
+          # indistinguishable from a path compared by content.
+          unhashed=$( { printf '%s\n' "${after}"; cat "${AI_REVIEW_TREE_BEFORE}"; } \
+            | grep -E '^(unquotable|unreadable) ' | sort -u | head -20 || true)
+          if [ -n "${unhashed}" ]; then
+            echo "::warning title=AI review UNMEASURED::at least one path in this tree could not be read by content — git had to quote its name, or the file could not be hashed — so for those paths this run compares names only and an edit the reviewer made to one would not be seen. Every other path is compared by content as usual. UNMEASURED at the paths named: $(escape_annotation "${unhashed}")"
           fi
 
           # The reading OUTSIDE the checkout (#843 finding 1), before the comparison

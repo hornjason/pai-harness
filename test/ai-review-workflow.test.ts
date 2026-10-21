@@ -991,8 +991,11 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     // The mutant, run rather than described: the two-decider `git diff` pair
     // the first draft used. It passes over the untracked file above, which is
     // the shape the reviewer is most likely to produce.
+    // The anchor is the drift step's call into the shared reader (#853); it
+    // used to be an inline `git status`. What is mutated is unchanged: which
+    // command does the reading.
     const mutant = buildDriftScript().replace(
-      /after=\$\(git status --porcelain --untracked-files=all[^)]*\)/,
+      /after=\$\(read_tree\)/,
       "after=$(git diff --name-only; git diff --cached --name-only)",
     );
     expect(
