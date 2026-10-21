@@ -131,12 +131,37 @@ describe("#892 AC-2: a one-character difference at identical length reads DIFFER
   });
 
   test("a SIZE comparison would have called these identical — the cheap fix, measured", () => {
-    // Stated as an executed fact rather than a comment, because the whole
-    // claim of AC-2 is that the fixture defeats the cheapest wrong fix. If a
-    // later edit makes the two files different lengths this goes red and says
-    // so, instead of the case quietly stopping being a witness.
-    expect(SAME_A.length).toBe(SAME_B.length);
-    expect(SAME_A).not.toBe(SAME_B);
+    // #906. This case used to be these two lines ALONE:
+    //
+    //     expect(SAME_A.length).toBe(SAME_B.length);
+    //     expect(SAME_A).not.toBe(SAME_B);
+    //
+    // Both are about two local constants, and neither calls the subject. The
+    // case is titled "measured" and reads as the witness that a size-comparing
+    // implementation is caught, and it was green under every mutation of the
+    // comparison — including a real size-comparing mutant, `git cat-file -s`
+    // in place of `git rev-parse <sha>:<path>`, measured 3 of 21 with this
+    // case among the 18 green. A case with no demonstrated failing input is
+    // not coverage, whatever its name says.
+    //
+    // The fixture half is kept, because it is a real instrument control: a
+    // later edit that made the two files different lengths would stop the rest
+    // of AC-2 defeating the cheap fix, and this says so rather than letting it
+    // happen quietly.
+    expect(SAME_A.length, "the AC-2 fixture no longer defeats a size comparison").toBe(SAME_B.length);
+    expect(SAME_A, "the AC-2 fixture no longer holds a divergence to find").not.toBe(SAME_B);
+
+    // The witness half. BOTH readings are taken, over the same two commits,
+    // and the case asserts they disagree — so the cheap fix has an input that
+    // reds this, which is the only thing that makes the title true.
+    const sizes = [alpha, beta].map(e => git(e.worktreePath, "cat-file", "-s", `${e.sha}:edited.ts`));
+    expect(new Set(sizes).size, "the size reading does not even reach the wrong answer here").toBe(1);
+
+    const [o] = overlapReadings([alpha, beta], ["edited.ts"]);
+    expect(
+      o.reading,
+      "the shipped reading agrees with a size comparison on a fixture built to make them disagree",
+    ).toBe("DIFFERS");
   });
 });
 

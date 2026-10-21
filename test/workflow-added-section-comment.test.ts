@@ -46,15 +46,32 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import {
-  MANAGED_MARKER_PREFIX,
-  mergeManagedWorkflow,
-  planManagedWrite,
-  topLevelKeyOrder,
-} from "../lib/scaffold/managed-workflow";
+import { writeFileSync } from "fs";
+
+import { mergeManagedWorkflow, topLevelKeyOrder } from "../lib/scaffold/managed-workflow";
+import { lineCommentProvenance } from "../lib/scaffold/owned-files";
 import { createCiWorkflows } from "../lib/scaffold/steps";
 
+/**
+ * The marker the generator really stamps, read off the binding that stamps it.
+ *
+ * This used to filter `MANAGED_MARKER_PREFIX` — a constant from the dead
+ * second managed-write path, which no generated file has ever carried, so the
+ * filter removed nothing and the fixture went into every comparison below
+ * still wearing a provenance line (#979). The live chain strips the marker on
+ * BOTH sides before the merge sees them, so a fixture that keeps it is not the
+ * input `mergeManagedWorkflow` is handed in production.
+ */
+const YAML_PROVENANCE = lineCommentProvenance("#");
+
 // ── reading the fixture off the real generator ─────────────────────────────
+
+/** Scaffold into an empty root and return the ci.yml the generator wrote. */
+function renderInto(root: string, actions: string[] = []): string {
+  mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+  createCiWorkflows(root, actions);
+  return readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf-8");
+}
 
 /**
  * The workflow the generator writes into an empty repository — the FRESH path,
@@ -65,12 +82,40 @@ import { createCiWorkflows } from "../lib/scaffold/steps";
 function freshRender(): string {
   const root = mkdtempSync(join(tmpdir(), "rungate-941-"));
   try {
+    return YAML_PROVENANCE.body(renderInto(root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Scaffold twice over one root, seeding the first run with `seed` as the
+ * consumer's existing `ci.yml`.
+ *
+ * This is the LIVE write path — `createCiWorkflows -> writeManagedFile ->
+ * resolveManagedWrite -> mergeManagedWorkflow` — including the provenance
+ * stamp, which is the thing that decides whether the second run can prove it
+ * wrote the first run's bytes.
+ *
+ * The AC-3 and AC-4 cases below used to drive `planManagedWrite` instead. That
+ * binding was a complete second implementation of this chain that nothing
+ * called (#979): the cases were green about a verb, a refusal and a
+ * `lostLines` set computed by code no scaffold has ever run. They assert the
+ * same properties here against the chain a consumer actually gets.
+ */
+function scaffoldTwice(seed: string): { runs: { content: string; action: string }[] } {
+  const root = mkdtempSync(join(tmpdir(), "rungate-941-twice-"));
+  try {
     mkdirSync(join(root, ".github", "workflows"), { recursive: true });
-    createCiWorkflows(root, []);
-    return readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf-8")
-      .split("\n")
-      .filter(l => !l.startsWith(MANAGED_MARKER_PREFIX))
-      .join("\n");
+    writeFileSync(join(root, ".github", "workflows", "ci.yml"), seed);
+    const runs = [1, 2].map(() => {
+      const actions: string[] = [];
+      const content = renderInto(root, actions);
+      const mine = actions.filter(a => a.includes(".github/workflows/ci.yml"));
+      expect(mine.length, `the scaffold reported ${mine.length} actions for ci.yml, not one`).toBe(1);
+      return { content, action: mine[0] };
+    });
+    return { runs };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -244,8 +289,8 @@ describe("#941 AC-2: a section the consumer already has is untouched, comments i
 describe("#941 AC-3: the fresh path and the merge path agree about the added key", () => {
   test("a newly-added key reads the same in a merged file as in a fresh render", () => {
     const before = withoutSections(GENERATED, COMMENTED);
-    const fresh = planManagedWrite(null, GENERATED).content;
-    const merged = planManagedWrite(before, GENERATED).content;
+    const fresh = GENERATED;
+    const merged = YAML_PROVENANCE.body(scaffoldTwice(before).runs[0].content);
 
     for (const key of COMMENTED) {
       expect(
@@ -276,13 +321,11 @@ describe("#941 AC-4: adding the block is idempotent", () => {
     // Not merely "the same comment": the whole file. A merge that re-derives
     // the block each run can be idempotent in the comment and still move a
     // blank line, which is an UPDATED with a diff for every consumer forever.
-    const before = withoutSections(GENERATED, COMMENTED);
-    const first = planManagedWrite(before, GENERATED);
-    const second = planManagedWrite(first.content, GENERATED);
+    const [first, second] = scaffoldTwice(withoutSections(GENERATED, COMMENTED)).runs;
 
-    expect(first.verb, "the upgrade did not write").toBe("UPDATED");
-    expect(second.verb, "the second scaffold is not a no-op").toBe("SKIP");
-    expect(second.content).toBe(first.content);
+    expect(first.action, `the upgrade did not write: ${first.action}`).toMatch(/^(UPDATED|REPLACED):/);
+    expect(second.action, `the second scaffold is not a no-op: ${second.action}`).toMatch(/^SKIP:/);
+    expect(second.content, "the second scaffold changed the file it had just written").toBe(first.content);
   });
 
   test("the upgraded file is not refused on the next run", () => {
@@ -291,11 +334,12 @@ describe("#941 AC-4: adding the block is idempotent", () => {
     // hands it to `jobs:` — where the jobs merge drops it, and the write then
     // refuses lines it cannot prove it wrote. A consumer whose next scaffold
     // REFUSES is worse off than one that never got the comment.
-    const before = withoutSections(GENERATED, COMMENTED);
-    const first = planManagedWrite(before, GENERATED);
-    const second = planManagedWrite(first.content, GENERATED);
+    const [, second] = scaffoldTwice(withoutSections(GENERATED, COMMENTED)).runs;
 
-    expect(second.refusal, "the upgraded file is refused by the run after it").toBeNull();
-    expect(second.lostLines, "the next run would drop lines the harness wrote").toEqual([]);
+    // The live chain reports a refusal as a `REFUSED:` action and names what
+    // it would have dropped in the same sentence, so both halves of the old
+    // assertion — no refusal, and nothing lost — read off that one line.
+    expect(second.action, "the upgraded file is refused by the run after it").not.toMatch(/^REFUSED:/);
+    expect(second.action, "the next run would drop lines the harness wrote").not.toMatch(/dropped|overwrote/);
   });
 });
