@@ -142,6 +142,60 @@ describe("#968: every spelling that raises the per-test budget is seen", () => {
   });
 });
 
+/**
+ * FOUND BY THE REVIEW OF THIS PR — the defect class reproduced inside its
+ * own fix. `CASE_ROOTS` matched the LOCAL identifier, so renaming the import
+ * made the detector report clean on its own subject.
+ *
+ * Measured against the pre-fix implementation, all three returned `[]`.
+ */
+describe("#968: an import alias does not defeat the detector", () => {
+  test("test aliased on import", () => {
+    const found = declarations('import { test as t } from "bun:test";\nt("slow", () => {}, 60_000);\n');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.caseName).toBe("slow");
+  });
+
+  test("setDefaultTimeout aliased on import", () => {
+    const found = declarations('import { setDefaultTimeout as sdt } from "bun:test";\nsdt(60_000);\n');
+    expect(found.map(d => d.kind)).toEqual(["file-default"]);
+  });
+
+  test("a hook aliased on import is reported under its EXPORTED name", () => {
+    // The message has to name `beforeAll`, not `bA` — a failure naming a
+    // local alias sends the reader looking for a hook that does not exist.
+    const found = declarations('import { beforeAll as bA } from "bun:test";\nbA(() => {}, 60_000);\n');
+    expect(found.map(d => [d.kind, d.caseName])).toEqual([["hook", "beforeAll"]]);
+  });
+
+  test("a bun:test namespace import", () => {
+    const found = declarations('import * as bt from "bun:test";\nbt.test("slow", () => {}, 60_000);\n');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.caseName).toBe("slow");
+  });
+
+  test("the injected global still works in a file importing nothing", () => {
+    // bun injects `test` when it is not imported. Resolution must not break
+    // the ordinary case while closing the alias hole.
+    expect(declarations('test("slow", () => {}, 60_000);\n')).toHaveLength(1);
+  });
+
+  /**
+   * The other direction of the same resolution, and the reason it is worth
+   * doing rather than just widening: a `test` that is NOT bun:test's is no
+   * longer reported. This retires the one false positive the previous
+   * revision had to name and accept.
+   */
+  test("a test imported from somewhere else is not bun:test's", () => {
+    expect(declarations('import { test } from "./helpers";\ntest(1, 2, 3);\n')).toEqual([]);
+  });
+
+  /** The stated boundary, asserted so it is measured rather than assumed. */
+  test("an indirection through a variable is NOT resolved, and is a known gap", () => {
+    expect(declarations('import { test } from "bun:test";\nconst t = test;\nt("slow", () => {}, 60_000);\n')).toEqual([]);
+  });
+});
+
 describe("#968: the widening did not cost precision", () => {
   /**
    * THE COST OF WIDENING, measured.
@@ -168,12 +222,13 @@ describe("#968: the widening did not cost precision", () => {
     }
   });
 
-  test("a local function named test is the one shape that could still false-fire", () => {
-    // Named rather than hidden. `calleeRoot` reads the IDENTIFIER, so a
-    // user-defined `test(a, b, c)` in a test file would be reported. The
-    // live consumer runs over one bun:test file where `test` is the imported
-    // case declarer, and the repo-wide census in the next case measures how
-    // often this shape occurs in practice.
+  test("an unimported local function named test is still reported", () => {
+    // Named rather than hidden, and NARROWED by the alias resolution: a
+    // `test` bound by a non-bun:test import is now excluded (asserted
+    // above). A local `function test` with no import at all is still
+    // reported, because that is indistinguishable from bun's injected
+    // global, which must keep working. The 594-file census found no
+    // instance of this shape.
     expect(declarations("function test(a, b, c) { return a; }\ntest(1, 2, 3);\n")).toHaveLength(1);
   });
 

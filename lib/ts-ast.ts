@@ -132,3 +132,69 @@ export function calleeRoot(callee: unknown): string | null {
     else return null;
   }
 }
+
+/**
+ * The property name accessed directly on the root identifier, or `null` when
+ * the callee IS the root. `rootProperty(bt.test.only)` is `"test"`.
+ *
+ * Needed so a namespace import (`import * as bt from "bun:test"`, then
+ * `bt.test(…)`) resolves to the same question as a named one, rather than
+ * being a spelling the detector cannot see.
+ */
+export function rootProperty(callee: unknown): string | null {
+  let node = callee;
+  let property: string | null = null;
+  for (;;) {
+    if (!isNode(node)) return null;
+    if (node.type === "Identifier") return property;
+    if (node.type === "MemberExpression") {
+      const prop = node.property as AstNode | undefined;
+      // Computed access (`bt["test"]`) is deliberately not resolved — see
+      // the UNRESOLVED boundary in lib/per-test-timeouts.ts.
+      property = !node.computed && prop?.type === "Identifier" ? String(prop.name) : null;
+      node = node.object;
+    } else if (node.type === "CallExpression") node = node.callee;
+    else if (node.type === "TaggedTemplateExpression") node = node.tag;
+    else return null;
+  }
+}
+
+/** What a module specifier was bound to, local name → how it was imported. */
+export interface ImportBinding {
+  /** The module specifier, e.g. `"bun:test"`. */
+  module: string;
+  /**
+   * The name as the module exports it, or `"*"` for a namespace binding and
+   * `"default"` for a default binding.
+   */
+  imported: string;
+}
+
+/**
+ * Every import binding in the module, keyed by the LOCAL name.
+ *
+ * This is what closes the alias hole: `import { test as t } from "bun:test"`
+ * binds local `t` to imported `test`, and a detector matching the local
+ * identifier reports clean on its own subject.
+ */
+export function importBindings(tree: AstNode): Map<string, ImportBinding> {
+  const out = new Map<string, ImportBinding>();
+  for (const node of walkNodes(tree)) {
+    if (node.type !== "ImportDeclaration") continue;
+    const src = node.source as AstNode | undefined;
+    if (src?.type !== "Literal" || typeof src.value !== "string") continue;
+    const module = src.value;
+    for (const s of (node.specifiers ?? []) as AstNode[]) {
+      const local = (s.local as AstNode | undefined)?.name;
+      if (typeof local !== "string") continue;
+      const imported =
+        s.type === "ImportNamespaceSpecifier"
+          ? "*"
+          : s.type === "ImportDefaultSpecifier"
+            ? "default"
+            : String((s.imported as AstNode | undefined)?.name ?? local);
+      out.set(local, { module, imported });
+    }
+  }
+  return out;
+}

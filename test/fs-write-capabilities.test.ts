@@ -98,6 +98,95 @@ describe("#968: every way a module can acquire a write primitive", () => {
   });
 });
 
+/**
+ * FOUND BY THE REVIEW OF THIS PR. The write names were an ALLOWLIST, so
+ * every fs export not on it defaulted to safe — and the list was already
+ * five short. Each of these returned `[]` before the inversion.
+ */
+describe("#968: an unknown fs export defaults to a write, not to safe", () => {
+  test("the five the allowlist was missing", () => {
+    for (const name of ["link", "chmod", "utimes", "writev", "ftruncate"]) {
+      expect(capabilities(`import { ${name} } from "fs";\n`), `${name} was missed by the allowlist`).toHaveLength(1);
+    }
+  });
+
+  test("an fs export that does not exist yet is a write", () => {
+    // The ratchet, stated as an assertion. This is the property an allowlist
+    // cannot have: a name nobody has classified is reported, not cleared.
+    expect(capabilities('import { someFutureWriter } from "fs";\n')).toHaveLength(1);
+  });
+
+  test("the known read-only exports are still not writes", () => {
+    for (const name of ["readFileSync", "readdirSync", "statSync", "existsSync", "realpath"]) {
+      expect(capabilities(`import { ${name} } from "fs";\n`), `${name} must not be refused`).toEqual([]);
+    }
+  });
+
+  /**
+   * THE COST OF THE INVERSION, measured over 667 files and then repaired.
+   *
+   * Inverting the list newly flagged five names. `chmodSync` (18 files),
+   * `utimesSync` (7) and `writeSync` (1) are genuine writes the allowlist
+   * had missed. `globSync` and `closeSync` were the only false positives,
+   * and they are classified here so the inversion costs nothing rather than
+   * costing a little. Pinned, because a detector widened until it refuses
+   * every file is the same failure wearing the opposite sign.
+   */
+  test("the two names the inversion wrongly flagged are classified, not tolerated", () => {
+    for (const name of ["glob", "globSync", "close", "closeSync", "fstat", "fstatSync"]) {
+      expect(capabilities(`import { ${name} } from "fs";\n`), `${name} cannot modify a path`).toEqual([]);
+    }
+  });
+
+  test("the three the inversion rightly added are writes", () => {
+    for (const name of ["chmodSync", "utimesSync", "writeSync"]) {
+      expect(capabilities(`import { ${name} } from "fs";\n`), `${name} modifies the filesystem`).toHaveLength(1);
+    }
+  });
+});
+
+/**
+ * FOUND BY THE REVIEW OF THIS PR. A spawned process writes whatever it is
+ * told to, so a detector that reads only fs imports reports clean on it.
+ * Both returned `[]` before this.
+ */
+describe("#968: a spawned process is a write capability", () => {
+  test("child_process, in both spellings and through require", () => {
+    expect(capabilities('import { execSync } from "child_process";\n')).toHaveLength(1);
+    expect(capabilities('import { spawn } from "node:child_process";\n')).toHaveLength(1);
+    expect(capabilities('const cp = require("child_process");\n')).toHaveLength(1);
+  });
+
+  test("Bun.spawn and Bun.spawnSync", () => {
+    expect(capabilities('Bun.spawn(["touch", "x"]);\n')).toHaveLength(1);
+    expect(capabilities('Bun.spawnSync(["touch", "x"]);\n')).toHaveLength(1);
+  });
+});
+
+/**
+ * The boundary, asserted rather than only written in prose. An unstated
+ * boundary reads as coverage; these cases make the gap measured, so the day
+ * someone closes it a test says so.
+ */
+describe("#968: the stated gaps are measured, not assumed", () => {
+  test("an indirection through a variable is NOT followed", () => {
+    expect(capabilities('import { readFileSync } from "fs";\nconst w = globalThis.mkdirSync;\nw("x");\n')).toEqual([]);
+  });
+
+  test("a write primitive re-exported by a local module is NOT followed", () => {
+    expect(capabilities('import { mkdirSync } from "./my-helpers";\n')).toEqual([]);
+  });
+
+  test("a whole-module binding is reported on the BINDING, so member access needs no tracking", () => {
+    // Measured in response to the review's finding 1: `import fs from "fs"`
+    // followed by `fs.writeFileSync(…)` is NOT a gap — the binding itself is
+    // already the capability, and reporting it there is strictly wider than
+    // chasing member access an indirection could hide.
+    expect(capabilities('import fs from "fs";\nfs.writeFileSync("a", "b");\n')).toHaveLength(1);
+    expect(capabilities('import * as fs from "node:fs";\nfs.mkdirSync("a");\n')).toHaveLength(1);
+  });
+});
+
 describe("#968: the widening did not cost precision", () => {
   /**
    * THE COST OF WIDENING, measured and named.

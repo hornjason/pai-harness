@@ -44,9 +44,42 @@
  * `[]`, and the caller must keep them distinct — a parser that stopped
  * parsing reports exactly as clean as a file with no overrides, which is the
  * defect class #968 exists to close.
+ *
+ * ## Import aliases are resolved, because matching the local name was a hole
+ *
+ * The review of this PR found the defect class reproduced in its own fix:
+ * `CASE_ROOTS` matched the LOCAL identifier, so
+ * `import { test as t } from "bun:test"` silently defeated the detector —
+ * MEASURED at 0 declarations for `t("slow", () => {}, 60_000)`, and the same
+ * for `setDefaultTimeout as sdt` and `beforeAll as bA`. Callees are now
+ * resolved through the module's import bindings to the name bun:test
+ * exports, so the alias, the namespace form (`import * as bt`, `bt.test(…)`)
+ * and the injected global are one question.
+ *
+ * ## WHAT THIS DOES NOT COVER (stated rather than implied)
+ *
+ * MEASURED to return `[]`:
+ *
+ *  - **An indirection through a variable.** `const t = test; t("a", fn, 1000)`.
+ *    Only import bindings are resolved, not assignments.
+ *  - **Computed member access.** `bt["test"](…)` on a namespace import.
+ *  - **A wrapper that declares the budget for you.** A local
+ *    `slowTest(name, fn)` that calls `test(name, fn, 60_000)` internally IS
+ *    reported, at the call inside the wrapper — but only because that call
+ *    is in the same module. A wrapper imported from elsewhere is not.
+ *
+ * None of these appear in this repo: the 594-file census in the PR found no
+ * aliased, namespaced or indirected case declaration.
  */
 
-import { type AstNode, calleeRoot, parseTsModule, walkNodes } from "./ts-ast";
+import {
+  type AstNode,
+  calleeRoot,
+  importBindings,
+  parseTsModule,
+  rootProperty,
+  walkNodes,
+} from "./ts-ast";
 
 /** The callees that declare a test case and accept a per-test budget. */
 const CASE_ROOTS = new Set(["test", "it"]);
@@ -99,13 +132,41 @@ function literalString(node: unknown): string | null {
 export function perTestTimeoutDeclarations(source: string): TimeoutDeclaration[] | null {
   const parsed = parseTsModule(source);
   if (parsed === null) return null;
+  const bindings = importBindings(parsed.tree);
+
+  /**
+   * The bun:test name a callee resolves to, following import aliases.
+   *
+   * Matching the LOCAL identifier was the alias hole this closes:
+   * `import { test as t } from "bun:test"` made the detector report clean on
+   * its own subject (MEASURED: 0 declarations for `t("slow", () => {}, 60_000)`).
+   *
+   * Three cases, in order:
+   *  - the local name is bound by a bun:test import → its EXPORTED name,
+   *    so `t` resolves to `test`;
+   *  - the local name is a bun:test NAMESPACE binding → the property called
+   *    on it, so `bt.test(…)` resolves to `test`;
+   *  - the local name is bound by some OTHER import → `null`, because
+   *    `import { test } from "./helpers"` is not bun:test's;
+   *  - otherwise the bare name, which is how bun's injected globals work in
+   *    a file that imports nothing from bun:test.
+   */
+  function resolved(callee: unknown): string | null {
+    const root = calleeRoot(callee);
+    if (root === null) return null;
+    const binding = bindings.get(root);
+    if (binding === undefined) return root;
+    if (binding.module !== "bun:test") return null;
+    if (binding.imported === "*") return rootProperty(callee);
+    return binding.imported;
+  }
 
   const out: TimeoutDeclaration[] = [];
   for (const node of walkNodes(parsed.tree)) {
     if (node.type !== "CallExpression") continue;
     const args = node.arguments as AstNode[] | undefined;
     if (!Array.isArray(args)) continue;
-    const root = calleeRoot(node.callee);
+    const root = resolved(node.callee);
 
     if (root === DEFAULT_TIMEOUT_FN && args.length >= 1) {
       out.push({
