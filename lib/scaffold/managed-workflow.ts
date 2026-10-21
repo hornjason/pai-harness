@@ -136,6 +136,142 @@ function parseJobsSection(lines: string[]): { head: string[]; jobs: JobBlock[] }
   return { head, jobs };
 }
 
+interface SubBlock {
+  key: string;
+  lines: string[];
+}
+
+/**
+ * Split a non-`jobs` top-level section into its key line and one block per
+ * sub-key (#839).
+ *
+ * The same shape `parseJobsSection` reads, with two deliberate differences.
+ * A sub-key here may carry a value on its own line (`contents: read`), which a
+ * job name never does. And a run of comments immediately above a sub-key
+ * belongs to that sub-key rather than to the one before it, because the whole
+ * point of reading this structure is to carry a generated sub-key into a
+ * consumer's file and the generated `merge_group:` is eleven lines of comment
+ * explaining why it has no `branches:` filter. Carrying the key without its
+ * reason is how the next person deletes it.
+ *
+ * That is the opposite of the rule for TOP-LEVEL keys, where a comment stays
+ * with the key above it (#482) — top-level sections are never relocated, so
+ * nothing there needs to travel.
+ */
+function parseSubKeys(lines: string[]): { head: string[]; blocks: SubBlock[] } {
+  const body = lines.slice(1);
+  let base = -1;
+  for (const l of body) {
+    if (l.trim() === "") continue;
+    if (l.trimStart().startsWith("#")) continue;
+    const indent = l.length - l.trimStart().length;
+    // A column-zero line inside a section is a trailing comment or stray text,
+    // never a sub-key. Letting it set `base` to 0 is the bug
+    // `parseJobsSection` records for comments; here the guard is structural.
+    if (indent === 0) continue;
+    if (base < 0 || indent < base) base = indent;
+  }
+  const isSubKey = (l: string) =>
+    base > 0 &&
+    l.length - l.trimStart().length === base &&
+    /^[A-Za-z0-9_.\-]+:(\s|$)/.test(l.trim());
+
+  const head = [lines[0]];
+  const blocks: SubBlock[] = [];
+  /** Comments and blanks held back until we know what they introduce. */
+  let pending: string[] = [];
+  const open = () => (blocks.length === 0 ? head : blocks[blocks.length - 1].lines);
+  for (const l of body) {
+    if (isSubKey(l)) {
+      blocks.push({ key: l.trim().replace(/:.*$/, ""), lines: [...pending, l] });
+      pending = [];
+      continue;
+    }
+    if (l.trim() === "" || l.trimStart().startsWith("#")) {
+      pending.push(l);
+      continue;
+    }
+    open().push(...pending, l);
+    pending = [];
+  }
+  // Whatever is left introduces nothing; it stays where the consumer put it.
+  open().push(...pending);
+  return { head, blocks };
+}
+
+/**
+ * The consumer's section with the generated sub-keys it does not have appended
+ * (#839).
+ *
+ * Only the sub-keys it does NOT have. A sub-key both sides declare is a local
+ * knob — a branch list, a runner label, a permission the consumer widened —
+ * and the consumer's value stands. What the harness takes back is the
+ * STRUCTURE: a trigger or a permission the generator learned since this file
+ * was written, which under the previous rule could never reach an already
+ * scaffolded repo at all because every non-`jobs` key the consumer had was
+ * the consumer's whichever side the merge was walking.
+ *
+ * Appended rather than interleaved, for the reason the whole of #482 exists:
+ * a key that moves away from the comment introducing it reads as a deletion.
+ */
+function mergeTopLevelSection(before: Section, generated: Section): string[] {
+  // A scalar on the consumer's side (`permissions: read-all`, `on: [push]`)
+  // has nowhere to put a sub-key, and appending one produces YAML that does
+  // not parse. The consumer's spelling stands.
+  //
+  // Read off the KEY LINE and not off "the consumer declared no sub-keys":
+  // a bare `permissions:` with nothing under it is an empty mapping, not a
+  // scalar, and it is exactly the shape an older generator leaves behind when
+  // the only sub-key it knew has since been renamed. Treating the two the
+  // same is how `permissions.contents` failed to converge — caught by #840's
+  // skew loop, which rewinds every sub-key rather than the one that was on
+  // somebody's mind.
+  if (!/^[A-Za-z_][A-Za-z0-9_.\-]*:\s*(#.*)?$/.test(before.lines[0])) return before.lines;
+
+  const b = parseSubKeys(before.lines);
+  const have = new Set(b.blocks.map(s => s.key));
+  const extra = parseSubKeys(generated.lines).blocks.filter(s => !have.has(s.key));
+  if (extra.length === 0) return before.lines;
+
+  const [kept, trailing] = splitTrailingBlanks(before.lines);
+  return [...kept, ...extra.flatMap(s => splitTrailingBlanks(s.lines)[0]), ...trailing];
+}
+
+/**
+ * Opening of the line the merge writes where a consumer has declined a
+ * generated key (#839).
+ *
+ * Stable prefix, because it is matched to strip the previous run's copy before
+ * the current one is written — the comment has to disappear when the config
+ * entry does, or a consumer who opts back in keeps reading that they have not.
+ * `resolveManagedWrite` knows this prefix for the same reason it knows the
+ * managed banner: a refusal is only useful when it is about somebody else's
+ * work, and this line is the harness's.
+ */
+export const WORKFLOW_OVERRIDE_COMMENT =
+  "# rungate: ci.workflowOverrides in .claude/rungate/config.json declares this key the consumer's";
+
+/** The harness's note on a declined key, naming the key and the config path. */
+function overrideNotice(key: string, indent: string): string {
+  return `${indent}${WORKFLOW_OVERRIDE_COMMENT} — the generated \`${key}:\` is not merged into it.`;
+}
+
+/**
+ * Drop every previous run's override notice, wherever in the file it sits.
+ *
+ * Over the whole document rather than per section, and before anything is
+ * parsed. A notice written at column zero for a key the consumer did not have
+ * lands in whatever section follows it on the next read — including `jobs:`,
+ * where it would ride along with a preserved consumer job while a fresh copy
+ * was appended, one more line every run.
+ */
+function stripOverrideNotices(text: string): string {
+  return text
+    .split("\n")
+    .filter(l => !l.trim().startsWith(WORKFLOW_OVERRIDE_COMMENT))
+    .join("\n");
+}
+
 /** Split trailing blank lines off a block. */
 function splitTrailingBlanks(lines: string[]): [string[], string[]] {
   let end = lines.length;
@@ -261,12 +397,22 @@ function mergeJobsSection(before: Section, generated: Section): string[] {
  * The newly generated file with everything the harness did not author carried
  * across: consumer-only jobs appended to the jobs mapping, consumer-only
  * top-level keys appended to the file.
+ *
+ * `overrides` names top-level keys the consumer has claimed through
+ * `ci.workflowOverrides`. A claimed key is left exactly as the consumer wrote
+ * it and carries a comment saying so — deviation is explicit, never implicit,
+ * which is the half of #839 that makes the other half safe to ship.
  */
-export function mergeManagedWorkflow(before: string, generated: string): string {
-  const b = splitTopLevel(before);
+export function mergeManagedWorkflow(
+  before: string,
+  generated: string,
+  overrides: readonly string[] = [],
+): string {
+  const b = splitTopLevel(stripOverrideNotices(before));
   const g = splitTopLevel(generated);
   const generatedKeys = new Set(g.map(s => s.key));
   const beforeJobs = jobsSectionOf(b);
+  const declined = new Set(overrides);
   const beforeByKey = new Map(b.filter(s => s.key !== "").map(s => [s.key, s] as const));
 
   // Walk the CONSUMER's sections, not the generated ones (#482).
@@ -290,11 +436,34 @@ export function mergeManagedWorkflow(before: string, generated: string): string 
       const generatedJobs = generatedByKey.get("jobs");
       return generatedJobs ? mergeJobsSection(beforeJobs, generatedJobs) : section.lines;
     }
-    // Every non-jobs key the consumer already has is the consumer's, whichever
-    // side we are walking. The generated `on:` is a default for a file that
-    // does not exist yet, not a claim on one that does.
-    if (section.key !== "" && beforeByKey.has(section.key)) return beforeByKey.get(section.key)!.lines;
-    return section.lines;
+    // Every non-jobs key the consumer already has is merged SUB-KEY BY
+    // SUB-KEY (#839).
+    //
+    // It used to be returned whole, on the reasoning that the generated `on:`
+    // is a default for a file that does not exist yet and not a claim on one
+    // that does. True of a one-time default, and wrong for a fleet: it made
+    // scaffold ORDER decide ownership, so no CI improvement the harness ever
+    // made could reach a repo it had already scaffolded. Measured 2026-10-20 —
+    // a consumer scaffolded before the generator learned `merge_group:` could
+    // not be given it by any number of re-scaffolds, and enabling a merge
+    // queue there would hang every entry on a check that never reports.
+    //
+    // What replaced it keeps the part that was right. The consumer's value for
+    // a sub-key both sides declare still wins, and the consumer's top-level
+    // order is untouched; only a sub-key the consumer does not have at all is
+    // added.
+    const consumer = beforeByKey.get(section.key);
+    if (section.key === "" || consumer === undefined) return section.lines;
+    const gen = generatedByKey.get(section.key);
+    const merged =
+      gen !== undefined && !declined.has(section.key)
+        ? mergeTopLevelSection(consumer, gen)
+        : consumer.lines;
+    // The notice is re-made from the current config every run — never carried
+    // — so a consumer who opts back in stops being told they have opted out.
+    return declined.has(section.key)
+      ? [merged[0], overrideNotice(section.key, "  "), ...merged.slice(1)]
+      : merged;
   };
 
   const ordered: string[] = [];
@@ -315,6 +484,15 @@ export function mergeManagedWorkflow(before: string, generated: string): string 
   // new.
   for (const section of g) {
     if (section.key === "" || emitted.has(section.key)) continue;
+    if (declined.has(section.key)) {
+      // Declining a key the consumer does not have means not writing it. The
+      // notice is still written, at column zero where the key would have
+      // gone: an omission nothing records is indistinguishable from a
+      // generator that never emitted the key.
+      ordered.push(overrideNotice(section.key, ""));
+      ordered.push("");
+      continue;
+    }
     ordered.push(...splitTrailingBlanks(section.lines)[0]);
     ordered.push("");
   }

@@ -172,14 +172,13 @@ jobs:
         `the write was refused over the harness's own bookkeeping line:\n${actions.join("\n")}`,
       ).not.toContain("REFUSED");
       expect(written, "the consumer job was not carried forward").toContain("echo deploy");
-      // NOT asserted here: that `merge_group` reaches the file. It does not,
-      // and that is deliberate — `mergeManagedWorkflow` treats every
-      // non-jobs top-level key the consumer already has as the consumer's,
-      // because #482 moved a `concurrency:` block away from the comment
-      // introducing it, a reader read that as a deletion, restored it, and
-      // the workflow stopped parsing. Whether the harness should own `on:`
-      // is a real question and a separate one; asserting it here would make
-      // this file the place that quietly reversed an incident fix.
+      // Asserted since #839: `merge_group` reaches the file. It used not to —
+      // `mergeManagedWorkflow` treated every non-jobs top-level key the
+      // consumer already had as the consumer's — which meant no CI
+      // improvement could reach a repo already scaffolded. The merge is now
+      // sub-key by sub-key, so the structural trigger lands and the
+      // consumer's own `push:` block, with its branch list, does not move.
+      expect(written, "the generated trigger did not reach the file").toContain("merge_group");
       expect(
         written,
         "the consumer's own top-level block was not preserved",
@@ -239,20 +238,20 @@ describe("#767 AC-3: the two reports cannot contradict each other", () => {
   });
 });
 
-describe("#767 AC-4: the ownership boundary this fix does NOT move", () => {
-  test("a non-jobs top-level key stays the consumer's, marker or no marker", () => {
-    // Pinned deliberately, as the current contract rather than as a wish.
+describe("#767 AC-4: where the ownership boundary ended up (moved by #839)", () => {
+  test("a VALUE under a non-jobs key stays the consumer's; the key's structure does not", () => {
+    // This case used to assert the opposite of its second half — that a
+    // generated top-level key is refused entry into a file that already has
+    // one — and it said so as the current contract rather than as a wish,
+    // with "if that ownership should change, it changes here, visibly, with
+    // this case updated in the same commit". #839 is that change, and this
+    // is that update.
     //
-    // #767 was filed partly because a generator change adding `on:
-    // merge_group:` did not reach consumer workflows. Stripping the marker
-    // removes the REFUSAL that hid the question, and this case records the
-    // answer underneath it: the merge keeps the consumer's `on:` on purpose
-    // (#482). Without this, the next person to read the fix concludes the
-    // top-level change is still broken and "repairs" it, which is how the
-    // concurrency-block incident happened in the first place.
-    //
-    // If that ownership should change, it changes here, visibly, with this
-    // case updated in the same commit.
+    // What moved: the merge is now sub-key by sub-key, so a structural
+    // sub-key the consumer does not have arrives. What did NOT move, and is
+    // the reason #482's incident does not recur: the consumer's value for a
+    // sub-key both sides declare still wins, and no top-level key is
+    // relocated. The branch list below is the half that must not change.
     const existing = `# generated-sha: deadbeefdeadbeef
 name: CI
 on:
@@ -282,7 +281,8 @@ jobs:
       writeManagedFile(path, generated, "ci.yml", [], {}, { body: workflowBody, stamp: stampWorkflow });
       const written = readFileSync(path, "utf-8");
       expect(written, "the consumer's trigger was overwritten").toContain(`"release"`);
-      expect(written, "a generated top-level key reached a file that already had one").not.toContain("merge_group");
+      expect(written, "the generator's branch list replaced the consumer's").not.toContain(`"main"`);
+      expect(written, "the generated structural sub-key did not reach the file").toContain("merge_group");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
