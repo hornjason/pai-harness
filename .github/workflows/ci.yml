@@ -1,4 +1,4 @@
-# generated-sha: f79b3e3cbac06ab9
+# generated-sha: 7f734f48d51810dc
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
@@ -25,6 +25,14 @@ on:
   pull_request:
     branches:
       - "main"
+  # Re-run this workflow on demand, on any ref. Without the trigger the
+  # Actions API refuses with `HTTP 422: Workflow does not have
+  # 'workflow_dispatch' trigger` — measured on 2026-10-21 across the fleet,
+  # where 5 of 6 re-run attempts came back 422. The cost is not the button: a
+  # flake cannot be told from a real failure without pushing an empty commit,
+  # and a fix landed on the default branch cannot be confirmed until unrelated
+  # traffic happens to arrive (#940).
+  workflow_dispatch:
 
 permissions:
   # Least privilege, and it matters most on the consumers. A workflow with
