@@ -1067,6 +1067,41 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
  * executable, and is written by a process that is definitionally not the
  * reviewer.
  *
+ * ## `_work` is not one category (#897)
+ *
+ * The paragraph above says "a sibling's `_work` checkout is another
+ * repository's source tree", and treats `_work` as a single thing. It is not.
+ * `_work/<repo>/<repo>` is that source tree and stays unsubtracted;
+ * `_work/_temp` is where the runner materialises the `<uuid>.sh` script for
+ * each `run:` step of whatever job it is executing, holds no repository
+ * source, and is torn down by the runner itself. That is the `_diag` argument
+ * word for word, so it gets the same treatment and the same anchored clause.
+ *
+ * Measured on the same consumer pool, run `39605785223`: exit 1 with three
+ * paths, all `/home/gharunner/runner-4/_work/_temp/<uuid>.sh`, while the job
+ * ran on **runner-5** — the log has 44 occurrences of `runner-5/_work/_temp`
+ * and 3 of `runner-4`'s. Checking the runner NUMBER is what separates "the
+ * current job's own `$RUNNER_TEMP`" from "a sibling's", and the two call for
+ * different fixes, so the reading is stated rather than assumed. `ai-review`
+ * had passed once in eight runs on that repo and the one success predates the
+ * current pool.
+ *
+ * A `_work/_actions` entry is the other runner-owned directory under `_work`
+ * and is
+ * deliberately NOT added: it appeared in that run's log but in none of its
+ * flagged paths, so subtracting it would be wider than what was measured —
+ * the defect this docblock names two sections down, in the direction nobody
+ * investigates.
+ *
+ * The anchor is emitted for this entry too, and AC-15e requires it, but it is
+ * not independently load-bearing here: one extra component in front of
+ * `<runner>/_work/_temp/<file>` is depth 5, outside
+ * `AI_REVIEW_OUTSIDE_MAXDEPTH`, so the walk never reads the shape the anchor
+ * would refuse. `AC-15g` pins the boundary that IS reachable — `_tempest` is
+ * not `_temp` — and it passes both before and after this change, which is
+ * what a guard against a future widening looks like rather than a witness for
+ * this one. The witnesses are the two `AC-15a` rows.
+ *
  * The entry is written in the list below as a glob rather than a literal,
  * because the directory above
  * `_diag` is the runner's install name, which the pool operator chooses —
@@ -1174,6 +1209,9 @@ export const AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS: readonly string[] = [
   // install directory, which the pool operator names, and it is anchored to
   // ONE component by the emitter below — see the docblock.
   "*/_diag",
+  // The runner's per-job scratch (#897). Same owner, same argument, measured
+  // separately — see "`_work` is not one category" in the docblock.
+  "*/_work/_temp",
 ];
 
 /**
