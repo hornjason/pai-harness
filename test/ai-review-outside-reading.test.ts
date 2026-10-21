@@ -525,6 +525,9 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".claude/projects",
       ".npm/_logs",
       ".bun/install/cache",
+      ".copilot/session-store.db",
+      ".copilot/session-store.db-wal",
+      ".copilot/session-store.db-shm",
     ]);
   });
 
@@ -539,6 +542,9 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".claude/plugins",
       ".claude/backups",
       ".claude/state",
+      ".claude/sessions",
+      ".copilot/mcp-config.json",
+      ".cache/copilot/mcp-tools",
       ".npm/_npx",
     ]);
   });
@@ -584,11 +590,22 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".claude/projects/-a-slug/5d4ec1e2-fb26-49f0-8abb-f81860933538.jsonl",
       ".claude/backups/.claude.json.backup.1792558105498",
       ".claude/plugins/plugin-directory-cache-v2.json",
+      // #907's two shapes, from runs `39620098295` and `39620105739`.
+      ".claude/sessions/1214993.json",
+      ".claude/sessions/1187153." +
+        "0f3a1c7e5b9d2486af01c3e7d59b8426ff7a0d13c6e58b92a4017de3cb56f8a2.key",
       ".npm/_npx/9d1f0c2e4b7a8365/package.json",
       ".npm/_npx/9d1f0c2e4b7a8365/package-lock.json",
       ".npm/_logs/2026-10-21T04_48_31_402Z-debug-0.log",
       ".npm/_logs/2026-10-21T04_48_39_043Z-debug-0.log",
       ".bun/install/cache/c17f4447ebe3362d.npm",
+      // #913's five shapes, from runs `39623516197` and `39622904926`.
+      ".cache/copilot/mcp-tools/" +
+        "38e6cebe4afebf9d02baefb8e5f68a7b2002c3a364965e8915d4f17e7b7e52df.json",
+      ".copilot/mcp-config.json",
+      ".copilot/session-store.db",
+      ".copilot/session-store.db-wal",
+      ".copilot/session-store.db-shm",
     ];
     const under = (prefix: string, p: string) => p === prefix || p.startsWith(`${prefix}/`);
     const unclassified: string[] = [];
@@ -1067,6 +1084,153 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     ).toBe(
       AI_REVIEW_RUNTIME_CONFIG_PATHS.length * 2 + AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.length * 4,
     );
+  });
+});
+
+// ── AC-16 / AC-17: the other two owners of a shared self-hosted $HOME ────
+
+/**
+ * #907 and #913 are the same shape as #877 and #897, one owner further out.
+ *
+ * The three lists above were derived from ONE runtime (the Claude CLI) and ONE
+ * runner process. A consumer's self-hosted pool has ten runner processes and
+ * more than one AI CLI sharing `/home/gharunner`, and every tool that writes
+ * under that home on its own schedule lands in a reading that attributes the
+ * write to the reviewer. `_diag` was the third owner, `_work/_temp` the
+ * fourth; these are the fifth and sixth, and the pattern is now explicit so
+ * the seventh is recognised as an instance rather than re-derived.
+ *
+ * Both were measured on hornjason/asaCommandCenter, whose ai-review was 0 of
+ * 18 at the time of filing. The runs are cited per case below.
+ */
+describe("AC-16 (#907): the CLI's own session state is not the reviewer's write", () => {
+  // Runs `39620098295` (asaCommandCenter#1769) and `39620105739` (#1817):
+  // 35 and 33 refused paths, of which 4 each are these two shapes. They were
+  // in the `::error` list that fails the job, not the `::warning` list.
+  const SESSION_JSON = ".claude/sessions/1214993.json";
+  const SESSION_KEY =
+    ".claude/sessions/1187153." +
+    "0f3a1c7e5b9d2486af01c3e7d59b8426ff7a0d13c6e58b92a4017de3cb56f8a2.key";
+
+  for (const entry of [SESSION_JSON, SESSION_KEY]) {
+    test(`a write at ${entry.split("/").pop()} is exit 0 AND named UNMEASURED`, () => {
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, entry);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "session state\n");
+      const r = runDrift(f, path, sha);
+      const text = r.stdout + r.stderr;
+      expect(r.code, `${entry} is runtime session state and refused:\n${r.stderr}`).toBe(0);
+      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      // The conjunction is the behaviour, for #871's reason: exit 0 alone is
+      // satisfied by subtracting the directory in silence, and silence is the
+      // wrong answer at a path where a credential can be dropped.
+      expect(
+        text,
+        `${entry} was subtracted silently — a session key is trust-bearing and must be named`,
+      ).toContain(CONFIG_UNMEASURED_TEXT);
+    });
+  }
+
+  test("THE MUTANT #907 asked for: a reviewer-planted session file is still NAMED", () => {
+    // #907's own suggested check. The failure it guards is a subtraction that
+    // makes the whole directory disappear from the reading: exit 0 with no
+    // annotation, which is indistinguishable from a run where nothing was
+    // written there at all. Classifying `.claude/sessions` as CONFIG rather
+    // than INERT is what keeps the plant visible, and this is the case that
+    // tells the two classifications apart — it passes under CONFIG and fails
+    // under INERT, where every other case in this block passes under both.
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    const target = join(f.home, ".claude/sessions/attacker.json");
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, '{"planted":true}\n');
+    const r = runDrift(f, path, sha);
+    const text = r.stdout + r.stderr;
+    expect(r.code).toBe(0);
+    expect(
+      text,
+      "a planted session file vanished from the reading entirely",
+    ).toContain(CONFIG_UNMEASURED_TEXT);
+    expect(text, "the planted path is not named in the annotation").toContain("attacker.json");
+  });
+});
+
+describe("AC-17 (#913): a SIBLING AI runtime's state is not the reviewer's write", () => {
+  // Run `39623516197` on asaCommandCenter#1833, headSha
+  // `2b1ca9dac39beeabcd91d328a1c6ac80ad64d184` — the run that bumped the pin
+  // to #901, so `_work/_temp` is already subtracted and this residue is all
+  // that remained. `.copilot/mcp-config.json` and the un-suffixed
+  // `session-store.db` come from run `39622904926` on the same pool.
+  //
+  // The failing job runs `AI_REVIEW_MODE: vertex` and never invokes the
+  // Copilot CLI, so it did not write any of these. They come from the five
+  // gh-aw workflows on that repo that do, sharing the same home.
+
+  // Trust-bearing, so NAMED rather than silent: `mcp-config.json` declares MCP
+  // servers, which is a command line the CLI runs — `.claude.json`'s argument
+  // word for word. The `mcp-tools` cache decides which tools that server is
+  // believed to offer, which is `.claude/state`'s.
+  for (const entry of [
+    ".cache/copilot/mcp-tools/38e6cebe4afebf9d02baefb8e5f68a7b2002c3a364965e8915d4f17e7b7e52df.json",
+    ".copilot/mcp-config.json",
+  ]) {
+    test(`a write at ${entry} is exit 0 AND named UNMEASURED`, () => {
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, entry);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "{}\n");
+      const r = runDrift(f, path, sha);
+      const text = r.stdout + r.stderr;
+      expect(r.code, `${entry} is sibling-runtime config and refused:\n${r.stderr}`).toBe(0);
+      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      expect(text, `${entry} is trust-bearing and was subtracted silently`).toContain(
+        CONFIG_UNMEASURED_TEXT,
+      );
+    });
+  }
+
+  // SQLite's write-ahead log and shared-memory sidecars, created and removed
+  // on every open of the session store. Read as data, never executed — the
+  // `.claude/projects` argument, so inert and silent.
+  for (const entry of [
+    ".copilot/session-store.db",
+    ".copilot/session-store.db-wal",
+    ".copilot/session-store.db-shm",
+  ]) {
+    test(`a write at ${entry} is exit 0 and SILENT`, () => {
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, entry);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "sqlite\n");
+      const r = runDrift(f, path, sha);
+      const text = r.stdout + r.stderr;
+      expect(r.code, `${entry} is inert sibling-runtime state and refused:\n${r.stderr}`).toBe(0);
+      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      expect(text, `${entry} is inert state and was reported as runtime config`).not.toContain(
+        CONFIG_UNMEASURED_TEXT,
+      );
+    });
+  }
+
+  test("the subtraction is anchored: a sibling's CHECKOUT under .copilot still refuses", () => {
+    // The width control. `session-store.db*` as a glob would have been the
+    // cheaper spelling and would subtract this too; three exact names do not.
+    // Without this case the entries could be widened to a star and nothing
+    // would go red.
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    const target = join(f.home, ".copilot/session-store.db.evil.sh");
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, "#!/bin/sh\necho pwned\n");
+    const r = runDrift(f, path, sha);
+    const text = r.stdout + r.stderr;
+    expect(r.code, "a name merely PREFIXED by a subtracted one was let through").toBe(1);
+    expect(text).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(text).toContain("session-store.db.evil.sh");
   });
 });
 

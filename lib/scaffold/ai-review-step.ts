@@ -985,6 +985,18 @@ export const AI_REVIEW_RUNTIME_INERT_PATHS: readonly string[] = [
   // bun's package cache. NOT `.bun`, which also holds `bin/` — the shim
   // directory on PATH, which is as exec-capable as a hook.
   ".bun/install/cache",
+  // The Copilot CLI's SQLite session store and its write-ahead-log and
+  // shared-memory sidecars (#913), created and removed on every open of the
+  // store. A SIBLING runtime: the job that was failed runs
+  // `AI_REVIEW_MODE: vertex` and never invokes Copilot at all.
+  //
+  // Three exact names rather than `session-store.db*`. The glob is the
+  // cheaper spelling and is wider than what was measured — it would also
+  // subtract `session-store.db.evil.sh`, which is a reviewer's write and the
+  // finding. AC-17's width control is the case that holds this shut.
+  ".copilot/session-store.db",
+  ".copilot/session-store.db-wal",
+  ".copilot/session-store.db-shm",
 ];
 
 /**
@@ -1014,6 +1026,18 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
   ".claude/backups",
   // MCP discovery verdicts — which servers have already been trusted.
   ".claude/state",
+  // Per-session state and session keys, written on every CLI start (#907).
+  // CONFIG rather than inert despite holding no command line: the `.key`
+  // entries are credential-shaped, and "the runtime writes it every start"
+  // and "a reviewer must not be able to drop one here unseen" are both true.
+  // Naming it is the only reading that satisfies the second.
+  ".claude/sessions",
+  // The sibling Copilot runtime's two trust-bearing paths (#913).
+  // `mcp-config.json` declares MCP servers — `.claude.json`'s argument word
+  // for word — and the `mcp-tools` cache decides which tools each of those
+  // servers is believed to offer, which is `.claude/state`'s.
+  ".copilot/mcp-config.json",
+  ".cache/copilot/mcp-tools",
   // What the next `npx` of that hash resolves to.
   ".npm/_npx",
 ];
