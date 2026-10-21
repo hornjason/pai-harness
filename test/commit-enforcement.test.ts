@@ -13,8 +13,10 @@ describe("CommitEnforcement hook", () => {
     const content = await Bun.file(join(ROOT, "hooks/CommitEnforcement.hook.ts")).text();
     // Should NOT have marcus-only filter
     expect(content).not.toContain("=== 'marcus'");
-    // Should use generic agent detection
-    expect(content).toContain("detectAgent(toolInput)");
+    // Should use generic agent detection. `detectAgentOrRecord` since #1000:
+    // the wrapper that records an unreadable config instead of returning a
+    // null indistinguishable from "no agent matched".
+    expect(content).toContain("detectAgentOrRecord(toolInput");
   });
 
   test("hook requires worktree isolation", async () => {

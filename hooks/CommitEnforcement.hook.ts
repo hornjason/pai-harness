@@ -11,9 +11,11 @@
  * 1. UI file changes — writes quinn-required tripwire for quinn-on-ui-change gate
  * 2. Uncommitted changes — writes agent-uncommitted tripwire signal
  *
- * Broadened from Marcus-only to all code agents (marcus, quinn, rook, serena, aditi).
+ * Broadened from Marcus-only to all code agents (marcus, quinn, rook, serena,
+ * aditi) — true of NOTHING until #1000, because the config that detection
+ * reads was in no commit; see `hooks/lib/agentDetection.ts`.
  *
- * Issue: #361, #343
+ * Issue: #361, #343, #1000
  */
 
 import { execFileSync } from 'child_process'
@@ -22,24 +24,21 @@ import { join } from 'path'
 import { findWorkflowForIssue, extractIssueNumber } from './lib/findWorkflow'
 import { WORK_DIR, SIGNAL_DIR } from './lib/paths'
 import { parseHookInput } from './lib/parseStdin';
-import { detectAgent } from './lib/agentDetection'
-
+import { detectAgentOrRecord } from './lib/agentDetection'
 
 async function main() {
   const payload = await parseHookInput()
   if (!payload) process.exit(0)
 
-  // Only trigger on Agent tool
   if (payload?.tool_name !== 'Agent') process.exit(0)
 
   const toolInput = payload.tool_input || {}
 
-  // Detect any known code agent — shared logic via lib/agentDetection
-  const agent = detectAgent(toolInput)
+  // `OrRecord`: an unreadable config leaves evidence, not a silent null (#1000).
+  const agent = detectAgentOrRecord(toolInput, 'CommitEnforcement', { cwd: (payload as { cwd?: string }).cwd })
 
-  if (!agent) process.exit(0)  // Not a known agent — skip
+  if (!agent) process.exit(0)  // Not a known agent, or config unreadable (recorded) — skip
 
-  // Only check worktree-isolated agents
   if (toolInput.isolation !== 'worktree') process.exit(0)
 
   // Extract worktree path from response
