@@ -7,9 +7,12 @@ import {
   hookRegistration,
   readRegistrationScopes,
   registrationCensus,
+  settingsScopePaths,
+  unplacedHooks,
   type HookRegistration,
   type ScopeReading,
 } from "../lib/hook-scopes";
+import { commandNamesHook, hookFilesNamedBy } from "../lib/hook-trees";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
 
@@ -75,7 +78,10 @@ const HOOK_FILES = readdirSync(join(HARNESS_ROOT, "hooks"))
  * and the agreement would hold up on whichever copy was not broken.
  */
 function namedHookFile(text: unknown): string | null {
-  return String(text).match(/([A-Za-z0-9_-]+\.hook\.ts)/)?.[1] ?? null;
+  // Delegates to , which tokenises and basenames rather
+  // than matching a substring anywhere in the string. A second extractor
+  // would survive any mutation of the first (#970 review, finding 3).
+  return hookFilesNamedBy(String(text))[0] ?? null;
 }
 
 /**
@@ -164,6 +170,10 @@ describe("#898: the four hook positions agree, named rather than counted", () =>
     // reported two hooks unregistered that were registered in user settings,
     // and the verdict `unregistered` is now unavailable unless every scope
     // was in fact read.
+    //
+    // This arm is live only where every scope is readable, which is NOT a
+    // runner. AC-4b is the half that holds there, and it is the half with a
+    // failing input in the configuration CI actually runs in.
     const silent = liveCensus()
       .filter(c => c.verdict === "unregistered")
       .map(c => `${c.hook}.hook.ts`)
@@ -172,6 +182,78 @@ describe("#898: the four hook positions agree, named rather than counted", () =>
       silent,
       `unregistered in EVERY settings scope and undeclared — register it, or write a ` +
         `"${UNREGISTERED_MARKER}" line in its header saying why not`,
+    ).toEqual([]);
+  });
+
+  test("AC-4b: every hook file is PLACED by something the repo owns", () => {
+    // The CI-enforceable half, and the reason it exists.
+    //
+    // AC-4 above went fail-open on a runner and the first draft of #910
+    // shipped it that way. `~/.claude/settings.json` is absent there, so the
+    // machine scopes are UNMEASURED, so nothing is ever `unregistered`, so
+    // `silent` is empty and the guard passes having witnessed nothing.
+    // Measured with one input — a hook file registered in no scope at all —
+    // run twice, differing only in `HOME`:
+    //
+    //   real HOME (every scope readable):   AC-4  0 pass, 1 fail
+    //   HOME=$(mktemp -d) (the CI config):  AC-4  1 pass, 0 fail
+    //
+    // Absence must never read as clean (#921). So this arm asks a question
+    // the runner CAN answer: not "is it registered", which is machine state,
+    // but **"does anything the repo owns say where this hook lives?"** All
+    // three repo-owned scopes are committed, so this holds everywhere.
+    //
+    // Three ways to satisfy it, and a hook may take any one:
+    //   1. a repo-owned scope registers it;
+    //   2. the registry declares `scope: "user"` — the repo asserting it is
+    //      machine state, which AC-7 then reports UNMEASURED; or
+    //   3. its header declares why it is registered nowhere.
+    //
+    // NOT a second decider for `reconcile` in
+    // `test/hook-registration-reconciler.test.ts`. That enforces a declared
+    // project-scoped ENTRY against `.claude/settings.json`; its population is
+    // registry entries. This population is hook FILES, and the input only
+    // this arm can reach is a file with no registry entry at all — which is
+    // invisible to `reconcile` and is exactly the state `ProjectStateSync`
+    // and `TestSuiteRelease` were in when #898 declared them unregistered.
+    const repoOwned = new Set(
+      settingsScopePaths(HARNESS_ROOT, homedir())
+        .filter(s => s.ownership === "repo")
+        .map(s => s.scope),
+    );
+    repoOwned.add("repo-registry");
+
+    const readings = liveScopeReadings().filter(r => repoOwned.has(r.scope));
+    expect(
+      readings.length,
+      "no repo-owned scope was read, so this arm compared nothing",
+    ).toBe(repoOwned.size);
+    expect(
+      readings.every(r => r.commands !== null),
+      "a repo-owned scope read as unreadable — it is committed, so this is not an absence",
+    ).toBe(true);
+
+    const declaredUserScope = new Set(
+      registryEntries()
+        .filter(e => e.scope === "user")
+        .map(e => e.name),
+    );
+
+    const unplaced = unplacedHooks({
+      hooks: HOOK_FILES.map(f => f.replace(/\.hook\.ts$/, "")),
+      repoReadings: readings,
+      declaredUnregistered: HOOK_FILES.filter(unregisteredDeclaration).map(f =>
+        f.replace(/\.hook\.ts$/, ""),
+      ),
+    }).map(h => `${h}.hook.ts`);
+
+    expect(
+      unplaced,
+      `nothing the repo owns says where these hooks live. On a runner the machine scopes ` +
+        `cannot be read, so "registered in user settings" and "registered nowhere" are the same ` +
+        `observation — the repo has to state which it is. Register it in .claude/settings.json, ` +
+        `or declare it in .claude/rungate/hooks.json with scope "user", or write a ` +
+        `"${UNREGISTERED_MARKER}" line in its header: ${unplaced.join(", ")}`,
     ).toEqual([]);
   });
 
@@ -287,6 +369,14 @@ function specTableHooks(): string[] {
  * repo is on the directory layout, and the hardcoded read is what made #879's
  * hook invisible here (`.claude/rules/config-access.md`).
  */
+interface RegistryEntry { name?: string; scope?: string; command?: string }
+
+function registryEntries(): RegistryEntry[] {
+  const hooks = (loadRungateConfig(HARNESS_ROOT) as { hooks: RegistryEntry[] }).hooks;
+  expect(hooks.length, "the loader resolved no hook entries at all").toBeGreaterThan(0);
+  return hooks;
+}
+
 function registryCommands(): string[] {
   const hooks = (loadRungateConfig(HARNESS_ROOT) as { hooks: unknown[] }).hooks;
   expect(hooks.length, "the loader resolved no hook entries at all").toBeGreaterThan(0);

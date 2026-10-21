@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 import {
   IncompleteScopeReadingError,
@@ -10,10 +10,18 @@ import {
   readRegistrationScopes,
   registrationCensus,
   settingsScopePaths,
+  unplacedHooks,
   type ScopeReading,
 } from "../lib/hook-scopes";
-import { appendEvidence, firingLine, parseFirings } from "../lib/hook-evidence";
-import { settingsCommands } from "../lib/hook-trees";
+import {
+  appendEvidence,
+  commandDigestFacts,
+  errorFacts,
+  firingLine,
+  parseFirings,
+  suiteTokens,
+} from "../lib/hook-evidence";
+import { commandNamesHook, settingsCommands } from "../lib/hook-trees";
 
 /**
  * #910 and #713 are one defect read from two sides, and this file holds the
@@ -344,6 +352,154 @@ describe("#910 AC-4: a fired hook leaves evidence", () => {
       expect(result).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#970 review: the evidence file carries no secret, and the match is by name", () => {
+  test("AC-6a: a command with a leading env assignment is not recorded", () => {
+    // Finding 1. `TOKEN=... bun test` is an ordinary spelling, and the
+    // evidence file is append-only, long-lived, and read by somebody who was
+    // not there. The pair varies exactly one thing: the secret.
+    const secret = "ghp_aaaabbbbccccddddeeeeffff0000111122";
+    const facts = commandDigestFacts(`GITHUB_TOKEN=${secret} bun test --parallel`);
+    const rendered = firingLine("Alpha", "released", facts, new Date());
+
+    expect(rendered, "the raw secret reached the record").not.toContain(secret);
+    expect(rendered, "the env assignment reached the record").not.toContain("GITHUB_TOKEN");
+    // And the questions the record exists to answer still have answers.
+    expect(facts.suiteTokens).toEqual(["bun", "test", "--parallel"]);
+    expect(facts.commandDigest).toHaveLength(16);
+    expect(commandDigestFacts("GITHUB_TOKEN=other bun test --parallel").commandDigest).not.toBe(
+      facts.commandDigest,
+    );
+    expect(commandDigestFacts(`GITHUB_TOKEN=${secret} bun test --parallel`).commandDigest).toBe(
+      facts.commandDigest,
+    );
+  });
+
+  test("AC-6b: suiteTokens draws from a fixed vocabulary, so nothing can be pushed through it", () => {
+    // The property that makes a classification safe where a pass-through is
+    // not: the output is a SUBSET of the vocabulary whatever the input.
+    const hostile = "AWS_SECRET=zzz bun test ./node_modules/.bin/weird --parallel";
+    for (const token of suiteTokens(hostile)) {
+      expect(hostile.split(/\s+/)).toContain(token);
+      expect(token, `${token} is not a vocabulary word`).toMatch(
+        /^(bun|npm|pnpm|yarn|npx|test|vitest|jest|--parallel|--no-isolate|--coverage)$/,
+      );
+    }
+    expect(suiteTokens(hostile)).not.toContain("AWS_SECRET=zzz");
+    // Non-vacuous: it really does find the words it is meant to.
+    expect(suiteTokens(hostile)).toEqual(["bun", "test", "--parallel"]);
+  });
+
+  test("AC-6c: an error is recorded as a class and a digest, never its message", () => {
+    // Finding 2. `execSync`'s message quotes the whole command line.
+    const e = new Error("Command failed: bun /x/scripts/update-project-state.ts --token=sek-ret-9");
+    const facts = errorFacts(e);
+    expect(JSON.stringify(facts)).not.toContain("sek-ret-9");
+    expect(JSON.stringify(facts)).not.toContain("Command failed");
+    expect(facts.errorClass).toBe("Error");
+    expect(facts.errorDigest).toHaveLength(16);
+
+    // `name` is writable, so a hostile or merely odd value is classified
+    // rather than passed through.
+    const odd = new Error("x");
+    odd.name = "tok en: sek-ret-9";
+    expect(errorFacts(odd).errorClass).toBe("UNCLASSIFIED");
+    expect(JSON.stringify(errorFacts(odd))).not.toContain("sek-ret-9");
+  });
+
+  test("AC-6d: the evidence file is 0600 and its directory 0700", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hook-evidence-mode-"));
+    try {
+      const path = join(dir, "nested", "hook-firings.jsonl");
+      expect(appendEvidence(path, firingLine("Alpha", "one", {}, new Date()))).toBe(true);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-6f: the placement predicate has a witness in the suite, not only on a machine", () => {
+    // `AC-4b` in test/hook-traceability.test.ts drives this over the live
+    // tree, where nothing is unplaced — so short-circuiting the predicate to
+    // `[]` is 0 red there and the live case witnesses nothing (battery row
+    // N6). These fixtures are the three ways to be placed and the one way
+    // not to be, so a mutation of the predicate has somewhere to land.
+    const registers = (cmd: string): ScopeReading[] => [
+      { scope: "project-settings", commands: [cmd] },
+      { scope: "repo-registry", commands: [] },
+    ];
+    const base = {
+      hooks: ["Alpha"],
+      repoReadings: registers("bun ${CLAUDE_PROJECT_DIR}/hooks/Other.hook.ts"),
+      declaredUnregistered: [] as string[],
+    };
+
+    // Unplaced: nothing the repo owns mentions it.
+    expect(unplacedHooks(base)).toEqual(["Alpha"]);
+
+    // Each placement, one at a time, so neither is covering for the other.
+    // Both repo-owned scopes are driven, because the registry is one of them
+    // and a reader that only consulted the settings would miss it.
+    expect(
+      unplacedHooks({
+        ...base,
+        repoReadings: registers("bun ${CLAUDE_PROJECT_DIR}/hooks/Alpha.hook.ts"),
+      }),
+    ).toEqual([]);
+    expect(
+      unplacedHooks({
+        ...base,
+        repoReadings: [
+          { scope: "project-settings", commands: [] },
+          { scope: "repo-registry", commands: ["bun ${RUNGATE_HOOKS_DIR}/Alpha.hook.ts"] },
+        ],
+      }),
+    ).toEqual([]);
+    expect(unplacedHooks({ ...base, declaredUnregistered: ["Alpha"] })).toEqual([]);
+
+    // And the fail-open this exists to close: a repo-owned scope read as
+    // unreadable refuses rather than returning an empty list.
+    expect(() =>
+      unplacedHooks({
+        ...base,
+        repoReadings: [
+          { scope: "project-settings", commands: null, unreadable: "gone" },
+          { scope: "repo-registry", commands: [] },
+        ],
+      }),
+    ).toThrow(IncompleteScopeReadingError);
+    expect(() => unplacedHooks({ ...base, repoReadings: [] })).toThrow(IncompleteScopeReadingError);
+  });
+
+  test("AC-6e: a registration is matched by hook NAME, not by substring", () => {
+    // Finding 3. `c.includes("TestSuiteRelease.hook.ts")` is satisfied by a
+    // different file whose name ends in the same characters — so a hook that
+    // is NOT registered reads as registered, and `registered` is the one
+    // verdict conclusive from a single scope.
+    const imposters = [
+      "bun ${RUNGATE_HOOKS_DIR}/other-TestSuiteRelease.hook.ts",
+      "bun ${RUNGATE_HOOKS_DIR}/TestSuiteRelease.hook.ts.bak",
+      "bun ${RUNGATE_HOOKS_DIR}/Other.hook.ts --note=TestSuiteRelease.hook.ts.disabled",
+    ];
+    for (const command of imposters) {
+      expect(commandNamesHook(command, "TestSuiteRelease"), command).toBe(false);
+      expect(
+        hookRegistration("TestSuiteRelease", complete({ "user-settings": [command] })).verdict,
+        command,
+      ).toBe("unregistered");
+    }
+
+    // The positive control, in both spellings the tree really uses. Without
+    // it, a matcher that refused everything satisfies the loop above.
+    for (const command of [
+      "bun ${RUNGATE_HOOKS_DIR}/TestSuiteRelease.hook.ts",
+      "bun ${CLAUDE_PROJECT_DIR}/hooks/TestSuiteRelease.hook.ts",
+    ]) {
+      expect(commandNamesHook(command, "TestSuiteRelease"), command).toBe(true);
     }
   });
 });

@@ -6,7 +6,7 @@
     "enabled": true,
     "scope": "user",
     "matcher": "Bash",
-    "description": "Blocks cat/head/tail file reading — enforces COMP-7 mechanically (Tier 3)"
+    "description": "Blocks cat/head/tail file reading \u2014 enforces COMP-7 mechanically (Tier 3)"
   },
   {
     "name": "TestSuiteGuard",
@@ -15,7 +15,16 @@
     "enabled": true,
     "scope": "user",
     "matcher": "Bash",
-    "description": "Blocks a full test suite (bun test) once the worker has spent its rate — enforces DIR-L29 mechanically (Tier 3). The rate lives in lib/test-suite-lock.ts."
+    "description": "Blocks a full test suite (bun test) once the worker has spent its rate \u2014 enforces DIR-L29 mechanically (Tier 3). The rate lives in lib/test-suite-lock.ts."
+  },
+  {
+    "name": "TestSuiteRelease",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteRelease.hook.ts",
+    "enabled": true,
+    "scope": "user",
+    "matcher": "Bash",
+    "description": "Hands a full suite its concurrency slot back when it finishes, so the next session is not stuck waiting out the 420s TTL (#67). Registered in user settings; #910 reported it registered nowhere after counting this file alone."
   },
   {
     "name": "AgentBriefGuard",
@@ -95,7 +104,7 @@
     "scope": "project",
     "matcher": "Edit|Write",
     "description": "Auto-runs conformity when spec files are modified",
-    "disabledReason": "package.json already runs scripts/sync-sc-status.ts as posttest, so this would be a second decider for one question — the fourth shape in .claude/rules/checks-must-be-able-to-fail.md, where a mutation of either leaves the other holding the case up. The two triggers are also not equivalent, and the posttest one is the better of them: it ticks coverage after a suite run, where this one ticks it on a text edit, with no test having been run. #479."
+    "disabledReason": "package.json already runs scripts/sync-sc-status.ts as posttest, so this would be a second decider for one question \u2014 the fourth shape in .claude/rules/checks-must-be-able-to-fail.md, where a mutation of either leaves the other holding the case up. The two triggers are also not equivalent, and the posttest one is the better of them: it ticks coverage after a suite run, where this one ticks it on a text edit, with no test having been run. #479."
   },
   {
     "name": "SpecSCGuard",
@@ -129,7 +138,7 @@
     "enabled": false,
     "scope": "project",
     "description": "Quality gates before task completion (tests, uncommitted changes, conformity)",
-    "disabledReason": "checkTests spawns a full bun test with a 120000 ms timeout and this suite measures around 400 s, so the run can never finish — every completion would report a timed-out non-zero exit with no parseable failure count, which the code turns into a warning. It also spawns a CONCURRENT full suite, which is what DIR-L29 and lib/test-suite-lock.ts exist to prevent and what jetsam-killed the machine once already. Re-enable only after the timeout exceeds the measured suite duration and the spawn goes through the suite lock. #479."
+    "disabledReason": "checkTests spawns a full bun test with a 120000 ms timeout and this suite measures around 400 s, so the run can never finish \u2014 every completion would report a timed-out non-zero exit with no parseable failure count, which the code turns into a warning. It also spawns a CONCURRENT full suite, which is what DIR-L29 and lib/test-suite-lock.ts exist to prevent and what jetsam-killed the machine once already. Re-enable only after the timeout exceeds the measured suite duration and the spawn goes through the suite lock. #479."
   },
   {
     "name": "VerifyPhaseLock",
@@ -148,5 +157,14 @@
     "scope": "project",
     "matcher": "Write|Edit",
     "description": "Blocks direct Write/Edit of workflow-state.json"
+  },
+  {
+    "name": "ProjectStateSync",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/ProjectStateSync.hook.ts",
+    "enabled": true,
+    "scope": "user",
+    "matcher": "Write|Edit",
+    "description": "Regenerates PROJECT-STATE.md when project-state.json is written. Registered in user settings on BOTH Write and Edit; whether it should fire on every agent edit is open on #910 (#296 blast radius)."
   }
 ]

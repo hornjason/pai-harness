@@ -56,7 +56,7 @@
 
 import { join } from "path";
 
-import { settingsCommands } from "./hook-trees";
+import { commandNamesHook, settingsCommands } from "./hook-trees";
 
 /**
  * Every position that can register a hook, in one declaring position.
@@ -263,8 +263,14 @@ export function hookRegistration(hook: string, readings: ScopeReading[]): HookRe
   assertEveryScopeRead(readings);
 
   const needle = `${hook}.hook.ts`;
+  // `commandNamesHook`, never `c.includes(needle)`: a substring match reports
+  // `other-TestSuiteRelease.hook.ts` and `TestSuiteRelease.hook.ts.bak` as
+  // registrations of `TestSuiteRelease`, so a hook that is NOT registered
+  // reads as registered. That is #910's defect mirrored, and it would make
+  // the `registered` verdict — the one branch that is conclusive from a
+  // single scope — the easiest of the three to forge.
   const registeredIn = readings
-    .filter(r => (r.commands ?? []).some(c => c.includes(needle)))
+    .filter(r => (r.commands ?? []).some(c => commandNamesHook(c, hook)))
     .map(r => r.scope);
   const unreadable = readings.filter(r => r.commands === null).map(r => r.scope);
 
@@ -306,6 +312,68 @@ export function hookRegistration(hook: string, readings: ScopeReading[]): HookRe
     unreadable: [],
     detail: `all ${REGISTRATION_SCOPES.length} scopes were read and none names ${needle}`,
   };
+}
+
+/**
+ * Hook files that nothing the repo owns has placed — the CI-enforceable half.
+ *
+ * `hookRegistration` answers "is it registered", and on a runner that answer
+ * is `unmeasured` for every machine-scoped hook, so a guard built on it is
+ * fail-open there. Measured on the first draft of #910 with one input — a
+ * hook file registered in no scope at all — run twice, differing only in
+ * `HOME`: red where every scope is readable, **green in the CI
+ * configuration**. Absence must never read as clean.
+ *
+ * So this asks a question a runner CAN answer. Not "is it registered", which
+ * is machine state, but **"does anything the repo owns say where this hook
+ * lives?"** Two ways to say so, and a hook may take either:
+ *
+ *   1. a repo-owned scope NAMES it — `.claude/settings.json`, its `.local`
+ *      sibling, or `.claude/rungate/hooks.json`, whose entry carries both the
+ *      command and the `scope` the repo claims for it; or
+ *   2. its own header declares why it is registered nowhere.
+ *
+ * A hook taking neither is one about which the repository has no opinion at
+ * all, and that is the state `ProjectStateSync` and `TestSuiteRelease` were
+ * in when a census declared them unregistered.
+ *
+ * **There is deliberately no third way through a registry `scope: "user"`
+ * declaration.** A draft had one, and it was a second decider: an entry
+ * declaring the scope also carries the command that names the hook, so
+ * clause 1 catches every input the extra clause did. Measured — removing it
+ * was 1 red, and the one red was its own fixture, with nothing in the live
+ * tree able to tell the two versions apart (battery row N7).
+ *
+ * **Every reading handed here must be readable.** A repo-owned scope is
+ * committed, so an unreadable one is a broken checkout rather than an
+ * absence, and returning an empty list for it would reinstate the fail-open
+ * this function exists to close.
+ */
+export function unplacedHooks(input: {
+  hooks: string[];
+  repoReadings: ScopeReading[];
+  declaredUnregistered: string[];
+}): string[] {
+  const unreadable = input.repoReadings.filter(r => r.commands === null).map(r => r.scope);
+  if (unreadable.length > 0) {
+    // ONE site, named so a battery row can anchor on it.
+    throw new IncompleteScopeReadingError(
+      `${unreadable.join(", ")} is repo-owned and read as unreadable. A committed scope that is ` +
+        `not in the tree registers nothing, which is a reading; a scope that cannot be read is ` +
+        `a broken checkout, and answering from it would make this guard fail open.`,
+    );
+  }
+  if (input.repoReadings.length === 0) {
+    throw new IncompleteScopeReadingError(
+      "no repo-owned scope was supplied, so every hook would read as unplaced for no reason",
+    );
+  }
+  return input.hooks.filter(hook => {
+    if (input.repoReadings.some(r => (r.commands ?? []).some(c => commandNamesHook(c, hook)))) {
+      return false;
+    }
+    return !input.declaredUnregistered.includes(hook);
+  });
 }
 
 /** The same verdict for a list of hooks, over one reading. */

@@ -38,7 +38,7 @@
 
 import { parseHookInput } from './lib/utils';
 import { deriveWorkerId, isFullSuiteCommand, releaseFullSuiteSlot } from '../lib/test-suite-lock';
-import { recordHookFiring } from '../lib/hook-evidence';
+import { commandDigestFacts, errorFacts, recordHookFiring } from '../lib/hook-evidence';
 
 const HOOK = 'TestSuiteRelease';
 
@@ -49,6 +49,9 @@ async function main() {
 
   const command = (input.tool_input?.command as string) || '';
   const sessionId = input.session_id || 'default';
+  // Never the raw command: a Bash call routinely carries leading env
+  // assignments, and those carry tokens (#970 review, finding 1).
+  const facts = commandDigestFacts(command);
 
   try {
     // Out of population: not a full suite, so this hook has nothing to say
@@ -61,7 +64,7 @@ async function main() {
     // running. Releasing here would hand the slot back mid-run and restore the
     // concurrency the guard exists to prevent. Let the TTL reclaim it instead.
     if (input.tool_input?.run_in_background) {
-      recordHookFiring(HOOK, 'declined-background', { command, sessionId, cwd: input.cwd });
+      recordHookFiring(HOOK, 'declined-background', { ...facts, sessionId, cwd: input.cwd });
       process.exit(0);
     }
 
@@ -69,12 +72,12 @@ async function main() {
     // session could free a sibling worker's slot while its suite still runs.
     const workerId = deriveWorkerId(sessionId, input.cwd);
     releaseFullSuiteSlot(sessionId, { workerId });
-    recordHookFiring(HOOK, 'released', { command, sessionId, workerId, cwd: input.cwd });
+    recordHookFiring(HOOK, 'released', { ...facts, sessionId, workerId, cwd: input.cwd });
   } catch (e) {
     // A failed release is recovered by the TTL; never surface it as a tool
     // error. It IS recorded: a release that threw and a release that never
     // happened leave the same empty lock dir behind.
-    recordHookFiring(HOOK, 'release-failed', { command, sessionId, error: String(e) });
+    recordHookFiring(HOOK, 'release-failed', { ...facts, sessionId, ...errorFacts(e) });
     process.exit(0);
   }
 }

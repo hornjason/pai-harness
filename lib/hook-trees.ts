@@ -104,6 +104,37 @@ export function settingsCommands(docs: string[]): string[] {
   return out;
 }
 
+/**
+ * The hook FILES a command executes, as basenames.
+ *
+ * One extractor, reused by `lib/hook-scopes.ts` and by the census in
+ * `test/hook-traceability.test.ts`. A third spelling of "which hook does this
+ * command name" is how a validator and its consumer come to disagree.
+ *
+ * **Tokenised and basenamed, never a substring.** `command.includes("X.hook.ts")`
+ * is satisfied by `other-X.hook.ts`, by `X.hook.ts.bak`, and by any path
+ * fragment that happens to contain the name — so a hook that is NOT registered
+ * reads as registered, which is #910's defect arriving from the opposite
+ * direction. Found by the security review of PR #970.
+ */
+export function hookFilesNamedBy(command: string): string[] {
+  const out: string[] = [];
+  for (const token of command.split(/\s+/)) {
+    // Trim shell quoting, then take the last path segment. A trailing `.bak`
+    // or `.tmp` leaves a basename that is not equal to any hook file name,
+    // which is the point of comparing by equality below.
+    const bare = token.replace(/^['"]+|['"]+$/g, "");
+    const base = bare.slice(bare.lastIndexOf("/") + 1);
+    if (/^[A-Za-z0-9_-]+\.hook\.ts$/.test(base)) out.push(base);
+  }
+  return out;
+}
+
+/** Does `command` execute `<hook>.hook.ts` — by name, not by substring. */
+export function commandNamesHook(command: string, hook: string): boolean {
+  return hookFilesNamedBy(command).includes(`${hook}.hook.ts`);
+}
+
 export interface TreeViolation {
   hook: string;
   tree: HookTree | "unknown";
