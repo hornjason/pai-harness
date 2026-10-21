@@ -599,7 +599,7 @@ governs: test
   // ── AC-3: No flagged markers in specs ──────────────────────────
 
   describe("AC-3: no flagged markers remain", () => {
-    test("no FLAGGED, AMBIGUOUS, or REVIEW markers in any RunGate spec", () => {
+    test("no FLAGGED, AMBIGUOUS, or pending-REVIEW markers in any RunGate spec", () => {
       const specsDir = join(import.meta.dir, "..", "specs");
       const specFiles = readdirSync(specsDir).filter(
         (f) => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md"
@@ -607,13 +607,71 @@ governs: test
       const flaggedSpecs: string[] = [];
 
       for (const f of specFiles) {
-        const content = readFileSync(join(specsDir, f), "utf-8");
-        if (/<!-- REVIEW:|FLAGGED|AMBIGUOUS.*SC|TODO.*rewrite.*SC|FIXME.*SC/.test(content)) {
+        if (pendingReviewMarker(readFileSync(join(specsDir, f), "utf-8"))) {
           flaggedSpecs.push(f);
         }
       }
 
+      // Non-empty first: a census over zero files is perfect agreement.
+      expect(specFiles.length).toBeGreaterThan(5);
       expect(flaggedSpecs).toEqual([]);
+    });
+
+    test("#827: a parked original is still refused", () => {
+      expect(
+        pendingReviewMarker("- [ ] SC-1: x\n<!-- REVIEW: original — the words it used to have -->\n"),
+      ).toBe("<!-- REVIEW: original");
+    });
+
+    test("#827: a coverage record on an untouched line is not a pending marker", () => {
+      // The exact string `scripts/audit-specs.ts` writes for a KEPT line.
+      expect(
+        pendingReviewMarker("- [ ] SC-1: x\n<!-- REVIEW: unmatched (no registry pattern was close enough) -->\n"),
+      ).toBeNull();
     });
   });
 });
+
+/**
+ * Does `content` carry a marker that means a human still has to look?
+ *
+ * One exported binding, so there is one thing to mutate and one place that
+ * decides. Returns the offending marker text, or `null`. Declared after the
+ * describe block it serves; hoisting makes it reachable from inside it.
+ *
+ * #827: this used to refuse every `<!-- REVIEW:` comment, and
+ * `scripts/audit-specs.ts` writes TWO comments under that prefix, for
+ * opposite reasons:
+ *
+ * - `<!-- REVIEW: original — … -->` is parked text. The criterion WAS
+ *   rewritten, ambiguously, and the words it used to have are kept beside it
+ *   so somebody can choose. That is a to-do and it must not survive.
+ * - `<!-- REVIEW: unmatched (…) -->` is a durable record. The criterion was
+ *   NOT touched — #426 says so where it is written: *"a line we decline to
+ *   rewrite keeps its text exactly … the marker records that the matcher
+ *   could not bind it, which is a coverage gap worth seeing"* — and #586
+ *   then made it per-criterion so two criteria could not share one. Nothing
+ *   is pending on it.
+ *
+ * Sweeping both up made this repository unable to be both green and a fixed
+ * point of its own generator: `bun bin/rungate.ts scaffold . --fix` writes 19
+ * `unmatched` markers into `RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md`, and
+ * committing the generator's own output turned AC-3 red. Two positions
+ * deciding one question with nothing comparing them, which is
+ * `.claude/rules/checks-must-be-able-to-fail.md`'s #621 shape — and the side
+ * with two issues of deliberation behind it is not the regex.
+ *
+ * The narrowing is bounded: `REVIEW: original` is still refused, and the two
+ * cases beside AC-3 are the proof, because a detector narrowed until the
+ * symptom goes away is the cheapest wrong fix there is.
+ */
+export function pendingReviewMarker(content: string): string | null {
+  // `REVIEW: unmatched` is deliberate, durable output — every other
+  // `REVIEW:` is parked work. Matching the admitted form explicitly rather
+  // than subtracting it keeps a third marker spelled tomorrow refused by
+  // default, which is the direction this is allowed to be wrong in.
+  const review = content.match(/<!-- REVIEW: (?!unmatched\b)/);
+  if (review) return "<!-- REVIEW: original";
+  const other = content.match(/FLAGGED|AMBIGUOUS.*SC|TODO.*rewrite.*SC|FIXME.*SC/);
+  return other ? other[0] : null;
+}

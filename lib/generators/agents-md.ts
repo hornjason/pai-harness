@@ -46,8 +46,47 @@ export function existingFrontmatter(root: string): Record<string, string> {
   return existing;
 }
 
-function buildFrontmatter(root: string): string {
-  const today = localCalendarDay();
+/**
+ * The committed AGENTS.md with its frontmatter block removed (#827).
+ *
+ * `null` means there is nothing to compare against — no file, or a file with
+ * no frontmatter block, which is a shape this generator has never written.
+ * Null and `""` are different facts and the caller must not conflate them:
+ * an absent file has no `updated:` to carry forward, so it gets today's.
+ */
+export function existingBody(root: string): string | null {
+  const path = join(root, "AGENTS.md");
+  if (!existsSync(path)) return null;
+  const content = readFileSync(path, "utf-8");
+  const match = content.match(/^---\n[\s\S]*?\n---\n\n/);
+  if (!match) return null;
+  return content.slice(match[0].length);
+}
+
+/**
+ * Build the AGENTS.md frontmatter block.
+ *
+ * Preserves whatever the existing file declared (owner, status, custom keys)
+ * and refreshes `updated:` ONLY when the body it is about actually changed.
+ * Regenerating from scratch would silently drop a hand-set owner, and
+ * emitting nothing — the behavior before #552 — stripped the block entirely
+ * on every re-scaffold.
+ *
+ * #827: `updated` used to be forced to today AFTER the spread, so it could
+ * never be carried forward and AGENTS.md could never be a fixed point of its
+ * own generator — the file stopped being one the morning after it was
+ * written, with no code or spec change in between. Dropping the field
+ * instead would make the file a fixed point and lose the freshness signal
+ * doc-hygiene wants, so neither of those is the fix. What the field claims
+ * to mean is "the date this file's content last changed", and deriving it
+ * from the body is what makes it mean that; the fixed point then falls out
+ * rather than being exempted into existence.
+ *
+ * @param bodyUnchanged  the generator's body for this scan equals the one on
+ *                       disk. The caller computes the body first and answers
+ *                       this; the frontmatter is not in a position to.
+ */
+function buildFrontmatter(root: string, today: string, bodyUnchanged: boolean): string {
   const defaults: Record<string, string> = {
     "doc-type": "reference",
     status: "active",
@@ -56,7 +95,12 @@ function buildFrontmatter(root: string): string {
 
   const existing = existingFrontmatter(root);
 
-  const merged: Record<string, string> = { ...defaults, ...existing, updated: today };
+  // An existing stamp survives only when the body it dates is unchanged. A
+  // file with no stamp at all gets today's either way — there is nothing to
+  // carry, and a missing `updated:` is not evidence of freshness.
+  const stamp = bodyUnchanged ? (existing.updated ?? today) : today;
+
+  const merged: Record<string, string> = { ...defaults, ...existing, updated: stamp };
   const order = ["doc-type", "status", "owner", "updated"];
   const keys = [...order.filter(k => k in merged), ...Object.keys(merged).filter(k => !order.includes(k))];
   return `---\n${keys.map(k => `${k}: ${merged[k]}`).join("\n")}\n---\n\n`;
@@ -67,7 +111,14 @@ export interface GeneratedRule {
   content: string;
 }
 
-export function generateAgentsMd(scan: ProjectScan): string {
+/**
+ * @param today  the calendar day a CHANGED body is stamped with. Injectable
+ *               so a test can advance the clock without advancing anything
+ *               else — the whole of #827 is a field that moves when nothing
+ *               else did, and a case that cannot change the date cannot see
+ *               it. Defaults to the real day, so every caller is unchanged.
+ */
+export function generateAgentsMd(scan: ProjectScan, today: string = localCalendarDay()): string {
   const {
     name,
     identity,
@@ -102,11 +153,6 @@ export function generateAgentsMd(scan: ProjectScan): string {
   const consumerSection = consumers.length > 0
     ? `\n## Consumers (${consumers.length})\n\n${consumers.map(c => `- ${c}`).join("\n")}\n\nCheck cascade impact when modifying shared modules.`
     : "";
-
-  // Re-scaffolding used to strip AGENTS.md's frontmatter, because the
-  // generator never emitted any. Carry the existing block forward with a
-  // refreshed `updated:` so doc-hygiene keeps working across re-scaffolds.
-  const frontmatter = buildFrontmatter(scan.root);
 
   // convert-spec is only advertised where the script actually exists —
   // rungate has it, a scaffolded consumer may not. It was being dropped on
@@ -180,7 +226,12 @@ bunx rungate --help
 
 Pin the version: re-scaffolding on a newer rungate rewrites generated files.`;
 
-  return `${frontmatter}# ${name}
+  // Re-scaffolding used to strip AGENTS.md's frontmatter, because the
+  // generator never emitted any. Carry the existing block forward so
+  // doc-hygiene keeps working across re-scaffolds — and build the BODY
+  // first, because `updated:` is a statement about the body and cannot be
+  // decided before it exists (#827).
+  const body = `# ${name}
 
 ## Project Identity
 
@@ -212,6 +263,8 @@ ${consumerSection}
 ${repoLine}${makeTargets}
 - **Test:** \`${testCmd}\`
 `;
+
+  return buildFrontmatter(scan.root, today, body === existingBody(scan.root)) + body;
 }
 
 /**

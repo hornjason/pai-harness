@@ -7,7 +7,8 @@
  * Extracted per SCAFFOLD-DECOMPOSITION-SPEC to keep scaffold-project.ts
  * as orchestrator-only (under 200 lines).
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, statSync } from "fs";
+import { readdirSorted } from "../readdir-sorted";
 import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
@@ -446,7 +447,7 @@ export function generateAgentsMdContent(
   const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
   const testEntries: TestFile[] = [];
   if (testDir) {
-    for (const f of readdirSync(join(projectPath, testDir)).filter(f => f.endsWith(".test.ts"))) {
+    for (const f of readdirSorted(join(projectPath, testDir)).filter(f => f.endsWith(".test.ts"))) {
       const label = f.replace(".test.ts", "").replace(/-/g, " ");
       testEntries.push({ label, file: f });
     }
@@ -461,7 +462,7 @@ export function generateAgentsMdContent(
   const refDir = join(projectPath, "reference");
   const refEntries: RefFile[] = [];
   if (existsSync(refDir)) {
-    for (const f of readdirSync(refDir)) {
+    for (const f of readdirSorted(refDir)) {
       refEntries.push({ file: f, what: "Historical reference" });
     }
   }
@@ -514,7 +515,7 @@ export function generateAgentsMdContent(
       // Recursive — see the same fix in scanner.ts. This is a second copy of
       // scanDocRouting and it is the one the scaffold actually calls, so the
       // scanner fix alone changed no generated output at all (#91).
-      const files = readdirSync(catPath, { recursive: true }).map(String).filter(f => f.endsWith(".md"));
+      const files = readdirSorted(catPath, { recursive: true }).filter(f => f.endsWith(".md"));
       docRouting.push({ need: `${cat.label} (${files.length} files)`, file: `${cat.dir}/` });
     } else {
       docRouting.push({ need: cat.label, file: `${cat.dir}/` });
@@ -833,7 +834,7 @@ export function generateAgentBriefsStep(
     marcus: [], quinn: [], rook: [], serena: [], aditi: [], discovery: []
   };
   if (existsSync(promptsDir)) {
-    const promptFiles = readdirSync(promptsDir).filter(f => f.endsWith(".md"));
+    const promptFiles = readdirSorted(promptsDir).filter(f => f.endsWith(".md"));
     for (const f of promptFiles) {
       const content = readFileSync(join(promptsDir, f), "utf-8");
       const lower = f.toLowerCase();
@@ -988,7 +989,7 @@ export function generateOrAuditProjectHarness(root: string, actions: string[], o
   // Scan pages from dashboard/src/pages/*.tsx (file-based routing)
   const dashboardPagesDir = join(root, "dashboard", "src", "pages");
   if (existsSync(dashboardPagesDir)) {
-    const pageFiles = readdirSync(dashboardPagesDir).filter(f => f.endsWith(".tsx") || f.endsWith(".jsx"));
+    const pageFiles = readdirSorted(dashboardPagesDir).filter(f => f.endsWith(".tsx") || f.endsWith(".jsx"));
     for (const f of pageFiles) {
       const componentName = f.replace(/\.(tsx|jsx)$/, "");
       // Convert CamelCase to kebab-case route path
@@ -1089,7 +1090,7 @@ export function generateOrAuditProjectHarness(root: string, actions: string[], o
   const srcDir = join(root, "src");
   if (existsSync(srcDir)) {
     const consumerPatterns = ["-routes.ts", "-generator.ts", "-plan.ts", "-intel.ts"];
-    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts"))) {
+    for (const f of readdirSorted(srcDir).filter(f => f.endsWith(".ts"))) {
       const content = readFileSync(join(srcDir, f), "utf-8");
       const isConsumer = consumerPatterns.some(p => f.includes(p)) ||
         content.includes("app.get(") || content.includes("app.post(") ||
@@ -1554,13 +1555,13 @@ function generateCodeMapInline(root: string, outPath: string, actions: string[])
   const name = basename(root);
   const skip = new Set(["node_modules", ".git", "reference", "dist", "build", ".next", ".fallow"]);
   const dirs: Array<{ name: string; fileCount: number; types: string[] }> = [];
-  for (const entry of readdirSync(root)) {
+  for (const entry of readdirSorted(root)) {
     if (entry.startsWith(".") && entry !== ".claude") continue;
     if (skip.has(entry)) continue;
     const full = join(root, entry);
     try {
       if (!statSync(full).isDirectory()) continue;
-      const files = readdirSync(full, { recursive: true }).map(String);
+      const files = readdirSorted(full, { recursive: true });
       const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
       dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
     } catch {}
@@ -1580,7 +1581,7 @@ function generateCodeMapInline(root: string, outPath: string, actions: string[])
   const srcDir = join(root, "src");
   const modules: Array<{ file: string; exports: string[] }> = [];
   if (existsSync(srcDir)) {
-    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
+    for (const f of readdirSorted(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
       const content = readFileSync(join(srcDir, f), "utf-8");
       const exports: string[] = [];
       const exportPattern = /export\s+(?:function|const|class|type|interface)\s+(\w+)/g;
@@ -1593,7 +1594,7 @@ function generateCodeMapInline(root: string, outPath: string, actions: string[])
   // Detect API routes
   const routes: Array<{ method: string; path: string; file: string }> = [];
   if (existsSync(srcDir)) {
-    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
+    for (const f of readdirSorted(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
       const content = readFileSync(join(srcDir, f), "utf-8");
       const routePatterns = [
         /app\.(get|post|put|delete|patch)\s*\(\s*["'`]([^"'`]+)["'`]/gi,
@@ -1654,7 +1655,7 @@ export function copySpecTemplateIfEmpty(specsDir: string, actions: string[]): vo
   if (!existsSync(specsDir)) return;
 
   // Skip if specs/ already has .md files (besides SPEC-TEMPLATE.md itself)
-  const existingSpecs = readdirSync(specsDir).filter(
+  const existingSpecs = readdirSorted(specsDir).filter(
     f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md"
   );
   if (existingSpecs.length > 0) {
@@ -4251,7 +4252,7 @@ export function runAuditSpecsFix(root: string, actions: string[]): void {
     actions.push("SKIP: audit-specs (no specs/ directory)");
     return;
   }
-  const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md"));
+  const specFiles = readdirSorted(specsDir).filter(f => f.endsWith(".md"));
   if (specFiles.length === 0) {
     actions.push("SKIP: audit-specs (no spec files)");
     return;
