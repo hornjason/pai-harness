@@ -5,12 +5,20 @@ import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
 import { planDocScan, type DocScanPlan } from "../lib/doc-scan-targets";
 import { lastCommitDates } from "../lib/git-dates";
 import { contentHash } from "../lib/content-hash";
-import { mineFixCommits, type FailureIntakeReading } from "../lib/failure-intake";
+import {
+  mineFixCommits,
+  type EvidenceCandidate,
+  type FailureIntakeReading,
+} from "../lib/failure-intake";
 import {
   promoteCandidates,
   PROMOTION_BUDGET_RULES,
   type PromotionReading,
 } from "../lib/rule-promotion";
+import {
+  retireUnresolvable,
+  type RetirementReading,
+} from "../lib/rule-retirement";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -85,6 +93,16 @@ export interface ExtractResult {
    * evidence-required criterion is being applied to.
    */
   promotion: PromotionReading;
+  /**
+   * What the generator stopped emitting, and why (#544, SC-1941).
+   *
+   * Separate from `promotion` for the same reason `evidence` is: a candidate
+   * dropped because the commit it cites was rebased away and one dropped
+   * because it ranked below the cut are different events with different
+   * repairs, and one `withheld` list carrying both would need a reader to
+   * tell them apart by reason string.
+   */
+  retirement: RetirementReading<EvidenceCandidate | Candidate>;
   /**
    * What was scanned and what could not be (#440).
    *
@@ -308,12 +326,27 @@ export async function extractConstraints(
   // gate withholds every one of them. That is not a bug in the wiring — it is
   // the measurement: signal-phrase extraction produces nothing a promotion
   // criterion based on observed failure can promote.
-  const promotion = promoteCandidates(
+  // #544 SC-1941. Retirement runs BEFORE promotion and over both
+  // populations: a candidate citing a commit that was rebased away, or a
+  // `path:line` in a file that has since moved, is dropped rather than
+  // ranked. Recency is the only ordering signal the promoter has, so a
+  // candidate citing a vanished sha would otherwise rank at the very top.
+  //
+  // Its reading is folded into the promotion as an upstream, not merged into
+  // one here: `0 retired` on a shallow clone means the question could not be
+  // asked, and a promotion that reported MEASURED over that population would
+  // be claiming a completeness nothing established.
+  const retirement = retireUnresolvable(
     [...evidence.candidates, ...allCandidates],
+    projectPath,
+  );
+
+  const promotion = promoteCandidates(
+    retirement.kept,
     {
       budget: PROMOTION_BUDGET_RULES,
       rejectedHashes: rejectedHashes,
-      upstream: evidence,
+      upstream: [evidence, retirement],
     },
   );
 
@@ -331,6 +364,7 @@ export async function extractConstraints(
     staleness,
     coverage: { planned: scanFiles.length, read, unread },
     evidence,
+    retirement,
     promotion,
     scan,
   };
