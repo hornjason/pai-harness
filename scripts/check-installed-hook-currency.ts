@@ -699,6 +699,74 @@ function readIfPresent(path: string): string | null {
   }
 }
 
+/**
+ * One reading of every hook the generator declares, taken without deciding
+ * what to do about it (#879).
+ *
+ * The CLI raises on it and the SessionStart hook prints it. Both had to
+ * exist, and the loop below is the ONE position that pairs a generated hook
+ * with the file installed at its address — a hook that walked the population
+ * itself would be a second decider about which hooks exist and what a
+ * current one is called, agreeing with this one until the day it did not.
+ */
+export interface CurrencyReading {
+  current: string[];
+  refusals: HookVerdict[];
+}
+
+export async function readHookCurrency(
+  project: string,
+  generatorRoot: string,
+): Promise<CurrencyReading> {
+  const hooks = await generatorHooks(generatorRoot, project);
+
+  // Every hook is read before any verdict is raised, so a stale FIRST hook
+  // cannot hide the state of the ones after it. The old shape could not have
+  // this problem because it only ever looked at one file, which is the
+  // problem (#891).
+  const current: string[] = [];
+  const refusals: HookVerdict[] = [];
+  for (const hook of hooks) {
+    const path = installedHookPath(project, hook.name);
+    // One decider, asked once per hook. The verdict is RETURNED rather than
+    // printed or raised here (#613), so there is exactly one position in
+    // this file that turns a refusal into a line of output and exactly one
+    // that turns it into an exit code.
+    const refusal = currencyRefusal(
+      readIfPresent(path),
+      hook.content,
+      hook.marker,
+      path,
+      hook.patterns,
+      hook.name,
+      hook.properties,
+    );
+    if (refusal) refusals.push(refusal);
+    else current.push(`${hook.name} is current at ${path}`);
+  }
+  return { current, refusals };
+}
+
+/**
+ * The STRONGEST class present, or `null` when every hook is current.
+ *
+ * A tree with one stale hook and one absent one HAS a stale hook, and
+ * reporting the pair as UNMEASURED would hide it; reporting a tree whose
+ * hooks are merely absent as STALE is the error #879 is about, in the other
+ * direction. One binding, because the CLI and the hook both need the answer
+ * and two copies of this comparison would agree right up until they did not.
+ */
+export function currencyClass(refusals: HookVerdict[]): RefusalClass | null {
+  if (refusals.some(v => v.cls === "STALE")) return "STALE";
+  return refusals.length > 0 ? "UNMEASURED" : null;
+}
+
+/** Each line keeps its own WORDS; the class prefix is rendered once, by the
+ * caller that reports (#613). */
+export function currencyLines(refusals: HookVerdict[]): string {
+  return refusals.map(v => v.reason).join("\n  ");
+}
+
 // CLI entry point. Guarded so the module can be imported by tests without
 // running the check and calling process.exit.
 if (import.meta.main) {
@@ -707,65 +775,45 @@ if (import.meta.main) {
     const project = typeof args.project === "string" ? args.project : process.cwd();
     const generatorRoot = typeof args.generator === "string" ? args.generator : defaultGeneratorRoot();
 
-    const hooks = await generatorHooks(generatorRoot, project);
-
-    // Every hook is read before any verdict is raised, so a stale FIRST
-    // hook cannot hide the state of the ones after it. The old shape could
-    // not have this problem because it only ever looked at one file, which
-    // is the problem (#891).
-    const refusals: HookVerdict[] = [];
-    for (const hook of hooks) {
-      const path = installedHookPath(project, hook.name);
-      if (args.install === true) {
+    // An explicit zero exit is deliberately absent from both arms: success
+    // falls off the end, so the "every exit goes through REFUSE_EXIT" scan
+    // has no exception to carve out, and an exception is where a literal
+    // exit code hides. An early zero exit written here turned four cases
+    // red, which is the scan doing its job — and naming the call in this
+    // comment turned the same case red a second time, because the scan
+    // reads prose as code (#235).
+    if (args.install === true) {
+      for (const hook of await generatorHooks(generatorRoot, project)) {
+        const path = installedHookPath(project, hook.name);
         installHook(path, hook.content);
         console.log(`${hook.name} installed, and current, at ${path}`);
-        continue;
       }
-      // One decider, asked once per hook. A success exits by falling off
-      // the end rather than through an explicit zero exit, so the test's
-      // "every exit goes through REFUSE_EXIT" scan has no exception to
-      // carve out — an exception is where a literal exit code hides.
-      //
-      // The staleness verdict is RAISED below rather than printed here
-      // (#613), so there is exactly one position in this file that turns a
-      // refusal into a line of output. A second print site would be a
-      // second decider about the label, and a mutation of either would
-      // leave the other holding the case up.
-      const refusal = currencyRefusal(
-        readIfPresent(path),
-        hook.content,
-        hook.marker,
-        path,
-        hook.patterns,
-        hook.name,
-        hook.properties,
-      );
-      if (refusal) refusals.push(refusal);
-      else console.log(`${hook.name} is current at ${path}`);
+    } else {
+    const { current, refusals } = await readHookCurrency(project, generatorRoot);
+    for (const line of current) console.log(line);
+
+    // One raise, after the whole population has been read. A throw inside the
+    // loop would make the report depend on declaration order, and an operator
+    // who fixed the first hook would discover the second only on the next run.
+    //
+    // Two raises, each naming its class as a LITERAL, over one call to the
+    // decider. Raising once with the class held in a variable was written
+    // first and is exactly what SC-2145 exists to refuse: a label that is
+    // not spelled at the raise cannot be read off the source, so "every
+    // class in REFUSAL_PREFIX is reachable" stops being a checkable claim
+    // about this file. The comparison itself is still in one place; these
+    // two arms only rename its answer.
+    //
+    // SC-2145 caught the first draft of this very comment, which quoted the
+    // rejected call verbatim and so read as a fourteenth raise naming no
+    // class. The probe cannot tell code from prose about code (#235), and
+    // the fix is to not write the call — not to teach the probe about
+    // comments.
+    const lines = currencyLines(refusals);
+    const cls = currencyClass(refusals);
+    if (cls === "STALE") throw new HookRefused("STALE", lines);
+    if (cls === "UNMEASURED") throw new HookRefused("UNMEASURED", lines);
     }
-    // One raise, after the whole population has been read. A throw inside
-    // the loop would make the report depend on declaration order, and an
-    // operator who fixed the first hook would discover the second only on
-    // the next run.
-    //
-    // Each line keeps its own WORDS — "nothing was compared", "nothing here
-    // can tell you" — but not its own prefix. The catch below is the one
-    // position that renders a class (#613), and a second prefix here printed
-    // it twice.
-    //
-    // The STRONGEST class present wins. A tree with one stale hook and one
-    // absent one HAS a stale hook, and reporting the pair as UNMEASURED
-    // would hide it; reporting a tree whose hooks are merely absent as STALE
-    // is the error #879 is about, in the other direction.
-    //
-    // Two raises each naming its class as a LITERAL, rather than one raise
-    // over a computed `cls`. The computed form was written first and is
-    // exactly what SC-2145 exists to refuse: a label that is a variable
-    // cannot be read off the source, so "every class in REFUSAL_PREFIX is
-    // reachable" stops being a checkable claim about this file.
-    const lines = refusals.map(v => v.reason).join("\n  ");
-    if (refusals.some(v => v.cls === "STALE")) throw new HookRefused("STALE", lines);
-    if (refusals.length > 0) throw new HookRefused("UNMEASURED", lines);
   } catch (e) {
     // The class decides the label. `e.refusalClass` is set at the raise, by
     // the code that knows what it refused; nothing here re-derives it from

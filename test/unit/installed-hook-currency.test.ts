@@ -538,14 +538,39 @@ describe('#599: an installed hook that is not the generator output is refused', 
       line,
       'the staleness raise is no longer the currencyRefusal verdict, so the label has ' +
         'detached from the only decider entitled to it',
-      // The probe was the literal `if (refusal)` and went red in #891 when
-      // the CLI began collecting a verdict per hook before raising once --
-      // `if (refusals.length > 0)`. The property did not move; the probe was
-      // narrower than the property it stood for, which is this repo's second
-      // shape. It is the guard expression that has to name what
-      // currencyRefusal returned, and the singleton assertion above is what
-      // makes "one position" mean one position.
-    ).toMatch(/^\s*if \(refusals?\b/);
+      // THIRD change to this probe, and the first that makes it stronger
+      // rather than merely wider. Stated rather than applied quietly,
+      // because a case edited three times in one session is a case somebody
+      // is bending to fit the code.
+      //
+      //   1. `if (refusal)` -> `if (refusals.length > 0)` (#891): the CLI
+      //      began collecting a verdict per hook before raising once.
+      //   2. the one-line call assertion split into two clauses (#891).
+      //   3. this one. #879 needs the strongest-class comparison in a
+      //      BINDING, because the SessionStart hook has to reach the same
+      //      answer and an inline copy in the hook would be a second
+      //      decider that agrees until it does not.
+      //
+      // 1 and 2 were widenings -- a probe narrower than its property. This
+      // one narrows: the guard must name one binding, that binding must be
+      // assigned from `currencyClass(refusals)`, and `currencyClass` must
+      // hold the ONLY `cls === "STALE"` comparison in the file. The old
+      // probe accepted any expression beginning `if (refusals`, including
+      // an inline `.some(...)` duplicated wherever somebody liked.
+    ).toMatch(/^\s*if \(cls === "STALE"\)/);
+    expect(
+      source.slice(0, at),
+      'the raised class is not the one currencyClass decided from the collected verdicts',
+    ).toContain('const cls = currencyClass(refusals);');
+    expect(
+      (source.match(/\.cls === "STALE"/g) || []).length,
+      'the strongest-class comparison is made from more than one position, so the hook ' +
+        'and the CLI can disagree about what a mixed tree is',
+    ).toBe(1);
+    expect(
+      (source.match(/currencyClass\(/g) || []).length,
+      'currencyClass is not exactly one declaration and one consultation in this file',
+    ).toBe(2);
     // Two clauses, because the call is no longer on one line (#891) and a
     // single literal spanning it would be asserting the formatting. The
     // property is that the thing raised is what currencyRefusal returned
