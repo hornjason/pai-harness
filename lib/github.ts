@@ -37,6 +37,21 @@ export interface GitHubClient {
       update: (params: { owner: string; repo: string; pull_number: number; [key: string]: any }) => Promise<{ data: any }>;
       list: (params: { owner: string; repo: string; [key: string]: any }) => Promise<{ data: any[] }>;
     };
+    repos: {
+      /** Repository metadata. `owner.type` and `default_branch` are what PROTECT-1 reads (#909). */
+      get: (params: { owner: string; repo: string }) => Promise<{ data: any }>;
+      /**
+       * One branch. Carries `protected`, and needs only read access (#909).
+       *
+       * Asked BEFORE `getBranchProtection`, which needs admin: a 404 from the
+       * protection endpoint means "unprotected" or "you are not an admin"
+       * with no way to tell which, and conflating those would let a token
+       * without admin report every repo clean.
+       */
+      getBranch: (params: { owner: string; repo: string; branch: string }) => Promise<{ data: any }>;
+      /** Branch protection. Requires admin on the repo; 403 for everyone else. */
+      getBranchProtection: (params: { owner: string; repo: string; branch: string }) => Promise<{ data: any }>;
+    };
     checks: {
       /**
        * Check runs for one ref (#46).
