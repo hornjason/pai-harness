@@ -79,6 +79,28 @@ export interface StableField {
    * asserting stability on prose.
    */
   branchedOnBy: string;
+  /**
+   * The properties of the DISCOVERY object in `workflows/ship.js` that this
+   * state path is written from — `sizing.ceremonyTier` in the state file is
+   * `discovery.ceremonyTier` in the workflow, because ship.js flattens one
+   * into the other when it writes the state.
+   *
+   * This is not documentation. `test/discovery-branch-coverage.test.ts` parses
+   * the workflow, collects every discovery property a CONDITION reads, and
+   * reddens on any name this mapping does not cover — which is how a branch
+   * added tomorrow on a field nobody declared stable gets caught, instead of
+   * the measurement quietly going on reporting "0 varied" over the wrong set.
+   * An entry with no `readAs` covers no branch.
+   */
+  readAs?: readonly string[];
+}
+
+/** An exclusion, with the reason it is one. */
+export interface NotAssertedField {
+  path: string;
+  reason: string;
+  /** As `StableField.readAs` — the workflow properties this excuse covers. */
+  readAs?: readonly string[];
 }
 
 /**
@@ -97,47 +119,55 @@ export const STABLE_DISCOVERY_FIELDS: StableField[] = [
     equality: "exact",
     branchedOnBy:
       "the scope gate, Quinn local, container verify and prove each run or do not run on it (#215, #274). Variance here is two different pipelines.",
+    readAs: ["ceremonyTier"],
   },
   {
     path: "sizing.predicted",
     equality: "exact",
     branchedOnBy:
       "feeds the ceremony tier floor (#215). The value is already a bucket label (XS/S/M/L), so exact equality on the label IS bucket equality — there is no finer reading to collapse.",
+    readAs: ["sizing"],
   },
   {
     path: "acs[]",
     equality: "count",
     branchedOnBy:
       "prove verifies `criteriaResults` count against the SC count (#384). A varying count is a varying definition of done.",
+    readAs: ["acs"],
   },
   {
     path: "acs[].id",
     equality: "set",
     branchedOnBy:
       "every per-AC result is keyed by id (#384). Compared as a set because discovery promises no ordering — the three recorded #258 runs emit AC-1..AC-6 in three different orders.",
+    readAs: ["acs"],
   },
   {
     path: "acs[].evidenceMethod.type",
     equality: "set",
     branchedOnBy:
       "selects how the evidence is obtained, and the evidence-type ratio check reads it (#235).",
+    readAs: ["acs"],
   },
   {
     path: "acs[].evidenceMethod.authoredCommand??command",
     equality: "set",
     branchedOnBy:
       "the scope gate dry-runs every one of them (#235). A command that varies is a gate that varies. `authoredCommand` FIRST and `command` only as the fallback: #614 records that three sites rewrite `command` after the model emits it (discovery's path normaliser, its evidence-type-ratio upgrade, and the git-ref qualification at the execution boundary), and those rewrites are deterministic harness behaviour. Reading `command` would attribute the normaliser's output to the model.",
+    readAs: ["acs"],
   },
   {
     path: "governingSpec.path",
     equality: "exact",
     branchedOnBy:
       "selects which rules govern the run. Two runs reading different specs are not two runs of the same thing.",
+    readAs: ["governingSpec"],
   },
   {
     path: "sourceSpecs[].path",
     equality: "set",
     branchedOnBy: "same as `governingSpec.path` — the set of rules in force.",
+    readAs: ["sourceSpecs"],
   },
 ];
 
@@ -148,7 +178,7 @@ export const STABLE_DISCOVERY_FIELDS: StableField[] = [
  * oversight, and the next reader otherwise has to re-derive why the obvious
  * field is missing.
  */
-export const NOT_ASSERTED: { path: string; reason: string }[] = [
+export const NOT_ASSERTED: NotAssertedField[] = [
   {
     path: "acs[].statement",
     reason:
@@ -167,6 +197,12 @@ export const NOT_ASSERTED: { path: string; reason: string }[] = [
     path: "acs[].threshold.op",
     reason:
       "a real candidate, deliberately deferred. The evidence pre-validation gate does compare evidence against the operator, so it plausibly meets the branch criterion — but it is not added on plausibility. Adding it needs the branch point read and cited the way every entry above is.",
+  },
+  {
+    path: "priorWork",
+    readAs: ["priorWork"],
+    reason:
+      "BRANCHED ON — `workflows/ship.js:3797` short-circuits the whole run on it, and its `acStatus` then selects which ACs survive into BUILD — and excluded anyway, which is why the reason has to be good. It is not a reading of the ISSUE, it is a reading of the REPOSITORY: whether a branch or PR for this issue already exists. Two runs of the same issue are therefore SUPPOSED to disagree here, because the first run creates the branch the second one finds. Asserting stability would red on the harness working correctly, which is the exact failure mode `.claude/rules/checks-must-be-able-to-fail.md` calls a check that cannot fail for the reason it claims to — inverted.",
   },
   {
     path: "acs[].verdict, acs[].evidence, gates.*, agents.*",
