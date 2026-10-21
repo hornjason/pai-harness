@@ -72,6 +72,7 @@ import {
   resolveShipPolicy,
   shipWorkflowRule,
 } from "../lib/ship-mode";
+import { issueClosingReference } from "../lib/prior-branch";
 import { generateScopedRules } from "../lib/generators/agents-md";
 import { mockProjectScan } from "../lib/generators/types";
 import { bodySha, declaredSha, ruleBody } from "../lib/rule-provenance";
@@ -189,6 +190,87 @@ describe('#911 AC-2: "harness" forbids direct shipping and "direct" does not', (
   test("the direct rule says the harness is still there, so nobody reads it as a removal", () => {
     expect(direct).toContain('"harness"');
     expect(direct).toContain("workflows/ship.js");
+  });
+});
+
+/**
+ * #925: the lane told agents to open a PR and said nothing about who CLOSES
+ * the issue, so the lane closed it by hand — and GitHub attributes a hand-typed
+ * close to nobody. `issue-audit.yml` went red on 2026-10-17 and stayed red five
+ * days reporting the lane's own output: 63 of 100 closed issues with no ship
+ * record, #900 closed 26 seconds after its own PR merged.
+ *
+ * The instruction and the audit are two positions describing ONE grammar with
+ * nothing comparing them, which is #621's shape. So none of this asserts that
+ * the rule contains a phrase. It runs the audit's own reader —
+ * `issueClosingReference` from `lib/prior-branch.ts`, the #887 binding that
+ * matches the same text GitHub does — over the rule's own step. Reword the step
+ * into something GitHub would not honour and the reader says so.
+ *
+ * **The cheapest wrong fix, named: drop the `<N>` placeholder and write a
+ * concrete issue number so the example "looks right".** Every future PR would
+ * then be instructed to close one particular issue. The cases survive it
+ * NON-vacuously — the step is substituted with several unrelated numbers and
+ * all are required, so a hardcoded number is red for every number but its own.
+ */
+describe("#925: the direct-ship lane instructs a close the AUDIT'S OWN reader recognises", () => {
+  const direct = ruleFor(DIRECT);
+
+  /**
+   * Search the slice, not the document. The whole rule is thousands of
+   * characters and mentions issues in several places; a closing keyword
+   * anywhere in it would satisfy a document-wide search while the PR step said
+   * nothing. The cut is asserted non-empty AND bounded before anything is read
+   * off it, because a slice that failed to find its section is an empty string
+   * and an empty string contains nothing — indistinguishable from a clean read.
+   */
+  const MARKER = "6. **Let the PR close the issue";
+  function closeStep(rule: string): string {
+    const at = rule.indexOf(MARKER);
+    if (at === -1) return "";
+    const end = rule.indexOf("\n## ", at);
+    return rule.slice(at, end === -1 ? rule.length : end);
+  }
+
+  const step = closeStep(direct);
+
+  test("the cut found its section and stops before the next heading", () => {
+    expect(step.length).toBeGreaterThan(80);
+    expect(step).not.toContain("\n## ");
+    expect(step.startsWith(MARKER)).toBe(true);
+  });
+
+  test("filled in, the step is a closing reference by the reader the audit uses", () => {
+    // Several unrelated numbers, not one: a step carrying a hardcoded issue
+    // number would pass for that number and fail for every other, which is
+    // exactly the cheap repair named above.
+    for (const n of [925, 7, 1769, 100000]) {
+      expect(issueClosingReference(n)(step.replace("<N>", String(n)))).toBe(true);
+    }
+  });
+
+  test("the reader REJECTS the pre-#925 step, so these cases are witnesses", () => {
+    // The genuine prior wording, verbatim. Without this the cases above could
+    // not tell a rule that fixed the gap from a reader that accepts anything.
+    const before =
+      "5. **Open a PR and enable auto-merge.** Review happens there, where it is\n" +
+      "   durable and where CI already runs.";
+    for (const n of [925, 7, 1769, 100000]) {
+      expect(issueClosingReference(n)(before.replace("<N>", String(n)))).toBe(false);
+    }
+  });
+
+  test("the step names the hand-close that actually fires first, so it can be avoided", () => {
+    // Prose, and asserted as prose: a reader cannot execute this half. What it
+    // buys is that the lane's instruction names the specific command whose
+    // output the audit reports, rather than a general exhortation. The
+    // behavioural half is the three cases above.
+    expect(step).toContain("gh issue close");
+    expect(step).toContain("attributed to nobody");
+  });
+
+  test("the harness-mode rule is untouched by this — it has no such lane", () => {
+    expect(closeStep(ruleFor(null))).toBe("");
   });
 });
 
