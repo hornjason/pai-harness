@@ -257,6 +257,68 @@ function overrideNotice(key: string, indent: string): string {
 }
 
 /**
+ * Top-level workflow keys this consumer has taken back from the generator
+ * (#839).
+ *
+ * The escape hatch that makes the key-wise merge safe to turn on. Structural
+ * keys are the harness's by default; a consumer who needs a different CI —
+ * self-hosted runners declared in `on:`, a permission model the generator
+ * cannot know about — names the key here and the merge leaves it alone and
+ * says so in the file.
+ *
+ * `jobs` is refused rather than honoured. Job ownership already has a
+ * mechanism (`HARNESS_OWNED_JOBS` and the job merge), and a second one that
+ * silently freezes `test` and `gates` would leave a consumer with a required
+ * check nothing regenerates. Read through the same `harness?.ci` binding as
+ * `shardCount` and `globalToolInstallStep`; a malformed value yields no
+ * overrides, which is the direction that keeps the harness in charge rather
+ * than the one that quietly hands everything over.
+ *
+ * Declared here rather than in `steps.ts`, which re-exports it unchanged, so
+ * that `lib/conformity.ts` can ask the same question (#915) without importing
+ * the generator.
+ */
+export function workflowOverrides(ci: unknown): string[] {
+  const raw = (ci as { workflowOverrides?: unknown } | null | undefined)?.workflowOverrides;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (k): k is string => typeof k === "string" && k !== "jobs" && OVERRIDE_KEY.test(k),
+  );
+}
+
+const OVERRIDE_KEY = /^[A-Za-z_][A-Za-z0-9_.\-]*$/;
+
+/** The tail `overrideNotice` writes, read back. */
+const OVERRIDE_NOTICE_TAIL = /— the generated `([A-Za-z_][A-Za-z0-9_.\-]*):` is not merged into it\.$/;
+
+/**
+ * Top-level keys a workflow's own override notices name (#915).
+ *
+ * `ci.workflowOverrides` says what the NEXT scaffold will decline; this says
+ * what the LAST one did, and the two disagree for exactly as long as a
+ * consumer has edited the config without re-scaffolding. A drift reading
+ * needs both, because a file whose bytes were authored under a decline is
+ * the consumer's whatever the config says today.
+ *
+ * Reading it back out of the file is the #722 position restated: ownership
+ * travels with the bytes, not with a list in another file. The composer above
+ * is not exported and this is the only parser, so the round trip is the one
+ * thing holding them together — `test/workflow-drift-validation.test.ts`
+ * drives a real `mergeManagedWorkflow` and reads the result with this, rather
+ * than asserting either side against a literal.
+ */
+export function overrideNoticeKeys(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(WORKFLOW_OVERRIDE_COMMENT)) continue;
+    const m = OVERRIDE_NOTICE_TAIL.exec(trimmed);
+    if (m && !out.includes(m[1])) out.push(m[1]);
+  }
+  return out;
+}
+
+/**
  * Drop every previous run's override notice, wherever in the file it sits.
  *
  * Over the whole document rather than per section, and before anything is

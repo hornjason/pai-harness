@@ -25,6 +25,7 @@ import {
   MANAGED_BANNER_PREFIX,
   movedTopLevelKeys,
   WORKFLOW_OVERRIDE_COMMENT,
+  workflowOverrides,
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
@@ -742,7 +743,7 @@ export function generateConformityTest(root?: string): string {
   const from = root && isHarnessItself(root) ? "../lib/conformity" : "rungate/lib/conformity";
   return `import { resolve } from "path";
 import { afterAll } from "bun:test";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, runAiReviewValidation, runBranchProtectionValidation, writeFindingsReport } from "${from}";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, runAiReviewValidation, runBranchProtectionValidation, runWorkflowDriftValidation, writeFindingsReport } from "${from}";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -760,6 +761,7 @@ runPromptConfigAccessValidation(ROOT);
 runSuccessDocValidation(ROOT);
 runAiReviewValidation(ROOT);
 runBranchProtectionValidation(ROOT);
+runWorkflowDriftValidation(ROOT);
 
 afterAll(() => writeFindingsReport(ROOT));
 `;
@@ -2596,29 +2598,21 @@ export function shardCount(ci: unknown): number {
 
 /**
  * Top-level workflow keys this consumer has taken back from the generator
- * (#839).
+ * (#839). Declared in `lib/scaffold/managed-workflow.ts`, beside the merge
+ * that consumes it and the notice it makes the merge write.
  *
- * The escape hatch that makes the key-wise merge safe to turn on. Structural
- * keys are the harness's by default; a consumer who needs a different CI —
- * self-hosted runners declared in `on:`, a permission model the generator
- * cannot know about — names the key here and the merge leaves it alone and
- * says so in the file.
+ * Re-exported from here, unmoved as far as every caller is concerned, because
+ * `lib/conformity.ts` needs the same reading (#915) and importing this module
+ * to get it would pull the whole scaffold generator graph — the scanner, the
+ * spec auditor, every generator — into the conformity suite of every consumer
+ * project. `managed-workflow.ts` imports `crypto` and nothing else.
  *
- * `jobs` is refused rather than honoured. Job ownership already has a
- * mechanism (`HARNESS_OWNED_JOBS` and the job merge), and a second one that
- * silently freezes `test` and `gates` would leave a consumer with a required
- * check nothing regenerates. Read through the same `harness?.ci` binding as
- * `shardCount` and `globalToolInstallStep`; a malformed value yields no
- * overrides, which is the direction that keeps the harness in charge rather
- * than the one that quietly hands everything over.
+ * One binding, so there is one thing to mutate. A second reader in
+ * `conformity.ts` would agree with this one on every input the suite has, and
+ * two deciders that agree are behaviourally one
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
  */
-export function workflowOverrides(ci: unknown): string[] {
-  const raw = (ci as { workflowOverrides?: unknown } | null | undefined)?.workflowOverrides;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (k): k is string => typeof k === "string" && k !== "jobs" && /^[A-Za-z_][A-Za-z0-9_.\-]*$/.test(k),
-  );
-}
+export { workflowOverrides } from "./managed-workflow";
 
 export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToolDecision {
   const declared = (ci as { globalTools?: unknown } | null | undefined)?.globalTools;
