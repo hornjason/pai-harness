@@ -433,3 +433,182 @@ knew.
 None of the four mutations is left in the tree; all were applied to
 `workflows/ship.js`, run, reverted, and the file confirmed byte-identical
 afterwards by checksum.
+
+## #906 — the content-comparison arms are each load-bearing, and the registry is total
+
+#892 shipped `overlapReadings()` in `scripts/preserve-worktree-work.ts` and
+twenty-one cases over it. #991 measured a five-row battery against those cases
+by hand and found one case — titled *"a SIZE comparison would have called these
+identical — the cheap fix, measured"* — that was green under every row
+including a real size-comparing mutant, because both its assertions were about
+two local constants and neither called the subject. That is the fifth shape in
+`.claude/rules/checks-must-be-able-to-fail.md`: a case that certifies the
+regression it was written to block.
+
+Both of those were **measurements** — a number in a PR body, true of one tree
+on one evening. AC-6's wording is *"each mutant built from the real source and
+aborting loudly if its anchor moves"*, which describes a standing harness, so
+this phase builds one: `test/preserve-overlap-battery.test.ts` constructs each
+mutant by text substitution over the real source, refuses to run a row whose
+anchor is not at exactly one site, loads the result as a module, and pins both
+the original's and the mutant's answer to one named distinguishing input.
+
+Three assertions per row rather than one, each closing a way the rule above is
+satisfied on paper:
+
+- **the anchor is in the real source exactly once** — a builder that silently
+  finds nothing produces a row of zeros indistinguishable from a row of
+  findings, and a builder that finds two sites changes something the row does
+  not name.
+- **the ORIGINAL's answer, pinned by value** — without it, *"they differ"* is
+  satisfied by two wrong answers.
+- **the MUTANT's answer, pinned by value** — `not.toBe` alone stays green when
+  the mutant throws on the way to an empty answer, and a crashing mutant is
+  not a mutant.
+
+### The cheapest wrong fix, named once and answered
+
+**Compare the file SIZE instead of the content digest** — `git cat-file -s`
+in place of `git rev-parse <sha>:<path>`. It is the 5pm repair for *"tell me
+whether these two copies are the same"*: one argument different, no new
+concept, and right about almost every real input. It fails in the direction
+that discards work, reporting IDENTICAL over two files that differ at the same
+length.
+
+**The shipped cases do not survive it, and the survival of the ones that do is
+accounted for rather than left as a count.** Applied to the real source and
+measured below as D2: **10 red of 48**, four of them in #892's own cases
+(*coverage is reported even when the verdict is reached*, *the two blobs are
+not equal*, *a SIZE comparison would have called these identical*, *the verdict
+and its coverage are both on the line*) and six in the new harness.
+
+The thirty-eight green are not all protection, and saying so is the point of
+recording this:
+
+- **Real survivals.** AC-1's *two worktrees agreeing about a path*, AC-3, AC-4
+  and the whole of AC-6 take inputs a size comparison answers correctly —
+  identical files are the same size, and a path with fewer than two readable
+  blobs has no comparison to get wrong. They are green because the mutant is
+  right about their input, which is a fact about the input and not a gap.
+- **Vacuous survivals, named.** Before #991, *a SIZE comparison would have
+  called these identical — the cheap fix, measured* was two assertions over
+  two string constants, so it was green under a mutation of the subject it is
+  named for. It now takes both readings over the same two commits and asserts
+  they disagree, and it is one of D2's ten. Left unstated, a case with that
+  title reads as coverage; this is the entry that stops it.
+
+**Provenance, stated rather than implied.** The pre-fix record required by
+#892's AC-7 is the docblock of `test/preserve-overlap-reading.test.ts`, written
+before #950's fix and naming both cheap fixes (the size comparison, and `new
+Set(blobs).size <= 1`). This section is a Phase 2 reading of that record, not
+a re-authoring of it: the statement above is dated here and cites the earlier
+position, because a statement whose value is that it preceded the fix cannot be
+created afterwards in a document that implies it did not.
+
+### The refusal-kind registry is TOTAL over a closed union
+
+`test/claim-refusal-kinds.test.ts` holds eight kinds — not six, as two earlier
+readings of this work recorded. The table that drives them was an array with
+`kind: string`, looked up by `KINDS.find(r => r.kind === "co-owned conflict")!`,
+and the remedy table beside it was `Record<string, string[]>` holding two of
+the eight. A `Record<string, …>` has no opinion about a key it lacks, so the
+two kinds added after it (#400, #629) simply had no remedy asserted and nothing
+said so — `UNCLASSIFIED` arriving at the end of a run instead of at the top of
+a build.
+
+Both tables are now total `Record`s over a `RefusalKind` union, and the
+hand-picked pair of remedy cases is replaced by a loop over every kind. Each
+kind declares either the phrases that make its refusal actionable or an
+explicit reason it carries none; a blank opt-out is refused, because an escape
+hatch with no reason is one somebody takes by reflex.
+
+**The two readings are deliberately different instruments, and each has an
+input only it can reach** — not two deciders for one question:
+
+- a kind added to the union with no row in either table is **a typecheck
+  error** and the suite stays green (R2 below: 36 pass, 0 fail, 2 errors).
+- a refusal template added to `workflows/ship.js` with no kind at all is
+  invisible to the type system and is caught by *the table covers every
+  refusal the block can emit*, which counts templates in the source (R1).
+
+- [x] SC-2460: test/preserve-overlap-battery.test.ts contains [the anchor is in the real source exactly once]
+- [x] SC-2461: test/preserve-overlap-battery.test.ts contains [the MUTANT answers it differently, and the difference is the named one]
+- [x] SC-2462: test/preserve-overlap-battery.test.ts contains [a mutant is a different module, not the subject under another name]
+- [x] SC-2463: test/claim-refusal-kinds.test.ts contains [every kind that declares a remedy carries it in the real message]
+- [x] SC-2464: test/claim-refusal-kinds.test.ts contains [a kind that declares no remedy is not quietly carrying another kind's]
+
+### What was broken to prove it (SC-2460..2464)
+
+Every count was predicted before the battery ran — written to
+`/tmp/906-battery/predictions.md` first — and **the baseline row was read
+before any mutation row**, because an instrument that has stopped reporting
+takes the baseline down with it and that is the row nobody mutates anything to
+produce. Measured on `a7a42604` plus this branch's changes.
+
+**Baseline: `test/preserve-overlap-reading.test.ts` + `test/preserve-overlap-battery.test.ts` — 48 pass, 0 fail.**
+
+| Row | Predicted | Red | The input on which mutant and original differ |
+|---|---|---|---|
+| **D1** the naive `new Set(blobs).size <= 1` applied to the real source | 11 | **11 of 48** | `only-alpha.ts` over `[alpha, beta]` — one readable blob: original `UNMEASURED`, mutant `IDENTICAL` |
+| **D2** THE CHEAPEST WRONG FIX — `git cat-file -s` for `git rev-parse <sha>:<path>` | 10 | **10 of 48** | `edited.ts` over `[alpha, beta]` — 24 bytes in both commits, one character apart: original `DIFFERS`, mutant `IDENTICAL` |
+| **D3** coverage stops travelling with the verdict — `read: readings.length` | 14 | **14 of 48** | `edited.ts` over `[alpha, beta, gamma]` — gamma does not have it: original `read 2/3`, mutant `read 3/3` |
+
+All three matched prediction, and matched it *by assertion* and not only by
+count — which is the check a total that happens to agree does not pass:
+
+- **D1's 11** are #892's five UNMEASURED cases (AC-3 *a path only one worktree
+  has*, AC-4 *a path no worktree has*, AC-4 *no usable entries at all*, AC-5
+  *an unreadable position prints its reason*, AC-6 *a failed preserve entry
+  contributes no reading*) and six in the harness: all three of M2's
+  assertions, M3's anchor and mutant assertions — M2's anchor **contains**
+  M3's, so applying M2 to the source removes M3's site and the builder aborts
+  loudly rather than measuring a no-op — and M6's verdict control.
+- **D2's 10** are the four named under *the cheapest wrong fix* above, plus all
+  three of M4's assertions, M3's original-answer assertion, and both of M5's.
+- **D3's 14** are #892's five coverage cases plus nine in the harness,
+  including the two fixture preconditions (*M2's input really has exactly one
+  readable blob*, *M5's input really is readable in two of three positions*)
+  and the builder control *a mutant is a different module* — whose anchor is
+  the very line D3 mutates, so it aborts.
+
+**Baseline: `test/claim-refusal-kinds.test.ts` — 36 pass, 0 fail; `bun run typecheck` — 0 errors.**
+
+| Row | Predicted | Measured | The input on which mutant and original differ |
+|---|---|---|---|
+| **R1** a kind deleted from the union and from both tables | suite 1, typecheck 0 | **1 of 35, typecheck 0** | the source itself: eight `${wt} reported ` templates against seven rows |
+| **R2** a ninth kind added to the UNION only | suite 0, typecheck 2 | **0 of 36, typecheck 2 errors** | the declaration: `Record<RefusalKind, …>` is missing a property, and bun strips types so nothing executes differently |
+| **R3** the remedy table reverted to `Record<string, Remedy>` with one entry deleted | suite 3, typecheck 0 | **3 of 35, typecheck 0** | `REMEDY["multiple claimants"]` — a `Remedy` under the union, `undefined` under `string` |
+
+**R2 is the row that matters and its suite column is zero on purpose.** It is
+the pre-#906 failure reproduced: a kind exists, nothing classifies it, and the
+suite is green. The instrument that catches it is the typechecker, so a green
+suite is not evidence here — which is why the row is recorded with two columns
+rather than one.
+
+**R3 says the runtime loop is not redundant with the type, and does not say
+the type is redundant with the loop.** The loop catches a missing entry only
+when something reads it at runtime; R2 is an entry missing with the suite
+green, which is the input only the type reaches. That is
+`.claude/rules/checks-must-be-able-to-fail.md`'s second option for two
+deciders — keep both, and give each an input only it can reach — rather than
+the collapsed pair the same section warns about.
+
+No mutation is left in the tree. `scripts/preserve-worktree-work.ts` and
+`test/claim-refusal-kinds.test.ts` were each copied with `cp` before the first
+row, restored from that copy after every row, and confirmed **byte-identical by
+`shasum -a 256 -c`** rather than by `git checkout --`.
+
+### What this does NOT do, stated rather than left as an omission
+
+- **AC-8's two named rows cannot be added.** `content-differs` and
+  `unreadable-comparison` appear nowhere in `lib`, `scripts`, `workflows` or
+  `test`. #950 shipped option C — the reading composes the operator-facing
+  message and changes no decision — so there are no new refusal templates for
+  those rows to describe. Inventing registry entries for templates nothing
+  emits is #979's defect class in the registry whose job is to prevent it. The
+  totality above is what AC-8's property reduces to against the tree that
+  exists.
+- **The four `ship.js` source-text cases in `test/preserve-overlap-reading.test.ts`
+  still have no demonstrated failing input** beyond *the schema DECLARES
+  overlapLines*. They assert over a file this harness cannot mutate as a
+  module, and they are reported as uncovered rather than counted as cases.

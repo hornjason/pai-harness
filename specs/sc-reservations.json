@@ -34,12 +34,6 @@
       "note": "#1009 - auto-loaded instruction surface budget. Delete when the PR merges."
     },
     {
-      "owner": "fix/906-content-comparison-mutants",
-      "from": 2460,
-      "to": 2479,
-      "note": "#906 - content-comparison mutation harness, refusal-kind registry, cheapest-wrong-fix record. Delete when the PR merges."
-    },
-    {
       "owner": "fix/312-recorder-contract",
       "from": 2480,
       "to": 2499,
