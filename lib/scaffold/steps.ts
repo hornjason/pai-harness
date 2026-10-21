@@ -21,6 +21,8 @@ import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
 import {
   mergeManagedWorkflow,
   duplicateTopLevelKeys,
+  managedPreamble,
+  MANAGED_BANNER_PREFIX,
   movedTopLevelKeys,
   WORKFLOW_OVERRIDE_COMMENT,
   type MovedKey,
@@ -2316,11 +2318,39 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
     if (HARNESS_BOOKKEEPING_PREFIXES.some(p => l.startsWith(p))) harnessOwned.add(l);
   }
 
+  // The harness's own preamble is the harness's to reword — the WHOLE of it
+  // from the banner down, not just the banner line (#834). A bookkeeping
+  // PREFIX catches the sentence it opens and nothing else, so the paragraphs
+  // underneath read as consumer content: a consumer that added `ci.vertex`
+  // had its re-scaffold refused over three lines of the harness's own "no
+  // credential is configured" header, which is precisely the header the new
+  // one replaces. The merge already declares that preamble its own, so this
+  // reads the boundary from `managedPreamble` rather than restating it —
+  // the two disagreeing is what made the refusal possible.
+  //
+  // This SUBSUMES the banner entry in `HARNESS_BOOKKEEPING_PREFIXES` for
+  // every file that reaches here, and saying so is cheaper than implying a
+  // guard that is not there (`.claude/rules/checks-must-be-able-to-fail.md`,
+  // fourth shape): giving that constant a second spelling in this module
+  // turns 0 of 107 red, because the banner always sits in the preamble of a
+  // generated workflow and `resolveManagedWrite` refuses anything that does
+  // not parse as one. It is left in place rather than deleted — it is #839's
+  // line, the override notice beside it is NOT in the preamble and is still
+  // load-bearing, and a consumer who moved the banner below a top-level key
+  // is an edge this change should not quietly start refusing. What it is not
+  // any more is the thing keeping the header out of the loss set.
+  const harnessPreamble = new Set(nonBlankLines(managedPreamble(existing).join("\n")));
+
   const kept = new Set(nonBlankLines(content));
   const gone = nonBlankLines(existing).filter(l => !kept.has(l));
-  const lostLines = gone.filter(l => !harnessOwned.has(l));
+  const lostLines = gone.filter(l => !harnessOwned.has(l) && !harnessPreamble.has(l));
+  // Rewording its own header is not overwriting somebody's edit, and this
+  // report says "in harness-owned jobs" — which the preamble is not.
   const overwrittenLines = gone.filter(
-    l => harnessOwned.has(l) && !HARNESS_BOOKKEEPING_PREFIXES.some(p => l.startsWith(p)),
+    l =>
+      harnessOwned.has(l) &&
+      !harnessPreamble.has(l) &&
+      !HARNESS_BOOKKEEPING_PREFIXES.some(p => l.startsWith(p)),
   );
   const droppedJobs = existingJobs.filter(j => !resultJobs.includes(j));
 
@@ -2345,15 +2375,6 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
 function nonBlankLines(text: string): string[] {
   return text.split("\n").map(l => l.trim()).filter(l => l !== "");
 }
-
-/**
- * Opening of the banner every generated workflow carries.
- *
- * Deliberately the stable prefix and not the whole sentence: the rest of it
- * names the config path, and that is exactly the part that changed and caused
- * the harness to refuse to update its own file.
- */
-const MANAGED_BANNER_PREFIX = "# Managed by rungate";
 
 /**
  * Lines in a managed file that are the harness talking to the consumer, not
