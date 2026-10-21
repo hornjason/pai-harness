@@ -56,8 +56,10 @@ import {
   AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_VERTEX_AUTH_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
+  MODEL_FAMILY_ALIASES,
   buildReviewPrompt,
   buildReviewRunStep,
+  modelAliasViolations,
   vertexCiConfig,
   type VertexCiDecision,
 } from "../lib/scaffold/ai-review-step";
@@ -335,13 +337,18 @@ describe("AC-6: exactly one pinned model identifier, declared once in the module
     expect(source).toContain("export const AI_REVIEW_MODEL");
   });
 
-  test("AC-7: model pin — no bare opus, sonnet or haiku alias reaches the action", () => {
+  test("AC-7: model pin — no bare family alias reaches the action", () => {
     // An alias floats: the same workflow run on two days reviews with two
     // different models, and nothing in the file records which.
-    const alias = /(?:^|[^a-z0-9-])(opus|sonnet|haiku)(?![a-z0-9-])/i;
-    const offenders = generated()
-      .split("\n")
-      .filter(l => alias.test(l.replace(AI_REVIEW_MODEL, "")));
+    //
+    // #685: this used to carry its own `/(opus|sonnet|haiku)/i`. That was a
+    // SECOND DECIDER for a question `modelAliasViolations` already answers,
+    // and it was narrower than the one it duplicated — `MODEL_FAMILY_ALIASES`
+    // has carried `fable` since it was written, so a planted
+    // `--model fable` in this very document was green here and red there.
+    // Two guards answering one question are behaviourally one, and no
+    // behavioural case can say which of them is dead.
+    const offenders = modelAliasViolations(generated());
     expect(offenders, `a floating model alias reached the workflow:\n${offenders.join("\n")}`)
       .toEqual([]);
   });
@@ -350,13 +357,19 @@ describe("AC-6: exactly one pinned model identifier, declared once in the module
     // #492: an absence assertion over a file that never had the string is
     // vacuous. The detector above is run against a planted alias, so a zero
     // means "looked and found none" rather than "never looked".
-    const alias = /(?:^|[^a-z0-9-])(opus|sonnet|haiku)(?![a-z0-9-])/i;
-    const planted = generated().replace(`--model ${AI_REVIEW_MODEL}`, "--model opus");
-    expect(planted, "the plant did not apply").not.toBe(generated());
-    const offenders = planted
-      .split("\n")
-      .filter(l => alias.test(l.replace(AI_REVIEW_MODEL, "")));
-    expect(offenders.length, "the alias detector cannot see a planted alias").toBe(1);
+    //
+    // Every family, not just `opus` — a one-family plant is green on a guard
+    // that knows one family, which is precisely what was here before.
+    expect(MODEL_FAMILY_ALIASES.length, "an empty list is caught by nothing")
+      .toBeGreaterThanOrEqual(3);
+    for (const alias of MODEL_FAMILY_ALIASES) {
+      const planted = generated().replace(`--model ${AI_REVIEW_MODEL}`, `--model ${alias}`);
+      expect(planted, `the plant did not apply for ${alias}`).not.toBe(generated());
+      expect(
+        modelAliasViolations(planted).join(" "),
+        `the alias detector cannot see a planted '${alias}'`,
+      ).toContain(alias);
+    }
   });
 
   test("AC-6: the pin is an exact version, not a family name", () => {

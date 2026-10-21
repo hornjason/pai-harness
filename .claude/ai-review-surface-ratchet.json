@@ -8,6 +8,12 @@
       "to": "AC-4 (#866), the PAIR: the runtime's own write is exit 0, anything else refuses",
       "issue": 866,
       "why": "The case asserted the outside-the-checkout reading warns rather than refuses, and said why: the noise floor had never been measured. #866 measured it over two runs \u2014 25 paths, all runtime state, none reviewer output \u2014 so the posture moved and the case moved with it. It keeps both directions, which is what made it protection: the runtime's own write is still exit 0."
+    },
+    {
+      "from": "AC-7: model pin \u2014 no bare opus, sonnet or haiku alias reaches the action",
+      "to": "AC-7: model pin \u2014 no bare family alias reaches the action",
+      "issue": 685,
+      "why": "The title ENUMERATED the three families the case's own local `/(opus|sonnet|haiku)/i` knew. #685 deleted that second decider and delegated to `modelAliasViolations`, whose `MODEL_FAMILY_ALIASES` has carried `fable` since it was written \u2014 so the old title named a narrower set than the case now checks, and leaving it would have read as a promise the case no longer makes. The subject, the document under test and the assertion direction are unchanged; the case got WIDER, not weaker, and `AC-7: model pin \u2014 planting an alias turns the detector red` now plants every declared family rather than only `opus`."
     }
   ],
   "titles": [
@@ -110,7 +116,7 @@
     "AC-7: a review step that passes quietly is what this would have shipped",
     "AC-7: every credentialed mode in the ladder annotates, not just the first",
     "AC-7: mode none is silent here, because the auth step already said it",
-    "AC-7: model pin \u2014 no bare opus, sonnet or haiku alias reaches the action",
+    "AC-7: model pin \u2014 no bare family alias reaches the action",
     "AC-7: model pin \u2014 planting an alias turns the detector red",
     "AC-7: the mode reaches the script through env:, never interpolated into run:",
     "AC-7: the refusal reads the variable exactly, like the auth step does",
