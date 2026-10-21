@@ -25,7 +25,7 @@
  * Every repository below is created by `mkdtemp` and removed in the same
  * `finally`. Nothing here touches a repository anyone is working in.
  */
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -36,14 +36,57 @@ import {
   configTrackabilityBlock,
   ensureConfigTrackable,
 } from "../lib/config-trackable";
-import { RUNGATE_CONFIG_IGNORE_PATHS } from "../lib/config-loader";
+import { DIRECTORY_CONFIG_FILES, RUNGATE_CONFIG_IGNORE_PATHS } from "../lib/config-loader";
 import { runScaffoldWriteSteps } from "../lib/scaffold/write-steps";
 import type { ProjectType } from "../lib/generators/types";
 
 const scratch: string[] = [];
-afterAll(() => {
-  for (const d of scratch) rmSync(d, { recursive: true, force: true });
+
+/**
+ * An empty `HOME`, and no global or system git config.
+ *
+ * Every assertion below is about what THIS repository's rules say, and
+ * `core.excludesFile` in a developer's `~/.gitconfig` is an ignore rule like
+ * any other — so a machine with `*.json` in a global excludes file would
+ * measure a different thing from CI while both reported a verdict. Set on
+ * `process.env` rather than per-`spawnSync`, because the module under test
+ * spawns git itself and a hermetic fixture that only covers the test's own
+ * calls is hermetic about the wrong half.
+ */
+const HERMETIC_HOME = mkdtempSync(join(tmpdir(), "rungate-505-home-"));
+const PRIOR_ENV = {
+  HOME: process.env.HOME,
+  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+  GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+  GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+};
+beforeAll(() => {
+  process.env.HOME = HERMETIC_HOME;
+  process.env.XDG_CONFIG_HOME = HERMETIC_HOME;
+  process.env.GIT_CONFIG_GLOBAL = join(HERMETIC_HOME, "absent-gitconfig");
+  process.env.GIT_CONFIG_SYSTEM = join(HERMETIC_HOME, "absent-gitconfig");
 });
+afterAll(() => {
+  for (const [k, v] of Object.entries(PRIOR_ENV)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  for (const d of scratch) rmSync(d, { recursive: true, force: true });
+  rmSync(HERMETIC_HOME, { recursive: true, force: true });
+});
+
+/**
+ * An action list with no refusal and no unmeasured outcome.
+ *
+ * UNMEASURED is a RESULT here and not a pass: `git` missing, a timeout or a
+ * locked index all produce one, and a row that accepted it would go green
+ * on a machine where the thing under test never ran.
+ */
+function expectMeasured(actions: string[], wanted: string) {
+  const joined = actions.join("\n");
+  expect(joined, `the step could not measure: ${joined}`).not.toContain("UNMEASURED:");
+  expect(joined, `the step did not reach "${wanted}": ${joined}`).toContain(wanted);
+}
 
 function run(root: string, ...args: string[]) {
   const r = spawnSync("git", args, { cwd: root, encoding: "utf-8" });
@@ -118,7 +161,7 @@ describe("#505: a config in an ignored directory is deleted by an ordinary branc
     const root = repo({ ".gitignore": ".claude/\n", "README.md": "# p", [MONOLITH]: CONFIG_BODY });
     const actions: string[] = [];
     ensureConfigTrackable(root, actions);
-    expect(actions.join("\n"), `the step refused: ${actions.join(" | ")}`).toContain("UPDATED: .gitignore");
+    expectMeasured(actions, "UPDATED: .gitignore");
 
     // A PLAIN add. No `-f`. This is the thing that was impossible before,
     // and it is why the file ends up on every branch instead of one.
@@ -181,6 +224,121 @@ describe("#505: a config in an ignored directory is deleted by an ordinary branc
       .not.toContain(".claude/worktrees/x/keep.txt");
   });
 
+  test("the negation reaches the config files and NOTHING else in the directory", () => {
+    // The finding a four-line block hid. `!.claude/rungate/` on its own
+    // un-ignores that directory RECURSIVELY: every file in it becomes
+    // trackable, now and whenever one is added, in every repository the
+    // scaffold reaches. Measured against the four-line version, `DECOY.json`
+    // and `nested/DECOY.json` both came back trackable.
+    //
+    // A row that asserted only "the config files are trackable" passes on
+    // the broken block, which is why the decoys are the assertion and not
+    // the configs.
+    const root = repo({
+      ".gitignore": ".claude/\n",
+      [DIR_CONFIG]: CONFIG_BODY,
+      ".claude/rungate/DECOY.json": '{"secret":"planted"}\n',
+      ".claude/rungate/nested/DECOY.json": '{"secret":"planted deeper"}\n',
+    });
+    const actions: string[] = [];
+    ensureConfigTrackable(root, actions);
+    expectMeasured(actions, "UPDATED: .gitignore");
+
+    const ignored = configPathsIgnored(root);
+    expect(ignored.failure, "the verification itself could not run").toBeNull();
+    expect(ignored.ignored, "a config path is still ignored").toEqual([]);
+
+    // `git add -A` is the command that would commit them, so it is the
+    // command that decides this.
+    run(root, "add", "-A");
+    const tracked = run(root, "ls-files").out.split("\n").filter(Boolean);
+    for (const f of DIRECTORY_CONFIG_FILES.filter(f => f === "config.json")) {
+      expect(tracked, `${f} is not committable`).toContain(`.claude/rungate/${f}`);
+    }
+    expect(tracked, "a file nobody named became trackable — the glob is too wide")
+      .not.toContain(".claude/rungate/DECOY.json");
+    expect(tracked, "a NESTED file nobody named became trackable")
+      .not.toContain(".claude/rungate/nested/DECOY.json");
+  });
+
+  test("every file the directory layout is made of survives, not just config.json", () => {
+    // The other direction, and the reason the block names four files rather
+    // than one: losing `roles.json` to a branch switch is #505 for
+    // `roles.json`. The list comes from `DIRECTORY_CONFIG_FILES`, so adding
+    // a fifth layout file without adding it to the block reddens here.
+    const files: Record<string, string> = { ".gitignore": ".claude/\n" };
+    for (const f of DIRECTORY_CONFIG_FILES) files[`.claude/rungate/${f}`] = "{}\n";
+    const root = repo(files);
+    ensureConfigTrackable(root, []);
+    run(root, "add", "-A");
+    const tracked = run(root, "ls-files").out.split("\n").filter(Boolean);
+    for (const f of DIRECTORY_CONFIG_FILES) {
+      expect(tracked, `${f} is not committable, so a branch switch still deletes it`)
+        .toContain(`.claude/rungate/${f}`);
+    }
+  });
+
+  test("a config file at an unexpected depth stays ignored, and that is the boundary", () => {
+    // Stated rather than inferred. `.claude/rungate/*` matches the
+    // intermediate directory, git does not descend, and the anchored
+    // negation below never applies — so a config at a depth the layout does
+    // not have is NOT rescued. Ignored is the safe side for a path nobody
+    // designed, and the emitted block says so in a comment.
+    const root = repo({ ".gitignore": ".claude/\n", ".claude/rungate/nested/config.json": CONFIG_BODY });
+    ensureConfigTrackable(root, []);
+    const r = spawnSync("git", ["check-ignore", "--no-index", "-q", ".claude/rungate/nested/config.json"], { cwd: root });
+    expect(r.status, "a nested config was quietly un-ignored").toBe(0);
+  });
+
+  test("a glob that reaches one path too far is a REFUSAL, measured over the whole ignored set", () => {
+    // The guard that holds for globs nobody has written yet. A tree where
+    // the existing rule ignores something the block's `!.claude/` would
+    // rescue: `.claude/` is excluded and so is a sibling the project means
+    // to keep out. Proven by pointing the guard at a block that is too
+    // wide, rather than by trusting the narrow one.
+    const root = repo({ ".gitignore": ".claude/\n", [MONOLITH]: CONFIG_BODY, ".claude/secrets.env": "K=v\n" });
+    const before = run(root, "ls-files", "-o", "-i", "--exclude-standard").out.split("\n").filter(Boolean);
+    expect(before, "the fixture's sibling is not ignored to begin with").toContain(".claude/secrets.env");
+
+    const actions: string[] = [];
+    ensureConfigTrackable(root, actions);
+    expectMeasured(actions, "UPDATED: .gitignore");
+    const after = run(root, "ls-files", "-o", "-i", "--exclude-standard").out.split("\n").filter(Boolean);
+    expect(after, "a sibling of the config stopped being ignored").toContain(".claude/secrets.env");
+    expect(after, "the config is still ignored").not.toContain(MONOLITH);
+  });
+
+  test("the un-ignore guard refuses a block that is too wide — the witness", () => {
+    // The guard cannot fire against the block this module emits, which is
+    // the point of the block and also the reason the guard needed this:
+    // deleting the guard was 0 red of 17 without it. So the witness hands
+    // in the block the review caught — `!.claude/rungate/` with no
+    // re-exclude after it, which un-ignores that directory RECURSIVELY —
+    // and asserts the step refuses rather than shipping it.
+    const tooWide = [
+      "", "!.claude/", ".claude/*", "!.claude/rungate/", "!.claude/rungate.json", "",
+    ].join("\n");
+    const original = ".claude/\n";
+    const root = repo({
+      ".gitignore": original,
+      [DIR_CONFIG]: CONFIG_BODY,
+      ".claude/rungate/DECOY.json": '{"planted":true}\n',
+    });
+    const actions: string[] = [];
+    ensureConfigTrackable(root, actions, tooWide);
+    expect(actions.join("\n"), "a block that un-ignores a decoy was accepted").toContain("REFUSED:");
+    expect(actions.join("\n"), "the refusal does not name what it would have un-ignored")
+      .toContain(".claude/rungate/DECOY.json");
+    expect(readFileSync(join(root, ".gitignore"), "utf-8"), "the too-wide block was left on disk")
+      .toBe(original);
+
+    // The control for the witness: the same tree, the REAL block, accepted.
+    // Without this the row is satisfied by a step that refuses everything.
+    const ok: string[] = [];
+    ensureConfigTrackable(root, ok);
+    expectMeasured(ok, "UPDATED: .gitignore");
+  });
+
   test("a config already tracked under an ignore rule is still reported at risk", () => {
     // `git check-ignore` SKIPS paths in the index unless `--no-index` is
     // given, so without that flag this repository — the reported consumer's
@@ -213,7 +371,7 @@ describe("#505: a config in an ignored directory is deleted by an ordinary branc
     const root = repo({ ".gitignore": "node_modules\n.claude/worktrees/\n", [DIR_CONFIG]: CONFIG_BODY });
     const first: string[] = [];
     ensureConfigTrackable(root, first);
-    expect(first.join("\n")).toContain("already committable");
+    expectMeasured(first, "already committable");
     expect(readFileSync(join(root, ".gitignore"), "utf-8")).toBe("node_modules\n.claude/worktrees/\n");
 
     // Idempotence, which matters because the scaffold is re-run: a step
@@ -227,16 +385,27 @@ describe("#505: a config in an ignored directory is deleted by an ordinary branc
   });
 
   test("an ignore rule this block cannot reach is a REFUSAL, and the file is restored", () => {
-    // The block re-includes `.claude/`. A rule that matches the config for
-    // some other reason is not reachable that way, and reporting `UPDATED:`
-    // over it would be a step that cannot fail: it edits a file, verifies
-    // nothing, and says it worked.
-    const original = `.claude/\n*.json\n`;
-    const root = repo({ ".gitignore": original, [MONOLITH]: CONFIG_BODY });
+    // A rule the root block cannot override, and the fixture had to change
+    // once already: a root `*.json` IS reachable, because the block's
+    // anchored `!.claude/rungate.json` is the last matching pattern. A
+    // NESTED `.gitignore` is not — patterns in a deeper directory's file
+    // win over a parent's whatever the order, so no line appended at the
+    // root can reach them. `check-ignore -v` names the file and the line,
+    // which is what the consumer needs.
+    //
+    // Reporting `UPDATED:` over this would be a step that cannot fail: it
+    // edits a file, verifies nothing, and says it worked.
+    const original = ".claude/\n";
+    const root = repo({
+      ".gitignore": original,
+      ".claude/.gitignore": "*\n",
+      [MONOLITH]: CONFIG_BODY,
+    });
     const actions: string[] = [];
     ensureConfigTrackable(root, actions);
     expect(actions.join("\n"), "an unreachable rule was reported as fixed").toContain("REFUSED:");
-    expect(actions.join("\n"), "the refusal does not name the rule that beat it").toContain("*.json");
+    expect(actions.join("\n"), "the refusal does not name the rule that beat it")
+      .toContain(".claude/.gitignore");
     expect(readFileSync(join(root, ".gitignore"), "utf-8"), "the .gitignore was left edited")
       .toBe(original);
   });
@@ -267,15 +436,17 @@ describe("#505: a config in an ignored directory is deleted by an ordinary branc
   });
 
   test("a project with no .gitignore at all does not acquire an empty one", () => {
-    // The config can be ignored by `.git/info/exclude` with no `.gitignore`
-    // in the tree. The block cannot reach that rule, so the step refuses —
+    // The config can be ignored with no root `.gitignore` in the tree at
+    // all — here by a nested one. The block cannot reach that, so it
+    // refuses —
     // and a refusal that leaves behind a file the project never had is a
     // step that changed something while reporting that it did not.
-    const root = repo({ [MONOLITH]: CONFIG_BODY });
-    writeFileSync(join(root, ".git", "info", "exclude"), "*.json\n");
+    const root = repo({ ".claude/.gitignore": "*\n", [MONOLITH]: CONFIG_BODY });
+    expect(existsSync(join(root, ".gitignore")), "the fixture already has a root .gitignore")
+      .toBe(false);
     const actions: string[] = [];
     ensureConfigTrackable(root, actions);
-    expect(actions.join("\n"), "an excludes-file rule was not even detected").toContain("REFUSED:");
+    expect(actions.join("\n"), "a nested ignore rule was not even detected").toContain("REFUSED:");
     expect(existsSync(join(root, ".gitignore")), "an empty .gitignore was left behind").toBe(false);
   });
 
@@ -315,7 +486,16 @@ describe("#505: a config in an ignored directory is deleted by an ordinary branc
       "!.claude/",
       ".claude/*",
       `!${dirname(DIR_CONFIG)}/`,
+      `${dirname(DIR_CONFIG)}/*`,
+      ...DIRECTORY_CONFIG_FILES.map(f => `!${dirname(DIR_CONFIG)}/${f}`),
       `!${MONOLITH}`,
     ]);
+    // The re-exclude must follow its own re-include and precede the
+    // negations, at BOTH levels. That ordering is the whole mechanism and
+    // the reason a flat list of `!` lines does not work.
+    expect(lines.indexOf(".claude/*")).toBeGreaterThan(lines.indexOf("!.claude/"));
+    expect(lines.indexOf(`${dirname(DIR_CONFIG)}/*`))
+      .toBeGreaterThan(lines.indexOf(`!${dirname(DIR_CONFIG)}/`));
+    expect(lines.indexOf(`!${DIR_CONFIG}`)).toBeGreaterThan(lines.indexOf(`${dirname(DIR_CONFIG)}/*`));
   });
 });

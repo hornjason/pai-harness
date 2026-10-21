@@ -110,9 +110,22 @@ import { spawnSync } from "child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
+  DIRECTORY_CONFIG_FILES,
+  RUNGATE_CONFIG_DIR,
   RUNGATE_CONFIG_IGNORE_PATHS,
   RUNGATE_CONFIG_PARENT_DIR,
 } from "./config-loader";
+
+/**
+ * A file the directory layout is MADE of, which the block names on purpose.
+ *
+ * Derived from `DIRECTORY_CONFIG_FILES` so it cannot disagree with the block
+ * that emits the negations — a second list here would let the guard refuse
+ * the very write it is checking, or wave through one it should not.
+ */
+function isConfigFragment(rel: string): boolean {
+  return DIRECTORY_CONFIG_FILES.some(f => rel === `${RUNGATE_CONFIG_DIR}/${f}`);
+}
 
 /** What this project's ignore rules say about the config's home. */
 export interface TrackableReading {
@@ -176,6 +189,33 @@ export function configPathsIgnored(root: string): TrackableReading {
   return matchedByIgnoreRules(root, RUNGATE_CONFIG_IGNORE_PATHS);
 }
 
+/**
+ * Every ignored, untracked path that EXISTS in the tree, sorted.
+ *
+ * The other half of the symmetry below. `trackedAndIgnoredPaths` answers
+ * "did the edit newly ignore something"; this answers "did it newly
+ * UN-ignore something", and that is the direction a glob gets wrong. The
+ * first cut of the block emitted `!.claude/rungate/` with nothing after it,
+ * which un-ignores that directory RECURSIVELY — every file in it, including
+ * ones added next month, defaulting to tracked in every consumer the
+ * scaffold reaches. Nothing in the tree could see that, because the two
+ * config files it was asked about came back trackable either way.
+ *
+ * A test asserting only the config files are trackable passes on the broken
+ * block. A measurement over the whole ignored set does not, and keeps
+ * holding for globs nobody has written yet.
+ *
+ * `--exclude-standard` is required for `-i`, and its absence is a git error
+ * rather than a narrower answer, so it is caught by the status check.
+ */
+function ignoredPaths(root: string): TrackableReading {
+  const r = git(root, ["ls-files", "-z", "-o", "-i", "--exclude-standard"]);
+  if (r.status !== 0) {
+    return { ignored: [], failure: `git ls-files -i failed (${r.status}): ${r.stderr.trim()}` };
+  }
+  return { ignored: r.stdout.split("\0").filter(p => p !== "").sort(), failure: null };
+}
+
 /** Tracked paths this project's ignore rules also match, as a sorted list. */
 function trackedAndIgnoredPaths(root: string): TrackableReading {
   const listed = git(root, ["ls-files", "-z"]);
@@ -210,10 +250,19 @@ export function configTrackabilityBlock(): string {
     `# Added by rungate scaffold: the harness config must survive a branch`,
     `# switch (#505). A bare \`!${RUNGATE_CONFIG_IGNORE_PATHS[1]}\` is INERT while`,
     `# \`${parent}/\` is excluded — git does not descend into an excluded`,
-    `# directory — so the directory is re-included and its contents re-excluded.`,
+    `# directory — so each level is re-included and then re-excluded, and only`,
+    `# the config files are named. Everything else in \`${parent}/\` and in`,
+    `# \`${RUNGATE_CONFIG_DIR}/\` stays ignored, now and when it is added later.`,
+    `#`,
+    `# NOT re-included, deliberately: a config file at an unexpected depth`,
+    `# (\`${RUNGATE_CONFIG_DIR}/nested/config.json\`) and any file this list does`,
+    `# not name. Ignored is the safe side of the default for a path nobody has`,
+    `# thought of yet; a new config file is a change to this list.`,
     `!${parent}/`,
     `${parent}/*`,
-    `!${RUNGATE_CONFIG_IGNORE_PATHS[0].slice(0, RUNGATE_CONFIG_IGNORE_PATHS[0].lastIndexOf("/"))}/`,
+    `!${RUNGATE_CONFIG_DIR}/`,
+    `${RUNGATE_CONFIG_DIR}/*`,
+    ...DIRECTORY_CONFIG_FILES.map(f => `!${RUNGATE_CONFIG_DIR}/${f}`),
     `!${RUNGATE_CONFIG_IGNORE_PATHS[1]}`,
     "",
   ].join("\n");
@@ -225,7 +274,26 @@ export function configTrackabilityBlock(): string {
  * Returns the `actions` strings it pushed, so a caller can assert on the
  * outcome without re-deriving it.
  */
-export function ensureConfigTrackable(root: string, actions: string[]): void {
+/**
+ * `block` is a REACHABILITY WITNESS seam and nothing else.
+ *
+ * The un-ignore guard below cannot fire against the block this module
+ * emits — that is the point of the block — so with one argument the guard
+ * is unfalsifiable: deleting it was **0 red of 17**, measured, which makes
+ * it a line in a report rather than a check
+ * (`.claude/rules/checks-must-be-able-to-fail.md`). The guard's value is
+ * prospective, for the next edit to the block, and a guard whose removal
+ * nothing notices does not survive to be there for it.
+ *
+ * So one caller may hand in a block that IS too wide, and the only caller
+ * that does is the test that proves the refusal happens. Production passes
+ * one argument.
+ */
+export function ensureConfigTrackable(
+  root: string,
+  actions: string[],
+  block: string = configTrackabilityBlock(),
+): void {
   const before = configPathsIgnored(root);
   if (before.failure !== null) {
     actions.push(`UNMEASURED: .gitignore (could not ask git about the config path — ${before.failure})`);
@@ -244,8 +312,13 @@ export function ensureConfigTrackable(root: string, actions: string[]): void {
     actions.push(`UNMEASURED: .gitignore (could not list tracked files — ${trackedBefore.failure})`);
     return;
   }
+  const ignoredBefore = ignoredPaths(root);
+  if (ignoredBefore.failure !== null) {
+    actions.push(`UNMEASURED: .gitignore (could not list ignored files — ${ignoredBefore.failure})`);
+    return;
+  }
 
-  writeFileSync(gitignorePath, original.trimEnd() + "\n" + configTrackabilityBlock());
+  writeFileSync(gitignorePath, original.trimEnd() + "\n" + block);
 
   // Byte-for-byte, and the file is REMOVED rather than blanked when there
   // was none: a project that acquires an empty `.gitignore` from a step that
@@ -285,6 +358,28 @@ export function ensureConfigTrackable(root: string, actions: string[]): void {
     revert(
       `the negation would newly ignore ${newlyIgnored.length} tracked file(s) — ` +
         `${newlyIgnored.slice(0, 3).join(", ")}${newlyIgnored.length > 3 ? ", …" : ""}`,
+    );
+    return;
+  }
+
+  // The symmetric half, and the one that generalises. Exactly the config
+  // paths may leave the ignored set; a glob that reaches one path further
+  // than intended shows up here as a file that stopped being ignored, and
+  // that is a REFUSAL rather than a surprise in three consumers' trees.
+  const ignoredAfter = ignoredPaths(root);
+  if (ignoredAfter.failure !== null) {
+    revert(`could not verify the edit un-ignored nothing else — ${ignoredAfter.failure}`);
+    return;
+  }
+  const stillIgnored = new Set(ignoredAfter.ignored);
+  const unIgnored = ignoredBefore.ignored.filter(
+    p => !stillIgnored.has(p) && !(RUNGATE_CONFIG_IGNORE_PATHS as readonly string[]).includes(p)
+      && !isConfigFragment(p),
+  );
+  if (unIgnored.length > 0) {
+    revert(
+      `the negation reaches further than the config — ${unIgnored.length} other file(s) stopped ` +
+        `being ignored: ${unIgnored.slice(0, 3).join(", ")}${unIgnored.length > 3 ? ", …" : ""}`,
     );
     return;
   }

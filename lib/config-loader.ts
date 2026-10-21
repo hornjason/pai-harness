@@ -143,6 +143,9 @@ export const RUNGATE_CONFIG_IGNORE_PATHS = [
 /** The directory both of the above sit in. */
 export const RUNGATE_CONFIG_PARENT_DIR = ".claude";
 
+/** The directory layout's own directory, POSIX form, for the same consumer. */
+export const RUNGATE_CONFIG_DIR = ".claude/rungate";
+
 /**
  * The resolution (ADR-002 D2(a)). `absent` is TRUTHY and carries no `.test`,
  * so the four sites that wrote `config?.test?.command || fallback` cannot
@@ -160,7 +163,18 @@ export type ConfigResolution =
     }
   | { status: "absent" };
 
-const DIRECTORY_CONFIG_FILES = ["config.json", "roles.json", "hooks.json", "compliance.json"];
+/**
+ * The files the directory layout is made of.
+ *
+ * Exported because the scaffold's `.gitignore` negation has to name each one
+ * (#505): the negation re-includes `.claude/rungate/` and then re-excludes
+ * its contents, so a config file this list does not carry is a config file
+ * the project cannot commit — and losing `roles.json` to a branch switch is
+ * the same defect as losing `config.json`. One list, in the module that
+ * knows where the config lives, or the two drift and the symptom is a file
+ * that silently stops being version-controlled.
+ */
+export const DIRECTORY_CONFIG_FILES = ["config.json", "roles.json", "hooks.json", "compliance.json"];
 
 /**
  * ADR-002 D3. `dev.*` is the authored canonical shape; `test.command` keeps
