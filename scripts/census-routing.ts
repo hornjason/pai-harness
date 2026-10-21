@@ -112,10 +112,16 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     // Not in the prose list before #990, and the rule file's own closing
     // section records this check catching that file on its first run. The
     // list has been missing the test that caught the list's author.
+    // #1009 widened this past `.claude/rules/`: `CLAUDE.md` and `AGENTS.md`
+    // are loaded at launch too, so an edit to either moves the instruction
+    // surface and can put it over its budget — in a test the diff does not
+    // touch, which is the whole shape of this router.
     id: "rule-doc",
-    event: "added or edited a .claude/rules/ doc",
-    tests: ["test/rule-provenance.test.ts"],
-    fires: c => isMarkdown(c.path) && c.path.startsWith(".claude/rules/"),
+    event: "added or edited CLAUDE.md, AGENTS.md or a .claude/rules/ doc",
+    tests: ["test/rule-provenance.test.ts", "test/instruction-surface-budget.test.ts"],
+    fires: c =>
+      isMarkdown(c.path) &&
+      (c.path.startsWith(".claude/rules/") || c.path === "CLAUDE.md" || c.path === "AGENTS.md"),
   },
   {
     id: "new-test-file",

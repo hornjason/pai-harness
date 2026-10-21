@@ -8,12 +8,6 @@
     "Do not regenerate this file wholesale to make a red run green. Each number is a claim somebody earned; bank a change in the same commit that caused it."
   ],
   "documents": {
-    ".claude/rules/checks-must-be-able-to-fail.md": {
-      "broken": 3,
-      "unmeasured": 14,
-      "anchors": 0,
-      "note": "#664's measurement table. The three broken ones are the three windows the sweep found that the hand list missed, cited by basename."
-    },
     ".claude/rules/config-access.md": {
       "broken": 0,
       "unmeasured": 1,
@@ -69,6 +63,12 @@
       "broken": 0,
       "unmeasured": 1,
       "anchors": 0
+    },
+    "reference/check-failure-worked-instances.md": {
+      "broken": 3,
+      "unmeasured": 14,
+      "anchors": 0,
+      "note": "#664's measurement table, moved here from .claude/rules/checks-must-be-able-to-fail.md by #1009 — the rules file now carries zero citations, so its entry is gone rather than zeroed. The three broken ones are the three windows the sweep found that the hand list missed, cited by basename."
     },
     "reference/specs/HARNESS-EXTRACTION-SPEC.md": {
       "broken": 19,

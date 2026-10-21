@@ -97,7 +97,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 
@@ -109,7 +109,7 @@ afterAll(() => {
 /** The two documents that carry #652's battery. */
 export const RECORD_FILES = [
   "specs/HARNESS-STANDARD.md",
-  ".claude/rules/checks-must-be-able-to-fail.md",
+  "reference/check-failure-worked-instances.md",
 ] as const;
 
 /**
@@ -219,7 +219,7 @@ describe("#795: a battery recorded twice is corrected in both places", () => {
     });
     const violations = batteryCurrencyViolations(root);
     expect(violations.length).toBe(1);
-    expect(violations[0]).toContain(".claude/rules/checks-must-be-able-to-fail.md");
+    expect(violations[0]).toContain(RECORD_FILES[1]);
     expect(violations[0]).toContain("re-measured");
   });
 });
@@ -238,10 +238,18 @@ function plantedRoot(replace: { ship?: string; spec?: string; rules?: string }):
   const goodDoc = `| ${BATTERY_ROW} \`workflows/ship.js\` | 6 | **6 of 22** |\n\n#653 did, and ${REMEASUREMENT_MARKER}.\n`;
 
   mkdirSync(join(root, "workflows"), { recursive: true });
-  mkdirSync(join(root, "specs"), { recursive: true });
-  mkdirSync(join(root, ".claude", "rules"), { recursive: true });
   writeFileSync(join(root, "workflows", "ship.js"), replace.ship ?? goodShip);
-  writeFileSync(join(root, "specs", "HARNESS-STANDARD.md"), replace.spec ?? goodDoc);
-  writeFileSync(join(root, ".claude", "rules", "checks-must-be-able-to-fail.md"), replace.rules ?? goodDoc);
+
+  // Planted FROM `RECORD_FILES`, not from two spelled paths. #1009 moved the
+  // second record out of `.claude/rules/` and a hand-written fixture path kept
+  // pointing at a file the binding no longer reads — the planted tree then had
+  // nothing at the path under test, and the case threw ENOENT instead of
+  // measuring anything.
+  const bodies = [replace.spec ?? goodDoc, replace.rules ?? goodDoc];
+  RECORD_FILES.forEach((file, i) => {
+    const target = join(root, file);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, bodies[i]!);
+  });
   return root;
 }

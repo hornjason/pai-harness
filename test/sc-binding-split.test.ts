@@ -86,7 +86,15 @@ const UNCLAIMED_RATCHET = 153;
 // an executed test — and it is unmatchable for the reason the docblock gives,
 // because no claim about the state of the tree expresses a comparator's
 // answer. Same rise, same cause as #704's six.
-const CLAIMED_UNBINDABLE = 73;
+//
+// 73 -> 81 on 2026-10-21 (#1009). Eight criteria about the auto-loaded
+// instruction surface check, all driven by `test/instruction-surface-budget.test.ts`
+// against the real script and a mutant of it. Unmatchable for the reason the
+// docblock gives: every one is a claim about what the check DOES to an input
+// — refuses an unmeasured tree, excludes a path-scoped rule, keeps the budget
+// within 35% of what it measures — and no file-exists pattern expresses the
+// behaviour of a predicate on a planted tree.
+const CLAIMED_UNBINDABLE = 81;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });
