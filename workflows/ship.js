@@ -6530,7 +6530,7 @@ function collectTarget(worktrees, marcusPath, projectRoot = PROJECT_ROOT, harnes
  * and reachable from nothing" is precisely the state nobody must be able to
  * end a run in without being told.
  */
-async function preserveRefusedWork(results, phaseName, label) {
+async function preserveRefusedWork(results, phaseName, label, refusedPaths = []) {
   const paths = [...new Set(
     (Array.isArray(results) ? results : [])
       .map(r => String(r && r.worktreePath || '').trim())
@@ -6541,14 +6541,40 @@ async function preserveRefusedWork(results, phaseName, label) {
 
   log(`Collection refused — preserving ${paths.length} worktree(s) onto their own branches (#228)`)
 
+  // The refused paths, after `--`. Quoted like every other argument: these
+  // originate in agent replies (#155) and are interpolated into a command
+  // line, so the same rule applies to them as to the worktree paths above.
+  const refused = [...new Set(
+    (Array.isArray(refusedPaths) ? refusedPaths : [])
+      .map(p => String(p || '').trim())
+      .filter(Boolean),
+  )]
+
+  // The `--` is UNCONDITIONAL and the mapping is on the command line itself,
+  // rather than a pre-joined `refusedArgs` built above. Both spellings quote
+  // the same strings, and only this one is visible to
+  // `test/collect-claim-enforcement.test.ts`'s check that every interpolation
+  // on this line routes through shellQuote. A variable whose quoting happened
+  // out of sight reads to that guard exactly like one that was never quoted —
+  // and it is right to refuse it, because #155 is a path from an agent reply
+  // reaching a shell. Widening the guard to accept the variable is the cheap
+  // repair and it would blind it to the real case. An empty list after the
+  // separator is what the script already treats as "no paths asked for".
   const out = await timedAgent(`
 Run exactly this and report the result:
 
-bun ${shellQuote(`${HARNESS_ROOT}/scripts/preserve-worktree-work.ts`)} ${paths.map(p => shellQuote(p)).join(' ')}
+bun ${shellQuote(`${HARNESS_ROOT}/scripts/preserve-worktree-work.ts`)} ${paths.map(p => shellQuote(p)).join(' ')} -- ${refused.map(p => shellQuote(p)).join(' ')}
 
 The command prints one JSON line: [{ worktreePath, branch, sha, status, detail }].
 Report that array verbatim as "entries". Do not invent, summarise or reorder it.
 If the command printed no JSON line at all, report entries as an empty array.
+
+It may print a SECOND JSON line: { overlaps: [...], lines: ["..."] }.
+Report its "lines" array verbatim as "overlapLines", in the same order.
+Do not rewrite, shorten or interpret those strings — they are the script's own
+reading of whether the refused copies are the same bytes, and a summary of them
+is not that reading. If there was no second JSON line, report overlapLines as
+an empty array.
   `, {
     label,
     phase: phaseName,
@@ -6569,6 +6595,10 @@ If the command printed no JSON line at all, report entries as an empty array.
             required: ['worktreePath', 'status'],
           },
         },
+        // Declared, or the relay drops it: a structured-output schema is a
+        // FILTER on the reply, not a description of it, and an undeclared
+        // field is removed silently on the way back (#646).
+        overlapLines: { type: 'array', items: { type: 'string' } },
       },
       required: ['entries'],
     },
@@ -6581,7 +6611,24 @@ If the command printed no JSON line at all, report entries as an empty array.
   if (unconfirmed.length > 0) {
     parts.push(`could not confirm preservation of ${unconfirmed.join(', ')} — the work may still be uncommitted there`)
   }
-  return { preserved, detail: ` — uncollected work preserved: ${parts.join('; ')}` }
+
+  // #892: say whether the copies being refused are the same file. Relayed, not
+  // re-rendered — `overlapLines` in scripts/preserve-worktree-work.ts is the
+  // one formatter, and a second one here would drift from it.
+  //
+  // Asked for and ABSENT is not the same as not asked for. A refusal that
+  // silently omitted the reading would be byte-identical to one taken before
+  // this existed, and the operator would read the silence as "nothing to say
+  // about the bytes" rather than "the comparison did not happen".
+  const overlapLines = Array.isArray(out && out.overlapLines) ? out.overlapLines.filter(Boolean) : []
+  let overlap = ''
+  if (refused.length > 0) {
+    overlap = overlapLines.length > 0
+      ? ` — refused paths compared across the preserved branches: ${overlapLines.join('; ')}`
+      : ` — UNMEASURED: ${refused.length} refused path(s) were submitted for comparison and the preserve step reported no reading`
+  }
+
+  return { preserved, detail: ` — uncollected work preserved: ${parts.join('; ')}${overlap}` }
 }
 // ──── PRESERVE-REFUSED-END ────
 
@@ -6637,8 +6684,13 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   // worktrees first (#228). A refusal that returns without doing that leaves
   // the only copy of the work unreachable from any ref, so the two belong in
   // one place rather than at three return statements.
-  const refuse = async (detail) => {
-    const kept = await preserveRefusedWork(results, phaseName, `${label}-preserve`)
+  // `refusedPaths` only ever reaches the MESSAGE (#892). The refusal is
+  // decided by auditWorktreeClaims above and nothing here can change it, which
+  // is the property that makes it safe to compute at all: options A and B on
+  // #892 both put the bytes into the refuse-or-not path, and a comparison that
+  // is merely wrong about a sentence cannot discard anybody's work.
+  const refuse = async (detail, refusedPaths = []) => {
+    const kept = await preserveRefusedWork(results, phaseName, `${label}-preserve`, refusedPaths)
     return { ok: false, collected: 0, staged: false, detail: `${detail}${kept.detail}` }
   }
 
@@ -6647,6 +6699,7 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
     return refuse(
       `refusing to collect: ${audit.violations.length} unclaimed file modification(s) (#178, SC-413) — ` +
       audit.violations.map(v => v.detail).join('; '),
+      audit.violations.map(v => v.path),
     )
   }
   // The worktree SET comes from what the agents reported, not from the pruned

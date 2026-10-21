@@ -147,15 +147,160 @@ export function preserveAll(paths: string[]): PreserveEntry[] {
   return paths.map(preserveWorktree);
 }
 
+/** One preserved commit's answer about one refused path. */
+export interface BlobReading {
+  worktreePath: string;
+  branch: string | null;
+  sha: string | null;
+  /** The git blob OID, or null when the read did not happen. */
+  blob: string | null;
+  /** Why it did not happen. Present iff `blob` is null. */
+  reason?: string;
+}
+
+export interface OverlapReading {
+  path: string;
+  /**
+   * EVERY preserved commit's answer, always, in input order — never a count
+   * and never a diff against another path (#892). "Identical to the one
+   * above" is a conclusion the reader draws; a refusal that draws it emits
+   * output that cannot be re-analysed when the question changes.
+   */
+  readings: BlobReading[];
+  /** How many of the preserved commits answered. `read N/M`. */
+  read: number;
+  of: number;
+  reading: "IDENTICAL" | "DIFFERS" | "UNMEASURED";
+}
+
+/**
+ * Whether the worktrees that touched a refused path agree about its BYTES.
+ *
+ * This changes no decision (#892). `auditWorktreeClaims` refuses exactly what
+ * it refused before and the run still fails; all that is added is whether the
+ * copies the operator is now holding are the same file. On
+ * `wf_161c4e96-f01` the 35 minutes were not lost because the run refused —
+ * they were lost because nothing said the three preserved branches were a
+ * superset chain with identical overlaps, which is a one-line recovery once
+ * somebody says it.
+ *
+ * Three properties, each because of a rule this repo has already paid for:
+ *
+ * - **A content digest, not a stat.** Two files one character apart have the
+ *   same length, so size or mtime is the proxy that is satisfiable without
+ *   answering the question. The blob OID IS the content hash, and git has
+ *   already computed it.
+ * - **Coverage travels with the verdict.** `read 2/3` and `read 3/3` are
+ *   otherwise the same IDENTICAL and no reader can tell them apart —
+ *   `.claude/rules/checks-must-be-able-to-fail.md`. A path present in two
+ *   commits and unreadable in a third really is identical in the two that
+ *   answered; saying so while naming the third is more useful than refusing
+ *   to say anything.
+ * - **Fewer than two answers is UNMEASURED, not agreement.** One blob
+ *   compares with nothing, and zero blobs trivially all match. Both would
+ *   print IDENTICAL under a naive `new Set(...).size <= 1`, which is the
+ *   "zero strings are perfect agreement" shape (#621). One discriminator:
+ *   `reading === "UNMEASURED"` is the whole answer, derived here and nowhere
+ *   else.
+ *
+ * A path absent from a commit is a real reading and NOT an error — it means
+ * that worktree did not have the file. It is reported with its own reason so
+ * the operator can tell "absent there" from "git could not be asked".
+ */
+export function overlapReadings(entries: PreserveEntry[], paths: string[]): OverlapReading[] {
+  const usable = (Array.isArray(entries) ? entries : []).filter(e => e && e.sha && e.status !== "failed");
+  const wanted = [...new Set((Array.isArray(paths) ? paths : []).map(p => String(p || "").trim()).filter(Boolean))];
+
+  return wanted.map(path => {
+    const readings: BlobReading[] = usable.map(e => {
+      const base: BlobReading = {
+        worktreePath: e.worktreePath,
+        branch: e.branch,
+        sha: e.sha,
+        blob: null,
+      };
+      try {
+        // `rev-parse <sha>:<path>` resolves to the blob OID git recorded for
+        // that path in that commit. Reading the OID rather than the bytes
+        // keeps this O(1) per pair and compares exactly what git compares.
+        const blob = git(e.worktreePath, ["rev-parse", `${e.sha}:${path}`]);
+        return blob ? { ...base, blob } : { ...base, reason: "git returned no object id" };
+      } catch (err) {
+        // git's own explanation is on STDERR; `message` is only
+        // "Command failed: git -C … rev-parse …", which names no cause and is
+        // the same string for every failure. Classifying off it would report
+        // an absent path and an unreadable repository identically — the two
+        // states this reading exists to keep apart.
+        const e = err as Error & { stderr?: Buffer | string };
+        const stderr = String(e.stderr ?? "").trim();
+        const msg = (stderr || String(e.message || err)).split("\n")[0].replace(/^fatal:\s*/, "");
+        return {
+          ...base,
+          reason: /does not exist|unknown revision|not in the working tree/i.test(msg)
+            ? "the path is not in that commit"
+            : msg,
+        };
+      }
+    });
+
+    const blobs = readings.map(r => r.blob).filter((b): b is string => Boolean(b));
+    const reading: OverlapReading["reading"] =
+      blobs.length < 2 ? "UNMEASURED" : new Set(blobs).size === 1 ? "IDENTICAL" : "DIFFERS";
+
+    return { path, readings, read: blobs.length, of: readings.length, reading };
+  });
+}
+
+/**
+ * The operator-facing line per refused path.
+ *
+ * Every branch is named on every line, with its own blob or its own reason —
+ * the whole set, not a summary. A run's refusals are dated by the branch they
+ * name and the sha beside it, because "it happened once" was an argument only
+ * because nothing recorded when.
+ */
+export function overlapLines(overlaps: OverlapReading[]): string[] {
+  return overlaps.map(o => {
+    const per = o.readings
+      .map(r => `${r.branch ?? r.worktreePath}@${(r.sha ?? "").slice(0, 8)}=${r.blob ? r.blob.slice(0, 12) : `UNREAD(${r.reason ?? "no reason given"})`}`)
+      .join(" ");
+    return `${o.path}: ${o.reading} (read ${o.read}/${o.of}) ${per}`;
+  });
+}
+
 if (import.meta.main) {
-  const paths = process.argv.slice(2).filter(Boolean);
+  // Worktrees before `--`, refused paths after it. A separator rather than a
+  // flag because both sides are lists and an agent composes this command line
+  // from two arrays; `--path a --path b` is the spelling that gets one of the
+  // two wrong.
+  const argv = process.argv.slice(2).filter(Boolean);
+  const sep = argv.indexOf("--");
+  const paths = (sep === -1 ? argv : argv.slice(0, sep));
+  const refused = sep === -1 ? [] : argv.slice(sep + 1);
   if (paths.length === 0) {
-    console.error("usage: bun scripts/preserve-worktree-work.ts <worktreePath> [<worktreePath>...]");
+    console.error(
+      "usage: bun scripts/preserve-worktree-work.ts <worktreePath> [<worktreePath>...] [-- <refusedPath>...]",
+    );
     process.exit(FAIL_EXIT);
   }
 
   const entries = preserveAll(paths);
   console.log(JSON.stringify(entries));
+  // Emitted on its own line, and only when paths were asked for. An empty
+  // array printed unconditionally would be indistinguishable from "asked and
+  // found nothing", which is the state this whole reading exists to separate.
+  if (refused.length > 0) {
+    const overlaps = overlapReadings(entries, refused);
+    const lines = overlapLines(overlaps);
+    // The LINES travel in the JSON, not just the structured readings.
+    // `workflows/ship.js` cannot import (#69), so a ship.js that re-rendered
+    // these would be a second formatter for one reading — two renderings that
+    // agree today and drift the first time either is edited. It relays these
+    // strings instead, which is `lib/launch-base.ts`'s arrangement: one
+    // binding decides, ship.js restates.
+    console.log(JSON.stringify({ overlaps, lines }));
+    for (const line of lines) console.error(`overlap: ${line}`);
+  }
   const committed = entries.filter(e => e.status === "committed");
   console.log(`PRESERVED ${committed.length}`);
   for (const e of entries) {
