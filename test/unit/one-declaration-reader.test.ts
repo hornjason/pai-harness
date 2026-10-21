@@ -52,7 +52,7 @@
  * verdict that held the old reading would leave every subsequent round
  * unmeasured forever.
  */
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -80,6 +80,24 @@ import {
   verifiedCensus,
 } from "../../gates/gate-executor";
 import { signCensus, signStampedCensus } from "../../gates/witness";
+import { ensureGateSalt } from "../../lib/paths";
+
+// `gates/witness.ts` reads the salt and deliberately does NOT mint one —
+// a verification that quietly creates the key it then validates against is
+// not a verification (`lib/paths.ts`). So the salt is this file's own setup,
+// exactly as `gates/adversarial.test.ts` establishes it.
+//
+// Without this the file passes only when some OTHER file in the same bun
+// shard has already called `ensureGateSalt` — `test/test-census.test.ts`
+// does, seven times. That is a dependency on shard assignment, and bun
+// shards by FILE, so adding any test file anywhere reshuffles it. It did:
+// #987's two new files moved this one into a shard with no minting caller
+// and all eight signing cases went red in CI on a tree where nothing they
+// test had changed. A fresh checkout has no salt either, so the same
+// failure reproduces locally the moment the file is run alone.
+beforeAll(() => {
+  ensureGateSalt();
+});
 
 const REPO = join(import.meta.dir, "..", "..");
 const scratch: string[] = [];
