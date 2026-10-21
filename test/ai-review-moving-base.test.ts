@@ -150,6 +150,31 @@
  * **N4 is recorded rather than dropped.** The mutant exits on an unbound
  * variable instead of warning and continuing, so its count is about a crash
  * and not about the posture. N4b is the clean row.
+ *
+ * ## The fixture was green here and red on CI, and why
+ *
+ * First push: 448 pass locally, and shard 1 red with "the second restore did
+ * not bring in the moved base, so the fixture is not the race" seven times.
+ * The bare origin was created with `git init --bare` and no `-b`, so its HEAD
+ * came from whatever default the machine's git carries. Apple's git 2.50.1
+ * answers `main` — from the SYSTEM gitconfig under CommandLineTools, which
+ * `env -i` does not strip, and from its own compiled default besides. An
+ * ubuntu runner answers `master`. A clone then follows a HEAD naming a ref
+ * that does not exist, checks out nothing, and the third party's commit lands
+ * on an unborn branch whose push is rejected non-fast-forward — so the base
+ * never moved and the assertion blamed the race.
+ *
+ * Measured, not inferred: with `init.defaultBranch=master` injected, the
+ * pre-fix file is **9 of 13 red** and the fixed file is **13 of 13 green**.
+ * Two repairs, because the symptom had two causes:
+ *
+ * - `-b main` on the bare init, and `GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL`
+ *   pointed at `/dev/null`, so this file no longer reads a setting CI lacks.
+ *   The difference is removed rather than the failure
+ *   (`.claude/rules/checks-must-be-able-to-fail.md`).
+ * - Every fixture git call now goes through `gitIn`, which REFUSES on a
+ *   non-zero exit. The rejected push above was silent for a whole CI round
+ *   trip; it now names itself at the call that failed.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
@@ -167,6 +192,7 @@ import {
   buildDriftScript,
   buildRestoreScript,
 } from "../lib/scaffold/ai-review-step";
+import { configureFixtureIdentity, initFixtureRepo } from "./helpers/git-fixture";
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -181,7 +207,56 @@ function scratchDir(prefix: string): string {
 
 type Run = { code: number; stdout: string; stderr: string };
 
-const GIT_ENV = () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin" });
+/**
+ * A git environment that reads NO config this machine happens to carry.
+ *
+ * `env -i` is not enough: the system gitconfig is found by a compiled-in path,
+ * not through the environment, and Apple's CommandLineTools puts
+ * `init.defaultBranch=main` in it. Dropping HOME therefore removed the
+ * developer's `~/.gitconfig` while leaving a setting the ubuntu runner does
+ * not have, which is precisely the gap a fixture must not sit in — it is the
+ * difference between this suite and CI, so it is removed rather than papered
+ * over. Everything the fixture needs is written into each repo's own config
+ * by `test/helpers/git-fixture.ts`.
+ */
+const GIT_ENV = () => ({
+  PATH: process.env.PATH ?? "/usr/bin:/bin",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+});
+
+/**
+ * Run git in `cwd` and REFUSE on a non-zero exit.
+ *
+ * The first cut of this file discarded `Bun.spawnSync`'s exit code, which is
+ * the shell `x=$(...)` mistake in another language: a fixture step that fails
+ * leaves the repository in a shape nobody asked for, and the ASSERTION three
+ * calls later reports the damage rather than the cause. Seven cases came back
+ * from CI saying "the fixture is not the race" when what had happened was a
+ * push rejected much earlier, for a reason the output never carried.
+ */
+function gitIn(cwd: string, ...a: string[]): void {
+  const r = Bun.spawnSync(["git", ...a], { cwd, env: GIT_ENV() });
+  if (r.exitCode !== 0) {
+    throw new Error(
+      `git ${a.join(" ")} exited ${r.exitCode} in ${cwd}:\n` +
+        new TextDecoder().decode(r.stderr),
+    );
+  }
+}
+
+/**
+ * Run git in `cwd` and TOLERATE a non-zero exit, deliberately.
+ *
+ * Only for the two calls inside `actionRestore` that reproduce upstream's own
+ * tolerance: `restore-config.ts:330-332` catches a failed `git checkout` and
+ * leaves a path that is absent on the base deleted, which is the whole of
+ * AC-M1c's route. Checking the code there would make the fixture refuse the
+ * case it exists to build.
+ */
+function gitMay(cwd: string, ...a: string[]): void {
+  Bun.spawnSync(["git", ...a], { cwd, env: GIT_ENV() });
+}
 
 function sh(script: string, cwd: string, env: Record<string, string>): Run {
   const file = join(scratchDir("ai-review-moving-sh-"), "step.sh");
@@ -219,17 +294,13 @@ interface Fixture {
 function checkout(): Fixture {
   const work = scratchDir("ai-review-moving-work-");
   const origin = scratchDir("ai-review-moving-origin-");
-  const git = (...a: string[]) => {
-    Bun.spawnSync(["git", "-C", work, ...a], { env: GIT_ENV() });
-  };
+  const git = (...a: string[]) => gitIn(work, ...a);
   const write = (rel: string, body: string) => {
     mkdirSync(dirname(join(work, rel)), { recursive: true });
     writeFileSync(join(work, rel), body);
   };
 
-  Bun.spawnSync(["git", "init", "-q", "-b", "main", work], { env: GIT_ENV() });
-  git("config", "user.email", "t@example.invalid");
-  git("config", "user.name", "t");
+  initFixtureRepo(work);
 
   write("tracked.ts", "export const a = 1;\n");
   write(RESTORED_FILE, "BASE\n");
@@ -237,7 +308,15 @@ function checkout(): Fixture {
   git("add", "-A");
   git("commit", "-qm", "base");
 
-  Bun.spawnSync(["git", "init", "-q", "--bare", origin], { env: GIT_ENV() });
+  // `-b main` is load-bearing on the BARE repo too, and its absence is what
+  // made this file green here and red on CI. Apple's CommandLineTools ships
+  // `init.defaultBranch=main` in the SYSTEM gitconfig — which `env -i` does
+  // not strip — so the bare origin's HEAD was `main` on this machine and
+  // `master` on an ubuntu runner. A clone then follows a HEAD pointing at a
+  // ref that does not exist, checks out nothing, and every later commit and
+  // push in `moveBase` lands on an unborn branch. Same defect as #71, one
+  // repo over.
+  gitIn(origin, "init", "-q", "--bare", "-b", "main");
   git("remote", "add", "origin", `file://${origin}`);
   git("push", "-q", "origin", "HEAD:refs/heads/main");
 
@@ -254,18 +333,28 @@ function checkout(): Fixture {
 }
 
 /**
+ * A second clone of the origin, carrying the fixture identity.
+ *
+ * The identity comes from `test/helpers/git-fixture.ts` rather than from a
+ * `git config user.email` written here: a clone inherits no identity, and a
+ * second site for the fixture identity is both a host dependency and the thing
+ * `test/unit/git-identity-isolation.test.ts` scans for.
+ */
+function cloneOrigin(f: Fixture, prefix: string): string {
+  const other = scratchDir(prefix);
+  gitIn(other, "clone", "-q", `file://${f.origin}`, other);
+  configureFixtureIdentity(other);
+  return other;
+}
+
+/**
  * A THIRD PARTY pushes to the base branch, which is what makes this issue's
  * scenario different from #836's. Done through a second clone so the commit
  * genuinely arrives from outside this job's checkout.
  */
 function moveBase(f: Fixture, body: string): void {
-  const other = scratchDir("ai-review-moving-other-");
-  const g = (...a: string[]) => {
-    Bun.spawnSync(["git", "-C", other, ...a], { env: GIT_ENV() });
-  };
-  Bun.spawnSync(["git", "clone", "-q", `file://${f.origin}`, other], { env: GIT_ENV() });
-  g("config", "user.email", "other@example.invalid");
-  g("config", "user.name", "other");
+  const other = cloneOrigin(f, "ai-review-moving-other-");
+  const g = (...a: string[]) => gitIn(other, ...a);
   mkdirSync(dirname(join(other, RESTORED_FILE)), { recursive: true });
   writeFileSync(join(other, RESTORED_FILE), body);
   g("add", "-A");
@@ -285,9 +374,9 @@ function actionRestore(f: Fixture): void {
   f.git("fetch", "-q", "origin", "main");
   f.git("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main");
   for (const p of [".claude", "CLAUDE.md"]) {
-    f.git("checkout", "refs/remotes/origin/main", "--", p);
+    gitMay(f.work, "checkout", "refs/remotes/origin/main", "--", p);
   }
-  f.git("reset", "-q", "--", ".claude", "CLAUDE.md");
+  gitMay(f.work, "reset", "-q", "--", ".claude", "CLAUDE.md");
 }
 
 /**
@@ -386,13 +475,8 @@ describe("AC-M1 (#989): a base that moved between the two restores does not accu
     const baseline = runBaseline(f);
 
     // The third party removes it from the base entirely.
-    const other = scratchDir("ai-review-moving-del-");
-    const g = (...a: string[]) => {
-      Bun.spawnSync(["git", "-C", other, ...a], { env: GIT_ENV() });
-    };
-    Bun.spawnSync(["git", "clone", "-q", `file://${f.origin}`, other], { env: GIT_ENV() });
-    g("config", "user.email", "other@example.invalid");
-    g("config", "user.name", "other");
+    const other = cloneOrigin(f, "ai-review-moving-del-");
+    const g = (...a: string[]) => gitIn(other, ...a);
     g("rm", "-q", "--", RESTORED_FILE);
     g("commit", "-qm", "a third party deletes it");
     g("push", "-q", "origin", "HEAD:refs/heads/main");
