@@ -265,6 +265,46 @@ function parseSubKeys(lines: string[]): { head: string[]; blocks: SubBlock[] } {
  * Appended rather than interleaved, for the reason the whole of #482 exists:
  * a key that moves away from the comment introducing it reads as a deletion.
  */
+/**
+ * The consumer's sub-keys that this generator computes and has stopped
+ * emitting (#923).
+ *
+ * Read off the SAME `parseSubKeys` both sides of the merge read, so the thing
+ * removed and the thing reported removed cannot be two different readings.
+ * The scalar guard is the same one `mergeTopLevelSection` opens with and for
+ * the same reason: `permissions: read-all` has no sub-keys to withdraw.
+ */
+function revokedSubKeys(section: string, before: Section, generated: Section): RevokedSubKey[] {
+  const owned = HARNESS_COMPUTED_SUBKEYS.get(section);
+  if (owned === undefined) return [];
+  if (!/^[A-Za-z_][A-Za-z0-9_.\-]*:\s*(#.*)?$/.test(before.lines[0])) return [];
+  const emitted = new Set(parseSubKeys(generated.lines).blocks.map(s => s.key));
+  return parseSubKeys(before.lines)
+    .blocks.filter(s => owned.has(s.key) && !emitted.has(s.key))
+    .map(s => ({ section, key: s.key, lines: s.lines }));
+}
+
+/**
+ * The consumer's section with the revoked sub-keys taken out (#923).
+ *
+ * Reassembled from `parseSubKeys` rather than filtered by line value: a
+ * revoked block carries the blank line and the comment block that introduce
+ * it, and dropping those by value would take every other blank in the section
+ * with them. `parseSubKeys` places every body line in exactly one block in
+ * file order, so head followed by the surviving blocks IS the section minus
+ * what was withdrawn — and with nothing to withdraw it is the section
+ * unchanged, which is why the caller still runs the untouched merge after it.
+ */
+function withoutRevoked(before: Section, revoked: readonly RevokedSubKey[]): Section {
+  if (revoked.length === 0) return before;
+  const gone = new Set(revoked.map(r => r.key));
+  const parsed = parseSubKeys(before.lines);
+  return {
+    ...before,
+    lines: [...parsed.head, ...parsed.blocks.filter(s => !gone.has(s.key)).flatMap(s => s.lines)],
+  };
+}
+
 function mergeTopLevelSection(before: Section, generated: Section): string[] {
   // A scalar on the consumer's side (`permissions: read-all`, `on: [push]`)
   // has nowhere to put a sub-key, and appending one produces YAML that does
@@ -286,6 +326,54 @@ function mergeTopLevelSection(before: Section, generated: Section): string[] {
 
   const [kept, trailing] = splitTrailingBlanks(before.lines);
   return [...kept, ...extra.flatMap(s => splitTrailingBlanks(s.lines)[0]), ...trailing];
+}
+
+/**
+ * Sub-keys the GENERATOR computes, by the top-level key they sit under (#923).
+ *
+ * Same shape as `HARNESS_OWNED_JOBS` and for the same reason: a conditionally
+ * emitted thing cannot be recognised from the generated side once it stops
+ * being emitted. `mergeTopLevelSection`'s rule — a sub-key only the consumer
+ * declares is the consumer's — is right for a LOCAL KNOB and wrong for a
+ * DERIVED GRANT. `pull-requests: write` that a consumer added for a job of
+ * their own is theirs. `id-token: write` that this generator emitted because
+ * `ci.vertex` resolved is nobody's choice; the config made it, and when the
+ * config goes the justification goes with it. By the time the merge runs both
+ * are just lines in the consumer's file and nothing records which side wrote
+ * them, so the list records it instead.
+ *
+ * A key here is REMOVED from the consumer's section when the generated side
+ * does not declare it. Add a conditionally emitted sub-key to this map in the
+ * same commit that makes it conditional.
+ *
+ * Scoped to what the generator COMPUTES, not to everything it emits.
+ * `contents: read` is unconditional, so both sides always declare it, #839's
+ * rule already settles it, and an entry for it would be one no input can
+ * reach. `test/scaffold-permissions-merge.test.ts` holds this map against the
+ * generator itself — it scaffolds with and without the config that drives the
+ * grant and takes the symmetric difference of the emitted sub-keys — so the
+ * population is read off the emitting module rather than off this list.
+ *
+ * `ci.workflowOverrides` is not the mechanism for this and could not be. It
+ * is an opt-OUT: a consumer names a key and the merge stops touching it.
+ * Revocation needs the opposite default, because the consumer who has stopped
+ * using Vertex is exactly the consumer who will not think to declare anything
+ * about it. The override still wins where it is declared — naming the
+ * top-level key short-circuits `mergeTopLevelSection` before this is read, so
+ * the escape hatch covers this path with no new config surface.
+ */
+export const HARNESS_COMPUTED_SUBKEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["permissions", new Set(["id-token"])],
+]);
+
+/** A sub-key the merge withdrew because the generator stopped emitting it (#923). */
+export interface RevokedSubKey {
+  /** The top-level key it sat under. */
+  section: string;
+  /** The sub-key itself. */
+  key: string;
+  /** Its lines as they stood in the consumer's file, comment block included. */
+  lines: string[];
 }
 
 /**
@@ -545,6 +633,36 @@ export function mergeManagedWorkflow(
   generated: string,
   overrides: readonly string[] = [],
 ): string {
+  return mergeManagedWorkflowRecording(before, generated, overrides).content;
+}
+
+/**
+ * `mergeManagedWorkflow`, plus the derived grants it withdrew (#923).
+ *
+ * The recording form exists because the write has to agree with the merge
+ * about the revocation, and the cheap way to make it agree is the wrong one.
+ * Withdrawing `id-token: write` puts that line and the comment introducing it
+ * into `resolveManagedWrite`'s loss set — outside any job, outside the
+ * leading preamble, nothing covering them — and the whole re-scaffold REFUSES
+ * over two lines the harness wrote itself. That is #834's failure reached
+ * from the other direction.
+ *
+ * The fix is not a second computation in the write of which lines ought to be
+ * revoked. Two deciders about the same bytes is what #834 actually was, and
+ * the merge was the one that was right. So the merge reports the lines it
+ * removed and the write whitelists THOSE, which is why this returns blocks
+ * rather than a count.
+ *
+ * `mergeManagedWorkflow` is the thin wrapper and not the other way round:
+ * there is one merge, and a caller that does not need the record reads
+ * `.content`.
+ */
+export function mergeManagedWorkflowRecording(
+  before: string,
+  generated: string,
+  overrides: readonly string[] = [],
+): { content: string; revoked: RevokedSubKey[] } {
+  const revoked: RevokedSubKey[] = [];
   const b = splitTopLevel(stripOverrideNotices(before));
   const g = splitTopLevel(generated);
   const generatedKeys = new Set(g.map(s => s.key));
@@ -592,10 +710,25 @@ export function mergeManagedWorkflow(
     const consumer = beforeByKey.get(section.key);
     if (section.key === "" || consumer === undefined) return section.lines;
     const gen = generatedByKey.get(section.key);
-    const merged =
-      gen !== undefined && !declined.has(section.key)
-        ? mergeTopLevelSection(consumer, gen)
-        : consumer.lines;
+    // A derived grant the generator has stopped computing is withdrawn before
+    // the sub-key merge runs, never after: the merge's job is to carry what
+    // the generator newly emits INTO the consumer's section, and running it
+    // over a section that still holds a withdrawn key would have it decide
+    // ownership of a line that is on its way out (#923).
+    //
+    // Inside the `!declined` arm, deliberately. A consumer who has named this
+    // top-level key in `ci.workflowOverrides` has taken the whole block back,
+    // and revoking a sub-key out of a block the harness has just declared not
+    // its own is the deletion-without-a-route that #839's escape hatch exists
+    // to make impossible.
+    let merged: string[];
+    if (gen !== undefined && !declined.has(section.key)) {
+      const withdrawn = revokedSubKeys(section.key, consumer, gen);
+      revoked.push(...withdrawn);
+      merged = mergeTopLevelSection(withoutRevoked(consumer, withdrawn), gen);
+    } else {
+      merged = consumer.lines;
+    }
     // The notice is re-made from the current config every run — never carried
     // — so a consumer who opts back in stops being told they have opted out.
     return declined.has(section.key)
@@ -654,7 +787,13 @@ export function mergeManagedWorkflow(
   // second merge loop: two code paths producing the same bytes for the same
   // input is one decider too many, and the dead one is the one no mutation
   // can reach.
-  return b.some(s => s.key !== "") ? ordered.join("\n") : generated;
+  // A `before` with nothing to merge takes the generated file whole, so
+  // nothing of the consumer's was withdrawn and the record has to say so —
+  // reporting a revocation for a file that was replaced outright would have
+  // the scaffold claim it removed a grant it never read.
+  return b.some(s => s.key !== "")
+    ? { content: ordered.join("\n"), revoked }
+    : { content: generated, revoked: [] };
 }
 
 /**

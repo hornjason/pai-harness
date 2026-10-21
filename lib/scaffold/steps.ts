@@ -19,7 +19,7 @@ import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
 import {
-  mergeManagedWorkflow,
+  mergeManagedWorkflowRecording,
   duplicateTopLevelKeys,
   managedPreamble,
   MANAGED_BANNER_PREFIX,
@@ -27,6 +27,7 @@ import {
   WORKFLOW_OVERRIDE_COMMENT,
   workflowOverrides,
   type MovedKey,
+  type RevokedSubKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
 import {
@@ -2096,6 +2097,26 @@ export interface ManagedWrite {
    * was being made.
    */
   movedKeys: MovedKey[];
+  /**
+   * Derived grants the merge withdrew because the generator stopped computing
+   * them (#923).
+   *
+   * Not a refusal and not an overwrite — a third thing, and it needs its own
+   * field because the other two would both misreport it. In `lostLines` it is
+   * a refusal over two lines the harness wrote itself; in `overwrittenLines`
+   * it is a report that says "in harness-owned jobs" about a top-level key.
+   *
+   * Reported rather than silent, because the removal is the whole point: a
+   * consumer who removes `ci.vertex` keeps `id-token: write` — the right to
+   * mint an OIDC token for a federation that no longer exists — and a
+   * permission nobody consumes is a permission nobody audits. Taking it away
+   * without saying so would make the scaffold do, silently, the one thing
+   * `ci.workflowOverrides` was built to guarantee is always visible.
+   *
+   * The record travels from the merge rather than being recomputed here. See
+   * `mergeManagedWorkflowRecording`.
+   */
+  revokedGrants: RevokedSubKey[];
   /** Non-null ⇒ the write must not happen. Names the dropped jobs and the line delta. */
   refusal: string | null;
 }
@@ -2196,7 +2217,8 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
 export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = []): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
-    preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], refusal: null,
+    preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], revokedGrants: [],
+    refusal: null,
   };
   if (existing === null) return base;
 
@@ -2225,7 +2247,7 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
   // A refusal that is structurally incapable of firing on the thing being
   // destroyed is the defect class .claude/rules/checks-must-be-able-to-fail.md
   // exists for, and it was in the fix written to prevent a data-loss bug.
-  const content = mergeManagedWorkflow(existing, generated, overrides);
+  const { content, revoked: revokedGrants } = mergeManagedWorkflowRecording(existing, generated, overrides);
   const lineDelta = lineCount(content) - before;
 
   const preservedJobs = existingJobs.filter(j => !generatedJobs.includes(j));
@@ -2352,9 +2374,26 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
   // loss set. That job is `harnessPreamble`'s.
   const harnessPreamble = new Set(nonBlankLines(managedPreamble(existing).join("\n")));
 
+  // The grants the merge withdrew, as the lines it took out (#923).
+  //
+  // Taken FROM THE MERGE, not recomputed. A second reading here of which
+  // sub-keys ought to have gone would be a decider that can disagree with the
+  // one that actually removed them, and #834 is the bill for exactly that
+  // arrangement: the merge computed the correct file, the write's own view of
+  // what it was allowed to drop refused to put it on disk, and `id-token:
+  // write` stayed off every consumer for it. Here the disagreement would run
+  // the other way and be worse — a line the merge removed and this set did
+  // not cover is a REFUSED re-scaffold, and a line this set covered and the
+  // merge did not remove is a consumer's own content dropped in silence.
+  const revokedLines = new Set(
+    revokedGrants.flatMap(r => nonBlankLines(r.lines.join("\n"))),
+  );
+
   const kept = new Set(nonBlankLines(content));
   const gone = nonBlankLines(existing).filter(l => !kept.has(l));
-  const lostLines = gone.filter(l => !harnessOwned.has(l) && !harnessPreamble.has(l));
+  const lostLines = gone.filter(
+    l => !harnessOwned.has(l) && !harnessPreamble.has(l) && !revokedLines.has(l),
+  );
   // Rewording its own header is not overwriting somebody's edit, and this
   // report says "in harness-owned jobs" — which the preamble is not.
   const overwrittenLines = gone.filter(
@@ -2379,7 +2418,11 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
     };
   }
 
-  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], overwrittenLines, movedKeys, refusal: null };
+  // `revokedGrants` only reaches a caller on this path. Every return above is
+  // a refusal and `unchanged` carries the empty list from `base`: nothing was
+  // written, so nothing was withdrawn, and a report naming a grant that is
+  // still in the file on disk is the reading disagreeing with reality again.
+  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], overwrittenLines, movedKeys, revokedGrants, refusal: null };
 }
 
 /** Non-blank lines, trimmed — the unit the loss set is counted in. */
@@ -2507,9 +2550,37 @@ export function writeManagedFile(
     // lines)`, which is the line an operator reads as "my generator change
     // landed" (#767).
     actions.push(`UPDATED: ${label} (provenance marker refreshed, +0 lines${kept})`);
-    return;
+  } else {
+    actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
   }
-  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
+  actions.push(...revocationActions(label, resolved.revokedGrants));
+}
+
+/**
+ * One line per grant the merge withdrew (#923).
+ *
+ * Its OWN line rather than a parenthetical on the write, and after the write
+ * rather than folded into it. "REPLACED (-74 lines)" is already true of a
+ * re-scaffold that withdraws nothing, so a consumer cannot read a withdrawal
+ * out of it, and the thing being reported is not a line count: a standing
+ * right to mint a credential has been taken away. That is the fact #631 says
+ * nobody audits, and burying it inside a byte-delta is how it goes on not
+ * being audited.
+ *
+ * The reason given is the one THIS layer actually knows — the generator
+ * computes this sub-key and has stopped computing it — and not the config
+ * entry that drove it. The merge cannot see `ci.vertex`; a sentence naming it
+ * here would be a second, unverified reading of the generator's own decision,
+ * and it would be wrong the first time a different sub-key joins the map.
+ */
+function revocationActions(label: string, revoked: readonly RevokedSubKey[]): string[] {
+  return revoked.map(
+    r =>
+      `REVOKED: ${label} no longer declares \`${r.section}: ${r.key}\` — the harness ` +
+      `computes that sub-key and this project's \`ci\` config no longer produces it, so ` +
+      `the grant has nothing left to justify it. Name \`${r.section}\` in ` +
+      `\`ci.workflowOverrides\` to keep it, and re-scaffold.`,
+  );
 }
 
 /** One globally installed CI tool, and the exact version it is pinned to. */

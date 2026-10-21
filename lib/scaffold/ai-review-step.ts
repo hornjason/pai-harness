@@ -108,6 +108,49 @@ export const AI_REVIEW_AUTH_PRECEDENCE: readonly AiReviewCredential[] = [
 ];
 
 /**
+ * The two places a runner's Application Default Credentials can be, in the
+ * order Google's own libraries consult them (#679).
+ *
+ * This is NOT a credential list and not a fourth entry in
+ * `AI_REVIEW_AUTH_PRECEDENCE`. Nothing here resolves a mode. It exists
+ * because the credential-free annotation used to open "No Claude credential
+ * is configured", full stop, and on a self-hosted runner carrying ADC that
+ * sentence is false: ADC alone authenticates to Vertex and returns a real
+ * completion — measured on #679 against the model this job is pinned to, with
+ * no service-account key, no `google-github-actions/auth` step and no
+ * `credentials_json`. A check that is silent about a credential it could have
+ * found is the mirror of #630: that was a PASS for a review that never ran,
+ * this is UNMEASURED for a review that could have run, and a false UNMEASURED
+ * trains people to ignore the one annotation that is supposed to mean
+ * something.
+ *
+ * **Environment paths, read with the shell, no subprocess.** `gcloud auth
+ * list` would be the richer reading and it is the wrong one here: this script
+ * is executed on developer machines, not only on runners —
+ * `aiReviewUnmeasuredViolations` in `lib/conformity.ts` runs it on every scan
+ * — and `test/ai-review-scaffold.test.ts` hands it the real `$HOME`. A
+ * subprocess that reads a developer's own gcloud configuration makes those
+ * cases depend on whose laptop they run on.
+ */
+export const AI_REVIEW_ADC_SOURCES: readonly string[] = [
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUDSDK_CONFIG",
+];
+
+/**
+ * The `$GITHUB_OUTPUT` key carrying what the runner had and this job did not
+ * use (#679).
+ *
+ * Empty when nothing ambient was found. A separate output rather than a mode,
+ * because the whole claim being made is that this is NOT a credential the job
+ * authenticated with.
+ */
+export const AI_REVIEW_AMBIENT_OUTPUT = "ambient";
+
+/** The one value `AI_REVIEW_AMBIENT_OUTPUT` ever carries. Spelled once. */
+export const AI_REVIEW_AMBIENT_ADC = "adc";
+
+/**
  * The secret this job used to authenticate with, named so a consumer sitting
  * on it is not silently downgraded.
  *
@@ -1744,12 +1787,35 @@ export function buildAuthDetectScript(vertex: VertexCiDecision): string {
 
   const credentials = [...SECRET_NAMES, "a ci.vertex federation provider"].join(", ");
 
+  // "in this job" is load-bearing and was added by #679. The sentence used to
+  // be a claim about the WORLD — "No Claude credential is configured" — made
+  // from a scan of three environment variables, and on a self-hosted runner
+  // with ADC it was false. What this job can honestly report is what it read.
   const warning =
-    `No Claude credential is configured ` +
+    `No Claude credential is configured in this job ` +
     `(${credentials}), so no AI review ran on this pull request. ` +
     `This check is UNMEASURED, not a passing review. ` +
     `Set the repository variable ${AI_REVIEW_REQUIRE_VAR} to ` +
     `'${AI_REVIEW_REQUIRE_VALUE}' to make an unmeasured review fail instead.`;
+
+  // The second sentence, appended to the SAME annotation rather than emitted
+  // as a second one. `aiReviewUnmeasuredViolations` requires exactly one
+  // UNMEASURED warning in the credential-free state, and that count is the
+  // thing keeping the word meaningful; a second annotation would turn every
+  // scan run on a machine that happens to carry ADC into a violation, which
+  // is a local/CI split manufactured by the fix rather than found by it.
+  //
+  // No path is named. The path is the only part of this that varies by
+  // machine, and the two variables below are what a reader needs to go
+  // looking. Nothing here reads, prints or validates a credential VALUE.
+  const ambientWarning =
+    `This runner also carries Application Default Credentials ` +
+    `(${AI_REVIEW_ADC_SOURCES.join(" or ")}). ADC alone authenticates to Vertex, so a ` +
+    `credential this job could have reviewed on is present on the runner and was not used. ` +
+    `It is REPORTED, NOT READ: no mode is resolved from it and nothing here validates it, ` +
+    `because validating ADC means exchanging it for an access token and a file that exists ` +
+    `is not a token that still refreshes. Reviewing on an ambient login is a separate ` +
+    `decision from scaffolding this workflow and there is no route to it today (#679).`;
 
   const refusal =
     `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and no credential ` +
@@ -1779,6 +1845,11 @@ fi
 # The decision is here and not in an \`if:\` expression on purpose — \`secrets\`
 # is unavailable in \`if:\`, and a skipped step can satisfy a required check.
 #
+# It also reports \`${AI_REVIEW_AMBIENT_OUTPUT}\`, which is NOT a ${AI_REVIEW_MODES.length + 1}th mode and is not a
+# credential this job uses (#679). It names what the runner was carrying when
+# no credential resolved, so the UNMEASURED annotation stops saying the
+# machine is empty when it is not.
+#
 # Vertex, as read from this consumer's config when the file was generated:
 #   ${vertex.reason}
 set -uo pipefail
@@ -1789,17 +1860,36 @@ if [ "\${mode}" = ${AI_REVIEW_MODE_NONE} ]; then
 ${secretBranches}
   fi
 fi
+
+# What the RUNNER has that this job did not use (#679). Read only in the
+# credential-free state, because that is the only state in which the
+# annotation makes a claim about it, and read as a PATH rather than as a
+# credential: this resolves no mode, so a stale or expired file cannot
+# produce a usable-looking one. Presence is not validity and the annotation
+# says so.
+ambient=
+if [ "\${mode}" = ${AI_REVIEW_MODE_NONE} ]; then
+  adc_file="\${${AI_REVIEW_ADC_SOURCES[0]}:-\${${AI_REVIEW_ADC_SOURCES[1]}:-\${HOME:-}/.config/gcloud}/application_default_credentials.json}"
+  if [ -f "\${adc_file}" ]; then
+    ambient=${AI_REVIEW_AMBIENT_ADC}
+  fi
+fi
 ${migration}
 echo "ai-review auth mode: \${mode}"
 if [ -n "\${GITHUB_OUTPUT:-}" ]; then
   echo "mode=\${mode}" >> "\${GITHUB_OUTPUT}"
+  echo "${AI_REVIEW_AMBIENT_OUTPUT}=\${ambient}" >> "\${GITHUB_OUTPUT}"
 fi
 
 if [ "\${mode}" != ${AI_REVIEW_MODE_NONE} ]; then
   exit 0
 fi
 
-echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${warning}"
+unmeasured="${warning}"
+if [ -n "\${ambient}" ]; then
+  unmeasured="\${unmeasured} ${ambientWarning}"
+fi
+echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::\${unmeasured}"
 
 if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
   echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2
