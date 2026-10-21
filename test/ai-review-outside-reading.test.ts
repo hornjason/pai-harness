@@ -541,11 +541,6 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".claude/backups",
       ".claude/state",
       ".claude/sessions",
-      ".copilot/mcp-config.json",
-      ".cache/copilot/mcp-tools",
-      ".copilot/session-store.db",
-      ".copilot/session-store.db-wal",
-      ".copilot/session-store.db-shm",
       ".npm/_npx",
     ]);
   });
@@ -600,13 +595,6 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".npm/_logs/2026-10-21T04_48_31_402Z-debug-0.log",
       ".npm/_logs/2026-10-21T04_48_39_043Z-debug-0.log",
       ".bun/install/cache/c17f4447ebe3362d.npm",
-      // #913's five shapes, from runs `39623516197` and `39622904926`.
-      ".cache/copilot/mcp-tools/" +
-        "38e6cebe4afebf9d02baefb8e5f68a7b2002c3a364965e8915d4f17e7b7e52df.json",
-      ".copilot/mcp-config.json",
-      ".copilot/session-store.db",
-      ".copilot/session-store.db-wal",
-      ".copilot/session-store.db-shm",
     ];
     const under = (prefix: string, p: string) => p === prefix || p.startsWith(`${prefix}/`);
     const unclassified: string[] = [];
@@ -1097,21 +1085,27 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
   });
 });
 
-// ── AC-16 / AC-17: the other two owners of a shared self-hosted $HOME ────
+// ── AC-16: the reviewer's own session state ─────────────────────────────
 
 /**
- * #907 and #913 are the same shape as #877 and #897, one owner further out.
+ * #907 is the same shape as #877 and #897, one owner further out.
  *
- * The three lists above were derived from ONE runtime (the Claude CLI) and ONE
- * runner process. A consumer's self-hosted pool has ten runner processes and
- * more than one AI CLI sharing `/home/gharunner`, and every tool that writes
- * under that home on its own schedule lands in a reading that attributes the
- * write to the reviewer. `_diag` was the third owner, `_work/_temp` the
- * fourth; these are the fifth and sixth, and the pattern is now explicit so
- * the seventh is recognised as an instance rather than re-derived.
+ * The three lists above were derived from ONE runtime and ONE runner process
+ * on an ephemeral home. A consumer's self-hosted pool shares `/home/gharunner`
+ * across many runner processes, and anything writing there on its own schedule
+ * lands in a reading that attributes the write to the reviewer. `_diag` was
+ * the third owner, `_work/_temp` the fourth, this is the fifth.
  *
- * Both were measured on hornjason/asaCommandCenter, whose ai-review was 0 of
- * 18 at the time of filing. The runs are cited per case below.
+ * Measured on a real consumer whose ai-review was 0 of 18 at the time of
+ * filing. The runs are cited per case below.
+ *
+ * WHY THIS ONE DOES NOT GO AWAY. #913 added a sixth owner — a sibling Copilot
+ * runtime on the same pool — and #946 removed it again once the workflows
+ * driving that CLI were deleted and the paths had no writer left. This owner
+ * is different in kind: `.claude/sessions` is written by the REVIEWER ITSELF.
+ * `AI_REVIEW_MODE: vertex` runs the Claude CLI, and the CLI writes session
+ * state on every start, so the job taking the reading is the job making the
+ * write. There is no deletion that retires this entry — only #904.
  */
 describe("AC-16 (#907): the CLI's own session state is not the reviewer's write", () => {
   // Runs `39620098295` (asaCommandCenter#1769) and `39620105739` (#1817):
@@ -1167,88 +1161,6 @@ describe("AC-16 (#907): the CLI's own session state is not the reviewer's write"
   });
 });
 
-describe("AC-17 (#913): a SIBLING AI runtime's state is not the reviewer's write", () => {
-  // Run `39623516197` on asaCommandCenter#1833, headSha
-  // `2b1ca9dac39beeabcd91d328a1c6ac80ad64d184` — the run that bumped the pin
-  // to #901, so `_work/_temp` is already subtracted and this residue is all
-  // that remained. `.copilot/mcp-config.json` and the un-suffixed
-  // `session-store.db` come from run `39622904926` on the same pool.
-  //
-  // The failing job runs `AI_REVIEW_MODE: vertex` and never invokes the
-  // Copilot CLI, so it did not write any of these. They come from the five
-  // gh-aw workflows on that repo that do, sharing the same home.
-
-  // Trust-bearing, so NAMED rather than silent: `mcp-config.json` declares MCP
-  // servers, which is a command line the CLI runs — `.claude.json`'s argument
-  // word for word. The `mcp-tools` cache decides which tools that server is
-  // believed to offer, which is `.claude/state`'s.
-  for (const entry of [
-    ".cache/copilot/mcp-tools/38e6cebe4afebf9d02baefb8e5f68a7b2002c3a364965e8915d4f17e7b7e52df.json",
-    ".copilot/mcp-config.json",
-  ]) {
-    test(`a write at ${entry} is exit 0 AND named UNMEASURED`, () => {
-      const f = fixture();
-      const { path, sha } = runBaseline(f);
-      const target = join(f.home, entry);
-      mkdirSync(join(target, ".."), { recursive: true });
-      writeFileSync(target, "{}\n");
-      const r = runDrift(f, path, sha);
-      const text = r.stdout + r.stderr;
-      expect(r.code, `${entry} is sibling-runtime config and refused:\n${r.stderr}`).toBe(0);
-      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
-      expect(text, `${entry} is trust-bearing and was subtracted silently`).toContain(
-        CONFIG_UNMEASURED_TEXT,
-      );
-    });
-  }
-
-  // SQLite's write-ahead log and shared-memory sidecars, created and removed
-  // on every open of the session store.
-  //
-  // #922 classified these INERT on the `.claude/projects` argument — a
-  // transcript is read, not run — and the review of that change moved them
-  // here. AC-18's measurement is what settles it rather than the taxonomy
-  // argument: a plant at an INERT entry is exit 0 and SILENT, the same plant
-  // at a CONFIG entry is exit 0 and NAMED, and these sit in a directory
-  // beside `mcp-config.json`. Named is the reading to have.
-  for (const entry of [
-    ".copilot/session-store.db",
-    ".copilot/session-store.db-wal",
-    ".copilot/session-store.db-shm",
-  ]) {
-    test(`a write at ${entry} is exit 0 AND named UNMEASURED`, () => {
-      const f = fixture();
-      const { path, sha } = runBaseline(f);
-      const target = join(f.home, entry);
-      mkdirSync(join(target, ".."), { recursive: true });
-      writeFileSync(target, "sqlite\n");
-      const r = runDrift(f, path, sha);
-      const text = r.stdout + r.stderr;
-      expect(r.code, `${entry} is sibling-runtime state and refused:\n${r.stderr}`).toBe(0);
-      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
-      expect(text, `${entry} was subtracted silently rather than named`).toContain(
-        CONFIG_UNMEASURED_TEXT,
-      );
-    });
-  }
-
-  test("the subtraction is anchored: a sibling's CHECKOUT under .copilot still refuses", () => {
-    // The width control. `session-store.db*` as a glob would have been the
-    // cheaper spelling and would subtract this too; three exact names do not.
-    // Without this case the entries could be widened to a star and nothing
-    // would go red.
-    const f = fixture();
-    const { path, sha } = runBaseline(f);
-    const target = join(f.home, ".copilot/session-store.db.evil.sh");
-    mkdirSync(join(target, ".."), { recursive: true });
-    writeFileSync(target, "#!/bin/sh\necho pwned\n");
-    const r = runDrift(f, path, sha);
-    const text = r.stdout + r.stderr;
-    expect(r.code, "a name merely PREFIXED by a subtracted one was let through").toBe(1);
-    expect(text).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
-    expect(text).toContain("session-store.db.evil.sh");
-  });
-});
 
 // ── AC-18: a directory where the measurement saw a file ──────────────────
 
@@ -1269,6 +1181,11 @@ describe("AC-17 (#913): a SIBLING AI runtime's state is not the reviewer's write
  * | `.copilot/session-store.db` | 0 | **no** |
  * | `.copilot/session-store.db-wal` | 0 | **no** |
  *
+ * The three `.copilot` rows are kept as the record of what was measured; the
+ * entries themselves were removed in #946 once their writer was deleted. The
+ * bypass they exposed is the reason this block exists and applies unchanged
+ * to the three entries that remain.
+ *
  * So the hole pre-dates #913 for the CONFIG entries, where pass 2 at least
  * NAMES the plant in the UNMEASURED annotation. It is the INERT entries that
  * are silent, and #922 added the first file-shaped ones. Both halves are
@@ -1285,10 +1202,6 @@ describe("AC-18 (#931): a DIRECTORY at a file-shaped entry does not exempt its c
     ".claude.json",
     ".claude/settings.json",
     ".claude/.last-cleanup",
-    ".copilot/mcp-config.json",
-    ".copilot/session-store.db",
-    ".copilot/session-store.db-wal",
-    ".copilot/session-store.db-shm",
   ]) {
     test(`a plant inside a directory at ${entry} still REFUSES`, () => {
       const f = fixture();
@@ -1326,7 +1239,6 @@ describe("AC-18 (#931): a DIRECTORY at a file-shaped entry does not exempt its c
       ".claude/backups",
       ".claude/state",
       ".claude/sessions",
-      ".cache/copilot/mcp-tools",
       ".npm/_npx",
     ]);
   });
