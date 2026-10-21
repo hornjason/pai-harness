@@ -138,6 +138,13 @@ const CeremonyTierOverrideSchema = z.object({
   agents: z.record(z.union([z.boolean(), z.string()])).optional(),
 }).passthrough();
 
+/** See `ship:` below and `lib/ship-mode.ts` for why `mode` is not an enum. */
+const ShipSchema = z.object({
+  mode: z.string(),
+  since: z.string().optional(),
+  reason: z.string().optional(),
+}).passthrough();
+
 export const ProjectHarnessSchema = z.object({
   project: z.string(),
   repo: z.string(),
@@ -188,6 +195,18 @@ export const ProjectHarnessSchema = z.object({
   mcp: z.array(McpServerSchema).optional(),
   research: z.array(ResearchToolSchema).optional(),
   roles: z.record(RoleSchema).optional(),
+  /**
+   * Whether this project ships through the harness or directly (#911).
+   *
+   * `mode` is a plain string here, NOT `z.enum(["harness","direct"])`, and
+   * that is deliberate: `lib/scanner.ts`'s config read is wrapped in
+   * `catch {}`, so a zod throw on a typo'd mode would be swallowed and read
+   * as an absent config — which resolves to `"harness"`. A typo that
+   * silently reinstates the harness is the defect #911 exists to stop, so
+   * the refusal lives in `resolveShipPolicy` (`lib/ship-mode.ts`), which is
+   * reached on the generator path and names the offending value.
+   */
+  ship: ShipSchema.optional(),
   stalenessThreshold: z.number().optional(),
   ceremonyOverrides: z.record(CeremonyTierOverrideSchema).optional(),
   schemaVersion: z.number().default(1),

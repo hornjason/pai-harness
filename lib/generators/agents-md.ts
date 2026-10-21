@@ -14,6 +14,7 @@ import { OWNED_FILES, ownedFilesTable } from "../scaffold/owned-files";
 import { isHarnessItself } from "../harness-identity";
 import { typecheckDecision } from "../typescript-project";
 import { localCalendarDay } from "../local-calendar-day";
+import { resolveShipPolicy, shipWorkflowRule } from "../ship-mode";
 
 /**
  * Build the AGENTS.md frontmatter block.
@@ -283,24 +284,14 @@ description: Shared behavioral principles for all agents working in this project
 `,
   });
 
+  // The TEXT is not a constant any more (#911). A project that has decided to
+  // bypass the harness declares `ship.mode: "direct"` in its config, and this
+  // rule says so — with the date and the reason — instead of telling every
+  // agent the opposite of its instructions. `lib/ship-mode.ts` is the single
+  // decider; an unrecognised mode throws out of here rather than defaulting.
   rules.push({
     filename: "ship-workflow.md",
-    content: `---
-description: All implementation work must go through the ship workflow — never spawn agents directly
----
-
-## Ship Workflow Required
-
-When shipping an issue or implementing code changes, use the ship workflow:
-
-\`\`\`
-Skill("ship")  →  Workflow({ scriptPath: "workflows/ship.js" })
-\`\`\`
-
-**NEVER spawn Marcus, Quinn, or Rook directly with the Agent tool.** The ship workflow captures transcripts, runs compliance grading, and enforces gates. Spawning agents directly bypasses all measurement.
-
-If Skill("harness") or Skill("goal") fails, fall back to Skill("ship") with the issue number.
-`,
+    content: shipWorkflowRule(resolveShipPolicy(scan.harnessConfig)),
   });
 
   if (specs.length > 0) {
