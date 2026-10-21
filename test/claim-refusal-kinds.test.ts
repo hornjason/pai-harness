@@ -4,6 +4,8 @@
  *
  * Covers SC-1432, SC-1433, SC-1434, SC-1435 (PARALLEL-AGENT-COORDINATION-SPEC.md).
  * Covers SC-2114, SC-2115 (#629).
+ * Covers SC-2463, SC-2464 (#906) — the refusal-kind registry, total over a
+ * closed union so a ninth kind is a build error rather than an unclassified row.
  *
  * Phase 1 gave `auditWorktreeClaims` three ownership answers and each of them
  * got its own sentence. Nothing checked that the sentences stay different.
@@ -108,15 +110,45 @@ function loadAudit(source: string = claimSource): Audit {
 const auditWorktreeClaims = loadAudit();
 
 /**
+ * The refusal kinds, as a closed union (#906).
+ *
+ * This was `kind: string` on an array of rows, looked up by
+ * `KINDS.find(r => r.kind === "co-owned conflict")!`. Two things were wrong
+ * with that and neither is style. A renamed kind turned every lookup into a
+ * runtime `undefined` deref rather than a compile error, and — the one AC-8
+ * is actually about — a NEW kind could be added to the array with no entry in
+ * the remedy table below it, because that table was keyed by `string` and a
+ * key it lacks is simply absent. Nothing refused; the new kind just had no
+ * remedy asserted, which is `UNCLASSIFIED` arriving at the end of a run
+ * rather than at the top of a build.
+ *
+ * Both tables are now TOTAL `Record`s over this union. Adding a kind is three
+ * edits and the compiler names all three; adding a refusal template to
+ * ship.js without adding a kind is still caught at runtime by *the table
+ * covers every refusal the block can emit*, which counts templates in the
+ * source. The two readings are deliberately different instruments — a type
+ * cannot see ship.js, and a count cannot see a missing remedy.
+ */
+type RefusalKind =
+  | "escapes-worktree"
+  | "unsafe but inside the worktree"
+  | "DA-owned write"
+  | "co-owned conflict"
+  | "multiple claimants"
+  | "out-of-scope unclaimed — another worktree owns it"
+  | "out-of-scope unclaimed — nobody owns it"
+  | "absent claim — no worktree issued one";
+
+/**
  * One row per refusal the block can emit.
  *
  * `token` is the row's DISCRIMINATOR: the phrase an operator would grep for,
  * which must appear in this kind's message and in no other's. `named` marks
- * the three kinds SC-5 calls out by name; the other three exist because the
- * table's job is to cover what the block emits, not what the issue remembered.
+ * the kinds SC-5 calls out by name; the others exist because the table's job
+ * is to cover what the block emits, not what the issue remembered.
  */
 interface Kind {
-  kind: string;
+  kind: RefusalKind;
   named: boolean;
   token: string;
   path: string;
@@ -125,9 +157,8 @@ interface Kind {
 
 const OTHER_WORK = { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] };
 
-const KINDS: Kind[] = [
-  {
-    kind: "escapes-worktree",
+const KIND_TABLE: Record<RefusalKind, Omit<Kind, "kind">> = {
+  "escapes-worktree": {
     named: false,
     token: "not inside its own worktree",
     path: `${WT_B}/lib/b.ts`,
@@ -140,11 +171,10 @@ const KINDS: Kind[] = [
       OTHER_WORK,
     ],
   },
-  {
-    // #400: inside the worktree, and still unstageable. Before #400 the audit
-    // had no opinion on this at all — it reported the run clean and staging
-    // refused the path two phases later, under a different message.
-    kind: "unsafe but inside the worktree",
+  // #400: inside the worktree, and still unstageable. Before #400 the audit
+  // had no opinion on this at all — it reported the run clean and staging
+  // refused the path two phases later, under a different message.
+  "unsafe but inside the worktree": {
     named: false,
     token: "cannot be staged",
     path: "lib/a;rm.ts",
@@ -157,9 +187,8 @@ const KINDS: Kind[] = [
       OTHER_WORK,
     ],
   },
-  {
-    // wf_0b15a933-b2b: CLAUDE.md told the agent to write it.
-    kind: "DA-owned write",
+  // wf_0b15a933-b2b: CLAUDE.md told the agent to write it.
+  "DA-owned write": {
     named: true,
     token: "DA-owned",
     path: "PROJECT-STATE.md",
@@ -172,9 +201,8 @@ const KINDS: Kind[] = [
       OTHER_WORK,
     ],
   },
-  {
-    // wf_536df065-969: the pre-push hook REQUIRES writing it, from everywhere.
-    kind: "co-owned conflict",
+  // wf_536df065-969: the pre-push hook REQUIRES writing it, from everywhere.
+  "co-owned conflict": {
     named: true,
     token: "co-owned registry",
     path: ALLOWLISTS,
@@ -183,8 +211,7 @@ const KINDS: Kind[] = [
       { worktreePath: WT_B, filesChanged: ["lib/b.ts", ALLOWLISTS], claimedFiles: ["lib/b.ts"] },
     ],
   },
-  {
-    kind: "multiple claimants",
+  "multiple claimants": {
     named: false,
     token: "a file may have one claimant",
     path: "lib/shared.ts",
@@ -193,9 +220,8 @@ const KINDS: Kind[] = [
       { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/shared.ts", "lib/b.ts"] },
     ],
   },
-  {
-    // wf_536df065-969 again, and the half SC-3 pins: genuine scope creep.
-    kind: "out-of-scope unclaimed — another worktree owns it",
+  // wf_536df065-969 again, and the half SC-3 pins: genuine scope creep.
+  "out-of-scope unclaimed — another worktree owns it": {
     named: true,
     token: "that file is claimed by",
     path: "gates/workflow.test.ts",
@@ -212,13 +238,12 @@ const KINDS: Kind[] = [
       },
     ],
   },
-  {
-    // #629: this row is now the narrower of two. Claims WERE issued in this
-    // run — WT_A claims lib/a.ts and WT_B claims lib/b.ts — and none of them
-    // names the reported file. The sentence #296 SC-3 pinned is true of
-    // exactly this case, which is why the split below adds an arm instead of
-    // rewording it.
-    kind: "out-of-scope unclaimed — nobody owns it",
+  // #629: this row is now the narrower of two. Claims WERE issued in this
+  // run — WT_A claims lib/a.ts and WT_B claims lib/b.ts — and none of them
+  // names the reported file. The sentence #296 SC-3 pinned is true of
+  // exactly this case, which is why the split below adds an arm instead of
+  // rewording it.
+  "out-of-scope unclaimed — nobody owns it": {
     named: true,
     token: "no worktree claimed that file",
     path: "gates/workflow.test.ts",
@@ -231,13 +256,12 @@ const KINDS: Kind[] = [
       OTHER_WORK,
     ],
   },
-  {
-    // #629: the opposite fact under the same `claimant === null`. NOBODY
-    // issued a claim, so the comparison never had an input — which is #627's
-    // defect seen from the refusal, and a caller fault rather than an agent
-    // one. Two participants, because one would take SINGLE_WORKTREE_EXEMPT
-    // and collect everything (#228), and then this arm is unreachable.
-    kind: "absent claim — no worktree issued one",
+  // #629: the opposite fact under the same `claimant === null`. NOBODY
+  // issued a claim, so the comparison never had an input — which is #627's
+  // defect seen from the refusal, and a caller fault rather than an agent
+  // one. Two participants, because one would take SINGLE_WORKTREE_EXEMPT
+  // and collect everything (#228), and then this arm is unreachable.
+  "absent claim — no worktree issued one": {
     named: false,
     token: "issued a claim at all",
     path: "gates/workflow.test.ts",
@@ -246,7 +270,16 @@ const KINDS: Kind[] = [
       { worktreePath: WT_B, filesChanged: ["lib/b.ts"] },
     ],
   },
-];
+};
+
+/** Every key of the union, read off the table rather than written twice. */
+const KIND_IDS = Object.keys(KIND_TABLE) as RefusalKind[];
+
+/** The rows, in declaration order, each carrying the key it was filed under. */
+const KINDS: Kind[] = KIND_IDS.map(kind => ({ kind, ...KIND_TABLE[kind] }));
+
+/** Lookup by key, not by scanning for a prose match. */
+const kindRow = (kind: RefusalKind): Kind => ({ kind, ...KIND_TABLE[kind] });
 
 /** The one message this row's fixture produces, read off the real audit. */
 function messageFor(row: Kind, audit: Audit = auditWorktreeClaims): string {
@@ -387,7 +420,7 @@ describe("SC-1433: the refusals are pairwise distinguishable", () => {
     // SC-5 may prove these different; it may not change them. Asserted here
     // so a later distinctness fix cannot buy green by rewording the one
     // message another criterion holds fixed.
-    const byKind = (k: string) => messageFor(KINDS.find(r => r.kind === k)!);
+    const byKind = (k: RefusalKind) => messageFor(kindRow(k));
     expect(byKind("out-of-scope unclaimed — another worktree owns it")).toBe(
       `${WT_A} reported gates/workflow.test.ts, which it did not claim — that file is claimed by ${WT_B}`,
     );
@@ -479,34 +512,125 @@ describe("#629 AC-3: an absent claim says WHICH absence it is", () => {
 // ── SC-1434: what the operator does next is in the message ────
 
 describe("SC-1434: each refusal says what to do about it", () => {
-  const REMEDY: Record<string, string[]> = {
-    "DA-owned write": ["#296", "the DA will write it"],
-    "co-owned conflict": ["#296", "Merge them in one place"],
-    "co-owned conflict:writers": ["wf_a", "wf_b"],
+  /**
+   * TOTAL over `RefusalKind` (#906), and the totality is the point.
+   *
+   * Before, this was `Record<string, string[]>` holding two kinds, read by
+   * two hand-written cases naming those two. A seventh and eighth kind
+   * arrived (#400, #629) and neither case noticed, because a `Record<string,
+   * …>` has no opinion about a key it lacks — the new kinds simply had no
+   * remedy asserted. That is the `UNCLASSIFIED` arriving silently at the end
+   * of a run rather than as a build error, which is what AC-8 is about.
+   *
+   * Every kind must now declare ONE of two things, and a new kind compiles
+   * only once it has:
+   *
+   * - `tokens` — the phrases that make the refusal actionable, asserted by
+   *   the loop below over every kind that declares them. Not by a case per
+   *   kind: self-selecting which rows to check is how the last two got
+   *   missed.
+   * - `none` — no next action in the message, **with the reason**. A blank
+   *   escape hatch is one somebody takes by reflex; a reason has to be true.
+   *   Two of these are load-bearing: SC-5 pins rows 6 and 7 by exact
+   *   equality, so a remedy clause cannot be added to them here without
+   *   breaking the pin, and recording that is more useful than leaving a
+   *   reader to rediscover it.
+   */
+  type Remedy = { tokens: string[] } | { none: string };
+
+  const REMEDY: Record<RefusalKind, Remedy> = {
+    "escapes-worktree": {
+      none: "states the boundary rule and names the path; the correction is the agent's and the message does not prescribe one",
+    },
+    "unsafe but inside the worktree": {
+      none: "names the phase that would otherwise fail (git add); there is no action an operator takes on the refusal itself",
+    },
+    // Without both tokens, the next agent reads CLAUDE.md's "update
+    // PROJECT-STATE.md at milestones" line and does the same thing tomorrow —
+    // which is how wf_0b15a933-b2b happened in the first place.
+    "DA-owned write": { tokens: ["#296", "the DA will write it"] },
+    // "Merge them in one place" is unactionable without knowing which places,
+    // so the writers are part of the remedy rather than a separate row.
+    "co-owned conflict": { tokens: ["#296", "Merge them in one place", WT_A, WT_B] },
+    "multiple claimants": {
+      none: "states the invariant; which of the claimants should win is not decidable from the collection side",
+    },
+    "out-of-scope unclaimed — another worktree owns it": {
+      none: "SC-5 pins this sentence by exact equality — a remedy clause cannot be added without breaking the pin",
+    },
+    "out-of-scope unclaimed — nobody owns it": {
+      none: "SC-5 pins this sentence by exact equality — a remedy clause cannot be added without breaking the pin",
+    },
+    // #627: the one refusal that points UPSTREAM. Re-running the agent
+    // reproduces it, so saying so is the whole value of the arm.
+    "absent claim — no worktree issued one": {
+      tokens: ["#627", "Fix the caller", "re-collect"],
+    },
   };
 
-  test("the DA-owned refusal points at the rule and the alternative", () => {
-    // Without both, the next agent reads CLAUDE.md's "update PROJECT-STATE.md
-    // at milestones" line and does the same thing tomorrow — which is how
-    // wf_0b15a933-b2b happened in the first place.
-    const detail = messageFor(KINDS.find(r => r.kind === "DA-owned write")!);
-    for (const token of REMEDY["DA-owned write"]!) expect(detail).toContain(token);
+  test("every kind that declares a remedy carries it in the real message", () => {
+    // Driven over the table, not over a hand-picked pair. The two kinds this
+    // case replaces were the only two anybody had written a case for.
+    const checked: RefusalKind[] = [];
+    for (const kind of KIND_IDS) {
+      const remedy = REMEDY[kind];
+      if (!("tokens" in remedy)) continue;
+      checked.push(kind);
+      const detail = messageFor(kindRow(kind));
+      for (const token of remedy.tokens) expect(detail, `${kind} is missing "${token}"`).toContain(token);
+    }
+    // The loop is vacuous if the table ever declares `none` everywhere.
+    expect(checked.length, "no kind declares a remedy — the loop above asserts nothing").toBeGreaterThan(0);
   });
 
-  test("the co-owned refusal names every worktree that wrote it", () => {
-    // "Merge them in one place" is unactionable without knowing which places.
-    const detail = messageFor(KINDS.find(r => r.kind === "co-owned conflict")!);
-    for (const token of REMEDY["co-owned conflict"]!) expect(detail).toContain(token);
-    expect(detail).toContain(WT_A);
-    expect(detail).toContain(WT_B);
+  test("every kind that declares no remedy says WHY, in a sentence", () => {
+    for (const kind of KIND_IDS) {
+      const remedy = REMEDY[kind];
+      if ("tokens" in remedy) continue;
+      expect(remedy.none.length, `${kind} opted out of a remedy with a blank reason`).toBeGreaterThan(20);
+    }
+  });
+
+  test("a kind that declares no remedy is not quietly carrying another kind's", () => {
+    // The failure a total table makes possible to catch and a partial one
+    // cannot: a new kind whose message was copied from a neighbour, filed
+    // under `none` because nobody read it. The copy still carries the
+    // neighbour's imperative, so the operator is told to do something that is
+    // wrong for this kind — strictly worse than being told nothing.
+    //
+    // Worktree paths are excluded from the cross-check, not forgotten: every
+    // message opens with the reporting worktree, so WT_A is in all eight by
+    // construction and comparing on it would make this case red for reasons
+    // that are not about remedies.
+    const imperatives = [
+      ...new Set(
+        KIND_IDS.flatMap(k => {
+          const r = REMEDY[k];
+          return "tokens" in r ? r.tokens : [];
+        }),
+      ),
+    ].filter(t => !t.startsWith(PROJECT));
+    expect(imperatives.length, "nothing to cross-check — the comparison below is vacuous").toBeGreaterThan(0);
+
+    for (const kind of KIND_IDS) {
+      if ("tokens" in REMEDY[kind]) continue;
+      const detail = messageFor(kindRow(kind));
+      for (const token of imperatives) {
+        expect(detail, `${kind} declares no remedy but its message carries "${token}"`).not.toContain(token);
+      }
+    }
   });
 
   test("the scope-creep refusal does NOT borrow an ownership excuse", () => {
     // The inverse of the above, and the primary correctness constraint of
     // #296: a change that makes all three read like ownership has deleted
     // SC-413 and kept the file.
-    for (const kind of ["out-of-scope unclaimed — another worktree owns it", "out-of-scope unclaimed — nobody owns it"]) {
-      const detail = messageFor(KINDS.find(r => r.kind === kind)!);
+    const kinds: RefusalKind[] = [
+      "out-of-scope unclaimed — another worktree owns it",
+      "out-of-scope unclaimed — nobody owns it",
+    ];
+    for (const kind of kinds) {
+      const detail = messageFor(kindRow(kind));
       expect(detail, kind).not.toContain("DA-owned");
       expect(detail, kind).not.toContain("co-owned");
     }
@@ -535,8 +659,8 @@ describe("SC-1435: MUTANT — two kinds collapsed into one message", () => {
     return loadAudit(claimSource.replace(CO_OWNED_TEMPLATE, GENERIC));
   }
 
-  const coOwned = KINDS.find(r => r.kind === "co-owned conflict")!;
-  const unclaimed = KINDS.find(r => r.kind === "out-of-scope unclaimed — nobody owns it")!;
+  const coOwned = kindRow("co-owned conflict");
+  const unclaimed = kindRow("out-of-scope unclaimed — nobody owns it");
 
   test("the co-owned message has exactly one site, so the mutation is total", () => {
     expect(claimSource.split(CO_OWNED_TEMPLATE).length - 1).toBe(1);
