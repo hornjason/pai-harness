@@ -2475,12 +2475,28 @@ export const AI_REVIEW_APP_INSTALL_401 =
  * `skipped` branch already uses for the workflow-validation guard: *"the
  * usual cause is…"*, with the reader left holding the evidence.
  *
- * It is attached to the generic non-zero branch unconditionally, so it
- * cannot misclassify: a reviewer that crashed and a reviewer that was never
- * allowed to start still produce the same message and the same verdict, and
- * `${AI_REVIEW_REQUIRE_VAR}` still decides whether that refuses or warns.
- * Collapsing those two into one DETECTED state is the mistake #803 itself
- * warns against; naming one of them as a likely cause is not.
+ * ## Where it is attached, and why that NARROWED (#826)
+ *
+ * It was attached to the generic non-zero branch unconditionally. The
+ * argument for that was that an unconditional sentence cannot misclassify —
+ * a reviewer that crashed and a reviewer that was never allowed to start got
+ * the same message and the same verdict, which is better than a detector
+ * nobody has watched work.
+ *
+ * **That held while nothing on the branch could be read. It stopped holding
+ * when `${AI_REVIEW_EXECUTION_FILE_VAR}` was bound into the step.** Measured
+ * over seven consecutive runs, three took this branch —`39683654861`,
+ * `39681656175`, `39682051799`, at 54, 51 and 52 turns against a configured
+ * maximum of 50 — and on all three the execution file was a real, readable
+ * path. An agent that wrote an execution file completed the app-token
+ * exchange this cause is about, so the sentence was wrong on three of three.
+ *
+ * So the cause is now named on **one** route: the one where no execution file
+ * exists, which is the state #803 actually measured on run `39456331887`.
+ * That is still a NAMED CAUSE and not a detection — the 401 is not read, it
+ * is still only the likely explanation, and `${AI_REVIEW_REQUIRE_VAR}` still
+ * decides refuse-or-warn identically on every route. What changed is that it
+ * is no longer printed over readings that contradict it.
  */
 export const AI_REVIEW_APP_INSTALL_CAUSE =
   `If every earlier step succeeded — a credential resolved and the action ` +
@@ -2502,11 +2518,82 @@ export const AI_REVIEW_APP_INSTALL_CAUSE =
   `so it is naming a likely cause and not reporting a measured one.`;
 
 export function buildReviewRunScript(): string {
+  // The DECLINED route, and the only one of the five below on which the
+  // app-install cause can be true: no execution file means the action never
+  // got far enough to write one (#826).
   const pending =
-    `The review action (#631) did not complete, so no AI review ran on this ` +
-    `pull request and no findings payload was written. This ` +
-    `check is UNMEASURED, not a passing review. ` +
+    `The review action (#631) did not complete, and it wrote no execution ` +
+    `file, so no AI review ran on this pull request and no findings payload ` +
+    `was written. This check is UNMEASURED, not a passing review. ` +
     `${AI_REVIEW_APP_INSTALL_CAUSE}`;
+
+  // #826, the FAILURE branch's four other routes. The same repair #849 made
+  // on the success branch, applied to the branch it did not reach: take the
+  // readings that are already bound into this step, and say which one holds.
+  //
+  // THE ROUTE DECIDES THE SENTENCE AND NEVER THE EXIT CODE, exactly as the
+  // success branch states. `${refusal}` below is unchanged and is printed on
+  // all five; `test/ai-review-failure-route.test.ts` AC-F6 asserts the exit
+  // code is identical across every route in both directions of the switch, so
+  // an edit that lets a reading move the verdict goes red.
+
+  // A payload IS on disk and the action still failed. The previous sentence
+  // asserted the opposite without stat'ing the path — this branch is reached
+  // before the success branch's `-s` test, so nothing had ever looked. The
+  // verdict does not soften: an action that did not complete has not produced
+  // a review whose payload can be trusted, and nothing reads it anyway (#675).
+  const pendingPayload =
+    `The review action (#631) did not complete, and yet a findings payload ` +
+    `IS present at the path this job gave the reviewer. So the reviewer ran ` +
+    `and wrote a result, and the action failed around it. The payload is NOT ` +
+    `adjudicated — nothing in this job reads one (#675) — and a run whose ` +
+    `action did not complete is not a run whose review can be trusted to be ` +
+    `whole. Read the execution file and the action's own log before treating ` +
+    `that file as a verdict. This check is UNMEASURED, not a passing review.`;
+
+  // The measured overshoot. `base-action/src/run-claude-sdk.ts` at the pinned
+  // SHA writes the execution file at `:222` and only then throws at `:249`
+  // when `subtype === "success" && !is_error && num_turns > maxTurns` — so a
+  // result message saying `success` inside a run whose action FAILED is the
+  // action rejecting a review the CLI completed. Three runs tonight: 54, 51
+  // and 52 turns against 50.
+  //
+  // A text read of a JSON document, for the reason the success branch gives:
+  // a runner is not guaranteed `jq`, and a false match here costs a different
+  // sentence rather than a different verdict.
+  const pendingRejected =
+    `The review action (#631) did not complete, and its execution file ` +
+    `reports the reviewer reported a SUCCESSFUL result. So the CLI finished ` +
+    `and the ACTION rejected the run afterwards — at the pinned SHA the one ` +
+    `thing that does this is the action's own turn accounting, which throws ` +
+    `when the completed run's turn count exceeds --max-turns. Read the ` +
+    `execution file's num_turns against the configured maximum, which this ` +
+    `job sets to ${AI_REVIEW_MAX_TURNS}; raising it is the lever if they ` +
+    `are close. The Claude ` +
+    `Code GitHub App is NOT the cause here — the reviewer could not have run ` +
+    `at all without it. This check is UNMEASURED, not a passing review.`;
+
+  // Executed and did not report success. The app-install cause is refuted by
+  // the file's existence; beyond that this job does not know, and says so
+  // rather than picking a cause.
+  const pendingExecuted =
+    `The review action (#631) did not complete, and it DID write an ` +
+    `execution file, so the reviewer executed and this is not the case where ` +
+    `the action declined before running. The Claude Code GitHub App is ` +
+    `installed — the agent could not have started otherwise — so that is not ` +
+    `worth checking. Read the execution file for the result subtype, the ` +
+    `turn count and the permission denials, and the action's own log for the ` +
+    `error it exited on. This check is UNMEASURED, not a passing review.`;
+
+  // Named and unreadable. Reporting this as the declined route would be a
+  // default substituted for a reading, which is the defect this step exists
+  // to stop committing.
+  const pendingRouteUnmeasured =
+    `The review action (#631) did not complete, and it named an execution ` +
+    `file this job could not read, so WHY it did not complete is UNMEASURED ` +
+    `as well. The output was set, so the action got far enough to set it; ` +
+    `beyond that this job cannot say which route produced the failure. This ` +
+    `check is UNMEASURED, not a passing review.`;
 
   const refusal =
     `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the review ` +
@@ -2798,7 +2885,39 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
   exit 0
 fi
 
-echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${pending}"
+# #826. The action did not complete. WHICH of five states that is, read from
+# the two things already bound into this step, rather than asserted.
+#
+# The order is the order of what each reading can settle. The payload is this
+# job's OWN artefact and goes first: "a payload is there" is true whatever the
+# execution file says, and the sentence this branch used to print denied it
+# without ever stat'ing the path. The execution file is the pinned action's
+# artefact and settles the rest.
+#
+# Same convention as the success branch above: \`route\` is a string this block
+# prints, no branch below reads it, and \${AI_REVIEW_REQUIRED_EXIT} is reached
+# through the same single check whichever route holds.
+if [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
+  route="${pendingPayload}"
+elif [ -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
+  # A text read of a JSON document, deliberately — see the success branch.
+  # \`"subtype": "success"\` inside a run whose ACTION failed is the action
+  # rejecting a review the CLI completed, which at the pinned SHA is the turn
+  # accounting in base-action/src/run-claude-sdk.ts:244-250.
+  if grep -qE '"subtype"[[:space:]]*:[[:space:]]*"success"' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
+    route="${pendingRejected}"
+  else
+    route="${pendingExecuted}"
+  fi
+elif [ -n "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
+  # Named but unreadable. Reporting it as the declined route would be a
+  # default substituted for a reading.
+  route="${pendingRouteUnmeasured}"
+else
+  route="${pending}"
+fi
+
+echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::$(escape_annotation "\${route}")"
 
 if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
   echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2
