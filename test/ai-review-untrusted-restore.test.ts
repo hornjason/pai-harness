@@ -221,8 +221,12 @@ describe("AC-1: the restore is a harness-owned step, strictly before the baselin
     // skipped by `if:` reports `skipped`, and a skipped required check can
     // be treated as satisfied.
     expect(step.if, "the restore carries a condition").toBeUndefined();
+    // Both events since #867: the job runs on `merge_group` too, and
+    // `pull_request.base.ref` is empty there — which this step refuses. The
+    // merge-group reading is asserted in test/ai-review-merge-group.test.ts
+    // alongside the normalisation the two spellings need.
     expect(step.env?.[AI_REVIEW_BASE_REF_VAR]).toBe(
-      "${{ github.event.pull_request.base.ref }}",
+      "${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}",
     );
   });
 
@@ -469,7 +473,9 @@ describe("AC-3: the drift check still catches the reviewer", () => {
       [AI_REVIEW_BASE_REF_VAR]: "no-such-branch-9401",
     });
     expect(missing.code, "a base branch that does not exist was accepted").not.toBe(0);
-    expect(missing.stderr).toContain("could not fetch the pull request base");
+    // "the base", not "the pull request base": since #867 this step also runs
+    // on a merge group, where there is no pull request to name.
+    expect(missing.stderr).toContain("could not fetch the base");
     expect(
       missing.stderr,
       "the refusal came from the empty-ref branch, not the fetch",

@@ -30,13 +30,20 @@
  * That is strictly worse than absent: the file then reads as handling the event
  * while the queue still hangs. The case asserts the key stands alone.
  *
- * **ai-review.yml is excluded deliberately, and the exclusion is asserted.**
- * `lib/scaffold/steps.ts` states the reason: the job reviews a pull request, and
- * a merge group has no pull request. Adding the trigger there would manufacture
- * the vacuous run that file's own header argues against. Asserted rather than
- * left to convention, so that "all workflows get merge_group" cannot be applied
- * as a blanket rule by a later reader — and so the omission reads as a decision
- * instead of an oversight.
+ * **Every generated workflow, read off the generated set (#867).** The cases
+ * enumerate what the generator actually wrote into the directory rather than a
+ * list of three names typed here, so a fourth generated workflow is covered the
+ * day it lands instead of the day somebody remembers to add it.
+ *
+ * `ai-review.yml` was excluded here until #867, and the exclusion was asserted
+ * as a deliberate decision on the reasoning that a merge group has no pull
+ * request to review. The reasoning is sound and the conclusion was not: it is
+ * an argument about what the job can *do* on the event, and it was applied to
+ * whether the job *reports* on it. A required context that never reports is the
+ * silent hang this whole file exists to prevent, and `ai-review` is the context
+ * a consumer is most likely to require, because it is the only one that reads
+ * the code. The argument now lives in the report step, where it decides the
+ * verdict — see `test/ai-review-merge-group.test.ts`.
  *
  * ## The cheapest wrong fix, named
  *
@@ -52,7 +59,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
@@ -89,16 +96,18 @@ function generate(shards: number): Record<string, string> {
 
     createCiWorkflows(root, [], { force: true });
 
+    // #867 SC-C. READ THE DIRECTORY, never a list of names typed here. The
+    // property is "every workflow this generator writes handles the event",
+    // and a hand-written triple can only ever check the three somebody
+    // remembered — a fourth generated workflow would be added, would miss the
+    // trigger, and every case below would still pass while saying it had
+    // checked them all. That is the same shape as the bug this file is about:
+    // a check that passed because of what it never looked at.
     const dir = join(root, ".github", "workflows");
     const out: Record<string, string> = {};
-    for (const name of ["ci.yml", "gates.yml", "ai-review.yml"]) {
-      try {
-        out[name] = readFileSync(join(dir, name), "utf8");
-      } catch {
-        // Recorded as absent rather than skipped. A missing file and a file
-        // without the trigger need opposite actions, and a `continue` here
-        // would make them the same reading.
-      }
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".yml") && !name.endsWith(".yaml")) continue;
+      out[name] = readFileSync(join(dir, name), "utf8");
     }
     return out;
   } finally {
@@ -149,10 +158,31 @@ describe("#765: a merge queue cannot hang on a check that never reports", () => 
     expect(triggerBlock(generate(4)["gates.yml"])).toContain(QUEUE_EVENT);
   });
 
-  test("the trigger carries no branches: filter, in either body", () => {
+  // #867 SC-C. The generated SET, not three remembered names. `ai-review.yml`
+  // was excluded here until #867 and the exclusion was asserted as a decision;
+  // the decision was wrong for the only reason that mattered — a consumer
+  // makes `ai-review` required *because* it is the check that reads the code,
+  // and a required context with no `merge_group` trigger hangs the queue.
+  test("EVERY generated workflow handles merge_group", () => {
     for (const shards of [4, 1]) {
-      for (const name of ["ci.yml", "gates.yml"]) {
-        const block = triggerBlock(generate(shards)[name]);
+      const files = generate(shards);
+      const names = Object.keys(files);
+      expect(names.length, "nothing was generated — this case is vacuous").toBeGreaterThan(2);
+      for (const name of names) {
+        expect(
+          triggerBlock(files[name]),
+          `${name} (shards=${shards}) has no ${QUEUE_EVENT} — a merge queue would wait forever for it if it were required`,
+        ).toContain(QUEUE_EVENT);
+      }
+    }
+  });
+
+  test("the trigger carries no branches: filter, in any generated workflow", () => {
+    for (const shards of [4, 1]) {
+      const files = generate(shards);
+      expect(Object.keys(files).length, "nothing was generated — this case is vacuous").toBeGreaterThan(2);
+      for (const name of Object.keys(files)) {
+        const block = triggerBlock(files[name]);
         const lines = block.split("\n");
         const at = lines.findIndex((l) => l.trim() === QUEUE_EVENT);
         expect(at, `${name} (shards=${shards}) must declare ${QUEUE_EVENT} on its own line`).toBeGreaterThan(-1);
@@ -202,13 +232,18 @@ describe("#765: a merge queue cannot hang on a check that never reports", () => 
     }
   });
 
-  test("ai-review.yml does NOT handle merge_group, deliberately", () => {
-    // Not an oversight. The job reviews a pull request and a merge group has
-    // none, so the run's outcome would mean nothing — the generator says so in
-    // a comment. Asserted so nobody applies "every workflow needs merge_group"
-    // as a blanket rule, and so the omission is a recorded decision.
+  // #867. The case this replaces asserted the OPPOSITE — that `ai-review.yml`
+  // deliberately omits the trigger, on the reasoning that a merge group has no
+  // pull request to review. That reasoning is still true and is why the job
+  // cannot REVIEW on the event; it was the wrong conclusion about the TRIGGER,
+  // because a required context has to report on every ref the queue builds
+  // whether or not it has work to do. Reporting nothing is not neutral — it is
+  // the silent hang. The reasoning moved to the report step, where it decides
+  // the verdict instead of deciding the trigger.
+  test("ai-review.yml keeps its pull_request trigger alongside merge_group", () => {
     const block = triggerBlock(generate(4)["ai-review.yml"]);
     expect(block.length).toBeGreaterThan(10);
-    expect(block, "ai-review has no pull request to review in a merge group").not.toContain(QUEUE_EVENT);
+    expect(block, "the queue trigger replaced the pull request one").toContain("pull_request:");
+    expect(block).toContain(QUEUE_EVENT);
   });
 });
