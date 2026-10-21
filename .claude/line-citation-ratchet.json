@@ -14,13 +14,21 @@
       "anchors": 0,
       "note": "#664's measurement table. The three broken ones are the three windows the sweep found that the hand list missed, cited by basename."
     },
-    ".claude/rules/config-access.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
-    ".claude/rules/ship-workflow.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    ".claude/rules/config-access.md": {
+      "broken": 0,
+      "unmeasured": 1,
+      "anchors": 0
+    },
+    ".claude/rules/ship-workflow.md": {
+      "broken": 0,
+      "unmeasured": 1,
+      "anchors": 0
+    },
     "PROJECT-STATE.md": {
-      "broken": 6,
+      "broken": 1,
       "unmeasured": 1,
       "anchors": 0,
-      "note": "DA-owned (#296). An agent in a worktree must never write this file, so its citations are banked here and reported as prose rather than repaired in passing."
+      "note": "DA-owned (#296). An agent in a worktree must never write this file, so its citations are banked here and reported as prose rather than repaired in passing. Lowered 6 -> 1 in session 56: regenerating the file rendered three sessions, and the older entries that carried the other five broken citations are no longer in the rendered window."
     },
     "SUCCESS.md": {
       "broken": 4,
@@ -52,8 +60,16 @@
       "anchors": 0,
       "note": "A dated council record."
     },
-    "docs/research/session-audit-2026-09-21-session2.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
-    "gates/SCHEMA-GUIDE.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "docs/research/session-audit-2026-09-21-session2.md": {
+      "broken": 0,
+      "unmeasured": 1,
+      "anchors": 0
+    },
+    "gates/SCHEMA-GUIDE.md": {
+      "broken": 0,
+      "unmeasured": 1,
+      "anchors": 0
+    },
     "reference/specs/HARNESS-EXTRACTION-SPEC.md": {
       "broken": 19,
       "unmeasured": 2,
@@ -66,7 +82,11 @@
       "anchors": 0,
       "note": "Was 1 broken before #541; one bare basename qualified."
     },
-    "specs/DOC-HYGIENE-ARCHITECTURE-SPEC.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
+    "specs/DOC-HYGIENE-ARCHITECTURE-SPEC.md": {
+      "broken": 0,
+      "unmeasured": 1,
+      "anchors": 0
+    },
     "specs/GATE-CONTRACTS-SPEC.md": {
       "broken": 0,
       "unmeasured": 0,
@@ -85,16 +105,36 @@
       "anchors": 0,
       "note": "The largest live population, mostly #664's measurement tables."
     },
-    "specs/HOOK-ARCHITECTURE-SPEC.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
-    "specs/INSTRUCTION-COMPLIANCE-SPEC.md": { "broken": 0, "unmeasured": 2, "anchors": 0 },
-    "specs/PARALLEL-AGENT-COORDINATION-SPEC.md": { "broken": 0, "unmeasured": 1, "anchors": 0 },
-    "specs/SCAFFOLD-DECOMPOSITION-SPEC.md": { "broken": 0, "unmeasured": 2, "anchors": 0 },
+    "specs/HOOK-ARCHITECTURE-SPEC.md": {
+      "broken": 0,
+      "unmeasured": 1,
+      "anchors": 0
+    },
+    "specs/INSTRUCTION-COMPLIANCE-SPEC.md": {
+      "broken": 0,
+      "unmeasured": 2,
+      "anchors": 0
+    },
+    "specs/PARALLEL-AGENT-COORDINATION-SPEC.md": {
+      "broken": 0,
+      "unmeasured": 1,
+      "anchors": 0
+    },
+    "specs/SCAFFOLD-DECOMPOSITION-SPEC.md": {
+      "broken": 0,
+      "unmeasured": 2,
+      "anchors": 0
+    },
     "specs/bootstrap-data-flow/rca-protocol.md": {
       "broken": 2,
       "unmeasured": 0,
       "anchors": 0,
       "note": "Both are illustrative paths inside JSON samples showing what an RCA field looks like in a consumer's project. They are not claims about this repository and will never resolve; they are banked rather than exempted, because an exemption nobody has to justify is a warning nobody reads."
     },
-    "specs/bootstrap-data-flow/success-criteria.md": { "broken": 0, "unmeasured": 2, "anchors": 0 }
+    "specs/bootstrap-data-flow/success-criteria.md": {
+      "broken": 0,
+      "unmeasured": 2,
+      "anchors": 0
+    }
   }
 }
