@@ -1,13 +1,13 @@
 {
   "_readme": [
     "SC id reservations. Read by lib/sc-reservations.ts and enforced by lib/create-sc.ts.",
-    "Declare your block HERE, on main, before you consume any id — including a renumber",
+    "Declare your block HERE, on main, before you consume any id \u2014 including a renumber",
     "during a repair, a hand-written fixture id, or a block chosen by eyeballing headroom.",
     "A renumber is an allocation. See .claude/rules/parallel-sessions.md and issue #725.",
     "",
     "Shape: every entry needs owner (branch name or issue ref), from and to (inclusive,",
     "positive integers below the 9000 fixture floor). note is optional. Blocks must not",
-    "overlap — the reader refuses the whole store if two do, because a store that hands",
+    "overlap \u2014 the reader refuses the whole store if two do, because a store that hands",
     "one id to two owners is worse than no store at all.",
     "",
     "The `reservations` key is the control string: an object without it is UNREADABLE,",
@@ -38,6 +38,12 @@
       "from": 2460,
       "to": 2479,
       "note": "#906 - content-comparison mutation harness, refusal-kind registry, cheapest-wrong-fix record. Delete when the PR merges."
+    },
+    {
+      "owner": "fix/312-recorder-contract",
+      "from": 2480,
+      "to": 2499,
+      "note": "#312 SC-A15 harness half: the container tier is the one probe target lib/dev-liveness.ts never claimed, so ship.js builds its own URL with `hosts[0]` on a possibly-empty array and `port || 3000`. Reserved before any id is consumed."
     }
   ]
 }
