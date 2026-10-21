@@ -41,10 +41,9 @@
  */
 
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
-import { join } from "path";
 import { parseHookInput } from "./lib/parseStdin";
 import { errorFacts, recordHookFiring } from "../lib/hook-evidence";
+import { projectStateTarget } from "../lib/project-state-root";
 
 const HOOK = "ProjectStateSync";
 
@@ -58,14 +57,23 @@ const filePath: string = input.tool_input?.file_path || "";
 // same observation, which is #910.
 if (!filePath.endsWith("project-state.json")) process.exit(0);
 
-const projectRoot = filePath.replace(/\/project-state\.json$/, "");
-const script = join(projectRoot, "scripts", "update-project-state.ts");
 const cwd = (input as { cwd?: string }).cwd;
 
-if (!existsSync(script)) {
-  recordHookFiring(HOOK, "declined-no-generator", { filePath, cwd, script });
+// WHERE this may run is decided in `lib/project-state-root.ts`, not here —
+// hooks are thin triggers, and a decision with a dozen inputs needs cases
+// that reach each one without a subprocess. Read that module's header before
+// trusting this to stop anything; its WHAT THIS DOES NOT COVER block is the
+// honest boundary.
+//
+// `existsSync(script)` used to be the only gate, and the hook's own comment
+// called it "a bar, not a wall — it only requires the payload to be a real
+// directory, and /tmp is writable" (#1001).
+const target = projectStateTarget(filePath);
+if (!target.ok) {
+  recordHookFiring(HOOK, target.outcome, { ...target.detail, cwd });
   process.exit(0);
 }
+const { projectRoot, script } = target;
 
 try {
   // ARGUMENT ARRAY, never a shell string (#971). `filePath` arrives from a
@@ -77,8 +85,9 @@ try {
   // `p$(touch /tmp/pwned)q` ran the `touch`. `execFileSync` spawns `bun`
   // directly with an argv, so no metacharacter in a path is interpreted.
   //
-  // `existsSync(script)` above is a bar, not a wall — it only requires the
-  // payload to be a real directory, and /tmp is writable.
+  // That alone was never enough: WHERE this runs is the other half, and
+  // until #1001 it was wherever the tool call pointed. See
+  // `lib/project-state-root.ts`.
   execFileSync("bun", [script, "--skip-tests"], {
     cwd: projectRoot,
     stdio: "pipe",

@@ -98,7 +98,7 @@
  *   vacuously.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { spawnSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import {
   chmodSync,
   copyFileSync,
@@ -260,8 +260,16 @@ function driveHook(
  * `dirName` is the directory the `project-state.json` write targets, and the
  * payload is BUILT INTO IT — a directory literally named
  * `p$(touch <canary>)q` on disk. That is the whole point: the fixture is a
- * real path, so the hook passes its own `existsSync` guard and reaches the
- * feature, which `#971 SC-2` requires in as many words.
+ * real path, so the hook passes its own guards and reaches the feature,
+ * which `#971 SC-2` requires in as many words.
+ *
+ * Since #1001 the fixture must also be the ROOT OF A GIT REPOSITORY — the
+ * hook no longer runs a generator in any directory that merely has the right
+ * two files in it. `git init` is argv, so a directory whose name contains
+ * `$(…)` is initialised without the shell ever seeing it; the payload stays
+ * in the path, which is what these arms are about. Without this the three
+ * ProjectStateSync arms stop at the root anchor and witness nothing — a
+ * clean canary that means the case never reached the exec.
  */
 function runProjectStateSync(hookPath: string, makeDirName: (canary: string) => string) {
   const base = scratch("pss");
@@ -269,6 +277,7 @@ function runProjectStateSync(hookPath: string, makeDirName: (canary: string) => 
   const marker = join(base, "GENERATOR-RAN");
   const projectRoot = join(base, makeDirName(canary));
   mkdirSync(join(projectRoot, "scripts"), { recursive: true });
+  execFileSync("git", ["-C", projectRoot, "init", "-q"], { stdio: "ignore" });
   // The generator stub IS the reach marker. It is a real file at the real
   // path, so `existsSync(script)` passes and the hook goes on to spawn it.
   writeFileSync(
