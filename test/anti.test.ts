@@ -8,6 +8,8 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
+import { remedyMessage } from "../lib/check-remedy";
+
 const HARNESS = join(import.meta.dir, "..");
 
 describe("Anti-Criteria: must NOT happen", () => {
@@ -21,16 +23,55 @@ describe("Anti-Criteria: must NOT happen", () => {
   // three are held as an exact list below: a subdirectory left out of the
   // walk is a subdirectory nobody measures again, where a count refuses
   // growth and goes red as an instruction to delist.
+  //
+  // #924. The SECOND consumer's check was a bare
+  // `expect(hits(needle)).toEqual([])` with no failure message, twelve lines
+  // below a sibling that had a full one. On 2026-10-21 it reddened two
+  // unrelated branches in four hours — `fix/887-detect-existing-pr` over
+  // `lib/prior-branch.ts`, `fix/909-protection-gate` over
+  // `lib/branch-protection.ts` — both times correctly, and both times
+  // printing an array diff that named the file it found and nothing about
+  // what to write instead. Adding a message to that one line would have
+  // fixed one instance of a class, so the consumers are a TABLE now: the
+  // message is generated from the row, and a third consumer cannot be added
+  // without one.
   describe("SC-A1: no project-specific references in workflows", () => {
-    const CONSUMER = "DailyBriefDashboard";
-    // `lib/scaffold/managed-workflow.ts` delisted in #482: the comment that
-    // named a consumer was on the merge path that issue deleted, and the
-    // replacement says "a real consumer" with the detail in the issue. The
-    // ratchet caught it the moment the file went clean, which is the half of
-    // "both ways" that usually never fires.
-    const KNOWN = [
-      "lib/scaffold/steps.ts",
+    /**
+     * Every consumer the harness must not name, and the files each is still
+     * allowed to be named in.
+     */
+    const CONSUMERS: { needle: string; known: string[] }[] = [
+      {
+        needle: "DailyBriefDashboard",
+        // `lib/scaffold/managed-workflow.ts` delisted in #482: the comment
+        // that named a consumer was on the merge path that issue deleted,
+        // and the replacement says "a real consumer" with the detail in the
+        // issue. The ratchet caught it the moment the file went clean, which
+        // is the half of "both ways" that usually never fires.
+        known: ["lib/scaffold/steps.ts"],
+      },
+      // Zero, and always has been, so there is no list to keep. A hit is
+      // fixed in the source file it appeared in; there is nothing to add it
+      // to, which is the whole reason the empty-set assertion is correct.
+      { needle: "asaCommandCenter", known: [] },
     ];
+
+    /**
+     * What to write INSTEAD — the half the bare assertion left out, and the
+     * half an agent staring at an array diff cannot derive.
+     *
+     * Provenance comments are wanted in this tree: `lib/scaffold/ai-review-step.ts`
+     * cites run ids and pools at length and that is good practice. Only the
+     * consumer's NAME is refused, and both branches #924 records tripped over
+     * exactly that distinction while writing a note that was otherwise right.
+     */
+    const CONSUMER_FIX =
+      `delete the NAME, keep the note. Write "a real consumer" or "one consumer" where ` +
+      `the name was, and put the repository, the run id and the file in the GitHub issue, ` +
+      `which is where that detail is readable and where it does not ship to every other ` +
+      `consumer (#304). A runtime string naming a consumer is the same violation and ` +
+      `worse, because it reaches output rather than only the source. Do NOT add the file ` +
+      `to its row in CONSUMERS in test/anti.test.ts — that list only shrinks.`;
 
     const hits = (needle: string) =>
       findTsFiles(HARNESS, ["gates", "scripts", "lib"])
@@ -38,35 +79,74 @@ describe("Anti-Criteria: must NOT happen", () => {
         .map(f => f.slice(HARNESS.length + 1))
         .sort();
 
-    test(`no ${CONSUMER} references outside the known list`, () => {
-      const unexpected = hits(CONSUMER).filter(f => !KNOWN.includes(f));
-      expect(
-        unexpected,
-        `${CONSUMER} named in: ${unexpected.join(", ")}. The harness must not name one of ` +
-          `its consumers; say "one consumer" and put the detail in the issue (#304).`,
-      ).toEqual([]);
-    });
+    for (const { needle, known } of CONSUMERS) {
+      const title = known.length
+        ? `no ${needle} references outside the known list`
+        : `no ${needle} references`;
 
-    test("the known list is exactly what is there — it ratchets both ways", () => {
-      // A stale entry is as bad as a missing one: it reads as a measured
-      // exception while naming a file that no longer has the problem.
-      expect(
-        hits(CONSUMER),
-        "the known-reference list is stale. Delist what you fixed; do not add to it.",
-      ).toEqual(KNOWN);
-    });
+      test(title, () => {
+        const unexpected = hits(needle).filter(f => !known.includes(f));
+        expect(
+          unexpected,
+          remedyMessage({
+            root: HARNESS,
+            check: `SC-A1 (${needle})`,
+            violations: unexpected,
+            fix: CONSUMER_FIX,
+          }),
+        ).toEqual([]);
+      });
+
+      // Only where there IS a list that can go stale. With an empty `known`
+      // the ratchet is the assertion above with its filter removed — a
+      // duplicate case carrying a message about delisting something that was
+      // never listed, which is worse output than no case at all.
+      if (known.length === 0) continue;
+
+      test(`the ${needle} known list is exactly what is there — it ratchets both ways`, () => {
+        // A stale entry is as bad as a missing one: it reads as a measured
+        // exception while naming a file that no longer has the problem.
+        const found = hits(needle);
+        const moved = [
+          ...found.filter(f => !known.includes(f)).map(f => `${f} (new, not listed)`),
+          ...known.filter(f => !found.includes(f)).map(f => `${f} (listed, now clean)`),
+        ];
+        expect(
+          found,
+          remedyMessage({
+            root: HARNESS,
+            check: `SC-A1 (${needle} known list)`,
+            violations: moved,
+            fix:
+              `DELIST the file you cleaned from the ${needle} row of CONSUMERS in ` +
+              `test/anti.test.ts. The list only shrinks — never add an entry to silence a ` +
+              `NEW mention; that one is fixed in the source file (#304, #482). ` +
+              `If "the walk reaches subdirectories" is ALSO red, delist nothing: the walk ` +
+              `stopped reaching the file and it is still there, which is the exact pair ` +
+              `#304 measured.`,
+          }),
+        ).toEqual(known);
+      });
+    }
 
     test("the walk reaches subdirectories — planted control", () => {
-      // The assertion above would pass vacuously against a non-recursive
-      // walk, which is exactly how it passed before #304. `lib/scaffold/` is
-      // the directory it could not see.
+      // The assertions above would pass vacuously against a non-recursive
+      // walk, which is exactly how they passed before #304. `lib/scaffold/`
+      // is the directory it could not see.
       const files = findTsFiles(HARNESS, ["lib"]).map(f => f.slice(HARNESS.length + 1));
-      expect(files.some(f => f.startsWith("lib/scaffold/"))).toBe(true);
-      expect(files.length, "the walk found suspiciously few files").toBeGreaterThan(30);
-    });
-
-    test("no asaCommandCenter references", () => {
-      expect(hits("asaCommandCenter")).toEqual([]);
+      expect(
+        files.some(f => f.startsWith("lib/scaffold/")),
+        "the walk never reached lib/scaffold/, so every consumer-name assertion above is " +
+          "passing over a fraction of the tree — which is how #304 stayed green for a " +
+          "month. Restore the recursion in findTsFiles at the bottom of this file; do not " +
+          "relax the assertions it feeds.",
+      ).toBe(true);
+      expect(
+        files.length,
+        `the walk found ${files.length} files under lib/, and lib/ has held far more than ` +
+          "30 since #304 — so the walk is reading a fraction of the tree and the " +
+          "assertions above are vacuous. Fix findTsFiles, not this number.",
+      ).toBeGreaterThan(30);
     });
   });
 
@@ -74,12 +154,26 @@ describe("Anti-Criteria: must NOT happen", () => {
   describe("SC-A2: no hardcoded paths in config generation", () => {
     test("no dashboard/src/App.tsx in scaffold", () => {
       const scaffold = readFileSync(join(HARNESS, "scripts/scaffold-project.ts"), "utf-8");
-      expect(scaffold).not.toContain("dashboard/src/App.tsx");
+      expect(
+        scaffold,
+        "scripts/scaffold-project.ts spells one consumer's file path as a literal. A " +
+          "scaffolded project decides its own layout, so read the path from the project's " +
+          "own config through lib/config-loader.ts and emit what it says. If the scaffold " +
+          "genuinely needs a path before any config exists, derive it from an argument the " +
+          "caller passes — a literal here is wrong for every project but the one it came " +
+          "from (#304).",
+      ).not.toContain("dashboard/src/App.tsx");
     });
 
     test("no callGemini patterns in scaffold", () => {
       const scaffold = readFileSync(join(HARNESS, "scripts/scaffold-project.ts"), "utf-8");
-      expect(scaffold).not.toContain("callGemini");
+      expect(
+        scaffold,
+        "scripts/scaffold-project.ts names a consumer's own helper function. Generate " +
+          "from the project's config rather than from a symbol that exists in exactly one " +
+          "repository; if the generated code needs to call something, take its name from " +
+          "config and say in the template why (#304).",
+      ).not.toContain("callGemini");
     });
   });
 
@@ -96,19 +190,37 @@ describe("Anti-Criteria: must NOT happen", () => {
           if (line.trim().startsWith("//") || line.trim().startsWith("*")) continue;
           // Check for .pai- in actual path construction
           if (line.match(/["'`].*\.pai-/) && !line.includes("CLAUDE.md") && !line.includes("doc-type")) {
-            expect(`${f}:${i + 1}: ${line.trim()}`).not.toMatch(/\.pai-/);
+            expect(
+              `${f}:${i + 1}: ${line.trim()}`,
+              "a runtime path is still spelled with the `.pai-` prefix, which is this " +
+                "harness's old name. Rename the path to its `.rungate` spelling and " +
+                "migrate any on-disk directory with it — do NOT widen the skip conditions " +
+                "a few lines above to step over the line, and do not move the literal into " +
+                "a comment to get past the comment skip. Documentation may say `.pai-` " +
+                "freely; a path a running harness constructs may not.",
+            ).not.toMatch(/\.pai-/);
           }
         }
       }
     });
 
     test("lock files use rungate naming", () => {
-      const files = findTsFiles(HARNESS, ["gates", "lib", "scripts"]);
-      const content = files.map(f => readFileSync(f, "utf-8")).join("\n");
-      // If there are lock file references, they should use rungate, not pai
-      if (content.includes("lock")) {
-        expect(content).not.toMatch(/pai-testing-lock|\.pai-lock/);
-      }
+      // Per file rather than over the concatenation the check used to build:
+      // the property is the same — a pattern cannot span two files unless it
+      // straddles the join, which is not a case anyone means — and a failure
+      // can then name the file instead of printing the whole of `lib/` as the
+      // received value (#924).
+      const offenders = findTsFiles(HARNESS, ["gates", "lib", "scripts"])
+        .filter(f => /pai-testing-lock|\.pai-lock/.test(readFileSync(f, "utf-8")))
+        .map(f => f.slice(HARNESS.length + 1))
+        .sort();
+      expect(
+        offenders,
+        "a lock file is still named with the harness's old `pai` prefix. Rename it to its " +
+          "`rungate` spelling at every position that constructs or reads it — the writer, " +
+          "the reader and the cleanup path — in one change, because a half-rename leaves " +
+          "two locks that cannot see each other. Narrowing the pattern here is not the fix.",
+      ).toEqual([]);
     });
   });
 
