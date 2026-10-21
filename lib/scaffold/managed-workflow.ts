@@ -339,35 +339,19 @@ export function workflowOverrides(ci: unknown): string[] {
 
 const OVERRIDE_KEY = /^[A-Za-z_][A-Za-z0-9_.\-]*$/;
 
-/** The tail `overrideNotice` writes, read back. */
-const OVERRIDE_NOTICE_TAIL = /— the generated `([A-Za-z_][A-Za-z0-9_.\-]*):` is not merged into it\.$/;
-
-/**
- * Top-level keys a workflow's own override notices name (#915).
+/*
+ * There was an `overrideNoticeKeys` parser here (#915), reading the notices
+ * back out of a workflow so `workflow-drift.ts` could treat them as a second
+ * source of ownership beside `ci.workflowOverrides`. #958 deleted its only
+ * caller: a notice is a comment anybody can type, so reading it back let a
+ * hand-edited workflow exempt itself from the drift check. The notice is
+ * written FOR A HUMAN READING THE FILE — it says why a key they edited was
+ * left alone — and it is not evidence of anything on the way back in.
  *
- * `ci.workflowOverrides` says what the NEXT scaffold will decline; this says
- * what the LAST one did, and the two disagree for exactly as long as a
- * consumer has edited the config without re-scaffolding. A drift reading
- * needs both, because a file whose bytes were authored under a decline is
- * the consumer's whatever the config says today.
- *
- * Reading it back out of the file is the #722 position restated: ownership
- * travels with the bytes, not with a list in another file. The composer above
- * is not exported and this is the only parser, so the round trip is the one
- * thing holding them together — `test/workflow-drift-validation.test.ts`
- * drives a real `mergeManagedWorkflow` and reads the result with this, rather
- * than asserting either side against a literal.
+ * `stripOverrideNotices` below still matches on the prefix, because removing
+ * last run's notices before re-merging is a different job from believing
+ * them.
  */
-export function overrideNoticeKeys(text: string): string[] {
-  const out: string[] = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith(WORKFLOW_OVERRIDE_COMMENT)) continue;
-    const m = OVERRIDE_NOTICE_TAIL.exec(trimmed);
-    if (m && !out.includes(m[1])) out.push(m[1]);
-  }
-  return out;
-}
 
 /**
  * Drop every previous run's override notice, wherever in the file it sits.
