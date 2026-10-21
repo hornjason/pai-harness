@@ -329,8 +329,21 @@ function checkout(): { work: string } {
   return { work };
 }
 
-function runRestore(work: string): Run {
-  return sh(buildRestoreScript(), work, { [AI_REVIEW_BASE_REF_VAR]: "main" });
+/**
+ * #989 gave this step a second job: publishing the base ref the drift step
+ * classifies against. It refuses without somewhere to publish it — the same
+ * shape the credential step uses for its deny rule — so the fixture supplies
+ * a real `GITHUB_OUTPUT` and reads the ref back out of it.
+ */
+function runRestore(work: string): Run & { baseRemote: string } {
+  const out = join(scratchDir("ai-review-restore-out-"), "github-output");
+  writeFileSync(out, "");
+  const run = sh(buildRestoreScript(), work, {
+    [AI_REVIEW_BASE_REF_VAR]: "main",
+    GITHUB_OUTPUT: out,
+  });
+  const baseRemote = /^base_remote=(.*)$/m.exec(readFileSync(out, "utf-8"))?.[1] ?? "";
+  return { ...run, baseRemote };
 }
 
 function runBaseline(work: string): { run: Run; path: string } {
@@ -342,10 +355,17 @@ function runBaseline(work: string): { run: Run; path: string } {
   return { run, path };
 }
 
-function runDrift(work: string, before: string): Run {
+/**
+ * `baseRemote` defaults to the ref the restore step publishes. #989 made the
+ * drift step refuse UNMEASURED without it rather than compare against
+ * nothing, so a fixture that omitted it would be exercising that refusal and
+ * not the comparison.
+ */
+function runDrift(work: string, before: string, baseRemote = "refs/remotes/origin/main"): Run {
   return sh(buildDriftScript(), work, {
     AI_REVIEW_MODE: "vertex",
     AI_REVIEW_TREE_BEFORE: before,
+    AI_REVIEW_BASE_REMOTE: baseRemote,
   });
 }
 
@@ -377,10 +397,29 @@ describe("AC-2: the restore lands in the baseline, where it cancels", () => {
     expect(drift.stderr).toBe("");
   });
 
-  test("baseline THEN restore — the defect verbatim — is RED and names the file", () => {
-    // The control. One thing varies against the case above: when the restore
-    // runs. If this is green the pair measures nothing, because a tree that
-    // nobody changed also reports no drift.
+  test("baseline THEN restore — the defect verbatim — is named as a RESTORE, not as the reviewer", () => {
+    // REPOINTED by #989, and the reason is worth stating rather than just
+    // editing the expectation.
+    //
+    // This case used to assert the drift step REFUSES a restore that landed
+    // after the baseline, as the control proving #836's reorder is
+    // load-bearing. #989 made the drift step classify a changed path by
+    // content against the base branch, and the bytes a late restore leaves
+    // ARE the base's — so it is now acquitted, correctly: the reviewer did
+    // not write them, and saying it did is the misattribution #824 and #851
+    // each measured at length.
+    //
+    // The order is still load-bearing and is still asserted — by
+    // `${label} orders restore before baseline` above, over both the
+    // generated and the committed workflow. That is the direct reading of
+    // the property; this was a behavioural proxy for it, and a proxy that
+    // has stopped tracking its subject is a case that passes for the wrong
+    // reason. #836's actual subject is what the reviewer READS, which the
+    // drift step never measured.
+    //
+    // What it asserts now is not weaker: the classification must fire, must
+    // name the file, and must not call it a reviewer write. Removing the
+    // classification turns this red again, in the other direction.
     const { work } = checkout();
     const { run: baseline, path } = runBaseline(work);
     expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
@@ -389,11 +428,13 @@ describe("AC-2: the restore lands in the baseline, where it cancels", () => {
     expect(restored.code, `the restore step refused:\n${restored.stderr}`).toBe(0);
 
     const drift = runDrift(work, path);
-    expect(drift.code, "the late restore was not reported as drift").not.toBe(0);
-    expect(drift.stderr).toContain("The reviewer modified the tree it was reviewing");
+    expect(drift.code, `a restore was blamed on the reviewer:\n${drift.stderr}`).toBe(0);
+    expect(drift.stderr, "the restored file is reported as a reviewer write").not.toContain(
+      "The reviewer modified the tree it was reviewing",
+    );
     expect(
-      drift.stderr,
-      "the refusal does not name the restored file, so this is not the reported defect",
+      drift.stdout,
+      "the classification did not fire, or fired without naming the file — so this case is green over a tree nothing looked at",
     ).toContain(RESTORED_FILE);
   });
 

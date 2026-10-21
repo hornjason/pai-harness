@@ -14,6 +14,12 @@
       "to": "AC-7: model pin \u2014 no bare family alias reaches the action",
       "issue": 685,
       "why": "The title ENUMERATED the three families the case's own local `/(opus|sonnet|haiku)/i` knew. #685 deleted that second decider and delegated to `modelAliasViolations`, whose `MODEL_FAMILY_ALIASES` has carried `fable` since it was written \u2014 so the old title named a narrower set than the case now checks, and leaving it would have read as a promise the case no longer makes. The subject, the document under test and the assertion direction are unchanged; the case got WIDER, not weaker, and `AC-7: model pin \u2014 planting an alias turns the detector red` now plants every declared family rather than only `opus`."
+    },
+    {
+      "from": "baseline THEN restore \u2014 the defect verbatim \u2014 is RED and names the file",
+      "to": "baseline THEN restore \u2014 the defect verbatim \u2014 is named as a RESTORE, not as the reviewer",
+      "issue": 989,
+      "why": "The case asserted the drift step REFUSES a restore that landed after the baseline, as the behavioural control proving #836's reorder is load-bearing. #989 made the drift step classify a changed path in the twice-restored set BY CONTENT against the base branch, and the bytes a late restore leaves ARE the base's \u2014 so it is now acquitted, which is the correct answer: the reviewer did not write them, and saying it did is the misattribution #824 and #851 each measured at length. The order is still asserted, directly and over both the generated and the committed workflow, by the `orders restore before baseline` case in the same file; this one was a behavioural PROXY for that property and has stopped tracking it, and a proxy that passes for the wrong reason is worse than no proxy. The subject and the document under test are unchanged and the case did not get weaker: it now requires the classification to fire, to name the file, and to not call it a reviewer write, so DELETING the classification turns it red in the other direction. AC-M4b in test/ai-review-moving-base.test.ts asserts the same acquittal from the other side, so the two cannot drift apart silently."
     }
   ],
   "titles": [
@@ -197,7 +203,7 @@
     "an UNSET findings path is no review either",
     "an empty base ref is refused BEFORE any fetch is attempted",
     "an empty seal warns, and the comparison still refuses real drift",
-    "baseline THEN restore \u2014 the defect verbatim \u2014 is RED and names the file",
+    "baseline THEN restore \u2014 the defect verbatim \u2014 is named as a RESTORE, not as the reviewer",
     "every consumer's generated job carries the baseline step",
     "every path the action restores is a path this step restores",
     "it annotates UNMEASURED and says no payload was written",

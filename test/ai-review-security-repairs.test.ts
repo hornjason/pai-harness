@@ -257,7 +257,15 @@ function checkout(opts: {
 }
 
 function restoreAndBaseline(f: Fixture) {
-  const restore = sh(buildRestoreScript(), f, { [AI_REVIEW_BASE_REF_VAR]: "main" });
+  // #989 gave the restore step a second job — publishing the base ref the
+  // drift step classifies a changed restored path against — and it refuses
+  // without somewhere to publish it.
+  const restoreOut = join(f.runnerTemp, `restore-output-${Math.random().toString(36).slice(2)}`);
+  writeFileSync(restoreOut, "");
+  const restore = sh(buildRestoreScript(), f, {
+    [AI_REVIEW_BASE_REF_VAR]: "main",
+    GITHUB_OUTPUT: restoreOut,
+  });
   expect(restore.code, `the restore step refused:\n${restore.stderr}`).toBe(0);
 
   const out = join(f.runnerTemp, `github-output-${Math.random().toString(36).slice(2)}`);
@@ -270,11 +278,19 @@ function restoreAndBaseline(f: Fixture) {
   return { path, sha: /^sha256=(.*)$/m.exec(text)?.[1] ?? "" };
 }
 
+/**
+ * `AI_REVIEW_BASE_REMOTE` is the ref the restore step publishes. #989 made a
+ * changed path INSIDE the restored set ambiguous — this job restored it and
+ * the review action restores it again — so the drift step classifies it
+ * against the base and refuses UNMEASURED with nothing to classify against.
+ * AC-9 plants under the agent-rules directory, so it is one of those paths.
+ */
 function runDrift(f: Fixture, before: string, sha: string): Run {
   return sh(buildDriftScript(), f, {
     AI_REVIEW_MODE: "vertex",
     [AI_REVIEW_TREE_BEFORE_VAR]: before,
     [AI_REVIEW_TREE_BEFORE_SHA_VAR]: sha,
+    AI_REVIEW_BASE_REMOTE: "refs/remotes/origin/main",
   });
 }
 
