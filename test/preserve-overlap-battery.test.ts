@@ -47,6 +47,17 @@
  * mutant with a distinguishing input, because a cheapest wrong fix named only
  * in prose is a claim about code nobody ran.
  *
+ * ## Why this file is not called `…-mutants.test.ts`
+ *
+ * `test/suite-binding-mutation.test.ts` sweeps `gates/` and `test/` for any
+ * FILENAME matching `/mutant/i`, exempting its own by name, and fails if it
+ * finds one — the control that its `writeMutant()` never lands a planted
+ * module in the repository. The obvious name for this file trips it. Renaming
+ * is the right side to give way: widening that exemption would turn a sweep
+ * into an allowlist, and an allowlist naming the files it exempts is the
+ * thing that stops being a sweep. The over-broad predicate is reported
+ * separately rather than edited around here.
+ *
  * Covers SC-2460, SC-2461, SC-2462 (PARALLEL-AGENT-COORDINATION-SPEC.md).
  */
 

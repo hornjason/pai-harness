@@ -448,7 +448,7 @@ regression it was written to block.
 Both of those were **measurements** — a number in a PR body, true of one tree
 on one evening. AC-6's wording is *"each mutant built from the real source and
 aborting loudly if its anchor moves"*, which describes a standing harness, so
-this phase builds one: `test/preserve-overlap-mutants.test.ts` constructs each
+this phase builds one: `test/preserve-overlap-battery.test.ts` constructs each
 mutant by text substitution over the real source, refuses to run a row whose
 anchor is not at exactly one site, loads the result as a module, and pins both
 the original's and the mutant's answer to one named distinguishing input.
@@ -531,9 +531,9 @@ input only it can reach** — not two deciders for one question:
   invisible to the type system and is caught by *the table covers every
   refusal the block can emit*, which counts templates in the source (R1).
 
-- [x] SC-2460: test/preserve-overlap-mutants.test.ts contains [the anchor is in the real source exactly once]
-- [x] SC-2461: test/preserve-overlap-mutants.test.ts contains [the MUTANT answers it differently, and the difference is the named one]
-- [x] SC-2462: test/preserve-overlap-mutants.test.ts contains [a mutant is a different module, not the subject under another name]
+- [x] SC-2460: test/preserve-overlap-battery.test.ts contains [the anchor is in the real source exactly once]
+- [x] SC-2461: test/preserve-overlap-battery.test.ts contains [the MUTANT answers it differently, and the difference is the named one]
+- [x] SC-2462: test/preserve-overlap-battery.test.ts contains [a mutant is a different module, not the subject under another name]
 - [x] SC-2463: test/claim-refusal-kinds.test.ts contains [every kind that declares a remedy carries it in the real message]
 - [x] SC-2464: test/claim-refusal-kinds.test.ts contains [a kind that declares no remedy is not quietly carrying another kind's]
 
@@ -545,7 +545,7 @@ before any mutation row**, because an instrument that has stopped reporting
 takes the baseline down with it and that is the row nobody mutates anything to
 produce. Measured on `a7a42604` plus this branch's changes.
 
-**Baseline: `test/preserve-overlap-reading.test.ts` + `test/preserve-overlap-mutants.test.ts` — 48 pass, 0 fail.**
+**Baseline: `test/preserve-overlap-reading.test.ts` + `test/preserve-overlap-battery.test.ts` — 48 pass, 0 fail.**
 
 | Row | Predicted | Red | The input on which mutant and original differ |
 |---|---|---|---|
