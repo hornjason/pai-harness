@@ -237,13 +237,13 @@ describe("#992 AC-13: the hook is a thin trigger over the one decider", () => {
 });
 
 describe("#992 AC-14: the hook, driven as a real subprocess", () => {
-  const run = (payload: unknown) => {
+  const run = (payload: unknown, extra: Record<string, string> = {}) => {
     const home = mkdtempSync(join(tmpdir(), "cd992-home-"));
     try {
       return spawnSync("bun", [HOOK], {
         input: JSON.stringify(payload),
         encoding: "utf-8",
-        env: { ...process.env, HOME: home },
+        env: { ...process.env, HOME: home, ...extra },
         cwd: ROOT,
       });
     } finally {
@@ -251,8 +251,15 @@ describe("#992 AC-14: the hook, driven as a real subprocess", () => {
     }
   };
 
-  test("it blocks a top-level cd and names the alternative", () => {
-    const r = run({ tool_name: "Bash", tool_input: { command: "cd /x && make" } });
+  test("it blocks a top-level cd and names the alternative, in `block` mode", () => {
+    // The mode is now explicit. When this arm was written the hook refused
+    // unconditionally; #992's own comments then corrected the cost model that
+    // justified that — at 32.7% of 31,577 commands a false refusal costs
+    // 10,332 retyped commands, not one — and the endorsed plan became scope,
+    // then WARN, then promote on evidence. So the refusal is opt-in and this
+    // arm opts in. The ladder itself is `test/cd-guard-mode.test.ts`; the
+    // default is checked there (AC-3) rather than restated here.
+    const r = run({ tool_name: "Bash", tool_input: { command: "cd /x && make" } }, { RUNGATE_CD_GUARD: "block" });
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout.trim());
     expect(out.decision).toBe("block");

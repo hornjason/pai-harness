@@ -256,3 +256,55 @@ export function topLevelCdRefusal(command: string): CdRefusal | null {
   }
   return null;
 }
+
+/**
+ * How loudly the guard speaks: the WARN→data→FAIL ladder
+ * `specs/harness-automation-matrix.md` prescribes (#992).
+ *
+ * ## Why a mode exists at all, with the number that decided it
+ *
+ * The parser is sound: **32.7% of 31,577 unique Bash commands** from this
+ * machine's transcript store since 2026-10-14 would be refused, with **zero
+ * false positives** — all three deliberate over-refusal classes clean, a
+ * 20-command spread hand-read and all 20 genuine, and the 245 `cd`-carrying
+ * commands it allows are subshells and heredoc bodies.
+ *
+ * The issue's original cost model was *"a false refusal costs one retyped
+ * command"*. At that rate it costs **10,332 retyped commands**, and a hook
+ * refusing a third of all Bash calls is the gets-disabled failure the issue
+ * itself warns about two paragraphs below its own recommendation. The
+ * premise was corrected on the issue; this is the code catching up to the
+ * correction.
+ *
+ * So `cd` is not an occasional lapse, it is the dominant navigation idiom,
+ * and most instances are harmless — a top-level `cd` costs something only in
+ * a session with concurrent agents holding worktrees. **A hard refusal is
+ * mis-scoped rather than mis-tuned**, and `warn` is the rung that produces
+ * the decay evidence a promotion to `block` would need.
+ *
+ * ## An unrecognised value is not silently a default
+ *
+ * It resolves to `warn` — the least disruptive rung — and the caller is told
+ * which value it did not understand. `0`, `{}` and silence being
+ * indistinguishable from success is `.claude/rules/config-access.md`, and a
+ * typo'd `RUNGATE_CD_GUARD=blcok` degrading quietly to the default is that
+ * shape exactly.
+ */
+export type CdGuardMode = "warn" | "block" | "off";
+
+/** The env var selecting the rung. Absent means `warn`. */
+export const CD_GUARD_MODE_VAR = "RUNGATE_CD_GUARD";
+
+export interface CdGuardModeReading {
+  mode: CdGuardMode;
+  /** Set when the configured value was not recognised, naming it. */
+  unrecognised?: string;
+}
+
+export function cdGuardMode(env: NodeJS.ProcessEnv = process.env): CdGuardModeReading {
+  const raw = env[CD_GUARD_MODE_VAR];
+  if (raw === undefined || raw === "") return { mode: "warn" };
+  const v = raw.trim().toLowerCase();
+  if (v === "warn" || v === "block" || v === "off") return { mode: v };
+  return { mode: "warn", unrecognised: raw };
+}
