@@ -480,9 +480,15 @@ describe("#868: the three ways into the exclusion that the first draft left open
     // draft read it as an expression rooted at `SG` and excused it. The root
     // is a closed vocabulary now, and `SG` is not in it.
     const scan = gatesTier2Scan();
+    // Composed with V/K rather than written as literals, for the reason the
+    // top of this file composes everything: the scan's corpus is
+    // `git grep -- .`, which includes this file. A fixture asserting that a
+    // shape is REPORTED, written as a literal, is an offender in the tree —
+    // and it fails CI in the one job it is about. Measured: the first draft
+    // of these three cases turned the Gates job red on itself.
     for (const line of [
-      "SENDGRID_API_KEY=SG.ePqRsTuVwXyZ01.aBcDeFgHiJkLmNoPqRsTuV",
-      "API_KEY=AKIA.IOSFODNN7.EXAMPLEKEYVAL",
+      V("SENDGRID_" + K.apiKey.toUpperCase(), "=", "SG.ePqRsTuVwXyZ01.aBcDeFgHiJkLmNoPqRsTuV"),
+      V(K.apiKey.toUpperCase(), "=", "AKIA.IOSFODNN7.EXAMPLEKEYVAL"),
     ]) {
       expect(tier2Verdict(scan, line), `a dotted-path-shaped credential is still excused: ${line}`).toBe("FAIL");
     }
@@ -509,7 +515,7 @@ describe("#868: the three ways into the exclusion that the first draft left open
     // generated credential does not.
     const scan = gatesTier2Scan();
     expect(
-      tier2Verdict(scan, "API_KEY=your_QX7bTk19ZpLmNvRs04WyEdHgUaFc"),
+      tier2Verdict(scan, V(K.apiKey.toUpperCase(), "=", "your_QX7bTk19ZpLmNvRs04WyEdHgUaFc")),
       "a placeholder prefix still excuses a random tail",
     ).toBe("FAIL");
   });

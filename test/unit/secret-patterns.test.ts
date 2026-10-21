@@ -45,6 +45,7 @@ const steps = readFileSync(join(REPO_ROOT, "lib", "scaffold", "steps.ts"), "utf-
 const gatesYml = readFileSync(join(REPO_ROOT, ".github", "workflows", "gates.yml"), "utf-8");
 const repoPreCommit = readFileSync(join(REPO_ROOT, "scripts", "git-hooks", "pre-commit"), "utf-8");
 
+
 describe("the registry covers the key formats that actually leak", () => {
   test("includes the five CI used to miss", () => {
     const ids = TIER1_SECRET_PATTERNS.map(p => p.id);
@@ -364,6 +365,56 @@ describe("the tier-2 scan does not read a minified comparison as an assignment (
     // than folded into the control above.
     const scan = gatesTier2Scan();
     expect(tier2Verdict(scan, V(K.apiKey, ": ", "AB==CDEFGHIJ"))).toBe("FAIL");
+  });
+
+  test("#868: tier 2 reports nothing on this tree either, and that scan read something too", () => {
+    // The twin of the tier-3 case below, and it did not exist until #868 —
+    // which is the whole reason this is a case rather than a comment. Tier 3
+    // had a self-scan with a vacuity control; tier 2, the older and busier
+    // tier, had none. A reader asking "is the scan run against its own
+    // repository?" found a yes, and the half that was missing is the half
+    // nobody re-reads.
+    //
+    // What it cost: the #868 regression cases assert three credential SHAPES
+    // are reported, and the first draft wrote them as string literals. The
+    // corpus is `git grep -- .`, which includes the file making the
+    // assertion, so the fixtures were offenders and the Gates job went red
+    // on the suite that is about it. The repo's idiom is to compose a
+    // fixture from parts — `PEM_OPEN` above, `V`/`K` in the sibling file —
+    // and nothing enforced it. This does, in a second rather than in CI.
+    const scan = gatesTier2Scan();
+    const tracked = spawnSync("git", ["grep", "-I", "-hoE", ...scan.captureFlags, scan.ere, "--", "."], {
+      cwd: REPO_ROOT,
+      encoding: "utf-8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    if ((tracked.status ?? 2) > 1) throw new Error(`git grep failed (${tracked.status}): ${tracked.stderr}`);
+    const captured = (tracked.stdout ?? "").split("\n").filter(Boolean);
+    const reported = captured.filter(
+      l => spawnSync("grep", ["-qE", ...scan.allowFlags, scan.allowlist], { input: l + "\n" }).status !== 0,
+    );
+    expect(reported, `the Gates job would go red on this tree: ${reported.join(", ")}`).toEqual([]);
+
+    // The instrument control. Zero offenders over a population of zero is
+    // not a reading: an expression that matched nothing would give the same
+    // answer.
+    //
+    // The floor is 3 and not the dozens a reader expects, and the reason is
+    // the fact this whole tier turns on: the capture can only ever see an
+    // UNQUOTED value, because the value charset excludes both quote
+    // characters. Nearly every key-shaped line in this file and its sibling
+    // is a quoted TypeScript literal and is therefore invisible here. The
+    // whole tree captured 6 at #868 — `process.env` twice and four
+    // placeholder spellings — and all six are excused, which is the
+    // allowlist being exercised rather than bypassed.
+    //
+    // A floor rather than an equality: the number moves whenever anyone adds
+    // a fixture, and a control other people's work can red is a control that
+    // accuses the wrong code.
+    expect(
+      captured.length,
+      "the tier-2 capture matched nothing, so the clean reading above is UNMEASURED",
+    ).toBeGreaterThan(3);
   });
 
   test("the allowlist still launders nothing it did not before", () => {
