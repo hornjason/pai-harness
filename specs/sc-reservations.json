@@ -26,6 +26,12 @@
       "from": 2420,
       "to": 2439,
       "note": "#541, PR #730. Already holds 2230-2246 on its branch. Headroom only."
+    },
+    {
+      "owner": "fix/1009-instruction-surface-budget",
+      "from": 2440,
+      "to": 2459,
+      "note": "#1009 - auto-loaded instruction surface budget. Delete when the PR merges."
     }
   ]
 }
