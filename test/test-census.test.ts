@@ -65,9 +65,19 @@ describe("#307: counting what a file declares", () => {
     const parked = `test.todo("a");\ntest.skip("b", () => {});\n`;
     expect(countTestDeclarations(live)).toBe(2);
     expect(countTestDeclarations(parked)).toBe(2);
-    // ...and commenting it out is removing it too, so comments are NOT
-    // stripped before counting.
-    expect(countTestDeclarations(`// test("a", () => {});\ntest("b", () => {});\n`)).toBe(2);
+    // ...and commenting it out is removing it too — so a commented-out test
+    // must make the count DROP, which is what the guard refuses on.
+    //
+    // This assertion is inverted from the one it replaces, and the inversion
+    // is #883's, so it is argued rather than flipped. The old case asserted
+    // `2` here, under a docblock reading "a commented-out test is a removed
+    // test, and stripping would make 'comment the block out' a way past the
+    // guard". The second clause is backwards: only a DECREASE is refused, so
+    // counting the commented-out test is what let it through. Measured on
+    // the pre-#883 reader, `// test("a", () => {})` counted 1 — identical to
+    // the live form, so the round that commented it out was clean.
+    expect(countTestDeclarations(`// test("a", () => {});\ntest("b", () => {});\n`)).toBe(1);
+    expect(countTestDeclarations(`/* test("a", () => {}); */\ntest("b", () => {});\n`)).toBe(1);
   });
 
   test("SC-1685: a word ending in test is not a test - the counter is anchored", () => {

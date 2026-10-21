@@ -932,6 +932,21 @@ export const WorkflowStateSchema = z.object({
      * witness reads UNMEASURED.
      */
     testCensusSignature: z.string().optional(),
+    /**
+     * Which reader took `testCensus` — `TEST_CENSUS_READER` (#883).
+     *
+     * Declared for the same reason the signature is: a `z.object` is a
+     * FILTER, so an undeclared stamp would be stripped on every parse and
+     * every round would look like a reader change.
+     *
+     * Absent means the pre-#883 reader, which is the whole point: a banked
+     * census with no stamp was taken by an instrument that counted prose
+     * and missed `test.each`, so its numbers are not comparable with this
+     * one's. `censusVerdict` reads that as UNMEASURED rather than as a
+     * regression, and the round banks the new reading so the NEXT one
+     * compares like with like.
+     */
+    testCensusReader: z.string().optional(),
     environments: z.any().optional(),
     verdicts: z.any().optional(),
     evidence: z.any().optional(),
