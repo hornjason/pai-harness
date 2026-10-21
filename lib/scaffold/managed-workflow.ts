@@ -283,6 +283,46 @@ function jobsSectionOf(sections: Section[]): Section | undefined {
   return sections.find(s => s.key === "jobs");
 }
 
+/**
+ * Opening of the banner every harness-generated workflow carries.
+ *
+ * Deliberately the stable prefix and not the whole sentence: the rest of it
+ * names the config path, and that is exactly the part that changed and caused
+ * the harness to refuse to update its own file.
+ */
+export const MANAGED_BANNER_PREFIX = "# Managed by rungate";
+
+/**
+ * The part of the leading preamble `mergeManagedWorkflow` replaces (#834).
+ *
+ * The merge states its own ownership rule at the preamble: *"the consumer's
+ * leading preamble is replaced by the generated one, which carries the
+ * managed banner — it is the one part of the file the harness does author."*
+ * The write's loss set did not agree. It whitelisted only the banner LINE, so
+ * the prose underneath it read as the consumer's, and a consumer that added
+ * `ci.vertex` had its whole re-scaffold REFUSED over three lines of the
+ * harness's own "no credential is configured" paragraph — the paragraph the
+ * new header, the one saying a federation now exists, is there to replace.
+ *
+ * Two deciders about the same bytes, disagreeing, and the merge is the one
+ * that was right: it computed the correct file and the write declined to put
+ * it on disk. That is what kept `id-token: write` off every already
+ * scaffolded consumer, and it is why #839's sub-key merge — which adds a
+ * generated sub-key the consumer lacks, `id-token` included — could not reach
+ * `ai-review.yml` either. One refusal, two features.
+ *
+ * It starts AT the banner, not at line one. A comment a consumer wrote above
+ * the banner is still theirs, is still dropped by the merge, and must still
+ * make the write refuse — widening this to the whole preamble would turn that
+ * refusal into a silent deletion.
+ */
+export function managedPreamble(text: string): string[] {
+  const head = splitTopLevel(text).find(s => s.key === "");
+  if (!head) return [];
+  const start = head.lines.findIndex(l => l.startsWith(MANAGED_BANNER_PREFIX));
+  return start < 0 ? [] : head.lines.slice(start);
+}
+
 /** Every top-level key a workflow declares, in file order (#482). */
 export function topLevelKeyOrder(text: string): string[] {
   return splitTopLevel(text).map(s => s.key).filter(k => k !== "");
