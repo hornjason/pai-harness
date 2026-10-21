@@ -137,21 +137,30 @@ describe("generated scanners use the registry, not their own copy", () => {
     // scripts/git-hooks/pre-commit is checked in, not generated, so it can
     // drift independently. It was the STRONGEST of the three copies; this
     // keeps it from quietly becoming the weakest.
+    // This compared a PREFIX of each ERE until the second review of #868 —
+    // the ERE cut at its first metacharacter, and anything under four
+    // characters SKIPPED. That waived `jwt` (`eyJ`) and `openai` (`sk-`),
+    // which are the only two entries the hook has ever got wrong: one
+    // missing outright, one carrying `{48}` against the registry's `{20,}`.
+    //
+    // A prefix cannot see the second of those at all — `sk-` is in the hook
+    // under either quantifier — so the fix is not a better prefix. The whole
+    // ERE is compared, and the two historical defects both become one failing
+    // assertion with no per-pattern metadata to declare or to get wrong.
+    //
+    // The one normalisation: `-` at the end of a bracket expression is
+    // written `\-` in the hook and bare here. They are the same expression to
+    // grep, so both sides are normalised rather than either being rewritten
+    // to match the other.
+    const bareDash = (s: string) => s.replace(/\\-/g, "-");
+    const hook = bareDash(repoPreCommit);
     for (const p of TIER1_SECRET_PATTERNS) {
-      // The derivation cuts the ERE at its first metacharacter. For `jwt`
-      // that is `eyJ` — three characters — and the guard used to `continue`
-      // on anything under four, which SKIPPED the one pattern the hook was
-      // missing. A short derivation is not a reason to waive the check; it
-      // is a reason to demand an explicit probe. Carry `hookProbe`, or be
-      // refused.
-      const derived = p.ere.split(/[[(\\]/)[0];
-      const probe = derived.length >= 4 ? derived : p.hookProbe;
       expect(
-        probe,
-        `TIER1_SECRET_PATTERNS[${p.id}] derives the probe "${derived}", which is too short to grep for. ` +
-          `Give it a hookProbe: a literal substring of its ERE that also appears in scripts/git-hooks/pre-commit.`,
-      ).toBeTruthy();
-      expect(repoPreCommit, `scripts/git-hooks/pre-commit no longer covers ${p.id}`).toContain(probe!);
+        hook,
+        `scripts/git-hooks/pre-commit does not carry TIER1_SECRET_PATTERNS[${p.id}] verbatim. ` +
+          `The hook must contain this registry's exact expression, not a prefix of it and not a ` +
+          `near-copy with a different quantifier: ${p.ere}`,
+      ).toContain(bareDash(p.ere));
     }
   });
 });

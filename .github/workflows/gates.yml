@@ -1,4 +1,4 @@
-# generated-sha: ecf9916e3c812007
+# generated-sha: 844a220c8cbfc4d7
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: Gates
 
@@ -97,7 +97,7 @@ jobs:
           # NAME:-default form. That vocabulary is a closed list of documented
           # non-values, not a judgement that a value looks harmless: a 32-char
           # random default carries none of its words and is still reported.
-          if printf '%s\n' "$tier2" | grep -qvE -i '^$|^(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*-?(process\.env|os\.environ|Deno\.env|getenv)|^(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*-?((REDACTED|CHANGEME|placeholder)[A-Za-z_-]*|your[_-][A-Za-z][A-Za-z_-]*|example[_-][A-Za-z][A-Za-z_-]*)$|^(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*-?(process|os|Deno|globalThis|module|exports|this|self|config|conf|cfg|settings|options|opts|env|deps|current|ctx|context|params|args|argv|input|data|state|store|creds|credentials|auth|secrets|vars)(\.[A-Za-z_][A-Za-z0-9_]*)+$'; then
+          if printf '%s\n' "$tier2" | grep -qvE -i '^$|^(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*-?getenv([A-Za-z_][A-Za-z0-9_]*)?(\.[A-Za-z_][A-Za-z0-9_]*)*$|^(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*-?((REDACTED|CHANGEME|placeholder)([_-][A-Za-z][A-Za-z_-]*)?|your[_-][A-Za-z][A-Za-z_-]*|example[_-][A-Za-z][A-Za-z_-]*)$|^(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*-?(process|os|Deno|globalThis|module|exports|this|self|config|conf|cfg|settings|options|opts|env|deps|current|ctx|context|params|args|argv|input|data|state|store|creds|credentials|auth|secrets|vars)(\.[A-Za-z_][A-Za-z0-9_]*)+$'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi

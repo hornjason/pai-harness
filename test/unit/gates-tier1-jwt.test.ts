@@ -539,3 +539,67 @@ describe("#868: the three ways into the exclusion that the first draft left open
     }
   });
 });
+
+describe("#868 second review: the two prefixes the first repair did not anchor", () => {
+  // The case above anchored `your[_-]`. Two siblings in the same expression
+  // were left as prefix tests, and both reproduced. Recorded as their own
+  // describe rather than folded into the one above, because the lesson is
+  // about the SIBLINGS and not about either defect: a repair that fixes one
+  // branch of an alternation and does not read the other three is half a
+  // repair, and this is now the second time in one issue.
+
+  test("a value beginning with an env-lookup word does not excuse its tail", () => {
+    // `(process\.env|os\.environ|Deno\.env|getenv)` was the one allowlist
+    // branch with no `$`. Measured on the shipped expression: CLEAN.
+    const scan = gatesTier2Scan();
+    expect(
+      tier2Verdict(scan, V(K.apiKey.toUpperCase(), "=", "getenv0X8fK2pQ9mZ4RtWv")),
+      "the unanchored env-lookup branch still launders a random tail",
+    ).toBe("FAIL");
+  });
+
+  test("a value beginning with a placeholder WORD does not excuse its tail", () => {
+    // `(REDACTED|CHANGEME|placeholder)[A-Za-z_-]*` — the same prefix defect
+    // as `your_`, in the branch directly above it. The tail must now begin
+    // with a separator, which is the rule `your[_-]` and `example[_-]`
+    // already stated. Composed, never written as a literal: the tier-2
+    // corpus is `git grep -- .` and includes this file.
+    const scan = gatesTier2Scan();
+    for (const line of [
+      V(K.apiKey.toUpperCase(), "=", "CHANGEMExKPrQvTnLdMwGbSjHyFaUz"),
+      V(K.secret.toUpperCase(), "=", "REDACTEDbQvTnLdMwGbSjHyFaUzKPr"),
+    ]) {
+      expect(tier2Verdict(scan, line), `a placeholder word still excuses a random tail: ${line}`).toBe("FAIL");
+    }
+  });
+
+  test("three of the env branch's four alternatives were dropped as redundant", () => {
+    // The witness for the collapse. `process`, `os` and `Deno` are all
+    // expression roots, so the dotted-path branch already excused these three
+    // forms — naming them again in the env branch was two deciders answering
+    // one question, and a mutation of either would have left the other
+    // holding every case up.
+    //
+    // This is the case that goes red if that premise is ever false: each form
+    // the dropped alternatives used to name, excused now only by
+    // `TIER2_DOTTED_PATH_ERE`.
+    const scan = gatesTier2Scan();
+    for (const benign of [
+      V(K.password, " = ", "process.env.DB_PASSWORD"),
+      V(K.apiKey, " = ", "os.environ.get"),
+      V(K.secret, ": ", "Deno.env.toObject"),
+    ]) {
+      expect(
+        tier2Verdict(scan, benign),
+        `dropping the redundant alternative broke a form the dotted path was supposed to cover: ${benign}`,
+      ).toBe("CLEAN");
+    }
+    // `getenv` is the one that is NOT redundant — a bare function name, which
+    // no dotted path reaches — so it stays, anchored. #844 pins this shape
+    // CLEAN and it is the reason the branch was kept rather than deleted.
+    expect(
+      tier2Verdict(scan, V(K.secret.toUpperCase(), ": ", "Getenv_SOME_LONG_NAME")),
+      "the getenv alternative was dropped too, and #844's case has nothing excusing it",
+    ).toBe("CLEAN");
+  });
+});

@@ -35,20 +35,31 @@ export interface SecretPattern {
   ere: string;
   /** What it catches, for the humans reading a blocked commit. */
   description: string;
-  /**
-   * A literal substring of this pattern that a parity check can grep the
-   * pre-commit hook for.
-   *
-   * The parity guard derives one by cutting the ERE at its first `[`, `(` or
-   * `\`. That derivation is a heuristic, and for `jwt` it yields `eyJ` —
-   * three characters, which the guard used to treat as "too generic to grep
-   * for" and SKIP. A pattern whose derived key is short is exactly the
-   * pattern most likely to be missing from the hook, so the skip excused the
-   * case it existed to catch. Carry an explicit probe instead; a pattern with
-   * neither a usable derivation nor a probe is REFUSED, not waived.
-   */
-  hookProbe?: string;
 }
+
+/*
+ * There was a `hookProbe?: string` here for one commit, and the second
+ * security review of #868 was right that it should not exist.
+ *
+ * The parity guard used to grep the hook for a PREFIX of each ERE, derived by
+ * cutting at the first metacharacter. That derivation yields `eyJ` for `jwt`
+ * and `sk-` for `openai` — three characters each — and the guard skipped
+ * anything under four, which is how the hook went its whole life missing
+ * `jwt` entirely and carrying `{48}` where this registry says `{20,}`. The
+ * first repair made a short derivation demand an explicit probe rather than
+ * waive the check.
+ *
+ * That was still the weaker design, for a reason the review named: a probe is
+ * a DECLARATION, and nothing checked it was even a substring of its own ERE.
+ * A prefix also cannot see a hook that carries the right prefix and the wrong
+ * quantifier, which is precisely the `{48}` defect.
+ *
+ * The guard now greps the hook for each pattern's ENTIRE ere. Measured: all
+ * nine are already present verbatim in `scripts/git-hooks/pre-commit`, modulo
+ * `\-` for `-` inside a bracket expression, so the stronger check needed no
+ * per-pattern metadata at all. It catches both halves of the historical gap —
+ * a missing pattern and a narrowed one — with one assertion and no field.
+ */
 
 /**
  * Tier 1 — anchored key formats.
@@ -68,17 +79,13 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
   // deduplication. When registries disagree, the union is the safe merge, not
   // whichever copy you happened to start from.
   // The hook carried `{48}` against this `{20,}` until #868, and the parity
-  // guard could not say so: `sk-` is the derived probe and three characters
+  // guard could not say so: `sk-` is the derived prefix and three characters
   // long, so the guard skipped this entry for its whole life. A 30-character
   // key committed cleanly and was caught in CI, which is the gap the skip was
   // hiding in the OTHER direction from `jwt` — not a missing pattern, a
-  // narrowed one.
-  {
-    id: "openai",
-    ere: "sk-[A-Za-z0-9]{20,}",
-    description: "OpenAI-style API key",
-    hookProbe: "sk-[A-Za-z0-9]{20,}",
-  },
+  // narrowed one. A prefix probe could not have caught it either: `sk-` is in
+  // the hook under both quantifiers. Comparing the whole ERE can.
+  { id: "openai", ere: "sk-[A-Za-z0-9]{20,}", description: "OpenAI-style API key" },
   { id: "anthropic", ere: "sk-ant-[A-Za-z0-9-]{90,}", description: "Anthropic API key" },
   {
     id: "private-key",
@@ -120,7 +127,6 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
     id: "jwt",
     ere: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{43,}",
     description: "JSON Web Token (signed, three segments)",
-    hookProbe: "eyJ[A-Za-z0-9_-]{10,}",
   },
 ];
 
@@ -353,9 +359,24 @@ export const TIER2_DOTTED_PATH_ERE =
  * cannot be the discriminator here even though a real key is usually mixed —
  * which is worth stating, because reaching for `[a-z]` is the obvious move
  * and it silently matches everything under that flag.
+ *
+ * THAT TAIL RULE HELD FOR TWO OF THE THREE WORDS, AND THE SECOND REVIEW
+ * CAUGHT THE THIRD
+ *
+ * `your[_-]` and `example[_-]` require the separator. `REDACTED|CHANGEME|
+ * placeholder` did not — it carried a bare `[A-Za-z_-]*` tail — so a value
+ * beginning with one of those three words and continuing into a digit-free
+ * random run was excused. Reproduced on the shipped expression: an
+ * `API_KEY=` carrying `CHANGEME` and twenty-two more letters read CLEAN.
+ * It is the same defect as the `your_` one directly above, in the sibling
+ * the first repair did not look at.
+ *
+ * The separator is now required of all three, which is the rule the other
+ * two already stated. It costs nothing real: the consumer shape that needs
+ * a tail at all is `Placeholder_value_here`, whose tail begins `_`.
  */
 export const TIER2_PLACEHOLDER_VOCAB_ERE =
-  "(REDACTED|CHANGEME|placeholder)[A-Za-z_-]*" +
+  "(REDACTED|CHANGEME|placeholder)([_-][A-Za-z][A-Za-z_-]*)?" +
   "|your[_-][A-Za-z][A-Za-z_-]*" +
   "|example[_-][A-Za-z][A-Za-z_-]*";
 
@@ -372,9 +393,54 @@ export const TIER2_PLACEHOLDER_VOCAB_ERE =
  */
 const TIER2_VALUE_ANCHOR = `^${TIER2_KEY_ERE}[[:space:]]*[:=][[:space:]]*-?`;
 
+/**
+ * THE ENV-LOOKUP BRANCH WAS UNANCHORED, AND THREE QUARTERS OF IT WAS A
+ * SECOND DECIDER (second review of #868)
+ *
+ * It read `(process\.env|os\.environ|Deno\.env|getenv)` and was the only one
+ * of the four branches with no `$`. So it was a PREFIX test, and an
+ * `API_KEY=` carrying `getenv` and sixteen random characters was excused —
+ * the third instance of the unanchored-prefix defect in this one expression,
+ * after `your[_-]` and the placeholder vocabulary. Measured on the shipped
+ * expression before the repair: CLEAN.
+ *
+ * Anchoring it closes that. What anchoring alone does NOT do is notice that
+ * `process`, `os` and `Deno` have all been in `TIER2_EXPRESSION_ROOT_ERE`
+ * since #863 widened the root to a vocabulary — so three of the four
+ * alternatives were already excused by the dotted-path branch below, and an
+ * anchored branch naming them is two deciders answering one question. A
+ * mutation of either would leave the other holding every case up.
+ *
+ * Measured over this whole tree and nine control lines: the four-alternative
+ * branch and a `getenv`-only branch give identical verdicts on every input,
+ * including `os.environ.get` and `Deno.env.toObject`.
+ *
+ * `getenv` is the one that is NOT redundant, because it is a bare function
+ * name rather than an object, so no dotted path reaches it. It stays, with
+ * the end anchor and an identifier tail.
+ *
+ * A NOTE ON WHAT THAT TAIL IS FOR, BECAUSE THE FIRST DRAFT DELETED IT
+ *
+ * This branch was briefly removed outright, on the reasoning that nothing
+ * real is shaped like `getenv` followed by an identifier — a bare `getenv`
+ * is six characters against a twelve-character floor, and a genuine call
+ * writes `getenv(`, which ends the capture at the paren. That reasoning is
+ * sound and it is beside the point: #844's own case pins a `SECRET:` whose
+ * value is < Getenv_SOME_LONG_NAME > CLEAN, as the fixture proving the
+ * allowlist reads case the way the capture does. The class is not empty —
+ * there is a case in it. An argument that a class has no members is not
+ * evidence when the suite already holds one.
+ *
+ * (The angle brackets and the spaces are this file's. Spelling that value
+ * plainly makes this docstring a tier-2 capture excused only by the branch
+ * it is describing — so narrowing the branch would turn the Gates job red on
+ * THIS FILE rather than on the change that narrowed it. Measured: it did,
+ * and the tier-2 self-scan case in `test/unit/secret-patterns.test.ts` is
+ * what reported it. See the note above the dotted-path constant.)
+ */
 export const TIER2_ALLOWED_VALUE_ERE =
   "^$" +
-  `|${TIER2_VALUE_ANCHOR}(process\\.env|os\\.environ|Deno\\.env|getenv)` +
+  `|${TIER2_VALUE_ANCHOR}getenv([A-Za-z_][A-Za-z0-9_]*)?(\\.[A-Za-z_][A-Za-z0-9_]*)*$` +
   `|${TIER2_VALUE_ANCHOR}(${TIER2_PLACEHOLDER_VOCAB_ERE})$` +
   `|${TIER2_VALUE_ANCHOR}${TIER2_DOTTED_PATH_ERE}$`;
 
