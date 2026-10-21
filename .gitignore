@@ -32,3 +32,13 @@ service-account/
 .claude/worktrees/
 evals/results/
 evals/.gcp-adc.json
+
+# Added by rungate scaffold
+.bun/
+build/
+*.tsbuildinfo
+*.p12
+*.pfx
+credentials.json
+service-account*
+.secret*

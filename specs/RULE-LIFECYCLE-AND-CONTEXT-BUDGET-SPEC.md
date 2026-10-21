@@ -210,36 +210,55 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 ### Tiers and ownership
 
 - [ ] SC-1930: Baseline rules carry no `paths:` key in frontmatter
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1931: Baseline rule bodies contain no repo-specific identifier — no issue number, date, file path or incident from a single project
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1932: Every mined rule carries a `paths:` list scoped to the code it governs
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### Budget
 
 - [ ] SC-1933: Scaffold computes max-concurrent-load per file and reports the maximum with the file producing it
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1934: Max-concurrent-load over budget is a FAIL naming the overlapping rules, with glob-narrowing as the first fix command
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1935: Total rule count is not capped — only concurrent load is
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1936: A mined rule whose globs match every file in the repo is reported as unscoped
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1937: Glob expansion per rule stays within 1,000 expanded patterns and 4 MiB
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### Promotion and lifecycle
 
 - [ ] SC-1938: A scaffold run with zero human interaction produces a populated, scoped rule set
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1939: Promotion ranks on the mechanical evidence score — a candidate with no evidence never outranks one with evidence
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1940: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
+<!-- REVIEW: unmatched (rewriting as file-exists would assert only that reference/rejected-constraints.md exists, while the criterion coordinates a further claim (it is never re-promoted) — the file is mentioned, not what the criterion is about) -->
 - [ ] SC-1941: A rule whose cited `file:line` no longer resolves is auto-retired, not warned about
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1942: Eval-gated retention is disabled until its delta measurement has a mutation test proving it goes red
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### Sources
 
 - [ ] SC-1943: Makefile targets, `package.json` scripts and CI workflow files are scanned for constraints alongside markdown
+<!-- REVIEW: unmatched (rewriting as file-exists would assert only that package.json exists, while the criterion coordinates a further claim (CI workflow files are scanned for constraints alongside markdown) — the file is mentioned, not what the criterion is about) -->
 - [ ] SC-1944: `CODE-MAP.md` is excluded from constraint sources
+<!-- REVIEW: unmatched (rewriting as file-exists would drop the file `CODE-MAP.md` the criterion names) -->
 - [ ] SC-1945: A consumer scaffolded with zero mined rules is reported as such, not as a complete rule set
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ### Idempotency
 
 - [ ] SC-1946: Running scaffold twice over the golden fixture produces byte-identical rules directories
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1947: Constraint extraction runs as part of scaffold and re-scaffold, not only as a separate command
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1948: Hand-edited rule files are preserved across all of the above and reported, not silently regenerated
+<!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
 ## Proving it
 
