@@ -94,7 +94,14 @@ const UNCLAIMED_RATCHET = 153;
 // — refuses an unmeasured tree, excludes a path-scoped rule, keeps the budget
 // within 35% of what it measures — and no file-exists pattern expresses the
 // behaviour of a predicate on a planted tree.
-const CLAIMED_UNBINDABLE = 81;
+//
+// 81 -> 86 on 2026-10-21 (#544). Five criteria about the max-concurrent-load
+// budget, same check and same battery: the peak reading and the file that
+// produces it, the refusal that names the overlapping rules, the absence of
+// a count cap, the glob that matches everything, and the per-rule glob
+// limits. Unmatchable for the same reason — each is a claim about what the
+// predicate returns for a planted tree, which no file-exists pattern states.
+const CLAIMED_UNBINDABLE = 86;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

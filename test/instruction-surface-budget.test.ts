@@ -1,8 +1,24 @@
 /**
- * Covers SC-2440..SC-2446 (RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md).
+ * Covers SC-2440..SC-2447 and SC-1933..SC-1937
+ * (RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md).
  *
- * `scripts/check-instruction-surface.ts` — the auto-loaded instruction surface,
- * measured and refused when it exceeds its declared budget (#1009).
+ * `scripts/check-instruction-surface.ts` — the instruction surface an agent
+ * loads, measured and refused when it exceeds its declared budget (#1009,
+ * #544).
+ *
+ * #544 extended the measurement from the launch surface to the PEAK: for
+ * every file in the repository, the launch surface plus every scoped rule
+ * whose globs match that file. The launch reading is the peak's floor, so one
+ * budget governs both and there is no second constant.
+ *
+ * The case that made this necessary is in this file, below SC-2444: *"a huge
+ * path-scoped rule does not blow the budget"* passed, and passed for a reason
+ * it never stated — its fixture plants a rule scoped to `src/**` in a tree
+ * with no `src/` directory. The glob matched nothing, so the exclusion was
+ * never tested against a file that would have exercised it. On the real tree
+ * the same hole was 9,484 real bytes: `harness-managed.md` is path-scoped,
+ * was excluded at `bytes: 0`, and put `.claude/agents/aditi.md` at 66,124
+ * against a 64,000 budget that reported clean.
  *
  * The defect this guards is not "a file got long". It is that the growth is
  * invisible from inside: every agent pays 44,000 tokens before it reads its
@@ -24,11 +40,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
+  MAX_EXPANDED_PATTERNS,
   SURFACE_BUDGET_BYTES,
   SurfaceUnmeasured,
+  expandBraces,
   isPathScoped,
+  measureConcurrentLoad,
   measureSurface,
   ruleBody,
+  rulePaths,
 } from "../scripts/check-instruction-surface";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -81,8 +101,18 @@ function refusesAndMutantDoesNot(args: string[]) {
   return real;
 }
 
-/** A tree shaped like a scaffolded repo, with the rule bodies given. */
-function plantedRoot(rules: Record<string, string>, opts: { claude?: string | null } = {}): string {
+/**
+ * A tree shaped like a scaffolded repo, with the rule bodies given.
+ *
+ * `opts.files` plants ordinary repository files — the population the peak
+ * reading is taken over. Before #544 no fixture here planted one, which is
+ * why the scoped-rule exclusion could be asserted against a glob that matched
+ * nothing.
+ */
+function plantedRoot(
+  rules: Record<string, string>,
+  opts: { claude?: string | null; files?: Record<string, string> } = {},
+): string {
   const root = mkdtempSync(join(tmpdir(), "surface-root-"));
   scratch.push(root);
   if (opts.claude !== null) writeFileSync(join(root, "CLAUDE.md"), opts.claude ?? "# rules\n");
@@ -90,6 +120,11 @@ function plantedRoot(rules: Record<string, string>, opts: { claude?: string | nu
   mkdirSync(join(root, ".claude", "rules"), { recursive: true });
   for (const [name, body] of Object.entries(rules)) {
     const p = join(root, ".claude", "rules", name);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, body);
+  }
+  for (const [name, body] of Object.entries(opts.files ?? {})) {
+    const p = join(root, name);
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, body);
   }
@@ -193,7 +228,10 @@ describe("SC-2442: over the declared budget is a refusal carrying the measuremen
     const root = plantedRoot({ "small.md": "## Small\n\nrule.\n" });
     const r = run(SCRIPT, ["--root", root]);
     expect(r.code, `${r.out}${r.err}`).toBe(0);
-    expect(r.out).toContain("TOTAL");
+    // `TOTAL` until #544, when the one line became two: the launch floor and
+    // the peak. A single total can no longer say which was compared.
+    expect(r.out).toContain("LAUNCH");
+    expect(r.out).toContain("PEAK");
   });
 });
 
@@ -222,16 +260,43 @@ describe("SC-2443: the population is derived from the tree", () => {
 // ── What loads at launch, and what does not ──────────────────────────────
 
 describe("SC-2444: a path-scoped rule is not part of the launch surface", () => {
-  test("a huge path-scoped rule does not blow the budget", () => {
+  test("a huge path-scoped rule is not in the LAUNCH surface", () => {
     // `paths:` is the only frontmatter key Claude Code reads; a rule carrying
-    // one loads on demand. Counting it would make the budget a number about a
-    // surface no agent pays for, and the first fix anyone reached for —
-    // narrowing a glob — would not move it.
+    // one loads on demand. Counting it at launch would make the budget a
+    // number about a surface no agent pays for, and the first fix anyone
+    // reached for — narrowing a glob — would not move it.
+    //
+    // #544: this fixture plants NO file under `src/`, so the glob matches
+    // nothing and the rule is free at the peak as well as at launch. That is
+    // what the case is now about, and the paired case below is the one that
+    // plants the file. Until #544 only this half existed, and it read as
+    // proof that a scoped rule is free — which on the real tree cost 9,484
+    // bytes of unmeasured `harness-managed.md`.
     const huge = `---\npaths:\n  - "src/**"\n---\n\n## Huge\n\n${filler(SURFACE_BUDGET_BYTES * 2)}`;
     const root = plantedRoot({ "scoped.md": huge });
     const r = run(SCRIPT, ["--root", root]);
     expect(r.code, `${r.out}${r.err}`).toBe(0);
     expect(r.out).toContain("path-scoped");
+    expect(measureSurface(root).totalBytes).toBeLessThan(1_000);
+    expect(measureConcurrentLoad(root).peakFile, "no file matches `src/**` in this tree").toBe(
+      null,
+    );
+  });
+
+  test("the SAME rule with one matching file present IS refused at the peak", () => {
+    // The input on which the two readings differ, and the whole of #544: the
+    // bytes are identical, the frontmatter is identical, and the only change
+    // is that the tree now contains a file the glob matches.
+    const huge = `---\npaths:\n  - "src/**"\n---\n\n## Huge\n\n${filler(SURFACE_BUDGET_BYTES * 2)}`;
+    const root = plantedRoot({ "scoped.md": huge }, { files: { "src/app.ts": "export {};\n" } });
+    const real = refusesAndMutantDoesNot(["--root", root]);
+    expect(real.err).toContain("peak instruction surface");
+    expect(real.err).toContain("src/app.ts");
+    expect(real.err).toContain("scoped.md");
+    // The launch reading on this same tree is tiny. Without this line the
+    // case would also pass if the peak had simply started billing every
+    // scoped rule unconditionally, which is the over-correction.
+    expect(measureSurface(root).totalBytes).toBeLessThan(1_000);
   });
 
   test("the same body without `paths:` DOES blow it — the exclusion is load-bearing", () => {
@@ -269,13 +334,18 @@ describe("SC-2445: the measurement is of the body, because frontmatter is stripp
 // ── This repository, measured ────────────────────────────────────────────
 
 describe("SC-2446: this repository is inside its own budget", () => {
-  test("the real tree measures under SURFACE_BUDGET_BYTES", () => {
-    const reading = measureSurface(REPO_ROOT);
+  test("the real tree measures under SURFACE_BUDGET_BYTES at its PEAK", () => {
+    // #544: this was `measureSurface` — the launch floor — and it was green
+    // while editing any file under `.claude/agents/**` or `.claude/rules/**`
+    // cost 66,124 bytes. The peak is what an agent pays; the floor is what it
+    // pays before it does anything.
+    const reading = measureConcurrentLoad(REPO_ROOT);
     expect(
-      reading.totalBytes,
-      `the auto-loaded surface is ${reading.totalBytes} bytes against a budget of ` +
-        `${SURFACE_BUDGET_BYTES}. Move a record into reference/ and route to it from ` +
-        `.claude/rules/docs-routing.md — see #1009. Raising the budget is a decision, not a fix.`,
+      reading.peakBytes,
+      `the peak surface is ${reading.peakBytes} bytes on ${reading.peakFile} against a budget ` +
+        `of ${SURFACE_BUDGET_BYTES}. Narrow a glob, or move a record into reference/ and route ` +
+        `to it from .claude/rules/docs-routing.md — see #1009 and #544. Raising the budget is ` +
+        `a decision, not a fix.`,
     ).toBeLessThanOrEqual(SURFACE_BUDGET_BYTES);
   });
 
@@ -312,7 +382,10 @@ describe("SC-2446: this repository is inside its own budget", () => {
      * the budget to accommodate real growth stays legal and stays one visible
      * line in the diff; inflating it so it stops binding does not.
      */
-    const measured = measureSurface(REPO_ROOT).totalBytes;
+    // #544: bound against the PEAK, because the peak is what the budget now
+    // governs. Binding it to the launch floor while the comparison was
+    // against the peak would be the two-deciders shape in miniature.
+    const measured = measureConcurrentLoad(REPO_ROOT).peakBytes;
     const ceiling = Math.round(measured * 1.35);
     expect(
       SURFACE_BUDGET_BYTES,
@@ -327,6 +400,278 @@ describe("SC-2446: this repository is inside its own budget", () => {
     // script recomputed the total itself. It does not — this asserts that.
     const r = run(SCRIPT, ["--root", REPO_ROOT, "--json"]);
     expect(r.code, `${r.out}${r.err}`).toBe(0);
-    expect(JSON.parse(r.out).totalBytes).toBe(measureSurface(REPO_ROOT).totalBytes);
+    const emitted = JSON.parse(r.out);
+    expect(emitted.totalBytes).toBe(measureSurface(REPO_ROOT).totalBytes);
+    expect(emitted.concurrent.peakBytes).toBe(measureConcurrentLoad(REPO_ROOT).peakBytes);
+  });
+});
+
+// ── #544: the peak, not the floor ────────────────────────────────────────
+
+describe("SC-1933: the peak is the launch surface plus one file's scoped rules", () => {
+  test("the reading names the maximum and the file that produces it", () => {
+    const root = plantedRoot(
+      {
+        "a.md": `---\npaths:\n  - "lib/**"\n---\n\n${filler(3_000)}`,
+        "b.md": `---\npaths:\n  - "lib/hot.ts"\n---\n\n${filler(2_000)}`,
+        "c.md": `---\npaths:\n  - "docs/**"\n---\n\n${filler(9_000)}`,
+      },
+      { files: { "lib/hot.ts": "x\n", "lib/cold.ts": "x\n", "docs/g.md": "x\n" } },
+    );
+    const reading = measureConcurrentLoad(root);
+    // `lib/hot.ts` loads a.md + b.md = 5,002 of filler; `docs/g.md` loads
+    // 9,001 alone. The peak is the single worst FILE, so the larger single
+    // rule wins and the overlap does not — which is the distinction a
+    // "largest rule" reading and a "most rules" reading both get wrong.
+    expect(reading.peakFile).toBe("docs/g.md");
+    expect(reading.peakRules.map(r => r.file)).toEqual([".claude/rules/c.md"]);
+    expect(reading.peakBytes - reading.launch.totalBytes).toBe(9_001);
+  });
+
+  test("overlapping rules on one file are summed", () => {
+    const root = plantedRoot(
+      {
+        "a.md": `---\npaths:\n  - "lib/**"\n---\n\n${filler(3_000)}`,
+        "b.md": `---\npaths:\n  - "lib/hot.ts"\n---\n\n${filler(9_000)}`,
+      },
+      { files: { "lib/hot.ts": "x\n", "lib/cold.ts": "x\n" } },
+    );
+    const reading = measureConcurrentLoad(root);
+    expect(reading.peakFile).toBe("lib/hot.ts");
+    expect(reading.peakRules.map(r => r.file)).toEqual([
+      ".claude/rules/b.md",
+      ".claude/rules/a.md",
+    ]);
+    expect(reading.peakBytes - reading.launch.totalBytes).toBe(12_002);
+  });
+
+  test("the launch surface is the peak's floor, so one budget governs both", () => {
+    // The property that makes a second constant unnecessary. Asserted rather
+    // than argued: if the peak could come back BELOW the launch reading, the
+    // #1009 comparison would have been dropped for a weaker one.
+    const reading = measureConcurrentLoad(REPO_ROOT);
+    expect(reading.peakBytes).toBeGreaterThanOrEqual(reading.launch.totalBytes);
+  });
+
+  test("a walk that loses the tree is UNMEASURED, not a peak equal to the floor", () => {
+    // Reachable only because the floor is stated against what the launch
+    // reading already read. The mutation: make `walkFiles` skip every
+    // directory, which is what a bad SKIP_DIRS entry does.
+    const root = plantedRoot({ "a.md": "## A\n\nrule.\n" });
+    const mutantSrc = source.replace(
+      "const SKIP_DIRS = new Set([",
+      "const SKIP_DIRS = new Set([String.raw`.claude`, ",
+    );
+    expect(mutantSrc, "the SKIP_DIRS declaration moved — this mutation is no longer applied").not.toBe(
+      source,
+    );
+    const p = join(MUTANT_DIR, "walk-mutant.ts");
+    writeFileSync(p, mutantSrc);
+    const r = run(p, ["--root", root]);
+    expect(r.code, `${r.out}${r.err}`).toBe(1);
+    expect(r.err).toContain("UNMEASURED");
+    expect(r.err).toContain("a walk that did not happen");
+    // And the unmutated script is fine on the same tree — so the refusal is
+    // the mutation's doing and not the fixture's.
+    expect(run(SCRIPT, ["--root", root]).code).toBe(0);
+  });
+});
+
+describe("SC-1934: over budget at the peak FAILs and names the overlapping rules", () => {
+  test("the refusal names every rule loading on the worst file", () => {
+    const root = plantedRoot(
+      {
+        "wide.md": `---\npaths:\n  - "lib/**"\n---\n\n${filler(SURFACE_BUDGET_BYTES / 2)}`,
+        "narrow.md": `---\npaths:\n  - "lib/hot.ts"\n---\n\n${filler(SURFACE_BUDGET_BYTES / 2)}`,
+      },
+      { files: { "lib/hot.ts": "x\n" } },
+    );
+    const real = refusesAndMutantDoesNot(["--root", root]);
+    expect(real.err).toContain("lib/hot.ts");
+    expect(real.err).toContain("wide.md");
+    expect(real.err).toContain("narrow.md");
+  });
+
+  test("glob-narrowing is the FIRST remedy and eviction the last", () => {
+    // The spec's order, and the reason for it: an over-budget repository is
+    // fixed by making a rule load less often before it is fixed by deleting
+    // a rule that is right. A message that led with eviction would get the
+    // good rule deleted, which is the cheapest wrong fix here.
+    const root = plantedRoot(
+      { "wide.md": `---\npaths:\n  - "lib/**"\n---\n\n${filler(SURFACE_BUDGET_BYTES + 10)}` },
+      { files: { "lib/hot.ts": "x\n" } },
+    );
+    const r = run(SCRIPT, ["--root", root]);
+    expect(r.code).toBe(1);
+    const narrow = r.err.indexOf("NARROW A GLOB");
+    const move = r.err.indexOf("Move the worked examples");
+    const evict = r.err.indexOf("Evict the rule");
+    expect(narrow).toBeGreaterThan(-1);
+    expect(narrow).toBeLessThan(move);
+    expect(move).toBeLessThan(evict);
+  });
+
+  test("the comparison is against the budget it is given, not against a constant", () => {
+    /**
+     * The #1009 lesson applied to the new reading. Every process-level case
+     * above sizes its filler from `SURFACE_BUDGET_BYTES`, so raising the
+     * constant raises the fixture and none of them can tell one budget from
+     * another — measured as 0 red for that mutation, which is why SC-2447
+     * exists.
+     *
+     * This case names an input on which two budgets differ: one tree, two
+     * literal budgets, opposite verdicts. The sizes are literals and do not
+     * move when the constant does.
+     */
+    const root = plantedRoot(
+      { "wide.md": `---\npaths:\n  - "lib/**"\n---\n\n${filler(5_000)}` },
+      { files: { "lib/hot.ts": "x\n" } },
+    );
+    const peak = measureConcurrentLoad(root, 4_000).peakBytes;
+    expect(peak).toBeGreaterThan(4_000);
+    expect(peak).toBeLessThan(8_000);
+    expect(measureConcurrentLoad(root, 4_000).budgetBytes).toBe(4_000);
+    expect(measureConcurrentLoad(root, 8_000).budgetBytes).toBe(8_000);
+  });
+});
+
+describe("SC-1935: the total rule count is not capped — only concurrent load is", () => {
+  test("forty rules that never co-match cost one rule's worth", () => {
+    // The reading a count-based cap gets backwards. `docs/research/context-
+    // management.md` measures collapse past ~16 rules IN CONTEXT; forty that
+    // never load together are never in context together.
+    const rules: Record<string, string> = {};
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 40; i++) {
+      rules[`r${i}.md`] = `---\npaths:\n  - "mod${i}/**"\n---\n\n${filler(1_000)}`;
+      files[`mod${i}/a.ts`] = "x\n";
+    }
+    const reading = measureConcurrentLoad(plantedRoot(rules, { files }));
+    expect(reading.peakBytes - reading.launch.totalBytes).toBe(1_001);
+    expect(run(SCRIPT, ["--root", plantedRoot(rules, { files })]).code).toBe(0);
+  });
+
+  test("two rules that always co-match cost two", () => {
+    // The other half. Without it, a check that ignored overlap entirely
+    // would satisfy the case above.
+    const root = plantedRoot(
+      {
+        "a.md": `---\npaths:\n  - "mod/**"\n---\n\n${filler(1_000)}`,
+        "b.md": `---\npaths:\n  - "mod/**"\n---\n\n${filler(1_000)}`,
+      },
+      { files: { "mod/a.ts": "x\n" } },
+    );
+    const reading = measureConcurrentLoad(root);
+    expect(reading.peakBytes - reading.launch.totalBytes).toBe(2_002);
+  });
+});
+
+describe("SC-1936: a glob matching every file is reported as unscoped", () => {
+  test("a rule scoped to `**` is refused, naming the rule and the count", () => {
+    // An un-narrowed glob converts a mined rule into a baseline one while
+    // still reading as scoped — so it is excluded from the launch surface
+    // and paid on every file. Strictly worse than declaring no `paths:`.
+    const root = plantedRoot(
+      { "everything.md": `---\npaths:\n  - "**"\n---\n\n${filler(500)}` },
+      { files: { "lib/a.ts": "x\n" } },
+    );
+    const real = refusesAndMutantDoesNot(["--root", root]);
+    expect(real.err).toContain("UNSCOPED");
+    expect(real.err).toContain("everything.md");
+    expect(real.err).toContain("A glob that excludes nothing is not a scope");
+  });
+
+  test("a rule that misses one file is NOT reported", () => {
+    // The positive control. A check that fired on every scoped rule would
+    // satisfy the case above and refuse the whole repository.
+    const root = plantedRoot(
+      { "nearly.md": `---\npaths:\n  - "lib/**"\n---\n\n${filler(500)}` },
+      { files: { "lib/a.ts": "x\n", "other/b.ts": "x\n" } },
+    );
+    expect(measureConcurrentLoad(root).unscoped).toEqual([]);
+    expect(run(SCRIPT, ["--root", root]).code).toBe(0);
+  });
+
+  test("this repository has no unscoped mined rule", () => {
+    expect(measureConcurrentLoad(REPO_ROOT).unscoped.map(r => r.file)).toEqual([]);
+  });
+});
+
+describe("SC-1937: per-rule glob expansion and size stay inside Claude Code's limits", () => {
+  test("brace groups multiply, as the platform counts them", () => {
+    expect(expandBraces("{a,b}/{c,d}/*.{ts,tsx}")).toHaveLength(8);
+    expect(expandBraces("lib/**")).toEqual(["lib/**"]);
+    expect(expandBraces("{a,{b,c}}/x")).toEqual(["a/x", "b/x", "c/x"]);
+    // An unclosed brace is not an expansion. Returning [] here would make an
+    // over-budget pattern read as costing nothing.
+    expect(expandBraces("{a,b/x")).toEqual(["{a,b/x"]);
+  });
+
+  test("a rule over the 1,000-pattern budget is refused", () => {
+    // 4 groups of 6 alternatives each: 1,296 patterns from one line.
+    const g = "{a,b,c,d,e,f}";
+    const root = plantedRoot(
+      { "many.md": `---\npaths:\n  - "${g}/${g}/${g}/${g}/x.ts"\n---\n\n${filler(100)}` },
+      { files: { "lib/a.ts": "x\n" } },
+    );
+    const real = refusesAndMutantDoesNot(["--root", root]);
+    expect(real.err).toContain("GLOB BUDGET");
+    expect(real.err).toContain("many.md");
+    expect(measureConcurrentLoad(root).globOverruns[0]!.expandedPatterns).toBeGreaterThan(
+      MAX_EXPANDED_PATTERNS,
+    );
+  });
+
+  test("a rule just under the budget is not refused", () => {
+    // 3 groups of 6: 216 patterns. The positive control for the case above.
+    const g = "{a,b,c,d,e,f}";
+    const root = plantedRoot(
+      { "few.md": `---\npaths:\n  - "${g}/${g}/${g}/x.ts"\n---\n\n${filler(100)}` },
+      { files: { "lib/a.ts": "x\n" } },
+    );
+    expect(measureConcurrentLoad(root).globOverruns).toEqual([]);
+    expect(run(SCRIPT, ["--root", root]).code).toBe(0);
+  });
+
+  test("this repository's rules stay inside both limits", () => {
+    const reading = measureConcurrentLoad(REPO_ROOT);
+    expect(reading.globOverruns.map(r => r.file)).toEqual([]);
+    expect(reading.oversized.map(r => r.file)).toEqual([]);
+  });
+});
+
+describe("rulePaths reads both YAML spellings", () => {
+  test("block and inline lists both parse, and the body does not", () => {
+    // A spelling this misses measures as un-scoped, which moves the rule
+    // into the launch surface and changes its BYTES, not only a label.
+    expect(rulePaths('---\npaths:\n  - "lib/**"\n  - "gates/**"\ndescription: x\n---\n\nbody\n')).toEqual([
+      "lib/**",
+      "gates/**",
+    ]);
+    expect(rulePaths('---\npaths: ["lib/**", "gates/**"]\n---\n\nbody\n')).toEqual([
+      "lib/**",
+      "gates/**",
+    ]);
+    expect(rulePaths("---\ndescription: x\n---\n\npaths:\n  - lib/**\n")).toEqual([]);
+    expect(rulePaths("## no frontmatter\n")).toEqual([]);
+  });
+
+  test("it agrees with isPathScoped on this repository's rules", () => {
+    // Two readers of one fact. If `isPathScoped` says scoped and `rulePaths`
+    // returns nothing, the rule is excluded from the launch surface AND
+    // matches no file — free at both readings, which is the escape hatch.
+    for (const r of measureConcurrentLoad(REPO_ROOT).peakRules) {
+      expect(r.globs.length, `${r.file} is path-scoped but parsed to zero globs`).toBeGreaterThan(0);
+    }
+    const scoped = measureSurface(REPO_ROOT).entries.filter(e => e.excluded);
+    expect(scoped.length, "no path-scoped rule in the tree — this case is vacuous").toBeGreaterThan(
+      0,
+    );
+    for (const e of scoped) {
+      expect(
+        rulePaths(readFileSync(join(REPO_ROOT, e.file), "utf-8")).length,
+        `${e.file} is excluded from the launch surface but declares no parseable globs`,
+      ).toBeGreaterThan(0);
+    }
   });
 });

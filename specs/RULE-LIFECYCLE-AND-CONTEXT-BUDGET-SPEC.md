@@ -218,16 +218,34 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 
 ### Budget
 
-- [ ] SC-1933: Scaffold computes max-concurrent-load per file and reports the maximum with the file producing it
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
-- [ ] SC-1934: Max-concurrent-load over budget is a FAIL naming the overlapping rules, with glob-narrowing as the first fix command
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
-- [ ] SC-1935: Total rule count is not capped — only concurrent load is
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
-- [ ] SC-1936: A mined rule whose globs match every file in the repo is reported as unscoped
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
-- [ ] SC-1937: Glob expansion per rule stays within 1,000 expanded patterns and 4 MiB
-<!-- REVIEW: unmatched (no registry pattern was close enough) -->
+Implemented by #544, in `scripts/check-instruction-surface.ts` and driven by
+`test/instruction-surface-budget.test.ts`.
+
+The reading is in **bytes, not in rules**. A count cannot tell a one-line rule
+from a nine-kilobyte one, and the thing being budgeted is context.
+
+It extends #1009's launch measurement rather than sitting beside it. The launch
+surface is the peak's floor — the reading for a file no glob matches — so
+`peak <= budget` implies `launch <= budget` and `SURFACE_BUDGET_BYTES` stays
+the single declaring position. A second constant for concurrent load would be
+two deciders for one question, and a mutation of either would leave the other
+holding the case up.
+
+**`paths:` was a budget escape hatch, and it had been used.** #1009 excluded
+every path-scoped rule at `bytes: 0`, correctly for the question it asked and
+with the consequence that no number governed a scoped rule at all. Measured on
+2026-10-21, before the fix: launch 56,640 bytes, and
+`.claude/rules/harness-managed.md` — scoped, therefore uncounted — a further
+9,484. Editing any file under `.claude/agents/**` put the reading at 66,124
+against a 64,000-byte budget that reported the repository clean. Repaired by
+the remedy this spec prescribes: the worked records moved to
+`reference/harness-managed-worked-instances.md`, nothing deleted, peak 62,671.
+
+- [x] SC-1933: Scaffold computes max-concurrent-load per file and reports the maximum with the file producing it
+- [x] SC-1934: Max-concurrent-load over budget is a FAIL naming the overlapping rules, with glob-narrowing as the first fix command
+- [x] SC-1935: Total rule count is not capped — only concurrent load is
+- [x] SC-1936: A mined rule whose globs match every file in the repo is reported as unscoped
+- [x] SC-1937: Glob expansion per rule stays within 1,000 expanded patterns and 4 MiB
 
 ### The always-loaded surface has a declared size (#1009)
 
@@ -321,6 +339,46 @@ make each guard go red. The eviction and concurrent-load checks are the ones
 most likely to pass because of what they never look at: short-circuiting the
 evictor or the overlap counter to `return []` must turn the budget tests red,
 and the count must be recorded here.
+
+### The concurrent-load battery (#544, 2026-10-21)
+
+Seven mutations against `test/instruction-surface-budget.test.ts`, baseline
+**40 pass / 0 fail**. Each count is of tests reddened, with the mutation named
+rather than described.
+
+| Mutation | Red | What it reddened |
+|---|---|---|
+| `SURFACE_BUDGET_BYTES` 64,000 → 10,000,000 | 5 (**1 attributable**) | SC-2447 — the budget may not sit more than 35% above what it measures |
+| the peak never updates (`if (hits.length > 0 && bytes > peakBytes)` → `if (false)`) | 8 | both SC-1933 readings, all three SC-1934 refusals, both SC-1935 cases, and SC-2444's paired case |
+| scoped rules never collected (`if (!isPathScoped(text)) continue` → `continue`) | 10 | the eight above, plus SC-1936 and SC-1937 |
+| the unscoped detector never fires (`m.matchCount === files.length` → `false`) | 1 | SC-1936 — a glob matching every file |
+| the glob-overrun detector never fires | 1 | SC-1937 — 1,296 patterns from one line |
+| the walk floor made unreachable (`files.length < floor` → `< 0`) | 1 | SC-1933 — a walk that loses the tree is UNMEASURED |
+| `rulePaths` → `return []` | 12 | all of the above plus both parser cases |
+
+**The budget mutation's 5 decompose into 1 and 4, and the 4 are not
+attributable.** Those four fixtures size their filler from
+`SURFACE_BUDGET_BYTES` — `filler(SURFACE_BUDGET_BYTES * 2)` becomes a 20 MB
+rule at the mutated value, which trips the 4 MiB per-rule limit (SC-1937) and
+refuses *before* the budget comparison is reached. Verified by reading the
+mutant's stderr rather than its exit code:
+
+```
+RULE SIZE: <the 20 MB fixture rule> is 20000010 bytes,
+over Claude Code's per-rule limit of 4194304 (#544, SC-1937).
+```
+
+This is #1009's own confound, inherited: a fixture sized from the constant
+cannot tell one budget from another. Two cases in the battery are immune and
+are the ones the binding rests on — SC-2447, which compares the constant
+against the measured tree, and SC-1934's *the comparison is against the budget
+it is given*, which runs one fixture of literal size against two literal
+budgets and gets opposite verdicts.
+
+`rulePaths` returning `[]` was not only a mutation. The first implementation
+used `\Z` in a regex, which JavaScript reads as a literal `Z`; every rule
+parsed to zero globs and the peak equalled the launch surface on every tree.
+It went red on the fixtures above before it reached review.
 
 ## SUCCESS.md
 
