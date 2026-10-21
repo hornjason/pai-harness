@@ -16,7 +16,10 @@ import { join } from "path";
 
 import {
   acquireFullSuiteSlot,
+  anySuiteRunning,
+  classifyPsLine,
   counterKey,
+  suiteLiveness,
   deriveWorkerId,
   evaluateFullSuiteRequest,
   heldSlots,
@@ -1446,5 +1449,168 @@ describe("resolveMaxRuns: the override cannot turn the guard off", () => {
     ["Infinity", Infinity],
   ])("a %s option falls back rather than being used", (_l, option) => {
     expect(resolveMaxRuns(option as number, undefined)).toBe(DEFAULT_MAX_RUNS_PER_WORKER);
+  });
+});
+
+/**
+ * #707 — a suite launched under a name the matcher cannot see.
+ *
+ * `/tmp/brun` is the documented workaround for #690: a symlink whose path
+ * does not contain the string the pattern kill matches, so the suite
+ * survives `SessionStart`. Measured on this machine 2026-10-21:
+ * `/tmp/brun -> /opt/homebrew/bin/bun`.
+ *
+ * The cost nobody priced is that the liveness probe looked for the same
+ * string, so the workaround hid the suite from the concurrency guard too —
+ * `slotIsStale` then reclaimed every slot as provably false after the grace
+ * period, and `DEFAULT_CAPACITY` was switched off for exactly the runs that
+ * used it.
+ *
+ * **Widening the regex cannot fix it and these cases do not try.** `brun`
+ * does not contain `bun`; #727 established that and `SPELLED_BUN` is
+ * unchanged. What is new is that argv[0] is resolved on disk when the
+ * ARGUMENTS are a suite invocation and the name is not, so the reading is
+ * about the executable's identity rather than its spelling.
+ *
+ * **The cheapest wrong fix, named: widen the leading boundary to `.*` so the
+ * pattern is less fussy.** It is one character, it is what someone reaches
+ * for when a matcher misses something, and it changes nothing at all here —
+ * there is no boundary under which a pattern written over `bun` matches
+ * `brun`. The pair below survives it because the only thing separating its
+ * two halves is the RESOLVER, not the line.
+ */
+describe("#707: a renamed or symlinked launcher is still a suite", () => {
+  /** The real mapping on this machine, injected so no case touches /tmp. */
+  const resolveBrun = (p: string) =>
+    p === "/tmp/brun" ? "/opt/homebrew/Cellar/bun/1.3.14/bin/bun" : p;
+
+  test.each([
+    ["bun test"],
+    ["/Users/jhorn/.bun/bin/bun test"],
+    ["bun run test"],
+    ["bun test test/foo.test.ts"],
+  ])("a line that spells it is a suite with no resolution at all: %s", (line) => {
+    // `resolveExecutable` throws, so these cannot be passing through the new
+    // branch: the spelled form is answered before the filesystem is asked.
+    const boom = () => {
+      throw new Error("the resolver must not be reached for a spelled line");
+    };
+    expect(classifyPsLine(line, { resolveExecutable: boom })).toBe("suite");
+  });
+
+  test.each([
+    ["/tmp/brun test"],
+    ["/tmp/brun test test/foo.test.ts"],
+    ["/tmp/brun run test"],
+  ])("a symlinked launcher resolves to bun and is a suite: %s", (line) => {
+    expect(classifyPsLine(line, { resolveExecutable: resolveBrun })).toBe("suite");
+  });
+
+  test("the pair differs in the RESOLVER and in nothing else", () => {
+    // #585: one input, two readings. The line is byte-identical in both
+    // halves, so what is being measured is the resolution and not the text —
+    // which is also why widening the regex cannot move either half.
+    const line = "/tmp/brun test";
+    expect("brun".includes("bun")).toBe(false);
+    expect(classifyPsLine(line, { resolveExecutable: (p) => p })).toBe("unknown");
+    expect(classifyPsLine(line, { resolveExecutable: resolveBrun })).toBe("suite");
+  });
+
+  test.each([
+    ["a resolution that cannot be taken", "/tmp/gone test", () => {
+      throw new Error("ENOENT");
+    }],
+    ["a relative launcher nothing can resolve", "brun test", (p: string) => p],
+    ["a binary that is something else", "/opt/mystery/runner test", (p: string) => p],
+  ])("%s is unknown, never idle", (_label, line, resolve) => {
+    expect(classifyPsLine(line as string, { resolveExecutable: resolve as (p: string) => string }))
+      .toBe("unknown");
+  });
+
+  test.each([
+    ["/System/Library/.../powerd.bundle/Contents/MacOS/powerd"],
+    ["bun run build"],
+    ["git commit -m 'bun test'"],
+    ["bunx tsc --noEmit"],
+    ["/usr/bin/vim notes.md"],
+  ])("a line that is not a suite stays not-suite: %s", (line) => {
+    expect(classifyPsLine(line, { resolveExecutable: (p) => p })).toBe("not-suite");
+  });
+
+  const rowOf = (command: string, pid = 100) => ({
+    pid,
+    ppid: 1,
+    elapsedSeconds: 60,
+    command,
+  });
+
+  test("the whole-machine reading has three states, and idle is a positive claim", () => {
+    const idle = { rows: [rowOf("/usr/bin/vim notes.md")], resolveExecutable: (p: string) => p };
+    const running = { rows: [rowOf("bun test")], resolveExecutable: (p: string) => p };
+    const murky = { rows: [rowOf("/opt/mystery/runner test")], resolveExecutable: (p: string) => p };
+
+    expect(suiteLiveness(idle)).toBe("idle");
+    expect(suiteLiveness(running)).toBe("running");
+    expect(suiteLiveness(murky)).toBe("unknown");
+  });
+
+  test("the boolean collapses unknown toward keeping slots, and the distinction survives", () => {
+    const murky = {
+      rows: [rowOf("/opt/mystery/runner test")],
+      resolveExecutable: (p: string) => p,
+    };
+    // Two readings of ONE input: the boolean cannot tell unknown from
+    // running, and that is deliberate — but `suiteLiveness` still can, which
+    // is what stops the collapse being a silent default.
+    expect(anySuiteRunning(murky)).toBe(true);
+    expect(suiteLiveness(murky)).toBe("unknown");
+    expect(suiteLiveness(murky)).not.toBe("running");
+  });
+
+  test("a process table that cannot be read is unknown, not idle", () => {
+    const boom = () => {
+      throw new Error("ps unavailable");
+    };
+    expect(suiteLiveness({ readRows: boom })).toBe("unknown");
+    expect(anySuiteRunning({ readRows: boom })).toBe(true);
+  });
+
+  test("the cap stays on for a run launched through the symlink", () => {
+    // The consequence, not the proxy. Capacity 1, slot taken at t0, a second
+    // request at t0+400s — past LIVENESS_GRACE_SECONDS and inside the TTL.
+    // The machine is running exactly one suite and its command line is
+    // `/tmp/brun test`. Before #707 that read as an idle machine, the slot
+    // was reclaimed as provably false, and two real suites ran against a cap
+    // of one.
+    const t0 = 1_000_000;
+    const machine = {
+      rows: [rowOf("/tmp/brun test", 31_337)],
+      resolveExecutable: resolveBrun,
+    };
+    const live = () => anySuiteRunning(machine);
+
+    expect(
+      acquireFullSuiteSlot("holder", opts({ now: t0, capacity: 1, suitesRunning: live })).ok,
+    ).toBe(true);
+    expect(
+      acquireFullSuiteSlot("peer", opts({ now: t0 + 400_000, capacity: 1, suitesRunning: live })).ok,
+      "the slot was reclaimed while a real suite was running — the cap is off",
+    ).toBe(false);
+  });
+
+  test("an idle machine still releases the slot early, so the reclaim is not just switched off", () => {
+    // The control for the case above. Without it, a classifier that answered
+    // "suite" to everything would satisfy the cap case and delete #74's
+    // early reclaim, and nothing would say so.
+    const t0 = 1_000_000;
+    const idle = () => anySuiteRunning({
+      rows: [rowOf("/usr/bin/vim notes.md", 31_338)],
+      resolveExecutable: (p: string) => p,
+    });
+
+    expect(acquireFullSuiteSlot("holder", opts({ now: t0, capacity: 1, suitesRunning: idle })).ok).toBe(true);
+    expect(
+      acquireFullSuiteSlot("peer", opts({ now: t0 + 400_000, capacity: 1, suitesRunning: idle })).ok,
+    ).toBe(true);
   });
 });

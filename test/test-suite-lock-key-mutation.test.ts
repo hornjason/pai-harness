@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 
 /**
  * #239 — proving the counter key is what the sibling case detects.
@@ -86,11 +86,25 @@ export function buildMutantSource(src: string, signature = BINDING_SIGNATURE): s
     );
   }
 
+  // The mutant runs from a temp directory, so a surviving relative specifier
+  // would die on module resolution — and a mutant that cannot load exits
+  // non-zero, which reads exactly like a refusal on the merits. Rewriting
+  // them to absolute paths is the sanctioned form of this guard
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, the gate-check example);
+  // the abort below is kept for any specifier the rewriter could not see,
+  // because silently leaving one is the failure this was protecting against.
+  const LIB_DIR = join(REPO_ROOT, "lib");
+  src = src.replace(
+    /from "(\.\.?\/[^"]+)"/g,
+    (_all, spec: string) => `from ${JSON.stringify(resolve(LIB_DIR, spec))}`,
+  );
+
   const leftover = src.match(/from "\.\.?\//g) || [];
   if (leftover.length > 0) {
     throw new Error(
-      `could not build the mutant: ${leftover.length} relative import(s) in lib/test-suite-lock.ts; ` +
-        `the mutant runs from a temp directory and would die on module resolution, which reads as a refusal`,
+      `could not build the mutant: ${leftover.length} relative import(s) in lib/test-suite-lock.ts ` +
+        `that the rewriter could not resolve; the mutant runs from a temp directory and would die ` +
+        `on module resolution, which reads as a refusal`,
     );
   }
 

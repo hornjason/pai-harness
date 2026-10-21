@@ -84,6 +84,27 @@ if (PROJECT_ROOT) try {
   }
 } catch (e) { log(`BRANCH cleanup error: ${e}`); }
 
+// Orphaned test-suite processes (#690). Thin trigger: lib/orphan-reaper.ts
+// holds every decision. It is a READING by default and signals nothing —
+// arming it is a deployment decision, not a code one, because this hook runs
+// from the shared checkout at every SessionStart and a merge that armed it
+// would arm it for every live peer at once. Set RUNGATE_REAP_ORPHANS=1 to
+// signal; the log line is identical except that it says `armed`.
+let orphansSignalled = 0;
+try {
+  const { reapOrphans, reapReportLines } = await import('../lib/orphan-reaper.ts');
+  const report = reapOrphans({ armed: process.env.RUNGATE_REAP_ORPHANS === '1' });
+  const candidates = report.decisions.length;
+  orphansSignalled = report.signalled.length;
+  // Silence is reserved for "nothing to say about any process". A reading
+  // that could not be taken, and a reading with candidates in it, both go in
+  // the log naming pids and reasons — "Cleaned up N" with nothing behind it
+  // is what made #690 cost two days.
+  if (report.reading === 'UNMEASURED' || candidates > 0) {
+    for (const line of reapReportLines(report)) log(line);
+  }
+} catch (e) { log(`ORPHAN reap error: ${e}`); }
+
 // Gap scan — drift detection
 let gapWarns = 0;
 if (PROJECT_ROOT) try {
@@ -100,6 +121,7 @@ if (PROJECT_ROOT) try {
 
 const parts: string[] = [];
 if (deletedCount > 0) parts.push(`${deletedCount} removed`);
+if (orphansSignalled > 0) parts.push(`${orphansSignalled} orphaned processes signalled`);
 if (gapWarns > 0) parts.push(`${gapWarns} gap warnings`);
 if (parts.length > 0) {
   console.log(`Stale TTL cleanup: ${parts.join(', ')}`);

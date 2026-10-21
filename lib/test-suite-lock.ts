@@ -37,6 +37,7 @@ import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { join } from "path";
+import { readProcessTable, type ProcessRow } from "./process-table";
 
 /**
  * Suites allowed to run AT ONCE. Measured, not chosen: one full suite peaks at
@@ -538,68 +539,169 @@ function segmentIsFullSuite(segment: string, depth = 0): boolean {
  */
 const LIVENESS_GRACE_SECONDS = 25;
 
+/** The spelling of a suite that the command line itself carries. */
+const SPELLED_BUN = /(^|\/|\s)bun\s+(run\s+)?test(\s|$)/;
+
+/** `test` or `run test` as the first arguments after argv[0]. */
+const SUITE_ARGUMENTS = /^\s+(run\s+)?test(\s|$)/;
+
+/** What one `ps` command line is. `unknown` is a reading, not a default. */
+export type PsLineReading = "suite" | "not-suite" | "unknown";
+
+/** How argv[0] is resolved to the file it actually names. Injected for tests. */
+export type ExecutableResolver = (path: string) => string;
+
 /**
  * The one place a `ps` line is judged to be a running suite (#707).
  *
  * Exported so there is exactly one binding to mutate and one thing for a
- * case to drive over a table of real command lines. `anySuiteRunning` reads
+ * case to drive over a table of real command lines. `suiteLiveness` reads
  * the process table; this decides what a line means, and the two questions
- * are separable only because they are separate functions.
+ * are separable only because they are separate functions. **The orphan
+ * reaper in `lib/orphan-reaper.ts` asks this same binding**, so the thing
+ * that decides what keeps a slot and the thing that decides what may be
+ * killed cannot drift apart — which is the whole of the #690/#707 pairing.
  *
- * **The leading boundary `(^|\/|\s)` is NOT the bug, and widening it buys
- * nothing.** That was tried and reverted, and the reason is one substring
- * check: `/tmp/brun test` is the documented workaround for #690, and `brun`
- * is b-r-u-n. It **does not contain `bun` at all**, so no loosening of a
+ * ## Widening the leading boundary buys nothing, and that is still true
+ *
+ * `/tmp/brun test` is the documented workaround for #690, and `brun` is
+ * b-r-u-n: it **does not contain `bun` at all**, so no loosening of a
  * pattern written over the string `bun` can ever match it. Measured:
- * `"bun" in "brun"` is false. A widened boundary matches nothing new here
- * and only makes the detector less specific, which #67 already paid for
- * once when `pgrep -f bun` matched powerd's bundle paths.
+ * `"brun".includes("bun")` is `false`. #727 established this and reverted
+ * the widening, and nothing below re-litigates it — `SPELLED_BUN` is
+ * unchanged.
  *
- * **The real finding is that the evasion and the detection are the same
- * mechanism.** #690's workaround exists precisely to make a suite invisible
- * to `pkill -f "bun test"` — and `anySuiteRunning` looks for the same
- * string, so the workaround hides the suite from this module too, by
- * construction. That is not fixable in this regex. It needs either a
- * workaround name that still contains `bun`, or a liveness signal that is
- * not the process name at all (the lock file's own heartbeat is the obvious
- * candidate). Tracked on #707; deliberately not attempted here.
+ * ## What is new: ask the filesystem what the executable IS
  *
- * What the blindness costs is not a flake. `slotIsStale` reclaims a slot
- * early when NO suite is running, so an invisible suite means slots are
- * reclaimed after the grace period and `DEFAULT_CAPACITY` — which this
- * module's header calls "the one doing the protecting" — is switched off
- * for exactly the runs that use the workaround.
+ * The workaround is a SYMLINK — measured on this machine, 2026-10-21:
+ * `/tmp/brun -> /opt/homebrew/bin/bun`, which `realpath`s to
+ * `/opt/homebrew/Cellar/bun/<version>/bin/bun`. So the name is an evasion
+ * and the identity is not. When a line's ARGUMENTS are a suite invocation
+ * (`<exe> test …` or `<exe> run test …`) but argv[0] is not spelled `bun`,
+ * this resolves argv[0] on disk and reads the basename of what it points
+ * at. A renamed or symlinked launcher is a `suite`; a resolution that
+ * cannot be taken is `unknown`.
  *
- * **Over-detection is the safe direction here.** Reporting a suite that is
- * not there keeps slots, which at worst wedges one slot for a TTL. Missing
- * a suite that IS there reclaims a live slot and lets two real suites run
- * against a cap of one, which is the OOM condition this whole mechanism
- * prevents. The comment on `noSuiteRunningNow` already says so about an
- * unreadable process table; a readable one that was misunderstood lands in
- * the same place.
+ * This is the liveness signal "that is not the process name at all" which
+ * the previous revision of this comment asked for, arriving as the
+ * executable's identity rather than as a heartbeat. A heartbeat was the
+ * other candidate and it is not available at this layer: the slot is taken
+ * by a PreToolUse hook that exits immediately, and a session running a
+ * foreground suite makes no tool calls while it waits, so nothing exists
+ * that could refresh the file.
+ *
+ * ## The two directions, and why they are not symmetric
+ *
+ * A resolution that fails, or an argv[0] that is not an absolute path, is
+ * `unknown` — and so is a binary whose resolved basename is something else,
+ * because a *copy* of bun under another name resolves to itself and no
+ * cheap reading can tell it from an unrelated program called with a `test`
+ * argument. The two consumers read that third state in OPPOSITE directions,
+ * deliberately:
+ *
+ * - **Keeping a slot** needs "not positively idle", so `unknown` keeps it.
+ *   Over-detection costs at most one wedged slot for a TTL. Missing a suite
+ *   that IS there reclaims a live slot and lets two real suites run against
+ *   a cap of one, which is the OOM condition this whole mechanism prevents.
+ * - **Killing a process** needs "positively a suite", so `unknown` is never
+ *   reaped. Over-detection there costs somebody else's work.
+ *
+ * The cost of the conservative reading is bounded and worth naming: one
+ * long-lived unrelated `/usr/bin/foo test` process makes the machine read
+ * `unknown`, which switches the early liveness reclaim off and leaves the
+ * 420-second TTL as the only staleness rule. That is the pre-#74 behaviour,
+ * not a new failure mode.
  */
-export function psLineIsSuite(line: string): boolean {
-  return /(^|\/|\s)bun\s+(run\s+)?test(\s|$)/.test(line);
+export function classifyPsLine(
+  line: string,
+  options: { resolveExecutable?: ExecutableResolver } = {},
+): PsLineReading {
+  if (SPELLED_BUN.test(line)) return "suite";
+
+  const space = line.indexOf(" ");
+  if (space <= 0) return "not-suite";
+  const argv0 = line.slice(0, space);
+  if (!SUITE_ARGUMENTS.test(line.slice(space))) return "not-suite";
+
+  // The arguments say "suite" and the name does not. Everything from here is
+  // a question about the file on disk, which is the thing a rename cannot
+  // change.
+  if (!argv0.startsWith("/")) return "unknown";
+  let resolved: string;
+  try {
+    resolved = (options.resolveExecutable ?? realpathSync)(argv0);
+  } catch {
+    return "unknown";
+  }
+  return resolved.slice(resolved.lastIndexOf("/") + 1) === "bun" ? "suite" : "unknown";
 }
 
 /**
- * True when at least one full suite is running anywhere on this machine.
+ * `psLineIsSuite` as it has always behaved: a projection of the reading
+ * above, kept because callers and cases already name it.
  *
- * ONLY THE ZERO CASE IS USED, deliberately. #67 established that attributing
- * bun processes to sessions is unreliable — the agentgrit suite leaks ~31
- * dangling bun processes per run, which is why slots are files rather than a
- * process count. This does not attribute anything: a slot means a running
- * suite, so if NO suite is running at all, every slot is provably false.
- *
- * Matches on the command line rather than the executable name, through the
- * single `psLineIsSuite` binding above.
- *
- * Throws rather than guessing when the process table cannot be read; the
- * caller treats that as "cannot determine" and keeps the slot.
+ * It is a PROJECTION and not a second decider — there is one `classifyPsLine`
+ * and this restates its answer — so a mutation of the classifier moves this
+ * too, which is the property that makes the battery able to see either.
  */
-export function anySuiteRunning(): boolean {
-  const out = execFileSync("ps", ["-axo", "command"], { encoding: "utf-8" });
-  return out.split("\n").some(psLineIsSuite);
+export function psLineIsSuite(
+  line: string,
+  options: { resolveExecutable?: ExecutableResolver } = {},
+): boolean {
+  return classifyPsLine(line, options) === "suite";
+}
+
+/** What the machine as a whole is doing. `unknown` is a reading. */
+export type SuiteLiveness = "running" | "idle" | "unknown";
+
+export interface LivenessOptions {
+  rows?: ProcessRow[];
+  readRows?: () => ProcessRow[];
+  resolveExecutable?: ExecutableResolver;
+}
+
+/**
+ * Whether any full suite is running anywhere on this machine.
+ *
+ * ONLY THE `idle` CASE IS ACTED ON, deliberately. #67 established that
+ * attributing bun processes to sessions is unreliable — the agentgrit suite
+ * leaks ~31 dangling bun processes per run, which is why slots are files
+ * rather than a process count. This does not attribute anything: a slot
+ * means a running suite, so if NO suite is running at all, every slot is
+ * provably false.
+ *
+ * `idle` is therefore a POSITIVE claim and it is made only when the whole
+ * table was read and every row was classified. One unclassifiable row makes
+ * the reading `unknown`, because `idle` is the only reading that lets a live
+ * slot be taken away from somebody.
+ */
+export function suiteLiveness(options: LivenessOptions = {}): SuiteLiveness {
+  let rows: ProcessRow[];
+  try {
+    rows = options.rows ?? (options.readRows ?? readProcessTable)();
+  } catch {
+    return "unknown";
+  }
+  let sawUnknown = false;
+  for (const row of rows) {
+    const reading = classifyPsLine(row.command, options);
+    if (reading === "suite") return "running";
+    if (reading === "unknown") sawUnknown = true;
+  }
+  return sawUnknown ? "unknown" : "idle";
+}
+
+/**
+ * True when the machine is NOT positively idle.
+ *
+ * The collapse is one-sided on purpose: `unknown` reads as `true` here, so a
+ * caller that only wants "may I take this slot away" gets the safe answer
+ * without having to remember which way round the third state goes. A caller
+ * that needs to tell `unknown` from `running` asks `suiteLiveness` — and the
+ * reaper does, because the opposite collapse would kill on a guess.
+ */
+export function anySuiteRunning(options: LivenessOptions = {}): boolean {
+  return suiteLiveness(options) !== "idle";
 }
 
 /**
