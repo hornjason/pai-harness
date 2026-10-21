@@ -1974,6 +1974,99 @@ const SHA256_HELPER = `sha256_of() {
 }`;
 
 /**
+ * The one reading of the tree, shared by the baseline step and the drift step
+ * (#853). It emits one line per dirty path:
+ *
+ * ```
+ * 1523f288e9cb0f1b1f9a3a2c4d5e6f708192a3b4 .claude/rules/a-rule.md
+ * absent .claude/rules/added-by-the-pr.md
+ * ```
+ *
+ * ## Why the porcelain status prefix is NOT in it
+ *
+ * `git status --porcelain` puts a two-letter index/worktree status in front
+ * of every path, and the drift step compares whole lines. So the restore
+ * step's own `git rm` + `git checkout` — both of which write the INDEX — put
+ * `M ` in the baseline, and anything that unstages before the second reading
+ * turns the same path into ` M`. Same file, same bytes, one space moved,
+ * reported as something the reviewer did. PR #815, run `39529882923`.
+ *
+ * ## Why a hash, and not just dropping the prefix
+ *
+ * The prefix carried one thing the comparison needed: modification against
+ * deletion against untracked-add. Dropping it alone is the one-\`cut\` repair
+ * and it makes a reviewer DELETING an agent-rules file byte-identical to the
+ * restore that made the path dirty in the first place.
+ *
+ * Content carries that distinction better than the prefix did, and carries
+ * one more the prefix never could. Porcelain reports *that* a path differs
+ * from the index, never *how* — and every restored path is already dirty in
+ * the baseline, so a reviewer editing one produced a line the comparison
+ * could not tell from the restore's own. Measured, with the drift step's
+ * \`grep -F -x -v\` applied verbatim:
+ *
+ * | reading | baseline | after a reviewer edits a restored path | verdict |
+ * |---|---|---|---|
+ * | prefix, no reset | \`M  doc.md\` | \`MM doc.md\` | REFUSED, by accident |
+ * | prefix, after a reset | \` M doc.md\` | \` M doc.md\` | **exit 0, INVISIBLE** |
+ * | content | \`1523f288… doc.md\` | \`65f7fba8… doc.md\` | REFUSED |
+ *
+ * Row one is the state before #853 and the refusal is real, but it is a
+ * by-product of the staged/unstaged distinction — the very thing #815 is
+ * about. Row two is what #853 asks for, and it retires the only control that
+ * catches a reviewer editing a file it was told to read. Row three needs no
+ * \`git reset\` at all: index state is simply not in the reading, so there is
+ * no index write to undo.
+ *
+ * ## What it cannot measure, said rather than left to be discovered
+ *
+ * A path with a quote, a backslash or a newline in it comes back from
+ * porcelain v1 QUOTED and C-escaped, so the name on the line is not the name
+ * on disk and no hash can be taken from it. Such a line reads \`unquotable\`
+ * and the drift step raises UNMEASURED. \`absent\` would be the wrong answer
+ * — the file is sitting right there — and silence would be worse. The \`-z\`
+ * form that would avoid quoting is unusable here: bash drops NUL bytes in
+ * command substitution.
+ *
+ * The line is still compared as a whole, so drift at such a path is still
+ * caught by the path appearing or disappearing; what is unmeasured is its
+ * content.
+ */
+export const AI_REVIEW_TREE_READER = `read_tree() {
+  local raw line xy p h
+  # Checked on its own line, never captured into an assignment: \`x=$(...)\`
+  # DISCARDS the exit code, so a git that failed produces the same empty
+  # string a clean tree produces, and "unreadable" would pass as "clean".
+  if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+    printf '%s' "\${raw}"
+    return 1
+  fi
+  [ -n "\${raw}" ] || return 0
+  printf '%s\\n' "\${raw}" | while IFS= read -r line; do
+    [ -n "\${line}" ] || continue
+    xy="\${line:0:2}"
+    p="\${line:3}"
+    # A rename or copy reads \`R  old -> new\`, and it is the destination that
+    # exists on disk. Keyed off the status letter, not off the arrow: a
+    # filename may contain " -> " and does not get quoted for it.
+    case "\${xy}" in
+      R*|C*) p="\${p##* -> }" ;;
+    esac
+    case "\${p}" in
+      '"'*) h=unquotable ;;
+      *)
+        if [ -f "\${p}" ]; then
+          h=$(git hash-object -- "\${p}" 2>/dev/null) || h=unreadable
+        else
+          h=absent
+        fi
+        ;;
+    esac
+    printf '%s %s\\n' "\${h}" "\${p}"
+  done
+}`;
+
+/**
  * The bash that records what the tree looked like BEFORE the reviewer ran.
  *
  * ## Why this step exists, measured rather than argued
@@ -2033,6 +2126,8 @@ set -uo pipefail
 
 ${SHA256_HELPER}
 
+${AI_REVIEW_TREE_READER}
+
 if [ -z "\${RUNNER_TEMP:-}" ]; then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::${noTemp}" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
@@ -2044,7 +2139,7 @@ before="\${RUNNER_TEMP}/${AI_REVIEW_BASELINE_BASENAME}-\${nonce}.txt"
 # Checked on its own line, never captured into an assignment: \`x=$(...)\`
 # DISCARDS the exit code, so a git that failed produces the same empty string
 # a clean tree produces, and "unreadable" would pass as "clean".
-if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+if ! raw=$(read_tree); then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed before the review, so there is no baseline and the drift check is UNMEASURED: \${raw}" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
@@ -2111,6 +2206,13 @@ export function buildDriftScript(): string {
     `refuses a tree the reviewer moved; what is UNMEASURED is the baseline's ` +
     `own integrity.`;
 
+  const unhashable =
+    `at least one path in this tree could not be read by content — git had ` +
+    `to quote its name, or the file could not be hashed — so for those paths ` +
+    `this run compares names only and an edit the reviewer made to one would ` +
+    `not be seen. Every other path is compared by content as usual. UNMEASURED ` +
+    `at the paths named`;
+
   const noHome =
     `HOME is unset or is not a directory, so nothing could look for writes ` +
     `the reviewer made OUTSIDE the checkout (#843 finding 1). The tree ` +
@@ -2129,6 +2231,8 @@ export function buildDriftScript(): string {
 set -uo pipefail
 
 ${SHA256_HELPER}
+
+${AI_REVIEW_TREE_READER}
 
 # The same rule as escapeAnnotation() in lib/scaffold/ai-review-findings.ts,
 # and the duplication is forced rather than chosen: this runs as bash on a
@@ -2201,9 +2305,20 @@ fi
 # default stops at a new directory's name.
 #
 # Checked on its own line, for the reason the baseline step states.
-if ! after=$(git status --porcelain --untracked-files=all 2>&1); then
+if ! after=$(read_tree); then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed, so the tree was never read and this check is UNMEASURED: $(escape_annotation "\${after}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# Both readings, because a path can become unhashable between them and either
+# side blinds the comparison at that path. Reported, not refused: a filename
+# git has to quote is a thing a repository is allowed to contain, and a gate
+# that refuses one is a gate consumers delete. Silence is what would make it
+# indistinguishable from a path compared by content.
+unhashed=$( { printf '%s\\n' "\${after}"; cat "\${${AI_REVIEW_TREE_BEFORE_VAR}}"; } \\
+  | grep -E '^(unquotable|unreadable) ' | sort -u | head -20 || true)
+if [ -n "\${unhashed}" ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${unhashable}: $(escape_annotation "\${unhashed}")"
 fi
 
 # The reading OUTSIDE the checkout (#843 finding 1), before the comparison
