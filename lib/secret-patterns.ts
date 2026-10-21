@@ -196,15 +196,19 @@ export const TIER2_ALLOWED_VALUE_ERE =
  *
  * MEASURED BEFORE IT WAS SHIPPED
  *
- * Captured / reported after the exclusion, over tracked files:
- * pai-harness 0/0 of 1138 files, asaCommandCenter 10/1 of 1726,
- * agentgrit 0/0 of 374, control-plane 0/0 of 52. Zero false positives over
- * 3,290 tracked files, and the one reported hit is already caught by tier 2
- * because its name carries `API_KEY` — so on every tree available to measure,
- * this tier adds nothing. The population it exists for has to be constructed,
- * which is what `test/unit/secret-patterns.test.ts` does, and the constructed
- * case asserts tier 2 reads CLEAN on it or this tier is measuring nothing
- * #844 did not already do.
+ * Captured / reported after the exclusion, over the tracked files of this
+ * repository and three consumer trees: 0/0 of 1138, 10/1 of 1726, 0/0 of
+ * 374, 0/0 of 52. Zero false positives over 3,290 tracked files, and the one
+ * reported hit is already caught by tier 2 because its name carries
+ * `API_KEY` — so on every tree available to measure, this tier adds nothing.
+ * The population it exists for has to be constructed, which is what
+ * `test/unit/secret-patterns.test.ts` does, and the constructed case asserts
+ * tier 2 reads CLEAN on it or this tier is measuring nothing #844 did not
+ * already do.
+ *
+ * The trees are named in that test file and deliberately not here: a module
+ * under `lib/` may carry no consumer-specific value (SC-A1), which is the
+ * same rule the `-i` note above defers to.
  *
  * A narrower charset with `/` removed — the obvious way to kill relative-path
  * defaults — captures 8 instead of 10 on the consumer and reports the same 1.
