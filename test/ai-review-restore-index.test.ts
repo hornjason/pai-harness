@@ -81,6 +81,72 @@
  * rather than asserting the script's text."* The guard and the thing it
  * guards were one `git status` apart, and asserting the script's shape is
  * what let that happen.
+ *
+ * ## What was broken to prove it
+ *
+ * Run and counted over this file + `test/ai-review-baseline-seal.test.ts` +
+ * `test/ai-review-untrusted-restore.test.ts` + `test/ai-review-workflow.test.ts`
+ * (95 tests). Every count was predicted before the battery ran, in
+ * `/tmp/853-battery/predictions.md`, and **the baseline row was read first**.
+ *
+ * | Row | Predicted | Measured |
+ * |---|---|---|
+ * | **baseline** — unmutated | 0 fail | **95 pass, 0 fail** |
+ * | M1 the reader reverted to plain porcelain — the pre-#853 state | 8 | **9 of 95** |
+ * | M2 **wrong fix A**: the prefix stripped, no hash put in its place | 4 | **10 of 95** |
+ * | M3 **wrong fix B**: #853's own `git reset`, pre-#853 reader | 5 | **8 of 95** |
+ * | M4 `absent` replaced by the empty string | 2 | **2 of 95** |
+ * | M5 the `unquotable` branch made unreachable | 2 | **1 of 95** |
+ * | M6 the UNMEASURED warning removed from the drift step | 1 | **1 of 95** |
+ * | M7 the rename/copy branch made unreachable | 0 | **0, then 1 of 95** |
+ * | M8 the porcelain prefix kept alongside the hash | 3 | **6 of 95** |
+ * | M9 `read_tree` stops propagating git's non-zero exit | 2 | **2 of 95** |
+ *
+ * **M3 is the row this issue turns on, and it is not a number — it is which
+ * cases moved.** The issue's own fix, applied faithfully, DOES cure the
+ * reported symptom: both `SC-1` cases are green under it. It also reds
+ * *"SC-2: an edit to a RESTORED path is refused and names it"*, **which M1 —
+ * the defective tree — does not**. So the repair that makes #815 pass is the
+ * repair that stops catching a reviewer editing an agent-rules file, and the
+ * only reason the defective tree catches one at all is the staged/unstaged
+ * distinction #815 is a false positive of. One mutation, a fix in one
+ * direction and a regression in the other, which is why "does the case
+ * survive the cheapest wrong fix" has to be asked of a named fix and not of
+ * a count.
+ *
+ * **M7 came back 0, and that was a finding about this change rather than
+ * about the cases.** The `R*|C*` branch had no fixture: nothing here staged
+ * a rename, so a mutation making it unreachable changed no observable
+ * behaviour. Code no case can witness is not shippable, so rather than
+ * delete the branch — which would read `absent` for a renamed file that is
+ * sitting on disk, and agree with itself across a reviewer's edit to it —
+ * the case *"a renamed path is hashed at its DESTINATION"* was added, and
+ * the row is 1. The baseline moved 94 → 95 and **every row above was
+ * re-measured against it** rather than carried over.
+ *
+ * **M5 missed LOW, and the prediction was wrong rather than the check.**
+ * I expected `AC-7` to red as well; it has no quoted path in its fixture, so
+ * it cannot. Before recording the 1, the input on which mutant and original
+ * differ, printed rather than assumed: a tree holding `we"ird.md` reads
+ * `unquotable "we\"ird.md"` on the real reader and `absent "we\"ird.md"` on
+ * the mutant.
+ *
+ * **M2, M3 and M8 all came back HIGH, and the extra reds are the real kind.**
+ * Each is squarely about the mutated behaviour — M2 kills content so every
+ * content case reds, M8 re-admits index state so every index case reds, and
+ * both change the reading's line format, which reds
+ * `ai-review-baseline-seal`'s forgery case because its planted line no
+ * longer matches what the reader emits. None is a crashing mutant: 85, 87
+ * and 89 cases still pass respectively, and the file parses and runs.
+ *
+ * `AC-2`'s unstaged case and `AC-3`'s two cases are **controls**, not
+ * witnesses: today's reading already refuses all three, so there is no state
+ * of the code in which they go red for this defect. They are here so that a
+ * reading which refuses nothing cannot read as one that found nothing.
+ *
+ * None of the nine mutations is left in the tree; all were restored from a
+ * `cp` backup — never `git checkout --` — and `lib/scaffold/ai-review-step.ts`
+ * was confirmed byte-identical after every row by sha256.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
@@ -440,6 +506,33 @@ describe("AC-6 (#853): the unreadable cases and the shared binding", () => {
     expect(modified!, "the porcelain status prefix is still in the reading").not.toMatch(
       /^[0-9a-f]{40} [ MADRCU?!]{2} /,
     );
+  });
+
+  test("AC-7: a renamed path is hashed at its DESTINATION, not read as absent", () => {
+    // `R  old -> new` puts two paths on one line and only the second exists.
+    // Without the rename branch the whole field is taken as a filename, `-f`
+    // fails, and the line reads `absent` for a file that is sitting there —
+    // which is wrong in the quiet direction: the two readings agree on
+    // `absent` whatever the reviewer then does to the destination.
+    //
+    // This case exists because the battery measured the rename branch at 0
+    // red. Code no case can witness is the thing this repo does not ship.
+    const f = checkout();
+    const RENAMED = "src/renamed.ts";
+    f.git("mv", UNRESTORED, RENAMED);
+    const { path, sha } = restoreAndBaseline(f);
+
+    const line = lineFor(path, RENAMED);
+    expect(line, `the reading has no line for the rename destination`).toBeDefined();
+    expect(line!, "the rename destination was not hashed").toMatch(/^[0-9a-f]{40} /);
+
+    // And the consequence, which is the half that matters: an edit to the
+    // destination is still caught. A reading stuck on `absent` would agree
+    // with itself across this.
+    f.write(RENAMED, "export const a = 99;\n");
+    const r = runDrift(f, path, sha);
+    expect(r.code, "a reviewer edit to a renamed path was invisible").not.toBe(0);
+    expect(r.stderr).toContain(RENAMED);
   });
 
   test("AC-8: ONE reader, interpolated into both steps", () => {

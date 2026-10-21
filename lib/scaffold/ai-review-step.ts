@@ -1978,9 +1978,17 @@ const SHA256_HELPER = `sha256_of() {
  * (#853). It emits one line per dirty path:
  *
  * ```
- * 1523f288e9cb0f1b1f9a3a2c4d5e6f708192a3b4 .claude/rules/a-rule.md
- * absent .claude/rules/added-by-the-pr.md
+ * 1523f288e9cb0f1b1f9a3a2c4d5e6f708192a3b4 CLAUDE.md
+ * absent .mcp.json
  * ```
+ *
+ * (The sample paths are deliberately not under the agent-rules directory.
+ * `test/rule-provenance.test.ts` reads any such path in a source file as a
+ * citation, so an invented filename in an example is a citation of a rule
+ * that does not exist. That is the trap
+ * `.claude/rules/self-referential-tests.md` describes, met while writing
+ * this block: the first draft used two made-up rule filenames and turned
+ * that suite red.)
  *
  * ## Why the porcelain status prefix is NOT in it
  *
