@@ -69,6 +69,14 @@ export interface ManagedWritePlan {
 
 interface Section {
   key: string;
+  /**
+   * The contiguous comment block introducing this key, held apart from the
+   * section it precedes so it can travel with the key (#941).
+   *
+   * Empty for the leading preamble and for any key with nothing above it.
+   * `[...intro, ...lines]` is always the section as it appeared in the file.
+   */
+  intro: string[];
   lines: string[];
 }
 
@@ -79,19 +87,62 @@ interface JobBlock {
 
 // ── reading the shape of a workflow file ───────────────────────────────────
 
+/**
+ * Split the comment block introducing the NEXT top-level key off the end of a
+ * section (#941).
+ *
+ * The same rule `parseSubKeys` applies one level down, and deliberately so:
+ * a run of comments immediately above a key belongs to that key, because the
+ * whole reason to read this structure is to carry a generated key into a
+ * consumer's file and a key carried without its reason is a key the next
+ * person deletes. Two mechanisms for associating comments with keys would be
+ * worse than the bug, so `isIntroLine` is the one place that decides.
+ *
+ * Column zero only. A top-level key's comment is never indented, and an
+ * indented one is commentary inside the mapping above — `permissions:` carries
+ * eight lines of it, and moving those onto the next key would be the #482
+ * incident with the harness holding the pen.
+ *
+ * Blank lines leading the block stay behind: they separate it from the section
+ * above rather than introducing the key below. A suffix of nothing but blanks
+ * is layout, and is left alone.
+ */
+function splitIntroducingComment(lines: string[]): [string[], string[]] {
+  const isIntroLine = (l: string) => l.trim() === "" || l.startsWith("#");
+  let at = lines.length;
+  while (at > 0 && isIntroLine(lines[at - 1])) at--;
+  while (at < lines.length && lines[at].trim() === "") at++;
+  if (at >= lines.length || !lines[at].startsWith("#")) return [lines, []];
+  return [lines.slice(0, at), lines.slice(at)];
+}
+
 function splitTopLevel(text: string): Section[] {
   const out: Section[] = [];
-  let cur: Section = { key: "", lines: [] };
+  let cur: Section = { key: "", intro: [], lines: [] };
   for (const line of text.split("\n")) {
     const m = TOP_LEVEL_KEY.exec(line);
     if (m) {
       if (cur.key !== "" || cur.lines.length > 0) out.push(cur);
-      cur = { key: m[1], lines: [line] };
+      cur = { key: m[1], intro: [], lines: [line] };
     } else {
       cur.lines.push(line);
     }
   }
   out.push(cur);
+
+  // Move each introducing comment block onto the key it introduces (#941).
+  //
+  // The leading preamble is exempt. It is the managed banner — the one part of
+  // the file the harness authors outright, replaced whole by the merge — and
+  // reading it as an introduction to `name:` would hand the banner to a
+  // consumer section and lose it the moment the consumer already had one.
+  for (let i = 1; i < out.length; i++) {
+    const above = out[i - 1];
+    if (above.key === "") continue;
+    const [kept, intro] = splitIntroducingComment(above.lines);
+    above.lines = kept;
+    out[i].intro = intro;
+  }
   return out;
 }
 
@@ -516,12 +567,27 @@ export function mergeManagedWorkflow(
       if (genHead) ordered.push(...genHead.lines);
       continue;
     }
-    ordered.push(...sectionFor(section));
+    // The consumer's own introducing comment, emitted unchanged (#941). A key
+    // the consumer already has keeps whatever they wrote above it, and the
+    // generator's block for that key is not merged in beside it — the same
+    // rule #839 applies to a sub-key both sides declare, one level up.
+    ordered.push(...section.intro, ...sectionFor(section));
     emitted.add(section.key);
   }
   // Generated keys the consumer does not have, appended in generated order.
   // Preserving the consumer's layout must not mean refusing to take anything
   // new.
+  //
+  // With the comment block that introduces each of them (#941). It used to
+  // arrive without one: a comment above a top-level key was read as the tail
+  // of the section ABOVE it, so the key travelled and its reasoning stayed
+  // behind in a section the consumer already had. What landed on every
+  // already-scaffolded consumer was a bare
+  // `cancel-in-progress: ${{ github.event_name == 'pull_request' }}` in a file
+  // headed "do not edit", with nothing anywhere saying why it is an expression
+  // rather than `true` — and simplifying it to `true` is what made one
+  // consumer cancel its own main-branch CI on every merge. Only brand-new
+  // consumers, who get the generated file verbatim, ever saw the reason.
   for (const section of g) {
     if (section.key === "" || emitted.has(section.key)) continue;
     if (declined.has(section.key)) {
@@ -533,7 +599,7 @@ export function mergeManagedWorkflow(
       ordered.push("");
       continue;
     }
-    ordered.push(...splitTrailingBlanks(section.lines)[0]);
+    ordered.push(...section.intro, ...splitTrailingBlanks(section.lines)[0]);
     ordered.push("");
   }
   // A `before` with no top-level key at all — empty, or something that is not
@@ -558,6 +624,13 @@ export function harnessRegion(before: string, generated: string): string {
 
   const out: string[] = [];
   for (const section of b) {
+    // The introducing block is emitted whether or not the section it belongs
+    // to survives (#941). It is where the file had it, and this reconstruction
+    // is compared byte-for-byte against the generated text: a consumer who
+    // inserted a key of their own between a harness comment and the harness
+    // key it introduces must not lose the comment out of the region and turn
+    // their next scaffold into a refusal over lines the harness wrote.
+    out.push(...section.intro);
     if (section.key !== "" && !generatedKeys.has(section.key)) continue;
     if (section.key !== "jobs") {
       out.push(...section.lines);
