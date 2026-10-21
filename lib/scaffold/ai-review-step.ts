@@ -1020,31 +1020,6 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
   // and "a reviewer must not be able to drop one here unseen" are both true.
   // Naming it is the only reading that satisfies the second.
   ".claude/sessions",
-  // The sibling Copilot runtime's two trust-bearing paths (#913).
-  // `mcp-config.json` declares MCP servers — `.claude.json`'s argument word
-  // for word — and the `mcp-tools` cache decides which tools each of those
-  // servers is believed to offer, which is `.claude/state`'s.
-  ".copilot/mcp-config.json",
-  ".cache/copilot/mcp-tools",
-  // The Copilot CLI's SQLite session store and its write-ahead-log and
-  // shared-memory sidecars (#913), created and removed on every open.
-  //
-  // #922 put these in the INERT list on the `.claude/projects` argument — a
-  // transcript is read, not run. The review of that change was right that it
-  // is the weaker list, and the measurement in AC-18 is what settles it: a
-  // plant at an INERT entry is exit 0 and SILENT, while the same plant at a
-  // CONFIG entry is exit 0 and NAMED. These sit beside `mcp-config.json` in
-  // a directory one runtime owns, so whatever is true of their content, the
-  // reading that names a plant is the one to have. The docblock above
-  // already says which way to be wrong here.
-  //
-  // Three exact names rather than `session-store.db*`. The glob is the
-  // cheaper spelling and is wider than what was measured — it would also
-  // subtract `session-store.db.evil.sh`, which is a reviewer's write and the
-  // finding. AC-17's width control is the case that holds this shut.
-  ".copilot/session-store.db",
-  ".copilot/session-store.db-wal",
-  ".copilot/session-store.db-shm",
   // What the next `npx` of that hash resolves to.
   ".npm/_npx",
 ];
@@ -1069,10 +1044,6 @@ export const AI_REVIEW_FILE_SHAPED_PATHS: readonly string[] = [
   ".claude/.last-cleanup",
   ".claude.json",
   ".claude/settings.json",
-  ".copilot/mcp-config.json",
-  ".copilot/session-store.db",
-  ".copilot/session-store.db-wal",
-  ".copilot/session-store.db-shm",
 ];
 
 /**
