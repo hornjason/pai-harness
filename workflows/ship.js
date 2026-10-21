@@ -160,13 +160,28 @@ const BUILD_RESULT_SCHEMA = {
     testFiles: { type: 'array', items: { type: 'string' } },
     testOutput: { type: 'string' },
     findings: { type: 'array', items: { type: 'string' } },
-    worktreePath: { type: 'string' },
+    worktreePath: {
+      type: 'string',
+      description: 'The absolute directory you worked in — your pwd. A path, never a URL.',
+    },
     // The worktree's `origin` URL, beside the pwd it is a property of (#218).
     // ship.js runs in the Workflow sandbox and cannot spawn git, so the only
     // channel for a fact about the checkout is the agent that is standing in
     // it — the same channel `worktreePath` already uses. Absent is a refusal,
     // not a pass: see worktreeIdentity.
-    worktreeRepo: { type: 'string' },
+    //
+    // #872 — the description is not decoration. Run wf_8dfce214-9f4 printed
+    // the right URL as its first tool call and then filled this field with
+    // the PARENT CHECKOUT PATH, because at output time the model sees a bare
+    // key beside a `worktreePath` that makes a path salient, and the prose
+    // defining it is ~4,500 lines away in the prompt. Two honest readings of
+    // the name, and the schema declared neither. Same precedent as
+    // `filesChanged` above: state the format where it is read, and keep a
+    // refusal that says which mistake was made — a description is a request.
+    worktreeRepo: {
+      type: 'string',
+      description: 'Exactly what `git remote get-url origin` printed in worktreePath — "https://github.com/owner/name.git" or "git@github.com:owner/name". Never a filesystem path; worktreePath is the directory, this is the remote it points at.',
+    },
     // Which instruction the agent actually worked from (#180). The Workflow
     // runtime prepends a relayed user request to every prompt and tells the
     // agent it outranks the computed task; wf_17267830-401 followed that and
@@ -1317,6 +1332,32 @@ function redactRemote(remote) {
     .replace(KEY_SHAPED, '<redacted>')
 }
 
+/**
+ * Is this value a filesystem path rather than a remote? (#872)
+ *
+ * Only to SAY SO in a refusal — nothing branches on it, and `unreadable` is
+ * still `unreadable`. ABSOLUTE only: `owner/name` is itself two segments with
+ * a slash, so a rule that called anything slash-shaped a path would describe
+ * a near-miss slug as a directory.
+ *
+ * No regex literal: written as one it needs an escaped forward slash, and
+ * `stripStringsAndComments` mangles a `\/`-bearing literal in THIS file's
+ * context into something that does not parse, which fails #89's and #69's
+ * scans. Filed separately; here the fix is to not write the construct.
+ */
+function looksLikeFilesystemPath(reported) {
+  const s = String(reported).trim()
+  if (s.startsWith('/') || s.startsWith('~/') || s.startsWith('\\\\')) return true
+  // A Windows drive: one letter, a colon, then either separator.
+  const drive = s.charCodeAt(0) | 32
+  return drive >= 97 && drive <= 122 && s[1] === ':' && (s[2] === '\\' || s[2] === '/')
+}
+
+/** The clause both copies append, so the two cannot word it differently. */
+const PATH_SHAPED_CLAUSE =
+  ' — that value is a filesystem path, and worktreeRepo is the URL ' +
+  '`git remote get-url origin` printed, never a path (#872)'
+
 function worktreeIdentity(worktreePath, expectedRepo, reported) {
   const expected = repoSlug(expectedRepo)
   const where = worktreePath || '(no path reported)'
@@ -1340,7 +1381,7 @@ function worktreeIdentity(worktreePath, expectedRepo, reported) {
   if (!actual) {
     return {
       verdict: 'unreadable', actual: null, expected,
-      refusal: `${where} reported an origin this run cannot read as owner/name (${JSON.stringify(redactRemote(String(reported).trim()))}), so it cannot be compared against ${expected} (#218)`,
+      refusal: `${where} reported an origin this run cannot read as owner/name (${JSON.stringify(redactRemote(String(reported).trim()))}), so it cannot be compared against ${expected} (#218)${looksLikeFilesystemPath(reported) ? PATH_SHAPED_CLAUSE : ''}`,
     }
   }
   if (actual === expected) return { verdict: 'match', actual, expected, refusal: null }

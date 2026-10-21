@@ -877,7 +877,15 @@ describe("SC-1446: the guard is wired in, and a dead remediation stops the run",
     expect(calls.length, "an isolated implement path stopped checking its worktree").toBe(2);
     const asks = shipSource.match(/Also report worktreeRepo:/g) || [];
     expect(asks.length, "a spawn is checked for a field it was never asked for").toBe(2);
-    expect(shipSource).toContain("worktreeRepo: { type: 'string' }");
+    // The field is declared, and the spelling is no longer the claim: #872
+    // gave it a `description`, so the one-line literal this used to match is
+    // gone. What this case is about is that a spawn is not checked for a
+    // field the schema never declares — `test/worktree-repo-field-meaning.ts`
+    // owns what the declaration SAYS.
+    const decl = structuralCut(shipSource, "worktreeRepo: {", { balanced: "{" });
+    expect(decl, "worktreeRepo is no longer declared in BUILD_RESULT_SCHEMA").toContain(
+      "type: 'string'",
+    );
   });
 
   test("the Verify BUILD regression has an else, and it is terminal", () => {
