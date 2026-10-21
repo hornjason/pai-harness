@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { stripJsComments } from "../lib/strip-js-comments";
+import { fsWriteCapabilities } from "../lib/fs-write-capabilities";
 import { fixedScratchRoots, uniqueScratchPrefixes } from "../lib/scratch-roots";
 import { scratchPrefixes } from "../lib/scratch-cleanup";
 import { describeScanBudget, measureScan, scanBudgetFromBunfig, scanBudgetViolations } from "../lib/scan-budget";
@@ -89,8 +89,67 @@ const SELF = "scratch-paths-unique.test.ts";
  * the file load with no budget and no message at all. Whichever case runs
  * first pays for the walk, inside the budget, where #621 can read it.
  */
+/**
+ * Is a test case currently running? (#968.)
+ *
+ * The guard this replaces was `const SCANNED_BEFORE_ANY_CASE_RAN = MEMO !==
+ * null` read at the end of module evaluation. It worked only because that
+ * `const` happened to sit after every other module-scope statement, so it
+ * was POSITIONAL where the property is STRUCTURAL — and it caught exactly
+ * one of the hoists it was written to refuse.
+ *
+ * MEASURED by hoisting the walk and running the file:
+ *
+ * | hoist destination | 600ms work under a 300ms budget | old guard |
+ * |---|---|---|
+ * | module scope       | 1 pass — escapes entirely | caught |
+ * | a `describe` body  | 1 pass — escapes entirely | **8 pass / 0 fail, missed** |
+ * | `beforeAll`        | KILLED at 300ms           | **8 pass / 0 fail, missed** |
+ *
+ * The middle row is the defect: a `describe` body runs at collection time,
+ * is not covered by any per-test timeout, and the old guard let it through.
+ *
+ * The third row corrects #968's own reasoning, which grouped `beforeAll`
+ * with module scope as "also outside the per-test timeout". On bun 1.3.14 it
+ * is not — the hook is killed at the budget and the JUnit report carries
+ * `<failure type="TimeoutError" />`, so `timeoutProximityViolations` DOES
+ * fire on it. What it loses is the name: the testcase is reported as
+ * `(unnamed)`, so the proximity row cannot say which case was killed. That
+ * is a real loss and `beforeAll` is still refused below, but it is refused
+ * for the name, not for the budget.
+ *
+ * `beforeEach` runs after `beforeAll` and before the case body, so one
+ * boolean separates all four positions with no reliance on where a `const`
+ * sits in the file.
+ */
+let IN_CASE = false;
+beforeEach(() => {
+  IN_CASE = true;
+});
+afterEach(() => {
+  IN_CASE = false;
+});
+
+/**
+ * Throws unless a case is running. Takes the flag as an argument so that a
+ * case can assert the guard is ARMED — from inside a case `IN_CASE` is
+ * necessarily true, so a guard reading only the module variable could never
+ * be shown to fire.
+ */
+export function assertInCase(inCase: boolean): void {
+  if (inCase) return;
+  throw new Error(
+    "the scratch-root scan ran outside a test case — at module load, in a describe body, or in a " +
+      "beforeAll. Module and describe-body time is not covered by bun's per-test timeout at all, and " +
+      "a beforeAll that is killed is reported as `(unnamed)`, so the proximity row cannot say which " +
+      "case died. Either way the scan stops being readable by timeoutProximityViolations — the same " +
+      "blind spot the `}, 60_000)` override created in #802. Call scan() from inside a test case.",
+  );
+}
+
 let MEMO: { values: string[]; reading: ReturnType<typeof measureScan<string>>["reading"] } | null = null;
 function scan() {
+  assertInCase(IN_CASE);
   if (MEMO === null) {
     MEMO = measureScan<string>({
       root: "test/",
@@ -108,13 +167,6 @@ function scan() {
   }
   return MEMO;
 }
-
-/**
- * Read at the END of module evaluation, which is the only moment at which the
- * distinction exists: every test callback runs later, so a case asking this
- * question of itself could never tell load time from case time.
- */
-const SCANNED_BEFORE_ANY_CASE_RAN = MEMO !== null;
 
 describe("#323 SC-6: no suite plants its fixtures at a path another run shares", () => {
   test("every in-repo scratch root in test/ is unique per run", () => {
@@ -144,44 +196,87 @@ describe("#323 SC-6: no suite plants its fixtures at a path another run shares",
   });
 
   /**
-   * #804 — the wrong fix that does not look like one, refused.
+   * #804 — the wrong fix that does not look like one, refused. #968 made the
+   * refusal structural.
    *
-   * Removing `}, 60_000)` and hoisting the walk to module scope or `beforeAll`
-   * leaves a green suite, a fast-looking case, and a scan with no budget over
-   * it whatsoever. This case is the only thing in the tree that can tell those
-   * two trees apart, because the distinction has evaporated by the time any
-   * other assertion runs.
+   * Hoisting the walk out of a case leaves a green suite, a fast-looking
+   * case, and a scan the proximity reading cannot name. The refusal is now
+   * inside `scan()` itself, so it does not matter WHERE the hoist goes: no
+   * case is running at module load, in a `describe` body or in a
+   * `beforeAll`, and all three throw.
+   *
+   * These two cases are what keep that mechanism honest. The guard cannot
+   * demonstrate itself from inside a case — `IN_CASE` is true there by
+   * definition — so the flag's liveness and the throw are asserted
+   * separately.
    */
-  test("#804: the scan runs inside a case, not at module load where no budget applies", () => {
+  test("#968: the in-case flag is live, not a constant", () => {
     expect(
-      SCANNED_BEFORE_ANY_CASE_RAN,
-      "the scratch-root scan ran during module evaluation. Module and beforeAll time is not covered " +
-        "by bun's per-test timeout, so the scan would be neither killable nor visible to " +
-        "timeoutProximityViolations — the same blind spot the `}, 60_000)` override created in #802. " +
-        "Call scan() from inside a test case instead.",
-    ).toBe(false);
+      IN_CASE,
+      "beforeEach did not set IN_CASE, so assertInCase would throw inside every case or never at all",
+    ).toBe(true);
   });
 
-  test("skipping this file is safe, because it creates nothing", () => {
-    // The exemption, checked. If someone later adds a real scratch directory
-    // here, the skip above would hide it — so the skip is conditional on this
-    // file having no filesystem writes at all, which is true of a pure
-    // source-analysis guard and stops being true the moment it is not.
-    // Checked on the IMPORT LIST, not by counting call-shaped text. The
-    // fixtures below contain `mkdtempSync(` and `rmSync(` as string data, and
-    // a source-text count reads them as calls — the self-reference trap one
-    // level further in. What the file imports cannot be faked by its fixtures.
-    const self = stripJsComments(readFileSync(join(TEST_DIR, SELF), "utf-8"));
-    const fsImport = /import\s*\{([^}]*)\}\s*from\s*"fs";/.exec(self);
-    expect(fsImport, "this file no longer imports from fs in the expected form").not.toBeNull();
-    const imported = (fsImport?.[1] ?? "").split(",").map(s => s.trim()).filter(Boolean);
-    const WRITES = ["mkdirSync", "mkdtempSync", "writeFileSync", "rmSync", "rmdirSync", "cpSync", "renameSync"];
-    const writes = imported.filter(n => WRITES.includes(n));
+  test("#968: the guard throws outside a case and not inside one", () => {
+    expect(() => assertInCase(false)).toThrow(/outside a test case/);
+    expect(() => assertInCase(true)).not.toThrow();
+  });
+
+  /**
+   * The WIRING witness. The two cases above prove the guard works; this
+   * proves `scan()` consults it. Without this, removing the
+   * `assertInCase(IN_CASE)` line from `scan()` leaves all three green — the
+   * detector-that-measures-nothing shape #968 is about, one level in.
+   *
+   * Read from the AST, not from source text: this file's own fixtures are
+   * strings full of call-shaped text, and a text count reads them as calls.
+   */
+  test("#968: scan() consults the guard before it walks", () => {
+    const src = readFileSync(join(TEST_DIR, SELF), "utf-8");
+    const body = /function scan\(\)\s*\{\s*([^\n;]+);/.exec(src);
+    expect(body, "scan() no longer has a recognisable body — this wiring check is UNMEASURED").not.toBeNull();
     expect(
-      writes,
-      `this file imports ${writes.join(", ")} from fs, so it can create a ` +
-        `scratch root that the exclusion above would hide — either drop the ` +
-        `exclusion or move the writes out`,
+      body?.[1],
+      "the first statement of scan() is no longer the in-case guard, so the scan can be hoisted out " +
+        "of a case with every assertion above still green",
+    ).toBe("assertInCase(IN_CASE)");
+  });
+
+  /**
+   * The exemption, checked. If someone later adds a real scratch directory
+   * here, the self-exclusion above would hide it — so the exclusion is
+   * conditional on this file holding no write capability at all, which is
+   * true of a pure source-analysis guard and stops being true the moment it
+   * is not.
+   *
+   * #968 moved the reading to `lib/fs-write-capabilities.ts`. It used to be
+   * `/import\s*\{([^}]*)\}\s*from\s*"fs";/.exec(self)`, and `exec` returns
+   * the FIRST match. MEASURED by mutating this very file and running it: a
+   * SECOND `import { mkdirSync } from "fs";` left the suite at 8 pass / 0
+   * fail, and so did `import { mkdirSync } from "node:fs";`. The file gained
+   * a write primitive and the case that exists to notice stayed green.
+   *
+   * Reading the import list was the old way of dodging the self-reference
+   * trap — this file's fixtures contain `mkdtempSync(` and `rmSync(` as
+   * string DATA, and a text count reads them as calls. That dodge is what
+   * made it blind to the second import. An AST does not need the dodge: a
+   * string is a `Literal` and a call is a `CallExpression`, so the detector
+   * now reads imports, `require`, dynamic `import()`, `Bun.write` and
+   * `Bun.$` alike without its own fixtures lying to it.
+   */
+  test("skipping this file is safe, because it creates nothing", () => {
+    const capabilities = fsWriteCapabilities(readFileSync(join(TEST_DIR, SELF), "utf-8"));
+    // REFUSAL, kept distinct from `[]`. A file that stopped parsing reports
+    // exactly as clean as one that cannot write.
+    expect(
+      capabilities,
+      `test/${SELF} did not parse, so its write capability is UNMEASURED rather than absent`,
+    ).not.toBeNull();
+    expect(
+      capabilities,
+      `test/${SELF} can write to the filesystem:\n${(capabilities ?? []).join("\n")}\n` +
+        `so it can create a scratch root that its self-exclusion from the scan above would hide — ` +
+        `either drop the exclusion or move the writes out`,
     ).toEqual([]);
   });
 
