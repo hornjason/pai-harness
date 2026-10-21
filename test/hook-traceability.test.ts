@@ -12,7 +12,7 @@ import {
   type HookRegistration,
   type ScopeReading,
 } from "../lib/hook-scopes";
-import { commandNamesHook, hookFilesNamedBy } from "../lib/hook-trees";
+import { commandNamesHook } from "../lib/hook-trees";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
 
@@ -73,15 +73,21 @@ const HOOK_FILES = readdirSync(join(HARNESS_ROOT, "hooks"))
   .sort();
 
 /**
- * The hook file a row or a registry entry names — ONE binding, so there is one
- * thing to mutate. A second extractor would survive any mutation of the first
- * and the agreement would hold up on whichever copy was not broken.
+ * The hook file a row or a registry entry MENTIONS — ONE binding for that
+ * question, so there is one thing to mutate and the agreement cannot hold up
+ * on whichever copy was not broken.
+ *
+ * Deliberately NOT `commandNamesHook`. Its population includes markdown rows
+ * from the spec's current-state table, which are not commands and which no
+ * argv parse can read. The question here is *which hook file does this line
+ * mention*; the question `lib/hook-trees.ts` answers is *which hook file does
+ * this command EXECUTE*. Two questions, two bindings — not the fourth shape.
+ *
+ * **Nothing decides REGISTRATION from this.** That goes through
+ * `commandNamesHook` everywhere, which is the whole point of #976.
  */
 function namedHookFile(text: unknown): string | null {
-  // Delegates to , which tokenises and basenames rather
-  // than matching a substring anywhere in the string. A second extractor
-  // would survive any mutation of the first (#970 review, finding 3).
-  return hookFilesNamedBy(String(text))[0] ?? null;
+  return String(text).match(/([A-Za-z0-9_-]+\.hook\.ts)/)?.[1] ?? null;
 }
 
 /**
