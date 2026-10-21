@@ -261,14 +261,56 @@ describe("#983 / AC-4: nothing to compare is UNMEASURED, not agreement", () => {
     return src.slice(0, at) + "const WORKFLOW_GLOBALS = new Set<string>([" + src.slice(close);
   };
 
+  /**
+   * …and the input only the UNMEASURED guard can reach.
+   *
+   * Emptying the measured list is ALSO caught by the base check, because
+   * `Date` and `Math` stop being provided — measured, not assumed: with the
+   * guard removed, the case above went red and this describe's exit-code case
+   * stayed green on a refusal that was no longer the one it is about. Two
+   * deciders answering one question about one input are behaviourally one
+   * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape), so each
+   * gets an input only it can reach. Emptying the DENY lists is the guard's:
+   * there is no capability left whose base could be missing, and nothing for
+   * `sandboxListViolations` to disagree about.
+   */
+  const noDenyLists = (src: string) => {
+    const names = "const FORBIDDEN_SANDBOX_GLOBALS = new Map([";
+    const caps = CAPABILITIES_OPEN;
+    const nAt = once(src, names);
+    const nClose = src.indexOf("]);", nAt);
+    const cAt = once(src, caps);
+    const cClose = src.indexOf("\n];", cAt);
+    if (nClose < 0 || cClose < 0) throw new Error("could not build the mutant: a deny list does not close");
+    return (
+      src.slice(0, nAt) +
+      "const FORBIDDEN_SANDBOX_GLOBALS = new Map<string, string>([" +
+      src.slice(nClose, cAt) +
+      "const FORBIDDEN_SANDBOX_CAPABILITIES: { label: string; base: string | null; pattern: RegExp; reason: string }[] = [" +
+      src.slice(cClose)
+    );
+  };
+
   test("an empty measured list refuses rather than agreeing with everything", () => {
     const r = run(CLEAN, mutant("empty-list", emptied(validatorSource)));
     expect(r.out).toMatch(/UNMEASURED/);
     expect(r.code).not.toBe(0);
   });
 
-  test("the refusal, not a crash, is what makes the exit non-zero", () => {
-    expect(run(CLEAN, mutant("empty-list-2", emptied(validatorSource))).code).not.toBe(0);
+  test("empty deny lists are UNMEASURED too — the input only this guard reaches", () => {
+    const r = run(CLEAN, mutant("no-deny-lists", noDenyLists(validatorSource)));
+    expect(r.out, r.out).toMatch(/Sandbox list consistency: UNMEASURED/);
+    expect(r.out).toMatch(/0 unavailable name\(s\) and capability form\(s\)/);
+    expect(r.code).not.toBe(0);
+  });
+
+  test("the refusal UNMEASURED names, not a crash, is what makes the exit non-zero", () => {
+    // Asserting only a non-zero exit would be satisfied by the base check
+    // refusing the same input for a different reason, which is what this
+    // case was measured doing before the row above was added.
+    const real = run(CLEAN, mutant("empty-list-2", emptied(validatorSource)));
+    expect(real.out).toMatch(/UNMEASURED/);
+    expect(real.code).not.toBe(0);
     expect(run(CLEAN, mutant("empty-list-exit0", emptied(EXIT_ZERO))).code).toBe(0);
   });
 });
