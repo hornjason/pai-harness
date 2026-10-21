@@ -3,7 +3,7 @@ description: Tests that assert a property about this repository itself — what 
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-20
+updated: 2026-10-21
 ---
 
 ## The shape
@@ -61,8 +61,9 @@ The constant is in the test file itself unless stated otherwise.
 | a computed (non-literal) anchor cutting `ship.js` | spell the anchor as a string literal — **no exemption list by design** |
 | a fixed-character `.slice(at, at + N)` in `test/` | use `structuralCut` from `lib/source-slice.ts` — no exemption list |
 | a new direct `.claude/rungate.json` path read | `.claude/config-access-ratchet.json` (absent file = zero allowed) |
-| a new ticked SC with no coverage claim | `BANKED`, `test/ticked-sc-cover.test.ts` |
-| a ticked `(behavioral)` SC | `BEHAVIORAL_TICKED_RATCHET`, `test/behavioral-sc-ratchet.test.ts` |
+| ticking an SC with no coverage claim — i.e. running `sync-sc-status` | `BANKED`, `test/ticked-sc-cover.test.ts` |
+| ticking a `(behavioral)` SC — same event | `BEHAVIORAL_TICKED_RATCHET`, `test/behavioral-sc-ratchet.test.ts` |
+| ticking or unticking ANY SC, whether or not a test claims it | `UNCLAIMED_RATCHET` **and** `CLAIMED_UNBINDABLE`, `test/sc-binding-split.test.ts` — both are equalities, so they refuse a fall as well as a rise |
 | an unqualified `SC-N` mention in a test | `CENSUS`, `test/sc-id-namespace.test.ts` |
 | a consumer's NAME in `lib/`,`gates/`,`scripts/` | **remove the name** — `CONSUMERS` in `test/anti.test.ts` only shrinks, so delist a file you cleaned and never add one |
 | a gate check test with no assertion | `WARN_TIER_CHECKS`, `lib/gate-check-audit.ts` — reason must exceed 80 chars |
@@ -97,23 +98,51 @@ The constant is in the test file itself unless stated otherwise.
 
 The standing rule against bare full suites holds — concurrent full runs have
 killed this machine. Run your targeted paths, **plus the census tests your
-change can trip**:
+change can trip** — and derive that second half rather than remembering it:
 
 ```bash
-# added or renamed any file
-bun test test/scaffold-conformity.test.ts test/package-closure.test.ts
-# added a doc, or edited one containing file:line citations
-bun test test/line-citation-ratchet.test.ts test/agents-md-refs.test.ts
-# added a test file
-bun test test/sc-id-namespace.test.ts test/scratch-paths-unique.test.ts
-# touched specs/
-bun test test/agents-md-spec-listing.test.ts test/spec-requirements.test.ts
-# touched gates/, hooks/ or the scaffold
-bun test test/gate-contracts.test.ts test/scaffold-ownership.test.ts test/hook-traceability.test.ts
+bun scripts/census-routing.ts          # the `bun test …` line for YOUR diff
+bun scripts/census-routing.ts --all    # every row, and what it routes to
 ```
+
+It reads the diff, not the file list, and that is the whole of #990: **an edit
+to a spec and a tick inside one are the same path and different events.** A
+criterion went `- [ ]` to `- [x]`, every targeted suite was green locally, and
+CI went red in a census file the change does not touch and the list here did
+not name. A router that sees only `git diff --name-only` cannot tell those two
+apart, so this one carries the added and removed lines.
+
+| what you did | what to run |
+|---|---|
+| added or renamed a file | `test/scaffold-conformity.test.ts` `test/package-closure.test.ts` |
+| added a doc, or edited one containing file:line citations | `test/line-citation-ratchet.test.ts` `test/agents-md-refs.test.ts` |
+| added or edited a .claude/rules/ doc | `test/rule-provenance.test.ts` |
+| added a test file | `test/sc-id-namespace.test.ts` `test/scratch-paths-unique.test.ts` |
+| touched specs/ | `test/agents-md-spec-listing.test.ts` `test/spec-requirements.test.ts` |
+| ticked or unticked an SC (ran sync-sc-status) | `test/sc-binding-split.test.ts` `test/ticked-sc-cover.test.ts` `test/behavioral-sc-ratchet.test.ts` |
+| touched gates/, hooks/ or the scaffold | `test/gate-contracts.test.ts` `test/scaffold-ownership.test.ts` `test/hook-traceability.test.ts` |
+
+**That table is rendered from `CENSUS_TRIGGERS` in `scripts/census-routing.ts`
+and compared byte-for-byte by that script's own test file**, in both
+directions: a row the router does not have is red, and a census test named
+here that no row routes to is red. So it is not a list anybody has to remember
+to update — which is the only honest answer to "what keeps prose correct when
+the census set moves". Add a row to the router and this table goes red until
+it carries it.
 
 Bounded and cheap. The point is not to run everything; it is that the file you
 changed is never the only file with an opinion about your change.
+
+**What this does not do: enforce.** It prints a command, and an agent who
+reads neither the rule nor the script is unaffected by both. The mechanical
+version is a check that refuses a diff whose census tests were not in the same
+run's measured set, and that needs a notion of "what this session ran" which
+does not exist here. Nor is it the same thing as
+`scripts/select-affected-tests.ts`: that selects by import graph, and a census
+test imports none of the things that move it. Measured with
+`specs/HARNESS-STANDARD.md` as the only changed file, that selector reaches
+`ticked-sc-cover` as a sweep and misses the other two outright. The two are
+complements — one routes by what the diff DID, the other by what it IMPORTS.
 
 ## If you are writing one of these
 
