@@ -47,6 +47,7 @@ import {
   addFrontmatterToSpecs, addFrontmatterToAdrs, detectOversizedSpecs,
   checkGovernsAlignment, detectMisplacedSpecs, detectUnconvertedSpecs,
 } from "../validators/spec-validators";
+import { ensureConfigTrackable } from "../config-trackable";
 import type { ProjectType } from "../generators/types";
 import { DEFAULT_PROFILE, isStepIncluded, type ScaffoldProfile } from "./profiles";
 
@@ -93,6 +94,9 @@ export function runScaffoldWriteSteps(
 
   // Phase 0: Security and directory setup
   createGitignore(projectPath, actions);
+  // AFTER `createGitignore` and not before: the negation only works as the
+  // LAST matching rule, and `createGitignore` appends (#505).
+  ensureConfigTrackable(projectPath, actions);
   safeDir(join(projectPath, "specs"), "specs", actions);
   safeDir(join(projectPath, "reference"), "reference", actions);
   safeDir(join(projectPath, ".github"), ".github", actions);

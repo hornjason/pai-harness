@@ -1134,6 +1134,10 @@ export const KNOWN_UNDECLARED_WRITES: Record<string, string> = {
   "lib/scaffold/steps.ts → .claude": "the scaffolder writes .claude/rungate.json and settings.local.json",
   "lib/scaffold/steps.ts → tsconfig.json": "scaffold seeds a tsconfig for a project that has none",
   "lib/scaffold/steps.ts → .gitignore": "scaffold appends ignore rules",
+  "lib/config-trackable.ts → .gitignore":
+    "the same scaffold write, one module over: the negation that stops the harness config " +
+    "being an ignored file a branch switch deletes (#505). It is not committed on the " +
+    "project's behalf by design, and it reverts its own write when the edit did not hold",
   "lib/scaffold/steps.ts → CLAUDE.md": "scaffold seeds CLAUDE.md",
   "lib/scaffold/steps.ts → package.json": "scaffold adds scripts",
   "scripts/sync-spec-tests.ts → test/spec-compliance-auto.test.ts": "generated test file, regenerated on demand",

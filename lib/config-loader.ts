@@ -120,6 +120,33 @@ export const DEFAULT_TEST_TIMEOUT = 120000;
 export const RUNGATE_CONFIG_RELATIVE_PATH = join(".claude", "rungate", "config.json");
 
 /**
+ * Every path a project's rungate config can occupy, in POSIX form, newest
+ * layout first (#505).
+ *
+ * Slash-separated and not `join`ed, because the one consumer outside this
+ * module compares them against `.gitignore` patterns and `git check-ignore`
+ * output, both of which are POSIX whatever the platform. A `path.join` here
+ * would produce backslashes on Windows and silently stop matching.
+ *
+ * It exists because a question about the config's LOCATION is the same
+ * question `resolveConfig` answers, and ADR-002 D1 centralises that for a
+ * reason — a second list is a second answer to drift from, and this one is
+ * consulted by a step that EDITS the project's ignore rules. A stale entry
+ * there does not produce a wrong reading; it produces a config file the
+ * project cannot commit.
+ */
+export const RUNGATE_CONFIG_IGNORE_PATHS = [
+  ".claude/rungate/config.json",
+  ".claude/rungate.json",
+] as const;
+
+/** The directory both of the above sit in. */
+export const RUNGATE_CONFIG_PARENT_DIR = ".claude";
+
+/** The directory layout's own directory, POSIX form, for the same consumer. */
+export const RUNGATE_CONFIG_DIR = ".claude/rungate";
+
+/**
  * The resolution (ADR-002 D2(a)). `absent` is TRUTHY and carries no `.test`,
  * so the four sites that wrote `config?.test?.command || fallback` cannot
  * silently absorb it — `null`, `0`, `{}` and `""` all could.
@@ -136,7 +163,18 @@ export type ConfigResolution =
     }
   | { status: "absent" };
 
-const DIRECTORY_CONFIG_FILES = ["config.json", "roles.json", "hooks.json", "compliance.json"];
+/**
+ * The files the directory layout is made of.
+ *
+ * Exported because the scaffold's `.gitignore` negation has to name each one
+ * (#505): the negation re-includes `.claude/rungate/` and then re-excludes
+ * its contents, so a config file this list does not carry is a config file
+ * the project cannot commit — and losing `roles.json` to a branch switch is
+ * the same defect as losing `config.json`. One list, in the module that
+ * knows where the config lives, or the two drift and the symptom is a file
+ * that silently stops being version-controlled.
+ */
+export const DIRECTORY_CONFIG_FILES = ["config.json", "roles.json", "hooks.json", "compliance.json"];
 
 /**
  * ADR-002 D3. `dev.*` is the authored canonical shape; `test.command` keeps
