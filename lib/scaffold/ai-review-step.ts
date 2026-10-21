@@ -2653,6 +2653,78 @@ const SHA256_HELPER = `sha256_of() {
 }`;
 
 /**
+ * Every git invocation in the baseline and drift steps runs through this
+ * prefix, which takes the reviewer's own configuration out of the reading
+ * (#960).
+ *
+ * ## The defect it closes
+ *
+ * The two steps read the tree with `git status --porcelain
+ * --untracked-files=all` and hash each dirty path. Both ran with whatever
+ * `~/.gitconfig` said. The reviewer runs as the same user on a pool where
+ * `$HOME` persists between jobs, so the file is writable by the process being
+ * measured — the gate read a value the thing it gates can set. Measured in a
+ * scratch repository with one planted untracked file, git 2.50.1:
+ *
+ * | poisoned key | written where | unisolated reading | isolated reading |
+ * |---|---|---|---|
+ * | `core.excludesFile` → a file listing the plant | `~/.gitconfig` | **plant INVISIBLE** | `?? planted.txt` |
+ * | `core.excludesFile` → a file listing the plant | the checkout's `.git/config` | **plant INVISIBLE** | `?? planted.txt` |
+ * | `core.fsmonitor` → a script that touches a marker | `~/.gitconfig` | **marker written — git ran it** | not run |
+ * | `core.hooksPath` → a dir with `post-index-change` | `~/.gitconfig` | **hook fired** | not fired |
+ *
+ * The first row is the one the gate turns on: a write the reviewer wants
+ * hidden becomes invisible to the step whose entire job is seeing it. The
+ * third and fourth are arbitrary command execution inside the measurement.
+ *
+ * ## Why env vars AND `-c`, which is not redundancy for its own sake
+ *
+ * `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` neutralise
+ * whole FILES, so they cover keys nobody here thought to enumerate — but they
+ * do not touch the checkout's own `.git/config`, which is inside the tree the
+ * reviewer is sitting in. The `-c` flags are the only thing covering row two,
+ * and command scope outranks local scope. Neither covers the other.
+ *
+ * ## `safe.directory`, which is not in the issue and is load-bearing
+ *
+ * `actions/checkout` writes `safe.directory` for the workspace into the
+ * GLOBAL config on every job (`set-safe-directory` defaults true). Neutralise
+ * the global file and that exception goes with it, so on any runner where the
+ * workspace is owned by a different uid than the step — containers, rootless
+ * self-hosted pools — `git status` exits 128 with *"detected dubious
+ * ownership"*, `read_tree` propagates it, and the step refuses UNMEASURED on
+ * every pull request. That is the failure the issue explicitly warns against
+ * (*"the file existing is normal and must not become a refusal"*) arriving
+ * through a different door. Measured under `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`:
+ *
+ * | invocation | exit |
+ * |---|---|
+ * | isolated, no `safe.directory` | **128, dubious ownership — the gate is red** |
+ * | isolated, `-c safe.directory='*'` | 0 |
+ *
+ * `safe.directory` is honoured only from PROTECTED scopes — system, global
+ * and command — so `-c` restores it and the checkout's `.git/config` still
+ * cannot. It re-grants exactly the exception `actions/checkout` already
+ * granted, from the one source the reviewer cannot write. It is not a
+ * loosening: without it this change would make the isolated reading stricter
+ * than the unisolated one it replaces, in a way that fails closed on green
+ * repositories rather than on hostile ones.
+ *
+ * ## Scope
+ *
+ * Baseline and drift only. `buildRestoreScript` also runs git — `fetch`,
+ * `rm`, `cat-file`, `checkout` — and is exposed to the same `$HOME`; that is
+ * filed separately because its `fetch` is a NETWORK call and the same env
+ * vars would also discard a proxy, a CA bundle or an `insteadOf` rewrite that
+ * a self-hosted runner legitimately keeps in `~/.gitconfig`. Different
+ * trade-off, different decision, not folded in here silently.
+ */
+export const AI_REVIEW_GIT_ISOLATED =
+  "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 " +
+  "git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null " +
+  "-c safe.directory='*'";
+
+/**
  * The one reading of the tree, shared by the baseline step and the drift step
  * (#853). It emits one line per dirty path:
  *
@@ -2724,7 +2796,7 @@ export const AI_REVIEW_TREE_READER = `read_tree() {
   # Checked on its own line, never captured into an assignment: \`x=$(...)\`
   # DISCARDS the exit code, so a git that failed produces the same empty
   # string a clean tree produces, and "unreadable" would pass as "clean".
-  if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+  if ! raw=$(${AI_REVIEW_GIT_ISOLATED} status --porcelain --untracked-files=all 2>&1); then
     printf '%s' "\${raw}"
     return 1
   fi
@@ -2749,7 +2821,11 @@ export const AI_REVIEW_TREE_READER = `read_tree() {
           # "x\\r\\n" and "x\\n" both hash 587be6b4…, and with --no-filters
           # they are db127bf6… and 587be6b4…. The reading is only a reading
           # of content if the hash is of the bytes on disk.
-          h=$(git hash-object --no-filters -- "\${p}" 2>/dev/null) || h=unreadable
+          # Isolated for the same reason as the status above (#960). It is
+          # the \`-c\` half that matters here: \`--no-filters\` already
+          # defeats a text/eol conversion, but a hash taken under the
+          # reviewer's config is still a reading the reviewer chose.
+          h=$(${AI_REVIEW_GIT_ISOLATED} hash-object --no-filters -- "\${p}" 2>/dev/null) || h=unreadable
         else
           h=absent
         fi

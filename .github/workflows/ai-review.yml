@@ -1,4 +1,4 @@
-# generated-sha: edf00d2ae401ce14
+# generated-sha: c8b051a9efa2cc1b
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -311,7 +311,7 @@ jobs:
             # Checked on its own line, never captured into an assignment: `x=$(...)`
             # DISCARDS the exit code, so a git that failed produces the same empty
             # string a clean tree produces, and "unreadable" would pass as "clean".
-            if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+            if ! raw=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' status --porcelain --untracked-files=all 2>&1); then
               printf '%s' "${raw}"
               return 1
             fi
@@ -336,7 +336,11 @@ jobs:
                     # "x\r\n" and "x\n" both hash 587be6b4…, and with --no-filters
                     # they are db127bf6… and 587be6b4…. The reading is only a reading
                     # of content if the hash is of the bytes on disk.
-                    h=$(git hash-object --no-filters -- "${p}" 2>/dev/null) || h=unreadable
+                    # Isolated for the same reason as the status above (#960). It is
+                    # the `-c` half that matters here: `--no-filters` already
+                    # defeats a text/eol conversion, but a hash taken under the
+                    # reviewer's config is still a reading the reviewer chose.
+                    h=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' hash-object --no-filters -- "${p}" 2>/dev/null) || h=unreadable
                   else
                     h=absent
                   fi
@@ -608,7 +612,7 @@ jobs:
             # Checked on its own line, never captured into an assignment: `x=$(...)`
             # DISCARDS the exit code, so a git that failed produces the same empty
             # string a clean tree produces, and "unreadable" would pass as "clean".
-            if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+            if ! raw=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' status --porcelain --untracked-files=all 2>&1); then
               printf '%s' "${raw}"
               return 1
             fi
@@ -633,7 +637,11 @@ jobs:
                     # "x\r\n" and "x\n" both hash 587be6b4…, and with --no-filters
                     # they are db127bf6… and 587be6b4…. The reading is only a reading
                     # of content if the hash is of the bytes on disk.
-                    h=$(git hash-object --no-filters -- "${p}" 2>/dev/null) || h=unreadable
+                    # Isolated for the same reason as the status above (#960). It is
+                    # the `-c` half that matters here: `--no-filters` already
+                    # defeats a text/eol conversion, but a hash taken under the
+                    # reviewer's config is still a reading the reviewer chose.
+                    h=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' hash-object --no-filters -- "${p}" 2>/dev/null) || h=unreadable
                   else
                     h=absent
                   fi
