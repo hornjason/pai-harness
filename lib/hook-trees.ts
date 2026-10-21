@@ -161,7 +161,9 @@ export function settingsCommands(docs: string[]): string[] {
  * error directions are opposite there: an over-broad match reports a
  * violation that is not real, which costs an investigation and fails loud,
  * while a narrow parse could silently stop reporting a hook genuinely wired
- * to the superseded tree. Tracked separately rather than changed here.
+ * to the superseded tree. Tracked as #981 rather than changed here, and that
+ * issue carries the error-direction table — so the cheap generalisation
+ * "reuse this parser everywhere" has a written reason not to.
  */
 const INTERPRETERS = new Set([
   "bun", "bunx", "node", "npx", "npm", "pnpm", "yarn", "deno", "ts-node", "tsx",
