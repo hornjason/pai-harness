@@ -35,6 +35,7 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 import { allowlistAdditions, allowlistEntries } from "../lib/conformity";
 import { stripJsComments } from "../lib/strip-js-comments";
+import { CI_SUITE_FETCH_DEPTH, baseRefFetchDepth } from "../lib/ci-history-depth";
 
 const ROOT = join(import.meta.dir, "..");
 const ALLOWLIST_REL = ".claude/conformity-allowlists.json";
@@ -134,35 +135,68 @@ describe("#302: CI is given the comparison base the ratchet needs", () => {
   // 128 and DRIFT-3 reported UNMEASURED on every run. The environment was
   // wrong, not the assertion, so the fix is to supply the base rather than to
   // relax the check.
-  const FETCH_STEP = /git fetch --no-tags --depth=(\d+) origin '\+refs\/heads\/\S+:refs\/remotes\/origin\/[^']+'/;
+  // #987 made the `--depth=N` optional, and the reason is the whole of that
+  // issue: a bounded `git fetch` RE-SHALLOWS a complete clone, so leaving the
+  // flag here would have made the suite job's `fetch-depth: 0` inert. The
+  // depth is now derived from the checkout's own in `lib/ci-history-depth.ts`.
+  // The property #302 cares about — the ratchet is handed a comparison base —
+  // is unchanged and is stronger than it was.
+  const FETCH_STEP = /git fetch --no-tags (?:--depth=(\d+) )?origin '\+refs\/heads\/\S+:refs\/remotes\/origin\/[^']+'/;
 
   test("the scaffold generator emits a base-ref fetch step", () => {
     // Fix the source, not the output: the workflow file is harness-managed
     // and regenerated, so a hand-edit there would be wiped.
+    //
+    // Read against the SOURCE's own spelling, which since #987 interpolates
+    // the depth instead of hardcoding it. A regex written for the rendered
+    // string stopped matching here the moment the literal became a template
+    // expression — and that is the standing hazard rather than a surprise:
+    // grep the rendered artefact for the rendered claim, and the source only
+    // for what the source actually says. The rendered half is the case below.
     const generator = readFileSync(join(ROOT, "lib/scaffold/steps.ts"), "utf-8");
-    expect(generator).toMatch(FETCH_STEP);
+    expect(generator).toMatch(
+      /git fetch --no-tags \$\{baseDepthFlag\}origin '\+refs\/heads\/\$\{baseBranch\}:refs\/remotes\/origin\/\$\{baseBranch\}'/,
+    );
   });
 
-  test("the depth is bounded, and deep enough to read a log", () => {
-    // This shipped at `--depth=1`, which is all the ratchet needs: it diffs
-    // the tip and reads one file. The cost argument against full history
-    // still holds and is why there is an upper bound here at all.
+  test("the base-ref fetch depth is derived from the checkout's, never declared beside it", () => {
+    // This case used to assert `--depth=N` with 50 <= N <= 1000, and that the
+    // generator contains no `fetch-depth: 0`. #987 overturned both, with a
+    // measurement rather than an opinion:
     //
-    // One commit turned out to be too few once something else asked the base
-    // a question. `test/project-state-currency.test.ts` compares landed PRs
-    // on main against the newest session entry, and under depth=1 it read an
-    // empty log — which is indistinguishable from a clean one, so it had to
-    // refuse as UNMEASURED. The environment was wrong, not the assertion.
+    // - A bounded `git fetch --depth=N` re-shallows a repository that was
+    //   already complete. Measured on a complete 40-commit clone,
+    //   `is-shallow-repository` goes false → true and `rev-list --count HEAD`
+    //   drops 40 → 20. Keeping the flag would have made the suite job's
+    //   `fetch-depth: 0` buy nothing at all.
+    // - The cost argument that justified the upper bound does not survive
+    //   measurement either. Three clones of this repository, three runs each:
+    //   depth 1 is 1.23–1.64s for 6MB, depth 500 is 1.54–2.75s for 9MB, full
+    //   history is 1.43–1.64s for 13MB. The bounded middle is the slowest.
     //
-    // Comments stripped first: the generator's own comment explains the
-    // alternative that was rejected and names it. A detector reading raw
-    // source reports the defect the comment says was avoided — this test
-    // failed exactly that way on its first run.
+    // So the question this case asks is no longer "what number" but "is there
+    // ONE decider". Two numbers that have to agree with nothing comparing them
+    // is the defect class this repository pays for most.
     const generator = stripJsComments(readFileSync(join(ROOT, "lib/scaffold/steps.ts"), "utf-8"));
-    expect(generator).not.toMatch(/fetch-depth:\s*0/);
-    const depth = Number(FETCH_STEP.exec(generator)?.[1]);
-    expect(depth, "a shallow base cannot answer a question about recent history").toBeGreaterThanOrEqual(50);
-    expect(depth, "this is a base for comparison, not a clone").toBeLessThanOrEqual(1000);
+    expect(generator, "the depth is derived, not written here as a literal").toMatch(
+      /baseRefFetchDepth\(CI_SUITE_FETCH_DEPTH\)/,
+    );
+    // And the derivation itself, both ways. A full checkout takes an
+    // unbounded fetch; a bounded one keeps a bound in the range #302 needs.
+    expect(baseRefFetchDepth(0)).toBeNull();
+    const bounded = baseRefFetchDepth(1);
+    expect(bounded, "a shallow base cannot answer a question about recent history").toBeGreaterThanOrEqual(50);
+    expect(bounded, "this is a base for comparison, not a clone").toBeLessThanOrEqual(1000);
+  });
+
+  test("the emitted fetch matches the derivation, so the two cannot drift", () => {
+    // The generator could hold the right call and emit the wrong string. Read
+    // what it actually wrote.
+    const workflow = readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf-8");
+    const emitted = FETCH_STEP.exec(workflow);
+    expect(emitted, "the committed workflow has no base-ref fetch at all").not.toBeNull();
+    const emittedDepth = emitted![1] === undefined ? null : Number(emitted![1]);
+    expect(emittedDepth).toBe(baseRefFetchDepth(CI_SUITE_FETCH_DEPTH));
   });
 
   test("a failed fetch prints rather than being swallowed", () => {
