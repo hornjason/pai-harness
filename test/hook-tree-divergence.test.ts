@@ -143,7 +143,23 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
-import { settingsScopePaths } from "../lib/hook-scopes";
+import { loadRungateConfig } from "../lib/config-loader";
+import {
+  type RegistrationScope,
+  type ScopeReading,
+  IncompleteScopeReadingError,
+  REGISTRATION_SCOPES,
+  readRegistrationScopes,
+  settingsScopePaths,
+} from "../lib/hook-scopes";
+import {
+  type EnvReading,
+  pathSpelling,
+  readEnvScopes,
+  registeredTreeCensus,
+  resolvePath,
+  settingsEnv,
+} from "../lib/hook-target-tree";
 import {
   hookTreeCensus,
   registrationTree,
@@ -177,6 +193,30 @@ const DUPLICATE_RATCHET = [
   "StaleTTLCleanup",
   "VerifyPhaseLock",
 ] as const;
+
+/**
+ * The path VARIABLES through which a registration on this machine resolves to
+ * a directory outside this checkout, measured 2026-10-21 with
+ *
+ *   /usr/bin/python3 -I -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/settings.json')))['env']['RUNGATE_HOOKS_DIR'])"
+ *
+ * **What the entry means.** `~/.claude/settings.json` defines
+ * `RUNGATE_HOOKS_DIR` as a checkout that is not this one, and both that file
+ * and this repo's own `.claude/rungate/hooks.json` register through it. So
+ * the hooks that run are a different tree's bytes, and PR #999's
+ * shell-injection fix to `hooks/ProjectStateSync.hook.ts` has not reached
+ * them — the registered copy still carries the `execSync` template literal.
+ *
+ * Repointing the variable at this checkout is Jason's, one line in a file the
+ * repo does not own, and it is NOT what this entry waives: the ratchet
+ * refuses in BOTH directions, so a second misdirected spelling fails and
+ * clearing this one without deleting the entry in the same commit fails too.
+ *
+ * Keyed on the variable and not on the resolved directory, which is a machine
+ * path, nor on the hook names, of which there are thirty behind this one
+ * fact.
+ */
+const FOREIGN_SPELLING_RATCHET: string[] = ["RUNGATE_HOOKS_DIR"];
 
 const PAI_HOOKS = join(homedir(), ".pai", "hooks");
 const RUNGATE_HOOKS = join(ROOT, "hooks");
@@ -634,5 +674,442 @@ describe("#713 SC-3: AgentBriefGuard is wired, and the issue's premise was a one
       "AgentBriefGuard is no longer project-scoped, so #479's reconciliation no longer covers it " +
         "and nothing checks that it is registered",
     ).toBe("project");
+  });
+});
+
+/**
+ * #713 point 4, the half #778 and #970 left open: **the tree the settings
+ * register is the tree the repo tests.**
+ *
+ * ## What the earlier waves closed, and the input they cannot see
+ *
+ * #778 shipped `hookTreeCensus` (two directories, duplicate names) and
+ * `wrongTreeViolations` (which ROOT a registration is spelled with). #970
+ * shipped `lib/hook-scopes.ts`, so no verdict can come out of a reading short
+ * of every scope. All three decide by SPELLING, and that is the dimension the
+ * issue's last comment attached a cost to.
+ *
+ * `~/.claude/settings.json` on the author's machine defines
+ * `RUNGATE_HOOKS_DIR` as a checkout that is **not this one**, and registers
+ * fourteen hook commands through it. Every existing check reads
+ * `${RUNGATE_HOOKS_DIR}/X.hook.ts` as `"rungate"` and is satisfied — the live
+ * case above is literally titled *"every hook this repo owns is wired to this
+ * repo's copy"* and it passes. Nothing resolves the variable.
+ *
+ * The cost, measured 2026-10-21 and not hypothesised: PR #999 merged a
+ * shell-injection fix into `hooks/ProjectStateSync.hook.ts`, replacing an
+ * `execSync` template literal carrying tool input with an argv
+ * `execFileSync`. `git show origin/main:hooks/ProjectStateSync.hook.ts`
+ * carries it. The file the registration RESOLVES to still carries the
+ * `execSync` form. **A merged security fix did not reach the code that runs,
+ * and the suite was green through it.**
+ *
+ * So this block asks the question none of the three bindings above can be
+ * asked: given the variables the machine actually defines, which DIRECTORY
+ * does each registration name?
+ *
+ * ## The three fail-opens, and why the third needed a field inventing
+ *
+ * | the silent pass | the reading instead |
+ * |---|---|
+ * | a variable nothing defines, assumed to mean this repo | `unresolved` → UNMEASURED |
+ * | a scope nobody opened, counted as registering nothing | UNMEASURED, scope named |
+ * | **zero registrations examined** | UNMEASURED — zero trees compared is not agreement |
+ *
+ * The third has no analogue in `hookTreeCensus` and no natural assertion:
+ * `foreign.length === 0` is the same value for a correctly wired tree and for
+ * a run that opened nothing. `examined` exists so the two are
+ * distinguishable, and AC-R4 is the pair that varies only that.
+ *
+ * ## Deliberately NOT done, and why each alternative is worse
+ *
+ * - **Deploying the fixed tree to the registered path.** That directory holds
+ *   orphaned staged work preserved as `cd24a91e` / tag
+ *   `orphaned-staged-20261021`, under a standing do-not-touch. This issue
+ *   asks for a CHECK, and a deployment would also destroy the evidence.
+ * - **Teaching `registrationTree` about the resolved path.** It answers
+ *   *which root is this spelled with* — a real question with four cases
+ *   above. Folding a second question into it makes one binding no mutation
+ *   can attribute (#484).
+ * - **Banking the resolved directory, or the hook names.** A machine path in
+ *   a committed file is wrong on the next machine; a hook-name list churns on
+ *   every hook added. Thirty registrations behind one misdirected variable
+ *   are ONE fact, so the ratchet keys on the VARIABLE.
+ *
+ * ## SC-4 and SC-5 are still not met, and this does not pretend otherwise
+ *
+ * Unchanged from #778: the eight `.pai` copies carry `uchg`, and the two
+ * `.tmp` files are refused by a live PreToolUse guard — which refused one of
+ * this session's own writes, so it is working. Both need Jason's hands.
+ * Nothing below touches either.
+ *
+ * ## The cheapest wrong fix, named before the repair
+ *
+ * **Add `${RUNGATE_HOOKS_DIR}` to a list of roots that count as this repo.**
+ * One line; it is what `RUNGATE_ROOTS` in `lib/hook-trees.ts` already does,
+ * and it is the exact state in which #999 went nowhere. Every case below is
+ * red under it, because not one of them matches a spelling — each drives
+ * `resolvePath` or `registeredTreeCensus`, which compare directories. AC-R1
+ * asserts the two readings DISAGREE on one input, so widening a root list
+ * cannot satisfy it: the disagreement is the assertion.
+ *
+ * A second repair worth naming because it is quieter: **resolve
+ * `${CLAUDE_PROJECT_DIR}` to the repo root in every scope.** It removes a
+ * refusal and reads as a simplification. AC-R6 is the pair that varies only
+ * the scope and goes red under it.
+ */
+describe("#713 point 4: the tree the settings REGISTER is the tree the repo TESTS", () => {
+  const ALL: RegistrationScope[] = [...REGISTRATION_SCOPES];
+  const REPO = "/repo";
+  const OTHER_CHECKOUT = "/elsewhere/rungate/hooks";
+
+  /** A complete command reading. Any scope not named registers nothing. */
+  const cmds = (per: Partial<Record<RegistrationScope, string[] | null>>): ScopeReading[] =>
+    ALL.map(scope => {
+      const c = scope in per ? per[scope] : [];
+      return c === null || c === undefined
+        ? { scope, commands: null, unreadable: `${scope} is unreadable in this fixture` }
+        : { scope, commands: c };
+    });
+
+  /** A complete env reading. Any scope not named defines nothing. */
+  const envs = (
+    per: Partial<Record<RegistrationScope, Record<string, string> | null>>,
+  ): EnvReading[] =>
+    ALL.map(scope => {
+      const e = scope in per ? per[scope] : {};
+      return e === null || e === undefined
+        ? { scope, env: null, unreadable: `${scope} is unreadable in this fixture` }
+        : { scope, env: e };
+    });
+
+  const RG = (name: string) => `bun \${RUNGATE_HOOKS_DIR}/${name}.hook.ts`;
+
+  test("AC-R1: a root SPELLED rungate that RESOLVES elsewhere is foreign, while the spelling check calls it fine", () => {
+    // THE WITNESS, and the assertion is the DISAGREEMENT rather than either
+    // verdict alone. One command, two bindings, opposite answers:
+    // `registrationTree` reports the tree this repo owns and
+    // `wrongTreeViolations` reports nothing to look at, while the resolved
+    // reading reports a directory outside the checkout. A reader who widens a
+    // root list cannot make this pass — there is no root list in it.
+    const command = RG("ProjectStateSync");
+
+    expect(
+      registrationTree(command),
+      "the spelling check stopped calling this rungate, so the disagreement this case is about " +
+        "no longer exists and the case is measuring nothing",
+    ).toBe("rungate");
+    expect(
+      wrongTreeViolations(["ProjectStateSync"], [command]),
+      "the spelling check started reporting this, which it cannot honestly do — it has no way to " +
+        "know where the variable points",
+    ).toEqual([]);
+
+    const census = registeredTreeCensus(
+      ["ProjectStateSync"],
+      cmds({ "user-settings": [command] }),
+      envs({ "user-settings": { RUNGATE_HOOKS_DIR: OTHER_CHECKOUT } }),
+      REPO,
+    );
+
+    expect(census.reading).toBe("MEASURED");
+    expect(census.examined).toBe(1);
+    expect(census.foreign.map(f => f.hook)).toEqual(["ProjectStateSync"]);
+    expect(census.foreign[0].resolved).toBe(`${OTHER_CHECKOUT}/ProjectStateSync.hook.ts`);
+    expect(
+      census.foreign[0].detail,
+      "the violation does not say that merged code never reaches the file, which is the whole " +
+        "cost and the only part that makes it actionable",
+    ).toContain("Nothing merged into this repository reaches that file");
+  });
+
+  test("AC-R2: the POSITIVE control — the same spelling pointing INTO the repo is clean", () => {
+    // Without this, AC-R1 is satisfied by a binding that reports every
+    // registration as foreign. The pair varies exactly one thing: the VALUE
+    // of `RUNGATE_HOOKS_DIR`. Same command, same scope, same owned list.
+    const census = registeredTreeCensus(
+      ["ProjectStateSync"],
+      cmds({ "user-settings": [RG("ProjectStateSync")] }),
+      envs({ "user-settings": { RUNGATE_HOOKS_DIR: `${REPO}/hooks` } }),
+      REPO,
+    );
+
+    expect(census.reading).toBe("MEASURED");
+    expect(census.examined).toBe(1);
+    expect(census.foreign).toEqual([]);
+    expect(census.inRepo.map(r => r.hook)).toEqual(["ProjectStateSync"]);
+  });
+
+  test("AC-R3: a variable nothing defines is UNRESOLVED, never 'this repo'", () => {
+    // Fail-open one. An undefined variable is the state CI is in, and the
+    // tempting reading is that `${RUNGATE_HOOKS_DIR}` obviously means the
+    // rungate checkout, which is this one. It does not obviously mean
+    // anything: a variable with no value names no directory.
+    const census = registeredTreeCensus(
+      ["ProjectStateSync"],
+      cmds({ "user-settings": [RG("ProjectStateSync")] }),
+      envs({}),
+      REPO,
+    );
+
+    expect(census.reading).toBe("UNMEASURED");
+    expect(census.inRepo, "an unresolved path was counted as this repo's copy").toEqual([]);
+    expect(census.foreign, "an unresolved path was counted as a violation").toEqual([]);
+    expect(census.unresolved.map(r => r.hook)).toEqual(["ProjectStateSync"]);
+    expect(census.unmeasuredReasons.join(" ")).toContain("RUNGATE_HOOKS_DIR is not defined");
+    expect(
+      census.unmeasuredReasons.join(" "),
+      "the reason does not say why an unresolved path is not a clean reading",
+    ).toContain("no reading at all");
+  });
+
+  test("AC-R4: ZERO registrations examined is UNMEASURED — zero trees compared is not agreement", () => {
+    // Fail-open three, and the one with no natural assertion. The pair varies
+    // exactly one thing against the clean reading: whether any command naming
+    // an owned hook exists at all. `foreign` is `[]` in BOTH, which is the
+    // problem — so the two lists are asserted EQUAL and the discriminators
+    // are asserted to differ, rather than each being checked on its own.
+    const clean = registeredTreeCensus(
+      ["ProjectStateSync"],
+      cmds({ "user-settings": [RG("ProjectStateSync")] }),
+      envs({ "user-settings": { RUNGATE_HOOKS_DIR: `${REPO}/hooks` } }),
+      REPO,
+    );
+    const nothing = registeredTreeCensus(
+      ["ProjectStateSync"],
+      cmds({ "user-settings": ["bun ${RUNGATE_HOOKS_DIR}/SomethingElse.hook.ts"] }),
+      envs({ "user-settings": { RUNGATE_HOOKS_DIR: `${REPO}/hooks` } }),
+      REPO,
+    );
+
+    expect(
+      nothing.foreign,
+      "the two readings differ in their violation lists, so this pair varies more than one thing " +
+        "and proves nothing about the empty case",
+    ).toEqual(clean.foreign);
+    expect(nothing.examined).toBe(0);
+    expect(clean.examined).toBe(1);
+    expect(nothing.reading).toBe("UNMEASURED");
+    expect(clean.reading).toBe("MEASURED");
+    expect(nothing.unmeasuredReasons.join(" ")).toContain(
+      "Zero trees compared is not perfect agreement",
+    );
+  });
+
+  test("AC-R5: an unreadable machine scope is UNMEASURED even when every reading taken was clean", () => {
+    // Fail-open two, and the state CI is in: no runner has a
+    // `~/.claude/settings.json`. Everything this run COULD read resolves into
+    // the repo, and that is still not a verdict — the scope that defines the
+    // variable on the author's machine is the one that could not be opened.
+    const census = registeredTreeCensus(
+      ["AgentBriefGuard"],
+      cmds({
+        "project-settings": ["bun ${CLAUDE_PROJECT_DIR}/hooks/AgentBriefGuard.hook.ts"],
+        "user-settings": null,
+      }),
+      envs({ "user-settings": null }),
+      REPO,
+    );
+
+    expect(census.inRepo.map(r => r.hook)).toEqual(["AgentBriefGuard"]);
+    expect(census.foreign).toEqual([]);
+    expect(
+      census.reading,
+      "every reading taken was clean and the run called that a measurement — which is the reading " +
+        "CI would produce for a tree wired entirely to another checkout",
+    ).toBe("UNMEASURED");
+    expect(census.unmeasuredReasons.join(" ")).toContain("user-settings");
+  });
+
+  test("AC-R6: CLAUDE_PROJECT_DIR is this repo in a scope the repo owns, and SESSION STATE in a machine scope", () => {
+    // The second cheapest wrong fix, as a pair. Resolving it to the repo root
+    // everywhere removes a refusal and reads as a simplification — and it
+    // turns a user-scope registration that may execute ANY checkout into a
+    // confident `in-repo`. The halves vary only the scope: identical command,
+    // identical env, identical owned list.
+    const command = "bun ${CLAUDE_PROJECT_DIR}/hooks/AgentBriefGuard.hook.ts";
+
+    const project = registeredTreeCensus(
+      ["AgentBriefGuard"],
+      cmds({ "project-settings": [command] }),
+      envs({}),
+      REPO,
+    );
+    const user = registeredTreeCensus(
+      ["AgentBriefGuard"],
+      cmds({ "user-settings": [command] }),
+      envs({}),
+      REPO,
+    );
+
+    expect(project.inRepo.map(r => r.resolved)).toEqual([`${REPO}/hooks/AgentBriefGuard.hook.ts`]);
+    expect(project.reading).toBe("MEASURED");
+
+    expect(
+      user.unresolved.map(r => r.hook),
+      "a user-scope CLAUDE_PROJECT_DIR was resolved to this repository, so a hook that executes " +
+        "whichever checkout the session started in now reads as this one",
+    ).toEqual(["AgentBriefGuard"]);
+    expect(user.reading).toBe("UNMEASURED");
+    expect(user.unmeasuredReasons.join(" ")).toContain("session state");
+  });
+
+  test("AC-R7: a variable with two different values is UNRESOLVED, not a precedence guess", () => {
+    // Picking a winner means encoding an order nobody wrote down, and being
+    // wrong about it produces a confident path — the thing this block exists
+    // to stop. The control beside it is the SAME variable defined twice with
+    // the SAME value, which is agreement and must still resolve: a refusal
+    // that fires on agreement is a check nobody can satisfy.
+    const conflict = registeredTreeCensus(
+      ["ProjectStateSync"],
+      cmds({ "user-settings": [RG("ProjectStateSync")] }),
+      envs({
+        "user-settings": { RUNGATE_HOOKS_DIR: `${REPO}/hooks` },
+        "user-local-settings": { RUNGATE_HOOKS_DIR: OTHER_CHECKOUT },
+      }),
+      REPO,
+    );
+    const agreeing = registeredTreeCensus(
+      ["ProjectStateSync"],
+      cmds({ "user-settings": [RG("ProjectStateSync")] }),
+      envs({
+        "user-settings": { RUNGATE_HOOKS_DIR: `${REPO}/hooks` },
+        "user-local-settings": { RUNGATE_HOOKS_DIR: `${REPO}/hooks` },
+      }),
+      REPO,
+    );
+
+    expect(conflict.reading).toBe("UNMEASURED");
+    expect(conflict.unresolved.map(r => r.hook)).toEqual(["ProjectStateSync"]);
+    expect(conflict.unmeasuredReasons.join(" ")).toContain("defined 2 times with different values");
+    expect(
+      agreeing.reading,
+      "two scopes AGREEING about a variable was refused, which makes every real machine " +
+        "unmeasurable and the check a thing nobody can satisfy",
+    ).toBe("MEASURED");
+    expect(agreeing.inRepo).toHaveLength(1);
+  });
+
+  test("AC-R8: a reading short of every scope is REFUSED, and the env half is refused too", () => {
+    // Both readings go through `assertEveryScopeRead`, #970's one binding for
+    // what complete means. The env half is the one that would silently
+    // acquire a narrower scope list, because a variable defined in a scope
+    // nobody read is indistinguishable from a variable nobody defined — and
+    // only the first of those is innocent.
+    expect(() =>
+      registeredTreeCensus(["X"], [{ scope: "user-settings", commands: [] }], envs({}), REPO),
+    ).toThrow(IncompleteScopeReadingError);
+
+    expect(
+      () => registeredTreeCensus(["X"], cmds({}), [{ scope: "user-settings", env: {} }], REPO),
+      "an env reading covering one scope produced a verdict, so a variable defined in a scope " +
+        "nobody opened reads as a variable nobody defined",
+    ).toThrow(IncompleteScopeReadingError);
+
+    // An unreadable env scope with no reason is refused as well: an
+    // unreadable scope and a scope nobody opened produce the same empty
+    // reading, and which happened is the whole question.
+    expect(() =>
+      registeredTreeCensus(
+        ["X"],
+        cmds({}),
+        ALL.map(scope => ({ scope, env: null })),
+        REPO,
+      ),
+    ).toThrow(IncompleteScopeReadingError);
+  });
+
+  test("AC-R9: a settings document that does not parse THROWS, and a non-string value is dropped", () => {
+    // Same reason `settingsCommands` throws. Swallowing a corrupt file turns
+    // every variable it defines into `unresolved` — a refusal, but for a
+    // reason nobody can act on, and indistinguishable from a file defining
+    // nothing.
+    expect(() => settingsEnv("{not json")).toThrow();
+    expect(settingsEnv('{"hooks":{}}'), "an absent env block invented variables").toEqual({});
+    expect(
+      settingsEnv('{"env":{"A":"/x","B":3,"C":null}}'),
+      "a non-string value was coerced into a path fragment",
+    ).toEqual({ A: "/x" });
+  });
+
+  test("AC-R10: the SPELLING a foreign target is reached through is what a ratchet can key on", () => {
+    // Not the resolved directory — a machine path in a committed file is
+    // wrong on the next machine. Not the hook name — thirty registrations
+    // behind one misdirected variable are one fact. `pathSpelling` is the
+    // binding the live case below banks against.
+    expect(pathSpelling("${RUNGATE_HOOKS_DIR}/X.hook.ts")).toBe("RUNGATE_HOOKS_DIR");
+    expect(pathSpelling("$PAI_HOOKS_DIR/X.hook.ts")).toBe("PAI_HOOKS_DIR");
+    expect(pathSpelling("/Users/someone/hooks/X.hook.ts")).toBe("literal");
+
+    // A relative path is unresolved rather than joined to something: which
+    // directory it names depends on whatever spawns the hook.
+    const rel = resolvePath("hooks/X.hook.ts", {}, null);
+    expect(rel.kind).toBe("unresolved");
+    expect(rel.kind === "unresolved" && rel.reason).toContain("not absolute");
+  });
+
+  test("the live reading: every registration on THIS machine, resolved rather than spelled", () => {
+    // Machine state, and the case that makes CI witness the subject rather
+    // than skip it. On a runner `~/.claude/settings.json` does not exist, the
+    // reading is UNMEASURED, and the refusal is asserted. On a machine that
+    // has one, the ratchet holds the line in both directions.
+    const readIfPresent = (p: string): string | null =>
+      existsSync(p) ? readFileSync(p, "utf-8") : null;
+    const registry = (loadRungateConfig(ROOT) as { hooks: { command?: string }[] }).hooks.map(h =>
+      String(h?.command ?? h),
+    );
+    expect(
+      registry.length,
+      "the loader resolved no hook entries, so this compares nothing",
+    ).toBeGreaterThan(0);
+
+    const owned = ownedHooks();
+    expect(owned.length, "this repo owns no hooks, so the scan compares nothing").toBeGreaterThan(
+      10,
+    );
+
+    const census = registeredTreeCensus(
+      owned,
+      readRegistrationScopes(ROOT, homedir(), readIfPresent, registry),
+      readEnvScopes(ROOT, homedir(), readIfPresent),
+      ROOT,
+    );
+
+    if (census.reading === "UNMEASURED") {
+      expect(
+        census.unmeasuredReasons.length,
+        "the reading is UNMEASURED and says nothing about why, which is a refusal nobody can act on",
+      ).toBeGreaterThan(0);
+      expect(
+        census.foreign,
+        "an UNMEASURED run reported violations, so somebody could read a count off a reading that " +
+          "was never taken",
+      ).toEqual([]);
+      return;
+    }
+
+    const seen = [...new Set(census.foreign.map(f => f.spelling))].sort();
+    const appeared = seen.filter(s => !FOREIGN_SPELLING_RATCHET.includes(s));
+    const cleared = FOREIGN_SPELLING_RATCHET.filter(s => !seen.includes(s));
+
+    expect(
+      appeared,
+      `a registration of a hook this repo owns resolves OUTSIDE ${join(ROOT, "hooks")} through a ` +
+        `path this file has not banked: ${appeared.join(", ")}. Nothing merged here reaches those ` +
+        `files. Either point the variable at this checkout, or add it to ` +
+        `FOREIGN_SPELLING_RATCHET in this file saying what it costs.\n` +
+        census.foreign
+          .filter(f => appeared.includes(f.spelling))
+          .map(f => `  ${f.hook} [${f.scope}] — ${f.detail}`)
+          .join("\n"),
+    ).toEqual([]);
+
+    expect(
+      cleared,
+      `${cleared.join(", ")} no longer resolves outside this repository — remove it from ` +
+        `FOREIGN_SPELLING_RATCHET in this file, in the same commit that fixed it. A ratchet ` +
+        `nobody lowers is a number nobody can interpret ` +
+        `(.claude/rules/checks-must-be-able-to-fail.md).`,
+    ).toEqual([]);
   });
 });
