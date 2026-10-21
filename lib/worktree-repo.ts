@@ -187,6 +187,29 @@ export function readWorktreeRemote(worktreePath: string): RemoteReading {
 }
 
 /**
+ * Is this value a filesystem path rather than a remote?
+ *
+ * Only to SAY SO in a refusal — nothing branches on it, and `unreadable` is
+ * still `unreadable` (#218 is unchanged). The reading is already unusable;
+ * what #872 adds is the operator being told WHICH unusable thing it is,
+ * because the measured instance was an agent writing the parent checkout's
+ * directory into `worktreeRepo` after printing the right URL.
+ *
+ * ABSOLUTE only. `owner/name` is itself two segments with a slash, so a rule
+ * that called anything slash-shaped a path would describe a near-miss slug as
+ * a directory — a refusal naming the wrong mistake is worse than one naming
+ * none. Three forms: POSIX, `~`-relative, and Windows drive or UNC.
+ */
+export function looksLikeFilesystemPath(reported: unknown): boolean {
+  return /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(String(reported).trim());
+}
+
+/** The clause both copies append, so the two cannot word it differently. */
+const PATH_SHAPED_CLAUSE =
+  " — that value is a filesystem path, and worktreeRepo is the URL " +
+  "`git remote get-url origin` printed, never a path (#872)";
+
+/**
  * Does the worktree belong to the repository this run is for?
  *
  * `reported` is the remote URL as the worktree stated it — read in-process by
@@ -245,7 +268,8 @@ export function worktreeIdentity(
       refusal:
         `${where} reported an origin this run cannot read as owner/name ` +
         `(${JSON.stringify(redactRemote(String(reported).trim()))}), ` +
-        `so it cannot be compared against ${expected} (#218)`,
+        `so it cannot be compared against ${expected} (#218)` +
+        (looksLikeFilesystemPath(reported) ? PATH_SHAPED_CLAUSE : ""),
     };
   }
 
