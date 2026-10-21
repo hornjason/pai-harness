@@ -361,8 +361,22 @@ describe("SC-1509: the generator writes this script, and not a copy of it", () =
 
   test("the script is the only place the hook body is written", () => {
     // A second literal would survive any mutation of the first.
+    //
+    // The probe was `writeFileSync(prePush, prePushHookScript());` and went
+    // red in #891, when `createGitHooks` became a loop over `GENERATED_HOOKS`
+    // and the write became `hook.script(root)`. The property did not move —
+    // the body still comes from `prePushHookScript` and from nowhere else —
+    // so what is asserted is the property: the generator calls it, names it
+    // exactly once, and holds no copy of the text.
     const steps = readFileSync(join(import.meta.dir, "..", "lib", "scaffold", "steps.ts"), "utf-8");
-    expect(steps).toContain("writeFileSync(prePush, prePushHookScript());");
+    const code = steps.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const named = code.match(/\bprePushHookScript\b/g) || [];
+    expect(
+      named.length,
+      "prePushHookScript is named more than once in the generator, which is a second " +
+        "position deciding what the pre-push hook is",
+    ).toBe(2); // the import, and the GENERATED_HOOKS entry
+    expect(code).toContain("script: () => prePushHookScript()");
     expect(steps).not.toContain("bun install --frozen-lockfile");
     expect(steps).not.toContain("Conformity tests failed");
   });

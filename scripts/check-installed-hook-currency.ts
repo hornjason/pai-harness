@@ -1,7 +1,15 @@
 #!/usr/bin/env bun
 /**
- * Compare the INSTALLED pre-commit hook against what the generator produces
- * today, and refuse when they differ (#599).
+ * Compare every INSTALLED git hook against what the generator produces
+ * today, and refuse when they differ (#599, #891).
+ *
+ * The population is `GENERATED_HOOKS` in `lib/scaffold/steps.ts` — the same
+ * declaration `createGitHooks` installs from — and not a list here. Until
+ * #891 this script joined the literal `pre-commit` and compared that one
+ * file, so the `pre-push` installed in this repository sat a mutation
+ * battery behind its generator (#728) while the check printed a clean
+ * verdict about the other hook and exited 0. A hook the scaffold gains is
+ * now a hook this reports on, without this file being edited.
  *
  * `.git/hooks/pre-commit` is untracked. Nothing in the repository can see it,
  * no CI job installs it, and `createGitHooks` only runs on a re-scaffold — so
@@ -151,6 +159,74 @@ export const GUARD_PROPERTIES: GuardProperty[] = [
 ];
 
 /**
+ * The guard properties of the generated `pre-push` (#891).
+ *
+ * Same discipline as the table above and the same instrument check: every
+ * probe must be present in the generator's own output, or the run is
+ * UNMEASURED rather than a pile of refusals naming a fix the hook carries.
+ */
+export const PRE_PUSH_GUARD_PROPERTIES: GuardProperty[] = [
+  {
+    // The whole of #869's symptom. `--show-toplevel` answers "where is this
+    // working tree", and in a linked worktree that is not where
+    // `node_modules` lives, so every worktree push was refused as UNMEASURED
+    // over a repository whose dependencies were installed the whole time.
+    name: "the main-checkout modules root (#728)",
+    // The ASSIGNMENT, not the flag. `--git-common-dir` on its own also
+    // appears in the comment above that line explaining why it is there, so
+    // a probe naming the flag reports a genuinely pre-#728 hook as carrying
+    // the fix — a detector that cannot tell code from the prose about it
+    // (#235). Caught by AC-3, which plants the real pre-#728 hook and
+    // expects to be told which fix it predates.
+    probe: "$(git rev-parse --git-common-dir)/..",
+  },
+  {
+    // `ln -s` does not look at its target, so a link to a path that does not
+    // exist succeeds and the suite then dies on an import error naming no
+    // cause. This is the refusal that says which it was.
+    name: "the absent-modules refusal (#728)",
+    probe: "run bun install there",
+  },
+  {
+    // Three outcomes, not two: conformity FAILED, conformity could not be
+    // RUN, and conformity passed. The first two used to share a message
+    // (#397), so an install that could not happen was reported as a test
+    // that did not pass.
+    name: "the three-outcome reading (#397)",
+    probe: "unmeasured=1",
+  },
+];
+
+/**
+ * What this checker knows about a hook, BEYOND comparing its bytes (#891).
+ *
+ * Keyed by the name in `GENERATED_HOOKS`, and deliberately not part of that
+ * declaration. A generator that declared the probes for its own output would
+ * satisfy them by construction, which is #530 — an artifact agreeing with
+ * whatever you put in it. These are assertions ABOUT the generator, so they
+ * live with the thing doing the asserting.
+ *
+ * **A hook with no entry here is still compared, byte for byte, and still
+ * reported.** That is the point: the population comes from the generator and
+ * the projections come from here, so a hook this checker has never heard of
+ * gets the weaker verdict rather than no verdict. AC-5 is the case.
+ */
+export interface HookProjection {
+  properties: GuardProperty[];
+  /** Does this hook embed the secret registry? Only `pre-commit` does. */
+  carriesSecretScanner: boolean;
+}
+
+export const HOOK_PROJECTIONS: Record<string, HookProjection> = {
+  "pre-commit": { properties: GUARD_PROPERTIES, carriesSecretScanner: true },
+  "pre-push": { properties: PRE_PUSH_GUARD_PROPERTIES, carriesSecretScanner: false },
+};
+
+export function projectionFor(hookName: string): HookProjection {
+  return HOOK_PROJECTIONS[hookName] ?? { properties: [], carriesSecretScanner: false };
+}
+
+/**
  * Where the hook that will actually run lives.
  *
  * `rev-parse --git-path hooks`, which is GIT's answer to this question rather
@@ -181,7 +257,7 @@ export const GUARD_PROPERTIES: GuardProperty[] = [
  * is resolved against the directory git was asked from, and not against the
  * worktree toplevel.
  */
-export function installedHookPath(projectRoot: string): string {
+export function installedHookPath(projectRoot: string, hookName: string): string {
   let hooks = "";
   try {
     hooks = execFileSync("git", ["-C", projectRoot, "rev-parse", "--git-path", "hooks"], {
@@ -198,7 +274,7 @@ export function installedHookPath(projectRoot: string): string {
   if (!hooks) {
     throw new HookRefused("UNMEASURED", `git reported no hooks directory for ${projectRoot}`);
   }
-  return join(isAbsolute(hooks) ? hooks : join(projectRoot, hooks), "pre-commit");
+  return join(isAbsolute(hooks) ? hooks : join(projectRoot, hooks), hookName);
 }
 
 /**
@@ -216,9 +292,14 @@ export interface RegistryPattern {
 }
 
 export interface GeneratorOutput {
+  /** The hook's file name, from the generator's own declaration (#891). */
+  name: string;
   content: string;
   marker: string;
+  /** Empty for a hook that does not embed the secret registry. */
   patterns: RegistryPattern[];
+  /** The probes this checker knows for this hook; empty for one it does not. */
+  properties: GuardProperty[];
 }
 
 /**
@@ -265,10 +346,10 @@ export function missingPatternIds(installed: string, patterns: RegistryPattern[]
  * always agrees with the first: the comparison would pass while the generator
  * drifted, and no mutation of either could tell them apart.
  */
-export async function generatorHook(
+export async function generatorHooks(
   generatorRoot: string,
   projectRoot: string,
-): Promise<GeneratorOutput> {
+): Promise<GeneratorOutput[]> {
   const modulePath = join(generatorRoot, "lib", "scaffold", "steps.ts");
   let mod: any;
   try {
@@ -280,86 +361,105 @@ export async function generatorHook(
         `Pass --generator <rungate checkout> if this project is not the harness.`,
     );
   }
-  if (
-    typeof mod.preCommitHookScript !== "function" ||
-    typeof mod.PRE_COMMIT_MANAGED_MARKER !== "string"
-  ) {
+
+  // THE population, read from the generator (#891). A list here instead
+  // would be a second decider for "which hooks does the scaffold install",
+  // and it would agree with the generator right up until somebody added a
+  // hook — which is exactly how `pre-push` went unchecked from #397 to #891.
+  const declared = mod.GENERATED_HOOKS;
+  if (!Array.isArray(declared) || declared.length === 0) {
     throw new HookRefused(
       "UNMEASURED",
-      `${modulePath} does not export preCommitHookScript and PRE_COMMIT_MANAGED_MARKER, so there ` +
-        `is nothing to compare the installed hook against`,
+      `${modulePath} does not export a non-empty GENERATED_HOOKS, so there is no declaration ` +
+        `of which hooks the scaffold installs and nothing here can say what should have been ` +
+        `compared. An empty population is not a clean tree.`,
     );
   }
 
-  {
+  // #874, hoisted out of the per-hook loop: the registry is one module and
+  // the projection that reads it is one hook's, so loading it once and
+  // asking `carriesSecretScanner` keeps a single declaration of both.
+  const registryPath = join(generatorRoot, "lib", "secret-patterns.ts");
+  let registry: any;
+  try {
+    registry = await import(registryPath);
+  } catch (e) {
+    throw new HookRefused(
+      "UNMEASURED",
+      `could not load the secret registry at ${registryPath}: ${firstLine(e)}. Without it ` +
+        `nothing here can say WHICH patterns an installed hook is missing.`,
+    );
+  }
+  const allPatterns = registry.EMBEDDED_PATTERNS;
+  if (!Array.isArray(allPatterns) || allPatterns.length === 0) {
+    throw new HookRefused(
+      "UNMEASURED",
+      `${registryPath} does not export a non-empty EMBEDDED_PATTERNS, so the scanner the hook ` +
+        `is supposed to carry has no declaration to be compared against`,
+    );
+  }
+
+  const out: GeneratorOutput[] = [];
+  for (const hook of declared) {
+    const name = hook?.name;
+    if (typeof name !== "string" || name.length === 0 || typeof hook.script !== "function") {
+      throw new HookRefused(
+        "UNMEASURED",
+        `${modulePath} declares a hook with no name or no script function, so one of the ` +
+          `things the scaffold installs cannot be compared`,
+      );
+    }
     let content: string;
     try {
-      // Generated FOR THE PROJECT, and written nowhere (#610). The hook names
-      // one updater, chosen from what the project declares itself to be — so
-      // a scratch directory would produce the hook for an empty consumer and
-      // report every real checkout as stale. And a generator that could only
-      // answer by installing itself would make this check the thing it is
-      // checking, over a `.git/hooks/pre-commit` that is shared by every
-      // linked worktree of the repository at once.
-      content = mod.preCommitHookScript(projectRoot);
+      // Generated FOR THE PROJECT, and written nowhere (#610). The pre-commit
+      // hook names one updater, chosen from what the project declares itself
+      // to be — so a scratch directory would produce the hook for an empty
+      // consumer and report every real checkout as stale. And a generator
+      // that could only answer by installing itself would make this check the
+      // thing it is checking, over a `.git/hooks/` shared by every linked
+      // worktree of the repository at once.
+      content = hook.script(projectRoot);
     } catch (e) {
       throw new HookRefused(
         "UNMEASURED",
-        `the hook generator threw for ${projectRoot}: ${firstLine(e)}`,
+        `the ${name} generator threw for ${projectRoot}: ${firstLine(e)}`,
       );
     }
-    const marker: string = mod.PRE_COMMIT_MANAGED_MARKER;
-    if (!content.includes(marker)) {
+    const marker = hook.marker;
+    if (typeof marker !== "string" || marker.length === 0 || !content.includes(marker)) {
       throw new HookRefused(
         "UNMEASURED",
-        `the generator's own output does not carry PRE_COMMIT_MANAGED_MARKER, so no installed ` +
-          `hook could ever be recognised as managed`,
+        `the generator's own ${name} output does not carry its declared managed marker, so no ` +
+          `installed ${name} could ever be recognised as managed`,
       );
     }
-    const blind = GUARD_PROPERTIES.filter(p => !content.includes(p.probe));
+
+    const projection = projectionFor(name);
+    const blind = projection.properties.filter(p => !content.includes(p.probe));
     if (blind.length > 0) {
       throw new HookRefused(
         "UNMEASURED",
-        `the generator no longer contains ${blind.map(b => b.name).join(", ")}. The probe` +
-          `${blind.length > 1 ? "s" : ""} in GUARD_PROPERTIES ha${blind.length > 1 ? "ve" : "s"} ` +
+        `the ${name} generator no longer contains ${blind.map(b => b.name).join(", ")}. The probe` +
+          `${blind.length > 1 ? "s" : ""} in HOOK_PROJECTIONS ha${blind.length > 1 ? "ve" : "s"} ` +
           `gone stale, and a stale probe reports every installed hook as predating a fix it may ` +
           `well carry. Update the table in the same change as the generator.`,
       );
     }
 
-    // #874. Same module path discipline as the generator above: computed from
-    // `--generator`, never imported relatively, so the mutant still runs from
-    // a temp directory.
-    const registryPath = join(generatorRoot, "lib", "secret-patterns.ts");
-    let registry: any;
-    try {
-      registry = await import(registryPath);
-    } catch (e) {
-      throw new HookRefused(
-        "UNMEASURED",
-        `could not load the secret registry at ${registryPath}: ${firstLine(e)}. Without it ` +
-          `nothing here can say WHICH patterns an installed hook is missing.`,
-      );
-    }
-    const patterns = registry.EMBEDDED_PATTERNS;
-    if (!Array.isArray(patterns) || patterns.length === 0) {
-      throw new HookRefused(
-        "UNMEASURED",
-        `${registryPath} does not export a non-empty EMBEDDED_PATTERNS, so the scanner the hook ` +
-          `is supposed to carry has no declaration to be compared against`,
-      );
-    }
+    const patterns: RegistryPattern[] = projection.carriesSecretScanner ? allPatterns : [];
     const unreachable = patternsBlindToGenerator(content, patterns);
     if (unreachable.length > 0) {
       throw new HookRefused(
         "UNMEASURED",
-        `the generator does not interpolate ${unreachable.join(", ")} from the registry, so ` +
-          `every installed hook would be reported as missing ${unreachable.length > 1 ? "them" : "it"}. ` +
-          `A probe the generator cannot satisfy names the wrong thing on every run.`,
+        `the ${name} generator does not interpolate ${unreachable.join(", ")} from the registry, ` +
+          `so every installed hook would be reported as missing ` +
+          `${unreachable.length > 1 ? "them" : "it"}. A probe the generator cannot satisfy names ` +
+          `the wrong thing on every run.`,
       );
     }
-    return { content, marker, patterns };
+    out.push({ name, content, marker, patterns, properties: projection.properties });
   }
+  return out;
 }
 
 /**
@@ -376,10 +476,15 @@ export function currencyRefusal(
   marker: string,
   path: string,
   patterns: RegistryPattern[],
+  // No defaults (#891). A default of `"pre-commit"` here is a second
+  // statement about which hooks exist, in the one function that must not
+  // hold one — and it is the exact form the cheapest wrong fix takes.
+  hookName: string,
+  properties: GuardProperty[],
 ): string | null {
   if (installed === null) {
     return (
-      `no pre-commit hook is installed at ${path}. The generator is not the thing that runs on ` +
+      `no ${hookName} hook is installed at ${path}. The generator is not the thing that runs on ` +
       `your commits; the file is. Re-run \`bun bin/rungate.ts scaffold .\`, or this script with ` +
       `--install.`
     );
@@ -394,7 +499,7 @@ export function currencyRefusal(
   }
   if (installed === generated) return null;
 
-  const missing = GUARD_PROPERTIES.filter(p => !installed.includes(p.probe));
+  const missing = properties.filter(p => !installed.includes(p.probe));
   const how = `Re-run this script with --install, or \`bun bin/rungate.ts scaffold .\`.`;
 
   // The scanner first, and on its own sentence. A hook that predates a fix to
@@ -414,8 +519,12 @@ export function currencyRefusal(
   if (missing.length > 0) {
     return (
       `the hook installed at ${path} predates ${missing.map(m => m.name).join(", ")}. ` +
-      `${scanner}Every commit from this checkout is running the old behaviour, whatever the ` +
-      `generator says. ${how}`
+      // "Every commit" was right while this script only ever read one hook,
+      // and became wrong the moment it read two (#891): a pre-push refusal
+      // that talks about commits is a message an operator has to translate
+      // before acting on it.
+      `${scanner}Every ${hookName} from this checkout is running the old behaviour, whatever ` +
+      `the generator says. ${how}`
     );
   }
   if (absent.length > 0) {
@@ -573,28 +682,47 @@ if (import.meta.main) {
     const project = typeof args.project === "string" ? args.project : process.cwd();
     const generatorRoot = typeof args.generator === "string" ? args.generator : defaultGeneratorRoot();
 
-    const path = installedHookPath(project);
-    const { content, marker, patterns } = await generatorHook(generatorRoot, project);
+    const hooks = await generatorHooks(generatorRoot, project);
 
-    if (args.install === true) {
-      installHook(path, content);
-      console.log(`pre-commit installed, and current, at ${path}`);
-    } else {
-      // One decider, asked once. A success exits by falling off the end
-      // rather than through an explicit zero exit, so the test's "every exit
-      // goes through REFUSE_EXIT" scan has no exception to carve out — an
-      // exception is where a literal exit code hides. The scan reads this
-      // prose too, which is why the shape is not written out here.
+    // Every hook is read before any verdict is raised, so a stale FIRST
+    // hook cannot hide the state of the ones after it. The old shape could
+    // not have this problem because it only ever looked at one file, which
+    // is the problem (#891).
+    const refusals: string[] = [];
+    for (const hook of hooks) {
+      const path = installedHookPath(project, hook.name);
+      if (args.install === true) {
+        installHook(path, hook.content);
+        console.log(`${hook.name} installed, and current, at ${path}`);
+        continue;
+      }
+      // One decider, asked once per hook. A success exits by falling off
+      // the end rather than through an explicit zero exit, so the test's
+      // "every exit goes through REFUSE_EXIT" scan has no exception to
+      // carve out — an exception is where a literal exit code hides.
       //
-      // The staleness verdict is RAISED rather than printed here (#613), so
-      // there is exactly one position in this file that turns a refusal into
-      // a line of output. A second print site would be a second decider
-      // about the label, and a mutation of either would leave the other
-      // holding the case up.
-      const refusal = currencyRefusal(readIfPresent(path), content, marker, path, patterns);
-      if (refusal) throw new HookRefused("STALE", refusal);
-      console.log(`pre-commit is current at ${path}`);
+      // The staleness verdict is RAISED below rather than printed here
+      // (#613), so there is exactly one position in this file that turns a
+      // refusal into a line of output. A second print site would be a
+      // second decider about the label, and a mutation of either would
+      // leave the other holding the case up.
+      const refusal = currencyRefusal(
+        readIfPresent(path),
+        hook.content,
+        hook.marker,
+        path,
+        hook.patterns,
+        hook.name,
+        hook.properties,
+      );
+      if (refusal) refusals.push(refusal);
+      else console.log(`${hook.name} is current at ${path}`);
     }
+    // One raise, after the whole population has been read. A throw inside
+    // the loop would make the report depend on declaration order, and an
+    // operator who fixed the first hook would discover the second only on
+    // the next run.
+    if (refusals.length > 0) throw new HookRefused("STALE", refusals.join("\n  "));
   } catch (e) {
     // The class decides the label. `e.refusalClass` is set at the raise, by
     // the code that knows what it refused; nothing here re-derives it from

@@ -3471,72 +3471,92 @@ exit 0
 `;
 }
 
+/**
+ * One hook the scaffold installs (#891).
+ *
+ * `createGitHooks` used to name each hook in its own paragraph of imperative
+ * code, and `scripts/check-installed-hook-currency.ts` joined the literal
+ * `pre-commit` and compared that one file. Two positions deciding what the
+ * set of hooks is, with nothing comparing them — so the installed `pre-push`
+ * in this repository sat four months and one mutation battery behind its
+ * generator while the currency check printed a verdict about the other hook
+ * and exited 0.
+ *
+ * This is the declaration both of them read. A hook added here is installed
+ * by the loop below AND reported by the checker, without either being
+ * edited; that is the property `test/unit/hook-currency-population.test.ts`
+ * AC-5 plants a case for, and it is what the cheap repair — adding the
+ * string `"pre-push"` to the checker — does not buy.
+ *
+ * `script` takes the project root because the pre-commit hook's content
+ * depends on it (#610): the updater it names is resolved at generation time
+ * from what the project declares itself to be. A hook that does not care
+ * ignores the argument.
+ */
+export interface GeneratedHook {
+  /** The file name under the hooks directory, and the name every report uses. */
+  name: string;
+  /** The script this project should have, generated and written nowhere. */
+  script: (root: string) => string;
+  /** The line that marks an installed copy as one of ours. */
+  marker: string;
+  /** What the scaffold's action log calls it. */
+  describes: string;
+}
+
+export const GENERATED_HOOKS: ReadonlyArray<GeneratedHook> = [
+  {
+    name: "pre-commit",
+    script: preCommitHookScript,
+    marker: PRE_COMMIT_MANAGED_MARKER,
+    describes: "secret scan + PROJECT-STATE update",
+  },
+  {
+    // Checks the COMMITS BEING PUSHED, not the working tree (#85). The old
+    // hook ran conformity in the working tree, which is not what is being
+    // pushed: on 2026-10-05 that let a regression reach main, because
+    // HYGIENE-3's reference index recursed into `.claude/worktrees/` and
+    // every file looked referenced. A gate that inspects something other
+    // than what it is gating is not a weaker gate; it is a different gate
+    // wearing the name of the one you wanted.
+    //
+    // The script itself lives in `lib/scaffold/pre-push-hook.ts` (#397). As
+    // a template literal here it was unrunnable, and the thing nothing runs
+    // is the thing nothing checks.
+    name: "pre-push",
+    script: () => prePushHookScript(),
+    marker: PRE_PUSH_MANAGED_MARKER,
+    describes: "conformity check",
+  },
+];
+
 export function createGitHooks(root: string, actions: string[]): void {
   const hooksDir = join(root, ".git", "hooks");
   if (!existsSync(hooksDir)) return;
 
   const { chmodSync } = require("fs");
 
-  const preCommit = join(hooksDir, "pre-commit");
-  const existingPreCommit = existsSync(preCommit) ? readFileSync(preCommit, "utf-8") : null;
-  if (existingPreCommit !== null && !existingPreCommit.includes(PRE_COMMIT_MANAGED_MARKER)) {
-    actions.push("SKIP: .git/hooks/pre-commit (hand-written, not overwriting)");
-  } else {
-    writeFileSync(preCommit, preCommitHookScript(root));
-    chmodSync(preCommit, 0o755);
+  // A loop over the declaration, and not four paragraphs. The old shape also
+  // carried a `return` in the pre-push SKIP arm, which was harmless only
+  // because pre-push happened to be last — a third hook would have been
+  // silently skipped for every project with a hand-written pre-push.
+  for (const hook of GENERATED_HOOKS) {
+    const at = join(hooksDir, hook.name);
+    const existing = existsSync(at) ? readFileSync(at, "utf-8") : null;
+    // Overwrite only our own managed hook; a hook a human wrote is left
+    // alone. The old guard here was `if (!existsSync(prePush))`, so once a
+    // hook existed it was never updated again and every fix to it — this one
+    // included — would have reached nobody.
+    if (existing !== null && !existing.includes(hook.marker)) {
+      actions.push(`SKIP: .git/hooks/${hook.name} (hand-written, not overwriting)`);
+      continue;
+    }
+    writeFileSync(at, hook.script(root));
+    chmodSync(at, 0o755);
     actions.push(
-      existingPreCommit === null
-        ? "CREATED: .git/hooks/pre-commit (secret scan + PROJECT-STATE update)"
-        : "UPDATED: .git/hooks/pre-commit (secret scan + PROJECT-STATE update)",
+      `${existing === null ? "CREATED" : "UPDATED"}: .git/hooks/${hook.name} (${hook.describes})`,
     );
   }
-
-  const prePush = join(hooksDir, "pre-push");
-  const MANAGED_MARKER = PRE_PUSH_MANAGED_MARKER;
-
-  // `2>/dev/null` threw away the only output that said WHY conformity failed,
-  // leaving the developer a bare "fix before pushing" and no diagnosis. And the
-  // old guard was `if (!existsSync(prePush))`, so once a hook existed it was
-  // never updated again — every fix to this hook, including this one, would
-  // have reached nobody. Overwrite only our own managed hook; a hook a human
-  // wrote is left alone.
-  const existing = existsSync(prePush) ? readFileSync(prePush, "utf-8") : null;
-  if (existing !== null && !existing.includes(MANAGED_MARKER)) {
-    actions.push("SKIP: .git/hooks/pre-push (hand-written, not overwriting)");
-    return;
-  }
-
-  // Checks the COMMITS BEING PUSHED, not the working tree (#85).
-  //
-  // The old hook ran the conformity suite in the working tree, which is not
-  // what is being pushed. On 2026-10-05 that let a regression reach main:
-  // HYGIENE-3's reference index recursed into .claude/worktrees/, 39 full repo
-  // copies that exist locally and not in a clean checkout, so every file
-  // looked referenced. It passed before push and Gates went red on main. A
-  // gate that inspects something other than what it is gating is not a weaker
-  // gate; it is a different gate wearing the name of the one you wanted.
-  //
-  // On node_modules, which #85 left open: symlinking the working tree's is
-  // fast, and it is honest exactly while the pushed commit's lockfile matches
-  // the one those modules were installed from. Installing unconditionally is
-  // correct and slow enough that people disable the hook, which is worse than
-  // either. So compare the lockfiles and only pay for an install when they
-  // actually differ — the common push changes no dependencies and keeps the
-  // fast path, and the push that does change them cannot quietly test against
-  // the wrong ones.
-  //
-  // The script itself lives in lib/scaffold/pre-push-hook.ts (#397). As a
-  // template literal here it was unrunnable, and the thing nothing runs is
-  // the thing nothing checks: the lockfile comparison read the CHECKOUT's
-  // `bun.lock`, so a consumer that gitignores its lockfile could never take
-  // the fast path and could never pass. Over there it is one binding with one
-  // exit-code constant, and test/pre-push-hook.test.ts drives it against
-  // planted repositories.
-  writeFileSync(prePush, prePushHookScript());
-  chmodSync(prePush, 0o755);
-  actions.push(existing === null
-    ? "CREATED: .git/hooks/pre-push (conformity check)"
-    : "UPDATED: .git/hooks/pre-push (conformity check)");
 }
 
 /**
