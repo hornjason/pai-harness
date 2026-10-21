@@ -160,13 +160,28 @@ const BUILD_RESULT_SCHEMA = {
     testFiles: { type: 'array', items: { type: 'string' } },
     testOutput: { type: 'string' },
     findings: { type: 'array', items: { type: 'string' } },
-    worktreePath: { type: 'string' },
+    worktreePath: {
+      type: 'string',
+      description: 'The absolute directory you worked in — your pwd. A path, never a URL.',
+    },
     // The worktree's `origin` URL, beside the pwd it is a property of (#218).
     // ship.js runs in the Workflow sandbox and cannot spawn git, so the only
     // channel for a fact about the checkout is the agent that is standing in
     // it — the same channel `worktreePath` already uses. Absent is a refusal,
     // not a pass: see worktreeIdentity.
-    worktreeRepo: { type: 'string' },
+    //
+    // #872 — the description is not decoration. Run wf_8dfce214-9f4 printed
+    // the right URL as its first tool call and then filled this field with
+    // the PARENT CHECKOUT PATH, because at output time the model sees a bare
+    // key beside a `worktreePath` that makes a path salient, and the prose
+    // defining it is ~4,500 lines away in the prompt. Two honest readings of
+    // the name, and the schema declared neither. Same precedent as
+    // `filesChanged` above: state the format where it is read, and keep a
+    // refusal that says which mistake was made — a description is a request.
+    worktreeRepo: {
+      type: 'string',
+      description: 'Exactly what `git remote get-url origin` printed in worktreePath — "https://github.com/owner/name.git" or "git@github.com:owner/name". Never a filesystem path; worktreePath is the directory, this is the remote it points at.',
+    },
     // Which instruction the agent actually worked from (#180). The Workflow
     // runtime prepends a relayed user request to every prompt and tells the
     // agent it outranks the computed task; wf_17267830-401 followed that and
@@ -965,6 +980,34 @@ function terminalReason(status, extra) {
 // ──── TERMINAL-REASON-END ────
 
 /**
+ * What a retry of this run will and will not see (#889).
+ *
+ * Every terminal refusal this file produces tells the operator to change
+ * something and try again, and the cheap way to try again — resuming the run
+ * id — is the one that cannot see the change. Measured twice, on two
+ * different statuses: a resume returned a byte-identical refusal in 13 ms and
+ * 9 ms with ZERO subagent tokens, the second of them still reporting
+ * `received 'unmeasured'` against a state file that had been repaired through
+ * the documented channel and confirmed afterwards.
+ *
+ * The gate verdict is an agent result, and the runtime caches a completed
+ * `agent()` call on its prompt and options. ship.js cannot vary that key on
+ * the state file's contents because it cannot open the file (#69), and on a
+ * resume every value derived from a prior agent is itself the cached one — so
+ * the real fix is not available from inside this script (#903).
+ *
+ * Both halves or neither. "Start a fresh run" alone sends an operator to
+ * repair `workflow-state.json` and watch the new run archive the repair,
+ * because the work directory is keyed by slug.
+ */
+const RESUME_REPLAYS_NOTE =
+  'retrying with resumeFromRunId will REPLAY this verdict from cache — it returns in milliseconds, ' +
+  'spends no tokens, and re-reads neither workflow-state.json nor any remote state, so a fix made ' +
+  'since this run will not be seen. A fresh run is required. Note that a fresh run ARCHIVES the ' +
+  'current workflow-state.json into previous-run-<runId>/, so repair the source the state is built ' +
+  'from rather than the file, or re-apply the repair after the new run has written its own (#889).'
+
+/**
  * End the run on a terminal status, having first given the work a name.
  *
  * Every terminal failure other than SHIP_FAILED comes through here.
@@ -991,6 +1034,10 @@ async function terminalFailure(status, extra = {}) {
     // a field is read by the test that proves the exit took the step (#640).
     runBranchReading: restored.reading,
     runBranchRestore: restored.restoreOutcome,
+    // Its own field, never folded into `reason` (#889). The two answer
+    // different questions — why the run stopped, and what a retry will see —
+    // and #524 put the first one there.
+    retryGuidance: RESUME_REPLAYS_NOTE,
     workDir: WORK_DIR,
   }
 }
@@ -1317,6 +1364,32 @@ function redactRemote(remote) {
     .replace(KEY_SHAPED, '<redacted>')
 }
 
+/**
+ * Is this value a filesystem path rather than a remote? (#872)
+ *
+ * Only to SAY SO in a refusal — nothing branches on it, and `unreadable` is
+ * still `unreadable`. ABSOLUTE only: `owner/name` is itself two segments with
+ * a slash, so a rule that called anything slash-shaped a path would describe
+ * a near-miss slug as a directory.
+ *
+ * No regex literal: written as one it needs an escaped forward slash, and
+ * `stripStringsAndComments` mangles a `\/`-bearing literal in THIS file's
+ * context into something that does not parse, which fails #89's and #69's
+ * scans. Filed separately; here the fix is to not write the construct.
+ */
+function looksLikeFilesystemPath(reported) {
+  const s = String(reported).trim()
+  if (s.startsWith('/') || s.startsWith('~/') || s.startsWith('\\\\')) return true
+  // A Windows drive: one letter, a colon, then either separator.
+  const drive = s.charCodeAt(0) | 32
+  return drive >= 97 && drive <= 122 && s[1] === ':' && (s[2] === '\\' || s[2] === '/')
+}
+
+/** The clause both copies append, so the two cannot word it differently. */
+const PATH_SHAPED_CLAUSE =
+  ' — that value is a filesystem path, and worktreeRepo is the URL ' +
+  '`git remote get-url origin` printed, never a path (#872)'
+
 function worktreeIdentity(worktreePath, expectedRepo, reported) {
   const expected = repoSlug(expectedRepo)
   const where = worktreePath || '(no path reported)'
@@ -1340,7 +1413,7 @@ function worktreeIdentity(worktreePath, expectedRepo, reported) {
   if (!actual) {
     return {
       verdict: 'unreadable', actual: null, expected,
-      refusal: `${where} reported an origin this run cannot read as owner/name (${JSON.stringify(redactRemote(String(reported).trim()))}), so it cannot be compared against ${expected} (#218)`,
+      refusal: `${where} reported an origin this run cannot read as owner/name (${JSON.stringify(redactRemote(String(reported).trim()))}), so it cannot be compared against ${expected} (#218)${looksLikeFilesystemPath(reported) ? PATH_SHAPED_CLAUSE : ''}`,
     }
   }
   if (actual === expected) return { verdict: 'match', actual, expected, refusal: null }
@@ -2279,6 +2352,11 @@ async function shipFailed(phaseName, immediateReason, extra = {}) {
   return {
     status: 'SHIP_FAILED',
     reason: summary.reason,
+    // The same note the other funnel carries, from the same binding (#889).
+    // SHIP_FAILED is the status most likely to be retried — the work exists
+    // and only the ship step refused — so a note on the other funnel alone
+    // would miss the case an operator hits hardest.
+    retryGuidance: RESUME_REPLAYS_NOTE,
     // Kept beside the summary, not replaced by it. The caller that only wants
     // "why did it stop here" still has it, and the difference between the two
     // fields is itself the thing #252 is about.
@@ -5343,6 +5421,58 @@ function claimPermits(claims, key, claimant, wt) {
 }
 
 /**
+ * Where one worktree's reading of one path lives in the readings a caller
+ * supplies (#892).
+ *
+ * ONE binding, used by the audit and by every producer, because a key built
+ * twice is a lookup that can miss for a reason neither side can see — and a
+ * miss here is UNMEASURED, which refuses. The reading itself is NOT computed
+ * in this file: `contentComparison` in lib/claim-content.ts is the only thing
+ * in the tree that compares two copies, and the sandbox cannot import it
+ * (#69), so this block consumes what that binding produced rather than
+ * keeping a second digest of its own.
+ */
+function contentReadingKey(worktreePath, path) {
+  return `${String(worktreePath == null ? '' : worktreePath)}\n${String(path == null ? '' : path)}`
+}
+
+/**
+ * Whether a content reading says there is nothing to contest (#892).
+ *
+ * ONE declaration, on one line, because it is the site the #892 mutation
+ * targets: `test/collect-claim-content.test.ts` rebuilds this block with the
+ * comparison widened to `!== 'DIFFERENT'` and watches an unreadable
+ * comparison start collecting. That is the cheapest wrong fix available to
+ * anyone whose run is refused — permit everything nobody managed to measure —
+ * and it reinstates the #296 fail-open for exactly the paths no one could
+ * read.
+ *
+ * IDENTICAL and only IDENTICAL. An absent reading, a malformed one, and an
+ * explicit UNMEASURED are the same answer: the comparison did not happen, so
+ * it did not pass (`.claude/rules/config-access.md`).
+ */
+function contentPermits(reading) {
+  return !!reading && reading.reading === 'IDENTICAL'
+}
+
+/**
+ * Why a content reading did not permit the path, in the operator's words.
+ *
+ * The producing binding's OWN sentences are relayed — `unreadable[]` carries
+ * the exact path each read was attempted against and the reader's own reason.
+ * Re-deriving a reason here would be a second decider agreeing with the
+ * first, and "the file could not be read" is not actionable: installing a
+ * missing worktree fixes an ENOENT and does nothing for an EACCES.
+ */
+function contentUnreadableDetail(reading) {
+  const sides = (reading && Array.isArray(reading.unreadable) ? reading.unreadable : [])
+    .map(u => `${u && u.path ? u.path : 'an unnamed path'}: ${u && u.reason ? u.reason : 'no reason given'}`)
+  return sides.length > 0
+    ? sides.join('; ')
+    : 'no reading was supplied for this path, so the comparison was never attempted'
+}
+
+/**
  * Check what each agent actually changed against what it was told it owned.
  *
  * SC-413 of PARALLEL-AGENT-COORDINATION-SPEC.md: "Post-wave integration check
@@ -5384,13 +5514,23 @@ function claimPermits(claims, key, claimant, wt) {
  * whatever the claim says, because the collector would discard it anyway and
  * a silent discard is how work goes missing.
  *
+ * #892 adds the optional SECOND argument: `contentReadings`, a map from
+ * `contentReadingKey(worktree, path)` to a reading produced by
+ * `contentComparison` in lib/claim-content.ts. It is consulted from ONE arm —
+ * a path a single other worktree claims — because every arm above that one is
+ * a fact about the file or the run that no reading of the bytes can change. A
+ * caller that supplies nothing gets exactly the verdict it got before; a
+ * caller that supplies readings with no entry for a contested path gets
+ * UNMEASURED, which refuses, because an absent comparison is not a passing
+ * one.
+ *
  * #400 replaced `escapesWorktree` here with `pathRefusal` in the
  * SECURITY-HELPERS block. It was a second copy of two of that table's rules,
  * and a second copy survives any mutation of the first — so there is now one
  * decider, asked by staging and by this audit, and `refusal.boundary` is how
  * this site asks it the narrower question `escapesWorktree` used to answer.
  */
-function auditWorktreeClaims(results) {
+function auditWorktreeClaims(results, contentReadings) {
   const violations = []
   const candidates = []
   if (!Array.isArray(results)) return { violations, candidates }
@@ -5536,6 +5676,39 @@ function auditWorktreeClaims(results) {
       }
       if (claimPermits(claims, key, claimant, wt)) {
         kept.push(key)
+        continue
+      }
+      // #892: the SECOND reading, and the ONLY arm it is consulted from.
+      //
+      // Everything above this line is a fact about the FILE or about the RUN
+      // — a DA-owned write, a co-owned registry two worktrees wrote, a path
+      // that cannot be staged, two claimants, a run in which nobody issued a
+      // claim — and no reading of the bytes can make any of them collectable.
+      // This arm is the one place where the refusal was about a DIVERGENCE
+      // that may not exist: run wf_161c4e96-f01 refused a 24-agent result
+      // whose overlapping files were byte-identical across every branch.
+      //
+      // `claimant` is required, not merely checked: without one there is no
+      // second copy to compare against, so there is nothing a reading could
+      // say. And the reading is consulted only when the CALLER supplied one —
+      // a caller that omits it gets exactly the verdict it got before (#178,
+      // #296, #629 are all unchanged), which is what keeps this a reading
+      // rather than a relaxation.
+      if (contentReadings && claimant) {
+        const reading = contentReadings[contentReadingKey(wt, key)]
+        if (contentPermits(reading)) {
+          // Nothing is contested: both worktrees hold the same bytes, so
+          // collecting this copy discards nothing. The claimant's copy is
+          // still the one the collector writes for every other path.
+          kept.push(key)
+          continue
+        }
+        violations.push({
+          worktreePath: wt, path: key, claimant,
+          detail: reading && reading.reading === 'DIFFERENT'
+            ? `${wt} reported ${key}, which it did not claim, and the two copies are not the same bytes — ${claimant} claims that file and holds a different version of it (#892). Collection copies whole files, so taking either copy would discard the other's edits.`
+            : `${wt} reported ${key}, which it did not claim, and whether the two copies match is UNMEASURED (#892) — ${claimant} claims that file and the comparison could not be taken: ${contentUnreadableDetail(reading)}. A comparison that did not happen is not one that passed, so this refuses exactly as it did before the reading existed.`,
+        })
         continue
       }
       // Three arms, not two (#629). The `claimant` arm is unchanged and its
