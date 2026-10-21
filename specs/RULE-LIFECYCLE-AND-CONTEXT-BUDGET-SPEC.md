@@ -233,7 +233,7 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 
 - [ ] SC-1938: A scaffold run with zero human interaction produces a populated, scoped rule set
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
-- [ ] SC-1939: Promotion ranks on the mechanical evidence score — a candidate with no evidence never outranks one with evidence
+- [x] SC-1939: Promotion ranks on the mechanical evidence score — a candidate with no evidence never outranks one with evidence
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
 - [ ] SC-1940: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
 <!-- REVIEW: unmatched (rewriting as file-exists would assert only that reference/rejected-constraints.md exists, while the criterion coordinates a further claim (it is never re-promoted) — the file is mentioned, not what the criterion is about) -->

@@ -69,9 +69,21 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
     expect(out).toEqual([]);
   });
 
-  test("no SC is pre-checked — nothing here is implemented yet", () => {
-    const checked = [...specBody().matchAll(/^- \[[xX]\] SC-(\d+):/gm)].map(m => m[1]);
-    expect(checked).toEqual([]);
+  test("exactly the implemented criteria are checked, and no others", () => {
+    const checked = [...specBody().matchAll(/^- \[[xX]\] SC-(\d+):/gm)].map(m => Number(m[1]));
+    // Was `toEqual([])` while nothing was implemented. #544/#545 implement
+    // two, so the honest form is an enumeration rather than a count: a list
+    // keeps saying WHICH, and a count would be satisfied by any two.
+    //
+    // This list is what stops the next increment ticking a criterion by
+    // accident. It already caught one: the first draft of
+    // `test/failure-intake-promotion.test.ts` named three UNIMPLEMENTED ids
+    // in declaring positions — a test title, a parenthetical — inside the
+    // section whose whole subject was what the change does NOT cover, and
+    // `sync-sc-status.ts` duly ticked all three. Mentioning a criterion in
+    // order to disclaim it is still mentioning it
+    // (`.claude/rules/claiming-sc-coverage.md`).
+    expect(checked.sort((a, b) => a - b)).toEqual([1939]);
   });
 
   test("the spec states the two load-time facts the whole design rests on", () => {
@@ -104,7 +116,17 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: behaviour (unimplemented)", ()
   test.todo("SC-1936: a mined rule matching every file is reported as unscoped");
   test.todo("SC-1937: glob expansion stays within 1,000 patterns and 4 MiB per rule");
   test.todo("SC-1938: a zero-interaction scaffold run produces a populated, scoped rule set");
-  test.todo("SC-1939: promotion ranks on the mechanical evidence score");
+  // SC-1939 is implemented and covered in
+  // `test/failure-intake-promotion.test.ts` (#544/#545). Its todo is deleted
+  // rather than left beside the real cases: since #810 a todo declaration
+  // OUTRANKS a comment citing the same criterion, so leaving it here would
+  // keep the id reading as unimplemented while tests for it ran green — two
+  // positions disagreeing about one fact, with the wrong one winning.
+  //
+  // The todo below stays. #544/#545 implement the half of it that refuses to
+  // re-promote a vetoed hash, and NOT the half that writes the hash to
+  // `reference/rejected-constraints.md` — a file this repository does not
+  // have. Half a criterion is not a criterion.
   test.todo("SC-1940: a rejected rule's hash is recorded and never re-promoted");
   test.todo("SC-1941: a rule citing an unresolvable file:line is auto-retired");
   test.todo("SC-1942: eval-gated retention stays disabled until its measurement can fail");
