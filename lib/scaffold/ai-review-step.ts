@@ -2279,7 +2279,24 @@ export function buildReviewRunScript(): string {
     `because a pull request cannot enter a merge queue without first ` +
     `satisfying its required checks, so ai-review has already run on this ` +
     `head commit and reported on the pull request. The review on the pull ` +
-    `request is the measurement; this is not a second one.`;
+    `request is the measurement; this is not a second one. This check is ` +
+    `UNMEASURED on this ref, not a passing review of it.`;
+
+  // #939. The sentence above argues the pass is correct FOR THE HEAD COMMIT,
+  // and it is. It does not hold for the BATCH: a merge queue exists to test
+  // commits combined, and the combination is a tree no reviewer has seen. A
+  // consumer who set ${AI_REVIEW_REQUIRE_VAR} asked to be told that rather
+  // than passed, and before this the flag was inert on this event — the
+  // branch exited 0 above every refusal that reads it.
+  const queueRefusal =
+    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and this run is ` +
+    `a ${AI_REVIEW_QUEUE_EVENT} queue entry, which the review action refuses ` +
+    `as an unsupported event type, so no AI review ran on the combined ref ` +
+    `this queue built. The reviews on the pull requests measured each head ` +
+    `commit alone; the merged tree is a different input and nothing has read ` +
+    `it. Failing rather than reporting a green check for a review that never ` +
+    `happened. Unset ${AI_REVIEW_REQUIRE_VAR}, or keep ai-review a required ` +
+    `context on pull_request and accept the per-head review as sufficient.`;
 
   const absentRefusal =
     `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the ` +
@@ -2332,8 +2349,28 @@ ${AI_REVIEW_ANNOTATION_ESCAPE}
 # runner; an unset or unexpected value falls through to the readings below
 # rather than taking this branch, so a step that never received its
 # environment reports UNMEASURED instead of success.
+#
+# #939: the default above is a DEFAULT, and \${${AI_REVIEW_REQUIRE_VAR}} still
+# overrides it. The reasoning for passing covers the head commit, not the
+# batch — a queue builds a combined tree no reviewer has read — so a consumer
+# who asked to be failed on an unreviewed ref is failed on this one too. The
+# branch kept its position, above the readings, because none of them can hold
+# on this event: the action threw before producing an outcome, so moving the
+# branch below them would report \`pending\` or \`absent\` — a cause this job
+# did not measure — in place of the one it did. What moved is the flag check,
+# INTO the branch, which is the same decider the four readings below spell,
+# not a second one: same variable, same \`=\` against the same value, same
+# \${AI_REVIEW_REQUIRED_EXIT}.
+#
+# \`::warning\` and not \`::notice\`: nothing reviewed this ref, and this
+# file's standing convention is that an unmeasured result is named as
+# unmeasured rather than reported as clean.
 if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = ${AI_REVIEW_QUEUE_EVENT} ]; then
-  echo "::notice title=${AI_REVIEW_UNMEASURED_TITLE}::${queueEntry}"
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${queueEntry}"
+  if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
+    echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${queueRefusal}" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+  fi
   exit 0
 fi
 

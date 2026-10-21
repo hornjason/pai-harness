@@ -70,7 +70,10 @@ import { join } from "node:path";
 import {
   AI_REVIEW_BASE_REF_VAR,
   AI_REVIEW_EVENT_VAR,
+  AI_REVIEW_EXECUTION_FILE_VAR,
+  AI_REVIEW_FINDINGS_PATH_VAR,
   AI_REVIEW_JOB,
+  AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_REQUIRE_VALUE,
   AI_REVIEW_REQUIRE_VAR,
   AI_REVIEW_RESTORE_STEP_ID,
@@ -281,11 +284,28 @@ describe("#867 SC-E/SC-F: the report step reaches a measured verdict on a queue 
   });
 
   test("on merge_group the check passes, and SAYS it reviewed nothing", () => {
-    const r = run(buildReviewRunScript(), { ...PR_ENV, [AI_REVIEW_EVENT_VAR]: "merge_group" });
+    // #939 narrowed the subject of this case. It was written with `PR_ENV`,
+    // which sets ${AI_REVIEW_REQUIRE_VAR} — and so it asserted that a
+    // consumer who had explicitly asked to be failed on an unreviewed ref was
+    // passed anyway. That was the defect, asserted as the contract. The
+    // passing verdict is the DEFAULT, so the default is what this case now
+    // holds; the flagged consumer is `#939` below.
+    const r = run(buildReviewRunScript(), {
+      ...PR_ENV,
+      [AI_REVIEW_REQUIRE_VAR]: "",
+      [AI_REVIEW_EVENT_VAR]: "merge_group",
+    });
     expect(r.code, "a queue entry reds even with the trigger present — the queue never drains").toBe(0);
     // Loud, not silent. A bare `exit 0` would pass this file's exit-code
     // assertion while being exactly the quiet green check #630 refuses.
-    expect(r.out, "the run passed in silence").toContain("::notice");
+    // `::warning` and not `::notice` since #939: nothing read this ref, and an
+    // unmeasured result is named as unmeasured rather than reported as clean.
+    expect(r.out, "the run passed in silence").toContain("::warning");
+    expect(
+      r.out,
+      "the queue entry is still annotated `::notice` as well — an unmeasured ref " +
+        "reported at two severities at once, and GitHub shows the quieter one",
+    ).not.toContain("::notice");
     expect(r.out).toContain("merge_group");
   });
 
@@ -305,5 +325,204 @@ describe("#867 SC-E/SC-F: the report step reaches a measured verdict on a queue 
     // receive its environment would otherwise report a passing review.
     const r = run(buildReviewRunScript(), PR_ENV);
     expect(r.code, "an unset event name took the passing branch").not.toBe(0);
+  });
+});
+
+/**
+ * #939: the `merge_group` short-circuit sat ABOVE every
+ * `RUNGATE_REQUIRE_AI_REVIEW` refusal in the same script, so the one knob
+ * whose entire purpose is "refuse rather than pass when the review did not
+ * happen" was inert on the one event where the review is KNOWN not to have
+ * run. A guard that cannot fail.
+ *
+ * The fix is not the one the issue proposes literally. The issue says move
+ * the branch below the refusals; measured, that is worse. On `merge_group`
+ * the action throws `Unsupported event type` before producing an outcome, so
+ * none of the readings below the branch can hold: a queue entry falling
+ * through reaches the `pending` tail and is refused with a message that
+ * names a cause this job did not measure ("the review action has not
+ * reported yet"), losing the one cause it did measure. The branch keeps its
+ * position; the flag check moved INTO it.
+ *
+ * ## Not a second decider
+ *
+ * "Has this consumer asked to be failed on an unreviewed ref" is spelled four
+ * times in `buildReviewRunScript` already, once per reading. This is the
+ * fifth spelling of the SAME decider, not a second one: same variable, same
+ * `=` against the same `AI_REVIEW_REQUIRE_VALUE`, same
+ * `AI_REVIEW_REQUIRED_EXIT`. `#939 fence` below is what keeps that true — it
+ * runs every no-verdict route the script has through one table, so a sixth
+ * branch added above without the check reds here rather than reintroducing
+ * this issue.
+ *
+ * ## Routed through the constant, and which case reds on a literal
+ *
+ * The refusal emits `exit ${AI_REVIEW_REQUIRED_EXIT}`, not `exit 1`. A
+ * literal would survive `test/ai-review-scaffold.test.ts`'s mutant — which
+ * rewrites the constant to 0 — and the refusal case would then pass having
+ * witnessed nothing. The case that reds on a literal is **AC-6b "no refusal
+ * inlines a non-zero exit literal"** in that file: it reads every `exit` out
+ * of the module source and requires `0` or the interpolated constant.
+ * Measured on this branch by writing `exit 1` into the new refusal: AC-6b
+ * failed with ``exit 1` bypasses AI_REVIEW_REQUIRED_EXIT`, and the three
+ * cases below stayed green — which is exactly why they delegate to it rather
+ * than restating it with a sixth local mutant harness. The exit assertions
+ * here read `AI_REVIEW_REQUIRED_EXIT` rather than the number `1`, so they
+ * follow the constant if it ever changes.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * - **A real merge queue.** No merge queue exists on this account (#770), so
+ *   `merge_group` cannot fire on any of the three repositories. Everything
+ *   here runs the generated script directly with the event name set, which
+ *   proves the script's behaviour and NOT that GitHub reaches it. #867's
+ *   SC-G remains open and this does not close it. The escape is asserted one
+ *   layer out instead: "the report step is handed the event name" above
+ *   reads the committed workflow's `env:` binding to `github.event_name`.
+ * - **`AI_REVIEW_MODE=none`.** That route exits 0 here regardless of the
+ *   flag, and the fence below excludes it. It is NOT an instance of this
+ *   defect: the refusal for a missing credential belongs to the auth step,
+ *   which refuses before this step runs
+ *   (`test/ai-review-scaffold.test.ts` AC-6, "the string true with no
+ *   credential exits non-zero"). Re-asserting it here would be the second
+ *   decider this file is about. That the auth step's refusal actually stops
+ *   the job — rather than being skipped past — is asserted by "the job
+ *   carries no `if:`" above.
+ * - **The batch argument itself.** The refusal message claims a merge queue
+ *   builds a tree no reviewer has read. That is reasoning about GitHub's
+ *   semantics, not a measurement, and nothing here tests it.
+ * - **Whether a consumer SHOULD set the flag.** Unchanged default: with the
+ *   flag unset the queue drains, which is the case above.
+ */
+describe("#939: the merge_group pass is a default, and the fail-closed flag overrides it", () => {
+  const QUEUE_ENV = {
+    AI_REVIEW_MODE: "vertex",
+    // What the action leaves behind on this event: it threw on the unsupported
+    // event name before it could run, so the step is a failure with no
+    // findings payload and no execution file.
+    AI_REVIEW_ACTION_OUTCOME: "failure",
+    [AI_REVIEW_EVENT_VAR]: "merge_group",
+  };
+
+  test("#939: a queue entry refuses when RUNGATE_REQUIRE_AI_REVIEW is set", () => {
+    const r = run(buildReviewRunScript(), {
+      ...QUEUE_ENV,
+      [AI_REVIEW_REQUIRE_VAR]: AI_REVIEW_REQUIRE_VALUE,
+    });
+
+    // Reds on the tree this was written against: the branch exited 0 with an
+    // empty stderr whatever the flag held.
+    expect(
+      r.code,
+      `the fail-closed flag is still inert on ${"merge_group"}\n${r.out}${r.err}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(r.err, "the refusal was not annotated as an error").toContain("::error");
+
+    // Reds on the cheapest wrong fix — deleting the branch, or moving it
+    // below the readings — which refuses with the generic `pending` tail. The
+    // exit code is identical under that fix, so the code assertion above
+    // cannot see it; only the message can. It must name the event it refused
+    // on and the knob that made it refuse.
+    expect(r.err, "the refusal does not say which event it refused on").toContain("merge_group");
+    expect(r.err, "the refusal does not name the knob that caused it").toContain(AI_REVIEW_REQUIRE_VAR);
+    expect(
+      r.err,
+      "the refusal reports a cause this job did not measure — the queue entry " +
+        "fell through to a reading rather than being refused by its own branch",
+    ).not.toContain("has not reported");
+  });
+
+  test("#939: the refusal is NARROW — any other value of the flag still drains the queue", () => {
+    // The control, and the one that matters most here. A merge queue that
+    // reds on every entry never drains, and the repair for that is to stop
+    // requiring the check — strictly worse than the fail-open this fixes. So
+    // the refusal must key on exactly the same string the other four
+    // readings do. Each row reds on a looser comparison: `!= false` reds on
+    // `false`, a case-insensitive match reds on `TRUE`, a truthiness test
+    // reds on `1` and `yes`, an unquoted/trimmed compare reds on `true `.
+    const script = buildReviewRunScript();
+    for (const [label, value] of [
+      ["unset", undefined],
+      ["empty", ""],
+      ["TRUE", "TRUE"],
+      ["True", "True"],
+      ["1", "1"],
+      ["yes", "yes"],
+      ["false", "false"],
+      ["true with a trailing space", "true "],
+    ] as Array<[string, string | undefined]>) {
+      const r = run(script, {
+        ...QUEUE_ENV,
+        ...(value === undefined ? {} : { [AI_REVIEW_REQUIRE_VAR]: value }),
+      });
+      expect(r.code, `${AI_REVIEW_REQUIRE_VAR}=${label} hung the merge queue\n${r.err}`).toBe(0);
+    }
+  });
+
+  test("#939 fence: no route through the report step exits 0 while the flag is set", () => {
+    // Today only the first row reds without the fix; the rest already
+    // refused, so they are instrument control — they prove the table reaches
+    // each route rather than testing one route five times. The fence is for
+    // the NEXT branch: a short-circuit added above these, for any future
+    // event the action cannot parse, reds here instead of shipping #939
+    // again.
+    //
+    // `AI_REVIEW_MODE=none` is deliberately absent — see WHAT THIS DOES NOT
+    // COVER. Every row below leaves the job with no verdict on the ref.
+    const script = buildReviewRunScript();
+    const dir = mkdtempSync(join(tmpdir(), "rg-939-"));
+    try {
+      const findings = join(dir, "findings.json");
+      writeFileSync(findings, '{"findings":[]}\n');
+      const unreadable = join(dir, "no-such-execution-file.json");
+
+      const routes: Array<[string, Record<string, string>]> = [
+        ["a merge_group queue entry", QUEUE_ENV],
+        ["no mode output at all", { [AI_REVIEW_EVENT_VAR]: "pull_request" }],
+        [
+          "the action failed",
+          { [AI_REVIEW_EVENT_VAR]: "pull_request", AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "failure" },
+        ],
+        [
+          "the action succeeded and wrote no payload",
+          { [AI_REVIEW_EVENT_VAR]: "pull_request", AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" },
+        ],
+        [
+          "the action succeeded, wrote no payload, and named an unreadable execution file",
+          {
+            [AI_REVIEW_EVENT_VAR]: "pull_request",
+            AI_REVIEW_MODE: "vertex",
+            AI_REVIEW_ACTION_OUTCOME: "success",
+            [AI_REVIEW_EXECUTION_FILE_VAR]: unreadable,
+          },
+        ],
+        [
+          "the action wrote a findings payload nobody adjudicated",
+          {
+            [AI_REVIEW_EVENT_VAR]: "pull_request",
+            AI_REVIEW_MODE: "vertex",
+            AI_REVIEW_ACTION_OUTCOME: "success",
+            [AI_REVIEW_FINDINGS_PATH_VAR]: findings,
+          },
+        ],
+      ];
+
+      // The coverage control. Two assertions that both read an empty list
+      // agree with each other and with nothing else; this is what reds if a
+      // rewrite empties the table.
+      expect(routes.length, "the route table is empty, so this case measured nothing").toBe(6);
+
+      for (const [label, env] of routes) {
+        const r = runIn(dir, script, { ...env, [AI_REVIEW_REQUIRE_VAR]: AI_REVIEW_REQUIRE_VALUE });
+        expect(
+          r.code,
+          `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and ${label} ` +
+            `exited 0 — a green check for a ref nothing reviewed\n${r.out}${r.err}`,
+        ).toBe(AI_REVIEW_REQUIRED_EXIT);
+        expect(r.err, `${label} refused without saying so on stderr`).toContain("::error");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

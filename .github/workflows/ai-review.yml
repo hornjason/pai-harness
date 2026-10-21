@@ -1,4 +1,4 @@
-# generated-sha: 7519397571d10280
+# generated-sha: 3858a958f734e9aa
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -549,8 +549,28 @@ jobs:
           # runner; an unset or unexpected value falls through to the readings below
           # rather than taking this branch, so a step that never received its
           # environment reports UNMEASURED instead of success.
+          #
+          # #939: the default above is a DEFAULT, and ${RUNGATE_REQUIRE_AI_REVIEW} still
+          # overrides it. The reasoning for passing covers the head commit, not the
+          # batch — a queue builds a combined tree no reviewer has read — so a consumer
+          # who asked to be failed on an unreviewed ref is failed on this one too. The
+          # branch kept its position, above the readings, because none of them can hold
+          # on this event: the action threw before producing an outcome, so moving the
+          # branch below them would report `pending` or `absent` — a cause this job
+          # did not measure — in place of the one it did. What moved is the flag check,
+          # INTO the branch, which is the same decider the four readings below spell,
+          # not a second one: same variable, same `=` against the same value, same
+          # ${AI_REVIEW_REQUIRED_EXIT}.
+          #
+          # `::warning` and not `::notice`: nothing reviewed this ref, and this
+          # file's standing convention is that an unmeasured result is named as
+          # unmeasured rather than reported as clean.
           if [ "${AI_REVIEW_EVENT:-}" = merge_group ]; then
-            echo "::notice title=AI review UNMEASURED::This run is a merge_group queue entry, and no AI review ran on it: the review action does not support the merge_group event and refuses it as an unsupported event type. The check passes because a pull request cannot enter a merge queue without first satisfying its required checks, so ai-review has already run on this head commit and reported on the pull request. The review on the pull request is the measurement; this is not a second one."
+            echo "::warning title=AI review UNMEASURED::This run is a merge_group queue entry, and no AI review ran on it: the review action does not support the merge_group event and refuses it as an unsupported event type. The check passes because a pull request cannot enter a merge queue without first satisfying its required checks, so ai-review has already run on this head commit and reported on the pull request. The review on the pull request is the measurement; this is not a second one. This check is UNMEASURED on this ref, not a passing review of it."
+            if [ "${RUNGATE_REQUIRE_AI_REVIEW:-}" = "true" ]; then
+              echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and this run is a merge_group queue entry, which the review action refuses as an unsupported event type, so no AI review ran on the combined ref this queue built. The reviews on the pull requests measured each head commit alone; the merged tree is a different input and nothing has read it. Failing rather than reporting a green check for a review that never happened. Unset RUNGATE_REQUIRE_AI_REVIEW, or keep ai-review a required context on pull_request and accept the per-head review as sufficient." >&2
+              exit 1
+            fi
             exit 0
           fi
 
