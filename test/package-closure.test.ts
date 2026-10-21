@@ -138,6 +138,7 @@ import { describe, expect, test, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
+import { remedyMessage } from "../lib/check-remedy";
 import {
   packageClosureViolations,
   publishedFiles,
@@ -216,7 +217,15 @@ describe("#446 CLOSURE-1: this package's own tarball is closed", () => {
     // the list by question gives each an input only it can reach, which is the
     // second remedy in `.claude/rules/checks-must-be-able-to-fail.md`.
     const imports = packageClosureViolations(ROOT, published).filter(v => !v.includes("at runtime"));
-    expect(imports, imports.join("\n")).toEqual([]);
+    expect(
+      imports,
+      remedyMessage({
+        root: ROOT,
+        check: "CLOSURE-1",
+        violations: imports,
+        fix: "add the imported path to `files[]` in package.json, or stop importing it from a published file.",
+      }),
+    ).toEqual([]);
   });
 });
 
@@ -377,7 +386,18 @@ describe("#484 CLOSURE-8: the live tree is closed for reads as well as imports",
   test("every runtime read in a published file resolves into the tarball", () => {
     const published = publishedFiles(ROOT, readPackageFiles(ROOT));
     const reads = packageClosureViolations(ROOT, published).filter(v => v.includes("at runtime"));
-    expect(reads, reads.join("\n")).toEqual([]);
+    expect(
+      reads,
+      remedyMessage({
+        root: ROOT,
+        check: "CLOSURE-8",
+        violations: reads,
+        fix:
+          "add the read path to `files[]` in package.json. A `join(import.meta.dir, \"..\")` " +
+          "read is the same closure property as an import, expressed in different syntax — " +
+          "which is why this one is missed.",
+      }),
+    ).toEqual([]);
   });
 
   test("a directory target is published when the files under it are", () => {

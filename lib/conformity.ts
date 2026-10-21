@@ -34,6 +34,7 @@ import {
 } from "./behavioral-cache";
 import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
+import { remedyMessage } from "./check-remedy";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
 import { fallowAvailable } from "./fallow-availability";
@@ -1696,12 +1697,35 @@ export function runSpecDrift(
       }
 
       const newlyOrphaned = orphaned.filter(s => !untestedAllowlist.includes(s));
-      expect(newlyOrphaned).toEqual([]);
+      expect(
+        newlyOrphaned,
+        remedyMessage({
+          root,
+          check: "DRIFT-2",
+          violations: newlyOrphaned,
+          fix:
+            "name the spec in a test — a `test(\"SC-N: ...\")` title counts as a declaration. " +
+            "Do NOT add it to .claude/conformity-allowlists.json: DRIFT-3 diffs that file " +
+            "against origin/main and fails any array that grew, so the obvious escape hatch " +
+            "turns one red check into two.",
+        }),
+      ).toEqual([]);
 
       const staleAllowlist = untestedAllowlist.filter(
         s => testable.includes(s) && !orphaned.includes(s),
       );
-      expect(staleAllowlist).toEqual([]);
+      expect(
+        staleAllowlist,
+        remedyMessage({
+          root,
+          check: "DRIFT-2 (stale exemption)",
+          violations: staleAllowlist,
+          fix:
+            "these specs now HAVE a referencing test, so delete their entries from " +
+            "untestedSpecs in .claude/conformity-allowlists.json. Shrinking the list is " +
+            "always allowed; only growth is refused.",
+        }),
+      ).toEqual([]);
     });
 
     test("DRIFT-3: the exemption lists did not GROW", () => {
@@ -1916,10 +1940,34 @@ export function runDocHygiene(
       }
 
       const newOrphans = orphans.filter(o => !orphanAllowlist.includes(o));
-      expect(newOrphans).toEqual([]);
+      expect(
+        newOrphans,
+        remedyMessage({
+          root,
+          check: "HYGIENE-3",
+          violations: newOrphans,
+          fix:
+            "make something genuinely reference the file — a routing row, a spec, an import. " +
+            "Do NOT add it to .claude/conformity-allowlists.json: DRIFT-3 diffs that file " +
+            "against origin/main and fails any array that grew, so the obvious escape hatch " +
+            "turns one red check into two. If the file is history rather than guidance, " +
+            "move it under reference/ instead.",
+        }),
+      ).toEqual([]);
 
       const staleAllowlist = orphanAllowlist.filter(o => !orphans.includes(o));
-      expect(staleAllowlist).toEqual([]);
+      expect(
+        staleAllowlist,
+        remedyMessage({
+          root,
+          check: "HYGIENE-3 (stale exemption)",
+          violations: staleAllowlist,
+          fix:
+            "these files are now referenced, so delete their entries from orphanFiles in " +
+            ".claude/conformity-allowlists.json. Shrinking the list is always allowed; " +
+            "only growth is refused.",
+        }),
+      ).toEqual([]);
     });
 
     test("HYGIENE-4: Every spec appears in the specs routing table", () => {
@@ -1937,7 +1985,18 @@ export function runDocHygiene(
         // SPEC-TEMPLATE.md documents how to write a spec; it governs nothing.
         .filter(f => f !== "SPEC-TEMPLATE.md");
       const unlisted = specFiles.filter(f => !routing.includes(f));
-      expect(unlisted).toEqual([]);
+      expect(
+        unlisted,
+        remedyMessage({
+          root,
+          check: "HYGIENE-4",
+          violations: unlisted,
+          fix:
+            "add a row naming each file to .claude/rules/specs-routing.md — the table this " +
+            "check reads. A spec with no `- [ ]` criteria needs its row to say so explicitly. " +
+            "There is no exemption list for this one.",
+        }),
+      ).toEqual([]);
     });
 
     test("HYGIENE-5: reference/ contents not in active routing", () => {
