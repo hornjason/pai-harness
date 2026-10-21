@@ -15,13 +15,19 @@
  * aditi) — true of NOTHING until #1000, because the config that detection
  * reads was in no commit; see `hooks/lib/agentDetection.ts`.
  *
- * Issue: #361, #343, #1000
+ * The worktree it acts on comes out of an agent-authored reply, so it is
+ * CONFINED and git runs ISOLATED — `lib/agent-worktree.ts`,
+ * `lib/git-isolation.ts` (#1001).
+ *
+ * Issue: #361, #343, #1000, #1001
  */
 
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { findWorkflowForIssue, extractIssueNumber } from './lib/findWorkflow'
+import { agentWorktreesBase, confinedWorktreePath } from '../lib/agent-worktree'
+import { gitIsolatedArgs, gitIsolatedEnv } from '../lib/git-isolation'
 import { WORK_DIR, SIGNAL_DIR } from './lib/paths'
 import { parseHookInput } from './lib/parseStdin';
 import { detectAgentOrRecord } from './lib/agentDetection'
@@ -41,7 +47,6 @@ async function main() {
 
   if (toolInput.isolation !== 'worktree') process.exit(0)
 
-  // Extract worktree path from response
   const resp = payload.tool_response
   // `tool_response.content` is declared `unknown` — the payload is whatever the
   // tool emitted. Only a string is regex-able; anything else means no path here.
@@ -49,27 +54,28 @@ async function main() {
   const respText = typeof respContent === 'string' ? respContent : ''
   let worktreePath: string | null = null
 
-  // Try regex on response text
+  // A regex match on an agent-authored reply is a CANDIDATE, not a
+  // confinement (#1001) — both branches resolve it against the base.
   const pathMatch = respText.match(/(?:\/[^\s]*worktrees\/agent-[a-f0-9]+[^\s]*)/i)
   if (pathMatch) {
-    worktreePath = pathMatch[0]
+    worktreePath = confinedWorktreePath(pathMatch[0])
   }
 
   // Fallback: scan worktrees directory for most recently modified
   if (!worktreePath) {
-    const wtBase = join(process.env.HOME!, '.claude', '.claude', 'worktrees')
+    const wtBase = agentWorktreesBase()
     try {
       const entries = readdirSync(wtBase, { withFileTypes: true })
         .filter(e => e.isDirectory() && e.name.startsWith('agent-'))
         .map(e => ({ name: e.name, mtime: statSync(join(wtBase, e.name)).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime)
-      if (entries.length > 0) {
-        worktreePath = join(wtBase, entries[0].name)
-      }
+      // Confined too: the entry is a name, but the directory it names may
+      // be a symlink out of the base.
+      if (entries.length > 0) worktreePath = confinedWorktreePath(join(wtBase, entries[0].name))
     } catch {}
   }
 
-  if (!worktreePath || !existsSync(worktreePath)) process.exit(0)
+  if (!worktreePath) process.exit(0)  // unconfined, or gone: realpath already proved existence
 
   // Resolve slug early — needed by both UI detection and uncommitted-changes tripwire
   const issueNum = extractIssueNumber(toolInput.prompt || '')
@@ -80,13 +86,12 @@ async function main() {
   const uiExtensions = /\.(tsx|jsx|css|scss|html|svg|less)$/i
   let uiFiles: string[] = []
   try {
-    // ARGV, never a shell string — `worktreePath` is a tool-call value and `$(…)` runs inside the double quotes this replaced (#971 SC-4, test/hook-shell-injection.test.ts). `2>/dev/null` is now `stdio`.
-    const diffOutput = execFileSync('git', ['-C', worktreePath, 'diff', '--name-only', 'main'], {
-      encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    // ARGV, never a shell string (#971 SC-4), and ISOLATED: argv does
+    // nothing about config keys git EXECUTES (#1001, lib/git-isolation.ts).
+    const diffOutput = execFileSync('git', gitIsolatedArgs(['-C', worktreePath, 'diff', '--name-only', 'main']), {
+      encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], env: gitIsolatedEnv(),
     }).trim()
-    if (diffOutput) {
-      uiFiles = diffOutput.split('\n').filter(f => uiExtensions.test(f))
-    }
+    if (diffOutput) uiFiles = diffOutput.split('\n').filter(f => uiExtensions.test(f))
   } catch {}
 
   if (uiFiles.length > 0) {
@@ -108,22 +113,18 @@ async function main() {
   // ── Uncommitted-changes detection ──
   let uncommittedStatus = ''
   try {
-    uncommittedStatus = execFileSync('git', ['-C', worktreePath, 'status', '--porcelain'], {
-      timeout: 5000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+    uncommittedStatus = execFileSync('git', gitIsolatedArgs(['-C', worktreePath, 'status', '--porcelain']), {
+      timeout: 5000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], env: gitIsolatedEnv(),
     }).trim()
   } catch {
     process.exit(0)
   }
 
-  // No uncommitted changes — all clean
   if (!uncommittedStatus) process.exit(0)
 
   const uncommittedFiles = uncommittedStatus.split('\n').filter(l => l.trim()).length
 
-  // Write tripwire signal
-  if (!existsSync(SIGNAL_DIR)) {
-    mkdirSync(SIGNAL_DIR, { recursive: true })
-  }
+  if (!existsSync(SIGNAL_DIR)) mkdirSync(SIGNAL_DIR, { recursive: true })
 
   const signalName = `agent-uncommitted-${agent.key}-${slug.replace(/\//g, '-')}`
   const signalPath = join(SIGNAL_DIR, signalName)
@@ -138,7 +139,6 @@ async function main() {
   }
 
   await Bun.write(signalPath, JSON.stringify(signal, null, 2))
-
   console.error(`[commit-enforcement] ${uncommittedFiles} uncommitted files by ${agent.key} in ${worktreePath}`)
   console.log(`\n<system-reminder>${agent.name} UNCOMMITTED CHANGES: ${agent.name} left ${uncommittedFiles} uncommitted file(s) in worktree ${worktreePath}. Review and commit before proceeding. Signal written to ${signalPath}.</system-reminder>`)
 
