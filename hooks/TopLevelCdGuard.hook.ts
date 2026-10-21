@@ -2,9 +2,12 @@
 /**
  * TopLevelCdGuard.hook.ts — PreToolUse on Bash
  *
- * SC-368 (HOOK-ARCHITECTURE-SPEC): the decision lives in lib/, not here
  * SC-370 (HOOK-ARCHITECTURE-SPEC): hook SC traceability
  * SC-371 (HOOK-ARCHITECTURE-SPEC): no hook exceeds 150 lines
+ *
+ * The decision lives in lib/top-level-cd.ts and not here — hooks are thin
+ * triggers (HOOK-ARCHITECTURE-SPEC), the same shape as VerifyPhaseLock over
+ * lib/issue-create-override.ts and BashToolGuard over lib/bash-file-read.ts.
  *
  * Refuses a Bash command whose TOP LEVEL begins with or chains to `cd`.
  *

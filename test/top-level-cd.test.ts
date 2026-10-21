@@ -9,7 +9,8 @@
  * agent that wrote this file, three times in its first five Bash calls.
  *
  * `lib/top-level-cd.ts` holds the one decider; `hooks/TopLevelCdGuard.hook.ts`
- * is the thin trigger (SC-368, SC-370, SC-371 — HOOK-ARCHITECTURE-SPEC.md).
+ * is the thin trigger. The hook is DELIBERATELY NOT REGISTERED — see its
+ * header and the PR for #992.
  *
  * The six AC rows below are the issue's own table, verbatim. Everything after
  * them is either an extra witness or a declared gap, and the gaps are asserted

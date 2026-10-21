@@ -49,6 +49,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | TestSuiteRelease | TestSuiteRelease.hook.ts | 42 | SC-370, SC-516, SC-517, SC-518, SC-625 | Ideal thin trigger — logic in lib/test-suite-lock.ts. **Registered nowhere (#910)** |
 | BashToolGuard | BashToolGuard.hook.ts | 82 | SC-457, SC-370 | Thin trigger — COMP-7 enforcement. Row added by #898's census, which is what first noticed it had none |
 | ProjectStateSync | ProjectStateSync.hook.ts | 43 | SC-370, SC-371 | Thin trigger — delegates to update-project-state.ts. **Registered nowhere (#910)** |
+| TopLevelCdGuard | TopLevelCdGuard.hook.ts | 51 | SC-370, SC-371 | Ideal thin trigger — the parse lives in lib/top-level-cd.ts. **Deliberately registered nowhere pending sign-off (#992)**: registering it changes behaviour for every session on this machine, and it would have refused 36% of the Bash calls this machine made on 2026-10-21 — every one of them a real top-level `cd`. See the PR for the measurement |
 
 ## The full-suite budget is keyed on a worker, not a session (#239)
 
