@@ -978,13 +978,8 @@ export const AI_REVIEW_RUNTIME_INERT_PATHS: readonly string[] = [
   ".claude/.last-cleanup",
   // Which models this account may call. Read as data, never executed.
   ".claude/cache",
-  // Session transcripts. A planted one is read, not run.
-  ".claude/projects",
   // npm's debug logs.
   ".npm/_logs",
-  // bun's package cache. NOT `.bun`, which also holds `bin/` — the shim
-  // directory on PATH, which is as exec-capable as a hook.
-  ".bun/install/cache",
 ];
 
 /**
@@ -1020,6 +1015,31 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
   // and "a reviewer must not be able to drop one here unseen" are both true.
   // Naming it is the only reading that satisfies the second.
   ".claude/sessions",
+  // CONSUMED by the next run, which is why these are not inert (#947).
+  //
+  // Both were INERT on the argument that a transcript is "read, not run".
+  // The measurement in AC-19 is what moved them: a plant at an INERT entry
+  // is exit 0 and SILENT, and these two are read back — `.bun/install/cache`
+  // by the next `bun install`, `.claude/projects` as model context. Silence
+  // is only a true answer where nothing consumes the directory.
+  //
+  // Narrowing the `/*` glob to `*.npm` and `*.jsonl` was the other option
+  // and is backwards: the plant that matters must carry those exact shapes
+  // to be consumed at all, so the narrow glob exempts the dangerous file and
+  // refuses `evil.sh`, which nothing executes. CONFIG names every plant.
+  ".bun/install/cache",
+  ".claude/projects",
+  // The CLI's self-update download (#949). Same writer as `.claude/sessions`
+  // — the reviewer's own runtime — so it recurs. A `.zst` that a later start
+  // may unpack and run is not a log, and the filename carries a version, so
+  // there is no exact path to name instead.
+  ".claude/downloads",
+  // Written by `actions/checkout` on every job, which sets and unsets
+  // `http.https://github.com/.extraheader` and `safe.directory` (#949).
+  // Trust-bearing in a way nothing else here is: it can define
+  // `core.sshCommand`, `credential.helper` and aliases, all command lines
+  // git runs. Indistinguishable from the runner's own write, so UNMEASURED.
+  ".gitconfig",
   // What the next `npx` of that hash resolves to.
   ".npm/_npx",
 ];
@@ -1044,6 +1064,7 @@ export const AI_REVIEW_FILE_SHAPED_PATHS: readonly string[] = [
   ".claude/.last-cleanup",
   ".claude.json",
   ".claude/settings.json",
+  ".gitconfig",
 ];
 
 /**
