@@ -40,7 +40,7 @@
  * nobody can read.
  */
 
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import { parseHookInput } from "./lib/parseStdin";
@@ -68,7 +68,18 @@ if (!existsSync(script)) {
 }
 
 try {
-  execSync(`bun ${script} --skip-tests`, {
+  // ARGUMENT ARRAY, never a shell string (#971). `filePath` arrives from a
+  // tool call, `projectRoot` is its prefix, and `script` is built from that
+  // prefix — so every character between the start of the path and the
+  // trailing `project-state.json` is attacker-influenced. Interpolated into
+  // `execSync` it was parsed by a shell, on every Write and Edit in every
+  // session on this machine: a directory literally named
+  // `p$(touch /tmp/pwned)q` ran the `touch`. `execFileSync` spawns `bun`
+  // directly with an argv, so no metacharacter in a path is interpreted.
+  //
+  // `existsSync(script)` above is a bar, not a wall — it only requires the
+  // payload to be a real directory, and /tmp is writable.
+  execFileSync("bun", [script, "--skip-tests"], {
     cwd: projectRoot,
     stdio: "pipe",
     timeout: 10000,

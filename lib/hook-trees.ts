@@ -168,13 +168,14 @@ export function settingsCommands(docs: string[]): string[] {
  * (measured: 0 of 19), which is why the bare-flag refusal costs nothing
  * today and is the safe default for whatever is added tomorrow.
  *
- * `wrongTreeViolations` below deliberately still uses a substring match. The
- * error directions are opposite there: an over-broad match reports a
- * violation that is not real, which costs an investigation and fails loud,
- * while a narrow parse could silently stop reporting a hook genuinely wired
- * to the superseded tree. Tracked as #981 rather than changed here, and that
- * issue carries the error-direction table — so the cheap generalisation
- * "reuse this parser everywhere" has a written reason not to.
+ * `wrongTreeViolations` below deliberately still SELECTS by substring, and
+ * #981 is why: the error directions are opposite there, so a narrow parse
+ * could silently stop reporting a hook genuinely wired to the superseded
+ * tree. What #981 changed is that a selected string is now CLASSIFIED by this
+ * parse, with everything the parse rejects reported as `unparsed` rather than
+ * dropped. Its docblock carries the error-direction table — so the cheap
+ * generalisation "reuse this parser everywhere" still has a written reason
+ * not to, and the thing that was wrong is fixed.
  */
 const INTERPRETERS = new Set([
   "bun", "bunx", "node", "npx", "npm", "pnpm", "yarn", "deno", "ts-node", "tsx",
@@ -182,7 +183,18 @@ const INTERPRETERS = new Set([
 const SUBCOMMANDS = new Set(["run", "exec"]);
 const SEPARATORS = new Set(["#", ";", "&&", "||", "|", "&"]);
 
-export function executedHookFile(command: string): string | null {
+/**
+ * The executed hook file as a PATH — the first positional, un-basenamed.
+ *
+ * The one parse. `executedHookFile` is its basename projection and
+ * `hookRegistrationPath` is its per-hook projection, so there is a single
+ * binding to mutate and no second spelling of the argv walk.
+ *
+ * The path is what `wrongTreeViolations` classifies, and the basename is what
+ * every registration reading compares. Both come from here; they cannot
+ * disagree about which token ran.
+ */
+export function executedHookPath(command: string): string | null {
   const tokens: string[] = [];
   for (const raw of command.split(/\s+/).filter(Boolean)) {
     // A separator ends the first command, whether it stands alone or is
@@ -227,7 +239,26 @@ export function executedHookFile(command: string): string | null {
 
   const arg = bare(tokens[i]);
   const base = arg.slice(arg.lastIndexOf("/") + 1);
-  return /^[A-Za-z0-9_-]+\.hook\.ts$/.test(base) ? base : null;
+  return /^[A-Za-z0-9_-]+\.hook\.ts$/.test(base) ? arg : null;
+}
+
+/** The executed hook file as a BASENAME. A projection of `executedHookPath`. */
+export function executedHookFile(command: string): string | null {
+  const path = executedHookPath(command);
+  return path === null ? null : path.slice(path.lastIndexOf("/") + 1);
+}
+
+/**
+ * The PATH `command` executes, when what it executes is `<hook>.hook.ts`.
+ *
+ * The one comparison. `commandNamesHook` is its boolean projection, so a
+ * reading cannot say "this command names the hook" and hand back a path
+ * belonging to something else.
+ */
+export function hookRegistrationPath(command: string, hook: string): string | null {
+  const path = executedHookPath(command);
+  if (path === null) return null;
+  return path.slice(path.lastIndexOf("/") + 1) === `${hook}.hook.ts` ? path : null;
 }
 
 /**
@@ -237,12 +268,16 @@ export function executedHookFile(command: string): string | null {
  * one binding to mutate and one place a narrowing or a widening lands.
  */
 export function commandNamesHook(command: string, hook: string): boolean {
-  return executedHookFile(command) === `${hook}.hook.ts`;
+  return hookRegistrationPath(command, hook) !== null;
 }
 
 export interface TreeViolation {
   hook: string;
-  tree: HookTree | "unknown";
+  /**
+   * `unparsed` is NOT a tree. It is the reading for a string that mentions the
+   * hook and is not a command executing it — see `wrongTreeViolations`.
+   */
+  tree: HookTree | "unknown" | "unparsed";
   command: string;
   detail: string;
 }
@@ -254,12 +289,83 @@ export interface TreeViolation {
  * finding, and duplicating it here would make this the second decider for a
  * question that already has one. The input this binding alone can see is a
  * registration that EXISTS and points at the superseded copy.
+ *
+ * ## Why SELECTION is still a substring, and the fix was NOT `executedHookFile`
+ *
+ * #981 is the issue, and it exists because the cheap generalisation —
+ * *"#976 replaced the substring with the argv parse in `hook-scopes.ts`, do
+ * the same here"* — makes this site WORSE. The error directions are opposite:
+ *
+ * | | over-broad | narrow parse |
+ * |---|---|---|
+ * | `hookRegistration` (#976) | a hook that is NOT registered reads as registered — a guard reporting clean about its own subject, #910's defect | a real registration reads as absent → `unregistered` → **loud** |
+ * | here | a violation that is not real → an investigation → **loud** | a hook genuinely wired to the superseded tree **silently stops being reported**, which is #713 entire |
+ *
+ * So selection keeps the substring and nothing is ever dropped for failing to
+ * parse. What changed is that a selected string is now CLASSIFIED by the argv
+ * parse, in three readings instead of two:
+ *
+ * | reading | what it means |
+ * |---|---|
+ * | `pai` | the command EXECUTES this hook, from the superseded tree |
+ * | `unknown` | it EXECUTES this hook, from a path naming neither root |
+ * | `unparsed` | it mentions the hook and is not a command executing it |
+ *
+ * Before, a `# TestSuiteRelease.hook.ts` in a comment was reported as
+ * *"registered by a command naming neither tree's path variable"* — a
+ * sentence about a string that is not a registration at all. It is still
+ * reported, because dropping it is the direction that goes silent; it is now
+ * reported as the thing it is.
+ *
+ * ## The tree is read off the EXECUTED PATH, not the whole command
+ *
+ * `registrationTree(command)` would read
+ * `bun ${PAI_HOOKS_DIR}/X.hook.ts # see ${RUNGATE_HOOKS_DIR}` as **rungate**
+ * and drop it — a genuine `.pai` registration, silenced by a word in a
+ * comment. That is the same over-broad-substring class the issue is about,
+ * one level down, so it is closed here rather than left for the next reader:
+ * the classifier is handed `hookRegistrationPath`'s path and sees only the
+ * token that runs.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * Every escape below is an UNDER-report, and each has a case in
+ * `test/hook-tree-divergence.test.ts` asserting the stated behaviour, so this
+ * list cannot drift from the code without a red.
+ *
+ * | spelling | read as |
+ * |---|---|
+ * | `bun "$HOOK_FILE"` — the file NAME is in a variable, so the string never contains `X.hook.ts` | not selected at all, so not reported |
+ * | a wrapper script that `exec`s the hook without naming it | not selected at all, so not reported |
+ * | `sh -c "bun ${PAI_HOOKS_DIR}/X.hook.ts"` | selected, reported `unparsed` — the quoting is not unwrapped, so the tree is not read |
+ * | `make x && bun ${PAI_HOOKS_DIR}/X.hook.ts` — executed in a LATER segment | selected, reported `unparsed` |
+ *
+ * The first two are the ones nothing here can reach: a string that does not
+ * contain the hook's file name cannot be selected by any reading of these
+ * commands, and recovering it needs a shell rather than a parser. They are
+ * the boundary, stated, because a stated limit is an answer and silence reads
+ * as coverage.
  */
 export function wrongTreeViolations(owned: string[], commands: string[]): TreeViolation[] {
   const out: TreeViolation[] = [];
   for (const hook of owned) {
+    // SELECTION stays over-broad on purpose — see the table above.
     for (const command of commands.filter(c => c.includes(`${hook}.hook.ts`))) {
-      const tree = registrationTree(command);
+      const path = hookRegistrationPath(command, hook);
+      if (path === null) {
+        const executes = executedHookFile(command);
+        out.push({
+          hook,
+          tree: "unparsed",
+          command,
+          detail:
+            `${hook} is named by this string, which is not a command that executes it ` +
+            `(${executes ? `the first command executes ${executes}` : "no executed hook file could be read from it"}), ` +
+            `so no tree can be read from it and it is not evidence of any registration: ${command}`,
+        });
+        continue;
+      }
+      const tree = registrationTree(path);
       if (tree === "rungate") continue;
       out.push({
         hook,
