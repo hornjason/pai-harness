@@ -4,6 +4,7 @@ import { join } from "path";
 import { stripJsComments } from "../lib/strip-js-comments";
 import { fixedScratchRoots, uniqueScratchPrefixes } from "../lib/scratch-roots";
 import { scratchPrefixes } from "../lib/scratch-cleanup";
+import { describeScanBudget, measureScan, scanBudgetFromBunfig, scanBudgetViolations } from "../lib/scan-budget";
 
 /**
  * #323 SC-6 — a fixed scratch path is a shared mutable resource.
@@ -72,26 +73,94 @@ const SELF = "scratch-paths-unique.test.ts";
  * indistinguishable from nothing having leaked.
  */
 
+/**
+ * The scan, run through `measureScan` (#804) and memoised so the two cases
+ * below read ONE walk rather than two. A second walk would be a second
+ * population, and the budget case would then be reporting on a scan nobody
+ * asserted over.
+ *
+ * **Lazy on purpose, and the next case checks that it stayed lazy.** The
+ * tempting shape is a `const SCAN = measureScan(...)` at module scope, or the
+ * same thing in `beforeAll`. Both work, both are tidier, and both move the
+ * cost OUT of the per-test budget — module and hook time are not what bun's
+ * per-test timeout measures. That is the `}, 60_000)` override again through a
+ * different door: the scan stops being killable, so it stops being visible to
+ * `timeoutProximityViolations`, and a scan that grows back to 30 seconds hangs
+ * the file load with no budget and no message at all. Whichever case runs
+ * first pays for the walk, inside the budget, where #621 can read it.
+ */
+let MEMO: { values: string[]; reading: ReturnType<typeof measureScan<string>>["reading"] } | null = null;
+function scan() {
+  if (MEMO === null) {
+    MEMO = measureScan<string>({
+      root: "test/",
+      files: readdirSync(TEST_DIR)
+        .filter(f => f.endsWith(".ts"))
+        .filter(f => f !== SELF), // see the exemption case below, which checks this is safe
+      budgetMs: scanBudgetFromBunfig(readFileSync(join(ROOT, "bunfig.toml"), "utf-8")),
+      read: f =>
+        fixedScratchRoots(readFileSync(join(TEST_DIR, f), "utf-8")).map(
+          hit =>
+            `test/${f} — ${hit} is a fixed path; wrap it in mkdtempSync(join(ROOT, "<prefix>-")) ` +
+            `so two concurrent runs cannot delete each other's fixtures (#323 SC-6)`,
+        ),
+    });
+  }
+  return MEMO;
+}
+
+/**
+ * Read at the END of module evaluation, which is the only moment at which the
+ * distinction exists: every test callback runs later, so a case asking this
+ * question of itself could never tell load time from case time.
+ */
+const SCANNED_BEFORE_ANY_CASE_RAN = MEMO !== null;
+
 describe("#323 SC-6: no suite plants its fixtures at a path another run shares", () => {
   test("every in-repo scratch root in test/ is unique per run", () => {
-    const violations: string[] = [];
-    for (const f of readdirSync(TEST_DIR).filter(f => f.endsWith(".ts"))) {
-      if (f === SELF) continue; // see the case below, which checks this is safe
-      for (const hit of fixedScratchRoots(readFileSync(join(TEST_DIR, f), "utf-8"))) {
-        violations.push(
-          `test/${f} — ${hit} is a fixed path; wrap it in mkdtempSync(join(ROOT, "<prefix>-")) ` +
-            `so two concurrent runs cannot delete each other's fixtures (#323 SC-6)`,
-        );
-      }
-    }
-    expect(violations, `shared scratch roots:\n${violations.join("\n")}`).toEqual([]);
-    // 60s, because this reads every .ts in test/ and the cost grows with the
-    // tree rather than with anything this case is about. Measured 2026-10-20:
-    // 3.48s over 378 files locally, and 5600ms on a CI shard — past the 5000ms
-    // bunfig default, which DECLARES the budget rather than setting one here.
-    // It went red on a PR that added one unrelated test file. The scan cost
-    // itself is #793; this stops an unrelated author paying for it.
-  }, 60_000);
+    const { values } = scan();
+    expect(values, `shared scratch roots:\n${values.join("\n")}`).toEqual([]);
+  });
+
+  /**
+   * #804 — the scan's own cost, measured rather than asserted.
+   *
+   * A timeout carries no message: the runner kills the case and the failure
+   * text above, which names the file, the offending path and the repair, is
+   * never reached. This reports the duration, the path and the budget while
+   * there is still room to act on it — and `measureScan` has already printed
+   * the same sentence to stdout mid-scan, so the evidence survives even the
+   * run where the kill wins and this case never executes.
+   *
+   * It no longer carries `}, 60_000)`. That override arrived in #802, when the
+   * scan cost 3.48s over 378 files and CI was killing it at 5005.68ms and
+   * 5172.46ms with no message. #798 rewrote the scan and it is 174.68ms over
+   * 427 files on `41d287c5`, measured 2026-10-21 — so the override bought
+   * nothing, and it cost the one thing that would have warned.
+   */
+  test("#804: the scan stays well inside the per-test budget, measured", () => {
+    const { reading } = scan();
+    expect(scanBudgetViolations(reading), describeScanBudget(reading)).toEqual([]);
+  });
+
+  /**
+   * #804 — the wrong fix that does not look like one, refused.
+   *
+   * Removing `}, 60_000)` and hoisting the walk to module scope or `beforeAll`
+   * leaves a green suite, a fast-looking case, and a scan with no budget over
+   * it whatsoever. This case is the only thing in the tree that can tell those
+   * two trees apart, because the distinction has evaporated by the time any
+   * other assertion runs.
+   */
+  test("#804: the scan runs inside a case, not at module load where no budget applies", () => {
+    expect(
+      SCANNED_BEFORE_ANY_CASE_RAN,
+      "the scratch-root scan ran during module evaluation. Module and beforeAll time is not covered " +
+        "by bun's per-test timeout, so the scan would be neither killable nor visible to " +
+        "timeoutProximityViolations — the same blind spot the `}, 60_000)` override created in #802. " +
+        "Call scan() from inside a test case instead.",
+    ).toBe(false);
+  });
 
   test("skipping this file is safe, because it creates nothing", () => {
     // The exemption, checked. If someone later adds a real scratch directory
