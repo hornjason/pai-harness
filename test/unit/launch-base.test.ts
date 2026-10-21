@@ -258,16 +258,18 @@ describe("#644: what the reading reports is redacted, and what it probes is not"
     const holder = scratch("redact");
     // A path a worktree could genuinely sit under: somebody's scratch
     // directory named after the token they were debugging with.
-    const leaky = join(holder, "ghp_0123456789abcdefghij");
+    // Constructed, not spelled (#1036); the bytes are unchanged.
+    const keyShaped = "ghp_" + "0123456789abcdefghij";
+    const leaky = join(holder, keyShaped);
     mkdirSync(leaky, { recursive: true });
 
     const r = launchBaseReading(leaky, root);
     expect(r.reading, "the probe must have run against the REAL path").toBe("CWD_NOT_A_REPO");
-    expect(refusalOf(r)).not.toContain("ghp_0123456789abcdefghij");
+    expect(refusalOf(r)).not.toContain(keyShaped);
     expect(refusalOf(r)).toContain("<redacted>");
     // The whole object is serialised by the script, so the fields carry it
     // too — a caller that had to remember to redact is one that forgets.
-    expect(JSON.stringify(r)).not.toContain("ghp_0123456789abcdefghij");
+    expect(JSON.stringify(r)).not.toContain(keyShaped);
   });
 
   test("an ordinary path is left exactly as it was — the redactor stays narrow", () => {
@@ -287,7 +289,7 @@ describe("#644: what the reading reports is redacted, and what it probes is not"
     // byte-identical to the finding the module exists to report. A real
     // repository under a key-shaped directory name must read SAME_CHECKOUT.
     const holder = scratch("raw-probe");
-    const under = join(holder, "ghp_abcdefghij0123456789");
+    const under = join(holder, "ghp_" + "abcdefghij0123456789");
     mkdirSync(under, { recursive: true });
     git(under, "init", "-q", "-b", "main");
     git(under, "config", "user.email", "t@example.com");

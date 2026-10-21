@@ -210,7 +210,11 @@ describe("#213: a recorded outcome does not carry credentials", () => {
   // Every `detail` ends up in ship-evidence.json, which is durable, and git
   // quotes the remote URL when authentication fails. An HTTPS remote with an
   // embedded PAT would otherwise write that PAT into the artefact.
-  const PAT = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+  // Constructed, not spelled (#1036) — the bytes are unchanged, because
+  // `redactSecrets` has to RECOGNISE this as a credential for the
+  // assertions below to witness anything.
+  const PAT = "ghp_" + "0123456789abcdefghijklmnopqrstuvwx";
+  const FINE_GRAINED_PAT = "github_pat_" + "11ABCDEFG0abcdefghijkl";
 
   test("userinfo in a URL is stripped", () => {
     const line = `fatal: Authentication failed for 'https://jhorn:${PAT}@github.com/o/r.git/'`;
@@ -232,7 +236,7 @@ describe("#213: a recorded outcome does not carry credentials", () => {
 
   test("a bare token outside a URL is stripped too", () => {
     expect(redactSecrets(`remote: token ${PAT} is invalid`)).not.toContain(PAT);
-    expect(redactSecrets("github_pat_11ABCDEFG0abcdefghijkl")).toBe("<redacted-token>");
+    expect(redactSecrets(FINE_GRAINED_PAT)).toBe("<redacted-token>");
   });
 
   test("an ordinary remote URL is left alone", () => {
@@ -540,16 +544,17 @@ describe("#213: an unreadable conformity findings file is not an empty one", () 
     // The file is machine-written from a scan of the project, so a parse error
     // can carry source text into workflow-state.json. The error's NAME is
     // enough to tell a parse failure from a read failure.
-    const leak = `{ "token": ghp_notarealtokenbutlooksliketone }`;
+    const token = "ghp_" + "notarealtokenbutlooksliketone";
+    const leak = `{ "token": ${token} }`;
     const err = (() => { try { JSON.parse(leak); return null; } catch (e) { return e; } })();
     expect(err, "the fixture must actually fail to parse").not.toBeNull();
     expect(
       String((err as Error).message),
       "the fixture does not reproduce the leak it exists to test",
-    ).toContain("ghp_notarealtokenbutlooksliketone");
+    ).toContain(token);
 
     const marker = unreadableConformityMarker("/tmp/x.json", err);
-    expect(JSON.stringify(marker)).not.toContain("ghp_notarealtokenbutlooksliketone");
+    expect(JSON.stringify(marker)).not.toContain(token);
     expect(marker.reason).toBe("SyntaxError");
   });
 
