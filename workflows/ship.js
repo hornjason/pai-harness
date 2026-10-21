@@ -6214,6 +6214,70 @@ let quinnLocalResult = { result: 'PASS' }
 // from the tier — see quinnVerdictFor below (#173).
 let quinnLocalRan = false
 
+// ──── CONTAINER-PROBE-START ────
+// Where to reach the test container, or why not (#312 SC-A15, harness half).
+//
+// INLINED, not imported. lib/dev-liveness.ts is the source of truth; the
+// sandbox has no module loading, and a top-level require() here killed every
+// ship run before it spawned an agent (#69). This copy must stay
+// behaviourally identical to `containerProbeTarget` —
+// test/container-probe-parity.test.ts runs both over the same input matrix
+// and fails on any divergence.
+//
+// What it replaces, at the two sites below: `(container.hosts || [])[0]` and
+// `container.port || 3000`, which for a container declared without hosts
+// produced `http://undefined:3000/` in a curl inside an agent prompt, and
+// then recorded `smoke = SKIP, smokeSkipReason = test container not running`
+// — a positive claim about a container nothing had contacted. See the
+// library docblock for why `unmeasured` and `unconfigured` are two outcomes.
+const CONTAINER_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/
+
+function containerSafeForRecord(text) {
+  return text
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, '$1<redacted>@')
+    .replace(/\b(gh[pousr]|github_pat)_[A-Za-z0-9_]{10,}/g, '<redacted-token>')
+    .replace(/([?&][A-Za-z0-9_.\[\]%-]+=)[^&\s)'"`]+/g, '$1<redacted>')
+}
+
+function containerProbeTarget(container) {
+  if (!container || typeof container !== 'object') {
+    return { kind: 'unconfigured', detail: 'no container is configured for this project' }
+  }
+  const hosts = Array.isArray(container.hosts) ? container.hosts : []
+  const host = hosts.find(h => typeof h === 'string' && CONTAINER_HOST.test(h))
+  if (!host) {
+    return {
+      kind: 'unmeasured',
+      detail:
+        'a container is configured and container.hosts names no host to reach it at, ' +
+        'so nothing was probed. No host is guessed. This is UNMEASURED, not DOWN',
+    }
+  }
+  const port = container.port
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return {
+      kind: 'unmeasured',
+      detail:
+        `a container is configured at ${host} and container.port is not a port number, ` +
+        'so nothing was probed. No default port is invented: a guessed port is answered ' +
+        'by whatever else holds it. This is UNMEASURED, not DOWN',
+    }
+  }
+  const raw = container.healthPath
+  const healthPath = raw === undefined || raw === null || raw === '' ? '/' : raw
+  if (typeof healthPath !== 'string' || !healthPath.startsWith('/') || healthPath.startsWith('//')) {
+    return {
+      kind: 'unmeasured',
+      detail:
+        `a container is configured at ${host} port ${port} and container.healthPath is not ` +
+        'an absolute path, so nothing was probed. This is UNMEASURED, not DOWN',
+    }
+  }
+  const url = `http://${host}:${port}${healthPath}`
+  return { kind: 'probe', host, port, healthPath, url, safeUrl: containerSafeForRecord(url) }
+}
+// ──── CONTAINER-PROBE-END ────
+
 // ──── QUINN-VERDICT-START ────
 /**
  * What this run can honestly say Quinn's verdict was.
@@ -6284,7 +6348,7 @@ function quinnShipVerdict(containerRan, containerResult, localVerdict) {
  * is interpolated into a single-quoted JS literal inside a double-quoted
  * shell string.
  */
-function prodQuinnRecord(containerRan, containerResult, containerConfigured) {
+function prodQuinnRecord(containerRan, containerResult, probeKind) {
   if (containerRan) {
     const verdict = quinnVerdictFor(true, containerResult)
     return {
@@ -6294,9 +6358,19 @@ function prodQuinnRecord(containerRan, containerResult, containerConfigured) {
         : '',
     }
   }
+  // #312: the third parameter was `!!containerConfig`, so a container
+  // declared with nowhere to reach it reported `no reachable test container`
+  // — which asserts a probe. Nothing was probed. A SKIP here is counted in
+  // the gate's pass total, so the run that measured least reads cleanest.
+  if (probeKind === 'unmeasured') {
+    return {
+      quinn: 'FAIL',
+      reason: '',
+    }
+  }
   return {
     quinn: 'SKIP',
-    reason: containerConfigured
+    reason: probeKind === 'probe'
       ? 'no reachable test container, so container Quinn never ran — Quinn validated on local dev'
       : 'no container is configured for this project',
   }
@@ -8049,13 +8123,20 @@ let securityVerdict = { spawned: false, verdict: 'FAIL', failures: ['the securit
 // ──── VERIFY-FANOUT-START ────
 // Container rebuild + Quinn container (STANDARD+ only, requires container config)
 const containerConfig = projectConfig.container || null
+// One decision, read by this block and by the Ship phase's record-env step
+// (#312). Both used to work the config out for themselves, with different
+// defaults — this block required a port, record-env substituted 3000.
+const containerProbe = containerProbeTarget(containerConfig)
 
 async function runContainerVerify() {
 if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
   const rebuildCmd = containerConfig.rebuildCommand
-  const containerHosts = containerConfig.hosts || []
-  const containerPort = containerConfig.port
-  const containerHealthPath = containerConfig.healthPath || '/'
+  // Filtered, not sanitised. Each host is interpolated unquoted into a curl
+  // line inside an agent prompt; one that does not read as a hostname is
+  // dropped and the run says so rather than being made to look like one.
+  const containerHosts = (containerConfig.hosts || []).filter(h => typeof h === 'string' && CONTAINER_HOST.test(h))
+  const containerPort = containerProbe.kind === 'probe' ? containerProbe.port : null
+  const containerHealthPath = containerProbe.kind === 'probe' ? containerProbe.healthPath : '/'
 
   if (rebuildCmd) {
     await timedAgent(`
@@ -8067,7 +8148,7 @@ Report the full output.
     `, { label: 'container-rebuild', phase: 'Verify' })
   }
 
-  if (containerHosts.length > 0 && containerPort) {
+  if (containerProbe.kind === 'probe') {
     const hostChecks = containerHosts.map((h, i) => `${i + 1}. curl -s -o /dev/null -w "%{http_code}" http://${h}:${containerPort}${containerHealthPath} 2>/dev/null\n   - host${i} = true if 200, false otherwise`).join('\n')
     const hostSchema = {}
     containerHosts.forEach((h, i) => { hostSchema['host' + i] = { type: 'boolean' } })
@@ -8083,7 +8164,10 @@ ${hostChecks}
 
     const hostIdx = containerHosts.findIndex((h, i) => envCheck && envCheck['host' + i])
     const testHost = hostIdx >= 0 ? containerHosts[hostIdx] : null
-    log(`Container env: ${containerHosts.map((h, i) => `${h}=${envCheck?.['host' + i]}`).join(', ')}, using=${testHost || 'NONE'}`)
+    // `safeUrl`, never `url`: this line is durable and a consumer may have
+    // put a token in `container.healthPath`. Same rule as the prove gate's
+    // liveness detail (#213), and the reason the probe target carries both.
+    log(`Container env: ${containerHosts.map((h, i) => `${h}=${envCheck?.['host' + i]}`).join(', ')}, using=${testHost || 'NONE'}, probed=${containerProbe.safeUrl}`)
 
     if (testHost) {
       quinnContainerResult = await briefedAgent(`
@@ -8123,6 +8207,13 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
     } else {
       log('WARN: No test container available — skipping container Quinn')
     }
+  } else {
+    // Previously nothing at all: the `hosts.length && port` test was the only
+    // guard, and failing it left the phase silent. A run that found no way to
+    // reach a container the project declared has to say which it was, because
+    // the Ship phase is about to refuse on exactly this and the log is where
+    // a reader finds out why (#312).
+    log(`WARN: container verify did not probe — ${containerProbe.detail}`)
   }
 } else if (discovery.ceremonyTier !== 'LIGHT') {
   log('No container config in rungate.json — skipping container verify')
@@ -9294,18 +9385,58 @@ phase('Ship')
 // `prodQuinnRecord` — until now every arm wrote SKIP, so `prod-quinn-pass`
 // could not report anything else for a project configuring `prod.rebuild`.
 const prodQuinn = prodQuinnAssignment(
-  prodQuinnRecord(quinnContainerRan, quinnContainerResult, !!containerConfig),
+  prodQuinnRecord(quinnContainerRan, quinnContainerResult, containerProbe.kind),
 )
 
 let prStep = null
 
-if (containerConfig) {
-  const containerPort = containerConfig.port || 3000
-  const containerHealthPath = containerConfig.healthPath || '/'
+// ──── RECORD-ENV-ARMS-START ────
+// Three arms, because there are three things that can be true (#312).
+//
+// There used to be two, split on `if (containerConfig)`. The container arm
+// built its curl from `(containerConfig.hosts || [])[0]` and
+// `containerConfig.port || 3000`, so a container declared without hosts sent
+// the agent at `http://undefined:3000/`, which answers nothing, which is the
+// "container is down" branch, which writes `smoke = SKIP` with the reason
+// `test container not running`. A declared container nothing could address
+// and a probed container that was down produced the same record, and the
+// first of those is a run that measured nothing while reading like a run
+// that did.
+//
+// The reasons go in `rebuildSkipReason`/`smokeSkipReason` beside a FAIL
+// rather than in a new field, because those two are what
+// `EnvironmentProdSchema` declares. `writeWorkflowState` parses with
+// `.passthrough()` and writes the original object, so an invented
+// `smokeFailReason` would validate, persist and read back exactly like a
+// declared one — and nothing would ever read it (#530).
+// Named rather than written inline, because the conditions below are read
+// structurally by three checkers (test/ship-pr-on-every-path.test.ts,
+// test/strip-js-comments.test.ts, test/gate-env-expressibility.test.ts) over
+// a view with every string literal blanked out. A condition carrying a quoted
+// kind is invisible in that view, and an anchor that cannot be found reads
+// exactly like a conditional that is no longer there.
+const containerUnmeasured = containerProbe.kind === 'unmeasured'
+const containerReachable = containerProbe.kind === 'probe'
+
+if (containerUnmeasured) {
+  await timedAgent(`
+A test container is configured for this project and this run could not work out where to
+reach it, so there is nothing to probe and no result to report. Record that, exactly:
+
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'FAIL'; s.environments.prod.rebuildSkipReason = '${containerProbe.detail}'; s.environments.prod.smoke = 'FAIL'; s.environments.prod.smokeSkipReason = '${containerProbe.detail}'; ${prodQuinn} writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+
+This is FAIL and not SKIP on purpose. SKIP is counted in the gate's pass total, so
+recording one here would make the run that measured least read as the cleanest. Do not
+substitute a host or a port of your own to turn this into a measurement: fix the
+container block in the project config, or report the FAIL.
+
+Run the command and report the output.
+`, { label: 'record-env', phase: 'Ship' })
+} else if (containerReachable) {
   await timedAgent(`
 Check test container status, then update workflow-state.json via writeWorkflowState():
 
-1. Check test container: curl -s -o /dev/null -w "%{http_code}" http://${(containerConfig.hosts || [])[0]}:${containerPort}${containerHealthPath} 2>/dev/null
+1. Check test container: curl -s -o /dev/null -w "%{http_code}" ${containerProbe.url} 2>/dev/null
 2. Based on result, run this bun -e command (pick the version matching your result):
 
 If container is up (200):
@@ -9325,6 +9456,7 @@ bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'
 Run the command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
 }
+// ──── RECORD-ENV-ARMS-END ────
 
 // Open or update the PR, on EVERY path that reaches Ship (#254).
 //

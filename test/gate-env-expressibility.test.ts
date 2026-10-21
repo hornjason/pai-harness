@@ -111,10 +111,20 @@ describe("#297 SC-5: the written answer, checked rather than trusted", () => {
     // entire job is noticing that the tree moved.
     const skips = [...ship.matchAll(/\brebuild\s*[:=]\s*'SKIP'/g)];
     expect(skips.length, "the production record no longer has three SKIP arms").toBe(3);
+    // Four reasons against three SKIPs since #312. The fourth arm writes
+    // `rebuild = 'FAIL'` for a container the config gave nowhere to reach,
+    // and carries the detail in `rebuildSkipReason` because that is the
+    // field `EnvironmentProdSchema` declares — an invented `rebuildFailReason`
+    // would validate under `.passthrough()`, persist, and be read by nothing.
+    // So the count is reasons, not SKIPs, and the two no longer coincide.
     expect(
       [...ship.matchAll(/rebuildSkipReason\s*[:=]\s*'[^']+'/g)].length,
-      "a SKIP arm lost its reason",
-    ).toBe(3);
+      "a production-record arm lost its reason",
+    ).toBe(4);
+    expect(
+      [...ship.matchAll(/\brebuild\s*[:=]\s*'FAIL'/g)].length,
+      "the unmeasured-container arm stopped refusing (#312)",
+    ).toBe(1);
 
     // Claim 3: the sites the answer cites still exist and still say what the
     // answer says they say.

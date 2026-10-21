@@ -195,18 +195,24 @@ describe("strip-js-comments: blankLiterals blanks literal contents, nothing else
 
   test("SJC-19: ship.js's container conditional brace-matches to a brace that is code", () => {
     // The real file, which is the input that matters. The Ship phase's
-    // `if (containerConfig) {` must close on a `}` the compiler would close it
+    // container conditional must close on a `}` the compiler would close it
     // on — the one followed by `else`.
+    //
+    // The head of that chain is `if (containerProbe.kind === 'unmeasured')`
+    // since #312, where the arm for a container the config gave nowhere to
+    // reach was split out of the single container arm. Held in a binding so
+    // the four uses below cannot drift apart.
+    const SHIP_CONTAINER_IF = "if (containerUnmeasured) {";
     const skeleton = blank(SHIP_JS);
-    const open = SHIP_JS.indexOf("if (containerConfig) {", SHIP_JS.indexOf("phase('Ship')"));
+    const open = SHIP_JS.indexOf(SHIP_CONTAINER_IF, SHIP_JS.indexOf("phase('Ship')"));
     expect(open).toBeGreaterThan(0);
-    const start = open + "if (containerConfig) {".length - 1;
+    const start = open + SHIP_CONTAINER_IF.length - 1;
     // #664: the brace walk this case used to hand-roll is now the one shared
     // cut in lib/source-slice.ts, taken over the BLANKED view — which is the
     // subject of the case. One binding to mutate, and no `close + 8` window:
     // eight characters was a bet on the whitespace between `}` and `else`.
-    expect(skeleton.indexOf("if (containerConfig) {"), "the conditional is not unique").toBe(open);
-    const armCut = structuralCut(skeleton, "if (containerConfig) {", { balanced: "{" });
+    expect(skeleton.indexOf(SHIP_CONTAINER_IF), "the conditional is not unique").toBe(open);
+    const armCut = structuralCut(skeleton, SHIP_CONTAINER_IF, { balanced: "{" });
     expect(armCut.length, "the cut is the whole file — it bounds nothing").toBeLessThan(
       skeleton.length,
     );

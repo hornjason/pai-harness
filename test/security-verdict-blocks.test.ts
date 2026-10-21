@@ -2157,7 +2157,14 @@ const shellQuote: (word: unknown) => string = (() => {
 })();
 
 function runFanout(opts: { rook?: unknown; scope?: unknown } = {}) {
-  const block = sliceBlock(FANOUT_START, FANOUT_END);
+  // The fan-out opens by resolving the container probe target (#312), so
+  // `containerProbeTarget` is a free name in it. Prepended from ITS own
+  // markers rather than stubbed, for the same reason the security helpers
+  // above are extracted: a stub deciding differently where to probe would
+  // let this harness agree with something that does not run.
+  const block =
+    sliceBlock("// ──── CONTAINER-PROBE-START ────", "// ──── CONTAINER-PROBE-END ────") +
+    sliceBlock(FANOUT_START, FANOUT_END);
   const labels: string[] = [];
   const prompts: string[] = [];
   const logs: string[] = [];

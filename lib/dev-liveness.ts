@@ -188,6 +188,120 @@ export function probeTarget(
   return { kind: "probe", url, safeUrl: safeForRecord(url) };
 }
 
+/**
+ * Where to reach the test container, or why not (#312 SC-A15, harness half).
+ *
+ * `probeTarget` was written so "unconfigured is UNMEASURED, never DOWN" is
+ * decided once (SC-733). It covers `dev` and `prod`. The container is the
+ * third tier and never went through it: `workflows/ship.js` built its own URL
+ * at two sites, from `(container.hosts || [])[0]` and `container.port || 3000`.
+ *
+ * Nothing reached either site until now. `ProjectHarnessSchema` did not
+ * declare `container`, so the validator deleted the key and both sites took
+ * their no-container arm on every run that has ever happened. #307 SC-A1
+ * declared it, and SC-A15 is a consumer putting a value there — at which
+ * point the first consumer with a `rebuildCommand` and no `hosts` gets:
+ *
+ *     curl -s -o /dev/null -w "%{http_code}" http://undefined:3000/
+ *
+ * interpolated into an agent prompt, no 200 back, and
+ * `prod.smoke = SKIP, smokeSkipReason = test container not running` written
+ * into the artefact. That reason is a positive claim about a container
+ * nothing contacted, and it is indistinguishable in the record from a probe
+ * that ran and found the container down. Every field of `ContainerSchema` is
+ * optional, so that config validates.
+ *
+ * So there are three outcomes and not two, and the difference between the two
+ * new ones is which verdict the run has earned:
+ *
+ * - `unconfigured` — no container. Nothing to measure; the run may SKIP.
+ * - `unmeasured` — a container is declared and the config does not say where
+ *   to reach it. The run measured nothing and must not say otherwise; its
+ *   caller records FAIL, because SKIP here reads exactly like success.
+ * - `probe` — a URL built from values that were all present and well-formed.
+ *
+ * No default host and no default port. `|| 3000` is the same instinct as the
+ * `?? "/health"` this module already refuses: a guessed port is answered by
+ * whatever else holds it, and the run reports on a container it never found.
+ */
+export type ContainerProbe =
+  | { kind: "unconfigured"; detail: string }
+  | { kind: "unmeasured"; detail: string }
+  | {
+      kind: "probe";
+      host: string;
+      port: number;
+      healthPath: string;
+      url: string;
+      safeUrl: string;
+    };
+
+/**
+ * Hostname or IP literal, and nothing else.
+ *
+ * The host is interpolated into a `curl` command inside an agent prompt and
+ * is never shell-quoted there. This charset has no shell metacharacter, no
+ * `@` (so no userinfo can ride in) and no `:` (so no second port), which is
+ * also why `redactSecrets` has nothing to find in the authority half of the
+ * URL this builds. A host that does not match is not sanitised — it is
+ * refused, and the run says it was not probed.
+ */
+export const CONTAINER_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
+export function containerProbeTarget(
+  container:
+    | { port?: unknown; healthPath?: unknown; hosts?: unknown; rebuildCommand?: unknown }
+    | null
+    | undefined,
+): ContainerProbe {
+  if (!container || typeof container !== "object") {
+    return {
+      kind: "unconfigured",
+      detail: "no container is configured for this project",
+    };
+  }
+  const hosts = Array.isArray(container.hosts) ? container.hosts : [];
+  const host = hosts.find(
+    (h: unknown) => typeof h === "string" && CONTAINER_HOST.test(h),
+  ) as string | undefined;
+  if (!host) {
+    return {
+      kind: "unmeasured",
+      detail:
+        "a container is configured and container.hosts names no host to reach it at, " +
+        "so nothing was probed. No host is guessed. This is UNMEASURED, not DOWN",
+    };
+  }
+  const port = container.port;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return {
+      kind: "unmeasured",
+      detail:
+        `a container is configured at ${host} and container.port is not a port number, ` +
+        "so nothing was probed. No default port is invented: a guessed port is answered " +
+        "by whatever else holds it. This is UNMEASURED, not DOWN",
+    };
+  }
+  const raw = container.healthPath;
+  const healthPath = raw === undefined || raw === null || raw === "" ? "/" : raw;
+  // The value is never quoted back. It is the one free-form component here,
+  // it reaches a durable artefact, and naming the key is what a reader needs.
+  if (
+    typeof healthPath !== "string" ||
+    !healthPath.startsWith("/") ||
+    healthPath.startsWith("//")
+  ) {
+    return {
+      kind: "unmeasured",
+      detail:
+        `a container is configured at ${host} port ${port} and container.healthPath is not ` +
+        "an absolute path, so nothing was probed. This is UNMEASURED, not DOWN",
+    };
+  }
+  const url = `http://${host}:${port}${healthPath}`;
+  return { kind: "probe", host, port, healthPath, url, safeUrl: safeForRecord(url) };
+}
+
 export function livenessPlan(
   acs: unknown,
   dev: { apiBase?: string; healthPath?: string; start?: string } | undefined,
