@@ -550,12 +550,17 @@ describe("AC-6 (#853): the unreadable cases and the shared binding", () => {
       ["baseline", buildBaselineScript()],
       ["drift", buildDriftScript()],
     ] as const) {
+      // Matched without the leading `git`, because #960 put an isolation
+      // prefix between the two — `… -c safe.directory='*' hash-object`. The
+      // property is still "one call site", which is what this counts; the
+      // prefix itself is AC-7's subject in
+      // test/ai-review-git-config-isolation.test.ts.
       expect(
-        (script.match(/git hash-object/g) ?? []).length,
+        (script.match(/\bhash-object\b/g) ?? []).length,
         `the ${name} step emits a second hash-object call, so there are two readers`,
       ).toBe(1);
       expect(
-        (script.match(/git status --porcelain/g) ?? []).length,
+        (script.match(/\bstatus --porcelain\b/g) ?? []).length,
         `the ${name} step reads the tree without going through the shared reader`,
       ).toBe(1);
     }
