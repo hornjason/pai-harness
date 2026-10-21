@@ -814,6 +814,11 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
 
     // The real baseline step, run rather than simulated. A hand-written
     // "before" file would be a fixture asserting its own input.
+    // A scratch HOME, not the developer's. The drift step walks $HOME for
+    // writes the reviewer made outside the checkout and REFUSES on anything
+    // the runtime does not own (#866), so a run pointed at a real home is a
+    // run whose verdict depends on what else that machine was doing.
+    const home = scratchDir("ai-review-drift-home-");
     const runnerTemp = scratchDir("ai-review-drift-temp-");
     const baselineSh = join(scratchDir("ai-review-drift-baseline-"), "baseline.sh");
     writeFileSync(baselineSh, buildBaselineScript());
@@ -823,7 +828,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: process.env.HOME ?? dir,
+        HOME: home,
         RUNNER_TEMP: runnerTemp,
         GITHUB_OUTPUT: baselineOut,
       },
@@ -840,7 +845,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: process.env.HOME ?? dir,
+        HOME: home,
         AI_REVIEW_MODE: "vertex",
         AI_REVIEW_TREE_BEFORE: beforePath,
         ...env,
@@ -949,7 +954,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: process.env.HOME ?? dir,
+        HOME: scratchDir("ai-review-home-"),
         AI_REVIEW_MODE: "vertex",
         AI_REVIEW_TREE_BEFORE: beforePath,
       },
@@ -1066,7 +1071,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: process.env.HOME ?? dir,
+        HOME: scratchDir("ai-review-home-"),
         AI_REVIEW_MODE: "vertex",
         AI_REVIEW_TREE_BEFORE: join(dir, "does-not-exist.txt"),
       },

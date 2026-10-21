@@ -130,6 +130,82 @@
  * None of the eight mutations is left in the tree; all were restored from a
  * `cp` backup — never `git checkout --` — and `lib/scaffold/ai-review-step.ts`
  * was confirmed byte-identical afterwards by sha256.
+ *
+ * ────────────────────────────────────────────────────────────────────────
+ *
+ * ## #866: the floor was measured, so the reading became a refusal
+ *
+ * Everything above was written while the posture was a warning, and `AC-4`
+ * said why in its own body: the noise floor had never been measured, and a
+ * refusal that fires on every run is a gate consumers delete. The job named
+ * itself as the instrument that would measure it.
+ *
+ * It did. Two completed runs on GitHub-hosted `ubuntu-latest`, different
+ * pull requests, neither touching the workflow: 12 paths and 13 paths, 25 in
+ * total, and **not one of them is reviewer output**. Claude's own state,
+ * npm's logs and npx cache, bun's install cache. The floor is non-empty and
+ * entirely attributable to the runtime, which is the reading that lets this
+ * refuse rather than the reading that stops it.
+ *
+ * Read with `gh api repos/<repo>/check-runs/<job-id>/annotations`. **Not by
+ * grepping the run log**, which echoes the whole `run:` block and returns
+ * twenty lines that look like annotations and are the step's own script
+ * text — the store quoting the subject back. The same job has four real
+ * annotations, two of them from Actions itself.
+ *
+ * ### What was broken to prove it
+ *
+ * 72 tests over this file plus `test/ai-review-workflow.test.ts`. Predicted
+ * before the run in `/tmp/866-battery/predictions.md`; **baseline read
+ * first**. Every row regenerates `.github/workflows/ai-review.yml` from the
+ * mutated generator, so the "scaffold writes it verbatim" case never fires
+ * and each row measures its own subject.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | baseline | 72 pass, 0 fail | **72 pass, 0 fail** | — |
+ * | U1 the pre-#866 block — warning, no exit, no exclusions | 7 | **7** | a file in `$HOME` the runtime does not own: original exits non-zero, mutant exits 0 |
+ * | U2 **cheapest wrong fix** — warning restored, exclusions KEPT | 6 | **6** | the same file |
+ * | U3 the exclusion list emptied | 4 | **4** | an npm debug log: original exits 0, mutant refuses |
+ * | U4 `.npm` removed from the list | 4 (mis-added; see below) | **3** | the same npm log |
+ * | U5 the deferred exit moved back to the reading site | 1 | **1** | a run that edits the tree AND writes to `$HOME`: original reports both and names the file, mutant exits at the outside block and never runs the comparison |
+ * | U6 `.claude.json` removed | 1 | **1** | a write to `$HOME/.claude.json`, which `.claude` covers as a STRING prefix and not as a path component |
+ *
+ * **U3 is the row that found something, and it found it by coming back LOW
+ * — 3 against a predicted 7.** The four per-entry `AC-8` cases are generated
+ * from `AI_REVIEW_RUNTIME_HOME_PATHS`, so emptying the list does not redden
+ * them, it DELETES them: the run was 64 pass + 3 fail, which is 67 cases and
+ * not 71, and a suite that silently runs four fewer cases reports the same
+ * green as one that ran them all. Not a collapsed pair and not a broken
+ * mutant — **a case population that is a projection of its own subject
+ * cannot witness that subject being emptied.** One case that is NOT
+ * generated from the list was added, the rows that touch the list were
+ * re-predicted before being re-run, and U3 is 4.
+ *
+ * **U4 came back 3 against a predicted 4, and that one is my arithmetic.**
+ * The prediction's own reasoning names exactly three cases and the total
+ * beside it says four. The three measured are the three named. Recorded
+ * rather than quietly corrected, because a row that misses low is supposed
+ * to be investigated and this one had nothing in it.
+ *
+ * **U1 and U2 differ by exactly one case, and that is the whole argument for
+ * AC-10.** Both put the warning back; only U1 also drops the exclusions.
+ * The six cases that red in both are about the POSTURE, and no number of
+ * them can tell whether the subtraction is still there.
+ *
+ * **Which cells are witnesses and which are controls.** The four `AC-8`
+ * per-entry cases are green under U1 and U2 by construction — they assert a
+ * runtime write is exit 0, and a warning-only reading is also exit 0. They
+ * are controls against a refusal that fires on everything, which is the one
+ * outcome that would get this deleted, and U3 and U4 are the rows that make
+ * them earn it.
+ *
+ * None of the six mutations is left in the tree; all were restored from a
+ * `cp` backup, never `git checkout --`, and all four files were confirmed
+ * byte-identical afterwards by sha256. One row ABORTED rather than measuring
+ * nothing — `.claude.json` appears twice in the module, once in the array
+ * and once in the docblock recording the measurement — and was re-cut
+ * against a unique anchor.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
@@ -143,6 +219,7 @@ import {
   AI_REVIEW_DRIFT_TITLE,
   AI_REVIEW_OUTSIDE_MAXDEPTH,
   AI_REVIEW_OUTSIDE_TITLE,
+  AI_REVIEW_RUNTIME_HOME_PATHS,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
   AI_REVIEW_TREE_BEFORE_VAR,
   AI_REVIEW_UNMEASURED_TITLE,
@@ -254,7 +331,7 @@ describe("AC-1 (#843/1): a write outside the checkout is reported", () => {
     const r = runDrift(f, path, sha);
     const text = r.stdout + r.stderr;
     expect(text, `drift output was:\n${text}`).toContain(
-      `::warning title=${AI_REVIEW_OUTSIDE_TITLE}`,
+      `::error title=${AI_REVIEW_OUTSIDE_TITLE}`,
     );
     expect(text, "the warning does not name what it found").toContain(".npmrc");
   });
@@ -271,11 +348,11 @@ describe("AC-1 (#843/1): a write outside the checkout is reported", () => {
     expect(
       before.stdout + before.stderr,
       "a file that predates the review is being blamed on the reviewer",
-    ).not.toContain(`::warning title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    ).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
 
     writeFileSync(join(f.home, ".npmrc"), "//registry/:_authToken=stolen\n");
     const after = runDrift(f, path, sha);
-    expect(after.stdout + after.stderr).toContain(`::warning title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(after.stdout + after.stderr).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
   });
 });
 
@@ -293,7 +370,7 @@ describe("AC-3 (#843/1): the reading does not double-count or misfire", () => {
     expect(
       r.stdout + r.stderr,
       "the in-tree write is reported by the outside reading as well",
-    ).not.toContain(`::warning title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    ).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
   });
 
   test("a write inside RUNNER_TEMP is not reported", () => {
@@ -304,22 +381,171 @@ describe("AC-3 (#843/1): the reading does not double-count or misfire", () => {
     const { path, sha } = runBaseline(f);
     writeFileSync(join(f.runnerTemp, "findings.json"), '{"findings":[]}');
     const r = runDrift(f, path, sha);
-    expect(r.stdout + r.stderr).not.toContain(`::warning title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(r.stdout + r.stderr).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
   });
 
-  test("AC-4: it WARNS — the exit code is unmoved, in both directions", () => {
-    // Deliberate, and asserted so it cannot be reversed by accident. The
-    // noise floor on a self-hosted runner has never been measured, and a
-    // refusal that fires every run is a gate consumers delete.
+  test("AC-4 (#866), the PAIR: the runtime's own write is exit 0, anything else refuses", () => {
+    // This case used to assert the opposite — that the reading WARNS and the
+    // exit code is unmoved in both directions — and it said why: the noise
+    // floor had never been measured, so a refusal would have fired on every
+    // run. #866 measured it over two runs: 25 paths, every one of them
+    // runtime state, none reviewer output. So the posture moves and the case
+    // moves with it, but it keeps the shape that mattered — BOTH directions,
+    // varying only whether the path is one the runtime owns.
+    //
+    // Keeping both halves is what makes the cheapest wrong fix visible.
+    // When this refusal fires on a tree nobody has investigated, the 5pm
+    // repair is to put `::warning` back and drop the exit. That reds the
+    // second half here while the first stays green, so the two cannot be
+    // confused for each other.
     const f = fixture();
     const { path, sha } = runBaseline(f);
     const clean = runDrift(f, path, sha);
     expect(clean.code, `a clean run was refused:\n${clean.stderr}`).toBe(0);
 
+    mkdirSync(join(f.home, ".npm", "_logs"), { recursive: true });
+    writeFileSync(join(f.home, ".npm", "_logs", "2026-10-21T04_48_31_402Z-debug-0.log"), "npm\n");
+    const runtime = runDrift(f, path, sha);
+    expect(
+      runtime.code,
+      `a write the runtime makes on every run refused the review:\n${runtime.stderr}`,
+    ).toBe(0);
+    expect(runtime.stdout + runtime.stderr).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+
     writeFileSync(join(f.home, "escaped.sh"), "#!/bin/sh\necho owned\n");
     const dirty = runDrift(f, path, sha);
-    expect(dirty.code, "the outside reading became a refusal").toBe(0);
-    expect(dirty.stdout + dirty.stderr).toContain(`::warning title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(dirty.code, "the outside reading is still only a warning").not.toBe(0);
+    expect(dirty.stderr).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(dirty.stderr, "the refusal does not name what it found").toContain("escaped.sh");
+  });
+});
+
+// ── AC-8 (#866): the measured floor, subtracted ─────────────────────────
+
+describe("AC-8 (#866): the runtime's own directories are subtracted", () => {
+  test("the list is the measurement, and the cases below are generated from it", () => {
+    // Found by the battery, not by reading. The per-entry cases below are
+    // generated from the list, so emptying the list does not RED them — it
+    // DELETES them, and a suite that silently runs four fewer cases reports
+    // the same green as one that ran them all. Predicted 7 red for an
+    // emptied list and measured 3; the four that vanished are these.
+    //
+    // So the population needs one case that is not generated from the thing
+    // it is about. The exact set rather than a floor, deliberately: the
+    // entries ARE the measurement recorded in AI_REVIEW_RUNTIME_HOME_PATHS,
+    // and a fifth one is a claim that somebody read a fifth directory in a
+    // real run. Editing this line is the friction that claim should cost.
+    expect([...AI_REVIEW_RUNTIME_HOME_PATHS]).toEqual([".claude.json", ".claude", ".npm", ".bun"]);
+  });
+
+  // One case per declared entry, generated from the list rather than written
+  // out, so removing an entry removes exactly one case — see the case above
+  // for why that is not the same as reddening one.
+  for (const entry of AI_REVIEW_RUNTIME_HOME_PATHS) {
+    test(`a write under ${entry} does not refuse the review`, () => {
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      // `.claude.json` is a file in the measured floor and the others are
+      // directories. Writing the entry itself as a file covers the first and
+      // is still inside the second's exclusion for the rest.
+      const target = join(f.home, entry);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "runtime state\n");
+      const r = runDrift(f, path, sha);
+      expect(r.code, `${entry} is in the measured floor and refused:\n${r.stderr}`).toBe(0);
+      expect(r.stdout + r.stderr).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    });
+  }
+
+  test("AC-9: the shapes a literal allowlist could not hold read CLEAN", () => {
+    // Four of the twelve paths in the measured floor carry a uuid, an epoch
+    // or an ISO timestamp, and a fifth is intermittent. These are the reason
+    // the subtraction is a prefix list and not a path list, so they are a
+    // case rather than a sentence.
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    for (const rel of [
+      ".claude/projects/-home-runner-work-pai-harness-pai-harness/5d4ec1e2-fb26-49f0-8abb-f81860933538.jsonl",
+      ".claude/backups/.claude.json.backup.1792558105498",
+      ".npm/_logs/2026-10-21T04_48_39_043Z-debug-0.log",
+      ".claude/plugins/plugin-directory-cache-v2.json",
+    ]) {
+      const target = join(f.home, rel);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "x");
+    }
+    const r = runDrift(f, path, sha);
+    expect(r.code, `a variable-component runtime path refused the review:\n${r.stderr}`).toBe(0);
+
+    // The control. Four writes that are all excluded is indistinguishable
+    // from a walk that found nothing — a broken `find`, an unset HOME, a
+    // baseline newer than everything. One unexcluded write in the same run
+    // proves the reading was taken.
+    writeFileSync(join(f.home, ".claudette-not-the-runtime"), "x");
+    const again = runDrift(f, path, sha);
+    expect(
+      again.code,
+      "the reading found nothing at all, so the four CLEAN readings above are UNMEASURED",
+    ).not.toBe(0);
+    expect(again.stderr).toContain(".claudette-not-the-runtime");
+  });
+
+  test("AC-11: both readings refuse, and the tree comparison is the one that names the file", () => {
+    // The outside block runs BEFORE the tree comparison on purpose — the
+    // comparison exits 0 the moment the tree is clean, and a clean tree is
+    // exactly the run in which an escaped write is the whole story. Making
+    // it exit where it reads would mean a reviewer that did both got the
+    // less specific diagnostic, so the annotation is emitted there and the
+    // EXIT is deferred. That ordering is a behaviour, so it is a case.
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    writeFileSync(join(f.home, "escaped.sh"), "#!/bin/sh\necho owned\n");
+    writeFileSync(join(f.work, "tracked.ts"), "export const a = 2;\n");
+    const r = runDrift(f, path, sha);
+
+    expect(r.code, `a run that did both was not refused:\n${r.stdout}${r.stderr}`).not.toBe(0);
+    expect(r.stderr, "the outside reading was swallowed by the tree refusal").toContain(
+      `::error title=${AI_REVIEW_OUTSIDE_TITLE}`,
+    );
+    expect(r.stderr, "the tree refusal never ran — the outside reading exited first").toContain(
+      `::error title=${AI_REVIEW_DRIFT_TITLE}`,
+    );
+    expect(r.stderr, "the refusal does not name the file the reviewer changed").toContain("tracked.ts");
+
+    // The control for the deferral, which the case above cannot give: with
+    // the tree clean, the outside reading has to carry the refusal on its
+    // own. Without this, moving the exit back to the reading site changes
+    // no verdict here.
+    const g = fixture();
+    const b = runBaseline(g);
+    writeFileSync(join(g.home, "escaped.sh"), "#!/bin/sh\necho owned\n");
+    const clean = runDrift(g, b.path, b.sha);
+    expect(clean.code, "a clean tree with an escaped write was not refused").not.toBe(0);
+    expect(clean.stderr).not.toContain(`::error title=${AI_REVIEW_DRIFT_TITLE}`);
+  });
+
+  test("AC-10: the exclusion is interpolated from the declared list, not typed", () => {
+    // Two shapes per entry — the path itself and everything under it — and
+    // nothing else. A hand-written fifth exclusion is a second declaring
+    // position for a list whose whole value is that there is one.
+    const script = buildDriftScript();
+    // Without this the loop below runs zero times against an empty list and
+    // the count compares 0 to 0 — the assertion holds vacuously, in the case
+    // whose whole job is to hold the list to what the script emits.
+    expect(
+      AI_REVIEW_RUNTIME_HOME_PATHS.length,
+      "the declared list is empty, so everything below this line asserts nothing",
+    ).toBeGreaterThan(0);
+    for (const entry of AI_REVIEW_RUNTIME_HOME_PATHS) {
+      expect(script, `${entry} is declared but not excluded`).toContain(
+        `-not -path "\${HOME}/${entry}" -not -path "\${HOME}/${entry}/*"`,
+      );
+    }
+    const emitted = (script.match(/-not -path "\$\{HOME\}\//g) || []).length;
+    expect(
+      emitted,
+      "an exclusion under $HOME is in the script that no entry of AI_REVIEW_RUNTIME_HOME_PATHS declares",
+    ).toBe(AI_REVIEW_RUNTIME_HOME_PATHS.length * 2);
   });
 });
 
@@ -392,7 +618,7 @@ describe("AC-5 (#843/1): a reading that could not be taken says so", () => {
     mkdirSync(odd, { recursive: true });
     writeFileSync(join(odd, "payload.bin"), "x");
     const r = runDrift(f, path, sha);
-    expect(r.stdout + r.stderr).toContain(`::warning title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(r.stdout + r.stderr).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
     expect(r.stdout + r.stderr).toContain("payload.bin");
   });
 });

@@ -773,13 +773,21 @@ export const AI_REVIEW_WORKSPACE_WRITE_DENY = "Edit(./**)";
  * finding 1 describes, a write that survives into another repository's job on
  * the same host. A permission is a claim; this is the reading.
  *
- * ## It warns rather than refusing, and the reason is a number nobody has
+ * ## It refused to refuse until the floor was measured, and now it is (#866)
  *
- * A runner writes under `$HOME` constantly for reasons unrelated to the
- * reviewer, and that noise floor has never been measured. A refusal firing on
- * every run is a gate consumers delete, which is worse than the silence it
- * replaces. This repository's own ai-review job is the instrument that
- * measures the floor; tightening comes after a number exists, not before.
+ * The posture here used to be a warning, and the reason was explicit: a runner
+ * writes under `$HOME` constantly for reasons unrelated to the reviewer, that
+ * noise floor had never been measured, and a refusal firing on every run is a
+ * gate consumers delete. This repository's own ai-review job was named as the
+ * instrument that would measure it.
+ *
+ * It did. Two completed runs, GitHub-hosted `ubuntu-latest`, different pull
+ * requests, neither touching this workflow: 12 paths and 13 paths, and **not
+ * one of the 25 is reviewer output.** Every one is the Claude CLI's own state,
+ * `npm`'s logs and npx cache, or bun's install cache. The floor is real, it is
+ * non-empty, and it is entirely attributable to the runtime — which is the
+ * reading that lets this become a refusal rather than the reading that
+ * prevents it. `AI_REVIEW_RUNTIME_HOME_PATHS` below is the subtraction.
  *
  * ## The time reference, and the gap it leaves
  *
@@ -807,6 +815,86 @@ export const AI_REVIEW_OUTSIDE_TITLE = "AI review wrote outside the checkout";
  * is why it is a named constant and not a literal buried in a heredoc.
  */
 export const AI_REVIEW_OUTSIDE_MAXDEPTH = 4;
+
+/**
+ * The runtime's own directories under `$HOME`, subtracted from the outside
+ * reading so that what is left is the reviewer (#866).
+ *
+ * ## The measurement, with the command beside it
+ *
+ * Two completed `ai-review` runs on GitHub-hosted `ubuntu-latest`, read with
+ * `gh api repos/<repo>/check-runs/<job-id>/annotations` — NOT by grepping the
+ * run log, which echoes the whole `run:` block and returns twenty "annotations"
+ * that are the step's own script text whether or not any of them ever fired.
+ * The store quoting the subject back; the real count for the same job is four,
+ * two of them from Actions itself.
+ *
+ * 25 paths across the two runs. Classified:
+ *
+ * - stable, same literal path each run: `.claude.json`, `.claude/.last-cleanup`,
+ *   `.claude/settings.json`, `.claude/state/mcp-discover-verdicts.json`,
+ *   `.claude/cache/model-access.json`, `.bun/install/cache/<hash>.npm`,
+ *   `.npm/_npx/<hash>/package.json`, `.npm/_npx/<hash>/package-lock.json`
+ * - present in both runs under a DIFFERENT name each time:
+ *   `.claude/projects/<slug>/<uuid>.jsonl`,
+ *   `.claude/backups/.claude.json.backup.<epoch-ms>`, and two
+ *   `.npm/_logs/<iso-timestamp>-debug-0.log`
+ * - present in one run and absent from the other:
+ *   `.claude/plugins/plugin-directory-cache-v2.json`
+ *
+ * ## Why this is a prefix list and not a path list
+ *
+ * Four of the twelve carry a uuid, an epoch or a timestamp, and a fifth is
+ * intermittent. A literal allowlist holds none of them, and an exact-set
+ * comparison would flake on the sixth run for a reason nobody could
+ * reconstruct. These four entries cover 25 of the 25 with nothing left over.
+ *
+ * ## Four entries, not the three the issue named
+ *
+ * #866 said three prefixes cover the floor, which is true of a STRING prefix:
+ * the directory `.claude` is a prefix of the file `.claude.json` once both
+ * are spelled out under a home directory. It is not true of a path-component
+ * match, and a component match is what this has to be — a string prefix on
+ * `.claude` also swallows a `.claudette` nobody has reasoned about. So
+ * `.claude.json` is its own entry, and the correction is recorded rather
+ * than quietly applied.
+ *
+ * The two paths are deliberately NOT written out in full here. `ST-3` in
+ * `test/structure.test.ts` greps every `.ts` for the RUNNING machine's own
+ * `$HOME` joined to `.claude`, so an absolute example of a runner's home is
+ * clean on a developer's laptop and red in CI — which is where this sentence
+ * was caught, having passed locally.
+ *
+ * ## What is NOT measured, said plainly
+ *
+ * The floor is measured on ONE runner image, and it is the GitHub-hosted one.
+ * #843 finding 1 is about a **self-hosted** runner, whose `$HOME` persists
+ * between jobs and whose floor nobody has read. A consumer on one of those
+ * will see the refusal fire with the path named, which is the one outcome that
+ * produces the next measurement instead of silence.
+ *
+ * ## The cheapest wrong fix, named
+ *
+ * When this refusal fires on a tree nobody has investigated, the 5pm repair is
+ * to put the reading back to a warning. It is one word, the red goes away, and
+ * the reading returns to the state #866 exists to end — a warning nobody acts
+ * on, over a floor that is now known to be subtractable.
+ * `test/ai-review-outside-reading.test.ts` AC-4 is a pair that asserts BOTH
+ * directions, so that repair reds the half that demands a refusal while the
+ * runtime-owned half stays green.
+ */
+export const AI_REVIEW_RUNTIME_HOME_PATHS: readonly string[] = [
+  // The Claude CLI's own settings file, at the root of $HOME rather than
+  // inside the directory below it.
+  ".claude.json",
+  // Settings, cache, state, plugin directory cache, transcript jsonl and
+  // rotated backups of the file above.
+  ".claude",
+  // npm's debug logs and the npx cache the pinned global tools install into.
+  ".npm",
+  // bun's install cache.
+  ".bun",
+];
 
 /**
  * The reviewer's turn budget. One declaring position; see `aiReviewClaudeArgs`.
@@ -2293,11 +2381,15 @@ export function buildDriftScript(): string {
     `as a run in which nothing was written there.`;
 
   const wroteOutside =
-    `the reviewer wrote OUTSIDE the checkout. The tool grant anchors at the ` +
-    `working directory, so these were permitted; on a shared self-hosted ` +
-    `runner \\$HOME persists between jobs, so a file here reaches another ` +
-    `repository's build (#843 finding 1). Reported, not refused: the noise ` +
-    `floor of this reading has not been measured yet. Paths`;
+    `the reviewer wrote OUTSIDE the checkout, to a path the runtime does not ` +
+    `own. The tool grant anchors at the working directory, so this was ` +
+    `permitted; on a shared self-hosted runner \\$HOME persists between jobs, ` +
+    `so a file here reaches another repository's build (#843 finding 1). The ` +
+    `runtime's own directories are subtracted before this fires — ` +
+    `${AI_REVIEW_RUNTIME_HOME_PATHS.join(", ")} — and those cover every path ` +
+    `two measured runs produced (#866). What is left is not the runtime. If ` +
+    `this runner is self-hosted its floor has never been read, and the path ` +
+    `below is the reading that would start that. Paths`;
 
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
@@ -2387,6 +2479,12 @@ fi
 # predicts the next filename — a scoped walk would be a detector narrower
 # than what it detects.
 #
+# What IS subtracted is the runtime's own directories, which is the opposite
+# move: not a list of places to look, a list of places whose writes have been
+# measured and attributed. Two runs produced 25 paths and all 25 are in these
+# four (#866). Interpolated from AI_REVIEW_RUNTIME_HOME_PATHS so the list has
+# one declaring position; a literal here would be a second.
+#
 # Two exclusions, both because the directory is already accounted for:
 # GITHUB_WORKSPACE is what the comparison below reads, and RUNNER_TEMP is
 # this job's own scratch, holding the payload, this baseline and the
@@ -2409,9 +2507,25 @@ else
     -newer "\${${AI_REVIEW_TREE_BEFORE_VAR}}" \\
     -not -path "\${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \\
     -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
+${AI_REVIEW_RUNTIME_HOME_PATHS.map(
+  // Two shapes per entry, with no special case for one that happens to name a
+  // file today: the `/*` form is simply a no-op against `.claude.json`, and a
+  // list with two spellings in it is a list that can drift.
+  p => `    -not -path "\${HOME}/${p}" -not -path "\${HOME}/${p}/*" \\`,
+).join("\n")}
     2>/dev/null | head -50 || true)
   if [ -n "\${outside}" ]; then
-    echo "::warning title=${AI_REVIEW_OUTSIDE_TITLE}::${wroteOutside}: $(escape_annotation "\${outside}")"
+    echo "::error title=${AI_REVIEW_OUTSIDE_TITLE}::${wroteOutside}: $(escape_annotation "\${outside}")" >&2
+    # The annotation is emitted HERE and the exit is DEFERRED to the end of
+    # the step, which is not the same thing as warning. Both readings refuse;
+    # exiting here would mean a reviewer that edited the tree AND touched
+    # \\\$HOME got the less specific of the two diagnostics, because this
+    # block runs first on purpose. The tree comparison below names the file
+    # it changed, so it goes first in the REPORT; this goes first in the
+    # READING, because the comparison exits 0 the moment the tree is clean
+    # and a clean tree is exactly the run in which an escaped write is the
+    # whole story.
+    outside_refused=1
   fi
 fi
 
@@ -2423,6 +2537,11 @@ fi
 added=$(printf '%s\\n' "\${after}" | grep -F -x -v -f "\${${AI_REVIEW_TREE_BEFORE_VAR}}" || true)
 
 if [ -z "\${added}" ]; then
+  # The tree is clean. The outside reading is the only thing left that can
+  # refuse, and it has already said what it found.
+  if [ -n "\${outside_refused:-}" ]; then
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+  fi
   exit 0
 fi
 
