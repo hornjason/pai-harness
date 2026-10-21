@@ -134,28 +134,39 @@ export function settingsCommands(docs: string[]): string[] {
  *
  * Truncate at the first `#`, `;`, `&&`, `||` or `|`; drop leading `VAR=`
  * assignments, an `env` prefix, a known interpreter and a `run`/`exec`
- * subcommand; skip flags; basename the **first positional** and compare it
- * by equality.
+ * subcommand; skip `--flag=value` flags and REFUSE on a bare one; basename
+ * the **first positional** and compare it by equality.
  *
- * ## What it does NOT close, named rather than left to be inferred
+ * ## WHAT THIS DOES NOT COVER
  *
- * An argv parse has its own differentials and this closes some of them:
+ * An argv parse has its own differentials. These are the ones still open,
+ * named here rather than left for the next reader to infer from the diff —
+ * **a stated limit is an answer; silence reads as coverage.** Each has a
+ * case in `test/hook-registration-evidence.test.ts` AC-6h asserting the
+ * stated behaviour, so this list cannot drift from the code without a red.
  *
- * - **`sh -c "bun X.hook.ts"`** — the real command is inside a quoted string
- *   and is not parsed. Reads as NOT naming the hook.
- * - **a wrapper script** that execs the hook. Reads as NOT naming it.
- * - **a `$VAR`-built path** whose variable holds the hook file name. The
- *   variable is not expanded here; `lib/hook-scopes.ts` compares the literal.
- * - **a hook executed in a LATER segment** — `make x && bun X.hook.ts`. The
- *   truncation stops at the first separator, so this reads as NOT naming it.
+ * | spelling | read as |
+ * |---|---|
+ * | `sh -c "bun X.hook.ts"` — the command is inside a quoted string | NOT naming it |
+ * | a wrapper script that `exec`s the hook | NOT naming it |
+ * | a `$VAR`-built path whose variable holds the file name | NOT naming it |
+ * | `make x && bun X.hook.ts` — executed in a LATER segment | NOT naming it |
+ * | `bun --inspect X.hook.ts` — a bare flag before the script | NOT naming it |
+ * | `bun -- X.hook.ts` — the end-of-flags separator | NOT naming it |
+ * | a computed specifier — `bun "$(resolve X)"` | NOT naming it |
  *
- * **Every one of those errs toward reporting a registration that exists as
- * absent**, and that is the direction chosen rather than tolerated. For
+ * **Every one errs toward reporting a registration that exists as absent**,
+ * and that is the direction chosen rather than tolerated. For
  * `hookRegistration` a missed registration becomes `unregistered` or
  * `unmeasured`, which `AC-4`/`AC-4b` turn red — loud, and someone fixes the
  * spelling. The opposite error is a guard reporting clean about its own
- * subject, which is what #910 cost. Do not "fix" a false red here by
- * widening this; add the spelling to the parse.
+ * subject, which is what #910 cost.
+ *
+ * So do not "fix" a false red by widening this. The two legal repairs are to
+ * add the spelling to the parse, or to change the registration to one the
+ * parse reads. No registry command in this tree carries a flag at all
+ * (measured: 0 of 19), which is why the bare-flag refusal costs nothing
+ * today and is the safe default for whatever is added tomorrow.
  *
  * `wrongTreeViolations` below deliberately still uses a substring match. The
  * error directions are opposite there: an over-broad match reports a
@@ -196,7 +207,22 @@ export function executedHookFile(command: string): string | null {
   const bare = (t: string) => t.replace(/^['"]+|['"]+$/g, "");
   if (i < tokens.length && INTERPRETERS.has(bare(tokens[i]).split("/").pop() ?? "")) i++;
   if (i < tokens.length && SUBCOMMANDS.has(bare(tokens[i]))) i++;
-  while (i < tokens.length && bare(tokens[i]).startsWith("-")) i++;
+  // The flag run is where an argv parse silently becomes wrong, and it is the
+  // differential a review found in the first version of this parse:
+  // `bun --preload Foo.hook.ts run real.ts` PRELOADS Foo and EXECUTES
+  // real.ts, so a loop that skips flags and then takes the next token reports
+  // a file that never ran as the registration.
+  //
+  // A `--flag=value` carries its value in its own token, so skipping it
+  // cannot swallow the script. A BARE flag may or may not consume the next
+  // token, and the only way to know is a list of value-taking flags — which
+  // goes stale the next time bun adds one, and a stale allowlist defaulting
+  // to "this was safe to skip" is the fail-open direction. So a bare flag is
+  // REFUSED: `null`, no registration read, loud.
+  while (i < tokens.length && bare(tokens[i]).startsWith("-")) {
+    if (!bare(tokens[i]).includes("=")) return null;
+    i++;
+  }
   if (i >= tokens.length) return null;
 
   const arg = bare(tokens[i]);
