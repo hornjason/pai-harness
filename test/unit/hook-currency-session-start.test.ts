@@ -104,11 +104,17 @@ describe('#879: the check runs without anyone remembering it', () => {
     expect(entry.enabled, 'the entry exists but is disabled, which runs nothing').toBe(true);
 
     // The fourth position self-referential-tests.md Tier 2 requires for a new
-    // hook. Asserted HERE because the census that owns the spec table only
-    // enforces a FLOOR -- "at least 14 rows" -- so deleting this hook's row
-    // was measured at 0 red (row M10). A floor cannot witness an addition,
-    // and three of the four required positions were held by something while
-    // the fourth was held by nobody.
+    // hook. Written here by #879 because the census that owned the spec table
+    // enforced a FLOOR -- "at least 14 rows" -- so deleting this hook's row
+    // was measured at 0 red (row M10). A floor cannot witness an addition.
+    //
+    // #898 replaced that floor with a named agreement over every hook on
+    // disk, so this line is now REDUNDANT for its original purpose and is
+    // kept deliberately rather than deleted: it is the per-hook case the
+    // census generalises, and the two go red for different reasons. Remove
+    // the row and both fail; point the census at the wrong file and only the
+    // census fails; stop generating this hook and only this fails. A
+    // redundancy that distinguishes causes is not duplication (#898 AC-2).
     expect(
       readFileSync(join(REPO_ROOT, 'specs', 'HOOK-ARCHITECTURE-SPEC.md'), 'utf-8'),
       'the hook has no row in the HOOK-ARCHITECTURE-SPEC current state table',

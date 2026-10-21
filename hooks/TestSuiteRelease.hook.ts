@@ -9,6 +9,12 @@
  * The TTL is the backstop for when this never fires (crash, reboot, kill -9) --
  * it is what stops a dead session from wedging the repo, so slot correctness
  * does not depend on this hook running.
+ *
+ * NOT REGISTERED — this hook is in no registry, so the TTL backstop above has
+ * been the only mechanism since #67 and every session that waited it out after
+ * a finished suite waited for this reason. Found by #898's census; whether to
+ * register it is #910, because registering a hook makes it run and a census
+ * does not get to decide that.
  */
 
 import { parseHookInput } from './lib/utils';
