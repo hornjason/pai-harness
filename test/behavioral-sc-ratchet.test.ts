@@ -199,3 +199,73 @@ describe("#328: the vacuous test cannot come back", () => {
     expect(restored).toContain("expect(true)");
   });
 });
+
+/**
+ * #211 — the same vacuous test, twenty lines below the one #328 repaired.
+ *
+ * The strict-mode matcher aggregate read:
+ *
+ * ```ts
+ * if (unmatched.length > 0) {
+ *   test(`${level}: ${unmatched.length} checked SCs have no pattern matcher`, () => {
+ *     console.warn(...);
+ *     expect(unmatched.length).toBeGreaterThan(0);
+ *   });
+ * }
+ * ```
+ *
+ * The assertion is inside the branch that only runs when it is true, so it
+ * has no failing input — and it was minting one PASSING test per strict spec,
+ * named after a number nothing asserts. #328's own describe above sits
+ * immediately before the block this guards, and its slice ENDS at the marker
+ * this one starts from, so the two windows abut and no region between the
+ * behavioral report and the `unimplemented` FAIL is left unwatched.
+ *
+ * The teeth are not being removed, because they were never here. #441 put
+ * them in `test/sc-binding-split.test.ts`, which bounds `UNCLAIMED_RATCHET`
+ * above and `CLAIMED_UNBINDABLE` in BOTH directions. That split is deliberate:
+ * the per-spec unmatched count measures the matcher registry's vocabulary —
+ * it rose 239 -> 242 -> 252 -> 258 across #397/#398/#399, every rise for a
+ * criterion that executed tests already cover — so driving it to zero means
+ * rewriting refusal criteria as weaker claims about file contents. This guard
+ * therefore asserts the block is a REPORT, not that the number is small.
+ *
+ * ## The cheapest wrong fix, named before the repair
+ *
+ * **Delete the whole `if (unmatched.length > 0)` branch.** No vacuous test,
+ * no noise, suite green. It does not survive: `start` below goes to -1 and
+ * the first assertion reddens — and #328's guard reddens too, because it
+ * slices UP TO this marker and `indexOf` returning -1 hands it most of the
+ * file, which contains `test(`.
+ */
+describe("#211: the strict-mode matcher aggregate is a report, not a passing test", () => {
+  test("the unmatched branch wraps no test() around a number nothing asserts", () => {
+    const src = stripJsComments(readFileSync(join(ROOT, "lib", "conformity.ts"), "utf-8"));
+    const start = src.indexOf("if (unmatched.length > 0) {");
+    expect(start, "the unmatched branch is not where this test expects it").toBeGreaterThan(-1);
+    const end = src.indexOf("if (unimplemented.length > 0) {", start);
+    expect(end, "the unimplemented branch that bounds this window is gone").toBeGreaterThan(start);
+    const block = src.slice(start, end);
+
+    expect(block, "the unmatched aggregate wraps its report in a test() again").not.toContain("test(");
+    expect(
+      block,
+      "expect(unmatched.length).toBeGreaterThan(0) is back — true by construction inside this branch",
+    ).not.toContain("expect(");
+    expect(block, "the unmatched listing stopped being emitted at all").toContain("console.warn(");
+  });
+
+  test("the guard would catch the restored form, and does not fire on the repair", () => {
+    // The mutation and the repair as literals, so the assertions above cannot
+    // be satisfied by a window that failed to locate anything.
+    const restored =
+      'if (unmatched.length > 0) {\n  test(`WARN`, () => { console.warn(x); expect(unmatched.length).toBeGreaterThan(0); });\n}';
+    expect(restored).toContain("test(");
+    expect(restored).toContain("expect(");
+
+    const repaired = 'if (unmatched.length > 0) {\n  console.warn(`WARN: ${n}`);\n}';
+    expect(repaired).not.toContain("test(");
+    expect(repaired).not.toContain("expect(");
+    expect(repaired).toContain("console.warn(");
+  });
+});
