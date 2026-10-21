@@ -1,11 +1,18 @@
-import { describe, test, expect } from "bun:test";
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { execSync } from "child_process";
 
+import {
+  containmentRemedy,
+  containmentVerdict,
+  readContainment,
+  WATCHED_DIRS,
+  WATCHED_FILES,
+} from "../lib/containment";
+
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
-const HOME = process.env.HOME || "";
-const CLAUDE_DIR = join(HOME, ".claude");
 
 interface ManifestEntry {
   source: string;
@@ -39,7 +46,42 @@ describe("ST-1: Migrated files exist at dest", () => {
   }
 });
 
+/**
+ * ST-2 and ST-2b read a fixture tree this suite builds, NOT the developer's
+ * home directory (#921). The old locations on a real machine are read by
+ * `bun scripts/check-containment.ts`, whose exit code is where a stray shows
+ * up for whoever can act on it — a file belonging to another process must
+ * not be able to set the verdict of the suite that gates this repository.
+ *
+ * Every case plants a stray and asserts the REFUSAL before it asserts a
+ * clean tree passes. A freshly built fixture is empty, so "the old locations
+ * hold no harness files" is true of it before the check exists and true of
+ * it after; only the planted direction can tell those apart.
+ */
+let containmentFixtures: string;
+
+beforeAll(() => {
+  containmentFixtures = mkdtempSync(join(tmpdir(), "rungate-containment-"));
+});
+
+afterAll(() => {
+  rmSync(containmentFixtures, { recursive: true, force: true });
+});
+
+/** An old-harness root with every watched directory present and empty. */
+function oldRoot(name: string): string {
+  const root = join(containmentFixtures, name);
+  for (const { dir } of WATCHED_DIRS) mkdirSync(join(root, dir), { recursive: true });
+  for (const f of WATCHED_FILES) {
+    mkdirSync(join(root, f.split("/").slice(0, -1).join("/")), { recursive: true });
+  }
+  return root;
+}
+
 describe("ST-2: Containment — harness files not in old locations", () => {
+  // The population the pre-#921 check named one by one. Every one of them
+  // must still be something the reading would refuse; the list shrinking is
+  // the way this check dies quietly.
   const harnessPatterns = [
     "workflows/ship.js",
     "workflows/prove.js",
@@ -59,11 +101,22 @@ describe("ST-2: Containment — harness files not in old locations", () => {
   ];
 
   for (const pattern of harnessPatterns) {
-    const oldPath = join(CLAUDE_DIR, pattern);
-    test(`${pattern} not in ~/.claude/`, () => {
-      expect(existsSync(oldPath)).toBe(false);
+    test(`${pattern} in an old location is refused`, () => {
+      const root = oldRoot(`pattern-${pattern.replace(/\//g, "-")}`);
+      writeFileSync(join(root, pattern), "// a second copy of the harness\n");
+      const readings = readContainment(root);
+      expect(containmentVerdict(readings)).toBe("STRAY");
+      expect(readings.flatMap(r => r.strays)).toContain(join(root, pattern));
     });
   }
+
+  test("the same tree without any of them reads CLEAN", () => {
+    const readings = readContainment(oldRoot("patterns-clean"));
+    expect(
+      containmentVerdict(readings),
+      readings.map(r => `${r.subject}=${r.state}`).join(", "),
+    ).toBe("CLEAN");
+  });
 });
 
 describe("ST-2c: Hook independence — no PAI imports", () => {
@@ -80,19 +133,52 @@ describe("ST-2c: Hook independence — no PAI imports", () => {
 });
 
 describe("ST-2b: Containment — no harness-pattern files in old locations", () => {
-  const oldHarnessDirs = [
-    { dir: join(CLAUDE_DIR, "workflows"), ext: ".js" },
-    { dir: join(CLAUDE_DIR, "gates"), ext: ".ts" },
-    { dir: join(CLAUDE_DIR, "lib"), ext: ".ts" },
-  ];
+  for (const { dir, ext } of WATCHED_DIRS) {
+    test(`a ${ext} file planted in ${dir}/ is refused`, () => {
+      const root = oldRoot(`dir-${dir}`);
+      const planted = join(root, dir, `stray${ext}`);
+      writeFileSync(planted, "// a second copy of the harness\n");
+      const readings = readContainment(root);
+      expect(readings.find(r => r.subject === `${dir}/*${ext}`)!.state).toBe("STRAY");
+      expect(containmentVerdict(readings)).toBe("STRAY");
+    });
 
-  for (const { dir, ext } of oldHarnessDirs) {
-    test(`no ${ext} files in ${dir.replace(HOME, "~")}`, () => {
-      if (!existsSync(dir)) return;
-      const files = readdirSync(dir).filter(f => f.endsWith(ext));
-      expect(files).toEqual([]);
+    test(`${dir}/ with no ${ext} file reads CLEAN, and an absent ${dir}/ does not`, () => {
+      const root = oldRoot(`dir-clean-${dir}`);
+      writeFileSync(join(root, dir, "unrelated.md"), "not a harness file\n");
+      expect(readContainment(root).find(r => r.subject === `${dir}/*${ext}`)!.state).toBe("CLEAN");
+
+      // Absence is the third state. The pre-#921 check returned early here
+      // and reported a pass having looked at nothing.
+      const bare = join(containmentFixtures, `dir-absent-${dir}`);
+      mkdirSync(bare, { recursive: true });
+      expect(readContainment(bare).find(r => r.subject === `${dir}/*${ext}`)!.state).toBe(
+        "UNMEASURED",
+      );
     });
   }
+
+  test("the refusal names the file, its directory, and what to do", () => {
+    const root = oldRoot("remedy");
+    writeFileSync(join(root, "workflows", "stray.js"), "// a second copy\n");
+    const message = containmentRemedy(HARNESS_ROOT, readContainment(root));
+    expect(message, "the file is not named").toContain(join(root, "workflows", "stray.js"));
+    expect(message, "the directory is not named").toContain("moved out of");
+    expect(message, "the reader is not told where to take the real reading").toContain(
+      "scripts/check-containment.ts",
+    );
+    expect(message, "the family of repository-level checks is not routed to").toContain(
+      ".claude/rules/self-referential-tests.md",
+    );
+  });
+
+  test("an UNMEASURED location is reported in the refusal, not folded into a pass", () => {
+    const bare = join(containmentFixtures, "remedy-unmeasured");
+    mkdirSync(bare, { recursive: true });
+    const readings = readContainment(bare);
+    expect(containmentVerdict(readings)).toBe("UNMEASURED");
+    expect(containmentRemedy(HARNESS_ROOT, readings)).toContain("UNMEASURED and are NOT clean");
+  });
 });
 
 describe("ST-3: Path purity — no hardcoded ~/.claude/ paths", () => {
@@ -103,8 +189,12 @@ describe("ST-3: Path purity — no hardcoded ~/.claude/ paths", () => {
       expect(existingDirs.length).toBeGreaterThan(0);
       return;
     }
+    // Any home-shaped absolute path, not `$HOME` interpolated (#921). The
+    // old pattern searched for the path of whoever ran the suite, so in CI —
+    // where the home directory is `/home/runner` and no source could name it
+    // — the check was vacuous and could not fail.
     const result = execSync(
-      `grep -rn '${HOME}/.claude' ${existingDirs.join(" ")} --include='*.ts' --include='*.js' 2>/dev/null || true`,
+      `grep -rnE '(/Users/|/home/)[A-Za-z0-9._-]+/\\.claude' ${existingDirs.join(" ")} --include='*.ts' --include='*.js' 2>/dev/null || true`,
       { encoding: "utf8" }
     );
     const lines = result.trim().split("\n").filter(l => l.length > 0);
