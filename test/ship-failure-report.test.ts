@@ -35,6 +35,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { structuralCut } from "../lib/source-slice";
+
 const REPO_ROOT = join(import.meta.dir, "..");
 const SHIP_PATH = join(REPO_ROOT, "workflows", "ship.js");
 const shipSource = readFileSync(SHIP_PATH, "utf-8");
@@ -54,6 +56,26 @@ const BLOCK: string = (() => {
   }
   return shipSource.slice(a, b);
 })();
+
+/**
+ * #889's retry note, taken as ship.js's own DECLARATION rather than as a
+ * value this file types out.
+ *
+ * `shipFailed` reads it from module scope, which the ledger block does not
+ * contain, so without this the funnel throws `ReferenceError` inside every
+ * case here — which is what it did: 21 of this file's cases went red on CI
+ * shard 4 while the two suites #889 was written against stayed green. The
+ * sibling slicer in `test/terminal-failure-reason.test.ts` had already been
+ * given the binding; this one was missed, and the general form is worth the
+ * sentence — **a new module-scope binding breaks every `new Function` slicer
+ * of the function that reads it, not only the one you know about.**
+ *
+ * Prepending the declaration rather than injecting a literal keeps the note
+ * to one declaring position in the tree, which is what `#889 AC-1` asserts.
+ */
+const NOTE_DECLARATION: string = structuralCut(shipSource, "const RESUME_REPLAYS_NOTE =", {
+  endAnchor: "\n\n",
+});
 
 interface Entry {
   kind: string;
@@ -98,7 +120,10 @@ function loadLedger(block: string, logs: string[] = []): Ledger {
     // #640: the funnels restore the shared checkout on the way out. Stubbed
     // rather than omitted — an absent binding is a ReferenceError inside the
     // funnel, which would red every case here for a reason unrelated to it.
-    "var restorePrimaryCheckout = async () => ({ reading: 'UNCHANGED', restoreOutcome: 'ALREADY_ON_START', lines: [] });\n";
+    "var restorePrimaryCheckout = async () => ({ reading: 'UNCHANGED', restoreOutcome: 'ALREADY_ON_START', lines: [] });\n" +
+    // #889: the funnel returns the retry note, so the binding has to be here.
+    // ship.js's own declaration, not a copy — see NOTE_DECLARATION above.
+    `${NOTE_DECLARATION}\n`;
   const out = new Function(
     "__log__",
     `var log = __log__;\n${prelude}${block}\n` +

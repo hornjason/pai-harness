@@ -67,7 +67,12 @@ describe("#889: a terminal refusal says that resume will replay it", () => {
   });
 
   test("AC-2: the note names the mechanism, not just the advice", () => {
-    const note = structuralCut(SHIP, `const ${BINDING} =`, { endAnchor: "\n\n" });
+    // The anchor is spelled out rather than built from BINDING, and that is
+    // #668's rule rather than a style choice: the ambiguity scan reads anchor
+    // LITERALS at each call site, so a template literal is unscannable and a
+    // duplicated anchor pointing at ship.js would go unnoticed. Measured —
+    // the interpolated form reds `no UNREADABLE anchor is pointed at ship.js`.
+    const note = structuralCut(SHIP, "const RESUME_REPLAYS_NOTE =", { endAnchor: "\n\n" });
     // "Start a fresh run" on its own is advice. What makes it actionable is
     // WHY the cheap retry cannot work, because an operator who does not know
     // that will reach for resume again on the next refusal.
@@ -80,7 +85,12 @@ describe("#889: a terminal refusal says that resume will replay it", () => {
     // Without this, the advice sends an operator to repair state and watch a
     // fresh run archive the repair. Half an instruction is the thing the
     // issue is complaining about, reissued.
-    const note = structuralCut(SHIP, `const ${BINDING} =`, { endAnchor: "\n\n" });
+    // The anchor is spelled out rather than built from BINDING, and that is
+    // #668's rule rather than a style choice: the ambiguity scan reads anchor
+    // LITERALS at each call site, so a template literal is unscannable and a
+    // duplicated anchor pointing at ship.js would go unnoticed. Measured —
+    // the interpolated form reds `no UNREADABLE anchor is pointed at ship.js`.
+    const note = structuralCut(SHIP, "const RESUME_REPLAYS_NOTE =", { endAnchor: "\n\n" });
     expect(note, "the note does not warn that a fresh run archives the repaired state").toMatch(
       /archiv/i,
     );
@@ -106,13 +116,24 @@ describe("#889: a terminal refusal says that resume will replay it", () => {
     // The object is also the better subject: the claim is that an operator
     // READS the note, and a note declared in a function it never returns is
     // the defect this file is about.
-    for (const [fn, anchor] of [
-      ["terminalFailure", "  return {\n    status,\n    ...extra,"],
-      ["shipFailed", "  return {\n    status: 'SHIP_FAILED',"],
-    ] as const) {
-      const returned = structuralCut(SHIP, anchor, { balanced: "{" });
-      expect(returned, `${fn}'s returned object does not carry ${BINDING}`).toContain(BINDING);
-    }
+    // Unrolled rather than looped, for the same #668 reason as AC-2: a loop
+    // variable is an anchor the ambiguity scan cannot read, and an anchor it
+    // cannot read is one it cannot warn about when ship.js grows a second
+    // copy of it. Two call sites, two literals, nothing computed.
+    const fromTerminalFailure = structuralCut(SHIP, "  return {\n    status,\n    ...extra,", {
+      balanced: "{",
+    });
+    expect(
+      fromTerminalFailure,
+      `terminalFailure's returned object does not carry ${BINDING}`,
+    ).toContain(BINDING);
+
+    const fromShipFailed = structuralCut(SHIP, "  return {\n    status: 'SHIP_FAILED',", {
+      balanced: "{",
+    });
+    expect(fromShipFailed, `shipFailed's returned object does not carry ${BINDING}`).toContain(
+      BINDING,
+    );
   });
 });
 
