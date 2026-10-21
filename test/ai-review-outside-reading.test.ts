@@ -206,6 +206,74 @@
  * nothing — `.claude.json` appears twice in the module, once in the array
  * and once in the docblock recording the measurement — and was re-cut
  * against a unique anchor.
+ *
+ * ## #871: the subtraction was too coarse, and the battery above could not
+ * have seen it
+ *
+ * #866 subtracted four prefixes and made all four silent. Four of the twelve
+ * measured paths are not inert state — `.claude.json` declares MCP servers,
+ * `.claude/settings.json` declares hooks, `.claude/plugins` is the directory
+ * the CLI loads from, and `.npm/_npx/<hash>/package.json` is what the next
+ * `npx` resolves. On a shared self-hosted runner `$HOME` persists between
+ * jobs, so a reviewer that writes a hook into `settings.json` reaches another
+ * repository's build — #843 finding 1 exactly, made SILENT by the change that
+ * made the surrounding reading refuse.
+ *
+ * Found by an automated security review of `2fa246b9`. **Every row of the U
+ * battery varied the list or the posture and none asked what the entries
+ * CONTAIN**, so no count above could have moved; the `AC-8` per-entry cases
+ * assert a runtime write is exit 0, which is exactly what the blind spot
+ * produces. A battery is only as wide as the question its rows vary.
+ *
+ * The fix is two lists and two passes: inert state subtracted silently,
+ * trust-bearing config excluded from the REFUSAL and reported by name as
+ * UNMEASURED — because the runtime rewrites those files on every run, so
+ * neither their presence nor their content separates a reviewer's write from
+ * the CLI's, and a reading nothing can take is not a reading that passed.
+ *
+ * Measured over this file alone. **Baseline read FIRST** and every count
+ * predicted before the run, in `/tmp/871-battery/predictions.md`.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | baseline | 27 pass, 0 fail | **27 pass, 0 fail, 27 cases** | — |
+ * | W1 pass 2 deleted — the genuine pre-#871 behaviour | 9 | **9 of 27** | a write to `$HOME/.claude/settings.json`: original is exit 0 plus the named UNMEASURED annotation, mutant is exit 0 and SILENT |
+ * | W2 **cheapest wrong fix** — the six config entries dropped from the exclusion, so the refusal fires on them | 9 | **9 of 27** | the same write: mutant refuses, which on a real runner is every pull request |
+ * | W3 `AI_REVIEW_RUNTIME_CONFIG_PATHS` emptied | 5 red, 21 cases | **5 of 21** | the same write |
+ * | W4 `AI_REVIEW_RUNTIME_INERT_PATHS` emptied | 5 red, 22 cases | **5 of 22** | an npm debug log: original exits 0, mutant refuses |
+ * | W5 `.claude/state` MOVED from config to inert | 2 | **2 of 27** | a write to `$HOME/.claude/state/mcp-discover-verdicts.json`: original names it, mutant is silent. Both exit 0 |
+ * | W6 pass 2 matches BOTH lists | 7 | **7 of 27** | an npm debug log: original silent, mutant annotated |
+ * | W7 the annotation emitted without its path list | 8 | **8 of 27** | any config write: identical message, no paths |
+ *
+ * **W3 and W4 predicted a CASE COUNT as well as a red count, and that is the
+ * whole inheritance from U3.** Both empty a list the per-entry cases are
+ * generated from, so both DELETE cases rather than reddening them — 21 and 22
+ * against a baseline of 27. The two non-generated exact-set cases are what
+ * make those rows non-zero at all, and predicting the case count is how a
+ * reader can tell a row that caught something from a row that ran less.
+ *
+ * **W5 is the row worth copying.** Moving one entry between the lists leaves
+ * `AC-12`'s coverage case GREEN — every measured path is still in exactly one
+ * list — and changes the behaviour at that path from named to silent. A
+ * coverage assertion cannot see a reclassification, which is why the two
+ * exact-set pins sit beside it rather than being folded into it.
+ *
+ * **W1 and W2 are both 9 and they are different nines.** W1's six config
+ * cases red on the missing annotation; W2's red on the exit code. That is the
+ * argument for `AC-13` asserting both halves in one case: either half alone
+ * is satisfied by one of these two mutants.
+ *
+ * **One assertion of mine was red on first run and the red was correct.**
+ * `AC-14` searched the whole refusal line for `settings.json`, and the
+ * refusal's own prose ENUMERATES both lists to explain what it subtracted —
+ * so the assertion matched the sentence rather than the finding. Fixed by
+ * comparing against the absolute path, which prose cannot contain;
+ * `.claude/rules/checks-must-be-able-to-fail.md`, "search the slice, not the
+ * document", met from the other side and caught by the case itself.
+ *
+ * None of the seven mutations is left in the tree; all were restored from a
+ * `cp` backup, never `git checkout --`, and `lib/scaffold/ai-review-step.ts`
+ * was confirmed byte-identical by sha256 after every row.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
@@ -219,13 +287,27 @@ import {
   AI_REVIEW_DRIFT_TITLE,
   AI_REVIEW_OUTSIDE_MAXDEPTH,
   AI_REVIEW_OUTSIDE_TITLE,
-  AI_REVIEW_RUNTIME_HOME_PATHS,
+  AI_REVIEW_RUNTIME_CONFIG_PATHS,
+  AI_REVIEW_RUNTIME_CONFIG_UNMEASURED,
+  AI_REVIEW_RUNTIME_INERT_PATHS,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
   AI_REVIEW_TREE_BEFORE_VAR,
   AI_REVIEW_UNMEASURED_TITLE,
   buildBaselineScript,
   buildDriftScript,
 } from "../lib/scaffold/ai-review-step";
+
+/**
+ * The config annotation as it appears in OUTPUT.
+ *
+ * The exported constant carries `\$HOME` so the generated shell emits a
+ * literal `$HOME` rather than expanding this process's; bash consumes that
+ * backslash on the way to stdout. Derived from the export rather than typed
+ * out, so the two cannot drift — a negative assertion against a drifted copy
+ * of a message passes for the wrong reason, which is the entire hazard the
+ * export exists to remove.
+ */
+const CONFIG_UNMEASURED_TEXT = AI_REVIEW_RUNTIME_CONFIG_UNMEASURED.replace("\\$", "$");
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -422,8 +504,8 @@ describe("AC-3 (#843/1): the reading does not double-count or misfire", () => {
 
 // ── AC-8 (#866): the measured floor, subtracted ─────────────────────────
 
-describe("AC-8 (#866): the runtime's own directories are subtracted", () => {
-  test("the list is the measurement, and the cases below are generated from it", () => {
+describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () => {
+  test("the INERT list is the measurement, and the cases below are generated from it", () => {
     // Found by the battery, not by reading. The per-entry cases below are
     // generated from the list, so emptying the list does not RED them — it
     // DELETES them, and a suite that silently runs four fewer cases reports
@@ -432,50 +514,214 @@ describe("AC-8 (#866): the runtime's own directories are subtracted", () => {
     //
     // So the population needs one case that is not generated from the thing
     // it is about. The exact set rather than a floor, deliberately: the
-    // entries ARE the measurement recorded in AI_REVIEW_RUNTIME_HOME_PATHS,
-    // and a fifth one is a claim that somebody read a fifth directory in a
-    // real run. Editing this line is the friction that claim should cost.
-    expect([...AI_REVIEW_RUNTIME_HOME_PATHS]).toEqual([".claude.json", ".claude", ".npm", ".bun"]);
+    // entries ARE the measurement, and a sixth one is a claim that somebody
+    // read a sixth directory in a real run. Editing this line is the
+    // friction that claim should cost.
+    expect([...AI_REVIEW_RUNTIME_INERT_PATHS]).toEqual([
+      ".claude/.last-cleanup",
+      ".claude/cache",
+      ".claude/projects",
+      ".npm/_logs",
+      ".bun/install/cache",
+    ]);
+  });
+
+  test("the CONFIG list is the measurement, and the cases below are generated from it", () => {
+    // Same argument, and the friction matters more on this side: an entry
+    // MOVED from here to the inert list is a claim that a write there cannot
+    // reach the CLI's next start, which is the claim #871 exists because
+    // nobody made. Both lists are pinned so neither can be edited quietly.
+    expect([...AI_REVIEW_RUNTIME_CONFIG_PATHS]).toEqual([
+      ".claude.json",
+      ".claude/settings.json",
+      ".claude/plugins",
+      ".claude/backups",
+      ".claude/state",
+      ".npm/_npx",
+    ]);
+  });
+
+  test("AC-12 (#871): the two lists are disjoint and neither nests inside the other", () => {
+    const inert = [...AI_REVIEW_RUNTIME_INERT_PATHS];
+    const config = [...AI_REVIEW_RUNTIME_CONFIG_PATHS];
+    expect(inert.filter(p => config.includes(p)), "a path is classified both ways").toEqual([]);
+
+    // Nesting is the failure a set comparison cannot see. A CONFIG entry that
+    // contains an INERT one makes pass 2 annotate inert state — noise in the
+    // annotation nobody can act on. An INERT entry containing a CONFIG one
+    // changes nothing in pass 1 (both are excluded) and nothing in pass 2
+    // (which matches positively), so it is harmless today and a trap the
+    // moment either pass changes shape. Both directions, named separately.
+    const nested = (a: string, b: string) => b === a || b.startsWith(`${a}/`);
+    expect(
+      config.flatMap(c => inert.filter(i => nested(c, i)).map(i => `${c} contains ${i}`)),
+      "a config prefix swallows inert state, so pass 2 annotates writes nobody needs to see",
+    ).toEqual([]);
+    expect(
+      inert.flatMap(i => config.filter(c => nested(i, c)).map(c => `${i} contains ${c}`)),
+      "an inert prefix contains a config path",
+    ).toEqual([]);
+  });
+
+  test("AC-12 (#871): every path the two runs measured falls in exactly one list", () => {
+    // The 25 paths of #866's measurement, reduced to the 13 distinct shapes.
+    // Written out HERE rather than in the lib docblock because `ST-3` greps
+    // every `.ts` for the running machine's own $HOME joined to `.claude` —
+    // these are relative, which is what makes them safe to spell out.
+    //
+    // This is the case that makes the split checkable rather than asserted
+    // in prose. Dropping an entry from either list leaves a measured path
+    // matching nothing, and MOVING one between lists leaves every path
+    // matched — which is why the two exact-set cases above exist beside it.
+    const MEASURED = [
+      ".claude.json",
+      ".claude/.last-cleanup",
+      ".claude/settings.json",
+      ".claude/state/mcp-discover-verdicts.json",
+      ".claude/cache/model-access.json",
+      ".claude/projects/-a-slug/5d4ec1e2-fb26-49f0-8abb-f81860933538.jsonl",
+      ".claude/backups/.claude.json.backup.1792558105498",
+      ".claude/plugins/plugin-directory-cache-v2.json",
+      ".npm/_npx/9d1f0c2e4b7a8365/package.json",
+      ".npm/_npx/9d1f0c2e4b7a8365/package-lock.json",
+      ".npm/_logs/2026-10-21T04_48_31_402Z-debug-0.log",
+      ".npm/_logs/2026-10-21T04_48_39_043Z-debug-0.log",
+      ".bun/install/cache/c17f4447ebe3362d.npm",
+    ];
+    const under = (prefix: string, p: string) => p === prefix || p.startsWith(`${prefix}/`);
+    const unclassified: string[] = [];
+    const both: string[] = [];
+    for (const p of MEASURED) {
+      const i = AI_REVIEW_RUNTIME_INERT_PATHS.some(e => under(e, p));
+      const c = AI_REVIEW_RUNTIME_CONFIG_PATHS.some(e => under(e, p));
+      if (!i && !c) unclassified.push(p);
+      if (i && c) both.push(p);
+    }
+    expect(unclassified, "a measured path is in neither list, so the refusal fires on every run").toEqual([]);
+    expect(both, "a measured path is in both lists").toEqual([]);
   });
 
   // One case per declared entry, generated from the list rather than written
-  // out, so removing an entry removes exactly one case — see the case above
+  // out, so removing an entry removes exactly one case — see the cases above
   // for why that is not the same as reddening one.
-  for (const entry of AI_REVIEW_RUNTIME_HOME_PATHS) {
-    test(`a write under ${entry} does not refuse the review`, () => {
+  for (const entry of AI_REVIEW_RUNTIME_INERT_PATHS) {
+    test(`AC-8: a write under ${entry} is exit 0 and SILENT`, () => {
       const f = fixture();
       const { path, sha } = runBaseline(f);
-      // `.claude.json` is a file in the measured floor and the others are
-      // directories. Writing the entry itself as a file covers the first and
-      // is still inside the second's exclusion for the rest.
       const target = join(f.home, entry);
       mkdirSync(join(target, ".."), { recursive: true });
       writeFileSync(target, "runtime state\n");
       const r = runDrift(f, path, sha);
-      expect(r.code, `${entry} is in the measured floor and refused:\n${r.stderr}`).toBe(0);
-      expect(r.stdout + r.stderr).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      const text = r.stdout + r.stderr;
+      expect(r.code, `${entry} is inert runtime state and refused:\n${r.stderr}`).toBe(0);
+      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      // Silent is the claim. Exit 0 alone is satisfied by a path that is
+      // annotated as runtime config, which is a different reading.
+      expect(text, `${entry} is inert state and was reported as runtime config`).not.toContain(
+        CONFIG_UNMEASURED_TEXT,
+      );
     });
   }
+
+  for (const entry of AI_REVIEW_RUNTIME_CONFIG_PATHS) {
+    test(`AC-13 (#871): a write under ${entry} is exit 0 AND named UNMEASURED`, () => {
+      // Both halves in ONE case, deliberately. The exit alone is satisfied by
+      // #866's silent exclusion — the defect this issue exists for. The
+      // annotation alone is satisfied by a refusal, which is #871's own
+      // cheapest wrong fix and goes red on every pull request. Only the
+      // conjunction is the behaviour.
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, entry);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "hooks: []\n");
+      const r = runDrift(f, path, sha);
+      const text = r.stdout + r.stderr;
+      expect(r.code, `${entry} is written by the runtime every run and refused:\n${r.stderr}`).toBe(0);
+      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      expect(text, `${entry} was subtracted in silence — #866's blind spot`).toContain(
+        `::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${CONFIG_UNMEASURED_TEXT}`,
+      );
+      // The absolute path, not the entry name: the refusal's prose enumerates
+      // both lists, so a relative spelling is satisfied by a sentence.
+      expect(text, "the annotation does not name the path it found").toContain(target);
+    });
+  }
+
+  test("AC-14 (#871): a config write beside an unlisted one refuses, and both are named", () => {
+    // The config reading must not swallow the refusal. It is a warning and
+    // the refusal is an error, so nothing in the ordering should let one
+    // suppress the other — which is a behaviour, so it is a case.
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    mkdirSync(join(f.home, ".claude"), { recursive: true });
+    writeFileSync(join(f.home, ".claude", "settings.json"), '{"hooks":{}}');
+    writeFileSync(join(f.home, "escaped.sh"), "#!/bin/sh\necho owned\n");
+    const r = runDrift(f, path, sha);
+    const text = r.stdout + r.stderr;
+    expect(r.code, "the config annotation swallowed the refusal").not.toBe(0);
+    expect(r.stderr).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(r.stderr, "the refusal does not name the unlisted write").toContain("escaped.sh");
+    expect(text, "the refusal suppressed the config reading").toContain(
+      CONFIG_UNMEASURED_TEXT,
+    );
+    expect(text, "the config annotation does not name the config path").toContain(
+      join(f.home, ".claude", "settings.json"),
+    );
+    // And the refusal is about the unlisted path only — a config path in the
+    // refusal would mean pass 1 stopped excluding it.
+    //
+    // Compared against the ABSOLUTE path, because the refusal's own prose
+    // enumerates both lists to explain what it subtracted, so a search for
+    // `settings.json` over the message matches the sentence rather than the
+    // finding. The first draft of this assertion did exactly that and this
+    // case went red for it — `.claude/rules/checks-must-be-able-to-fail.md`,
+    // "search the slice, not the document", met from the other side.
+    const refusal = r.stderr.slice(r.stderr.indexOf(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`));
+    const line = refusal.slice(0, refusal.indexOf("\n"));
+    expect(line, "a config path reached the REFUSAL").not.toContain(
+      join(f.home, ".claude", "settings.json"),
+    );
+    expect(line, "the refusal is not reporting the unlisted write by its real path").toContain(
+      join(f.home, "escaped.sh"),
+    );
+  });
 
   test("AC-9: the shapes a literal allowlist could not hold read CLEAN", () => {
     // Four of the twelve paths in the measured floor carry a uuid, an epoch
     // or an ISO timestamp, and a fifth is intermittent. These are the reason
     // the subtraction is a prefix list and not a path list, so they are a
     // case rather than a sentence.
+    //
+    // Two of the four are inert and two are config, so the run is also the
+    // pair that shows the split surviving a variable component: all four are
+    // exit 0, and exactly the config two are named.
     const f = fixture();
     const { path, sha } = runBaseline(f);
-    for (const rel of [
-      ".claude/projects/-home-runner-work-pai-harness-pai-harness/5d4ec1e2-fb26-49f0-8abb-f81860933538.jsonl",
-      ".claude/backups/.claude.json.backup.1792558105498",
+    const INERT_SHAPES = [
+      ".claude/projects/-a-slug/5d4ec1e2-fb26-49f0-8abb-f81860933538.jsonl",
       ".npm/_logs/2026-10-21T04_48_39_043Z-debug-0.log",
+    ];
+    const CONFIG_SHAPES = [
+      ".claude/backups/.claude.json.backup.1792558105498",
       ".claude/plugins/plugin-directory-cache-v2.json",
-    ]) {
+    ];
+    for (const rel of [...INERT_SHAPES, ...CONFIG_SHAPES]) {
       const target = join(f.home, rel);
       mkdirSync(join(target, ".."), { recursive: true });
       writeFileSync(target, "x");
     }
     const r = runDrift(f, path, sha);
     expect(r.code, `a variable-component runtime path refused the review:\n${r.stderr}`).toBe(0);
+
+    const text = r.stdout + r.stderr;
+    const annotation = text.slice(text.indexOf(CONFIG_UNMEASURED_TEXT));
+    for (const rel of CONFIG_SHAPES) {
+      expect(annotation, `${rel} is trust-bearing and was subtracted in silence`).toContain(rel);
+    }
+    for (const rel of INERT_SHAPES) {
+      expect(text, `${rel} is inert state and was annotated as runtime config`).not.toContain(rel);
+    }
 
     // The control. Four writes that are all excluded is indistinguishable
     // from a walk that found nothing — a broken `find`, an unset HOME, a
@@ -524,28 +770,49 @@ describe("AC-8 (#866): the runtime's own directories are subtracted", () => {
     expect(clean.stderr).not.toContain(`::error title=${AI_REVIEW_DRIFT_TITLE}`);
   });
 
-  test("AC-10: the exclusion is interpolated from the declared list, not typed", () => {
+  test("AC-10: both passes are interpolated from the declared lists, not typed", () => {
     // Two shapes per entry — the path itself and everything under it — and
-    // nothing else. A hand-written fifth exclusion is a second declaring
+    // nothing else. A hand-written extra exclusion is a second declaring
     // position for a list whose whole value is that there is one.
     const script = buildDriftScript();
-    // Without this the loop below runs zero times against an empty list and
-    // the count compares 0 to 0 — the assertion holds vacuously, in the case
-    // whose whole job is to hold the list to what the script emits.
+    const both = [...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS];
+    // Without this the loops below run zero times against empty lists and the
+    // counts compare 0 to 0 — the assertions hold vacuously, in the case
+    // whose whole job is to hold the lists to what the script emits.
     expect(
-      AI_REVIEW_RUNTIME_HOME_PATHS.length,
-      "the declared list is empty, so everything below this line asserts nothing",
+      AI_REVIEW_RUNTIME_INERT_PATHS.length,
+      "the inert list is empty, so everything below this line asserts nothing",
     ).toBeGreaterThan(0);
-    for (const entry of AI_REVIEW_RUNTIME_HOME_PATHS) {
-      expect(script, `${entry} is declared but not excluded`).toContain(
+    expect(
+      AI_REVIEW_RUNTIME_CONFIG_PATHS.length,
+      "the config list is empty, so everything below this line asserts nothing",
+    ).toBeGreaterThan(0);
+
+    // Pass 1 excludes BOTH lists: a config path must not reach the refusal.
+    for (const entry of both) {
+      expect(script, `${entry} is declared but not excluded from the refusal`).toContain(
         `-not -path "\${HOME}/${entry}" -not -path "\${HOME}/${entry}/*"`,
       );
     }
-    const emitted = (script.match(/-not -path "\$\{HOME\}\//g) || []).length;
+    const excluded = (script.match(/-not -path "\$\{HOME\}\//g) || []).length;
     expect(
-      emitted,
-      "an exclusion under $HOME is in the script that no entry of AI_REVIEW_RUNTIME_HOME_PATHS declares",
-    ).toBe(AI_REVIEW_RUNTIME_HOME_PATHS.length * 2);
+      excluded,
+      "an exclusion under $HOME is in the script that neither declared list names",
+    ).toBe(both.length * 2);
+
+    // Pass 2 MATCHES the config list, and only it. Counting the positive
+    // terms separately is what stops an inert path being annotated: a
+    // thirteenth `-path` under $HOME that is not `-not` would be one.
+    for (const entry of AI_REVIEW_RUNTIME_CONFIG_PATHS) {
+      expect(script, `${entry} is trust-bearing but pass 2 does not match it`).toContain(
+        `-path "\${HOME}/${entry}" -o -path "\${HOME}/${entry}/*"`,
+      );
+    }
+    const allPathTerms = (script.match(/-path "\$\{HOME\}\//g) || []).length;
+    expect(
+      allPathTerms - excluded,
+      "pass 2 matches a path under $HOME that AI_REVIEW_RUNTIME_CONFIG_PATHS does not declare",
+    ).toBe(AI_REVIEW_RUNTIME_CONFIG_PATHS.length * 2);
   });
 });
 
