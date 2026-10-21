@@ -494,3 +494,120 @@ describe("AC-11 (#856): all three repairs, one ordinary pull request", () => {
     expect(runDrift(f, path, sha).code, "a reviewer write was not caught").not.toBe(0);
   });
 });
+
+// ── AC-14: emitted annotation prose may not contain shell metacharacters ──
+
+/**
+ * AC-14 (#824): a refusal message that EXECUTES.
+ *
+ * Found in review, measured, and it was in a message about measurement
+ * integrity. `buildPrepareScript`'s mode-read-back refusal read:
+ *
+ *     neither `stat -c` nor `stat -f` could be run
+ *
+ * spliced into `echo "::error title=…::${msg}" >&2`. Backticks inside a
+ * double-quoted shell string are command substitution, so the emitted line
+ * did not print that sentence — it RAN `stat -c` and `stat -f` on the
+ * runner and printed with both tool names missing:
+ *
+ *     $ bash -c 'echo "::error::neither `stat -c` nor `stat -f` could be run"'
+ *     stat: illegal option -- c
+ *     stat: option requires an argument -- f
+ *     ::error::neither  nor  could be run
+ *
+ * Harmless as it stood — the prose is a generated literal, not attacker
+ * input — and the next author's sentence is not guaranteed to be.
+ *
+ * ## Why a ratchet and not an escaping scheme
+ *
+ * The durable alternative is to emit every refusal through a single-quoted
+ * shell variable with `'\''`-escaping. That was not taken, and the reason
+ * is which of the two is a single decider:
+ *
+ * - Escaping lets the hazard exist in the prose and neutralises it at the
+ *   emission site, so "is this safe" has to be answered at ~30 sites, some
+ *   of them in functions this change does not own.
+ * - This asserts the prose cannot contain the metacharacter at all. It is
+ *   strictly stronger, it is one assertion, and it covers scripts nobody
+ *   has written yet.
+ *
+ * Measured before writing it: across all seven generated scripts there was
+ * exactly ONE violating line, the new one. The ratchet is therefore not a
+ * migration — it is a fence around a population that is already clean.
+ *
+ * ## The trap this avoids, named
+ *
+ * `lib/scaffold/ai-review-step.ts` is built out of TypeScript template
+ * literals, so a backtick scan over its SOURCE matches hundreds of
+ * legitimate occurrences and the temptation is to keep narrowing it until
+ * it matches nothing. The property is not "the file contains a backtick" —
+ * it is "this string, at the point it is interpolated into emitted shell,
+ * contains a shell metacharacter". So the scan runs over the generated
+ * script's RUNTIME VALUE, where a template literal has already become
+ * ordinary text and the only backtick left is one that will reach bash.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * - **Annotations emitted by anything but `echo "::…`.** The scan keys on
+ *   that prefix, which is every annotation in all seven scripts today.
+ *   `AC-14b` is the non-vacuity control on the count.
+ * - **Single-quoted emission.** Nothing here asserts the escaping scheme,
+ *   because the escaping scheme was deliberately not adopted; if a later
+ *   change introduces one, this assertion stays true and stops being the
+ *   only thing holding.
+ * - **`$(escape_annotation …)`**, which is sanctioned and excluded by name
+ *   — it is the encoder AC-7/AC-8 above require. A different `$(` is not
+ *   excluded and reds.
+ */
+describe("AC-14 (#824): no generated annotation can run a command", () => {
+  /** Every emitted annotation line, across every script in the module. */
+  function annotationLines(): Array<{ script: string; line: string }> {
+    const out: Array<{ script: string; line: string }> = [];
+    for (const [name, text] of SCRIPTS) {
+      for (const raw of text.split("\n")) {
+        const line = raw.trim();
+        if (/^echo "::(error|warning|notice)/.test(line)) out.push({ script: name, line });
+      }
+    }
+    return out;
+  }
+
+  test("AC-14a: no annotation carries a backtick or an unsanctioned $(", () => {
+    for (const { script, line } of annotationLines()) {
+      // A backtick inside the double quotes is command substitution. There
+      // is no legitimate one: every annotation in this module is prose.
+      expect(
+        line.includes("`"),
+        `${script}: this annotation RUNS the backticked text rather than printing it:\n  ${line}`,
+      ).toBe(false);
+
+      // `$(escape_annotation …)` is the sanctioned encoder AC-7/AC-8
+      // require. Any other command substitution is a second thing the
+      // annotation executes.
+      const subs = [...line.matchAll(/\$\(/g)].length;
+      const sanctioned = [...line.matchAll(/\$\(escape_annotation /g)].length;
+      expect(
+        subs - sanctioned,
+        `${script}: this annotation runs a command that is not the encoder:\n  ${line}`,
+      ).toBe(0);
+    }
+  });
+
+  test("AC-14b: the scan reads something, and can see a violation", () => {
+    // Non-vacuity, in both directions. Without the count, AC-14a is
+    // satisfied by a regex that stopped matching; without the positive
+    // control, by a check that cannot fire.
+    const lines = annotationLines();
+    expect(lines.length, "no annotations were found, so AC-14a measured nothing").toBeGreaterThan(20);
+    expect(new Set(lines.map(l => l.script)).size, "the scan reached only one script").toBeGreaterThan(3);
+
+    const bad = 'echo "::error title=X::neither `stat -c` nor `stat -f` could be run" >&2';
+    expect(/^echo "::(error|warning|notice)/.test(bad), "the scan would skip the real defect").toBe(true);
+    expect(bad.includes("`"), "the backtick check cannot see a backtick").toBe(true);
+
+    const sneaky = 'echo "::error title=X::$(whoami)" >&2';
+    const subs = [...sneaky.matchAll(/\$\(/g)].length;
+    const sanctioned = [...sneaky.matchAll(/\$\(escape_annotation /g)].length;
+    expect(subs - sanctioned, "the substitution check cannot see a substitution").toBe(1);
+  });
+});

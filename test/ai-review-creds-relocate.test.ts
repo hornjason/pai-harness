@@ -122,18 +122,43 @@
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, relative } from "path";
 
 import {
   AI_REVIEW_BASELINE_STEP_ID,
+  AI_REVIEW_CREDS_DENY_OUTPUT,
+  AI_REVIEW_CREDS_DIR_PREFIX,
   AI_REVIEW_CREDS_RELOCATE_STEP_ID,
   AI_REVIEW_CREDS_TITLE,
+  AI_REVIEW_FINDINGS_DIR_SUFFIX,
+  AI_REVIEW_JOB,
+  AI_REVIEW_ACTION_STEP_ID,
+  AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_VERTEX_AUTH_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
+  aiReviewClaudeArgs,
   buildCredsRelocateScript,
+  vertexCiConfig,
+  type VertexCiDecision,
 } from "../lib/scaffold/ai-review-step";
+import { unknownAgainstRecord } from "../lib/claude-tool-vocabulary";
+
+/** The two decisions `aiReviewClaudeArgs` branches on (#893 AC-3d/AC-3e). */
+const VERTEX_FIXTURE: VertexCiDecision = vertexCiConfig({
+  runner: "ubuntu-latest",
+  bunVersion: "1.2.0",
+  vertex: {
+    project: "fixture-vertex-project",
+    workloadIdentityProvider:
+      "projects/111122223333/locations/global/workloadIdentityPools/fixture-pool/providers/fixture-provider",
+  },
+});
+const NO_VERTEX_FIXTURE: VertexCiDecision = vertexCiConfig({
+  runner: "ubuntu-latest",
+  bunVersion: "1.2.0",
+});
 
 /** What the action actually writes, shortened. The bearer token is the point. */
 const CREDENTIAL = JSON.stringify({
@@ -179,6 +204,8 @@ interface Run {
   stderr: string;
   /** The variables the step asked GitHub to export, parsed from GITHUB_ENV. */
   exported: Record<string, string>;
+  /** The step outputs, parsed from GITHUB_OUTPUT (#893). */
+  outputs: Record<string, string>;
   workspace: string;
   runnerTemp: string;
 }
@@ -197,12 +224,23 @@ function run(
     noRunnerTemp?: boolean;
     /** A second `gha-creds-*` file nobody named, planted in the workspace. */
     stray?: string;
+    /** #893: the runner always sets GITHUB_OUTPUT; this drops it. */
+    noOutput?: boolean;
+    /** #893: pre-create the credential directory this run will derive. */
+    leftover?: (path: string) => void;
+    /** #893: replace a tool on PATH, to measure a reading that cannot fail. */
+    shims?: Record<string, string>;
   } = {},
 ): Run {
   const workspace = scratchDir("ai-review-creds-ws-");
   const runnerTemp = scratchDir("ai-review-creds-temp-");
   const envFile = join(runnerTemp, "github-env");
   writeFileSync(envFile, "");
+  const outputFile = join(runnerTemp, "github-output");
+  writeFileSync(outputFile, "");
+  if (opts.leftover) {
+    opts.leftover(join(runnerTemp, `${AI_REVIEW_CREDS_DIR_PREFIX}-39525691857-1${AI_REVIEW_FINDINGS_DIR_SUFFIX}`));
+  }
 
   const planted = join(workspace, "gha-creds-0123456789abcdef.json");
   if (opts.creds !== null && opts.creds !== undefined) writeFileSync(planted, opts.creds);
@@ -219,6 +257,18 @@ function run(
     GITHUB_RUN_ID: "39525691857",
     GITHUB_RUN_ATTEMPT: "1",
   };
+  // The runner always sets this; the fixture did not, which is why #893's
+  // output had nowhere to go the first time it was added.
+  if (!opts.noOutput) env.GITHUB_OUTPUT = outputFile;
+  if (opts.shims) {
+    const bin = scratchDir("ai-review-creds-shim-");
+    for (const [name, body] of Object.entries(opts.shims)) {
+      const sp = join(bin, name);
+      writeFileSync(sp, `#!/bin/sh\n${body}\n`);
+      chmodSync(sp, 0o755);
+    }
+    env.PATH = `${bin}:${env.PATH}`;
+  }
   if (!opts.noRunnerTemp) env.RUNNER_TEMP = runnerTemp;
   const named = opts.names === undefined ? planted : opts.names;
   if (named !== null) env.GOOGLE_GHA_CREDS_PATH = named;
@@ -229,11 +279,17 @@ function run(
     const m = /^([A-Z_][A-Z_0-9]*)=(.*)$/.exec(line);
     if (m) exported[m[1]] = m[2];
   }
+  const outputs: Record<string, string> = {};
+  for (const line of readFileSync(outputFile, "utf-8").split("\n")) {
+    const m = /^([a-zA-Z_][a-zA-Z_0-9]*)=(.*)$/.exec(line);
+    if (m) outputs[m[1]] = m[2];
+  }
   return {
     code: r.exitCode,
     stdout: new TextDecoder().decode(r.stdout),
     stderr: new TextDecoder().decode(r.stderr),
     exported,
+    outputs,
     workspace,
     runnerTemp,
   };
@@ -412,5 +468,280 @@ describe("AC-7 (#843/3): the committed workflow runs it between auth and the age
     expect(relocate).toBeGreaterThan(auth);
     expect(baseline, "no baseline step — the position claim is vacuous").toBeGreaterThan(-1);
     expect(relocate).toBeLessThan(baseline);
+  });
+});
+
+/**
+ * #893: the credential was moved into the directory the reviewer reads.
+ *
+ * #852 moved it out of the CHECKOUT, which was the finding at the time and
+ * was right. The destination it chose was `RUNNER_TEMP`'s root — the job's
+ * scratch, the directory both drift passes subtract, and, until #824, the
+ * directory holding the findings payload the reviewer is told to write. The
+ * step's own opening refusal already named the hazard in terms: *"Refusing
+ * rather than running the reviewer with a live bearer token in the directory
+ * it reads."* It then put the token there.
+ *
+ * ## What does NOT fix it, and why the issue's preferred option is not enough
+ *
+ * The issue prefers option 1 — two directories, one of them "a second one
+ * for the credential that the agent is never told about". Measured against
+ * the rest of the generated file, that alone buys almost nothing:
+ *
+ * - **Unix modes are not a barrier.** The reviewer runs as the same user as
+ *   the job. 0600 stops another user, and the reviewer is not another user.
+ * - **An unguessable name is not a barrier.** `AI_REVIEW_ALLOWED_TOOLS`
+ *   grants `Glob` unscoped, so a `mktemp`-named directory is one call away
+ *   from being listed. The old name was worse — derivable from `RUNNER_TEMP`
+ *   and the run id, both in the agent's own environment — but the
+ *   difference is between one call and none.
+ * - **Deleting the credential before the review is not available.** The
+ *   review step is what spends it.
+ * - **#824 already separated the two directories.** The payload moved into
+ *   its own per-run subdirectory, so the issue's headline — *"the findings
+ *   payload and the cloud credential are in the same directory"* — is
+ *   already false on this branch. Shipping option 1 and closing would have
+ *   been a change whose entire effect had already happened.
+ *
+ * ## What does
+ *
+ * The agent's own permission system, in the one spelling that is consulted
+ * for reads. Claude Code's documentation, quoted in full at
+ * `AI_REVIEW_WORKSPACE_WRITE_DENY`: *"Claude Code checks file permissions
+ * against `Edit(path)` and `Read(path)` rules only."* So the credential gets
+ * a directory whose purpose is to be a region a `Read(...)` rule can name —
+ * holding the credential and nothing else — and the rule is emitted into
+ * `--disallowedTools` beside `Edit(./**)`.
+ *
+ * ## The direction an unresolved expression fails in, chosen deliberately
+ *
+ * The rule text is built in BASH and travels whole through a step output,
+ * comma included. The alternative — assembling it in the generator around
+ * `${{ steps.x.outputs.dir }}` — renders `Read(/**)` if the expression ever
+ * resolves empty, which denies EVERY read: the reviewer would read nothing,
+ * find nothing, and "found nothing" is the output of a clean review. A
+ * fail-shut arriving as a green check. This form renders the empty string
+ * instead, leaving the deny list as it is today. `AC-3d` is the case on it,
+ * and the step refuses outright when `GITHUB_OUTPUT` is absent so the
+ * fail-open has somewhere to be caught before the review runs.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * - **That the CLI honours `Read(<dir>/**)` at run time.** Nothing here
+ *   runs the CLI. The evidence that path rules bind at all is #836's
+ *   four-spelling table, which measured `Edit(...)`, and the documentation
+ *   above, which names `Read` in the same sentence. A real review on a real
+ *   runner is what would settle it, and the issue is explicit that no run
+ *   has been shown to read the credential either way.
+ * - **Detection.** Both drift passes subtract `RUNNER_TEMP`, so a reviewer
+ *   that read the credential and copied it anywhere under `RUNNER_TEMP` is
+ *   outside every detector in the generated file. That is the issue's
+ *   second half and it is NOT fixed here: it would mean editing the
+ *   subtraction lists, which #904 owns.
+ * - **A leftover owned by another local user.** The refusal is "ANY
+ *   pre-existing path", which does not consult the owner, so ownership is
+ *   not a thing this can be wrong about. What remains uncovered is a race
+ *   between the `-e` test and the `mkdir` on a `RUNNER_TEMP` another user
+ *   can write; `mkdir` without `-p` turns that into a refusal rather than
+ *   an adoption, which is the best this shape does without a lock.
+ * - **Non-Vertex credentials.** `CLAUDE_CODE_OAUTH_TOKEN` and
+ *   `ANTHROPIC_API_KEY` reach the action through `with:` and never touch
+ *   the disk, so there is no file for a rule to name. The deny rule is
+ *   emitted only when `ci.vertex` resolved, which `AC-3e` asserts.
+ */
+describe("#893: the cloud credential gets its own directory, and a rule the reviewer is denied by", () => {
+  const CRED_DIR = (r: Run) =>
+    join(r.runnerTemp, `${AI_REVIEW_CREDS_DIR_PREFIX}-39525691857-1${AI_REVIEW_FINDINGS_DIR_SUFFIX}`);
+
+  test("AC-3a: the credential lands in a 0700 directory of its own, not in the temp root", () => {
+    const r = run({ creds: CREDENTIAL });
+    expect(r.code, `the relocate step refused a healthy runner:\n${r.stderr}`).toBe(0);
+
+    const dir = CRED_DIR(r);
+    // Reds on the tree this was written against, which moved the credential
+    // to `${RUNNER_TEMP}/ai-review-gcp-creds-<nonce>.json` — the temp root.
+    expect(existsSync(dir), "no credential directory was created").toBe(true);
+    expect(statSync(dir).mode & 0o777, "the credential directory is not 0700").toBe(0o700);
+
+    const dest = r.exported.GOOGLE_APPLICATION_CREDENTIALS ?? "";
+    expect(dest, "the exported credential path is not inside the new directory").toStartWith(dir + "/");
+    expect(readFileSync(dest, "utf-8"), "the credential did not arrive").toBe(CREDENTIAL);
+    expect(statSync(dest).mode & 0o777, "the credential file is not 0600").toBe(0o600);
+
+    // And the directory holds the credential and NOTHING else, which is the
+    // whole reason a directory exists rather than a filename: the rule
+    // denies a region, so anything else in it is denied with it. Reds on a
+    // fix that points the deny at `RUNNER_TEMP`, which would take the
+    // findings payload and the drift baseline with it.
+    expect(readdirSync(dir), "the credential directory holds more than the credential").toEqual([
+      dest.slice(dir.length + 1),
+    ]);
+  });
+
+  test("AC-3b: the step emits a Read deny naming exactly that directory", () => {
+    const r = run({ creds: CREDENTIAL });
+    const rule = r.outputs[AI_REVIEW_CREDS_DENY_OUTPUT] ?? "";
+
+    // Reds on the tree this was written against: no such output existed.
+    expect(rule, `the step emitted no ${AI_REVIEW_CREDS_DENY_OUTPUT} output`).not.toBe("");
+    expect(rule, "the leading comma is missing, so the rule would fuse to the one before it").toStartWith(
+      ",",
+    );
+    // `Read` and not `Glob`/`Write`: path rules for those are accepted and
+    // never consulted. Reds on `,Glob(<dir>/**)`, which reads as a barrier
+    // and is worth nothing.
+    expect(rule, "the rule is not spelled against a tool whose path rules are consulted").toBe(
+      `,Read(${CRED_DIR(r)}/**)`,
+    );
+    // No whitespace: `claude_args` is emitted unquoted and split by the
+    // action, so a rule containing a space arrives in pieces.
+    expect(rule, "the rule carries whitespace and would split").not.toMatch(/\s/);
+
+    // `ai-review-deny-vocabulary.test.ts` asserts every emitted deny rule
+    // names a tool the CLI knows, over the STATIC list. This rule is built
+    // at run time and is structurally invisible to that suite, so the same
+    // decider is CALLED here rather than restated — a rule the CLI cannot
+    // resolve warns at startup and denies nothing, which is a barrier that
+    // reads as present and is worth nothing. Reds on `,Nope(<dir>/**)`.
+    expect(
+      unknownAgainstRecord([rule.slice(1)]),
+      "the credential deny names a tool the recorded CLI vocabulary does not know",
+    ).toEqual([]);
+  });
+
+  test("AC-3c: a credential directory the runner could not provide REFUSES", () => {
+    // Each of these ends with a live bearer token in a directory no rule
+    // covers. The chmod cases replace the TOOL, because a filesystem that
+    // ignores modes has no other input a unit test can supply — the same
+    // instrument `ai-review-write-scope.test.ts` uses, and `AC-3f` below is
+    // the control that shimming does not itself cause a refusal.
+    const cases: Array<[string, Parameters<typeof run>[0], string]> = [
+      [
+        "a leftover that is not a directory",
+        { creds: CREDENTIAL, leftover: p => writeFileSync(p, "someone else's\n") },
+        "already exists",
+      ],
+      ["chmod failing", { creds: CREDENTIAL, shims: { chmod: "exit 1" } }, "mode 0700"],
+      [
+        "chmod reporting success without the mode taking",
+        { creds: CREDENTIAL, shims: { chmod: "exit 0", stat: "echo 755" } },
+        "Mode read back",
+      ],
+      [
+        "a mode that cannot be read back at all",
+        { creds: CREDENTIAL, shims: { chmod: "exit 0", stat: "exit 1" } },
+        "UNMEASURED",
+      ],
+      ["GITHUB_OUTPUT absent", { creds: CREDENTIAL, noOutput: true }, "GITHUB_OUTPUT is not set"],
+      [
+        // `-e`, `-d` and `-O` all dereference, so a link an earlier job on
+        // this runner left behind would decide where a live bearer token
+        // gets written. Reds on a `-L` test placed after any of them.
+        "a symlink at the credential directory path",
+        { creds: CREDENTIAL, leftover: p => symlinkSync(mkdtempSync(join(tmpdir(), "rg-893-t-")), p) },
+        "SYMLINK",
+      ],
+    ];
+    expect(cases.length, "the table is empty, so this case measured nothing").toBe(6);
+
+    for (const [label, opts, says] of cases) {
+      const r = run(opts);
+      expect(r.code, `${label} was accepted:\n${r.stdout}${r.stderr}`).toBe(AI_REVIEW_REQUIRED_EXIT);
+      expect(r.stderr, `${label} refused without an annotation`).toContain(
+        `::error title=${AI_REVIEW_CREDS_TITLE}`,
+      );
+      expect(r.stderr, `${label} refused for a reason it did not name`).toContain(says);
+      // The half that makes it a refusal: no deny rule is published from a
+      // step that failed, so nothing downstream reads a stale one.
+      expect(r.outputs[AI_REVIEW_CREDS_DENY_OUTPUT] ?? "", `${label} still published a deny rule`).toBe(
+        "",
+      );
+    }
+  });
+
+  test("AC-3c2: the leftover is refused, not deleted", () => {
+    // On a machine running sixteen self-hosted runners, `rm -rf` on an
+    // interpolated path is a new risk class in a file that has none: an
+    // empty or relocated `${dir}` removes something nobody intended and
+    // there is no reading afterwards that would show it. Reds on that
+    // repair, which is the obvious one.
+    const r = run({ creds: CREDENTIAL, leftover: p => writeFileSync(p, "someone else's\n") });
+    expect(r.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(
+      readFileSync(CRED_DIR(r), "utf-8"),
+      "the step DELETED a path it did not create, on a shared runner",
+    ).toBe("someone else's\n");
+  });
+
+  test("AC-3d: an unresolved expression renders empty, never Read(/**)", () => {
+    // The direction this fails in, asserted on the shape rather than
+    // described in a comment. `--disallowedTools …,Read(${{ … }}/**)` with
+    // an unresolved expression is `Read(/**)` — every read denied, the
+    // reviewer finds nothing, and "found nothing" is a clean review. Reds
+    // on moving the glob or the comma out of the step output and into the
+    // generator.
+    const args = aiReviewClaudeArgs(VERTEX_FIXTURE);
+    const expr = `\${{ steps.${AI_REVIEW_CREDS_RELOCATE_STEP_ID}.outputs.${AI_REVIEW_CREDS_DENY_OUTPUT} }}`;
+    expect(args, "the credential deny is not wired into the args").toContain(expr);
+    // Nothing of the rule may live outside the expression.
+    expect(args.slice(args.indexOf(expr) + expr.length), "text trails the expression").toBe("");
+    expect(args, "the glob is assembled in the generator, so an empty output denies everything").not.toContain(
+      `${expr}/**`,
+    );
+    expect(args, "a comma precedes the expression, so an empty output leaves a trailing comma").not.toContain(
+      `,${expr}`,
+    );
+
+    // Non-vacuity: the catastrophic form is one this scan can see.
+    const bad = `--disallowedTools A,Read(${expr}/**)`;
+    expect(bad).toContain(`${expr}/**`);
+  });
+
+  test("AC-3e: the deny is emitted only where a credential file exists, and resolves", () => {
+    // No Vertex means no auth step, no relocate step, and no step for the
+    // expression to read — emitting it anyway would be a rule written down
+    // that cannot hold. Reds on wiring it unconditionally.
+    expect(
+      aiReviewClaudeArgs(NO_VERTEX_FIXTURE),
+      "a deny naming a step this job does not have",
+    ).not.toContain(AI_REVIEW_CREDS_RELOCATE_STEP_ID);
+
+    // And where it IS emitted, the step it names exists and runs first —
+    // the same escape `AC-1e` covers for `--add-dir`, and the only one that
+    // turns this into the fail-open above rather than a working rule.
+    const doc = Bun.YAML.parse(
+      readFileSync(join(import.meta.dir, "..", ".github", "workflows", AI_REVIEW_WORKFLOW_FILE), "utf-8"),
+    ) as any;
+    const steps = doc.jobs[AI_REVIEW_JOB].steps as any[];
+    const ids = steps.map(s => s?.id);
+    const relocateAt = ids.indexOf(AI_REVIEW_CREDS_RELOCATE_STEP_ID);
+    const reviewAt = ids.indexOf(AI_REVIEW_ACTION_STEP_ID);
+    expect(relocateAt, `no step has id ${AI_REVIEW_CREDS_RELOCATE_STEP_ID}`).toBeGreaterThan(-1);
+    expect(relocateAt, "the credential is relocated AFTER the reviewer runs").toBeLessThan(reviewAt);
+
+    const named =
+      /--disallowedTools\s+\S*?\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\s*\}\}/.exec(
+        String(steps[reviewAt]?.with?.claude_args ?? ""),
+      );
+    expect(named, "the committed workflow carries no credential deny expression").not.toBeNull();
+    expect(named![1]).toBe(AI_REVIEW_CREDS_RELOCATE_STEP_ID);
+    expect(named![2]).toBe(AI_REVIEW_CREDS_DENY_OUTPUT);
+    expect(
+      buildCredsRelocateScript(),
+      `the step never writes a \`${named![2]}=\` line to GITHUB_OUTPUT`,
+    ).toContain(`${named![2]}=`);
+  });
+
+  test("AC-3f instrument control: passthrough shims do not themselves refuse", () => {
+    // Without this, every shimmed row in AC-3c is satisfied by a script
+    // that refuses whenever PATH has an extra entry.
+    const r = run({
+      creds: CREDENTIAL,
+      shims: { chmod: 'exec /bin/chmod "$@"', stat: 'exec /usr/bin/stat "$@" 2>/dev/null || exec /bin/stat "$@"' },
+    });
+    expect(r.code, `passthrough shims refused a healthy runner:\n${r.stderr}`).toBe(0);
+    expect(r.outputs[AI_REVIEW_CREDS_DENY_OUTPUT] ?? "", "the passthrough run published no rule").not.toBe(
+      "",
+    );
   });
 });
