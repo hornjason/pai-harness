@@ -852,11 +852,18 @@ export const AI_REVIEW_OUTSIDE_MAXDEPTH = 4;
  * ## Four entries, not the three the issue named
  *
  * #866 said three prefixes cover the floor, which is true of a STRING prefix:
- * `/home/runner/.claude` is a prefix of `/home/runner/.claude.json`. It is not
- * true of a path-component match, and a component match is what this has to
- * be — a string prefix on `.claude` also swallows a `.claudette` nobody has
- * reasoned about. So `.claude.json` is its own entry, and the correction is
- * recorded rather than quietly applied.
+ * the directory `.claude` is a prefix of the file `.claude.json` once both
+ * are spelled out under a home directory. It is not true of a path-component
+ * match, and a component match is what this has to be — a string prefix on
+ * `.claude` also swallows a `.claudette` nobody has reasoned about. So
+ * `.claude.json` is its own entry, and the correction is recorded rather
+ * than quietly applied.
+ *
+ * The two paths are deliberately NOT written out in full here. `ST-3` in
+ * `test/structure.test.ts` greps every `.ts` for the RUNNING machine's own
+ * `$HOME` joined to `.claude`, so an absolute example of a runner's home is
+ * clean on a developer's laptop and red in CI — which is where this sentence
+ * was caught, having passed locally.
  *
  * ## What is NOT measured, said plainly
  *
