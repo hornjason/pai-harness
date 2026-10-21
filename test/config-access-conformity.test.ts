@@ -49,6 +49,7 @@ import {
   CONFIG_1_DECLINES,
   readConfigAccessRatchet,
   scanConfigAccess,
+  scanConfigAccessWithReach,
   SOURCE_EXTENSIONS,
   projectSourceEvidence,
   scanPromptConfigAccess,
@@ -69,6 +70,7 @@ const scan = (counts: Record<string, number>, files = 50, bytes = 100_000): Conf
   counts,
   filesScanned: files,
   bytesScanned: bytes,
+  fallbackFiles: [],
 });
 
 describe("SC-1427: the collector refuses, and can be made to", () => {
@@ -485,11 +487,26 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     // Repointed rather than deleted. The branch is still real for any
     // directory the list does not name, which is the half of #492 that no
     // list can close.
+    //
+    // **#506 repointed it again, and the assertion got stronger, not
+    // weaker.** `domain/index.ts` is now READ rather than refused over —
+    // the walk had already located it, so the check reads it instead of
+    // reporting that it could not. What this case is for is unchanged: a
+    // project whose source the scan dirs do not hold must not come back
+    // waived. It now comes back with the violation that was always there,
+    // which is the outcome "still REFUSES" was standing in for.
     const root = project({ "domain/index.ts": READS_CONFIG });
     const got = config1(root);
     expect(got.unmeasured, "an unreached source tree was waived as absent").toBeNull();
     expect(got.violations).toHaveLength(1);
-    expect(got.violations[0]).toContain("read NO files");
+    expect(got.violations[0], "the read in an unscanned directory went unreported")
+      .toContain("domain/index.ts has 1 direct config access site");
+    // And the control for THIS row: the same tree without the read is a
+    // PASS that measured something, not a PASS that looked at nothing.
+    const clean = project({ "domain/index.ts": "export const x = 1;\n" });
+    const cleanGot = config1(clean);
+    expect(cleanGot.red, "a clean file in an unscanned directory still fails").toBe(false);
+    expect(cleanGot.unmeasured, "a file that WAS read was reported as unmeasured").toBeNull();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -506,8 +523,8 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     rmSync(root, { recursive: true, force: true });
   });
 
-  const noCode = { found: false, examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] };
-  const hasCode = { found: true, examples: ["lib/x.ts"], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] };
+  const noCode = { found: false, examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedFiles: [], unscannedDirs: [] };
+  const hasCode = { found: true, examples: ["lib/x.ts"], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedFiles: [], unscannedDirs: [] };
 
   test("the two questions are separate, and the binding needs both answers", () => {
     // `filesScanned` answers "did I read anything"; `sourcesPresent` answers
@@ -534,13 +551,13 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     // one that has the directory and read nothing out of it refuses.
     const root = project({ "README.md": "# docs" });
     expect(
-      unmeasuredScanReason(scanPromptConfigAccess(root), { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] }, "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(scanPromptConfigAccess(root), { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedFiles: [], unscannedDirs: [] }, "CONFIG-2", "workflows/ directory"),
     ).toContain("UNMEASURED");
 
     mkdirSync(join(root, "workflows"), { recursive: true });
     const withDir = scanPromptConfigAccess(root);
     expect(
-      unmeasuredScanReason(withDir, { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] }, "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(withDir, { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedFiles: [], unscannedDirs: [] }, "CONFIG-2", "workflows/ directory"),
       "an empty workflows/ directory was waived",
     ).toBeNull();
     expect(configAccessViolations(withDir, {}, "CONFIG-2")[0]).toContain("read NO files");
@@ -659,16 +676,20 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
    * one level up, and would pass over any producer at all.
    */
   test("#517: a violation about the SCAN reports no file, not the word `the`", () => {
-    // `domain/` is not in CONFIG_SCAN_DIRS, so the scan reads zero files
-    // while the source walk finds code — the project shape #492 is about,
-    // and the only one that reaches this refusal. `filesScanned === 0` with
-    // `found === true` is not waivable, so it falls through to a FAIL.
+    // The scan reads zero files while the source walk finds code.
+    // `filesScanned === 0` with `found === true` is not waivable, so it
+    // falls through to a FAIL about the SCAN, which is the finding whose
+    // `file` field this row is about.
     //
-    // This said `src/` until #492 added it to the scan list. `domain/` is a
-    // name no list will ever hold, which is the same reason #492's own
-    // fixtures use it: a case pointed at `src/` is satisfied by the cheap
-    // repair of extending the list, and this one must not be.
-    const root = project({ "domain/app.ts": READS_CONFIG, "README.md": "# d" });
+    // This said `src/` until #492 added it to the scan list, then
+    // `domain/app.ts` until #506 made the scan read what the walk found.
+    // `lib/test/x.ts` is the fixture that survives BOTH cheap repairs:
+    // `lib/` is already the first directory the scan walks, and
+    // `walkSources` skips a directory named `test` while the evidence walk
+    // does not — so the scan reads nothing, the walk finds source, and no
+    // widening of `CONFIG_SCAN_DIRS` can change either. A case satisfiable
+    // by extending a list is a case that certifies the next extension.
+    const root = project({ "lib/test/x.ts": READS_CONFIG, "README.md": "# d" });
     const got = config1(root);
     expect(got.red, "the refusal did not fire, so there is no finding to inspect").toBe(true);
     expect(got.violations.join("\n"), "a different violation fired").toContain("read NO files");
@@ -851,7 +872,7 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     // producer's own comment calls out a count-rendered-as-a-path as the
     // thing to avoid. A count in a column headed `file` is the original
     // defect with a different stopword.
-    const empty = { filesScanned: 2, bytesScanned: 0, counts: {} } as ConfigAccessScan;
+    const empty = { filesScanned: 2, bytesScanned: 0, counts: {}, fallbackFiles: [] } as ConfigAccessScan;
     const records = configAccessViolationRecords(empty, {}, "CONFIG-1");
     expect(records.length, "the zero-bytes refusal did not fire").toBe(1);
     expect(records[0].message, "a different refusal fired").toContain("none had any content");
@@ -1191,13 +1212,29 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
 
       // The CONTROL, and it is the whole reason this is not a waiver: the
       // same project with its source one directory over, in a place nobody
-      // else measures, still refuses.
+      // else measures, is not let through.
       // `domain/` rather than `vendor/`: the walk classifies `vendor` as
       // generated output and declines it, so that fixture would have been
       // green for a reason nothing to do with the hand-off.
-      const elsewhere = config1(project({ "domain/w.ts": "export const x = 1;\n", "README.md": "# d" }));
-      expect(elsewhere.red, "source in an unmeasured directory stopped being a refusal").toBe(true);
-      expect(elsewhere.violations.join("\n")).toContain("read NO files");
+      //
+      // **#506 changed what "not let through" means here, and the control
+      // is stronger for it.** It used to be `red === true` over an EMPTY
+      // file — a refusal that named `domain/` and read none of it. The
+      // control now carries a real direct read, and the check reports that
+      // read. A mutation that hands `domain/` to CONFIG-2's exclusion still
+      // reddens this row, and now it reddens on a violation that was
+      // actually found rather than on a refusal to look.
+      const elsewhere = config1(project({ "domain/w.ts": READS_CONFIG, "README.md": "# d" }));
+      expect(elsewhere.red, "source in an unmeasured directory stopped being reported").toBe(true);
+      expect(elsewhere.violations.join("\n"), "the read in domain/ went unreported")
+        .toContain("domain/w.ts has 1 direct config access site");
+      // And the hand-off keeps its own sentence: `workflows/` is named as
+      // CONFIG-2's, `domain/` is not. Collapsing the two is what this pair
+      // exists to catch.
+      expect(got.unmeasured, "the hand-off stopped naming the check that owns it")
+        .toContain("CONFIG-2");
+      expect(elsewhere.unmeasured, "a directory nobody measures was waived as handed off")
+        .toBeNull();
     });
 
     test("SC-1900: the hand-off holds at every depth CONFIG-2 reads", () => {
@@ -1267,6 +1304,190 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
       const got = config1(root);
       expect(got.red, "a project whose only source is a test directory stopped refusing").toBe(true);
       expect(got.violations.join("\n")).toContain("read NO files");
+    });
+  });
+
+  /**
+   * #506 — a docs site's bundled JS refused a content project, and the
+   * refusal could not be cleared from inside the project.
+   *
+   * `docs/` is not in `CONFIG_SCAN_DIRS` and that list is fixed in the
+   * harness, so the only actions available to a consumer were deleting the
+   * asset or planting a decoy file in `lib/`. Measured on `origin/main`
+   * before the fix: `docs/assets/search.js` alone gave `filesScanned=0`,
+   * `found=true`, severity FAIL; the same tree plus a one-line
+   * `lib/noop.ts` gave PASS with a coverage WARN naming `docs/` — same
+   * file, same blindness, opposite verdicts.
+   *
+   * The fix READS the file rather than re-grading the refusal. The walk had
+   * already located it and already applied every exclusion it applies, so
+   * this costs no new policy about what `docs/` means — which is what
+   * options 1 and 2 in the issue would have cost, and what the issue body
+   * says is most likely to buy green with blindness.
+   *
+   * ## What each row is for, and what reddens it
+   *
+   * | row | mutation it is pointed at |
+   * |---|---|
+   * | SC-1904 | the fallback never engaging; `fallbackFiles` not recorded |
+   * | SC-1905 | the fallback engaging but not CLASSIFYING what it read |
+   * | SC-1906 | the fallback engaging when the scan already read something |
+   * | SC-1907 | an unreadable file read as empty instead of failing closed |
+   * | SC-1908 | the count and the paths drifting into two tallies |
+   * | SC-1909 | the shortfall naming files the fallback just read |
+   *
+   * The refusal's own survival is held by the two rows above this block
+   * (`lib/test/x.ts` via #517, `tests/helper.ts` via SC-1901) and by
+   * SC-1910 here, which states the boundary as a property rather than an
+   * instance.
+   */
+  describe("#506: source outside the scan dirs is READ, not refused over", () => {
+    /**
+     * The instrument. Every fixture below is written with a literal
+     * directory name, and this is what makes that literal mean something:
+     * if `docs` or `domain` ever entered the scan list, the fixtures would
+     * be testing the ordinary path while still passing. Sourced from the
+     * emitting module, which is the only place that can answer it.
+     */
+    test("the fixtures below are outside the scan's reach, as the scan list declares it", () => {
+      for (const d of ["docs", "domain"]) {
+        expect(CONFIG_SCAN_DIRS, `${d}/ entered the scan list and these fixtures went vacuous`)
+          .not.toContain(d);
+      }
+    });
+
+    test("SC-1904: a docs site's bundled asset is measured, not refused over", () => {
+      // #506's headline tree, exactly: a content project whose only
+      // code-extension file is a documentation asset carrying nothing.
+      const root = project({ "README.md": "# d", "docs/assets/search.js": "export const x = 1;\n" });
+      const got = config1(root);
+      expect(got.red, "a docs asset with no config read still fails CONFIG-1").toBe(false);
+      expect(got.violations, "the unsatisfiable refusal is still being issued").toEqual([]);
+      // Not a waiver. The difference between this and dropping the
+      // severity is that a file was actually read, and the scan says so.
+      expect(got.unmeasured, "the asset was waived rather than read").toBeNull();
+      const evidence = projectSourceEvidence(root);
+      const scan = scanConfigAccessWithReach(root, evidence);
+      expect(scan.fallbackFiles, "the file the walk found was not the file the scan read")
+        .toEqual(["docs/assets/search.js"]);
+      expect(scan.bytesScanned, "the fallback counted a file it did not read").toBeGreaterThan(0);
+    });
+
+    test("SC-1905: the same asset carrying a real read is reported, by name", () => {
+      // The direction that makes SC-1904 worth having. A fallback that
+      // counted the file without classifying it would turn #506's FAIL
+      // into a silent PASS for every project in this shape — strictly
+      // worse than the unsatisfiable red it replaced.
+      const root = project({ "README.md": "# d", "docs/assets/search.js": READS_CONFIG });
+      const got = config1(root);
+      expect(got.red, "a direct config read in a docs asset was not reported").toBe(true);
+      expect(got.failFiles, "the violation was not attributed to the file that carries it")
+        .toEqual(["docs/assets/search.js"]);
+      expect(got.violations.join("\n")).toContain("direct config access site(s), 0 allowed");
+    });
+
+    test("SC-1906: a scan that read something is not widened", () => {
+      // The blast radius, stated as a test. The fallback exists for the
+      // state where CONFIG-1's output is worth nothing; a project it
+      // already measures must be measured on exactly the same files, or
+      // this is #492/#501's option 3 arriving without the decision.
+      const root = project({ "lib/a.ts": "export const x = 1;\n", "docs/assets/search.js": READS_CONFIG });
+      const evidence = projectSourceEvidence(root);
+      const scan = scanConfigAccessWithReach(root, evidence);
+      expect(scan.fallbackFiles, "the fallback engaged over a scan that had already read files")
+        .toEqual([]);
+      expect(scan.counts, "a file outside the scan dirs was read anyway").toEqual({});
+      expect(evidence.unscannedFiles, "the walk stopped recording what went unread")
+        .toEqual(["docs/assets/search.js"]);
+    });
+
+    test("SC-1907: an unreadable out-of-reach file leaves the refusal standing", () => {
+      // Fail closed. These paths come from a walk that finished before the
+      // read, so the file can be gone or locked by the time it is opened —
+      // and reading three of four while reporting a PASS is a scan that
+      // shrank silently, which is the second shape in
+      // `.claude/rules/checks-must-be-able-to-fail.md`.
+      const root = project({ "README.md": "# d", "docs/a.js": "export const x = 1;\n", "docs/b.js": READS_CONFIG });
+      const locked = join(root, "docs", "b.js");
+      chmodSync(locked, 0o000);
+      try {
+        const evidence = projectSourceEvidence(root);
+        expect(evidence.unscannedFiles.slice().sort(), "the walk did not find both files")
+          .toEqual(["docs/a.js", "docs/b.js"]);
+        const scan = scanConfigAccessWithReach(root, evidence);
+        expect(scan.fallbackFiles, "a partially-readable tree was scanned anyway").toEqual([]);
+        expect(scan.filesScanned, "the unreadable file was read as empty").toBe(0);
+        const records = configAccessViolationRecords(scan, {}, "CONFIG-1", true, evidence);
+        expect(records.map(r => r.message).join("\n"), "the refusal did not stand")
+          .toContain("read NO files");
+      } finally {
+        chmodSync(locked, 0o644);
+      }
+    });
+
+    test("SC-1908: the count of unread files IS the list of them", () => {
+      // One decider. `unscannedSourceCount` used to be a tally incremented
+      // beside the directory set; now it projects the path list the
+      // fallback reads, so a file cannot be counted as unread and then
+      // left out of what gets read. Two expressions answering one question
+      // are the fourth shape in the rule file.
+      const root = project({
+        "README.md": "# d",
+        "docs/a.js": "export const a = 1;\n",
+        "domain/b.ts": "export const b = 1;\n",
+      });
+      const evidence = projectSourceEvidence(root);
+      expect(evidence.unscannedSourceCount, "the count and the paths disagree")
+        .toBe(evidence.unscannedFiles.length);
+      expect(evidence.unscannedFiles.slice().sort()).toEqual(["docs/a.js", "domain/b.ts"]);
+      const scan = scanConfigAccessWithReach(root, evidence);
+      expect(scan.fallbackFiles.slice().sort(), "the scan read a different set than the walk named")
+        .toEqual(evidence.unscannedFiles.slice().sort());
+    });
+
+    test("SC-1909: the shortfall does not name a file the fallback just read", () => {
+      // `coverageShortfall` counts source outside `CONFIG_SCAN_DIRS`, and
+      // after the fallback those files HAVE been read. Reporting them
+      // unread is the false sentence #500 was filed about, one guard over.
+      const read = project({ "README.md": "# d", "docs/assets/search.js": "export const x = 1;\n" });
+      const readEvidence = projectSourceEvidence(read);
+      expect(
+        coverageShortfall(scanConfigAccessWithReach(read, readEvidence), readEvidence),
+        "the warning named a file the scan had just read",
+      ).toBeNull();
+
+      // The control, and the reason this is a subtraction and not a
+      // blanket silence: in its own domain the warning must still fire,
+      // for one file, which is where #492 pinned the boundary.
+      const partial = project({ "lib/a.ts": "export const x = 1;\n", "docs/assets/search.js": "export const y = 1;\n" });
+      const partialEvidence = projectSourceEvidence(partial);
+      const shortfall = coverageShortfall(
+        scanConfigAccessWithReach(partial, partialEvidence),
+        partialEvidence,
+      );
+      expect(shortfall, "the #492 coverage warning stopped firing in its own domain").not.toBeNull();
+      expect(shortfall).toContain("docs/");
+    });
+
+    test("SC-1910: source the scan SHOULD have reached still refuses", () => {
+      // The boundary, as a property rather than an instance. The fallback
+      // reads what is outside `CONFIG_SCAN_DIRS`; a file INSIDE a scanned
+      // directory that the scan nevertheless did not read is a different
+      // fact, and it stays a refusal because the project can act on it.
+      //
+      // Both fixtures are files the evidence walk counts and `walkSources`
+      // does not read: a `test` directory under `lib/`, and a top-level
+      // `tests/` that `measuredElsewhere` keeps out of the unread count.
+      for (const rel of ["lib/test/x.ts", "tests/helper.ts"]) {
+        const root = project({ "README.md": "# d", [rel]: READS_CONFIG });
+        const evidence = projectSourceEvidence(root);
+        expect(evidence.found, `${rel}: the walk stopped counting it as source`).toBe(true);
+        expect(evidence.unscannedFiles, `${rel}: a file inside a scanned tree was handed to the fallback`)
+          .toEqual([]);
+        const got = config1(root);
+        expect(got.red, `${rel}: a file the scan should have reached stopped refusing`).toBe(true);
+        expect(got.violations.join("\n")).toContain("read NO files");
+      }
     });
   });
 });

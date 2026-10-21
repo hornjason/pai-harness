@@ -3210,6 +3210,16 @@ export interface ConfigAccessScan {
   filesScanned: number;
   /** Bytes read. Zero with a non-zero file count means empty sources. */
   bytesScanned: number;
+  /**
+   * Files read by the out-of-reach fallback rather than by walking
+   * `CONFIG_SCAN_DIRS` (#506). Empty on every ordinary scan.
+   *
+   * Recorded rather than merged invisibly because `coverageShortfall` is
+   * about to be asked how many source files went unread, and these are
+   * precisely the ones that would otherwise be counted as unread a line
+   * after being read.
+   */
+  fallbackFiles: string[];
 }
 
 /**
@@ -3231,7 +3241,93 @@ export function scanConfigAccess(root: string): ConfigAccessScan {
     const n = classifyConfigSites(f.text).filter(site => site.kind === "use").length;
     if (n > 0) counts[f.path] = n;
   }
-  return { counts, filesScanned: files.length, bytesScanned };
+  return { counts, filesScanned: files.length, bytesScanned, fallbackFiles: [] };
+}
+
+/**
+ * CONFIG-1's reading, with the files it could not reach added when — and
+ * only when — it reached nothing at all (#506).
+ *
+ * ## The refusal this replaces could not be cleared
+ *
+ * A documentation site whose only code-extension file is `docs/assets/
+ * search.js` got a CONFIG-1 FAIL with no action available but deleting the
+ * asset. `docs/` is not in `CONFIG_SCAN_DIRS`, and that list is fixed in the
+ * harness, so no change inside the project could make the check read it.
+ *
+ * ## Why not a `docs/` exclusion, an allowlist, or a lower severity
+ *
+ * A bundled `search.js` and a runnable `docs/examples/client.ts` are the
+ * same bytes to any heuristic available here, so excluding the directory is
+ * the narrowing #506's body warns is most likely to buy green with
+ * blindness. An allowlist in the consumer's config makes the file's name
+ * evidence that somebody considered it. And dropping the severity to
+ * UNMEASURED was the first thing I built and the wrong thing: it leaves a
+ * live `join(process.cwd(), ".claude", "rungate.json")` in `bin/cli.ts`
+ * unreported, which is one of the five layouts #476's security review
+ * specifically fixed.
+ *
+ * Reading the files has none of those costs. The walk has ALREADY located
+ * them and already applied every exclusion it applies — tests, type
+ * declarations, root tool configs, dot-directories, build output, symlinks
+ * leaving the project — so this re-reads that decision rather than making a
+ * new one. A clean `search.js` becomes a PASS that MEASURED something; a
+ * `docs/examples/client.ts` with a real direct read becomes a FAIL that
+ * names the file.
+ *
+ * ## Why it is not "widen `CONFIG_SCAN_DIRS`" (#492/#501's option 3)
+ *
+ * It engages only when `filesScanned === 0` — the state where the check's
+ * output today is an unsatisfiable refusal and therefore worth nothing. No
+ * project that passes today can start failing, no ratchet moves, and
+ * `coverageShortfall`'s domain (`filesScanned > 0`) is untouched, so the
+ * guard #492 measured yesterday keeps the meaning it was measured with.
+ * This closes neither #492 nor #501.
+ *
+ * ## Fail-closed on an unreadable file
+ *
+ * If ANY of them cannot be read, the fallback does not engage at all and
+ * the original refusal stands, naming the source. Reading three of four and
+ * reporting a PASS would be a scan that shrank silently — the second shape
+ * in `.claude/rules/checks-must-be-able-to-fail.md` — and the window is
+ * real: these paths come from a walk that finished before this call.
+ */
+export function scanConfigAccessWithReach(
+  root: string,
+  evidence: SourceEvidence,
+): ConfigAccessScan {
+  const scan = scanConfigAccess(root);
+  // Asked FIRST and separately. A fallback that merged into a non-empty
+  // scan would change what every project is measured on, which is the
+  // behavioural change this one is scoped not to be.
+  if (scan.filesScanned > 0) return scan;
+  if (evidence.unscannedFiles.length === 0) return scan;
+
+  const read: Array<{ path: string; text: string }> = [];
+  for (const rel of evidence.unscannedFiles) {
+    try {
+      read.push({ path: rel, text: readFileSync(join(root, rel), "utf-8") });
+    } catch {
+      // Fail closed — see the docstring. The caller's refusal is the
+      // correct outcome for a project this check could not finish reading.
+      return scan;
+    }
+  }
+
+  const counts = { ...scan.counts };
+  let bytesScanned = scan.bytesScanned;
+  for (const f of read) {
+    bytesScanned += f.text.length;
+    if (f.path === CONFIG_LOADER) continue;
+    const n = classifyConfigSites(f.text).filter(site => site.kind === "use").length;
+    if (n > 0) counts[f.path] = n;
+  }
+  return {
+    counts,
+    filesScanned: scan.filesScanned + read.length,
+    bytesScanned,
+    fallbackFiles: read.map(f => f.path),
+  };
 }
 
 /**
@@ -3307,7 +3403,7 @@ export function scanPromptConfigAccess(root: string): ConfigAccessScan {
     const n = (stripJsComments(text).match(configAccessPattern()) || []).length;
     if (n > 0) counts[`workflows/${f}`] = n;
   }
-  return { counts, filesScanned, bytesScanned };
+  return { counts, filesScanned, bytesScanned, fallbackFiles: [] };
 }
 
 /**
@@ -3676,6 +3772,22 @@ export interface SourceEvidence {
    */
   unscannedSourceCount: number;
   /**
+   * The PATHS behind that count — every source file the walk counted that
+   * lives outside `CONFIG_SCAN_DIRS` (#506).
+   *
+   * `unscannedSourceCount` is now `unscannedFiles.length` rather than a
+   * second tally incremented beside it. Two expressions answering one
+   * question are one decider wearing two hats, and a mutation of either
+   * leaves the other holding every case up — the fourth shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md`.
+   *
+   * It exists because naming these files was never the end of the job.
+   * CONFIG-1 refused over `docs/assets/search.js` while the file sat right
+   * there, already located by this walk and already filtered by every rule
+   * the walk applies. Reading it is strictly more than refusing to.
+   */
+  unscannedFiles: string[];
+  /**
    * Top-level directories holding source that `CONFIG_SCAN_DIRS` does not
    * walk — `"."` for a source file at the root (#492).
    *
@@ -3780,8 +3892,10 @@ const SCRIPT_LIKE = /\.(py|rb|sh|bash|zsh|fish|pl|php|lua|r|go|rs|java|kt|swift|
 
 export function projectSourceEvidence(root: string): SourceEvidence {
   const examples: string[] = [];
-  // #492: the COUNT and the WHERE, alongside the capped sample.
-  let unscannedSourceCount = 0;
+  // #492: the COUNT and the WHERE, alongside the capped sample. #506 made
+  // the count a projection of the paths — one list, so a file cannot be
+  // counted as unread and then left out of the list of what to read.
+  const unscannedFiles: string[] = [];
   const unscannedDirs = new Set<string>();
   const unreadable: string[] = [];
   const skipped: string[] = [];
@@ -3800,7 +3914,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
   } catch {
     return {
       found: false, examples: [], unreadable: ["."], skipped: [],
-      unscannedSourceCount: 0, unscannedDirs: [],
+      unscannedSourceCount: 0, unscannedFiles: [], unscannedDirs: [],
     };
   }
   const insideProject = (p: string) => p === rootReal || p.startsWith(rootReal + sep);
@@ -4013,7 +4127,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
         }
         if (!CONFIG_SCAN_DIRS.includes(top) && !measuredElsewhere(top)) {
           unscannedDirs.add(top);
-          unscannedSourceCount++;
+          unscannedFiles.push(childRel);
         }
         if (examples.length < 3) examples.push(childRel);
       }
@@ -4053,7 +4167,9 @@ export function projectSourceEvidence(root: string): SourceEvidence {
     examples,
     unreadable,
     skipped,
-    unscannedSourceCount,
+    // A projection of the list, not a tally kept beside it (#506).
+    unscannedSourceCount: unscannedFiles.length,
+    unscannedFiles,
     unscannedDirs: [...unscannedDirs].sort(),
   };
 }
@@ -4169,8 +4285,16 @@ export function coverageShortfall(scan: ConfigAccessScan, evidence: SourceEviden
   // where that entry already closed it. Both measured at 0 red before the
   // boundary cases were added (sec-492).
   if (scan.filesScanned === 0) return null; // the empty-scan refusal owns this case
-  const unread = evidence.unscannedSourceCount;
-  if (unread === 0) return null;
+  // Subtracted, not zeroed, and the difference is a statement: these are
+  // the SAME files. `fallbackFiles` is sourced from `unscannedFiles`, which
+  // is also what this count projects, so the subtraction is inside one walk
+  // and cannot go negative (#506). Naming a file as unread one line after
+  // reading it is the kind of false sentence #500 was filed about.
+  //
+  // It cannot silence the ordinary path: `fallbackFiles` is non-empty only
+  // when the first scan read NOTHING, which the guard above already owns.
+  const unread = evidence.unscannedSourceCount - scan.fallbackFiles.length;
+  if (unread <= 0) return null;
   const where = evidence.unscannedDirs.map(d => (d === "." ? "the project root" : `${d}/`)).join(", ");
   return (
     `UNMEASURED: CONFIG-1 read ${scan.filesScanned} file(s), and ${unread} more source ` +
@@ -4267,8 +4391,10 @@ export function runSuccessDocValidation(root: string) {
 export function runConfigAccessValidation(root: string) {
   describe("Config access (ADR-002 D1)", () => {
     test("CONFIG-1: only the loader reads the rungate config", () => {
-      const scan = scanConfigAccess(root);
       const evidence = projectSourceEvidence(root);
+      // #506: when the scan dirs hold nothing, read the source the walk
+      // found anyway rather than refusing over a file nobody can move.
+      const scan = scanConfigAccessWithReach(root, evidence);
       const unmeasured = unmeasuredScanReason(
         scan,
         evidence,
@@ -4874,7 +5000,7 @@ export function runPromptConfigAccessValidation(root: string) {
       // at the point it was read (#476).
       const unmeasured = unmeasuredScanReason(
         scan,
-        { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] },
+        { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedFiles: [], unscannedDirs: [] },
         "CONFIG-2",
         "workflows/ directory",
       );
