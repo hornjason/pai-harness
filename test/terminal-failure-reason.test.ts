@@ -37,6 +37,14 @@ function block(name: string): string {
   return SHIP.slice(start, end);
 }
 
+/** #889's note, read from its one declaration in ship.js rather than copied. */
+function noteValue(): string {
+  const at = SHIP.indexOf("const RESUME_REPLAYS_NOTE =");
+  if (at < 0) throw new Error("RESUME_REPLAYS_NOTE is not in ship.js");
+  const end = SHIP.indexOf("\n\n", at);
+  return new Function(`${SHIP.slice(at, end)}; return RESUME_REPLAYS_NOTE;`)() as string;
+}
+
 /** `terminalReason`, lifted out of the sandbox and callable. */
 function reasonFn(): (status: unknown, extra: unknown) => string {
   const body = block("TERMINAL-REASON");
@@ -126,6 +134,7 @@ describe("#524: the terminal funnel always has a reason to give", () => {
 
     const fn = new Function(
       "preserveSeenWorktrees", "WORK_DIR", "terminalReason", "restorePrimaryCheckout",
+      "RESUME_REPLAYS_NOTE",
       `${SHIP.slice(start, close)}; return terminalFailure;`,
     )(
       async () => ({ preserved: [], detail: "" }),
@@ -136,6 +145,11 @@ describe("#524: the terminal funnel always has a reason to give", () => {
       // funnel, which would red this case for a reason that has nothing to do
       // with the reason floor it is about.
       async () => ({ reading: "UNCHANGED", restoreOutcome: "ALREADY_ON_START", lines: [] }),
+      // #889's note, the same way and for the same reason: the funnel now
+      // reads it, so an absent binding throws inside the slice. Its VALUE is
+      // taken from ship.js rather than copied here — a copy would be a second
+      // declaring position for a string #889 asserts has exactly one.
+      noteValue(),
     ) as (s: string, e?: unknown) => Promise<Record<string, unknown>>;
 
     expect((await fn("COMMIT_FAILED")).reason).toContain(SENTINEL);

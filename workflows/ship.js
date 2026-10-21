@@ -980,6 +980,34 @@ function terminalReason(status, extra) {
 // ──── TERMINAL-REASON-END ────
 
 /**
+ * What a retry of this run will and will not see (#889).
+ *
+ * Every terminal refusal this file produces tells the operator to change
+ * something and try again, and the cheap way to try again — resuming the run
+ * id — is the one that cannot see the change. Measured twice, on two
+ * different statuses: a resume returned a byte-identical refusal in 13 ms and
+ * 9 ms with ZERO subagent tokens, the second of them still reporting
+ * `received 'unmeasured'` against a state file that had been repaired through
+ * the documented channel and confirmed afterwards.
+ *
+ * The gate verdict is an agent result, and the runtime caches a completed
+ * `agent()` call on its prompt and options. ship.js cannot vary that key on
+ * the state file's contents because it cannot open the file (#69), and on a
+ * resume every value derived from a prior agent is itself the cached one — so
+ * the real fix is not available from inside this script (#903).
+ *
+ * Both halves or neither. "Start a fresh run" alone sends an operator to
+ * repair `workflow-state.json` and watch the new run archive the repair,
+ * because the work directory is keyed by slug.
+ */
+const RESUME_REPLAYS_NOTE =
+  'retrying with resumeFromRunId will REPLAY this verdict from cache — it returns in milliseconds, ' +
+  'spends no tokens, and re-reads neither workflow-state.json nor any remote state, so a fix made ' +
+  'since this run will not be seen. A fresh run is required. Note that a fresh run ARCHIVES the ' +
+  'current workflow-state.json into previous-run-<runId>/, so repair the source the state is built ' +
+  'from rather than the file, or re-apply the repair after the new run has written its own (#889).'
+
+/**
  * End the run on a terminal status, having first given the work a name.
  *
  * Every terminal failure other than SHIP_FAILED comes through here.
@@ -1006,6 +1034,10 @@ async function terminalFailure(status, extra = {}) {
     // a field is read by the test that proves the exit took the step (#640).
     runBranchReading: restored.reading,
     runBranchRestore: restored.restoreOutcome,
+    // Its own field, never folded into `reason` (#889). The two answer
+    // different questions — why the run stopped, and what a retry will see —
+    // and #524 put the first one there.
+    retryGuidance: RESUME_REPLAYS_NOTE,
     workDir: WORK_DIR,
   }
 }
@@ -2320,6 +2352,11 @@ async function shipFailed(phaseName, immediateReason, extra = {}) {
   return {
     status: 'SHIP_FAILED',
     reason: summary.reason,
+    // The same note the other funnel carries, from the same binding (#889).
+    // SHIP_FAILED is the status most likely to be retried — the work exists
+    // and only the ship step refused — so a note on the other funnel alone
+    // would miss the case an operator hits hardest.
+    retryGuidance: RESUME_REPLAYS_NOTE,
     // Kept beside the summary, not replaced by it. The caller that only wants
     // "why did it stop here" still has it, and the difference between the two
     // fields is itself the thing #252 is about.
