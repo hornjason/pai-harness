@@ -441,6 +441,158 @@ describe("#713 SC-2: which TREE a registration names, which nothing else asks", 
   });
 });
 
+/**
+ * #981 — `wrongTreeViolations` selected by substring, so a string that merely
+ * MENTIONED a hook was classified as a registration of it.
+ *
+ * The fix is deliberately NOT "reuse `executedHookFile`", and the issue says
+ * so in as many words. The error directions at the two call sites are
+ * opposite: for `hookRegistration` an over-broad match is a guard reporting
+ * clean about its own subject (#910), while here a narrow parse would
+ * SILENTLY STOP REPORTING a hook genuinely wired to the superseded `.pai`
+ * tree, which is #713 entire. So selection stays over-broad and nothing is
+ * dropped; what changed is that a selected string is now CLASSIFIED by the
+ * argv parse, into a third reading — `unparsed` — instead of being described
+ * as a registration naming neither tree.
+ *
+ * Every case below says which reading it is about, and the escapes the fix
+ * does NOT close are asserted as cases rather than left in prose, so the
+ * `WHAT THIS DOES NOT COVER` block in `lib/hook-trees.ts` cannot drift from
+ * the code without a red.
+ *
+ * ## What was broken to prove these can fail
+ *
+ * Run over this file + `test/hook-shell-injection.test.ts` (32 tests). Every
+ * count predicted before the battery ran, and **the baseline row read first.**
+ * Each row names the CASES it reddens.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 32 pass, 0 fail | **32 pass, 0 fail** | — |
+ * | M6 the genuinely pre-#981 body — substring selection, whole-command classification, two readings | 4 | **4 of 32** — AC-1, AC-4, AC-5, AC-7 | `# TestSuiteRelease.hook.ts`: the original reads `unparsed`, the pre-#981 body reads `unknown` and says *"is registered by a command naming neither tree's path variable"* about a comment |
+ * | M7 **the cheapest wrong fix, which is the one #981 exists to refuse**: select with the parse and DROP what it rejects | 5 | **5 of 32** — AC-1, AC-2, AC-5, AC-6, AC-7 | the same comment: the original reports one reading, the mutant reports none |
+ * | M8 the tree read off the whole command again, selection unchanged | 1 | **1 of 32** — AC-4 | `bun ${PAI_HOOKS_DIR}/IssueCloseGuard.hook.ts # superseded, cf ${RUNGATE_HOOKS_DIR}`: the original reports `pai`, the mutant reports nothing |
+ *
+ * **M7 is the row that matters, and AC-2 is the assertion that owns it.** The
+ * one-line generalisation makes the noise go away and converts this site's
+ * error direction from loud to silent — a hook genuinely wired to the
+ * superseded tree in a spelling the parse cannot read would stop being
+ * reported, which is #713 entire. AC-3 and AC-4 stay GREEN under it, because
+ * an ordinary `.pai` registration still parses; only a case asserting that a
+ * REJECT is still reported can see it.
+ *
+ * **M8 is 1 and that is the point of splitting it out.** The whole-command
+ * classification is a second over-broad substring one level below the one
+ * #981 names, and no case in this file other than AC-4 can tell the two
+ * halves of the fix apart.
+ *
+ * None of the three mutations is left in the tree; all were applied and
+ * reverted, and `lib/hook-trees.ts` was confirmed byte-identical to the
+ * measured source afterwards by sha256.
+ */
+describe("#981: a string that MENTIONS a hook is not a registration of it", () => {
+  const COMMENT = "# TestSuiteRelease.hook.ts";
+  const LATER_SEGMENT = "bun run x.ts && cat TestSuiteRelease.hook.ts";
+
+  test("AC-1: a comment is reported as 'unparsed', not as a tree violation", () => {
+    // WITNESS. On the pre-#981 binding both of these came back
+    // `tree: "unknown"` with the detail *"registered by a command naming
+    // neither tree's path variable"* — a sentence about a string that is not
+    // a registration at all.
+    const v = wrongTreeViolations(["TestSuiteRelease"], [COMMENT, LATER_SEGMENT]);
+    expect(v.map(x => x.tree), "a mention was still classified as a tree").toEqual([
+      "unparsed",
+      "unparsed",
+    ]);
+    for (const x of v) {
+      expect(
+        x.detail,
+        "the detail still describes a mention as a registration",
+      ).not.toContain("is registered by a command");
+      expect(x.detail).toContain("not a command that executes it");
+    }
+  });
+
+  test("AC-2: it is still REPORTED — dropping it is the direction that goes silent", () => {
+    // The whole argument of #981. The cheapest wrong fix is to select with
+    // `executedHookFile` and drop whatever it rejects; that is one line, it
+    // makes the noise disappear, and it converts this site's error direction
+    // from loud to silent. This case is RED under that fix.
+    expect(
+      wrongTreeViolations(["TestSuiteRelease"], [COMMENT]).length,
+      "a string naming the hook was dropped rather than reported, so absence now reads as clean",
+    ).toBe(1);
+  });
+
+  test("AC-3: a .pai registration is still reported, which the narrowing must not cost", () => {
+    // The positive control for the witness above. Without it, AC-1 and AC-2
+    // are satisfied by a binding that reports everything as `unparsed`.
+    const v = wrongTreeViolations(["IssueCloseGuard"], settingsCommands([PAI_DOC("IssueCloseGuard")]));
+    expect(v.map(x => x.tree)).toEqual(["pai"]);
+  });
+
+  test("AC-4: the TREE is read off the executed path, not off a word in a comment", () => {
+    // The recursion question, asked of the fix itself. `registrationTree`
+    // decides by substring too, so handing it the WHOLE command let a
+    // `${RUNGATE_HOOKS_DIR}` in a trailing comment classify a genuine `.pai`
+    // registration as rungate — and rungate is the arm that `continue`s.
+    // Pre-#981 this pair returned NOTHING: a real wrong-tree registration,
+    // silenced by a word nobody executes. That is #981's own warned direction
+    // arriving one level down, so it is closed here rather than filed.
+    const v = wrongTreeViolations(
+      ["IssueCloseGuard"],
+      ["bun ${PAI_HOOKS_DIR}/IssueCloseGuard.hook.ts # superseded, cf ${RUNGATE_HOOKS_DIR}"],
+    );
+    expect(
+      v.map(x => x.tree),
+      "a comment naming the rungate root made a .pai registration disappear",
+    ).toEqual(["pai"]);
+    expect(v[0].detail).toContain("superseded");
+  });
+
+  test("AC-5: a first segment executing a DIFFERENT hook is reported, never dropped", () => {
+    // The input that makes "drop whatever the parse rejects" unsafe, stated
+    // as a case. `executedHookFile` truncates at `&&`, so it reads
+    // `other.hook.ts` and is CONFIDENT about it — and the real `.pai`
+    // registration is in the segment it never looked at. A conclusive
+    // reading of the wrong segment is still the wrong segment, so the
+    // reading is `unparsed` and the string is reported.
+    const v = wrongTreeViolations(
+      ["IssueCloseGuard"],
+      ["bun /x/other.hook.ts && bun ${PAI_HOOKS_DIR}/IssueCloseGuard.hook.ts"],
+    );
+    expect(v.map(x => x.tree)).toEqual(["unparsed"]);
+    expect(
+      v[0].detail,
+      "the reading does not say what the parse read instead, so nobody can triage it",
+    ).toContain("the first command executes other.hook.ts");
+  });
+
+  test("AC-6: WHAT THIS DOES NOT COVER — the two escapes that are not selected at all", () => {
+    // Both are UNDER-reports and both are stated in the binding's docblock.
+    // They are asserted here so the stated limit and the code cannot drift:
+    // a string that does not contain `<hook>.hook.ts` cannot be selected by
+    // any reading of these commands, and recovering it needs a shell.
+    expect(
+      wrongTreeViolations(["IssueCloseGuard"], ['HOOK=IssueCloseGuard.hook.ts; bun "${PAI_HOOKS_DIR}/$HOOK"']),
+      "the variable-built path case changed behaviour without the docblock changing",
+    ).toHaveLength(1); // selected only because the assignment spells the name
+    expect(
+      wrongTreeViolations(["IssueCloseGuard"], ["bun ${PAI_HOOKS_DIR}/run-the-hook.sh"]),
+      "a wrapper script that never names the hook is not selected, and must not be",
+    ).toEqual([]);
+  });
+
+  test("AC-7: WHAT THIS DOES NOT COVER — a quoted sh -c is reported, not classified", () => {
+    // Selected, because the string contains the name; `unparsed`, because the
+    // quoting is not unwrapped. Loud, which is the direction this site is
+    // allowed to be wrong in.
+    const v = wrongTreeViolations(["IssueCloseGuard"], ['sh -c "bun ${PAI_HOOKS_DIR}/IssueCloseGuard.hook.ts"']);
+    expect(v.map(x => x.tree)).toEqual(["unparsed"]);
+    expect(v[0].detail).toContain("no executed hook file could be read from it");
+  });
+});
+
 describe("#713 SC-3: AgentBriefGuard is wired, and the issue's premise was a one-scope read", () => {
   test("it is registered at project scope, pointing at the rungate copy", () => {
     // #713 says "wired nowhere". The control the issue never ran — *is it

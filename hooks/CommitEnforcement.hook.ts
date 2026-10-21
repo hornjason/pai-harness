@@ -16,7 +16,7 @@
  * Issue: #361, #343
  */
 
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { findWorkflowForIssue, extractIssueNumber } from './lib/findWorkflow'
@@ -81,8 +81,9 @@ async function main() {
   const uiExtensions = /\.(tsx|jsx|css|scss|html|svg|less)$/i
   let uiFiles: string[] = []
   try {
-    const diffOutput = execSync(`git -C "${worktreePath}" diff --name-only main 2>/dev/null`, {
-      encoding: 'utf-8', timeout: 5000
+    // ARGV, never a shell string — `worktreePath` is a tool-call value and `$(…)` runs inside the double quotes this replaced (#971 SC-4, test/hook-shell-injection.test.ts). `2>/dev/null` is now `stdio`.
+    const diffOutput = execFileSync('git', ['-C', worktreePath, 'diff', '--name-only', 'main'], {
+      encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
     if (diffOutput) {
       uiFiles = diffOutput.split('\n').filter(f => uiExtensions.test(f))
@@ -108,9 +109,8 @@ async function main() {
   // ── Uncommitted-changes detection ──
   let uncommittedStatus = ''
   try {
-    uncommittedStatus = execSync(`git -C "${worktreePath}" status --porcelain`, {
-      timeout: 5000,
-      encoding: 'utf-8',
+    uncommittedStatus = execFileSync('git', ['-C', worktreePath, 'status', '--porcelain'], {
+      timeout: 5000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
     }).trim()
   } catch {
     process.exit(0)
