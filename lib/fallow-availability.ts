@@ -75,6 +75,7 @@ export function resetFallowAvailability(): void {
  */
 export type FallowUnavailable =
   | { kind: "not-installed"; reason: string }
+  | { kind: "timed-out"; reason: string }
   | { kind: "run-failed"; reason: string };
 
 export function fallowNotInstalled(): FallowUnavailable {
@@ -114,6 +115,162 @@ export function fallowRunFailed(detail: string): FallowUnavailable {
     kind: "run-failed",
     reason: `fallow is installed but the run did not produce a reading: ${safeToolDetail(detail)}`,
   };
+}
+
+/**
+ * The budget, and there is exactly one of it (#935).
+ *
+ * It is BOTH the spawn's `timeout` and the per-test timeout every FALLOW
+ * registration is given, because the defect this constant exists to prevent
+ * is the two disagreeing. `lib/conformity.ts` spawned with `timeout: 30_000`
+ * inside a `test()` that passed no timeout at all — so bun killed the body at
+ * its 5000ms default and the 30s was unreachable, a budget nothing could
+ * spend. Measured on `hornjason/agentgrit` PR #310: FALLOW-1 died at 5010ms
+ * on a commit that changed two markdown files, four times in one day.
+ *
+ * A second literal anywhere is the whole bug returning, so
+ * `test/fallow-budget-reading.test.ts` holds the population of other budget
+ * spellings at zero rather than trusting this comment.
+ */
+export const FALLOW_BUDGET_MS = 30_000;
+
+/**
+ * A run the clock killed.
+ *
+ * Its own kind, and NOT a flavour of `run-failed`, because the two send an
+ * operator to different places: one says go and look at the tool, this one
+ * says the tool was still working when we stopped it. It carries the budget
+ * because that is the number the reader would change, and the elapsed time
+ * because a run killed at the budget and a run killed by something else at
+ * 200ms are different facts.
+ */
+export function fallowTimedOut(budgetMs: number, elapsedMs: number): FallowUnavailable {
+  return {
+    kind: "timed-out",
+    reason:
+      `fallow is installed and was still running when the ${budgetMs}ms budget expired ` +
+      `(killed after ${elapsedMs}ms) — no static analysis reading was produced. This is ` +
+      `UNMEASURED, not a clean result: raise the budget, or warm the index before the run`,
+  };
+}
+
+/** Only the fields the classifier is allowed to read, so a test can plant one. */
+export interface FallowSpawnResult {
+  stdout: { toString(): string };
+  stderr?: { toString(): string };
+  exitCode: number | null;
+  exitedDueToTimeout?: boolean;
+}
+
+export type FallowReading<T> = { data: T } | { unavailable: FallowUnavailable };
+
+/**
+ * The ONE place in the tree that spawns fallow (#935, #621).
+ *
+ * There were two — `lib/conformity.ts` and `scripts/generate-code-map.ts` —
+ * each with its own `timeout: 30_000` literal and only one of them
+ * classifying anything. Two positions answering one question with nothing
+ * comparing them: mutate either and the other carries on spawning, which is
+ * `.claude/rules/checks-must-be-able-to-fail.md`'s fourth shape.
+ *
+ * **The classification ORDER is the fix, not the `timed-out` arm.** A killed
+ * process writes nothing, so a run that exceeded the budget satisfies the
+ * empty-stdout branch too — and whichever is tested first decides what the
+ * operator is told. Reading `exitedDueToTimeout` second is how a 30-second
+ * hang got reported as `fallow is not installed (not a declared dependency)`
+ * on a tree where fallow is exactly pinned. An operator acting on that goes
+ * and declares a dependency that is already there.
+ *
+ * `available` and `spawn` are injected rather than reached for, so a case can
+ * force a timeout without waiting for one and can prove the absent-tool arm
+ * never spawns at all. Both default to the real thing.
+ */
+export function runFallowJson<T>(
+  root: string,
+  args: string[],
+  opts?: {
+    budgetMs?: number;
+    available?: (root: string) => boolean;
+    spawn?: (argv: string[], options: Record<string, unknown>) => FallowSpawnResult;
+  },
+): FallowReading<T> {
+  const budgetMs = opts?.budgetMs ?? FALLOW_BUDGET_MS;
+  const isAvailable = opts?.available ?? fallowAvailable;
+  if (!isAvailable(root)) return { unavailable: fallowNotInstalled() };
+
+  const spawn =
+    opts?.spawn ??
+    ((argv: string[], options: Record<string, unknown>) =>
+      Bun.spawnSync(argv, options as Parameters<typeof Bun.spawnSync>[1]) as FallowSpawnResult);
+
+  const startedAt = Date.now();
+  const result = spawn(["npx", "fallow", ...args, "--format", "json", "--quiet"], {
+    cwd: root,
+    env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    timeout: budgetMs,
+  });
+  const elapsedMs = Date.now() - startedAt;
+
+  // FIRST, and the order is the whole point — see the docstring above.
+  if (result.exitedDueToTimeout) return { unavailable: fallowTimedOut(budgetMs, elapsedMs) };
+
+  const stdout = result.stdout.toString().trim();
+  if (!stdout) {
+    const stderr = result.stderr?.toString().trim() ?? "";
+    return {
+      unavailable: fallowRunFailed(stderr || `exit ${result.exitCode}, no output`),
+    };
+  }
+  // fallow's own error envelope. It is well-formed JSON, so it would parse
+  // and be returned as a reading of zero issues.
+  if (stdout.startsWith('{"error"')) return { unavailable: fallowRunFailed(stdout) };
+  try {
+    return { data: JSON.parse(stdout) as T };
+  } catch (e) {
+    return {
+      unavailable: fallowRunFailed(`output did not parse as JSON (${(e as Error).name})`),
+    };
+  }
+}
+
+/**
+ * Pay the cold index build once, before anyone is being timed for it.
+ *
+ * fallow builds an index on first use: ~1.5s cold against ~455ms warm,
+ * measured. Four checks run in sequence and the FIRST one pays it, which is
+ * why FALLOW-1 looked slow and the three after it looked fast. It was never
+ * FALLOW-1 — it is whichever check runs first, and moving the checks around
+ * would move the symptom without touching the cause.
+ *
+ * Failures are deliberately swallowed: this is a warm-up, and every caller
+ * takes its own reading immediately afterwards and reports its own outcome.
+ * A warm-up that could fail a suite would be a second decider for whether
+ * fallow works.
+ *
+ * It takes the same seam `runFallowJson` does, and that is not symmetry for
+ * its own sake. Without it the only assertable property is WHERE the call
+ * sits in the source, and a warm-up short-circuited to `return` is invisible
+ * to a position check — measured, as row M7 of this change's battery, which
+ * came back 0 of 14. Worse, fallow is not installed on this machine or on
+ * CI, so `fallowAvailable` is false and the real function returns without
+ * spawning too: there was no input anywhere in this repository on which the
+ * no-op and the original behaved differently. That is not a check that is
+ * blind, it is a row that could not be run
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, *before you believe a 0*).
+ */
+export function warmFallow(
+  root: string,
+  opts?: Parameters<typeof runFallowJson>[2],
+): void {
+  // No availability check of its own, deliberately. It had one, and
+  // `runFallowJson` opens with the same question — two deciders answering it
+  // about the same root, which is behaviourally one and which no test can
+  // tell apart. The battery said so before any of this was argued: deleting
+  // the guard here was 0 of 15, because the one below it still refused
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). There is
+  // no input only this copy could reach, so the honest fix is to collapse
+  // rather than to invent a case for it.
+  runFallowJson(root, ["dead-code"], opts);
 }
 
 /**

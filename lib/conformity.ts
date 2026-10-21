@@ -5,7 +5,7 @@
  *   import { runScaffoldConformity, runSpecDiscovery, runSpecDrift } from "rungate/lib/conformity";
  *   runScaffoldConformity(import.meta.dir + "/..");
  */
-import { describe, test, expect } from "bun:test";
+import { beforeAll, describe, test, expect } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import type { Dirent } from "fs";
@@ -44,7 +44,14 @@ import { stripJsComments } from "./strip-js-comments";
 import { remedyMessage } from "./check-remedy";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
-import { fallowAvailable } from "./fallow-availability";
+import {
+  FALLOW_BUDGET_MS,
+  fallowAvailable,
+  runFallowJson,
+  warmFallow,
+  type FallowReading,
+  type FallowUnavailable,
+} from "./fallow-availability";
 import {
   briefReferenceReading,
   unmeasuredBriefReferenceNotice,
@@ -2670,76 +2677,86 @@ interface FallowResult {
 // months, which is the defect #581 is about.
 export { fallowAvailable };
 
-/** Shared skip notice — a skipped check must say so, not read as a pass. */
-function fallowSkipped(check: string): void {
-  console.warn(
-    `SKIP ${check}: fallow is not installed (not a declared dependency) — ` +
-      `this check did NOT run. Install it to enable static analysis.`,
-  );
+/**
+ * Shared skip notice — a skipped check must say so, not read as a pass, and
+ * must say WHICH silence it is (#935).
+ *
+ * It used to take only the check name and print one sentence: *"fallow is not
+ * installed (not a declared dependency)"*. That sentence was printed for a
+ * run the clock killed, on trees where fallow is an exactly-pinned declared
+ * dependency, because `runFallowCommand` returned `null` for both. The
+ * reading is passed in now, so the notice is the reading's own sentence
+ * rather than a guess about which of three things happened.
+ */
+function fallowSkipped(check: string, why: FallowUnavailable): void {
+  console.warn(`SKIP ${check}: ${why.reason}. This check did NOT run.`);
 }
 
-function runFallowCommand(root: string, args: string[]): FallowResult | null {
-  if (!fallowAvailable(root)) return null;
-  const result = Bun.spawnSync(["npx", "fallow", ...args, "--format", "json", "--quiet"], {
-    cwd: root,
-    env: { ...process.env, NODE_NO_WARNINGS: "1" },
-    timeout: 30_000,
-  });
-  const stdout = result.stdout.toString().trim();
-  if (!stdout || stdout.startsWith("{\"error\"")) return null;
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    return null;
-  }
+/**
+ * The reading, or the refusal that says why there isn't one.
+ *
+ * Delegates to `lib/fallow-availability.ts` — one spawn in the tree, one
+ * budget, and the timeout classified before the empty-stdout branch. This
+ * function used to hold its own copy of all three (#935).
+ */
+function runFallowCommand(root: string, args: string[]): FallowReading<FallowResult> {
+  return runFallowJson<FallowResult>(root, args);
 }
 
 export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolean; warnOnly?: boolean }) {
   const fail = !opts?.warnOnly;
   describe("Fallow: static analysis", () => {
+    // Before the four checks, not inside the first of them. fallow builds its
+    // index on first use — ~1.5s cold against ~455ms warm — and whichever
+    // check ran first paid for it alone. That made FALLOW-1 look slow and the
+    // other three look fast, which sent two investigations after FALLOW-1's
+    // own query instead of after the cold start (#935).
+    beforeAll(() => warmFallow(root), FALLOW_BUDGET_MS);
+
     test("FALLOW-1: No unused files", () => {
-      const result = runFallowCommand(root, ["dead-code", "--unused-files"]);
-      if (!result) { fallowSkipped("FALLOW-1 (unused files)"); return; }
+      const reading = runFallowCommand(root, ["dead-code", "--unused-files"]);
+      if ("unavailable" in reading) { fallowSkipped("FALLOW-1 (unused files)", reading.unavailable); return; }
+      const result = reading.data;
       const unused = result.unused_files.map(f => f.path).filter(p => !p.includes("test/fixtures/") && !p.includes("reference/"));
       if (unused.length > 0) {
         console.warn(`Unused files (${unused.length}):\n  ${unused.slice(0, 10).join("\n  ")}${unused.length > 10 ? `\n  ... and ${unused.length - 10} more` : ""}`);
       }
       if (fail) expect(unused).toEqual([]);
-    });
+    }, FALLOW_BUDGET_MS);
 
     if (!opts?.skipUnusedExports) {
       test("FALLOW-2: No unused exports", () => {
-        const result = runFallowCommand(root, ["dead-code", "--unused-exports"]);
-        if (!result) { fallowSkipped("FALLOW-2 (unused exports)"); return; }
-        const unused = (result.unused_exports || [])
+        const reading = runFallowCommand(root, ["dead-code", "--unused-exports"]);
+        if ("unavailable" in reading) { fallowSkipped("FALLOW-2 (unused exports)", reading.unavailable); return; }
+        const unused = (reading.data.unused_exports || [])
           .filter(e => !e.path.includes("test/fixtures/") && !e.path.includes("reference/"))
           .map(e => `${e.path}:${e.line ?? "?"} ${e.export_name}`);
         if (unused.length > 0) {
           console.warn(`Unused exports (${unused.length}):\n  ${unused.slice(0, 10).join("\n  ")}${unused.length > 10 ? `\n  ... and ${unused.length - 10} more` : ""}`);
         }
         if (fail) expect(unused).toEqual([]);
-      });
+      }, FALLOW_BUDGET_MS);
     }
 
     test("FALLOW-3: No unused dependencies", () => {
-      const result = runFallowCommand(root, ["dead-code", "--unused-deps"]);
-      if (!result) { fallowSkipped("FALLOW-3 (unused dependencies)"); return; }
-      const unused = result.unused_dependencies?.map(d => d.name) || [];
+      const reading = runFallowCommand(root, ["dead-code", "--unused-deps"]);
+      if ("unavailable" in reading) { fallowSkipped("FALLOW-3 (unused dependencies)", reading.unavailable); return; }
+      const unused = reading.data.unused_dependencies?.map(d => d.name) || [];
       if (unused.length > 0) {
         console.warn(`Unused dependencies (${unused.length}):\n  ${unused.join("\n  ")}`);
       }
       if (fail) expect(unused).toEqual([]);
-    });
+    }, FALLOW_BUDGET_MS);
 
     test("FALLOW-4: No circular dependencies", () => {
-      const result = runFallowCommand(root, ["dead-code"]);
-      if (!result) { fallowSkipped("FALLOW-4 (circular dependencies)"); return; }
-      const circles = result.circular_dependencies || [];
+      const reading = runFallowCommand(root, ["dead-code"]);
+      if ("unavailable" in reading) { fallowSkipped("FALLOW-4 (circular dependencies)", reading.unavailable); return; }
+      const circles = reading.data.circular_dependencies || [];
       if (circles.length > 0) {
         console.warn(`Circular dependencies (${circles.length}):\n  ${circles.slice(0, 5).map(c => c.path || JSON.stringify(c.chain ?? c)).join("\n  ")}${circles.length > 5 ? `\n  ... and ${circles.length - 5} more` : ""}`);
       }
       if (fail) expect(circles).toEqual([]);
-    });
+    }, FALLOW_BUDGET_MS);
   });
 }
 
