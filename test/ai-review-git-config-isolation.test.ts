@@ -57,6 +57,15 @@
  * | **M7** | `-c safe.directory='*'` dropped only | **2 of 16** | AC-5 dubious ownership, AC-7/1 |
  * | **M8** | only the `status` call isolated, `hash-object` left bare | **1 of 16** | AC-7/2 no-bare-git |
  *
+ * **Provenance, since the tree underneath this table has moved (#969).** The
+ * rows above were measured on the tree #965 shipped. #969 added
+ * `AI_REVIEW_IGNORED_READING` to the same `status` call, and `unharden` below
+ * now strips that flag as well — without which the pre-#960 variant would be
+ * a tree nobody ever shipped and three "the poison worked" halves go red,
+ * measured. The counts have NOT been re-taken against the post-#969 tree, so
+ * they describe the mutations on the tree they name. Re-run them before
+ * citing them as current.
+ *
  * **M4 to M7 red a BEHAVIOURAL case each, and the case is always the local
  * one.** That is the finding, not a detail: every `-c` flag earns its place
  * on the checkout's own `.git/config`, which the env vars cannot reach and
@@ -131,6 +140,7 @@ import { join } from "path";
 import {
   AI_REVIEW_DRIFT_TITLE,
   AI_REVIEW_GIT_ISOLATED,
+  AI_REVIEW_IGNORED_READING,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
   AI_REVIEW_TREE_BEFORE_VAR,
   AI_REVIEW_TREE_READER,
@@ -159,7 +169,17 @@ function scratchDir(prefix: string): string {
  * hardened variant the moment the constant stops isolating anything.
  */
 function unharden(script: string): string {
-  return script.split(AI_REVIEW_GIT_ISOLATED).join("git");
+  // `AI_REVIEW_IGNORED_READING` goes too, and it is not optional (#969).
+  // That flag enumerates ignored paths, so a plant hidden by
+  // `core.excludesFile` is visible WITH it no matter what the config says —
+  // leaving it in makes every "the poison worked" half of this file red, and
+  // the quiet version of the same problem would be a pre-#960 variant that
+  // is really pre-#960-plus-#969 and measures a tree nobody ever shipped.
+  return script
+    .split(AI_REVIEW_GIT_ISOLATED)
+    .join("git")
+    .split(` ${AI_REVIEW_IGNORED_READING}`)
+    .join("");
 }
 
 type Variant = "hardened" | "unhardened";
