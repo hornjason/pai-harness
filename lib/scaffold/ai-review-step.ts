@@ -975,6 +975,128 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
 ];
 
 /**
+ * The CI RUNNER's own diagnostic directories — a third owner the floor above
+ * was never derived from (#877).
+ *
+ * The two lists above are the AI runtime: the Claude CLI's state, npm's logs,
+ * bun's cache. This is the GitHub Actions runner process itself, and it is a
+ * separate list rather than another entry in the inert one because the
+ * evidence, the owner and the environment are all different — those 25 paths
+ * were measured on GitHub-hosted runners, these 30 on a self-hosted pool.
+ *
+ * ## The measurement
+ *
+ * asaCommandCenter PR #1816, run `39564143967`, job `ai-review`: exit 1 with
+ * **30 paths**, every one under a `_diag` directory two levels below the
+ * shared home — `runner-3` and `actions-runner` are two of the parents. The
+ * job ran on `runner-4` and the list
+ * names `runner-2`, `runner-3`, `runner-5`, `runner-7`, `runner-9` and
+ * `actions-runner` — **six SIBLING runner processes**, each writing its own
+ * `Worker_*.log` for whatever repository it happened to be building, into a
+ * home directory all ten share. The `Worker_20261021-0744*` timestamps are
+ * concurrent builds of other projects.
+ *
+ * Depths 3 and 4, both inside `AI_REVIEW_OUTSIDE_MAXDEPTH`. There is no run in
+ * which they are absent — the runner writes `_diag` continuously, by design,
+ * with `-xdev` and `-newer` both satisfied — so this was not noise but a
+ * permanent refusal with no path back to green, on every self-hosted consumer,
+ * from their first `ai-review` run.
+ *
+ * ## Why #866's and #871's measurements could not have found it
+ *
+ * Both were taken on GitHub-hosted `ubuntu-latest`, where `$HOME` is fresh per
+ * job and exactly one runner process exists. Every fixture met "one runner,
+ * ephemeral home", so the branch where that is false was outside the
+ * measurement entirely — `.claude/rules/checks-must-be-able-to-fail.md`'s
+ * precondition shape, and the refusal's own text predicted it: *"If this
+ * runner is self-hosted its floor has never been read."*
+ *
+ * ## Why `_diag` and not the runner tree
+ *
+ * The tempting generalisation is "subtract every sibling directory under
+ * `$HOME` that is not this job's own runner" — derivable from `RUNNER_WORKSPACE` and strictly
+ * wider. It is the wrong width: a sibling's `_work` checkout is **another
+ * repository's source tree on the same host**, which is #843 finding 1's harm
+ * exactly, and subtracting it would go blind on the one write this reading
+ * exists to catch. `_diag` is the runner's own diagnostics, holds nothing
+ * executable, and is written by a process that is definitionally not the
+ * reviewer.
+ *
+ * The entry is written in the list below as a glob rather than a literal,
+ * because the directory above
+ * `_diag` is the runner's install name, which the pool operator chooses —
+ * `runner-3` and `actions-runner` in the same home. A subtraction keyed on
+ * `runner-<n>` would miss the tenth. A star in `find -path` matches a slash
+ * too, so one entry covers both measured depths.
+ *
+ * ## The cheapest wrong fix, named
+ *
+ * Drop `AI_REVIEW_OUTSIDE_MAXDEPTH` from 4 to 2. All 30 paths sit at depth 3
+ * and 4, so the gate goes green on one digit. It is wrong because it buys that
+ * with blindness at exactly the depth a real write sits:
+ * `$HOME/<sibling-runner>/_work/<other-repo>/<file>` is depth 4.
+ * `test/ai-review-outside-reading.test.ts` AC-15c plants that file and
+ * requires the refusal, so the repair reds it — and AC-15a would go green
+ * under it, which is why AC-15c and not AC-15a is the witness.
+ *
+ * ## What is still NOT measured
+ *
+ * This is one self-hosted pool, read from one refusal. Whatever else shares
+ * that home directory — another tool's cache, a second runner product — has
+ * not been read, and the honest state of this pass on any OTHER self-hosted
+ * pool is still UNMEASURED. A consumer there sees the refusal fire with the
+ * paths named, which is the one outcome that produces the next measurement
+ * instead of silence.
+ *
+ * ## What was broken to prove the cases fail
+ *
+ * Run and counted over `test/ai-review-outside-reading.test.ts` (35 tests).
+ * Every count predicted before the battery ran, and THE BASELINE ROW WAS READ
+ * FIRST. Each fixture is a real bash run of the generated step against a fake
+ * `$HOME`, so a row is a measurement of behaviour and not of a string.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | baseline — unmutated | 35 pass, 0 fail | 35 pass, 0 fail | — |
+ * | N1 the genuinely pre-#877 tree: this list emptied | 3 red, 32 cases | 6 of 35 | a `_diag` log three levels under the home: the original exits 0 silently, the mutant refuses and names it |
+ * | N2 THE CHEAPEST WRONG FIX: the depth bound dropped from 4 to 2 | 1 | 2 of 35 | a file four levels down in a sibling runner's `_work` checkout: the original refuses and names it, the mutant never sees it |
+ * | N3 this list added to pass 2 as well, so a runner log is annotated | 5 | 5 of 35 | the same log: the original is silent, the mutant reports it as runtime config UNMEASURED |
+ * | N4 the entry narrowed to the numbered runners only | 2 | 2 of 35 | a log under the pool's tenth runner, which is named `actions-runner`: the original is silent, the mutant refuses |
+ * | N5 the entry widened to every sibling directory under the home | 6 | 11 of 35 | a file in a sibling's `_work` checkout, and nine other writes the suite plants anywhere below a directory in the home |
+ *
+ * **N1 came back 6 where 3 was predicted, and the prediction was wrong about
+ * this file's own test.** The three per-shape cases were expected to be
+ * DELETED by emptying the list — the projection trap — but they are driven by
+ * a literal list of three measured fixtures in the test, not by this export,
+ * so they go red instead. The pin case above them is still load-bearing: N4
+ * is the row where it earns its place.
+ *
+ * **N2 came back 2, and the extra red is the real kind.** The prediction
+ * covered the sibling-checkout case. The second is `AC-9`, whose config
+ * fixtures sit three levels down — so the shallow bound does not merely blind
+ * the REFUSAL, it blinds the UNMEASURED annotation too, and the run reports
+ * nothing about trust-bearing paths it is supposed to name. That is a worse
+ * consequence of the wrong fix than the one predicted, not a broken mutant:
+ * 33 cases still pass.
+ *
+ * **N5 came back 11 where 6 was predicted**, and the five extra reds are the
+ * argument against the wider generalisation stated above, measured rather
+ * than asserted: subtracting every sibling directory blinds `AC-1`, `AC-2`,
+ * `AC-4`, `AC-6`, `AC-7`, `AC-11` and `AC-14` as well — most of the reading,
+ * not just the sibling checkout. 24 cases still pass, so the mutant runs.
+ *
+ * None of the five mutations is left in the tree; all were run and reverted,
+ * and this file was confirmed byte-identical to the measured source
+ * afterwards by sha256, restored from a `cp` backup and never by
+ * `git checkout --`.
+ */
+export const AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS: readonly string[] = [
+  // The Actions runner's own diagnostic logs. `*` is the runner's install
+  // directory, which the pool operator names.
+  "*/_diag",
+];
+
+/**
  * What the config half of the floor reports, under
  * `AI_REVIEW_UNMEASURED_TITLE` and never under the refusal's own title.
  *
@@ -2492,9 +2614,16 @@ export function buildDriftScript(): string {
     `${AI_REVIEW_RUNTIME_INERT_PATHS.join(", ")} as inert state, and ` +
     `${AI_REVIEW_RUNTIME_CONFIG_PATHS.join(", ")} as runtime config reported ` +
     `separately as UNMEASURED (#871) — and those cover every path two ` +
-    `measured runs produced (#866). What is left is not the runtime. If ` +
-    `this runner is self-hosted its floor has never been read, and the path ` +
-    `below is the reading that would start that. Paths`;
+    `measured runs produced (#866). The CI runner's own diagnostics are ` +
+    `subtracted too — ${AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.join(", ")} — ` +
+    `because on a pool whose runners share a home directory those are written ` +
+    `by SIBLING runner processes building other repositories, continuously ` +
+    `and by design (#877). What is left is neither the runtime nor the ` +
+    `runner. A sibling runner's _work checkout is NOT subtracted: a write ` +
+    `there is another repository's source tree and is the finding, not the ` +
+    `floor. If this runner is self-hosted, whatever else shares its home has ` +
+    `still never been read, and the path below is the reading that would ` +
+    `start that. Paths`;
 
   const runtimeConfig = AI_REVIEW_RUNTIME_CONFIG_UNMEASURED;
 
@@ -2588,8 +2717,10 @@ fi
 #
 # What IS subtracted is the runtime's own directories, which is the opposite
 # move: not a list of places to look, a list of places whose writes have been
-# measured and attributed. Two runs produced 25 paths and all 25 are in the
-# two lists below (#866). Interpolated from AI_REVIEW_RUNTIME_INERT_PATHS and
+# measured and attributed. Two hosted runs produced 25 paths and all 25 are
+# in the first two lists below (#866); one self-hosted run produced 30 more
+# and all 30 are the CI runner's own _diag, which is the third (#877).
+# Interpolated from AI_REVIEW_RUNTIME_INERT_PATHS and
 # AI_REVIEW_RUNTIME_CONFIG_PATHS so each list has one declaring position; a
 # literal here would be a second.
 #
@@ -2624,7 +2755,11 @@ else
     -newer "\${${AI_REVIEW_TREE_BEFORE_VAR}}" \\
     -not -path "\${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \\
     -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
-${[...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS]
+${[
+  ...AI_REVIEW_RUNTIME_INERT_PATHS,
+  ...AI_REVIEW_RUNTIME_CONFIG_PATHS,
+  ...AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS,
+]
   .map(
     // Two shapes per entry, with no special case for one that happens to name
     // a file today: the `/*` form is simply a no-op against `.claude.json`,
