@@ -70,6 +70,8 @@ import {
   AI_REVIEW_VERTEX_AUTH_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
 } from "./scaffold/ai-review-step";
+import { workflowOverrides } from "./scaffold/managed-workflow";
+import { workflowDrift } from "./scaffold/workflow-drift";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -4770,6 +4772,77 @@ export function runBranchProtectionValidation(
       // recorded finding into a red suite — and the cast keeps the assertion
       // written against the value rather than against the narrowing.
       expect(reading.verdict as string, message).toBe("PASS");
+    });
+  });
+}
+
+/**
+ * WORKFLOW-DRIFT-1 (#915) — a generated workflow still holds the bytes the
+ * generator wrote.
+ *
+ * The consumer-facing end of #722's census, which has been able to tell a
+ * hand-edited generated workflow from an untouched one since the day it
+ * shipped and which nothing a consumer runs has ever asked. `lib/conformity.ts`
+ * exported fifteen `run*` functions and none of them was a workflow drift
+ * check, so a hand-edit to a stamped `ci.yml`, `gates.yml` or `ai-review.yml`
+ * was detectable and undetected.
+ *
+ * FAILS; does not warn, for a file whose every byte is the generator's —
+ * `bunx rungate scaffold .` reverts that edit and nothing says so first.
+ * WARNs, naming the reason, for the two states that are not a pass and not a
+ * verdict either: a scan with nothing stamped to compare, and a file in which
+ * `ci.workflowOverrides` has made part of the content the consumer's. See
+ * `lib/scaffold/workflow-drift.ts` for why the second of those cannot be
+ * resolved from a whole-body digest.
+ *
+ * NOT-OWNED workflows pass and are named. A consumer's own CI is theirs; a
+ * check that refused it would be deleted within a day.
+ */
+export function runWorkflowDriftValidation(root: string) {
+  describe("Generated workflow drift (#915)", () => {
+    test("WORKFLOW-DRIFT-1: a generated workflow holds the bytes the generator wrote", () => {
+      const overrides = workflowOverrides(tryLoadRungateConfig(root)?.ci);
+      const reading = workflowDrift(root, overrides);
+
+      if (reading.reading === "UNMEASURED") {
+        // Every cause, named. "UNMEASURED" with no reason beside it is the
+        // silence this check exists to replace.
+        for (const reason of reading.unmeasuredReasons) {
+          addFinding({ ruleId: "WORKFLOW-DRIFT-1", severity: "WARN", file: "", message: reason });
+        }
+        return;
+      }
+
+      for (const f of reading.consumerOwned) {
+        addFinding({
+          ruleId: "WORKFLOW-DRIFT-1",
+          severity: "WARN",
+          file: `.github/workflows/${f.name}`,
+          message: f.detail,
+        });
+      }
+      for (const name of reading.notOwned) {
+        addFinding({
+          ruleId: "WORKFLOW-DRIFT-1",
+          severity: "WARN",
+          file: `.github/workflows/${name}`,
+          message:
+            "NOT-OWNED — rungate did not write this workflow and does not manage it. " +
+            "Reported, not touched: what happens to it is yours",
+        });
+      }
+
+      const violations = reading.drifted.map(f => `${f.name}: ${f.detail}`);
+      for (const f of reading.drifted) {
+        addFinding({
+          ruleId: "WORKFLOW-DRIFT-1",
+          severity: "FAIL",
+          file: `.github/workflows/${f.name}`,
+          message: f.detail,
+          fixCommand: "bunx rungate scaffold .",
+        });
+      }
+      expect(violations, violations.join("\n")).toEqual([]);
     });
   });
 }

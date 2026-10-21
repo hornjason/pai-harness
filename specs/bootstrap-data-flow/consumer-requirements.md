@@ -175,6 +175,8 @@ Ownership: **`job-preserving`** — the harness owns the generated `test` and `g
 
 Outside `jobs:`, ownership is **sub-key by sub-key** (#839). A trigger or a permission the generator emits and your file does not have is added on re-scaffold; a sub-key you both declare keeps YOUR value, and your top-level order never changes. That is what lets a CI fix made once in the harness reach repos it scaffolded months ago — before it, a repo scaffolded prior to the generator learning `on: merge_group:` could never be given it, and turning on a merge queue there would hang every entry on a required check that never reports. To keep a key out, name it in `ci.workflowOverrides`; the written file then carries a comment saying which config key declined it.
 
+A generated workflow carries a `# generated-sha:` marker on line 1 digesting the bytes the harness wrote (#722), and your conformity suite asks it on every run: `runWorkflowDriftValidation` (`WORKFLOW-DRIFT-1`, #915) **fails** when a generated workflow has been hand-edited, because the next `bunx rungate scaffold .` overwrites that edit and nothing would otherwise say so first. Workflows the harness did not write are reported by name and pass — they are yours. A top-level key you have taken back through `ci.workflowOverrides` is **not** drift: the marker digests the whole file, so a file carrying a key of yours is reported UNMEASURED with the key named rather than accused. Fix drift in the generator or in config, not in the workflow.
+
 The harness provides two workflow files that enforce gates in the CI pipeline. Local gates can be skipped (agent ignores WARN, user bypasses). CI gates can't — they block merge mechanically.
 
 #### .claude/rungate/config.json CI config
