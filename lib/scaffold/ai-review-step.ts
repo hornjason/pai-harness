@@ -220,6 +220,173 @@ export const AI_REVIEW_VERTEX_AUTH_STEP_ID = "ai-review-vertex-auth";
 
 export const AI_REVIEW_VERTEX_AUTH_STEP_NAME = "Authenticate to Vertex AI";
 
+/**
+ * The annotation title for a credential that is readable where it must not be.
+ *
+ * Its own title, not the drift one: "the reviewer edited the tree" and "the
+ * cloud credential is in the directory the reviewer reads" are different
+ * facts, and an operator filtering annotations by title should be able to
+ * tell them apart.
+ */
+export const AI_REVIEW_CREDS_TITLE = "AI review credential exposure";
+
+export const AI_REVIEW_CREDS_RELOCATE_STEP_ID = "ai-review-creds-relocate";
+
+export const AI_REVIEW_CREDS_RELOCATE_STEP_NAME =
+  "Move the cloud credential out of the workspace";
+
+export const AI_REVIEW_CREDS_BASENAME = "ai-review-gcp-creds";
+
+/**
+ * The glob `google-github-actions/auth` names its credentials file with.
+ *
+ * Its README publishes exactly this as the `.gitignore` line consumers are
+ * told to add, so it is the action's own statement about the name rather
+ * than a pattern inferred from one observed filename.
+ */
+export const AI_REVIEW_CREDS_GLOB = "gha-creds-*.json";
+
+/**
+ * The three variables the auth step exports when it creates a credentials
+ * file, all of which must follow the file when it moves (#843 finding 3).
+ *
+ * One list here, because they are rewritten in one loop — one site to mutate.
+ *
+ * The test deliberately keeps its OWN hand-written copy rather than importing
+ * this one. An earlier draft of this comment said the opposite, and the
+ * battery disproved it: dropping `GOOGLE_APPLICATION_CREDENTIALS` from this
+ * list was predicted to red one case and reds two, the second being the pair
+ * case that compares the exported names to the test's list. A test that
+ * imported this constant would compare the mutant to itself and that row
+ * would be 1. An expected value in a test is supposed to be independent of
+ * the thing it is checking; "two deciders that agree" is about two deciders
+ * in the PRODUCT, not about a test holding its own copy of the answer.
+ *
+ * `GOOGLE_GHA_CREDS_PATH` is the one the action's own `post.ts` reads to
+ * decide what to delete, and an unset value is an explicit early return
+ * there. So dropping it rather than rewriting it leaves the credential on
+ * disk when the job ends — strictly worse than the state being fixed.
+ */
+export const AI_REVIEW_CREDS_EXPORTED_VARS = [
+  "GOOGLE_GHA_CREDS_PATH",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+] as const;
+
+/**
+ * The bash that moves the cloud credential out of the directory the reviewer
+ * can read (#843 finding 3).
+ *
+ * ## Why a move, and not a configuration
+ *
+ * `google-github-actions/auth` has no path input. Its README states the file
+ * "is exported into `$GITHUB_WORKSPACE`", and the only path-shaped item in
+ * its interface is an OUTPUT. Relocating it afterwards is the only lever
+ * there is.
+ *
+ * It writes exactly ONE file — `createCredentialsFile` in
+ * `src/client/workload_identity_federation.ts` has a single `writeSecureFile`
+ * — and the document uses `credential_source.url`, with no `file` key and no
+ * sidecar holding the OIDC token. That is what makes moving one file a
+ * complete fix rather than a half-measure, and it is why this step still
+ * refuses a second `${AI_REVIEW_CREDS_GLOB}` it did not move: the fix is
+ * correct only for as long as that stays true, and nothing here would notice
+ * it changing.
+ *
+ * ## Why the cleanup redirect is part of the same change
+ *
+ * `src/post.ts` reads `GOOGLE_GHA_CREDS_PATH` from the ENVIRONMENT and
+ * force-removes whatever it names. Rewriting it through `GITHUB_ENV` sends
+ * the cleanup to the new location; dropping it makes the post step skip
+ * entirely, and on a self-hosted runner that is the credential persisting
+ * into the next job — the exposure this issue opens with, arrived at by the
+ * fix for it.
+ *
+ * ## It refuses rather than warns
+ *
+ * Unlike the baseline seal one step below, every failure here is fatal. A
+ * seal that could not be taken still leaves a comparison that works; a
+ * credential that could not be moved leaves a live bearer token in the
+ * directory the agent is about to be pointed at, and there is no partial
+ * version of that which is worth running.
+ */
+export function buildCredsRelocateScript(): string {
+  const noTemp =
+    `RUNNER_TEMP is not set, so there is nowhere outside the checkout to put ` +
+    `the cloud credential. Refusing rather than running the reviewer with a ` +
+    `live bearer token in the directory it reads.`;
+
+  const missing =
+    `GOOGLE_GHA_CREDS_PATH names a file that is not there. The variable is ` +
+    `set, so the auth step created a credential; something else has moved or ` +
+    `removed it and nobody can say where it is. That is UNMEASURED, not ` +
+    `clean.`;
+
+  const moveFailed =
+    `the cloud credential could not be moved out of the workspace`;
+
+  const leftBehind =
+    `the workspace still holds a credential this step did not move. The auth ` +
+    `action writes exactly one file today; a second one means that is no ` +
+    `longer true and the reviewer would read it. Refusing`;
+
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+# No credential file was created — the auth step did not run, or ran without
+# \`create_credentials_file\`. Nothing is in the workspace, so there is nothing
+# to move and nothing to say. Silence is the honest reading here and ONLY
+# here: every other branch below is a credential whose whereabouts are known
+# to be wrong.
+if [ -z "\${GOOGLE_GHA_CREDS_PATH:-}" ]; then
+  exit 0
+fi
+
+src="\${GOOGLE_GHA_CREDS_PATH}"
+
+if [ -z "\${RUNNER_TEMP:-}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${noTemp}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+if [ ! -f "\${src}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${missing}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+nonce="\${GITHUB_RUN_ID:-0}-\${GITHUB_RUN_ATTEMPT:-0}"
+dest="\${RUNNER_TEMP}/${AI_REVIEW_CREDS_BASENAME}-\${nonce}.json"
+
+# Checked on its own line rather than captured, for the reason the baseline
+# step states: \`x=$(...)\` discards the exit code.
+if ! out=$(mv -f "\${src}" "\${dest}" 2>&1); then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${moveFailed}: \${out}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+chmod 600 "\${dest}" 2>/dev/null || true
+
+# Every variable the auth step exported follows the file. GOOGLE_GHA_CREDS_PATH
+# is the one the action's post step reads to decide what to delete; the other
+# two are what downstream tooling reads to authenticate. Rewriting a subset
+# points something at a path that no longer exists, and the failure lands in
+# whichever step reads the one that was missed rather than in this one.
+{
+${AI_REVIEW_CREDS_EXPORTED_VARS.map(v => `  echo "${v}=\${dest}"`).join("\n")}
+} >> "\${GITHUB_ENV}"
+
+echo "ai-review credential moved out of the workspace: \${dest}"
+
+# A READING, not a belief. The move above is correct only while the auth
+# action writes one file, which is measured rather than assumed — and this is
+# the line that notices the day it stops being true.
+left=$(find "\${GITHUB_WORKSPACE:-.}" -maxdepth 1 -name '${AI_REVIEW_CREDS_GLOB}' -print 2>/dev/null || true)
+if [ -n "\${left}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${leftBehind}: \${left}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+`;
+}
+
 /** The review action's `id:` and name. Its pin arrives as an argument too. */
 export const AI_REVIEW_ACTION_STEP_ID = "ai-review-action";
 
@@ -2068,6 +2235,21 @@ export function buildReviewRunStep(
           `    workload_identity_provider: ${vertex.config.workloadIdentityProvider}`,
         ];
 
+  // Emitted with the auth step and only with it: this step exists to clean up
+  // after that one, and a relocate step in a job with nothing to relocate is a
+  // step whose silent exit means two different things. Positioned immediately
+  // after, so the window in which the credential sits in the workspace is one
+  // step long and contains nothing that reads the tree (#843 finding 3).
+  const credsRelocate =
+    vertex.config === null
+      ? []
+      : [
+          `- name: ${AI_REVIEW_CREDS_RELOCATE_STEP_NAME}`,
+          `  id: ${AI_REVIEW_CREDS_RELOCATE_STEP_ID}`,
+          `  run: |`,
+          ...buildCredsRelocateScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+        ];
+
   // Vertex needs a project, a location and a model. None is a secret and none
   // is inferable by the reviewer, so all three are generated literals from
   // `ci.vertex` rather than `vars.*` — a `vars` reading is a second declaring
@@ -2165,6 +2347,7 @@ export function buildReviewRunStep(
     indented(checkout, indent) +
     indented(prepare, indent) +
     (vertexAuth.length === 0 ? "" : indented(vertexAuth, indent)) +
+    (credsRelocate.length === 0 ? "" : indented(credsRelocate, indent)) +
     indented(restore, indent) +
     indented(baseline, indent) +
     indented(review, indent) +
