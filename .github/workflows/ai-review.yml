@@ -1,4 +1,4 @@
-# generated-sha: 2928367d760e621e
+# generated-sha: b622ca055bfbc73f
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -675,6 +675,12 @@ jobs:
           # predicts the next filename — a scoped walk would be a detector narrower
           # than what it detects.
           #
+          # What IS subtracted is the runtime's own directories, which is the opposite
+          # move: not a list of places to look, a list of places whose writes have been
+          # measured and attributed. Two runs produced 25 paths and all 25 are in these
+          # four (#866). Interpolated from AI_REVIEW_RUNTIME_HOME_PATHS so the list has
+          # one declaring position; a literal here would be a second.
+          #
           # Two exclusions, both because the directory is already accounted for:
           # GITHUB_WORKSPACE is what the comparison below reads, and RUNNER_TEMP is
           # this job's own scratch, holding the payload, this baseline and the
@@ -697,9 +703,23 @@ jobs:
               -newer "${AI_REVIEW_TREE_BEFORE}" \
               -not -path "${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \
               -not -path "${RUNNER_TEMP:-/nonexistent-temp}/*" \
+              -not -path "${HOME}/.claude.json" -not -path "${HOME}/.claude.json/*" \
+              -not -path "${HOME}/.claude" -not -path "${HOME}/.claude/*" \
+              -not -path "${HOME}/.npm" -not -path "${HOME}/.npm/*" \
+              -not -path "${HOME}/.bun" -not -path "${HOME}/.bun/*" \
               2>/dev/null | head -50 || true)
             if [ -n "${outside}" ]; then
-              echo "::warning title=AI review wrote outside the checkout::the reviewer wrote OUTSIDE the checkout. The tool grant anchors at the working directory, so these were permitted; on a shared self-hosted runner \$HOME persists between jobs, so a file here reaches another repository's build (#843 finding 1). Reported, not refused: the noise floor of this reading has not been measured yet. Paths: $(escape_annotation "${outside}")"
+              echo "::error title=AI review wrote outside the checkout::the reviewer wrote OUTSIDE the checkout, to a path the runtime does not own. The tool grant anchors at the working directory, so this was permitted; on a shared self-hosted runner \$HOME persists between jobs, so a file here reaches another repository's build (#843 finding 1). The runtime's own directories are subtracted before this fires — .claude.json, .claude, .npm, .bun — and those cover every path two measured runs produced (#866). What is left is not the runtime. If this runner is self-hosted its floor has never been read, and the path below is the reading that would start that. Paths: $(escape_annotation "${outside}")" >&2
+              # The annotation is emitted HERE and the exit is DEFERRED to the end of
+              # the step, which is not the same thing as warning. Both readings refuse;
+              # exiting here would mean a reviewer that edited the tree AND touched
+              # \$HOME got the less specific of the two diagnostics, because this
+              # block runs first on purpose. The tree comparison below names the file
+              # it changed, so it goes first in the REPORT; this goes first in the
+              # READING, because the comparison exits 0 the moment the tree is clean
+              # and a clean tree is exactly the run in which an escaped write is the
+              # whole story.
+              outside_refused=1
             fi
           fi
 
@@ -711,6 +731,11 @@ jobs:
           added=$(printf '%s\n' "${after}" | grep -F -x -v -f "${AI_REVIEW_TREE_BEFORE}" || true)
 
           if [ -z "${added}" ]; then
+            # The tree is clean. The outside reading is the only thing left that can
+            # refuse, and it has already said what it found.
+            if [ -n "${outside_refused:-}" ]; then
+              exit 1
+            fi
             exit 0
           fi
 

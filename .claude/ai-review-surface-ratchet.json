@@ -1,7 +1,15 @@
 {
-  "comment": "AC-13 (#857). The ai-review test case titles as they stood at baseCommit, immediately before #853/#856/#857. test/ai-review-surface-census.test.ts asserts every one is STILL present and that the surface has grown. A case renamed on purpose edits its entry here in the same commit; a case deleted has to say why.",
+  "comment": "AC-13 (#857). The ai-review test case titles as they stood at baseCommit, immediately before #853/#856/#857, with deliberate renames applied in place and recorded in `renames` below. test/ai-review-surface-census.test.ts asserts every one is STILL present and that the surface has grown. A case renamed on purpose edits its entry here in the same commit and adds a `renames` row saying why; a case deleted has to say why. Regenerating the whole list from HEAD makes this green and makes it evidence about nothing.",
   "baseCommit": "bc56a7c2c08ced301924924a80e5043dd7aebce0",
   "baselineTotal": 248,
+  "renames": [
+    {
+      "from": "AC-4: it WARNS \u2014 the exit code is unmoved, in both directions",
+      "to": "AC-4 (#866), the PAIR: the runtime's own write is exit 0, anything else refuses",
+      "issue": 866,
+      "why": "The case asserted the outside-the-checkout reading warns rather than refuses, and said why: the noise floor had never been measured. #866 measured it over two runs \u2014 25 paths, all runtime state, none reviewer output \u2014 so the posture moved and the case moved with it. It keeps both directions, which is what made it protection: the runtime's own write is still exit 0."
+    }
+  ],
   "titles": [
     "#677 AC5: a consumer who required a review and got no reading is refused",
     "#677 AC5: an absent mode and an explicit none are different states",
@@ -52,11 +60,11 @@
     "AC-3: the credential is READABLE at the new path, byte for byte",
     "AC-3: the file parses with four glob branch patterns",
     "AC-3: the header and the run script agree about whether findings are read",
+    "AC-4 (#866), the PAIR: the runtime's own write is exit 0, anything else refuses",
     "AC-4/AC-5: a script that never warns is REFUSED by the check",
     "AC-4/AC-5: the check does not inherit the developer's own credentials",
     "AC-4: a real scaffold records one line saying the gate is inert, and what activates it",
     "AC-4: a seal that cannot be RECOMPUTED refuses, unlike one never taken",
-    "AC-4: it WARNS \u2014 the exit code is unmoved, in both directions",
     "AC-4: the count is one, and it is read off a real run of the generated script",
     "AC-4: the scaffolded project's own script emits exactly one UNMEASURED warning",
     "AC-4: the wrapper declares no exit code of its own",
