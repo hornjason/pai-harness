@@ -39,6 +39,7 @@
  */
 import { spawnSync } from "child_process";
 import { readJunitOutcomes } from "./junit-checks";
+import { caseDeclarations, renamePairs } from "./test-case-bodies";
 
 // ── Reading a commit ─────────────────────────────────────────────────────
 
@@ -112,26 +113,13 @@ function changedTestFiles(projectRoot: string, previous: string, current: string
 // ── Reading the cases a source file declares ─────────────────────────────
 
 /**
- * `test("…")` and `it("…")`, including the `.skip`, `.only`, `.todo` and
- * `.failing` forms.
- *
- * `describe` is deliberately not matched: the census this is compared
- * against counts cases, and a describe block that was renamed is not a
- * deleted case. The first group is the quote character and the second is the
- * raw name, escapes included.
- */
-const CASE_DECLARATION =
-  /(?:^|[^.\w$])(?:test|it)(?:\.(?:skip|only|todo|failing|skipIf|todoIf|runIf))?\s*\(\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
-
-const ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", "0": "\0" };
-
-/** A source-level string literal's VALUE. */
-function unescape(raw: string): string {
-  return raw.replace(/\\(.)/g, (_, ch: string) => ESCAPES[ch] ?? ch);
-}
-
-/**
  * Every test case name a source file declares, in declaration order.
+ *
+ * A PROJECTION of `caseDeclarations`, which owns the declaration pattern
+ * since #880. The names and the bodies this module compares are therefore
+ * one reading seen twice: a scan that found a case and a scan that found its
+ * body cannot disagree about which cases exist, because there is only one
+ * scan (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
  *
  * Exported so a caller can compare a reading of one commit against an
  * instrument that is not this one — `test/unit/deletion-build-commit-pair.test.ts`
@@ -140,15 +128,7 @@ function unescape(raw: string): string {
  * file rather than producing the right three names by luck.
  */
 export function caseNames(source: string): string[] {
-  const names: string[] = [];
-  for (const m of source.matchAll(CASE_DECLARATION)) {
-    // A template literal with an interpolation has no single name to record,
-    // and reporting its text as a name would make it look deleted the moment
-    // the interpolation changed.
-    if (m[1] === "`" && m[2].includes("${")) continue;
-    names.push(unescape(m[2]));
-  }
-  return names;
+  return caseDeclarations(source).map(d => d.name);
 }
 
 // ── The deletion ─────────────────────────────────────────────────────────
@@ -162,33 +142,96 @@ export interface DeletedCase {
 }
 
 /**
- * Every test case the current commit has lost since the previous one.
+ * One test case present at both commits under two different titles (#880).
+ *
+ * A rename and a deletion are different facts and the remedies are opposite
+ * — one needs nothing done, the other needs the test restored — so they are
+ * different fields rather than one list with a flag.
+ */
+export interface RenamedCase {
+  /** The path, which is the same at both commits: a pair is within one file. */
+  file: string;
+  /** The title at the previous commit. */
+  from: string;
+  /** The title at the current commit. */
+  to: string;
+}
+
+/** What a round did to the cases in the files it touched. */
+export interface CaseChanges {
+  deleted: DeletedCase[];
+  renamed: RenamedCase[];
+}
+
+/**
+ * What the current commit did to the previous one's test cases.
  *
  * Both sides are read out of the object store, so neither commit has to be
  * checked out and the working tree is never touched. Only files the diff
  * reports as modified or deleted are read: a file whose blob is identical
  * cannot have lost a case, and reading every test file in both trees would
  * be ~700 git invocations for an answer the diff already narrows.
+ *
+ * ## A title that is gone is four different facts (#880)
+ *
+ * This module's own docblock has said so since #659 and the reading could
+ * only tell apart the last of them. Run `wf_99ed276b-cf3` reported eight
+ * cases missing from one file; seven were renamed by the repair round and
+ * net coverage over the run went 19 → 27. A rename changes the title and
+ * leaves the body, so the body is what separates the two, and
+ * `renamePairs` does it by IDENTITY of the normalised body rather than by
+ * any similarity score — see `lib/test-case-bodies.ts` for why a score was
+ * refused.
+ *
+ * **Pairing is within ONE file.** A case moved to another file is still
+ * absent from this one, and saying "renamed" about it would be an answer to
+ * a question nobody asked — the file it went to is not in the pair, so a
+ * reader could not go and check. It is reported as a deletion, which is
+ * what it is from here.
+ */
+export function caseChanges(
+  projectRoot: string,
+  previousCommit: string,
+  currentCommit: string,
+): CaseChanges {
+  const previous = resolveCommit(projectRoot, previousCommit);
+  const current = resolveCommit(projectRoot, currentCommit);
+  const deleted: DeletedCase[] = [];
+  const renamed: RenamedCase[] = [];
+
+  for (const file of changedTestFiles(projectRoot, previous, current)) {
+    const beforeSource = blobAt(projectRoot, previous, file);
+    if (beforeSource === null) continue;
+    const afterSource = blobAt(projectRoot, current, file);
+    const before = caseDeclarations(beforeSource);
+    const after = afterSource === null ? [] : caseDeclarations(afterSource);
+
+    const pairs = renamePairs(before, after);
+    for (const p of pairs) renamed.push({ file, from: p.from, to: p.to });
+    const paired = new Set(pairs.map(p => p.from));
+
+    const survived = new Set(after.map(d => d.name));
+    for (const name of new Set(before.map(d => d.name))) {
+      if (!survived.has(name) && !paired.has(name)) deleted.push({ name, file });
+    }
+  }
+  return { deleted, renamed };
+}
+
+/**
+ * Every test case the current commit has lost since the previous one.
+ *
+ * A projection of `caseChanges`, kept because every existing caller asks
+ * only this question. It is a projection and not a second walk: two walks
+ * would be two deciders, and the one that reported deletions could go on
+ * reporting a rename as one after the other had stopped.
  */
 export function deletedCases(
   projectRoot: string,
   previousCommit: string,
   currentCommit: string,
 ): DeletedCase[] {
-  const previous = resolveCommit(projectRoot, previousCommit);
-  const current = resolveCommit(projectRoot, currentCommit);
-  const out: DeletedCase[] = [];
-
-  for (const file of changedTestFiles(projectRoot, previous, current)) {
-    const before = blobAt(projectRoot, previous, file);
-    if (before === null) continue;
-    const after = blobAt(projectRoot, current, file);
-    const survived = new Set(after === null ? [] : caseNames(after));
-    for (const name of new Set(caseNames(before))) {
-      if (!survived.has(name)) out.push({ name, file });
-    }
-  }
-  return out;
+  return caseChanges(projectRoot, previousCommit, currentCommit).deleted;
 }
 
 // ── The verdict ──────────────────────────────────────────────────────────
@@ -269,11 +312,26 @@ export function parseWaiver(raw: string): DeletedCase {
   return { file, name };
 }
 
-/** The reading, with UNMEASURED as a first-class outcome. */
+/**
+ * The reading, with UNMEASURED as a first-class outcome.
+ *
+ * `renamed` is carried on every arm and never affects the verdict. A rename
+ * is not a deletion, so it cannot make a round dirty; and it is not nothing,
+ * so a round that renamed seven cases must not report the same thing as a
+ * round that touched none — that silence is what sent run `wf_99ed276b-cf3`
+ * looking for lost coverage that was sitting in front of it (#880).
+ */
 export type DeletionReading =
-  | { verdict: "CLEAN"; cases: DeletedCase[]; waived?: WaivedCase[]; unusedWaivers?: string[] }
-  | { verdict: "DELETED"; cases: DeletedCase[]; waived?: WaivedCase[]; unusedWaivers?: string[] }
-  | { verdict: "UNMEASURED"; cases: DeletedCase[]; reason: string; waived?: WaivedCase[]; unusedWaivers?: string[] };
+  | { verdict: "CLEAN"; cases: DeletedCase[]; waived?: WaivedCase[]; unusedWaivers?: string[]; renamed?: RenamedCase[] }
+  | { verdict: "DELETED"; cases: DeletedCase[]; waived?: WaivedCase[]; unusedWaivers?: string[]; renamed?: RenamedCase[] }
+  | {
+      verdict: "UNMEASURED";
+      cases: DeletedCase[];
+      reason: string;
+      waived?: WaivedCase[];
+      unusedWaivers?: string[];
+      renamed?: RenamedCase[];
+    };
 
 /** A ledger from a bun JUnit report written at the previous build commit. */
 export function ledgerFromJunit(path: string): PassLedger {
@@ -312,6 +370,7 @@ export function deletionReading(
   deleted: DeletedCase[],
   ledger: PassLedger,
   waivers: DeletionWaivers = { cases: [], reason: "" },
+  renamed: RenamedCase[] = [],
 ): DeletionReading {
   // Waivers are applied HERE, in the owning binding, and not in the script.
   // A script that filtered its own input before calling this would be a
@@ -362,6 +421,11 @@ export function deletionReading(
   const extra = {
     ...(waived.length > 0 ? { waived } : {}),
     ...(unusedWaivers.length > 0 ? { unusedWaivers } : {}),
+    // Present only when there were any, so a round with no renames produces
+    // the record it always produced. An empty list beside an absent one is
+    // two spellings of the same fact, and the signature would then have two
+    // tokens for one reading.
+    ...(renamed.length > 0 ? { renamed } : {}),
   };
 
   deleted = deleted.filter(d => !isWaived(d));
@@ -434,6 +498,8 @@ export interface DeletionArtefact {
   reason: string | null;
   waived?: WaivedCase[];
   unusedWaivers?: string[];
+  /** Cases that changed title and nothing else (#880). */
+  renamed?: RenamedCase[];
   /** @see deletionSignature */
   signature: string;
 }
@@ -517,21 +583,36 @@ export function deletionSignature(a: {
   reason?: string | null;
   waived?: WaivedCase[];
   unusedWaivers?: string[];
+  renamed?: RenamedCase[];
 }): string {
   const cases = a.cases ?? [];
   const waived = a.waived ?? [];
   const unused = a.unusedWaivers ?? [];
+  const renamed = a.renamed ?? [];
   const count = (reading: LedgerReading) => waived.filter(w => w.ledgerReading === reading).length;
   // The three ledger readings are counted separately because the operator
   // line distinguishes them: a waived case the ledger proved green and one
   // nothing could judge are different acts (#661), and a token that reported
   // them identically would let a restatement move a case between the two.
+  //
+  // `v2` because #880 added `renamed`, and a token's version is the only
+  // thing that can say two positions carrying the same prefix are talking
+  // about the same reading. `workflows/ship.js` carries the second
+  // implementation and cannot import this one; `test/deletion-verdict-relay.test.ts`
+  // compares them over a matrix, which is what makes a one-sided edit here
+  // a red suite rather than a silent UNMEASURED on every run.
   const readable =
-    `v1:${a.verdict}:c${cases.length}:w${waived.length}:s${unused.length}` +
-    `:g${count("green")}:r${count("red")}:j${count("unjudged")}`;
+    `v2:${a.verdict}:c${cases.length}:w${waived.length}:s${unused.length}` +
+    `:g${count("green")}:r${count("red")}:j${count("unjudged")}:n${renamed.length}`;
   const caseIds = cases.map(c => `${c.file}${WAIVER_SEPARATOR}${c.name}`).sort();
   const waivedIds = waived
     .map(w => `${w.file}${WAIVER_SEPARATOR}${w.name}${WAIVER_SEPARATOR}${w.ledgerReading}${WAIVER_SEPARATOR}${w.acceptedReason}`)
+    .sort();
+  // Both titles, because the pair IS the evidence: a restatement that kept
+  // the old title and invented a new one would be claiming a rename that
+  // did not happen, which is the reassuring-direction error #880 names.
+  const renamedIds = renamed
+    .map(r => `${r.file}${WAIVER_SEPARATOR}${r.from}${WAIVER_SEPARATOR}${r.to}`)
     .sort();
   const members = [
     ...caseIds,
@@ -539,6 +620,8 @@ export function deletionSignature(a: {
     ...waivedIds,
     "\u0000",
     ...[...unused].sort(),
+    "\u0000",
+    ...renamedIds,
     "\u0000",
     a.reason ?? "",
   ].join("\u0001");
@@ -561,6 +644,10 @@ export function deletionArtefact(
     // and a CLEAN reached by deleting nothing are different records.
     ...(reading.waived ? { waived: reading.waived } : {}),
     ...(reading.unusedWaivers ? { unusedWaivers: reading.unusedWaivers } : {}),
+    // A CLEAN reached by renaming seven cases and a CLEAN reached by
+    // touching none are different rounds, and the second is what the
+    // pre-#880 artefact said about both.
+    ...(reading.renamed ? { renamed: reading.renamed } : {}),
   };
   return { ...base, signature: deletionSignature(base) };
 }

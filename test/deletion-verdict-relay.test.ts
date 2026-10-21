@@ -312,8 +312,13 @@ const artefactOf = (
   deleted: Array<{ file: string; name: string }>,
   ledger: PassLedger,
   waivers?: { cases: string[]; reason: string },
+  renamed?: Array<{ file: string; from: string; to: string }>,
 ): DeletionArtefact =>
-  deletionArtefact(deletionReading(deleted, ledger, waivers ?? { cases: [], reason: "" }), PREV, CUR);
+  deletionArtefact(
+    deletionReading(deleted, ledger, waivers ?? { cases: [], reason: "" }, renamed),
+    PREV,
+    CUR,
+  );
 
 /** Nothing was deleted at all. */
 const cleanArtefact = (): DeletionArtefact => artefactOf([], ledgerSaying([A.name]));
@@ -345,6 +350,24 @@ const staleWaiverArtefact = (): DeletionArtefact =>
 /** The ledger could not say, so nothing establishes what left. */
 const unmeasuredArtefact = (): DeletionArtefact => artefactOf([A, B], UNREADABLE_LEDGER);
 
+/** The whole of #880: a round that renamed a case and deleted nothing. */
+const renamedArtefact = (): DeletionArtefact =>
+  artefactOf([], ledgerSaying([A.name]), undefined, [
+    { file: A.file, from: A.name, to: `${A.name}, and the port is OS-assigned` },
+  ]);
+
+/**
+ * #880's own scope note: a rename and a real deletion in ONE round.
+ *
+ * The arm a CLEAN-only rename line would skip, and the reason the operator
+ * line prints renames before the verdict rather than inside the CLEAN
+ * branch.
+ */
+const renamedAndDeletedArtefact = (): DeletionArtefact =>
+  artefactOf([B], ledgerSaying([A.name, B.name]), undefined, [
+    { file: A.file, from: A.name, to: `${A.name}, and the port is OS-assigned` },
+  ]);
+
 function allArtefacts(): DeletionArtefact[] {
   return [
     cleanArtefact(),
@@ -353,6 +376,8 @@ function allArtefacts(): DeletionArtefact[] {
     waivedUnjudgedArtefact(),
     staleWaiverArtefact(),
     unmeasuredArtefact(),
+    renamedArtefact(),
+    renamedAndDeletedArtefact(),
   ];
 }
 
@@ -465,12 +490,18 @@ describe("#684 SC-1: the schema declares every field the artefact carries", () =
       expect(carried.has(`waived[].${field}`)).toBe(true);
     }
     for (const field of ["file", "name"]) expect(carried.has(`cases[].${field}`)).toBe(true);
+    // #880's three. `from` and `to` are both asserted because the PAIR is
+    // the evidence: a declaration carrying only `to` would relay a new
+    // title with nothing saying what it used to be called.
+    for (const field of ["file", "from", "to"]) {
+      expect(carried.has(`renamed[].${field}`)).toBe(true);
+    }
     expect(carried.has("unusedWaivers")).toBe(true);
     expect(carried.has("signature")).toBe(true);
     expect(carried.has("reason")).toBe(true);
   });
 
-  for (const field of ["verdict", "cases", "waived", "unusedWaivers", "signature", "reason"]) {
+  for (const field of ["verdict", "cases", "waived", "unusedWaivers", "renamed", "signature", "reason"]) {
     test(`removing \`${field}\` from the declaration turns this red`, () => {
       const artefacts = allArtefacts();
       // Both halves in one case: "the real source agrees" and "the mutant does
@@ -531,7 +562,7 @@ describe("#684 SC-3: ship.js's recomputation agrees with the script's", () => {
   test("the script really emits a non-empty signature, so agreement is not two silences", () => {
     for (const a of allArtefacts()) {
       expect(typeof a.signature).toBe("string");
-      expect(a.signature.startsWith("v1:")).toBe(true);
+      expect(a.signature.startsWith("v2:")).toBe(true);
     }
   });
 
@@ -566,8 +597,34 @@ describe("#684 SC-3: ship.js's recomputation agrees with the script's", () => {
         { ...base, waived: [{ ...A, acceptedReason: "a different reason", ledgerReading: "green" }] },
       ],
       ["unusedWaivers", { ...base, unusedWaivers: [`${B.file}${WAIVER_SEPARATOR}${B.name}`] }],
+      ["renamed", { ...base, renamed: [{ file: A.file, from: A.name, to: "a new title" }] }],
     ];
     const baseline = deletionSignature(base);
+    for (const [field, perturbed] of perturbations) {
+      expect(deletionSignature(perturbed), `altering ${field} left the signature unchanged`)
+        .not.toBe(baseline);
+      expect(recompute(perturbed), `ship.js disagrees about ${field}`).toBe(deletionSignature(perturbed));
+    }
+  });
+
+  test("#880: every part of a rename pair is covered, not just its presence", () => {
+    // Perturbed against an artefact that ALREADY carries a rename, and not
+    // against the no-rename baseline: measured against that baseline, a
+    // change to `from`, to `to` and to `file` would each differ from it for
+    // the same reason — the field being there at all — and three cases
+    // would pass having witnessed one thing (`.claude/rules/checks-must-be-able-to-fail.md`,
+    // #585's pair discipline: vary exactly one reading).
+    const base = renamedArtefact();
+    const baseline = deletionSignature(base);
+    const pair = base.renamed![0];
+    const recompute = loadVerdictBlock(SHIP).recomputeDeletionSignature;
+    const perturbations: Array<[string, DeletionArtefact]> = [
+      ["renamed.from", { ...base, renamed: [{ ...pair, from: "a different old title" }] }],
+      ["renamed.to", { ...base, renamed: [{ ...pair, to: "a different new title" }] }],
+      ["renamed.file", { ...base, renamed: [{ ...pair, file: B.file }] }],
+      ["renamed (count)", { ...base, renamed: [pair, { file: B.file, from: B.name, to: "x" }] }],
+    ];
+    expect(base.renamed).toHaveLength(1);
     for (const [field, perturbed] of perturbations) {
       expect(deletionSignature(perturbed), `altering ${field} left the signature unchanged`)
         .not.toBe(baseline);
@@ -737,6 +794,38 @@ describe("#684 SC-4: CLEAN, CLEAN-by-waiver and waived-unjudged are different re
     const text = reading.lines.join("\n");
     expect(text).toContain("REPAIR_DELETED_TESTS");
     expect(text).toContain(A.name);
+    expect(text).toContain(B.name);
+  });
+
+  test("#880: a CLEAN reached by renaming says so, and names both titles", () => {
+    // The whole of #880 at the operator line. A CLEAN round that renamed
+    // seven cases and one that touched nothing printed the same sentence
+    // before this, which is how `wf_99ed276b-cf3`'s reader was sent
+    // looking for coverage that was in front of them.
+    const artefact = renamedArtefact();
+    const reading = read(replyFor(artefact));
+    expect(reading.verdict).toBe("CLEAN");
+    const text = reading.lines.join("\n");
+    expect(text).toContain("DELETION_RENAMED");
+    expect(text).toContain(artefact.renamed![0].from);
+    expect(text).toContain(artefact.renamed![0].to);
+    // and it is a DIFFERENT record from a round that renamed nothing
+    expect(text).not.toBe(textOf(replyFor(cleanArtefact())));
+  });
+
+  test("#880: the rename line is printed on the DELETED arm too, with both facts", () => {
+    // #880's own scope note — a rename and a real deletion in one round —
+    // and the reason the line sits above the verdict branch rather than
+    // inside the CLEAN one. A CLEAN-only line would skip exactly the arm
+    // that is hardest to read, and the operator would be told cases are
+    // gone with nothing saying the other seven are not.
+    const artefact = renamedAndDeletedArtefact();
+    const reading = read(replyFor(artefact));
+    expect(reading.verdict).toBe("DELETED");
+    const text = reading.lines.join("\n");
+    expect(text).toContain("DELETION_RENAMED");
+    expect(text).toContain(artefact.renamed![0].to);
+    expect(text).toContain("REPAIR_DELETED_TESTS");
     expect(text).toContain(B.name);
   });
 });

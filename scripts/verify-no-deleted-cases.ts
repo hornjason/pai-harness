@@ -69,7 +69,7 @@ import { writeFileSync } from "fs";
 
 import {
   WAIVER_SEPARATOR,
-  deletedCases,
+  caseChanges,
   deletionArtefact,
   deletionReading,
   ledgerFromJunit,
@@ -146,11 +146,18 @@ if (import.meta.main) {
           reason: "no --ledger was given, so nothing says which cases were passing at the previous build commit",
         };
 
-    const deleted = deletedCases(args.project, args.previous, args.current);
-    const reading = deletionReading(deleted, ledger, {
-      cases: args.accept,
-      reason: String(args.reason ?? ""),
-    });
+    // ONE walk of the two trees, and the deletions and the renames are two
+    // projections of it. Asking `deletedCases` here and `renamePairs`
+    // separately would be two walks that agree — the fourth shape — and the
+    // one answering "was anything deleted" could go on calling a rename a
+    // deletion after the other had stopped (#880).
+    const changes = caseChanges(args.project, args.previous, args.current);
+    const reading = deletionReading(
+      changes.deleted,
+      ledger,
+      { cases: args.accept, reason: String(args.reason ?? "") },
+      changes.renamed,
+    );
 
     // Composed by the library, not here. The artefact carries a canonical
     // `signature` over its own fields, and the only consumer that matters —
@@ -162,6 +169,21 @@ if (import.meta.main) {
     const json = JSON.stringify(result, null, 2);
     if (args.out) writeFileSync(args.out, json);
     console.log(json);
+
+    // A CLEAN reached by renaming is not a CLEAN reached by touching
+    // nothing, and #880 is the run where that silence cost a shipped
+    // change: eight cases reported missing, seven of them renamed, and the
+    // operator sent to look for coverage that was in front of them. Said on
+    // the console for the same reason the waiver line is — it is where an
+    // operator looks — and said whatever the verdict, because a rename
+    // beside a real deletion is the reading that is hardest to interpret.
+    if (reading.renamed && reading.renamed.length > 0) {
+      console.error(
+        `RENAMED: ${reading.renamed.length} case(s) changed title and nothing else — ` +
+          `${reading.renamed.map(r => `${r.file}${WAIVER_SEPARATOR}${r.from} -> ${r.to}`).join("; ")}` +
+          ` — their bodies are byte-identical after comments and whitespace, so no coverage left with them`,
+      );
+    }
 
     // A CLEAN reached by waiving is not a CLEAN reached by deleting nothing,
     // and the console is where an operator actually looks. Saying it here

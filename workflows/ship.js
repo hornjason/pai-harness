@@ -7003,6 +7003,23 @@ if (verifyResult?.result === 'FAIL') {
                 }
               },
               unusedWaivers: { type: 'array', items: { type: 'string' } },
+              // Cases that changed title and nothing else (#880). Declared
+              // by NAME and not as a bare `{ type: 'array' }`: an array of
+              // objects whose properties are undeclared arrives as an array
+              // of empty objects, which is `renamed: [{}, {}]` — a count
+              // with the evidence filtered out, and #646's defect one level
+              // in. Both titles, because the pair is the evidence.
+              renamed: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    file: { type: 'string' },
+                    from: { type: 'string' },
+                    to: { type: 'string' }
+                  }
+                }
+              },
               // The script's own canonical summary of the fields above,
               // copied verbatim rather than restated.
               signature: { type: 'string' }
@@ -7055,17 +7072,20 @@ if (verifyResult?.result === 'FAIL') {
         const cases = Array.isArray(a.cases) ? a.cases : []
         const waived = Array.isArray(a.waived) ? a.waived : []
         const unused = Array.isArray(a.unusedWaivers) ? a.unusedWaivers : []
+        const renamed = Array.isArray(a.renamed) ? a.renamed : []
         const count = reading => waived.filter(w => w && w.ledgerReading === reading).length
         const readable =
-          `v1:${a.verdict}:c${cases.length}:w${waived.length}:s${unused.length}` +
-          `:g${count('green')}:r${count('red')}:j${count('unjudged')}`
+          `v2:${a.verdict}:c${cases.length}:w${waived.length}:s${unused.length}` +
+          `:g${count('green')}:r${count('red')}:j${count('unjudged')}:n${renamed.length}`
         const sep = DELETION_WAIVER_SEPARATOR
         const caseIds = cases.map(c => `${c.file}${sep}${c.name}`).sort()
         const waivedIds = waived
           .map(w => `${w.file}${sep}${w.name}${sep}${w.ledgerReading}${sep}${w.acceptedReason}`)
           .sort()
+        const renamedIds = renamed.map(r => `${r.file}${sep}${r.from}${sep}${r.to}`).sort()
         const members = [
           ...caseIds, '\u0000', ...waivedIds, '\u0000', ...unused.slice().sort(), '\u0000',
+          ...renamedIds, '\u0000',
           a.reason === null || a.reason === undefined ? '' : a.reason
         ].join('\u0001')
         return `${readable}:h${deletionSignatureFold(members)}`
@@ -7138,7 +7158,21 @@ if (verifyResult?.result === 'FAIL') {
         const cases = Array.isArray(a.cases) ? a.cases : []
         const waived = Array.isArray(a.waived) ? a.waived : []
         const unused = Array.isArray(a.unusedWaivers) ? a.unusedWaivers : []
+        const renamed = Array.isArray(a.renamed) ? a.renamed : []
         const named = list => list.map(c => `${c.file}${DELETION_WAIVER_SEPARATOR}${c.name}`).join('; ')
+        // Printed before the verdict and on EVERY arm, because the reading
+        // it belongs to is the mixed one: a round with a rename and a real
+        // deletion in the same file is the hardest to interpret, and that
+        // is exactly the arm a CLEAN-only line would skip. Run
+        // `wf_99ed276b-cf3` reported eight cases missing with nothing
+        // saying seven were renames (#880).
+        if (renamed.length > 0) {
+          lines.push(
+            `DELETION_RENAMED: ${renamed.length} case(s) changed title and nothing else — ` +
+            `${renamed.map(r => `${r.file}${DELETION_WAIVER_SEPARATOR}${r.from} -> ${r.to}`).join('; ')}` +
+            `. Their bodies are byte-identical after comments and whitespace, so no coverage left ` +
+            `with them and nothing needs restoring (#880)`)
+        }
         // Reported before the verdict lines, because a waiver that matched
         // nothing means either the deletion is gone or the case was renamed
         // and the waiver has silently stopped applying — and it is true of a
@@ -7210,13 +7244,16 @@ and do NOT report true if the command failed (#166, #169).
 Then check what this repair round removed. Run exactly this:
   bun ${shellQuote(`${HARNESS_ROOT}/scripts/verify-no-deleted-cases.ts`)} --project ${shellQuote(commitDir)} --previous "$prevBuild" --current "$sha" --ledger ${shellQuote(`${WORK_DIR}/gate-verify-junit.xml`)} --out ${shellQuote(`${WORK_DIR}/deleted-cases.json`)}
 
-It compares the two BUILD COMMITS by test case NAME and exits non-zero when a
-case that was green before this round is gone. It prints one JSON object on
-stdout and writes the same object to the --out path above.
+It compares the two BUILD COMMITS case by case and exits non-zero when a case
+that was green before this round is gone. A case whose TITLE changed while its
+BODY stayed byte-identical is a rename, not a deletion, and is reported under
+"renamed" instead (#880). It prints one JSON object on stdout and writes the
+same object to the --out path above.
 
 Return that object as "deletion", copying every field EXACTLY as it is
 written — "verdict", "previous", "current", "cases", "reason", "waived" (with
-each case's "ledgerReading" and "acceptedReason"), "unusedWaivers", and
+each case's "ledgerReading" and "acceptedReason"), "unusedWaivers", "renamed"
+(with each pair's "file", "from" and "to"), and
 "signature". In particular "signature" is an opaque token the script computed
 from the other fields: copy it CHARACTER FOR CHARACTER and do not normalise,
 re-derive or tidy it, and do not adjust any other field to agree with it. It
