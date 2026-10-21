@@ -255,18 +255,18 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
 
   test("AC-5: two disappeared cases sharing a body do not pair with one survivor", () => {
     const before: CaseDeclaration[] = [
-      { name: "alpha", body: BODY, modifier: "" },
-      { name: "beta", body: BODY, modifier: "" },
+      { name: "alpha", body: BODY, modifier: "", enclosing: [] },
+      { name: "beta", body: BODY, modifier: "", enclosing: [] },
     ];
-    const after: CaseDeclaration[] = [{ name: "gamma", body: BODY, modifier: "" }];
+    const after: CaseDeclaration[] = [{ name: "gamma", body: BODY, modifier: "", enclosing: [] }];
     expect(renamePairs(before, after)).toEqual([]);
   });
 
   test("AC-6: one disappeared case matching two added cases does not pair", () => {
-    const before: CaseDeclaration[] = [{ name: "alpha", body: BODY, modifier: "" }];
+    const before: CaseDeclaration[] = [{ name: "alpha", body: BODY, modifier: "", enclosing: [] }];
     const after: CaseDeclaration[] = [
-      { name: "beta", body: BODY, modifier: "" },
-      { name: "gamma", body: BODY, modifier: "" },
+      { name: "beta", body: BODY, modifier: "", enclosing: [] },
+      { name: "gamma", body: BODY, modifier: "", enclosing: [] },
     ];
     expect(renamePairs(before, after)).toEqual([]);
   });
@@ -275,7 +275,7 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
     // Without this the two cases above are satisfied by a `renamePairs`
     // that never pairs anything (`.claude/rules/checks-must-be-able-to-fail.md`,
     // assertions that hold vacuously).
-    expect(renamePairs([{ name: "alpha", body: BODY, modifier: "" }], [{ name: "beta", body: BODY, modifier: "" }])).toEqual([
+    expect(renamePairs([{ name: "alpha", body: BODY, modifier: "", enclosing: [] }], [{ name: "beta", body: BODY, modifier: "", enclosing: [] }])).toEqual([
       { from: "alpha", to: "beta" },
     ]);
   });
@@ -287,12 +287,12 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
     // same body at both commits, so the body names no case.
     // test/unit/suite-denominator.test.ts is this input, five times over.
     const before: CaseDeclaration[] = [
-      { name: "alpha", body: BODY, modifier: "" },
-      { name: "stayed", body: BODY, modifier: "" },
+      { name: "alpha", body: BODY, modifier: "", enclosing: [] },
+      { name: "stayed", body: BODY, modifier: "", enclosing: [] },
     ];
     const after: CaseDeclaration[] = [
-      { name: "beta", body: BODY, modifier: "" },
-      { name: "stayed", body: BODY, modifier: "" },
+      { name: "beta", body: BODY, modifier: "", enclosing: [] },
+      { name: "stayed", body: BODY, modifier: "", enclosing: [] },
     ];
     expect(renamePairs(before, after)).toEqual([]);
   });
@@ -304,7 +304,7 @@ describe("AC-5/AC-6 (#880): ambiguity pairs nothing, on either side", () => {
     // unique here — only the floor can refuse it.
     const trivial = `, () => { expect(1).toBe(1); }`;
     expect(normalisedBody(trivial).length).toBeLessThan(MIN_IDENTIFYING_BODY);
-    expect(renamePairs([{ name: "gone", body: trivial, modifier: "" }], [{ name: "arrived", body: trivial, modifier: "" }])).toEqual([]);
+    expect(renamePairs([{ name: "gone", body: trivial, modifier: "", enclosing: [] }], [{ name: "arrived", body: trivial, modifier: "", enclosing: [] }])).toEqual([]);
   });
 });
 
@@ -348,6 +348,51 @@ describe("AC-16 (#880): a case that stopped RUNNING is not a rename", () => {
   });
 });
 
+describe("AC-18 (#880): a case wrapped in describe.skip is not a rename either", () => {
+  // AC-16 one level out, found by the second security review after the
+  // first found AC-16. The case's own call is untouched and its body is
+  // byte-identical; it is the BLOCK that stopped running. A key built from
+  // the call site alone pairs it and reports that no coverage left.
+  const BODY = `() => {\n  const port = listen(0);\n  expect(port).toBeGreaterThan(0);\n}`;
+  const BEFORE = HEAD + `describe("ports", () => {\n  test("a free port passes", ${BODY});\n});\n`;
+  const QUARANTINED =
+    HEAD + `describe.skip("ports", () => {\n  test("a free port passes, quarantined", ${BODY});\n});\n`;
+  const RENAMED =
+    HEAD + `describe("ports", () => {\n  test("a free port passes, and the port is OS-assigned", ${BODY});\n});\n`;
+
+  test("the chain is read, and only the chain differs between the two afters", () => {
+    const [plain] = caseDeclarations(RENAMED);
+    const [skipped] = caseDeclarations(QUARANTINED);
+    expect(plain.enclosing).toEqual([""]);
+    expect(skipped.enclosing).toEqual([".skip"]);
+    expect(plain.modifier).toBe("");
+    expect(skipped.modifier).toBe("");
+    expect(normalisedBody(plain.body!)).toBe(normalisedBody(skipped.body!));
+  });
+
+  test("a rename into a describe.skip is reported as a DELETION", () => {
+    const { root, previous, current } = fixture(BEFORE, QUARANTINED);
+    const changes = caseChanges(root, previous, current);
+    expect(changes.renamed).toEqual([]);
+    expect(changes.deleted).toEqual([{ name: "a free port passes", file: "test/subject.test.ts" }]);
+  });
+
+  test("the control: the same rename inside the SAME describe pairs", () => {
+    const { root, previous, current } = fixture(BEFORE, RENAMED);
+    expect(caseChanges(root, previous, current).renamed).toHaveLength(1);
+  });
+
+  test("a nested chain is read outermost first, and a block that never closes is skipped", () => {
+    const nested =
+      HEAD + `describe("outer", () => {\n  describe.skip("inner", () => {\n    test("x", ${BODY});\n  });\n});\n`;
+    expect(caseDeclarations(nested)[0].enclosing).toEqual(["", ".skip"]);
+    // An unclosed block must not swallow every case after it — a span run
+    // to EOF would silently change what they are compared as.
+    const unclosed = HEAD + `describe.skip("never closes", () => {\n` + `test("y", ${BODY});\n`;
+    expect(caseDeclarations(unclosed)[0].enclosing).toEqual([]);
+  });
+});
+
 describe("AC-17 (#880): a phantom declaration cannot discharge a deletion", () => {
   // A `test("…"` sequence inside a string literal is a repository writing
   // about its own tests, not a declaration. They were harmless by ACCIDENT
@@ -375,6 +420,47 @@ describe("AC-17 (#880): a phantom declaration cannot discharge a deletion", () =
     const changes = caseChanges(root, previous, current);
     expect(changes.renamed).toEqual([]);
     expect(changes.deleted).toEqual([{ name: "a free port passes", file: "test/subject.test.ts" }]);
+  });
+
+  test("dropping phantoms does not silently drop real declarations", () => {
+    // The control the phantom filter needs, and the one the filter itself
+    // cannot provide: `literalSpans` deciding that half a file is a string
+    // would make every case in it vanish, and a vanished case is a
+    // deletion nobody reports — the fail-open direction.
+    //
+    // Compared against the RAW pattern, which is the same expression with
+    // the literal-span pass removed, so the two readings differ in exactly
+    // the thing being measured.
+    //
+    // Measured 2026-10-21: 7,662 raw matches, 7,514 kept, 148 dropped
+    // (1.93%), and **0** files lose all of theirs. The heaviest per-file
+    // drops are the files that write ABOUT test declarations —
+    // test/test-census.test.ts at 46→22 and this file at 62→36 — so a
+    // per-file ratio ceiling would have to sit above 52% to be green, and
+    // a ceiling that loose measures nothing. Losing EVERY declaration in a
+    // file is the shape a broken span pass has, and that is asserted
+    // exactly.
+    const raw =
+      /(?:^|[^.\w$])(?:test|it)(?:\.(?:skip|only|todo|failing|skipIf|todoIf|runIf))?\s*\(\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
+    let rawTotal = 0;
+    let kept = 0;
+    const emptied: string[] = [];
+    for (const f of testFilesUnder(REPO_ROOT)) {
+      const src = readFileSync(f, "utf-8");
+      const found = [...src.matchAll(raw)].filter(m => !(m[1] === "`" && m[2].includes("${"))).length;
+      const declared = caseDeclarations(src).length;
+      rawTotal += found;
+      kept += declared;
+      if (found > 0 && declared === 0) emptied.push(`${f.slice(REPO_ROOT.length + 1)}: ${found} -> 0`);
+    }
+    expect(rawTotal).toBeGreaterThan(5000);
+    expect(
+      emptied,
+      "a file whose every declaration is read as living inside a string literal is a broken " +
+        "literalSpans, not a file of prose — every case in it would be invisible to the deletion check",
+    ).toEqual([]);
+    expect(rawTotal - kept, `${rawTotal - kept} of ${rawTotal} declarations dropped as phantoms`)
+      .toBeLessThan(rawTotal / 20);
   });
 
   test("literalSpans covers the shapes the declaration scan has to see through", () => {
@@ -414,7 +500,7 @@ describe("AC-7/AC-8/AC-9 (#880): the normalisation is trivia only", () => {
     // `normalisedBody` comparison on the line above.
     expect(normalisedBody(one).length).toBeGreaterThanOrEqual(MIN_IDENTIFYING_BODY);
     expect(normalisedBody(one)).not.toBe(normalisedBody(two));
-    expect(renamePairs([{ name: "a", body: one, modifier: "" }], [{ name: "b", body: two, modifier: "" }])).toEqual([]);
+    expect(renamePairs([{ name: "a", body: one, modifier: "", enclosing: [] }], [{ name: "b", body: two, modifier: "", enclosing: [] }])).toEqual([]);
   });
 
   test("a comment is removed, not merely shortened — a comment cannot carry the body", () => {
@@ -462,7 +548,7 @@ describe("AC-10/AC-11/AC-12 (#880): cutting the body out of real source", () => 
     const decls = caseDeclarations(truncated);
     expect(decls.map(d => d.name)).toEqual(["unterminated"]);
     expect(decls[0].body).toBeNull();
-    expect(renamePairs(decls, [{ name: "renamed", body: null, modifier: "" }])).toEqual([]);
+    expect(renamePairs(decls, [{ name: "renamed", body: null, modifier: "", enclosing: [] }])).toEqual([]);
   });
 
   test("AC-10: caseNames is a projection of the same scan, so there is one decider", () => {

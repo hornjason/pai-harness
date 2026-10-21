@@ -55,26 +55,37 @@
  *
  * Run and counted over `test/unit/case-rename-detection.test.ts` +
  * `test/deletion-verdict-relay.test.ts` +
- * `test/unit/deleted-case-non-vacuous.test.ts` — 82 tests. Every count was
+ * `test/unit/deleted-case-non-vacuous.test.ts` — 87 tests. Every count was
  * predicted before the battery ran, and **the baseline row was read before
  * any mutation row**: an instrument that has stopped reporting takes the
  * baseline down with it, and that is the row nobody mutates anything to
  * produce.
  *
+ * **Provenance.** P1–P11 were first measured at a baseline of 82, before the
+ * second security review added the `describe`-chain key and two cases. They
+ * were ALL re-run against the final tree rather than carried over — a row
+ * measured on a tree nobody can check out is a claim rather than a count
+ * (`.claude/rules/parallel-sessions.md`). Only P1 moved, from 7 to 8, and
+ * the extra red is AC-18's control.
+ *
  * | Row | Predicted | Measured | The input on which mutant and original differ |
  * |---|---|---|---|
- * | **baseline** — unmutated | 82 pass, 0 fail | **82 pass, 0 fail** | — |
- * | P1 `renamePairs` short-circuited to `return []` | 7 | **7 of 82** | AC-1's pair: the original returns one `{from, to}`, the mutant none, and the renamed case goes back to being reported deleted |
- * | P2 the modifier dropped from `pairingKey` | 1 | **1 of 82** | `test("x", BODY)` becoming `test.skip("y", BODY)`: the original reports a deletion, the mutant a rename |
- * | P3 the phantom `continue` removed | 3 | **3 of 82** | a line reading `const GATE_CHECK = 'test("a free port passes", …)'`: the original reports no case, the mutant one — whose name then discharges a real deletion |
- * | P4 `MIN_IDENTIFYING_BODY` set to 0 | 4 | **4 of 82** | #659's fixture: a placeholder body disappearing beside an identical one appearing |
- * | P5 the body index narrowed to the CHANGED cases | 1 | **1 of 82** | a file where one rename is the only change and a third case carries the same body at both commits |
- * | P6 `normalisedBody` stops stripping comments | 2 | **2 of 82** | one body carrying a line comment and an otherwise identical one that does not |
- * | P7 **the cheapest wrong fix** — string and numeric literals discarded | 2 | **2 of 82** | `expect(reading.total).toBe(4)` against the same body with `5`: the original calls them different cases, the mutant pairs them |
- * | P8 `v2` reverted to `v1` in the library only | 4 | **13 of 82** | every artefact: the token the library writes stops matching the one `workflows/ship.js` recomputes |
- * | P9 `renamedIds` dropped from the signature members, in BOTH positions | 2 | **2 of 82** | one rename with `to` altered and the count unchanged — the `:n1` prefix still agrees, so only membership can see it |
- * | P10 the `DELETION_RENAMED` block removed from `ship.js` | 2 | **2 of 82** | a CLEAN reply carrying one rename: the original prints both titles, the mutant prints what a round that renamed nothing prints |
- * | P11 the rename line moved inside the CLEAN arm | 1 | **1 of 82** | a reply carrying one rename AND one deletion — #880's own scope note, and the arm a CLEAN-only line skips |
+ * | **baseline** — unmutated | 87 pass, 0 fail | **87 pass, 0 fail** | — |
+ * | P1 `renamePairs` short-circuited to `return []` | 8 | **8 of 87** | AC-1's pair: the original returns one `{from, to}`, the mutant none, and the renamed case goes back to being reported deleted |
+ * | P2 the call-site modifier dropped from `pairingKey` | 1 | **1 of 87** | `test("x", BODY)` becoming `test.skip("y", BODY)`: the original reports a deletion, the mutant a rename |
+ * | P3 the phantom `continue` removed | 3 | **3 of 87** | a line reading `const GATE_CHECK = 'test("a free port passes", …)'`: the original reports no case, the mutant one — whose name then discharges a real deletion |
+ * | P4 `MIN_IDENTIFYING_BODY` set to 0 | 4 | **4 of 87** | #659's fixture: a placeholder body disappearing beside an identical one appearing |
+ * | P5 the body index narrowed to the CHANGED cases | 1 | **1 of 87** | a file where one rename is the only change and a third case carries the same body at both commits |
+ * | P6 `normalisedBody` stops stripping comments | 2 | **2 of 87** | one body carrying a line comment and an otherwise identical one that does not |
+ * | P7 **the cheapest wrong fix** — string and numeric literals discarded | 2 | **2 of 87** | `expect(reading.total).toBe(4)` against the same body with `5`: the original calls them different cases, the mutant pairs them |
+ * | P8 `v2` reverted to `v1` in the library only | 4 | **13 of 87** | every artefact: the token the library writes stops matching the one `workflows/ship.js` recomputes |
+ * | P9 `renamedIds` dropped from the signature members, BOTH positions | 2 | **2 of 87** | one rename with `to` altered and the count unchanged — the `:n1` prefix still agrees, so only membership can see it |
+ * | P10 the `DELETION_RENAMED` block removed from `ship.js` | 2 | **2 of 87** | a CLEAN reply carrying one rename: the original prints both titles, the mutant prints what a round that renamed nothing prints |
+ * | P11 the rename line moved inside the CLEAN arm | 1 | **1 of 87** | a reply carrying one rename AND one deletion — #880's own scope note, and the arm a CLEAN-only line skips |
+ * | P12 the enclosing chain dropped from `pairingKey` | 1 | **1 of 87** | a case wrapped in `describe.skip` at the current commit, body unchanged |
+ * | P13 `blockSpans` short-circuited to `return []` | 3 | **3 of 87** | the same input, plus a case nested two blocks deep whose chain reads `["", ".skip"]` |
+ * | P14 the block-comment branch dropped from `literalSpans` | 1 | **1 of 87** | a source holding a star-slash comment: the original spans it, the mutant does not |
+ * | P15 `literalSpans` returning one span over the whole file | ≥15, with the phantom-drop control among them | **26 of 87**, control among them | every file: the original reads 7,514 declarations over the tree, the mutant none |
  *
  * **P7's first cut came back 1 against a predicted 2, and the low row was
  * the finding.** AC-4's two bodies normalise to 39 characters once their
@@ -93,11 +104,18 @@
  * directly. The other nine are operator-line cases: a version disagreement
  * makes `deletionVerdictReading` return `DELETION_SIGNATURE_DISAGREEMENT`
  * for EVERY reply, so every case that reads a verdict goes red. Squarely
- * about the mutated behaviour, the mutant parses, and 69 cases still pass.
+ * about the mutated behaviour, the mutant parses, and 74 cases still pass.
  * The fact it records is that a one-sided version bump is caught by the
  * whole relay suite and not only by the parity cases.
  *
- * None of the eleven mutations is left in the tree; all were run and
+ * **P11's first cut came back 30, and it was not a mutation.** The `&&` in
+ * the replacement text was mangled on its way through the shell and
+ * `ship.js` stopped parsing, so every case that loads it died. A mutant
+ * that crashes is not a mutant — it measures that the file still parses
+ * (#485). Re-cut as a ternary with no ampersand, the row is 1, and the
+ * single red is the DELETED-arm case it was aimed at.
+ *
+ * None of the fifteen mutations is left in the tree; all were run and
  * restored from a `cp` backup, and `lib/test-case-bodies.ts`,
  * `lib/test-case-deletion.ts` and `workflows/ship.js` were confirmed
  * byte-identical afterwards by sha256 — never by `git checkout --`.
@@ -146,6 +164,24 @@ export interface CaseDeclaration {
    * pairing and a case that changed modifier is reported as a DELETION.
    */
   modifier: string;
+  /**
+   * The modifiers of the `describe` / `suite` calls this one sits inside,
+   * outermost first — `[]` at the top level, `[".skip"]` inside a
+   * `describe.skip`, `["", ".skip"]` inside a plain describe holding a
+   * skipped one.
+   *
+   * The same defect as `modifier`, one level out, and found by the second
+   * security review after the first found the call-site one. Wrapping a
+   * renamed case in `describe.skip(...)` leaves the case's own call
+   * untouched and its body byte-identical, so a key built from the call
+   * site alone pairs it and says no coverage left with it. It did.
+   *
+   * A separate field rather than being folded into `modifier` at the scan,
+   * because `modifier` means what it says — the call-site modifier, which
+   * `AC-16` asserts directly. Both are data; `pairingKey` is the single
+   * place that decides what they MEAN for identity.
+   */
+  enclosing: string[];
 }
 
 /**
@@ -399,6 +435,7 @@ export function caseDeclarations(source: string): CaseDeclaration[] {
   const out: CaseDeclaration[] = [];
   const spans = literalSpans(source);
   const inLiteral = (at: number) => spans.some(([s, e]) => at >= s && at < e);
+  const blocks = blockSpans(source, inLiteral);
   // A budget across the whole call, so a malformed file cannot turn an
   // O(n) scan per declaration into a gate that never returns. It cannot be
   // reached by a well-formed file: every body is scanned once, so the total
@@ -426,6 +463,17 @@ export function caseDeclarations(source: string): CaseDeclaration[] {
     // report nothing gone — the deletion check's own defect, reachable
     // through the name set rather than through the pairing. Found by the
     // security review of this change.
+    //
+    // Dropped on BOTH sides, and the asymmetric alternative was declined
+    // deliberately. Keeping phantoms on the BEFORE side would make every
+    // edit to one of this tree's 148 string constants report a deleted
+    // test — a refusal naming something that was never a test, which is
+    // the cry-wolf failure #880 is about, arriving as its fix. The real
+    // risk the asymmetry guards against is `literalSpans` misclassifying a
+    // REAL declaration, and that is met directly instead: the control case
+    // in `test/unit/case-rename-detection.test.ts` compares this reading
+    // against the raw pattern over every test file in the tree and refuses
+    // any file that loses all of its declarations.
     if (inLiteral(m.index! + m[0].search(/(?:test|it)/))) continue;
     let body: string | null = null;
     if (budget > 0) {
@@ -439,7 +487,41 @@ export function caseDeclarations(source: string): CaseDeclaration[] {
       budget -= (close === null ? source.length : close) - open;
       if (close !== null && close >= titleEnd) body = source.slice(titleEnd, close);
     }
-    out.push({ name: unescape(m[3]), body, modifier: m[1] ?? "" });
+    out.push({
+      name: unescape(m[3]),
+      body,
+      modifier: m[1] ?? "",
+      enclosing: blocks.filter(b => open > b.start && open < b.end).map(b => b.modifier),
+    });
+  }
+  return out;
+}
+
+/** `describe(` and `suite(`, with the modifier captured. */
+const BLOCK_DECLARATION =
+  /(?:^|[^.\w$])(?:describe|suite)(\.(?:skip|only|todo|failing|skipIf|todoIf|runIf|each))?\s*\(/g;
+
+/**
+ * Where each `describe` / `suite` call starts and ends, outermost first.
+ *
+ * Ordered by start, so `filter` over it yields a case's enclosing chain
+ * from the outside in without a second sort. A block whose call does not
+ * close is skipped rather than extended to the end of the file: a span
+ * running to EOF would put every later case inside it and silently change
+ * what they are compared as.
+ */
+function blockSpans(
+  source: string,
+  inLiteral: (at: number) => boolean,
+): Array<{ start: number; end: number; modifier: string }> {
+  const out: Array<{ start: number; end: number; modifier: string }> = [];
+  for (const m of source.matchAll(BLOCK_DECLARATION)) {
+    const at = m.index! + m[0].search(/(?:describe|suite)/);
+    if (inLiteral(at)) continue;
+    const open = m.index! + m[0].lastIndexOf("(");
+    const close = matchingCallParen(source, open);
+    if (close === null) continue;
+    out.push({ start: open, end: close, modifier: m[1] ?? "" });
   }
   return out;
 }
@@ -604,17 +686,30 @@ export const MIN_IDENTIFYING_BODY = 48;
  * that agree, and a mutation of either would leave the other refusing
  * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
  *
- * The modifier is part of the key and not a side condition for the same
+ * The modifiers are part of the key and not side conditions for the same
  * reason: a side condition is a second place a rule can be dropped. `test`
  * and `test.skip` carrying one body produce two different keys and
  * therefore never pair, and they do so by the same arithmetic that already
- * refuses two unrelated bodies.
+ * refuses two unrelated bodies. The enclosing `describe` chain is in the
+ * key for the same reason it exists — a case wrapped in `describe.skip`
+ * does not run, and a rename report says it does.
+ *
+ * ## What the key does NOT claim, named rather than omitted
+ *
+ * A `.only` ANYWHERE in the after source suppresses every other case in
+ * the file, so strictly a pair in such a file is a pair of cases that no
+ * longer run. That is deliberately not refused here. It is a property of
+ * the file and not of the pair: a committed `.only` means almost nothing
+ * in the file ran, which the previous build commit's LEDGER reports
+ * directly and far more loudly than a rename line could. Folding it in
+ * would make `renamePairs` answer a question the ledger already answers,
+ * which is a second decider.
  */
 function pairingKey(d: CaseDeclaration): string | null {
   if (d.body === null) return null;
   const body = normalisedBody(d.body);
   if (body.length < MIN_IDENTIFYING_BODY) return null;
-  return `${d.modifier}\u0000${body}`;
+  return `${d.enclosing.join(">")}\u0000${d.modifier}\u0000${body}`;
 }
 
 export function renamePairs(
