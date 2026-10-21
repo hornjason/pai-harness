@@ -1,10 +1,16 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join, relative } from "path";
-import { createHash } from "crypto";
 import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
 import { planDocScan, type DocScanPlan } from "../lib/doc-scan-targets";
 import { lastCommitDates } from "../lib/git-dates";
+import { contentHash } from "../lib/content-hash";
+import { mineFixCommits, type FailureIntakeReading } from "../lib/failure-intake";
+import {
+  promoteCandidates,
+  PROMOTION_BUDGET_RULES,
+  type PromotionReading,
+} from "../lib/rule-promotion";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -64,6 +70,22 @@ export interface ExtractResult {
   /** What was planned against what was read. Never inferred from `candidates`. */
   coverage: ScanCoverage;
   /**
+   * Observed failures mined from `fix:` and `Revert` commits (#545).
+   *
+   * Carried BESIDE `candidates` rather than merged into it, deliberately. The
+   * two populations answer different questions — "is this sentence
+   * rule-shaped" against "did something go wrong and cost us something" — and
+   * folding them together would move HYGIENE-6's advisory backlog count for a
+   * reason that has nothing to do with the backlog.
+   */
+  evidence: FailureIntakeReading;
+  /**
+   * Who survives, and why everything else did not (#544). Computed over BOTH
+   * populations, which is the point: the doc candidates are what the
+   * evidence-required criterion is being applied to.
+   */
+  promotion: PromotionReading;
+  /**
    * What was scanned and what could not be (#440).
    *
    * Carried on the result rather than printed, because the thing that went
@@ -76,9 +98,14 @@ export interface ExtractResult {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-export function contentHash(text: string): string {
-  return createHash("sha256").update(text.trim().toLowerCase()).digest("hex").slice(0, 12);
-}
+// `contentHash` lives in `lib/content-hash.ts` now and is re-exported here
+// under the name its callers already know — one binding, two names, the
+// arrangement `lastCommitDates` has with `lib/conformity.ts` (#508). It moved
+// because `lib/failure-intake.ts` is a second producer of candidates and the
+// SC-137 veto table matches on this hash: two implementations of it would be
+// behaviourally one until the day they disagreed, and the veto would silently
+// stop applying to whichever producer used the other copy.
+export { contentHash };
 
 function surroundingContext(lines: string[], lineIdx: number): string {
   const start = Math.max(0, lineIdx - 1);
@@ -273,6 +300,23 @@ export async function extractConstraints(
 
   const staleness = computeStaleness(projectPath, scanFiles);
 
+  // #545. One bounded `git log`, after the document walk, so a repository
+  // without one costs nothing and a repository with one is read once.
+  const evidence = mineFixCommits(projectPath);
+
+  // #544. The doc candidates arrive with no `evidence` field at all, so the
+  // gate withholds every one of them. That is not a bug in the wiring — it is
+  // the measurement: signal-phrase extraction produces nothing a promotion
+  // criterion based on observed failure can promote.
+  const promotion = promoteCandidates(
+    [...evidence.candidates, ...allCandidates],
+    {
+      budget: PROMOTION_BUDGET_RULES,
+      rejectedHashes: rejectedHashes,
+      upstream: evidence,
+    },
+  );
+
   if (options?.apply && allCandidates.length > 0) {
     applyToAgentsMd(projectPath, allCandidates);
   }
@@ -286,6 +330,8 @@ export async function extractConstraints(
     },
     staleness,
     coverage: { planned: scanFiles.length, read, unread },
+    evidence,
+    promotion,
     scan,
   };
 }

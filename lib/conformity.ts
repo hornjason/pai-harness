@@ -2192,6 +2192,25 @@ export function runDocHygiene(
         `HYGIENE-6 coverage: read ${result.coverage.read} of ${result.coverage.planned} planned documents ` +
           `from ${result.scan.roots.length} directories (${result.scan.source})`,
       );
+
+      // #545/#544. The failure intake and the promotion decision are reported
+      // here and asserted nowhere: HYGIENE-6 is advisory by declaration, and a
+      // new refusal in it would turn a backlog report into a gate.
+      //
+      // What it is NOT allowed to be is silent. The intake reads `git log`,
+      // and `actions/checkout@v4` with no `fetch-depth` clones to depth 1, so
+      // on a runner this line says UNMEASURED/SHALLOW_HISTORY — which is the
+      // state, printed, rather than a zero that reads as "no failures found".
+      const { promotionSummary } = await import("./rule-promotion");
+      console.log(
+        `HYGIENE-6 intake: ${result.evidence.reading}, ` +
+          `${result.evidence.candidates.length} evidence-backed candidates ` +
+          `over ${result.evidence.commitsScanned} commits` +
+          (result.evidence.unmeasuredReasons.length > 0
+            ? ` — ${result.evidence.unmeasuredReasons.join("; ")}`
+            : ""),
+      );
+      console.log(`HYGIENE-6 ${promotionSummary(result.promotion)}`);
       expect(
         result.coverage.planned,
         "the documentation scan planned no files, so this check measured nothing",

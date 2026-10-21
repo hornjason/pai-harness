@@ -261,6 +261,25 @@ describe("#810: a todo declaration outranks a comment that cites the id", () => 
     for (const id of CITED) {
       expect(spec, `${id} is no longer declared in ${SPEC}`).toContain(`- [ ] ${id}:`);
     }
-    expect(spec.split("\n").filter(l => l.startsWith("- [x] SC-19")), "a rule-lifecycle criterion is ticked").toEqual([]);
+
+    // This used to read `filter(l => l.startsWith("- [x] SC-19"))` and expect
+    // `[]` — no criterion in the whole spec ticked. That was true when #810
+    // shipped, and it is broader than the premise the comment above states:
+    // AC-4 is about the FOUR ids in `CITED`, and the loop directly above
+    // establishes exactly that, per id, by name.
+    //
+    // #544/#545 implement SC-1939, which is in neither list and which this
+    // file has no stake in, and the blanket form went red for it. A guard
+    // that fires on correct work in a spec it does not govern is the shape
+    // `.claude/rules/self-referential-tests.md` is about.
+    //
+    // The population is still held, and more tightly: `rule-lifecycle-spec.
+    // test.ts` asserts the ticked set of that spec EQUALS an enumerated list,
+    // so a criterion ticked by accident reds there, by number, in the file
+    // that owns the spec.
+    expect(
+      CITED.filter(id => spec.includes(`- [x] ${id}:`)),
+      "a criterion #810 cites as todo-declared has been ticked",
+    ).toEqual([]);
   });
 });
