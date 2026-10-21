@@ -28,8 +28,11 @@ import {
   TIER2_ALLOWED_VALUE_ERE,
   TIER2_ASSIGNMENT_ERE,
   TIER2_GREP_CASE_FLAG,
+  TIER3_ALLOWED_VALUE_ERE,
+  TIER3_SHELL_DEFAULT_ERE,
   tier1Ere,
   tier2Ere,
+  tier3Ere,
   unshellSafePatterns,
 } from "../../lib/secret-patterns";
 
@@ -580,5 +583,332 @@ describe("the tier-2 expressions are one binding the generator interpolates (#48
       (steps.match(/\$\{TIER2_GREP_CASE_FLAG\}/g) || []).length,
       "a tier-2 grep is deciding case for itself — interpolate TIER2_GREP_CASE_FLAG",
     ).toBe(4);
+  });
+});
+
+/**
+ * #848 — a credential written as a shell default whose variable NAME carries
+ * no credential vocabulary.
+ *
+ * #844 closed the half where the name does carry it: the live instance was a
+ * real key in a consumer repository, and it is caught because `API_KEY` is in
+ * the tier-2 vocabulary. The half left open is the one tier 2 structurally
+ * cannot reach — a variable named for what it holds rather than for what kind
+ * of thing it is — and that shape is camouflaged in a way an assignment is
+ * not, because every neighbouring line in such a block genuinely is a default.
+ *
+ * WHY THE DISCRIMINATOR IS ON THE VALUE AND NOT ON THE NAME
+ *
+ * Putting the vocabulary back into the name is the cheapest wrong fix, named
+ * on the issue before this was written: every false positive on every tree
+ * disappears, the capture goes quiet, and the tier then catches exactly the
+ * population tier 2 already catches. The case below that asserts tier 2 reads
+ * CLEAN on the same fixture is what makes that repair go red rather than
+ * green, and it is in the same case deliberately.
+ *
+ * WHY THE FLOOR IS NOT THE DISCRIMINATOR EITHER
+ *
+ * The runner-up wrong fix is to raise the length floor until the tree goes
+ * quiet. Measured on a consumer tree, the false-positive values are 13, 13,
+ * 13, 13, 23 and 32 characters and the real one is 32. No floor separates
+ * them, so the floor stays at tier 2's 12 and the value CLASS does the work.
+ *
+ * EVERY FIXTURE IS ASSEMBLED FROM FRAGMENTS, for the reason recorded above
+ * the #489 block: a test that proves a scanner works must not be a file that
+ * scanner blocks, and tier 3 now scans this file too.
+ *
+ * ### What was measured before any of this was written
+ *
+ * Captured, then reported after the exclusion, over tracked files. The
+ * command is recorded beside the count because the trees underneath move:
+ *
+ *   git grep -I -hoE "$CAPTURE" -- . | wc -l
+ *   git grep -I -hoE "$CAPTURE" -- . | grep -vE "$ALLOW" | wc -l
+ *
+ * | tree | tracked files | captured | reported |
+ * |---|---|---|---|
+ * | hornjason/pai-harness | 1138 | 0 | 0 |
+ * | hornjason/asaCommandCenter | 1726 | 10 | 1 |
+ * | hornjason/agentgrit | 374 | 0 | 0 |
+ * | hornjason/control-plane | 52 | 0 | 0 |
+ *
+ * Zero false positives over 3,290 tracked files, and the single reported hit
+ * is one tier 2 already catches — so on every tree available to measure,
+ * this tier adds nothing. That is the honest reading, and it is why the case
+ * below that asserts tier 2 reads CLEAN on the constructed fixture is the one
+ * doing the work.
+ *
+ * ### What was broken to prove it
+ *
+ * 38 tests over this file. Every count predicted before the run in
+ * `/tmp/848-battery/predictions.md`; **the baseline row was read first**. All
+ * six matched, and in every row the cases that went red were the predicted
+ * ones by name.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | baseline | 38 pass, 0 fail | **38 pass, 0 fail** | — |
+ * | T1 the genuinely pre-#848 `steps.ts` and `gates.yml` | 12 | **12** | `gates.yml` holds no tier-3 capture line, so the cut reads nothing |
+ * | T2 **cheapest wrong fix**: credential vocabulary required in the tier-3 NAME | 4 | **4** | a 32-character value under a variable named for its destination: original FAIL, mutant CLEAN |
+ * | T3 the value-class exclusion narrowed to the empty-line alternative | 3 | **3** | a keystore path default: original CLEAN, mutant FAIL |
+ * | T4 the name-side rule widened to admit positional parameters | 1 | **1** | a positional default holding a repo slug: original captures nothing, mutant captures it |
+ * | T5 the leading-character rule removed from the value | 1 | **1** | a path default carrying digits: original CLEAN, mutant FAIL |
+ * | T6a `gatesTier3Scan` short-circuited to return the constants, artifact untouched | 0 | **0** | none — there is none, which is why this row is recorded |
+ * | T6b the same short-circuit WITH the artifact's floor perturbed | 1 | **1** | `gates.yml` itself, read directly rather than through the cut |
+ *
+ * **T1 is 12 and not 14 deliberately.** The registry constants are kept in
+ * that row: reverting `lib/secret-patterns.ts` too removes the exports this
+ * file imports, and the whole file then aborts at load — 0 of 38 run, which
+ * is a loud abort and not a count. The two cases that stay green read only
+ * the registry, and they are green for a true reason.
+ *
+ * **T6a is the row that is not a measurement, and it is recorded rather than
+ * dropped.** With the real artifact agreeing with the constants there is no
+ * input on which the short-circuited cut and the real one differ, so that run
+ * is the code executed twice. Only the pair says anything, and what it says
+ * is that one assertion — the direct read of `gatesYml` in the binding case —
+ * is the only thing standing between every behavioural case here and a
+ * workflow that says something else.
+ *
+ * **T5 is 1 only because a fixture was added for it.** The prediction for the
+ * leading-character rule was 0 against the fixtures as first written: every
+ * path in them is letters and separators, which the value-class exclusion
+ * declines anyway. A rule no input can distinguish is indistinguishable from
+ * dead code, so `DATA_DIR` defaulting to a path carrying digits was added
+ * before the battery ran rather than after it came back 0.
+ *
+ * None of the mutations is left in the tree; all were restored from a `cp`
+ * backup, never `git checkout --`, and `lib/secret-patterns.ts`,
+ * `lib/scaffold/steps.ts`, `.github/workflows/gates.yml` and this file were
+ * confirmed byte-identical to the measured source afterwards by SHA-256.
+ */
+
+/** A shell default, never written as a literal anywhere in this file. */
+const SHELL_DEFAULT = (name: string, value: string) => "$" + "{" + name + ":" + "-" + value + "}";
+
+/** A tier-3 scan as the committed job spells it: the flags AND the expressions. */
+interface Tier3Scan {
+  captureFlags: string[];
+  ere: string;
+  allowFlags: string[];
+  allowlist: string;
+}
+
+/**
+ * The two commands the committed `gates` job runs for tier 3.
+ *
+ * Cut out of the artifact rather than imported, for the reason
+ * `gatesTier2Scan` is: importing the constant asserts the registry is correct
+ * and says nothing about the file CI executes. Both cuts are asserted
+ * non-empty before anything is measured with them — a cut that failed to find
+ * its own line is an empty string, which is indistinguishable from a clean
+ * result.
+ */
+function gatesTier3Scan(): Tier3Scan {
+  const capture = gatesYml.match(/tier3=\$\(git grep -I -hoE ((?:-[A-Za-z]+ )*)'([^']+)' -- \.\)/);
+  const allow = gatesYml.match(/"\$tier3" \| grep -qvE ((?:-[A-Za-z]+ )*)'([^']+)'/);
+  expect(capture?.[2] ?? "", "the tier-3 capture line is not in gates.yml — this cut is reading nothing").not.toBe("");
+  expect(allow?.[2] ?? "", "the tier-3 allowlist line is not in gates.yml — this cut is reading nothing").not.toBe("");
+  return {
+    captureFlags: (capture?.[1] ?? "").split(" ").filter(Boolean),
+    ere: capture?.[2] ?? "",
+    allowFlags: (allow?.[1] ?? "").split(" ").filter(Boolean),
+    allowlist: allow?.[2] ?? "",
+  };
+}
+
+/** The generated job's tier-3 verdict for a body of text. Mirrors the shell exactly. */
+function tier3Verdict(scan: Tier3Scan, text: string): "FAIL" | "CLEAN" {
+  const printfInput = grepExtract(scan.captureFlags, scan.ere, text).replace(/\n+$/, "") + "\n";
+  const r = spawnSync("grep", ["-qvE", ...scan.allowFlags, scan.allowlist], {
+    input: printfInput,
+    encoding: "utf-8",
+  });
+  return r.status === 0 ? "FAIL" : "CLEAN";
+}
+
+describe("#848: a credential in a shell default with no vocabulary in its name", () => {
+  test("the committed gates.yml and the tier-3 registry are one binding, not two copies", () => {
+    const scan = gatesTier3Scan();
+    expect(scan.ere).toBe(TIER3_SHELL_DEFAULT_ERE);
+    expect(scan.allowlist).toBe(TIER3_ALLOWED_VALUE_ERE);
+    // Read the artifact once WITHOUT going through the cut, for the reason
+    // the tier-2 case does: a cut short-circuited to return the constants
+    // would leave every behavioural case below green over a workflow that
+    // says something else — the store answering with what you put in it.
+    expect(
+      gatesYml,
+      "the committed tier-3 capture command is not the one the registry composes",
+    ).toContain(`tier3=$(git grep -I -hoE '${TIER3_SHELL_DEFAULT_ERE}' -- .)`);
+  });
+
+  test("the shape tier 2 structurally cannot see is caught, and tier 2 is shown not to catch it", () => {
+    // The whole point of the tier. Both halves are asserted over ONE fixture:
+    // without the tier-2 half, requiring the credential vocabulary back in
+    // the tier-3 variable name — the cheapest wrong fix — leaves this green
+    // while the tier measures nothing #844 did not already do.
+    const value = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6";
+    expect(value.length, "the fixture value must be key-length to measure anything").toBe(32);
+    const line = `DEPLOY_HOST="${SHELL_DEFAULT("DEPLOY_TARGET", value)}"`;
+
+    expect(
+      tier2Verdict(gatesTier2Scan(), line),
+      "tier 2 already catches this, so tier 3 is measuring nothing new — check the fixture's variable name",
+    ).toBe("CLEAN");
+    expect(tier3Verdict(gatesTier3Scan(), line), `still invisible: ${line}`).toBe("FAIL");
+  });
+
+  test("a path default reads CLEAN", () => {
+    // Letters and separators, no digit. Caught by the value CLASS rather than
+    // by a leading-slash special case, so a relative path default is covered
+    // by the same rule.
+    const scan = gatesTier3Scan();
+    for (const path of [
+      SHELL_DEFAULT("KEYSTORE_PATH", "/usr/local/share/keystore"),
+      SHELL_DEFAULT("SSH_KEY_PATH", "/home/user/.ssh/id_rsa"),
+      SHELL_DEFAULT("CACHE_DIR", "var/cache/application"),
+      // This one is the only input the leading-character rule can be seen on.
+      // It carries a digit AND a letter, so the value-class exclusion lets it
+      // through; what declines it is that the value starts with `/`. Without
+      // this fixture, deleting the leading-character rule is 0 red and the
+      // rule is indistinguishable from dead code.
+      SHELL_DEFAULT("DATA_DIR", "/var/lib/app1/cache2"),
+    ]) {
+      expect(tier3Verdict(scan, path), `a path default hard-fails CI: ${path}`).toBe("CLEAN");
+    }
+  });
+
+  test("a port default reads CLEAN", () => {
+    const scan = gatesTier3Scan();
+    for (const port of [
+      SHELL_DEFAULT("PORT", "7777"),
+      // Long enough to clear the floor, and still only digits.
+      SHELL_DEFAULT("TIMEOUT_MS", "123456789012345"),
+    ]) {
+      expect(tier3Verdict(scan, port), `a port default hard-fails CI: ${port}`).toBe("CLEAN");
+    }
+  });
+
+  test("every false positive measured on a real consumer tree reads CLEAN", () => {
+    // The six captures the exclusion absorbs on hornjason/asaCommandCenter,
+    // reconstructed by shape. A gate that fires on these is a gate consumers
+    // delete, and the deletion costs the eight tier-1 patterns too.
+    const scan = gatesTier3Scan();
+    for (const benign of [
+      SHELL_DEFAULT("CONTAINER_NAME", "asa-command-center"),
+      SHELL_DEFAULT("CONTAINER_BOOT_NAME", "asa-command-center-test"),
+      SHELL_DEFAULT("EMPTY_CATCH_SCAN_DIR", "src/services"),
+      SHELL_DEFAULT("EMPTY_CATCH_RATCHET", "config/empty-catch-ratchet.json"),
+    ]) {
+      expect(tier3Verdict(scan, benign), `a consumer's ordinary default hard-fails CI: ${benign}`).toBe("CLEAN");
+    }
+  });
+
+  test("a positional-parameter default is not a credential declaration", () => {
+    // The name-side discriminator, and the only thing that removes this
+    // repository's own two false positives: a positional parameter is an
+    // argument. The value here carries no digit either, so the case asserts
+    // the NAME rule by reading the capture directly rather than the verdict —
+    // otherwise the exclusion would hold it up and the rule could be deleted.
+    const scan = gatesTier3Scan();
+    const positional = "$" + "{2" + ":" + "-" + "hornjason1/pai-config2}";
+    expect(
+      grepExtract(scan.captureFlags, scan.ere, positional),
+      "a positional-parameter default is being captured as a credential declaration",
+    ).toBe("");
+    // The control: the identical value under a named variable IS captured, so
+    // the case above is about the name and not about the value.
+    expect(
+      grepExtract(scan.captureFlags, scan.ere, SHELL_DEFAULT("REPO_SLUG", "hornjason1/pai-config2")),
+      "the control did not capture, so the positional case proves nothing",
+    ).not.toBe("");
+  });
+
+  test("the floor is a floor: one character below it is invisible, one at it is caught", () => {
+    const scan = gatesTier3Scan();
+    expect(tier3Verdict(scan, SHELL_DEFAULT("DEPLOY_TARGET", "a1b2c3d4e5f"))).toBe("CLEAN");
+    expect(tier3Verdict(scan, SHELL_DEFAULT("DEPLOY_TARGET", "a1b2c3d4e5f6"))).toBe("FAIL");
+  });
+
+  test("the wider value charset is load-bearing: a base64 secret carries / and +", () => {
+    // The declined narrowing, pinned. Dropping `/` from the value charset was
+    // the obvious way to kill relative-path defaults; measured, it captures 8
+    // instead of 10 on the consumer and reports the same 1, so it buys
+    // nothing and costs this.
+    const scan = gatesTier3Scan();
+    expect(tier3Verdict(scan, SHELL_DEFAULT("DEPLOY_TARGET", "aB3/dEf+gHi=jKl9mN0"))).toBe("FAIL");
+  });
+
+  test("tier 3 carries no case flag, and the committed job does not give it one", () => {
+    // Tier 3 has no vocabulary to miss in the wrong case — every class is
+    // written for both — so `-i` here would only widen the value class, which
+    // is the direction that fails open.
+    const scan = gatesTier3Scan();
+    expect(scan.captureFlags, "the tier-3 capture picked up a case flag").toEqual([]);
+    expect(scan.allowFlags, "the tier-3 allowlist picked up a case flag").toEqual([]);
+  });
+
+  test("this repository's own tracked files report nothing, and the scan read something", () => {
+    const scan = gatesTier3Scan();
+    const tracked = spawnSync("git", ["grep", "-I", "-hoE", ...scan.captureFlags, scan.ere, "--", "."], {
+      cwd: REPO_ROOT,
+      encoding: "utf-8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    if ((tracked.status ?? 2) > 1) throw new Error(`git grep failed (${tracked.status}): ${tracked.stderr}`);
+    const reported = (tracked.stdout ?? "")
+      .split("\n")
+      .filter(Boolean)
+      .filter(l => spawnSync("grep", ["-qE", scan.allowlist], { input: l + "\n" }).status !== 0);
+    expect(reported, "tier 3 reports a finding on this tree — read it before banking anything").toEqual([]);
+
+    // The instrument control. Zero findings over a population of zero is not
+    // a reading: if the shape does not occur here at all, an expression that
+    // matches nothing would give the same answer. This repository has shell
+    // defaults; the tier is declining them, not failing to see them.
+    const anyDefault = spawnSync("git", ["grep", "-I", "-hoE", "[$][{][A-Za-z_][A-Za-z0-9_]*:-", "--", "."], {
+      cwd: REPO_ROOT,
+      encoding: "utf-8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    expect(
+      (anyDefault.stdout ?? "").split("\n").filter(Boolean).length,
+      "no shell default of any shape was found, so the clean reading above is UNMEASURED",
+    ).toBeGreaterThan(10);
+  });
+});
+
+describe("#848: the tier-3 expressions are one binding the generator interpolates", () => {
+  test("steps.ts interpolates tier3Ere() rather than inlining a copy", () => {
+    const inlined = steps.match(/\[A-Za-z0-9\/\+=_\.-\]\{11,\}/g) || [];
+    expect(
+      inlined.length,
+      "the tier-3 pattern is hardcoded in the generator — interpolate tier3Ere() from lib/secret-patterns.ts",
+    ).toBe(0);
+    // Both generated scanners: gates.yml and the consumer pre-commit hook.
+    expect((steps.match(/\$\{tier3Ere\(\)\}/g) || []).length).toBe(2);
+  });
+
+  test("steps.ts interpolates the tier-3 allowlist rather than inlining a copy", () => {
+    const inlinedAllow = steps.match(/:-\[\^0-9\]\*\$/g) || [];
+    expect(
+      inlinedAllow.length,
+      "the tier-3 allowlist is hardcoded in the generator — interpolate TIER3_ALLOWED_VALUE_ERE",
+    ).toBe(0);
+    expect((steps.match(/\$\{TIER3_ALLOWED_VALUE_ERE\}/g) || []).length).toBe(2);
+  });
+
+  test("tier3Ere() mirrors tier1Ere() and tier2Ere() so there is one thing to mutate", () => {
+    expect(tier3Ere()).toBe(TIER3_SHELL_DEFAULT_ERE);
+  });
+
+  test("both tier-3 expressions are validated for the trip into generated shell", () => {
+    // The validator used to inspect only tier 1, then only tiers 1 and 2. A
+    // validator with a narrower view than the thing it validates is the
+    // defect this registry exists to prevent.
+    const src = readFileSync(join(REPO_ROOT, "lib", "secret-patterns.ts"), "utf-8");
+    expect(src).toContain("tier3-shell-default");
+    expect(src).toContain("tier3-allowlist");
+    expect(unshellSafePatterns()).toEqual([]);
   });
 });

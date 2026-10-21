@@ -166,6 +166,101 @@ export const TIER2_GREP_CASE_FLAG = "-i";
 export const TIER2_ALLOWED_VALUE_ERE =
   "^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)";
 
+/**
+ * Tier 3 — a credential written as a shell default, caught by SHAPE.
+ *
+ * Tiers 1 and 2 both need something in the text to tell them where to look: a
+ * provider prefix, or a variable name carrying credential vocabulary. A shell
+ * default gives neither when the variable is named for what it holds rather
+ * than for what kind of thing it is, and it is camouflaged in a way an
+ * assignment is not — every neighbouring line in such a block genuinely is a
+ * default, so the one that is not sits in a list of things that look alike.
+ *
+ * TWO DISCRIMINATORS, AND ONE OF THEM IS ON THE NAME SIDE (#848)
+ *
+ * The name must begin with a letter or underscore, which excludes positional
+ * parameters. A positional parameter is an argument, never a credential
+ * declaration, and both false positives this repository had were that shape.
+ *
+ * The VALUE must carry both a letter and a digit, which is the exclusion
+ * below rather than part of this expression — a `grep -oE` capture cannot
+ * express "contains one of these and one of those" without an alternation
+ * that doubles its length, and the two-stage pipeline tier 2 already uses
+ * reads better and is the shape every generated scanner already has.
+ *
+ * THE FLOOR IS NOT THE DISCRIMINATOR, AND REACHING FOR IT IS THE WRONG FIX
+ *
+ * Measured on a consumer tree: the false-positive values are 13, 13, 13, 13,
+ * 23 and 32 characters, and the real credential is 32. No length floor
+ * separates them. 12 is kept to match tier 2, as a floor and nothing more.
+ *
+ * MEASURED BEFORE IT WAS SHIPPED
+ *
+ * Captured / reported after the exclusion, over the tracked files of this
+ * repository and three consumer trees: 0/0 of 1138, 10/1 of 1726, 0/0 of
+ * 374, 0/0 of 52. Zero false positives over 3,290 tracked files, and the one
+ * reported hit is already caught by tier 2 because its name carries
+ * `API_KEY` — so on every tree available to measure, this tier adds nothing.
+ * The population it exists for has to be constructed, which is what
+ * `test/unit/secret-patterns.test.ts` does, and the constructed case asserts
+ * tier 2 reads CLEAN on it or this tier is measuring nothing #844 did not
+ * already do.
+ *
+ * The trees are named in that test file and deliberately not here: a module
+ * under `lib/` may carry no consumer-specific value (SC-A1), which is the
+ * same rule the `-i` note above defers to.
+ *
+ * A narrower charset with `/` removed — the obvious way to kill relative-path
+ * defaults — captures 8 instead of 10 on the consumer and reports the same 1.
+ * It differs only in captures the exclusion throws away, and it costs base64
+ * secrets, which carry `/`. Declined on the measurement, not on an argument.
+ *
+ * WHY `[$][{]` AND NOT `\$\{`
+ *
+ * Every pattern here is interpolated into a JS template literal on its way to
+ * generated shell. A literal `$` adjacent to a `{` inside one of those is an
+ * interpolation, and `unshellSafePatterns()` below refuses any pattern
+ * carrying that adjacency. Bracket expressions say the same thing in POSIX
+ * ERE with no backslash and no adjacency, and `[{]` additionally avoids a
+ * bare `{`, which some greps read as the start of an interval.
+ *
+ * NO CASE FLAG, DELIBERATELY. Tier 2 needs `-i` because its vocabulary is
+ * spelled in one case and credentials are written in another. This tier has
+ * no vocabulary: every character class is already written for both cases, and
+ * the exclusion is structural rather than a list of words. `-i` here would
+ * change nothing except to widen the value class, which is the direction that
+ * fails open.
+ *
+ * WHAT IT DOES NOT CATCH, named rather than left as an omission: a value with
+ * no digit at all, a `:=` or bare `-` default, and a quoted value — the last
+ * for the same reason recorded for tier 2 above.
+ */
+export const TIER3_SHELL_DEFAULT_ERE = "[$][{][A-Za-z_][A-Za-z0-9_]*:-[A-Za-z0-9][A-Za-z0-9/+=_.-]{11,}";
+
+/**
+ * Values in a shell default that look like credentials but are not.
+ *
+ * Applied to the extracted MATCH, anchored at the `:-` separator, for the
+ * reason tier 2's is anchored at its own: matching anywhere on the line is an
+ * allowlist escape.
+ *
+ * `^$` absorbs the single empty line `printf '%s\n' "$tier3"` produces from an
+ * empty capture — the same device tier 2's exclusion uses.
+ *
+ * The other two alternatives are the discriminator: a value with no digit, or
+ * a value with no letter, is let through. That one rule covers every false
+ * positive measured on three consumer trees — path defaults, scan-directory
+ * defaults and container names are letters and separators, port and timeout
+ * defaults are digits — and it subsumes the placeholder vocabulary tier 2
+ * needs a word list for, since `CHANGEME`, `placeholder` and `REDACTED` all
+ * carry no digit.
+ *
+ * `:` is not in the value charset and the name charset excludes it too, so
+ * `:-` occurs exactly once in any captured match and these anchors cannot
+ * attach to the wrong place.
+ */
+export const TIER3_ALLOWED_VALUE_ERE = "^$|:-[^0-9]*$|:-[^A-Za-z]*$";
+
 /** Tier 1 as one alternation, parenthesised and ready to embed in `grep -E '...'`. */
 export function tier1Ere(): string {
   return `(${TIER1_SECRET_PATTERNS.map(p => p.ere).join("|")})`;
@@ -182,6 +277,16 @@ export function tier1Ere(): string {
  */
 export function tier2Ere(): string {
   return TIER2_ASSIGNMENT_ERE;
+}
+
+/**
+ * Tier 3, ready to embed in `grep -E '...'`.
+ *
+ * Mirrors `tier1Ere()` and `tier2Ere()` for the same reason: the generator
+ * interpolates ONE binding per tier, so a mutation of a tier has one site.
+ */
+export function tier3Ere(): string {
+  return TIER3_SHELL_DEFAULT_ERE;
 }
 
 /**
@@ -202,6 +307,8 @@ export function unshellSafePatterns(): string[] {
     ...TIER1_SECRET_PATTERNS.map(p => ({ id: p.id, ere: p.ere })),
     { id: "tier2-assignment", ere: TIER2_ASSIGNMENT_ERE },
     { id: "tier2-allowlist", ere: TIER2_ALLOWED_VALUE_ERE },
+    { id: "tier3-shell-default", ere: TIER3_SHELL_DEFAULT_ERE },
+    { id: "tier3-allowlist", ere: TIER3_ALLOWED_VALUE_ERE },
   ];
   // A single quote ends the shell quoting; a backtick or ${ ends the JS
   // template the shell is built in. Backslashes are legitimate regex escapes,
