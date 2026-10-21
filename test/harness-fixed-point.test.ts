@@ -78,6 +78,8 @@ export interface FixedPointReading {
   deferred: string[];
   /** The scaffold's own action log, for the deferral reading and for failures. */
   log: string;
+  /** The bytes that differ, so a reader can classify the drift rather than guess. */
+  diff: string;
 }
 
 const UNREADABLE: Omit<FixedPointReading, "unmeasuredReasons"> = {
@@ -88,6 +90,7 @@ const UNREADABLE: Omit<FixedPointReading, "unmeasuredReasons"> = {
   incomparable: [],
   deferred: [],
   log: "",
+  diff: "",
 };
 
 /** The frontmatter block of `content`, or `""` when it has none. */
@@ -164,16 +167,20 @@ export function fixedPointReading(root: string, work: string): FixedPointReading
     .filter(rel => /^scanned-at-sha:/m.test(frontmatterOf(readFileSync(join(root, rel), "utf-8"))))
     .sort();
 
-  const apply = (): { drift: string[] | null; log: string } => {
+  const apply = (): { drift: string[] | null; diff: string; log: string } => {
     const r = Bun.spawnSync(["bun", join(tree, "bin", "rungate.ts"), "scaffold", ".", "--fix"], {
       cwd: tree,
       timeout: 300_000,
     });
     const log = r.stdout.toString() + r.stderr.toString();
-    if (r.exitCode !== 0) return { drift: null, log };
+    if (r.exitCode !== 0) return { drift: null, diff: "", log };
     const status = git(tree, ["status", "--porcelain"]);
-    if (status === null) return { drift: null, log };
-    return { drift: porcelainPaths(status).filter(p => !incomparable.includes(p)), log };
+    if (status === null) return { drift: null, diff: "", log };
+    const drift = porcelainPaths(status).filter(p => !incomparable.includes(p));
+    // The paths alone cannot tell a stale file from a non-deterministic one,
+    // and those have different fixes. Carry the bytes that differ.
+    const diff = drift.length === 0 ? "" : (git(tree, ["diff", "--", ...drift]) ?? "(the diff could not be read)");
+    return { drift, diff, log };
   };
 
   const first = apply();
@@ -207,6 +214,7 @@ export function fixedPointReading(root: string, work: string): FixedPointReading
     incomparable,
     deferred,
     log: first.log + second.log,
+    diff: first.diff + second.diff,
   };
 }
 
@@ -249,7 +257,7 @@ describe("#827: the harness is a fixed point of its own generator", () => {
       `  3. the file is not supposed to be generated here — narrow \`--fix\`;\n` +
       `  4. the difference is a date, a sha or an ordering — that is a determinism defect, and ` +
       `deriving the field from the content (as #827 did for AGENTS.md's \`updated:\`) is the fix, ` +
-      `not exempting the file.`,
+      `not exempting the file.\n\n${r.diff.slice(0, 20000)}`,
     ).toEqual([]);
   });
 
