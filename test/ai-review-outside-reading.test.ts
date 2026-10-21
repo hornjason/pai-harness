@@ -406,6 +406,14 @@ function writeOld(path: string, body: string): void {
   utimesSync(path, longAgo, longAgo);
 }
 
+// A body that is VALID git config, because one declared entry IS
+// `~/.gitconfig` and git parses it during the drift reading. Writing
+// arbitrary bytes there makes `git status` fail and the step refuse with
+// UNMEASURED — fail-closed and correct, but it would mean these cases
+// measured the parser rather than the subtraction. An empty section is
+// valid INI and inert to every other path, none of which is parsed.
+const RUNTIME_WRITE = "[init]\n";
+
 // ── AC-1 / AC-2: the reading exists, and it is a reading ─────────────────
 
 describe("AC-1 (#843/1): a write outside the checkout is reported", () => {
@@ -523,9 +531,7 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     expect([...AI_REVIEW_RUNTIME_INERT_PATHS]).toEqual([
       ".claude/.last-cleanup",
       ".claude/cache",
-      ".claude/projects",
       ".npm/_logs",
-      ".bun/install/cache",
     ]);
   });
 
@@ -541,6 +547,10 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".claude/backups",
       ".claude/state",
       ".claude/sessions",
+      ".bun/install/cache",
+      ".claude/projects",
+      ".claude/downloads",
+      ".gitconfig",
       ".npm/_npx",
     ]);
   });
@@ -595,6 +605,9 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".npm/_logs/2026-10-21T04_48_31_402Z-debug-0.log",
       ".npm/_logs/2026-10-21T04_48_39_043Z-debug-0.log",
       ".bun/install/cache/c17f4447ebe3362d.npm",
+      // #949's two with live writers.
+      ".claude/downloads/claude-2.1.306-linux-arm64.zst",
+      ".gitconfig",
     ];
     const under = (prefix: string, p: string) => p === prefix || p.startsWith(`${prefix}/`);
     const unclassified: string[] = [];
@@ -618,7 +631,7 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       const { path, sha } = runBaseline(f);
       const target = join(f.home, entry);
       mkdirSync(join(target, ".."), { recursive: true });
-      writeFileSync(target, "runtime state\n");
+      writeFileSync(target, RUNTIME_WRITE);
       const r = runDrift(f, path, sha);
       const text = r.stdout + r.stderr;
       expect(r.code, `${entry} is inert runtime state and refused:\n${r.stderr}`).toBe(0);
@@ -642,7 +655,7 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       const { path, sha } = runBaseline(f);
       const target = join(f.home, entry);
       mkdirSync(join(target, ".."), { recursive: true });
-      writeFileSync(target, "hooks: []\n");
+      writeFileSync(target, RUNTIME_WRITE);
       const r = runDrift(f, path, sha);
       const text = r.stdout + r.stderr;
       expect(r.code, `${entry} is written by the runtime every run and refused:\n${r.stderr}`).toBe(0);
@@ -944,12 +957,15 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     const f = fixture();
     const { path, sha } = runBaseline(f);
     const INERT_SHAPES = [
-      ".claude/projects/-a-slug/5d4ec1e2-fb26-49f0-8abb-f81860933538.jsonl",
       ".npm/_logs/2026-10-21T04_48_39_043Z-debug-0.log",
+      ".claude/cache/model-access.json",
     ];
     const CONFIG_SHAPES = [
       ".claude/backups/.claude.json.backup.1792558105498",
       ".claude/plugins/plugin-directory-cache-v2.json",
+      // Moved out of INERT_SHAPES by #947: a transcript is read back as model
+      // context, so a plant there must be named rather than subtracted.
+      ".claude/projects/-a-slug/5d4ec1e2-fb26-49f0-8abb-f81860933538.jsonl",
     ];
     for (const rel of [...INERT_SHAPES, ...CONFIG_SHAPES]) {
       const target = join(f.home, rel);
@@ -1232,13 +1248,14 @@ describe("AC-18 (#931): a DIRECTORY at a file-shaped entry does not exempt its c
     // split is readable rather than a subtraction the reader has to perform.
     expect(all.filter(e => !files.has(e))).toEqual([
       ".claude/cache",
-      ".claude/projects",
       ".npm/_logs",
-      ".bun/install/cache",
       ".claude/plugins",
       ".claude/backups",
       ".claude/state",
       ".claude/sessions",
+      ".bun/install/cache",
+      ".claude/projects",
+      ".claude/downloads",
       ".npm/_npx",
     ]);
   });
@@ -1254,6 +1271,160 @@ describe("AC-18 (#931): a DIRECTORY at a file-shaped entry does not exempt its c
       );
       expect(script, `${e} lost its own exclusion`).toContain(`-not -path "\${HOME}/${e}"`);
     }
+  });
+});
+
+// ── AC-19: a plant in a CONSUMED directory ──────────────────────────────
+
+/**
+ * #947. #929 closed the planting hole for file-shaped entries. The
+ * directory-shaped ones still emit a blanket `-not -path "${HOME}/<e>/*"`,
+ * and for some of them that is the wrong answer.
+ *
+ * Probed the same way, one planted `evil.sh` per directory entry:
+ *
+ * | entry | exit | named? |
+ * |---|---|---|
+ * | `.claude/cache` | 0 | no |
+ * | `.claude/projects` | 0 | **no** |
+ * | `.npm/_logs` | 0 | no |
+ * | `.bun/install/cache` | 0 | **no** |
+ * | `.claude/plugins` | 0 | yes |
+ * | `.claude/backups` | 0 | yes |
+ * | `.claude/state` | 0 | yes |
+ * | `.claude/sessions` | 0 | yes |
+ * | `.npm/_npx` | 0 | yes |
+ *
+ * The split is exactly INERT-vs-CONFIG, which is the design working. What
+ * the design did not account for is that two INERT entries are CONSUMED:
+ * `.bun/install/cache` is read by the next `bun install`, `.claude/projects`
+ * is read back as model context. A plant there is not inert, it is silent.
+ *
+ * ## Why the two entries MOVE rather than the glob being narrowed
+ *
+ * #947 offered both. Narrowing `/*` to the measured filename shapes —
+ * `*.npm`, `*.jsonl` — is the stricter-sounding option and it is the wrong
+ * one, because it catches the harmless plant and misses the dangerous one.
+ *
+ * The plant that matters at `.bun/install/cache` is a poisoned package
+ * tarball, which must be named `<hash>.npm` to be consumed at all. At
+ * `.claude/projects` it is a poisoned transcript, which must be `<uuid>.jsonl`
+ * to be read back. Both are extension-shaped, so a narrowed glob exempts them
+ * and refuses only `evil.sh` — a file sitting in a cache directory that
+ * nothing executes. That is backwards: it buys a refusal on the case with no
+ * consumer and keeps silence on the case with one.
+ *
+ * Moving them to CONFIG names EVERY plant regardless of filename, including
+ * the correctly-named ones. The cost is annotation noise on every run, and it
+ * is small at measured volumes: #866's two runs produced one path under each
+ * of these, not fifty.
+ *
+ * ## What deliberately does NOT move, so the choice is visible
+ *
+ * `.npm/_logs` — npm's debug logs are written and never read back. Nothing
+ * consumes them, so silence is a true answer and the entry stays INERT. It is
+ * the control below: if a future change moves the whole list, that case reds.
+ *
+ * `.claude/cache` — the weaker call of the four, and left INERT rather than
+ * decided quietly. It holds `model-access.json`, which IS read back, so the
+ * "consumed" test catches it too. It stays because a plant there can only
+ * widen or narrow which models may be called and carries no command line,
+ * which is a smaller claim than the other two. It is the next candidate if
+ * anyone revisits this, and it is named here rather than left for someone to
+ * rediscover as an omission.
+ */
+describe("AC-19 (#947): a plant in a CONSUMED directory is named, not silent", () => {
+  for (const entry of [".bun/install/cache", ".claude/projects"]) {
+    test(`a plant at ${entry} is exit 0 AND named UNMEASURED`, () => {
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, entry, "evil.sh");
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "#!/bin/sh\necho pwned\n");
+      const r = runDrift(f, path, sha);
+      const text = r.stdout + r.stderr;
+      expect(r.code, `${entry} refused a write the runtime makes every run`).toBe(0);
+      expect(
+        text,
+        `${entry} is consumed by the next run and a plant there vanished from the reading`,
+      ).toContain(CONFIG_UNMEASURED_TEXT);
+      expect(text, "the planted path is not named").toContain("evil.sh");
+    });
+  }
+
+  test("CONTROL: a plant at .npm/_logs is still silent — nothing consumes a log", () => {
+    // The selectivity control. Moving every INERT entry to CONFIG would pass
+    // the two cases above and is the cheapest wrong fix here; this is the
+    // case that separates "the consumed ones moved" from "the list moved".
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    const target = join(f.home, ".npm/_logs", "evil.sh");
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, "#!/bin/sh\n");
+    const r = runDrift(f, path, sha);
+    const text = r.stdout + r.stderr;
+    expect(r.code).toBe(0);
+    expect(text, "a debug log is not consumed and should not be annotated").not.toContain(
+      CONFIG_UNMEASURED_TEXT,
+    );
+  });
+});
+
+// ── AC-20: the residue that was in neither list ─────────────────────────
+
+/**
+ * #949. Three paths appeared in the measured residue and were classified by
+ * neither #907 nor #913. They need three different answers, which is why
+ * they are one issue rather than three entries appended to a list.
+ */
+describe("AC-20 (#949): the three unclassified residue paths", () => {
+  // Written by the Claude CLI when it updates itself, so the writer is the
+  // REVIEWER'S OWN runtime and this recurs — the same standing as
+  // `.claude/sessions` and unaffected by anything that happened to gh-aw.
+  // CONFIG rather than inert: a `.zst` a later start may unpack and run is
+  // not a log. The filename carries a version, so there is no exact path.
+  //
+  // `.gitconfig` is written by `actions/checkout` on every job, which sets
+  // and unsets `http.https://github.com/.extraheader` and `safe.directory`.
+  // It is trust-bearing in a way nothing else in the list is: it can define
+  // `core.sshCommand`, `credential.helper` and aliases, all command lines
+  // git runs. Indistinguishable from the runner's own write, so UNMEASURED.
+  for (const entry of [".claude/downloads/claude-2.1.306-linux-arm64.zst", ".gitconfig"]) {
+    test(`a write at ${entry} is exit 0 AND named UNMEASURED`, () => {
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, entry);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, RUNTIME_WRITE);
+      const r = runDrift(f, path, sha);
+      const text = r.stdout + r.stderr;
+      expect(r.code, `${entry} has a live writer and refused:\n${r.stderr}`).toBe(0);
+      expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      expect(text, `${entry} is trust-bearing and was subtracted silently`).toContain(
+        CONFIG_UNMEASURED_TEXT,
+      );
+    });
+  }
+
+  test("~/.local/bin/awf is NOT subtracted — a PATH directory stays reportable", () => {
+    // The third path, and the answer is "add nothing". Two reasons, either
+    // sufficient. Its writer was gh-aw's installer, deleted with the stack in
+    // #946, so subtracting it would be the exact mistake #946 undid. And
+    // `~/.local/bin` is ON PATH — the category the inert list already refuses
+    // to cover, in its own words: "NOT `.bun`, which also holds `bin/` — the
+    // shim directory on PATH, which is as exec-capable as a hook."
+    //
+    // Asserting the REFUSAL, so the exemption cannot be added quietly later.
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    const target = join(f.home, ".local/bin/awf");
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, "#!/bin/sh\necho installer\n");
+    const r = runDrift(f, path, sha);
+    const text = r.stdout + r.stderr;
+    expect(r.code, "a write to a PATH directory was subtracted").toBe(1);
+    expect(text).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+    expect(text).toContain("awf");
   });
 });
 
