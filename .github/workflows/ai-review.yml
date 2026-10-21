@@ -1,4 +1,4 @@
-# generated-sha: 64525bb1f69c04a1
+# generated-sha: 00d52471ef0c5d41
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -550,6 +550,43 @@ jobs:
           if ! after=$(git status --porcelain --untracked-files=all 2>&1); then
             echo "::error title=AI review modified the tree::git status failed, so the tree was never read and this check is UNMEASURED: $(escape_annotation "${after}")" >&2
             exit 1
+          fi
+
+          # The reading OUTSIDE the checkout (#843 finding 1), before the comparison
+          # below, because that one exits 0 the moment the tree is clean and a clean
+          # tree is exactly the run in which an escaped write is the whole story.
+          #
+          # No allowlist of interesting directories. The finding's own example is an
+          # `auth.json` an unrelated job left in the runner's home, and nobody
+          # predicts the next filename — a scoped walk would be a detector narrower
+          # than what it detects.
+          #
+          # Two exclusions, both because the directory is already accounted for:
+          # GITHUB_WORKSPACE is what the comparison below reads, and RUNNER_TEMP is
+          # this job's own scratch, holding the payload, this baseline and the
+          # relocated credential. The `:-` defaults are a path that cannot exist, so
+          # an unset variable excludes nothing rather than excluding everything.
+          #
+          # `-maxdepth 4` is a BOUND, not a filter, and it
+          # is here because an unbounded walk is not shippable: measured during
+          # development, the same step over a developer's home directory had not
+          # finished after ten minutes. A self-hosted runner's home can be arbitrarily
+          # large and this step runs on every pull request. What it costs is honest and
+          # stated rather than hidden — a write deeper than
+          # 4 levels under \$HOME is not seen. The
+          # finding's own example, a stray credential left in the runner's home, sits
+          # at depth 1 to 3.
+          if [ -z "${HOME:-}" ] || [ ! -d "${HOME}" ]; then
+            echo "::warning title=AI review UNMEASURED::HOME is unset or is not a directory, so nothing could look for writes the reviewer made OUTSIDE the checkout (#843 finding 1). The tree comparison below is unaffected. This run is UNMEASURED on everything the grant permits outside the working directory, which is not the same as a run in which nothing was written there."
+          else
+            outside=$(find "${HOME}" -xdev -maxdepth 4 -type f \
+              -newer "${AI_REVIEW_TREE_BEFORE}" \
+              -not -path "${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \
+              -not -path "${RUNNER_TEMP:-/nonexistent-temp}/*" \
+              2>/dev/null | head -50 || true)
+            if [ -n "${outside}" ]; then
+              echo "::warning title=AI review wrote outside the checkout::the reviewer wrote OUTSIDE the checkout. The tool grant anchors at the working directory, so these were permitted; on a shared self-hosted runner \$HOME persists between jobs, so a file here reaches another repository's build (#843 finding 1). Reported, not refused: the noise floor of this reading has not been measured yet. Paths: $(escape_annotation "${outside}")"
+            fi
           fi
 
           # The DIFFERENCE, not the total. A line present before the reviewer started is

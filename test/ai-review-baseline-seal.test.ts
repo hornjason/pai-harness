@@ -147,7 +147,12 @@ function scratchDir(prefix: string): string {
 
 const GIT_ENV = (): Record<string, string> => ({
   PATH: process.env.PATH ?? "/usr/bin:/bin",
-  HOME: process.env.HOME ?? "/tmp",
+  // A scratch HOME, not the developer's. #843 finding 1 added a
+  // `find "$HOME"` to the drift step, and a suite pointed at a real home
+  // directory walks it on every case — non-hermetic, and slow in proportion
+  // to something no test controls. `test/ai-review-outside-reading.test.ts`
+  // is where that reading is exercised, against a home it builds itself.
+  HOME: scratchDir("ai-review-seal-home-"),
   GIT_AUTHOR_NAME: "t",
   GIT_AUTHOR_EMAIL: "t@example.com",
   GIT_COMMITTER_NAME: "t",
