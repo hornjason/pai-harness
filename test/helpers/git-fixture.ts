@@ -44,6 +44,21 @@ export function initFixtureRepo(cwd: string, branch = "main"): void {
   // init.defaultBranch, which is how `git worktree add ... main` hit
   // "invalid reference: main" on a runner that defaulted to master.
   git("init", "-b", branch);
+  configureFixtureIdentity(cwd);
+}
+
+/**
+ * Write the fixture identity into a repo that already exists.
+ *
+ * Split out of `initFixtureRepo` for fixtures whose repo arrives by `git clone`
+ * rather than by `git init`. A clone carries no identity of its own, so a commit
+ * made inside one falls back to the host's global config — the same dependency
+ * this module exists to remove, arriving by a door `initFixtureRepo` cannot
+ * cover because the repo is not ours to initialise.
+ */
+export function configureFixtureIdentity(cwd: string): void {
+  const git = (...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe" });
+
   git("config", "user.email", FIXTURE_IDENTITY.email);
   git("config", "user.name", FIXTURE_IDENTITY.name);
   // A developer with commit.gpgsign=true globally cannot sign as a fake identity,

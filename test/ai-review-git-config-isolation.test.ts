@@ -542,9 +542,17 @@ describe("AC-7 (#960): no git invocation in the baseline or drift step runs unis
   });
 
   test("the EMITTED bash of both steps has no bare git in command position", () => {
-    for (const [name, script] of [
-      ["baseline", buildBaselineScript()],
-      ["drift", buildDriftScript()],
+    // Per-script counts. One shared number held while both steps ran the
+    // same two calls — the tree status and the content hash, both inside the
+    // shared reader. #989 gave the DRIFT step three more of its own, to
+    // classify a changed path against the base branch: resolve the base
+    // commit, test whether the base carries the path, and read the path's
+    // blob there. The baseline takes none of them, so a single expected
+    // count can no longer be true of both, and raising it to 5 for the pair
+    // would stop the baseline's own number from being asserted at all.
+    for (const [name, script, isolated] of [
+      ["baseline", buildBaselineScript(), 2],
+      ["drift", buildDriftScript(), 5],
     ] as const) {
       // Remove the prefix, then look for a git that is still being RUN —
       // start of line, after `$(`, or after a shell operator. Prose that
@@ -567,8 +575,10 @@ describe("AC-7 (#960): no git invocation in the baseline or drift step runs unis
       ).toBe(0);
       expect(
         (stripped.match(/<isolated>/g) ?? []).length,
-        `the ${name} step isolates a different number of git calls than expected`,
-      ).toBe(2);
+        `the ${name} step isolates a different number of git calls than expected — ` +
+          `a NEW git call must be isolated and counted here, and a count that ` +
+          `rose without one being added is a call nobody declared`,
+      ).toBe(isolated);
     }
   });
 });

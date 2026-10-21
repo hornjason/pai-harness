@@ -228,9 +228,14 @@ describe("#867 SC-E: the PR-shaped readings resolve on a merge group", () => {
     // unfixed tree. So the fetch has to actually be attempted and succeed.
     const { dir, origin } = gitFixture();
     try {
+      // #989: the step publishes the base ref for the drift step and
+      // refuses without somewhere to publish it.
+      const outFile = join(dir, "github-output");
+      writeFileSync(outFile, "");
       const r = runIn(dir, buildRestoreScript(), {
         [AI_REVIEW_BASE_REF_VAR]: "refs/heads/main",
         GITHUB_TOKEN: "x",
+        GITHUB_OUTPUT: outFile,
       });
       expect(
         r.code,
@@ -248,9 +253,14 @@ describe("#867 SC-E: the PR-shaped readings resolve on a merge group", () => {
     // with a slash in its name, and only this case would see it.
     const { dir } = gitFixture();
     try {
+      // #989: the step publishes the base ref for the drift step and
+      // refuses without somewhere to publish it.
+      const outFile = join(dir, "github-output");
+      writeFileSync(outFile, "");
       const r = runIn(dir, buildRestoreScript(), {
         [AI_REVIEW_BASE_REF_VAR]: "main",
         GITHUB_TOKEN: "x",
+        GITHUB_OUTPUT: outFile,
       });
       expect(r.code, `a bare base ref stopped working: ${r.err}`).toBe(0);
     } finally {
