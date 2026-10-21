@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { extractTestFailureCount } from "../gates/gate-executor";
 import { prevalidateEvidence } from "../lib/evidence-prevalidator";
 import { readSuiteRun, suiteRunVerdict } from "../lib/suite-run-reading";
+import { pathsContaining, untrackedUnder } from "./helpers/planted-artefacts";
 
 /**
  * #224 — the suite result and the ship verdict were not connected.
@@ -38,6 +39,18 @@ import { readSuiteRun, suiteRunVerdict } from "../lib/suite-run-reading";
 const REPO_ROOT = join(import.meta.dir, "..");
 const GATES_DIR = join(REPO_ROOT, "gates");
 const GATE_SUITE = join(GATES_DIR, "workflow.test.ts");
+
+/**
+ * The comment `buildMutantSource` writes into every mutant, and the thing the
+ * leftover sweep below looks for. One constant, so that the sweep searches
+ * for what the builder actually writes rather than for a copy of it that can
+ * drift — and so that a file wanting to TALK about the marker can name this
+ * export instead of spelling the literal, which would make it look planted.
+ */
+export const MUTATION_MARKER = "MUTANT: suite-to-verdict binding removed";
+
+/** The directories a mutant could plausibly be planted in if `MUTANTS` were ever mis-joined. */
+const SWEPT_DIRS = ["gates", "test"];
 
 /**
  * The one line the mutation removes. Declared here rather than regex-built so
@@ -268,7 +281,7 @@ export function buildMutantSource(src: string, signature = BINDING_SIGNATURE): s
   }
   const shortCircuited = src.replace(
     signature,
-    `${signature}\n  return []; // MUTANT: suite-to-verdict binding removed`,
+    `${signature}\n  return []; // ${MUTATION_MARKER}`,
   );
 
   // The mutant runs from a temp directory, so every relative specifier has to
@@ -528,18 +541,42 @@ describe("#224 mutant: removing the binding makes the gate ship the failure", ()
   test("nothing the suite-binding mutation wrote is left anywhere in the tree", () => {
     plantProject({ failing: true });
     plantState({ tests: "FAIL" });
+
+    // #1025: read the untracked set BEFORE the plant. What this case is about
+    // is what writing the mutant ADDED to the repository, and a delta says
+    // that; an absolute reading says "the tree has untracked files in it",
+    // which is true of every working copy and of no defect. Someone else's
+    // scratch appears in both readings and in neither verdict.
+    const before = untrackedUnder(REPO_ROOT, SWEPT_DIRS);
+
     const path = writeMutant();
     expect(existsSync(path)).toBe(true);
     expect(path.startsWith(tmpdir()), `the mutant was written inside the repo: ${path}`).toBe(true);
 
     // And the real source is untouched by having been mutated.
-    expect(readFileSync(GATE_SUITE, "utf-8")).not.toContain("MUTANT: suite-to-verdict binding removed");
-    for (const dir of [GATES_DIR, join(REPO_ROOT, "test")]) {
-      expect(
-        readdirSync(dir).filter(f => /mutant/i.test(f) && f !== "suite-binding-mutation.test.ts"),
-        `a mutant file was left in ${dir}`,
-      ).toEqual([]);
-    }
+    expect(readFileSync(GATE_SUITE, "utf-8")).not.toContain(MUTATION_MARKER);
+
+    // The plant, by the only property that distinguishes it from a harness
+    // somebody committed: it is untracked, and it was not here a moment ago.
+    // This catches it under ANY name — including the names the old filename
+    // filter missed, since `writeMutant` builds its own from a sha1 and one
+    // rename would have walked straight past `/mutant/i`.
+    const after = untrackedUnder(REPO_ROOT, SWEPT_DIRS);
+    expect(
+      after.filter(p => !before.includes(p)),
+      `writing the mutant added untracked file(s) under ${SWEPT_DIRS.join("/, ")}/ — a planted module ` +
+        `left in the repository is collected by the next \`bun test\` as if it were source`,
+    ).toEqual([]);
+
+    // A delta cannot see a plant from a run that died before its cleanup, and
+    // the check it replaces could. So: nothing untracked anywhere under those
+    // directories carries the mutation, whatever it is called. A committed
+    // harness is excluded by being tracked, which is a fact about the file
+    // rather than a line in an exemption list.
+    expect(
+      pathsContaining(REPO_ROOT, after, MUTATION_MARKER),
+      "a mutated copy of the gate suite is sitting untracked in the tree, left by an earlier run",
+    ).toEqual([]);
   });
 });
 
@@ -911,7 +948,7 @@ describe("#235 mutant: removing the binding makes the gate ship the broken comma
     const path = writeMutant(PREVALIDATION_SIGNATURE);
     expect(existsSync(path)).toBe(true);
     expect(path.startsWith(tmpdir()), `the mutant was written inside the repo: ${path}`).toBe(true);
-    expect(readFileSync(GATE_SUITE, "utf-8")).not.toContain("MUTANT: suite-to-verdict binding removed");
+    expect(readFileSync(GATE_SUITE, "utf-8")).not.toContain(MUTATION_MARKER);
   });
 });
 
