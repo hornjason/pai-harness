@@ -1,0 +1,9 @@
+{
+  "agents": {
+    "marcus": { "match": ["marcus", "engineer", "marcus webb"], "exclude": ["council"] },
+    "quinn": { "match": ["quinn", "qatester", "quinn torres"], "exclude": [] },
+    "rook": { "match": ["rook", "pentester", "rook blackburn"], "exclude": [] },
+    "serena": { "match": ["serena", "architect", "serena blackwood"], "exclude": [] },
+    "aditi": { "match": ["aditi", "designer", "aditi sharma"], "exclude": [] }
+  }
+}

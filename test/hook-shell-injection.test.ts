@@ -162,17 +162,33 @@ function stageHook(
     out = out.replace(from, to);
   }
 
-  // `hooks/lib/agent-config.json` has never existed in this repository, so
-  // `detectAgent` returns null for every input and `CommitEnforcement` exits
-  // before reaching either exec call. That is its own defect and is filed
-  // separately; here it would mean the arm could not reach the subject at
-  // all, so the detection module is staged LOCALLY with a config beside it.
-  // Nothing about the hook under test is substituted — only the data a module
-  // it imports could not find.
+  // When this was written `hooks/lib/agent-config.json` was in no commit, so
+  // `detectAgent` returned null for every input and `CommitEnforcement`
+  // exited before reaching either exec call — the staging existed because
+  // otherwise these arms could not reach their subject. **#1000 shipped the
+  // config**, so that is no longer why.
+  //
+  // The staging stays, and the reason is now the stronger one: a shipped
+  // config is a file a later change can edit. Pinning a one-agent config
+  // here keeps these arms about SHELL INJECTION and not about whichever
+  // agents `agent-config.json` happens to declare — otherwise dropping
+  // `marcus` from it would silently retire two injection cases. `AC-4a`
+  // below is what stops the staging becoming a second version of the hook.
   const local = new Set<string>();
   if (opts.agentConfig) {
     mkdirSync(join(dir, "lib"), { recursive: true });
-    copyFileSync(join(HOOKS, "lib", "agentDetection.ts"), join(dir, "lib", "agentDetection.ts"));
+    // Copied with its own relative imports absolutised, for the same reason
+    // the hook's are below: since #1000 the module imports
+    // `../../lib/hook-evidence`, which resolves to nothing from a tmpdir. A
+    // plain `copyFileSync` produced a module that could not load, and every
+    // arm using it failed on the import rather than on its subject.
+    writeFileSync(
+      join(dir, "lib", "agentDetection.ts"),
+      readFileSync(join(HOOKS, "lib", "agentDetection.ts"), "utf-8").replace(
+        /from (['"])(\.[^'"]*)\1/g,
+        (_m, q: string, rel: string) => `from ${q}${resolve(join(HOOKS, "lib"), rel)}${q}`,
+      ),
+    );
     writeFileSync(
       join(dir, "lib", "agent-config.json"),
       JSON.stringify({ agents: { marcus: { match: ["marcus"] } } }),
