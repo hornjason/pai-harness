@@ -33,6 +33,13 @@ import {
   readCache,
 } from "./behavioral-cache";
 import { tryLoadRungateConfig } from "./config-loader";
+import {
+  type ProtectionProbe,
+  githubProtectionProbe,
+  protectionSubject,
+  readMergeSerialisation,
+  readPushCi,
+} from "./branch-protection";
 import { stripJsComments } from "./strip-js-comments";
 import { remedyMessage } from "./check-remedy";
 import { parseScDeclarations } from "./sc-ids";
@@ -4664,6 +4671,88 @@ export function runAiReviewValidation(root: string) {
         });
       }
       expect(violations, violations.join("\n")).toEqual([]);
+    });
+  });
+}
+
+/**
+ * PROTECT-1 (#909) — the repo's protection does not serialise every PR.
+ *
+ * `required_status_checks.strict = true` makes merging one PR invalidate all
+ * the others. On a swarm that is the whole throughput limit, and it is
+ * invisible: every PR is individually green and `BEHIND`. See
+ * `lib/branch-protection.ts` for the measurement and for why the remedy
+ * differs by `owner.type`.
+ *
+ * FAILS; does not warn, when the serialisation is established — the reason
+ * this is in RunGate rather than a doc is that three consumers hit it
+ * independently and nobody wrote it down, and a rule that is documented but
+ * not enforced is the failure mode
+ * `.claude/rules/checks-must-be-able-to-fail.md` is about.
+ *
+ * WARNS, and says UNMEASURED out loud, for everything it could not read. The
+ * protection endpoint needs admin and the default Actions token has none, so
+ * UNMEASURED is the ordinary outcome in a consumer's CI; it must still never
+ * be mistaken for clean.
+ *
+ * `probe` and `subject` are seams and not conveniences. The probe is the same
+ * binding production calls through, so a test replacing it exercises this
+ * function rather than a parallel path, and nothing here reaches the network
+ * when it is replaced.
+ */
+export function runBranchProtectionValidation(
+  root: string,
+  opts: { probe?: ProtectionProbe; subject?: (root: string) => string | null } = {},
+) {
+  const probe = opts.probe ?? githubProtectionProbe;
+  const subject = opts.subject ?? protectionSubject;
+
+  describe("Branch protection (#909)", () => {
+    test("PROTECT-1: merging one PR does not invalidate every other open PR", async () => {
+      const slug = subject(root);
+      if (!slug) {
+        addFinding({
+          ruleId: "PROTECT-1",
+          severity: "WARN",
+          file: "",
+          message:
+            "UNMEASURED: this tree's origin remote names no owner/name, so there is no repo to " +
+            "read protection for. Nothing was checked, which is not the same as nothing being wrong.",
+        });
+        return;
+      }
+
+      const facts = await probe(slug);
+      // Read against the branch the FACTS are about. Defaulting to "main"
+      // here would answer a question about a branch the repo may not protect.
+      const pushCi = facts.branch
+        ? readPushCi(root, facts.contexts, facts.branch)
+        : { onPush: [], missing: [], unmeasured: "UNMEASURED push-CI: the default branch is unknown, so no trigger could be matched against it." };
+      const reading = readMergeSerialisation(facts, pushCi);
+
+      if (reading.verdict === "UNMEASURED") {
+        addFinding({ ruleId: "PROTECT-1", severity: "WARN", file: "", message: reading.reason });
+        return;
+      }
+      if (reading.verdict === "PASS") return;
+
+      const message = `${reading.reason}\n\nREMEDY: ${reading.remedy}`;
+      addFinding({
+        ruleId: "PROTECT-1",
+        severity: "FAIL",
+        file: "",
+        message,
+        // Not a command that fixes it. This check reads and refuses; a
+        // fixCommand that mutated protection would be the scaffold silently
+        // rewriting a repo's security settings, which #909 puts out of scope.
+        fixCommand: `gh api repos/${facts.slug}/branches/${facts.branch ?? "main"}/protection -q .required_status_checks`,
+      });
+      // Widened deliberately: control flow has already narrowed `verdict` to
+      // "FAIL" here, so the comparison typechecks as a contradiction and the
+      // assertion reads as dead. It is not dead — it is what turns the
+      // recorded finding into a red suite — and the cast keeps the assertion
+      // written against the value rather than against the narrowing.
+      expect(reading.verdict as string, message).toBe("PASS");
     });
   });
 }
