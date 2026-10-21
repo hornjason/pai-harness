@@ -26,6 +26,12 @@
       "from": 2420,
       "to": 2439,
       "note": "#541, PR #730. Already holds 2230-2246 on its branch. Headroom only."
+    },
+    {
+      "owner": "#892",
+      "from": 2440,
+      "to": 2479,
+      "note": "#892 Phase 1 — the claim-content reading. Declared before any id in this work is consumed, and sized for all three sub-issues: the reading itself (lib/claim-content.ts), the single-claimant arm that consumes it, and the spec section carrying AC-1..AC-5 and #906's battery record. Forty ids, because the spec section is the only one of the three that allocates and it does so for all of them."
     }
   ]
 }
