@@ -243,6 +243,37 @@ describe("#690 AC-4: the report says what it killed and why, by pid and age", ()
     expect(report.examined).toBe(4);
   });
 
+  test("the flag and the reason are one answer, not two that can disagree", () => {
+    // Found by the battery: short-circuiting the final `reap` to `false`
+    // leaves every report still saying ORPHANED while signalling nothing, and
+    // the two AC-4 cases above are green over it because they read the
+    // reason. Two fields answering one question is the fourth shape; this is
+    // the input that can tell them apart.
+    const shapes = [
+      // The ORPHANED row is FIRST and is deliberately not protected. Its
+      // absence is how the first draft of this case went green under the
+      // mutation it was written for: every other shape returns before the
+      // reap, so a fixture without this row never reaches the branch whose
+      // two fields it is comparing.
+      row({ pid: 6, ppid: 1, elapsedSeconds: 99_999 }),
+      row({ pid: 1, ppid: 1, elapsedSeconds: 99_999 }),
+      row({ pid: 2, ppid: 77, elapsedSeconds: 99_999 }),
+      row({ pid: 3, ppid: 1, elapsedSeconds: 1 }),
+      row({ pid: 4, ppid: 1, command: "/usr/bin/vim notes.md" }),
+      row({ pid: 5, ppid: 1, command: "/opt/mystery/runner test" }),
+    ];
+    const decisions = shapes.map((r) =>
+      orphanDecision(r, { protectedPids: new Set([1]), resolveExecutable: (p) => p }),
+    );
+    expect(decisions[0].reason).toBe("ORPHANED");
+    expect(new Set(decisions.map((d) => d.reason)).size).toBe(6);
+    for (const d of decisions) {
+      expect(d.reap, `pid ${d.pid} reported ${d.reason} with reap=${d.reap}`).toBe(
+        d.reason === "ORPHANED",
+      );
+    }
+  });
+
   test('"Cleaned up N" and "No orphaned processes found" are no longer the whole vocabulary', () => {
     // The old hook had two sentences and neither distinguished a real orphan
     // from a live run. Two reports that the old banner would have rendered

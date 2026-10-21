@@ -14,9 +14,9 @@
  * No parent check, no age check, no session check, and it was registered on
  * `SessionStart` **and** `SessionEnd`, so every session start — including a
  * compaction resume — killed every suite on the machine. Measured on
- * 2026-10-19: a DailyBriefDashboard baseline and a peer session's rungate
- * suite died at the same instant, both mid-run, both with no summary line and
- * no failure count, which is why it was diagnosed as a hang first. Its banner
+ * 2026-10-19: a consumer project's suite baseline and a peer session's suite
+ * died at the same instant, both mid-run, both with no summary line and no
+ * failure count, which is why it was diagnosed as a hang first. Its banner
  * said `Cleaned up 4 orphaned bun test processes` while reaping four
  * processes that all had live parents.
  *
