@@ -6,7 +6,6 @@
 import { test, expect, describe } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { execSync } from "child_process";
 
 import { remedyMessage } from "../lib/check-remedy";
 

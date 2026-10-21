@@ -2331,17 +2331,25 @@ export function resolveManagedWrite(existing: string | null, generated: string, 
   // reads the boundary from `managedPreamble` rather than restating it —
   // the two disagreeing is what made the refusal possible.
   //
-  // This SUBSUMES the banner entry in `HARNESS_BOOKKEEPING_PREFIXES` for
-  // every file that reaches here, and saying so is cheaper than implying a
-  // guard that is not there (`.claude/rules/checks-must-be-able-to-fail.md`,
-  // fourth shape): giving that constant a second spelling in this module
-  // turns 0 of 107 red, because the banner always sits in the preamble of a
-  // generated workflow and `resolveManagedWrite` refuses anything that does
-  // not parse as one. It is left in place rather than deleted — it is #839's
-  // line, the override notice beside it is NOT in the preamble and is still
-  // load-bearing, and a consumer who moved the banner below a top-level key
-  // is an edge this change should not quietly start refusing. What it is not
-  // any more is the thing keeping the header out of the loss set.
+  // This SUBSUMES the banner entry in `HARNESS_BOOKKEEPING_PREFIXES` for the
+  // LEADING PREAMBLE, and only there. The banner of a generated workflow is
+  // always in that preamble, so for the file the generator wrote the two
+  // deciders cannot disagree — which is why giving the constant a second
+  // spelling in this module turned 0 of 107 red when #916 landed, and why
+  // saying so was cheaper than implying a guard that is not there
+  // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+  //
+  // "Only there" is the part that was missing, and #926 is where it was
+  // measured. `managedPreamble` reads the HEAD section and returns `[]` when
+  // the banner is not in it, so a bookkeeping line anywhere else in the file
+  // — beside the job key it introduces, which is exactly where the override
+  // notice sits — reaches this loss set with nothing above covering it. The
+  // entry is what keeps it out, and the write refuses without it. Both
+  // entries now carry that witness in
+  // `test/scaffold-permissions-merge.test.ts`, generated from the array.
+  //
+  // What the entry is not any more is the thing keeping the HEADER out of the
+  // loss set. That job is `harnessPreamble`'s.
   const harnessPreamble = new Set(nonBlankLines(managedPreamble(existing).join("\n")));
 
   const kept = new Set(nonBlankLines(content));
@@ -2385,8 +2393,20 @@ function nonBlankLines(text: string): string[] {
  *
  * Both are prefixes rather than whole sentences: the rest of each names a
  * config path, and that tail is exactly the part that changes.
+ *
+ * EXPORTED so the list itself can be tested rather than its members (#926).
+ * `test/scaffold-permissions-merge.test.ts` demands a WITNESS for every entry
+ * — an input where matching the prefix is what decides the outcome — and
+ * ratchets this array against the witnessed population, so an entry added
+ * here with no case there is red. An entry nothing asserts reads as covered,
+ * and adding the next one is how a dead decider gets in; this is what stops
+ * the next one arriving dead the way the banner entry did.
+ *
+ * The witnesses plant lines built from the constants in `managed-workflow.ts`
+ * rather than from this array, deliberately. A fixture read out of the list
+ * under test matches whatever the list says and cannot see it drift.
  */
-const HARNESS_BOOKKEEPING_PREFIXES = [MANAGED_BANNER_PREFIX, WORKFLOW_OVERRIDE_COMMENT];
+export const HARNESS_BOOKKEEPING_PREFIXES = [MANAGED_BANNER_PREFIX, WORKFLOW_OVERRIDE_COMMENT];
 
 /**
  * Write a harness-managed file, preserving whatever the harness did not author.
