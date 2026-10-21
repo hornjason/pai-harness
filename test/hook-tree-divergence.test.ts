@@ -143,6 +143,7 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
+import { settingsScopePaths } from "../lib/hook-scopes";
 import {
   hookTreeCensus,
   registrationTree,
@@ -196,20 +197,24 @@ function ownedHooks(): string[] {
     .map(n => n.replace(/\.hook\.ts$/, ""));
 }
 
-/** Every settings document this run can read, with the scopes it could not named. */
+/**
+ * Every settings document this run can read, with the scopes it could not
+ * named.
+ *
+ * The scope list is `settingsScopePaths`', not this file's. It used to be a
+ * three-entry literal here, and #910 is what a second opinion about which
+ * scopes exist costs: a census read a different, narrower set and reported
+ * confident absence. `~/.claude/settings.local.json` was missing from this
+ * list and is on the author's machine.
+ */
 function readableScopes(): { docs: string[]; names: string[]; missing: string[] } {
-  const candidates = [
-    ["project", join(ROOT, ".claude", "settings.json")],
-    ["project-local", join(ROOT, ".claude", "settings.local.json")],
-    ["user", join(homedir(), ".claude", "settings.json")],
-  ] as const;
   const docs: string[] = [];
   const names: string[] = [];
   const missing: string[] = [];
-  for (const [label, path] of candidates) {
-    if (!existsSync(path)) { missing.push(label); continue; }
+  for (const { scope, path } of settingsScopePaths(ROOT, homedir())) {
+    if (!existsSync(path)) { missing.push(scope); continue; }
     docs.push(readFileSync(path, "utf-8"));
-    names.push(label);
+    names.push(scope);
   }
   return { docs, names, missing };
 }
@@ -416,7 +421,7 @@ describe("#713 SC-2: which TREE a registration names, which nothing else asks", 
     expect(
       names,
       `no settings scope was readable (missing: ${missing.join(", ")}), so this read nothing`,
-    ).toContain("project");
+    ).toContain("project-settings");
 
     const commands = settingsCommands(docs);
     expect(

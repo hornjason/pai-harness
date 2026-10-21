@@ -1,7 +1,15 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync, readdirSync, existsSync } from "fs";
+import { homedir } from "os";
 import { join, resolve } from "path";
 import { loadRungateConfig } from "../lib/config-loader";
+import {
+  hookRegistration,
+  readRegistrationScopes,
+  registrationCensus,
+  type HookRegistration,
+  type ScopeReading,
+} from "../lib/hook-scopes";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
 
@@ -29,6 +37,31 @@ const HARNESS_ROOT = resolve(import.meta.dir, "..");
  * only `.claude/rungate.json`). This file hardcoded the monolith, so #879's
  * hook was invisible to it — the floor was green over a population that did
  * not contain the thing most recently added to the repo.
+ *
+ * ## The census's own blind spot, found by #910 and fixed here
+ *
+ * The line above — *"ProjectStateSync and TestSuiteRelease are in NO
+ * registry"* — is correct about this repository and was read as a claim about
+ * every scope. Both are registered in `~/.claude/settings.json`, and have
+ * been throughout; measured 2026-10-21 by parsing it rather than grepping.
+ * The repo's own `test/test-suite-guard-registration.test.ts` has asserted
+ * that about `TestSuiteRelease` since #67-A and was green the whole time.
+ *
+ * Two hook files were given unregistered declarations on the strength of that
+ * reading, and **AC-5 could not catch them, because it read the same single
+ * scope that produced the error.** A guard whose blind spot is identical to
+ * the blind spot of the thing it guards is
+ * `.claude/rules/checks-must-be-able-to-fail.md`'s fourth shape with the
+ * second decider removed — both agree, and neither can be wrong in a way the
+ * other notices.
+ *
+ * So AC-4 and AC-5 now go through `lib/hook-scopes.ts`, which REFUSES to
+ * return a verdict from a reading short of every scope. The consequence that
+ * matters: **no reading this file can take produces `unregistered` unless
+ * every scope was read**, so the conclusion #898 drew is not available to it
+ * any more. A scope that cannot be read — `~/.claude/settings.json` on a
+ * runner — makes the verdict `unmeasured`, which AC-7 reports and which is
+ * never clean.
  */
 
 /** The declaration. Everything else is a position that must agree with it. */
@@ -56,11 +89,49 @@ function namedHookFile(text: unknown): string | null {
  */
 const UNREGISTERED_MARKER = "NOT REGISTERED";
 
-const unregisteredDeclaration = (file: string): string | null => {
-  const content = readFileSync(join(HARNESS_ROOT, "hooks", file), "utf-8");
+/**
+ * The declaration line in a hook's SOURCE. Pure, so AC-6's predicate stays
+ * provable when the tree carries no declaration at all — which is the state
+ * #910 left it in, and a `continue` over an empty population is an assertion
+ * that holds vacuously.
+ */
+export function unregisteredDeclarationIn(content: string): string | null {
   const line = content.split("\n").find(l => l.includes(UNREGISTERED_MARKER));
   return line ? line.trim() : null;
-};
+}
+
+/** A declaration with fewer than 20 letters of reason beside the marker. */
+export function declarationLacksReason(line: string): boolean {
+  return line.replace(UNREGISTERED_MARKER, "").replace(/[^A-Za-z]/g, "").length <= 20;
+}
+
+const unregisteredDeclaration = (file: string): string | null =>
+  unregisteredDeclarationIn(readFileSync(join(HARNESS_ROOT, "hooks", file), "utf-8"));
+
+/**
+ * Every scope that can register a hook, read for real, with the ones that are
+ * not on this machine NAMED rather than dropped.
+ *
+ * The scope list and the assembly are `lib/hook-scopes.ts`'s, not this
+ * file's: a census with its own idea of which scopes exist is how #898 came
+ * to read one.
+ */
+function liveScopeReadings(): ScopeReading[] {
+  return readRegistrationScopes(HARNESS_ROOT, homedir(), readIfPresent, registryCommands());
+}
+
+/** `readFileSync`, with an absent file reported as `null` rather than `""`. */
+function readIfPresent(path: string): string | null {
+  return existsSync(path) ? readFileSync(path, "utf-8") : null;
+}
+
+/** The census over every hook file on disk. */
+function liveCensus(): HookRegistration[] {
+  return registrationCensus(
+    HOOK_FILES.map(f => f.replace(/\.hook\.ts$/, "")),
+    liveScopeReadings(),
+  );
+}
 
 describe("#898: the four hook positions agree, named rather than counted", () => {
   test("AC-1: the declaration is non-empty", () => {
@@ -88,13 +159,19 @@ describe("#898: the four hook positions agree, named rather than counted", () =>
     // which hooks should be registered is a behavioural decision this census
     // does not get to make — what it can refuse is a hook being absent from
     // every registry with nobody having said so.
-    const registered = registryHooks();
-    const silent = HOOK_FILES.filter(
-      f => !registered.includes(f) && !unregisteredDeclaration(f),
-    );
+    //
+    // Over EVERY scope since #910. The repo-registry-only version of this
+    // reported two hooks unregistered that were registered in user settings,
+    // and the verdict `unregistered` is now unavailable unless every scope
+    // was in fact read.
+    const silent = liveCensus()
+      .filter(c => c.verdict === "unregistered")
+      .map(c => `${c.hook}.hook.ts`)
+      .filter(f => !unregisteredDeclaration(f));
     expect(
       silent,
-      `unregistered and undeclared — register it, or write a "${UNREGISTERED_MARKER}" line in its header saying why not`,
+      `unregistered in EVERY settings scope and undeclared — register it, or write a ` +
+        `"${UNREGISTERED_MARKER}" line in its header saying why not`,
     ).toEqual([]);
   });
 
@@ -103,11 +180,20 @@ describe("#898: the four hook positions agree, named rather than counted", () =>
     // permanent waiver: once a hook IS registered its declaration is stale,
     // and a stale declaration would keep satisfying AC-4 if it were ever
     // deregistered again, which is the state AC-4 exists to catch.
-    const registered = registryHooks();
-    const contradictory = HOOK_FILES.filter(
-      f => registered.includes(f) && unregisteredDeclaration(f),
-    );
-    expect(contradictory, "a registered hook still carries its unregistered declaration").toEqual([]);
+    //
+    // This is the case #910 proved could not fire. It read the repo registry
+    // alone, so a hook registered in user settings looked unregistered to it
+    // and its declaration looked current. Over the complete reading, the two
+    // declarations #898 wrote are contradictions and this goes red.
+    const contradictory = liveCensus()
+      .filter(c => c.verdict === "registered")
+      .map(c => ({ file: `${c.hook}.hook.ts`, where: c.registeredIn.join(", ") }))
+      .filter(({ file }) => unregisteredDeclaration(file))
+      .map(({ file, where }) => `${file} (registered in ${where})`);
+    expect(
+      contradictory,
+      "a registered hook still carries its unregistered declaration",
+    ).toEqual([]);
   });
 
   test("AC-6: each declaration gives a reason, not just the marker", () => {
@@ -116,11 +202,71 @@ describe("#898: the four hook positions agree, named rather than counted", () =>
     for (const file of HOOK_FILES) {
       const line = unregisteredDeclaration(file);
       if (!line) continue;
-      expect(
-        line.replace(UNREGISTERED_MARKER, "").replace(/[^A-Za-z]/g, "").length,
-        `${file} declares itself unregistered with no reason`,
-      ).toBeGreaterThan(20);
+      expect(declarationLacksReason(line), `${file} declares itself unregistered with no reason`).toBe(
+        false,
+      );
     }
+
+    // The tree carries no declaration today, so the loop above runs zero
+    // times and asserts nothing. A predicate proved only by a population that
+    // may be empty is `.claude/rules/checks-must-be-able-to-fail.md`'s third
+    // shape, so the predicate is driven over both answers directly.
+    expect(declarationLacksReason(` * ${UNREGISTERED_MARKER}`)).toBe(true);
+    expect(
+      declarationLacksReason(
+        ` * ${UNREGISTERED_MARKER} — see #910, pending a decision about the blast radius`,
+      ),
+    ).toBe(false);
+    expect(unregisteredDeclarationIn("a\n * x NOT REGISTERED y\nb")).toBe("* x NOT REGISTERED y");
+    expect(unregisteredDeclarationIn("nothing to see here")).toBeNull();
+  });
+
+  test("AC-7: a hook the repo cannot place is UNMEASURED and named, never clean", () => {
+    // `0`, `{}`, `null`, `SKIP` and a skipped test are indistinguishable from
+    // success; a reading is not (`.claude/rules/config-access.md`). On a
+    // runner `~/.claude/settings.json` does not exist, so every hook
+    // registered only there lands here — and this case asserts the refusal
+    // fired rather than letting CI pass over the subject.
+    const readings = liveScopeReadings();
+    const census = liveCensus();
+
+    expect(
+      census.map(c => c.hook).sort(),
+      "the census did not answer for every hook file on disk",
+    ).toEqual(HOOK_FILES.map(f => f.replace(/\.hook\.ts$/, "")).sort());
+    expect(
+      readings.filter(r => r.commands !== null).length,
+      "no scope was readable at all, so this census compared nothing",
+    ).toBeGreaterThan(0);
+
+    const unreadable = readings.filter(r => r.commands === null).map(r => r.scope);
+    const unmeasured = census.filter(c => c.verdict === "unmeasured");
+
+    if (unreadable.length === 0) {
+      expect(
+        unmeasured,
+        "every scope was readable, so nothing can be UNMEASURED",
+      ).toEqual([]);
+      return;
+    }
+    for (const c of unmeasured) {
+      expect(
+        c.detail,
+        `${c.hook} is UNMEASURED and the reading does not say an absence here is not an absence`,
+      ).toContain('not "not registered"');
+      expect(c.unreadable).toEqual(unreadable);
+    }
+  });
+
+  test("AC-8: this census cannot conclude from one scope", () => {
+    // The property, asserted rather than left to the module. A caller that
+    // opened one file gets a refusal — which is what #898 and #713 both
+    // needed and neither had.
+    expect(() =>
+      hookRegistration("TestSuiteRelease", [
+        { scope: "repo-registry", commands: registryCommands() },
+      ]),
+    ).toThrow(/every scope/);
   });
 });
 
@@ -141,10 +287,17 @@ function specTableHooks(): string[] {
  * repo is on the directory layout, and the hardcoded read is what made #879's
  * hook invisible here (`.claude/rules/config-access.md`).
  */
-function registryHooks(): string[] {
+function registryCommands(): string[] {
   const hooks = (loadRungateConfig(HARNESS_ROOT) as { hooks: unknown[] }).hooks;
   expect(hooks.length, "the loader resolved no hook entries at all").toBeGreaterThan(0);
-  return hooks.map(h => namedHookFile((h as any)?.command ?? h)).filter((h): h is string => h !== null);
+  return hooks.map(h => String((h as any)?.command ?? h));
+}
+
+function registryHooks(): string[] {
+  // Derived from `registryCommands`, not read a second time: the registry is
+  // one of five scopes now, and two readers of it would disagree the first
+  // time either changed.
+  return registryCommands().map(namedHookFile).filter((h): h is string => h !== null);
 }
 
 describe("Hook SC Traceability (SC-370)", () => {
