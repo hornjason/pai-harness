@@ -283,6 +283,23 @@ async function runBlock(code, extra) {
       testCommand: "bun test",
       testTimeout: 1000,
       containerConfig: null,
+      // #312's probe target and the pattern it refuses with. Stubbed rather
+      // than sliced out of SRC, for the same reason as the three helpers
+      // above: SRC here is a MUTANT, the mutants this file spawns include a
+      // source predating the block entirely, and a helper lifted from a
+      // source that may not carry it would turn "the tier sites are gone"
+      // into "the harness could not build" — a different outcome from the
+      // one every observation measures. The default is the reachable kind,
+      // matching the fixture CONTAINER below; the declined arm overrides it.
+      CONTAINER_HOST: /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/,
+      containerProbe: {
+        kind: "probe",
+        host: "localhost",
+        port: 7777,
+        healthPath: "/api/health",
+        url: "http://localhost:7777/api/health",
+        safeUrl: "http://localhost:7777/api/health",
+      },
       parsedArgs: {},
       discovery: {
         ceremonyTier: RESOLVED,

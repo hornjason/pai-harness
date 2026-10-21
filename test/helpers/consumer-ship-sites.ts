@@ -154,12 +154,21 @@ const QUINN_CONTAINER_DECLS = region(
   "the container Quinn declarations",
 );
 
-/** The container config read. */
-const CONTAINER_CONFIG_DECL = one(
-  shipSource,
+/**
+ * The container config read, and the probe target resolved from it.
+ *
+ * Two statements since #312, not one: the Verify fan-out and the Ship phase's
+ * record-env step both branch on `containerProbe.kind`, and they used to work
+ * the config out separately with different defaults. Taken as a region so the
+ * second cannot be left behind here — it was, and the block threw on an
+ * undefined name before doing anything, which is what this file exists to
+ * catch for ship.js and had no equivalent for itself.
+ */
+const CONTAINER_CONFIG_DECL = region(
   /^const containerConfig = projectConfig\.container \|\| null$/m,
-  "the container config declaration",
-).text;
+  /^const containerProbe = containerProbeTarget\(containerConfig\)$/m,
+  "the container config and probe declarations",
+);
 
 /** Both arms of the container-verify statement, function wrapper included. */
 const CONTAINER_BLOCK = region(
@@ -216,6 +225,18 @@ const SECURITY_HELPERS = region(
  * a fourth helper added inside it arrives here without an edit.
  */
 const RECORDER_COMMANDS = markerRegion(shipSource, "RECORDER-COMMAND");
+
+/**
+ * `containerProbeTarget` and the hostname pattern it refuses with (#312).
+ *
+ * The Verify fan-out opens by resolving the probe target, and the Ship phase
+ * branches on its kind, so a run with these names absent throws before the
+ * block has done anything. Extracted from ITS own marker rather than stubbed:
+ * a stub deciding differently where to probe would let this harness agree
+ * with something that does not run, which is the reason the two regions above
+ * are extracted too.
+ */
+const CONTAINER_PROBE = markerRegion(shipSource, "CONTAINER-PROBE");
 
 // ── the consumer fixture, read from disk ─────────────────────
 
@@ -379,6 +400,7 @@ async function runBlock(block: string, opts: RunOpts): Promise<Recorded> {
     "const projectConfig = JSON.parse(JSON.stringify(config))",
     "const parsedArgs = { remoteHosts: config.remoteHosts || {}, preflightResults: null }",
     RECORDER_COMMANDS,
+    CONTAINER_PROBE,
     TIER_CHAIN,
     "tierBox.tier = discovery.ceremonyTier",
     block,
