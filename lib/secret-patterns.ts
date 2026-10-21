@@ -37,6 +37,30 @@ export interface SecretPattern {
   description: string;
 }
 
+/*
+ * There was a `hookProbe?: string` here for one commit, and the second
+ * security review of #868 was right that it should not exist.
+ *
+ * The parity guard used to grep the hook for a PREFIX of each ERE, derived by
+ * cutting at the first metacharacter. That derivation yields `eyJ` for `jwt`
+ * and `sk-` for `openai` — three characters each — and the guard skipped
+ * anything under four, which is how the hook went its whole life missing
+ * `jwt` entirely and carrying `{48}` where this registry says `{20,}`. The
+ * first repair made a short derivation demand an explicit probe rather than
+ * waive the check.
+ *
+ * That was still the weaker design, for a reason the review named: a probe is
+ * a DECLARATION, and nothing checked it was even a substring of its own ERE.
+ * A prefix also cannot see a hook that carries the right prefix and the wrong
+ * quantifier, which is precisely the `{48}` defect.
+ *
+ * The guard now greps the hook for each pattern's ENTIRE ere. Measured: all
+ * nine are already present verbatim in `scripts/git-hooks/pre-commit`, modulo
+ * `\-` for `-` inside a bracket expression, so the stronger check needed no
+ * per-pattern metadata at all. It catches both halves of the historical gap —
+ * a missing pattern and a narrowed one — with one assertion and no field.
+ */
+
 /**
  * Tier 1 — anchored key formats.
  *
@@ -54,12 +78,55 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
   // shorter than 48 chars — a coverage regression smuggled in by a
   // deduplication. When registries disagree, the union is the safe merge, not
   // whichever copy you happened to start from.
+  // The hook carried `{48}` against this `{20,}` until #868, and the parity
+  // guard could not say so: `sk-` is the derived prefix and three characters
+  // long, so the guard skipped this entry for its whole life. A 30-character
+  // key committed cleanly and was caught in CI, which is the gap the skip was
+  // hiding in the OTHER direction from `jwt` — not a missing pattern, a
+  // narrowed one. A prefix probe could not have caught it either: `sk-` is in
+  // the hook under both quantifiers. Comparing the whole ERE can.
   { id: "openai", ere: "sk-[A-Za-z0-9]{20,}", description: "OpenAI-style API key" },
   { id: "anthropic", ere: "sk-ant-[A-Za-z0-9-]{90,}", description: "Anthropic API key" },
   {
     id: "private-key",
     ere: "-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
     description: "PEM private key block",
+  },
+  // #863. The one unquoted credential form that LOOKS like a dotted
+  // identifier path, which is the population `TIER2_DOTTED_PATH_ERE` below
+  // removes from tier 2. Tier 2 cannot tell the two apart — the shape IS the
+  // same — so the exclusion would launder a bearer token out of a `.env`.
+  //
+  // It belongs here and not there because a JWT is a FORMAT, not a shape:
+  // both the header and the payload are base64url of a JSON object, so both
+  // begin `eyJ`, and two anchored prefixes separated by a dot is not
+  // something ordinary source produces. That is what makes it safe in the
+  // tier with no allowlist.
+  //
+  // The signature segment is required. A two-segment `alg: none` token is
+  // not a credential, and matching two segments alone would catch
+  // `a.b`-shaped prose beginning with those three letters.
+  //
+  // THE SIGNATURE FLOOR IS 43 AND IT IS A FORMAT FACT, NOT A TUNING (#863)
+  //
+  // A JWS signature is a fixed-width base64url encoding of a fixed-width
+  // MAC or signature, so the shortest one any standard algorithm produces is
+  // HS256's 32 bytes — 43 base64url characters. ES256 is 86, RS256 342.
+  // There is no signed JWT below the floor, so nothing is given up by it.
+  //
+  // What it buys is the false-positive side, which tier 1 cannot absorb.
+  // Measured 2026-10-21 on one consumer tree: a `{10,}` signature reports
+  // two quoted browser-test fixtures whose third segment is an English
+  // phrase of 21 and 26 characters. Both are JWT-shaped and neither is a
+  // token, and tier 1 has no allowlist to excuse them — so that consumer's
+  // Gates job would have gone from red on two property references to red on
+  // two test fixtures, which is #863 reintroduced by its own fix. The tree
+  // and the lines are named in `test/unit/gates-tier1-jwt.test.ts`; a module
+  // under `lib/` may carry no consumer-specific value (SC-A1).
+  {
+    id: "jwt",
+    ere: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{43,}",
+    description: "JSON Web Token (signed, three segments)",
   },
 ];
 
@@ -105,8 +172,10 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
  * that is read in a generated workflow by whoever is debugging a blocked
  * commit, for no behaviour a flag does not already buy.
  */
+export const TIER2_KEY_ERE = "(password|passwd|api[_-]?key|secret)";
+
 export const TIER2_ASSIGNMENT_ERE =
-  "(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}";
+  `${TIER2_KEY_ERE}[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+_.-][A-Za-z0-9/+=_.-]{11,}`;
 
 /**
  * The flag every tier-2 grep carries, and tier 1 carries nowhere (#844).
@@ -163,8 +232,217 @@ export const TIER2_GREP_CASE_FLAG = "-i";
  * with the letters of `getenv` or `placeholder` is the laundering this
  * widens, and no form of it was detectable before either.
  */
+/**
+ * An unquoted value that is a DOTTED IDENTIFIER PATH, not a literal (#863).
+ *
+ * `-i` (above) made `api[_-]?key` match `apiKey`, which it could not before.
+ * `apiKey` is the conventional TypeScript spelling, so every consumer that
+ * passes a key through an object property started hard-failing the gate on
+ * lines like `apiKey:` config.judge.apiKey — a property REFERENCE, excused by
+ * nothing in the list above, and the generated job's branch is `exit 1`, not
+ * a warning. A secret gate that hard-fails CI on a property reference is a
+ * gate a consumer deletes, and deleting it costs the #844 fix too.
+ *
+ * WHY THIS CANNOT HIDE A CREDENTIAL THE CAPTURE CAN SEE
+ *
+ * The value charset excludes `"` and `'`, so in a source file tier 2 can only
+ * ever see an UNQUOTED value — and an unquoted value in source is an
+ * expression. The false-positive class is precisely dotted identifier paths,
+ * so excluding them removes no credential FORM this pattern is able to
+ * report, with one exception, which is why the exception is a tier-1 pattern:
+ * a signed JWT has this exact shape and is reachable in a `.env`. See the
+ * `jwt` entry in `TIER1_SECRET_PATTERNS`.
+ *
+ * It is anchored at BOTH ends of the value — `[:=][[:space:]]*` on the left,
+ * `$` on the right — so the whole value must be the path. The cheapest wrong
+ * fix for #863 is an "anything unquoted" exclusion, which deletes tier 2 for
+ * every source file while making the symptom go away; dropping the `$` is
+ * that fix wearing one character. An `API_KEY=` carrying `sk-live` and
+ * eighteen more characters has no dot and stays a FAIL, and so does a
+ * `${NAME_API_KEY:-...}` default, whose value begins `-`.
+ *
+ * Every example in this module is written so it is NOT itself a tier-2
+ * capture — the value is described rather than spelled, or a character
+ * outside the value charset leads it. A docstring that its own scanner
+ * reports is a module that fails the repository's Gates job the day somebody
+ * narrows one of these expressions, and the failure would name this file
+ * rather than their change.
+ *
+ * It is a named constant rather than six more tokens inside the string below
+ * because it is the component a reader of a blocked commit needs to find, and
+ * because `test/unit/gates-tier1-jwt.test.ts` asserts the committed
+ * `gates.yml` carries THIS and not a hand-typed near-copy. It is still a
+ * component OF the allowlist and not a second expression the generator joins
+ * on its own: four generated greps interpolate one allowlist binding, and a
+ * second string to interpolate is a second thing that can disagree about what
+ * counts as a secret.
+ *
+ * THE ROOT IS A CLOSED VOCABULARY, AND THE FIRST DRAFT'S WAS NOT
+ *
+ * This read `[A-Za-z_][A-Za-z0-9_]*` for the first segment — any identifier —
+ * and the security review of PR #868 was right that it is a hole. The premise
+ * above is that an unquoted value is an EXPRESSION, and that premise is a fact
+ * about source languages, not about every file a `git grep -- .` reaches. In a
+ * dotenv file, a shell script or a YAML document an unquoted dotted value is a
+ * LITERAL, and some credentials are literally shaped like an identifier path:
+ * a key of the form two letters, a dot, a base62 run, a dot, another base62
+ * run — the shape one well-known mail provider issues — walks through an
+ * any-identifier root. Measured on the first draft: it was excused.
+ *
+ * So the root is a fixed list of the words real code roots an expression at.
+ * It is the same decision as the placeholder vocabulary below and for the same
+ * reason: a closed list of words is auditable, and "anything shaped like an
+ * identifier" is a judgement the scanner is not entitled to make. A consumer
+ * whose expression roots at a word not on this list gets a false positive and
+ * a one-line change here, which is the direction this is allowed to be wrong
+ * in — the other direction is a credential nobody sees.
+ */
+export const TIER2_EXPRESSION_ROOT_ERE =
+  "(process|os|Deno|globalThis|module|exports|this|self|config|conf|cfg|" +
+  "settings|options|opts|env|deps|current|ctx|context|params|args|argv|" +
+  "input|data|state|store|creds|credentials|auth|secrets|vars)";
+
+export const TIER2_DOTTED_PATH_ERE =
+  `${TIER2_EXPRESSION_ROOT_ERE}(\\.[A-Za-z_][A-Za-z0-9_]*)+`;
+
+/**
+ * The FIXED vocabulary of documented non-values (#863).
+ *
+ * The dotted-path exclusion above covers only two of the seven lines the
+ * widened capture reports on one consumer tree. Four of the remaining five
+ * are the spelling every getting-started document in the world uses,
+ * measured 2026-10-21. The tree and the file positions are named in
+ * `test/unit/gates-tier1-jwt.test.ts`, which also carries the four lines
+ * byte-exact; a module under `lib/` may carry no consumer-specific value
+ * (SC-A1). The shapes, with this file's own angle brackets:
+ *
+ *   API_KEY:- <your-api-key-goes-here>
+ *   API_KEY= <your_key_here>
+ *   API_KEY= <your_gemini_key_here>
+ *   SECRET:- <example-value-not-real>
+ *
+ * (The angle brackets and the space are this file's, not the consumer's —
+ * see the note above about a docstring that matches its own scanner.)
+ *
+ * A fix measured only on the repository that reported it is a fix measured on
+ * one input, and the dotted-path class alone leaves a second consumer red.
+ *
+ * WHAT MAKES THIS SAFE AND AN "IT LOOKS HARMLESS" RULE NOT
+ *
+ * This is a VOCABULARY — a closed list of words — not a judgement about
+ * whether a value looks like a credential. `your[_-]` and `example[_-]`
+ * require the separator, so the exclusion is the documented placeholder
+ * idiom and not every value beginning with four common letters.
+ * An `API_KEY=` carrying `sk-live` and eighteen more characters carries none
+ * of these words and stays a FAIL.
+ *
+ * It is ONE NAMED CONSTANT and not five more tokens spliced into the string
+ * below, for the reason `TIER2_GREP_CASE_FLAG` is one: the positions that
+ * consume it are generated into four greps, and a vocabulary a reader cannot
+ * point at is a vocabulary that gets re-typed somewhere else.
+ *
+ * It does NOT widen what the dotted-path exclusion covers and must not be
+ * read as a general placeholder heuristic. Adding a word here is adding a
+ * word to a gate's blind spot; measure the consumer line that needs it
+ * first, the way these four were measured.
+ *
+ * THE TAIL CARRIES NO DIGIT, AND THE FIRST DRAFT'S COULD
+ *
+ * `your[_-]` alone is a PREFIX test, so a value beginning with those five
+ * characters and continuing into thirty-two random ones was excused — the
+ * security review of PR #868 was right, and it reproduced. End-anchoring
+ * alone does not fix it, because the tail is still arbitrary.
+ *
+ * The discriminator is the digit. A documented placeholder is words and
+ * separators (`your` then a dash then `api` then a dash then `key`, and so
+ * on); a credential is not. The grep that consumes this runs `-i`, so case
+ * cannot be the discriminator here even though a real key is usually mixed —
+ * which is worth stating, because reaching for `[a-z]` is the obvious move
+ * and it silently matches everything under that flag.
+ *
+ * THAT TAIL RULE HELD FOR TWO OF THE THREE WORDS, AND THE SECOND REVIEW
+ * CAUGHT THE THIRD
+ *
+ * `your[_-]` and `example[_-]` require the separator. `REDACTED|CHANGEME|
+ * placeholder` did not — it carried a bare `[A-Za-z_-]*` tail — so a value
+ * beginning with one of those three words and continuing into a digit-free
+ * random run was excused. Reproduced on the shipped expression: an
+ * `API_KEY=` carrying `CHANGEME` and twenty-two more letters read CLEAN.
+ * It is the same defect as the `your_` one directly above, in the sibling
+ * the first repair did not look at.
+ *
+ * The separator is now required of all three, which is the rule the other
+ * two already stated. It costs nothing real: the consumer shape that needs
+ * a tail at all is `Placeholder_value_here`, whose tail begins `_`.
+ */
+export const TIER2_PLACEHOLDER_VOCAB_ERE =
+  "(REDACTED|CHANGEME|placeholder)([_-][A-Za-z][A-Za-z_-]*)?" +
+  "|your[_-][A-Za-z][A-Za-z_-]*" +
+  "|example[_-][A-Za-z][A-Za-z_-]*";
+
+/**
+ * The optional `-` is the SHELL DEFAULT separator, not a widening of the
+ * value (#863). Three of the four placeholder lines above are written as a
+ * `${NAME_API_KEY:-...}` default, so the character after `[:=]` is `-` and
+ * an anchor without it cannot reach the vocabulary at all.
+ *
+ * It cannot soften `SC-C`: the #844 shape is `${SAPLING_API_KEY:-<32 random
+ * chars>}`, whose value begins with no word in the vocabulary, so it is still
+ * reported. The anchor decides WHERE to look; the vocabulary decides what is
+ * excused, and only the second of those two is a list anyone can lengthen.
+ */
+const TIER2_VALUE_ANCHOR = `^${TIER2_KEY_ERE}[[:space:]]*[:=][[:space:]]*-?`;
+
+/**
+ * THE ENV-LOOKUP BRANCH WAS UNANCHORED, AND THREE QUARTERS OF IT WAS A
+ * SECOND DECIDER (second review of #868)
+ *
+ * It read `(process\.env|os\.environ|Deno\.env|getenv)` and was the only one
+ * of the four branches with no `$`. So it was a PREFIX test, and an
+ * `API_KEY=` carrying `getenv` and sixteen random characters was excused —
+ * the third instance of the unanchored-prefix defect in this one expression,
+ * after `your[_-]` and the placeholder vocabulary. Measured on the shipped
+ * expression before the repair: CLEAN.
+ *
+ * Anchoring it closes that. What anchoring alone does NOT do is notice that
+ * `process`, `os` and `Deno` have all been in `TIER2_EXPRESSION_ROOT_ERE`
+ * since #863 widened the root to a vocabulary — so three of the four
+ * alternatives were already excused by the dotted-path branch below, and an
+ * anchored branch naming them is two deciders answering one question. A
+ * mutation of either would leave the other holding every case up.
+ *
+ * Measured over this whole tree and nine control lines: the four-alternative
+ * branch and a `getenv`-only branch give identical verdicts on every input,
+ * including `os.environ.get` and `Deno.env.toObject`.
+ *
+ * `getenv` is the one that is NOT redundant, because it is a bare function
+ * name rather than an object, so no dotted path reaches it. It stays, with
+ * the end anchor and an identifier tail.
+ *
+ * A NOTE ON WHAT THAT TAIL IS FOR, BECAUSE THE FIRST DRAFT DELETED IT
+ *
+ * This branch was briefly removed outright, on the reasoning that nothing
+ * real is shaped like `getenv` followed by an identifier — a bare `getenv`
+ * is six characters against a twelve-character floor, and a genuine call
+ * writes `getenv(`, which ends the capture at the paren. That reasoning is
+ * sound and it is beside the point: #844's own case pins a `SECRET:` whose
+ * value is < Getenv_SOME_LONG_NAME > CLEAN, as the fixture proving the
+ * allowlist reads case the way the capture does. The class is not empty —
+ * there is a case in it. An argument that a class has no members is not
+ * evidence when the suite already holds one.
+ *
+ * (The angle brackets and the spaces are this file's. Spelling that value
+ * plainly makes this docstring a tier-2 capture excused only by the branch
+ * it is describing — so narrowing the branch would turn the Gates job red on
+ * THIS FILE rather than on the change that narrowed it. Measured: it did,
+ * and the tier-2 self-scan case in `test/unit/secret-patterns.test.ts` is
+ * what reported it. See the note above the dotted-path constant.)
+ */
 export const TIER2_ALLOWED_VALUE_ERE =
-  "^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)";
+  "^$" +
+  `|${TIER2_VALUE_ANCHOR}getenv([A-Za-z_][A-Za-z0-9_]*)?(\\.[A-Za-z_][A-Za-z0-9_]*)*$` +
+  `|${TIER2_VALUE_ANCHOR}(${TIER2_PLACEHOLDER_VOCAB_ERE})$` +
+  `|${TIER2_VALUE_ANCHOR}${TIER2_DOTTED_PATH_ERE}$`;
 
 /**
  * Tier 3 — a credential written as a shell default, caught by SHAPE.
