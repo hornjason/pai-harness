@@ -4,11 +4,11 @@
  *
  * `required_status_checks.strict` is GitHub's "Require branches to be up to
  * date before merging". Under it, merging PR #1 invalidates #2..#N: each then
- * needs `gh pr update-branch`, a full CI re-run, then a merge. Measured on
- * `hornjason/asaCommandCenter` on 2026-10-21 at **2.5 minutes per PR, strictly
- * serial** — 18 open PRs, every one `BEHIND`, not one of them broken. A 30-PR
- * swarm is ~90 minutes of serialisation during which the swarm opens more PRs,
- * so it never converges.
+ * needs `gh pr update-branch`, a full CI re-run, then a merge. Measured on a
+ * real consumer on 2026-10-21 at **2.5 minutes per PR, strictly serial** — 18
+ * open PRs, every one `BEHIND`, not one of them broken. A 30-PR swarm is ~90
+ * minutes of serialisation during which the swarm opens more PRs, so it never
+ * converges. #909 has the repo and the figures.
  *
  * It is the single biggest throughput limit on a RunGate consumer and it is
  * invisible from every direction a reviewer looks: each PR is individually
@@ -168,10 +168,17 @@ export interface ProtectionReading {
  * One sentence, used in every FAIL. A refusal that says "this is slow"
  * is an opinion; one that says 2.5 minutes per PR over 18 PRs is a number the
  * operator can weigh against the thing they were about to do instead.
+ *
+ * The consumer it was measured on is NOT named, and this string is the reason
+ * that matters more than the usual one. It is not a comment — it ships into
+ * the findings report of whichever consumer runs this check, so naming the
+ * repo would print one consumer's name to every other one. SC-A1 in
+ * `test/anti.test.ts` refuses the harness naming a consumer anywhere under
+ * `lib/`; #909 carries the repo and the full table.
  */
 const MEASURED_COST =
-  "measured 2026-10-21 on hornjason/asaCommandCenter at ~2.5 min per PR, strictly serial — " +
-  "18 open PRs, every one BEHIND, none merging and none broken";
+  "measured 2026-10-21 on a real consumer at ~2.5 min per PR, strictly serial — " +
+  "18 open PRs, every one BEHIND, none merging and none broken (rungate#909)";
 
 const SERIALISES =
   "required_status_checks.strict = true (\"Require branches to be up to date before merging\") " +

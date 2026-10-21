@@ -221,8 +221,31 @@ describe("#909: PROTECT-1 goes red on strict:true and clears on strict:false", (
     expect(msg).toContain("required_status_checks.strict = true");
     expect(msg).toContain("merging one PR invalidates every other open PR");
     expect(msg).toContain("2.5 min per PR");
-    expect(msg).toContain("asaCommandCenter");
+    expect(msg).toContain("18 open PRs");
     expect(msg).toContain("REMEDY:");
+  });
+
+  /**
+   * SC-A1 in `test/anti.test.ts` refuses the harness naming a consumer
+   * anywhere under `lib/`, and this check is the one place that rule has
+   * teeth beyond tidiness: `MEASURED_COST` is not a comment, it ships into
+   * the findings report of whichever consumer runs PROTECT-1. Naming the repo
+   * it was measured on would print one consumer's name to every other one.
+   *
+   * Asserted on the EMITTED MESSAGE and not on the source, because the source
+   * is already covered by SC-A1 and the thing with the privacy consequence is
+   * the output. Caught on this branch by that sibling test; it is a recurring
+   * trap, so it gets a check pointed at the artefact that leaks.
+   */
+  test("the refusal names no consumer repo — it is printed to other consumers", () => {
+    const root = project({ ".github/workflows/ci.yml": PUSH_CI });
+    const [msg] = protect1(root, facts({ strict: true })).fails;
+
+    expect(msg).toContain("on a real consumer");
+    expect(msg).not.toContain("asaCommandCenter");
+    // The citation that replaces the name has to actually be there, or the
+    // detail is simply lost rather than relocated.
+    expect(msg).toContain("rungate#909");
   });
 });
 
