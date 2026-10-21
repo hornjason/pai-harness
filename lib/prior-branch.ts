@@ -203,6 +203,111 @@ export function issueProseReference(issueNumber: number): (text: unknown) => boo
   return (text: unknown) => typeof text === 'string' && pattern.test(text)
 }
 
+/**
+ * Does this PR BODY declare that it closes issue N? The third binding, and
+ * the narrowest (#887).
+ *
+ * `issueProseReference` above requires a `#`, which is the right bound for a
+ * COMMIT SUBJECT and far too wide for a PR body. Citing another issue in a
+ * body is not an edge case in these repositories, it is the house style:
+ * measured over this repository's 120 most recent PRs, 103 of them cite
+ * issues they do not close, 417 citations in all. Treating any of those as
+ * prior work stops a correct run from ever starting, and it fires late --
+ * A consumer run for issue #1624 refused after 9 agents, 716k tokens and
+ * naming a PR with zero file overlap.
+ *
+ * The signal that separates the populations already exists and the harness
+ * already writes it: `Fixes #${ISSUE}`, which ship.js puts in every body it
+ * opens, and which is also what GitHub itself reads to link a PR to an issue.
+ *
+ * Two deliberate choices, both of which cost something if taken the other
+ * way:
+ *
+ * - **Every GitHub variant, case-insensitively.** `close`/`closes`/`closed`,
+ *   `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`. Matching only
+ *   ship.js's own spelling would stop detecting hand-written PRs, and the
+ *   issue would go back to being shipped twice -- #209, the defect this
+ *   module exists to prevent.
+ * - **A backtick does not disarm it.** GitHub closes `#N` from a quoted
+ *   `` `Fixes #N` `` in a body, so a detector that skipped code spans would
+ *   disagree with GitHub about which PR closes what. Match the same text
+ *   GitHub does, including the false positive GitHub itself has.
+ *
+ * There is deliberately NO fallback to the bare reading when no closing
+ * keyword is found. A fallback would reintroduce #887 exactly; "no closing
+ * keyword in any open body" reads as no prior work, which is the true answer
+ * for #1624 today. A PR whose body says nothing is still found through its
+ * head ref and its subject.
+ *
+ * Total over non-strings: GitHub returns `null` for a body opened without one.
+ */
+export function issueClosingReference(issueNumber: number): (text: unknown) => boolean {
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 0) {
+    throw new TypeError(
+      `issueClosingReference needs a non-negative integer issue number, got ${JSON.stringify(issueNumber)}`,
+    )
+  }
+  // The forms GitHub itself honours, not just the one ship.js writes. A
+  // detector NARROWER than GitHub's grammar fails in the dangerous
+  // direction: a PR saying `Fixes: #209` or `Closes GH-209` really does
+  // close the issue, this would not see it, and the issue gets shipped
+  // twice -- #209, which is the defect the module exists to prevent. Found
+  // by security review of the first draft, which required a bare `#`.
+  //
+  //   keyword, optional colon, whitespace, then one of:
+  //     #209   GH-209   https://github.com/<owner>/<repo>/issues/209
+  const ref = `(?:#|GH-|https?://github\\.com/[^/\\s]+/[^/\\s]+/issues/)${issueNumber}`
+  const pattern = new RegExp(
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s*:?\\s+${ref}\\b`,
+    'i',
+  )
+  return (text: unknown) => typeof text === 'string' && pattern.test(text)
+}
+
+/**
+ * Does this PR TITLE name issue N as its SUBJECT? The fourth binding (#887).
+ *
+ * A title is one sentence, so the body's problem is smaller here but it is
+ * the same problem: measured over this repository's 120 most recent PRs, 107
+ * titles carry a `#N` and 6 carry more than one -- `docs(#837): record the
+ * #836 battery` is #837's PR, and under a whole-title reading it was also
+ * #836's.
+ *
+ * What separates them is POSITION, not spelling. The conventional-commit
+ * subject -- everything before the first colon -- is where this repository
+ * writes the issue a change is FOR, every time: `fix(#209):`, `#795:`,
+ * `#640 + #644:`. A number after the colon is prose.
+ *
+ * A title with no colon in its first 40 characters declares no subject issue
+ * and matches nothing. That is deliberately not a fallback to the whole
+ * string: a fallback is how the body reading got as wide as it did, and the
+ * honest answer for a title that does not name an issue in its subject is
+ * that it does not say. The PR is still found by head ref or by body.
+ */
+export function issueSubjectReference(issueNumber: number): (text: unknown) => boolean {
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 0) {
+    throw new TypeError(
+      `issueSubjectReference needs a non-negative integer issue number, got ${JSON.stringify(issueNumber)}`,
+    )
+  }
+  const pattern = new RegExp(`#${issueNumber}\\b`)
+  return (text: unknown) => {
+    if (typeof text !== 'string') return false
+    const colon = text.indexOf(':')
+    if (colon < 0 || colon > SUBJECT_PREFIX_LIMIT) return false
+    return pattern.test(text.slice(0, colon))
+  }
+}
+
+/**
+ * How far into a title the conventional-commit colon may sit (#887).
+ *
+ * Long enough for `docs(#837)` and `#640 + #644`, short enough that a colon
+ * in an ordinary sentence -- "the reading says: nothing" -- does not turn the
+ * first half of a prose title into a subject.
+ */
+const SUBJECT_PREFIX_LIMIT = 40
+
 function git(args: string[], cwd: string, timeout = 15_000) {
   return spawnSync('git', args, { cwd, encoding: 'utf-8', timeout })
 }
@@ -460,10 +565,22 @@ const PR_PAGE_SIZE = 100
  * says which issue the PR is for. A head-ref-only reading could not match the
  * PRs this workflow opens.
  *
- * The head ref is read as an IDENTIFIER (bare number) and the title and body
- * as PROSE (`#` required) — see `issueProseReference`. One pattern over all
- * three was #687: a PR body quoting `rungate/run-631` as evidence became
- * issue 631's prior work and blocked its run.
+ * Three fields, three grammars, three readings — see `issueReference`,
+ * `issueSubjectReference` and `issueClosingReference`. One pattern over all
+ * three has now been wrong twice:
+ *
+ * - **#687**: a bare-number reading matched `rungate/run-631` quoted as
+ *   evidence in a body, and issue 631's run refused. Fixed by requiring `#`.
+ * - **#887**: `#N` is still what a CITATION looks like. A consumer run for
+ *   issue #1624 refused after 9 agents, 716k tokens and 26 minutes, naming a PR
+ *   with zero file overlap that mentioned it in two sentences of prose —
+ *   and three other open PRs cited it too, so removing one would have handed
+ *   the refusal to the next. The body must now DECLARE that it closes the
+ *   issue, and the title is read at its subject rather than whole.
+ *
+ * Both narrowings cost nothing in recall because the three readings are a
+ * disjunction over fields that rarely all stay silent: measured over this
+ * repository's 120 most recent PRs, the new rule loses no true pair.
  *
  * Returns `null` for "no open PR", a PR for "this one", and `{unreadable}`
  * for "could not look". Never conflate the first and the last.
@@ -488,16 +605,21 @@ export async function detectExistingPR(opts: DetectExistingPROptions | DetectExi
   // matching it made PR #209 the prior work for issue #209 whatever it was
   // about, which is a false positive on the one path where a false positive
   // stops a correct run from ever starting.
+  // THREE readings, because the three fields have three grammars and one
+  // pattern over all of them has now been wrong twice (#687, #887).
   const refs = issueReference(issueNumber)
-  const prose = issueProseReference(issueNumber)
+  const subject = issueSubjectReference(issueNumber)
+  const closes = issueClosingReference(issueNumber)
   const match = prs.find((pr: any) => {
     const headRef = pr?.head?.ref || pr?.headRefName || ''
-    // The head ref is an identifier and keeps the bare-number reading. The
-    // title and the body are free text and must carry `#` — a PR quoting
-    // another issue's branch name in a sentence is not that issue's prior
-    // work, and treating it as one stops a correct run from ever starting
-    // (#687).
-    return refs(headRef) || prose(pr?.title) || prose(pr?.body)
+    // - the HEAD REF is an identifier: bare number, unchanged.
+    // - the TITLE is read at its conventional-commit SUBJECT, before the
+    //   first colon, which is where this repository names the issue a change
+    //   is FOR. `docs(#837): record the #836 battery` is 837's, not 836's.
+    // - the BODY must DECLARE that it closes the issue. A bare `#N` in a
+    //   body is a citation, and 103 of this repository's 120 most recent PRs
+    //   carry 417 of them.
+    return refs(headRef) || subject(pr?.title) || closes(pr?.body)
   })
 
   if (!match) return null

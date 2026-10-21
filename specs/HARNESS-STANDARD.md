@@ -5087,7 +5087,7 @@ are found; the scratch exclusion is asserted separately so the widening
 cannot quietly undo it.
 
 - [x] SC-868: lib/prior-branch.ts contains [export function issueReference] — one binding decides whether a text references an issue, bounded on digits rather than on a `#` so it matches a PR body, a commit subject and a branch name alike, and total over the `null` body GitHub returns for an empty PR
-- [x] SC-869: lib/prior-branch.ts contains [prose(pr?.title) || prose(pr?.body)] — an open PR is matched by what it SAYS, never by its own number; an API failure returns unreadable rather than null, so "no PR" and "could not look" stop being the same answer
+- [x] SC-869: lib/prior-branch.ts contains [subject(pr?.title) || closes(pr?.body)] — an open PR is matched by what it SAYS, never by its own number; an API failure returns unreadable rather than null, so "no PR" and "could not look" stop being the same answer
 - [x] SC-870: lib/prior-branch.ts contains [refs(c.branch) || prose(c.subject)] — a prior branch is found by its tip commit subject as well as its name, and harness scratch refs stay excluded either way
 
 ### A ref is an identifier; a title and a body are prose (#687)
@@ -5123,6 +5123,80 @@ bindings so that each has one site to mutate and a case can tell them apart
   which it writes into every subject. #223's original case — a worktree
   branch whose name has no number at all, found by `Closes #209` in the body
   — still matches.
+
+### `#N` is what a CITATION looks like too (#887)
+
+The section above split one bound into two and left the title and the body
+sharing the narrower one. They cannot share it either, and the reason is the
+same reason one more time: **the thing a PR body does most often with `#N` is
+cite it.**
+
+Measured on this repository's 120 most recent PRs, 2026-10-21:
+
+| | |
+|---|---|
+| bodies citing issues they do not close | 103 of 120 — **417** citations |
+| bodies carrying any closing keyword | 33 of 120 |
+| titles carrying a `#N` | 107 of 120 |
+| titles carrying MORE than one | 6 |
+| false positives, `#N` over title + body | **354** |
+| false positives, subject + closing keyword | **4** |
+| true (PR, issue) pairs lost | **0** |
+
+All four remaining are genuine multi-issue closing declarations the
+ground-truth heuristic missed — `Fixes #500` in PR 838, `Closes #735` in PR
+736, `Fixes #644` and `closed #586` in PR 708. The honest reading is three
+correct detections and one past-tense sentence GitHub would also treat as
+closing.
+
+The instance that paid for it: a consumer run for issue #1624 refused
+`PRIOR_WORK_OPEN_PR` after 9 agents, 716k tokens and 26 minutes, naming PR
+#1820 — which is #1815's PR, with **zero file overlap**. What matched was two
+sentences of prose. Four separate open PRs cite #1624, so removing one would
+have handed the refusal to the next.
+
+So the fields split again, now three ways:
+
+- a **head ref** keeps `issueReference`'s bare number. Unchanged.
+- a **title** takes `issueSubjectReference`: the number must sit in the
+  conventional-commit subject, before the first colon, which is where this
+  repository names the issue a change is FOR. `docs(#837): record the #836
+  battery` is 837's.
+- a **body** takes `issueClosingReference`: it must DECLARE that it closes
+  the issue, in any of GitHub's nine keyword forms, case-insensitively, and
+  through a backtick — because GitHub closes an issue from a quoted
+  `` `Fixes #N` `` and a detector that disagreed with GitHub about which PR
+  closes what would be a third bound, not a fix.
+
+**The body reading is deliberately as WIDE as GitHub's grammar, not as
+narrow as ship.js's spelling.** The first draft required `keyword #N`, and
+security review of it named the direction the error runs in: a PR saying
+`Fixes: #209`, `Closes GH-209` or `Resolves <issue URL>` really does close
+the issue, a narrower detector does not see it, and the issue is shipped
+twice — #209 again, from the opposite side of the same predicate. The
+optional colon, the `GH-` form and the issue-URL form are all accepted, and
+re-measuring the 120-PR corpus shows the widening costs nothing: **4 false
+positives either way, 0 true pairs lost.**
+
+Two positions name the closing line — `workflows/ship.js` writes it, this
+predicate reads it back — and nothing compared them. A reword of the
+template to defuse the keyword (which this repository's own rules ask for in
+hand-written bodies, because a quoted one still fires on merge) would
+silently stop the harness finding its own PRs. `AC-6c` reads the line out of
+`workflows/ship.js` and asserts this predicate matches it, so the two cannot
+drift.
+
+There is deliberately **no fallback** to the bare reading when no body
+carries a keyword. A fallback reintroduces #887 exactly; "nothing declares
+it" is the true answer for #1624.
+
+**The cheapest wrong fix was to delete the body reading outright** — one
+line, and the four citations stop matching. `test/prior-branch-closing-keyword.test.ts`'s
+AC-11 is the case that does not survive it: ship.js opens PRs from branches
+called `worktree-wf_5e3ed885-98c-9`, which carry the number nowhere, so only
+the `Fixes #N` it writes into the body says which issue the PR is for.
+Blinding the body makes the harness unable to see its own PRs, the issue
+ships twice, and that is #209 — the defect this module exists to prevent.
 
 A commit **subject** is prose by the same reading, so `detectPriorBranch`
 pairs the identifier bound on `c.branch` with the prose bound on `c.subject`.
