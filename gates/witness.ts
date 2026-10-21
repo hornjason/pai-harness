@@ -110,11 +110,20 @@ function computeHmac(record: Omit<WitnessRecord, "hmac">): string {
  * - **The file count**, so two different censuses cannot produce the same
  *   signing input through a path containing the separator.
  */
-export function censusSigningInput(slug: string, census: Record<string, number>): string {
+export function censusSigningInput(
+  slug: string,
+  census: Record<string, number>,
+  reader?: string,
+): string {
   const entries = Object.keys(census)
     .sort()
     .map(file => `${file}=${census[file]}`);
-  return [`slug=${slug}`, `files=${entries.length}`, ...entries].join("\n");
+  // `reader=` sits BEFORE `files=`, and that position is the domain
+  // separation (#883). Every entry line comes AFTER `files=N`, so no v1
+  // input can be spelled the same as a v2 input — not even a census whose
+  // one file is literally named `reader`.
+  const head = reader === undefined ? [`slug=${slug}`] : [`slug=${slug}`, `reader=${reader}`];
+  return [...head, `files=${entries.length}`, ...entries].join("\n");
 }
 
 /**
@@ -136,6 +145,11 @@ export function censusSigningInput(slug: string, census: Record<string, number>)
  * unsigned census is the same hole one layer down —
  * `persistTestCensus` records that it could not sign instead of pretending
  * it did, and the next round reads the unsigned census as UNMEASURED.
+ *
+ * **This is the v1 payload and nothing writes it any more.** It is reachable
+ * so that a genuinely pre-#883 state file — a census with no reader stamp —
+ * can still be verified and reported as a migration rather than a tamper.
+ * Everything the gate banks is signed by `signStampedCensus` below.
  */
 export function signCensus(
   slug: string,
@@ -144,6 +158,45 @@ export function signCensus(
 ): string {
   return createHmac("sha256", getSalt(saltPath))
     .update(censusSigningInput(slug, census))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * Sign a banked census together with the reader that took it (#883).
+ *
+ * #883 added `gateContract.testCensusReader` so a census taken by another
+ * instrument reads UNMEASURED instead of as a cliff of deleted tests. Signing
+ * the census and not the stamp made that arm a way PAST the #494 refusal it
+ * sits beside, and the first draft of this change shipped with a docblock on
+ * `TEST_CENSUS_READER` asserting the opposite — *"it is NOT a security
+ * control… that agent can already delete the census outright"*. That is the
+ * argument that let it through, and it is wrong in both halves:
+ *
+ * - Flipping one unsigned byte is cheaper than deleting the census, and
+ *   quieter. The census still verifies, so the round reports a WARN whose
+ *   text explains a legitimate migration, with no refusal anywhere.
+ * - It is not merely a missed refusal for one round. `nextCensus` BANKS the
+ *   current reading on a reader change, by design, so the lowered count
+ *   becomes the baseline and the next round is clean. The erasure is
+ *   laundered into the record.
+ *
+ * So a PRESENT stamp is covered by the signature. An ABSENT one is accepted
+ * only against the v1 payload, which is the one shape no agent can mint by
+ * writing a stamp — and writing one onto a real pre-#883 file now reads as
+ * the rewrite it is.
+ *
+ * Still tamper-EVIDENT and not tamper-proof: the salt is readable by anything
+ * running as this user. The boundary is unchanged, and it is the salt.
+ */
+export function signStampedCensus(
+  slug: string,
+  census: Record<string, number>,
+  reader: string,
+  saltPath: string = GATE_SALT_PATH,
+): string {
+  return createHmac("sha256", getSalt(saltPath))
+    .update(censusSigningInput(slug, census, reader))
     .digest("hex")
     .slice(0, 16);
 }

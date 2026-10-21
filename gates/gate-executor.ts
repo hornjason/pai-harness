@@ -12,7 +12,7 @@ import {
   markCommandlessACsAsSkip,
   type GateResult,
 } from "./orchestrator";
-import { signCensus, writeWitness } from "./witness";
+import { signCensus, signStampedCensus, writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { recordEvidenceRewrite } from "../lib/evidence-command-transport";
 import { GATE_SUITE_TIMEOUT_MS } from "../lib/gate-timeouts";
@@ -335,7 +335,7 @@ export type PersistedCensus =
    * comparable. Only one of them is about an agent, and only one of them
    * should bank the new number — see `nextCensus`.
    */
-  | { kind: "stale-reader"; reason: string }
+  | { kind: "stale-reader"; reason: string; census: Record<string, number> }
   | { kind: "absent" };
 
 /**
@@ -450,7 +450,22 @@ export function censusVerdict(
   // the witness question below, which is about erasure and has no bearing
   // on an instrument change.
   if (previous.kind === "stale-reader") {
-    return { kind: "reader-changed", reason: previous.reason };
+    // …but say what the comparison WOULD have reported. A reader change
+    // moves almost every file's number, so refusing on the drops would make
+    // the migration never end — that is what `reader-changed` exists to
+    // avoid. What it must not also do is stay silent, because then a round
+    // that genuinely deleted a test is indistinguishable from the
+    // instrument change it is hiding behind, and `nextCensus` banks the
+    // lowered reading as the new baseline.
+    const wouldHaveBeen = censusRegressions(previous.census, current);
+    const named = wouldHaveBeen.slice(0, 5).join("; ");
+    const drops =
+      wouldHaveBeen.length === 0
+        ? " No file counted fewer tests across the change."
+        : ` ${wouldHaveBeen.length} file(s) counted FEWER tests than the banked reading, which ` +
+          `this round cannot tell from deletions: ${named}` +
+          `${wouldHaveBeen.length > 5 ? `; and ${wouldHaveBeen.length - 5} more` : ""}.`;
+    return { kind: "reader-changed", reason: previous.reason + "." + drops };
   }
   // Nothing to compare against. Whether that is ordinary depends entirely on
   // whether a gate has run for this slug before — the one fact the state
@@ -610,12 +625,19 @@ export function persistTestCensus(
   const fresh = JSON.parse(readFileSync(stateFilePath, "utf-8"));
   fresh.gateContract = fresh.gateContract || {};
   fresh.gateContract.testCensus = census;
-  // Stamped in the same write as the census it describes. A stamp written
-  // separately could land without the reading or vice versa, and either
-  // half alone says the wrong thing about the other.
+  // Stamped in the same write as the census it describes, and SIGNED with
+  // it. A stamp written separately could land without the reading or vice
+  // versa, and either half alone says the wrong thing about the other; a
+  // stamp outside the signature is a one-byte way past the #494 refusal,
+  // because `reader-changed` warns and banks instead of refusing.
   fresh.gateContract.testCensusReader = TEST_CENSUS_READER;
   try {
-    fresh.gateContract.testCensusSignature = signCensus(slug, census, opts.saltPath);
+    fresh.gateContract.testCensusSignature = signStampedCensus(
+      slug,
+      census,
+      TEST_CENSUS_READER,
+      opts.saltPath,
+    );
   } catch (e: any) {
     delete fresh.gateContract.testCensusSignature;
     console.warn(
@@ -646,6 +668,19 @@ export function persistTestCensus(
  * parsed on a run whose gate has never executed is still a first reading —
  * said out loud rather than passed quietly.
  */
+/**
+ * A reader stamp as it is allowed to appear in a report.
+ *
+ * The stamp is inside the signature, so nothing unsigned reaches this — but
+ * a value that renders a newline or a control character into a WARN detail
+ * is a report an operator cannot read, and the cost of refusing to print it
+ * is one line. One binding, so there is one thing to mutate.
+ */
+export function renderReaderStamp(reader: string | null): string {
+  if (reader === null) return "1 (unstamped, pre-#883)";
+  return /^[A-Za-z0-9._-]{1,16}$/.test(reader) ? `"${reader}"` : "(unprintable)";
+}
+
 export function readPersistedCensus(stateFilePath: string, slug: string): PersistedCensus {
   let onDisk: any;
   try {
@@ -662,29 +697,40 @@ export function readPersistedCensus(stateFilePath: string, slug: string): Persis
   if (typeof signature !== "string" || signature.length === 0) {
     return { kind: "unverified", reason: "the banked census carries no signature" };
   }
+  // The reader stamp is INSIDE the signature when it is present, so a
+  // forged or deleted stamp reads as a rewrite rather than as a migration
+  // (#883). An absent stamp is checked against the v1 payload, which is the
+  // only shape a genuinely pre-#883 state file has — and the only one an
+  // agent cannot mint, because minting it means removing a signature it
+  // cannot recompute.
+  const rawReader = onDisk?.gateContract?.testCensusReader;
+  const reader = typeof rawReader === "string" && rawReader.length > 0 ? rawReader : null;
   let expected: string;
   try {
-    expected = signCensus(slug, census);
+    expected =
+      reader === null ? signCensus(slug, census) : signStampedCensus(slug, census, reader);
   } catch (e: any) {
     return { kind: "unverified", reason: `the census signature could not be checked: ${e.message}` };
   }
   if (expected !== signature) {
     return {
       kind: "unverified",
-      reason: "the banked census does not match its signature — it was rewritten after the gate banked it",
+      reason:
+        "the banked census or its reader stamp does not match its signature — " +
+        "it was rewritten after the gate banked it",
     };
   }
   // Asked LAST, and the order is the reading. A census that fails the
   // signature is a tamper whatever instrument took it; a census that passes
   // it and was taken by another reader is intact and merely incomparable.
   // Asked first, every pre-#883 tamper would be reported as a migration.
-  const reader = onDisk?.gateContract?.testCensusReader;
   if (reader !== TEST_CENSUS_READER) {
     return {
       kind: "stale-reader",
+      census,
       reason:
         `the banked census was taken by test-census reader ` +
-        `${typeof reader === "string" && reader.length > 0 ? `"${reader}"` : "1 (unstamped, pre-#883)"} ` +
+        `${renderReaderStamp(reader)} ` +
         `and this gate reads with "${TEST_CENSUS_READER}". The two instruments count ` +
         `different things, so a file whose number moved cannot be told from a file that ` +
         `lost a test. This round banks a fresh reading and the next one compares (#883)`,

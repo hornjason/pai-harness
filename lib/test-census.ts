@@ -139,11 +139,24 @@ export const MAX_CENSUS_FILE_BYTES = 2_000_000;
  * and a refactor that moves no count costs every in-flight run a round of
  * UNMEASURED for nothing.
  *
- * It is NOT a security control, said here rather than implied. The stamp is
- * not covered by `signCensus`, so an agent that can edit the state file can
- * edit it — but that agent can already delete the census outright, and the
- * witness store (#494) is what catches that. This marks a reading as
- * incomparable; it does not prove who wrote it.
+ * **It IS covered by the signature, and the first draft of #883 said the
+ * opposite.** That draft's docblock read *"It is NOT a security control…
+ * the stamp is not covered by `signCensus`, so an agent that can edit the
+ * state file can edit it — but that agent can already delete the census
+ * outright."* Both halves are wrong, and writing the sentence is what
+ * stopped the question being asked:
+ *
+ * - Flipping this one byte is CHEAPER than deleting the census and much
+ *   quieter. The census still verifies, so the round reports a WARN whose
+ *   text explains an ordinary migration and refuses nothing.
+ * - `nextCensus` banks the current reading on a reader change, by design —
+ *   so the lowered count becomes the baseline and the NEXT round is clean.
+ *   The erasure #494 exists to catch is laundered into the record.
+ *
+ * `signStampedCensus` in `gates/witness.ts` signs the census and this stamp
+ * together. A forged or deleted stamp reads `unverified`; an absent one is
+ * checked against the v1 payload, which is what a real pre-#883 file has.
+ * Still tamper-evident rather than tamper-proof: the boundary is the salt.
  */
 export const TEST_CENSUS_READER = "2";
 
