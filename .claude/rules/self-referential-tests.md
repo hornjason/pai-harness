@@ -143,12 +143,19 @@ changed is never the only file with an opinion about your change.
 reads neither the rule nor the script is unaffected by both. The mechanical
 version is a check that refuses a diff whose census tests were not in the same
 run's measured set, and that needs a notion of "what this session ran" which
-does not exist here. Nor is it the same thing as
-`scripts/select-affected-tests.ts`: that selects by import graph, and a census
-test imports none of the things that move it. Measured with
-`specs/HARNESS-STANDARD.md` as the only changed file, that selector reaches
-`ticked-sc-cover` as a sweep and misses the other two outright. The two are
-complements — one routes by what the diff DID, the other by what it IMPORTS.
+does not exist here.
+
+**A ship run no longer depends on you reading this** (#1004).
+`scripts/select-affected-tests.ts` selects by import graph, and a census test
+imports none of the things that move it — measured with
+`specs/HARNESS-STANDARD.md` as the only changed file, that selector reached
+`ticked-sc-cover` as a sweep and missed the other two outright, while
+reporting MEASURED, so nothing fell back. It now unions `censusTestsFor` into
+its SELECTED result, and its artefact records `graphTests` and `censusTests`
+separately so the two halves stay tellable apart. The routers are still
+complements — one routes by what the diff DID, the other by what it IMPORTS —
+and this table is still what you run by hand, because the selector runs only
+inside a ship run.
 
 ## If you are writing one of these
 
