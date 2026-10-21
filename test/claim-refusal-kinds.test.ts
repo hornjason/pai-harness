@@ -53,13 +53,29 @@
  * between — an absent claim, an unclaimed file, and a claimed file that never
  * changed — through the real block over ONE set of paths, and compares what
  * came back. One executed run, three outcomes, pairwise distinct.
+ *
+ * ## AC-4 (#892)
+ *
+ * #892 adds a SECOND reading to the audit: when a worktree reports a file it
+ * did not claim, compare its copy against the claiming worktree's copy, and
+ * stop refusing when the bytes are the same. The whole value of that change
+ * rests on where it is consulted. Five of the block's arms are facts about
+ * the FILE or about the RUN — DA ownership, a co-owned registry two worktrees
+ * wrote, a path that cannot be staged, two claimants, and a run in which
+ * nobody issued a claim — and no reading of the bytes can make any of them
+ * collectable. The last describes at the bottom of this file pin all five
+ * against a fixture in which the two copies really are byte-identical on
+ * disk, so the content reading can only be reached from the single-claimant
+ * arm.
  */
 
 // SPEC-REF: PARALLEL-AGENT-COORDINATION-SPEC.md § Success Criteria (SC-413)
 
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { join } from "path";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { dirname, join } from "path";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
@@ -97,12 +113,23 @@ const claimSource = block("COLLECT-CLAIM");
 // so staging and the audit share one decider, and the audit calls into it.
 const securitySource = block("SECURITY-HELPERS");
 
-function loadAudit(source: string = claimSource): Audit {
+/**
+ * A copy of one file, as a digest or `null` when it could not be read.
+ *
+ * Only the #892 wrong-fix mutant below uses this. The real block takes no
+ * reader — it is handed in as a `new Function` parameter rather than as an
+ * argument to `auditWorktreeClaims`, so nothing here can be mistaken for a
+ * claim about the audit's signature.
+ */
+type CopyReader = (absolutePath: string) => string | null;
+
+function loadAudit(source: string = claimSource, readCopy: CopyReader = () => null): Audit {
   return new Function(
     "PROJECT_ROOT",
     "log",
+    "readCopy",
     `${securitySource}\n${source}\nreturn auditWorktreeClaims`,
-  )("/repo", () => {}) as Audit;
+  )("/repo", () => {}, readCopy) as Audit;
 }
 
 const auditWorktreeClaims = loadAudit();
@@ -748,5 +775,490 @@ describe("AC-7b: MUTANT — the absent-claim fallthrough restored and observed",
     const mutant = loadWidened();
     expect(mutant(daOwned).violations.map(v => v.path)).toEqual(["PROJECT-STATE.md"]);
     expect(mutant(daOwned).violations[0]!.detail).toContain("DA-owned");
+  });
+});
+
+// ── #892 AC-4: five arms that no reading of the bytes can waive ───────────
+
+/**
+ * The fixture is REAL FILES, not an injected reading.
+ *
+ * #892 AC-5 says the comparison reads the filesystem when no reader is
+ * supplied, so the honest way to say "the two copies are byte-identical" is
+ * to make them byte-identical: two worktree directories under `mkdtemp`, the
+ * contested file written into both with the same bytes, and the audit called
+ * with exactly ONE argument — the shape every caller in the tree uses today.
+ *
+ * That has three consequences worth stating, because each rules out a way
+ * these cases could pass without meaning anything:
+ *
+ * - Nothing here asserts a signature. If #892's wiring takes the reading as a
+ *   second parameter, these cases keep driving the same path a caller that
+ *   omits it drives, which is the one AC-9 is about.
+ * - The premise is MEASURED. `the two copies really are byte-identical`
+ *   hashes both files off disk before any arm is judged — a fixture that
+ *   wrote different bytes would make all five arms refuse for the ordinary
+ *   pre-#892 reason and this whole section would witness nothing.
+ * - Every worktree holds every file, which is what a worktree is. So in four
+ *   of the five arms some OTHER worktree also claims the contested path, and
+ *   a single claimant exists for the content reading to be taken against.
+ *   Without that the arms would survive the wrong fix vacuously: a reading
+ *   with no claiming worktree is UNMEASURED, and UNMEASURED refuses anyway.
+ *
+ * ## Witnesses and controls
+ *
+ * Say which, or the next reader counts eight.
+ *
+ * WITNESSES — green on the real block, and measured RED under the cheapest
+ * wrong fix below: the five arm cases, one per arm.
+ *
+ * CONTROLS — green on both sides by construction, and not evidence that any
+ * arm is ordered correctly: `the two copies really are byte-identical` (the
+ * premise), the two distinctness cases (which are about wording and would
+ * hold under any ordering), and `differing copies are still refused` (which
+ * the wrong fix also refuses, and exists so "the mutant waived everything"
+ * cannot be satisfied by a mutant that refuses nothing).
+ *
+ * The single-claimant arm with IDENTICAL copies is neither. It is the
+ * POSITIVE CONTROL for the whole section: without it, "all five arms still
+ * refuse" is satisfied by an implementation that never consults the reading
+ * anywhere. It is red until the reading lands, and that is the only honest
+ * state for it to be in — see the describe's own comment.
+ */
+
+const CONTENT_ROOT = mkdtempSync(join(tmpdir(), "claim-content-arms-"));
+const CT_A = join(CONTENT_ROOT, "wf_a");
+const CT_B = join(CONTENT_ROOT, "wf_b");
+
+/** Files written with the SAME bytes into both worktrees. */
+const IDENTICAL_IN_BOTH = [
+  "lib/a.ts",
+  "lib/b.ts",
+  "lib/shared.ts",
+  "lib/a;rm.ts",
+  "lib/single.ts",
+  "gates/workflow.test.ts",
+  "PROJECT-STATE.md",
+  ALLOWLISTS,
+];
+
+/** The one file whose two copies differ, and the two bodies it differs by. */
+const DIFFERING = "lib/single-diff.ts";
+const DIFFERING_BODIES: Record<string, string> = {
+  [CT_A]: "export const from = 'reporting worktree'\n",
+  [CT_B]: "export const from = 'claiming worktree'\n",
+};
+
+function writeCopy(worktree: string, path: string, body: string): void {
+  const absolute = join(worktree, path);
+  mkdirSync(dirname(absolute), { recursive: true });
+  writeFileSync(absolute, body);
+}
+
+function digestOf(worktree: string, path: string): string {
+  return createHash("sha256").update(readFileSync(join(worktree, path))).digest("hex");
+}
+
+beforeAll(() => {
+  for (const path of IDENTICAL_IN_BOTH) {
+    const body = `// ${path}\nexport const marker = 'same bytes in every worktree'\n`;
+    writeCopy(CT_A, path, body);
+    writeCopy(CT_B, path, body);
+  }
+  writeCopy(CT_A, DIFFERING, DIFFERING_BODIES[CT_A]!);
+  writeCopy(CT_B, DIFFERING, DIFFERING_BODIES[CT_B]!);
+});
+
+afterAll(() => {
+  rmSync(CONTENT_ROOT, { recursive: true, force: true });
+});
+
+/** One arm of the audit that decides without ever asking about the bytes. */
+interface Arm {
+  arm: string;
+  /** The phrase that identifies this arm's sentence and no other's. */
+  token: string;
+  /** The contested path, present byte-identically in BOTH worktrees. */
+  path: string;
+  results: unknown[];
+}
+
+const ARMS: Arm[] = [
+  {
+    // A claim cannot authorise a DA-owned write, so neither can a reading
+    // that says both copies agree. CT_B claims it, which is deliberate: it
+    // gives the content comparison a claiming worktree to read, so this arm
+    // is a real witness rather than one the wrong fix leaves alone because
+    // there was nothing to compare against.
+    arm: "DA-owned",
+    token: "DA-owned",
+    path: "PROJECT-STATE.md",
+    results: [
+      { worktreePath: CT_A, filesChanged: ["lib/a.ts", "PROJECT-STATE.md"], claimedFiles: ["lib/a.ts"] },
+      { worktreePath: CT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts", "PROJECT-STATE.md"] },
+    ],
+  },
+  {
+    // Two worktrees WROTE the registry. Identical bytes here would be the
+    // most misleading possible reading: collection copies whole files, so
+    // the copies agreeing on the day they are compared says nothing about
+    // whether both sets of entries survive. Neither claims it — no plan can.
+    arm: "co-owned with two writers",
+    token: "co-owned registry",
+    path: ALLOWLISTS,
+    results: [
+      { worktreePath: CT_A, filesChanged: ["lib/a.ts", ALLOWLISTS], claimedFiles: ["lib/a.ts"] },
+      { worktreePath: CT_B, filesChanged: ["lib/b.ts", ALLOWLISTS], claimedFiles: ["lib/b.ts"] },
+    ],
+  },
+  {
+    // #400: inside the worktree and still unstageable. `git add` refuses the
+    // path whatever the bytes say, so a waiver here moves the failure two
+    // phases later and into another message.
+    //
+    // The boundary half of `pathRefusal` is NOT the row used here. A key that
+    // is still absolute matches no claim, so no claimant is found, so a wrong
+    // fix consulting the reading first refuses it anyway — it would survive
+    // vacuously and witness nothing. That half is covered by the
+    // `escapes-worktree` row in KINDS above.
+    arm: "path refusal",
+    token: "cannot be staged",
+    path: "lib/a;rm.ts",
+    results: [
+      { worktreePath: CT_A, filesChanged: ["lib/a.ts", "lib/a;rm.ts"], claimedFiles: ["lib/a.ts"] },
+      { worktreePath: CT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts", "lib/a;rm.ts"] },
+    ],
+  },
+  {
+    // Two claimants is a scheduling failure. There is no "the claiming
+    // worktree" to compare against, and picking one would be the #178 bug
+    // with a hash in front of it.
+    arm: "two claimants",
+    token: "a file may have one claimant",
+    path: "lib/shared.ts",
+    results: [
+      { worktreePath: CT_A, filesChanged: ["lib/shared.ts"], claimedFiles: ["lib/shared.ts"] },
+      { worktreePath: CT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/shared.ts", "lib/b.ts"] },
+    ],
+  },
+  {
+    // #629/#627: nobody issued a claim, so the ledger never arrived. Bytes
+    // that agree cannot substitute for it — the question "was this agent in
+    // scope" was never asked, and the fault is upstream of the agent.
+    arm: "no claim issued",
+    token: "issued a claim at all",
+    path: "gates/workflow.test.ts",
+    results: [
+      { worktreePath: CT_A, filesChanged: ["gates/workflow.test.ts", "lib/a.ts"] },
+      { worktreePath: CT_B, filesChanged: ["lib/b.ts"] },
+    ],
+  },
+];
+
+/** Every violation the audit raised against CT_A for this arm's path. */
+function armViolations(arm: Arm, audit: Audit = auditWorktreeClaims): Violation[] {
+  return audit(arm.results).violations.filter(
+    v => v.path === arm.path && v.worktreePath === CT_A,
+  );
+}
+
+/** Was `path` handed to the collector as something CT_A may contribute? */
+function keptByA(results: unknown[], path: string, audit: Audit = auditWorktreeClaims): boolean {
+  return audit(results).candidates.some(
+    c => c.worktreePath === CT_A && c.filesChanged.includes(path),
+  );
+}
+
+/** The arm's sentence with every substituted value blanked (see `shape`). */
+function armShape(detail: string): string {
+  const substitutions: Array<[string, string]> = [
+    [CT_A, "<worktree>"],
+    [CT_B, "<worktree>"],
+    [ALLOWLISTS, "<path>"],
+    ["lib/a;rm.ts", "<path>"],
+    ["gates/workflow.test.ts", "<path>"],
+    ["lib/shared.ts", "<path>"],
+    ["PROJECT-STATE.md", "<path>"],
+    ["project-state.json", "<path>"],
+    ["SUCCESS.md", "<path>"],
+  ];
+  let out = detail;
+  for (const [from, to] of substitutions) out = out.split(from).join(to);
+  return out.replace(/\b\d+\b/g, "<n>");
+}
+
+describe("#892 AC-4: every arm but the single-claimant one refuses on identical bytes", () => {
+  test("CONTROL/premise: the two copies really are byte-identical on disk", () => {
+    // The vacuity guard. Without it a fixture that wrote different bytes
+    // would make all five arms refuse for the ordinary pre-#892 reason, and
+    // every case below would be green having measured nothing.
+    for (const path of IDENTICAL_IN_BOTH) {
+      expect(digestOf(CT_A, path), `${path} is not the same bytes in both worktrees`).toBe(
+        digestOf(CT_B, path),
+      );
+    }
+    // And the one that must NOT be, or the differing half of the
+    // single-claimant pair is reading the same thing as the identical half.
+    expect(digestOf(CT_A, DIFFERING)).not.toBe(digestOf(CT_B, DIFFERING));
+  });
+
+  for (const arm of ARMS) {
+    test(`WITNESS: the ${arm.arm} arm still refuses, with its own sentence`, () => {
+      const got = armViolations(arm);
+      expect(
+        got.map(v => v.detail),
+        `${arm.arm}: identical bytes must not change what this arm decides about ${arm.path}`,
+      ).toHaveLength(1);
+      expect(got[0]!.detail).toContain(arm.token);
+      // And the path is not handed to the collector either. A refusal that
+      // still leaves the file in the candidate list is a refusal the
+      // collector walks straight past.
+      expect(keptByA(arm.results, arm.path), `${arm.arm}: ${arm.path} reached the collector`).toBe(
+        false,
+      );
+    });
+  }
+
+  test("CONTROL: the five refusals are pairwise distinct by sentence, not by count", () => {
+    // Five arms refusing is satisfied by five copies of one sentence, which
+    // is the state #300 exists to prevent. Compared on the blanked shape, so
+    // the interpolated worktree and path cannot manufacture a difference.
+    const shapes = ARMS.map(arm => [arm.arm, armShape(armViolations(arm)[0]!.detail)] as const);
+    for (let i = 0; i < shapes.length; i++) {
+      for (let j = i + 1; j < shapes.length; j++) {
+        expect(
+          shapes[i]![1],
+          `${shapes[i]![0]} and ${shapes[j]![0]} read identically once the worktree and path are blanked`,
+        ).not.toBe(shapes[j]![1]);
+      }
+    }
+  });
+
+  test("CONTROL: each arm's token identifies exactly one of the five", () => {
+    const details = ARMS.map(arm => [arm.arm, armViolations(arm)[0]!.detail] as const);
+    for (const arm of ARMS) {
+      const hits = details.filter(([, d]) => d.includes(arm.token)).map(([a]) => a);
+      expect(hits, `"${arm.token}" does not identify one arm`).toEqual([arm.arm]);
+    }
+  });
+});
+
+// ── #892 AC-4: the single-claimant arm, which is the one that may change ──
+
+/**
+ * The pair, derived rather than written twice (#585).
+ *
+ * The differing half is the identical half with the path swapped and nothing
+ * else, and the derivation is asserted before anything is concluded from it,
+ * so the only thing that can explain a difference in the verdict is the
+ * bytes. Both halves report a file CT_A did not claim and CT_B did — the one
+ * arm where #892 says the bytes are allowed to decide.
+ */
+const SINGLE_CLAIMANT_IDENTICAL = [
+  { worktreePath: CT_A, filesChanged: ["lib/single.ts"], claimedFiles: ["lib/a.ts"] },
+  { worktreePath: CT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts", "lib/single.ts"] },
+];
+
+const SINGLE_CLAIMANT_DIFFERING = SINGLE_CLAIMANT_IDENTICAL.map(row => ({
+  ...row,
+  filesChanged: row.filesChanged.map(f => (f === "lib/single.ts" ? DIFFERING : f)),
+  claimedFiles: row.claimedFiles.map(f => (f === "lib/single.ts" ? DIFFERING : f)),
+}));
+
+describe("#892 AC-4: the single-claimant arm is the only one the bytes reach", () => {
+  test("the pair varies only the file compared", () => {
+    const strip = (rows: typeof SINGLE_CLAIMANT_IDENTICAL) =>
+      JSON.stringify(rows).split(DIFFERING).join("lib/single.ts");
+    expect(strip(SINGLE_CLAIMANT_DIFFERING)).toBe(strip(SINGLE_CLAIMANT_IDENTICAL));
+    expect(JSON.stringify(SINGLE_CLAIMANT_DIFFERING)).not.toBe(
+      JSON.stringify(SINGLE_CLAIMANT_IDENTICAL),
+    );
+  });
+
+  test("POSITIVE CONTROL: identical copies are kept, with no violation for the path", () => {
+    // This is the one case in the section that is RED until #892's reading is
+    // wired into the audit, and it is deliberately not softened. Without it,
+    // "all five arms still refuse" is satisfied by an implementation that
+    // never consults the reading anywhere — the five witnesses above would be
+    // green over a tree in which nothing was built, which is exactly the
+    // vacuity .claude/rules/checks-must-be-able-to-fail.md is about.
+    //
+    // Pre-#892 this reports the ordinary claimant refusal, which is the
+    // behaviour run wf_161c4e96-f01 died on: 24 agents, ~35 minutes, three
+    // preserved branches whose overlapping files were byte-identical, no PR.
+    const got = auditWorktreeClaims(SINGLE_CLAIMANT_IDENTICAL).violations.filter(
+      v => v.path === "lib/single.ts",
+    );
+    expect(
+      got.map(v => v.detail),
+      "the two copies are byte-identical and the path is still refused — the content reading is not reached from the single-claimant arm",
+    ).toEqual([]);
+    expect(keptByA(SINGLE_CLAIMANT_IDENTICAL, "lib/single.ts")).toBe(true);
+  });
+
+  test("CONTROL: differing copies are still refused, naming the claiming worktree", () => {
+    // The half that must NOT move. #892's own words: do not relax SC-413.
+    // Asserted on the claiming worktree rather than on the pre-#892 sentence,
+    // because AC-2 rewords this refusal to name the divergence and a case
+    // pinned to the old wording would have to be edited to let the fix land.
+    const got = auditWorktreeClaims(SINGLE_CLAIMANT_DIFFERING).violations.filter(
+      v => v.path === DIFFERING,
+    );
+    expect(got.length, "a file whose copies differ was collected").toBeGreaterThan(0);
+    expect(got.some(v => v.detail.includes(CT_B))).toBe(true);
+    expect(keptByA(SINGLE_CLAIMANT_DIFFERING, DIFFERING)).toBe(false);
+  });
+});
+
+// ── #892 AC-4: the cheapest wrong fix, applied and counted ────────────────
+
+/**
+ * THE CHEAPEST WRONG FIX, named before the repair exists.
+ *
+ * The symptom an operator sees is a refusal naming files whose bytes are the
+ * same everywhere. The 5pm repair is to consult the content reading at the
+ * TOP of the per-path loop — ahead of the path refusal and ahead of the
+ * ownership classes — and keep any path some other worktree holds identical
+ * bytes for. It is a few lines, it makes the reported symptom go away, and
+ * run `wf_161c4e96-f01` would have collected.
+ *
+ * It also deletes four guards. Every worktree is a full checkout, so almost
+ * every file in a run is byte-identical in some other worktree — including a
+ * `PROJECT-STATE.md` nobody touched, including a registry two worktrees
+ * wrote, including a path `git add` refuses. #296, #400 and #629 all go back
+ * to the state they were filed in.
+ *
+ * The five witnesses above are the protection, and this describe is the
+ * measurement that says so: the mutant is built, each witness is driven
+ * through it, and each one is observed to stop refusing. The cases that
+ * would stay green are named as controls rather than counted as coverage.
+ *
+ * ## Predicted and measured, over this file (55 tests)
+ *
+ * Run on a copy of this file under `mkdtemp` whose DEFAULT audit is the
+ * repair — `loadAudit(wrongFix, diskReader)` — with `REPO_ROOT` pinned back
+ * at this checkout, so the block under test is the real one and only the
+ * ordering moved. `workflows/ship.js` was not modified; the copy was deleted
+ * after the run.
+ *
+ * | Row | Predicted | Measured |
+ * |---|---|---|
+ * | baseline — this file, unmutated | 54 pass, 1 fail | **54 pass, 1 fail** |
+ * | the wrong fix as the default audit | 8 | **8 of 55** |
+ *
+ * The baseline's one fail is the positive control below, which is red until
+ * the reading lands and is named as such where it sits.
+ *
+ * Before believing the row, the input on which mutant and original differ,
+ * named and run rather than assumed: the DA-owned arm's fixture. The real
+ * block returns one violation reading `… reported PROJECT-STATE.md, which is
+ * DA-owned …`; the repair returns none and hands the path to the collector.
+ *
+ * **Read the composition, not the number.** The 8 is the five witnesses plus
+ * three more, and all three are about the mutated behaviour: the two
+ * distinctness controls throw, because with nothing refused there is no
+ * sentence to compare, and `the mutant really differs from the real block`
+ * goes red because under this run the real block IS the mutant.
+ *
+ * **And the row that did NOT move is the point of the section.** The
+ * positive control — identical copies kept — is GREEN under the repair. Of
+ * course it is: waiving everything on identical bytes also waives the one
+ * case the waiver is wanted for. A section built on that case alone would
+ * have certified the repair it exists to block, which is the fifth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, and it is why the five
+ * witnesses are the protection and the positive control is not.
+ */
+describe("#892 AC-4: MUTANT — the content reading hoisted above every class", () => {
+  const LOOP_ANCHOR = "      const key = claimKey(wt, raw)\n      if (!key) continue\n";
+
+  const WAIVE_ON_IDENTICAL = `${LOOP_ANCHOR}      let waived = false
+      const mine = readCopy(wt + '/' + key)
+      if (mine) {
+        for (const other of results) {
+          const owt = String(other && other.worktreePath || '').trim()
+          if (!owt || owt === wt) continue
+          if (readCopy(owt + '/' + key) === mine) { waived = true; break }
+        }
+      }
+      if (waived) { kept.push(key); continue }
+`;
+
+  /** The reader the mutant is handed: real bytes, real sha256, real disk. */
+  const readCopy: CopyReader = absolutePath => {
+    try {
+      return createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
+    } catch {
+      return null;
+    }
+  };
+
+  function loadWaiver(): Audit {
+    const hits = claimSource.split(LOOP_ANCHOR).length - 1;
+    if (hits !== 1) {
+      throw new Error(`could not build the mutant: the per-path loop anchor appears ${hits} times`);
+    }
+    return loadAudit(claimSource.replace(LOOP_ANCHOR, WAIVE_ON_IDENTICAL), readCopy);
+  }
+
+  test("the per-path loop has exactly one head, so the hoist is total", () => {
+    // A second entry into the loop would survive the insertion and leave the
+    // mutant behaving like the real source, which would make every count
+    // below a measurement of nothing.
+    expect(claimSource.split(LOOP_ANCHOR).length - 1).toBe(1);
+    expect(
+      claimSource.includes("readCopy("),
+      "the real block already consults a reader — this mutant is no longer the repair it describes",
+    ).toBe(false);
+  });
+
+  test("the mutant really differs from the real block on this input", () => {
+    // Before believing any row: name an input on which mutant and original
+    // differ, and run it. Without this the five rows below could be reporting
+    // that the insertion never happened.
+    const arm = ARMS[0]!;
+    expect(armViolations(arm).map(v => v.detail)).toHaveLength(1);
+    expect(armViolations(arm, loadWaiver()).map(v => v.detail)).toEqual([]);
+  });
+
+  for (const arm of ARMS) {
+    test(`measured red under the wrong fix: the ${arm.arm} arm`, () => {
+      // What "red" means here, performed rather than asserted in prose: the
+      // witness case above asserts exactly one violation for this path, and
+      // under the repair there are none, so that case fails.
+      const mutant = loadWaiver();
+      expect(
+        armViolations(arm, mutant).map(v => v.detail),
+        `${arm.arm}: the wrong fix did NOT waive this arm — the witness above would stay green under the repair it exists to block`,
+      ).toEqual([]);
+      expect(keptByA(arm.results, arm.path, mutant)).toBe(true);
+    });
+  }
+
+  test("CONTROL: the mutant still refuses the file whose copies differ", () => {
+    // Without this, "the mutant waived all five" is satisfied by a mutant
+    // that refuses nothing for any reason — a broken insertion rather than
+    // the repair being described, and the five rows above would prove
+    // nothing about ordering.
+    const mutant = loadWaiver();
+    const got = mutant(SINGLE_CLAIMANT_DIFFERING).violations.filter(v => v.path === DIFFERING);
+    expect(got.length, "the mutant refuses nothing at all").toBeGreaterThan(0);
+  });
+
+  test("CONTROL: the mutant leaves the KINDS fixtures' verdicts alone", () => {
+    // The KINDS rows name worktree paths that do not exist on disk, so the
+    // reader returns null for both sides and the hoisted branch cannot fire.
+    // That is the second half of "the mutation is local": the mutant refuses
+    // the same paths as the real block everywhere the bytes are unreadable,
+    // so the five rows above are about identical bytes and not about the
+    // insertion having broken the loop.
+    const mutant = loadWaiver();
+    for (const row of KINDS) {
+      const real = auditWorktreeClaims(row.results).violations.map(v => v.path).sort();
+      const mut = mutant(row.results).violations.map(v => v.path).sort();
+      expect(
+        mut,
+        `${row.kind}: the mutant changed a verdict it could not have read bytes for`,
+      ).toEqual(real);
+    }
   });
 });

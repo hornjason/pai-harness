@@ -35,6 +35,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -1219,5 +1220,234 @@ describe("#627: the rows the wave staging path hands this collector", () => {
     expect(lost).toContain("unclaimed file modification(s)");
     expect(never).toContain("unclaimed file modification(s)");
     expect(lost).toBe(never);
+  });
+});
+
+// ── #892 AC-9: a caller that supplies no content reading changes no verdict ──
+
+/**
+ * #892 gives the audit a SECOND reading — the bytes of a reported file in the
+ * reporting worktree against the bytes in the claiming worktree. Every caller
+ * in this tree supplies none of it, and these fixtures name worktree
+ * directories that have never existed on disk, so every one of them drives
+ * the no-reading path.
+ *
+ * The hazard is narrow and worth naming, because it is NOT "does the new
+ * feature work". It is that a reading taken for EVERY path, rather than only
+ * from the single-claimant arm, turns an unreadable copy into UNMEASURED and
+ * UNMEASURED into a refusal — and then files this collector keeps today start
+ * being refused, on a run that was never about content at all. The second
+ * case below is that property, pinned by value.
+ *
+ * ## Two readings, because either alone has a hole
+ *
+ * - A verdict pin alone is satisfied by a future edit that quietly starts
+ *   supplying a reading from these very cases, which would make the pin a
+ *   statement about the WITH-reading path wearing AC-9's name.
+ * - A call-site census alone is satisfied by a tree in which the audit stops
+ *   refusing anything.
+ *
+ * The census carries its own control (#657): the same scanner that reports
+ * zero call sites in `test/wave-claim-propagation.test.ts` — which exercises
+ * the audit only through ship.js's own callers, and is run unmodified — has
+ * to find the population in THIS file, or its zero is an instrument that
+ * stopped reporting rather than a fact about that file.
+ */
+
+/**
+ * The number of top-level arguments at every `auditWorktreeClaims` call in
+ * `source`.
+ *
+ * The needle is assembled rather than written, so this scanner does not count
+ * itself — a checker that greps for a call cannot otherwise tell a call from
+ * a sentence about one.
+ */
+function auditCallArities(source: string): number[] {
+  const needle = `${"auditWorktreeClaims"}(`;
+  const arities: number[] = [];
+  for (let at = source.indexOf(needle); at >= 0; at = source.indexOf(needle, at + 1)) {
+    let parens = 0;
+    let nested = 0;
+    let commas = 0;
+    let closed = false;
+    for (let i = at + needle.length - 1; i < source.length; i++) {
+      const ch = source[i]!;
+      if (ch === "(") parens++;
+      else if (ch === ")") {
+        parens--;
+        if (parens === 0) {
+          closed = true;
+          // An empty argument list is zero arguments, not one.
+          arities.push(source.slice(at + needle.length, i).trim() === "" ? 0 : commas + 1);
+          break;
+        }
+      } else if (ch === "[" || ch === "{") nested++;
+      else if (ch === "]" || ch === "}") nested--;
+      else if (ch === "," && parens === 1 && nested === 0) commas++;
+    }
+    if (!closed) {
+      throw new Error(`unbalanced auditWorktreeClaims call at offset ${at} — the scanner cannot read this file`);
+    }
+  }
+  return arities;
+}
+
+describe("#892 AC-9: the audit is driven with no content reading, and nothing moves", () => {
+  const WAVE_SUITE = join(REPO_ROOT, "test", "wave-claim-propagation.test.ts");
+  const THIS_SUITE = join(REPO_ROOT, "test", "collect-claim-enforcement.test.ts");
+
+  test("every call site in this file passes exactly one argument", () => {
+    const arities = auditCallArities(readFileSync(THIS_SUITE, "utf-8"));
+    // A floor, not an equality: the claim is that the scanner READ this
+    // population, and an exact count is a number nobody is maintaining that
+    // an unrelated case would break (#637).
+    expect(
+      arities.length,
+      "the scanner found almost no call sites in the file it is pointed at — it is not reading what it claims to",
+    ).toBeGreaterThan(15);
+    expect(
+      arities.filter(n => n !== 1),
+      "a call site in this file supplies a second argument, so its verdicts are no longer evidence about the no-reading path",
+    ).toEqual([]);
+  });
+
+  test("the wave suite calls the audit nowhere, measured with the same scanner", () => {
+    // Zero is only a reading if the instrument works, and the case above is
+    // the control that says it does. `wave-claim-propagation.test.ts` reaches
+    // the audit through ship.js's own callers, which is why AC-9 asks for it
+    // to be RUN unmodified rather than edited.
+    const source = readFileSync(WAVE_SUITE, "utf-8");
+    expect(source.length, "the wave suite could not be read").toBeGreaterThan(0);
+    expect(auditCallArities(source)).toEqual([]);
+  });
+
+  /**
+   * One situation per outcome the audit can reach without a content reading,
+   * over worktree directories that do not exist.
+   *
+   * Pinned by VALUE rather than by pairwise difference: several outcomes can
+   * all be different and all be wrong, and what AC-9 claims is that each one
+   * is the SAME answer it was before #892 — not merely that they still differ.
+   */
+  const ALLOWLISTS = ".claude/conformity-allowlists.json";
+
+  const SITUATIONS: Array<{
+    situation: string;
+    results: AgentResult[];
+    refused: string[];
+    collected: string[];
+  }> = [
+    {
+      situation: "disjoint claimed work",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts"], claimedFiles: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] },
+      ],
+      refused: [],
+      collected: ["lib/a.ts", "lib/b.ts"],
+    },
+    {
+      situation: "one unclaimed file with a single claimant",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts", "lib/shared.ts"], claimedFiles: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts", "lib/shared.ts"] },
+      ],
+      refused: ["lib/shared.ts"],
+      collected: ["lib/a.ts", "lib/b.ts"],
+    },
+    {
+      situation: "a DA-owned write",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts", "PROJECT-STATE.md"], claimedFiles: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] },
+      ],
+      refused: ["PROJECT-STATE.md"],
+      collected: ["lib/a.ts", "lib/b.ts"],
+    },
+    {
+      situation: "a co-owned registry one worktree wrote",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts", ALLOWLISTS], claimedFiles: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] },
+      ],
+      refused: [],
+      collected: [ALLOWLISTS, "lib/a.ts", "lib/b.ts"],
+    },
+    {
+      situation: "a co-owned registry two worktrees wrote",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts", ALLOWLISTS], claimedFiles: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts", ALLOWLISTS], claimedFiles: ["lib/b.ts"] },
+      ],
+      refused: [ALLOWLISTS, ALLOWLISTS],
+      collected: ["lib/a.ts", "lib/b.ts"],
+    },
+    {
+      situation: "a path that cannot be staged",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts", "lib/a;rm.ts"], claimedFiles: ["lib/a.ts", "lib/a;rm.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] },
+      ],
+      refused: ["lib/a;rm.ts"],
+      collected: ["lib/a.ts", "lib/b.ts"],
+    },
+    {
+      situation: "two claimants for one file",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/shared.ts"], claimedFiles: ["lib/shared.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/shared.ts", "lib/b.ts"] },
+      ],
+      refused: ["lib/shared.ts"],
+      collected: ["lib/b.ts"],
+    },
+    {
+      situation: "no worktree issued a claim",
+      results: [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"] },
+      ],
+      refused: ["lib/a.ts", "lib/b.ts"],
+      collected: [],
+    },
+    {
+      situation: "a lone worktree, exempt from its own claim",
+      results: [{ worktreePath: WT_A, filesChanged: ["lib/a.ts", "lib/unclaimed.ts"], claimedFiles: ["lib/a.ts"] }],
+      refused: [],
+      collected: ["lib/a.ts", "lib/unclaimed.ts"],
+    },
+  ];
+
+  test("none of these fixtures names a directory that exists", () => {
+    // The premise. If one of these paths were ever a real directory the
+    // situations below would stop being readings of the no-reading path, and
+    // the pin would quietly become a pin of something else.
+    for (const wt of [WT_A, WT_B]) {
+      expect(existsSync(wt), `${wt} exists on disk — these fixtures are no longer unreadable`).toBe(
+        false,
+      );
+    }
+  });
+
+  for (const s of SITUATIONS) {
+    test(`unchanged with no reading supplied: ${s.situation}`, () => {
+      const audit = auditWorktreeClaims(s.results);
+      expect(audit.violations.map(v => v.path).sort(), `${s.situation}: refused`).toEqual(
+        [...s.refused].sort(),
+      );
+      expect(
+        audit.candidates.flatMap(c => c.filesChanged).sort(),
+        `${s.situation}: collected`,
+      ).toEqual([...s.collected].sort());
+    });
+  }
+
+  test("the population reaches both outcomes, so the pin is not one-sided", () => {
+    // A table of nine refusals would satisfy every assertion above while
+    // saying nothing about the files this collector KEEPS — which is the half
+    // a reading taken for every path would break.
+    expect(SITUATIONS.filter(s => s.refused.length === 0).length).toBeGreaterThan(1);
+    expect(SITUATIONS.filter(s => s.collected.length === 0).length).toBeGreaterThan(0);
+    expect(SITUATIONS.filter(s => s.refused.length > 0 && s.collected.length > 0).length)
+      .toBeGreaterThan(1);
   });
 });

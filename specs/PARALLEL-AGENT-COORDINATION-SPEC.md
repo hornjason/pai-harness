@@ -433,3 +433,162 @@ knew.
 None of the four mutations is left in the tree; all were applied to
 `workflows/ship.js`, run, reverted, and the file confirmed byte-identical
 afterwards by checksum.
+
+## A guard that could not tell divergence from agreement (#892, 2026-10-21)
+
+#629 made the refusal say WHY the claim was absent. It still says nothing about
+the bytes, and the audit decides on the claim ledger alone — so two situations
+that call for opposite actions are indistinguishable:
+
+- **Two worktrees edited a file differently and one did not claim it.** Taking
+  either copy discards the other's edits. **Refuse.**
+- **Two worktrees produced the SAME BYTES.** There is nothing to lose and
+  nothing to choose between. **Collect.**
+
+Run `wf_161c4e96-f01` — agentgrit #250, 24 agents, ~35 minutes, 0 errors — was
+the second case. Three preserved branches whose overlapping files were
+byte-identical, one a strict superset of the other two; nine files refused as
+unclaimed; `SHIP_FAILED`; no PR.
+
+### The three readings, and the one position that takes them
+
+`compareClaimedFileContent` in `lib/claim-content.ts` is the only thing in this
+repository that compares the two copies, and it answers exactly three ways:
+
+| Reading | What it means | What the caller does |
+|---|---|---|
+| `IDENTICAL` | both copies hash the same | collect — there is no divergence to catch |
+| `DIFFERENT` | the digests differ | refuse, naming the divergence |
+| `UNMEASURED` | a copy could not be read, or a reader answered without answering | refuse, naming the path and the reason |
+
+`UNMEASURED` is a first-class answer rather than a falsy `IDENTICAL`. A
+comparison nobody could take is not a comparison that passed, and `0`, `{}`,
+`null` and silence are all indistinguishable from success
+(`.claude/rules/config-access.md`).
+
+### The single-claimant arm is the only caller
+
+The reading is asked in ONE arm of `auditWorktreeClaims` — the one reached when
+a single other worktree claims the file and the reporting worktree is not it.
+Every other arm refuses exactly as before, byte-identical copies or not:
+
+- **DA-owned** (`project-state.json`, `PROJECT-STATE.md`, `SUCCESS.md`) — a
+  shared state document is contested whatever the bytes say today (#296).
+- **Co-owned registry written by more than one worktree** — collection copies
+  whole files, so agreeing on one version is not agreement on the merge.
+- **Path refusal** — `pathRefusal` is asked by staging and by the audit before
+  this is ever reached (#400); a third asker would reinstate the defect #400
+  removed.
+- **Two or more claimants** — a scheduling failure SC-411 should have caught.
+- **No claim issued at all** — #627's relay defect. Fix the caller; the bytes
+  say nothing about whether the pairing dropped the claim.
+
+Widening the content reading to any of those is the cheapest wrong fix
+available here, and it is wrong in the direction that costs the most: it turns
+a refusal into a silent collection.
+
+### The terminal-reachable caller, and both refusal sentences
+
+`workflows/ship.js` cannot import (#69), so the arm reaches the reading across
+a subprocess boundary through `scripts/compare-claim-content.ts`, exactly as
+`scripts/collect-worktree-files.ts` and `scripts/rook-review-scope.ts` do. It
+prints one JSON body on stdout — `reading`, `collectable`, the comparison, and
+the refusal — and the sentence on stderr.
+
+A refusal that says only *"that file was unclaimed"* is the sentence this issue
+exists to replace, so neither of these is allowed to be that:
+
+**DIFFERENT** — names the divergence FROM THE CLAIMING WORKTREE'S COPY, both
+worktree paths and the file path:
+
+> REFUSED src/f.ts: the reporting worktree's copy DIVERGES IN CONTENT from the
+> claiming worktree's copy — /wt-a/src/f.ts and /wt-b/src/f.ts are not the same
+> bytes. This is a real content divergence, not merely a file that went
+> unclaimed: collecting one copy would discard the other worktree's edits. Open
+> the diff between those two paths (#892).
+
+**UNMEASURED** — names the exact path that could not be read and the reader's
+own reason, per side, and says the path is not collectable:
+
+> REFUSED src/f.ts: the content comparison is UNMEASURED — the claiming copy at
+> /wt-empty/src/f.ts could not be read: ENOENT: no such file or directory, open
+> '/wt-empty/src/f.ts'. An unreadable comparison is not an identical one, so
+> src/f.ts is NOT reported as collectable (#892).
+
+Both carry `collectable: false` in the JSON body, and the UNMEASURED path is
+never reported as collectable anywhere in the emission.
+
+- [ ] SC-2440: scripts/compare-claim-content.ts contains [the comparison is called once here and declared nowhere here] — the script calls the one binding from lib/claim-content.ts and declares no comparison of its own, so there is a single position in the tree that compares the bytes and a single thing to mutate
+- [ ] SC-2441: scripts/compare-claim-content.ts contains [EXIT-CODE-CONSTANT] — every refusal exits through one exported exit-code constant, assigned on exactly one line, and the file's single process exit is handed that constant rather than a literal
+- [ ] SC-2442: scripts/compare-claim-content.ts contains [DIVERGES IN CONTENT] — a DIFFERENT reading refuses naming the content divergence from the claiming worktree's copy, both worktree paths and the file path, and never only that the file was unclaimed
+- [ ] SC-2443: scripts/compare-claim-content.ts contains [NOT reported as collectable] — an UNMEASURED reading refuses naming the exact path that could not be read and the reader's own reason, and that path is never reported collectable
+- [ ] SC-2444: scripts/compare-claim-content.ts contains [the mutant (exit constant 0) does NOT refuse] — a mutant copy with the exit constant set to 0 is built and run beside the real script for BOTH refusal readings, asserting per reading that the real one refuses and the mutant does not
+- [ ] SC-2445: The content reading is reached from the single-claimant arm of `auditWorktreeClaims` and from no other arm — DA-owned, co-owned, path-refusal, two-claimant and no-claim-issued each refuse unchanged even when the two copies are byte-identical
+
+The ids stay UNTICKED deliberately. `scripts/sync-sc-status.ts` ticks a
+criterion when a test file names it, and the proof for SC-2440..SC-2444 lives
+in the script's own `--prove` mode rather than in `test/`: this sub-issue's
+claim covers the script and this spec and nothing else, and a test file no
+sub-issue claimed is refused at collection by SC-413. Ticking them from the
+script would certify criteria that `test/` does not cover, which is
+`.claude/rules/claiming-sc-coverage.md`'s trap from the other direction.
+SC-2445 belongs to the sub-issue that writes the arm.
+
+### What was broken to prove it (SC-2440..2444)
+
+The battery is the script's own `--prove` mode, so it is re-run by anyone who
+runs it rather than described here:
+
+```bash
+bun scripts/compare-claim-content.ts --prove     # 12 rows, exit 0
+```
+
+It builds a copy of the source with the exit constant set to `0`, rewrites the
+relative import to an absolute path so the copy runs from a temp directory, and
+runs real and mutant over the same two fixtures. Three properties make the rows
+mean something:
+
+- **The IDENTICAL control runs first.** Without it, "exited non-zero" is not
+  evidence of a refusal — a script that cannot run exits non-zero for every
+  input, and a mutant that died on module resolution reads as the mutation
+  having been rejected on the merits.
+- **The mutant must reach the SAME reading.** Its exit `0` is then the removed
+  refusal and not a crash, a usage error or an unresolved import; the row
+  asserts real and mutant differ ONLY in the exit code, with identical stdout.
+- **The builder ABORTS when its anchor moves.** A second assignment, a refusal
+  that bypasses the constant, or a surviving relative import throws rather than
+  returning an unmutated copy — a harness that silently no-ops when its target
+  moves is the decorative check this is against.
+
+Every count was predicted before the battery ran, and **the baseline row was
+read first**. Mutations were applied to `scripts/compare-claim-content.ts`,
+run, and reverted; the file was confirmed byte-identical afterwards by sha256.
+
+**Baseline, unmutated: 12 rows, 0 failed.**
+
+| Mutation | Predicted | Failed rows |
+|---|---|---|
+| `refusalSentence` returns `null` for every reading | 6 | **6 of 12** |
+| the cheapest wrong fix: DIFFERENT reuses the bare *"that file was not claimed"* sentence | 1 | **1 of 12** |
+| `collectable` computed as `comparison !== null` | 2 | **2 of 12** |
+| the UNMEASURED branch stops refusing | 3 | **3 of 12** |
+| the single exit inlined as a literal, bypassing the constant | abort | **the proof ABORTS — 0 rows run, exit 1, "could not build the mutant"** |
+
+**Before believing any of them, the input on which mutant and original
+differ**, named and run rather than assumed:
+
+- rows 1, 2 and 4 — the DIFFERENT fixture, two worktrees whose copies of
+  `src/daemon/auto-reflection.ts` read `export const reflect = true;` and
+  `export const reflect = false;`, and the UNMEASURED fixture, a claiming
+  worktree holding no copy of that file at all. The original exits 1 carrying
+  the sentences above; each mutant exits 0, or exits 1 carrying the bare
+  unclaimed sentence.
+- row 3 — the UNMEASURED fixture: the original reports `collectable: false`,
+  the mutant reports `collectable: true` for a file nobody could read.
+- row 5 — any input at all: the builder refuses to build, which is the point.
+
+**The cheapest wrong fix, named: let `UNMEASURED` collect.** An unreadable copy
+on a run that is otherwise fine looks like noise, and treating it as IDENTICAL
+makes the symptom disappear. Row 4 is that repair applied, and it is 3 red: the
+reading is the one state in which nobody knows what the bytes say, and a guard
+that collects on it is a guard that collects on a read failure.
