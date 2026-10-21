@@ -281,6 +281,60 @@ export const AI_REVIEW_CREDS_RELOCATE_STEP_NAME =
 export const AI_REVIEW_CREDS_BASENAME = "ai-review-gcp-creds";
 
 /**
+ * The per-run directory the credential is moved into (#893).
+ *
+ * #852 moved the credential out of the CHECKOUT, which was the finding at
+ * the time. The destination it chose was `RUNNER_TEMP`'s root — which is the
+ * job's scratch, the directory both drift passes subtract, and, until #824,
+ * the directory holding the findings payload the reviewer is told to write.
+ * The step's own refusal already named the hazard in terms: *"Refusing
+ * rather than running the reviewer with a live bearer token in the directory
+ * it reads."* It then put the token there.
+ *
+ * **Unix modes cannot fix this and neither can a filename.** The reviewer
+ * runs as the same user as the job — 0600 is no barrier to it — and
+ * `AI_REVIEW_ALLOWED_TOOLS` grants `Glob` unscoped, so an unguessable
+ * `mktemp` name is enumerable in one call. The credential also cannot be
+ * deleted before the review: the review step is what spends it.
+ *
+ * So the only lever that bites is the agent's own permission system, and
+ * exactly one spelling of it is consulted for reads. Claude Code's
+ * documentation, quoted in full at `AI_REVIEW_WORKSPACE_WRITE_DENY`:
+ *
+ *   > Claude Code checks file permissions against `Edit(path)` and
+ *   > `Read(path)` rules only.
+ *
+ * `Read(<this directory>/**)` is therefore the fix, and the directory exists
+ * so that the rule has a region to name that contains the credential and
+ * nothing else. A rule naming the credential FILE would have to be rebuilt
+ * every time the auth action renamed its output; a rule naming
+ * `RUNNER_TEMP` would deny the findings payload and the baseline with it.
+ */
+export const AI_REVIEW_CREDS_DIR_PREFIX = "ai-review-creds";
+
+/**
+ * The step output carrying the ready-made deny rule, comma and all.
+ *
+ * The rule text is built in BASH and travels whole, rather than being
+ * assembled in the generator around a `${{ }}` path. That is a deliberate
+ * choice about which way it fails:
+ *
+ * - `--disallowedTools …,Read(${{ steps.x.outputs.dir }}/**)` with an
+ *   unresolved expression renders `Read(/**)`, which denies EVERY read. The
+ *   reviewer would read nothing, find nothing, and "found nothing" is the
+ *   output of a clean review — a fail-shut that arrives as a green check.
+ * - This form renders the empty string, so an unresolved expression leaves
+ *   the deny list exactly as it was. That is fail-open, which is worse in
+ *   principle and far better here: it is the current behaviour, the CLI
+ *   warns about nothing, and `AC-3d` is what notices.
+ *
+ * The leading comma is part of the value for the same reason: an empty
+ * output must append nothing at all, not a trailing comma the CLI would
+ * read as an empty rule name.
+ */
+export const AI_REVIEW_CREDS_DENY_OUTPUT = "denyread";
+
+/**
  * The glob `google-github-actions/auth` names its credentials file with.
  *
  * Its README publishes exactly this as the `.gitignore` line consumers are
@@ -373,6 +427,52 @@ export function buildCredsRelocateScript(): string {
     `action writes exactly one file today; a second one means that is no ` +
     `longer true and the reviewer would read it. Refusing`;
 
+  // #893. Every one of these ends with a live bearer token in a directory
+  // the reviewer's deny rule does not cover, so each refuses rather than
+  // continuing — the step's own opening refusal already says the review must
+  // not run with the token in a directory it reads.
+  const credDirTaken =
+    `the credential directory under RUNNER_TEMP already exists. Its name ` +
+    `carries this run id and attempt, so nothing this job did put it ` +
+    `there, and the cloud credential would be moved into something another ` +
+    `user on this runner controls. Refusing rather than adopting it — and ` +
+    `not deleting it, because what to do with another user's directory is ` +
+    `not this job's decision`;
+
+  const credDirSymlink =
+    `the credential directory path under RUNNER_TEMP is a SYMLINK, so a ` +
+    `link left by an earlier job on this runner would decide where this ` +
+    `job writes a live bearer token. Refusing, and not following or ` +
+    `removing it`;
+
+  const credDirFailed =
+    `the credential directory under RUNNER_TEMP could not be created, so ` +
+    `there is nowhere to put the cloud credential that the reviewer's deny ` +
+    `rule names. Refusing rather than leaving the token in the job scratch ` +
+    `directory the reviewer can enumerate`;
+
+  const credChmodFailed =
+    `the credential directory under RUNNER_TEMP could not be set to mode ` +
+    `0700, so the cloud credential would be readable by any other job ` +
+    `sharing this runner. Refusing`;
+
+  const credModeWrong =
+    `the credential directory under RUNNER_TEMP is not mode 0700 after ` +
+    `chmod reported success, or its mode could not be read back at all, so ` +
+    `whether the cloud credential is protected from other jobs on this ` +
+    `runner is UNMEASURED. Refusing: "it is 0700" and "nobody looked" must ` +
+    `not be the same answer. Mode read back`;
+
+  const credFileChmodFailed =
+    `the cloud credential file could not be set to mode 0600 after it was ` +
+    `moved. Refusing`;
+
+  const noOutput =
+    `GITHUB_OUTPUT is not set, so this step cannot tell the review step ` +
+    `which directory holds the cloud credential and the reviewer would run ` +
+    `with no rule denying it. Refusing rather than moving a live bearer ` +
+    `token to a place nothing is told to keep the reviewer out of`;
+
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
 
@@ -399,8 +499,70 @@ if [ ! -f "\${src}" ]; then
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
+# #893. The deny rule reaches the review step through this file and nothing
+# else. Without it the step would move the credential and then be unable to
+# say where, the review would run with no rule covering it, and the only
+# trace would be a rule that renders empty — the fail-open this output's
+# shape accepts for an unresolved expression, arriving here where it can be
+# refused instead.
+if [ -z "\${GITHUB_OUTPUT:-}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${noOutput}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
 nonce="\${GITHUB_RUN_ID:-0}-\${GITHUB_RUN_ATTEMPT:-0}"
-dest="\${RUNNER_TEMP}/${AI_REVIEW_CREDS_BASENAME}-\${nonce}.json"
+
+# #893. Its OWN directory, holding the credential and nothing else, so the
+# deny rule below has a region to name. Not RUNNER_TEMP's root: that is where
+# the drift baseline lives and, until #824, where the findings payload the
+# reviewer is told to write lived too — a rule naming it would deny the
+# reviewer its own output.
+dir="\${RUNNER_TEMP}/${AI_REVIEW_CREDS_DIR_PREFIX}-\${nonce}${AI_REVIEW_FINDINGS_DIR_SUFFIX}"
+
+# FIRST, before anything that dereferences. \`-e\`, \`-d\` and \`-O\` all
+# follow symlinks, so a link left by an earlier job on this runner would
+# otherwise decide where a live bearer token gets written.
+if [ -L "\${dir}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${credDirSymlink}: $(escape_annotation "\${dir}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+if [ -e "\${dir}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${credDirTaken}: $(escape_annotation "\${dir}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# \`-m 700\` at creation and no \`-p\`: no window in which a directory about
+# to hold a credential is world-readable, and an existing path is an error
+# rather than something adopted. chmod and the read-back below are the
+# verification, not the protection.
+if ! out=$(mkdir -m 700 "\${dir}" 2>&1); then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${credDirFailed}: $(escape_annotation "\${out}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# No \`|| true\`. A hardening that cannot fail is not a hardening, and this
+# one is holding a live bearer token.
+if ! out=$(chmod 700 "\${dir}" 2>&1); then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${credChmodFailed}: $(escape_annotation "\${out}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# chmod's exit code is a claim; the mode is read back. Same two spellings
+# and same reason as \`buildPrepareScript\`.
+mode=
+if m=$(stat -c '%a' "\${dir}" 2>/dev/null) && [ -n "\${m}" ]; then
+  mode="\${m}"
+elif m=$(stat -f '%Lp' "\${dir}" 2>/dev/null) && [ -n "\${m}" ]; then
+  mode="\${m}"
+fi
+
+if [ "\${mode}" != 700 ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${credModeWrong}: $(escape_annotation "\${mode:-<unreadable>}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+dest="\${dir}/${AI_REVIEW_CREDS_BASENAME}-\${nonce}.json"
 
 # Checked on its own line rather than captured, for the reason the baseline
 # step states: \`x=$(...)\` discards the exit code.
@@ -408,7 +570,17 @@ if ! out=$(mv -f "\${src}" "\${dest}" 2>&1); then
   echo "::error title=${AI_REVIEW_CREDS_TITLE}::${moveFailed}: $(escape_annotation "\${out}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
-chmod 600 "\${dest}" 2>/dev/null || true
+
+# Defence in depth and nothing more: the reviewer runs as this user, so the
+# file mode is no barrier to it. The DIRECTORY's 0700, read back above, is
+# what keeps other users off; the deny rule below is what keeps the reviewer
+# off. This refuses on a non-zero exit rather than \`|| true\`, and its mode
+# is deliberately not read back — the directory's reading already covers the
+# filesystem-ignores-modes case for this path.
+if ! out=$(chmod 600 "\${dest}" 2>&1); then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${credFileChmodFailed}: $(escape_annotation "\${out}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
 
 # Every variable the auth step exported follows the file. GOOGLE_GHA_CREDS_PATH
 # is the one the action's post step reads to decide what to delete; the other
@@ -420,6 +592,19 @@ ${AI_REVIEW_CREDS_EXPORTED_VARS.map(v => `  echo "${v}=\${dest}"`).join("\n")}
 } >> "\${GITHUB_ENV}"
 
 echo "ai-review credential moved out of the workspace: \${dest}"
+
+# #893. The deny rule, built here and travelling whole — see
+# \`AI_REVIEW_CREDS_DENY_OUTPUT\` for why the comma and the glob are part of
+# the value rather than assembled around it in the generator.
+#
+# Spelled against Read, and against nothing else: Claude Code consults path
+# rules for the Edit and Read tools ONLY, and accepts rules naming the other
+# tools while never consulting them. A path rule naming one of those would
+# read as a second barrier and be worth nothing, which is the shape this
+# whole file exists to refuse. The tool names are left bare here on purpose
+# — a parenthesised one in a comment is indistinguishable from a rule to
+# the scan in ai-review-write-scope.test.ts, which this sentence tripped.
+echo "${AI_REVIEW_CREDS_DENY_OUTPUT}=,Read(\${dir}/**)" >> "\${GITHUB_OUTPUT}"
 
 # A READING, not a belief. The move above is correct only while the auth
 # action writes one file, which is measured rather than assumed — and this is
@@ -1521,7 +1706,19 @@ export function aiReviewClaudeArgs(vertex: VertexCiDecision): string {
     // second flag would be a second place to forget. No spaces in it — the
     // args string is emitted unquoted, so a rule containing one would reach
     // the CLI in pieces.
-    `--disallowedTools ${AI_REVIEW_DISALLOWED_TOOLS},${AI_REVIEW_WORKSPACE_WRITE_DENY}`
+    // #893. The credential's read deny, appended only where there IS a
+    // credential: `vertex.config === null` means no auth step, no relocate
+    // step, and therefore no step output for this expression to read — an
+    // unresolvable expression renders empty, but emitting one that is known
+    // to be unresolvable would be a rule written down that cannot hold.
+    //
+    // It rides in the same flag as the other denials, as the comment above
+    // says, and the leading comma lives inside the step output so that an
+    // unresolved expression appends nothing rather than a trailing comma.
+    `--disallowedTools ${AI_REVIEW_DISALLOWED_TOOLS},${AI_REVIEW_WORKSPACE_WRITE_DENY}` +
+    (vertex.config === null
+      ? ""
+      : `\${{ steps.${AI_REVIEW_CREDS_RELOCATE_STEP_ID}.outputs.${AI_REVIEW_CREDS_DENY_OUTPUT} }}`)
   );
 }
 
@@ -2570,12 +2767,12 @@ export function buildPrepareScript(): string {
   // nobody intended and there is no reading afterwards that would show it.
   // Another user's directory is a decision for a human.
   const preexisting =
-    `the findings directory under RUNNER_TEMP already exists and is not a ` +
-    `directory this job owns, so writing the payload into it would hand a ` +
-    `reviewer's output to whoever does own it. This is a reused runner ` +
-    `holding a leftover. Refusing rather than adopting it — and not ` +
-    `deleting it, because what to do with another user's directory is not ` +
-    `this job's decision`;
+    `the findings directory under RUNNER_TEMP already exists. Its name ` +
+    `carries this run id and attempt, so nothing this job did put it ` +
+    `there: a reused runner is holding a leftover, and writing the payload ` +
+    `into it would hand a reviewer's output to whoever does own it. ` +
+    `Refusing rather than adopting it — and not deleting it, because what ` +
+    `to do with another user's directory is not this job's decision`;
 
   // `chmod` exiting non-zero, and `chmod` exiting ZERO without the mode
   // taking, are different failures and both of them end with the findings
@@ -2589,12 +2786,30 @@ export function buildPrepareScript(): string {
     `other job sharing this runner. Refusing rather than continuing with an ` +
     `unprotected directory`;
 
+  // No backtick, no double quote, no dollar — see AC-14 in
+  // test/ai-review-security-repairs.test.ts. This text is spliced into a
+  // double-quoted shell string, where a backtick is command substitution:
+  // the first draft of this very sentence ran stat -c and stat -f on the
+  // runner and printed with both tool names missing. A refusal about
+  // measurement integrity, executing code.
   const modeUnmeasured =
     `the findings directory under RUNNER_TEMP was created and chmod reported ` +
-    `success, but its mode could not be READ BACK — neither \`stat -c\` nor ` +
-    `\`stat -f\` could be run — so whether the payload is protected from ` +
-    `other jobs on this runner is UNMEASURED. Refusing: "it is 0700" and ` +
-    `"nobody looked" must not be the same answer`;
+    `success, but its mode could not be READ BACK — neither the GNU nor the ` +
+    `BSD spelling of stat could be run — so whether the payload is ` +
+    `protected from other jobs on this runner is UNMEASURED. Refusing: it ` +
+    `is 0700 and nobody looked must not be the same answer`;
+
+  // Finding 1, and it is the one that turns this directory into a write
+  // grant somewhere else: `-d` and `-O` both FOLLOW symlinks, so a symlink
+  // this job owns, pointing anywhere, satisfies both. The directory is
+  // passed to the reviewer as `--add-dir`, so the grant lands wherever the
+  // link resolves. A prior job on a reused self-hosted runner is all it
+  // takes to leave one. Tested BEFORE anything that dereferences.
+  const isSymlink =
+    `the findings directory path under RUNNER_TEMP is a SYMLINK. It is ` +
+    `handed to the reviewer as a writable directory, so a link left by an ` +
+    `earlier job on this runner would grant the reviewer write access to ` +
+    `wherever it points. Refusing, and not following or removing it`;
 
   const modeWrong =
     `the findings directory under RUNNER_TEMP is not mode 0700 after chmod ` +
@@ -2647,16 +2862,34 @@ case "\${dir}" in
     ;;
 esac
 
-# A reused runner may already hold this path, and \`mkdir -p\` adopts it in
-# silence. Refuse, do not delete — see the \`preexisting\` text.
-if [ -e "\${dir}" ] && { [ ! -d "\${dir}" ] || [ ! -O "\${dir}" ]; }; then
+# FIRST, and before anything that dereferences: \`-e\`, \`-d\` and \`-O\` all
+# follow symlinks, so a \`-L\` test placed after any of them reads the
+# target and says nothing about the link.
+if [ -L "\${dir}" ]; then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${isSymlink}: $(escape_annotation "\${dir}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# ANY pre-existing path refuses. The nonce is run id plus attempt, so this
+# step cannot legitimately meet its own directory — anything here came from
+# somewhere else. Refuse, do not delete, and do not inspect the owner: an
+# ownership test is one more thing to get subtly wrong when "nothing may be
+# here at all" is both simpler and stricter.
+if [ -e "\${dir}" ]; then
   echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${preexisting}: $(escape_annotation "\${dir}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
+# \`-m 700\` and no \`-p\`. The mode is set AT CREATION, so there is no window
+# in which the directory exists world-readable; and without \`-p\` an
+# existing path is an error rather than something adopted in silence, which
+# makes the refusal above a second line of defence instead of the only one.
+# The chmod and the read-back below stay, as VERIFICATION rather than as the
+# protection.
+#
 # Checked on its own line rather than captured, for the reason the baseline
 # step states: \`x=$(...)\` discards the exit code.
-if ! out=$(mkdir -p "\${dir}" 2>&1); then
+if ! out=$(mkdir -m 700 "\${dir}" 2>&1); then
   echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${mkdirFailed}: $(escape_annotation "\${out}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi

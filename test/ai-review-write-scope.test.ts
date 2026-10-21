@@ -43,7 +43,7 @@
  * permission is a claim and a diff is a reading.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -383,12 +383,14 @@ describe("AC-4: the drift step is not removed on the strength of a permission", 
  *   to be PRESENT and correctly spelled, not to be OBEYED. The restore step
  *   (#836) remains the measurement that the checkout's `.claude` is the
  *   base's, and it is not removed by this.
- * - **The `-O` arm of the leftover refusal.** `AC-1g` measures the
- *   `! -d` arm — a leftover that is a file. The other arm, a leftover
- *   DIRECTORY owned by another local user, is the shape that actually
- *   motivates the branch and no non-root test can create it. It is
- *   unmeasured here, and the refusal was chosen over `rm -rf` precisely
- *   because the unmeasured arm is the dangerous one to guess at.
+ * - **A leftover owned by another local user.** The refusal is now "ANY
+ *   pre-existing path", which does not consult the owner at all, so there
+ *   is nothing left to be unmeasured about ownership — `AC-1g` plants a
+ *   file and `AC-1o` plants a symlink, and both refuse. What is NOT
+ *   covered is the case where another user owns `RUNNER_TEMP` itself and
+ *   can win a race between the `-e` test and the `mkdir`; `mkdir` without
+ *   `-p` makes that a refusal rather than an adoption, which is the best
+ *   this shape can do without a lock.
  * - **Whether the write probe beats `[ -w ]`.** `AC-1m` reds if the probe
  *   is deleted and does NOT red if it is replaced by `[ -w "${dir}" ]` —
  *   there is no input available to a unit test where the writable bit is
@@ -591,6 +593,37 @@ describe("#824 AC-1: a findings directory the runner could not provide REFUSES",
     ).toContain("a previous generator's payload");
   });
 
+  test("AC-1o: a SYMLINK at the findings path refuses, and is not followed", () => {
+    // HIGH, and the reason the `-L` test comes first. `-e`, `-d` and `-O`
+    // all DEREFERENCE, so a symlink this job owns — one a prior job on a
+    // reused self-hosted runner left behind — satisfies every one of them
+    // while pointing anywhere at all. The directory is then handed to the
+    // reviewer as `--add-dir`, which is a WRITE GRANT to wherever the link
+    // resolves.
+    //
+    // Reds on the ownership-test form this replaced, and reds on a `-L`
+    // test placed after `-d`: by then the link has already been followed.
+    const target = mkdtempSync(join(tmpdir(), "rg-824-target-"));
+    scratch.push(target);
+    writeFileSync(join(target, "someone-elses-file"), "untouched\n");
+
+    const { runnerTemp, env } = withLeftover(p => symlinkSync(target, p));
+    const { out, code, dir, path } = runPrepare(runnerTemp, env);
+
+    expect(code, `a symlinked findings directory was accepted:\n${out.stdout}`).toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(out.stderr, "the refusal does not say the path was a symlink").toContain("SYMLINK");
+    // The grant must not be published. Reds on a fix that annotates and
+    // carries on — `--add-dir` would then name the link.
+    expect(dir, "a symlinked path was still exported as the granted directory").toBe("");
+    expect(path, "a refused prepare step still exported a findings path").toBe("");
+    // And nothing was written through the link, or removed from behind it.
+    expect(readdirSync(target), "the step wrote or deleted through the symlink").toEqual([
+      "someone-elses-file",
+    ]);
+  });
+
   test("AC-1j: chmod failing refuses rather than continuing unprotected", () => {
     // The input is the TOOL: a `chmod` that exits 1. Reds on
     // `chmod 700 "${dir}" 2>/dev/null || true`, which is what this was
@@ -613,13 +646,14 @@ describe("#824 AC-1: a findings directory the runner could not provide REFUSES",
     // Reds on trusting chmod's exit code — i.e. on the version of this fix
     // that checks `chmod`'s status and stops there, which is the repair the
     // AC-1j case above would otherwise be satisfied by.
-    const { runnerTemp, env } = withLeftover(p => {
-      mkdirSync(p);
-      chmodSync(p, 0o755);
-    });
-    const { out, code, path } = runPrepare(runnerTemp, env, { chmod: "exit 0" });
+    //
+    // The mode is supplied by a `stat` shim rather than by pre-creating the
+    // directory, because since the `-L`/`-e` hardening a pre-existing path
+    // refuses before the mode is ever read — which would have made this
+    // case green for the wrong reason.
+    const { out, code, path } = runPrepare(undefined, {}, { chmod: "exit 0", stat: "echo 755" });
 
-    expect(code, `a directory left at 0755 was accepted as 0700:\n${out.stdout}`).toBe(
+    expect(code, `a directory reported as 0755 was accepted as 0700:\n${out.stdout}`).toBe(
       AI_REVIEW_REQUIRED_EXIT,
     );
     expect(out.stderr, "the refusal does not report the mode it read back").toContain("755");
@@ -653,21 +687,19 @@ describe("#824 AC-1: a findings directory the runner could not provide REFUSES",
       "running as root: a 0500 directory is still writable, so this case cannot witness anything",
     ).not.toBe(0);
 
-    const { runnerTemp, env } = withLeftover(p => {
-      mkdirSync(p);
-      chmodSync(p, 0o500);
+    // The directory is made unwritable by the `mkdir` shim rather than
+    // pre-created, for the same reason as AC-1k: a pre-existing path now
+    // refuses before any of this is reached.
+    const { out, code, path } = runPrepare(undefined, {}, {
+      mkdir: 'exec /bin/mkdir -m 500 "$3" 2>/dev/null || exec /usr/bin/mkdir -m 500 "$3"',
+      chmod: "exit 0",
+      stat: "echo 700",
     });
-    const taken = join(runnerTemp, `${AI_REVIEW_FINDINGS_BASENAME}-7-1${AI_REVIEW_FINDINGS_DIR_SUFFIX}`);
-    try {
-      const { out, code, path } = runPrepare(runnerTemp, env, { chmod: "exit 0", stat: "echo 700" });
-      expect(code, `an unwritable findings directory was accepted:\n${out.stdout}`).toBe(
-        AI_REVIEW_REQUIRED_EXIT,
-      );
-      expect(out.stderr, "the refusal is not the write's").toContain("a write into it STILL failed");
-      expect(path, "a refused prepare step still exported a findings path").toBe("");
-    } finally {
-      chmodSync(taken, 0o700);
-    }
+    expect(code, `an unwritable findings directory was accepted:\n${out.stdout}`).toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(out.stderr, "the refusal is not the write's").toContain("a write into it STILL failed");
+    expect(path, "a refused prepare step still exported a findings path").toBe("");
   });
 
   test("AC-1n instrument control: a shim directory on PATH does not by itself refuse", () => {
