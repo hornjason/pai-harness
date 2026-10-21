@@ -226,6 +226,8 @@ function run(
     stray?: string;
     /** #893: the runner always sets GITHUB_OUTPUT; this drops it. */
     noOutput?: boolean;
+    /** #893: point GITHUB_OUTPUT somewhere the append fails or is lost. */
+    outputTo?: string;
     /** #893: pre-create the credential directory this run will derive. */
     leftover?: (path: string) => void;
     /** #893: replace a tool on PATH, to measure a reading that cannot fail. */
@@ -259,7 +261,7 @@ function run(
   };
   // The runner always sets this; the fixture did not, which is why #893's
   // output had nowhere to go the first time it was added.
-  if (!opts.noOutput) env.GITHUB_OUTPUT = outputFile;
+  if (!opts.noOutput) env.GITHUB_OUTPUT = opts.outputTo ?? outputFile;
   if (opts.shims) {
     const bin = scratchDir("ai-review-creds-shim-");
     for (const [name, body] of Object.entries(opts.shims)) {
@@ -527,12 +529,29 @@ describe("AC-7 (#843/3): the committed workflow runs it between auth and the age
  *
  * ## WHAT THIS DOES NOT COVER
  *
- * - **That the CLI honours `Read(<dir>/**)` at run time.** Nothing here
- *   runs the CLI. The evidence that path rules bind at all is #836's
- *   four-spelling table, which measured `Edit(...)`, and the documentation
- *   above, which names `Read` in the same sentence. A real review on a real
- *   runner is what would settle it, and the issue is explicit that no run
- *   has been shown to read the credential either way.
+ * - **A real review on a real runner.** The deny rules themselves ARE
+ *   measured — see the table on `AI_REVIEW_CREDS_DIR_PREFIX`, taken the way
+ *   #836 took its, against the real CLI at the recorded version. What that
+ *   measurement used was a hand-built checkout and sibling directory, not
+ *   an `ai-review` job. The cases in THIS file assert the rule text the
+ *   step emits; they do not re-run the CLI, and re-running it per test
+ *   would put a network call and a model in a unit suite.
+ *
+ *   The measurement is also version-bound. It was taken at `2.1.306`,
+ *   which is the version `lib/claude-tool-vocabulary.ts` records and NOT
+ *   the version CI runs (`2.1.303`). `ai-review-deny-vocabulary.test.ts`
+ *   reports that gap as UNMEASURED on every run and this does not close
+ *   it.
+ *
+ * - **Every future content-returning tool.** A denylist over a live
+ *   credential file is a standing commitment to enumerate them. Three are
+ *   granted today and all three are denied; a fourth added to
+ *   `AI_REVIEW_ALLOWED_TOOLS` tomorrow is an open door and nothing here
+ *   notices. The durable fix is to not have the file — a short-lived
+ *   access token in the review step's `env:`, deleted before the agent
+ *   starts — which changes the auth flow and depends on whether the pinned
+ *   action accepts a bare Vertex access token. Unmeasured, filed
+ *   separately, and this is the containment rather than the cure.
  * - **Detection.** Both drift passes subtract `RUNNER_TEMP`, so a reviewer
  *   that read the credential and copied it anywhere under `RUNNER_TEMP` is
  *   outside every detector in the generated file. That is the issue's
@@ -587,12 +606,39 @@ describe("#893: the cloud credential gets its own directory, and a rule the revi
     expect(rule, "the leading comma is missing, so the rule would fuse to the one before it").toStartWith(
       ",",
     );
-    // `Read` and not `Glob`/`Write`: path rules for those are accepted and
-    // never consulted. Reds on `,Glob(<dir>/**)`, which reads as a barrier
-    // and is worth nothing.
-    expect(rule, "the rule is not spelled against a tool whose path rules are consulted").toBe(
-      `,Read(${CRED_DIR(r)}/**)`,
+    // The MEASURED contract, every character of it. See the table on
+    // `AI_REVIEW_CREDS_DIR_PREFIX`: taken against the real CLI at the
+    // version `lib/claude-tool-vocabulary.ts` records.
+    //
+    // Reds in three separate ways, each a spelling that was shipped or
+    // nearly shipped here:
+    //   - one leading slash, which the CLI accepts IN SILENCE and never
+    //     fires. That is what the first version of this fix emitted.
+    //   - `Read` alone, which leaves `Grep` — and `Grep` returns MATCHING
+    //     LINES, so it returns the credential itself, not a hint of it.
+    //
+    // `Glob` is measured to bind and is deliberately absent: it returns
+    // paths, and this path is RUNNER_TEMP plus the run id plus the
+    // attempt, all already in the agent's environment. Asserted as absent
+    // rather than left unsaid, so a later author adding it has to read
+    // why it was left out.
+    const dir = CRED_DIR(r);
+    expect(rule, "the deny does not match the spelling that was measured to fire").toBe(
+      `,Read(/${dir}/**),Grep(/${dir}/**)`,
     );
+    expect(
+      rule,
+      "Glob is denied: it protects a path the agent can compute, and costs an exception " +
+        "in ai-review-write-scope's inert-path-rule scan",
+    ).not.toContain("Glob(");
+    // Stated separately from the equality above, so the reason survives a
+    // future edit to the expected string: the absolute form needs TWO
+    // leading slashes and one is inert.
+    for (const tool of ["Read", "Grep"]) {
+      expect(rule, `${tool} is not denied, so it is an open door to the credential`).toContain(
+        `${tool}(//`,
+      );
+    }
     // No whitespace: `claude_args` is emitted unquoted and split by the
     // action, so a rule containing a space arrives in pieces.
     expect(rule, "the rule carries whitespace and would split").not.toMatch(/\s/);
@@ -634,6 +680,24 @@ describe("#893: the cloud credential gets its own directory, and a rule the revi
       ],
       ["GITHUB_OUTPUT absent", { creds: CREDENTIAL, noOutput: true }, "GITHUB_OUTPUT is not set"],
       [
+        // The transport for the control is a thing that can fail. An
+        // unchecked `>>` leaves the review running with no rule published
+        // and the step reporting success — the control's own fail-open,
+        // one layer below the control. Input: a GITHUB_OUTPUT pointing at
+        // a path that cannot be appended to.
+        "the deny rule could not be written to GITHUB_OUTPUT",
+        { creds: CREDENTIAL, outputTo: "/nonexistent-dir-rg893/github-output" },
+        "could not be written",
+      ],
+      [
+        // And a write that returns 0 and lands nowhere. `/dev/null`
+        // accepts every append and holds none of them, which is exactly
+        // what the read-back exists to tell apart from a successful write.
+        "the deny rule did not land when read back",
+        { creds: CREDENTIAL, outputTo: "/dev/null" },
+        "not there when read back",
+      ],
+      [
         // `-e`, `-d` and `-O` all dereference, so a link an earlier job on
         // this runner left behind would decide where a live bearer token
         // gets written. Reds on a `-L` test placed after any of them.
@@ -642,7 +706,7 @@ describe("#893: the cloud credential gets its own directory, and a rule the revi
         "SYMLINK",
       ],
     ];
-    expect(cases.length, "the table is empty, so this case measured nothing").toBe(6);
+    expect(cases.length, "the table is empty, so this case measured nothing").toBe(8);
 
     for (const [label, opts, says] of cases) {
       const r = run(opts);
