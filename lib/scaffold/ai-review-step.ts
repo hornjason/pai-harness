@@ -787,7 +787,9 @@ export const AI_REVIEW_WORKSPACE_WRITE_DENY = "Edit(./**)";
  * `npm`'s logs and npx cache, or bun's install cache. The floor is real, it is
  * non-empty, and it is entirely attributable to the runtime — which is the
  * reading that lets this become a refusal rather than the reading that
- * prevents it. `AI_REVIEW_RUNTIME_HOME_PATHS` below is the subtraction.
+ * prevents it. `AI_REVIEW_RUNTIME_INERT_PATHS` below is the subtraction, and
+ * `AI_REVIEW_RUNTIME_CONFIG_PATHS` is the part of that floor the subtraction
+ * is not allowed to make silent (#871).
  *
  * ## The time reference, and the gap it leaves
  *
@@ -818,7 +820,8 @@ export const AI_REVIEW_OUTSIDE_MAXDEPTH = 4;
 
 /**
  * The runtime's own directories under `$HOME`, subtracted from the outside
- * reading so that what is left is the reviewer (#866).
+ * reading so that what is left is the reviewer (#866) — and split in two,
+ * because a third of the measured floor is not inert state (#871).
  *
  * ## The measurement, with the command beside it
  *
@@ -842,28 +845,63 @@ export const AI_REVIEW_OUTSIDE_MAXDEPTH = 4;
  * - present in one run and absent from the other:
  *   `.claude/plugins/plugin-directory-cache-v2.json`
  *
- * ## Why this is a prefix list and not a path list
+ * ## Why these are prefixes and not paths
  *
  * Four of the twelve carry a uuid, an epoch or a timestamp, and a fifth is
  * intermittent. A literal allowlist holds none of them, and an exact-set
  * comparison would flake on the sixth run for a reason nobody could
- * reconstruct. These four entries cover 25 of the 25 with nothing left over.
+ * reconstruct. The two lists below cover 25 of the 25 with nothing left over,
+ * which `test/ai-review-outside-reading.test.ts` AC-12 asserts path by path
+ * rather than leaving to this sentence.
  *
- * ## Four entries, not the three the issue named
+ * The runner home is deliberately NOT written out in full anywhere here.
+ * `ST-3` in `test/structure.test.ts` greps every `.ts` for the RUNNING
+ * machine's own `$HOME` joined to `.claude`, so an absolute example of a
+ * runner's home is clean on a developer's laptop and red in CI — which is
+ * where #866's version of this sentence was caught, having passed locally.
  *
- * #866 said three prefixes cover the floor, which is true of a STRING prefix:
- * the directory `.claude` is a prefix of the file `.claude.json` once both
- * are spelled out under a home directory. It is not true of a path-component
- * match, and a component match is what this has to be — a string prefix on
- * `.claude` also swallows a `.claudette` nobody has reasoned about. So
- * `.claude.json` is its own entry, and the correction is recorded rather
- * than quietly applied.
+ * ## Why ONE list was the wrong shape, and what the second one is for (#871)
  *
- * The two paths are deliberately NOT written out in full here. `ST-3` in
- * `test/structure.test.ts` greps every `.ts` for the RUNNING machine's own
- * `$HOME` joined to `.claude`, so an absolute example of a runner's home is
- * clean on a developer's laptop and red in CI — which is where this sentence
- * was caught, having passed locally.
+ * #866 shipped four entries — `.claude.json`, `.claude`, `.npm`, `.bun` — and
+ * subtracted all of them silently. That is correct for a transcript, a debug
+ * log and an install cache. It is wrong for four of the measured paths, and
+ * wrong in the direction the reading exists to cover:
+ *
+ * | path | what a write to it does |
+ * |---|---|
+ * | `.claude.json` | declares MCP servers — a command line the CLI runs |
+ * | `.claude/settings.json` | declares hooks — a command line the CLI runs |
+ * | `.claude/plugins/…` | the plugin directory the CLI loads from |
+ * | `.npm/_npx/<hash>/package.json` | what the next `npx` of that hash resolves |
+ *
+ * On a shared self-hosted runner `$HOME` persists between jobs, so a reviewer
+ * that writes a hook into `settings.json` reaches **another repository's
+ * build** — #843 finding 1 stated exactly. Excluding `.claude` wholesale made
+ * that write silent while the same change made the surrounding reading louder
+ * about the paths that cannot execute. Found by an automated security review
+ * of `2fa246b9`; #866's battery could not have found it, because every row
+ * varied the list or the posture and none asked what the entries CONTAIN.
+ *
+ * So the floor splits by what a write there can do, not by who usually makes
+ * it:
+ *
+ * - **inert** — runtime state carrying nothing executable. A write is
+ *   subtracted and silent, because CLEAN is a true answer.
+ * - **config** — trust-bearing, and written by the runtime on every single
+ *   run. A reviewer's write and the runtime's write are **indistinguishable
+ *   by path**, and nothing else is available to this step. That is not CLEAN;
+ *   it is UNMEASURED, which is the distinction `.claude/rules/config-access.md`
+ *   exists to insist on — `0`, `{}`, `SKIP` and silence are all
+ *   indistinguishable from success, and `UNMEASURED` is not.
+ *
+ * ## What would make the config half MEASURED, and why it is not done here
+ *
+ * Content hashing does not separate them: the runtime rewrites those files
+ * every run, so the content differs whether or not a reviewer touched them.
+ * The two things that would are denying the reviewer write at those paths
+ * outright — #824's decision about where the reviewer may write — and
+ * comparing against a job that ran no reviewer at all. Both are larger than
+ * this, and neither is a reason to keep reporting CLEAN in the meantime.
  *
  * ## What is NOT measured, said plainly
  *
@@ -873,28 +911,93 @@ export const AI_REVIEW_OUTSIDE_MAXDEPTH = 4;
  * will see the refusal fire with the path named, which is the one outcome that
  * produces the next measurement instead of silence.
  *
- * ## The cheapest wrong fix, named
+ * ## The cheapest wrong fixes, both named
  *
- * When this refusal fires on a tree nobody has investigated, the 5pm repair is
- * to put the reading back to a warning. It is one word, the red goes away, and
- * the reading returns to the state #866 exists to end — a warning nobody acts
- * on, over a floor that is now known to be subtractable.
- * `test/ai-review-outside-reading.test.ts` AC-4 is a pair that asserts BOTH
- * directions, so that repair reds the half that demands a refusal while the
+ * **#866's**: when the refusal fires on a tree nobody has investigated, the
+ * 5pm repair is to put the reading back to a warning. One word, the red goes
+ * away, and the reading returns to the state #866 exists to end.
+ * `test/ai-review-outside-reading.test.ts` AC-4 is a pair asserting BOTH
+ * directions, so that repair reds the half demanding a refusal while the
  * runtime-owned half stays green.
+ *
+ * **#871's**: move the four config entries out of the exclusion entirely and
+ * let the refusal fire on them. One edit, the blind spot closes, and
+ * `ai-review` goes red on EVERY pull request — the CLI writes `settings.json`
+ * and `.claude.json` on every start, which is why they are in the measured
+ * floor at all. A gate that refuses every run is a gate consumers delete, and
+ * the deletion costs the whole reading. AC-13's config cases assert exit 0 AND
+ * the named annotation together, so that repair reds them; asserting either
+ * half alone would survive it.
  */
-export const AI_REVIEW_RUNTIME_HOME_PATHS: readonly string[] = [
-  // The Claude CLI's own settings file, at the root of $HOME rather than
-  // inside the directory below it.
-  ".claude.json",
-  // Settings, cache, state, plugin directory cache, transcript jsonl and
-  // rotated backups of the file above.
-  ".claude",
-  // npm's debug logs and the npx cache the pinned global tools install into.
-  ".npm",
-  // bun's install cache.
-  ".bun",
+export const AI_REVIEW_RUNTIME_INERT_PATHS: readonly string[] = [
+  // A timestamp the CLI touches at startup.
+  ".claude/.last-cleanup",
+  // Which models this account may call. Read as data, never executed.
+  ".claude/cache",
+  // Session transcripts. A planted one is read, not run.
+  ".claude/projects",
+  // npm's debug logs.
+  ".npm/_logs",
+  // bun's package cache. NOT `.bun`, which also holds `bin/` — the shim
+  // directory on PATH, which is as exec-capable as a hook.
+  ".bun/install/cache",
 ];
+
+/**
+ * The part of the measured floor a write to which the CLI later OBEYS.
+ *
+ * Excluded from the refusal for the same reason the list above is — the
+ * runtime writes every one of these on every run — and reported by name as
+ * UNMEASURED rather than subtracted in silence, because at these paths this
+ * step cannot tell the runtime's write from the reviewer's. See the `#871`
+ * section of the docblock above for the table and the argument.
+ *
+ * Deliberately conservative at the two entries whose exec path is indirect:
+ * `.claude/state` holds MCP discovery verdicts, which decide whether a server
+ * is trusted, and `.claude/backups` holds rotated copies of `.claude.json`
+ * that a restore would reinstate. Neither is a command line on its own. Both
+ * decide what one will be, and the direction to be wrong in here is the one
+ * that names a path nobody needed to see.
+ */
+export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
+  // Declares MCP servers: a command line the CLI runs.
+  ".claude.json",
+  // Declares hooks: a command line the CLI runs.
+  ".claude/settings.json",
+  // The plugin directory the CLI loads from.
+  ".claude/plugins",
+  // Rotated copies of the file above, which a restore reinstates.
+  ".claude/backups",
+  // MCP discovery verdicts — which servers have already been trusted.
+  ".claude/state",
+  // What the next `npx` of that hash resolves to.
+  ".npm/_npx",
+];
+
+/**
+ * What the config half of the floor reports, under
+ * `AI_REVIEW_UNMEASURED_TITLE` and never under the refusal's own title.
+ *
+ * Exported rather than built inside the generator because the case that
+ * matters asserts an ABSENCE — an inert write must produce no annotation —
+ * and a negative assertion against a copy of a message is satisfied the
+ * moment the two copies drift. One declaring position, read by the script
+ * and by `test/ai-review-outside-reading.test.ts`.
+ *
+ * The `\\$` is escaped for the template literal this is interpolated into:
+ * the generated shell must carry a literal `$HOME`, not this process's.
+ */
+export const AI_REVIEW_RUNTIME_CONFIG_UNMEASURED =
+  `the reviewer's job wrote to the runtime's own CONFIGURATION under ` +
+  `\\$HOME, and this step cannot tell that write from the one the CLI makes ` +
+  `on every start — the paths below are rewritten by the runtime on every ` +
+  `run, so neither their presence nor their content distinguishes the two ` +
+  `(#871). These are not inert state: they declare MCP servers, hooks, the ` +
+  `plugin directory and what the next npx resolves, so a write here is a ` +
+  `command line the CLI obeys on its next start, and on a shared ` +
+  `self-hosted runner that is another repository's build (#843 finding 1). ` +
+  `This run is UNMEASURED at these paths, which is not the same as a run ` +
+  `in which the reviewer did not write to them. Paths`;
 
 /**
  * The reviewer's turn budget. One declaring position; see `aiReviewClaudeArgs`.
@@ -2386,10 +2489,14 @@ export function buildDriftScript(): string {
     `permitted; on a shared self-hosted runner \\$HOME persists between jobs, ` +
     `so a file here reaches another repository's build (#843 finding 1). The ` +
     `runtime's own directories are subtracted before this fires — ` +
-    `${AI_REVIEW_RUNTIME_HOME_PATHS.join(", ")} — and those cover every path ` +
-    `two measured runs produced (#866). What is left is not the runtime. If ` +
+    `${AI_REVIEW_RUNTIME_INERT_PATHS.join(", ")} as inert state, and ` +
+    `${AI_REVIEW_RUNTIME_CONFIG_PATHS.join(", ")} as runtime config reported ` +
+    `separately as UNMEASURED (#871) — and those cover every path two ` +
+    `measured runs produced (#866). What is left is not the runtime. If ` +
     `this runner is self-hosted its floor has never been read, and the path ` +
     `below is the reading that would start that. Paths`;
+
+  const runtimeConfig = AI_REVIEW_RUNTIME_CONFIG_UNMEASURED;
 
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
@@ -2481,9 +2588,19 @@ fi
 #
 # What IS subtracted is the runtime's own directories, which is the opposite
 # move: not a list of places to look, a list of places whose writes have been
-# measured and attributed. Two runs produced 25 paths and all 25 are in these
-# four (#866). Interpolated from AI_REVIEW_RUNTIME_HOME_PATHS so the list has
-# one declaring position; a literal here would be a second.
+# measured and attributed. Two runs produced 25 paths and all 25 are in the
+# two lists below (#866). Interpolated from AI_REVIEW_RUNTIME_INERT_PATHS and
+# AI_REVIEW_RUNTIME_CONFIG_PATHS so each list has one declaring position; a
+# literal here would be a second.
+#
+# TWO PASSES, because the floor is not one kind of thing (#871). Pass 1
+# refuses anything in neither list. Pass 2 matches ONLY the config list and
+# reports it as UNMEASURED without refusing: the runtime rewrites those files
+# on every run, so a refusal there fires on every pull request and gets the
+# gate deleted — and they declare hooks, MCP servers and the plugin
+# directory, so subtracting them in silence is reporting CLEAN about the one
+# write that reaches the next job. Neither answer is available, which is what
+# UNMEASURED is for.
 #
 # Two exclusions, both because the directory is already accounted for:
 # GITHUB_WORKSPACE is what the comparison below reads, and RUNNER_TEMP is
@@ -2507,13 +2624,35 @@ else
     -newer "\${${AI_REVIEW_TREE_BEFORE_VAR}}" \\
     -not -path "\${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \\
     -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
-${AI_REVIEW_RUNTIME_HOME_PATHS.map(
-  // Two shapes per entry, with no special case for one that happens to name a
-  // file today: the `/*` form is simply a no-op against `.claude.json`, and a
-  // list with two spellings in it is a list that can drift.
-  p => `    -not -path "\${HOME}/${p}" -not -path "\${HOME}/${p}/*" \\`,
-).join("\n")}
+${[...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS]
+  .map(
+    // Two shapes per entry, with no special case for one that happens to name
+    // a file today: the `/*` form is simply a no-op against `.claude.json`,
+    // and a list with two spellings in it is a list that can drift.
+    p => `    -not -path "\${HOME}/${p}" -not -path "\${HOME}/${p}/*" \\`,
+  )
+  .join("\n")}
     2>/dev/null | head -50 || true)
+
+  # Pass 2: the config half of the floor, reported by name and NOT refused.
+  # Matching rather than excluding, so this says what it found instead of
+  # what it let through. No \`head\` bound difference from pass 1 and no
+  # overlap with it — pass 1 excluded every path this can match.
+  runtime_config=$(find "\${HOME}" -xdev -maxdepth ${AI_REVIEW_OUTSIDE_MAXDEPTH} -type f \\
+    -newer "\${${AI_REVIEW_TREE_BEFORE_VAR}}" \\
+    -not -path "\${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \\
+    -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
+    \\( \\
+${AI_REVIEW_RUNTIME_CONFIG_PATHS.map(
+  (p, i) =>
+    `      ${i === 0 ? "" : "-o "}-path "\${HOME}/${p}" -o -path "\${HOME}/${p}/*" \\`,
+).join("\n")}
+    \\) \\
+    2>/dev/null | head -50 || true)
+  if [ -n "\${runtime_config}" ]; then
+    echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${runtimeConfig}: $(escape_annotation "\${runtime_config}")"
+  fi
+
   if [ -n "\${outside}" ]; then
     echo "::error title=${AI_REVIEW_OUTSIDE_TITLE}::${wroteOutside}: $(escape_annotation "\${outside}")" >&2
     # The annotation is emitted HERE and the exit is DEFERRED to the end of

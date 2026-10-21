@@ -1,4 +1,4 @@
-# generated-sha: b622ca055bfbc73f
+# generated-sha: 4dadc2700763b771
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -677,9 +677,19 @@ jobs:
           #
           # What IS subtracted is the runtime's own directories, which is the opposite
           # move: not a list of places to look, a list of places whose writes have been
-          # measured and attributed. Two runs produced 25 paths and all 25 are in these
-          # four (#866). Interpolated from AI_REVIEW_RUNTIME_HOME_PATHS so the list has
-          # one declaring position; a literal here would be a second.
+          # measured and attributed. Two runs produced 25 paths and all 25 are in the
+          # two lists below (#866). Interpolated from AI_REVIEW_RUNTIME_INERT_PATHS and
+          # AI_REVIEW_RUNTIME_CONFIG_PATHS so each list has one declaring position; a
+          # literal here would be a second.
+          #
+          # TWO PASSES, because the floor is not one kind of thing (#871). Pass 1
+          # refuses anything in neither list. Pass 2 matches ONLY the config list and
+          # reports it as UNMEASURED without refusing: the runtime rewrites those files
+          # on every run, so a refusal there fires on every pull request and gets the
+          # gate deleted — and they declare hooks, MCP servers and the plugin
+          # directory, so subtracting them in silence is reporting CLEAN about the one
+          # write that reaches the next job. Neither answer is available, which is what
+          # UNMEASURED is for.
           #
           # Two exclusions, both because the directory is already accounted for:
           # GITHUB_WORKSPACE is what the comparison below reads, and RUNNER_TEMP is
@@ -703,13 +713,42 @@ jobs:
               -newer "${AI_REVIEW_TREE_BEFORE}" \
               -not -path "${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \
               -not -path "${RUNNER_TEMP:-/nonexistent-temp}/*" \
+              -not -path "${HOME}/.claude/.last-cleanup" -not -path "${HOME}/.claude/.last-cleanup/*" \
+              -not -path "${HOME}/.claude/cache" -not -path "${HOME}/.claude/cache/*" \
+              -not -path "${HOME}/.claude/projects" -not -path "${HOME}/.claude/projects/*" \
+              -not -path "${HOME}/.npm/_logs" -not -path "${HOME}/.npm/_logs/*" \
+              -not -path "${HOME}/.bun/install/cache" -not -path "${HOME}/.bun/install/cache/*" \
               -not -path "${HOME}/.claude.json" -not -path "${HOME}/.claude.json/*" \
-              -not -path "${HOME}/.claude" -not -path "${HOME}/.claude/*" \
-              -not -path "${HOME}/.npm" -not -path "${HOME}/.npm/*" \
-              -not -path "${HOME}/.bun" -not -path "${HOME}/.bun/*" \
+              -not -path "${HOME}/.claude/settings.json" -not -path "${HOME}/.claude/settings.json/*" \
+              -not -path "${HOME}/.claude/plugins" -not -path "${HOME}/.claude/plugins/*" \
+              -not -path "${HOME}/.claude/backups" -not -path "${HOME}/.claude/backups/*" \
+              -not -path "${HOME}/.claude/state" -not -path "${HOME}/.claude/state/*" \
+              -not -path "${HOME}/.npm/_npx" -not -path "${HOME}/.npm/_npx/*" \
               2>/dev/null | head -50 || true)
+
+            # Pass 2: the config half of the floor, reported by name and NOT refused.
+            # Matching rather than excluding, so this says what it found instead of
+            # what it let through. No `head` bound difference from pass 1 and no
+            # overlap with it — pass 1 excluded every path this can match.
+            runtime_config=$(find "${HOME}" -xdev -maxdepth 4 -type f \
+              -newer "${AI_REVIEW_TREE_BEFORE}" \
+              -not -path "${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \
+              -not -path "${RUNNER_TEMP:-/nonexistent-temp}/*" \
+              \( \
+                -path "${HOME}/.claude.json" -o -path "${HOME}/.claude.json/*" \
+                -o -path "${HOME}/.claude/settings.json" -o -path "${HOME}/.claude/settings.json/*" \
+                -o -path "${HOME}/.claude/plugins" -o -path "${HOME}/.claude/plugins/*" \
+                -o -path "${HOME}/.claude/backups" -o -path "${HOME}/.claude/backups/*" \
+                -o -path "${HOME}/.claude/state" -o -path "${HOME}/.claude/state/*" \
+                -o -path "${HOME}/.npm/_npx" -o -path "${HOME}/.npm/_npx/*" \
+              \) \
+              2>/dev/null | head -50 || true)
+            if [ -n "${runtime_config}" ]; then
+              echo "::warning title=AI review UNMEASURED::the reviewer's job wrote to the runtime's own CONFIGURATION under \$HOME, and this step cannot tell that write from the one the CLI makes on every start — the paths below are rewritten by the runtime on every run, so neither their presence nor their content distinguishes the two (#871). These are not inert state: they declare MCP servers, hooks, the plugin directory and what the next npx resolves, so a write here is a command line the CLI obeys on its next start, and on a shared self-hosted runner that is another repository's build (#843 finding 1). This run is UNMEASURED at these paths, which is not the same as a run in which the reviewer did not write to them. Paths: $(escape_annotation "${runtime_config}")"
+            fi
+
             if [ -n "${outside}" ]; then
-              echo "::error title=AI review wrote outside the checkout::the reviewer wrote OUTSIDE the checkout, to a path the runtime does not own. The tool grant anchors at the working directory, so this was permitted; on a shared self-hosted runner \$HOME persists between jobs, so a file here reaches another repository's build (#843 finding 1). The runtime's own directories are subtracted before this fires — .claude.json, .claude, .npm, .bun — and those cover every path two measured runs produced (#866). What is left is not the runtime. If this runner is self-hosted its floor has never been read, and the path below is the reading that would start that. Paths: $(escape_annotation "${outside}")" >&2
+              echo "::error title=AI review wrote outside the checkout::the reviewer wrote OUTSIDE the checkout, to a path the runtime does not own. The tool grant anchors at the working directory, so this was permitted; on a shared self-hosted runner \$HOME persists between jobs, so a file here reaches another repository's build (#843 finding 1). The runtime's own directories are subtracted before this fires — .claude/.last-cleanup, .claude/cache, .claude/projects, .npm/_logs, .bun/install/cache as inert state, and .claude.json, .claude/settings.json, .claude/plugins, .claude/backups, .claude/state, .npm/_npx as runtime config reported separately as UNMEASURED (#871) — and those cover every path two measured runs produced (#866). What is left is not the runtime. If this runner is self-hosted its floor has never been read, and the path below is the reading that would start that. Paths: $(escape_annotation "${outside}")" >&2
               # The annotation is emitted HERE and the exit is DEFERRED to the end of
               # the step, which is not the same thing as warning. Both readings refuse;
               # exiting here would mean a reviewer that edited the tree AND touched
