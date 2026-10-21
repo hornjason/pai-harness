@@ -8,6 +8,11 @@
  * TRIGGER: PostToolUse (Write/Edit)
  *
  * Thin trigger: runs update-project-state.ts when project-state.json is modified.
+ *
+ * NOT REGISTERED — this hook is in no registry and has never fired. Found by
+ * #898's census; whether it should fire is #910 and is genuinely open, because
+ * PROJECT-STATE.md is DA-owned and an agent in a worktree must never write it
+ * (#296), so a PostToolUse trigger on any agent's write has blast radius.
  */
 
 import { execSync } from "child_process";
