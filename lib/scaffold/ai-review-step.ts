@@ -985,18 +985,6 @@ export const AI_REVIEW_RUNTIME_INERT_PATHS: readonly string[] = [
   // bun's package cache. NOT `.bun`, which also holds `bin/` — the shim
   // directory on PATH, which is as exec-capable as a hook.
   ".bun/install/cache",
-  // The Copilot CLI's SQLite session store and its write-ahead-log and
-  // shared-memory sidecars (#913), created and removed on every open of the
-  // store. A SIBLING runtime: the job that was failed runs
-  // `AI_REVIEW_MODE: vertex` and never invokes Copilot at all.
-  //
-  // Three exact names rather than `session-store.db*`. The glob is the
-  // cheaper spelling and is wider than what was measured — it would also
-  // subtract `session-store.db.evil.sh`, which is a reviewer's write and the
-  // finding. AC-17's width control is the case that holds this shut.
-  ".copilot/session-store.db",
-  ".copilot/session-store.db-wal",
-  ".copilot/session-store.db-shm",
 ];
 
 /**
@@ -1038,8 +1026,53 @@ export const AI_REVIEW_RUNTIME_CONFIG_PATHS: readonly string[] = [
   // servers is believed to offer, which is `.claude/state`'s.
   ".copilot/mcp-config.json",
   ".cache/copilot/mcp-tools",
+  // The Copilot CLI's SQLite session store and its write-ahead-log and
+  // shared-memory sidecars (#913), created and removed on every open.
+  //
+  // #922 put these in the INERT list on the `.claude/projects` argument — a
+  // transcript is read, not run. The review of that change was right that it
+  // is the weaker list, and the measurement in AC-18 is what settles it: a
+  // plant at an INERT entry is exit 0 and SILENT, while the same plant at a
+  // CONFIG entry is exit 0 and NAMED. These sit beside `mcp-config.json` in
+  // a directory one runtime owns, so whatever is true of their content, the
+  // reading that names a plant is the one to have. The docblock above
+  // already says which way to be wrong here.
+  //
+  // Three exact names rather than `session-store.db*`. The glob is the
+  // cheaper spelling and is wider than what was measured — it would also
+  // subtract `session-store.db.evil.sh`, which is a reviewer's write and the
+  // finding. AC-17's width control is the case that holds this shut.
+  ".copilot/session-store.db",
+  ".copilot/session-store.db-wal",
+  ".copilot/session-store.db-shm",
   // What the next `npx` of that hash resolves to.
   ".npm/_npx",
+];
+
+/**
+ * The entries above that are FILES, for which no `/<entry>/*` clause is
+ * emitted (#931).
+ *
+ * The emitter writes two shapes per entry, and the comment beside it called
+ * the second "simply a no-op against `.claude.json`". That holds only while
+ * a file is what sits there. Nothing stops a reviewer creating a DIRECTORY
+ * at a file-shaped path and writing inside it, and the `/*` clause then
+ * exempts the contents — measured at exit 0 for all seven entries below,
+ * silently for the three the INERT list used to hold.
+ *
+ * There is deliberately no inference from the spelling. A name with a dot in
+ * it is not a file and `.claude/.last-cleanup` would be misread by any rule
+ * simple enough to state. The shape is declared, and AC-18 refuses an entry
+ * that is in neither shape rather than letting it default back.
+ */
+export const AI_REVIEW_FILE_SHAPED_PATHS: readonly string[] = [
+  ".claude/.last-cleanup",
+  ".claude.json",
+  ".claude/settings.json",
+  ".copilot/mcp-config.json",
+  ".copilot/session-store.db",
+  ".copilot/session-store.db-wal",
+  ".copilot/session-store.db-shm",
 ];
 
 /**
@@ -1319,9 +1352,11 @@ export const AI_REVIEW_RUNTIME_CONFIG_UNMEASURED =
   `on every start — the paths below are rewritten by the runtime on every ` +
   `run, so neither their presence nor their content distinguishes the two ` +
   `(#871). These are not inert state: they declare MCP servers, hooks, the ` +
-  `plugin directory and what the next npx resolves, so a write here is a ` +
-  `command line the CLI obeys on its next start, and on a shared ` +
-  `self-hosted runner that is another repository's build (#843 finding 1). ` +
+  `plugin directory and what the next npx resolves, or they carry session ` +
+  `state and keys a runtime reads back as trusted context (#907, #913), so ` +
+  `a write here reaches what the CLI does on its next start, and on a ` +
+  `shared self-hosted runner that is another repository's build (#843 ` +
+  `finding 1). ` +
   `This run is UNMEASURED at these paths, which is not the same as a run ` +
   `in which the reviewer did not write to them. Paths`;
 
@@ -3040,10 +3075,15 @@ else
     -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
 ${[...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS]
   .map(
-    // Two shapes per entry, with no special case for one that happens to name
-    // a file today: the `/*` form is simply a no-op against `.claude.json`,
-    // and a list with two spellings in it is a list that can drift.
-    p => `    -not -path "\${HOME}/${p}" -not -path "\${HOME}/${p}/*" \\`,
+    // One shape for a declared file, two for a directory (#931). The earlier
+    // revision emitted both unconditionally and called the `/*` form "simply
+    // a no-op against `.claude.json`" — it is a no-op only while a FILE sits
+    // there, and a reviewer can put a directory at that name instead. AC-18
+    // plants one at each file-shaped entry.
+    p =>
+      AI_REVIEW_FILE_SHAPED_PATHS.includes(p)
+        ? `    -not -path "\${HOME}/${p}" \\`
+        : `    -not -path "\${HOME}/${p}" -not -path "\${HOME}/${p}/*" \\`,
   )
   .join("\n")}
 ${AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.map(runnerDiagnosticExclusion).join("\n")}
@@ -3058,10 +3098,16 @@ ${AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.map(runnerDiagnosticExclusion).join("\n")}
     -not -path "\${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \\
     -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
     \\( \\
-${AI_REVIEW_RUNTIME_CONFIG_PATHS.map(
-  (p, i) =>
-    `      ${i === 0 ? "" : "-o "}-path "\${HOME}/${p}" -o -path "\${HOME}/${p}/*" \\`,
-).join("\n")}
+${AI_REVIEW_RUNTIME_CONFIG_PATHS.map((p, i) => {
+  // The same file/directory split as pass 1 (#931), and for the invariant
+  // stated above rather than for safety: pass 1 no longer excludes
+  // `<file-entry>/*`, so matching it here would report a path that pass 1
+  // had just refused — the one overlap this comment promises does not exist.
+  const head = i === 0 ? "" : "-o ";
+  return AI_REVIEW_FILE_SHAPED_PATHS.includes(p)
+    ? `      ${head}-path "\${HOME}/${p}" \\`
+    : `      ${head}-path "\${HOME}/${p}" -o -path "\${HOME}/${p}/*" \\`;
+}).join("\n")}
     \\) \\
     2>/dev/null | head -50 || true)
   if [ -n "\${runtime_config}" ]; then

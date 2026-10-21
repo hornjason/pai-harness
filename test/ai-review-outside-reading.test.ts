@@ -288,6 +288,7 @@ import {
   AI_REVIEW_OUTSIDE_MAXDEPTH,
   AI_REVIEW_OUTSIDE_TITLE,
   AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS,
+  AI_REVIEW_FILE_SHAPED_PATHS,
   AI_REVIEW_RUNTIME_CONFIG_PATHS,
   AI_REVIEW_RUNTIME_CONFIG_UNMEASURED,
   AI_REVIEW_RUNTIME_INERT_PATHS,
@@ -525,9 +526,6 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".claude/projects",
       ".npm/_logs",
       ".bun/install/cache",
-      ".copilot/session-store.db",
-      ".copilot/session-store.db-wal",
-      ".copilot/session-store.db-shm",
     ]);
   });
 
@@ -545,6 +543,9 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       ".claude/sessions",
       ".copilot/mcp-config.json",
       ".cache/copilot/mcp-tools",
+      ".copilot/session-store.db",
+      ".copilot/session-store.db-wal",
+      ".copilot/session-store.db-shm",
       ".npm/_npx",
     ]);
   });
@@ -1054,24 +1055,31 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
     ).toBeGreaterThan(0);
 
     // Pass 1 excludes ALL THREE lists: neither a config path nor a runner
-    // diagnostic may reach the refusal.
+    // diagnostic may reach the refusal. One clause for a declared file, two
+    // for a directory (#931) — the `/*` clause at a file-shaped entry is
+    // what AC-18 plants a directory into.
+    const isFile = (e: string) => AI_REVIEW_FILE_SHAPED_PATHS.includes(e);
     for (const entry of both) {
       expect(script, `${entry} is declared but not excluded from the refusal`).toContain(
-        `-not -path "\${HOME}/${entry}" -not -path "\${HOME}/${entry}/*"`,
+        isFile(entry)
+          ? `-not -path "\${HOME}/${entry}" \\`
+          : `-not -path "\${HOME}/${entry}" -not -path "\${HOME}/${entry}/*"`,
       );
     }
     const excluded = (script.match(/-not -path "\$\{HOME\}\//g) || []).length;
     expect(
       excluded,
       "an exclusion under $HOME is in the script that no declared list names",
-    ).toBe(both.length * 2);
+    ).toBe(both.filter(e => !isFile(e)).length * 2 + both.filter(isFile).length);
 
     // Pass 2 MATCHES the config list, and only it. Counting the positive
     // terms separately is what stops an inert path being annotated: a
     // thirteenth `-path` under $HOME that is not `-not` would be one.
     for (const entry of AI_REVIEW_RUNTIME_CONFIG_PATHS) {
       expect(script, `${entry} is trust-bearing but pass 2 does not match it`).toContain(
-        `-path "\${HOME}/${entry}" -o -path "\${HOME}/${entry}/*"`,
+        isFile(entry)
+          ? `-path "\${HOME}/${entry}" \\`
+          : `-path "\${HOME}/${entry}" -o -path "\${HOME}/${entry}/*"`,
       );
     }
     const allPathTerms = (script.match(/-path "\$\{HOME\}\//g) || []).length;
@@ -1082,7 +1090,9 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       allPathTerms - excluded,
       "a -path term under $HOME is in the script that no declared list accounts for",
     ).toBe(
-      AI_REVIEW_RUNTIME_CONFIG_PATHS.length * 2 + AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.length * 4,
+      AI_REVIEW_RUNTIME_CONFIG_PATHS.filter(e => !isFile(e)).length * 2 +
+        AI_REVIEW_RUNTIME_CONFIG_PATHS.filter(isFile).length +
+        AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS.length * 4,
     );
   });
 });
@@ -1193,14 +1203,20 @@ describe("AC-17 (#913): a SIBLING AI runtime's state is not the reviewer's write
   }
 
   // SQLite's write-ahead log and shared-memory sidecars, created and removed
-  // on every open of the session store. Read as data, never executed — the
-  // `.claude/projects` argument, so inert and silent.
+  // on every open of the session store.
+  //
+  // #922 classified these INERT on the `.claude/projects` argument — a
+  // transcript is read, not run — and the review of that change moved them
+  // here. AC-18's measurement is what settles it rather than the taxonomy
+  // argument: a plant at an INERT entry is exit 0 and SILENT, the same plant
+  // at a CONFIG entry is exit 0 and NAMED, and these sit in a directory
+  // beside `mcp-config.json`. Named is the reading to have.
   for (const entry of [
     ".copilot/session-store.db",
     ".copilot/session-store.db-wal",
     ".copilot/session-store.db-shm",
   ]) {
-    test(`a write at ${entry} is exit 0 and SILENT`, () => {
+    test(`a write at ${entry} is exit 0 AND named UNMEASURED`, () => {
       const f = fixture();
       const { path, sha } = runBaseline(f);
       const target = join(f.home, entry);
@@ -1208,9 +1224,9 @@ describe("AC-17 (#913): a SIBLING AI runtime's state is not the reviewer's write
       writeFileSync(target, "sqlite\n");
       const r = runDrift(f, path, sha);
       const text = r.stdout + r.stderr;
-      expect(r.code, `${entry} is inert sibling-runtime state and refused:\n${r.stderr}`).toBe(0);
+      expect(r.code, `${entry} is sibling-runtime state and refused:\n${r.stderr}`).toBe(0);
       expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
-      expect(text, `${entry} is inert state and was reported as runtime config`).not.toContain(
+      expect(text, `${entry} was subtracted silently rather than named`).toContain(
         CONFIG_UNMEASURED_TEXT,
       );
     });
@@ -1231,6 +1247,101 @@ describe("AC-17 (#913): a SIBLING AI runtime's state is not the reviewer's write
     expect(r.code, "a name merely PREFIXED by a subtracted one was let through").toBe(1);
     expect(text).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
     expect(text).toContain("session-store.db.evil.sh");
+  });
+});
+
+// ── AC-18: a directory where the measurement saw a file ──────────────────
+
+/**
+ * The emitter writes TWO shapes for every entry — `${HOME}/<e>` and
+ * `${HOME}/<e>/*` — and the comment beside it called the second "simply a
+ * no-op against `.claude.json`". That is true only while a FILE is what sits
+ * there. Nothing stops a directory existing at a file-shaped path, and the
+ * `/*` clause then exempts everything inside it.
+ *
+ * Measured on this suite before the fix, one planted `evil.sh` per entry:
+ *
+ * | entry | exit | named? |
+ * |---|---|---|
+ * | `.claude.json` | 0 | yes — pass 2 matches it |
+ * | `.claude/settings.json` | 0 | yes |
+ * | `.copilot/mcp-config.json` | 0 | yes |
+ * | `.copilot/session-store.db` | 0 | **no** |
+ * | `.copilot/session-store.db-wal` | 0 | **no** |
+ *
+ * So the hole pre-dates #913 for the CONFIG entries, where pass 2 at least
+ * NAMES the plant in the UNMEASURED annotation. It is the INERT entries that
+ * are silent, and #922 added the first file-shaped ones. Both halves are
+ * fixed here rather than only the half that is new, because a named bypass
+ * is still a bypass and the two share one emitter.
+ *
+ * The fix is to stop emitting the `/*` clause for an entry declared to be a
+ * file. `AI_REVIEW_FILE_SHAPED_PATHS` is that declaration, and the case at
+ * the bottom of this block refuses an entry that is in neither shape — an
+ * entry nobody classified would otherwise silently keep the old behaviour.
+ */
+describe("AC-18 (#931): a DIRECTORY at a file-shaped entry does not exempt its contents", () => {
+  for (const entry of [
+    ".claude.json",
+    ".claude/settings.json",
+    ".claude/.last-cleanup",
+    ".copilot/mcp-config.json",
+    ".copilot/session-store.db",
+    ".copilot/session-store.db-wal",
+    ".copilot/session-store.db-shm",
+  ]) {
+    test(`a plant inside a directory at ${entry} still REFUSES`, () => {
+      const f = fixture();
+      const { path, sha } = runBaseline(f);
+      const target = join(f.home, entry, "evil.sh");
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, "#!/bin/sh\necho pwned\n");
+      const r = runDrift(f, path, sha);
+      const text = r.stdout + r.stderr;
+      expect(
+        r.code,
+        `a directory at ${entry} exempted its contents — the subtraction was written for a file`,
+      ).toBe(1);
+      expect(text).toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
+      expect(text, "the planted path is not named").toContain("evil.sh");
+    });
+  }
+
+  test("every declared entry is classified as a file or a directory", () => {
+    // Without this, a new entry defaults to directory-shaped and gets the
+    // `/*` clause back. The default is the defect, so there is no default.
+    const all = [...AI_REVIEW_RUNTIME_INERT_PATHS, ...AI_REVIEW_RUNTIME_CONFIG_PATHS];
+    const files = new Set(AI_REVIEW_FILE_SHAPED_PATHS);
+    for (const e of AI_REVIEW_FILE_SHAPED_PATHS) {
+      expect(all, `${e} is declared file-shaped but is in neither path list`).toContain(e);
+    }
+    // The directory-shaped ones are the remainder, and are named here so the
+    // split is readable rather than a subtraction the reader has to perform.
+    expect(all.filter(e => !files.has(e))).toEqual([
+      ".claude/cache",
+      ".claude/projects",
+      ".npm/_logs",
+      ".bun/install/cache",
+      ".claude/plugins",
+      ".claude/backups",
+      ".claude/state",
+      ".claude/sessions",
+      ".cache/copilot/mcp-tools",
+      ".npm/_npx",
+    ]);
+  });
+
+  test("a file-shaped entry emits ONE clause, not two", () => {
+    // The source-level half. The behavioural cases above would also pass if
+    // the `/*` clause were kept and something else refused the plant, and
+    // this is the case that says which mechanism did it.
+    const script = buildDriftScript();
+    for (const e of AI_REVIEW_FILE_SHAPED_PATHS) {
+      expect(script, `${e} is a file and still gets the directory clause`).not.toContain(
+        `-not -path "\${HOME}/${e}/*"`,
+      );
+      expect(script, `${e} lost its own exclusion`).toContain(`-not -path "\${HOME}/${e}"`);
+    }
   });
 });
 
