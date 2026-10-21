@@ -36,6 +36,35 @@
  * SC ids in fixtures are in the 9000 range on purpose — a real id in a test
  * is credited as covered (`.claude/rules/claiming-sc-coverage.md`), so a test
  * about routing SC census checks would otherwise tick the criteria it names.
+ *
+ * ## What was broken to prove it, run and counted
+ *
+ * Over this file (12 tests). The named cases were predicted before the
+ * battery ran, and the baseline row was read first — an instrument that has
+ * stopped reporting takes the baseline down with it.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 12 pass, 0 fail | **12 pass, 0 fail** | — |
+ * | the `spec-tick` entry deleted — the genuinely pre-#990 table | the 7 named below | **7 of 12** | `{path: "specs/HARNESS-STANDARD.md", added: ["- [x] SC-9101: …"]}`: the original routes the three SC census files, the mutant routes only the spec-edit pair |
+ * | `spec-tick.fires` widened to any `specs/*.md` change — the cheapest wrong generalisation | 3 | **3 of 12** | `{path: "specs/HARNESS-STANDARD.md", added: ["- [ ] SC-9103: …"]}`: the original routes two tests, the mutant routes five |
+ * | the tick row deleted from the rule file's table, router untouched | 2 | **2 of 12** | the document itself: the rendered table no longer appears in it |
+ * | the `---` header no longer skipped in `parseUnifiedDiff` | 1 | **1 of 12** | the seven-line diff in the last describe: `removed` gains `"-- a/specs/X.md"` |
+ *
+ * The first row's PREDICTION was written as a list of seven case names and
+ * then mis-added to six in the same sentence. The seven measured are the
+ * seven named; the arithmetic was wrong and the prediction was not. Recorded
+ * rather than quietly corrected, because a row that matches after the number
+ * is edited is not a row anybody can check.
+ *
+ * Row 2 is the one that makes the control case above a measurement. Row 3
+ * is the instrument: without it the table could drift from the router with
+ * everything else green, which is the state this issue is about.
+ *
+ * None of the four is left in the tree; all were run and reverted, and
+ * `scripts/census-routing.ts` and
+ * `.claude/rules/self-referential-tests.md` were confirmed byte-identical to
+ * the measured source afterwards by sha256.
  */
 
 import { describe, expect, test } from "bun:test";
