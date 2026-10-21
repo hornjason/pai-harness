@@ -2143,6 +2143,19 @@ export function buildReviewRunScript(): string {
     `output. Set the repository variable ${AI_REVIEW_REQUIRE_VAR} to ` +
     `'${AI_REVIEW_REQUIRE_VALUE}' to make an unmeasured review fail instead.`;
 
+  // #867. Says what happened, so the run is not a silent 0. It names the
+  // event, the reason no review ran, and the thing that makes passing
+  // correct — a reader who disagrees with the reasoning can find it from the
+  // check itself rather than from this source file.
+  const queueEntry =
+    `This run is a ${AI_REVIEW_QUEUE_EVENT} queue entry, and no AI review ran ` +
+    `on it: the review action does not support the ${AI_REVIEW_QUEUE_EVENT} ` +
+    `event and refuses it as an unsupported event type. The check passes ` +
+    `because a pull request cannot enter a merge queue without first ` +
+    `satisfying its required checks, so ai-review has already run on this ` +
+    `head commit and reported on the pull request. The review on the pull ` +
+    `request is the measurement; this is not a second one.`;
+
   const absentRefusal =
     `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the ` +
     `credential-detection step produced no mode output, so this pull ` +
@@ -2164,6 +2177,40 @@ export function buildReviewRunScript(): string {
 set -uo pipefail
 
 ${AI_REVIEW_ANNOTATION_ESCAPE}
+
+# #867, and FIRST, because on this event none of the readings below can hold.
+#
+# The job runs on \`merge_group\` so that a repository which has made
+# \`ai-review\` a required context gets a verdict on the ref the merge queue
+# builds. Without the trigger the queue does not fail — it waits forever for a
+# check that never reports, with nothing red anywhere to look at.
+#
+# It cannot REVIEW on this event. Measured in the action's own source at the
+# SHA lib/claude-code-action.ts pins: \`parseGitHubContext()\` in
+# src/github/context.ts switches on the event name and its default branch
+# throws \`Unsupported event type\`; \`merge_group\` is in neither of its two
+# event-name lists, and it is still in neither on the action's main branch
+# today. There is no version to bump to.
+#
+# Exiting 0 here is NOT the green-check-for-nothing this file refuses
+# everywhere else, and the difference is load-bearing:
+#
+#   * A pull request cannot ENTER a merge queue without satisfying its
+#     required checks. If \`ai-review\` is required — which is the only reason
+#     this trigger is needed — the review has already run, on this exact head
+#     commit, and reported green. The queue entry's honest verdict is
+#     "already reviewed", not "never reviewed".
+#   * The state this file exists to refuse is a FIRST review silently not
+#     happening. That state is reported on \`pull_request\`, below, unchanged.
+#
+# And it is narrow. \${AI_REVIEW_EVENT} is \`github.event_name\`, set by the
+# runner; an unset or unexpected value falls through to the readings below
+# rather than taking this branch, so a step that never received its
+# environment reports UNMEASURED instead of success.
+if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = ${AI_REVIEW_QUEUE_EVENT} ]; then
+  echo "::notice title=${AI_REVIEW_UNMEASURED_TITLE}::${queueEntry}"
+  exit 0
+fi
 
 if [ -z "\${AI_REVIEW_MODE:-}" ]; then
   echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${absent}"
@@ -2341,6 +2388,21 @@ export const AI_REVIEW_BASE_REF_VAR = "AI_REVIEW_BASE_REF";
 export const AI_REVIEW_GIT_AUTH_VAR = "AI_REVIEW_GIT_AUTH";
 
 /**
+ * The env var carrying `github.event_name` into the report step (#867).
+ *
+ * The job runs on `pull_request` and on `merge_group`, and exactly one of
+ * those two can host a review. The report step has to tell them apart, and
+ * `github.event_name` is the only reading that is set by the runner rather
+ * than by anything a repository can configure — a `vars.*` or an input would
+ * be a switch somebody could flip to turn every unmeasured pull request
+ * green.
+ */
+export const AI_REVIEW_EVENT_VAR = "AI_REVIEW_EVENT";
+
+/** The event a merge queue fires, and the only one that takes the queue branch. */
+export const AI_REVIEW_QUEUE_EVENT = "merge_group";
+
+/**
  * The bash that restores the untrusted path set BEFORE the baseline is read.
  *
  * ## What it is fixing, measured on a real run
@@ -2408,7 +2470,24 @@ if [ -z "\${${AI_REVIEW_BASE_REF_VAR}:-}" ]; then
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
-base_remote="refs/remotes/origin/\${${AI_REVIEW_BASE_REF_VAR}}"
+# #867. A pull request's \`base.ref\` is a bare branch name; a merge group's
+# \`base_ref\` is fully qualified. The refspec below builds
+# \`refs/heads/<ref>\`, so the qualified form would ask for
+# \`refs/heads/refs/heads/main\` and the fetch would fail — the silent hang
+# replaced by a red queue one layer further in.
+#
+# Prefix-stripping and NOT \`basename\`/\`cut\`: a branch name may contain a
+# slash, and a blind last-component read would turn \`release/1.2\` into
+# \`1.2\` on the event that works today. Conditional on the prefix being
+# present, so the bare form passes through untouched.
+base_ref="\${${AI_REVIEW_BASE_REF_VAR}#refs/heads/}"
+
+if [ -z "\${base_ref}" ]; then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::${noRef}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+base_remote="refs/remotes/origin/\${base_ref}"
 
 # Through the environment, never \`-c\`: a value passed with \`-c\` is in the
 # command line of the git process and readable by anything that can run \`ps\`.
@@ -2418,8 +2497,8 @@ export ${AI_REVIEW_GIT_AUTH_VAR}
 # Checked on its own line, never captured into an assignment, for the reason
 # the baseline step states.
 if ! out=$(git --config-env=http.extraheader=${AI_REVIEW_GIT_AUTH_VAR} fetch --no-tags --depth=1 \\
-  origin "+refs/heads/\${${AI_REVIEW_BASE_REF_VAR}}:\${base_remote}" 2>&1); then
-  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not fetch the pull request base $(escape_annotation "\${${AI_REVIEW_BASE_REF_VAR}}"), so the untrusted paths were NOT restored and this run is UNMEASURED: $(escape_annotation "\${out}")" >&2
+  origin "+refs/heads/\${base_ref}:\${base_remote}" 2>&1); then
+  echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not fetch the base $(escape_annotation "\${base_ref}"), so the untrusted paths were NOT restored and this run is UNMEASURED: $(escape_annotation "\${out}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
@@ -3166,7 +3245,18 @@ export function buildReviewRunStep(
     `- name: ${AI_REVIEW_RESTORE_STEP_NAME}`,
     `  id: ${AI_REVIEW_RESTORE_STEP_ID}`,
     `  env:`,
-    `    ${AI_REVIEW_BASE_REF_VAR}: \${{ github.event.pull_request.base.ref }}`,
+    // Both events, because this job now runs on both (#867). `||` is the
+    // runner's expression operator and falls through on the empty string, so
+    // a pull request takes the first and a queue entry the second. Without
+    // the second reading the trigger alone turns the silent hang into a RED
+    // queue: `pull_request.base.ref` is empty on a merge group and the script
+    // below refuses an empty base ref, correctly, on every entry.
+    //
+    // The two payloads spell it differently — `main` versus `refs/heads/main`
+    // — and the script normalises rather than the expression, because a
+    // workflow expression has no string operations and a second spelling
+    // introduced here would be a decider the script could not see.
+    `    ${AI_REVIEW_BASE_REF_VAR}: \${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}`,
     // The job's own token, for one fetch. It is not persisted into
     // `.git/config` and the reviewer runs in a later step with its own
     // environment, so nothing of it reaches the agent.
@@ -3215,6 +3305,10 @@ export function buildReviewRunStep(
     `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
     `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
     `    ${AI_REVIEW_REQUIRE_VAR}: \${{ vars.${AI_REVIEW_REQUIRE_VAR} }}`,
+    // #867. Set by the runner, not by the repository — the branch it selects
+    // exits 0, so a reading a consumer could configure would be a switch for
+    // turning every unmeasured pull request green.
+    `    ${AI_REVIEW_EVENT_VAR}: \${{ github.event_name }}`,
     `  run: |`,
     ...buildReviewRunScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];

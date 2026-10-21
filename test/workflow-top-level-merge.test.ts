@@ -264,42 +264,55 @@ describe("#839 AC-3: a consumer can decline a generated key, and the file says s
 });
 
 describe("#839 AC-4: re-scaffolding an older consumer converges, end to end", () => {
-  /** Scaffold, then rewind the two files to the shape #839 recorded. */
+  /** Every generated workflow, rewound to the shape #839 recorded. */
+  const REWOUND = ["ci.yml", "gates.yml", "ai-review.yml"];
+
+  /**
+   * The TRIGGER, as a line, not the word anywhere in the file.
+   *
+   * `ai-review.yml` names the event inside its report step too, because since
+   * #867 that script branches on it — so a whole-file `toContain` reads the
+   * prose as the trigger and the rewind looks like it failed.
+   */
+  const hasQueueTrigger = (text: string) =>
+    text.split("\n").some(l => l.trim() === "merge_group:");
+
+  /** Scaffold, then rewind the files to the shape #839 recorded. */
   function rewound(config?: Record<string, unknown>): Repo {
     const r = repo(config);
     createCiWorkflows(r.root, []);
-    for (const name of ["ci.yml", "gates.yml"]) {
+    for (const name of REWOUND) {
       writeFileSync(wf(r, name), withoutSubKey(readFileSync(wf(r, name), "utf-8"), "merge_group"));
     }
     return r;
   }
 
-  test("ci.yml and gates.yml gain merge_group, and ai-review.yml still omits it", () => {
+  // #867 extended this from two files to all three. `ai-review.yml` was the
+  // exception here, on the reasoning that a queue re-run reviews a diff
+  // already reviewed — which is true, and is why the job does not review on
+  // the event. It still has to REPORT, because a consumer makes `ai-review`
+  // required and a required context that never reports hangs the queue
+  // silently. This case is the one that proves an ALREADY-SCAFFOLDED consumer
+  // inherits the trigger, which is the whole point of #839's machinery.
+  test("every generated workflow gains merge_group on re-scaffold", () => {
     const r = rewound();
     try {
       // Establish the subject: the rewind really removed the trigger, or
       // everything below passes for the boring reason.
-      for (const name of ["ci.yml", "gates.yml"]) {
-        expect(readFileSync(wf(r, name), "utf-8"), `${name} was not rewound`).not.toContain("merge_group");
+      for (const name of REWOUND) {
+        expect(hasQueueTrigger(readFileSync(wf(r, name), "utf-8")), `${name} was not rewound`).toBe(false);
       }
 
       const actions: string[] = [];
       createCiWorkflows(r.root, actions);
       expect(actions.join("\n"), `the re-scaffold refused:\n${actions.join("\n")}`).not.toContain("REFUSED");
 
-      for (const name of ["ci.yml", "gates.yml"]) {
+      for (const name of REWOUND) {
         const text = readFileSync(wf(r, name), "utf-8");
-        expect(text, `${name} did not gain merge_group on re-scaffold`).toContain("merge_group:");
+        expect(hasQueueTrigger(text), `${name} did not gain merge_group on re-scaffold`).toBe(true);
         expect(subKeyBlock(text, "on", "merge_group"), `${name}'s merge_group grew a branches: filter`).toEqual([]);
         expect(text, `${name} still has its own jobs`).toContain("runs-on:");
       }
-
-      // ai-review is a pull_request-only workflow on purpose: it costs model
-      // tokens and a merge-queue re-run reviews a diff already reviewed.
-      expect(
-        readFileSync(wf(r, "ai-review.yml"), "utf-8"),
-        "ai-review.yml took merge_group, which no consumer asked it to",
-      ).not.toContain("merge_group");
     } finally { r.cleanup(); }
   });
 

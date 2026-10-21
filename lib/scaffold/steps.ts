@@ -3055,9 +3055,29 @@ ${bunStep}
   // not a copy: one decider for the script, and a mutation of it has one
   // binding. See lib/scaffold/ai-review-step.ts.
   //
-  // `pull_request` only. A review of a pull request has nothing to say about
-  // a push to a branch, and a trigger that fires where the job cannot do its
-  // work is a run whose outcome means nothing.
+  // `pull_request` and `merge_group`, and NOT `push`. A review of a pull
+  // request has nothing to say about a push to a branch, and a trigger that
+  // fires where the job cannot do its work is a run whose outcome means
+  // nothing.
+  //
+  // `merge_group` is the exception to that sentence, and #867 is why it had to
+  // be. This job was `pull_request`-only on exactly the reasoning above: a
+  // merge group has no pull request, so the review would be vacuous. True, and
+  // the wrong conclusion — it is an argument about what the job can DO on the
+  // event, and it was applied to whether the job REPORTS on it. A consumer
+  // makes `ai-review` a required context precisely because it is the check
+  // that reads the code; a required context that never reports does not fail
+  // the queue, it HANGS it, with every entry pending and nothing red anywhere.
+  //
+  // So the trigger is here and the vacuousness is handled where it belongs, in
+  // the report step, which exits 0 on this event and says in a notice that no
+  // review ran and why. That is sound rather than a green check for nothing: a
+  // pull request cannot enter a merge queue without first satisfying its
+  // required checks, so `ai-review` has already run on that exact head commit.
+  //
+  // No `branches:` filter, for the reason ci.yml states at length: the queue
+  // builds a `gh-readonly-queue/<base>/...` ref that no branch list matches,
+  // so a filtered trigger is an absent one that reads as handled.
   // #631. Workload Identity Federation, read from the consumer's own config.
   // One reading, taken here and threaded into both the permission block and
   // the steps — a second `vertexCiConfig(...)` call beside either would be a
@@ -3095,6 +3115,9 @@ ${buildOutcomesHeader(vertex)}#
 name: AI Review
 
 on:
+  # See the block comment in lib/scaffold/steps.ts: no branches: filter, and
+  # its absence hangs a merge queue silently rather than failing it (#867).
+  merge_group:
   pull_request:
     branches:
 ${branchList}
