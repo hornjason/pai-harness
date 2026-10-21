@@ -1339,9 +1339,18 @@ function redactRemote(remote) {
  * still `unreadable`. ABSOLUTE only: `owner/name` is itself two segments with
  * a slash, so a rule that called anything slash-shaped a path would describe
  * a near-miss slug as a directory.
+ *
+ * No regex literal: written as one it needs an escaped forward slash, and
+ * `stripStringsAndComments` mangles a `\/`-bearing literal in THIS file's
+ * context into something that does not parse, which fails #89's and #69's
+ * scans. Filed separately; here the fix is to not write the construct.
  */
 function looksLikeFilesystemPath(reported) {
-  return /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(String(reported).trim())
+  const s = String(reported).trim()
+  if (s.startsWith('/') || s.startsWith('~/') || s.startsWith('\\\\')) return true
+  // A Windows drive: one letter, a colon, then either separator.
+  const drive = s.charCodeAt(0) | 32
+  return drive >= 97 && drive <= 122 && s[1] === ':' && (s[2] === '\\' || s[2] === '/')
 }
 
 /** The clause both copies append, so the two cannot word it differently. */

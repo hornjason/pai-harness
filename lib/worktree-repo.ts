@@ -199,9 +199,20 @@ export function readWorktreeRemote(worktreePath: string): RemoteReading {
  * that called anything slash-shaped a path would describe a near-miss slug as
  * a directory — a refusal naming the wrong mistake is worse than one naming
  * none. Three forms: POSIX, `~`-relative, and Windows drive or UNC.
+ *
+ * No regex literal, and that is not a style choice. Written as one, this
+ * needs an escaped forward slash — and `stripStringsAndComments` mangles a
+ * `\/`-bearing literal in `workflows/ship.js`'s context into `/^(?:\/x/`,
+ * which does not parse. Two CI shards went red on it. The same literal
+ * strips cleanly in isolation, so the differential is real and is filed
+ * separately; here the fix is to not write the construct.
  */
 export function looksLikeFilesystemPath(reported: unknown): boolean {
-  return /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(String(reported).trim());
+  const s = String(reported).trim();
+  if (s.startsWith("/") || s.startsWith("~/") || s.startsWith("\\\\")) return true;
+  // A Windows drive: one letter, a colon, then either separator.
+  const drive = s.charCodeAt(0) | 32;
+  return drive >= 97 && drive <= 122 && s[1] === ":" && (s[2] === "\\" || s[2] === "/");
 }
 
 /** The clause both copies append, so the two cannot word it differently. */
