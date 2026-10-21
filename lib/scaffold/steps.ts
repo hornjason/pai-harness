@@ -38,7 +38,14 @@ import { GOOGLE_AUTH_ACTION } from "../google-auth-action";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
-import { TIER2_ALLOWED_VALUE_ERE, TIER2_GREP_CASE_FLAG, tier1Ere, tier2Ere } from "../secret-patterns";
+import {
+  TIER2_ALLOWED_VALUE_ERE,
+  TIER2_GREP_CASE_FLAG,
+  TIER3_ALLOWED_VALUE_ERE,
+  tier1Ere,
+  tier2Ere,
+  tier3Ere,
+} from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
@@ -2921,6 +2928,35 @@ ${bunStep}
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi
+          # Tier 3 — a credential written as a shell default, caught by SHAPE
+          # rather than by a name. Tier 2 can only see one whose variable name
+          # carries credential vocabulary; a variable named for what it holds
+          # is invisible to it, and every neighbouring line in such a block
+          # genuinely is a default, so the one that is not sits in a list of
+          # things that look alike (#848).
+          #
+          # Captured first for the same reason tier 2 is: piping git straight
+          # into the filter turns an error into empty input, which reads as
+          # clean. No "|| true" on the assignment — see the note above.
+          #
+          # No -i here, and that is not an oversight: tier 3 has no vocabulary
+          # to spell in the wrong case. Its classes already cover both cases,
+          # and the flag would only widen the value class.
+          set +e
+          tier3=$(git grep -I -hoE '${tier3Ere()}' -- .)
+          rc=$?
+          set -e
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::git grep failed (exit $rc) — refusing to report a clean scan"
+            exit 1
+          fi
+          # The exclusion is the discriminator, not the length floor: a value
+          # with no digit or no letter is a path, a container name or a port,
+          # and those are what this shape is full of.
+          if printf '%s\\n' "$tier3" | grep -qvE '${TIER3_ALLOWED_VALUE_ERE}'; then
+            echo "::error::Potential credential in a shell default in tracked files"
+            exit 1
+          fi
           echo "Secret scan clean"
 `;
 
@@ -3344,6 +3380,23 @@ if printf '%s\\n' "$staged_diff" \\
   | grep -oE ${TIER2_GREP_CASE_FLAG} '${tier2Ere()}' \\
   | grep -qvE ${TIER2_GREP_CASE_FLAG} '${TIER2_ALLOWED_VALUE_ERE}'; then
   echo "ERROR: Potential credential assignment in staged changes"
+  exit 1
+fi
+
+# Tier 3 — a credential written as a shell default, caught by shape rather
+# than by the variable name. Tier 2 only sees one whose name carries
+# credential vocabulary (#848).
+#
+# Both expressions are interpolated from lib/secret-patterns.ts for the
+# reason tier 2's are: a hardcoded copy is a second binding for one string.
+#
+# No -i, deliberately. Tier 3 has no vocabulary to miss in the wrong case,
+# and the flag would only widen the value class.
+if printf '%s\\n' "$staged_diff" \\
+  | grep '^+' \\
+  | grep -oE '${tier3Ere()}' \\
+  | grep -qvE '${TIER3_ALLOWED_VALUE_ERE}'; then
+  echo "ERROR: Potential credential in a shell default in staged changes"
   exit 1
 fi
 
