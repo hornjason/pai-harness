@@ -220,6 +220,173 @@ export const AI_REVIEW_VERTEX_AUTH_STEP_ID = "ai-review-vertex-auth";
 
 export const AI_REVIEW_VERTEX_AUTH_STEP_NAME = "Authenticate to Vertex AI";
 
+/**
+ * The annotation title for a credential that is readable where it must not be.
+ *
+ * Its own title, not the drift one: "the reviewer edited the tree" and "the
+ * cloud credential is in the directory the reviewer reads" are different
+ * facts, and an operator filtering annotations by title should be able to
+ * tell them apart.
+ */
+export const AI_REVIEW_CREDS_TITLE = "AI review credential exposure";
+
+export const AI_REVIEW_CREDS_RELOCATE_STEP_ID = "ai-review-creds-relocate";
+
+export const AI_REVIEW_CREDS_RELOCATE_STEP_NAME =
+  "Move the cloud credential out of the workspace";
+
+export const AI_REVIEW_CREDS_BASENAME = "ai-review-gcp-creds";
+
+/**
+ * The glob `google-github-actions/auth` names its credentials file with.
+ *
+ * Its README publishes exactly this as the `.gitignore` line consumers are
+ * told to add, so it is the action's own statement about the name rather
+ * than a pattern inferred from one observed filename.
+ */
+export const AI_REVIEW_CREDS_GLOB = "gha-creds-*.json";
+
+/**
+ * The three variables the auth step exports when it creates a credentials
+ * file, all of which must follow the file when it moves (#843 finding 3).
+ *
+ * One list here, because they are rewritten in one loop — one site to mutate.
+ *
+ * The test deliberately keeps its OWN hand-written copy rather than importing
+ * this one. An earlier draft of this comment said the opposite, and the
+ * battery disproved it: dropping `GOOGLE_APPLICATION_CREDENTIALS` from this
+ * list was predicted to red one case and reds two, the second being the pair
+ * case that compares the exported names to the test's list. A test that
+ * imported this constant would compare the mutant to itself and that row
+ * would be 1. An expected value in a test is supposed to be independent of
+ * the thing it is checking; "two deciders that agree" is about two deciders
+ * in the PRODUCT, not about a test holding its own copy of the answer.
+ *
+ * `GOOGLE_GHA_CREDS_PATH` is the one the action's own `post.ts` reads to
+ * decide what to delete, and an unset value is an explicit early return
+ * there. So dropping it rather than rewriting it leaves the credential on
+ * disk when the job ends — strictly worse than the state being fixed.
+ */
+export const AI_REVIEW_CREDS_EXPORTED_VARS = [
+  "GOOGLE_GHA_CREDS_PATH",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+] as const;
+
+/**
+ * The bash that moves the cloud credential out of the directory the reviewer
+ * can read (#843 finding 3).
+ *
+ * ## Why a move, and not a configuration
+ *
+ * `google-github-actions/auth` has no path input. Its README states the file
+ * "is exported into `$GITHUB_WORKSPACE`", and the only path-shaped item in
+ * its interface is an OUTPUT. Relocating it afterwards is the only lever
+ * there is.
+ *
+ * It writes exactly ONE file — `createCredentialsFile` in
+ * `src/client/workload_identity_federation.ts` has a single `writeSecureFile`
+ * — and the document uses `credential_source.url`, with no `file` key and no
+ * sidecar holding the OIDC token. That is what makes moving one file a
+ * complete fix rather than a half-measure, and it is why this step still
+ * refuses a second `${AI_REVIEW_CREDS_GLOB}` it did not move: the fix is
+ * correct only for as long as that stays true, and nothing here would notice
+ * it changing.
+ *
+ * ## Why the cleanup redirect is part of the same change
+ *
+ * `src/post.ts` reads `GOOGLE_GHA_CREDS_PATH` from the ENVIRONMENT and
+ * force-removes whatever it names. Rewriting it through `GITHUB_ENV` sends
+ * the cleanup to the new location; dropping it makes the post step skip
+ * entirely, and on a self-hosted runner that is the credential persisting
+ * into the next job — the exposure this issue opens with, arrived at by the
+ * fix for it.
+ *
+ * ## It refuses rather than warns
+ *
+ * Unlike the baseline seal one step below, every failure here is fatal. A
+ * seal that could not be taken still leaves a comparison that works; a
+ * credential that could not be moved leaves a live bearer token in the
+ * directory the agent is about to be pointed at, and there is no partial
+ * version of that which is worth running.
+ */
+export function buildCredsRelocateScript(): string {
+  const noTemp =
+    `RUNNER_TEMP is not set, so there is nowhere outside the checkout to put ` +
+    `the cloud credential. Refusing rather than running the reviewer with a ` +
+    `live bearer token in the directory it reads.`;
+
+  const missing =
+    `GOOGLE_GHA_CREDS_PATH names a file that is not there. The variable is ` +
+    `set, so the auth step created a credential; something else has moved or ` +
+    `removed it and nobody can say where it is. That is UNMEASURED, not ` +
+    `clean.`;
+
+  const moveFailed =
+    `the cloud credential could not be moved out of the workspace`;
+
+  const leftBehind =
+    `the workspace still holds a credential this step did not move. The auth ` +
+    `action writes exactly one file today; a second one means that is no ` +
+    `longer true and the reviewer would read it. Refusing`;
+
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+# No credential file was created — the auth step did not run, or ran without
+# \`create_credentials_file\`. Nothing is in the workspace, so there is nothing
+# to move and nothing to say. Silence is the honest reading here and ONLY
+# here: every other branch below is a credential whose whereabouts are known
+# to be wrong.
+if [ -z "\${GOOGLE_GHA_CREDS_PATH:-}" ]; then
+  exit 0
+fi
+
+src="\${GOOGLE_GHA_CREDS_PATH}"
+
+if [ -z "\${RUNNER_TEMP:-}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${noTemp}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+if [ ! -f "\${src}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${missing}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+nonce="\${GITHUB_RUN_ID:-0}-\${GITHUB_RUN_ATTEMPT:-0}"
+dest="\${RUNNER_TEMP}/${AI_REVIEW_CREDS_BASENAME}-\${nonce}.json"
+
+# Checked on its own line rather than captured, for the reason the baseline
+# step states: \`x=$(...)\` discards the exit code.
+if ! out=$(mv -f "\${src}" "\${dest}" 2>&1); then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${moveFailed}: \${out}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+chmod 600 "\${dest}" 2>/dev/null || true
+
+# Every variable the auth step exported follows the file. GOOGLE_GHA_CREDS_PATH
+# is the one the action's post step reads to decide what to delete; the other
+# two are what downstream tooling reads to authenticate. Rewriting a subset
+# points something at a path that no longer exists, and the failure lands in
+# whichever step reads the one that was missed rather than in this one.
+{
+${AI_REVIEW_CREDS_EXPORTED_VARS.map(v => `  echo "${v}=\${dest}"`).join("\n")}
+} >> "\${GITHUB_ENV}"
+
+echo "ai-review credential moved out of the workspace: \${dest}"
+
+# A READING, not a belief. The move above is correct only while the auth
+# action writes one file, which is measured rather than assumed — and this is
+# the line that notices the day it stops being true.
+left=$(find "\${GITHUB_WORKSPACE:-.}" -maxdepth 1 -name '${AI_REVIEW_CREDS_GLOB}' -print 2>/dev/null || true)
+if [ -n "\${left}" ]; then
+  echo "::error title=${AI_REVIEW_CREDS_TITLE}::${leftBehind}: \${left}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+`;
+}
+
 /** The review action's `id:` and name. Its pin arrives as an argument too. */
 export const AI_REVIEW_ACTION_STEP_ID = "ai-review-action";
 
@@ -579,6 +746,65 @@ export const AI_REVIEW_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Write"].join(",
  * respelling to a copy of this file and observes it refused.
  */
 export const AI_REVIEW_WORKSPACE_WRITE_DENY = "Edit(./**)";
+
+/**
+ * The annotation title for a write the reviewer made OUTSIDE the checkout
+ * (#843 finding 1).
+ *
+ * ## Why there is a reading here rather than a tighter deny
+ *
+ * `AI_REVIEW_WORKSPACE_WRITE_DENY` above anchors at the working directory, so
+ * it covers the checkout and nothing else — #836 measured `Edit(./**)` as
+ * BLOCKED inside the checkout and **WROTE** to a path outside it. That is
+ * finding 1's exposure, confirmed against the real CLI.
+ *
+ * The two spellings in that table which close it, `Edit(**)` and
+ * `Edit(<abs>/**)`, are BLOCKED in both columns — each of them also denies
+ * the findings write. So "where may the reviewer write" is ONE decision whose
+ * other half is #824, and respelling this to close finding 1 would close the
+ * payload path in the same stroke. The docblock above names that as its
+ * cheapest wrong fix and a case is already pointed at it.
+ *
+ * What does not need that decision is **observing** what the grant permits.
+ * Until this, the drift step read the tree and nothing read anywhere else, so
+ * every write outside the checkout was unobserved — which is exactly the harm
+ * finding 1 describes, a write that survives into another repository's job on
+ * the same host. A permission is a claim; this is the reading.
+ *
+ * ## It warns rather than refusing, and the reason is a number nobody has
+ *
+ * A runner writes under `$HOME` constantly for reasons unrelated to the
+ * reviewer, and that noise floor has never been measured. A refusal firing on
+ * every run is a gate consumers delete, which is worse than the silence it
+ * replaces. This repository's own ai-review job is the instrument that
+ * measures the floor; tightening comes after a number exists, not before.
+ *
+ * ## The time reference, and the gap it leaves
+ *
+ * `find -newer` against the tree baseline, reusing the artefact #843 finding
+ * 2 already seals rather than introducing a second one. The seal is over the
+ * baseline's CONTENT, so `touch` moves its mtime without breaking the
+ * checksum: an agent that back-dates it hides writes from THIS reading and is
+ * still caught by the tree comparison. Narrower than the gap it replaces, and
+ * written down rather than discovered.
+ */
+export const AI_REVIEW_OUTSIDE_TITLE = "AI review wrote outside the checkout";
+
+/**
+ * How deep under `$HOME` the outside reading walks.
+ *
+ * A bound, not a filter, and it exists because an unbounded walk is not
+ * shippable — measured while writing this: the step over a developer's home
+ * directory had not finished after ten minutes, and it runs on every pull
+ * request. A self-hosted runner's home has no size anyone controls.
+ *
+ * What it costs: a write deeper than this is not seen. Finding 1's own
+ * example — a stray `auth.json` an unrelated job left in the runner's home —
+ * is at depth 1 to 3, and `~/.ssh/`, `~/.config/<tool>/` and `~/.docker/` all
+ * sit inside 4. That is the argument for the number and also its limit, which
+ * is why it is a named constant and not a literal buried in a heredoc.
+ */
+export const AI_REVIEW_OUTSIDE_MAXDEPTH = 4;
 
 /**
  * The reviewer's turn budget. One declaring position; see `aiReviewClaudeArgs`.
@@ -1748,6 +1974,107 @@ const SHA256_HELPER = `sha256_of() {
 }`;
 
 /**
+ * The one reading of the tree, shared by the baseline step and the drift step
+ * (#853). It emits one line per dirty path:
+ *
+ * ```
+ * 1523f288e9cb0f1b1f9a3a2c4d5e6f708192a3b4 CLAUDE.md
+ * absent .mcp.json
+ * ```
+ *
+ * (The sample paths are deliberately not under the agent-rules directory.
+ * `test/rule-provenance.test.ts` reads any such path in a source file as a
+ * citation, so an invented filename in an example is a citation of a rule
+ * that does not exist. That is the trap
+ * `.claude/rules/self-referential-tests.md` describes, met while writing
+ * this block: the first draft used two made-up rule filenames and turned
+ * that suite red.)
+ *
+ * ## Why the porcelain status prefix is NOT in it
+ *
+ * `git status --porcelain` puts a two-letter index/worktree status in front
+ * of every path, and the drift step compares whole lines. So the restore
+ * step's own `git rm` + `git checkout` — both of which write the INDEX — put
+ * `M ` in the baseline, and anything that unstages before the second reading
+ * turns the same path into ` M`. Same file, same bytes, one space moved,
+ * reported as something the reviewer did. PR #815, run `39529882923`.
+ *
+ * ## Why a hash, and not just dropping the prefix
+ *
+ * The prefix carried one thing the comparison needed: modification against
+ * deletion against untracked-add. Dropping it alone is the one-\`cut\` repair
+ * and it makes a reviewer DELETING an agent-rules file byte-identical to the
+ * restore that made the path dirty in the first place.
+ *
+ * Content carries that distinction better than the prefix did, and carries
+ * one more the prefix never could. Porcelain reports *that* a path differs
+ * from the index, never *how* — and every restored path is already dirty in
+ * the baseline, so a reviewer editing one produced a line the comparison
+ * could not tell from the restore's own. Measured, with the drift step's
+ * \`grep -F -x -v\` applied verbatim:
+ *
+ * | reading | baseline | after a reviewer edits a restored path | verdict |
+ * |---|---|---|---|
+ * | prefix, no reset | \`M  doc.md\` | \`MM doc.md\` | REFUSED, by accident |
+ * | prefix, after a reset | \` M doc.md\` | \` M doc.md\` | **exit 0, INVISIBLE** |
+ * | content | \`1523f288… doc.md\` | \`65f7fba8… doc.md\` | REFUSED |
+ *
+ * Row one is the state before #853 and the refusal is real, but it is a
+ * by-product of the staged/unstaged distinction — the very thing #815 is
+ * about. Row two is what #853 asks for, and it retires the only control that
+ * catches a reviewer editing a file it was told to read. Row three needs no
+ * \`git reset\` at all: index state is simply not in the reading, so there is
+ * no index write to undo.
+ *
+ * ## What it cannot measure, said rather than left to be discovered
+ *
+ * A path with a quote, a backslash or a newline in it comes back from
+ * porcelain v1 QUOTED and C-escaped, so the name on the line is not the name
+ * on disk and no hash can be taken from it. Such a line reads \`unquotable\`
+ * and the drift step raises UNMEASURED. \`absent\` would be the wrong answer
+ * — the file is sitting right there — and silence would be worse. The \`-z\`
+ * form that would avoid quoting is unusable here: bash drops NUL bytes in
+ * command substitution.
+ *
+ * The line is still compared as a whole, so drift at such a path is still
+ * caught by the path appearing or disappearing; what is unmeasured is its
+ * content.
+ */
+export const AI_REVIEW_TREE_READER = `read_tree() {
+  local raw line xy p h
+  # Checked on its own line, never captured into an assignment: \`x=$(...)\`
+  # DISCARDS the exit code, so a git that failed produces the same empty
+  # string a clean tree produces, and "unreadable" would pass as "clean".
+  if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+    printf '%s' "\${raw}"
+    return 1
+  fi
+  [ -n "\${raw}" ] || return 0
+  printf '%s\\n' "\${raw}" | while IFS= read -r line; do
+    [ -n "\${line}" ] || continue
+    xy="\${line:0:2}"
+    p="\${line:3}"
+    # A rename or copy reads \`R  old -> new\`, and it is the destination that
+    # exists on disk. Keyed off the status letter, not off the arrow: a
+    # filename may contain " -> " and does not get quoted for it.
+    case "\${xy}" in
+      R*|C*) p="\${p##* -> }" ;;
+    esac
+    case "\${p}" in
+      '"'*) h=unquotable ;;
+      *)
+        if [ -f "\${p}" ]; then
+          h=$(git hash-object -- "\${p}" 2>/dev/null) || h=unreadable
+        else
+          h=absent
+        fi
+        ;;
+    esac
+    printf '%s %s\\n' "\${h}" "\${p}"
+  done
+}`;
+
+/**
  * The bash that records what the tree looked like BEFORE the reviewer ran.
  *
  * ## Why this step exists, measured rather than argued
@@ -1807,6 +2134,8 @@ set -uo pipefail
 
 ${SHA256_HELPER}
 
+${AI_REVIEW_TREE_READER}
+
 if [ -z "\${RUNNER_TEMP:-}" ]; then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::${noTemp}" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
@@ -1818,7 +2147,7 @@ before="\${RUNNER_TEMP}/${AI_REVIEW_BASELINE_BASENAME}-\${nonce}.txt"
 # Checked on its own line, never captured into an assignment: \`x=$(...)\`
 # DISCARDS the exit code, so a git that failed produces the same empty string
 # a clean tree produces, and "unreadable" would pass as "clean".
-if ! raw=$(git status --porcelain --untracked-files=all 2>&1); then
+if ! raw=$(read_tree); then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed before the review, so there is no baseline and the drift check is UNMEASURED: \${raw}" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
@@ -1885,10 +2214,33 @@ export function buildDriftScript(): string {
     `refuses a tree the reviewer moved; what is UNMEASURED is the baseline's ` +
     `own integrity.`;
 
+  const unhashable =
+    `at least one path in this tree could not be read by content — git had ` +
+    `to quote its name, or the file could not be hashed — so for those paths ` +
+    `this run compares names only and an edit the reviewer made to one would ` +
+    `not be seen. Every other path is compared by content as usual. UNMEASURED ` +
+    `at the paths named`;
+
+  const noHome =
+    `HOME is unset or is not a directory, so nothing could look for writes ` +
+    `the reviewer made OUTSIDE the checkout (#843 finding 1). The tree ` +
+    `comparison below is unaffected. This run is UNMEASURED on everything ` +
+    `the grant permits outside the working directory, which is not the same ` +
+    `as a run in which nothing was written there.`;
+
+  const wroteOutside =
+    `the reviewer wrote OUTSIDE the checkout. The tool grant anchors at the ` +
+    `working directory, so these were permitted; on a shared self-hosted ` +
+    `runner \\$HOME persists between jobs, so a file here reaches another ` +
+    `repository's build (#843 finding 1). Reported, not refused: the noise ` +
+    `floor of this reading has not been measured yet. Paths`;
+
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
 
 ${SHA256_HELPER}
+
+${AI_REVIEW_TREE_READER}
 
 # The same rule as escapeAnnotation() in lib/scaffold/ai-review-findings.ts,
 # and the duplication is forced rather than chosen: this runs as bash on a
@@ -1961,9 +2313,57 @@ fi
 # default stops at a new directory's name.
 #
 # Checked on its own line, for the reason the baseline step states.
-if ! after=$(git status --porcelain --untracked-files=all 2>&1); then
+if ! after=$(read_tree); then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::git status failed, so the tree was never read and this check is UNMEASURED: $(escape_annotation "\${after}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# Both readings, because a path can become unhashable between them and either
+# side blinds the comparison at that path. Reported, not refused: a filename
+# git has to quote is a thing a repository is allowed to contain, and a gate
+# that refuses one is a gate consumers delete. Silence is what would make it
+# indistinguishable from a path compared by content.
+unhashed=$( { printf '%s\\n' "\${after}"; cat "\${${AI_REVIEW_TREE_BEFORE_VAR}}"; } \\
+  | grep -E '^(unquotable|unreadable) ' | sort -u | head -20 || true)
+if [ -n "\${unhashed}" ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${unhashable}: $(escape_annotation "\${unhashed}")"
+fi
+
+# The reading OUTSIDE the checkout (#843 finding 1), before the comparison
+# below, because that one exits 0 the moment the tree is clean and a clean
+# tree is exactly the run in which an escaped write is the whole story.
+#
+# No allowlist of interesting directories. The finding's own example is an
+# \`auth.json\` an unrelated job left in the runner's home, and nobody
+# predicts the next filename — a scoped walk would be a detector narrower
+# than what it detects.
+#
+# Two exclusions, both because the directory is already accounted for:
+# GITHUB_WORKSPACE is what the comparison below reads, and RUNNER_TEMP is
+# this job's own scratch, holding the payload, this baseline and the
+# relocated credential. The \`:-\` defaults are a path that cannot exist, so
+# an unset variable excludes nothing rather than excluding everything.
+#
+# \`-maxdepth ${AI_REVIEW_OUTSIDE_MAXDEPTH}\` is a BOUND, not a filter, and it
+# is here because an unbounded walk is not shippable: measured during
+# development, the same step over a developer's home directory had not
+# finished after ten minutes. A self-hosted runner's home can be arbitrarily
+# large and this step runs on every pull request. What it costs is honest and
+# stated rather than hidden — a write deeper than
+# ${AI_REVIEW_OUTSIDE_MAXDEPTH} levels under \\\$HOME is not seen. The
+# finding's own example, a stray credential left in the runner's home, sits
+# at depth 1 to 3.
+if [ -z "\${HOME:-}" ] || [ ! -d "\${HOME}" ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${noHome}"
+else
+  outside=$(find "\${HOME}" -xdev -maxdepth ${AI_REVIEW_OUTSIDE_MAXDEPTH} -type f \\
+    -newer "\${${AI_REVIEW_TREE_BEFORE_VAR}}" \\
+    -not -path "\${GITHUB_WORKSPACE:-/nonexistent-workspace}/*" \\
+    -not -path "\${RUNNER_TEMP:-/nonexistent-temp}/*" \\
+    2>/dev/null | head -50 || true)
+  if [ -n "\${outside}" ]; then
+    echo "::warning title=${AI_REVIEW_OUTSIDE_TITLE}::${wroteOutside}: $(escape_annotation "\${outside}")"
+  fi
 fi
 
 # The DIFFERENCE, not the total. A line present before the reviewer started is
@@ -2068,6 +2468,21 @@ export function buildReviewRunStep(
           `    workload_identity_provider: ${vertex.config.workloadIdentityProvider}`,
         ];
 
+  // Emitted with the auth step and only with it: this step exists to clean up
+  // after that one, and a relocate step in a job with nothing to relocate is a
+  // step whose silent exit means two different things. Positioned immediately
+  // after, so the window in which the credential sits in the workspace is one
+  // step long and contains nothing that reads the tree (#843 finding 3).
+  const credsRelocate =
+    vertex.config === null
+      ? []
+      : [
+          `- name: ${AI_REVIEW_CREDS_RELOCATE_STEP_NAME}`,
+          `  id: ${AI_REVIEW_CREDS_RELOCATE_STEP_ID}`,
+          `  run: |`,
+          ...buildCredsRelocateScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+        ];
+
   // Vertex needs a project, a location and a model. None is a secret and none
   // is inferable by the reviewer, so all three are generated literals from
   // `ci.vertex` rather than `vars.*` — a `vars` reading is a second declaring
@@ -2165,6 +2580,7 @@ export function buildReviewRunStep(
     indented(checkout, indent) +
     indented(prepare, indent) +
     (vertexAuth.length === 0 ? "" : indented(vertexAuth, indent)) +
+    (credsRelocate.length === 0 ? "" : indented(credsRelocate, indent)) +
     indented(restore, indent) +
     indented(baseline, indent) +
     indented(review, indent) +

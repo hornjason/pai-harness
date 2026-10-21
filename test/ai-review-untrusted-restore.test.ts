@@ -258,7 +258,12 @@ function sh(script: string, cwd: string, env: Record<string, string>): Run {
   writeFileSync(file, script);
   const r = Bun.spawnSync(["bash", file], {
     cwd,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? cwd, ...env },
+    // A scratch HOME, not the developer's. #843 finding 1 added a
+    // `find "$HOME"` to the drift step, so a suite pointed at a real home
+    // walks it on every case — non-hermetic, and slow in proportion to
+    // something no test controls. That reading has its own file,
+    // `test/ai-review-outside-reading.test.ts`, against a home it builds.
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: scratchDir("ai-review-restore-home-"), ...env },
   });
   return {
     code: r.exitCode,

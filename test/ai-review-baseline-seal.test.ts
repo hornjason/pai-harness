@@ -147,7 +147,12 @@ function scratchDir(prefix: string): string {
 
 const GIT_ENV = (): Record<string, string> => ({
   PATH: process.env.PATH ?? "/usr/bin:/bin",
-  HOME: process.env.HOME ?? "/tmp",
+  // A scratch HOME, not the developer's. #843 finding 1 added a
+  // `find "$HOME"` to the drift step, and a suite pointed at a real home
+  // directory walks it on every case — non-hermetic, and slow in proportion
+  // to something no test controls. `test/ai-review-outside-reading.test.ts`
+  // is where that reading is exercised, against a home it builds itself.
+  HOME: scratchDir("ai-review-seal-home-"),
   GIT_AUTHOR_NAME: "t",
   GIT_AUTHOR_EMAIL: "t@example.com",
   GIT_COMMITTER_NAME: "t",
@@ -256,7 +261,17 @@ describe("AC-2 (#843/2): a baseline edited after it was sealed is refused", () =
     // The reviewer writes a file it was told not to write...
     writeFileSync(join(work, "evil.ts"), "export const owned = true;\n");
     // ...and appends its own line to the baseline so the difference is empty.
-    appendFileSync(path, "?? evil.ts\n");
+    // The line is produced the way the reader produces one (#853: content,
+    // then path) and the hash is taken from git rather than written down, so
+    // the forgery keeps matching if the fixture's bytes ever change.
+    const blob = Bun.spawnSync(["git", "-C", work, "hash-object", "--", "evil.ts"], {
+      env: GIT_ENV(),
+    });
+    const hash = new TextDecoder().decode(blob.stdout).trim();
+    expect(hash, "could not hash the planted file, so the forgery is not a forgery").toMatch(
+      /^[0-9a-f]{40}$/,
+    );
+    appendFileSync(path, `${hash} evil.ts\n`);
 
     // Without the seal this is exit 0: the comparison is `after` minus the
     // baseline's lines, and the baseline now contains the line.
