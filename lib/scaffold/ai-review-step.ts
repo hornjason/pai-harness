@@ -438,6 +438,17 @@ export function vertexCiConfig(ci: unknown): VertexCiDecision {
  */
 export const AI_REVIEW_FINDINGS_PATH_VAR = "AI_REVIEW_FINDINGS_PATH";
 
+/**
+ * The action's own execution-file output, as the report step receives it.
+ *
+ * Only a diagnostic. `setExecutionFileOutputIfPresent` in the pinned action's
+ * `base-action/src/execution-file.ts` sets `execution_file` only when the
+ * file exists, so an EMPTY value means the action never reached the point of
+ * writing one — which separates "the action declined" from "the reviewer ran
+ * and wrote nothing" with no parsing at all (#826).
+ */
+export const AI_REVIEW_EXECUTION_FILE_VAR = "AI_REVIEW_EXECUTION_FILE";
+
 export const AI_REVIEW_PREPARE_STEP_ID = "ai-review-prepare";
 
 export const AI_REVIEW_PREPARE_STEP_NAME = "Choose a findings path outside the checkout";
@@ -1333,6 +1344,52 @@ export function buildReviewRunScript(): string {
     `pull request has no AI review. Failing rather than reporting a green ` +
     `check for a review that never ran.`;
 
+  // #826: WHICH of three routes produced the empty payload, measured.
+  //
+  // `skipped` above is correct about the declined route and was printed for
+  // all three. On run 39518336224 the reviewer executed for seven minutes,
+  // spent $2.04 and was denied three times, and the annotation sent the
+  // reader to the workflow file to look for a difference that was not there.
+  //
+  // The discriminator needs no parsing and is the action's own:
+  // `setExecutionFileOutputIfPresent` in `base-action/src/execution-file.ts`
+  // at the pinned SHA sets `execution_file` ONLY when the file exists, so an
+  // empty value is "the action never got far enough to write one". Read from
+  // the action's source rather than from its README.
+  //
+  // THE ROUTE DECIDES THE SENTENCE AND NEVER THE EXIT CODE. The payload
+  // decides whether this check is UNMEASURED and what it exits with; this
+  // reading only chooses which explanation goes with it. That separation is
+  // what keeps it from being the second decider the comment above declines to
+  // build, and it is asserted in `test/ai-review-route-reading.test.ts`
+  // (AC-B5) rather than left as an intention.
+  const executed =
+    `The review action exited successfully WITHOUT writing a findings ` +
+    `payload, so no AI review ran on this pull request — and the reviewer ` +
+    `DID execute: the action wrote an execution file, so this is NOT the ` +
+    `case where it declined before running, and nothing about the workflow ` +
+    `file is worth checking. Read that execution file for the turn count ` +
+    `and the permission denials; a reviewer that ran and wrote nothing is ` +
+    `usually one that could not write to the findings path, which is outside ` +
+    `the checkout. This check is UNMEASURED, not a passing review.`;
+
+  const exhausted =
+    `The review action exited successfully WITHOUT writing a findings ` +
+    `payload, and its execution file reports the turn budget was exhausted ` +
+    `(error_max_turns), so the reviewer ran out of turns before it wrote ` +
+    `anything. Raising ${"AI_REVIEW_MAX_TURNS"} is the lever; making the prompt ` +
+    `write a payload early is NOT, because a partial review that leaves a ` +
+    `file behind reports as a pass. This check is UNMEASURED, not a passing ` +
+    `review.`;
+
+  const routeUnmeasured =
+    `The review action exited successfully WITHOUT writing a findings ` +
+    `payload, and it named an execution file this job could not read, so ` +
+    `which of the two routes produced the empty payload is UNMEASURED as ` +
+    `well. The action either declined to run or ran and wrote nothing, and ` +
+    `this job cannot say which. This check is UNMEASURED, not a passing ` +
+    `review.`;
+
   const absent =
     `The credential-detection step produced no mode output, so this job does ` +
     `not know whether a credential was configured and no AI review ran on ` +
@@ -1392,7 +1449,28 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     exit 0
   fi
 
-  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${skipped}"
+  # Which route, and nothing else. \`route\` is a string this block prints; no
+  # branch below reads it, and the exit code is identical whichever it holds
+  # (#826). A reading that changed the verdict would be the second decider the
+  # comment above declines to build.
+  route="${skipped}"
+  if [ -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
+    # A text read of a JSON document, deliberately: a runner is not
+    # guaranteed \`jq\`, and the consequence of a false match here is a
+    # different explanatory sentence rather than a different verdict.
+    if grep -qE '"subtype"[[:space:]]*:[[:space:]]*"error_max_turns"' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
+      route="${exhausted}"
+    else
+      route="${executed}"
+    fi
+  elif [ -n "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
+    # Named but unreadable. Reporting that as the declined route would be a
+    # default substituted for a reading, in the step this job exists to stop
+    # doing that.
+    route="${routeUnmeasured}"
+  fi
+
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::\${route}"
   if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
     echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${skippedRefusal}" >&2
     exit ${AI_REVIEW_REQUIRED_EXIT}
@@ -1948,6 +2026,14 @@ export function buildReviewRunStep(
     `  env:`,
     `    AI_REVIEW_MODE: \${{ steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode }}`,
     `    AI_REVIEW_ACTION_OUTCOME: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outcome }}`,
+    // #826. The script has branched on the payload since #816 and this step
+    // was never handed its path — a step's `env:` does not carry to a later
+    // step, so `[ -s "" ]` was false on every run that has ever executed and
+    // the unadjudicated branch was unreachable. Measured from the runner's
+    // own echo of this step's environment on run 39518336224: three
+    // variables, and the findings path not among them.
+    `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
+    `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
     `    ${AI_REVIEW_REQUIRE_VAR}: \${{ vars.${AI_REVIEW_REQUIRE_VAR} }}`,
     `  run: |`,
     ...buildReviewRunScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),

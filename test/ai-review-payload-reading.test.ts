@@ -230,7 +230,15 @@ describe("AC-5: the pre-#816 script is shown reporting the false sentence", () =
     // carries an ESCAPED `\${...}` so that bash receives the expansion, and
     // re-deriving that through a second layer of interpolation here is how a
     // needle silently stops matching.
-    const needle = 'if [ -s "';
+    //
+    // Narrowed from a bare `if [ -s "` when #826 added a second `-s` test —
+    // for the action's execution file, one branch below. The abort fired
+    // rather than the mutation landing on the wrong line, which is what the
+    // count is for, and the repair is to name the reading rather than to
+    // raise the expected count.
+    // Still a plain string for the reason above: the source carries the
+    // CONSTANT's name, not its value, so the needle names the constant too.
+    const needle = 'if [ -s "\\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]';
     const count = source.split(needle).length - 1;
     if (count !== 1) {
       throw new Error(
