@@ -738,6 +738,69 @@ const FORBIDDEN_SANDBOX_GLOBALS = new Map([
 ]);
 
 /**
+ * The sandbox constraint this validator could not express until #903.
+ *
+ * `FORBIDDEN_SANDBOX_GLOBALS` keys on a bare global NAME. Three of the
+ * constructs the sandbox refuses are not bare names — they are members of
+ * globals that DO exist. `Date` and `Math` are both in `WORKFLOW_GLOBALS` and
+ * both really are there, so a name-shaped detector is structurally incapable
+ * of seeing `Date.now()`. Measured on 2026-10-21 against `origin/main`: a
+ * workflow whose every top-level statement throws in the sandbox
+ * (`Date.now()`, `Math.random()`, `new Date()`) validated with
+ * `✓ Sandbox globals: no unavailable globals referenced` and exit 0.
+ *
+ * That is a detector narrower than the thing it detects, and #903 is the
+ * record of what the gap costs: the constraint was priced three separate
+ * times in one session, each time by reading a prose comment someone had hand-
+ * written beside the code. `workflows/prove.js`, `workflows/ship.js` and
+ * `lib/trajectory.ts` each carry one of those comments. A constraint
+ * maintained by comment is the tell that no detector covers it.
+ *
+ * SOURCE, AND HOW TO RE-CHECK IT. These three are stated by the host's own
+ * `workflow-authoring` reference, read 2026-10-21: *"Standard JS built-ins
+ * (JSON, Math, Array, etc.) are available — EXCEPT `Date.now()`/
+ * `Math.random()`/argless `new Date()`, which throw (they would break
+ * resume)"*. The reason is resume: a cached prefix of `agent()` calls has to
+ * replay to the same values. Do not add an entry here on the belief that it
+ * "should" be unavailable — the list above says the same thing, and says it
+ * because a previous version of it was wrong in exactly that way. Re-check by
+ * running a workflow whose script body is only:
+ *
+ *     const probe = (l, f) => { try { return l + '=' + String(f()) } catch (e) { return l + '=THREW:' + e.message } }
+ *     return [probe('Date.now', () => Date.now()), probe('Math.random', () => Math.random()),
+ *             probe('new Date', () => new Date().toISOString()), probe('typeof require', () => typeof require)]
+ *
+ * It spawns no agents and costs nothing. A constraint that ships with its own
+ * falsification recipe does not rot the way a bare assertion does.
+ */
+const FORBIDDEN_SANDBOX_CAPABILITIES: { label: string; pattern: RegExp; reason: string }[] = [
+  {
+    label: "Date.now()",
+    pattern: /(?<![.\w$])Date\s*\.\s*now\s*\(/g,
+    reason:
+      "the sandbox throws on Date.now() — it would break resume (#69, #903). Stamp the time after the workflow returns, or pass it in through `args`.",
+  },
+  {
+    label: "Math.random()",
+    pattern: /(?<![.\w$])Math\s*\.\s*random\s*\(/g,
+    reason:
+      "the sandbox throws on Math.random() — it would break resume (#69, #903). Vary the agent prompt or label by index instead.",
+  },
+  {
+    label: "new Date()",
+    pattern: /(?<![.\w$])new\s+Date\s*\(\s*\)/g,
+    reason:
+      "the sandbox throws on an ARGLESS new Date() — it would break resume (#69, #903). `new Date(someIso)` is fine and is not matched here; it is reading the clock that is refused.",
+  },
+  {
+    label: "import()",
+    pattern: /(?<![.\w$])import\s*\(/g,
+    reason:
+      "no dynamic module loading in the sandbox, for the same reason `require` is refused above (#69). Put the code in scripts/ and invoke it through an agent step.",
+  },
+];
+
+/**
  * Blank everything the sandbox never evaluates as script — comments, and the
  * contents of string, template and regular-expression literals — replacing
  * each character with a space and leaving newlines alone. What remains is
@@ -922,8 +985,44 @@ try {
     }
   }
 
+  // Capabilities, not names (#903). A member of an available global is
+  // invisible to the loop above, and three of the sandbox's refusals have
+  // exactly that shape.
+  //
+  // Each candidate is re-tested against the RAW source at the same offsets.
+  // `stripNonCode` replaces every blanked character with a space and leaves
+  // newlines alone, so offsets and lengths map 1:1 and the raw span is exactly
+  // the text a reader sees. That second look is load-bearing for `new Date()`:
+  // blanking turns `new Date('2026-01-01T00:00:00Z')` into
+  // `new Date(                      )`, which is argless to a regex. The first
+  // draft of this check reported that line as a violation — a detector that
+  // flags legal code is the same defect as one that misses illegal code, just
+  // pointed the other way.
+  const raw = readFileSync(resolved, "utf-8");
+  for (const { label, pattern, reason } of FORBIDDEN_SANDBOX_CAPABILITIES) {
+    const scanner = new RegExp(pattern.source, "g");
+    const hits: string[] = [];
+    for (const m of code.matchAll(scanner)) {
+      const span = raw.slice(m.index!, m.index! + m[0].length);
+      if (new RegExp(`^(?:${pattern.source})$`).test(span)) hits.push(span);
+    }
+    if (hits.length > 0) {
+      console.error(
+        `  ✗ \`${label}\` used ${hits.length}x at workflow top level — ${reason}`,
+      );
+      forbidden += hits.length;
+      errors++;
+    }
+  }
+
   if (forbidden === 0) {
-    console.log("  ✓ Sandbox globals: no unavailable globals referenced");
+    // Names the two things that were checked, because "no unavailable globals
+    // referenced" was the exact line this check printed while approving a
+    // script whose every statement throws (#903).
+    console.log(
+      `  ✓ Sandbox capabilities: none of the ${FORBIDDEN_SANDBOX_GLOBALS.size} unavailable global(s) ` +
+        `or ${FORBIDDEN_SANDBOX_CAPABILITIES.length} unavailable capability form(s) referenced`,
+    );
   }
 } catch (e: any) {
   console.error(`  ✗ Forbidden-global check failed: ${e.message}`);

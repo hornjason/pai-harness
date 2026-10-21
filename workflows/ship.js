@@ -6748,6 +6748,56 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   // ship.js has no I/O in the sandbox (#69), so everything crossing back from
   // a script must pass through an agent. Removing the agent entirely needs the
   // sandbox to offer a direct exec primitive; tracked separately.
+  //
+  // ── #903: the price of that sentence, so it is paid once ──────────────
+  //
+  // Three fixes in one session each bottomed out here and each re-derived the
+  // same answer. The answer, written down (measured 2026-10-21):
+  //
+  // THE CONSTRAINT STILL HOLDS. The host's own `workflow-authoring` reference,
+  // read 2026-10-21: "No filesystem or Node.js API access", and `Date.now()`,
+  // `Math.random()` and argless `new Date()` throw because they would break
+  // resume. Re-check it with the zero-agent probe in
+  // `scripts/validate-workflow.ts`'s FORBIDDEN_SANDBOX_CAPABILITIES docstring
+  // — it costs nothing and prints `typeof` for each candidate. A live probe
+  // was not run for this issue: invoking the Workflow tool is user-gated, so
+  // that half is recorded UNMEASURED on #903 rather than inferred.
+  //
+  // WHAT ship.js ASKS AN AGENT FOR, AND WHY EACH ONE EXISTS. Five facts, all
+  // of them mechanical, none of them a judgement:
+  //   - `evidencePrevalidation`, carried out of workflow-state.json (#59 SC-4
+  //     — see the schema at the top of this file and `dryRunReport` below)
+  //   - which harness graded this run (#602, the provenance block)
+  //   - `collect-worktree-files`' exit code and COLLECTED count (this call)
+  //   - rook's scope-step exit code (the SCOPE-STEP block near the end)
+  //   - a worktree's `git remote get-url origin` (#218 → #414 → #872)
+  // Every one is deterministic and would cost a script milliseconds. The
+  // model contributes nothing to any of them except the #530 failure: a reply
+  // that agrees with whatever was put in the prompt.
+  //
+  // THE `scripts/resolve-config.ts` PATTERN DOES NOT GENERALISE TO THESE, and
+  // the reason is structural rather than a missing feature. That pattern works
+  // because its readers — agent prompts and scripts — have a filesystem.
+  // ship.js does not, so materialising a fact into the work directory helps
+  // every consumer except the one that has to BRANCH on it. Evaluated against
+  // the concrete mid-run per-worktree fact #872 wanted (`reportedRepo`): a
+  // file would not help, because ship.js is the reader.
+  //
+  // WHAT DOES WORK is moving the DECISION, not the fact. #414 is the working
+  // instance: the worktree path goes into state and the GATE — a script, with
+  // a filesystem — reads the remote off disk itself, so the agent's
+  // restatement stops being load-bearing. Reach for that before reaching for
+  // another reported field. If the decision genuinely has to happen inside
+  // this file, an agent is the only channel and the reply is untrusted input.
+  //
+  // WHAT IT COSTS, measured rather than asserted. Across the 42 recorded runs
+  // in ~/.rungate, 842 paired agent spawns: median 22s wall clock, p25 12s,
+  // p75 75s. The five facts above all RIDE a spawn that was happening anyway,
+  // so their marginal cost is a few schema fields. A dedicated agent for one
+  // fact — the shape #872 declined — is one spawn at that distribution, plus
+  // its tokens, plus one more untrusted reply. That is the number to put in
+  // the next proposal instead of the word "cheap".
+  // ──────────────────────────────────────────────────────────────────────
   const out = await timedAgent(`
 Run exactly this and report the result:
 
