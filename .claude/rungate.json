@@ -10,7 +10,7 @@
     "discovery": {
       "brief": ".claude/agents/discovery.md",
       "standardTask": "Scan the codebase and identify all specs, their SCs, and current test coverage",
-      "description": "Discovery agent — reads issue, sizes work, writes ACs with evidence methods",
+      "description": "Discovery agent \u2014 reads issue, sizes work, writes ACs with evidence methods",
       "tools": "[Bash, Read]",
       "model": "opus",
       "tiers": {
@@ -23,7 +23,7 @@
       "brief": ".claude/agents/marcus.md",
       "isolation": "worktree",
       "standardTask": "Add config/test.json with {name: test} and write a unit test for it",
-      "description": "Principal engineer — implements code changes with TDD, writes tests, commits",
+      "description": "Principal engineer \u2014 implements code changes with TDD, writes tests, commits",
       "tools": "[Bash, Read, Write, Edit]",
       "model": "opus",
       "tiers": {
@@ -39,7 +39,7 @@
       "brief": ".claude/agents/quinn.md",
       "isolation": "worktree",
       "standardTask": "Validate the latest commit passes all tests and type checks, report AC evidence",
-      "description": "QA engineer — tests as a brand-new user using Playwright MCP tools",
+      "description": "QA engineer \u2014 tests as a brand-new user using Playwright MCP tools",
       "tools": "[Bash, Read, mcp__playwright__*]",
       "model": "opus",
       "tiers": {
@@ -53,7 +53,7 @@
       "brief": ".claude/agents/rook.md",
       "isolation": "worktree",
       "standardTask": "Review lib/ for security issues: input validation, path traversal, command injection",
-      "description": "Security engineer — scans changed files for vulnerabilities",
+      "description": "Security engineer \u2014 scans changed files for vulnerabilities",
       "tools": "[Bash, Read]",
       "model": "opus"
     },
@@ -61,7 +61,7 @@
       "brief": ".claude/agents/serena.md",
       "isolation": "worktree",
       "standardTask": "Review the scaffold-project.ts architecture and propose decomposition into modules",
-      "description": "Software architect — structural decisions, ADRs, module boundary review",
+      "description": "Software architect \u2014 structural decisions, ADRs, module boundary review",
       "tools": "[Read]",
       "model": "sonnet",
       "disallowedTools": [
@@ -73,7 +73,7 @@
       "brief": ".claude/agents/aditi.md",
       "isolation": "worktree",
       "standardTask": "Design the CLI output format for test-brief compliance report with accessibility",
-      "description": "UX/UI designer — component specs, visual review, accessibility",
+      "description": "UX/UI designer \u2014 component specs, visual review, accessibility",
       "tools": "[Read]",
       "model": "sonnet",
       "disallowedTools": [
@@ -92,131 +92,5 @@
   "test": {
     "command": "bun test --parallel --no-isolate",
     "timeout": 300000
-  },
-  "hooks": [
-    {
-      "name": "BashToolGuard",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/BashToolGuard.hook.ts",
-      "enabled": true,
-      "matcher": "Bash",
-      "description": "Blocks cat/head/tail file reading — enforces COMP-7 mechanically (Tier 3)"
-    },
-    {
-      "name": "TestSuiteGuard",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
-      "enabled": true,
-      "matcher": "Bash",
-      "description": "Blocks a full test suite (bun test) once the worker has spent its rate — enforces DIR-L29 mechanically (Tier 3). The rate lives in lib/test-suite-lock.ts."
-    },
-    {
-      "name": "AgentBriefGuard",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/AgentBriefGuard.hook.ts",
-      "enabled": true,
-      "matcher": "Agent",
-      "description": "Validates agent brief templates and enforces ship-active marker"
-    },
-    {
-      "name": "AgentVerdictCapture",
-      "hookFor": "SubagentStop",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/AgentVerdictCapture.hook.ts",
-      "enabled": true,
-      "description": "Captures agent verdicts and writes to workflow-state.json"
-    },
-    {
-      "name": "AutoVerifyGate",
-      "hookFor": "PostToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/AutoVerifyGate.hook.ts",
-      "enabled": true,
-      "matcher": "Agent",
-      "description": "Nudges DA to run verify gate after agent completion"
-    },
-    {
-      "name": "CommitEnforcement",
-      "hookFor": "PostToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/CommitEnforcement.hook.ts",
-      "enabled": true,
-      "matcher": "Agent",
-      "description": "Detects uncommitted changes and UI file changes in agent worktrees"
-    },
-    {
-      "name": "GateEnforcement",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/GateEnforcement.hook.ts",
-      "enabled": true,
-      "matcher": ".*",
-      "description": "Nags on gate failures and blocks Skill calls after max strikes"
-    },
-    {
-      "name": "IssueCloseGuard",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/IssueCloseGuard.hook.ts",
-      "enabled": true,
-      "matcher": "Bash",
-      "description": "Blocks gh issue close without ship-gate PASS and HMAC validation"
-    },
-    {
-      "name": "MergeGuard",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/MergeGuard.hook.ts",
-      "enabled": true,
-      "matcher": "Bash",
-      "description": "Early warning on git merge to main without verify-gate passing"
-    },
-    {
-      "name": "PostCompact",
-      "hookFor": "PostCompact",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/PostCompact.hook.ts",
-      "enabled": true,
-      "description": "Re-injects critical rules after context window compaction"
-    },
-    {
-      "name": "SpecConformityTrigger",
-      "hookFor": "PostToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/SpecConformityTrigger.hook.ts",
-      "enabled": true,
-      "matcher": "Edit|Write",
-      "description": "Auto-runs conformity when spec files are modified"
-    },
-    {
-      "name": "SpecSCGuard",
-      "hookFor": "PostToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/SpecSCGuard.hook.ts",
-      "enabled": true,
-      "matcher": "Edit|Write",
-      "description": "Validates new SC lines in spec files have matching patterns"
-    },
-    {
-      "name": "StaleTTLCleanup",
-      "hookFor": "SessionStart",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
-      "enabled": true,
-      "description": "Cleans up stale workflow-state.json and ship-active files"
-    },
-    {
-      "name": "TaskCompleted",
-      "hookFor": "TaskCompleted",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/TaskCompleted.hook.ts",
-      "enabled": true,
-      "description": "Quality gates before task completion (tests, uncommitted changes, conformity)"
-    },
-    {
-      "name": "VerifyPhaseLock",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/VerifyPhaseLock.hook.ts",
-      "enabled": true,
-      "matcher": "Bash",
-      "description": "Blocks gh issue create during VERIFY phase"
-    },
-    {
-      "name": "WorkflowStateGuard",
-      "hookFor": "PreToolUse",
-      "command": "bun ${RUNGATE_HOOKS_DIR}/WorkflowStateGuard.hook.ts",
-      "enabled": true,
-      "matcher": "Write|Edit",
-      "description": "Blocks direct Write/Edit of workflow-state.json"
-    }
-  ]
+  }
 }
