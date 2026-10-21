@@ -3544,6 +3544,33 @@ const SHA256_HELPER = `sha256_of() {
  * vars would also discard a proxy, a CA bundle or an `insteadOf` rewrite that
  * a self-hosted runner legitimately keeps in `~/.gitconfig`. Different
  * trade-off, different decision, not folded in here silently.
+ *
+ * ## BOUND to `lib/git-isolation.ts`, and NOT by an import (#1001)
+ *
+ * The decision — which env vars, which `-c` pairs — lives in
+ * `lib/git-isolation.ts` as data, because `hooks/CommitEnforcement.hook.ts`
+ * needs the same set as an ARGV and a shell prefix cannot be reused as one.
+ *
+ * This value is still a literal, and that is deliberate rather than
+ * unfinished. **This module is import-free because 27 test suites copy it
+ * into a tmpdir to build mutants**, where no relative import resolves, and
+ * `test/ai-review-scaffold.test.ts` AC-6b already asserts exactly that. The
+ * first attempt at this change imported the helper and turned three CI
+ * shards red with `Cannot find module` across suites that have nothing to
+ * do with git config. The property is real, it was already checked, and it
+ * costs less to respect than to dismantle.
+ *
+ * (AC-6b greps this file for a relative-import spelling, so the sentence
+ * above describes one rather than quoting it — the citation-vs-claim trap
+ * in `.claude/rules/self-referential-tests.md`, which this very paragraph
+ * hit on its first draft.)
+ *
+ * So the binding is a CHECK, not an import: `test/git-isolation.test.ts`
+ * AC-D1 asserts this string is byte-identical to `gitIsolatedShellPrefix()`,
+ * and AC-D2 asserts that every production spelling of the set agrees with
+ * that one declaration. A literal that CI refuses to let diverge is a weaker
+ * guarantee than a single expression and a stronger one than a comment;
+ * saying which it is matters more than the difference.
  */
 export const AI_REVIEW_GIT_ISOLATED =
   "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 " +

@@ -233,12 +233,15 @@ const PRE_971 = {
     'execSync(`bun ${script} --skip-tests`, {',
   ] as [string, string],
   commitImport: ["import { execFileSync } from 'child_process'", "import { execSync } from 'child_process'"] as [string, string],
+  // Both anchors carry `gitIsolatedArgs(…)` since #1001 — the isolation
+  // wrapper is part of the current spelling, and the pre-#971 side drops it
+  // because the shell string never had it.
   commitDiff: [
-    "execFileSync('git', ['-C', worktreePath, 'diff', '--name-only', 'main'], {",
+    "execFileSync('git', gitIsolatedArgs(['-C', worktreePath, 'diff', '--name-only', 'main']), {",
     'execSync(`git -C "${worktreePath}" diff --name-only main 2>/dev/null`, {',
   ] as [string, string],
   commitStatus: [
-    "execFileSync('git', ['-C', worktreePath, 'status', '--porcelain'], {",
+    "execFileSync('git', gitIsolatedArgs(['-C', worktreePath, 'status', '--porcelain']), {",
     'execSync(`git -C "${worktreePath}" status --porcelain`, {',
   ] as [string, string],
 };
@@ -254,8 +257,13 @@ function driveHook(
   hookPath: string,
   payload: unknown,
   extraPath?: string,
+  homeOverride?: string,
 ): { status: number | null; stderr: string; stdout: string } {
-  const home = scratch("home");
+  // `homeOverride` so a caller can plant a fixture INSIDE the home the hook
+  // will read. Since #1001 `CommitEnforcement` confines its worktree to
+  // `$HOME/.claude/.claude/worktrees`, so a fixture elsewhere is refused
+  // before either exec and the arm witnesses nothing.
+  const home = homeOverride ?? scratch("home");
   const r = spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(payload),
     encoding: "utf-8",
@@ -326,7 +334,12 @@ function runCommitEnforcement(hookPath: string, makeLeaf: (canary: string) => st
   writeFileSync(stub, `#!/bin/sh\n: >> ${JSON.stringify(marker)}\nexit 0\n`);
   chmodSync(stub, 0o755);
 
-  const worktree = join(base, "worktrees", makeLeaf(canary));
+  // Inside the hook's own HOME, because #1001 confines the worktree to
+  // `$HOME/.claude/.claude/worktrees/`. The payload still lives in the LEAF
+  // NAME, which is what these arms are about — confinement constrains where
+  // the directory is, not what it is called.
+  const home = scratch("home");
+  const worktree = join(home, ".claude", ".claude", "worktrees", makeLeaf(canary));
   mkdirSync(worktree, { recursive: true });
   const out = driveHook(
     hookPath,
@@ -336,6 +349,7 @@ function runCommitEnforcement(hookPath: string, makeLeaf: (canary: string) => st
       tool_response: `done: ${worktree}`,
     },
     bin,
+    home,
   );
   return { ...out, injected: existsSync(canary), reached: existsSync(marker) };
 }
