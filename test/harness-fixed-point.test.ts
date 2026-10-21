@@ -40,6 +40,7 @@ import { mkdtempSync, mkdirSync, rmSync, cpSync, existsSync, readFileSync, write
 import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { generateAgentsMd } from "../lib/generators/agents-md";
+import { structuralCut } from "../lib/source-slice";
 import { mockProjectScan } from "../lib/generators/types";
 
 const ROOT = join(import.meta.dir, "..");
@@ -288,6 +289,65 @@ describe("#827: the harness is a fixed point of its own generator", () => {
       "a failure — it means the exclusion has no subject and this case plus the filter in " +
       "`fixedPointReading` should be deleted rather than left asserting nothing.",
     ).not.toEqual([]);
+  });
+
+  test("#827 / AC-5b: nothing in the scan reads a directory in filesystem order", () => {
+    // The class CI found and macOS cannot: three generated files were a
+    // different PERMUTATION on ext4 and on APFS, with byte-identical rows,
+    // because every table in `lib/scanner.ts` is rendered straight from a
+    // `readdirSync`. AC-2 catches it only on the platform that disagrees
+    // with whoever last committed the files, which is why this is asserted
+    // structurally as well as behaviourally.
+    const src = readFileSync(join(ROOT, "lib", "scanner.ts"), "utf-8");
+    const helper = structuralCut(src, "function readdirSorted(", { balanced: "{" });
+    // The cut must be non-empty and must be the thing it claims to be, or
+    // the subtraction below removes nothing and the assertion holds
+    // vacuously over a file that never had a helper.
+    expect(helper).toContain("readdirSync");
+    expect(
+      src.replace(helper, ""),
+      "`lib/scanner.ts` calls `readdirSync` outside `readdirSorted`. Directory enumeration " +
+      "order is the filesystem's, not an order, and this module renders tables straight from " +
+      "it — so the generated file is a different permutation on Linux and on macOS and the " +
+      "repository stops being a fixed point of its own generator on every machine but one.",
+    ).not.toContain("readdirSync(");
+
+    // …and the helper must actually impose an order. The structural half
+    // above only establishes that one binding does the reading; a helper
+    // reading through a single site and returning filesystem order would
+    // satisfy it exactly.
+    //
+    // AC-2 does catch a non-sorting helper — measured, 2 red, on APFS as
+    // well as on ext4. But only because this machine's enumeration order
+    // happens to differ from sorted: on a filesystem that already returns
+    // names alphabetically there is no input on which a sorting helper and
+    // a non-sorting one differ, so AC-2 would be green over the defect with
+    // nothing in the run saying which case it was in. That is the margin
+    // being set from outside the fixture, so the sort is also asserted
+    // where it is written, and AC-5c asserts the order in the artifact.
+    expect(
+      helper,
+      "`readdirSorted` no longer sorts, so it is `readdirSync` with extra steps.",
+    ).toContain(".sort()");
+  });
+
+  test("#827 / AC-5c: the generated spec table is in a stated order, not the filesystem's", () => {
+    // The artifact half of AC-5b, and the half that is platform-independent:
+    // whatever order a machine enumerates `specs/` in, the committed table
+    // is sorted, so two machines produce the same bytes. Rows are read from
+    // the generated file rather than from `scanSpecs`, because a reading
+    // taken from the same call the generator makes would agree with it
+    // however wrong both were.
+    const table = readFileSync(join(ROOT, ".claude", "rules", "specs-routing.md"), "utf-8");
+    const rows = table
+      .split("\n")
+      .filter(l => l.startsWith("| ") && !l.startsWith("| Spec ") && !l.startsWith("|---"))
+      .map(l => l.split("|")[1].trim());
+    // The grouped `dir/ (N specs)` rows are appended after the file rows by
+    // `generateScopedRules`; only the file rows come from the directory read.
+    const fileRows = rows.filter(r => !r.includes("/"));
+    expect(fileRows.length).toBeGreaterThan(10);
+    expect(fileRows).toEqual([...fileRows].sort());
   });
 
   test("#827 / AC-5: a step the run deferred is named, and a NEW deferral is a failure", () => {

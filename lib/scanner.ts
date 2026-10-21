@@ -115,6 +115,33 @@ function detectTechStack(root: string): string[] {
  * because a fix landed here and nobody knew a second implementation existed.
  * One derivation, so the next fix cannot land in only half of them (#827).
  */
+/**
+ * `readdirSync`, sorted (#827).
+ *
+ * Directory enumeration order is the filesystem's, and it is not an order:
+ * APFS hands entries back in a different sequence from ext4. Every table in
+ * this module is rendered straight from one of these reads, so three
+ * generated files — `.claude/rules/specs-routing.md` and the prompt-routing
+ * tables in two agent briefs — were a different PERMUTATION on Linux and on
+ * macOS, with byte-identical rows. The repository could therefore be a fixed
+ * point of its own generator on the machine its files were last written on
+ * and on no other, which is why #827 reported five drifting files from a Mac
+ * and CI found three more.
+ *
+ * One binding, so a new call site cannot reintroduce the class by reaching
+ * for the raw import — `test/harness-fixed-point.test.ts` asserts that
+ * `readdirSync` appears in this file exactly once, which is here.
+ *
+ * Plain `.sort()`: the default lexicographic order over UTF-16 code units is
+ * locale-independent, unlike `localeCompare`, and a generator whose output
+ * depends on the runner's locale is the same defect in a different coat.
+ */
+interface ReaddirSortedOptions { recursive?: boolean }
+
+function readdirSorted(dir: string, opts?: ReaddirSortedOptions): string[] {
+  return (opts ? readdirSync(dir, opts) : readdirSync(dir)).map(String).sort();
+}
+
 export function scanSpecs(root: string): SpecEntry[] {
   const specsDir = join(root, "specs");
   if (!existsSync(specsDir)) return [];
@@ -124,7 +151,7 @@ export function scanSpecs(root: string): SpecEntry[] {
   // `lib/scaffold/steps.ts` answered the same question with its own filter
   // and reached the opposite verdict for `SPEC-TEMPLATE.md`, so the one file
   // this table deliberately omits was reported as missing from it (#382).
-  const specFiles = readdirSync(specsDir).filter(isSpecFile);
+  const specFiles = readdirSorted(specsDir).filter(isSpecFile);
 
   for (const f of specFiles) {
     const content = readFileSync(join(specsDir, f), "utf-8");
@@ -152,13 +179,12 @@ export function scanSpecs(root: string): SpecEntry[] {
 
   // Also scan specs subdirectories
   try {
-    const specSubDirs = readdirSync(specsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
+    const specSubDirs = readdirSorted(specsDir)
+      .filter(n => { try { return statSync(join(specsDir, n)).isDirectory(); } catch { return false; } });
 
     for (const sub of specSubDirs) {
       const subPath = join(specsDir, sub);
-      const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md") && f !== "INDEX.md");
+      const subFiles = readdirSorted(subPath).filter(f => f.endsWith(".md") && f !== "INDEX.md");
       if (subFiles.length > 0) {
         const indexPath = join(subPath, "INDEX.md");
         let groupGoverns = `${sub} (${subFiles.length} specs)`;
@@ -214,7 +240,7 @@ function detectConsumers(root: string): string[] {
   const consumers: string[] = [];
   const consumerPatterns = ["-routes.ts", "-generator.ts", "-plan.ts", "-intel.ts"];
 
-  for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts"))) {
+  for (const f of readdirSorted(srcDir).filter(f => f.endsWith(".ts"))) {
     try {
       const content = readFileSync(join(srcDir, f), "utf-8");
       const isConsumer = consumerPatterns.some(p => f.includes(p)) ||
@@ -289,7 +315,7 @@ function scanTestFiles(root: string): TestFile[] {
   if (!testDir) return [];
 
   try {
-    return readdirSync(join(root, testDir))
+    return readdirSorted(join(root, testDir))
       .filter(f => f.endsWith(".test.ts"))
       .map(f => ({
         label: f.replace(".test.ts", "").replace(/-/g, " "),
@@ -307,7 +333,7 @@ function scanRefFiles(root: string): RefFile[] {
   if (!existsSync(refDir)) return [];
 
   try {
-    return readdirSync(refDir).map(f => ({
+    return readdirSorted(refDir).map(f => ({
       file: f,
       what: "Historical reference",
     }));
@@ -347,7 +373,7 @@ function scanDocRouting(root: string, categories: Category[]): DocRoute[] {
         // Recursive: reference/ held 19 markdown files, every one of them in a
         // subdirectory, and a shallow count advertised it as "(0 files)" (#91).
         // A row saying a directory is empty reads as an instruction not to look.
-        const files = readdirSync(catPath, { recursive: true }).map(String).filter(f => f.endsWith(".md"));
+        const files = readdirSorted(catPath, { recursive: true }).filter(f => f.endsWith(".md"));
         docRouting.push({ need: `${cat.label} (${files.length} files)`, file: `${cat.dir}/` });
       } catch {
         docRouting.push({ need: cat.label, file: `${cat.dir}/` });
@@ -470,13 +496,13 @@ function scanDirs(root: string): DirEntry[] {
   const dirs: DirEntry[] = [];
 
   try {
-    for (const entry of readdirSync(root)) {
+    for (const entry of readdirSorted(root)) {
       if (entry.startsWith(".") && entry !== ".claude") continue;
       if (skip.has(entry)) continue;
       const full = join(root, entry);
       try {
         if (!statSync(full).isDirectory()) continue;
-        const files = readdirSync(full, { recursive: true }).map(String);
+        const files = readdirSorted(full, { recursive: true });
         const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
         dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
       } catch {}
@@ -494,7 +520,7 @@ function scanModules(root: string): ModuleEntry[] {
   if (!existsSync(srcDir)) return modules;
 
   try {
-    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
+    for (const f of readdirSorted(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
       const content = readFileSync(join(srcDir, f), "utf-8");
       const exports: string[] = [];
       const exportPattern = /export\s+(?:function|const|class|type|interface)\s+(\w+)/g;
@@ -514,7 +540,7 @@ function scanRoutes(root: string): RouteEntry[] {
   if (!existsSync(srcDir)) return routes;
 
   try {
-    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
+    for (const f of readdirSorted(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
       const content = readFileSync(join(srcDir, f), "utf-8");
       const routePatterns = [
         /app\.(get|post|put|delete|patch)\s*\(\s*["'`]([^"'`]+)["'`]/gi,
@@ -574,7 +600,7 @@ function scanPromptRouting(root: string, harness: Record<string, any> | null): R
   if (!existsSync(promptsDir)) return promptsByAgent;
 
   try {
-    const promptFiles = readdirSync(promptsDir).filter(f => f.endsWith(".md"));
+    const promptFiles = readdirSorted(promptsDir).filter(f => f.endsWith(".md"));
     for (const f of promptFiles) {
       const content = readFileSync(join(promptsDir, f), "utf-8");
       const lower = f.toLowerCase();
