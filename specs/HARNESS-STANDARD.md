@@ -5149,7 +5149,7 @@ ground-truth heuristic missed — `Fixes #500` in PR 838, `Closes #735` in PR
 correct detections and one past-tense sentence GitHub would also treat as
 closing.
 
-The instance that paid for it: asaCommandCenter run for issue #1624 refused
+The instance that paid for it: a consumer run for issue #1624 refused
 `PRIOR_WORK_OPEN_PR` after 9 agents, 716k tokens and 26 minutes, naming PR
 #1820 — which is #1815's PR, with **zero file overlap**. What matched was two
 sentences of prose. Four separate open PRs cite #1624, so removing one would
@@ -5167,6 +5167,24 @@ So the fields split again, now three ways:
   through a backtick — because GitHub closes an issue from a quoted
   `` `Fixes #N` `` and a detector that disagreed with GitHub about which PR
   closes what would be a third bound, not a fix.
+
+**The body reading is deliberately as WIDE as GitHub's grammar, not as
+narrow as ship.js's spelling.** The first draft required `keyword #N`, and
+security review of it named the direction the error runs in: a PR saying
+`Fixes: #209`, `Closes GH-209` or `Resolves <issue URL>` really does close
+the issue, a narrower detector does not see it, and the issue is shipped
+twice — #209 again, from the opposite side of the same predicate. The
+optional colon, the `GH-` form and the issue-URL form are all accepted, and
+re-measuring the 120-PR corpus shows the widening costs nothing: **4 false
+positives either way, 0 true pairs lost.**
+
+Two positions name the closing line — `workflows/ship.js` writes it, this
+predicate reads it back — and nothing compared them. A reword of the
+template to defuse the keyword (which this repository's own rules ask for in
+hand-written bodies, because a quoted one still fires on merge) would
+silently stop the harness finding its own PRs. `AC-6c` reads the line out of
+`workflows/ship.js` and asserts this predicate matches it, so the two cannot
+drift.
 
 There is deliberately **no fallback** to the bare reading when no body
 carries a keyword. A fallback reintroduces #887 exactly; "nothing declares

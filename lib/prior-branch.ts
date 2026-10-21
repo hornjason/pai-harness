@@ -213,7 +213,7 @@ export function issueProseReference(issueNumber: number): (text: unknown) => boo
  * measured over this repository's 120 most recent PRs, 103 of them cite
  * issues they do not close, 417 citations in all. Treating any of those as
  * prior work stops a correct run from ever starting, and it fires late --
- * asaCommandCenter #1624 refused after 9 agents, 716k tokens and 26 minutes,
+ * A consumer run for issue #1624 refused after 9 agents, 716k tokens and
  * naming a PR with zero file overlap.
  *
  * The signal that separates the populations already exists and the harness
@@ -247,8 +247,18 @@ export function issueClosingReference(issueNumber: number): (text: unknown) => b
       `issueClosingReference needs a non-negative integer issue number, got ${JSON.stringify(issueNumber)}`,
     )
   }
+  // The forms GitHub itself honours, not just the one ship.js writes. A
+  // detector NARROWER than GitHub's grammar fails in the dangerous
+  // direction: a PR saying `Fixes: #209` or `Closes GH-209` really does
+  // close the issue, this would not see it, and the issue gets shipped
+  // twice -- #209, which is the defect the module exists to prevent. Found
+  // by security review of the first draft, which required a bare `#`.
+  //
+  //   keyword, optional colon, whitespace, then one of:
+  //     #209   GH-209   https://github.com/<owner>/<repo>/issues/209
+  const ref = `(?:#|GH-|https?://github\\.com/[^/\\s]+/[^/\\s]+/issues/)${issueNumber}`
   const pattern = new RegExp(
-    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+#${issueNumber}\\b`,
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s*:?\\s+${ref}\\b`,
     'i',
   )
   return (text: unknown) => typeof text === 'string' && pattern.test(text)
@@ -561,8 +571,8 @@ const PR_PAGE_SIZE = 100
  *
  * - **#687**: a bare-number reading matched `rungate/run-631` quoted as
  *   evidence in a body, and issue 631's run refused. Fixed by requiring `#`.
- * - **#887**: `#N` is still what a CITATION looks like. asaCommandCenter
- *   #1624 refused after 9 agents, 716k tokens and 26 minutes, naming a PR
+ * - **#887**: `#N` is still what a CITATION looks like. A consumer run for
+ *   issue #1624 refused after 9 agents, 716k tokens and 26 minutes, naming a PR
  *   with zero file overlap that mentioned it in two sentences of prose —
  *   and three other open PRs cited it too, so removing one would have handed
  *   the refusal to the next. The body must now DECLARE that it closes the

@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import {
   detectExistingPR,
   issueClosingReference,
@@ -11,7 +13,7 @@ import {
  * #887 — `detectExistingPR` treated any `#N` anywhere in any open PR body as
  * that issue's prior work, and `priorWorkRefusal` then stopped the run.
  *
- * The instance: asaCommandCenter #1624 refused after 9 agents, 716k tokens
+ * The instance: a consumer run for issue #1624 refused after 9 agents, 716k
  * and 26 minutes, naming PR #1820 — which is #1815's PR, with zero file
  * overlap. What matched was two sentences of prose citing #1624. Four
  * separate open PRs cite it; removing one would have handed the refusal to
@@ -125,6 +127,40 @@ describe('#887: issueClosingReference matches what GitHub matches', () => {
     // code spans would disagree with GitHub about which PR closes what. Match
     // the same text GitHub does.
     expect(issueClosingReference(209)('a sample body ends `Fixes #209` like so')).toBe(true)
+  })
+
+  test('AC-6b: the forms GitHub honours that are not a bare #N', () => {
+    // Found by security review of the first draft, which required `\s+#`.
+    // A detector NARROWER than GitHub's grammar fails in the dangerous
+    // direction: the PR really does close the issue, this does not see it,
+    // and the issue is shipped twice -- #209 again.
+    const m = issueClosingReference(209)
+    expect(m('Fixes: #209'), 'GitHub honours a colon after the keyword').toBe(true)
+    expect(m('Closes GH-209'), 'GH-N is one of the forms GitHub closes from').toBe(true)
+    expect(m('Resolves https://github.com/hornjason/pai-harness/issues/209')).toBe(true)
+    // And the boundaries survive the widening.
+    expect(m('Fixes GH-2091')).toBe(false)
+    expect(m('Resolves https://github.com/o/r/issues/2091')).toBe(false)
+    expect(m('see GH-209')).toBe(false)
+  })
+
+  test('AC-6c: ship.js PR-body template is matched by this predicate', () => {
+    // Two positions naming one fact, with nothing comparing them until now
+    // (#621's shape). `workflows/ship.js` writes the closing line into every
+    // PR it opens; this predicate is what reads it back. If the template is
+    // reworded -- to defuse the keyword, say, which this repository's own
+    // AFK rules ask for in hand-written bodies -- the harness silently stops
+    // finding its own PRs and the issue ships twice.
+    //
+    // Asked of the FILE rather than of a copy of the string, so the two
+    // cannot drift. Requested by security review.
+    const ship = readFileSync(join(import.meta.dir, '..', 'workflows', 'ship.js'), 'utf-8')
+    const line = ship.split('\n').find(l => /^(close[sd]?|fix(e[sd])?|resolve[sd]?)\s*:?\s*#\$\{ISSUE\}/i.test(l.trim()))
+    expect(line, 'ship.js no longer writes a closing line into the PR bodies it opens').toBeTruthy()
+    expect(
+      issueClosingReference(209)(line!.replace('${ISSUE}', '209')),
+      `ship.js writes ${JSON.stringify(line)} and this predicate does not match it`,
+    ).toBe(true)
   })
 
   test('AC-7: the boundary cases the bare reading already had', () => {
