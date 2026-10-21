@@ -12,7 +12,7 @@ import {
   type HookRegistration,
   type ScopeReading,
 } from "../lib/hook-scopes";
-import { commandNamesHook } from "../lib/hook-trees";
+import { commandNamesHook, executedHookFile } from "../lib/hook-trees";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
 
@@ -393,7 +393,32 @@ function registryHooks(): string[] {
   // Derived from `registryCommands`, not read a second time: the registry is
   // one of five scopes now, and two readers of it would disagree the first
   // time either changed.
-  return registryCommands().map(namedHookFile).filter((h): h is string => h !== null);
+  //
+  // `executedHookFile`, NOT `namedHookFile`. This population is COMMANDS, so
+  // the question is the registration one and it goes through the one parse
+  // that answers it. `namedHookFile`'s unanchored match was reported by the
+  // fifth review and it was right about this call site: a registry command
+  // reading `bun run x.ts # Foo.hook.ts` would have contributed `Foo` to the
+  // repo's own inventory of registered hooks.
+  //
+  // The OTHER call site keeps `namedHookFile` and that is not an oversight —
+  // see its docblock. Spec-table rows are markdown, not commands, and no
+  // argv parse can read them. Two questions, two bindings; the defect was
+  // that one call site was on the wrong side of the line.
+  //
+  // A command this parse refuses contributes nothing, which errs toward
+  // reporting a registered hook as absent — the loud direction, and the one
+  // AC-4/AC-4b turn red. Measured: 0 of 19 registry commands carry a flag or
+  // any other spelling this refuses, so the list is unchanged today.
+  const parsed = registryCommands()
+    .map(executedHookFile)
+    .filter((h): h is string => h !== null);
+  expect(
+    parsed.length,
+    "the parse read no hook out of any registry command, so every comparison " +
+      "below would be against an empty list — which agrees with anything",
+  ).toBeGreaterThan(0);
+  return parsed;
 }
 
 describe("Hook SC Traceability (SC-370)", () => {
@@ -468,5 +493,38 @@ describe("Hook line count limits (SC-367, SC-371)", () => {
       const lineCount = content.split("\n").length;
       expect(lineCount).toBeLessThanOrEqual(150);
     }
+  });
+});
+
+describe("#976 review 5: the two name-extractors answer different questions", () => {
+  test("AC-9: a hook name in a non-executing position is a MENTION, not a registration", () => {
+    // `registryHooks` was rewired from `namedHookFile` to `executedHookFile`
+    // because its population is COMMANDS. Reverting that is **0 red** over
+    // this file — measured, in both the real and the CI environment — and
+    // that zero is a fact about the live registry, not about the change:
+    // all 19 of its commands are `bun ${VAR}/X.hook.ts`, on which the two
+    // bindings agree, so no live input can tell them apart.
+    //
+    // Per `.claude/rules/checks-must-be-able-to-fail.md`, a zero needs an
+    // input on which mutant and original differ before it means anything.
+    // Here is that input, asserted rather than described, so the split is a
+    // boundary a reader can see instead of a silent 0 in a battery table.
+    const mention = "bun run x.ts # IssueCloseGuard.hook.ts";
+    expect(
+      namedHookFile(mention),
+      "namedHookFile answers 'which hook does this line MENTION' — correct for " +
+        "the spec's markdown table, and wrong for a command",
+    ).toBe("IssueCloseGuard.hook.ts");
+    expect(
+      executedHookFile(mention),
+      "executedHookFile answers 'which hook does this command EXECUTE' — the " +
+        "registration question, and the only one registryHooks may ask",
+    ).toBeNull();
+
+    // And the spec-table row, which is why `namedHookFile` is kept rather
+    // than collapsed into one binding: no argv parse can read markdown.
+    const row = "| `IssueCloseGuard.hook.ts` | PreToolUse | thin trigger |";
+    expect(namedHookFile(row)).toBe("IssueCloseGuard.hook.ts");
+    expect(executedHookFile(row)).toBeNull();
   });
 });

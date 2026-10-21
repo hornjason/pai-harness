@@ -281,25 +281,42 @@ describe("#910 AC-3: the live reading of the two hooks #910 called unregistered"
     const readings = liveReadings();
     const user = readings.find(r => r.scope === "user-settings")!;
     if (user.commands === null) {
-      // A runner. The refusal is the observation: the user-scope half is
-      // reported UNMEASURED and the case does not skip, because a
-      // silently-skipped check is the same failure mode as the census that
-      // silently read one scope.
+      // A runner, and this arm has now been wrong TWICE in opposite
+      // directions. Both are worth keeping written down, because the second
+      // is this PR's own subject reproduced one level down.
       //
-      // NOT `verdict === "unmeasured"`. That is what this arm asserted when
-      // it was written, and the registry rows added for AC-4b made it stale
-      // in CI and nowhere else: `repo-registry` names both hooks now, so a
-      // runner reads `registered` with `user-settings` still unreadable. The
-      // claim this case owns is about the USER scope, so it is the user scope
-      // the assertions are over — a verdict is the wrong grain for it, and a
-      // verdict assertion is the one that an unrelated data edit moves.
-      const r = hookRegistration("TestSuiteRelease", readings);
-      expect(r.unreadable, `${r.detail}`).toContain("user-settings");
-      expect(
-        r.registeredIn,
-        "a scope reported as unreadable cannot also have been read as naming the hook",
-      ).not.toContain("user-settings");
-      expect(r.verdict, `${r.detail}`).not.toBe("unregistered");
+      // 1. It asserted `verdict === "unmeasured"`. The registry rows added
+      //    for AC-4b made that stale in CI and nowhere else: `repo-registry`
+      //    names both hooks now, so a runner reads `registered`. CI red.
+      // 2. The repair asserted `unreadable` contains `user-settings` and
+      //    `registeredIn` does not. **Those cannot disagree.** `registeredIn`
+      //    is built from `(r.commands ?? [])`, so a null-commands scope can
+      //    never appear in it, and `unreadable` is the same filter the branch
+      //    condition above already took. A tautology, inside the PR that
+      //    closes a fail-open. A green that cannot go red reads as evidence.
+      //
+      // Re-grounded on the claim the case actually owns: **nothing the repo
+      // owns can say these two hooks are WIRED.** So empty the repo
+      // registry's declaration — a row there is the repo saying where a hook
+      // is SUPPOSED to live, not a registration — and what is left is the
+      // question only the user scope can answer. On a runner it cannot be
+      // answered, and `unmeasured` is the reading rather than a skip.
+      const withoutDeclaration = readings.map(r =>
+        r.scope === "repo-registry" ? { ...r, commands: [] } : r,
+      );
+      for (const hook of ["TestSuiteRelease", "ProjectStateSync"]) {
+        const r = hookRegistration(hook, withoutDeclaration);
+        // Each of these has an input that makes it red, and they are
+        // different inputs: collapse the repo/machine ownership split and
+        // the verdict becomes `unregistered`; let any repo-owned scope name
+        // the hook and `registeredIn` stops being empty.
+        expect(r.verdict, `${hook}: ${r.detail}`).toBe("unmeasured");
+        expect(
+          r.registeredIn,
+          `${hook} is named by a repo-owned scope, so this case no longer ` +
+            `witnesses that only the user scope can register it`,
+        ).toEqual([]);
+      }
       return;
     }
     for (const hook of ["TestSuiteRelease", "ProjectStateSync"]) {
@@ -510,6 +527,12 @@ describe("#970 review: the evidence file carries no secret, and the match is by 
       // it. Without this case, removing the truncation is 0 red and the
       // clause is deletable (battery row P1).
       "bun;${RUNGATE_HOOKS_DIR}/IssueCloseGuard.hook.ts",
+      // The fifth review, and the differential the FIRST version of this
+      // parse had: `--preload` takes the next token, so a loop that skipped
+      // every flag and then took the next positional reported a PRELOADED
+      // file as the executed one. `real.ts` runs; IssueCloseGuard does not.
+      "bun --preload IssueCloseGuard.hook.ts run real.ts",
+      "bun -r IssueCloseGuard.hook.ts run real.ts",
     ]) {
       expect(executedHookFile(command), command).not.toBe("IssueCloseGuard.hook.ts");
       expect(commandNamesHook(command, "IssueCloseGuard"), command).toBe(false);
@@ -531,11 +554,12 @@ describe("#970 review: the evidence file carries no secret, and the match is by 
       "bun ${CLAUDE_PROJECT_DIR}/hooks/IssueCloseGuard.hook.ts",
       "TOKEN=x env FOO=2 bun ${D}/IssueCloseGuard.hook.ts",
       "bun run ${D}/IssueCloseGuard.hook.ts",
-      // A flag between the interpreter and the script. Without this the
-      // flag skip is deletable at 0 red (battery row P3) — and its removal
-      // errs toward reporting a real registration as absent, which is the
-      // loud direction but is still a red nobody could explain.
-      "bun --inspect ${D}/IssueCloseGuard.hook.ts",
+      // A flag between the interpreter and the script. Without this the flag
+      // skip is deletable at 0 red (battery row P3). It must be the `=` form:
+      // a `--flag=value` carries its value in its own token, so skipping it
+      // cannot swallow the script, and that is the ONLY flag shape this parse
+      // skips. A bare one is refused — see the `--preload` rows above.
+      "bun --conditions=node ${D}/IssueCloseGuard.hook.ts",
     ]) {
       expect(executedHookFile(command), command).toBe("IssueCloseGuard.hook.ts");
     }
@@ -548,11 +572,18 @@ describe("#970 review: the evidence file carries no secret, and the match is by 
     // the ones left open are asserted, as a boundary a reader can see rather
     // than coverage they infer. If one of these ever starts returning the
     // hook, that is a real improvement and this case should be updated.
+    //
+    // This list is the one in `lib/hook-trees.ts`'s `WHAT THIS DOES NOT
+    // COVER` table. The two are deliberately the same population, so the
+    // doc cannot claim a boundary the code does not have.
     const notClosed = [
       `sh -c "bun \${D}/IssueCloseGuard.hook.ts"`, // the command is inside a string
       "/usr/local/bin/run-hook IssueCloseGuard", // a wrapper execs it
       "bun ${HOOK_PATH}", // the path is built in a variable
       "make build && bun ${D}/IssueCloseGuard.hook.ts", // a later segment
+      "bun --inspect ${D}/IssueCloseGuard.hook.ts", // a BARE flag, refused
+      "bun -- ${D}/IssueCloseGuard.hook.ts", // the end-of-flags separator
+      'bun "$(resolve IssueCloseGuard.hook.ts)"', // a computed specifier
     ];
     for (const command of notClosed) {
       expect(commandNamesHook(command, "IssueCloseGuard"), command).toBe(false);
