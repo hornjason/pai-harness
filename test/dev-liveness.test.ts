@@ -208,8 +208,11 @@ describe("#304: credentials in apiBase never reach a durable artefact", () => {
   });
 
   test("a bare token in apiBase is redacted too", () => {
-    const t = probeTarget("dev", { apiBase: "http://localhost:7777/ghp_abcdefghij1234567890" });
-    if (t.kind === "unmeasured") expect(t.detail).not.toContain("ghp_abcdefghij1234567890");
+    // Constructed, not spelled (#1036). One binding, so the URL and the
+    // assertion cannot drift apart into testing different strings.
+    const token = "ghp_" + "abcdefghij1234567890";
+    const t = probeTarget("dev", { apiBase: `http://localhost:7777/${token}` });
+    if (t.kind === "unmeasured") expect(t.detail).not.toContain(token);
   });
 
   test("a credential in the QUERY STRING is redacted", () => {

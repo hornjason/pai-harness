@@ -347,7 +347,8 @@ describe("#212 — the subject under test cannot switch off the check verifying 
     // sensitive-data-to-observability: a config is a project's own file, and
     // JSON parse errors routinely echo the bytes around the fault. A secret
     // in a misplaced field must not reach the build log by that route.
-    const secret = "ghp_EXAMPLE_NOT_A_REAL_TOKEN_0123456789";
+    // Constructed, not spelled (#1036); the bytes are unchanged.
+    const secret = "ghp_" + "EXAMPLE_NOT_A_REAL_TOKEN_0123456789";
     // The fixture shape matters, and the first one I wrote did not work: for
     // `{"token": "<secret>" oops` the parser reports `Expected '}'` and names
     // nothing, so the test passed whether or not the message was echoed — an

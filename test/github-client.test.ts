@@ -243,9 +243,11 @@ describe("lib/github.ts", () => {
         // Octokit puts straight into the Authorization header. The result is
         // a 401 with nothing in it pointing at whitespace, so strip it here
         // where the cause is still visible.
-        setEnv({ GITHUB_TOKEN: undefined, GH_TOKEN: "  gho_realtoken\n" });
+        // Constructed, not spelled (#1036).
+        const token = "gho_" + "realtoken";
+        setEnv({ GITHUB_TOKEN: undefined, GH_TOKEN: `  ${token}\n` });
         createGitHubClient();
-        expect(lastOctokitOptions?.auth).toBe("gho_realtoken");
+        expect(lastOctokitOptions?.auth).toBe(token);
       });
     });
   });

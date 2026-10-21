@@ -393,10 +393,18 @@ describe("#140: a block reason never carries a credential", () => {
   // which blocks the event loop, so a Bun.serve in this process can never
   // answer the subprocess's request. The first attempt at a live-server
   // version deadlocked for 30s and timed out.
+  // Constructed, not spelled (#1036). The BYTES are deliberately
+  // unchanged: `redactSecrets` has to match each of these as a credential,
+  // so a value the detector no longer recognises would turn this table
+  // from a redaction test into a test of nothing.
+  const CLASSIC_PAT = "ghp_" + "A".repeat(20);
+  const OAUTH_TOKEN = "gho_" + "B".repeat(20);
+  const FINE_GRAINED_PAT = "github_pat_" + "11ABCDE_xyz";
+
   test.each([
-    ["classic PAT", "Bad credentials ghp_AAAAAAAAAAAAAAAAAAAA", "ghp_AAAAAAAAAAAAAAAAAAAA"],
-    ["OAuth token", "401 for gho_BBBBBBBBBBBBBBBBBBBB", "gho_BBBBBBBBBBBBBBBBBBBB"],
-    ["fine-grained PAT", "github_pat_11ABCDE_xyz rejected", "github_pat_11ABCDE_xyz"],
+    ["classic PAT", `Bad credentials ${CLASSIC_PAT}`, CLASSIC_PAT],
+    ["OAuth token", `401 for ${OAUTH_TOKEN}`, OAUTH_TOKEN],
+    ["fine-grained PAT", `${FINE_GRAINED_PAT} rejected`, FINE_GRAINED_PAT],
     ["basic auth in a URL", "GET http://someuser:s3cr3t@host/repos/a/b", "s3cr3t"],
   ])("%s is removed", (_label, message, secret) => {
     const out = redactSecrets(message);

@@ -393,7 +393,12 @@ describe("#970 review: the evidence file carries no secret, and the match is by 
     // Finding 1. `TOKEN=... bun test` is an ordinary spelling, and the
     // evidence file is append-only, long-lived, and read by somebody who was
     // not there. The pair varies exactly one thing: the secret.
-    const secret = "ghp_aaaabbbbccccddddeeeeffff0000111122";
+    // Built rather than spelled, so no credential-shaped literal sits in
+    // the source for an external secret scanner to report (#1036). The
+    // VALUE is unchanged — redaction here is allowlist-based, but the
+    // sibling fixtures are matched by a detector, so the whole class keeps
+    // its exact bytes and only its spelling changes.
+    const secret = "ghp_" + "aaaabbbbccccddddeeeeffff0000111122";
     const facts = commandDigestFacts(`GITHUB_TOKEN=${secret} bun test --parallel`);
     const rendered = firingLine("Alpha", "released", facts, new Date());
 
