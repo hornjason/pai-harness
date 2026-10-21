@@ -117,8 +117,17 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     // surface and can put it over its budget — in a test the diff does not
     // touch, which is the whole shape of this router.
     id: "rule-doc",
+    //
+    // `harness-fixed-point` is here because #1009 paid for its absence: a
+    // `.claude/rules/` file the scaffold generates carries a count derived
+    // from a scan, so adding two documents to `reference/` made `scaffold .
+    // --fix` rewrite a tracked file. Local census said green; CI did not.
     event: "added or edited CLAUDE.md, AGENTS.md or a .claude/rules/ doc",
-    tests: ["test/rule-provenance.test.ts", "test/instruction-surface-budget.test.ts"],
+    tests: [
+      "test/rule-provenance.test.ts",
+      "test/instruction-surface-budget.test.ts",
+      "test/harness-fixed-point.test.ts",
+    ],
     fires: c =>
       isMarkdown(c.path) &&
       (c.path.startsWith(".claude/rules/") || c.path === "CLAUDE.md" || c.path === "AGENTS.md"),

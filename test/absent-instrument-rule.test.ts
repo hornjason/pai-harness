@@ -20,7 +20,10 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 const REPO = join(import.meta.dir, "..");
-const RULES = join(REPO, ".claude/rules/checks-must-be-able-to-fail.md");
+// #1009 moved the worked instances out of `.claude/rules/` and left the
+// rules behind. This section is a worked instance, so it travelled; the
+// heading, the fenced commands and the counts are byte-identical.
+const RULES = join(REPO, "reference/check-failure-worked-instances.md");
 const SPEC = join(REPO, "specs/INSTRUCTION-COMPLIANCE-SPEC.md");
 
 const RULE_HEADING = "### Before you believe an empty search over a store you did not write (#646, #657)";
