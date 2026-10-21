@@ -1,4 +1,4 @@
-# generated-sha: 64525bb1f69c04a1
+# generated-sha: 692a998a500d9921
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -246,6 +246,24 @@ jobs:
                 exit 1
               fi
             fi
+            # Both commands above write the INDEX, so the tree they leave behind reads
+            # `M  <path>` — staged. The reviewing action performs the same restore a
+            # step later and leaves ` M <path>` — unstaged. Same path, same bytes, one
+            # space moved, and the drift verdict is a whole-line comparison in which
+            # the two-letter status prefix is part of the compared string. So the
+            # harness's own restore was reported as the reviewer's work on every run
+            # (#853). The index goes back to the head commit here, which is where the
+            # action leaves it; the WORKTREE is untouched by this and still holds the
+            # base's bytes, which is the whole point of the restore.
+            #
+            # Not fixed by stripping the prefix before comparing: the prefix is what
+            # tells a modification from a deletion from an untracked add, so dropping
+            # it makes a reviewer that DELETES a restored path indistinguishable from
+            # this step.
+            if ! out=$(git reset -q -- "${path}" 2>&1); then
+              echo "::error title=AI review modified the tree::could not return the index to the head commit after restoring ${path}. The baseline would then read a STAGED restore where the reviewing action leaves an unstaged one, and the two spellings of one restore read as reviewer drift (#853). UNMEASURED rather than compared. ${out}" >&2
+              exit 1
+            fi
           done
 
           echo "ai-review restored from ${base_remote}: .claude .claude.json .mcp.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky"
@@ -260,6 +278,15 @@ jobs:
             if out=$(sha256sum "$1" 2>/dev/null); then printf '%s' "${out%% *}"; return 0; fi
             if out=$(shasum -a 256 "$1" 2>/dev/null); then printf '%s' "${out%% *}"; return 0; fi
             return 1
+          }
+
+          untrusted_content() {
+            git ls-files -z --cached --others --exclude-standard -- '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' \
+              | while IFS= read -r -d '' f; do
+                  [ -f "${f}" ] || continue
+                  h=$(git hash-object -- "${f}") || exit 1
+                  printf 'untrusted-content %s %s\n' "${h}" "${f}"
+                done
           }
 
           if [ -z "${RUNNER_TEMP:-}" ]; then
@@ -277,6 +304,12 @@ jobs:
             echo "::error title=AI review modified the tree::git status failed before the review, so there is no baseline and the drift check is UNMEASURED: ${raw}" >&2
             exit 1
           fi
+
+          if ! content=$(untrusted_content 2>&1); then
+            echo "::error title=AI review modified the tree::the files under the restored paths could not be read, so a reviewer edit to one of them would be invisible: a restored path reads as an unstaged modification before such an edit and as an unstaged modification after it, and the content reading is the only thing that sees the difference. UNMEASURED. ${content}" >&2
+            exit 1
+          fi
+          raw=$(printf '%s\n%s' "${raw}" "${content}")
 
           printf '%s\n' "${raw}" > "${before}"
           echo "ai-review tree baseline: ${before}"
@@ -476,6 +509,15 @@ jobs:
             return 1
           }
 
+          untrusted_content() {
+            git ls-files -z --cached --others --exclude-standard -- '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' \
+              | while IFS= read -r -d '' f; do
+                  [ -f "${f}" ] || continue
+                  h=$(git hash-object -- "${f}") || exit 1
+                  printf 'untrusted-content %s %s\n' "${h}" "${f}"
+                done
+          }
+
           # The same rule as escapeAnnotation() in lib/scaffold/ai-review-findings.ts,
           # and the duplication is forced rather than chosen: this runs as bash on a
           # runner and cannot import TypeScript. It is ONE function here, applied the
@@ -513,8 +555,12 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${AI_REVIEW_TREE_BEFORE:-}" ] || [ ! -f "${AI_REVIEW_TREE_BEFORE}" ]; then
-            echo "::error title=AI review modified the tree::the pre-review reading of the tree is missing, so there is nothing to compare this run against and the drift check is UNMEASURED. A tree that nobody read before the review is not a tree that did not change." >&2
+          # `-r` as well as `-f`: the comparison below is `grep -f <baseline>`, and
+          # grep on a file it cannot open exits 2 into a `|| true` — so an unreadable
+          # baseline produced an empty difference and the step exited 0 over a tree
+          # nobody had compared anything against (#853 AC-5).
+          if [ -z "${AI_REVIEW_TREE_BEFORE:-}" ] || [ ! -f "${AI_REVIEW_TREE_BEFORE}" ] || [ ! -r "${AI_REVIEW_TREE_BEFORE}" ]; then
+            echo "::error title=AI review modified the tree::the pre-review reading of the tree is missing or cannot be read, so there is nothing to compare this run against and the drift check is UNMEASURED. A tree that nobody read before the review is not a tree that did not change." >&2
             exit 1
           fi
 
@@ -551,6 +597,12 @@ jobs:
             echo "::error title=AI review modified the tree::git status failed, so the tree was never read and this check is UNMEASURED: $(escape_annotation "${after}")" >&2
             exit 1
           fi
+
+          if ! content=$(untrusted_content 2>&1); then
+            echo "::error title=AI review modified the tree::the files under the restored paths could not be read, so a reviewer edit to one of them would be invisible: a restored path reads as an unstaged modification before such an edit and as an unstaged modification after it, and the content reading is the only thing that sees the difference. UNMEASURED. ${content}" >&2
+            exit 1
+          fi
+          after=$(printf '%s\n%s' "${after}" "${content}")
 
           # The DIFFERENCE, not the total. A line present before the reviewer started is
           # not something the reviewer did — `google-github-actions/auth` writes its

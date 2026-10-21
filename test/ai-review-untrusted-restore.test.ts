@@ -107,12 +107,55 @@
  * by SHA-256, never by `git checkout --`.
  *
  * Covers AC-1, AC-2, AC-3, AC-4, AC-6, AC-7 of #836.
+ *
+ * ────────────────────────────────────────────────────────────────────────
+ *
+ * # #853: the INDEX half of the same restore
+ *
+ * The section at the foot of this file. Its own "what was broken to prove
+ * it", run and counted over this file + `test/ai-review-baseline-seal.test.ts`
+ * + `test/ai-review-workflow.test.ts` (95 tests). Every count was predicted
+ * before the battery ran, in `/tmp/853-probe/predictions.md`, and **the
+ * baseline row was read before any mutation row.**
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 95 pass, 0 fail | **95 pass, 0 fail** | — |
+ * | M1 the genuinely pre-#853 restore — the index-reset block removed | 6 | **6 of 95** | the fixture's own checkout: the original leaves ` M <path>`, the mutant `M  <path>`, and the action's restore turns the second into the first |
+ * | M2 **the cheapest wrong fix** — the comparison stripped to `cut -c4-` on both sides | 5 | **4 of 95** — see below | a reviewer that DELETES the restored path: the original refuses naming ` D <path>`, the mutant exits 0 |
+ * | M3 the content reading removed from both readings | 2 | **2 of 95** | a reviewer that rewrites the restored path: the porcelain line is ` M <path>` before and after, so only the blob moves |
+ * | M4 the `-r` guard removed from the drift step | 2 | **2 of 95** | a mode-000 baseline: the original refuses UNMEASURED, the mutant's `grep -f` exits 2 into `\|\| true` and the step exits 0 |
+ * | M5 the test's own control neutered — `preIndexResetRestore` returns the real script | 1 | **1 of 95** | the control, which then varies nothing |
+ *
+ * **M2 came back 4 against a predicted 5, and the prediction was the thing
+ * that was wrong.** It counted the wrong-fix case twice — once for its own
+ * assertion and once for `prefixBlindDrift` failing to find its anchor in
+ * the mutated source — and those are one case. The four are named: the
+ * generated-vs-committed byte identity, the AC-1 control, the deletion
+ * case, and the wrong-fix case. No collapsed pair.
+ *
+ * None of the five mutations is left in the tree; all were run and
+ * reverted, and `lib/scaffold/ai-review-step.ts` was confirmed
+ * byte-identical to the measured source afterwards by SHA-256.
+ *
+ * Covers AC-1, AC-2, AC-3, AC-4, AC-5 of #853.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+  accessSync,
+  chmodSync,
+  constants as FS,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 
@@ -607,6 +650,28 @@ describe("AC-7: the committed workflow came out of the generator", () => {
     ).toContain(indented);
   });
 
+  test("the committed baseline and drift steps are byte-identical to the generator's", () => {
+    // #853 changes both of them too, and AC-7 above read only the restore
+    // step — so a regenerated restore beside two stale readings would have
+    // passed, which is the whole population of ways a claim scoped to one
+    // region is satisfied by a region beside it.
+    for (const [label, script] of [
+      ["baseline", buildBaselineScript()],
+      ["drift", buildDriftScript()],
+    ] as const) {
+      const indented = script
+        .trimEnd()
+        .split("\n")
+        .map(l => (l ? `          ${l}` : ""))
+        .join("\n");
+      expect(
+        COMMITTED,
+        `the committed ${label} step is not the generator's output — it was hand-edited, ` +
+          "or the file was not regenerated after the generator changed",
+      ).toContain(indented);
+    }
+  });
+
   test("the generated job's step ids are unique, so the order assertions mean something", () => {
     const ids = stepIds(COMMITTED).filter(Boolean);
     // Non-emptiness FIRST. `new Set([]).size === [].length` is 0 === 0, so
@@ -615,5 +680,421 @@ describe("AC-7: the committed workflow came out of the generator", () => {
     // against a predicted 3 until this line existed.
     expect(ids.length, "the step-id reader returned nothing, so uniqueness is vacuous").toBeGreaterThan(4);
     expect(new Set(ids).size, `duplicate step ids: ${ids.join(", ")}`).toBe(ids.length);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// #853 — the INDEX half of the same restore
+//
+// #836 fixed the ORDER: the harness restores before the baseline, so the
+// restore's edits land in both readings and cancel. #853 is what was left.
+// `buildRestoreScript` restores with `git rm` + `git checkout <base> --
+// <path>`, and BOTH write the index, so the baseline reads
+//
+//     M  .claude/rules/self-referential-tests.md     (staged)
+//
+// while the reviewing action performs the same restore inside its own step
+// and leaves
+//
+//      M .claude/rules/self-referential-tests.md     (unstaged)
+//
+// Same path, same bytes, one space moved. The drift verdict is
+// `grep -F -x -v` over WHOLE porcelain lines, so the two-letter status
+// prefix is part of the compared string and the harness's own restore is
+// reported as the reviewer's work. PR #815 rebased onto #841 still failed.
+//
+// ## The cheapest wrong fix, named before the repair
+//
+// **Strip the two-letter status prefix before comparing.** One `cut -c4-`
+// on each side, the symptom disappears, and the drift check can no longer
+// tell a modification from a DELETION of the same path — so a reviewer that
+// deletes a restored rule reads as the restore. AC-4 below applies that
+// repair to a copy of the drift script and observes the deletion walk
+// through it, which is the only thing that makes the case a block on it
+// rather than a sentence about it (`.claude/rules/checks-must-be-able-to-
+// fail.md`, fifth shape).
+//
+// ## The hole the fix opens, and why AC-3 is two cases
+//
+// Making the baseline read ` M <path>` means a reviewer that REWRITES that
+// file leaves ` M <path>` as well: the status does not move, so a whole-line
+// comparison has nothing to see. That is why the reading now carries the
+// blob of every file under the restored set beside the status lines, and
+// why AC-3 asserts the restored path and an ordinary tracked path
+// separately — the second is caught by the status lines and would hold the
+// first one up if they shared a case (#484).
+// ════════════════════════════════════════════════════════════════════════
+
+/** The reading both steps take, run here exactly as they run it. */
+function porcelain(work: string): string {
+  const r = Bun.spawnSync(
+    ["git", "-C", work, "status", "--porcelain", "--untracked-files=all"],
+    { env: GIT_ENV() },
+  );
+  expect(r.exitCode, "git status failed inside the fixture").toBe(0);
+  return new TextDecoder().decode(r.stdout);
+}
+
+/**
+ * The reviewing action's own restore, modelled by its measured END STATE.
+ *
+ * Not by its internals, which this repository does not own and cannot read
+ * from a test: run 39500604342's post-review reading of the restored file is
+ * ` M <path>` — the base's bytes in the worktree, the index at the head
+ * commit. Every case that uses this asserts that end state before concluding
+ * anything from it, so a model that has stopped reproducing the measurement
+ * fails loudly instead of quietly agreeing with whatever the harness does.
+ *
+ * `.claude` and `CLAUDE.md` are the fixture's two paths that exist in the
+ * base; `git checkout <ref> -- <path>` refuses a path the ref does not have.
+ */
+function actionRestore(work: string): void {
+  for (const argv of [
+    ["checkout", "refs/remotes/origin/main", "--", ".claude", "CLAUDE.md"],
+    ["reset", "-q", "--", ".claude", "CLAUDE.md"],
+  ]) {
+    const r = Bun.spawnSync(["git", "-C", work, ...argv], { env: GIT_ENV() });
+    expect(
+      r.exitCode,
+      `the action model's \`git ${argv[0]}\` failed:\n${new TextDecoder().decode(r.stderr)}`,
+    ).toBe(0);
+  }
+}
+
+/**
+ * The restore step as it was before #853: the same source with the index
+ * reset removed and nothing else varied.
+ *
+ * #585's pair discipline. The two halves of every pair below run over one
+ * fixture, one set of scripts, and differ in this one block — written down
+ * once and derived, rather than as a second hand-typed script that the next
+ * edit touches one copy of.
+ */
+function preIndexResetRestore(): string {
+  const block =
+    /\n {2}if ! out=\$\(git reset -q -- "\$\{path\}" 2>&1\); then\n {4}[^\n]*\n {4}[^\n]*\n {2}fi\n/g;
+  const real = buildRestoreScript();
+  const hits = real.match(block) ?? [];
+  expect(
+    hits.length,
+    `could not build the mutant: the index-reset block appears ${hits.length} times, not once`,
+  ).toBe(1);
+  const mutant = real.replace(block, "\n");
+  expect(mutant, "the mutation was never applied").not.toBe(real);
+  expect(mutant, "the mutant still resets the index, so it is not the pre-#853 step").not.toContain(
+    "git reset",
+  );
+  return mutant;
+}
+
+describe("#853 AC-1: the two readings of one restore agree, prefix included", () => {
+  test("the baseline reading and the post-restore reading agree in index state", () => {
+    const { work } = checkout();
+    expect(runRestore(work).code).toBe(0);
+
+    const before = porcelain(work);
+    expect(
+      before,
+      "the harness restore left the index staged, so the baseline cannot match the action's reading",
+    ).toBe(` M ${RESTORED_FILE}\n`);
+
+    actionRestore(work);
+    const after = porcelain(work);
+
+    // The model's own measured property, asserted before anything is
+    // concluded from it: the action leaves the path UNSTAGED.
+    expect(
+      after,
+      "the action model no longer reproduces run 39500604342's reading, so this pair measures nothing",
+    ).toBe(` M ${RESTORED_FILE}\n`);
+    expect(before, "the two readings of one restore disagree").toBe(after);
+  });
+
+  test("end to end: restore, baseline, the action's restore, no drift", () => {
+    const { work } = checkout();
+    expect(runRestore(work).code).toBe(0);
+    const { run: baseline, path } = runBaseline(work);
+    expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
+
+    actionRestore(work);
+
+    const drift = runDrift(work, path);
+    expect(
+      drift.code,
+      `the drift step refused a tree only the harness and the action touched:\n${drift.stderr}`,
+    ).toBe(0);
+  });
+
+  test("WITHOUT the index reset — the defect verbatim — the same two readings differ by the prefix", () => {
+    // The control, varying one thing against both cases above. If this is
+    // green the pair measures nothing: a baseline that already agreed would
+    // agree with or without the reset.
+    const { work } = checkout();
+    const pre = sh(preIndexResetRestore(), work, { [AI_REVIEW_BASE_REF_VAR]: "main" });
+    expect(pre.code, `the pre-#853 restore refused:\n${pre.stderr}`).toBe(0);
+
+    const before = porcelain(work);
+    const { run: baseline, path } = runBaseline(work);
+    expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
+
+    actionRestore(work);
+    const after = porcelain(work);
+
+    expect(before, "the pre-#853 restore did not leave the restore STAGED").toBe(
+      `M  ${RESTORED_FILE}\n`,
+    );
+    expect(after, "the action model did not leave the restore UNSTAGED").toBe(
+      ` M ${RESTORED_FILE}\n`,
+    );
+    // The whole defect in one line: the same path, the same bytes, one space.
+    expect(before.trimEnd().slice(3)).toBe(after.trimEnd().slice(3));
+
+    const drift = runDrift(work, path);
+    expect(drift.code, "the two spellings of one restore were not reported as drift").not.toBe(0);
+    expect(drift.stderr).toContain("The reviewer modified the tree it was reviewing");
+    expect(
+      drift.stderr,
+      "the refusal does not name the restored file, so this is not the reported defect",
+    ).toContain(RESTORED_FILE);
+  });
+});
+
+describe("#853 AC-2: the reset is in the generator and in the committed workflow", () => {
+  for (const [label, text] of [
+    ["lib/scaffold/ai-review-step.ts", SOURCE],
+    [".github/workflows/ai-review.yml", COMMITTED],
+  ] as const) {
+    test(`${label} carries exactly one index-reset line`, () => {
+      const lines = text.split("\n").filter(l => l.includes("git reset -q --"));
+      expect(
+        lines.length,
+        `${label} carries ${lines.length} index-reset lines, not one — a generator that ` +
+          "declares it twice has two deciders, and a committed workflow that carries none " +
+          "was not regenerated after the generator changed",
+      ).toBe(1);
+      // `{path}` rather than `"${path}"`: the generator spells it `\${path}`
+      // inside a template literal and the workflow spells it `${path}`, and
+      // a pattern that matched only one of the two would report the other
+      // file as unscoped.
+      expect(lines[0], "the reset is not scoped to the path being restored").toContain("{path}");
+    });
+  }
+
+  test("the reset is inside the loop, after the checkout that staged the path", () => {
+    const script = buildRestoreScript();
+    const checkoutAt = script.indexOf('git checkout "${base_remote}" -- "${path}"');
+    const resetAt = script.indexOf('git reset -q -- "${path}"');
+    const doneAt = script.indexOf("\ndone\n");
+    expect(checkoutAt, "the restore no longer checks the path out of the base").toBeGreaterThan(-1);
+    expect(resetAt, "the restore does not reset the index").toBeGreaterThan(-1);
+    expect(doneAt, "the restore loop has no end").toBeGreaterThan(-1);
+    expect(resetAt, "the index is reset before the checkout that stages it").toBeGreaterThan(
+      checkoutAt,
+    );
+    expect(resetAt, "the index is reset after the loop, so only the last path is unstaged").toBeLessThan(
+      doneAt,
+    );
+  });
+});
+
+describe("#853 AC-3: a reviewer write after the baseline is still refused", () => {
+  test("a reviewer edit to a restored path is refused", () => {
+    const { work } = checkout();
+    expect(runRestore(work).code).toBe(0);
+    const { run: baseline, path } = runBaseline(work);
+    expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
+    actionRestore(work);
+
+    const seenByStatus = porcelain(work);
+    writeFileSync(join(work, RESTORED_FILE), "THE REVIEWER WROTE THIS\n");
+
+    // The input on which this case and a status-only reading differ, named
+    // and measured rather than assumed: the porcelain line does not move.
+    expect(
+      porcelain(work),
+      "the status reading moved, so this case says nothing about the content reading",
+    ).toBe(seenByStatus);
+
+    const drift = runDrift(work, path);
+    expect(drift.code, "a reviewer's rewrite of a restored path was not reported").not.toBe(0);
+    expect(drift.stderr).toContain(RESTORED_FILE);
+  });
+
+  test("a reviewer edit to a non-restored path is refused", () => {
+    const { work } = checkout();
+    expect(runRestore(work).code).toBe(0);
+    const { run: baseline, path } = runBaseline(work);
+    expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
+    actionRestore(work);
+
+    writeFileSync(join(work, "tracked.ts"), "export const a = 2;\n");
+
+    const drift = runDrift(work, path);
+    expect(drift.code, "a reviewer's edit to an ordinary tracked file was not reported").not.toBe(0);
+    expect(drift.stderr).toContain("tracked.ts");
+  });
+});
+
+/**
+ * The 5pm repair for #853, applied to a copy of the real drift script.
+ *
+ * `cut -c4-` on both sides of the comparison drops the two-letter status and
+ * its space, which makes the staged and unstaged spellings of one restore
+ * equal — the reported symptom goes away in one line and nothing else about
+ * the step changes.
+ */
+function prefixBlindDrift(): string {
+  const compare =
+    /^added=\$\(printf '%s\\n' "\$\{after\}" \| grep -F -x -v -f "\$\{AI_REVIEW_TREE_BEFORE\}" \|\| true\)$/gm;
+  const real = buildDriftScript();
+  const hits = real.match(compare) ?? [];
+  expect(
+    hits.length,
+    `could not build the mutant: the comparison appears ${hits.length} times, not once`,
+  ).toBe(1);
+  const mutant = real.replace(
+    compare,
+    `added=$(printf '%s\\n' "\${after}" | cut -c4- ` +
+      `| grep -F -x -v -f <(cut -c4- "\${AI_REVIEW_TREE_BEFORE}") || true)`,
+  );
+  expect(mutant, "the mutation was never applied").not.toBe(real);
+  return mutant;
+}
+
+describe("#853 AC-4: a deletion is refused, and refused AS a deletion", () => {
+  test("a reviewer that deletes a restored path is refused distinguishably from a modification", () => {
+    const { work } = checkout();
+    expect(runRestore(work).code).toBe(0);
+    const { run: baseline, path } = runBaseline(work);
+    expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
+    actionRestore(work);
+
+    unlinkSync(join(work, RESTORED_FILE));
+
+    const drift = runDrift(work, path);
+    expect(drift.code, "a reviewer that deleted a restored rule was not reported").not.toBe(0);
+    expect(
+      drift.stderr,
+      "the refusal does not say the path was DELETED, so it reads as the modification " +
+        "the restore itself leaves",
+    ).toContain(` D ${RESTORED_FILE}`);
+    expect(
+      drift.stderr,
+      "the refusal reports the deletion as a modification",
+    ).not.toContain(` M ${RESTORED_FILE}`);
+  });
+
+  test("the cheapest wrong fix is applied and observed letting the deletion through", () => {
+    const { work } = checkout();
+    expect(runRestore(work).code).toBe(0);
+    const { run: baseline, path } = runBaseline(work);
+    expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
+    actionRestore(work);
+
+    const mutant = prefixBlindDrift();
+    const env = { AI_REVIEW_MODE: "vertex", AI_REVIEW_TREE_BEFORE: path };
+
+    // The positive control first. A mutant that refused everything, or that
+    // failed to run at all, would "pass" the assertion below by accident —
+    // and an unreadable script exits non-zero exactly like a refusal.
+    writeFileSync(join(work, "the-reviewer-wrote-this.ts"), "export const x = 1;\n");
+    const stillCatches = sh(mutant, work, env);
+    expect(
+      stillCatches.code,
+      `the prefix-blind mutant does not run or refuses nothing:\n${stillCatches.stderr}`,
+    ).not.toBe(0);
+    unlinkSync(join(work, "the-reviewer-wrote-this.ts"));
+
+    unlinkSync(join(work, RESTORED_FILE));
+    const blind = sh(mutant, work, env);
+    expect(
+      blind.code,
+      "the prefix-blind comparison refused the deletion, so the case above is not what blocks it",
+    ).toBe(0);
+
+    // And the real script, over the identical tree, in the same case.
+    const real = runDrift(work, path);
+    expect(real.code, "the real comparison let the deletion through").not.toBe(0);
+    expect(real.stderr).toContain(` D ${RESTORED_FILE}`);
+  });
+});
+
+describe("#853: a refusal message cannot run commands on the runner", () => {
+  test("no generated step carries a backtick outside a comment", () => {
+    // Found by reading the regenerated YAML, and it was mine: #853's first
+    // draft of the content refusal quoted a porcelain line as ` M <path>`
+    // inside a double-quoted `echo`, where a backtick is COMMAND
+    // SUBSTITUTION. The runner would have tried to run ` M <path>` at the
+    // one moment the message has to be readable.
+    //
+    // Invisible to `test/unit/generated-shell-syntax.test.ts`, which is the
+    // reason this exists rather than a note in a docblock: the substitution
+    // is valid bash. Every script here uses `$(...)`, so the population is
+    // zero and has no exemption list.
+    for (const [label, script] of [
+      ["restore", buildRestoreScript()],
+      ["baseline", buildBaselineScript()],
+      ["drift", buildDriftScript()],
+    ] as const) {
+      const offending = script
+        .split("\n")
+        .filter(l => !l.trimStart().startsWith("#") && l.includes("`"));
+      expect(
+        offending,
+        `the ${label} step runs a command substitution inside a message. Use $(...) ` +
+          "if you meant to, and plain words if you did not — a backtick in a refusal " +
+          "is executed by the shell when the refusal fires",
+      ).toEqual([]);
+    }
+  });
+});
+
+describe("#853 AC-5: a reading that could not be taken is UNMEASURED", () => {
+  test("a baseline file that cannot be read is UNMEASURED and refuses", () => {
+    const { work } = checkout();
+    expect(runRestore(work).code).toBe(0);
+    const { run: baseline, path } = runBaseline(work);
+    expect(baseline.code, `the baseline step refused:\n${baseline.stderr}`).toBe(0);
+
+    chmodSync(path, 0o000);
+    // The precondition, loudly. A process that can read a mode-000 file —
+    // anything running as root — measures nothing here, and a case that
+    // quietly passes in that environment is worse than one that stops.
+    let readable = true;
+    try {
+      accessSync(path, FS.R_OK);
+    } catch {
+      readable = false;
+    }
+    expect(
+      readable,
+      "this process can read a mode-000 file, so the unreadable baseline was never produced",
+    ).toBe(false);
+
+    const drift = runDrift(work, path);
+    chmodSync(path, 0o644);
+    expect(drift.code, "an unreadable baseline was compared as if it were empty").not.toBe(0);
+    expect(drift.stderr, "the refusal does not say the reading was never taken").toContain(
+      "UNMEASURED",
+    );
+  });
+
+  test("a post-review status that cannot be taken is UNMEASURED and refuses", () => {
+    // Not a git repository at all, which is what a checkout step that
+    // silently did nothing leaves behind. A baseline IS present, so the
+    // refusal cannot be the missing-baseline one — two refusals, one
+    // assertion, neither isolated.
+    const dir = scratchDir("ai-review-853-nonrepo-");
+    writeFileSync(join(dir, "tracked.ts"), "export const a = 1;\n");
+    const before = join(scratchDir("ai-review-853-nonrepo-temp-"), "before.txt");
+    writeFileSync(before, "");
+
+    const drift = runDrift(dir, before);
+    expect(drift.code, "a tree that was never read reported clean").not.toBe(0);
+    expect(drift.stderr, "the refusal does not say the tree was never read").toContain("UNMEASURED");
+    expect(
+      drift.stderr,
+      "the refusal blamed the baseline, not the unreadable tree",
+    ).toContain("git status failed");
   });
 });
