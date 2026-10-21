@@ -188,6 +188,66 @@ describe("deduplication must not narrow coverage", () => {
 });
 
 /**
+ * #865 AC-6 — THE MUTATION BATTERY FOR THE TIER-2 EXCLUSION
+ *
+ * Recorded here rather than in a PR body because a measurement that lives in
+ * a PR body is a measurement nobody re-runs. Every count was read over
+ * `test/unit/secret-patterns.test.ts` + `test/unit/gates-tier1-jwt.test.ts`,
+ * and **the baseline row was read before any mutation row** — an instrument
+ * that has stopped reporting takes the baseline down with it, and that is the
+ * one row nobody mutates anything to produce.
+ *
+ * `lib/secret-patterns.ts` is mutated and `gates.yml` regenerated from it
+ * each row, because every case below reaches the expressions through the
+ * committed workflow and not through the constants.
+ *
+ * | Row | Red | The input on which mutant and original differ |
+ * |---|---|---|
+ * | **baseline** — unmutated | **59 pass, 0 fail** | — |
+ * | the `getenv` clause removed | **2 of 59** | a `SECRET:` whose value is < Getenv_SOME_LONG_NAME >: original CLEAN, mutant FAIL |
+ * | the placeholder-vocabulary clause removed | **4 of 59** | `API_KEY=` carrying `your_key_here`: original CLEAN, mutant FAIL |
+ * | the dotted-path clause made unmatchable | **7 of 59** | `apiKey: config.judge.apiKey`: original CLEAN, mutant FAIL |
+ * | the WHOLE exclusion removed — allowlist is `^$` alone | **7 of 59** | the same input; this row is the ceiling the one above already reaches |
+ * | **negative control** — the #489 minified fixtures | **GREEN in every row above** | nothing: they are never captured, so no clause can reach them |
+ *
+ * TWO ROWS THAT NEED THEIR READING STATED, OR THEY MISLEAD
+ *
+ * **The last two rows are equal, and that is not a broken mutant.** Removing
+ * the dotted-path clause reds the same seven cases as removing the entire
+ * exclusion, because the control cases list benign lines of every shape
+ * together — a control naming `process.env.DB_PASSWORD` beside
+ * `API_KEY=your_key_here` goes red when EITHER clause goes. The per-clause
+ * rows are what establish that `getenv` and the placeholder vocabulary are
+ * independently load-bearing: 2 and 4 cases respectively go red on their own
+ * removal, so neither is dead code riding on the dotted path.
+ *
+ * **A row deleting the dotted-path LINE outright was cut and discarded.** It
+ * left a dangling `+` and the file stopped parsing: 0 pass, 2 fail, every
+ * case in both suites failing to load. A mutant that crashes is not a
+ * mutant — it measures that the file still parses. Re-cut as a never-matching
+ * token inside the branch, the row is 7.
+ *
+ * THE CHEAPEST WRONG FIX, NAMED
+ *
+ * For "the gate hard-fails on `apiKey: config.judge.apiKey`", the 5pm repair
+ * is to excuse any unquoted value containing a dot. It works, it is one
+ * clause, and it deletes tier 2 for every source file — a credential written
+ * unquoted with a dot in it is then excused too, which is why `jwt` is a
+ * tier-1 pattern.
+ *
+ * Applied and counted rather than argued: **5 of 59**, and the five are the
+ * right five — the JWT handoff, the named wrong-fix case, SC-I's fixed
+ * vocabulary, the #868 case asserting a credential SHAPED like a dotted path
+ * is reported, and the internal-`=` case. The separating input is a value of
+ * the form two letters, a dot, a base62 run, a dot, another base62 run: the
+ * original reports it, the widened clause excuses it.
+ *
+ * Note what does NOT catch it, because it is the case a reader reaches for
+ * first: **SC-B is green under this mutation.** Its fixtures carry no dot at
+ * all, so a contains-a-dot exclusion cannot change their verdict. "An
+ * unquoted literal with no dotted shape is still reported" is a true and
+ * useful claim that happens to be orthogonal to this repair.
+ *
  * #489 — the tier-2 scan read a minified comparison as a credential
  * assignment.
  *
@@ -343,6 +403,52 @@ describe("the tier-2 scan does not read a minified comparison as an assignment (
     ]) {
       expect(tier2Verdict(scan, minified), `false positive on: ${minified}`).toBe("CLEAN");
     }
+  });
+
+  test("#865 AC-5: #489 is CLEAN at the CAPTURE, so the #863 exclusion cannot be what saves it", () => {
+    // The case above reads a VERDICT, and a verdict has two ways of being
+    // CLEAN: nothing was captured, or something was captured and excused.
+    // Those are different mechanisms and the assertion cannot tell them
+    // apart — so if the #863 dotted-path exclusion were quietly excusing
+    // minified comparisons, #489 would read exactly as green as it does now
+    // while the narrowing it is named for did nothing.
+    //
+    // #865 AC-5 is that separation, and it is asserted on the CAPTURE,
+    // which only one of the two mechanisms touches.
+    const scan = gatesTier2Scan();
+    const minified = [
+      `if(e.${K.password}===t.${K.password}){return 1}`,
+      `if(a.${K.apiKey}===b.${K.apiKey}){return 0}`,
+      `function f(x,y){return x.${K.secret}===y.${K.secret}}`,
+      `const ok=u.${K.passwd}===v.${K.passwd}&&u.id===v.id`,
+      `if(e.${K.password.toUpperCase()}===t.${K.password.toUpperCase()}){return 1}`,
+      `if(a.${K.apiKey.toUpperCase()}===b.${K.apiKey.toUpperCase()}){return 0}`,
+    ];
+    for (const m of minified) {
+      expect(
+        grepExtract(scan.captureFlags, scan.ere, m).trim(),
+        `#489 now depends on the allowlist: the capture matched on ${m}, so this fixture is CLEAN ` +
+          `because something excused it rather than because the capture never saw it`,
+      ).toBe("");
+    }
+    // And the same claim from the other side, which is the one a reader can
+    // check without trusting the capture: with the allowlist reduced to the
+    // empty-line absorber — every #863 and #868 clause gone — the fixtures
+    // are STILL clean. Nothing in the exclusion is load-bearing for #489.
+    const noExclusion: Tier2Scan = { ...scan, allowlist: "^$" };
+    for (const m of minified) {
+      expect(
+        tier2Verdict(noExclusion, m),
+        `#489 rides on the exclusion: ${m} fails once the allowlist clauses are removed`,
+      ).toBe("CLEAN");
+    }
+    // The vacuity control for the line above. An allowlist of `^$` has to be
+    // able to report SOMETHING, or the six CLEAN readings are six readings of
+    // a scan that stopped working rather than six separable fixtures.
+    expect(
+      tier2Verdict(noExclusion, V(K.apiKey, ": ", "sk_live_abcdefghijklmnop")),
+      "with the exclusion removed the scan reports nothing at all, so the readings above are UNMEASURED",
+    ).toBe("FAIL");
   });
 
   test("the control: a credential assignment this scan can see still fails it", () => {
