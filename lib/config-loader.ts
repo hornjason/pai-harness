@@ -120,6 +120,30 @@ export const DEFAULT_TEST_TIMEOUT = 120000;
 export const RUNGATE_CONFIG_RELATIVE_PATH = join(".claude", "rungate", "config.json");
 
 /**
+ * Every path a project's rungate config can occupy, in POSIX form, newest
+ * layout first (#505).
+ *
+ * Slash-separated and not `join`ed, because the one consumer outside this
+ * module compares them against `.gitignore` patterns and `git check-ignore`
+ * output, both of which are POSIX whatever the platform. A `path.join` here
+ * would produce backslashes on Windows and silently stop matching.
+ *
+ * It exists because a question about the config's LOCATION is the same
+ * question `resolveConfig` answers, and ADR-002 D1 centralises that for a
+ * reason — a second list is a second answer to drift from, and this one is
+ * consulted by a step that EDITS the project's ignore rules. A stale entry
+ * there does not produce a wrong reading; it produces a config file the
+ * project cannot commit.
+ */
+export const RUNGATE_CONFIG_IGNORE_PATHS = [
+  ".claude/rungate/config.json",
+  ".claude/rungate.json",
+] as const;
+
+/** The directory both of the above sit in. */
+export const RUNGATE_CONFIG_PARENT_DIR = ".claude";
+
+/**
  * The resolution (ADR-002 D2(a)). `absent` is TRUTHY and carries no `.test`,
  * so the four sites that wrote `config?.test?.command || fallback` cannot
  * silently absorb it — `null`, `0`, `{}` and `""` all could.
