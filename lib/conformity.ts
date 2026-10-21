@@ -38,6 +38,11 @@ import { remedyMessage } from "./check-remedy";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
 import { fallowAvailable } from "./fallow-availability";
+import {
+  briefReferenceReading,
+  unmeasuredBriefReferenceNotice,
+  unresolvableBriefReferenceMessage,
+} from "./brief-references";
 import { tsconfigVerdict, TS_SOURCE_DIRS } from "./typescript-project";
 import { readSuccessDoc, readSuccessTemplate, successViolations } from "./success-doc";
 import {
@@ -2544,24 +2549,35 @@ export function runAgentFileValidation(root: string) {
 
     test("AGENT-6: All file paths referenced in briefs exist", () => {
       if (!existsSync(agentsDir)) return;
-      const broken: string[] = [];
-      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
-        const content = readFileSync(join(agentsDir, f), "utf-8");
-        const refs = content.match(/node_modules\/[^\s`*)"']+/g) || [];
-        for (const ref of refs) {
-          const clean = ref.replace(/[`*)"']+$/, "");
-          if (!existsSync(join(root, clean))) {
-            broken.push(`${f} → ${clean}`);
-            addFinding({
-              ruleId: "AGENT-BROKEN-REF",
-              severity: "FAIL",
-              file: `.claude/agents/${f}`,
-              message: `Brief references "${clean}" but file does not exist`,
-              fixCommand: `Check prompts/ directory for correct filename — may be a typo or renamed file`,
-            });
-          }
-        }
+      // #884: a reference into a package that is not installed here is
+      // UNMEASURED, not broken. A ship worktree has no install, and reporting
+      // its missing corpus as the project's test health failed `tests-pass` on
+      // every run. The three outcomes live in `lib/brief-references.ts`.
+      const reading = briefReferenceReading(root, agentsDir);
+
+      for (const u of reading.unresolvable) {
+        addFinding({
+          ruleId: "AGENT-REF-UNMEASURED",
+          severity: "WARN",
+          file: `.claude/agents/${u.brief}`,
+          message: unresolvableBriefReferenceMessage(u),
+          fixCommand: `Install dependencies in this checkout and re-run — "${u.packageRoot}" is absent, so AGENT-6 could not check this reference`,
+        });
       }
+      for (const b of reading.broken) {
+        addFinding({
+          ruleId: "AGENT-BROKEN-REF",
+          severity: "FAIL",
+          file: `.claude/agents/${b.brief}`,
+          message: `Brief references "${b.ref}" but file does not exist`,
+          fixCommand: `Check prompts/ directory for correct filename — may be a typo or renamed file`,
+        });
+      }
+
+      const notice = unmeasuredBriefReferenceNotice(reading);
+      if (notice !== null) console.error(notice);
+
+      const broken = reading.broken.map(b => `${b.brief} → ${b.ref}`);
       if (broken.length > 0) {
         console.error(`Broken references in agent briefs:\n  ${broken.join("\n  ")}`);
       }
