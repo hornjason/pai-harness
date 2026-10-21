@@ -61,6 +61,42 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
     ere: "-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
     description: "PEM private key block",
   },
+  // #863. The one unquoted credential form that LOOKS like a dotted
+  // identifier path, which is the population `TIER2_DOTTED_PATH_ERE` below
+  // removes from tier 2. Tier 2 cannot tell the two apart — the shape IS the
+  // same — so the exclusion would launder a bearer token out of a `.env`.
+  //
+  // It belongs here and not there because a JWT is a FORMAT, not a shape:
+  // both the header and the payload are base64url of a JSON object, so both
+  // begin `eyJ`, and two anchored prefixes separated by a dot is not
+  // something ordinary source produces. That is what makes it safe in the
+  // tier with no allowlist.
+  //
+  // The signature segment is required. A two-segment `alg: none` token is
+  // not a credential, and matching two segments alone would catch
+  // `a.b`-shaped prose beginning with those three letters.
+  //
+  // THE SIGNATURE FLOOR IS 43 AND IT IS A FORMAT FACT, NOT A TUNING (#863)
+  //
+  // A JWS signature is a fixed-width base64url encoding of a fixed-width
+  // MAC or signature, so the shortest one any standard algorithm produces is
+  // HS256's 32 bytes — 43 base64url characters. ES256 is 86, RS256 342.
+  // There is no signed JWT below the floor, so nothing is given up by it.
+  //
+  // What it buys is the false-positive side, which tier 1 cannot absorb.
+  // Measured 2026-10-21 on one consumer tree: a `{10,}` signature reports
+  // two quoted browser-test fixtures whose third segment is an English
+  // phrase of 21 and 26 characters. Both are JWT-shaped and neither is a
+  // token, and tier 1 has no allowlist to excuse them — so that consumer's
+  // Gates job would have gone from red on two property references to red on
+  // two test fixtures, which is #863 reintroduced by its own fix. The tree
+  // and the lines are named in `test/unit/gates-tier1-jwt.test.ts`; a module
+  // under `lib/` may carry no consumer-specific value (SC-A1).
+  {
+    id: "jwt",
+    ere: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{43,}",
+    description: "JSON Web Token (signed, three segments)",
+  },
 ];
 
 /**
@@ -163,8 +199,111 @@ export const TIER2_GREP_CASE_FLAG = "-i";
  * with the letters of `getenv` or `placeholder` is the laundering this
  * widens, and no form of it was detectable before either.
  */
+/**
+ * An unquoted value that is a DOTTED IDENTIFIER PATH, not a literal (#863).
+ *
+ * `-i` (above) made `api[_-]?key` match `apiKey`, which it could not before.
+ * `apiKey` is the conventional TypeScript spelling, so every consumer that
+ * passes a key through an object property started hard-failing the gate on
+ * lines like `apiKey:` config.judge.apiKey — a property REFERENCE, excused by
+ * nothing in the list above, and the generated job's branch is `exit 1`, not
+ * a warning. A secret gate that hard-fails CI on a property reference is a
+ * gate a consumer deletes, and deleting it costs the #844 fix too.
+ *
+ * WHY THIS CANNOT HIDE A CREDENTIAL THE CAPTURE CAN SEE
+ *
+ * The value charset excludes `"` and `'`, so in a source file tier 2 can only
+ * ever see an UNQUOTED value — and an unquoted value in source is an
+ * expression. The false-positive class is precisely dotted identifier paths,
+ * so excluding them removes no credential FORM this pattern is able to
+ * report, with one exception, which is why the exception is a tier-1 pattern:
+ * a signed JWT has this exact shape and is reachable in a `.env`. See the
+ * `jwt` entry in `TIER1_SECRET_PATTERNS`.
+ *
+ * It is anchored at BOTH ends of the value — `[:=][[:space:]]*` on the left,
+ * `$` on the right — so the whole value must be the path. The cheapest wrong
+ * fix for #863 is an "anything unquoted" exclusion, which deletes tier 2 for
+ * every source file while making the symptom go away; dropping the `$` is
+ * that fix wearing one character. An `API_KEY=` carrying `sk-live` and
+ * eighteen more characters has no dot and stays a FAIL, and so does a
+ * `${NAME_API_KEY:-...}` default, whose value begins `-`.
+ *
+ * Every example in this module is written so it is NOT itself a tier-2
+ * capture — the value is described rather than spelled, or a character
+ * outside the value charset leads it. A docstring that its own scanner
+ * reports is a module that fails the repository's Gates job the day somebody
+ * narrows one of these expressions, and the failure would name this file
+ * rather than their change.
+ *
+ * It is a named constant rather than six more tokens inside the string below
+ * because it is the component a reader of a blocked commit needs to find, and
+ * because `test/unit/gates-tier1-jwt.test.ts` asserts the committed
+ * `gates.yml` carries THIS and not a hand-typed near-copy. It is still a
+ * component OF the allowlist and not a second expression the generator joins
+ * on its own: four generated greps interpolate one allowlist binding, and a
+ * second string to interpolate is a second thing that can disagree about what
+ * counts as a secret.
+ */
+export const TIER2_DOTTED_PATH_ERE = "[:=][[:space:]]*[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$";
+
+/**
+ * The FIXED vocabulary of documented non-values (#863).
+ *
+ * The dotted-path exclusion above covers only two of the seven lines the
+ * widened capture reports on one consumer tree. Four of the remaining five
+ * are the spelling every getting-started document in the world uses,
+ * measured 2026-10-21. The tree and the file positions are named in
+ * `test/unit/gates-tier1-jwt.test.ts`, which also carries the four lines
+ * byte-exact; a module under `lib/` may carry no consumer-specific value
+ * (SC-A1). The shapes, with this file's own angle brackets:
+ *
+ *   API_KEY:- <your-api-key-goes-here>
+ *   API_KEY= <your_key_here>
+ *   API_KEY= <your_gemini_key_here>
+ *   SECRET:- <example-value-not-real>
+ *
+ * (The angle brackets and the space are this file's, not the consumer's —
+ * see the note above about a docstring that matches its own scanner.)
+ *
+ * A fix measured only on the repository that reported it is a fix measured on
+ * one input, and the dotted-path class alone leaves a second consumer red.
+ *
+ * WHAT MAKES THIS SAFE AND AN "IT LOOKS HARMLESS" RULE NOT
+ *
+ * This is a VOCABULARY — a closed list of words — not a judgement about
+ * whether a value looks like a credential. `your[_-]` and `example[_-]`
+ * require the separator, so the exclusion is the documented placeholder
+ * idiom and not every value beginning with four common letters.
+ * An `API_KEY=` carrying `sk-live` and eighteen more characters carries none
+ * of these words and stays a FAIL.
+ *
+ * It is ONE NAMED CONSTANT and not five more tokens spliced into the string
+ * below, for the reason `TIER2_GREP_CASE_FLAG` is one: the positions that
+ * consume it are generated into four greps, and a vocabulary a reader cannot
+ * point at is a vocabulary that gets re-typed somewhere else.
+ *
+ * It does NOT widen what the dotted-path exclusion covers and must not be
+ * read as a general placeholder heuristic. Adding a word here is adding a
+ * word to a gate's blind spot; measure the consumer line that needs it
+ * first, the way these four were measured.
+ */
+export const TIER2_PLACEHOLDER_VOCAB_ERE = "REDACTED|CHANGEME|placeholder|your[_-]|example[_-]";
+
+/**
+ * The optional `-` is the SHELL DEFAULT separator, not a widening of the
+ * value (#863). Three of the four placeholder lines above are written as a
+ * `${NAME_API_KEY:-...}` default, so the character after `[:=]` is `-` and
+ * an anchor without it cannot reach the vocabulary at all.
+ *
+ * It cannot soften `SC-C`: the #844 shape is `${SAPLING_API_KEY:-<32 random
+ * chars>}`, whose value begins with no word in the vocabulary, so it is still
+ * reported. The anchor decides WHERE to look; the vocabulary decides what is
+ * excused, and only the second of those two is a list anyone can lengthen.
+ */
 export const TIER2_ALLOWED_VALUE_ERE =
-  "^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)";
+  "^$|[:=][[:space:]]*-?(process\\.env|os\\.environ|Deno\\.env|getenv|" +
+  `${TIER2_PLACEHOLDER_VOCAB_ERE})` +
+  `|${TIER2_DOTTED_PATH_ERE}`;
 
 /**
  * Tier 3 — a credential written as a shell default, caught by SHAPE.

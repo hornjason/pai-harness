@@ -2891,6 +2891,9 @@ ${bunStep}
           # CLAIM parity while CI carried 3 patterns and the hook carried 8 —
           # CI missed gho_, ghs_, github_pat_, sk-ant- and PEM private keys
           # entirely. Asserted now in test/unit/secret-patterns.test.ts.
+          # Tier 1 also owns the signed JWT, because it is the one unquoted
+          # credential whose shape is a dotted identifier path and so is
+          # excused by the tier-2 exclusion below (#863).
           if git grep -I -lE '${tier1Ere()}' -- .; then
             echo "::error::Potential secrets detected in tracked files"
             exit 1
@@ -2924,6 +2927,18 @@ ${bunStep}
           # recorded in lib/secret-patterns.ts: the population the capture
           # newly sees is mostly .env.example, where a non-value is spelled
           # CHANGEME and PLACEHOLDER (#844).
+          # The last alternative excuses a DOTTED IDENTIFIER PATH, anchored at
+          # both ends so the whole value must be one. The value charset has no
+          # quote characters, so in source tier 2 only ever sees an unquoted
+          # value, and an unquoted value is an expression: apiKey:
+          # config.judge.apiKey is a property reference, not a credential
+          # (#863). A JWT has the same shape and is a credential, which is why
+          # the tier-1 scan above carries it.
+          # The optional dash after the separator is the shell-default
+          # separator, so the placeholder vocabulary can reach the value of a
+          # NAME:-default form. That vocabulary is a closed list of documented
+          # non-values, not a judgement that a value looks harmless: a 32-char
+          # random default carries none of its words and is still reported.
           if printf '%s\\n' "$tier2" | grep -qvE ${TIER2_GREP_CASE_FLAG} '${TIER2_ALLOWED_VALUE_ERE}'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
