@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
@@ -702,6 +703,12 @@ describe("#910 AC-5: both hooks are observed running, and a decline is not a sil
       const project = join(dir, "project");
       mkdirSync(join(project, "scripts"), { recursive: true });
       writeFileSync(join(project, "project-state.json"), "{}");
+      // Since #1001 the generator only runs at the ROOT OF A REAL
+      // REPOSITORY, so the fixture has to be one. Without this the hook
+      // declines at the root anchor and never reaches the two outcomes this
+      // arm is about — it would go red on `declined-outside-repo`, which is
+      // the anchor working rather than the evidence failing.
+      execFileSync("git", ["-C", project, "init", "-q"], { stdio: "ignore" });
       const env = { RUNGATE_WORK_DIR: dir };
       const write = (file: string) => ({
         tool_name: "Write",
