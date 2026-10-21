@@ -669,6 +669,42 @@ export const AI_REVIEW_PREPARE_STEP_NAME = "Choose a findings path outside the c
 export const AI_REVIEW_FINDINGS_BASENAME = "ai-review-findings";
 
 /**
+ * The suffix that makes the findings DIRECTORY a directory (#824 AC-1).
+ *
+ * The payload used to be a file sitting directly in `RUNNER_TEMP`, and
+ * nothing granted the reviewer access to it — no `--add-dir` was passed
+ * anywhere in this generator, so the one write the reviewer is asked for was
+ * the one write it could not make. Measured on PR #815, job 118797389663:
+ * `num_turns: 47`, `permission_denials_count: 5`, no payload.
+ *
+ * The grant is a DIRECTORY and not the payload file because `--add-dir`
+ * takes directories. Which directory is the whole question:
+ *
+ * - **`--add-dir "$RUNNER_TEMP"` is the cheapest wrong fix and it is named
+ *   in two other docblocks.** The drift BASELINE lives in `RUNNER_TEMP` at
+ *   `ai-review-tree-before-<run id>-<attempt>.txt` — every component of
+ *   which the reviewer can derive — so granting the temp root hands the
+ *   reviewer the record it is about to be judged against in the same stroke
+ *   as the payload. #843 finding 2's seal makes that survivable; it does not
+ *   make it correct.
+ * - **The credential also sits in `RUNNER_TEMP`'s root**
+ *   (`buildCredsRelocateScript`), which is #893.
+ *
+ * So the grant names a per-run SUBDIRECTORY holding the payload and nothing
+ * else. The baseline and the credential are siblings of it, not children,
+ * and remain outside the grant.
+ *
+ * The `.d` suffix rather than a bare stem: on a reused self-hosted runner the
+ * previous shape, `ai-review-findings-<nonce>.json`, was a FILE under the
+ * same stem. Distinct names mean a leftover from an older generator can never
+ * be the thing `mkdir -p` is asked to treat as a directory.
+ */
+export const AI_REVIEW_FINDINGS_DIR_SUFFIX = ".d";
+
+/** The step output carrying the findings DIRECTORY, which `--add-dir` names. */
+export const AI_REVIEW_FINDINGS_DIR_OUTPUT = "dir";
+
+/**
  * The tool grant handed to the reviewer, as one constant.
  *
  * Wave 2 shipped `--allowedTools Read,Grep,Glob,Write` and nothing else. Three
@@ -755,6 +791,15 @@ export const AI_REVIEW_DENY_RULES: ReadonlyArray<{ rule: string; inert?: string 
 export const AI_REVIEW_DISALLOWED_TOOLS = AI_REVIEW_DENY_RULES.map(r => r.rule).join(",");
 
 export const AI_REVIEW_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Write"].join(",");
+
+/**
+ * Whose Claude settings govern the reviewer (#824 AC-2).
+ *
+ * One declaring position, so no second copy can disagree. `user` is the
+ * runner's own; `project` and `local` are the two that read `.claude/` out of
+ * the checkout — which is the branch under review.
+ */
+export const AI_REVIEW_SETTING_SOURCES = "user";
 
 /**
  * The deny rule that stops the reviewer writing into the tree it reviews.
@@ -1443,6 +1488,34 @@ export function aiReviewClaudeArgs(vertex: VertexCiDecision): string {
   return (
     `--model ${model} --max-turns ${AI_REVIEW_MAX_TURNS} ` +
     `--allowedTools ${AI_REVIEW_ALLOWED_TOOLS} ` +
+    // #824 AC-2. The action's own config dump reported
+    // `"settingSources": ["user", "project", "local"]` — the reviewer loads
+    // its permission settings FROM THE BRANCH IT IS REVIEWING. A pull
+    // request adding `.claude/settings.json` with `permissions.allow`
+    // entries widens what the reviewer may do on a runner holding a Vertex
+    // credential. `main`'s copy already grants `Bash(git *)`, `Bash(gh *)`
+    // and `Bash(curl *)`, inert only because `Bash` is denied at the tool
+    // level one line below — one edit away from not being true.
+    //
+    // `user` and not `project`/`local`, which are the two that read the
+    // checkout. This is the only position it is declared in; a second would
+    // be a second answer to "whose settings govern the reviewer", and the
+    // action concatenates `claude_args` rather than deduplicating it.
+    //
+    // The restore step (#836) is NOT a substitute: it puts `.claude` back to
+    // the BASE's content, which is a different claim — that the head cannot
+    // supply settings. `--setting-sources user` says the checkout supplies
+    // none at all, base or head, and survives a restore that missed a path.
+    `--setting-sources ${AI_REVIEW_SETTING_SOURCES} ` +
+    // #824 AC-1. The one write the reviewer is asked for, granted. The value
+    // is the prepare step's `dir` output and NOT `$RUNNER_TEMP`: see
+    // `AI_REVIEW_FINDINGS_DIR_SUFFIX` for why the temp root is the cheapest
+    // wrong fix, and `AI_REVIEW_TREE_BEFORE_SHA_VAR` for what it would hand
+    // over. The checkout is never added — the reviewer reads it as its
+    // working directory and `AI_REVIEW_WORKSPACE_WRITE_DENY` denies writing
+    // to it, which #836 measured as compatible with writing to an
+    // `--add-dir` path.
+    `--add-dir \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }} ` +
     // The path rule rides in the SAME flag as the tool-level denials, because
     // the two are one statement about what the reviewer may not do and a
     // second flag would be a second place to forget. No spaces in it — the
@@ -2465,8 +2538,94 @@ export function buildPrepareScript(): string {
     `write the findings payload. Refusing rather than writing it into the ` +
     `branch under review, where the branch could have committed it already.`;
 
+  // #824 AC-1, and #675's shape. Without these three refusals a prepare step
+  // that could not produce the directory still exports a path, the reviewer
+  // is handed a path it cannot write, the action exits 0 having written
+  // nothing, and the report step reads that as `executed` — "the reviewer
+  // ran and wrote nothing". A TOOLING failure reported as a reviewer's
+  // verdict, which is the state #675 exists to keep distinguishable. There
+  // is no `routeUnmeasured` branch that covers this: that one fires on a
+  // named-but-unreadable execution file, which is a different reading.
+  const mkdirFailed =
+    `the findings directory under RUNNER_TEMP could not be created, so the ` +
+    `reviewer has nowhere outside the checkout to write its payload. ` +
+    `Refusing here rather than letting the review run and report as a ` +
+    `reviewer that wrote nothing, which is a verdict about the reviewer and ` +
+    `this is a failure of the runner`;
+
+  const unwritable =
+    `the findings directory under RUNNER_TEMP is 0700 and owned by this job, ` +
+    `and a write into it STILL failed, so the reviewer cannot write its ` +
+    `payload there. A read-only mount, a full disk or a quota is the shape ` +
+    `left once the mode and the owner have been read back. Refusing rather ` +
+    `than reporting a reviewer that wrote nothing`;
+
+  // A pre-existing directory on a reused self-hosted runner may be another
+  // local user's. `mkdir -p` succeeds on it silently and the payload would
+  // then be written into a directory somebody else controls.
+  //
+  // It REFUSES rather than deleting. `rm -rf` on an interpolated path, in a
+  // step that runs on shared self-hosted runners, is a new risk class in a
+  // file that has none: an empty or relocated `${dir}` deletes something
+  // nobody intended and there is no reading afterwards that would show it.
+  // Another user's directory is a decision for a human.
+  const preexisting =
+    `the findings directory under RUNNER_TEMP already exists and is not a ` +
+    `directory this job owns, so writing the payload into it would hand a ` +
+    `reviewer's output to whoever does own it. This is a reused runner ` +
+    `holding a leftover. Refusing rather than adopting it — and not ` +
+    `deleting it, because what to do with another user's directory is not ` +
+    `this job's decision`;
+
+  // `chmod` exiting non-zero, and `chmod` exiting ZERO without the mode
+  // taking, are different failures and both of them end with the findings
+  // payload readable by every other job on the runner. The second is why
+  // the mode is READ BACK: a hardening that cannot fail is not a hardening,
+  // and the comment claiming 0700 would otherwise be asserting a property
+  // nothing checks.
+  const chmodFailed =
+    `the findings directory under RUNNER_TEMP could not be set to mode 0700, ` +
+    `so the reviewer's payload would be readable — and plantable — by any ` +
+    `other job sharing this runner. Refusing rather than continuing with an ` +
+    `unprotected directory`;
+
+  const modeUnmeasured =
+    `the findings directory under RUNNER_TEMP was created and chmod reported ` +
+    `success, but its mode could not be READ BACK — neither \`stat -c\` nor ` +
+    `\`stat -f\` could be run — so whether the payload is protected from ` +
+    `other jobs on this runner is UNMEASURED. Refusing: "it is 0700" and ` +
+    `"nobody looked" must not be the same answer`;
+
+  const modeWrong =
+    `the findings directory under RUNNER_TEMP is not mode 0700 after chmod ` +
+    `reported success, so the filesystem did not take it and the reviewer's ` +
+    `payload would be readable — and plantable — by any other job sharing ` +
+    `this runner. Refusing rather than trusting the chmod's exit code over ` +
+    `the directory's actual mode. Mode read back`;
+
+  const notOwned =
+    `the findings directory under RUNNER_TEMP is not owned by this job after ` +
+    `this step created it, so something else on this runner holds it and the ` +
+    `0700 protects the wrong user. Refusing`;
+
+  // The args string reaches the CLI unquoted and is split on whitespace by
+  // the action, so a `--add-dir` value containing a space arrives as two
+  // arguments: the grant names a path that does not exist and the remainder
+  // becomes a stray argument. The same hazard `AI_REVIEW_WORKSPACE_WRITE_DENY`
+  // is spelled relative to avoid. It is unreachable on a GitHub-hosted runner
+  // and reachable on a self-hosted one whose work directory a human chose.
+  const spaced =
+    `RUNNER_TEMP contains whitespace, so the findings directory cannot be ` +
+    `passed to the reviewer: the claude_args string is emitted unquoted and ` +
+    `split on whitespace, so the --add-dir grant would name a different ` +
+    `path than the one the payload is written to and the reviewer would be ` +
+    `denied its own output file. Refusing rather than granting a path ` +
+    `nobody chose`;
+
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
+
+${AI_REVIEW_ANNOTATION_ESCAPE}
 
 if [ -z "\${RUNNER_TEMP:-}" ]; then
   echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2
@@ -2474,7 +2633,81 @@ if [ -z "\${RUNNER_TEMP:-}" ]; then
 fi
 
 nonce="\${GITHUB_RUN_ID:-0}-\${GITHUB_RUN_ATTEMPT:-0}"
-path="\${RUNNER_TEMP}/${AI_REVIEW_FINDINGS_BASENAME}-\${nonce}.json"
+# A per-run DIRECTORY holding the payload and nothing else, because
+# \`--add-dir\` grants directories and the only directory it may name is one
+# whose other contents are nothing. The baseline and the credential are
+# SIBLINGS of this path, under RUNNER_TEMP's root, and stay outside the grant.
+dir="\${RUNNER_TEMP}/${AI_REVIEW_FINDINGS_BASENAME}-\${nonce}${AI_REVIEW_FINDINGS_DIR_SUFFIX}"
+path="\${dir}/${AI_REVIEW_FINDINGS_BASENAME}.json"
+
+case "\${dir}" in
+  *[[:space:]]*)
+    echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${spaced}: $(escape_annotation "\${dir}")" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+    ;;
+esac
+
+# A reused runner may already hold this path, and \`mkdir -p\` adopts it in
+# silence. Refuse, do not delete — see the \`preexisting\` text.
+if [ -e "\${dir}" ] && { [ ! -d "\${dir}" ] || [ ! -O "\${dir}" ]; }; then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${preexisting}: $(escape_annotation "\${dir}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# Checked on its own line rather than captured, for the reason the baseline
+# step states: \`x=$(...)\` discards the exit code.
+if ! out=$(mkdir -p "\${dir}" 2>&1); then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${mkdirFailed}: $(escape_annotation "\${out}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# 0700, so a job sharing the runner cannot read the findings or plant one —
+# and the next four readings are what make that sentence true rather than
+# merely written down. A \`|| true\` here would be a hardening that cannot
+# fail: the step would continue with a world-readable directory and report
+# success, which is the defect class this whole file is about.
+if ! out=$(chmod 700 "\${dir}" 2>&1); then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${chmodFailed}: $(escape_annotation "\${out}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# chmod's exit code is a CLAIM. A filesystem that does not carry POSIX modes
+# accepts the call and changes nothing, so the mode is read back. Both
+# spellings are attempted rather than looked up with \`command -v\`, for the
+# reason \`sha256_of\` gives: a tool that is present and broken and a tool
+# that is absent produce the same useless answer.
+mode=
+if m=$(stat -c '%a' "\${dir}" 2>/dev/null) && [ -n "\${m}" ]; then
+  mode="\${m}"
+elif m=$(stat -f '%Lp' "\${dir}" 2>/dev/null) && [ -n "\${m}" ]; then
+  mode="\${m}"
+fi
+
+if [ -z "\${mode}" ]; then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${modeUnmeasured}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+if [ "\${mode}" != 700 ]; then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${modeWrong}: $(escape_annotation "\${mode}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+if [ ! -O "\${dir}" ]; then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${notOwned}: $(escape_annotation "\${dir}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+
+# The mode bits are a reading about PERMISSION. They say nothing about a
+# read-only mount, a full disk or a quota, and \`[ -w ]\` tests the same bits
+# a second time rather than the thing the reviewer needs. So the last
+# reading is a write.
+probe="\${dir}/.ai-review-write-probe"
+if ! out=$({ printf '' > "\${probe}"; } 2>&1); then
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${unwritable}: $(escape_annotation "\${out}")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
+rm -f "\${probe}"
 
 # A leftover from a previous attempt on a reused runner is a stale clean
 # payload read as this run's result. Same fail-open, a clock instead of an
@@ -2483,6 +2716,7 @@ rm -f "\${path}"
 
 echo "ai-review findings path: \${path}"
 echo "path=\${path}" >> "\${GITHUB_OUTPUT}"
+echo "${AI_REVIEW_FINDINGS_DIR_OUTPUT}=\${dir}" >> "\${GITHUB_OUTPUT}"
 `;
 }
 
@@ -2717,11 +2951,22 @@ export const AI_REVIEW_BASELINE_BASENAME = "ai-review-tree-before";
  * baseline and the difference goes empty: the subject holds the pen on the
  * record it is about to be judged against.
  *
- * It cannot write there TODAY — no `--add-dir` is passed anywhere in this
- * generator, which is also why the findings payload never arrives (#824). The
- * obvious repair for that is `--add-dir "$RUNNER_TEMP"`, and that one flag
- * hands over the baseline in the same stroke as the payload. The seal is what
- * makes the repair safe to make.
+ * It could not write there at all before #824: no `--add-dir` was passed
+ * anywhere in this generator, which is also why the findings payload never
+ * arrived. The obvious repair for that was `--add-dir "$RUNNER_TEMP"`, and
+ * that one flag would have handed over the baseline in the same stroke as
+ * the payload. The seal is what made the repair safe to make, and it went
+ * first for that reason.
+ *
+ * **The repair that landed is narrower and the seal still carries it.**
+ * `aiReviewClaudeArgs` grants `--add-dir <the prepare step's `dir` output>`,
+ * a per-run SUBDIRECTORY holding the payload and nothing else
+ * (`AI_REVIEW_FINDINGS_DIR_SUFFIX`). This baseline is a SIBLING of that
+ * directory under `RUNNER_TEMP`'s root, so it is not inside the grant. Two
+ * independent things now have to fail before the subject holds the pen: the
+ * grant would have to widen to the temp root, and the seal would have to be
+ * forged. `AI_REVIEW_FINDINGS_DIR_SUFFIX` names the widening as its cheapest
+ * wrong fix and a case is pointed at it.
  *
  * A **step output** rather than a file beside the baseline: outputs are
  * captured when the step ends, so nothing a later step does can change what a

@@ -15,12 +15,20 @@
  *
  * ## Why it is worth fixing BEFORE it can happen
  *
- * Measured on run `39518336224`: the reviewer is given no `--add-dir`, so
- * today it cannot write under `RUNNER_TEMP` at all — which is also why the
- * findings payload never arrives, and is what #824 is open about. **The
- * obvious repair for #824 is `--add-dir "$RUNNER_TEMP"`**, and that single
- * flag hands the reviewer the baseline in the same stroke as the payload.
- * The seal is what makes that repair safe to make, so it goes first.
+ * Measured on run `39518336224`: the reviewer was given no `--add-dir`, so
+ * at that run it could not write under `RUNNER_TEMP` at all — which is also
+ * why the findings payload never arrived, and is what #824 was open about.
+ * **The obvious repair for #824 is `--add-dir "$RUNNER_TEMP"`**, and that
+ * single flag hands the reviewer the baseline in the same stroke as the
+ * payload. The seal is what makes that repair safe to make, so it went
+ * first.
+ *
+ * #824 has since landed and it did NOT take that repair: the grant names a
+ * per-run subdirectory holding the payload and nothing else, and this
+ * baseline is a sibling of it rather than a child. So the reviewer still
+ * cannot write to this file. The seal has not become redundant — it is the
+ * second of two independent things that would have to fail, and the one that
+ * does not depend on anybody re-deriving which directory was granted.
  *
  * ## The seal, and why it is a step OUTPUT
  *
