@@ -56,7 +56,7 @@ const REPO_ROOT = join(import.meta.dir, "..");
 /** The two documents that carry the #666 measurement. */
 export const RECORD_FILES = [
   "specs/HARNESS-STANDARD.md",
-  ".claude/rules/checks-must-be-able-to-fail.md",
+  "reference/check-failure-worked-instances.md",
 ] as const;
 
 /** The first heading of the shared block, and the only entry point to it. */

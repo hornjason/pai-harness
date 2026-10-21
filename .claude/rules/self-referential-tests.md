@@ -89,8 +89,14 @@ The constant is in the test file itself unless stated otherwise.
 - `AGENTS.md`'s Commands row, `.github/workflows/ci.yml` and
   `.claude/rungate/config.json`'s `test.command` must all name the same string.
 - The `#666` measurement table must be **byte-identical** in
-  `.claude/rules/checks-must-be-able-to-fail.md` and
-  `specs/HARNESS-STANDARD.md`. A reformat of either is red.
+  `reference/check-failure-worked-instances.md` and
+  `specs/HARNESS-STANDARD.md`. A reformat of either is red. It moved out of
+  `.claude/rules/` in #1009; both bindings read `RECORD_FILES`, so the path
+  lives in one place per test and not in this sentence.
+- The auto-loaded instruction surface — `CLAUDE.md`, `AGENTS.md` and every
+  un-scoped `.claude/rules/*.md` — must stay under `SURFACE_BUDGET_BYTES` in
+  `scripts/check-instruction-surface.ts`, and the budget must stay within 35%
+  of what it measures. Adding a rule can redden it.
 - Every reference in `AGENTS.md` must resolve on disk.
 - Every `.claude/rules/*.md` needs a `description` over 20 characters.
 
@@ -116,7 +122,7 @@ apart, so this one carries the added and removed lines.
 |---|---|
 | added or renamed a file | `test/scaffold-conformity.test.ts` `test/package-closure.test.ts` |
 | added a doc, or edited one containing file:line citations | `test/line-citation-ratchet.test.ts` `test/agents-md-refs.test.ts` |
-| added or edited a .claude/rules/ doc | `test/rule-provenance.test.ts` |
+| added or edited CLAUDE.md, AGENTS.md or a .claude/rules/ doc | `test/rule-provenance.test.ts` `test/instruction-surface-budget.test.ts` `test/harness-fixed-point.test.ts` |
 | added a test file | `test/sc-id-namespace.test.ts` `test/scratch-paths-unique.test.ts` |
 | touched specs/ | `test/agents-md-spec-listing.test.ts` `test/spec-requirements.test.ts` |
 | ticked or unticked an SC (ran sync-sc-status) | `test/sc-binding-split.test.ts` `test/ticked-sc-cover.test.ts` `test/behavioral-sc-ratchet.test.ts` |

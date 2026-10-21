@@ -28,8 +28,17 @@ const ROOT = join(import.meta.dir, "..");
 const SPEC_REL = "specs/RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md";
 const SPEC = join(ROOT, SPEC_REL);
 
-/** The block #544 reserved. Widening this is a decision, not a typo fix. */
-const SC_RANGE = { lo: 1930, hi: 1948 } as const;
+/**
+ * The blocks reserved for this spec, each with the owner that reserved it in
+ * `specs/sc-reservations.json`. Widening this is a decision, not a typo fix —
+ * which is why it is a list of named blocks rather than one widened interval:
+ * `{ lo: 1930, hi: 2459 }` would accept 500 unreserved ids and read as the
+ * same edit in a diff.
+ */
+const SC_RANGES = [
+  { owner: "#544", lo: 1930, hi: 1948 },
+  { owner: "#1009 (PR #1011)", lo: 2440, hi: 2459 },
+] as const;
 
 function specBody(): string {
   expect(existsSync(SPEC)).toBe(true);
@@ -55,7 +64,8 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
     expect(scs.length).toBeGreaterThan(0);
     // A bare `SC-1933` mid-sentence is a citation, not a claim — see
     // .claude/rules/claiming-sc-coverage.md. The count below is of claims.
-    expect(scs.length).toBe(19);
+    // 19 -> 27 on 2026-10-21: #1009's eight, SC-2440..SC-2447.
+    expect(scs.length).toBe(27);
   });
 
   test("SC ids are unique", () => {
@@ -65,8 +75,10 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
   });
 
   test("SC ids stay inside the range reserved for #544", () => {
-    const out = declaredSCs(specBody()).filter(n => n < SC_RANGE.lo || n > SC_RANGE.hi);
-    expect(out).toEqual([]);
+    const out = declaredSCs(specBody()).filter(
+      n => !SC_RANGES.some(r => n >= r.lo && n <= r.hi),
+    );
+    expect(out, `ids outside every reserved block: ${SC_RANGES.map(r => `${r.lo}-${r.hi} (${r.owner})`).join(", ")}`).toEqual([]);
   });
 
   test("exactly the implemented criteria are checked, and no others", () => {
@@ -83,7 +95,14 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
     // `sync-sc-status.ts` duly ticked all three. Mentioning a criterion in
     // order to disclaim it is still mentioning it
     // (`.claude/rules/claiming-sc-coverage.md`).
-    expect(checked.sort((a, b) => a - b)).toEqual([1939]);
+    //
+    // #1009 ticks eight, SC-2440..SC-2447. Unlike #544's, every one is driven
+    // by `test/instruction-surface-budget.test.ts` against the real script
+    // and a mutant of it, so the enumeration grows rather than the list being
+    // replaced by a count.
+    expect(checked.sort((a, b) => a - b)).toEqual([
+      1939, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447,
+    ]);
   });
 
   test("the spec states the two load-time facts the whole design rests on", () => {

@@ -229,6 +229,48 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 - [ ] SC-1937: Glob expansion per rule stays within 1,000 expanded patterns and 4 MiB
 <!-- REVIEW: unmatched (no registry pattern was close enough) -->
 
+### The always-loaded surface has a declared size (#1009)
+
+The budget above is max-concurrent-load, which is the right shape for the
+mined tier and says nothing about the baseline. The baseline is what every
+agent pays unconditionally, and on 2026-10-21 it was measured at **176,020
+bytes — roughly 44,000 tokens** of `CLAUDE.md` + `AGENTS.md` + nine un-scoped
+rules, with `checks-must-be-able-to-fail.md` alone contributing 119,308 of it.
+`harness-managed.md` and `specs-routing.md` carry `paths:` and are excluded:
+they load on demand, so a count that includes them overstates the launch
+surface by 13,728 bytes.
+
+#1009 moved the measurement records out to `reference/` and left the rules,
+taking the surface to **55,764 bytes (~13,900 tokens)**. The records were
+moved, not deleted — they are the only evidence several of this repository's
+checks were ever proved able to fail, and deleting them is the cheapest wrong
+fix, named on the issue before the work started.
+
+The enforcement lives in `scripts/check-instruction-surface.ts`
+(`SURFACE_BUDGET_BYTES`, one declaring position) and
+`test/instruction-surface-budget.test.ts`.
+
+- [x] SC-2440: Every refusal in the surface check exits through one exported
+      constant, declared once, with no relative imports, so a mutant can
+      neutralise it
+- [x] SC-2441: A surface reading that could not be taken — zero rule files, or
+      a missing `CLAUDE.md` — FAILS as UNMEASURED rather than scoring as a
+      small surface
+- [x] SC-2442: A surface over the declared budget is a refusal whose message
+      carries the current measurement, the largest contributors, and moving
+      records to `reference/` as the remedy
+- [x] SC-2443: The measured population is derived from the tree, so a rule
+      file nobody listed — including one in a nested directory — is counted
+- [x] SC-2444: A rule carrying `paths:` is excluded from the launch surface,
+      and the same body without `paths:` is refused, so the exclusion is
+      load-bearing
+- [x] SC-2445: The measurement is of the rule body, because Claude Code strips
+      frontmatter before a rule enters context
+- [x] SC-2446: This repository's own surface measures under
+      `SURFACE_BUDGET_BYTES`, over a population too large to be vacuous
+- [x] SC-2447: The budget stays within 35% of what it measures, so it cannot
+      be inflated to a number that never binds
+
 ### Promotion and lifecycle
 
 - [ ] SC-1938: A scaffold run with zero human interaction produces a populated, scoped rule set
