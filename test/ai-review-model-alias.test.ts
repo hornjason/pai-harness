@@ -47,22 +47,61 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { writeFileSync } from "fs";
+
 import {
   AI_REVIEW_JOB,
+  AI_REVIEW_MODEL,
   MODEL_FAMILY_ALIASES,
   modelAliasScanSlice,
   modelAliasViolations,
+  vertexCiConfig,
 } from "../lib/scaffold/ai-review-step";
 import { createCiWorkflows } from "../lib/scaffold/steps";
 
-/** Scaffold a real project and return the review workflow it actually wrote. */
-function generatedReviewWorkflow(): { text: string; cleanup: () => void } {
+/**
+ * Scaffold a real project and return the review workflow it actually wrote.
+ *
+ * `ci` is written to the consumer's own config, because `createCiWorkflows`
+ * reads `ci.vertex` off disk through `vertexCiConfig`. Passing it in memory
+ * would scaffold the UNCONFIGURED workflow while the case believed otherwise.
+ */
+function generatedReviewWorkflow(ci?: unknown): { text: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "rungate-685-"));
   mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+  if (ci !== undefined) {
+    mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "rungate", "config.json"),
+      JSON.stringify({ project: "ai-review-alias-fixture", ci }, null, 2) + "\n",
+    );
+  }
   createCiWorkflows(root, []);
   const text = readFileSync(join(root, ".github", "workflows", "ai-review.yml"), "utf-8");
   return { text, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
+
+/**
+ * A `ci` block whose vertex half is valid, so `model` is the ONE field a case
+ * varies. The project and provider are nobody's — `test/ai-review-wif.test.ts`
+ * greps `lib/` for this repository's real values and a fixture carrying them
+ * would defeat that case.
+ */
+const VERTEX_CI = {
+  runner: "ubuntu-latest",
+  bunVersion: "1.2.0",
+  vertex: {
+    project: "fixture-vertex-project",
+    workloadIdentityProvider:
+      "projects/111122223333/locations/global/workloadIdentityPools/fixture-pool/providers/fixture-provider",
+  },
+};
+
+/** `VERTEX_CI` with one field changed, so a pair varies exactly one input. */
+const withModel = (model: string) => ({
+  ...VERTEX_CI,
+  vertex: { ...VERTEX_CI.vertex, model },
+});
 
 describe("#685 AC-6: the generated review workflow carries no bare alias", () => {
   test("AC-6a: the generated workflow is real, non-empty, and clean", () => {
@@ -172,5 +211,172 @@ describe("#685 AC-6: the generated review workflow carries no bare alias", () =>
     // a guard people learn to switch off.
     expect(modelAliasViolations(`  # see the opusculum for rationale\n`)).toEqual([]);
     expect(modelAliasViolations(`  name: sonnets-and-haikus\n`)).toEqual([]);
+  });
+});
+
+// ── AC-5 (#685): the route by which an alias can actually arrive ─────────
+//
+// AC-6 above shipped alone, before Phase 1, over the UNCONFIGURED workflow.
+// Phase 1 has since landed `claude-code-action`, a `claude_args` line and
+// `ci.vertex.model` — a CONSUMER-SUPPLIED model that `vertexCiConfig` reads
+// off config and interpolates into that line. That field is the only way a
+// bare alias can reach the action in a scaffolded project, and nothing in
+// `test/` drove its guard: grepping for `EXACT_MODEL_PATTERN` or the refusal
+// sentence returned the module and nothing else.
+//
+// So the refusal at `vertexCiConfig`'s model branch was a pin in name only —
+// correct code with no demonstrated failing input, which is exactly
+// `.claude/rules/checks-must-be-able-to-fail.md`'s subject and this issue's.
+//
+// Which cell is which, so the next reader does not count six witnesses:
+//
+//   * AC-5a is an INSTRUMENT CONTROL. It proves the reading was taken — that
+//     a configured scaffold really carries a `--model` value — and it is
+//     green under every alias defect. Without it every absence below is
+//     vacuous; with it, nothing is caught.
+//   * AC-5b, AC-5c and AC-5e are WITNESSES. Each has a named input on which
+//     the real code and a plausible weakening differ.
+//   * AC-5d is a CONTROL against the cheapest wrong fix — refuse the family
+//     word, or refuse every consumer model — which would make an exact
+//     `claude-fable-5-1` unshippable while every other case stayed green.
+
+describe("#685 AC-5: the model a CONFIGURED project hands the review action", () => {
+  test("AC-5a (instrument control): the configured workflow carries the pin, once", () => {
+    // Establish the subject BEFORE asserting an absence from it. The
+    // UNCONFIGURED workflow is what AC-6a reads; this is the other one, and
+    // the two are different documents — asserted, not assumed.
+    const { text, cleanup } = generatedReviewWorkflow(VERTEX_CI);
+    const bare = generatedReviewWorkflow();
+    try {
+      expect(text).toContain(AI_REVIEW_JOB);
+      expect(text, "the configured scaffold produced the unconfigured workflow")
+        .not.toBe(bare.text);
+      expect(text, "no --model reaches claude_args").toContain(`--model ${AI_REVIEW_MODEL}`);
+      // Once, not merely present: a second position is a second thing to
+      // forget, and no behavioural case could say which one the job used.
+      expect(text.split(AI_REVIEW_MODEL).length - 1, "the pin has more than one position").toBe(1);
+    } finally { cleanup(); bare.cleanup(); }
+  });
+
+  test("AC-5b (witness): the whole-document guard reads the CONFIGURED workflow too", () => {
+    // `test/ai-review-credentialed-job.test.ts` used to scan this document
+    // with a local `/(opus|sonnet|haiku)/i` of its own — a second decider,
+    // narrower than `MODEL_FAMILY_ALIASES`, so a planted `fable` walked past
+    // it. Both now delegate here, and the plant is run per family so a guard
+    // that caught one and not the rest cannot read as green.
+    const { text, cleanup } = generatedReviewWorkflow(VERTEX_CI);
+    try {
+      expect(modelAliasViolations(text)).toEqual([]);
+      for (const alias of MODEL_FAMILY_ALIASES) {
+        // The real VALUE position, not a comment and not a fresh line: this
+        // is the exact byte range a consumer's `ci.vertex.model` controls.
+        const planted = text.replace(`--model ${AI_REVIEW_MODEL}`, `--model ${alias}`);
+        expect(planted, `the plant did not change the text for ${alias}`).not.toBe(text);
+        const found = modelAliasViolations(planted);
+        expect(found.join(" "), `a bare '${alias}' in claude_args was not caught`).toContain(alias);
+      }
+    } finally { cleanup(); }
+  });
+
+  test("AC-5c (witness): ci.vertex.model is REFUSED when it is a bare family alias", () => {
+    // The guard with a failing input, which is this issue's acceptance. Every
+    // family, generated from the declared list rather than typed, so a family
+    // added to `MODEL_FAMILY_ALIASES` is a family this case starts driving.
+    expect(MODEL_FAMILY_ALIASES.length, "an empty list agrees with every rule")
+      .toBeGreaterThanOrEqual(3);
+    for (const alias of MODEL_FAMILY_ALIASES) {
+      const decision = vertexCiConfig(withModel(alias));
+      expect(decision.config, `ci.vertex.model: ${alias} was ACCEPTED as a pin`).toBeNull();
+      // The reason has to send someone to a field. "ci.vertex is invalid"
+      // names nothing, and the whole block is refused, so without this the
+      // case cannot tell a model refusal from a provider refusal.
+      expect(decision.reason, `the refusal of '${alias}' does not name the field`)
+        .toContain("ci.vertex.model");
+    }
+  });
+
+  test("AC-5d (control, the pair): the SAME family with a version is accepted and reaches the job", () => {
+    // Varies one thing against AC-5c: the version segment. This is the case
+    // that blocks the cheapest wrong fix — refusing the family word, or
+    // refusing consumer models outright — which would pass AC-5c, AC-5e and
+    // every AC-6 case while making an exact `claude-fable-5-1` unshippable.
+    for (const alias of MODEL_FAMILY_ALIASES) {
+      const exact = `claude-${alias}-5-1`;
+      const decision = vertexCiConfig(withModel(exact));
+      expect(decision.config, `${exact} was refused as an alias: ${decision.reason}`).not.toBeNull();
+      expect(decision.config?.model, "the consumer's model was replaced by the default").toBe(exact);
+
+      // And it reaches the generated job — a decision nothing interpolates is
+      // a config field with no consumer.
+      const { text, cleanup } = generatedReviewWorkflow(withModel(exact));
+      try {
+        expect(text, `${exact} did not reach claude_args`).toContain(`--model ${exact}`);
+        expect(modelAliasViolations(text), `${exact} tripped the guard`).toEqual([]);
+      } finally { cleanup(); }
+    }
+  });
+
+  test("AC-5e (witness): a refused model is fail-CLOSED — no alias reaches the workflow", () => {
+    // AC-5c is about the decision; this is about the artifact. A refusal that
+    // still emitted the value would be a correct reading with no effect, and
+    // the two are indistinguishable from the decision alone.
+    const good = generatedReviewWorkflow(VERTEX_CI);
+    try {
+      for (const alias of MODEL_FAMILY_ALIASES) {
+        const { text, cleanup } = generatedReviewWorkflow(withModel(alias));
+        try {
+          // The refusal CHANGED the output. Without this the two assertions
+          // below are satisfied by a scaffold that ignored the config.
+          expect(text, `a refused ci.vertex.model produced the same workflow as a valid one`)
+            .not.toBe(good.text);
+          expect(text, `the refused alias '${alias}' reached claude_args`)
+            .not.toContain(`--model ${alias}`);
+          expect(modelAliasViolations(text), `a refused '${alias}' is in the workflow`).toEqual([]);
+        } finally { cleanup(); }
+      }
+    } finally { good.cleanup(); }
+  });
+});
+
+// ── WHAT THIS DOES NOT COVER ────────────────────────────────────────────
+//
+// Each escape is a case rather than a sentence, so the boundary is measured
+// and goes red if it moves. None of these is a defect being hidden; they are
+// the things a reader would otherwise assume this file settles.
+
+describe("#685: what the alias guard does NOT cover", () => {
+  test("the guard checks the SHAPE of an identifier, never that it resolves", () => {
+    // `claude-zzz-9` is a pin in the only sense this guard measures: it names
+    // a version, so it cannot re-point under a consumer. Whether any provider
+    // serves it is a network question and deliberately not asked here — see
+    // #377 for the freshness decision this repo has not taken.
+    const decision = vertexCiConfig(withModel("claude-zzz-9"));
+    expect(decision.config?.model, "a well-shaped but nonexistent id was refused").toBe("claude-zzz-9");
+    expect(modelAliasViolations(`  claude_args: --model claude-zzz-9\n`)).toEqual([]);
+  });
+
+  test("a family word absent from the declared list is not detected", () => {
+    // `MODEL_FAMILY_ALIASES` is hand-maintained. A future family alias is
+    // invisible to `modelAliasViolations` until somebody adds the word, and
+    // `vertexCiConfig` is the thing that still refuses it — which is why
+    // AC-5c and AC-5e exist in addition to the text scan.
+    const unknownFamily = "lyra";
+    expect(MODEL_FAMILY_ALIASES, "the premise moved — pick another non-family word")
+      .not.toContain(unknownFamily);
+    expect(modelAliasViolations(`  ANTHROPIC_MODEL: ${unknownFamily}\n`)).toEqual([]);
+    // The config route still refuses it, so the generated workflow is safe
+    // even where the text scan is blind. That asymmetry is the coverage.
+    expect(vertexCiConfig(withModel(unknownFamily)).config).toBeNull();
+  });
+
+  test("a model handed to the action by a HAND-EDITED workflow is only caught by AC-6h", () => {
+    // The generator cannot see a consumer's hand-edit, and no scaffolded
+    // project runs AC-6h — it scans this repository's own workflows. For a
+    // consumer, a hand-edited alias is unmeasured, and that is not fixed here.
+    const handEdited = `${AI_REVIEW_JOB}:\n  steps:\n    - with:\n        claude_args: --model opus\n`;
+    expect(modelAliasViolations(handEdited).join(" "), "the guard itself cannot see it")
+      .toContain("opus");
+    // The guard can read it; nothing in a consumer's pipeline calls the guard.
+    // Recorded, not closed.
   });
 });
