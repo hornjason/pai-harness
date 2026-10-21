@@ -463,13 +463,28 @@ export async function generatorHooks(
 }
 
 /**
- * The single decider. Returns null when the installed hook IS the generator
- * output, and the reason otherwise.
+ * One hook's verdict: `null` when the installed copy IS the generator
+ * output, and a CLASSIFIED reason otherwise.
  *
  * One function, one binding to mutate. The CLI below does not re-ask any of
  * these questions — a second guard answering the same question would survive
- * any mutation of this one, and both would read as covered.
+ * any mutation of this one, and both would read as covered. That includes
+ * the CLASS: it is decided here, beside the reason it belongs to, and the
+ * CLI renders it (#613, #879).
+ *
+ * **Absent is not stale (#879).** A tree with no installed hook has not
+ * failed a comparison; it has not had one. A fresh clone and a CI checkout
+ * are both in that state as a matter of course, and a session-start reading
+ * that calls them STALE is a refusal everybody learns to ignore. The same
+ * goes for a hand-written hook, whose own message says in as many words that
+ * nothing here can tell you what it enforces — that is the definition of
+ * unmeasured. What is STALE is narrower and exact: a hook carrying the
+ * managed marker that is not what the generator emits.
  */
+export interface HookVerdict {
+  cls: RefusalClass;
+  reason: string;
+}
 export function currencyRefusal(
   installed: string | null,
   generated: string,
@@ -481,21 +496,25 @@ export function currencyRefusal(
   // hold one — and it is the exact form the cheapest wrong fix takes.
   hookName: string,
   properties: GuardProperty[],
-): string | null {
+): HookVerdict | null {
   if (installed === null) {
-    return (
-      `no ${hookName} hook is installed at ${path}. The generator is not the thing that runs on ` +
-      `your commits; the file is. Re-run \`bun bin/rungate.ts scaffold .\`, or this script with ` +
-      `--install.`
-    );
+    return {
+      cls: "UNMEASURED",
+      reason:
+        `no ${hookName} hook is installed at ${path}, so nothing was compared. The generator is ` +
+        `not the thing that runs on your commits; the file is. Re-run ` +
+        `\`bun bin/rungate.ts scaffold .\`, or this script with --install.`,
+    };
   }
   if (!installed.includes(marker)) {
-    return (
+    return {
+      cls: "UNMEASURED",
+      reason:
       `the hook installed at ${path} is hand-written — it does not carry the rungate managed ` +
       `marker, so it is not compared and not replaced. Nothing here can tell you whether it ` +
       `enforces the DA-owned state rule. Move it aside and re-run with --install if you want ` +
-      `the generated one.`
-    );
+      `the generated one.`,
+    };
   }
   if (installed === generated) return null;
 
@@ -517,27 +536,33 @@ export function currencyRefusal(
       : "";
 
   if (missing.length > 0) {
-    return (
+    return {
+      cls: "STALE",
+      reason:
       `the hook installed at ${path} predates ${missing.map(m => m.name).join(", ")}. ` +
       // "Every commit" was right while this script only ever read one hook,
       // and became wrong the moment it read two (#891): a pre-push refusal
       // that talks about commits is a message an operator has to translate
       // before acting on it.
       `${scanner}Every ${hookName} from this checkout is running the old behaviour, whatever ` +
-      `the generator says. ${how}`
-    );
+      `the generator says. ${how}`,
+    };
   }
   if (absent.length > 0) {
-    return (
-      `the hook installed at ${path} carries every named guard and is not byte-identical to the ` +
-      `generator's output. ${scanner}${how}`
-    );
+    return {
+      cls: "STALE",
+      reason:
+        `the hook installed at ${path} carries every named guard and is not byte-identical to ` +
+        `the generator's output. ${scanner}${how}`,
+    };
   }
-  return (
-    `the hook installed at ${path} carries every named guard and every registry pattern but is ` +
-    `not byte-identical to the generator's output, so something edited it or it predates a ` +
-    `change this table does not name. ${how}`
-  );
+  return {
+    cls: "STALE",
+    reason:
+      `the hook installed at ${path} carries every named guard and every registry pattern but ` +
+      `is not byte-identical to the generator's output, so something edited it or it predates ` +
+      `a change this table does not name. ${how}`,
+  };
 }
 
 /**
@@ -688,7 +713,7 @@ if (import.meta.main) {
     // hook cannot hide the state of the ones after it. The old shape could
     // not have this problem because it only ever looked at one file, which
     // is the problem (#891).
-    const refusals: string[] = [];
+    const refusals: HookVerdict[] = [];
     for (const hook of hooks) {
       const path = installedHookPath(project, hook.name);
       if (args.install === true) {
@@ -722,7 +747,25 @@ if (import.meta.main) {
     // the loop would make the report depend on declaration order, and an
     // operator who fixed the first hook would discover the second only on
     // the next run.
-    if (refusals.length > 0) throw new HookRefused("STALE", refusals.join("\n  "));
+    //
+    // Each line keeps its own WORDS — "nothing was compared", "nothing here
+    // can tell you" — but not its own prefix. The catch below is the one
+    // position that renders a class (#613), and a second prefix here printed
+    // it twice.
+    //
+    // The STRONGEST class present wins. A tree with one stale hook and one
+    // absent one HAS a stale hook, and reporting the pair as UNMEASURED
+    // would hide it; reporting a tree whose hooks are merely absent as STALE
+    // is the error #879 is about, in the other direction.
+    //
+    // Two raises each naming its class as a LITERAL, rather than one raise
+    // over a computed `cls`. The computed form was written first and is
+    // exactly what SC-2145 exists to refuse: a label that is a variable
+    // cannot be read off the source, so "every class in REFUSAL_PREFIX is
+    // reachable" stops being a checkable claim about this file.
+    const lines = refusals.map(v => v.reason).join("\n  ");
+    if (refusals.some(v => v.cls === "STALE")) throw new HookRefused("STALE", lines);
+    if (refusals.length > 0) throw new HookRefused("UNMEASURED", lines);
   } catch (e) {
     // The class decides the label. `e.refusalClass` is set at the raise, by
     // the code that knows what it refused; nothing here re-derives it from
