@@ -238,7 +238,18 @@ describe("AC-5: the pre-#816 script is shown reporting the false sentence", () =
     // raise the expected count.
     // Still a plain string for the reason above: the source carries the
     // CONSTANT's name, not its value, so the needle names the constant too.
-    const needle = 'if [ -s "\\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]';
+    //
+    // Narrowed a SECOND time, for the same reason and by the repair the
+    // paragraph above prescribes. #826's failure-branch routes gave the
+    // payload a reading on that branch too — correctly: the sentence there
+    // asserted "no findings payload was written" without ever stat'ing the
+    // path. So there are now two honest readings of this variable and the
+    // needle has to say WHICH. The success branch's sits inside
+    // `if [ "${AI_REVIEW_ACTION_OUTCOME}" = success ]` and is indented two
+    // spaces; the failure branch's is at column 0. The leading newline and
+    // indent are the discriminator, and the count below still aborts if a
+    // third one appears rather than mutating a line nobody chose.
+    const needle = '\n  if [ -s "\\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]';
     const count = source.split(needle).length - 1;
     if (count !== 1) {
       throw new Error(
