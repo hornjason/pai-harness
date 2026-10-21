@@ -57,6 +57,66 @@
  * it: the exit code must be identical across both routes, in both directions
  * of the require switch, so a future edit that lets the route decide anything
  * goes red.
+ *
+ * ## The cheapest wrong fix, named before the repair was written
+ *
+ * What an operator sees is an annotation naming a cause that was not the
+ * cause. **The 5pm repair is to delete the validation-guard sentence.** It
+ * works: the wrong assertion stops being made, and the job still cannot say
+ * which of three things happened, so the next reader gets no cause at all
+ * instead of a wrong one. M3 below is that repair applied — 2 red, and
+ * AC-B1 is one of them, because the sentence is TRUE on the declined route
+ * and measuring the route is what makes it accurate rather than removable.
+ *
+ * That matters beyond this file. #824's AC-5 proposes removing the same
+ * sentence, and it was right to when the sentence printed on every route.
+ * With the route measured it should be scoped, not deleted — and M3's second
+ * red is `test/ai-review-payload-reading.test.ts`'s own case saying the same
+ * thing from #816.
+ *
+ * ## What was broken to prove it
+ *
+ * Over this file plus `test/ai-review-payload-reading.test.ts` (22 tests).
+ * Every count predicted before the battery ran, in
+ * `/tmp/826-battery/predictions.md`, and **the baseline row was read first.**
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 22 pass, 0 fail | **22 pass, 0 fail** | — |
+ * | M1 the genuinely pre-#826 step: both new `env:` lines removed, the workflow regenerated | 3 | **3 of 22** | the committed step's env map — three keys against five |
+ * | M2 the whole route block deleted, `skipped` printed directly again | 4 | **4 of 22** | an execution file with no payload: original says the reviewer executed, mutant names the guard |
+ * | M3 **the cheapest wrong fix**: the guard sentence deleted from `skipped` | 1 | **2 of 22** | no execution file: original names the guard, mutant names no cause at all |
+ * | M4 the route decides the exit code — `exit 0` in the executed branch | 1 | **1 of 22** | an execution file with the require switch on: original refuses, mutant exits 0 |
+ * | M5 the payload reading short-circuited to `if false` | 5 | **5 of 22** | a payload on disk: original takes the unadjudicated branch, mutant reports none |
+ * | M6 the execution-file `-s` test widened to `-n` | 1 | **1 of 22** | `AI_REVIEW_EXECUTION_FILE` naming a path that does not exist |
+ *
+ * **M3 came back 2 against a predicted 1, and the extra red is the real
+ * kind.** It is `ai-review-payload-reading.test.ts`'s *"it names the cause a
+ * consumer will actually hit"* — #816's own case over the same sentence,
+ * which the prediction simply forgot was there. 20 cases still pass and both
+ * reds are about the deleted text. The fact it records is that the sentence
+ * has two independent holders in two files, so the delete-it repair is
+ * costlier to make silently than it looks.
+ *
+ * **M6 is 1 because AC-B7 was strengthened before the battery, not after.**
+ * As first written that case only forbade the guard sentence — and the `-n`
+ * mutant sends a missing file down the EXECUTED branch, whose text does not
+ * contain the guard either, so the case passed over the mutation it exists
+ * for. Writing the predictions is what surfaced it. It now asserts the
+ * unreadable sentence positively and compares it to the executed one.
+ *
+ * None of the mutations is left in the tree; all were run and restored from a
+ * `cp` backup, and `lib/scaffold/ai-review-step.ts`, this file,
+ * `test/ai-review-payload-reading.test.ts` and
+ * `.github/workflows/ai-review.yml` were confirmed byte-identical to the
+ * measured source afterwards by SHA-256, never by `git checkout --`.
+ *
+ * ## What this does NOT do
+ *
+ * It does not set `RUNGATE_REQUIRE_AI_REVIEW` on this repository, which is
+ * #826's first bullet and is explicitly gated on #824 landing. Flipping it
+ * now turns every pull request red for a cause #824 is mid-flight fixing,
+ * which is the pressure that gets a check disabled rather than fixed.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
