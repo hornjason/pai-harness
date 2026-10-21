@@ -46,7 +46,7 @@ const STEPS_DIR = dirname(STEPS);
  * abort this file rather than quietly mutate nothing.
  */
 const BINDING_SIGNATURE =
-  "export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = []): ManagedWrite {";
+  'export function resolveManagedWrite(existing: string | null, generated: string, overrides: readonly string[] = [], provenance: MergeProvenance = "UNPROVEN"): ManagedWrite {';
 
 /**
  * The mutation: preservation and refusal replaced by unconditional overwrite.

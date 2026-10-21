@@ -1,4 +1,4 @@
-# generated-sha: c60097cb08a887d7
+# generated-sha: 6a06fe3d4dd187bd
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
@@ -104,6 +104,24 @@ jobs:
           fi
           echo "All 4 shards passed."
 
+# The GROUP does the work here, not the flag. A run is only ever cancelled by
+# another run in the SAME group, so keying a push on its own commit makes the
+# question moot: there is never a second occupant to do the cancelling.
+#
+# A push to `main` keys on `github.sha`, unique per commit. Every other main
+# run is in a different group and nothing can cancel it. That matters because
+# a main run is the ONLY run that will ever build that commit, so losing it
+# leaves a gap in main's history with no red check anywhere saying so.
+#
+# Everything else keys on `github.ref`: unique per pull request
+# (`refs/pull/<n>/merge`) and per merge-queue entry
+# (`gh-readonly-queue/...`), but STABLE across pushes to the same pull
+# request — which is what lets a pull request supersede itself, the one case
+# where cancelling is the right answer.
+#
+# Do NOT "simplify" this to a ref-keyed group with an event expression in
+# cancel-in-progress. That was tried and measured: three main-push runs
+# cancelled inside eight minutes with the expression in place.
 concurrency:
   group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
