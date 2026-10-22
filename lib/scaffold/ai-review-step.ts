@@ -2225,10 +2225,31 @@ export const AI_REVIEW_RUNTIME_CONFIG_TITLE = "AI review runtime config UNMEASUR
  * So the number is now measured rather than guessed, and the measurement is a
  * floor and not a distribution: n is ONE, and the one observation is a lower
  * bound, because an exhausted run tells you the budget was too small and not
- * by how much. 50 is twice the only reading there is, which bounds the worst
- * case at roughly 340s and \$2.50 per pull request. The reason not to go
+ * by how much. 50 was twice the only reading there was, which bounded the
+ * worst case at roughly 340s and \$2.50 per pull request. The reason not to go
  * further is unchanged and is the sentence above: a reviewer with no turn
  * budget is a job with no upper bound on what it costs.
+ *
+ * **2026-10-22: there is now a distribution, and 50 sat inside it.** `num_turns`
+ * read from the execution file of 7 consecutive AI Review runs on this repo:
+ *
+ * | 28 | 38 | 39 | 42 | **49** | **51** | **51** |
+ *
+ * The 49 is the reading that decides this, not the 51s. It is a run that
+ * **passed**, one turn under the ceiling — so the ceiling was not catching an
+ * outlier, it was clipping the top of the ordinary working range, and two of
+ * seven runs lost their review to it. A budget set at the observed maximum is
+ * a budget that fires again on the next slightly larger diff.
+ *
+ * 80 is ~57% headroom over the largest reading, bounding the worst case near
+ * \$4 per pull request. That is deliberately not a doubling of the new
+ * maximum: the point of the guard is an upper bound on cost, and the failure
+ * it prevents is unbounded spend, while the failure it was causing is a
+ * discarded review — which costs a full re-run, blocks the pull request, and
+ * reads in the UI exactly like a finding. Both are real; they are not equal,
+ * and the cheap one to be wrong about is the budget.
+ *
+ * Revise it with more n, not with the next single overrun.
  *
  * **The cheapest wrong fix is not to raise this at all — it is to make the
  * prompt write a payload in its first turns and refine it afterwards**, so an
@@ -2238,7 +2259,7 @@ export const AI_REVIEW_RUNTIME_CONFIG_TITLE = "AI review runtime config UNMEASUR
  * producing nothing. `test/ai-review-turn-budget.test.ts` asserts that
  * exhaustion keeps writing nothing, so that repair goes red.
  */
-export const AI_REVIEW_MAX_TURNS = 50;
+export const AI_REVIEW_MAX_TURNS = 80;
 
 /**
  * The `claude_args` line, with the model the consumer's config resolved.
