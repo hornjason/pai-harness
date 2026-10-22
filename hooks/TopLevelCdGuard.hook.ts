@@ -20,30 +20,43 @@
  * wrote it and the agent that built this hook. The conclusion was not to state
  * it more loudly: `VerifyPhaseLock` holds because it is not advice.
  *
- * NOT REGISTERED. This hook is deliberately inert — registering it changes
- * behaviour for every session on this machine and needs Jason's sign-off,
- * which has not been given (#992's scope note). It appears in no settings
- * file and in no hooks registry. The registration step is the remaining
- * action, recorded on the PR.
+ * REGISTERED, as a hard refusal, by #992. Jason's decision, taken against the
+ * measurement on that issue — 32.7% of 31,577 recorded commands carry a
+ * top-level `cd`, so this fires often, and that is the point rather than an
+ * argument against it. The registration is four positions and they must agree
+ * (`.claude/rules/self-referential-tests.md`): this comment's `SC-` ids,
+ * `.claude/rungate/hooks.json`, the current-state table in
+ * `specs/HOOK-ARCHITECTURE-SPEC.md`, and `.claude/settings.json`.
  *
- * ## What changed while it stayed inert
+ * It is registered at PROJECT scope. `${CLAUDE_PROJECT_DIR}` resolves to the
+ * worktree a session is in, every worktree carries the committed
+ * `.claude/settings.json`, and worktree isolation — the thing a stray `cd`
+ * breaks — is a harness concern. Machine-wide registration lives in
+ * `~/.claude/settings.json`, which no PR can carry and no test here can
+ * honestly assert (`test/hook-registration-reconciler.test.ts`).
  *
- * It can now WARN. Before, it emitted `{decision:'block'}` unconditionally,
- * so "register it as a warning" — the option endorsed on the issue, and the
- * first rung of the WARN→data→FAIL ladder in
- * `specs/harness-automation-matrix.md` — was not a thing anyone could
- * choose without rewriting the hook on the day of the decision. `warn` is
- * the default; `RUNGATE_CD_GUARD=block` opts into refusal and `=off`
- * silences it. See `cdGuardMode` for the 32.7%-of-31,577 measurement that
- * makes a hard refusal the wrong first rung.
+ * ## The rung, and what #1040 left behind
  *
- * It is also SCOPED to harnessed projects via `lib/harness-project.ts`, the
- * same decider `BashToolGuard` uses. A top-level `cd` costs something only
- * in a session with concurrent agents holding worktrees; firing everywhere
- * to protect the minority of sessions where it matters is mis-scoped.
+ * #1040 built the ladder — `RUNGATE_CD_GUARD` reads `warn` | `block` | `off`
+ * — and took no rung, so the decision would be a configuration choice rather
+ * than a code change made under pressure. The choice has now been made and
+ * it is `block`: `cdGuardMode`'s default moved, so the hook refuses unless a
+ * caller opts out. `warn` and `off` are both still reachable, which is what
+ * makes this reversible without touching code.
  *
- * Neither change registers anything. Both exist so the decision is a
- * configuration choice rather than a code change made under time pressure.
+ * It is SCOPED to harnessed projects via `lib/harness-project.ts`, the same
+ * decider `BashToolGuard` uses — #1040's scoping, unchanged. A top-level
+ * `cd` costs something only in a session with concurrent agents holding
+ * worktrees.
+ *
+ * ## What this will cost, measured rather than guessed
+ *
+ * 21 Bash commands in this repo's own agent prompts — `workflows/ship.js`,
+ * `prove.js`, `verify.js` — open with a top-level `cd` and are refused by
+ * this guard. Those workflows are not in use (`.claude/rules/ship-workflow.md`,
+ * direct-ship mode since 2026-10-19) and the count is on #992's PR, but it is
+ * the first thing to fix if harness mode comes back. `git -C`, a subshell and
+ * `bun --cwd` are each a one-line change at those sites.
  *
  * The parse, and what it cannot see, is `lib/top-level-cd.ts`. Read its
  * WHAT THIS DOES NOT COVER block before trusting this to stop anything.
@@ -52,7 +65,7 @@
  */
 
 import { parseHookInput } from './lib/parseStdin';
-import { cdGuardMode, topLevelCdRefusal } from '../lib/top-level-cd';
+import { CD_GUARD_DECISION, cdGuardMode, topLevelCdRefusal } from '../lib/top-level-cd';
 import { isHarnessProject } from '../lib/harness-project';
 
 async function main() {
@@ -68,15 +81,21 @@ async function main() {
   const { mode, unrecognised } = cdGuardMode();
   if (mode === 'off') process.exit(0);
 
-  const refusal = topLevelCdRefusal(payload.tool_input?.command || '');
+  // The raw value, NOT `|| ''`. An absent command is unreadable, and the one
+  // decider refuses it rather than letting the guard pass over nothing.
+  const refusal = topLevelCdRefusal(payload.tool_input?.command);
   if (refusal === null) process.exit(0);
 
   const note = unrecognised
-    ? `\n(${'RUNGATE_CD_GUARD'}=${JSON.stringify(unrecognised)} is not a mode I know; warning instead of refusing.)`
+    ? `\n(${'RUNGATE_CD_GUARD'}=${JSON.stringify(unrecognised)} is not a mode I know; refusing, which is the default.)`
     : '';
 
+  // `mode` is the configured RUNG and `CD_GUARD_DECISION` is the field the
+  // hook protocol reads. They spell the same word today and are not the same
+  // fact — collapsing them would break the rung if the protocol ever renamed
+  // its verdict — so they stay two names.
   if (mode === 'block') {
-    console.log(JSON.stringify({ decision: 'block', reason: refusal.message + note }));
+    console.log(JSON.stringify({ decision: CD_GUARD_DECISION, reason: refusal.message + note }));
     process.exit(0);
   }
 

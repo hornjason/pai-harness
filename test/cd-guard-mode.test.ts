@@ -1,5 +1,26 @@
 /**
- * #992 — the guard can WARN, and it is scoped. Still registered nowhere.
+ * #992 — the guard can WARN, it is scoped, and the rung has now been chosen.
+ *
+ * ## The decision, and what moved in this file
+ *
+ * #1040 built the ladder and took no rung: `warn` was the default and
+ * `block` was opt-in, so the choice would be configuration rather than a
+ * code change made under pressure. **Jason chose `block`** and the hook is
+ * registered at project scope. Three arms inverted here and they are the
+ * whole diff worth reading:
+ *
+ * - AC-1 / AC-2: the default rung is `block`, including for an unrecognised
+ *   value, which moves the "err toward refusal" direction into the mode.
+ * - AC-3: the default REFUSES; `warn` became the opt-in and keeps its own
+ *   case, because the rung has to stay reachable for the decision to be
+ *   reversible without code.
+ * - AC-10: was *registered nowhere*. It is now *registered in exactly the
+ *   repo-owned positions*, asserted by name, so a later deregistration is
+ *   as loud as the registration was.
+ *
+ * AC-11 did NOT move. `~/.claude/settings.json` is machine state no PR
+ * carries, and this branch still does not touch it — which is the honest
+ * limit of what "registered" means here.
  *
  * ## What was actually missing
  *
@@ -22,11 +43,12 @@
  * it as a warning" meant rewriting the hook on the day of the decision — the
  * worst moment to be editing a hook that fires on every Bash call.
  *
- * This battery is about that: `warn` is expressible, `block` is opt-in, the
- * scope check is shared rather than copied, and **nothing is registered**.
- * AC-7 is the arm that keeps the last part true.
+ * That argument is left standing above because it is the honest case against
+ * what this now does, and the counter-argument is the scoping: the guard
+ * fires only inside a harnessed project, where peer worktrees are what a
+ * stray `cd` kills. AC-7 is the arm that keeps the scoping true.
  *
- * Issue: #992. Refs #997, COMP-7.
+ * Issue: #992. Refs #997, #1040, COMP-7.
  */
 
 import { afterAll, describe, test, expect } from "bun:test";
@@ -34,7 +56,7 @@ import { spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
-import { CD_GUARD_MODE_VAR, cdGuardMode } from "../lib/top-level-cd";
+import { CD_GUARD_DEFAULT_MODE, CD_GUARD_MODE_VAR, cdGuardMode } from "../lib/top-level-cd";
 import { isHarnessProject } from "../lib/harness-project";
 
 const ROOT = join(import.meta.dir, "..");
@@ -77,10 +99,15 @@ const OFFENDING = "cd /tmp && ls";
 const ALLOWED = "git -C /tmp status";
 
 describe("#992 — the mode is a reading, not a rewrite", () => {
-  test("AC-1: absent config is WARN, and the three rungs resolve", () => {
-    expect(cdGuardMode({}).mode).toBe("warn");
-    expect(cdGuardMode({ [CD_GUARD_MODE_VAR]: "" }).mode).toBe("warn");
-    expect(cdGuardMode({ [CD_GUARD_MODE_VAR]: "block" }).mode).toBe("block");
+  test("AC-1: absent config is BLOCK, and the three rungs resolve", () => {
+    expect(cdGuardMode({}).mode, "the default rung is no longer the decision Jason took").toBe(
+      CD_GUARD_DEFAULT_MODE,
+    );
+    expect(CD_GUARD_DEFAULT_MODE, "#992's decision was block").toBe("block");
+    expect(cdGuardMode({ [CD_GUARD_MODE_VAR]: "" }).mode).toBe("block");
+    // The two opt-outs, each asserted, because the decision is only
+    // reversible-without-code for as long as both still resolve.
+    expect(cdGuardMode({ [CD_GUARD_MODE_VAR]: "warn" }).mode).toBe("warn");
     expect(cdGuardMode({ [CD_GUARD_MODE_VAR]: " OFF " }).mode).toBe("off");
   });
 
@@ -88,28 +115,44 @@ describe("#992 — the mode is a reading, not a rewrite", () => {
     // `.claude/rules/config-access.md`: a typo resolving quietly to the
     // default is the same observation as a deliberate choice. The value is
     // carried back so the caller can say it out loud.
+    //
+    // The direction moved with the default and that is deliberate: an
+    // unreadable rung now REFUSES, which is where `lib/top-level-cd.ts`
+    // errs everywhere else. A typo must not be the quiet way to turn a
+    // guard down.
     const r = cdGuardMode({ [CD_GUARD_MODE_VAR]: "blcok" });
-    expect(r.mode, "an unknown rung should take the least disruptive one").toBe("warn");
+    expect(r.mode, "an unknown rung should take the default").toBe(CD_GUARD_DEFAULT_MODE);
     expect(r.unrecognised, "the bad value is swallowed — a typo is indistinguishable from a choice").toBe("blcok");
     expect(cdGuardMode({ [CD_GUARD_MODE_VAR]: "block" }).unrecognised).toBeUndefined();
   });
 });
 
-describe("#992 — WARN runs the command; BLOCK is opt-in", () => {
-  test("AC-3: the default rung WARNS and does not block", () => {
+describe("#992 — BLOCK is the default rung; WARN and OFF are the opt-outs", () => {
+  test("AC-3: the default rung REFUSES, and names the alternative", () => {
     const r = run(harnessed("dir"), OFFENDING);
-    expect(r.decision, "the default is still a hard refusal — the ladder's first rung is missing").toBeUndefined();
+    expect(r.decision, "the default rung is not refusing — #992 chose block").toBe("block");
+    // #992: a refusal "that does not name `git -C` as the alternative will
+    // just be worked around". The whole case for a hard rung rests on the
+    // refusal being actionable in the moment it fires.
+    expect(r.stdout).toContain("git -C");
+    expect(r.stderr.trim(), "it refused AND warned — one event, two channels").toBe("");
+  });
+
+  test("AC-4: `warn` is still reachable and runs the command", () => {
+    // The reversibility the mode was built for. If this arm goes red the
+    // decision has stopped being a configuration choice, whatever the
+    // docblocks say.
+    const r = run(harnessed("dir"), OFFENDING, { [CD_GUARD_MODE_VAR]: "warn" });
+    expect(r.decision, "opting out to warn still blocked").toBeUndefined();
     expect(r.stderr, "the warning says nothing").toContain("top-level-cd");
-    // The refusal message is the whole point of warning rather than
-    // refusing: #992 says a refusal "that does not name `git -C` as the
-    // alternative will just be worked around", and a warning even more so.
     expect(r.stderr).toContain("git -C");
   });
 
-  test("AC-4: `block` still blocks, with the same message", () => {
-    const r = run(harnessed("dir"), OFFENDING, { [CD_GUARD_MODE_VAR]: "block" });
-    expect(r.decision, "opting into block no longer blocks").toBe("block");
-    expect(r.stdout).toContain("git -C");
+  test("AC-4b: an explicit `block` and the default are the same observation", () => {
+    const explicit = run(harnessed("dir"), OFFENDING, { [CD_GUARD_MODE_VAR]: "block" });
+    const defaulted = run(harnessed("dir"), OFFENDING);
+    expect(explicit.decision).toBe("block");
+    expect(explicit.stdout).toBe(defaulted.stdout);
   });
 
   test("AC-5: `off` says nothing at all", () => {
@@ -146,14 +189,14 @@ describe("#992 — WARN runs the command; BLOCK is opt-in", () => {
     // project that is not harnessed.
     for (const marker of ["file", "dir"] as const) {
       const r = run(harnessed(marker), OFFENDING);
-      expect(r.stderr, `the ${marker} marker is not recognised as a harness`).toContain("top-level-cd");
+      expect(r.decision, `the ${marker} marker is not recognised as a harness`).toBe("block");
     }
     expect(isHarnessProject(tmp()), "an empty directory reads as harnessed").toBe(false);
     expect(isHarnessProject(ROOT), "this repository does not read as harnessed").toBe(true);
   });
 });
 
-describe("#992 — one decider, and still registered nowhere", () => {
+describe("#992 — one decider, and registered where the repo can see it", () => {
   test("AC-9: `isHarnessProject` is defined ONCE", () => {
     // The prerequisite the issue names: "a second inline copy would be two
     // deciders for one question, which is this repo's most frequent defect".
@@ -175,25 +218,46 @@ describe("#992 — one decider, and still registered nowhere", () => {
       .toContain("from '../lib/harness-project'");
   });
 
-  test("AC-10: the hook is registered NOWHERE — registration is Jason's call", () => {
-    // This PR deliberately does not register the hook. Building a WARN rung
-    // is not choosing it. The arm fails the moment someone adds a
-    // registration without taking the decision.
+  test("AC-10: the hook IS registered, in the repo-owned scopes, by name", () => {
+    // The inversion. This arm used to assert the hook was registered nowhere
+    // and it went red the moment the registration landed — which is what it
+    // was for. Jason has taken the decision, so it now asserts the other
+    // direction with the same strictness: a later silent DEREGISTRATION is
+    // as loud as the registration was.
     //
     // Repo scopes only: machine settings are UNMEASURABLE on a CI runner,
     // and an arm whose input is absent there passes vacuously. This one a
     // runner can answer, which is the #976 lesson.
-    for (const rel of [".claude/settings.json", ".claude/rungate/hooks.json", ".claude/rungate.json"]) {
-      let src: string;
-      try { src = readFileSync(join(ROOT, rel), "utf-8"); } catch { continue; }
-      expect(src, `TopLevelCdGuard is registered in ${rel} — #992's scope note makes that Jason's call`)
-        .not.toContain("TopLevelCdGuard");
+    //
+    // `.claude/rungate.json` is the monolith layout, which this repo is not
+    // on. It is read when present and skipped when absent rather than being
+    // asserted either way — asserting over a file that does not exist is an
+    // assertion about nothing.
+    const scopes = [".claude/settings.json", ".claude/rungate/hooks.json"];
+    const read: string[] = [];
+    for (const rel of scopes) {
+      const src = readFileSync(join(ROOT, rel), "utf-8");
+      read.push(rel);
+      expect(src, `${rel} no longer registers TopLevelCdGuard — #992 decided it should`)
+        .toContain("TopLevelCdGuard.hook.ts");
     }
-    // The header declaration #898's AC-4 requires of an unregistered hook.
-    expect(readFileSync(HOOK, "utf-8")).toContain("NOT REGISTERED");
+    expect(read, "a scope went unread, so this arm compared less than it claims").toEqual(scopes);
+
+    // The mirror of #898's AC-5: a registered hook carrying the
+    // unregistered declaration is a stale waiver that would satisfy AC-4
+    // again the day someone deregisters it.
+    expect(readFileSync(HOOK, "utf-8")).not.toContain("NOT REGISTERED");
   });
 
   test("AC-11: the machine's own settings are UNCHANGED by this branch", () => {
+    // Did NOT move with AC-10, and that is the honest limit of the word
+    // "registered" in this PR. Project scope covers sessions started in a
+    // harnessed project — including every worktree, which carries the
+    // committed `.claude/settings.json`. It does NOT cover a session started
+    // anywhere else on the machine. That registration is
+    // `~/.claude/settings.json`, which no PR carries and which 45 other
+    // hooks share, so it stays a separate, deliberate action.
+    //
     // Stated as a reading rather than a promise. If a future change
     // registers it at user level this arm says so on the author's machine
     // and is simply absent on a runner — recorded as a limit, not hidden.
