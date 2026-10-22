@@ -53,7 +53,7 @@ deployment path currently reaches zero hooks.
 | MergeGuard | MergeGuard.hook.ts | 58 | SC-370, SC-371 | Good |
 | TaskCompleted | TaskCompleted.hook.ts | 51 | SC-370, SC-372 | Good — logic in lib/task-completion-checks.ts |
 | SpecConformityTrigger | SpecConformityTrigger.hook.ts | 43 | SC-370, SC-371 | Good — thin trigger pattern |
-| WorkflowStateGuard | WorkflowStateGuard.hook.ts | 40 | SC-370, SC-371 | Ideal thin trigger |
+| WorkflowStateGuard | WorkflowStateGuard.hook.ts | 64 | SC-370, SC-371 | Ideal thin trigger |
 | TestSuiteGuard | TestSuiteGuard.hook.ts | 45 | SC-473, SC-370, SC-625 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
 | TestSuiteRelease | TestSuiteRelease.hook.ts | 42 | SC-370, SC-516, SC-517, SC-518, SC-625 | Ideal thin trigger — logic in lib/test-suite-lock.ts. **Registered nowhere (#910)** |
 | BashToolGuard | BashToolGuard.hook.ts | 82 | SC-457, SC-370 | Thin trigger — COMP-7 enforcement. Row added by #898's census, which is what first noticed it had none |
@@ -63,7 +63,7 @@ deployment path currently reaches zero hooks.
 | HarnessAFKGate | HarnessAFKGate.hook.ts | 85 | SC-370, SC-371 | Good — migrated by #713. Reads `WORK_DIR` from hooks/lib/paths (`RUNGATE_WORK_DIR`, else `~/.rungate`), so it is rungate-owned. The `.pai` docstring claimed `MEMORY/WORK/`; corrected here |
 | TeamInit | TeamInit.hook.ts | 85 | SC-370, SC-371 | Good — migrated by #713. Writes under Claude Code's own config dir, not a PAI one; idempotent, exits 0 on every error path |
 | ActionVerificationGate | ActionVerificationGate.hook.ts | 89 | SC-370, SC-371 | Good — migrated by #713. No file I/O and no path resolution at all; the most portable of the nine PRODUCT hooks |
-| GateResultProtection | GateResultProtection.hook.ts | 69 | SC-370, SC-371 | Good — migrated by #713, thinned 93→69 lines onto `lib/gate-result-protection.ts` by #1137, which found it failing open three ways: a literal-`includes` detector a space defeated, an unparseable Write ALLOWED by a bare `catch`, and the protected gate set enumerated a second time in `lib/gate-enforcement.ts`. Both enumerations now read `lib/gate-names.ts`. Pure rungate gate integrity; reads no path the tool call did not already name |
+| GateResultProtection | GateResultProtection.hook.ts | 95 | SC-370, SC-371 | Good — migrated by #713, thinned 93→69 lines onto `lib/gate-result-protection.ts` by #1137, which found it failing open three ways: a literal-`includes` detector a space defeated, an unparseable Write ALLOWED by a bare `catch`, and the protected gate set enumerated a second time in `lib/gate-enforcement.ts`. Both enumerations now read `lib/gate-names.ts`. Pure rungate gate integrity; reads no path the tool call did not already name |
 | BashWriteGuard | BashWriteGuard.hook.ts | 60 | SC-370, SC-371 | Good — migrated by #713, rewritten by #1120 as a thin trigger over `lib/bash-write-guard.ts`, which holds the decision and is swept over a 5,060-command corpus by `test/bash-write-guard.test.ts`. #1120 found it failing in BOTH directions at once: a read-only prefix allowlist consulted before the write target let an allowlisted prefix carry a protected redirect past it, while whole-string substring matching refused read-only commands for quoting the words they searched for. One cause — a substring test over a command line cannot tell code from data — so the allowlist is gone and every check is structural and per-segment. The `*.hook.ts` arm is still unscoped, so it would fire on a consumer authoring their own hooks — settle that before `deployToConsumers` |
 | DocHygiene | DocHygiene.hook.ts | 148 | SC-370, SC-371 | Acceptable — migrated by #713, thinned 220→135 lines onto `lib/frontmatter.ts`, which its own `.pai` header already named as the tested binding. Stamped `owner: jason` as a literal until #1119, which **omits the key** rather than sourcing it from config: nothing downstream reads it, so a config field would transport a value with no consumer. The three keys it still stamps are all inferable from the document or the clock |
 
@@ -196,6 +196,76 @@ remote-destructive git call. **Reading a hook's header is not classifying it.**
 | TaskCompleted | HARNESS-ONLY | It spawns a CONCURRENT full suite, which is the thing lib/test-suite-lock.ts exists to prevent, so deploying it to a consumer would export the defect that disabled it here. Re-classify if and when it is re-enabled. |
 | VerifyPhaseLock | OPT-IN | Blocks `gh issue create` during the VERIFY phase, so it presumes both a GitHub tracker and an active rungate workflow. Ships in the tarball; register it once the project ships through phases against a tracker. |
 | ProjectStateSync | HARNESS-ONLY | It execs `<projectRoot>/scripts/update-project-state.ts`, which `package.json` `files[]` does not publish, so on a consumer `projectStateTarget` returns `declined-no-generator` on every write — zero reading as success, the shape #1047 is about. And #910's #296 blast-radius question is open: it is registered on BOTH Write and Edit at user scope, so it would fire on every agent edit in a consumer's worktree, and PROJECT-STATE.md is DA-owned. Deploying it is blocked on publishing the generator AND closing #910; revisit on either, not on neither. |
+
+## The workflow-state.json write contract (#1152)
+
+Two hooks decide every `Write` or `Edit` whose `file_path` is
+`workflow-state.json`, they match on the same matcher, and until #1152 nothing
+in the repository said which answers what. This section is that statement. It
+is **not** the contract — `test/workflow-state-write-contract.test.ts` is, and
+it holds the same table as executed rows. Prose here and a table there is
+deliberate: the one that can go stale is this one, and the other one goes red
+when it does.
+
+### Who is authoritative for what
+
+| hook | authoritative for | matcher | reach |
+|---|---|---|---|
+| `WorkflowStateGuard` | **whether a tool call may write the artifact at all.** The sanctioned writer is `writeWorkflowState()`, which Zod-validates; the Write and Edit tools bypass that, so every such call is refused regardless of content | `path.includes('workflow-state.json')` — case-SENSITIVE substring | **SHIPS.** `deployToConsumers: true` |
+| `GateResultProtection` | **what a permitted write may contain.** It refuses a write that forges, erases or changes a `gates.<name>.result`, that advances `phase` to `DONE`, or that the guard could not model | `filePath.toLowerCase().endsWith('workflow-state.json')` — case-FOLDED suffix, per #1184 | **OPT-IN.** `deployToConsumers: false` |
+
+Neither subsumes the other, and this is asserted rather than asserted-about:
+there are inputs each one refuses and the other permits, in both directions.
+If that ever stops being true the pair has collapsed into one decider — the
+fourth shape in `.claude/rules/checks-must-be-able-to-fail.md` — and the
+contract test goes red saying so.
+
+### #1152's body has the deployment backwards
+
+The issue reasons that the specific guard "travels with the package" while the
+blanket guard "may not be wired in a consumer's tree", and concludes the
+overlap is defensible on those grounds. Measured on `origin/main` at
+`dbf10445`, `.claude/rungate/hooks.json` says the reverse:
+`WorkflowStateGuard` carries `deployToConsumers: true` and
+`GateResultProtection` carries `deployToConsumers: false` with an explicit
+`notDeployedReason`. `deployHooksToConsumers` filters on
+`deployToConsumers === true`, so a scaffolded consumer receives the blanket
+guard and not the specific one.
+
+The conclusion survives — both should stay, and deleting either without a
+decision is still wrong — but the reason inverts, and so does which gap is
+consumer-reachable. **It is the blanket guard, the one that ships, whose
+allow-path nothing was exercising.**
+
+### Where they disagree, and which disagreements are intended
+
+Six of the contract's fourteen rows diverge. Three are the split above working
+as designed: a legitimate Write, a legitimate Edit, and an edit to a run whose
+phase is already `DONE` are all refused by the blanket guard and permitted by
+the specific one. That set **is** the specific guard's allow-path, and running
+each hook alone is what makes it observable — #1152's resolution item 3.
+
+The other three are accidents of two independently written path predicates and
+are filed, not fixed here:
+
+- **A forged gate result written to `WORKFLOW-STATE.JSON` is permitted by the
+  blanket guard.** `String.includes` is case-sensitive; #1184 measured that the
+  two spellings resolve to the same inode on a case-insensitive filesystem and
+  case-folded the specific guard, and the fix was never carried across. The
+  guard that still has it is the one that ships, so on a consumer tree this
+  input reaches disk with no guard at all.
+- A sibling path such as `workflow-state.json.bak` is refused by the blanket
+  guard's substring match and permitted by the specific guard's suffix match.
+  Over-blocking a backup file costs a rename; this is the direction to be
+  wrong in.
+- The blanket guard falls back to a `path` key that neither tool sends. Dead
+  today; a tool-schema change makes it live without either hook being touched.
+
+### If you change either hook
+
+Update the row in `test/workflow-state-write-contract.test.ts` and the table
+here in the same commit, and say which hook moved. A row deleted to make the
+suite green deletes the only record that the two were ever compared.
 
 ## The full-suite budget is keyed on a worker, not a session (#239)
 
@@ -588,4 +658,4 @@ hook is 84 lines, within SC-371.
 
 - Hooks fire in Claude Code's PostToolUse/PreToolUse context — test the trigger behavior, not just the extracted logic
 - Don't break hook registration — the hook filename and export pattern must be preserved
-- WorkflowStateGuard (37 lines) is the reference pattern for what a thin hook looks like
+- WorkflowStateGuard (64 lines, 23 of them the #1152 contract statement) is the reference pattern for what a thin hook looks like
