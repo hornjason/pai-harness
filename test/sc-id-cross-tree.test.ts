@@ -36,7 +36,7 @@ import { dirname, join } from "path";
 
 import { allocateScNumber, nextSCNumber } from "../lib/create-sc";
 import type { SourceReading } from "../lib/sc-id-cross-tree";
-import { describeReading, readScNamespace, siblingWorktrees } from "../lib/sc-id-cross-tree";
+import { describeReading, idsInRefs, readScNamespace, siblingWorktrees } from "../lib/sc-id-cross-tree";
 import { buildScRegistry, scIdsSpelledInSource } from "../lib/sc-ids";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -401,6 +401,100 @@ describe("#593: the registry leg is not optional", () => {
     for (const expected of legs) {
       expect(described, `describeReading omits the ${expected} leg`).toContain(expected);
     }
+  });
+});
+
+describe("#1132: the ref leg is scoped to distinct specs/ trees, not to refs", () => {
+  /**
+   * Why this asserts a COUNT and not a clock.
+   *
+   * The defect is that allocating one id ran 17 sequential `git grep`
+   * invocations over 1638 refs. A wall-clock assertion for that is flaky by
+   * construction — it goes red on a loaded machine and green on a fast one,
+   * and neither outcome is about the scoping. What makes it slow is the
+   * number of refs handed to `git grep`, so that is the number this binds.
+   *
+   * `grepped` is the seam: `idsInRefs` reports how many refs it actually
+   * searched alongside how many exist. On `origin/main` those two were the
+   * same number and there was nothing to assert.
+   */
+  test("#1132 AC-1: refs sharing a specs/ tree are searched once, not once each", () => {
+    const root = repo([id(4801)]);
+    // Twelve refs at one commit. Every one of them has a byte-identical
+    // `specs/` tree, so eleven of the twelve greps can only return what the
+    // first already returned.
+    const CLONES = 12;
+    for (let i = 0; i < CLONES; i++) git(root, ["branch", `clone-${i}`]);
+
+    const reading = idsInRefs(root);
+
+    expect(reading.failure, "the fixture could not be read at all").toBeNull();
+    expect(reading.refs, "the fixture did not actually create the refs").toBe(CLONES + 1);
+    // The witness. Before the fix this was 13.
+    expect(reading.grepped, "every ref was searched, including the duplicates").toBe(1);
+    // …and it still found the id, which is the half a scoping change can
+    // quietly drop.
+    expect(reading.ids, "narrowing the scan lost the id it was scanning for").toContain(id(4801));
+  });
+
+  /**
+   * The control for AC-1: refs whose specs/ trees DIFFER are all searched.
+   *
+   * Without this, AC-1 is satisfied by an implementation that greps exactly
+   * one ref always — which is the cheapest wrong fix, is 13x faster still,
+   * and loses ids. `grepped` rising with the number of DISTINCT trees is the
+   * differing input that tells the two apart.
+   */
+  test("#1132 AC-2: refs with differing specs/ trees are each searched", () => {
+    const root = repo([id(4810)]);
+    const theirs = [id(4811), id(4812), id(4813)];
+    theirs.forEach((scId, i) => {
+      git(root, ["checkout", "-q", "-b", `diverged-${i}`]);
+      writeSpec(root, `DIVERGED-${i}-SPEC.md`, [scId]);
+      git(root, ["add", "-A"]);
+      git(root, ["commit", "-q", "-m", `branch ${i}`]);
+      git(root, ["checkout", "-q", "main"]);
+    });
+
+    const reading = idsInRefs(root);
+
+    // Four refs, four different specs/ trees, four searches. A fixed-size
+    // scan would report 1 here and pass AC-1 while failing this.
+    expect(reading.grepped, "a divergent ref was skipped as a duplicate").toBe(4);
+    for (const scId of theirs) {
+      expect(reading.ids, `${scId} lives only on its own branch and was not found`).toContain(scId);
+    }
+  });
+
+  /**
+   * The duplicate this scan exists to prevent, driven through the allocator.
+   *
+   * This is the case that falsifies the cheapest wrong fix. Scoping the ref
+   * leg to `origin/main` — the obvious way to stop reading 1638 refs — was
+   * measured on the real repository at 1646 ids against 1656, and its
+   * highest id MATCHED, so the allocated number was identical and the loss
+   * was invisible. It is visible exactly when the highest id lives on an
+   * unmerged branch, which is this fixture.
+   */
+  test("#1132 AC-3: the highest id on an unmerged branch is still not reissued", () => {
+    const onMain = 4820;
+    const onBranch = 4890;
+    const root = repo([id(onMain)]);
+    git(root, ["checkout", "-q", "-b", "unmerged"]);
+    writeSpec(root, "UNMERGED-SPEC.md", [id(onBranch)]);
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "their block"]);
+    git(root, ["checkout", "-q", "main"]);
+
+    // The instrument: main genuinely does not carry it, so an allocator that
+    // read only main would see `onMain` as the ceiling and hand back 4821.
+    expect(
+      readFileSync(join(root, "specs", "MAIN-SPEC.md"), "utf-8"),
+      "the fixture leaked the branch id into main",
+    ).not.toContain(id(onBranch));
+
+    const { number } = allocateScNumber(root, "", NO_SPECS);
+    expect(number, "an id committed on an unmerged branch was reissued").toBeGreaterThan(onBranch);
   });
 });
 

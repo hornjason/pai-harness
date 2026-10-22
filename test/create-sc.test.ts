@@ -160,7 +160,23 @@ testable: true
           .map(f => ({ file: f, content: readFileSync(join(SPECS_DIR, f), "utf-8") })),
       ).declaredById;
       expect(taken.has(`SC-${Math.max(...ids)}`), "the CLI issued an id a spec already owns").toBe(false);
-    });
+    },
+    // Wider than the 15000ms `runCreateSC` allows the subprocess, deliberately
+    // (#1132). This is the only case here that ALLOCATES, and allocation reads
+    // every sibling worktree's `specs/` and every distinct `specs/` tree among
+    // the branch refs — so its cost is proportional to how much work the
+    // developer's machine has in flight, not to anything this case does. On
+    // CI, one worktree and a fresh pack: 2864ms. On a machine holding 197
+    // worktrees and 1638 refs: 7.2s, and 17.4s before #1132.
+    //
+    // At the default 5000ms the case budget was SMALLER than the subprocess
+    // allowance, so the binding constraint was a bare "timed out after
+    // 5000ms" and the 15000ms guard could never be the thing that reported.
+    // Inverting them makes the failure mode deterministic: if the CLI
+    // regresses past its allowance, `spawnSync` kills it and this fails on
+    // `exitCode`, naming the allowance. The case budget is now only a
+    // backstop, which is the most a wall-clock number can honestly be.
+    30_000);
   });
 
   // AC-7: Without --spec flag, outputs SC text to stdout

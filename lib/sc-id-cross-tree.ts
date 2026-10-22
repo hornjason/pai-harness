@@ -51,7 +51,7 @@
  * on, which is the fastest way to build a refusal everyone learns to click
  * past. Fix the allocator that mints collisions; do not alarm on the fossils.
  */
-import { execFileSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 
@@ -176,21 +176,91 @@ function idsInSpecsDir(specsDir: string): string[] {
 }
 
 /**
+ * One ref per distinct `specs/` tree, and `null` if that cannot be worked out.
+ *
+ * `git grep <ref>` searches that ref's tree from scratch. Two refs whose
+ * `specs/` is the SAME tree object therefore do the same search twice and
+ * return the same lines, because the ids are a pure function of the bytes
+ * under `specs/` and a tree SHA is a hash of exactly those bytes. Dropping
+ * the second is not a narrowing of what is read — it is the same reading with
+ * the repeats removed, which is why it needs no judgement call about which
+ * branches "matter". Measured on this repository: 1638 refs, 326 distinct
+ * trees, identical id set of 1656 — 0 missing, 0 extra (#1132).
+ *
+ * 533 of those refs resolve to no `specs/` at all and are dropped outright. A
+ * ref with no `specs/` directory cannot match `-- specs/*.md`, so grepping it
+ * was always going to return nothing.
+ *
+ * `null` means the question could not be answered — a `git` that does not
+ * support the batching, or output that does not line up with the input. The
+ * caller then greps every ref, which is slow and correct. Guessing at a
+ * partial mapping would be fast and wrong, and the wrongness is a reissued
+ * id rather than an error anyone would see.
+ */
+function refsByDistinctSpecsTree(root: string, refs: string[]): string[] | null {
+  const probe = spawnSync("git", ["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+    cwd: root,
+    input: refs.map(r => `${r}^{tree}:specs\n`).join(""),
+    encoding: "utf-8",
+    timeout: 120_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (probe.error || probe.status !== 0) return null;
+  const lines = (probe.stdout ?? "").split("\n").filter(l => l !== "");
+  // One line in, one line out. If that does not hold, the index below is
+  // pairing a SHA with the wrong ref, and a representative chosen for the
+  // wrong tree drops ids that are really there.
+  if (lines.length !== refs.length) return null;
+
+  const representative = new Map<string, string>();
+  for (let i = 0; i < lines.length; i++) {
+    // `<sha> tree` for a ref that has one; `<input> missing` for a ref that
+    // does not. Only the first shape is a tree worth searching.
+    const match = /^([0-9a-f]{40}) tree$/.exec(lines[i]);
+    if (match === null) continue;
+    if (!representative.has(match[1])) representative.set(match[1], refs[i]);
+  }
+  return [...representative.values()];
+}
+
+/**
  * Ids declared in `specs/` on any ref this repository holds — local branches
  * and remote-tracking branches both.
  *
  * One `git grep` over every ref at once rather than a checkout each: measured
  * at 0.17s over 1087 refs, against minutes for the obvious implementation.
+ *
+ * ## …and at 1638 refs that was 7.3s, on the hot path of allocating one id
+ *
+ * The comment above aged into a wrong number rather than a stale one (#1132).
+ * `git grep` over N refs costs N tree searches, and this repository grew from
+ * 1087 refs to 1638 while the work per ref stayed the same, so allocating a
+ * single SC id came to 17.4s end to end — past the 15s its own caller allows
+ * it. The cost is in the ref COUNT, and the ref count is a fact about how
+ * many branches are in flight, not about the change being made.
+ *
+ * `refsByDistinctSpecsTree` removes the repeats rather than picking a
+ * narrower population, so the id set is unchanged by construction. The
+ * tempting fix is to read `origin/main` only; measured here that reads 1646
+ * ids of 1656, and the ten it loses are the ids on unmerged branches, which
+ * are precisely the ones this leg exists to see (#503). Its highest id
+ * happened to match, so the allocated number was identical and the loss would
+ * not have shown up as a wrong answer until the day it collided.
+ *
+ * `grepped` is reported next to `refs` so a test can bind the scoping without
+ * binding a clock — a wall-clock assertion over this is flaky by
+ * construction, and the thing that makes it slow is the count.
  */
-function idsInRefs(root: string): { ids: string[]; refs: number; failure: string | null } {
+export function idsInRefs(root: string): { ids: string[]; refs: number; grepped: number; failure: string | null } {
   let refList: string;
   try {
     refList = git(root, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"]);
   } catch (err) {
-    return { ids: [], refs: 0, failure: (err as Error).message.split("\n")[0] };
+    return { ids: [], refs: 0, grepped: 0, failure: (err as Error).message.split("\n")[0] };
   }
-  const refs = refList.split("\n").filter(r => r.trim() !== "");
-  if (refs.length === 0) return { ids: [], refs: 0, failure: null };
+  const allRefs = refList.split("\n").filter(r => r.trim() !== "");
+  if (allRefs.length === 0) return { ids: [], refs: 0, grepped: 0, failure: null };
+  const refs = refsByDistinctSpecsTree(root, allRefs) ?? allRefs;
 
   const ids: string[] = [];
   // Batched: a ref list this long overruns the argument limit in one call.
@@ -214,12 +284,12 @@ function idsInRefs(root: string): { ids: string[]; refs: number; failure: string
       // a failure. Anything else is a failure, and the caller must hear it.
       const status = (err as { status?: number }).status;
       if (status === 1) continue;
-      return { ids, refs: refs.length, failure: (err as Error).message.split("\n")[0] };
+      return { ids, refs: allRefs.length, grepped: refs.length, failure: (err as Error).message.split("\n")[0] };
     }
     for (const m of out.matchAll(scDeclarationPattern())) ids.push(m[2]);
     for (const m of out.matchAll(scHeadingDeclarationPattern())) ids.push(m[1]);
   }
-  return { ids, refs: refs.length, failure: null };
+  return { ids, refs: allRefs.length, grepped: refs.length, failure: null };
 }
 
 /**
@@ -283,7 +353,13 @@ export function readScNamespace(root: string): ScNamespaceReading {
   } else {
     for (const id of refs.ids) record(id, "refs");
     sources.push({
-      label: `refs (${refs.refs} local and remote-tracking)`,
+      // Both numbers, because they are different facts. `refs` is how wide
+      // the reading was; `grepped` is how many searches that cost. Printing
+      // only the second would read as a narrower reading than it is, and
+      // printing only the first hides the one number #1132 was about.
+      label: refs.grepped === refs.refs
+        ? `refs (${refs.refs} local and remote-tracking)`
+        : `refs (${refs.refs} local and remote-tracking, ${refs.grepped} distinct specs/ trees searched)`,
       kind: "refs",
       status: "read",
       found: new Set(refs.ids).size,
