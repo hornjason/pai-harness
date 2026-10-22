@@ -110,6 +110,44 @@ the project wanted none` and `0 deployed because nobody set the flag` are
 different facts and only one of them is fine. A `DEPLOYED` line names the
 hooks, because a count cannot be checked against a registry and a list can.
 
+### A deployed entry is one Claude Code executes, pointing at a file the consumer has (#1088)
+
+Until #1088 the **SHIPS** rows below were a claim the code did not deliver, in
+two independent ways, while the run reported `DEPLOYED: 12 hooks`.
+
+**The shape.** Claude Code nests event → matcher group → `hooks[]` →
+`{ type: "command", command }`. The deployment pushed a bare `{ command }`
+straight into the event array, which Claude Code does not recognise as a hook.
+No test caught it because every reading went through `settingsCommands` in
+`lib/hook-trees.ts`, which collects a `command` string at any depth — a
+tolerance that is correct for a census and fatal as an acceptance test. The
+repository's own reader and the authoritative one disagreed, and the one under
+test was not the one that decides whether a guard runs.
+
+**The path.** `${RUNGATE_HOOKS_DIR}` was expanded against the **harness**
+root, so a consumer that installed rungate from npm received commands naming a
+directory on the harness author's machine, and nothing checked that any file
+was there. It is now resolved against the **consumer** —
+`${CLAUDE_PROJECT_DIR}/node_modules/rungate/hooks`, or
+`${CLAUDE_PROJECT_DIR}/hooks` when the consumer is the harness itself, decided
+by `isHarnessItself` — and a hook whose file is not at the path being written
+is `UNMEASURED` naming the hook and the path, with no entry written.
+
+Three further readings the step did not have: a consumer entry that names one
+of our hooks but executes a different file is a `CONFLICT` and is left alone,
+not overwritten and not counted as deployed; an inert entry left by the old
+shape is `REPAIRED` — removed and replaced, because reading it as "already
+deployed" would strand every consumer that already received one; and a
+**relative** consumer path that resolves outside the repository is refused
+(an absolute one is the owner naming another tree on purpose, which stays
+supported).
+
+The acceptance evidence is a round trip through `executingHookCommands`, which
+reads the schema strictly. It is deliberately a second binding beside
+`settingsCommands` and the two must be able to disagree: their disagreement on
+a bare `{ command }` is the whole defect, and a single tolerant reader cannot
+witness it.
+
 ### Verdicts
 
 **12 SHIP, 4 OPT-IN, 4 HARNESS-ONLY.** `StaleTTLCleanup` was classified SHIP in the

@@ -10,7 +10,7 @@ import { describe, test as bunTest, expect, beforeEach, afterEach, setDefaultTim
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
-import { writtenPath } from "../../lib/scaffold/steps";
+import { writtenPath, executingHookCommands } from "../../lib/scaffold/steps";
 import {
   BUDGET_FLOOR_MS,
   calibrateScaffold,
@@ -633,6 +633,15 @@ describe("scaffold-project: consumer hook deployment", () => {
     mkdirSync(join(tmpDir, ".claude"), { recursive: true });
     mkdirSync(join(tmpDir, "hooks"), { recursive: true });
     writeFileSync(join(tmpDir, "hooks", "TestHook.hook.ts"), "// test hook");
+    // #1088: the command is resolved against the CONSUMER's installed
+    // package, and an entry whose file is not there is refused. The copy
+    // under `tmpDir/hooks` above is the harness's own and is deliberately
+    // not enough.
+    mkdirSync(join(consumerDir, "node_modules", "rungate", "hooks"), { recursive: true });
+    writeFileSync(
+      join(consumerDir, "node_modules", "rungate", "hooks", "TestHook.hook.ts"),
+      "// test hook",
+    );
     writeFileSync(join(tmpDir, ".claude", "rungate.json"), JSON.stringify({
       project: "test",
       roles: {},
@@ -661,11 +670,12 @@ describe("scaffold-project: consumer hook deployment", () => {
     const consumerSettings = join(consumerDir, ".claude", "settings.local.json");
     expect(existsSync(consumerSettings)).toBe(true);
     const settings = JSON.parse(readFileSync(consumerSettings, "utf-8"));
-    // deployToConsumers:true hook should be deployed
-    expect(settings.hooks?.PreToolUse).toBeDefined();
-    expect(settings.hooks.PreToolUse.length).toBeGreaterThanOrEqual(1);
+    // deployToConsumers:true hook should be deployed, and deployed as a hook
+    // Claude Code executes — read through the executing shape, not through
+    // the permissive walk that accepted the #1088 entry.
+    expect(executingHookCommands(settings, "PreToolUse")).toHaveLength(1);
     // deployToConsumers:false hook should NOT be deployed
-    expect(settings.hooks?.PostToolUse).toBeUndefined();
+    expect(executingHookCommands(settings, "PostToolUse")).toEqual([]);
   });
 
   test("consumer hook has correct hookFor and resolved command path", () => {
@@ -675,6 +685,15 @@ describe("scaffold-project: consumer hook deployment", () => {
     mkdirSync(join(tmpDir, ".claude"), { recursive: true });
     mkdirSync(join(tmpDir, "hooks"), { recursive: true });
     writeFileSync(join(tmpDir, "hooks", "TestHook.hook.ts"), "// test hook");
+    // #1088: the command is resolved against the CONSUMER's installed
+    // package, and an entry whose file is not there is refused. The copy
+    // under `tmpDir/hooks` above is the harness's own and is deliberately
+    // not enough.
+    mkdirSync(join(consumerDir, "node_modules", "rungate", "hooks"), { recursive: true });
+    writeFileSync(
+      join(consumerDir, "node_modules", "rungate", "hooks", "TestHook.hook.ts"),
+      "// test hook",
+    );
     writeFileSync(join(tmpDir, ".claude", "rungate.json"), JSON.stringify({
       project: "test",
       roles: {},
@@ -694,10 +713,14 @@ describe("scaffold-project: consumer hook deployment", () => {
 
     const consumerSettings = join(consumerDir, ".claude", "settings.local.json");
     const settings = JSON.parse(readFileSync(consumerSettings, "utf-8"));
-    const hook = settings.hooks.PreToolUse[0];
-    // Command should be resolved (no ${RUNGATE_HOOKS_DIR})
-    expect(hook.command).not.toContain("${RUNGATE_HOOKS_DIR}");
-    expect(hook.command).toContain("hooks/TestHook.hook.ts");
+    const [command] = executingHookCommands(settings, "PreToolUse");
+    // Resolved (no ${RUNGATE_HOOKS_DIR}) and pointing into the CONSUMER's
+    // installed package, which is the tree the hook will run in (#1088).
+    expect(command).not.toContain("${RUNGATE_HOOKS_DIR}");
+    expect(command).toBe(
+      "bun ${CLAUDE_PROJECT_DIR}/node_modules/rungate/hooks/TestHook.hook.ts",
+    );
+    expect(settings.hooks.PreToolUse[0].matcher).toBe("Bash");
   });
 });
 
