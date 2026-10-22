@@ -499,3 +499,216 @@ describe("AC-8d: the blocking decision is computed from the severities", () => {
     expect(aiReviewExitCode(green)).toBe(0);
   });
 });
+
+// ── #1178: a CONTRADICTION must emit the findings it counted ─────────────
+//
+// The reported shape is `BLOCK over 0 of 1 blocking finding(s)` — seen on
+// run 39770912983 (PR #1150) and run 39795440261 (PR #1165), and measured at
+// roughly 6 of the last 20 `ai-review` runs. The verdict word says BLOCK, the
+// severities say nothing blocks, so the reading is CONTRADICTION and the job
+// refuses. That part is correct and this section does not touch it.
+//
+// What was wrong is that the refusal printed the ARITHMETIC ALONE. `detail`
+// is populated inside `if (blocks)` in the reader's loop, so a contradiction
+// whose findings are all non-blocking carries an EMPTY detail list, and the
+// annotation reads `0 of 1 finding(s) block.` and stops. Measured on
+// `b7281397` before the fix, the whole refusal for that payload was:
+//
+//   The AI review's verdict "BLOCK" contradicts its own payload: 0 of 1
+//   finding(s) block. A verdict that disagrees with the findings beneath it
+//   is a contradiction, not a result.
+//
+// So every occurrence destroyed the one observation the reviewer made, and
+// a re-run — which returns CLEAN, that being the non-determinism this issue
+// also records — destroyed it permanently. #1170's finding is unrecoverable:
+// the payload lives under `$RUNNER_TEMP`, which dies with the runner, and
+// three retrieval attempts returned nothing.
+//
+// The annotation is therefore the only durable surface, and it already is
+// one: the generated step captures the reader with `2>&1` and `printf`s the
+// capture, so an `::error` the reader writes becomes an annotation on the
+// check run and survives the job. Emitting the payload into the refusal is
+// the whole fix, which is why it is a branch and not a new capability — the
+// findings are already parsed into `reading.reported` by the time the
+// contradiction is detected.
+//
+// NOT FIXED HERE, deliberately: the non-determinism itself. Without the
+// payload you cannot tell a reviewer that emitted a DIFFERENT finding on the
+// second run from one that emitted the SAME finding and mis-stamped the
+// verdict, and those are different bugs. This section is the instrument.
+//
+// And NOT by resolving a contradiction to CLEAN. A verdict the adjudicator
+// cannot explain is UNMEASURED and UNMEASURED fails
+// (`.claude/rules/config-access.md`). Blocking is correct; being
+// unexplainable is the defect. The control below holds that line.
+
+describe("#1178: a CONTRADICTION emits the findings it counted", () => {
+  const f = AI_REVIEW_FINDING_FIELDS;
+
+  /** The reported shape, reproduced: BLOCK over a payload where nothing blocks. */
+  const zeroOfOne = JSON.stringify({
+    [AI_REVIEW_VERDICT_KEY]: "BLOCK",
+    [AI_REVIEW_FINDINGS_KEY]: [
+      {
+        [f.severity]: "low",
+        [f.file]: "lib/scaffold/ai-review-findings.ts",
+        [f.line]: 42,
+        [f.summary]: "the detail list is built inside the blocking branch",
+      },
+    ],
+  });
+
+  test("#1178 witness: `BLOCK over 0 of N` names the finding it counted", () => {
+    const r = readAiReviewFindings(zeroOfOne);
+    expect(r.outcome, "the reported shape no longer reproduces").toBe("CONTRADICTION");
+    expect(r.blockingReported?.length).toBe(0);
+    expect(r.reported?.length).toBe(1);
+
+    const refusal = aiReviewRefusal(r);
+    expect(refusal).not.toBeNull();
+    // All four fields the acceptance criterion names. Asserted separately
+    // rather than against one composed string, so a renderer that drops the
+    // line number is distinguishable from one that drops everything.
+    expect(refusal, "the file was discarded").toContain("lib/scaffold/ai-review-findings.ts");
+    expect(refusal, "the line was discarded").toContain("42");
+    expect(refusal, "the severity was discarded").toContain("low");
+    expect(refusal, "the summary was discarded").toContain(
+      "the detail list is built inside the blocking branch",
+    );
+    // …and the arithmetic it already carried is still there. The payload is
+    // added to the refusal, not substituted for it.
+    expect(refusal).toContain("0 of 1 finding(s) block");
+  });
+
+  test("#1178 witness: every reported finding appears exactly once, blocking or not", () => {
+    // The other direction — PASS over a payload that does block — already
+    // carried the BLOCKING finding through `detail`. So this case fails
+    // today on the non-blocking one only, and its second half is the guard
+    // against the obvious over-correction: appending the full payload to a
+    // detail list that already holds the blocking renders prints those twice.
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        [AI_REVIEW_VERDICT_KEY]: "PASS",
+        [AI_REVIEW_FINDINGS_KEY]: [
+          { [f.severity]: "critical", [f.file]: "a.ts", [f.line]: 1, [f.summary]: "creds in a log" },
+          { [f.severity]: "low", [f.file]: "b.ts", [f.line]: 2, [f.summary]: "a naming nit" },
+        ],
+      }),
+    );
+    expect(r.outcome).toBe("CONTRADICTION");
+
+    const refusal = aiReviewRefusal(r) ?? "";
+    const occurrences = (hay: string, needle: string) => hay.split(needle).length - 1;
+    expect(occurrences(refusal, "a.ts:1"), "the blocking finding was duplicated or lost").toBe(1);
+    expect(occurrences(refusal, "b.ts:2"), "the non-blocking finding was discarded").toBe(1);
+    expect(refusal).toContain("creds in a log");
+    expect(refusal).toContain("a naming nit");
+  });
+
+  test("#1178 control: an ordinary BLOCKED refusal is byte-identical to today's", () => {
+    // The issue's negative control, written as an EQUALITY and not a
+    // `toContain`. The cheapest wrong fix here is moving
+    // `detail.push(renderFinding(…))` out of `if (blocks)` in the reader's
+    // loop — one line, and it does make the contradiction print its payload.
+    // It also makes an ordinary BLOCKED refusal start enumerating findings
+    // that do not block, which is a different annotation for a path this
+    // issue is not about. Measured: applying that one-line move turns this
+    // case red and leaves the two witnesses above green, which is why the
+    // fix is scoped to the CONTRADICTION arm instead.
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        [AI_REVIEW_VERDICT_KEY]: "BLOCK",
+        [AI_REVIEW_FINDINGS_KEY]: [
+          { [f.severity]: "critical", [f.file]: "a.ts", [f.line]: 1, [f.summary]: "creds in a log" },
+          { [f.severity]: "low", [f.file]: "b.ts", [f.line]: 2, [f.summary]: "a naming nit" },
+        ],
+      }),
+    );
+    expect(r.outcome).toBe("BLOCKED");
+    expect(aiReviewRefusal(r)).toBe(
+      "The AI review reported 1 blocking finding(s). " +
+        "finding 0 is critical at a.ts:1: creds in a log.",
+    );
+  });
+
+  test("#1178 control: an ordinary CLEAN run still adjudicates exactly as today", () => {
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        [AI_REVIEW_VERDICT_KEY]: "PASS",
+        [AI_REVIEW_FINDINGS_KEY]: [
+          { [f.severity]: "low", [f.file]: "b.ts", [f.line]: 2, [f.summary]: "a naming nit" },
+        ],
+      }),
+    );
+    expect(r.outcome).toBe("CLEAN");
+    expect(aiReviewRefusal(r), "a clean review acquired a refusal").toBeNull();
+    expect(aiReviewExitCode(r)).toBe(0);
+  });
+
+  test("#1178 control: the contradiction still refuses — it does not resolve to CLEAN", () => {
+    // The forbidden fix, as a case. Emitting the payload is an addition to
+    // what the refusal says, never a change to whether there is one: a
+    // verdict the adjudicator cannot explain is UNMEASURED, and UNMEASURED
+    // fails. This case can move — it is exactly what "make the contradiction
+    // go green" would turn red.
+    const r = readAiReviewFindings(zeroOfOne);
+    expect(r.outcome).not.toBe("CLEAN");
+    expect(aiReviewExitCode(r)).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(aiReviewRefusal(r)).not.toBeNull();
+  });
+
+  test("#1178: the per-finding cap truncates the summary and never the location", () => {
+    // AI_REVIEW_DETAIL_MAX is 300 characters per finding, so a long summary
+    // IS cut. What the cap must never cost is the ability to find the
+    // finding again, and the renderer puts severity, file and line ahead of
+    // the summary — so the cut lands in the prose. Measured rather than
+    // assumed: a 900-character summary renders to exactly 301 characters
+    // (the cap plus the ellipsis) with the location intact.
+    const summary = "x".repeat(900);
+    const finding = {
+      [f.severity]: "low",
+      [f.file]: "lib/deep/path.ts",
+      [f.line]: 7,
+      [f.summary]: summary,
+    };
+    const rendered = renderFinding(0, finding);
+    expect(rendered.length, "the cap is not being applied").toBe(AI_REVIEW_DETAIL_MAX + 1);
+    expect(rendered.startsWith("finding 0 is low at lib/deep/path.ts:7: ")).toBe(true);
+    expect(rendered).not.toContain(summary);
+
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        [AI_REVIEW_VERDICT_KEY]: "BLOCK",
+        [AI_REVIEW_FINDINGS_KEY]: [finding],
+      }),
+    );
+    expect(r.outcome).toBe("CONTRADICTION");
+    // The refusal carries the capped render, not a second uncapped one.
+    expect(aiReviewRefusal(r), "the contradiction emitted an uncapped finding").toContain(rendered);
+  });
+
+  test("#1178 witness: the finding reaches the annotation main() emits, escaped once", () => {
+    // The payload file dies with the runner, so the annotation is the thing
+    // that has to carry the finding. This asserts on what reaches the
+    // STREAM — the composed refusal would skip the `console.error`
+    // interpolation, which is the one hop where the encoding happens.
+    const hostile = "100% broken\n::stop-commands::deadbeef";
+    const lines = captureStderr(() => main([fixtureFile(JSON.stringify({
+      [AI_REVIEW_VERDICT_KEY]: "BLOCK",
+      [AI_REVIEW_FINDINGS_KEY]: [
+        { [f.severity]: "low", [f.file]: "lib/x.ts", [f.line]: 9, [f.summary]: hostile },
+      ],
+    }))]));
+
+    expect(lines.length, `the annotation spans ${lines.length} lines:\n${lines.join("\n")}`).toBe(1);
+    expect(lines[0].startsWith("::error title=")).toBe(true);
+    expect(lines[0], "the contradiction's finding never reached the annotation").toContain(
+      "lib/x.ts:9",
+    );
+    expect(lines[0], "the reviewer's own words were discarded").toContain("deadbeef");
+    // One escaper, applied once, at the single emission site.
+    expect(lines[0], "the newline was dropped rather than encoded").toContain("%0A");
+    expect(lines[0], "the percent sign was encoded twice").not.toContain("%2525");
+    expect(lines[0]).toContain("100%25 broken");
+  });
+});
