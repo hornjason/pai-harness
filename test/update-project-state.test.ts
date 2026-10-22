@@ -1,45 +1,95 @@
+/**
+ * #1135 — every fixture below used to be written into the real checkout.
+ *
+ * `ROOT` was `join(import.meta.dir, "..")`, so `writeTestJson` replaced the
+ * live `project-state.json`, the renderer rewrote the live
+ * `PROJECT-STATE.md`, one case deleted `project-state.json` outright, and
+ * `afterAll` put everything back. Measured, that left the two DA-owned
+ * records in 36 distinct states across a single run — one of them ABSENT —
+ * and for 48.4% of the run a concurrent reader got a document it could not
+ * use. `test/project-state-currency.test.ts` and `test/closing-keywords.test.ts`
+ * are deliberately pointed at those live files, and several agents share this
+ * checkout.
+ *
+ * Restoring in `afterAll` is not a fix: the window stays open for the whole
+ * run and the originals are lost on a crash. So the fixtures moved to a temp
+ * root instead, via the seam `test/project-state-shape.test.ts` already
+ * drives — see `test/helpers/project-state-temp-root.ts`.
+ *
+ * A side effect worth naming: `specs/` in the temp root is EMPTY, so SC
+ * promotion is now exactly what each test puts there. Against the real tree
+ * these cases were also scanning several hundred committed SC checkboxes,
+ * which is where the "21 flips" in the filed issue came from — flips of
+ * `"done": false` inside `project-state.json`, not edits to any spec.
+ *
+ * Guarded by `test/project-state-suite-isolation.test.ts`.
+ */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
+import { makeProjectStateTempRoot, type ProjectStateTempRoot } from "./helpers/project-state-temp-root";
 
-const ROOT = join(import.meta.dir, "..");
-const STATE_JSON = join(ROOT, "project-state.json");
-const STATE_MD = join(ROOT, "PROJECT-STATE.md");
-const SPECS_DIR = join(ROOT, "specs");
+/** The real checkout. Read-only here: used to assert the script is shipped. */
+const REPO = join(import.meta.dir, "..");
 
-let originalJson: string;
-let originalMd: string;
+let tmp: ProjectStateTempRoot;
+let ROOT: string;
+let STATE_JSON: string;
+let STATE_MD: string;
+let SPECS_DIR: string;
 
 describe("update-project-state", () => {
   beforeAll(() => {
-    originalJson = readFileSync(STATE_JSON, "utf-8");
-    originalMd = existsSync(STATE_MD) ? readFileSync(STATE_MD, "utf-8") : "";
+    tmp = makeProjectStateTempRoot("ps-update-");
+    ROOT = tmp.root;
+    STATE_JSON = join(ROOT, "project-state.json");
+    STATE_MD = join(ROOT, "PROJECT-STATE.md");
+    SPECS_DIR = tmp.specs;
   });
 
   afterAll(() => {
-    writeFileSync(STATE_JSON, originalJson);
-    if (originalMd) writeFileSync(STATE_MD, originalMd);
-    for (const f of ["test-spec.md", "test-promote.md"]) {
-      const p = join(SPECS_DIR, f);
-      if (existsSync(p)) rmSync(p);
-    }
+    tmp?.cleanup();
   });
 
   function writeTestJson(state: any) {
     writeFileSync(STATE_JSON, JSON.stringify(state, null, 2));
   }
 
+  /**
+   * Run the copied script. No shell: the root is an `mkdtemp` path and an
+   * argument array keeps it one argument whatever characters it contains.
+   */
+  function exec(timeout = 10000): { status: number; out: string } {
+    const r = spawnSync("bun", [tmp.script], { cwd: ROOT, encoding: "utf-8", timeout });
+    return { status: r.status ?? 1, out: (r.stdout ?? "") + (r.stderr ?? "") };
+  }
+
   function run() {
-    execSync("bun scripts/update-project-state.ts", { cwd: ROOT, timeout: 10000 });
+    const r = exec();
+    // The old `execSync` threw on a non-zero exit, so a script that started
+    // refusing would have failed loudly. `spawnSync` does not, so say it.
+    expect(r.status, `the renderer exited ${r.status}:\n${r.out}`).toBe(0);
     return readFileSync(STATE_MD, "utf-8");
   }
 
   test("script exists", () => {
-    expect(existsSync(join(ROOT, "scripts/update-project-state.ts"))).toBe(true);
+    // The shipped one, not the copy — a test that only ever checked its own
+    // scratch copy would stay green after the script was deleted.
+    expect(existsSync(join(REPO, "scripts/update-project-state.ts"))).toBe(true);
   });
 
   test("runs fast (under 2s)", () => {
+    // Seeded, because the timing is of a run that RENDERS. Against the real
+    // checkout this inherited whatever document happened to be committed; in
+    // an empty root the script correctly skips, and timing a skip would make
+    // this the fastest test in the file and measure nothing.
+    writeTestJson({
+      updated: "2026-01-01",
+      priorities: ["Do the thing"],
+      phases: [{ name: "Phase 0", scs: [{ id: "SC-9441", what: "A", done: true }] }],
+      sessions: [{ date: "2026-10-17 session 48", items: ["x"] }],
+    });
     const start = Date.now();
     run();
     expect(Date.now() - start).toBeLessThan(2000);
@@ -240,23 +290,26 @@ describe("update-project-state", () => {
     // The distinction is the presence of the rendered output, so deleting
     // the source here — with PROJECT-STATE.md still on disk — is now the
     // refusing case. The skip case has no markdown either, and is covered in
-    // test/project-state-shape.test.ts against a temp directory rather than
-    // by deleting two tracked files out of the working tree.
+    // test/project-state-shape.test.ts against a temp directory.
+    //
+    // #1135: this delete used to land on the checkout's own
+    // `project-state.json`, which is where the ABSENT readings came from. It
+    // is the temp root's copy now, so no backup is needed — but the file is
+    // rebuilt anyway, because later tests in this describe share the root.
+    //
+    // The refusal needs PROJECT-STATE.md PRESENT and its source gone, so the
+    // markdown is rendered here rather than inherited from whichever test ran
+    // last — order-dependence is how this case would quietly stop testing
+    // the refusal and start testing the skip.
+    writeTestJson({ updated: "2026-01-01", priorities: [], phases: [], sessions: [] });
+    run();
+    expect(existsSync(STATE_MD)).toBe(true);
     const backup = readFileSync(STATE_JSON, "utf-8");
     rmSync(STATE_JSON);
     try {
-      let status = 0;
-      let output = "";
-      try {
-        output = execSync("bun scripts/update-project-state.ts 2>&1", {
-          cwd: ROOT, encoding: "utf-8", timeout: 5000
-        });
-      } catch (e: any) {
-        status = e.status ?? 1;
-        output = e.stdout ?? "";
-      }
-      expect(status).not.toBe(0);
-      expect(output).toContain("outlived its source");
+      const r = exec(5000);
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("outlived its source");
     } finally {
       writeFileSync(STATE_JSON, backup);
     }
@@ -337,7 +390,8 @@ describe("update-project-state", () => {
         { date: "2026-10-17 d", items: ["d"] },
       ],
     });
-    const out = execSync("bun scripts/update-project-state.ts 2>&1", { cwd: ROOT, encoding: "utf-8", timeout: 10000 });
+    const { status, out } = exec();
+    expect(status, out).toBe(0);
     expect(out, "an unorderable entry was ranked without saying so").toContain("someday");
     expect(out).toContain("no ISO date");
 
@@ -360,7 +414,8 @@ describe("update-project-state", () => {
       phases: [],
       sessions: [{ date: "2026-10-17 session 48", items: ["x"] }],
     });
-    const out = execSync("bun scripts/update-project-state.ts 2>&1", { cwd: ROOT, encoding: "utf-8", timeout: 10000 });
+    const { status, out } = exec();
+    expect(status, out).toBe(0);
     expect(out).toContain("rendered 1 of 1 session(s)");
     expect(out, "the summary does not say which session reached the file").toContain("2026-10-17");
   });
