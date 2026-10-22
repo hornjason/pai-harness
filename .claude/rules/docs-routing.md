@@ -1,6 +1,6 @@
 ---
 description: Documentation routing and file creation conventions
-generated-sha: defca061b0b19062
+generated-sha: 3a5d8c22eeeedffa
 ---
 
 ## Documentation Routing
@@ -14,7 +14,7 @@ generated-sha: defca061b0b19062
 | Research — findings, evaluations, competitive analysis (26 files) | `docs/research/` |
 | Council — synthesis, design debates (10 files) | `docs/council/` |
 | Guides — setup, onboarding, reference (1 files) | `docs/guides/` |
-| Reference — historical and inactive docs (22 files) | `reference/` |
+| Reference — historical and inactive docs (23 files) | `reference/` |
 
 ## Where to Create Things
 
