@@ -1563,6 +1563,10 @@ describe("#1249 WITNESS: an escaped BACKSLASH inside double quotes is a pair", (
     const dir = mkdtempSync(join(tmpdir(), "bw1249-"));
     try {
       const victim = join(dir, "victim.txt");
+      // late-env-ok: the child is `echo` and `cp` under bash, which read no
+      // RUNGATE variable and no TMPDIR — the destination is an absolute path
+      // computed here and passed on the command line. Nothing this file
+      // writes to process.env can change what this row measures.
       spawnSync("/bin/bash", ["-c", `echo "x\\\\" ; cp /etc/hosts ${victim}`]);
       expect(existsSync(victim)).toBe(true);
     } finally {
@@ -1574,10 +1578,20 @@ describe("#1249 WITNESS: an escaped BACKSLASH inside double quotes is a pair", (
     // Every row above reads the library. This one runs the hook the way the
     // tool runner does, because that is where the refusal has to happen.
     const hook = join(import.meta.dir, "..", "hooks", "BashWriteGuard.hook.ts");
+    // This child DOES read RUNGATE_WORK_DIR and TMPDIR, so it gets an
+    // EXPLICIT env rather than a stated reason (#1096). Earlier tests in
+    // this file write both, and relying on Bun dropping a late write to
+    // keep them out of the child would make that an accident of the
+    // runtime rather than a property of the row.
+    const env: Record<string, string | undefined> = { ...process.env, TMPDIR: "/tmp" };
+    delete env.RUNGATE_WORK_DIR;
+    delete env.PAI_HOOKS_DIR;
+    delete env.RUNGATE_HOOKS_DIR;
     const run = (command: string) => {
       const r = spawnSync("bun", ["run", hook], {
         input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }),
         encoding: "utf8",
+        env,
       });
       return { status: r.status, stdout: (r.stdout || "").trim() };
     };
