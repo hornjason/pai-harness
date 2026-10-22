@@ -92,6 +92,8 @@ const change = (p: Partial<Change> & { path: string }): Change => ({
   isNew: false,
   added: [],
   removed: [],
+  // No census trigger reads `hunks`; `lib/text-dependents.ts` does (#1054).
+  hunks: [],
   ...p,
 });
 

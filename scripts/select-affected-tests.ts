@@ -62,7 +62,26 @@
  *     path exists — so the filter cannot quietly become the thing that
  *     hides a rename.
  *
- * Both routers now read ONE git invocation, `changesFor`. They previously
+ * ## Three routers, because the question has a third shape (#1054)
+ *
+ * `textDependents` routes by what a change's TEXT IS READ BY. A file that
+ * lifts a marker-delimited region out of `workflows/ship.js` and executes it
+ * imports nothing and walks nothing; it names an anchor. Measured on PR
+ * #1034's first commit, the graph's basename rule did reach all five files
+ * that went red — inside a selection of 226 of 538, with no statement of
+ * why any of them was there. The text router names 13 readers for the same
+ * change, each with the anchor and the `ship.js` line span that put it
+ * there, and `scripts/text-dependents.ts` prints that before a push.
+ *
+ * Its union here is ADDITIVE and narrow, which is sound for the opposite
+ * reason the graph's over-selection is: this contributor can only add to a
+ * selection two other routers already made, so being too tight costs
+ * nothing the graph was not already covering, while being too loose costs
+ * the saving the whole mechanism exists for. An UNMEASURED reading from it
+ * still falls the run back to the full suite — "could not look" is not
+ * "found nothing", and that distinction is the reason this file exists.
+ *
+ * All three routers now read ONE git invocation, `changesFor`. They previously
  * asked git different questions — names only here, added and removed lines
  * there — and a name list is definitionally unable to tell a tick from an
  * edit, which is the whole of #990.
@@ -71,6 +90,7 @@ import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
 import { affectedTests } from "../lib/affected-tests";
+import { textDependents } from "../lib/text-dependents";
 
 import { censusTestsFor, changesFor, type Change } from "./census-routing";
 
@@ -91,6 +111,15 @@ export interface CensusAttribution {
   id: string;
   event: string;
   because: string[];
+}
+
+/** One file that lifts a region of a changed file, and the anchor it uses. */
+export interface TextAttribution {
+  reader: string;
+  target: string;
+  anchor: string;
+  from: number;
+  to: number;
 }
 
 export interface SelectionArtifact {
@@ -114,6 +143,27 @@ export interface SelectionArtifact {
   censusAbsent: string[];
   /** The router's reading, recorded even under FULL_SUITE. */
   censusFired: CensusAttribution[];
+  /**
+   * ADDED to `tests` by the text-dependency router (#1054): files that lift
+   * a region of a changed file out of its text, present on disk, and not
+   * already reached by the graph or the census.
+   */
+  textTests: string[];
+  /** Why each one is there. The attribution IS the product, so it is kept. */
+  textFired: TextAttribution[];
+  /**
+   * `UNMEASURED` means that router could not look and the run fell back. It
+   * is recorded separately from the graph's reading because a FULL_SUITE
+   * caused by the text router and one caused by the graph are different
+   * events, and an artefact that cannot tell them apart cannot be used to
+   * find out which happened.
+   */
+  textReading: "MEASURED" | "UNMEASURED";
+  /** Readers the router found that are not test files, so cannot be run. */
+  textHelpers: string[];
+  /** Coverage (#492): candidate readers read, of candidate readers seen. */
+  textFilesRead: number;
+  textFilesSeen: number;
   changed: string[];
   testFilesSeen: number;
   /** The GRAPH's count, against `testFilesSeen`. `tests.length` is the run. */
@@ -139,6 +189,12 @@ export function selectionFor(root: string, base?: string): SelectionArtifact {
       censusTests: [],
       censusAbsent: [],
       censusFired: [],
+      textTests: [],
+      textFired: [],
+      textReading: "UNMEASURED",
+      textHelpers: [],
+      textFilesRead: 0,
+      textFilesSeen: 0,
       changed: [],
       testFilesSeen: 0,
       selected: 0,
@@ -150,6 +206,11 @@ export function selectionFor(root: string, base?: string): SelectionArtifact {
   const routing = censusTestsFor(changes);
   const routed = routing.tests;
 
+  const text = textDependents(
+    root,
+    changes.map(c => ({ path: c.path, hunks: c.hunks })),
+  );
+
   const r = affectedTests(root, changed);
   const base_ = {
     changed,
@@ -159,14 +220,33 @@ export function selectionFor(root: string, base?: string): SelectionArtifact {
       because: f.because,
     })),
     censusAbsent: routed.filter(t => !existsSync(join(root, t))),
+    textReading: text.reading,
+    textHelpers: text.helpers,
+    textFired: text.edges
+      .filter(e => e.direct)
+      .map(e => ({ reader: e.reader, target: e.target, anchor: e.anchor, from: e.from, to: e.to })),
+    textFilesRead: text.filesRead,
+    textFilesSeen: text.filesSeen,
     testFilesSeen: r.testFilesSeen,
     selected: r.selected,
     sweeps: r.sweeps.length,
   };
-  const fallback = { tests: [], graphTests: [], censusTests: [], ...base_ };
+  const fallback = { tests: [], graphTests: [], censusTests: [], textTests: [], ...base_ };
 
   if (r.reading === "UNMEASURED") {
     return { mode: "FULL_SUITE", fellBackBecause: r.unmeasuredReasons, ...fallback };
+  }
+  // A router that could not look is not a router that found nothing (#1054).
+  // The graph's own UNMEASURED is checked first so the artefact attributes
+  // the fallback to one cause rather than two, and both reasons survive.
+  if (text.reading === "UNMEASURED") {
+    return {
+      mode: "FULL_SUITE",
+      fellBackBecause: text.unmeasuredReasons.map(
+        w => `the text-dependency router could not take a reading: ${w}`,
+      ),
+      ...fallback,
+    };
   }
   if (r.tests.length === 0) {
     return {
@@ -181,7 +261,15 @@ export function selectionFor(root: string, base?: string): SelectionArtifact {
 
   const graphTests = r.tests;
   const censusTests = routed.filter(t => !graphTests.includes(t) && existsSync(join(root, t)));
-  const tests = [...graphTests, ...censusTests];
+  // Third, and additive like the second: a file that lifts a region of a
+  // changed file out of its text has a dependency the graph expresses no
+  // edge for and no census row is about. Attributed separately for the
+  // reason the other two are — three contributors with one total is a
+  // number nobody can decompose when a file turns out to be missing.
+  const textTests = text.tests.filter(
+    t => !graphTests.includes(t) && !censusTests.includes(t) && existsSync(join(root, t)),
+  );
+  const tests = [...graphTests, ...censusTests, ...textTests];
 
   const unsafe = tests.filter(t => !SAFE_TEST_PATH.test(t));
   if (unsafe.length > 0) {
@@ -195,7 +283,15 @@ export function selectionFor(root: string, base?: string): SelectionArtifact {
     };
   }
 
-  return { mode: "SELECTED", fellBackBecause: [], tests, graphTests, censusTests, ...base_ };
+  return {
+    mode: "SELECTED",
+    fellBackBecause: [],
+    tests,
+    graphTests,
+    censusTests,
+    textTests,
+    ...base_,
+  };
 }
 
 if (import.meta.main) {
@@ -217,9 +313,21 @@ if (import.meta.main) {
       result.censusTests.length > 0
         ? ` + ${result.censusTests.length} census (${result.censusFired.map(f => f.id).join(", ")})`
         : "";
+    const text =
+      result.textTests.length > 0
+        ? ` + ${result.textTests.length} text (${
+            new Set(result.textFired.map(f => f.target)).size
+          } file(s) lifted)`
+        : "";
     console.error(
       `affected-tests: ${result.selected} of ${result.testFilesSeen} files ` +
-        `(${result.sweeps} sweeps), from ${result.changed.length} changed${census}`,
+        `(${result.sweeps} sweeps), from ${result.changed.length} changed${census}${text}`,
+    );
+    // Coverage, unconditionally: `36/426` and `426/426` are the same PASS
+    // when only the verdict is printed (#492).
+    console.error(
+      `affected-tests: the text router read ${result.textFilesRead} of ` +
+        `${result.textFilesSeen} candidate readers`,
     );
     if (result.censusAbsent.length > 0) {
       console.error(
