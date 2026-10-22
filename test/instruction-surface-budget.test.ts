@@ -43,7 +43,9 @@ import {
   MAX_EXPANDED_PATTERNS,
   SURFACE_BUDGET_BYTES,
   SurfaceUnmeasured,
+  WARN_AT_FRACTION,
   expandBraces,
+  headroom,
   isPathScoped,
   measureConcurrentLoad,
   measureSurface,
@@ -637,6 +639,79 @@ describe("SC-1937: per-rule glob expansion and size stay inside Claude Code's li
     const reading = measureConcurrentLoad(REPO_ROOT);
     expect(reading.globOverruns.map(r => r.file)).toEqual([]);
     expect(reading.oversized.map(r => r.file)).toEqual([]);
+  });
+});
+
+// ── #1069: a passing reading reports how close it came ───────────────────
+//
+// The gate failed at 100% and was silent at 99.94%, so the first report of
+// 36 bytes of headroom was a red shard on a file the agent had never opened.
+// Each case below is paired with the control that makes it mean something:
+// a warning that fires at 95% is only evidence if it is also observed NOT
+// firing at 94%, and a warning that does not change the exit code is only
+// evidence if the same tree is observed exiting 0.
+describe("#1069: headroom is reported, and the last 5% warns without refusing", () => {
+  // One tree, two budgets. Measuring one fixture against a budget on either
+  // side of the threshold is what rules out the reading moving instead of the
+  // threshold deciding — the thing under test is the comparison, not the file.
+  const tree = () => plantedRoot({ "a.md": filler(1_000) });
+
+  test("inside the band warns, and one byte of budget more does not", () => {
+    const root = tree();
+    const measured = measureConcurrentLoad(root).peakBytes;
+
+    // Smallest budget for which `peak / budget` is still below the fraction.
+    const justUnder = Math.floor(measured / WARN_AT_FRACTION) + 1;
+    expect(headroom(measureConcurrentLoad(root, justUnder)).warn).toBe(false);
+    expect(headroom(measureConcurrentLoad(root, justUnder - 1)).warn).toBe(true);
+  });
+
+  test("headroom is the budget minus the peak, and goes negative over it", () => {
+    const root = tree();
+    const measured = measureConcurrentLoad(root).peakBytes;
+    expect(headroom(measureConcurrentLoad(root, measured + 500)).bytes).toBe(500);
+    // Over budget is a reading, not an absence of one: the refusal is a
+    // separate decision and this function must not pre-empt it.
+    const over = headroom(measureConcurrentLoad(root, measured - 500));
+    expect(over.bytes).toBe(-500);
+    expect(over.warn).toBe(true);
+  });
+
+  test("the script prints the warning on stderr and still exits 0", () => {
+    // 95% of 64,000 is 60,800. A body that size is under the budget, so the
+    // only thing that can make this run non-zero is the warning doing more
+    // than warn.
+    const root = plantedRoot({ "big.md": filler(61_000) });
+    const r = run(SCRIPT, ["--root", root]);
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    expect(r.err).toContain("HEADROOM");
+    expect(r.out).toContain("HEADROOM");
+  });
+
+  test("a tree well under budget prints headroom and no warning", () => {
+    const root = plantedRoot({ "small.md": filler(1_000) });
+    const r = run(SCRIPT, ["--root", root]);
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    expect(r.out).toContain("HEADROOM");
+    expect(r.err).not.toContain("HEADROOM");
+  });
+
+  test("--json carries the headroom so a caller need not recompute it", () => {
+    const root = tree();
+    const r = run(SCRIPT, ["--root", root, "--json"]);
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    const emitted = JSON.parse(r.out);
+    expect(emitted.headroom).toEqual(headroom(measureConcurrentLoad(root)));
+  });
+
+  test("this repository reports a headroom somebody can act on", () => {
+    // Not a second budget — SC-2446 owns that. This asserts the REPORT is
+    // live on the real tree: a figure of zero would mean the reading never
+    // reached the renderer, which is how 36 bytes went unremarked.
+    const h = headroom(measureConcurrentLoad(REPO_ROOT));
+    expect(h.bytes, "no headroom left — see SC-2446's remedy").toBeGreaterThan(0);
+    expect(h.used).toBeGreaterThan(0);
+    expect(h.used).toBeLessThan(1);
   });
 });
 

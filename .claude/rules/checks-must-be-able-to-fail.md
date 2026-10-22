@@ -20,26 +20,10 @@ rule, a ratchet, a CI step.
 This is the single most common defect in this codebase's own tooling. Not a
 hypothetical — a count. On 2026-10-06, five of eight issues shipped in one day
 were the same bug wearing different clothes: **a check that passed because of
-what it never looked at.**
-
-- A prompt-immutability gate ran `ls -lO` and grepped for a BSD flag. On Linux
-  CI the command fails, nothing is appended to the violations list, and the
-  check passes unconditionally. It had never once run in CI.
-- A guard against top-level `require()` stripped template literals with a
-  regex. Backticks inside comments and strings paired with unrelated ones and
-  deleted 61% of the file, including the two functions the guard existed to
-  protect. Two new violations were added and the suite reported 48 pass.
-- A budget counter read `parseInt(raw) || 0`. One unparseable byte silently
-  meant "zero spent", disabling the cap while every message still looked normal.
-- Nine `require()` calls inside `try/catch` in an environment with no module
-  loading. Every one threw, every throw was swallowed as a warning, and the run
-  reported success with its measurement features switched off.
-- A "generator determinism" test called a one-argument function with three
-  arguments, compared two arrays that were always empty, and `expect([])
-  .toEqual([])` passed no matter how non-deterministic the generator was.
-
-Every one of those was green. Every one was green for a reason that had nothing
-to do with the code being correct.
+what it never looked at.** All five are in
+`reference/check-failure-worked-instances.md`, *Why*. Every one was green, and
+every one was green for a reason that had nothing to do with the code being
+correct.
 
 ## What makes this hard to notice
 
@@ -110,24 +94,16 @@ second assertion is the whole point: it is the removal of the non-zero exit,
 performed and observed, so a case that later starts passing for an unrelated
 reason stops being indistinguishable from a case that is genuinely caught.
 
+Two properties make that work and both must be asserted by the test, not left
+as conventions: the constant appears **exactly once** in the source, so no
+refusal can bypass the mutation by inlining `process.exit(1)`; and the script
+has **no relative imports**, so the mutant runs from a temp directory instead
+of dying on module resolution — a non-zero exit that reads as the mutation
+having been rejected on the merits.
+
 `scripts/rook-review-scope.ts` and `test/rook-review-scope.test.ts` are the
-worked example (#129). Two properties make it work, and both are asserted by
-the test rather than left as conventions:
-
-- The constant appears exactly once in the source, so no refusal can quietly
-  bypass the mutation by inlining `process.exit(1)`.
-- The script has no relative imports, so the mutant runs from a temp
-  directory. Without that check a later `from "../lib/..."` would make every
-  mutant die on module resolution — exiting non-zero, which reads as the
-  mutation having been rejected on the merits.
-
-What was broken to prove it, run and counted rather than asserted: making the
-empty-scope branch stop throwing turns 3 tests red, and zeroing `REFUSE_EXIT`
-in the real source leaves the harness nothing to mutate, so it throws
-"could not build the mutant" and the whole file aborts instead of passing
-quietly. That second outcome is the point — a mutation harness that silently
-no-ops when its target moves is the decorative check this rule is about.
-Neither mutation is left in the tree; both were run and reverted.
+worked example (#129); what was broken to prove it, and the counts, are in
+`reference/check-failure-worked-instances.md`.
 
 ## For a gate check, where the guard is itself a test
 
@@ -138,36 +114,19 @@ function short-circuited to `return []`. The copy is spawned —
 `bun test <mutant> -t <check name>` — and the real suite is spawned the same
 way against the same planted state. Real red, mutant green, one input.
 
+Four things make that work, all asserted by the test rather than left as
+conventions: the fixture is **executed, not described**, and its failure
+counted with the parser the harness itself uses; the check is **observed
+running** (`ran === 1` before any assertion, because a `-t` that matches
+nothing and a mutant that failed to load both report zero failures); the
+binding signature appears **exactly once**, or the file aborts; and the mutant
+has **no relative imports left**, or it dies on module resolution and reads as
+a refusal.
+
 `gates/workflow.test.ts`'s `suiteVerdictViolations` and
-`test/suite-binding-mutation.test.ts` are the worked example (#224). Four
-things make it work, all asserted by the test rather than left as conventions:
-
-- **The fixture is executed, not described.** A project carrying one
-  deliberately failing test is run, and its failure counted with
-  `extractTestFailureCount` — the parser the harness itself uses — before the
-  resulting verdict is handed to the check. A hand-written `"FAIL"` proves the
-  check can read a string; a measured one proves a failing suite reaches it.
-- **The check is observed running.** A `-t` filter that matches nothing leaves
-  bun reporting zero failures, which is indistinguishable from the check
-  passing, and is also what a mutant that failed to resolve its imports looks
-  like. Every assertion goes through `ran === 1` first, and the red case also
-  asserts the refusal text, because a suite that failed to load is red too.
-- **The signature appears exactly once.** A second refusal path for the same
-  fact would survive the mutation and the mutant would go red for a reason
-  that has nothing to do with the mutation working. Two copies abort the file.
-- **The mutant has no relative imports left.** The copy runs from a temp
-  directory with `./schema` and friends rewritten to absolute paths, and any
-  specifier the rewriter could not see aborts the build rather than letting the
-  mutant die on module resolution and read as a refusal.
-
-What was broken to prove it, run and counted rather than asserted, over
-`test/suite-binding-mutation.test.ts` + `test/gate-vacuous-checks.test.ts`
-(20 tests): short-circuiting `suiteVerdictViolations` to `return []` turns 3
-red — both fixture refusals and the real-source half of the mutant case — and
-renaming it to `suiteVerdictRefusal` turns 4 red, every one of them throwing
-`could not build the mutant: the binding signature appears 0 times`. Neither
-mutation is left in the tree; both were run and reverted, and the counts are
-recorded in specs/HARNESS-STANDARD.md beside SC-615..617.
+`test/suite-binding-mutation.test.ts` are the worked example (#224); what was
+broken to prove it, and the counts, are in
+`reference/check-failure-worked-instances.md`.
 
 ## The worked instances live next door
 

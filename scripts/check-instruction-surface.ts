@@ -136,6 +136,25 @@ export const REFUSE_EXIT = 1;
  */
 export const SURFACE_BUDGET_BYTES = 64_000;
 
+/**
+ * The fraction of the budget above which a PASSING reading still says
+ * something. WARNs; never refuses.
+ *
+ * #1069: this check failed at 100% and was silent at 99.94%. The peak sat 36
+ * bytes under budget on `origin/main` for long enough that the next agent to
+ * add an ordinary 230-byte table row reddened a CI shard on
+ * `.claude/agents/aditi.md` — a file it had never opened and whose connection
+ * to its change is two levels of indirection away. Nothing had reported the
+ * approach, because a reading one byte under the budget and a reading at half
+ * of it produced identical output.
+ *
+ * So headroom is printed on every run, and a run inside the last 5% names
+ * itself. A second REFUSAL at 95% was the alternative and is worse: it is a
+ * second budget with the first one's problem and no slack at all, and the
+ * repository would be red right now rather than warned.
+ */
+export const WARN_AT_FRACTION = 0.95;
+
 /** Loaded at launch regardless of what is touched. */
 const ALWAYS_LOADED = ["CLAUDE.md", "AGENTS.md"] as const;
 
@@ -573,6 +592,47 @@ export function overPeakReport(reading: ConcurrentLoadReading): string {
   return lines.join("\n");
 }
 
+export interface HeadroomReading {
+  /** Budget minus peak. Negative when over — this is a reading, not a verdict. */
+  bytes: number;
+  /** Peak as a fraction of the budget. */
+  used: number;
+  /** True at or above `WARN_AT_FRACTION`, including when already over. */
+  warn: boolean;
+}
+
+/**
+ * How much room is left, as one function rather than as arithmetic at each
+ * call site.
+ *
+ * There is exactly one of these on purpose. A second place computing
+ * `budget - peak` would be the "two deciders that agree" shape from
+ * `.claude/rules/checks-must-be-able-to-fail.md`: both correct, neither
+ * falsifiable by a mutation of the other.
+ */
+export function headroom(reading: ConcurrentLoadReading): HeadroomReading {
+  const bytes = reading.budgetBytes - reading.peakBytes;
+  const used = reading.peakBytes / reading.budgetBytes;
+  return { bytes, used, warn: used >= WARN_AT_FRACTION };
+}
+
+/**
+ * The warning text. Says what an ordinary addition costs, because "402 bytes
+ * left" does not tell a reader whether their table row fits and a table row
+ * is the thing that keeps not fitting.
+ */
+export function headroomWarning(reading: ConcurrentLoadReading): string {
+  const h = headroom(reading);
+  return (
+    `HEADROOM: the peak instruction surface is ${reading.peakBytes.toLocaleString()} bytes, ` +
+    `${Math.round(h.used * 100)}% of the ${reading.budgetBytes.toLocaleString()}-byte budget — ` +
+    `${h.bytes.toLocaleString()} left, and an ordinary rule table row is about 230. The next ` +
+    `agent to add one will go red on ${reading.peakFile ?? "the launch surface"}, which has ` +
+    `nothing to do with their change. Move a worked record into reference/ and route to it ` +
+    `from .claude/rules/docs-routing.md now, rather than making them discover this (#1069).`
+  );
+}
+
 // `overBudgetReport` — #1009's launch-only renderer — is gone, folded into
 // `overPeakReport` above. Two renderers for one refusal would be two places
 // to keep the remedy correct, and the launch surface is no longer a thing
@@ -597,7 +657,7 @@ function main(argv: string[]): number {
     // The launch reading stays at the top level: it is what #1009's callers
     // read, and burying it under a new key would be a silent contract change
     // dressed as an addition.
-    console.log(JSON.stringify({ ...reading, concurrent: peak }, null, 2));
+    console.log(JSON.stringify({ ...reading, concurrent: peak, headroom: headroom(peak) }, null, 2));
   } else {
     for (const e of [...reading.entries].sort((a, b) => b.bytes - a.bytes)) {
       console.log(`${String(e.bytes).padStart(8)}  ${e.file}${e.excluded ? `  [${e.excluded}]` : ""}`);
@@ -614,7 +674,18 @@ function main(argv: string[]): number {
     for (const r of peak.peakRules) {
       console.log(`${String(r.bytes).padStart(8)}    + ${r.file}  [${r.globs.join(" ")}]`);
     }
+    const h = headroom(peak);
+    console.log(
+      `${String(h.bytes).padStart(8)}  HEADROOM (${Math.round(h.used * 100)}% of budget used)`,
+    );
   }
+
+  // #1069. Printed before the refusals below and independent of them: a tree
+  // that is over budget is also, trivially, inside the warning band, and a
+  // reader who sees only the refusal learns nothing about how close the tree
+  // was before their change. This is the whole of the warning — it does not
+  // touch the return value anywhere.
+  if (headroom(peak).warn) console.error(headroomWarning(peak));
 
   // SC-1936. A `paths:` matching every file in the tree declares the mined
   // tier and behaves as the baseline one, which is strictly worse than
