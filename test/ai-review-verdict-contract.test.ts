@@ -292,7 +292,13 @@ function runCommittedStep(script: string, payload: string): {
     mode: 0o755,
   });
 
-  const r = spawnSync("bash", [sh], {
+  // `-e`, because that is the shell GitHub supplies: the default for a `run:`
+  // step is `/usr/bin/bash -e {0}`. This runner used to omit it, and #1110 is
+  // the whole cost of the omission — the adjudication branch AC-4e exists to
+  // drive was dead code on every real runner for every non-zero verdict, and
+  // this case was green throughout because plain `bash` executes it.
+  // `test/ai-review-shell-semantics.test.ts` holds that measurement.
+  const r = spawnSync("bash", ["-e", sh], {
     encoding: "utf-8",
     cwd: dir,
     timeout: 60_000,
