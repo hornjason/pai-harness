@@ -36,7 +36,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, relative } from "path";
 
 import {
   AmbiguousAnchorError,
@@ -223,9 +223,60 @@ describe("#668: no converted site passes an anchor that occurs more than once", 
     anchors: string[];
   }
 
-  function callSites(): { sites: Site[]; unscannable: string[] } {
+  /**
+   * A call site whose anchor the scan could not read.
+   *
+   * ONE shape, because there is one consumer and it asks one question of
+   * every entry. The SUBJECT case and the START case differ only in which
+   * expression was unreadable, which is what `expr` is for — so neither
+   * needs a field the other lacks, and a `kind` nobody branches on would be
+   * a second decider of what an entry means (#1078).
+   */
+  interface Unscannable {
+    file: string;
+    doc: string;
+    expr: string;
+  }
+
+  function scanSource(name: string, src: string): { sites: Site[]; unscannable: Unscannable[] } {
     const sites: Site[] = [];
-    const unscannable: string[] = [];
+    const unscannable: Unscannable[] = [];
+
+    // A file that only MENTIONS the name — an import, a comment, a
+    // population scan like this one — is not a call site and is not
+    // unscannable. Only a call whose anchor the scan cannot read is.
+    const calls = [...src.matchAll(/structuralCut(Around)?\(\s*([A-Za-z0-9_.]+)\s*,\s*(?:"((?:[^"\\]|\\.)*)"|([^,]+)),/g)];
+    for (const c of calls) {
+      const [whole, around, doc, literal, computed] = c;
+      // The one place an unscannable entry is built. Both cases below go
+      // through it, so there is one shape to produce and one to read.
+      const report = (expr: string) => unscannable.push({ file: name, doc, expr });
+
+      if (literal === undefined) {
+        report(String(computed).trim().slice(0, 40));
+        continue;
+      }
+      const anchors = [literal];
+      if (around) {
+        // The start anchor belongs to THIS call, so it is taken from the
+        // text of this call rather than from the file at large — two
+        // Around calls in one file would otherwise cross-contaminate.
+        const tail = src.slice(c.index ?? 0, (c.index ?? 0) + whole.length + 600);
+        const sa = /startAnchor:\s*(?:"((?:[^"\\]|\\.)*)"|([^,\n}]+))/.exec(tail);
+        if (sa?.[1] !== undefined) anchors.push(sa[1]);
+        // `startAnchor` is required by the signature, so no match at all is
+        // the 600-char window falling short rather than an absent option.
+        // Either way the anchor was not read, which is the thing to report.
+        else report(sa ? String(sa[2]).trim().slice(0, 40) : "(no startAnchor within 600 chars)");
+      }
+      sites.push({ file: name, doc, anchors });
+    }
+    return { sites, unscannable };
+  }
+
+  function callSites(): { sites: Site[]; unscannable: Unscannable[] } {
+    const sites: Site[] = [];
+    const unscannable: Unscannable[] = [];
     for (const name of readdirSync(join(REPO, "test"), { recursive: true }) as string[]) {
       if (!name.endsWith(".ts")) continue;
       const file = join(REPO, "test", name);
@@ -236,29 +287,9 @@ describe("#668: no converted site passes an anchor that occurs more than once", 
         continue; // a directory entry, not a file
       }
       if (!src.includes("structuralCut")) continue;
-
-      // A file that only MENTIONS the name — an import, a comment, a
-      // population scan like this one — is not a call site and is not
-      // unscannable. Only a call whose anchor the scan cannot read is.
-      const calls = [...src.matchAll(/structuralCut(Around)?\(\s*([A-Za-z0-9_.]+)\s*,\s*(?:"((?:[^"\\]|\\.)*)"|([^,]+)),/g)];
-      for (const c of calls) {
-        const [whole, around, doc, literal, computed] = c;
-        if (literal === undefined) {
-          unscannable.push(`${name}|${doc}|${String(computed).trim().slice(0, 40)}`);
-          continue;
-        }
-        const anchors = [literal];
-        if (around) {
-          // The start anchor belongs to THIS call, so it is taken from the
-          // text of this call rather than from the file at large — two
-          // Around calls in one file would otherwise cross-contaminate.
-          const tail = src.slice(c.index ?? 0, (c.index ?? 0) + whole.length + 600);
-          const sa = /startAnchor:\s*"((?:[^"\\]|\\.)*)"/.exec(tail);
-          if (sa) anchors.push(sa[1]);
-          else unscannable.push(`${name}: a structuralCutAround start anchor is not a literal`);
-        }
-        sites.push({ file: name, doc, anchors });
-      }
+      const scan = scanSource(name, src);
+      sites.push(...scan.sites);
+      unscannable.push(...scan.unscannable);
     }
     return { sites, unscannable };
   }
@@ -299,14 +330,77 @@ describe("#668: no converted site passes an anchor that occurs more than once", 
    * `ship.js`.** So the scan is allowed to be blind, and only about
    * documents whose duplicates cannot reach a converted site.
    */
-  test("no UNREADABLE anchor is pointed at ship.js — the scan's blindness is bounded", () => {
+  function unreadableShipAnchors(
+    entries: Unscannable[],
+    readSource: (file: string) => string,
+  ): string[] {
     const offenders: string[] = [];
-    for (const entry of UNSCANNABLE) {
-      const [file, doc, expr] = entry.split("|");
-      const ids = shipIdentifiers(readFileSync(join(REPO, "test", file), "utf-8"));
-      if (ids.has(doc)) offenders.push(`${file}: computed anchor ${expr} is cut from ship.js`);
+    for (const { file, doc, expr } of entries) {
+      const ids = shipIdentifiers(readSource(file));
+      if (ids.has(doc)) offenders.push(`${file}: unreadable anchor ${expr} is cut from ship.js`);
     }
-    expect(offenders).toEqual([]);
+    return offenders;
+  }
+
+  /** The reader the suite runs against the tree — the one that threw in #1078. */
+  const readTestSource = (file: string) => readFileSync(join(REPO, "test", file), "utf-8");
+
+  test("no UNREADABLE anchor is pointed at ship.js — the scan's blindness is bounded", () => {
+    expect(unreadableShipAnchors(UNSCANNABLE, readTestSource)).toEqual([]);
+  });
+
+  /**
+   * #1078 — the reporting path itself, put through both of its inputs.
+   *
+   * The scan above reads every `.ts` under `test/`, including this file, so
+   * the fixtures below spell the call name as a concatenation: written whole
+   * they would be read as real call sites and this file would report itself.
+   *
+   * The fixtures are attributed to THIS file, derived rather than spelled, so
+   * the consumer runs with `readTestSource` — the reader that threw — against
+   * a path that exists. The `SHIP` binding the consumer then finds is the
+   * `SHIP_BOUND` line below, which is in this file because the fixture is.
+   */
+  const AROUND = "structuralCut" + "Around";
+  const SELF = relative(join(REPO, "test"), import.meta.path);
+  const SHIP_BOUND = `const SHIP = readFileSync(join(REPO, "workflows", "ship.js"), "utf-8");`;
+  const NON_LITERAL_START = `${SHIP_BOUND}
+const START = "function main(";
+${AROUND}(SHIP, "needle", { startAnchor: START, end: "}" });
+`;
+  const SCANNABLE = `${SHIP_BOUND}
+${AROUND}(SHIP, "needle", { startAnchor: "function main(", end: "}" });
+`;
+
+  test("#1078: a non-literal START anchor is REPORTED, and the consumer reads it", () => {
+    const scan = scanSource(SELF, NON_LITERAL_START);
+    expect(scan.sites.length, "the subject anchor is still a literal, so the site is scannable")
+      .toBe(1);
+    expect(scan.unscannable.length, "the unreadable start anchor must produce one entry").toBe(1);
+    expect(scan.unscannable[0], "it names the file and the expression, in the one shape")
+      .toEqual({ file: SELF, doc: "SHIP", expr: "START" });
+
+    // The clause #1078 is about. Before the fix the entry was a prose
+    // sentence, so `split("|")` handed this reader a filename with an error
+    // message glued to it and the check died instead of reporting.
+    expect(() => unreadableShipAnchors(scan.unscannable, readTestSource)).not.toThrow();
+
+    // And it reports. Read against the fixture's own source — where `SHIP` is
+    // bound to a read of ship.js — the entry comes back as an offender.
+    const offenders = unreadableShipAnchors(scan.unscannable, () => NON_LITERAL_START);
+    expect(offenders.length, "the doc is bound to ship.js, so this entry is an offender").toBe(1);
+    expect(offenders[0]).toContain(SELF);
+    expect(offenders[0], "the entry must name the expression the scan could not read")
+      .toContain("START");
+  });
+
+  test("#1078 control: an all-literal call reports nothing — a reporter of everything fails", () => {
+    const scan = scanSource(SELF, SCANNABLE);
+    expect(scan.sites.length).toBe(1);
+    expect(scan.sites[0].anchors, "both anchors are literals and both are read")
+      .toEqual(["needle", "function main("]);
+    expect(scan.unscannable.length, "nothing here is unreadable").toBe(0);
+    expect(unreadableShipAnchors(scan.unscannable, () => SCANNABLE)).toEqual([]);
   });
 
   test("every anchor against workflows/ship.js occurs at most once", () => {
