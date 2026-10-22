@@ -34,7 +34,7 @@ import {
   UNFILED_ID,
   type Finding,
 } from "../lib/finding-arbiter";
-import { SEVERITY_RANK, type VerifierVote } from "../lib/finding-jury";
+import { INCOMPLETE_GROUP, SEVERITY_RANK, type VerifierVote } from "../lib/finding-jury";
 
 /**
  * A full, agreeing verifier group.
@@ -806,5 +806,146 @@ describe("AR-13: the dedupe is one-hop on purpose", () => {
     // Two survivors, not one. A transitive dedupe would return one here and
     // would be withholding a finding nothing says is a duplicate of anything.
     expect(r.toComment.length).toBe(2);
+  });
+});
+
+/**
+ * AR-14: a malformed ballot is UNMEASURED, not a dissent (#1235).
+ *
+ * `readVotes` cast the parsed JSON to `VerifierVote[]` with no shape check, and
+ * `juryReading` counts agreement with `votes.filter(v => v.real)` — a truthy
+ * test. **The string `"false"` is truthy**, so a verifier who wrote
+ * `"real": "false"` was counted as agreeing. Measured on `origin/main` through
+ * the CLI below before the fix: a ballot in which all three verifiers rejected
+ * the finding, two of them spelling it `"false"`, exited **0** and printed
+ * `2 of 3 verifiers agree`. The jury passed a finding its verifiers rejected,
+ * which is the one outcome it exists to prevent.
+ *
+ * ## The two cases are doing different jobs, and the battery says which
+ *
+ * The cheapest wrong fix — coerce `"false"` to `false` and count it as a no —
+ * was applied by hand to `parseVotes` and measured. Both cases stay red under
+ * it, **on different assertions**, and that is the whole reason there are two:
+ *
+ * | case | coerced reading | red on |
+ * |---|---|---|
+ * | `A` | `exit 1` · `DROP new (NO_QUORUM): 0 of 3 verifiers called it real` | the reading only |
+ * | `B` | `exit 0` · `COMMENT … 2 of 3 verifiers agree` | the exit code |
+ *
+ * `A` is the defect — a rejection read as agreement — and it is the direction
+ * assertion the issue asks for. But its exit code is `1` under **both** fixes,
+ * so an exit-code-only `A` would have gone green and certified the coercion.
+ * The `toContain("UNMEASURED")` line is what separates them, and it is load-
+ * bearing rather than decorative.
+ *
+ * `B` is the case that chose the fix on behaviour: under coercion the ballot
+ * still clears a 2-of-3 quorum and the finding still posts. Coercion is
+ * rejected because a vote nobody can read is not a vote somebody cast —
+ * inventing the dissent is a second reading nobody took
+ * (`.claude/rules/config-access.md`'s *Silent Default Substitution*, and the
+ * standing position that a reading which could not be taken is not a reading
+ * that passed).
+ *
+ * Nor is the bad entry dropped from the ballot. That would leave two votes
+ * against a declared group of three and refuse as `INCOMPLETE_GROUP` — "a
+ * verifier did not report", when in fact it reported unreadably. Different
+ * facts, and the refusal has to name the right one.
+ */
+describe("AR-14: a malformed ballot is UNMEASURED, not a dissent", () => {
+  const script = join(import.meta.dir, "..", "scripts", "arbitrate-finding.ts");
+  let scratch = "";
+
+  const run = (votesFile: string): { code: number; out: string } => {
+    const r = Bun.spawnSync(
+      ["bun", script, "--project-root", root,
+       "--title", "an unrelated reading",
+       "--body-file", join(scratch, "body.md"),
+       "--existing", join(scratch, "empty.json"),
+       "--votes", join(scratch, votesFile)],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    return { code: r.exitCode, out: new TextDecoder().decode(r.stdout) };
+  };
+
+  const ballot = (name: string, votes: unknown): string => {
+    writeFileSync(join(scratch, name), JSON.stringify(votes));
+    return name;
+  };
+
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), "arbiter-ballot-"));
+    writeFileSync(join(scratch, "body.md"), "`widgetHandler` leaks 58 descriptors across 19 runs in `widget.ts`.");
+    writeFileSync(join(scratch, "empty.json"), "[]");
+
+    // A — all three verifiers rejected it; two spelled the rejection `"false"`.
+    ballot("A.json", [
+      { verifier: "v1", real: "false", reason: "could not reproduce" },
+      { verifier: "v2", real: "false", reason: "could not reproduce" },
+      { verifier: "v3", real: false, reason: "could not reproduce" },
+    ]);
+    // B — one unreadable vote among two genuine yeses. Coercion leaves this at
+    // 2 of 3 and still passing; only a refusal of the whole ballot turns it red.
+    ballot("B.json", [
+      { verifier: "v1", real: "false", reason: "could not reproduce" },
+      { verifier: "v2", real: true, reason: "reproduced" },
+      { verifier: "v3", real: true, reason: "reproduced" },
+    ]);
+    ballot("no-verifier.json", [
+      { real: true, reason: "reproduced" },
+      { verifier: "v2", real: true, reason: "reproduced" },
+      { verifier: "v3", real: true, reason: "reproduced" },
+    ]);
+    ballot("not-an-object.json", [
+      "v1 says yes",
+      { verifier: "v2", real: true, reason: "reproduced" },
+      { verifier: "v3", real: true, reason: "reproduced" },
+    ]);
+    // The control. Every refusal above has to be the ballot's shape and not the
+    // finding, so the same finding on a well-formed ballot must still post.
+    ballot("control.json", [
+      { verifier: "v1", real: true, reason: "reproduced" },
+      { verifier: "v2", real: true, reason: "reproduced" },
+      { verifier: "v3", real: false, reason: "could not reproduce" },
+    ]);
+  });
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  test("the control posts — the refusals below are about the ballot, not the finding", () => {
+    const r = run("control.json");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("COMMENT");
+  });
+
+  test('A: `real: "false"` from every verifier no longer reads as agreement', () => {
+    const r = run("A.json");
+    // Before the fix this was `0` and `2 of 3 verifiers agree`, on a ballot
+    // where nobody agreed. The count is asserted as well as the exit, because
+    // a refusal for some unrelated reason would satisfy the exit alone.
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("UNMEASURED");
+    expect(r.out).not.toContain("verifiers agree");
+  });
+
+  test('B: one `"false"` among two yeses refuses — it is not silently a no vote', () => {
+    const r = run("B.json");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("UNMEASURED");
+    // The refusal must name the unreadable vote, not a short group: dropping
+    // the entry instead of refusing the ballot would report INCOMPLETE_GROUP.
+    expect(r.out).toContain("vote 0");
+    expect(r.out).not.toContain(INCOMPLETE_GROUP);
+  });
+
+  test("a vote with no `verifier` refuses — an anonymous vote is not independence", () => {
+    const r = run("no-verifier.json");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("UNMEASURED");
+    expect(r.out).toContain("verifier");
+  });
+
+  test("an entry that is not an object refuses", () => {
+    const r = run("not-an-object.json");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("UNMEASURED");
   });
 });

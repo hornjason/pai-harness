@@ -22,9 +22,11 @@ import {
   DROPPED_CATEGORIES,
   juryCategory,
   juryReading,
+  parseVotes,
   renderComment,
   severityOf,
   SEVERITY_RANK,
+  UNREADABLE_VOTE,
   VERIFIER_GROUP_SIZE,
   VERIFIER_QUORUM,
   type VerifierVote,
@@ -280,5 +282,91 @@ describe("JURY-5: what the filter would have dropped on real findings", () => {
       body: "The deeper point, and the reason this is not just a wording fix: a typo here is not the issue. Nit, cosmetic, refactor.",
     };
     expect(classifyCategory(finding)).toBe("correctness");
+  });
+});
+
+/**
+ * JURY-6: the ballot is read, not cast (#1235).
+ *
+ * `scripts/arbitrate-finding.ts` checked `Array.isArray` and then cast —
+ * `parsed as VerifierVote[]` — so no entry was ever inspected. Agreement is
+ * counted by truthiness, and **the string `"false"` is truthy**, so a verifier
+ * who rejected a finding was counted as agreeing with it.
+ *
+ * The end-to-end direction case, with the exit codes and the coercion control,
+ * is `AR-14` in `test/finding-arbiter.test.ts`. These are the field-level
+ * cases, including the two the CLI block does not reach: `category` and
+ * `severity` carry the same defect as `real` and are refused for the reasons
+ * the first test here measures.
+ */
+describe("JURY-6: the ballot is read, not cast", () => {
+  const good = { verifier: "v1", real: true, reason: "reproduced" };
+
+  test("the control — a well-formed ballot survives unchanged", () => {
+    const ballot = [good, { verifier: "v2", real: false, reason: "no", category: "security", severity: "Nit" }];
+    expect(parseVotes(ballot)).toEqual(ballot as VerifierVote[]);
+  });
+
+  /**
+   * The premise the whole fix rests on, asserted rather than asserted-about:
+   * these three are the reason an unvalidated field is a defect and not an
+   * untidiness. Each is the mechanism named in `parseVotes`'s refusal.
+   */
+  test("the premises: a truthy `real`, an unknown category that is not dropped, an unranked severity", () => {
+    // `"false"` reads as agreement. This is #1235.
+    expect(juryReading([
+      vote("v1", "false" as unknown as boolean),
+      vote("v2", "false" as unknown as boolean),
+      vote("v3", false),
+    ]).agree).toBe(2);
+    // An unrecognised category is not in DROPPED_CATEGORIES, so it keeps.
+    expect(DROPPED_CATEGORIES.has("janitorial" as never)).toBe(false);
+    // An unrecognised severity has no rank, so the comparator sees NaN.
+    expect(SEVERITY_RANK["Critical" as never] as unknown).toBeUndefined();
+  });
+
+  test.each([
+    ["not an array", { verifier: "v1" }, "not a JSON array"],
+    ["an entry that is a string", ["v1 says yes"], "not an object"],
+    ["an entry that is null", [null], "not an object"],
+    ["an entry that is an array", [[]], "not an object"],
+    ["`real` as the string \"false\"", [{ ...good, real: "false" }], "non-boolean `real`"],
+    ["`real` as the number 1", [{ ...good, real: 1 }], "non-boolean `real`"],
+    ["`real` absent", [{ verifier: "v1", reason: "r" }], "non-boolean `real`"],
+    ["`verifier` absent", [{ real: true, reason: "r" }], "no `verifier` id"],
+    ["`verifier` as a number", [{ ...good, verifier: 7 }], "no `verifier` id"],
+    ["`verifier` as the empty string", [{ ...good, verifier: "" }], "no `verifier` id"],
+    ["`reason` absent", [{ verifier: "v1", real: true }], "no `reason`"],
+    ["an unknown `category`", [{ ...good, category: "janitorial" }], "unknown `category`"],
+    ["an unknown `severity`", [{ ...good, severity: "Critical" }], "unknown `severity`"],
+  ])("refuses %s", (_what, ballot, expected) => {
+    expect(() => parseVotes(ballot)).toThrow(expected);
+  });
+
+  test("the refusal names the entry and the reading it refused to take", () => {
+    expect(() => parseVotes([good, { verifier: "v2", real: "false", reason: "no" }]))
+      .toThrow("vote 1 of the ballot");
+    // Not a dissent, and not a short group: the refusal has to say which.
+    expect(() => parseVotes([{ verifier: "v2", real: "false", reason: "no" }])).toThrow(UNREADABLE_VOTE);
+  });
+
+  /**
+   * The cheapest wrong fix, run as a case rather than described.
+   *
+   * Coercing `"false"` to `false` fixes the headline ballot and invents a
+   * dissent on this one: two genuine yeses and one unreadable vote still clear
+   * a 2-of-3 quorum, so the coerced reading passes a finding one of whose
+   * verifiers said nothing legible. Only refusing the whole ballot separates
+   * them (`.claude/rules/checks-must-be-able-to-fail.md`, the fifth shape).
+   */
+  test("the coerced reading still passes, which is why the ballot is refused instead", () => {
+    const raw = [
+      { verifier: "v1", real: "false", reason: "could not reproduce" },
+      { verifier: "v2", real: true, reason: "reproduced" },
+      { verifier: "v3", real: true, reason: "reproduced" },
+    ];
+    const coerced = raw.map(v => vote(v.verifier, v.real !== "false" && Boolean(v.real)));
+    expect(juryReading(coerced).passed).toBe(true);
+    expect(() => parseVotes(raw)).toThrow(UNREADABLE_VOTE);
   });
 });
