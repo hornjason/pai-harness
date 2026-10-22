@@ -89,22 +89,10 @@
 import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
-import { affectedTests } from "../lib/affected-tests";
+import { affectedTests, SAFE_TEST_PATH } from "../lib/affected-tests";
 import { textDependents } from "../lib/text-dependents";
 
 import { censusTestsFor, changesFor, type Change } from "./census-routing";
-
-/**
- * The shape a selected path is allowed to have.
- *
- * The caller interpolates this script's stdout into a shell command
- * unquoted, because word-splitting is how a list becomes arguments. Rather
- * than trust that every path a tree walk produced is inert, anything outside
- * this alphabet refuses the whole selection and falls back to the full
- * suite. The injection surface is removed by construction rather than by
- * assuming the walk is well-behaved.
- */
-const SAFE_TEST_PATH = /^[A-Za-z0-9._/-]+\.test\.tsx?$/;
 
 /** One census row that fired, and the changed paths that fired it. */
 export interface CensusAttribution {

@@ -30,10 +30,37 @@
  * composed form above makes the difference load-bearing: `bun test` with no
  * arguments runs the whole suite, which is the safe answer to a reading
  * nobody could take.
+ *
+ * Exit 2 for the same reason on a path that is not plain — see
+ * `refuseUnsafePaths`. Because stdout is reparsed by a shell, this script
+ * and `scripts/select-affected-tests.ts` are two producers for one
+ * consumer, and they share `SAFE_TEST_PATH` rather than each holding a
+ * copy of it.
  */
 import { changesFor } from "./census-routing";
 
+import { SAFE_TEST_PATH } from "../lib/affected-tests";
 import { textDependents, type ChangedFile } from "../lib/text-dependents";
+
+/**
+ * The selection, or the paths that disqualify it.
+ *
+ * Refuse, do not filter. An unsafe path means the walk produced something
+ * nobody predicted, and a selection with that one entry dropped is a
+ * selection missing exactly the file that was unusual — worse than no
+ * selection, because it still looks like an answer. Empty stdout in the
+ * `bun test $(…)` composition degrades to the full suite, which is the safe
+ * direction for a test selector and the same direction
+ * `scripts/select-affected-tests.ts` takes for the same input.
+ *
+ * `SAFE_TEST_PATH` is imported, not copied. Two producers emitting into one
+ * shell composition need one decider; see its definition in
+ * `lib/affected-tests.ts` for what the second copy would have cost.
+ */
+export function refuseUnsafePaths(tests: string[]): { ok: boolean; unsafe: string[] } {
+  const unsafe = tests.filter(t => !SAFE_TEST_PATH.test(t));
+  return { ok: unsafe.length === 0, unsafe };
+}
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -111,6 +138,17 @@ if (import.meta.main) {
         `anchor anything and were declined, worst ${JSON.stringify(trim(worst.anchor))} ` +
         `(${worst.occurrences}x in ${worst.target})`,
     );
+  }
+
+  const safety = refuseUnsafePaths(r.tests);
+  if (!safety.ok) {
+    console.error(
+      `\ntext-dependents: REFUSED — ${safety.unsafe.length} selected path(s) are not plain test ` +
+        "paths and this output is interpolated into a shell command unquoted: " +
+        `${safety.unsafe.slice(0, 3).join(", ")}. stdout is empty, so a composed ` +
+        "`bun test` runs everything rather than a selection with the odd one dropped",
+    );
+    process.exit(2);
   }
 
   if (r.tests.length > 0) console.log(`bun test ${r.tests.join(" ")}`);

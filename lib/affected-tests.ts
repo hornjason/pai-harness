@@ -45,6 +45,35 @@ export const SELECTABLE_SOURCE = /\.(ts|tsx|js|jsx|mts|cts)$/;
 export const TEST_FILE = /\.test\.(ts|tsx)$/;
 
 /**
+ * The shape a path is allowed to have before it may be PRINTED as part of a
+ * `bun test …` selection.
+ *
+ * Every selector here writes its answer to stdout and a caller interpolates
+ * it into a shell command unquoted, because word-splitting is how a list
+ * becomes arguments. Rather than trust that a tree walk produced inert
+ * paths, anything outside this alphabet refuses the whole selection. The
+ * injection surface is removed by construction rather than by assuming the
+ * walk is well-behaved.
+ *
+ * **It lives here, next to `TEST_FILE`, because there is now more than one
+ * producer.** It was a `const` inside `scripts/select-affected-tests.ts`
+ * until `scripts/text-dependents.ts` (#1054) began emitting into the same
+ * composition without it — a guard that one of two producers applies is a
+ * guard with a hole, and the hole is invisible from either file. Copying
+ * the pattern into the second producer would have made it two deciders that
+ * agree, which `.claude/rules/checks-must-be-able-to-fail.md` names as a
+ * shape where mutating either leaves the other holding the case up. One
+ * binding, both importers, and `test/selection-path-safety.test.ts` fails
+ * if a third producer declares its own.
+ *
+ * The shape of the defect is worth naming, because it is the shape of the
+ * issue that introduced it: #1054 is about a dependency expressed in a
+ * syntax the checker did not know, and this was the same thing one level
+ * up — a validation expressed in one of two producers.
+ */
+export const SAFE_TEST_PATH = /^[A-Za-z0-9._/-]+\.test\.tsx?$/;
+
+/**
  * Directories walked when building the graph.
  *
  * `workflows` is in this list for a reason worth stating: `ship.js` is the
