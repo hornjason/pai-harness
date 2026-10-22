@@ -1,4 +1,4 @@
-# generated-sha: e87f764fb0612694
+# generated-sha: b838087dc7818408
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -690,16 +690,24 @@ jobs:
           # not: it takes the HELD VERDICT and hands it to `reReviewScope`, which
           # refuses to diff-scope anything but a held PASS, because a diff against the
           # flagged commit does not contain the flagged code — #244, and the fail-open
-          # `46034035` was reverted for exactly it. The comment that used to sit here
-          # claimed parity with that function, and the bash never called it. Two
-          # deciders that DISAGREE, where only one of them runs: no TypeScript test can
-          # see the one that does.
+          # `46034035` was reverted for exactly it.
           #
-          # The honest fix is not to synthesise a held verdict in bash. This job does
-          # not have one — the previous round's verdict lives in a check-run annotation
-          # that this run replaces wholesale — so a bash reading of it would be a
-          # second decider for a question `reReviewScope` already answers, and the two
-          # could drift apart silently.
+          # The comment that used to sit here described that split correctly and was
+          # right about the design: this job holds no previous verdict, so it reports
+          # the floor and leaves the held-verdict half to the adjudicator. What it got
+          # wrong was its own workflow. There IS no adjudicator — `reviewScopeForRound`
+          # has zero production callers — and the floor was never merely reported: the
+          # step writes `review_scope` into the file the REVIEWER reads, and the prompt
+          # told the reviewer to narrow on it. So a round-number `diff` reached the
+          # reviewer with nothing in between, which is the fail-open the design was
+          # built to avoid, arriving by the one path the design did not describe.
+          #
+          # Publishing `reviewScopeForRound` therefore does not fix this on its own.
+          # The reviewer-facing path has to be gated too, and the honest fix meanwhile
+          # is not to synthesise a held verdict in bash: this job does not have one —
+          # the previous round's verdict lives in a check-run annotation that this run
+          # replaces wholesale — so a bash reading would be a second decider for a
+          # question `reReviewScope` already answers, free to drift from it.
           #
           # So the scope stays `full` until the adjudicator re-emits unresolved prior
           # findings (`carryForward`, written and tested and NOT yet called from
