@@ -60,7 +60,9 @@
  * battery's reach entirely.
  */
 import { spawnSync } from "child_process";
+import { resolve } from "path";
 
+import { canonicalRoot } from "./paths";
 import { readWorktreeRemote, redactRemote, repoSlug } from "./worktree-repo";
 
 /**
@@ -86,6 +88,19 @@ export type LaunchBaseReading =
   | { reading: "DIFFERENT_REPO"; cwd: string; projectRoot: string; refusal: string }
   /** Same repository, different working tree or branch. Failure 2, quiet version. */
   | { reading: "DIFFERENT_CHECKOUT"; cwd: string; projectRoot: string; refusal: string }
+  /**
+   * A root is reached through a symlink, so it has two spellings (#1129).
+   *
+   * This reading exists because its absence was the gap. `--show-toplevel`
+   * RESOLVES symlinks, so both spellings of one directory produce one
+   * answer and the comparison below reads `SAME_CHECKOUT` — the one gate
+   * that sees both the session and the root is structurally blind to the
+   * difference, and then hands the unresolved string onward to a workflow
+   * that can only compare strings. "The roots are canonical" and "the roots
+   * are two spellings that happen to resolve alike" were indistinguishable
+   * in this output; they no longer are.
+   */
+  | { reading: "NON_CANONICAL_ROOT"; cwd: string; projectRoot: string; refusal: string }
   /**
    * Something could not be read. NOT a pass: a reading that could not be
    * taken is indistinguishable from a clean one, and only one of them is
@@ -131,14 +146,94 @@ function branchOf(dir: string): string | null {
  * separates "the tree the run was handed" from "another tree of the same
  * project", and that distinction is the whole of failure 2's quiet half.
  */
-export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseReading {
+/**
+ * The roots that are not their own canonical spelling, as a reading (#1129).
+ *
+ * Returns `null` when every root given resolves to itself — which is the
+ * only state the rest of `launchBaseReading` can reason about, because
+ * every comparison downstream of it is between strings.
+ *
+ * `harnessRoot` is optional and skipped when absent rather than treated as
+ * canonical. `harnessRootFor()` in `lib/paths.ts` canonicalises the roots it
+ * produces, but it is not the only producer — a hand-typed `--harness-root`
+ * never goes through it, which is why this takes the value rather than
+ * trusting the producer.
+ *
+ * An unresolvable root is UNMEASURED and refuses. It is deliberately NOT
+ * folded into NON_CANONICAL_ROOT: "this root has two names" is fixed by
+ * relaunching with the other one, and "this root does not exist" is not, so
+ * collapsing them would hand the operator a remedy that cannot work.
+ */
+function nonCanonicalRoots(roots: {
+  projectRoot: string;
+  harnessRoot?: string;
+}): { reading: "NON_CANONICAL_ROOT" | "UNMEASURED"; refusal: string } | null {
+  for (const [name, given] of Object.entries(roots)) {
+    if (typeof given !== "string" || !given.trim()) continue;
+    let canonical: string;
+    try {
+      canonical = canonicalRoot(given);
+    } catch (e: any) {
+      return {
+        reading: "UNMEASURED",
+        refusal:
+          `${name} ${safe(given)} cannot be resolved to a real path (${redactRemote(String(e?.message || e))}). ` +
+          "Whether this run's containment checks would agree with the paths git reports is therefore " +
+          "unknown, and unknown is not canonical — it is refused rather than passed through unresolved (#1129)",
+      };
+    }
+    if (canonical === given) continue;
+
+    // TWO conditions, and they are reported apart because only one of them
+    // is about symlinks. Comparing `canonical` straight back against the raw
+    // string folds them together, and then a root spelled `…/rungate/` is
+    // refused with "which is a symlink to …/rungate" — a false statement
+    // about the operator's disk, offering as a remedy the path they just
+    // typed with one character removed. Found by the AI review of PR #1150.
+    //
+    // Both still refuse. A non-normalised root breaks the comparison in
+    // ship.js just as surely: it builds `${root}/.claude/worktrees/` and a
+    // trailing slash makes that a doubled separator no git-reported path
+    // matches. The verdict is the same; the sentence is not.
+    const normalised = resolve(given);
+    const why =
+      canonical !== normalised
+        ? `it is a symlink to ${safe(canonical)} — one directory under two names`
+        : `it is not a normalised path; it names ${safe(canonical)} with redundant or relative segments`;
+
+    return {
+      reading: "NON_CANONICAL_ROOT",
+      refusal:
+        `${name} was given as ${safe(given)}, and ${why}. ` +
+        "`git rev-parse --show-toplevel` resolves symlinks and every path git reports is canonical, " +
+        "but `collectDestination` in workflows/ship.js compares roots as STRINGS and cannot resolve " +
+        "anything: the sandbox has no filesystem (#69). So this run would refuse its own agent " +
+        `worktrees, and the refusal would read as "this directory is not yours". Relaunch with ` +
+        `${name} set to ${safe(canonical)}`,
+    };
+  }
+  return null;
+}
+
+export function launchBaseReading(
+  cwd: string,
+  projectRoot: string,
+  harnessRoot?: string,
+): LaunchBaseReading {
   // RAW for probing, REDACTED for reporting, and the two are never mixed
   // up: `git -C` must receive the real path, and a redacted one would send
   // the probe to a directory that does not exist — which resolves to
   // CWD_NOT_A_REPO and reads exactly like the finding this module exists
   // to report. Everything returned is built from `here`; everything handed
   // to git comes from `raw`.
-  const raw = { cwd: String(cwd ?? ""), projectRoot: String(projectRoot ?? "") };
+  const raw = {
+    cwd: String(cwd ?? ""),
+    projectRoot: String(projectRoot ?? ""),
+    // Absent stays absent rather than becoming "": the canonicality check
+    // skips a root it was not given, and an empty string would be
+    // indistinguishable from a caller that passed one and got it wrong.
+    harnessRoot: harnessRoot === undefined ? undefined : String(harnessRoot ?? ""),
+  };
   // Redacted ON THE READING, not at each call site. `check-launch-base.ts`
   // serialises the whole object, and a caller that had to remember to
   // redact is a control one caller will forget.
@@ -183,7 +278,31 @@ export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseR
     };
   }
 
-  if (cwdTop === rootTop) return { ...here, reading: "SAME_CHECKOUT" };
+  if (cwdTop === rootTop) {
+    // #1129 refines THIS answer and only this one, and the position is the
+    // whole point. `--show-toplevel` resolves symlinks, so two spellings of
+    // one directory arrive here as one toplevel and the comparison above
+    // cannot tell them apart — the unresolved string then travels on to
+    // `collectDestination`, which compares it by `startsWith` against paths
+    // git has already resolved.
+    //
+    // It is NOT checked earlier. A symlinked root is the mildest thing that
+    // can be wrong here: CWD_NOT_A_REPO, DIFFERENT_REPO and
+    // DIFFERENT_CHECKOUT are all worse and all more urgent, and a
+    // canonicality check placed above them MASKS them. Measured — on macOS
+    // `tmpdir()` is `/var/folders/...`, itself a symlink to `/private/var`,
+    // so every fixture built under it is non-canonical by accident: the
+    // early placement turned 15 cases in this module's own suite into
+    // NON_CANONICAL_ROOT, on macOS only, while Linux CI (`tmpdir()` is
+    // `/tmp`, not a link) stayed green. A check that changes which defect
+    // you are told about, per platform, is worse than the defect.
+    const nonCanonical = nonCanonicalRoots({
+      projectRoot: raw.projectRoot,
+      harnessRoot: raw.harnessRoot,
+    });
+    if (nonCanonical) return { ...here, ...nonCanonical };
+    return { ...here, reading: "SAME_CHECKOUT" };
+  }
 
   // Different trees. Which KIND of different decides what the operator does
   // next, so the two are never collapsed.
@@ -247,7 +366,11 @@ export function launchBaseReading(cwd: string, projectRoot: string): LaunchBaseR
  * reading that clears: UNMEASURED refuses with the rest, because a check
  * that could not be run is not a check that passed.
  */
-export function launchBaseRefusal(cwd: string, projectRoot: string): string | null {
-  const reading = launchBaseReading(cwd, projectRoot);
+export function launchBaseRefusal(
+  cwd: string,
+  projectRoot: string,
+  harnessRoot?: string,
+): string | null {
+  const reading = launchBaseReading(cwd, projectRoot, harnessRoot);
   return reading.reading === "SAME_CHECKOUT" ? null : reading.refusal;
 }

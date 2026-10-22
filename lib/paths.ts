@@ -34,6 +34,56 @@ const FIXES =
   "or pass the root you mean explicitly: harnessRootFor(root).";
 
 /**
+ * One spelling of a root, with symlinks followed (#1129).
+ *
+ * `resolve()` normalises `..` and relative segments and stops there — it does
+ * NOT follow symlinks, so two names for one directory survive it as two
+ * strings. That is only a cosmetic difference until something compares roots
+ * by `startsWith`, and `collectDestination` in `workflows/ship.js` does
+ * exactly that. It has no choice: `workflows/*.js` runs in a sandbox with no
+ * module loading and no `process` or `Bun` (#69, enforced by
+ * `scripts/validate-workflow.ts`), so `realpathSync` is unreachable from that
+ * file. A string compare and a realpath compare agree on every already-
+ * canonical path and disagree the moment one side is reached through a link.
+ *
+ * This repository is the live instance: it is reachable under both its
+ * canonical name and a symlink named after the repo, and the symlinked one is
+ * the name a person types. A run launched with it would compare an unresolved
+ * root against a resolved worktree path and refuse a directory that is in
+ * fact inside it.
+ *
+ * So the resolution happens HERE, at the one producer, rather than at the
+ * hundreds of sites that consume a root. Every consumer then gets one
+ * spelling and the sandboxed comparison is left with nothing to disagree
+ * about.
+ *
+ * An unresolvable root THROWS rather than falling back to `resolve()`. The
+ * fallback is the tempting line and it is the bug: a root that resolves to
+ * nothing would be compared against happily, and the run would refuse its own
+ * worktrees for a reason naming neither the root nor the fact that it was
+ * never checked. Unknown is not canonical.
+ */
+export function canonicalRoot(root: string): string {
+  if (!root || !root.trim()) {
+    throw new Error(
+      `canonicalRoot() was given an empty root at ${callSite()}. ` +
+        "An explicit root is the caller naming the tree it means; there is no tree to fall back to.",
+    );
+  }
+  const normalised = resolve(root);
+  try {
+    return realpathSync(normalised);
+  } catch (e: any) {
+    throw new Error(
+      `canonicalRoot() cannot be resolved for ${normalised} (from ${callSite()}): ${e?.message || e}. ` +
+        "A root that does not resolve is unmeasured, not canonical — it is refused here rather than " +
+        "passed through unresolved, because a comparison against it would silently disagree with every " +
+        "path git reports (#1129).",
+    );
+  }
+}
+
+/**
  * The harness root the CALLER means, stated rather than inferred (#105).
  *
  * Use this from anything that is about to EXECUTE or WRITE — `gate-executor`
@@ -41,6 +91,24 @@ const FIXES =
  * tree it is pointed at. For those, "whichever tree this module happens to sit
  * in" is not a default, it is a coin flip between the run's root and the
  * worktree the agent is editing, and the losing side gets written to.
+ *
+ * Canonical since #1129, and that is a behaviour change worth stating: this
+ * used to return `resolve(root)`, which left a symlinked spelling intact for
+ * every downstream comparison.
+ *
+ * A root that does not EXIST is still returned normalised, and that
+ * asymmetry with `canonicalRoot()` is deliberate rather than an oversight.
+ * This is a path helper, not a gate: its callers name a tree, and naming one
+ * that is not on this disk is legitimate — `scripts/sync-spec-tests.ts`
+ * takes a root from `argv[2]` and `gates/run-gate.ts` takes one from
+ * `HARNESS_ROOT`, and both are exercised with trees that do not exist.
+ * Throwing here would turn "you named a tree I cannot see" into a crash in
+ * the middle of unrelated work.
+ *
+ * The refusal the acceptance asks for lives where the DECISION is made
+ * instead: `launchBaseReading` reads an unresolvable root as UNMEASURED and
+ * refuses the launch. That is the one place a root being unreadable should
+ * stop something, and it is reached before any agent is spawned.
  */
 export function harnessRootFor(root: string): string {
   if (!root || !root.trim()) {
@@ -49,7 +117,11 @@ export function harnessRootFor(root: string): string {
         "An explicit root is the caller naming the tree it means; there is no tree to fall back to.",
     );
   }
-  return resolve(root);
+  try {
+    return canonicalRoot(root);
+  } catch {
+    return resolve(root);
+  }
 }
 
 export interface ImplicitRootOptions {

@@ -30,7 +30,7 @@
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -52,8 +52,26 @@ afterAll(() => {
   for (const d of made) rmSync(d, { recursive: true, force: true });
 });
 
+/**
+ * A temp directory that is its own canonical path on every platform.
+ *
+ * `realpathSync` is not decoration (#1129). On Linux, where CI runs,
+ * `tmpdir()` is `/tmp` and is not a symlink. On macOS it is
+ * `/var/folders/...`, and `/var` is itself a symlink to `/private/var` — so
+ * every fixture built here was non-canonical on one platform and canonical
+ * on the other, which is invisible until something in the module under test
+ * starts caring about the difference. `launchBaseReading` now does: it
+ * refines SAME_CHECKOUT into NON_CANONICAL_ROOT when a root has two
+ * spellings, and without this call five cases below read NON_CANONICAL_ROOT
+ * on a developer's Mac and SAME_CHECKOUT in CI.
+ *
+ * Resolving the fixture is the fix rather than relaxing the assertions: the
+ * cases here are about cwd-versus-projectRoot, and a platform's own symlink
+ * is a confound in that measurement, not a subject of it. The case that IS
+ * about symlinks builds its own, in `test/unit/root-canonicality.test.ts`.
+ */
 function scratch(tag: string): string {
-  const d = mkdtempSync(join(tmpdir(), `launch-base-${tag}-`));
+  const d = realpathSync(mkdtempSync(join(tmpdir(), `launch-base-${tag}-`)));
   made.push(d);
   return d;
 }

@@ -2611,8 +2611,12 @@ function launchBaseCheckShell() {
   // because ambient state is the defect; here the ambient state IS the
   // measurement, and a `cd` would make the step report the answer the run
   // wanted rather than the one it has.
+  // Both roots, because both reach this file unresolved and both are
+  // compared here as strings (#1129). Passing an ARGUMENT, not making a
+  // filesystem call: the resolution happens inside the script, which is not
+  // in the sandbox. #69 is unchanged by this line.
   return `   pwd
-   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-launch-base.ts`)} --project-root ${shellQuote(PROJECT_ROOT)}
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-launch-base.ts`)} --project-root ${shellQuote(PROJECT_ROOT)} --harness-root ${shellQuote(HARNESS_ROOT)}
    echo "EXIT: $?"
 `
 }
@@ -6410,16 +6414,26 @@ runWorktrees = worktreeRecords(implementResult.buildResult?.agentResults)
  *
  * That is not hypothetical here: this repository is reachable as BOTH
  * `…/Projects/rungate` and a symlink named after the repo, and the symlinked
- * name is the one a person types. A run launched with it would compare an
- * unresolved root against a resolved worktree path and refuse, and the
- * refusal would read as "this directory is not yours" when the real answer is
- * "nobody canonicalised the roots".
+ * name is the one a person types.
  *
- * So the refusal says so. This does NOT fix the containment reading and is
- * not pretending to: the fix is to resolve `projectRoot` and `harnessRoot`
- * where they are produced, before they reach this file, which is outside this
- * workflow and is filed separately. What it fixes is an operator reading a
- * containment error and going to look at the wrong thing.
+ * WHAT THIS STILL COVERS, AFTER #1129. The ROOT half is now fixed upstream:
+ * `canonicalRoot()` in `lib/paths.ts` resolves both roots at the producer,
+ * and `launchBaseReading` refuses a symlinked root at the Goal phase naming
+ * the canonical spelling — so a run no longer reaches this file with a root
+ * that has two names. That is a different case from the one left:
+ *
+ *   roots symlinked, target canonical -> fixed at the caller (#1129)
+ *   roots canonical, target symlinked -> STILL REFUSED HERE
+ *
+ * The second is why this hint stays. The target is a path an AGENT reported
+ * as its worktree (#155); it never passes through any producer that could
+ * resolve it, and this file cannot. `test/unit/root-canonicality.test.ts`
+ * asserts both rows, including that one, so the boundary is measured rather
+ * than remembered.
+ *
+ * So the refusal says so. It does NOT fix that remaining reading and is not
+ * pretending to. What it fixes is an operator reading a containment error
+ * and going to look at the wrong thing.
  *
  * Deliberately NOT a guess about whether a symlink is involved — nothing here
  * can know that. It names the possibility and what to check, which is what a

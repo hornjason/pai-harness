@@ -160,7 +160,17 @@ describe("SC-2179: SAME_CHECKOUT is the only reading that clears", () => {
       refusal: null,
     });
 
-    for (const reading of ["CWD_NOT_A_REPO", "DIFFERENT_REPO", "DIFFERENT_CHECKOUT", "UNMEASURED"]) {
+    // NON_CANONICAL_ROOT (#1129) is in the table for the same reason the
+    // rest are: ship.js refuses everything that is not SAME_CHECKOUT, so a
+    // new reading is carried by that rule rather than by a line naming it —
+    // and a rule nothing exercises is one a later edit can narrow silently.
+    for (const reading of [
+      "CWD_NOT_A_REPO",
+      "DIFFERENT_REPO",
+      "DIFFERENT_CHECKOUT",
+      "NON_CANONICAL_ROOT",
+      "UNMEASURED",
+    ]) {
       const r = read({ reading, exitCode: 1, refusal: `the measured reason for ${reading}` });
       expect(r.reading, `${reading} was not carried through`).toBe(reading);
       expect(r.refusal, `${reading} did not refuse`).toContain(`LAUNCH_BASE_${reading}`);
