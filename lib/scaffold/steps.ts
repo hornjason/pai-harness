@@ -9,10 +9,10 @@
  */
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, statSync } from "fs";
 import { readdirSorted } from "../readdir-sorted";
-import { join, basename, dirname } from "path";
+import { join, basename, dirname, resolve, sep } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
-import { isHarnessItself } from "../harness-identity";
+import { HARNESS_PACKAGE, isHarnessItself } from "../harness-identity";
 import { scanSpecs } from "../scanner";
 import { projectStateDerivation, projectStateKeyFileNote } from "../project-state-derivation";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
@@ -82,7 +82,7 @@ import {
   type WriteStrategy,
 } from "./owned-files";
 import type { SectionSpec } from "../agents-md-sections";
-import { hookRegistrationPath } from "../hook-trees";
+import { executedHookPath, hookRegistrationPath } from "../hook-trees";
 
 /**
  * Look for a declared health route in the places a server declares one.
@@ -3512,6 +3512,111 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(
 // ── Consumer hook deployment ─────────────────────────────────
 
 /**
+ * The commands Claude Code would actually RUN for one event, read the way
+ * Claude Code reads them (#1088).
+ *
+ * The schema is `event → matcher group → hooks[] → { type, command }`, and a
+ * leaf is a registration only when every level is present:
+ *
+ * ```json
+ * "PreToolUse": [
+ *   { "matcher": "Bash", "hooks": [ { "type": "command", "command": "…" } ] }
+ * ]
+ * ```
+ *
+ * `matcher` is omitted for events that do not have one — `SessionStart`,
+ * `SubagentStop`, `PostCompact` and the rest — but `hooks[]` and
+ * `type: "command"` are not optional anywhere. Read off a live
+ * `~/.claude/settings.json` holding twenty-five groups across eleven events,
+ * not off documentation.
+ *
+ * ## Why this is not `settingsCommands` from `lib/hook-trees.ts`
+ *
+ * That function walks the document recursively and collects any `command`
+ * string **at any depth**, deliberately: it answers a census question —
+ * *which trees does this machine register hooks from* — and a census that
+ * knew one shape would report a document in the next shape as empty, which
+ * is indistinguishable from a machine with no registrations.
+ *
+ * That tolerance is exactly why #1088 survived. `deployHooksToConsumers`
+ * wrote a bare `{ command }` straight into the event array; the permissive
+ * walk found the string, every test that asked "is the hook there?" said yes,
+ * and Claude Code — the only reader whose answer decides whether the guard
+ * runs — saw an array element it does not recognise as a hook. Two readers
+ * disagreed and the authoritative one was not under test.
+ *
+ * So this reader is **strict on purpose**, and it is a second binding on
+ * purpose. The two answer different questions and must be able to disagree:
+ * their disagreement on a bare `{ command }` is the whole defect, and a
+ * reading that cannot disagree cannot witness it
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ */
+export function executingHookCommands(settings: unknown, event: string): string[] {
+  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return [];
+  const hooks = (settings as Record<string, unknown>).hooks;
+  if (hooks === null || typeof hooks !== "object" || Array.isArray(hooks)) return [];
+  const groups = (hooks as Record<string, unknown>)[event];
+  if (!Array.isArray(groups)) return [];
+
+  const out: string[] = [];
+  for (const group of groups) {
+    if (group === null || typeof group !== "object" || Array.isArray(group)) continue;
+    // A bare `{ command }` has no `hooks[]`, and that is the #1088 shape. It
+    // is not a registration, so it is not reported as one.
+    const leaves = (group as Record<string, unknown>).hooks;
+    if (!Array.isArray(leaves)) continue;
+    for (const leaf of leaves) {
+      if (leaf === null || typeof leaf !== "object" || Array.isArray(leaf)) continue;
+      const rec = leaf as Record<string, unknown>;
+      // The field #1088 omitted. `type` is what tells a command hook from
+      // the other leaf kinds the schema allows, so a leaf without it is not
+      // a command this can claim will run.
+      if (rec.type !== "command") continue;
+      if (typeof rec.command === "string") out.push(rec.command);
+    }
+  }
+  return out;
+}
+
+/**
+ * Where a deployed hook command points, in the two spellings one deployment
+ * needs (#1088).
+ *
+ * `command` is what goes into the consumer's settings file; `disk` is the
+ * path this process checks for existence. They are returned together because
+ * writing one and checking the other is the defect: before this, the command
+ * was built from `join(harnessRoot, "hooks")` and nothing was checked at all,
+ * so a consumer that installed rungate from npm received twelve guards whose
+ * commands named a directory on the harness author's machine — and the run
+ * reported `DEPLOYED: 12 hooks`.
+ *
+ * Resolved against the CONSUMER, which is the tree the hook will run in:
+ *
+ * | the consumer is | command | disk |
+ * |---|---|---|
+ * | the harness itself | `${CLAUDE_PROJECT_DIR}/hooks` | `<root>/hooks` |
+ * | anything else | `${CLAUDE_PROJECT_DIR}/node_modules/rungate/hooks` | `<root>/node_modules/rungate/hooks` |
+ *
+ * `${CLAUDE_PROJECT_DIR}` rather than an absolute path, for the same reason
+ * the harness's own `.claude/settings.json` is spelled that way: the variable
+ * survives the checkout moving, and an absolute path baked at scaffold time
+ * is wrong the first time the consumer is cloned somewhere else.
+ *
+ * Identity comes from `isHarnessItself` — the project's own `package.json`
+ * `name` — which is the single existing binding for this question (#380) and
+ * the same one `promptPrefix` and `detectPromptPrefix` read. A second
+ * decider agreeing with it would be behaviourally one decider.
+ */
+export function consumerHooksDir(consumerRoot: string): { command: string; disk: string } {
+  return isHarnessItself(consumerRoot)
+    ? { command: "${CLAUDE_PROJECT_DIR}/hooks", disk: join(consumerRoot, "hooks") }
+    : {
+        command: "${CLAUDE_PROJECT_DIR}/node_modules/" + HARNESS_PACKAGE + "/hooks",
+        disk: join(consumerRoot, "node_modules", HARNESS_PACKAGE, "hooks"),
+      };
+}
+
+/**
  * Deploy hooks marked deployToConsumers:true to consumer projects'
  * .claude/settings.local.json with correct hookFor and command paths.
  * SC-472: scaffold deploys consumer-facing hooks
@@ -3594,10 +3699,24 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
     return;
   }
 
-  const hooksDir = join(root, "hooks");
-
   for (const consumer of harness.consumers) {
-    const consumerRoot = consumer.startsWith("/") ? consumer : join(root, consumer);
+    // An absolute entry is the repository owner naming a tree outside this
+    // one on purpose, and that is a supported declaration. A RELATIVE entry
+    // says "inside this repository", so one containing `..` is saying two
+    // things at once and only one of them can be true — refuse it rather
+    // than writing to wherever it lands (#1088).
+    const consumerRoot = consumer.startsWith("/") ? consumer : resolve(root, consumer);
+    if (!consumer.startsWith("/")) {
+      const base = resolve(root);
+      if (consumerRoot !== base && !consumerRoot.startsWith(base + sep)) {
+        actions.push(
+          `SKIP: Consumer ${consumer} — a relative consumer path must stay inside ${base}, ` +
+            `and this one resolves to ${consumerRoot}. Declare it as an absolute path if ` +
+            `that is deliberate.`,
+        );
+        continue;
+      }
+    }
     if (!existsSync(consumerRoot)) {
       actions.push(`SKIP: Consumer ${consumer} — directory not found`);
       continue;
@@ -3646,50 +3765,131 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
 
     if (!settings.hooks) settings.hooks = {};
 
+    // Resolved against the CONSUMER, not against the harness (#1088). `disk`
+    // is only ever used to ask whether the file is there; `command` is the
+    // only spelling that reaches the consumer's settings file.
+    const dirs = consumerHooksDir(consumerRoot);
+
     const deployedNames: string[] = [];
+    const repairedNames: string[] = [];
+    let alreadyPresent = 0;
     for (const hook of eligible) {
-      const resolvedCommand = hook.command.replace("${RUNGATE_HOOKS_DIR}", hooksDir);
+      const resolvedCommand = hook.command.replace("${RUNGATE_HOOKS_DIR}", dirs.command);
+      const diskCommand = hook.command.replace("${RUNGATE_HOOKS_DIR}", dirs.disk);
       const hookType = hook.hookFor as string;
 
-      if (!settings.hooks[hookType]) settings.hooks[hookType] = [];
+      if (!Array.isArray(settings.hooks[hookType])) settings.hooks[hookType] = [];
+      const groups: any[] = settings.hooks[hookType];
 
-      // Is this hook already deployed? Asked through the repo's one parse for
-      // the question (`lib/hook-trees.ts`), not with a substring test.
+      // Does the file this command runs exist in the tree it will run in?
       //
-      // `h.command.includes(hook.name)` matched anywhere in the string, so an
-      // unrelated entry could shadow a hook and the deployment would silently
-      // decide it was already there: a consumer's own
-      // `bun ./scripts/lint.ts # skip MergeGuard` suppresses MergeGuard, and
-      // any hook whose name is a substring of another's — which nothing in
-      // the registry forbids — suppresses its longer sibling. The failure is
-      // invisible, because "already deployed" and "deployed" produce the same
-      // absence of a complaint.
-      //
-      // `hookRegistrationPath` answers the registration question off the
-      // EXECUTED path, so a mention in a comment or an argument is a mention.
-      const existing = settings.hooks[hookType].find(
-        (h: any) =>
-          h?.command === resolvedCommand ||
-          (typeof h?.command === "string" && hookRegistrationPath(h.command, hook.name) !== null),
+      // Nothing asked before, so the deployment could not tell "the guard is
+      // installed" from "the guard's path names nothing here" — and both
+      // reported `DEPLOYED`. A silently inert security control is worse than
+      // an absent one; an absent one gets noticed.
+      const executed = executedHookPath(diskCommand);
+      if (executed === null) {
+        actions.push(
+          `UNMEASURED: ${consumer} — ${hook.name}: could not read which file ` +
+            `"${hook.command}" executes, so whether it is present was never established. ` +
+            `Not deployed.`,
+        );
+        continue;
+      }
+      if (!existsSync(executed)) {
+        actions.push(
+          `UNMEASURED: ${consumer} — ${hook.name}: nothing at ${executed}, which is where ` +
+            `the command being written points. Not deployed. Install ${HARNESS_PACKAGE} in ` +
+            `the consumer, or drop deployToConsumers on this entry.`,
+        );
+        continue;
+      }
+
+      // Registrations as CLAUDE CODE would see them. Reading `groups` for a
+      // top-level `command` — which is what this used to do — counts the
+      // inert pre-#1088 entries as deployments, so a consumer that already
+      // received the broken shape would never receive the working one and
+      // the run would report "already deployed" forever.
+      const registered = executingHookCommands(settings, hookType).filter(
+        c => hookRegistrationPath(c, hook.name) !== null,
       );
-      if (existing) continue;
+      if (registered.includes(resolvedCommand)) {
+        alreadyPresent++;
+        continue;
+      }
+      if (registered.length > 0) {
+        // Names the hook, runs something else. That is a disagreement about
+        // which program a guard is, and resolving it by appending a second
+        // registration — or by treating it as already deployed — both pick a
+        // winner silently. Say it and leave the consumer's entry alone.
+        actions.push(
+          `CONFLICT: ${consumer} — ${hook.name} is already registered under ${hookType} as ` +
+            `${registered.join(", ")}, which is not ${resolvedCommand}. Left alone; ` +
+            `nothing was deployed for this hook.`,
+        );
+        continue;
+      }
 
-      const hookEntry: any = { command: resolvedCommand };
-      if (hook.matcher) hookEntry.matcher = hook.matcher;
+      // Inert leftovers from the shape this fixes: a bare `{ command }` in
+      // the event array, which Claude Code does not recognise as a hook.
+      // Removed rather than left beside the correct entry, because a reader
+      // cannot tell one of ours from one of the consumer's — and ours is
+      // identified exactly: it EXECUTES `<name>.hook.ts`, by the same parse
+      // the registration check uses.
+      for (let i = groups.length - 1; i >= 0; i--) {
+        const g = groups[i];
+        if (g === null || typeof g !== "object" || Array.isArray(g)) continue;
+        if (Array.isArray(g.hooks)) continue;
+        if (typeof g.command !== "string") continue;
+        if (hookRegistrationPath(g.command, hook.name) === null) continue;
+        groups.splice(i, 1);
+        repairedNames.push(hook.name);
+      }
 
-      settings.hooks[hookType].push(hookEntry);
+      // The executing shape: event → matcher group → `hooks[]` → `{ type,
+      // command }`. An existing group with the SAME matcher is reused, so a
+      // re-scaffold does not accumulate one group per run, and events with
+      // no matcher get a group with the key omitted rather than set to
+      // `undefined` — which is what `~/.claude/settings.json` holds for
+      // SessionStart, SubagentStop and PostCompact.
+      const matcher: string | undefined =
+        typeof hook.matcher === "string" && hook.matcher.length > 0 ? hook.matcher : undefined;
+      let group = groups.find(
+        (g: any) =>
+          g !== null &&
+          typeof g === "object" &&
+          !Array.isArray(g) &&
+          Array.isArray(g.hooks) &&
+          (typeof g.matcher === "string" ? g.matcher : undefined) === matcher,
+      );
+      if (!group) {
+        group = matcher === undefined ? { hooks: [] } : { matcher, hooks: [] };
+        groups.push(group);
+      }
+      group.hooks.push({ type: "command", command: resolvedCommand });
       deployedNames.push(hook.name);
     }
 
-    if (deployedNames.length > 0) {
+    if (deployedNames.length > 0 || repairedNames.length > 0) {
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-      actions.push(
-        `DEPLOYED: ${deployedNames.length} hooks to ${consumer}/.claude/settings.local.json ` +
-          `— ${deployedNames.join(", ")}`,
-      );
-    } else {
+      if (repairedNames.length > 0) {
+        actions.push(
+          `REPAIRED: ${repairedNames.length} unrecognised hook entries removed from ` +
+            `${consumer}/.claude/settings.local.json — ${repairedNames.join(", ")}. They were ` +
+            `written in a shape Claude Code does not execute (#1088) and never ran.`,
+        );
+      }
+      if (deployedNames.length > 0) {
+        actions.push(
+          `DEPLOYED: ${deployedNames.length} hooks to ${consumer}/.claude/settings.local.json ` +
+            `— ${deployedNames.join(", ")}`,
+        );
+      }
+    } else if (alreadyPresent === eligible.length) {
       // Reachable only with a non-empty eligible set, so this now means what
-      // it says. The `eligible.length === 0` guard above took the other case.
+      // it says. The `eligible.length === 0` guard above took the other case,
+      // and an UNMEASURED or CONFLICT hook is no longer swept in here — each
+      // pushed its own line and this count excludes it.
       actions.push(
         `SKIP: all ${eligible.length} eligible hooks already deployed to ${consumer}`,
       );

@@ -301,10 +301,17 @@ describe("SC-1519: the two steps a rehearsal must not run, do not run", () => {
     roots.push(consumer);
     mkdirSync(join(consumer, ".claude"));
     writeFileSync(join(consumer, ".claude", "settings.local.json"), "{}\n");
+    // #1088: the deployment now resolves the command against the CONSUMER's
+    // installed package and refuses to write an entry whose file is not
+    // there. Without this the positive control below deploys nothing, and a
+    // guard that never had to fire would look as though it had.
+    const consumerHooks = join(consumer, "node_modules", "rungate", "hooks");
+    mkdirSync(consumerHooks, { recursive: true });
+    writeFileSync(join(consumerHooks, "probe.hook.ts"), "// a hook\n");
 
     const fixture = plantDriftedConsumer("consumers");
     mkdirSync(join(fixture, "hooks"), { recursive: true });
-    writeFileSync(join(fixture, "hooks", "probe.ts"), "// a hook\n");
+    writeFileSync(join(fixture, "hooks", "probe.hook.ts"), "// a hook\n");
     // Two fixture details the positive control below forced out, and the
     // reason it is here: `hooks` comes from hooks.json, not config.json —
     // `loadFromDirectory` spreads it last and defaults it to `[]`, so a
@@ -321,7 +328,7 @@ describe("SC-1519: the two steps a rehearsal must not run, do not run", () => {
       join(fixture, ".claude", "rungate", "hooks.json"),
       JSON.stringify([{
         name: "probe", enabled: true, hookFor: "PreToolUse",
-        command: "bun ${RUNGATE_HOOKS_DIR}/probe.ts", deployToConsumers: true,
+        command: "bun ${RUNGATE_HOOKS_DIR}/probe.hook.ts", deployToConsumers: true,
       }], null, 2),
     );
 
@@ -386,7 +393,12 @@ describe("SC-1512: one binding decides what counts as a written path", () => {
       // needs no staging. It has been emitted since long before #442 and
       // was in neither list the whole time — the widened detector above is
       // what surfaced it, which is the argument for widening.
-      "PRESERVED"]);
+      "PRESERVED",
+      // #1088: a consumer entry that names one of our hooks but EXECUTES a
+      // different file. The deployment leaves it alone and writes nothing
+      // for that hook, so it is the absence of a write by definition —
+      // staging on it would stage a file the run deliberately did not touch.
+      "CONFLICT"]);
     const emitted = new Set<string>();
     // Two narrownesses, both found by #442 planting a verb and watching
     // this guard not notice — the third shape in
