@@ -596,8 +596,8 @@ function loadCollectBoundary(source = shipSource) {
   // declaration the assignment would create a sloppy-mode global and the
   // control tests below would pass over a block that recorded nothing.
   const run = new Function(
-    "implementResult", "REPO", "log", "terminalFailure",
-    "worktreeIdentityViolations", "redactRemote", "worktreeRecords",
+    "implementResult", "REPO", "log", "terminalFailure", "shipFailed", "symlinkHint",
+    "worktreeIdentityViolations", "redactRemote", "worktreeRecords", "collectDestination",
     `let runWorktrees = []\nreturn (async () => {\n${body}\nreturn { shipped: true, runWorktrees }\n})()`,
   );
   return {
@@ -608,12 +608,34 @@ function loadCollectBoundary(source = shipSource) {
         repo,
         (m: string) => logs.push(String(m)),
         async (status: string, extra: Record<string, unknown>) => ({ status, ...extra }),
+        // A DESTINATION refusal is not a repo mismatch and must not exit as
+        // one. It leaves through #1056's own exit, so the two are told apart
+        // by the cases below rather than sharing a name (#524, #1098).
+        async (phase: string, reason: string) => ({ status: "SHIP_FAILED", phase, reason }),
+        // ship.js's real hint, built from its own block for the same reason
+        // the allowlist is: a reimplementation would survive its removal.
+        shipSymlinkHint,
         worktreeIdentityViolations,
         redactRemote,
         worktreeRecords,
+        // #1098 — the block now vets the DESTINATION as well as the identity,
+        // and the allowlist lives in a different marked block. ship.js's real
+        // one, pinned to the roots these fixtures are written against: `RIGHT`
+        // sits under this repository's worktrees and `WT` does not.
+        (d: unknown) => shipCollectDestination(d, "/Users/jhorn/Projects/rungate", "/Users/jhorn/Projects/rungate"),
       ) as Promise<Record<string, unknown>>,
   };
 }
+
+/** ship.js's real symlink hint, for the boundary harness above. */
+const shipSymlinkHint = new Function(
+  `${markedBlock("SYMLINK-HINT")}\nreturn symlinkHint`,
+)() as (path: unknown) => string;
+
+/** ship.js's real allowlist, for the boundary harness above. */
+const shipCollectDestination = new Function(
+  `${markedBlock("COLLECT-DESTINATION")}\nreturn collectDestination`,
+)() as (dir: unknown, projectRoot?: string, harnessRoot?: string) => string | null;
 
 describe("SC-1448: the run stops at the collection boundary, not after it", () => {
   test("the block is at module top level, so a wrapper cannot switch it off", () => {
@@ -680,6 +702,33 @@ describe("SC-1448: the run stops at the collection boundary, not after it", () =
     expect(got.status, "the run carried on past a worktree in another repository")
       .toBe("WORKTREE_REPO_MISMATCH");
     expect(String(got.reason)).toContain("asacommandcenter");
+    expect(logs.join("\n")).toContain("COLLECT REFUSED");
+  });
+
+  test("a worktree of the RIGHT repository in the wrong place ends the run (#1098)", async () => {
+    // The case identity cannot see, driven through the real block. A clone
+    // of this repository parked somewhere else reports a matching remote, so
+    // every identity reading says match — and the directory is still not one
+    // this run may stage from, which is the question `collectDestination`
+    // answers and the one that used to be asked ~350 lines later.
+    const { call, logs } = loadCollectBoundary();
+    const elsewhere = "/Users/jhorn/Projects/some-other-clone";
+    const got = await call(
+      [{ worktreePath: elsewhere, worktreeRepo: "git@github.com:hornjason/pai-harness.git" }],
+      RUN_REPO,
+    );
+    expect(got.status, "a directory this run does not own reached the collector")
+      .toBe("SHIP_FAILED");
+    expect(String(got.reason)).toContain("not a directory this run may act in");
+    // …and NOT under the repository's name. The repository matched; saying
+    // WORKTREE_REPO_MISMATCH here would be an exit contradicting its own
+    // reason, which is the #524 defect rather than a variant of it. The
+    // identity case above asserts the other half, so the two exits are told
+    // apart by two cases and not by one.
+    expect(got.status, "a destination refusal left under the repo-mismatch exit")
+      .not.toBe("WORKTREE_REPO_MISMATCH");
+    expect(String(got.reason))
+      .toContain("the implement step reported a worktree this run will not commit from");
     expect(logs.join("\n")).toContain("COLLECT REFUSED");
   });
 

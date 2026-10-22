@@ -1446,6 +1446,28 @@ function worktreeIdentity(worktreePath, expectedRepo, reported) {
  * boundary every row will be committed from, so "no path" is not "nothing to
  * check" — it is a row claiming files with no checkable origin, and omitting
  * one field would otherwise skip the guard entirely.
+ *
+ * `allowPath` is the DESTINATION question asked at the same boundary (#1098).
+ * Identity answers "which repository is this a worktree of", which is a
+ * reading of the remote the agent reported; it says nothing about whether the
+ * directory is one this run may act in. Those were separate checks sitting
+ * ~350 lines apart, and the second one ran after two agents had been told to
+ * validate and to fix inside the path — so a worktree the run would later
+ * refuse to COMMIT from was a worktree two agents had already WORKED in.
+ * Asked here, every reported path is allowlisted once, at the boundary that
+ * already exists, before anything is interpolated into a prompt.
+ *
+ * It is asked where identity had nothing to say, not instead of it: a row in
+ * the wrong REPOSITORY keeps #218's own refusal, which names the repository.
+ * The case this adds is the one identity cannot see — a checkout of the right
+ * repository in a directory this run does not own reads as a match.
+ *
+ * Injected rather than referenced: `collectDestination` is declared further
+ * down `workflows/ship.js` and is not part of this block, and this block is
+ * sliced out and executed on its own by the tests. A predicate the caller
+ * passes keeps the two copies of this function identical and keeps the slice
+ * loadable. Absent, nothing is allowlisted — a caller that is merely
+ * SURVEYING rows has no destination to vet.
  */
 function worktreeIdentityViolations(reports, expectedRepo, opts = {}) {
   if (!Array.isArray(reports)) return []
@@ -1454,7 +1476,16 @@ function worktreeIdentityViolations(reports, expectedRepo, opts = {}) {
     const path = r && typeof r.worktreePath === 'string' ? r.worktreePath.trim() : ''
     if (!path && !opts.requirePath) continue
     const got = worktreeIdentity(path, expectedRepo, r && r.worktreeRepo)
-    if (got.refusal) out.push(got.refusal)
+    if (got.refusal) { out.push(got.refusal); continue }
+    // AFTER the identity reading, and only where identity had nothing to
+    // say. A row that is a worktree of the wrong repository should be told
+    // so by name — that is the more specific diagnosis and #218's own words
+    // for it. What this adds is the case identity CANNOT see: a checkout of
+    // the RIGHT repository sitting in a directory this run does not own,
+    // which every identity reading reports as a match.
+    if (path && typeof opts.allowPath === 'function' && !opts.allowPath(path)) {
+      out.push(`${path} is not this run's project root nor one of its agent worktrees, so it is not a directory this run may act in (#1098)`)
+    }
   }
   return out
 }
@@ -6291,6 +6322,14 @@ if (mDecomposition && mDecomposition.subIssues && mDecomposition.subIssues.lengt
 // path is not "nothing to check", it is a row claiming files with no
 // checkable origin, and the default skip would let one omitted field switch
 // the guard off at the only place it is load-bearing.
+//
+// `allowPath` because this is also the first place every reported path is in
+// hand, and "may this worktree contribute to the repository" has a second
+// half the identity reading cannot answer (#1098): whether the directory is
+// one this run owns. `collectDestination` used to be asked ~350 lines below,
+// about `commitDir` alone, after the Validate and Fix prompts had already
+// named the path to two agents. It hoists, so asking it here costs nothing
+// structurally and moves the refusal ahead of both prompts.
 const preCollectIdentity = worktreeIdentityViolations(
   implementResult.buildResult?.agentResults, REPO, { requirePath: true })
 if (preCollectIdentity.length > 0) {
@@ -6307,13 +6346,116 @@ if (preCollectIdentity.length > 0) {
   })
 }
 
+// Identity is clean, so every violation the SAME binding reports with
+// `allowPath` supplied is a DESTINATION violation and nothing else — the
+// second call is a superset of the first, and the first came back empty.
+// Asked as its own question because it needs its own exit: reporting "this
+// directory is not one this run owns" under WORKTREE_REPO_MISMATCH names the
+// repository as the problem when the repository is fine, and an exit whose
+// name contradicts its reason is the #524 defect, not a variant of it.
+//
+// It refuses in #1056's words and through #1056's exit deliberately. This is
+// the same decision that guard makes about the same value, asked before the
+// prompts instead of after; a second status and a second sentence for one
+// decision is two vocabularies for one fact, and the next reader cannot tell
+// which of them is authoritative.
+const strayDestinations = worktreeIdentityViolations(
+  implementResult.buildResult?.agentResults, REPO,
+  { requirePath: true, allowPath: collectDestination })
+if (strayDestinations.length > 0) {
+  for (const r of strayDestinations) log(`COLLECT REFUSED: ${r}`)
+  return await shipFailed('Implement',
+    'the implement step reported a worktree this run will not commit from: ' +
+    `${strayDestinations.join('; ').slice(0, 400)} — refused before the Validate and Fix ` +
+    'prompts name the path to an agent, not after (#1098, #1056, #155). ' +
+    symlinkHint(''))
+}
+
 // The reply passed. Record where it came from so the gates can ask the same
 // question of the disk, which is the half a reply cannot answer (#414).
 runWorktrees = worktreeRecords(implementResult.buildResult?.agentResults)
 // ──── COLLECT-IDENTITY-END ────
 
+// ──── SYMLINK-HINT-START ────
+/**
+ * The sentence a containment refusal needs when the roots may be unresolved.
+ *
+ * `collectDestination` compares STRINGS. It has to: `workflows/*.js` runs in
+ * a sandbox with no module loading and no `process` or `Bun` (#69), so
+ * `realpathSync` — which `scripts/collect-worktree-files.ts` uses for the
+ * authoritative source-containment check — is not reachable from this file at
+ * all. A string compare and a realpath compare agree on every path that is
+ * already canonical and disagree the moment one side is reached through a
+ * symlink.
+ *
+ * That is not hypothetical here: this repository is reachable as BOTH
+ * `…/Projects/rungate` and a symlink named after the repo, and the symlinked
+ * name is the one a person types. A run launched with it would compare an
+ * unresolved root against a resolved worktree path and refuse, and the
+ * refusal would read as "this directory is not yours" when the real answer is
+ * "nobody canonicalised the roots".
+ *
+ * So the refusal says so. This does NOT fix the containment reading and is
+ * not pretending to: the fix is to resolve `projectRoot` and `harnessRoot`
+ * where they are produced, before they reach this file, which is outside this
+ * workflow and is filed separately. What it fixes is an operator reading a
+ * containment error and going to look at the wrong thing.
+ *
+ * Deliberately NOT a guess about whether a symlink is involved — nothing here
+ * can know that. It names the possibility and what to check, which is what a
+ * reading that cannot be taken is allowed to say.
+ */
+function symlinkHint(path) {
+  const named = String(path == null ? '' : path).slice(0, 120)
+  return 'If the path above and this run\'s roots differ only by a symlink — one side canonical ' +
+    'and the other reached through a linked name — then the roots were passed unresolved and ' +
+    'the containment reading is an artefact of that rather than a judgement about ' +
+    `${named || 'the directory'}. Compare \`realpath\` of both before concluding the directory ` +
+    'is foreign; this check compares strings because the sandbox has no filesystem (#69).'
+}
+// ──── SYMLINK-HINT-END ────
+
+// ──── MARCUS-WORKTREE-START ────
 // Capture Marcus's worktree path so Quinn and fix iterations validate the same code
 const marcusWorktreePath = implementResult.buildResult?.worktreePath || PROJECT_ROOT
+
+// Allowlisted HERE, at the assignment, and not at the `git add` destination
+// ~350 lines down (#1098).
+//
+// This is a DIFFERENT field from the rows the block above vets:
+// `buildResult.worktreePath`, not `buildResult.agentResults[].worktreePath`.
+// Today the two agree on every path through this file — `runImplement` builds
+// its single row from the same value, and `runDecomposedShip` takes the last
+// completed sub-issue's — but nothing enforces that, and this is the value
+// that is interpolated into the Validate prompt 229 lines below and the Fix
+// prompt 295 lines below. Both tell an agent to work in the directory. The
+// run deciding afterwards that it will not COMMIT from a path is not a guard
+// on a path two agents have already acted in.
+//
+// Not a second decider for the question the identity block asks: that one
+// reads `agentResults`, this one reads a field it never looks at, and a row
+// only this check can reach is a `buildResult.worktreePath` that no
+// `agentResults` entry repeats.
+if (!collectDestination(marcusWorktreePath)) {
+  log(`IMPLEMENT REFUSED: ${marcusWorktreePath} is not this run's project root nor one of its agent worktrees`)
+  // The path is carried in `worktreePath` and printed by the `log` above, and
+  // is deliberately NOT interpolated into this sentence. SHELL-QUOTE-1 holds
+  // bare interpolations of agent-reported bindings at zero across
+  // `workflows/*.js`, and its remedy is the right one here: this value never
+  // reaches a shell, so it belongs in a `log()` call and a structured field
+  // rather than in prose that is one edit away from being a command (#1056).
+  // #1056's exit and #1056's sentence, for the reason given at the identity
+  // boundary above: one decision about one value, asked earlier. The value is
+  // sliced rather than interpolated bare, which is the form #1056 uses and
+  // the form SHELL-QUOTE-1 is satisfied by.
+  return await shipFailed('Implement',
+    'the implement step reported a worktree this run will not commit from: ' +
+    `${String(marcusWorktreePath).slice(0, 200)} is neither this run's project root nor one of ` +
+    'its agent worktrees, and the Validate and Fix prompts address an agent to it, so the run ' +
+    'stops before either prompt is built rather than after (#1098, #1056, #155). ' +
+    symlinkHint(marcusWorktreePath))
+}
+// ──── MARCUS-WORKTREE-END ────
 
 // AC evidence validation merged into verify gate (Phase 7) — the separate
 // pre-commit evidence agent was duplicating verify gate work, adding ~170s overhead.
@@ -10086,6 +10228,97 @@ function shipStatusFor(proveVerdict, suiteReading) {
 }
 // ──── PROVE-STATUS-END ────
 
+// ──── WORKFLOW-PROBE-START ────
+/**
+ * "How many workflow files does this project have", written so that it cannot
+ * answer `0` when it could not look (#1098).
+ *
+ * `0` is the no-CI EXEMPTION in `ciBlocksReadiness` — the branch that
+ * undrafts a PR without reading CI at all. The probe was one line: an `ls` of
+ * the two workflow globs with stderr sent to /dev/null, piped into `wc -l`.
+ * An unreadable `commitDir`, a `.github` that cannot be traversed, a
+ * `.github/workflows` with no read bit, and a project that genuinely has no
+ * CI all produced that same `0`. The failure mode of the probe WAS the
+ * exemption.
+ *
+ * Which makes this the sixth member of the list in
+ * `.claude/rules/config-access.md`: `0`, `{}`, `null`, `SKIP` and silence are
+ * indistinguishable from success, and so is a count that could not be taken.
+ *
+ * #1101 closed the first of those four, in the same shape and with the same
+ * token: a `test -d` on `commitDir` ahead of the count, refusing with
+ * WORKFLOW_PROBE_FAILED. It is kept. What it could not reach is the other
+ * three — a directory that EXISTS and cannot be enumerated — because the
+ * count below it is a PIPELINE whose status is `wc`'s, and because the error
+ * it would have raised is sent to /dev/null. And the token never reached the
+ * CONSUMER: `ciBlocksReadiness` reads an agent's JSON, not the shell's exit
+ * code, so a reply of `{workflowCount: 0}` after a refused probe still takes
+ * the exemption. `workflowProbe` is the field that closes that half.
+ *
+ * Two things this deliberately does NOT do, both of which were the obvious
+ * repair and both of which are measured in `test/ci-workflow-probe.test.ts`:
+ *
+ *  - **It does not ask the agent.** The count was moved onto the shell on
+ *    purpose — an agent asked "does this project have CI" can answer wrongly
+ *    in the direction that unblocks itself, and the prose at the ci-verify
+ *    prompt already tried and could not succeed, because the shell handed it
+ *    a bare `0` in both states. The shell now prints a different token in
+ *    each, so the agent transcribes a reading rather than forming one.
+ *  - **It does not just drop the `2>/dev/null` and add a `||`.** That repair
+ *    is a NO-OP, measured: the `||` tests the status of a PIPELINE, which is
+ *    `tr`'s, which is 0, so it cannot fire on any input and the unreadable
+ *    directory still reports `0`. Take the pipeline out to make it reachable
+ *    and the probe refuses EVERYTHING — an `ls` of two globs exits 1 when
+ *    only one matches, because the unmatched one is passed through literally
+ *    and ENOENTs, and `.yml` files with no `.yaml` is this repository's own
+ *    shape. `find` is used instead because a no-match is exit 0 and an
+ *    enumeration error is not.
+ *
+ * The enumeration and the counting are therefore separate statements, for the
+ * same reason: `find … | wc -l` hides the error a third time, which is how
+ * #1101's `find` rewrite still reported `0` for a directory it could not read.
+ *
+ * `quotedDir` is already through `shellQuote` at the call site, which is where
+ * #1056 put every agent-reported path. It is concatenated with `/.github`
+ * rather than interpolated inside the quotes: `'/a/b'/.github` is one word to
+ * the shell, and quoting the whole thing here would need this function to
+ * know how the caller quoted it.
+ */
+function workflowProbeCommand(quotedDir) {
+  return [
+    // `-d` alone is not "I can look in here": a directory at mode 000 exists,
+    // `[ -d ]` says yes, and then `.github` is invisible to `[ -e ]` and the
+    // count comes out 0 — which is the exemption. Measured, not reasoned.
+    `if [ ! -d ${quotedDir} ] || [ ! -x ${quotedDir} ] || [ ! -r ${quotedDir} ]; then echo WORKFLOW_PROBE_FAILED; exit 1; fi`,
+    // Gated on `-e` deliberately. The reading is sound BECAUSE the line above
+    // already refused an untraversable `${quotedDir}`, so a false `-e` here
+    // means absent and cannot mean "could not look". Asking `[ ! -x ]`
+    // unconditionally instead refuses every project that has no `.github` at
+    // all — the probe-that-refuses-everything this issue's acceptance row
+    // exists to stop. Measured both ways; the control is below.
+    `if [ -e ${quotedDir}/.github ] && [ ! -x ${quotedDir}/.github ]; then echo WORKFLOW_PROBE_FAILED; exit 1; fi`,
+    `if [ ! -e ${quotedDir}/.github/workflows ]; then`,
+    `  workflows=0`,
+    // Every narrowing of this enumeration fails toward "no CI here, ship it",
+    // so the two symlink shapes GitHub Actions honours are both counted and
+    // both measured. `-type f` alone misses a symlinked `ci.yml`; without
+    // `-L`, a symlinked `.github/workflows` DIRECTORY is not descended into
+    // at all and the probe reports 0 for a project whose CI runs. `-type l`
+    // is kept beside `-L` on purpose: under `-L` a DANGLING link is reported
+    // as a link, so it counts, and the run asks for CI rather than exempting
+    // itself. That is the direction this probe is allowed to be wrong in.
+    `elif ! found=$(find -L ${quotedDir}/.github/workflows -maxdepth 1 \\( -type f -o -type l \\) \\( -name '*.yml' -o -name '*.yaml' \\)); then`,
+    `  echo WORKFLOW_PROBE_FAILED; exit 1`,
+    `elif [ -z "$found" ]; then`,
+    `  workflows=0`,
+    `else`,
+    `  workflows=$(printf '%s\\n' "$found" | wc -l | tr -d ' ')`,
+    `fi`,
+    `echo WORKFLOW_PROBE_OK`,
+  ].join('\n')
+}
+// ──── WORKFLOW-PROBE-END ────
+
 // ──── PR-READINESS-START ────
 /**
  * The line between "the harness stands behind this" and "it got this far"
@@ -10138,7 +10371,21 @@ function ciBlocksReadiness(ci) {
   // draft forever. The count comes from the shell, not from a judgement: an
   // agent asked "does this project have CI" can answer wrongly in the
   // direction that unblocks itself.
-  if (ci.workflowCount === 0) return null
+  // And the shell has to say it LOOKED (#1098). This branch is the only one
+  // that undrafts a PR without reading CI at all, so it is the one place
+  // where "the count is zero" and "the count could not be taken" must not be
+  // the same input — and under the old `ls … 2>/dev/null | wc -l` they were
+  // the same byte. `workflowProbe` is the token `workflowProbeCommand`
+  // prints, and the exemption is keyed on the pair. Checked INSIDE this
+  // branch and not above it: a probe failure must not change the answer for
+  // a project whose count is non-zero, where the `ci-status` reading decides
+  // and the exemption is not in play.
+  if (ci.workflowCount === 0) {
+    if (ci.workflowProbe !== 'OK') {
+      return `the CI step reported no workflow files, but the probe did not report OK (workflowProbe was ${JSON.stringify(ci.workflowProbe ?? null)}) — "this project has no CI" and "the workflow count could not be taken" cannot be told apart, and only one of them earns an undraft`
+    }
+    return null
+  }
   if (typeof ci.workflowCount !== 'number') {
     return 'the CI step did not report how many workflows the project has, so "no CI" and "CI not checked" cannot be told apart'
   }
@@ -10210,15 +10457,16 @@ Read CI's verdict on the commit this run pushed. Every path below is already
 absolute, so run them from wherever you are:
 
 sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)
-test -d ${shellQuote(commitDir)} || { echo "WORKFLOW_PROBE_FAILED: cannot read" ${shellQuote(commitDir)} "— a count of 0 here would take the no-CI exemption and undraft without reading CI (#1056)"; exit 1; }
-workflows=$(find ${shellQuote(commitDir)}/.github/workflows -maxdepth 1 \\( -name '*.yml' -o -name '*.yaml' \\) 2>/dev/null | wc -l | tr -d ' ')
+${workflowProbeCommand(shellQuote(commitDir))}
 bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 600000
 
-The \`test -d\` line is not decoration. A count of 0 means "this repository
-has no CI" and takes a branch that undrafts the PR WITHOUT reading CI, so a
-probe that merely FAILED would reach the same 0 and wave the PR through — the
-two are byte-identical to the \`if\` below. Run the block unchanged, and if it
-prints WORKFLOW_PROBE_FAILED report that rather than working around it.
+The probe block is not decoration (#1056, #1098). A count of 0 means "this
+repository has no CI" and takes a branch that undrafts the PR WITHOUT reading
+CI, so a probe that merely FAILED would reach the same 0 and wave the PR
+through — the two are byte-identical to the \`if\` that reads them. Run the
+block unchanged. It prints exactly one of WORKFLOW_PROBE_OK and
+WORKFLOW_PROBE_FAILED, and after FAILED it exits: do not count the files
+yourself, and do not re-run it hoping for a better answer.
 
 The SHA comes from git, not from you. Do NOT pass a branch name: the checks
 endpoint accepts one and answers about whatever commit that branch pointed at
@@ -10231,10 +10479,16 @@ and they are different facts: one says CI looked and said no, the other says
 nobody has looked yet. Do not retry with gh, and do not re-run the command
 hoping for a better answer.
 
-Set workflowCount to the number $workflows printed. Zero is a real answer —
-a project with no workflow files has no CI to wait for — and it is not the
-same as the command failing. If any command did not run, omit workflowCount
-entirely rather than guessing it.
+Which token the probe printed is the answer, not something for you to decide.
+Set workflowProbe to "OK" if it printed WORKFLOW_PROBE_OK, and to "FAILED" if
+it printed WORKFLOW_PROBE_FAILED. If it printed neither, omit workflowProbe.
+
+Set workflowCount to the number $workflows holds, and only after
+WORKFLOW_PROBE_OK. Zero is a real answer there — a project with no workflow
+files has no CI to wait for. After WORKFLOW_PROBE_FAILED there is no count:
+$workflows was never assigned, and reporting zero would say "this project has
+no CI" about a directory nobody could read. Omit workflowCount entirely
+rather than guessing it.
 `, { label: 'ci-verify', phase: 'Prove', schema: {
   type: 'object',
   properties: {
@@ -10242,6 +10496,11 @@ entirely rather than guessing it.
     sha: { type: 'string' },
     reason: { type: 'string' },
     workflowCount: { type: 'number' },
+    // The token the shell printed, relayed verbatim. Undeclared, a structured
+    // reply is FILTERED and the field never reaches `ciBlocksReadiness`, which
+    // would read as a probe that did not report OK — fail-closed, but for the
+    // wrong reason and on every run (#646, #1098).
+    workflowProbe: { type: 'string', enum: ['OK', 'FAILED'] },
     failed: { type: 'array', items: { type: 'string' } },
     pending: { type: 'array', items: { type: 'string' } },
   },
@@ -10265,8 +10524,7 @@ if (prState.action === 'MARK_READY') {
 Take the PR out of draft. Run exactly this one block, unchanged:
 
 sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)
-test -d ${shellQuote(commitDir)} || { echo "WORKFLOW_PROBE_FAILED: cannot read" ${shellQuote(commitDir)} "— a count of 0 here would take the no-CI exemption and undraft without reading CI (#1056)"; exit 1; }
-workflows=$(find ${shellQuote(commitDir)}/.github/workflows -maxdepth 1 \\( -name '*.yml' -o -name '*.yaml' \\) 2>/dev/null | wc -l | tr -d ' ')
+${workflowProbeCommand(shellQuote(commitDir))}
 if [ "$workflows" -eq 0 ]; then
   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
 else
@@ -10274,9 +10532,13 @@ else
     && bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
 fi
 
-The \`test -d\` line is not decoration either: a count of 0 takes the branch
-that undrafts WITHOUT reading CI, so a probe that merely failed would reach
-that same 0. If it prints WORKFLOW_PROBE_FAILED, report it and stop.
+The probe block is not decoration either, and it is not yours to split
+(#1056, #1098). A count of 0 takes the branch that undrafts WITHOUT reading
+CI, so a probe that merely failed would reach that same 0. It \`exit 1\`s on
+WORKFLOW_PROBE_FAILED, so a directory nobody could enumerate never reaches
+the \`if\`. If the block exits there, set ok to false and say so in detail;
+do not re-run it, do not count the files yourself, and do not run
+\`pr-ready\` on its own.
 
 The \`&&\` is the whole point and is not yours to split (#46). CI's verdict
 reached this workflow through a reply you typed, and a reply is not a reading:
