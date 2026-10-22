@@ -2270,6 +2270,14 @@ export function aiReviewScaffoldAction(vertex: VertexCiDecision): string {
  * safe because every variable is read through `${X:-}` — an unset GitHub
  * secret interpolates to the empty string, so absent and empty have to be the
  * same case anyway.
+ *
+ * "No `set -e`" describes what this generator WRITES, not the shell the step
+ * RUNS IN (#1110). GitHub's default for a `run:` step is `/usr/bin/bash -e
+ * {0}`, so `-e` is on in every generated step whether or not the text says
+ * so. A condition is unaffected — `-e` does not fire inside `if`, `&&`, `||`
+ * or `!` — but a standalone statement that may exit non-zero is a shell that
+ * dies there. `buildReviewRunScript`'s adjudication is the one such statement
+ * in this file and it carries the full account.
  */
 export function buildAuthDetectScript(vertex: VertexCiDecision): string {
   // Vertex is a GENERATED LITERAL, not a runtime reading. The provider is
@@ -3138,8 +3146,30 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     # is unset, so it is outside the checkout by construction rather than by
     # convention. A \`cd\` that fails takes the subshell non-zero with no
     # outcome line, which the reading below fails closed on.
-    adjudication=\$(cd "\$(dirname "\${${AI_REVIEW_FINDINGS_PATH_VAR}}")" && ${adjudicator} "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>&1)
-    adjudicated=\$?
+    #
+    # \`|| adjudicated=\$?\` AND NOT A PLAIN ASSIGNMENT (#1110). The module
+    # header says "No \`set -e\`", and that is true of what this generator
+    # WRITES and false of what the runner SUPPLIES: GitHub's default shell for
+    # a \`run:\` step is \`/usr/bin/bash -e {0}\`, which every job log echoes.
+    # Under \`-e\` an assignment whose value is a command substitution takes
+    # the substitution's status, and a non-zero status aborts the shell ON
+    # THIS LINE — so \`adjudicated=\$?\`, the \`printf\`, the \`case\` and the
+    # UNMEASURED annotation below were all unreachable for every non-zero
+    # adjudication, which is EVERY blocking finding and EVERY failure to
+    # start. Measured on run 39711570020: 1.8s, no stdout at all, exit 1.
+    # An uninstallable adjudicator was worse still — the shell died carrying
+    # the adjudicator's own 127 out of the job, past the mapped exit
+    # ${AI_REVIEW_REQUIRED_EXIT} entirely.
+    #
+    # \`||\` puts the substitution where \`-e\` does not fire, so the exit code
+    # becomes DATA for the reading below instead of control flow. Everything
+    # downstream was already correct; it had simply never run.
+    #
+    # \`adjudicated\` is seeded first: on the success path the \`||\` branch
+    # does not execute, and an unset variable there would make a clean
+    # adjudication read as an empty string rather than as 0.
+    adjudicated=0
+    adjudication=\$(cd "\$(dirname "\${${AI_REVIEW_FINDINGS_PATH_VAR}}")" && ${adjudicator} "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>&1) || adjudicated=\$?
     printf '%s\\n' "\${adjudication}"
 
     # DID IT RUN, asked before WHAT IT SAID. Without this line a registry that
