@@ -50,6 +50,22 @@ const DECLARED_SCOPE = parsedArgs.declaredScope || []
 const ENV = parsedArgs.environment || 'test'
 const SIZE = parsedArgs.size || 'S'
 
+// ──── SHELL-QUOTE-START ────
+// Single-quote a shell word. Single quotes are the only shell quoting with
+// no interior expansion at all, so a path containing a space, a `$` or a
+// backtick all survive. `"${…}"` stops at the space and leaves the rest
+// expanding, which is the cheapest wrong fix for #1086 and not accepted.
+//
+// INLINED, not imported: the workflow sandbox has no require, no dynamic
+// import() and no filesystem (#69). `lib/workflow-security.ts` is the
+// source of truth; test/workflow-prompt-top-level-cd.test.ts runs every
+// copy against the same inputs and fails on any divergence, so changing
+// one means changing all of them.
+function shellQuote(word) {
+  return `'${String(word).replace(/'/g, "'\\''")}'`
+}
+// ──── SHELL-QUOTE-END ────
+
 // ── #344: four hardcodings, all one consumer's ───────────────────────────
 //
 // This file was a DailyBriefDashboard script living in the harness. It
@@ -112,7 +128,7 @@ log('Running mechanical verification: tsc + tests + container + smoke')
 const mechanical = await parallel([
   () => agent(`
 Run TypeScript type checking on the project:
-( cd ${PROJECT_ROOT} && ${TYPECHECK_CMD} ) 2>&1 | tail -20
+( cd ${shellQuote(PROJECT_ROOT)} && ${TYPECHECK_CMD} ) 2>&1 | tail -20
 Report PASS if no errors, FAIL with the error output if errors found.
   `, { label: 'tsc', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA }),
 
@@ -121,7 +137,7 @@ Report PASS if no errors, FAIL with the error output if errors found.
   TEST_CMD
     ? () => agent(`
 Run the unit test suite:
-( cd ${PROJECT_ROOT} && ${TEST_CMD} ) 2>&1 | tail -30
+( cd ${shellQuote(PROJECT_ROOT)} && ${TEST_CMD} ) 2>&1 | tail -30
 Report PASS with the test count if all pass, FAIL with failing test names.
 If the command ran ZERO tests, report FAIL — a suite that matched nothing has
 not passed, it has not run.

@@ -494,9 +494,21 @@ function buildSafeSSHCommand(host, command) {
 // composes the subject from the API into a file and the agent runs
 // `git commit -F` on it — one composer in the tree, and nothing to compare
 // it against, which is better than a comparator over a second copy.
+// ──── SHELL-QUOTE-START ────
+// Single-quote a shell word. Single quotes are the only shell quoting with
+// no interior expansion at all, so a path containing a space, a `$` or a
+// backtick all survive. `"${…}"` stops at the space and leaves the rest
+// expanding, which is the cheapest wrong fix for #1086 and not accepted.
+//
+// INLINED, not imported: the workflow sandbox has no require, no dynamic
+// import() and no filesystem (#69). `lib/workflow-security.ts` is the
+// source of truth; test/workflow-prompt-top-level-cd.test.ts runs every
+// copy against the same inputs and fails on any divergence, so changing
+// one means changing all of them.
 function shellQuote(word) {
   return `'${String(word).replace(/'/g, "'\\''")}'`
 }
+// ──── SHELL-QUOTE-END ────
 
 
 // ──── RECORDER-COMMAND-START ────
@@ -2012,7 +2024,7 @@ function acListBlock(acs) {
 
 function phase2AcsCommand(harnessRoot, workDir, acs) {
   const payload = JSON.stringify(acs.map(a => ({ id: a.id, statement: a.statement, specElement: a.specElement })))
-  return `bun --cwd ${harnessRoot} -e 'require("fs").writeFileSync(process.argv[1], process.argv[2])' ` +
+  return `bun --cwd ${shellSingleQuote(harnessRoot)} -e 'require("fs").writeFileSync(process.argv[1], process.argv[2])' ` +
     `${workDir}/phase2-acs.json ${shellSingleQuote(payload)}`
 }
 
@@ -3496,7 +3508,7 @@ console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
    There is deliberately no "|| echo {}" fallback: an unresolvable config must
    fail setup, not arrive as an empty object that reads as "configured with
    nothing" and silently drops the project to the LIGHT tier floor):
-bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT} --out ${WORK_DIR}/resolved-config.json
+bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${shellQuote(PROJECT_ROOT)} --out ${WORK_DIR}/resolved-config.json
 
    Report its EXIT STATUS as configResolved (#1065). Exit ZERO is
    configResolved: true, and the JSON it printed is config. A NON-ZERO exit,
@@ -8983,7 +8995,7 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
    Extract the directory from that path (dirname of the found file).
 
 2. Run grading:
-   bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts "$TDIR" --project ${PROJECT_ROOT} ${WORK_DIR}
+   bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts "$TDIR" --project ${shellQuote(PROJECT_ROOT)} ${WORK_DIR}
 
 3. Run efficiency analysis. Use tee, not a plain redirect — the file is read by
    the persist step and you still need to see the output to report it below:

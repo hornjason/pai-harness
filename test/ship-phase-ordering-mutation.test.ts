@@ -452,10 +452,13 @@ describe("#273: every anchor the suite still uses is classified, and the classif
     expect(resolvesInComment(HEAL_SRC, "GRADE")).toBe(true);
     // 132 until #1035, which added 22 lines above it: the `test-config` prompt
     // stopped naming the project's config file by path and now runs
-    // scripts/resolve-config.ts across the subprocess boundary instead. The
-    // number moving is the point of the arm — it records WHERE a comment-
-    // resolving anchor lands, so an edit anywhere above it has to be noticed.
-    expect(HEAL_SRC.slice(0, HEAL_SRC.indexOf("GRADE")).split("\n").length).toBe(154);
+    // scripts/resolve-config.ts across the subprocess boundary instead. 154
+    // until #1086, which added the 16-line SHELL-QUOTE block above it —
+    // ship-and-heal.js builds shell commands and cannot import (#69), so it
+    // now carries its own copy of `shellQuote`. The number moving is the
+    // point of the arm — it records WHERE a comment-resolving anchor lands,
+    // so an edit anywhere above it has to be noticed.
+    expect(HEAL_SRC.slice(0, HEAL_SRC.indexOf("GRADE")).split("\n").length).toBe(170);
     expect(resolvesInComment(HEAL_SRC, "'SHIPPED'")).toBe(false);
     expect(resolvesInComment(HEAL_SRC, "label: 'remediate'")).toBe(false);
   });

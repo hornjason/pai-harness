@@ -44,14 +44,46 @@
  * switch lives in the hook; `topLevelCdRefusal` has no mode and cannot be
  * turned off, which is why this check survives that fix for real rather than
  * vacuously.
+ *
+ * ## The second half, added by #1086
+ *
+ * The rewrite above removed the `cd` and kept the path bare. `cd ${X} && git`
+ * and `git -C ${X}` interpolate the directory the same way, so a fix that
+ * touched 50 commands carried an unquoted path to every one of them —
+ * measured on `91386f0f`, 64 directory arguments across four workflow files,
+ * in a tree where `shellQuote` already existed and was already called 65
+ * times. The second describe block below asks the other question about the
+ * same lines: not "does this move the session" but "does this survive a
+ * directory name with a space in it".
+ *
+ * They are deliberately in one file. A reader sent here by either failure
+ * should see that both are properties of the same rewrite, and the second
+ * one is the half that a search for `shellQuote` in `workflows/ship.js`
+ * actively hides — 65 hits read as a file that handles quoting.
  */
 
-import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 import { remedyMessage } from "../lib/check-remedy";
+import {
+  BARE_PATH_REMEDY,
+  barePathInterpolations,
+  barePathInterpolationsIn,
+} from "../lib/shell-path-interpolation";
 import { CD_GUARD_MODE_VAR, topLevelCdRefusal } from "../lib/top-level-cd";
+import { shellQuote } from "../lib/workflow-security";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const WORKFLOW_DIR = join(REPO_ROOT, "workflows");
@@ -195,5 +227,249 @@ describe("#1056: the scan can fail, and fails on the right input", () => {
       if (previous === undefined) delete process.env[CD_GUARD_MODE_VAR];
       else process.env[CD_GUARD_MODE_VAR] = previous;
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// #1086: the same lines, quoted
+// ═══════════════════════════════════════════════════════════════════════
+
+const SHELL_QUOTE_START = "// ──── SHELL-QUOTE-START ────";
+const SHELL_QUOTE_END = "// ──── SHELL-QUOTE-END ────";
+
+/** The inline `shellQuote` block a workflow carries, markers included. */
+function shellQuoteBlock(source: string, rel: string): string {
+  const a = source.indexOf(SHELL_QUOTE_START);
+  const b = source.indexOf(SHELL_QUOTE_END);
+  if (a === -1 || b === -1) {
+    throw new Error(
+      `${rel} builds shell commands but carries no ${SHELL_QUOTE_START} block. ` +
+        BARE_PATH_REMEDY,
+    );
+  }
+  return source.slice(a, b + SHELL_QUOTE_END.length);
+}
+
+/** The copy as a callable, so a case can compare behaviour and not text. */
+function loadCopy(block: string): (word: unknown) => string {
+  return new Function(`${block}\nreturn shellQuote`)() as (word: unknown) => string;
+}
+
+/** Workflow files that actually build a shell command, so carry a copy. */
+const QUOTING_WORKFLOWS = WORKFLOW_FILES.filter(f =>
+  readFileSync(join(WORKFLOW_DIR, f), "utf-8").includes(SHELL_QUOTE_START),
+);
+
+describe("#1086: no workflow prompt hands a shell an unquoted directory", () => {
+  test("the scan has a population to be about", () => {
+    // Same control as the `cd` scan above, and for the same reason: every
+    // assertion below is otherwise satisfied by a glob that stopped matching.
+    expect(WORKFLOW_FILES.length, "no workflow sources were scanned").toBeGreaterThan(3);
+  });
+
+  for (const file of WORKFLOW_FILES) {
+    test(`workflows/${file}`, () => {
+      const rel = `workflows/${file}`;
+      const violations = barePathInterpolationsIn(
+        readFileSync(join(WORKFLOW_DIR, file), "utf-8"),
+      ).map(v => `${rel}:${v.line} — ${v.form} ${v.expression}`);
+      expect(
+        violations,
+        remedyMessage({
+          root: REPO_ROOT,
+          check: "SHELL-QUOTE-1",
+          violations,
+          fix: BARE_PATH_REMEDY,
+        }),
+      ).toEqual([]);
+    });
+  }
+});
+
+describe("#1086: the scan can fail, and fails on the right input", () => {
+  // The population above is empty by construction after the fix. These are
+  // the inputs that separate a working scan from one that builds no
+  // candidates and a decider that never refuses.
+
+  test("a bare directory interpolation IS found", () => {
+    expect(barePathInterpolations("git -C ${PROJECT_ROOT} status")).toHaveLength(1);
+    expect(barePathInterpolations("bun --cwd ${HARNESS_ROOT} scripts/x.ts")).toHaveLength(1);
+    expect(barePathInterpolations("( cd ${PROJECT_ROOT} && make )")).toHaveLength(1);
+    expect(barePathInterpolations("x.ts --project ${PROJECT_ROOT}")).toHaveLength(1);
+  });
+
+  test("the forms the fix uses are NOT found, or the check forbids its own remedy", () => {
+    // The mutant/original pair for the decider: these lines and the ones
+    // above differ only in HOW the directory is quoted, and that difference
+    // is the entire property. A scan that flagged these would have sent the
+    // next agent back to the bare form.
+    const clean = [
+      "git -C ${shellQuote(PROJECT_ROOT)} status",
+      "git -C ${shellQuote(PROJECT_ROOT || '.')} status",
+      "bun --cwd ${shellQuote(`${HARNESS_ROOT}/x`)} y.ts",
+      "git -C /Users/x/thing status",
+      "--project ${q(projectRoot)}",
+    ];
+    for (const line of clean) {
+      expect(barePathInterpolations(line), line).toEqual([]);
+    }
+  });
+
+  test("a path quoted once into a variable is NOT found, which is how ship.js writes it", () => {
+    // `gitDerivedStaging` in workflows/ship.js binds the quoted value because
+    // one of its four uses is inside a double-quoted `echo`, where re-quoting
+    // at the site would be wrong. The exemplar predates this check.
+    const source = [
+      "function gitDerivedStaging(dir) {",
+      "  const d = shellQuote(dir)",
+      "  return `git -C ${d} add -A`",
+      "}",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toEqual([]);
+
+    // And the laundering is a BINDING, not a name: rename the quoter away and
+    // the same `${d}` is refused. Without this the case above is satisfied by
+    // a decider that accepts any single-letter name.
+    expect(barePathInterpolationsIn(source.replace("shellQuote(dir)", "String(dir)"))).toHaveLength(1);
+  });
+
+  test("the cheapest wrong fix IS found: double quotes are not accepted", () => {
+    const found = barePathInterpolations('git -C "${PROJECT_ROOT}" status');
+    expect(found).toHaveLength(1);
+    expect(found[0].quoting).toBe("double");
+  });
+
+  test("prose about a bare path is NOT found, because a comment reaches no shell", () => {
+    // Taken from the docblock above `gitAddForCommit` in workflows/ship.js,
+    // which recounts a defect: "the commit still ran `cd ${commitDir}`, so
+    // nothing was staged". It was the only false hit of the first run of this
+    // scan, and a quoting fix applied inside a comment changes nothing a
+    // shell ever sees.
+    const source = [
+      "/**",
+      " * a remediation round runs a new agent and the commit still ran",
+      " * `cd ${commitDir}`, so nothing was staged.",
+      " */",
+      "const x = 1",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toEqual([]);
+
+    // The control: the same text as CODE is refused, so the case above
+    // witnesses the stripping rather than a decider that found nothing.
+    expect(barePathInterpolationsIn("const c = `( cd ${commitDir} && make )`")).toHaveLength(1);
+  });
+});
+
+describe("#1086: the failure is real, against a real shell and a real git", () => {
+  // Everything above is a claim about source text. This is the claim the
+  // issue actually makes — that a consumer at `/Users/x/My Projects/thing`
+  // gets an error naming a directory nobody typed — rendered and run.
+
+  const scratch = mkdtempSync(join(tmpdir(), "rg-1086-"));
+  const sh = (command: string) =>
+    spawnSync("/bin/sh", ["-c", command], { encoding: "utf-8" });
+
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  test("a space in the checkout path breaks the bare form and not the quoted one", () => {
+    const repo = join(scratch, "My Projects", "thing");
+    mkdirSync(repo, { recursive: true });
+    expect(spawnSync("git", ["init", "-q", repo]).status, "git init failed").toBe(0);
+
+    // The two renderings of the SAME prompt line, differing only in the fix.
+    const bare = sh(`git -C ${repo} rev-parse --show-toplevel`);
+    const quoted = sh(`git -C ${shellQuote(repo)} rev-parse --show-toplevel`);
+
+    expect(bare.status, `bare form unexpectedly succeeded: ${bare.stdout}`).not.toBe(0);
+    expect(bare.stderr).toContain("My");
+    expect(quoted.status, quoted.stderr).toBe(0);
+    expect(quoted.stdout.trim().endsWith("thing")).toBe(true);
+  });
+
+  test("double quotes survive the space and still expand, which is why they are refused", () => {
+    // Not an attacker: `PROJECT_ROOT` is a CLI argument and no issue title
+    // reaches it (#1086 traced each value). This is an operator whose
+    // directory name contains a `$`, and it is the reason the accepted
+    // remedy is single quotes rather than the fix that answers the filed
+    // symptom. workflows/ship.js carries a comment about the security review
+    // that caught this exact shape inside `gitDerivedStaging`.
+    const marker = join(scratch, "EXPANDED");
+    const odd = join(scratch, `$(touch ${marker})`);
+    mkdirSync(odd, { recursive: true });
+    writeFileSync(join(odd, "INSIDE"), "");
+
+    // Double quotes: the directory is not found AND the substitution runs.
+    expect(sh(`test -f "${odd}/INSIDE"`).status, "double quotes found the file").not.toBe(0);
+    expect(existsSync(marker), "the substitution inside double quotes did not run").toBe(true);
+
+    rmSync(marker);
+    expect(sh(`test -f ${shellQuote(join(odd, "INSIDE"))}`).status, "single quotes lost the file").toBe(0);
+    expect(existsSync(marker), "single quotes expanded something").toBe(false);
+  });
+});
+
+describe("#1086: every inline shellQuote is the one in lib/workflow-security.ts", () => {
+  // `workflows/*.js` cannot import (#69), so each file that builds a shell
+  // command carries its own copy. Four unanchored copies is how two of them
+  // end up disagreeing about a backslash a year from now.
+
+  test("the population is the files that build shell commands", () => {
+    expect(QUOTING_WORKFLOWS.length, "no workflow carries an inline quoter").toBeGreaterThan(3);
+  });
+
+  test("the marked blocks are byte-identical", () => {
+    const blocks = QUOTING_WORKFLOWS.map(f => ({
+      file: f,
+      block: shellQuoteBlock(readFileSync(join(WORKFLOW_DIR, f), "utf-8"), `workflows/${f}`),
+    }));
+    const diverged = blocks.filter(b => b.block !== blocks[0].block).map(b => `workflows/${b.file}`);
+    expect(
+      diverged,
+      remedyMessage({
+        root: REPO_ROOT,
+        check: "SHELL-QUOTE-2",
+        violations: diverged,
+        fix:
+          `the ${SHELL_QUOTE_START} block must be identical in every workflow that ` +
+          `carries one, and must match \`shellQuote\` in lib/workflow-security.ts. ` +
+          BARE_PATH_REMEDY,
+      }),
+    ).toEqual([]);
+  });
+
+  test("each copy agrees with lib/workflow-security.ts on every input", () => {
+    // Behaviour, not text: identical blocks could still be identically wrong,
+    // and the lib export is what `test/workflow-security-integration.test.ts`
+    // and every TypeScript caller use.
+    const inputs: unknown[] = [
+      "/Users/x/My Projects/thing",
+      "it's here",
+      "/tmp/$(touch pwned)",
+      "back`tick`",
+      "a\\b",
+      "line\nbreak",
+      "",
+      42,
+      null,
+    ];
+    for (const file of QUOTING_WORKFLOWS) {
+      const copy = loadCopy(
+        shellQuoteBlock(readFileSync(join(WORKFLOW_DIR, file), "utf-8"), `workflows/${file}`),
+      );
+      for (const input of inputs) {
+        expect(copy(input), `workflows/${file} diverged on ${JSON.stringify(input)}`)
+          .toBe(shellQuote(input));
+      }
+    }
+  });
+
+  test("the agreement can fail, so the case above is not two spellings of the same value", () => {
+    // The mutation: a copy that escapes nothing. If `loadCopy` were returning
+    // the lib function — the obvious way for this battery to pass while
+    // measuring nothing — this row would be green too.
+    const broken = loadCopy(
+      "function shellQuote(word) { return `'${String(word)}'` }",
+    );
+    expect(broken("it's here")).not.toBe(shellQuote("it's here"));
   });
 });
