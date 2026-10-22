@@ -3630,13 +3630,35 @@ export function consumerHooksDir(consumerRoot: string): { command: string; disk:
  *
  * ## Every exit leaves a reading (#1047)
  *
- * #70 fixed one silent return and left four. Measured on this repository on
- * 2026-10-21: zero of twenty registry entries set `deployToConsumers`, so the
- * eligible set was empty on every run this function has ever had, and the
- * only line it emitted was `SKIP: All hooks already deployed to <consumer>` —
- * which is a claim about hooks that were never eligible, printed by the
- * `else` of `deployed > 0`. A caller reading the action list saw a successful
- * no-op. So did the release.
+ * #70 fixed one silent return and left four. When #1047 was written, zero of
+ * twenty registry entries set `deployToConsumers`, so the eligible set was
+ * empty on every run this function had ever had, and the only line it emitted
+ * was `SKIP: All hooks already deployed to <consumer>` — a claim about hooks
+ * that were never eligible, printed by the `else` of `deployed > 0`. A caller
+ * reading the action list saw a successful no-op. So did the release.
+ *
+ * **That count is no longer true, and this docblock asserted it for longer
+ * than it held.** Re-measured 2026-10-21 by parsing
+ * `.claude/rungate/hooks.json`: **twenty entries, twelve `true`, eight
+ * `false`, none absent.** #1047's AC-11 now refuses an entry that leaves the
+ * field unset, which is why nothing is absent and why the number cannot drift
+ * back. Corrected by #713, which found the same stale claim in two other
+ * places; if you are reading this docblock you are most likely the person
+ * about to decide what a consumer receives, and the old sentence told you
+ * nobody had opted in when twelve entries had.
+ *
+ * What that does and does not mean, since the eligible set being non-empty is
+ * the whole precondition for everything below:
+ *
+ * - Deployment is **armed**, not dormant. `hooks/` is in `package.json`'s
+ *   `files[]`, so the `node_modules/<pkg>/hooks` command this function writes
+ *   resolves on a consumer.
+ * - **Publishing deploys nothing by itself.** This function runs from the
+ *   scaffold's write-steps, not from an install hook, so the trigger is a
+ *   scaffold run and the sink is `<consumerRoot>/.claude/settings.local.json`.
+ * - **`consumers` is `[]` on this repository today**, so the guard below
+ *   returns before any of that. The first declared consumer to be scaffolded
+ *   is when twelve hook registrations first appear in somebody's settings.
  *
  * Four outcomes used to arrive as one, or as nothing:
  *
