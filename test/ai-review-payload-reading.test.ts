@@ -190,7 +190,11 @@ describe("AC-3: a consumer that required the review is refused", () => {
     expect(withPayload.code).not.toBe(0);
     expect(without.code).not.toBe(0);
     expect(withPayload.err).not.toBe(without.err);
-    expect(withPayload.err).toContain("adjudicated the findings payload");
+    // The unadjudicated state's own phrase. Since #1013's review this
+    // refusal no longer mentions the require var at all — it fires whether
+    // or not a consumer opted in — so the sentence to match on is the one
+    // about the reading that did not happen.
+    expect(withPayload.err).toContain("produced no reading");
     expect(without.err).toContain("never ran");
   });
 });
@@ -207,10 +211,17 @@ describe("AC-4: the pair varies only the payload", () => {
     const present = run({ payload: PAYLOAD, outcome: "success" });
     const missing = run({ payload: null, outcome: "success" });
 
-    expect(present.out.length, "the payload-present run printed nothing").toBeGreaterThan(0);
-    expect(missing.out.length, "the payload-missing run printed nothing").toBeGreaterThan(0);
-    expect(present.out).not.toBe(missing.out);
-    expect(present.out).toContain(COMPLETION_CLAIM);
+    // BOTH streams on each side (#1013 review): the payload-present state
+    // refuses on stderr and the payload-missing state warns on stdout, so
+    // comparing one stream across the pair would find them "different"
+    // because one of them is empty, which is a distinction about plumbing
+    // rather than about the reading.
+    const presentText = `${present.out}${present.err}`;
+    const missingText = `${missing.out}${missing.err}`;
+    expect(presentText.length, "the payload-present run printed nothing").toBeGreaterThan(0);
+    expect(missingText.length, "the payload-missing run printed nothing").toBeGreaterThan(0);
+    expect(presentText).not.toBe(missingText);
+    expect(presentText).toContain(COMPLETION_CLAIM);
     expect(missing.out).not.toContain(COMPLETION_CLAIM);
   });
 
@@ -276,7 +287,7 @@ describe("AC-5: the pre-#816 script is shown reporting the false sentence", () =
     const pre = run({ payload: null, outcome: "success", script: mutant.buildReviewRunScript(FIXTURE_VERSION) });
 
     expect(
-      pre.out,
+      `${pre.out}${pre.err}`,
       "the reconstruction does not reproduce the defect, so it witnesses nothing",
     ).toContain(COMPLETION_CLAIM);
     expect(real.out).not.toContain(COMPLETION_CLAIM);

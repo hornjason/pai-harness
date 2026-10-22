@@ -2698,33 +2698,49 @@ export function buildReviewRunScript(version: string): string {
   // (#1013). Not "nobody wired it" — the command is right there in the step —
   // but "the command this step named produced no reading".
   //
-  // It is a distinct state from every other UNMEASURED here, and it is the one
-  // that has to stay distinct from a REFUSAL. `${AI_REVIEW_REQUIRED_EXIT}` is
-  // 1 and so is a `bunx` that could not resolve the package, so collapsing the
-  // two makes an uninstallable checker read as a blocked pull request — and
-  // the obvious repair for a check that is red on every pull request is to
-  // delete the step. The discriminator is `${AI_REVIEW_OUTCOME_LINE}`, which
-  // the reader prints before it decides anything.
+  // It is a distinct state from every other UNMEASURED here, and the
+  // discriminator is `${AI_REVIEW_OUTCOME_LINE}` rather than the exit code:
+  // `${AI_REVIEW_REQUIRED_EXIT}` is 1 and so is a `bunx` that could not
+  // resolve the package, so the code alone cannot tell a refusal from a
+  // command that never started.
   //
-  // It follows the ${AI_REVIEW_REQUIRE_VAR} convention every other unmeasured
-  // state in this file follows: warn by default, refuse for a consumer who
-  // asked to be refused. A tree that has not opted in is not turned red by a
-  // registry outage.
+  // **IT FAILS, and it does not consult ${AI_REVIEW_REQUIRE_VAR}.** The first
+  // cut of #1013 ran this through that flag like every other unmeasured state
+  // in the file, and that was wrong in a way worth writing down, because the
+  // flag reads as if it covers this.
+  //
+  // What the flag is for is a tree that has NEVER CONFIGURED A CREDENTIAL:
+  // nothing was attempted, nobody promised a review, and
+  // `.claude/rules/config-access.md` argues — correctly — that a first
+  // scaffold should say so rather than go red. That reasoning does not reach
+  // here. Reaching this line means the action completed AND a findings
+  // payload is on disk: a review WAS attempted, the reviewer DID write a
+  // result, and the only thing missing is this job's own reading of it. A
+  // payload nobody adjudicated and a payload adjudicated clean are then
+  // indistinguishable from outside the job — which is a green required check
+  // over an unread `critical`, the exact state #1013 exists to end.
+  //
+  // The cost of failing closed is named rather than waved at: a registry
+  // outage reds every pull request in the repository until it clears. That is
+  // the right direction for a REQUIRED check — "I could not measure" is a
+  // failure, not a pass — and the annotation names the cause precisely so an
+  // operator can tell an outage from their own code. The argument for warning
+  // instead was that a check which is red on every pull request gets deleted;
+  // that argument proves too much, because it is an argument against ever
+  // failing closed.
   const unadjudicated =
     `The AI review completed and wrote a findings payload, and the step that ` +
     `adjudicates it produced no reading: '${adjudicator}' printed no ` +
-    `'${AI_REVIEW_OUTCOME_LINE}' line, so it did not run. An exit code alone ` +
-    `cannot say — a refusal and a command that could not start both exit ` +
-    `non-zero — so this is reported as UNMEASURED rather than read as a ` +
-    `verdict. The usual cause is that ${AI_REVIEW_ADJUDICATOR_PACKAGE}@${version} ` +
-    `is not on the registry yet, or that bun is not on this runner. The ` +
-    `review's comments are real; the gate is not enforced on this run.`;
-
-  const unadjudicatedRefusal =
-    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and nothing ` +
-    `adjudicated the findings payload on this run, so a blocking finding ` +
-    `would report green. Failing rather than reporting a passing gate for a ` +
-    `verdict nobody read.`;
+    `'${AI_REVIEW_OUTCOME_LINE}' line, so it did not run. The payload is ` +
+    `therefore UNMEASURED — not clean. Failing rather than reporting a green ` +
+    `check for a review whose findings nobody read; a blocking finding and an ` +
+    `adjudication that never happened look identical from outside this job. ` +
+    `This is NOT the ${AI_REVIEW_REQUIRE_VAR} case: that flag is for a tree ` +
+    `with no credential, where no review was attempted. One was attempted ` +
+    `here and its result is sitting at the findings path unread. The usual ` +
+    `causes are that ${AI_REVIEW_ADJUDICATOR_PACKAGE}@${version} is not on ` +
+    `the registry, that bun is not on this runner, or that the registry was ` +
+    `unreachable — the command's own output is printed above this line.`;
 
   // The FOURTH state, and the reason the third one had to be split (#816):
   // the action exited ZERO having not reviewed anything.
@@ -2966,7 +2982,24 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     # its own annotation payloads (one escaper, in \`ai-review-findings.ts\`),
     # and escaping it twice turns \`%\` into \`%2525\` and the annotation into
     # noise.
-    adjudication=\$(${adjudicator} "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>&1)
+    #
+    # RUN FROM THE PAYLOAD'S OWN DIRECTORY, not from the checkout. \`bunx\`
+    # resolves \`bunfig.toml\`, \`.npmrc\`, \`package.json\` and \`node_modules\`
+    # by walking UP from the working directory, and a step's working directory
+    # is \${GITHUB_WORKSPACE} — the tree under review. A branch that adds a
+    # \`bunfig.toml\` naming its own registry, or a \`node_modules/.bin\`
+    # entry, would choose what this credentialed job executes. On THIS
+    # repository the trigger is \`pull_request\`, so a fork gets no secrets and
+    # the attacker would need push access; this file is a GENERATOR, and the
+    # job it writes lands in consumer repositories whose trigger and trust
+    # settings nobody here can see. The consumer is the threat model.
+    #
+    # The payload's directory is the right cwd and needs no new wiring: the
+    # prepare step puts it under \${RUNNER_TEMP} and REFUSES the run if that
+    # is unset, so it is outside the checkout by construction rather than by
+    # convention. A \`cd\` that fails takes the subshell non-zero with no
+    # outcome line, which the reading below fails closed on.
+    adjudication=\$(cd "\$(dirname "\${${AI_REVIEW_FINDINGS_PATH_VAR}}")" && ${adjudicator} "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>&1)
     adjudicated=\$?
     printf '%s\\n' "\${adjudication}"
 
@@ -2992,12 +3025,12 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
         ;;
     esac
 
-    echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicated}"
-    if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
-      echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicatedRefusal}" >&2
-      exit ${AI_REVIEW_REQUIRED_EXIT}
-    fi
-    exit 0
+    # NO ${AI_REVIEW_REQUIRE_VAR} CHECK HERE, deliberately — see the sentence
+    # this prints. A payload exists, so a review was attempted; "nobody read
+    # it" is a failure on every tree, not an opt-in. The flag still governs
+    # every branch above and below, where nothing was attempted at all.
+    echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicated}" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
   fi
 
   # Which route, and nothing else. \`route\` is a string this block prints; no
@@ -3360,6 +3393,27 @@ export const AI_REVIEW_UNTRUSTED_PATHS: readonly string[] = [
   // one. Both are needed and neither covers the other.
   ".gitignore",
   ".gitattributes",
+  // #1013 review. Not an instruction and not an input to the measurement —
+  // this one selects the INTERPRETER. The job's `setup-bun` step reads this
+  // file out of the checkout to decide which bun to install, and that bun
+  // then runs the findings adjudicator inside a credentialed job. A branch
+  // that edits it is choosing the runtime its own reviewer executes.
+  //
+  // Spelled as a literal because this module has no relative imports (see
+  // `AiReviewActionRefs`), so it cannot read `BUN_VERSION_FILE` from
+  // `lib/bun-version.ts`. That makes it a second position for one name, and
+  // the repair is a test rather than a comment: `test/ai-review-untrusted-
+  // restore.test.ts` compares this entry to that constant, so the two cannot
+  // drift apart silently.
+  //
+  // The sibling bun/npm resolution files — `bunfig.toml`, `.npmrc`,
+  // `package.json`, `bun.lock`, `node_modules` — are deliberately NOT here.
+  // The adjudicator runs with its working directory under `RUNNER_TEMP`, and
+  // bun resolves those by walking up from the working directory, so none of
+  // them is on its path at all. Restoring `package.json` would additionally
+  // change WHAT THE REVIEWER READS, which #1013's body flags as a separate
+  // decision and not one to make in passing.
+  ".bun-version",
 ];
 
 export const AI_REVIEW_RESTORE_STEP_ID = "ai-review-restore-untrusted";
@@ -5131,10 +5185,20 @@ export function buildReviewRunStep(
   return (
     indented(checkout, indent) +
     indented(prepare, indent) +
-    indented(setupBun, indent) +
     (vertexAuth.length === 0 ? "" : indented(vertexAuth, indent)) +
     (credsRelocate.length === 0 ? "" : indented(credsRelocate, indent)) +
     indented(restore, indent) +
+    // AFTER the restore and BEFORE the baseline, and both halves are load
+    // bearing. The action reads the bun-version declaration out of the
+    // CHECKOUT to decide which runtime to install, so running it before the
+    // restore lets the branch choose the interpreter this job then executes
+    // the adjudicator with. That declaration is in
+    // `AI_REVIEW_UNTRUSTED_PATHS` for exactly that reason, and restoring it
+    // buys nothing if the step that reads it has already run. Before the
+    // baseline is #836's ordering: anything a step writes into the workspace
+    // after the baseline is taken lands in the REVIEWER's column in the
+    // drift reading.
+    indented(setupBun, indent) +
     indented(baseline, indent) +
     indented(review, indent) +
     indented(report, indent) +

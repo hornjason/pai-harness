@@ -40,6 +40,13 @@
       "issue": 1013,
       "why": "Renumbered only, for the a-f ordering #1013 gave the block. The pair, the one varied reading and both assertions are unchanged apart from what the two sentences are compared on: the old form looked for \"#675\" in the completed sentence, which #1013 removed from it, so it looks for the adjudicator package name the sentence now carries."
     }
+,
+    {
+      "from": "AC-9d: a consumer who required a review is refused an unadjudicated one",
+      "to": "AC-9d: THE PAIR \u2014 no credential warns, an unread payload does not",
+      "issue": 1013,
+      "why": "#1013 shipped this case asserting that RUNGATE_REQUIRE_AI_REVIEW covers a payload nothing adjudicated \u2014 warn by default, refuse only on opt-in. The team lead's review of #1076 caught that as a FAIL-OPEN: a payload exists, so a review WAS attempted and its result is on disk, and 'nobody read it' is then indistinguishable from 'adjudicated clean' on a required check. The flag is for a tree with no credential, where nothing was attempted at all. So the state the old case was about no longer exists \u2014 it refuses unconditionally now \u2014 and the replacement is the PAIR that keeps the two apart: no credential still warns and exits 0, an unread payload refuses, and the third run shows the flag does not change the second. The case got STRONGER: it now fails if the refusal stops firing AND if the no-credential path starts firing, where the old one only checked the opt-in path. AC-9c asserts the refusal directly and AC-9e runs the mutant that would undo it."
+    }
   ],
   "titles": [
     "#677 AC5: a consumer who required a review and got no reading is refused",
@@ -179,7 +186,7 @@
     "AC-8f: nothing is double-encoded \u2014 one escaper, applied once",
     "AC-8f: the detail of one finding is capped",
     "AC-8f: the escaper is reachable and encodes all three characters",
-    "AC-9d: a consumer who required a review is refused an unadjudicated one",
+    "AC-9d: THE PAIR \u2014 no credential warns, an unread payload does not",
     "AC-9b: a BLOCKED reading fails the job \u2014 #675's second half",
     "AC-9: the silent exit is what this would have shipped",
     "AC-9f: the two completed/not-completed states say different things",

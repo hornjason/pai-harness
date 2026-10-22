@@ -86,7 +86,7 @@ import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
 import { actionRef } from "../lib/workflow-actions";
 import { declaredBunVersion, setupBunWith } from "../lib/bun-version";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
-import { stubBunx } from "./helpers/stub-bunx";
+import { stubBunx, stubBunxAbsent } from "./helpers/stub-bunx";
 
 /**
  * A fixture version for the adjudicator's `bunx` pin (#1013), never the
@@ -571,77 +571,129 @@ describe("AC-9 (#1013): the job's exit code comes from the adjudicator's reading
     ).toBe(AI_REVIEW_REQUIRED_EXIT);
   });
 
-  test("AC-9c: an adjudicator that could NOT run is UNMEASURED, not a refusal", () => {
-    // The distinction the whole branch exists for, and the one the cheapest
-    // wrong fix loses. `AI_REVIEW_REQUIRED_EXIT` is 1 and so is a `bunx` that
-    // could not resolve the package — so a step that read the exit code alone
-    // would report an UNINSTALLABLE checker as a blocked pull request, on
-    // every pull request, and the obvious repair for that is to delete the
-    // step. The input that separates them is the outcome line, not the code.
+  test("AC-9c: an adjudicator that produced no reading FAILS the job", () => {
+    // THE FAIL-OPEN, as a case. #1013's first cut printed a warning here and
+    // exited 0 unless a consumer had opted in to RUNGATE_REQUIRE_AI_REVIEW —
+    // so a payload nothing adjudicated and a payload adjudicated clean were
+    // the same green required check from outside the job, which is the state
+    // the issue exists to end.
+    //
+    // No opt-in in this environment, deliberately: the refusal has to hold on
+    // a tree that has configured nothing.
     const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
       PATH: plantedBunx(`echo "error: package not found" >&2; exit 1`),
     }, PAYLOAD);
-    const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
     expect(
-      warnings.length,
-      `an adjudication that never happened passed quietly\n${run.stdout}`,
-    ).toBe(1);
+      run.code,
+      `a payload nothing adjudicated reported a green check:\n${run.stdout}\n${run.stderr}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
     expect(
-      warnings[0],
-      "the annotation does not name the command that failed to produce a reading",
+      run.stderr,
+      "the refusal does not name the command that failed to produce a reading",
     ).toContain(`${AI_REVIEW_ADJUDICATOR_PACKAGE}@${FIXTURE_VERSION}`);
     expect(
       run.stdout,
       "the failed command's own output was swallowed, so nobody can see why",
     ).toContain("package not found");
-    expect(run.code, "a tree that has not opted in must not go red on a registry outage").toBe(0);
+    // Named as UNMEASURED and not as a blocking finding: the two have the
+    // same exit code and different repairs, and an operator reading only the
+    // code cannot tell a registry outage from their own `critical`.
+    expect(run.stderr).toContain(AI_REVIEW_UNMEASURED_TITLE);
   });
 
-  test("AC-9d: a consumer who required a review is refused an unadjudicated one", () => {
-    // RUNGATE_REQUIRE_AI_REVIEW means "a review I cannot read must not report
-    // green". A payload nothing adjudicated is a review nobody read, so the
-    // same variable has to cover it — otherwise the opt-in buys a green check
-    // over a blocking finding, which is what it was added to prevent.
-    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+  test("AC-9d: THE PAIR — no credential warns, an unread payload does not", () => {
+    // The distinction that makes AC-9c a fix rather than a blunt instrument,
+    // and the one that would be lost by "UNMEASURED always fails" applied
+    // without reading which UNMEASURED.
+    //
+    // No credential is a review NOBODY ATTEMPTED: `.claude/rules/config-
+    // access.md` argues a first scaffold should say so rather than go red,
+    // and RUNGATE_REQUIRE_AI_REVIEW is the opt-in for a consumer who wants
+    // otherwise. An unread payload is a review that WAS attempted, whose
+    // result is on disk — the job's own reading is the only thing missing, so
+    // there is nothing for a consumer to opt in to.
+    //
+    // Varying one input at a time: both runs are `AI_REVIEW_MODE: vertex`
+    // against the same script, and the pair differs only in whether a payload
+    // exists and what `bunx` answers.
+    const noCredential = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+      AI_REVIEW_MODE: "",
+    });
+    expect(
+      noCredential.code,
+      "a tree that has never configured a credential went red on its first scaffold",
+    ).toBe(0);
+    expect(noCredential.stdout).toContain(AI_REVIEW_UNMEASURED_TITLE);
+
+    const unread = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`exit 127`),
+    }, PAYLOAD);
+    expect(
+      unread.code,
+      "an attempted review whose result nobody read reported green",
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+
+    // And the opt-in is not what carried it: the same input, with the flag
+    // set, reaches the same verdict. A case that only ever ran with the flag
+    // on could not tell the two apart.
+    const withFlag = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
       RUNGATE_REQUIRE_AI_REVIEW: "true",
       PATH: plantedBunx(`exit 127`),
     }, PAYLOAD);
-    expect(run.code, "the opt-in refusal did not fire for an unadjudicated payload").toBe(
-      AI_REVIEW_REQUIRED_EXIT,
+    expect(withFlag.code, "the flag changed a verdict it is not supposed to reach").toBe(
+      unread.code,
     );
-    expect(run.stderr).toContain("RUNGATE_REQUIRE_AI_REVIEW");
   });
 
   test("AC-9e: THE CHEAPEST WRONG FIX — exit on the code alone, with no proof it ran", () => {
     // Named and RUN, not argued about. The five-minute version of this branch
-    // is `bunx … ; exit $?`, and it is green on AC-9a and AC-9b both. Deleting
-    // the run-proof is that fix performed, and the input on which it differs
-    // from the original is AC-9c's: a `bunx` that exits 1 having printed
-    // nothing. Original: exit 0 and an UNMEASURED annotation. Mutant: exit 1,
-    // a red required check, and no annotation saying what went wrong.
+    // is `bunx … ; exit $?`, and it is green on AC-9a, AC-9b and AC-9c alike
+    // — once the branch fails closed, an adjudicator that exits 1 having said
+    // nothing and one that refused agree by accident.
+    //
+    // So the input that separates them is the one where the code is a LIE in
+    // the other direction: a `bunx` that exits **0** having printed nothing.
+    // Original: UNMEASURED and non-zero. Mutant: exit 0 — a green required
+    // check over an adjudication that never happened.
+    //
+    // It is not a contrived input. `scripts/ai-review-findings.ts`'s own
+    // docblock records this exact shape for this exact command: under the
+    // dispatcher `import.meta.main` is false, so a module guarded on it
+    // "loads, runs nothing, and the dispatcher exits 0". A wrapper, a cached
+    // no-op, or a future refactor that reinstates that guard all land here.
     const naive = buildReviewRunScript(FIXTURE_VERSION).replace(
       /\n *case "\$\{adjudication\}" in\n(?:.*\n)*? *esac\n/,
       '\n    exit ${adjudicated}\n',
     );
     expect(naive, "the mutation did not apply").not.toBe(buildReviewRunScript(FIXTURE_VERSION));
 
+    const silentSuccess = { PATH: plantedBunx(`exit 0`) };
     const env = {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
-      PATH: plantedBunx(`echo "error: package not found" >&2; exit 1`),
+      ...silentSuccess,
     };
+
     const mutant = runAuthScript(naive, env, PAYLOAD);
     expect(
       mutant.code,
       "the mutant did not differ — this case witnesses nothing about the run-proof",
-    ).toBe(1);
+    ).toBe(0);
     expect(mutant.stdout).not.toContain("UNMEASURED");
 
-    // And the mutant is still green on the two cases a happy-path suite would
+    const original = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), env, PAYLOAD);
+    expect(
+      original.code,
+      `an adjudicator that exited 0 having said nothing was read as CLEAN:\n${original.stdout}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+
+    // And the mutant is still green on the cases a happy-path suite would
     // have written, which is WHY it is the cheap fix rather than an obvious
     // error.
     const clean = runAuthScript(naive, {
@@ -649,6 +701,40 @@ describe("AC-9 (#1013): the job's exit code comes from the adjudicator's reading
       PATH: plantedBunx(`echo "${OUTCOME_LINE} CLEAN"; exit 0`),
     }, PAYLOAD);
     expect(clean.code, "the mutant is not actually a plausible fix").toBe(0);
+    const blocked = runAuthScript(naive, {
+      ...env,
+      PATH: plantedBunx(`echo "${OUTCOME_LINE} BLOCKED"; exit ${AI_REVIEW_REQUIRED_EXIT}`),
+    }, PAYLOAD);
+    expect(blocked.code, "the mutant is not actually a plausible fix").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+  });
+
+  test("AC-9g: the adjudicator does not run from the checkout", () => {
+    // #1013 review. `bunx` resolves `bunfig.toml`, `.npmrc`, `package.json`
+    // and `node_modules` by walking UP from the working directory, and a
+    // step's working directory is the tree under review. The generated job
+    // runs it from the payload's own directory instead, which the prepare
+    // step guarantees is under RUNNER_TEMP.
+    //
+    // Driven rather than grepped: the planted `bunx` reports its own `pwd`,
+    // and the case asserts it is the payload's directory and not the one
+    // bash was started in.
+    const script = buildReviewRunScript(FIXTURE_VERSION);
+    const run = runAuthScript(script, {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`echo "${OUTCOME_LINE} CLEAN"; echo "cwd=$(pwd -P)"; exit 0`),
+    }, PAYLOAD);
+
+    const cwd = /cwd=(.*)/.exec(run.stdout)?.[1];
+    expect(cwd, `the planted bunx never reported a cwd:\n${run.stdout}`).toBeDefined();
+    const payloadDir = /ai-review-run-[^\n]*/.exec(cwd!)?.[0];
+    expect(
+      payloadDir,
+      `the adjudicator ran from ${cwd}, which is not the payload's directory`,
+    ).toBeDefined();
+    expect(run.code).toBe(0);
   });
 
   test("AC-9f: the two completed/not-completed states say different things", () => {
@@ -666,10 +752,22 @@ describe("AC-9 (#1013): the job's exit code comes from the adjudicator's reading
       ...base,
       AI_REVIEW_ACTION_OUTCOME: "failure",
     });
-    expect(ran.stdout, "one sentence for two states").not.toBe(failed.stdout);
-    expect(failed.stdout).toContain("#631");
-    expect(failed.stdout).not.toContain(AI_REVIEW_ADJUDICATOR_PACKAGE);
-    expect(ran.stdout).toContain(AI_REVIEW_ADJUDICATOR_PACKAGE);
+    // Both streams on each side. The unadjudicated state refuses on stderr
+    // since #1013's review and the not-completed state still warns on stdout,
+    // so comparing one stream to the other would find them "different" for
+    // the trivial reason that one of them is empty.
+    const ranText = `${ran.stdout}${ran.stderr}`;
+    const failedText = `${failed.stdout}${failed.stderr}`;
+    expect(ranText, "one sentence for two states").not.toBe(failedText);
+    expect(failedText).toContain("#631");
+    expect(failedText).not.toContain(AI_REVIEW_ADJUDICATOR_PACKAGE);
+    expect(ranText).toContain(AI_REVIEW_ADJUDICATOR_PACKAGE);
+
+    // And the verdicts differ too, which is the half a text comparison
+    // cannot see: an attempted-but-unread review refuses, a review the
+    // action never completed warns and leaves the opt-in to decide.
+    expect(ran.code, "an unread payload stopped refusing").toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(failed.code, "a not-completed action started refusing without the opt-in").toBe(0);
   });
 
   test("AC-9: the silent exit is what this would have shipped", () => {
@@ -836,12 +934,18 @@ describe("#803: a non-zero exit with no payload names the app install", () => {
     ] as const;
     for (const o of others) {
       const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { ...o.env }, o.payload);
-      expect(run.stdout, `${o.label} carries the app-install cause`).not.toContain(
+      // BOTH streams. Since #1013's review the unadjudicated state refuses
+      // rather than warns, so its annotation is an `::error` on stderr while
+      // the other two are `::warning`s on stdout — and a search of one stream
+      // would report the state that moved as carrying no annotation at all,
+      // which is the non-vacuity assertion below silently going hollow.
+      const annotated = `${run.stdout}${run.stderr}`;
+      expect(annotated, `${o.label} carries the app-install cause`).not.toContain(
         AI_REVIEW_APP_INSTALL_URL,
       );
       // Non-vacuity: each of these really did annotate something, so the
       // absence above is a choice and not a state that printed nothing.
-      expect(run.stdout, `${o.label} annotated nothing at all`).toContain("UNMEASURED");
+      expect(annotated, `${o.label} annotated nothing at all`).toContain("UNMEASURED");
     }
   });
 
@@ -1312,7 +1416,14 @@ function runAuthScript(
   }
   const r = Bun.spawnSync(["bash", sh], {
     env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      // `bunx` is stubbed absent by DEFAULT (#1013). A case that supplies a
+      // payload and does not plant one would otherwise run the real command,
+      // which names this tree's version and reaches the npm registry — slow,
+      // offline-hostile, and a reading of what npm served today rather than
+      // of the script. `...env` still wins, so the AC-9 cases plant their
+      // own. Measured: before this default, `#803`'s case was fetching
+      // `rungate@0.0.0-fixture` from the network on every run.
+      PATH: stubBunxAbsent(),
       HOME: process.env.HOME ?? dir,
       GITHUB_OUTPUT: out,
       ...planted,

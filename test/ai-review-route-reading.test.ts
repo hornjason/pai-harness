@@ -324,10 +324,16 @@ describe("AC-A (#826): the report step is handed the findings path", () => {
     // Unreachable before this change: the branch exists, #816 tested it with
     // an env the workflow never produced, and no run has ever taken it.
     const r = runReport({ payload: PAYLOAD, execution: EXECUTED });
-    expect(r.out, `stderr:\n${r.err}`).toContain(`::warning title=${AI_REVIEW_UNMEASURED_TITLE}`);
-    expect(r.out, "a payload still reads as an action that wrote nothing").not.toContain(
-      "WITHOUT writing a findings payload",
-    );
+    // An `::error` on stderr since #1013's review, not a `::warning`: a
+    // payload nothing adjudicated now FAILS rather than warning, because a
+    // review WAS attempted and its result is on disk unread. The branch
+    // being reachable is what this case is about, and the title is the
+    // thing that says which branch it is.
+    expect(r.err, `stdout:\n${r.out}`).toContain(`::error title=${AI_REVIEW_UNMEASURED_TITLE}`);
+    expect(
+      `${r.out}${r.err}`,
+      "a payload still reads as an action that wrote nothing",
+    ).not.toContain("WITHOUT writing a findings payload");
   });
 });
 
