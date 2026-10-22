@@ -1509,6 +1509,13 @@ describe("#1203: an escaped quote outside a quote does not OPEN one", () => {
  * exits the review flagged are unreachable.
  */
 function parses(cmd: string): boolean {
+  // late-env-ok: this file became a candidate for the #1096 scan when #1175
+  // added cases that assign `process.env.TMPDIR`, and the scan is right to
+  // ask. The answer is that this child cannot be affected by them: `bash -n`
+  // parses the string it is handed and does not execute it, so it reads no
+  // variable at all, and `TMPDIR` here is read by `isScratchPath` IN THIS
+  // PROCESS. Every assignment is also restored in a `finally` in the same
+  // test, so no value outlives the case that set it.
   return spawnSync("/bin/bash", ["-n", "-c", cmd], { encoding: "utf8" }).status === 0;
 }
 
