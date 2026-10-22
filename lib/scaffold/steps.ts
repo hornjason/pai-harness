@@ -3771,10 +3771,27 @@ ${bunStep}
   // `id-token: write` is what lets the runner mint the OIDC token GCP's STS
   // exchanges. Granted ONLY when there is a federation to use it, because a
   // permission nobody consumes is a permission nobody audits.
+  //
+  // `actions: read` is #1168's, and it is granted unconditionally because
+  // the round counter it serves runs on every review. It is READ on the
+  // workflow's own run list and nothing else: the step lifts one integer,
+  // `total_count`, which is how many times this workflow has run on this
+  // pull request — the only thing in reach that is actually a review round.
+  // A permission nobody consumes is a permission nobody audits, and this one
+  // has exactly one consumer, named in `buildRoundsScript`.
+  //
+  // LAST in the block, after `id-token: write`, and the order is not
+  // cosmetic. This file is job-preserving: a consumer who already has the
+  // workflow gets the new key MERGED into their existing permissions block,
+  // which appends. A generator emitting it in the middle therefore disagrees
+  // with what every already-scaffolded tree ends up holding, and AC-12 in
+  // test/ai-review-surface-census.test.ts compares the committed file
+  // against a FRESH generation — so the two orders are a byte difference
+  // that reads as a hand-edit. Measured: that is exactly how this was found.
   const aiReviewPermissions =
     vertex.config === null
-      ? `permissions:\n  contents: read`
-      : `permissions:\n  contents: read\n  # Mint the OIDC token Workload Identity Federation exchanges (#631).\n  id-token: write`;
+      ? `permissions:\n  contents: read\n  # Count this pull request's previous AI Review runs — the round budget (#1168).\n  actions: read`
+      : `permissions:\n  contents: read\n  # Mint the OIDC token Workload Identity Federation exchanges (#631).\n  id-token: write\n  # Count this pull request's previous AI Review runs — the round budget (#1168).\n  actions: read`;
 
   const aiReviewYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
