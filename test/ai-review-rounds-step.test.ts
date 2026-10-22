@@ -32,17 +32,23 @@ import {
   AI_REVIEW_ROUND_OPEN,
   REVIEW_SCOPE_DIFF,
   REVIEW_SCOPE_FULL,
+  reviewScopeForRound,
   roundOutcome,
 } from "../lib/ai-review-rounds.ts";
 import {
   AI_REVIEW_AT_CAP_OUTPUT,
   AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL,
+  AI_REVIEW_FINDINGS_COMMAND,
+  AI_REVIEW_FINDINGS_PATH_VAR,
+  AI_REVIEW_JOB,
+  AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_ROUNDS_STEP_ID,
   AI_REVIEW_ROUNDS_TITLE,
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_ROUND_CAP_LITERAL,
   AI_REVIEW_ROUND_OUTPUT,
   AI_REVIEW_ROUND_PATH_VAR,
+  AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_SCOPE_OUTPUT,
   buildReviewPrompt,
   buildRoundsScript,
@@ -147,13 +153,21 @@ describe("AC-S2: the bash and the library agree", () => {
     }
   }, 30_000);
 
-  test("AC-S2: the scope floor is the same in both", () => {
+  test("AC-S2: the bash reports full on EVERY round, including past the floor", () => {
+    // It used to restate the library's floor and emit `diff` from round 3 on
+    // a round number alone, which is #1241: `reviewScopeForRound` makes that
+    // decision from the HELD VERDICT, and the bash has no held verdict to
+    // make it from. Rather than two deciders that disagree, the bash makes no
+    // decision — it pins `full` until the adjudicator re-emits unresolved
+    // findings. The floor constant is still exercised, by the case below and
+    // by AC-S6, so removing it is still red.
     for (const round of MATRIX) {
       const sh = runRounds({ AI_REVIEW_EVENT: "pull_request" }, round);
-      const expected =
-        Number(round) >= AI_REVIEW_DIFF_SCOPE_FROM_ROUND ? REVIEW_SCOPE_DIFF : REVIEW_SCOPE_FULL;
-      expect(sh.outputs[AI_REVIEW_SCOPE_OUTPUT], `round ${round}`).toBe(expected);
+      expect(sh.outputs[AI_REVIEW_SCOPE_OUTPUT], `round ${round}`).toBe(REVIEW_SCOPE_FULL);
     }
+    // The control: a round at or past the floor is in the matrix, so the row
+    // above is not green because it never reached one.
+    expect(MATRIX.some(r => Number(r) >= AI_REVIEW_DIFF_SCOPE_FROM_ROUND)).toBe(true);
   }, 30_000);
 });
 
@@ -301,9 +315,12 @@ describe("AC-S5: nothing from the branch under review reaches the prompt", () =>
     expect(flat).toContain("Do not stay silent");
   });
 
-  test("AC-S5: the diff branch states the no-repeat key is not the line number", () => {
-    expect(prompt).toContain("NOT on the line number");
-    expect(prompt).toContain("carried forward");
+  test("AC-S5: the prompt tells the reviewer the scope is full, and why", () => {
+    // Replaces the narrowed-scope arm, withdrawn in #1241. The field is still
+    // written, so the prompt must still say something true about it rather
+    // than naming a field it never explains.
+    expect(flat).toContain("`review_scope` reads `full` on every round today");
+    expect(flat).toContain("read the whole branch, every round");
   });
 
   test("AC-S5: an absent state file is a stated case, not an undefined one", () => {
@@ -318,5 +335,246 @@ describe("AC-S5: nothing from the branch under review reaches the prompt", () =>
     // The prompt says `round_budget` rather than a literal, so the number
     // itself lives in one place. This is the binding that keeps that true.
     expect(buildRoundsScript()).toContain(`round_budget=%s\\n' '${AI_REVIEW_ROUND_CAP}'`);
+  });
+});
+
+// ── AC-S6 (#1241): the cap bounds re-litigation, never the gate ─────────
+
+/**
+ * The defect this block exists for, as it shipped in #1236.
+ *
+ * A pull request reaches round 4 carrying an unfixed blocking finding from
+ * round 2. The prompt told the reviewer the finding was "carried forward for
+ * you" — nothing carried it — and told it not to use a blocking severity. The
+ * required check went green over a live finding.
+ *
+ * So two properties, and they are different in kind:
+ *
+ *  - the cap may not reach the BLOCKING DECISION. Asserted behaviourally,
+ *    against the committed verdict step, with a mutant to show the case is
+ *    not vacuous.
+ *  - the cap may not tell the REVIEWER to withhold a blocking severity, and
+ *    the prompt may not promise an enforcement nothing performs. Asserted
+ *    over the prompt text, which is the only instruction the reviewer gets.
+ */
+describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
+  const yml = readFileSync(WORKFLOW, "utf8");
+
+  /** The committed verdict step's bash — the thing that actually decides. */
+  function committedVerdictScript(): string {
+    const doc = Bun.YAML.parse(yml) as any;
+    const step = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []).find(
+      (s: any) => s?.id === AI_REVIEW_RUN_STEP_ID,
+    );
+    if (step === undefined) throw new Error(`no ${AI_REVIEW_RUN_STEP_ID} step in the workflow`);
+    const script = String(step.run ?? "");
+    if (!script.includes(AI_REVIEW_FINDINGS_COMMAND)) {
+      throw new Error(
+        `the committed ${AI_REVIEW_RUN_STEP_ID} step does not invoke ` +
+          `'${AI_REVIEW_FINDINGS_COMMAND}', so these cases would drive a step that ` +
+          `adjudicates nothing`,
+      );
+    }
+    return script;
+  }
+
+  /**
+   * Run a verdict script with a BLOCKING adjudication, at the cap.
+   *
+   * The at-cap state is put in the environment under every spelling the step
+   * could plausibly read it by, so a step that grew a dependency on it is
+   * caught whichever name it used.
+   */
+  function runVerdict(script: string): { status: number | null; stdout: string } {
+    const dir = mkdtempSync(join(tmpdir(), "ai-review-cap-gate-"));
+    try {
+      const bin = join(dir, "bin");
+      require("node:fs").mkdirSync(bin);
+      writeFileSync(
+        join(bin, "bunx"),
+        `#!/bin/sh\necho "${AI_REVIEW_OUTCOME_LINE} BLOCKED"\nexit ${AI_REVIEW_REQUIRED_EXIT}\n`,
+        { mode: 0o755 },
+      );
+      const payload = join(dir, "ai-review-findings.json");
+      writeFileSync(
+        payload,
+        JSON.stringify({
+          findings: [
+            {
+              severity: "high",
+              file: "lib/a.ts",
+              line: 1,
+              summary: "raised on round 2 and never fixed",
+              failure_scenario: "any input",
+            },
+          ],
+          verdict: "BLOCK",
+        }),
+      );
+      const sh = join(dir, "verdict.sh");
+      writeFileSync(sh, script);
+      const r = spawnSync("bash", ["-e", sh], {
+        encoding: "utf8",
+        cwd: dir,
+        timeout: 60_000,
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          HOME: dir,
+          AI_REVIEW_MODE: "vertex",
+          AI_REVIEW_ACTION_OUTCOME: "success",
+          [AI_REVIEW_FINDINGS_PATH_VAR]: payload,
+          // Every spelling of "the budget is spent".
+          AI_REVIEW_AT_CAP: "1",
+          [AI_REVIEW_AT_CAP_OUTPUT.toUpperCase()]: "1",
+          AI_REVIEW_ROUND: "4",
+          [AI_REVIEW_ROUND_OUTPUT.toUpperCase()]: "4",
+        },
+      });
+      return { status: r.status, stdout: r.stdout ?? "" };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("AC-S6: at cap, an unresolved blocking finding still fails the check", () => {
+    // #1241's acceptance criterion, stated in its own words.
+    const r = runVerdict(committedVerdictScript());
+    expect(
+      r.status,
+      "a blocking adjudication at the round cap must still exit non-zero — a cap that " +
+        "downgrades the verdict is a required check turning itself off",
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+  }, 30_000);
+
+  test("AC-S6: the MUTANT — a step that honours the cap — goes green, so the case is not vacuous", () => {
+    // Without this row the one above is the third shape in
+    // `.claude/rules/checks-must-be-able-to-fail.md`: an assertion that holds
+    // because the input it varies reaches nothing. This performs the
+    // regression — a verdict step that reads the cap and exits 0 — and
+    // observes it, so real-red / mutant-green is one measured pair.
+    const mutant =
+      `if [ "\${AI_REVIEW_AT_CAP:-}" = "1" ]; then\n  exit 0\nfi\n` + committedVerdictScript();
+    const r = runVerdict(mutant);
+    expect(
+      r.status,
+      "the mutant must NOT refuse, or the case above witnessed nothing",
+    ).toBe(0);
+  }, 30_000);
+
+  test("AC-S6: no step in the committed job reads the cap output", () => {
+    // The structural half of the behavioural pair. The only producer of
+    // `at_cap` is the rounds step; the only legitimate consumer is its own
+    // annotation. Any OTHER step referencing it is a route by which the cap
+    // could reach a verdict, and this names them rather than waiting for one
+    // to change an exit code.
+    const doc = Bun.YAML.parse(yml) as any;
+    const steps = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []) as any[];
+    const readers = steps
+      .filter(s => s?.id !== AI_REVIEW_ROUNDS_STEP_ID)
+      .filter(s => JSON.stringify(s ?? {}).includes(`outputs.${AI_REVIEW_AT_CAP_OUTPUT}`))
+      .map(s => String(s?.id ?? s?.name ?? "(unnamed)"));
+    expect(
+      readers,
+      "a step other than the rounds step reads the at-cap output — the cap must not be " +
+        "an input to anything that decides whether this check fails (#1241)",
+    ).toEqual([]);
+  });
+
+  test("AC-S6: the prompt does not forbid a blocking severity at cap", () => {
+    const prompt = buildReviewPrompt();
+    const flat = prompt.replace(/\s+/g, " ");
+    expect(
+      flat,
+      "the at-cap arm told the reviewer not to raise a blocking severity, which is how a " +
+        "live finding reached a green check (#1241)",
+    ).not.toContain("Do not raise it to a blocking severity");
+    // And it says the opposite, positively, so the absence above is not the
+    // only thing standing between here and the regression.
+    expect(flat).toContain("CHANGES NOTHING ABOUT WHAT BLOCKS");
+    expect(flat).toContain("exactly as you would on round 1");
+  });
+
+  test("AC-S6: the prompt promises no carry-forward while nothing carries forward", () => {
+    // The promise and the mechanism are asserted TOGETHER, in one case, so
+    // they cannot be re-separated: the sentence is allowed back the moment a
+    // production caller exists, and not before.
+    const prompt = buildReviewPrompt();
+    const flat = prompt.replace(/\s+/g, " ");
+    // Detect an IMPORT of the module, not a mention of the symbols. A prose
+    // mention is a citation, not a claim — `.claude/rules/claiming-sc-coverage.md`
+    // — and the first draft of this case was red because the comment this very
+    // change added to `lib/scaffold/ai-review-step.ts` says the word
+    // `carryForward` while calling nothing. An importer is the thing a caller
+    // cannot be without: the library is a module, so no import, no call site.
+    // POSIX ERE, not PCRE: `git grep -E` has no `\s`, and a pattern it cannot
+    // match is indistinguishable from a tree with no callers — which is what
+    // the control below caught when this line was first written with `\s+`.
+    const IMPORTS = String.raw`from[[:space:]]+"[^"]*ai-review-rounds(\.ts)?"`;
+    const callers = spawnSync(
+      "git",
+      ["grep", "-l", "-E", IMPORTS, "--", "lib", "gates", "scripts", "workflows", "bin"],
+      { cwd: ROOT, encoding: "utf8" },
+    );
+    const production = (callers.stdout ?? "")
+      .split("\n")
+      .filter(Boolean)
+      .filter(f => f !== "lib/ai-review-rounds.ts");
+    // The control: the detector finds an importer when there is one. Without
+    // this row, a pattern that matches nothing at all reads exactly like a
+    // tree with no production callers, and the branch below holds vacuously.
+    const anyImporter = spawnSync(
+      "git",
+      ["grep", "-l", "-E", IMPORTS, "--", "test"],
+      { cwd: ROOT, encoding: "utf8" },
+    );
+    expect(
+      (anyImporter.stdout ?? "").split("\n").filter(Boolean),
+      "the import pattern matches no file anywhere, so it cannot distinguish " +
+        "'no production caller' from 'broken detector'",
+    ).toContain("test/ai-review-rounds-step.test.ts");
+    if (production.length === 0) {
+      expect(
+        flat,
+        `nothing in lib/, gates/, scripts/, workflows/ or bin/ calls carryForward or ` +
+          `suppressRepeats, so the prompt may not tell the reviewer a finding "is carried ` +
+          `forward for you" — it would stop reporting a live finding on that promise (#1241)`,
+      ).not.toContain("carried forward for you");
+    } else {
+      // A caller exists, so the sentence is earned. Require it, in the other
+      // direction, rather than letting the case quietly stop asserting.
+      expect(flat, `production callers exist (${production.join(", ")})`).toContain(
+        "carried forward",
+      );
+    }
+  }, 30_000);
+
+  test("AC-S6: the committed workflow emits no diff scope while that is true", () => {
+    const doc = Bun.YAML.parse(yml) as any;
+    const step = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []).find(
+      (s: any) => s?.id === AI_REVIEW_ROUNDS_STEP_ID,
+    );
+    const code = String(step?.run ?? "")
+      .split("\n")
+      .filter(l => !l.trim().startsWith("#"))
+      .join("\n");
+    expect(
+      code.includes(`${AI_REVIEW_SCOPE_OUTPUT}=diff`),
+      "the generated bash narrows the review scope without the held verdict reReviewScope " +
+        "requires — a branch whose last round BLOCKED would be diff-scoped, which is #244 " +
+        "and the fail-open 46034035 was reverted for (#1241)",
+    ).toBe(false);
+    // The control: the step must still SET a scope, or the assertion above
+    // holds because the whole mechanism vanished.
+    expect(code).toContain(`${AI_REVIEW_SCOPE_OUTPUT}=full`);
+  });
+
+  test("AC-S6: the library still refuses to diff-scope a held FAIL at the floor", () => {
+    // Unchanged and re-stated here, because the bash now pins `full` and can
+    // no longer disagree with it. When the adjudicator is wired and the pin
+    // comes off, this is the rule the bash has to restate.
+    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL), { verdict: "FAIL", failures: ["x"] }))
+      .toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL), { verdict: "PASS" }))
+      .toBe(REVIEW_SCOPE_DIFF);
   });
 });
