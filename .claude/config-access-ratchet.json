@@ -1,6 +1,3 @@
 {
-  "lib/scaffold/steps.ts": 9,
-  "workflows/prove.js": 5,
-  "workflows/ship-and-heal.js": 1,
-  "workflows/ship.js": 5
+  "lib/scaffold/steps.ts": 9
 }

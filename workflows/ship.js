@@ -1250,7 +1250,7 @@ driftReading and its refusal line as driftRefusal — null when it printed none.
 
 // ── Agent brief loader (config-driven) ────────────────────
 // Workflow sandbox can't resolve project-local agentTypes from .claude/agents/.
-// Roles from args.roles (passed by skill from rungate.json) or convention fallback.
+// Roles from args.roles (passed by the caller from the project's rungate config) or convention fallback.
 const ROLES = parsedArgs.roles || {}
 
 // SC-406: Brief context paths extracted by a lightweight agent call (no import() in workflow sandbox)
@@ -3105,7 +3105,10 @@ ${criterionIds(goalData.successCriteria).map(c => `${c.alias}. ${c.text}`).join(
 
 ## Instructions
 1. Read ${HARNESS_ROOT}/gates/SCHEMA-GUIDE.md FIRST.
-2. Read ${PROJECT_ROOT}/.claude/rungate.json and ${PROJECT_ROOT}/AGENTS.md.
+2. Read ${WORK_DIR}/resolved-config.json and ${PROJECT_ROOT}/AGENTS.md. That
+   file is this run's resolved config, written by scripts/resolve-config.ts at
+   setup. Do NOT read the project's own config file: it may be in either of
+   two layouts, only one of which has the name you would guess.
 3. Check prior work: git log --oneline --all --grep="#${ISSUE}" in ${PROJECT_ROOT}.
 
 ## AC ANCHORING (CRITICAL — do not skip)
@@ -3488,9 +3491,10 @@ const s=JSON.parse(require('fs').readFileSync(sf,'utf-8'));
 console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
 " ${acPayloadShellArgument(discovery.acs)} 2>&1
 
-2. Load config (ADR-002 D1 — the loader is the only thing that reads
-   .claude/rungate*, and it normalises dev.* into the resolved shape, so the
-   directory layout and the monolith layout produce a byte-identical result.
+2. Load config (ADR-002 D1 — the loader is the only thing that reads the
+   project's rungate config, and it normalises dev.* into the resolved shape,
+   so the directory layout and the monolith layout produce a byte-identical
+   result.
    There is deliberately no "|| echo {}" fallback: an unresolvable config must
    fail setup, not arrive as an empty object that reads as "configured with
    nothing" and silently drops the project to the LIGHT tier floor):
@@ -6433,14 +6437,18 @@ Run all file checks, tests, and validations from that directory (cd ${marcusWork
 This is where Marcus made the code changes — do NOT validate against the main branch.
 
 ## Environment
-- **Config:** Read ${PROJECT_ROOT}/.claude/rungate.json for dev URLs, page paths, and API endpoints
+- **Config:** Read ${WORK_DIR}/resolved-config.json for dev URLs, page paths, and API endpoints.
+  That is this run's resolved config, written by scripts/resolve-config.ts at setup. Do NOT
+  read the project's own config file: it may be in either of two layouts, only one of which
+  has the name you would guess, and the keys in it are the authored spellings rather than the
+  normalised ones used here.
 - **Viewport:** 1280x720 (set via browser_resize FIRST)
 - **Test as:** Brand-new user — no prior session state
-- **Pages map:** Read ${PROJECT_ROOT}/.claude/rungate.json for exact URL paths
+- **Pages map:** \`pages\` in that same file holds the exact URL paths
 
 ## Pre-conditions (GATE — stop if any fail)
 1. browser_resize(1280, 720)
-2. browser_navigate to target URL from rungate.json pages map
+2. browser_navigate to target URL from the \`pages\` map
 3. browser_snapshot() — verify page loaded (no error banners, data present)
 If pre-conditions fail → report FAIL immediately, do NOT proceed.
 
@@ -7062,7 +7070,7 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
 
    That is the whole command. It carries no environment verdicts: this step
    commits, it does not curl the API and it does not open the UI. Those two
-   flags used to be passed as PASS whenever rungate.json named a URL, which
+   flags used to be passed as PASS whenever the rungate config named a URL, which
    overwrote whatever Quinn measured during Validate and left the
    local-api-validated and local-ui-validated gate checks with no state they
    could fail on (#176). Both fields belong to whoever measured them.
@@ -8255,8 +8263,9 @@ If mismatch, FAIL with "Container running wrong version — HEAD {actual} != bui
 - browser_verify_text_visible(text) — assert text on page
 
 ## Test Plan for #${ISSUE} on CONTAINER — http://${testHost}:${containerPort}
-Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
-1. browser_navigate("http://${testHost}:${containerPort}" + page path from rungate.json)
+Read ${WORK_DIR}/resolved-config.json for page paths — this run's resolved config, written
+by scripts/resolve-config.ts at setup. Do NOT read the project's own config file.
+1. browser_navigate("http://${testHost}:${containerPort}" + page path from the \`pages\` map)
 2. browser_snapshot() — verify page loaded
 3. For each AC:
    a. Perform the action (browser_click, browser_type, etc.)
@@ -8283,7 +8292,7 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
     log(`WARN: container verify did not probe — ${containerProbe.detail}`)
   }
 } else if (discovery.ceremonyTier !== 'LIGHT') {
-  log('No container config in rungate.json — skipping container verify')
+  log('No container config in the resolved config — skipping container verify')
 }
 }
 

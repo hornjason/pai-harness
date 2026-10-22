@@ -63,20 +63,42 @@ const PROJECT_ROOT = parsedArgs.projectRoot
 const HARNESS_ROOT = parsedArgs.harnessRoot
 const ISSUE_REPO = parsedArgs.issueRepo || parsedArgs.repo || 'hornjason/pai-config'
 
-// Read test config and compliance.threshold from rungate.json
+// Read test config and compliance.threshold through the one loader (#1035,
+// ADR-002 D1). This prompt used to name the project's config file by path,
+// which is the violation D1 describes: for a consumer on the directory layout
+// the instruction points at nothing, and "file not found" arrived here as
+// `bun test` — a default indistinguishable from a reading.
 const testConfig = await agent(`
-Read ${PROJECT_ROOT}/.claude/rungate.json and return the test section and compliance.threshold.
-If no test section or file doesn't exist, return command: "bun test", timeout: 120000.
-If no compliance.threshold field exists, omit it (caller defaults to 80).
+Run exactly this and report what it printed:
+
+bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT}
+
+It prints this project's resolved rungate config as JSON on stdout, through the
+one loader that understands every supported config layout. Do NOT read the
+project's own config file.
+
+From that JSON return the test section (command, timeout) and
+compliance.threshold. If there is no compliance.threshold, omit it — the caller
+defaults to 80.
+
+If the command exits NON-ZERO it could not resolve a config at all. Report
+configResolved: false and return command: "bun test", timeout: 120000. That is
+a recorded default, not a reading: a project with no resolvable config is a
+different state from one configured to run "bun test", and only one of them is
+reportable. Otherwise report configResolved: true.
 `, { label: 'test-config', schema: {
   type: 'object',
   properties: {
     command: { type: 'string' },
     timeout: { type: 'number' },
     complianceThreshold: { type: 'number' },
+    configResolved: { type: 'boolean' },
   },
   required: ['command', 'timeout'],
 }})
+if (testConfig && testConfig.configResolved === false) {
+  log(`Config UNRESOLVED at ${PROJECT_ROOT} — test command is the built-in default, not a reading`)
+}
 const testCommand = testConfig?.command || 'bun test'
 const testTimeout = testConfig?.timeout || 120000
 
@@ -227,7 +249,7 @@ Analyze agent transcripts for efficiency metrics:
   }
 }
 
-// Read compliance.threshold from rungate.json config with default 80
+// Read compliance.threshold from the resolved config with default 80
 const complianceThreshold = testConfig?.complianceThreshold || 80
 
 // Classify violations
