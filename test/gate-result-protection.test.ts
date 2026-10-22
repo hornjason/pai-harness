@@ -247,15 +247,26 @@ describe("#1137 a gate result cannot be bypassed by ERASING it", () => {
   });
 
   test("WITNESS: an Edit whose old_string holds a result and new_string does not is blocked", () => {
-    const r = runHook({
-      tool_name: "Edit",
-      tool_input: {
-        file_path: STATE,
-        old_string: '"scope": { "result": "FAIL", "attempt": 2 }',
-        new_string: '"scope": { "attempt": 2 }',
-      },
-    });
-    expect(blockedReason(r)).toMatch(/remov|eras/i);
+    // Round 2 pointed this at a path with no file, which the fragment-only
+    // implementation caught from `old_string` alone. The disk-aware one
+    // correctly treats a missing file as nothing to erase — the Edit tool
+    // refuses it anyway — so the case now models the real situation.
+    const dir = mkdtempSync(join(tmpdir(), "grp-edit-erase-"));
+    try {
+      const path = join(dir, "workflow-state.json");
+      writeFileSync(path, '{"phase":"SHIP","gates":{"scope":{"result":"FAIL","attempt":2}}}');
+      const r = runHook({
+        tool_name: "Edit",
+        tool_input: {
+          file_path: path,
+          old_string: '{"result":"FAIL","attempt":2}',
+          new_string: '{"attempt":2}',
+        },
+      });
+      expect(blockedReason(r)).toMatch(/remov|eras|chang/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("CONTROL: a Write to a state that never had a gate result is allowed", () => {
@@ -284,18 +295,169 @@ describe("#1137 a gate result cannot be bypassed by ERASING it", () => {
     );
   });
 
-  test("CONTROL: an existing state file that is itself corrupt does not brick writes", () => {
-    // An unreadable prior state is UNMEASURED for the ERASURE question
-    // specifically. Refusing here would make one corrupt file permanently
-    // unwritable by the only tool that could repair it.
+  // The round-2 version of this case asserted the OPPOSITE — that a corrupt
+  // prior state must not block writes, on the reasoning that refusing would
+  // make the file unrepairable. That reasoning was wrong and the measurement
+  // is in the next describe: the repair path is `writeWorkflowState` over a
+  // Bash call, which this matcher never sees. The case now asserts the
+  // refusal, and the one below keeps the property the old one was reaching
+  // for — that the guard stays scoped to this one artifact.
+  test("CONTROL: a corrupt file at a DIFFERENT path does not block anything", () => {
     const dir = mkdtempSync(join(tmpdir(), "grp-corrupt-"));
     try {
-      const path = join(dir, "workflow-state.json");
-      writeFileSync(path, "{ not json");
-      expectAllowed(write(JSON.stringify({ phase: "BUILD" }), path));
+      const other = join(dir, "notes.md");
+      writeFileSync(other, "{ not json");
+      expectAllowed(write("still not json", other));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Third review round. The Edit branch decided from two string fragments and
+ * never read the file, so it caught erasure OF A RESULT but not erasure of
+ * the PATH to the result — and the two findings below chain into one
+ * two-step bypass.
+ *
+ * PREDICTED 5 red against the branch at 4c68a672, before the fix:
+ * the rename, the result-key rename, the corrupting Edit, the Write over an
+ * unparseable prior, and the Edit over an unparseable prior. MEASURED below.
+ */
+describe("#1137 an Edit cannot erase the PATH to a result", () => {
+  function editOn(prior: unknown, old_string: string, new_string: string): Run {
+    let out!: Run;
+    withStateFile(prior, path => {
+      out = runHook({ tool_name: "Edit", tool_input: { file_path: path, old_string, new_string } });
+    });
+    return out;
+  }
+
+  const GATED = { phase: "SHIP", gates: { scope: { result: "PASS" }, verify: { result: "FAIL" } } };
+
+  test("WITNESS: renaming the gates key is refused", () => {
+    // The reported bypass, verbatim. Neither fragment contains a forbidden
+    // substring; the file stays valid JSON; every result moves out of reach.
+    expect(blockedReason(editOn(GATED, '"gates"', '"gates_old"'))).toMatch(/remov|eras|chang/i);
+  });
+
+  test("WITNESS: renaming the result key is refused", () => {
+    expect(blockedReason(editOn(GATED, '"result"', '"result_old"'))).toMatch(/remov|eras|chang/i);
+  });
+
+  test("WITNESS: renaming a single gate out of reach is refused", () => {
+    expect(blockedReason(editOn(GATED, '"verify"', '"verify_x"'))).toMatch(/remov|eras|chang/i);
+  });
+
+  test("WITNESS: an Edit that leaves the file unparseable is refused", () => {
+    // Step one of the chain: Edit is the only way to reach a corrupt prior
+    // state, because the Write branch already refuses unparseable content.
+    expect(blockedReason(editOn(GATED, "{", "XX"))).toMatch(/pars/i);
+  });
+
+  test("WITNESS: an Edit that FORGES a result through a rename is refused", () => {
+    const prior = { phase: "BUILD", gates_draft: { ship: { result: "PASS" } } };
+    expect(blockedReason(editOn(prior, '"gates_draft"', '"gates"'))).toMatch(/gate-runner|chang|add/i);
+  });
+
+  test("CONTROL: a legitimate phase Edit still passes", () => {
+    expectAllowed(editOn({ phase: "BUILD", acs: [] }, '"BUILD"', '"VERIFY"'));
+  });
+
+  test("CONTROL: a legitimate Edit on a GATED state still passes", () => {
+    // The guard must not become "no edits once a gate has run" — that is the
+    // brick. Adding a changelog entry touches no gate result.
+    expectAllowed(
+      editOn(
+        { ...GATED, changelog: [] },
+        '"changelog": []',
+        '"changelog": [{"ts":"t","event":"note"}]',
+      ),
+    );
+  });
+
+  test("CONTROL: an Edit whose old_string is not in the file passes", () => {
+    // The Edit tool itself refuses this, so the guard adds nothing and a
+    // confusing refusal here would be the kind that gets guards switched off.
+    expectAllowed(editOn(GATED, '"nowhere-in-this-file"', '"x"'));
+  });
+
+  test("CONTROL: an ordinary Edit to an already-DONE run passes", () => {
+    // Found by the false-positive sweep, not by review: the first disk-aware
+    // draft refused whenever the OUTCOME was DONE, which refused every edit
+    // to a finished run — 6 refusals across 157 legitimate operations on the
+    // 44 live states in ~/.rungate, all on the two already-DONE ones. Phase
+    // DONE is a transition, and nothing here advances anything.
+    expectAllowed(
+      editOn(
+        { phase: "DONE", gates: { ship: { result: "PASS" } }, updatedTs: "2026-01-01" },
+        '"updatedTs": "2026-01-01"',
+        '"updatedTs": "2026-10-22"',
+      ),
+    );
+  });
+
+  test("WITNESS: an Edit that ADVANCES a run to DONE is still refused", () => {
+    // The control above must not have bought itself by switching the rule off.
+    expect(
+      blockedReason(editOn({ phase: "SHIP" }, '"SHIP"', '"DONE"')),
+    ).toContain("DONE");
+  });
+
+  test("CONTROL: an Edit to a path with no file on disk passes", () => {
+    expectAllowed(
+      runHook({
+        tool_name: "Edit",
+        tool_input: { file_path: STATE, old_string: '"a"', new_string: '"b"' },
+      }),
+    );
+  });
+});
+
+describe("#1137 an unparseable PRIOR state is UNMEASURED, and refuses", () => {
+  // Step two of the chain. Once the file on disk will not parse, the erasure
+  // comparison has nothing to compare against — and the previous round let
+  // the write through on its own merits, which disabled the protection for
+  // everything after.
+  //
+  // Closing this does NOT brick repair. Measured 2026-10-22: a corrupt
+  // workflow-state.json is repaired by `bun -e "…writeWorkflowState(path,
+  // state)"`, which succeeds over unparseable prior content (its own prior
+  // read is inside a catch) and is a Bash call this matcher never sees.
+  function onCorruptPrior(payload: (p: string) => unknown): Run {
+    const dir = mkdtempSync(join(tmpdir(), "grp-prior-"));
+    try {
+      const path = join(dir, "workflow-state.json");
+      writeFileSync(path, "XX not json");
+      return runHook(payload(path));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("WITNESS: a Write over an unparseable prior state is refused", () => {
+    const r = onCorruptPrior(path => ({
+      tool_name: "Write",
+      tool_input: { file_path: path, content: JSON.stringify({ phase: "BUILD" }) },
+    }));
+    expect(blockedReason(r)).toMatch(/pars/i);
+  });
+
+  test("WITNESS: an Edit over an unparseable prior state is refused", () => {
+    const r = onCorruptPrior(path => ({
+      tool_name: "Edit",
+      tool_input: { file_path: path, old_string: "XX", new_string: "YY" },
+    }));
+    expect(blockedReason(r)).toMatch(/pars/i);
+  });
+
+  test("CONTROL: the refusal names the repair path", () => {
+    const r = onCorruptPrior(path => ({
+      tool_name: "Write",
+      tool_input: { file_path: path, content: JSON.stringify({ phase: "BUILD" }) },
+    }));
+    // A refusal nobody can get out from under gets switched off.
+    expect(blockedReason(r)).toContain("writeWorkflowState");
   });
 });
 

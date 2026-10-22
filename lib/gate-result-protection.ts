@@ -59,22 +59,48 @@
  * JSON string are decoded too. That over-blocks a string nobody writes into
  * this file, and the direction is the correct one to be wrong in.
  *
- * ## Where UNMEASURED refuses, and the one place it does not
+ * ## Both branches read the disk, because they are one rule
+ *
+ * An earlier draft decided the Edit branch from the two string fragments
+ * alone. That caught erasure OF A RESULT and missed erasure of the PATH to
+ * one: `old_string: '"gates"'`, `new_string: '"gates_old"'` contains no
+ * forbidden substring, leaves the file valid JSON, and moves every gate
+ * record out of reach of `collectGateResults`. Measured ALLOWED.
+ *
+ * So the Edit branch now reads the file, applies the splice in memory,
+ * parses the result, and compares `collectGateResults` before against after
+ * — the same reading the Write branch takes. The fragment patterns survive
+ * only as a FAST PRE-FILTER that can refuse without I/O; they are never the
+ * decision. Two implementations of one rule is why the branches could
+ * disagree at all.
+ *
+ * A gate result that is ADDED, REMOVED or CHANGED all refuse. Re-running a
+ * gate legitimately changes `PASS`↔`FAIL`, and that is precisely the write
+ * this hook exists to route through the gate runner instead — a re-run is
+ * not a reason to let the thing being gated edit the verdict by hand.
+ *
+ * ## UNMEASURED refuses, including the prior state
  *
  * A workflow state is always a JSON object. Content that does not parse, or
- * that parses to an array, a `null` or a scalar, is a reading the guard could
- * not take — and a reading that could not be taken is not one that passed.
- * Both refuse. The first draft allowed both, which is the same fail-open as
- * the `catch { // allow }` this issue was filed about, wearing two more hats.
+ * parses to an array, a `null` or a scalar, is a reading the guard could not
+ * take — and a reading that could not be taken is not one that passed.
  *
- * The exception is the PRIOR state read for the erasure check. If the file
- * already on disk is unreadable or unparseable, the erasure question is
- * UNMEASURED and the write is allowed to proceed on its own merits. Refusing
- * there would make one corrupt state file permanently unwritable by the only
- * tool that could repair it — a guard nobody can get out from under gets
- * switched off, and then it guards nothing. The forgery and non-object
- * refusals still apply to that same write, so the incoming content is never
- * unexamined; it is only the comparison that is skipped.
+ * That now includes the PRIOR state. If the file already on disk will not
+ * parse, whether this change erases a result is UNMEASURED, and it refuses.
+ * An earlier draft allowed it, reasoning that refusing would make a corrupt
+ * state file unrepairable. **Measured 2026-10-22: it would not.** The
+ * sanctioned repair is `bun -e "…writeWorkflowState(path, state)"`, which
+ * succeeds over unparseable prior content — its own prior read sits inside a
+ * `catch` that yields `null` — and which is a Bash call this PreToolUse
+ * matcher never sees. The refusal names that path, because a guard nobody
+ * can get out from under is a guard that gets switched off.
+ *
+ * That allowance was also the second half of a two-step bypass: Edit was the
+ * only way to reach a corrupt prior state, since the Write branch already
+ * refused unparseable incoming content — and once reached, every later Write
+ * carrying no results was permitted. Refusing an Edit that leaves the file
+ * unparseable closes the entry; refusing an unparseable prior closes the
+ * escalation. Either alone breaks the chain; both is right.
  */
 
 import { existsSync, readFileSync } from 'fs';
@@ -101,11 +127,32 @@ const NON_OBJECT_REASON =
 
 function erasureReason(dropped: string[]): string {
   return (
-    `Refused: this write removes or changes an existing gate result (${dropped.join(', ')}). ` +
+    `Refused: this write adds, removes or changes an existing gate result (${dropped.join(', ')}). ` +
     'Erasing a FAIL reaches the same end as forging a PASS. Gate results are produced by ' +
     'gate-runner.ts and are not editable directly.'
   );
 }
+
+/**
+ * Named in every refusal that turns on a state file the guard could not
+ * read. A refusal with no way out is one somebody disables.
+ */
+const REPAIR_HINT =
+  ' To repair a corrupt workflow-state.json, use the sanctioned writer — it tolerates an ' +
+  'unparseable prior state and is a Bash call, not a Write/Edit: ' +
+  "bun -e \"import {writeWorkflowState} from '<harness>/gates/orchestrator.ts'; " +
+  "writeWorkflowState('<path>', state);\"";
+
+const PRIOR_UNPARSEABLE_REASON =
+  'Refused: the workflow-state.json already at this path could not be parsed, so whether this ' +
+  'change erases a gate result is UNMEASURED — and UNMEASURED refuses rather than passes.' +
+  REPAIR_HINT;
+
+const EDIT_CORRUPTS_REASON =
+  'Refused: applying this edit would leave workflow-state.json unparseable. Every reader of ' +
+  'this artifact JSON.parses it, and a corrupt state file disables the gate-result comparison ' +
+  'for every write after it.' +
+  REPAIR_HINT;
 
 /** The artifact this module guards. */
 export function isWorkflowState(filePath: string): boolean {
@@ -151,18 +198,37 @@ export function collectGateResults(parsed: unknown): Map<string, string> {
   return found;
 }
 
-/** The gate results already on disk at `filePath`, or null if unreadable. */
-function existingGateResults(filePath: string): Map<string, string> | null {
+type PriorState =
+  | { kind: 'missing' }
+  | { kind: 'unreadable' }
+  | { kind: 'ok'; state: unknown };
+
+/** What is already at `filePath`, as a reading that can say it failed. */
+function readPriorState(filePath: string): PriorState {
+  let raw: string;
   try {
-    if (!existsSync(filePath)) return new Map();
-    return collectGateResults(JSON.parse(readFileSync(filePath, 'utf-8')));
+    if (!existsSync(filePath)) return { kind: 'missing' };
+    raw = readFileSync(filePath, 'utf-8');
   } catch {
-    // UNMEASURED for the erasure question only — see the module docstring.
-    return null;
+    return { kind: 'unreadable' };
+  }
+  try {
+    return { kind: 'ok', state: JSON.parse(raw) };
+  } catch {
+    return { kind: 'unreadable' };
   }
 }
 
-/** Does this parsed state set a gate result, or phase DONE? */
+/** Is this state's phase DONE? */
+function isDone(state: unknown): boolean {
+  return (
+    isPlainObject(state) &&
+    typeof state.phase === 'string' &&
+    state.phase.toUpperCase() === 'DONE'
+  );
+}
+
+/** Does this parsed state forge a gate result? */
 function decideParsed(parsed: unknown): GateWriteDecision {
   if (!isPlainObject(parsed)) return { blocked: true, reason: NON_OBJECT_REASON };
 
@@ -170,28 +236,109 @@ function decideParsed(parsed: unknown): GateWriteDecision {
     return { blocked: true, reason: GATE_RESULT_REASON };
   }
 
-  // Case-insensitive to match the Edit path. Readers compare `=== 'DONE'`
-  // exactly, so a lowercase spelling is not a live bypass — but only the gate
-  // runner sets this field at all, so refusing both spellings costs nothing
-  // and keeps the two branches from disagreeing about one input.
-  if (typeof parsed.phase === 'string' && parsed.phase.toUpperCase() === 'DONE') {
-    return { blocked: true, reason: DONE_PHASE_REASON };
-  }
-
   return ALLOW;
 }
 
-/** Does this Edit fragment set a gate result, or phase DONE? */
-function decideFragment(newString: string, oldString: string): GateWriteDecision {
+/**
+ * Phase DONE is a TRANSITION, not a resting state.
+ *
+ * The rule is that only the gate runner ADVANCES a run to DONE. An earlier
+ * draft refused whenever the outcome was DONE, which refused every edit to
+ * an already-finished run — measured as 6 refusals across 157 legitimate
+ * operations on the 44 live states in `~/.rungate`, all of them on the two
+ * runs whose phase was already DONE. Nothing was being advanced; the guard
+ * was reading a resting value as an event.
+ *
+ * Refusing the transition loses nothing: an attacker who wants DONE has to
+ * arrive from not-DONE, and the gate results of a finished run stay covered
+ * by the before/after comparison either way.
+ *
+ * Case-insensitive because the Edit pre-filter is. Readers compare
+ * `=== 'DONE'` exactly, so a lowercase spelling is not a live bypass, but
+ * only the gate runner sets this field and refusing both costs nothing.
+ */
+function advancesToDone(prior: PriorState, after: unknown): boolean {
+  if (!isDone(after)) return false;
+  return !(prior.kind === 'ok' && isDone(prior.state));
+}
+
+/** Gate names whose result differs between two readings, in either direction. */
+function gateResultDelta(
+  before: Map<string, string>,
+  after: Map<string, string>,
+): string[] {
+  const changed = new Set<string>();
+  for (const [gate, result] of before) if (after.get(gate) !== result) changed.add(gate);
+  for (const gate of after.keys()) if (!before.has(gate)) changed.add(gate);
+  return [...changed];
+}
+
+/**
+ * The Edit tool's splice, in memory. A function replacement rather than a
+ * string one: `String.replace` with a string pattern interprets `$&`, `$1`
+ * and friends in the replacement, so a `new_string` containing a dollar sign
+ * would be spliced as something other than what lands on disk — and a guard
+ * that models the write incorrectly is measuring the wrong file.
+ */
+function applySplice(raw: string, oldString: string, newString: string, all: boolean): string {
+  if (all) return raw.split(oldString).join(newString);
+  const at = raw.indexOf(oldString);
+  if (at === -1) return raw;
+  return raw.slice(0, at) + newString + raw.slice(at + oldString.length);
+}
+
+/**
+ * Decide an Edit by modelling its OUTCOME, not by reading its fragments.
+ *
+ * The fragment patterns run first and can refuse with no I/O, but they are a
+ * pre-filter: the decision is the before/after comparison below.
+ */
+function decideEdit(
+  filePath: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+): GateWriteDecision {
+  // Fast pre-filter — a replacement that spells a result or DONE outright.
   const text = decodeUnicodeEscapes(newString);
   if (RESULT_PATTERN.test(text)) return { blocked: true, reason: GATE_RESULT_REASON };
   if (DONE_PHASE_PATTERN.test(text)) return { blocked: true, reason: DONE_PHASE_REASON };
 
-  // Erasure: the text being replaced carried a result and the replacement
-  // does not. Same end as a forged PASS, and invisible to `new_string` alone.
-  const replaced = decodeUnicodeEscapes(oldString);
-  if (RESULT_PATTERN.test(replaced)) {
-    return { blocked: true, reason: erasureReason(['an edited gate record']) };
+  let raw: string;
+  try {
+    // No file yet: the Edit tool refuses this itself, so there is no outcome
+    // to model and nothing for the guard to protect.
+    if (!existsSync(filePath)) return ALLOW;
+    raw = readFileSync(filePath, 'utf-8');
+  } catch {
+    return ALLOW;
+  }
+
+  let priorState: unknown;
+  try {
+    priorState = JSON.parse(raw);
+  } catch {
+    return { blocked: true, reason: PRIOR_UNPARSEABLE_REASON };
+  }
+  const prior: PriorState = { kind: 'ok', state: priorState };
+
+  // An `old_string` the file does not contain, or an empty one, is an edit
+  // the tool itself refuses. Modelling it would mean inventing an outcome.
+  if (oldString === '' || !raw.includes(oldString)) return ALLOW;
+
+  let after: unknown;
+  try {
+    after = JSON.parse(applySplice(raw, oldString, newString, replaceAll));
+  } catch {
+    return { blocked: true, reason: EDIT_CORRUPTS_REASON };
+  }
+  if (!isPlainObject(after)) return { blocked: true, reason: NON_OBJECT_REASON };
+
+  const delta = gateResultDelta(collectGateResults(priorState), collectGateResults(after));
+  if (delta.length > 0) return { blocked: true, reason: erasureReason(delta) };
+
+  if (advancesToDone(prior, after)) {
+    return { blocked: true, reason: DONE_PHASE_REASON };
   }
 
   return ALLOW;
@@ -224,12 +371,18 @@ export function decideGateResultWrite(
     if (onContent.blocked) return onContent;
 
     // The content carries no gate result. If the file already on disk does,
-    // this write drops it.
-    const before = existingGateResults(filePath);
-    if (before && before.size > 0) {
-      const after = collectGateResults(parsed);
-      const dropped = [...before.keys()].filter(g => after.get(g) !== before.get(g));
-      if (dropped.length > 0) return { blocked: true, reason: erasureReason(dropped) };
+    // this write drops it — and if that file will not parse, whether it does
+    // is UNMEASURED, which refuses.
+    const prior = readPriorState(filePath);
+    if (prior.kind === 'unreadable') {
+      return { blocked: true, reason: PRIOR_UNPARSEABLE_REASON };
+    }
+    const before = prior.kind === 'ok' ? collectGateResults(prior.state) : new Map<string, string>();
+    const delta = gateResultDelta(before, collectGateResults(parsed));
+    if (delta.length > 0) return { blocked: true, reason: erasureReason(delta) };
+
+    if (advancesToDone(prior, parsed)) {
+      return { blocked: true, reason: DONE_PHASE_REASON };
     }
 
     return ALLOW;
@@ -238,7 +391,7 @@ export function decideGateResultWrite(
   if (toolName === 'Edit') {
     const newString = typeof toolInput.new_string === 'string' ? toolInput.new_string : '';
     const oldString = typeof toolInput.old_string === 'string' ? toolInput.old_string : '';
-    return decideFragment(newString, oldString);
+    return decideEdit(filePath, oldString, newString, toolInput.replace_all === true);
   }
 
   return ALLOW;
