@@ -163,6 +163,74 @@ describe("#713 BashWriteGuard: protects gate artifacts and hook files", () => {
     // for mentioning the filename, which is how a guard gets switched off.
     expect(runHook("BashWriteGuard.hook.ts", cmd("grep -n phase workflow-state.json")).stdout.trim()).toBe("");
   });
+
+  // ── #1120: the allowlist used to be consulted BEFORE the write target.
+  //
+  // Two bypasses, and they fail for different reasons, which is why both are
+  // here. (C) is an ordering defect: the write target was always visible, the
+  // guard just never looked. (B) is a blind spot: an interpreter writes
+  // without a shell redirect, so write-target extraction cannot see it at all
+  // and deleting the allowlist does not help — measured, see the PR.
+
+  test("#1120 WITNESS: an allowlisted prefix in front of a protected redirect is blocked", () => {
+    // The bypassing prefix does nothing whatsoever and the blocked redirect is
+    // still there, verbatim, one semicolon later.
+    const r = runHook("BashWriteGuard.hook.ts", cmd("gh --version; echo x > /tmp/probe/.gate-salt"));
+    expect(JSON.parse(r.stdout).decision).toBe("block");
+  });
+
+  test("#1120 WITNESS: an interpreter one-liner writing a protected file is blocked", () => {
+    const r = runHook(
+      "BashWriteGuard.hook.ts",
+      cmd(`python3 -c "open('/tmp/probe/.gate-salt','w').write('x')"`),
+    );
+    expect(JSON.parse(r.stdout).decision).toBe("block");
+  });
+
+  test("#1120 NEG CTRL: the RECORDED false positive still passes", () => {
+    // Reconstructed verbatim from the 2026-09-10 transcript. This is the ONLY
+    // false positive the allowlist was ever built against — recorded in
+    // `hornjason/pai-config#474`, NOT this repository's #474, which is a
+    // `lib/scaffold/steps.ts` bug. A `gh` command whose comment body quotes a
+    // protected filename and the word `chflags`.
+    //
+    // It is blocked by the chmod/chflags whole-command check, not by write-
+    // target extraction — measured both ways. So the allowlist's remaining
+    // job is to exempt a read-only command from the SUBSTRING checks, and
+    // only from those. Emptying the allowlist turns this case red, which is
+    // the cheapest wrong fix reintroducing the exact regression it undid.
+    const recorded = [
+      `gh issue close 473 --repo hornjason/pai-config --comment "$(cat <<'EOF'`,
+      "1. **BashWriteGuard.hook.ts** — blocks Bash writes to workflow-state.json, .gate-salt, witnesses/, hook files.",
+      "- Run `chflags uchg` on hook files for immutable protection (one-time)",
+      "EOF",
+      `)" 2>&1 | tail -1`,
+    ].join("\n");
+    expect(
+      runHook("BashWriteGuard.hook.ts", cmd(recorded)).stdout.trim(),
+      "the recorded pai-config#474 false positive must stay allowed",
+    ).toBe("");
+  });
+
+  test("#1120 NEG CTRL: ordinary read commands all still pass", () => {
+    // A guard that refuses everything passes every witness written for it.
+    // This is the population that separates the fix from that guard.
+    const reads = [
+      "ls -la",
+      "cat README.md",
+      "grep -rn phase lib/",
+      "find . -name '*.hook.ts'",
+      "head -20 workflow-state.json",
+      "tail -5 workflow-state.json",
+      "wc -l hooks/BashWriteGuard.hook.ts",
+      "jq .phase workflow-state.json",
+      "bun test test/product-hook-migration.test.ts",
+      "gh issue view 1120 --repo hornjason/pai-harness",
+      "python3 -c \"print(1 + 1)\"",
+    ];
+    const refused = reads.filter(c => runHook("BashWriteGuard.hook.ts", cmd(c)).stdout.trim() !== "");
+    expect(refused, "these are reads; a guard refusing them is a guard that gets switched off").toEqual([]);
+  });
 });
 
 describe("#713 GateResultProtection: only the gate runner writes gate results", () => {
