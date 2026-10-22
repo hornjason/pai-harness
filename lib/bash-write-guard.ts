@@ -47,7 +47,48 @@
  * Using `stripQuoted` for both would let an attacker quote the path; using
  * `dequote` for both reinstates all four false positives. Each test below
  * names which one it uses and why.
+ *
+ * ## The names are global; the artifacts are not (#1175)
+ *
+ * `PROTECTED_FILES` is a list of NAMES, and until #1175 a name matched in any
+ * tree. A fixture at `/tmp/rg-abc/workflow-state.json` was refused as readily
+ * as a live run's state, which is a true positive against the rule and a false
+ * positive against intent — agents on this repo build such fixtures
+ * constantly, including fixtures for this module.
+ *
+ * The scoping is by SCRATCH TREE rather than by project root, and that is a
+ * measurement and not a preference. #1175's acceptance asked for "the path
+ * relative to the project root". Swept over 5,531 real commands, the gate
+ * artifacts named in them resolve like this:
+ *
+ *     2,620  under the run store (`$RUNGATE_WORK_DIR`, i.e. `~/.rungate`)
+ *       521  under a former run store (`~/.pai-work`) or `~/.claude`
+ *     1,724  no resolvable path at all — a bare basename, or built by `join`
+ *        83  under an OS temp root
+ *        65  relative
+ *        16  under a repository tree
+ *
+ * A live `workflow-state.json` is almost never inside the project root: it is
+ * in the run store, one level up and sideways. "Protect what is under the
+ * root" would therefore have stopped protecting 3,141 of 3,240 absolute
+ * references — reopening `pai-config#473` C1, the forge-a-gate-result attack
+ * this guard was built for. The root-relative reading is recorded here as
+ * MEASURED WRONG rather than merely not chosen.
+ *
+ * So the question asked is the fail-closed one: can this path be shown to be
+ * in a scratch tree? Only then is it a fixture. Every other answer —
+ * elsewhere, relative, or not a path at all — keeps the old refusal. An
+ * allowlist is normally the wrong shape here and `pai-config#474`'s
+ * read-only-prefix list is why: a PREFIX says nothing about what a command
+ * writes. A scratch root says something about the DESTINATION, is consulted
+ * only after the destination has been extracted, and is not a judgement call
+ * — each entry is a value `mktemp -d` returns on a supported platform.
+ * Narrowing it over-blocks; it cannot open a hole.
  */
+
+import { realpathSync, statSync } from 'fs';
+import { tmpdir } from 'os';
+import { basename, dirname, join, resolve } from 'path';
 
 /** Gate artifacts. A write to any of these must come from the gate runner. */
 export const PROTECTED_FILES = ['workflow-state.json', '.gate-salt', '/witnesses/'];
@@ -61,6 +102,366 @@ export interface BashWriteDecision {
 }
 
 const ALLOW: BashWriteDecision = { blocked: false };
+
+/**
+ * The trees an OS temporary directory can be in.
+ *
+ * `/tmp` and `/private/tmp` are both listed because on macOS they are the
+ * same directory under two names and a command may spell either; `resolve()`
+ * normalises `..` but does not follow links, and the link cannot be followed
+ * here because the path being judged usually does not exist yet — it is about
+ * to be created. `/var/folders` is where macOS puts a per-user `$TMPDIR`, and
+ * `tmpdir()` covers whatever the platform or the environment says, which is
+ * what `mkdtemp`, `mkstemp` and `mktemp -d` all build on.
+ *
+ * Each root is also recorded in its REALPATH form. On macOS `/var` is a
+ * symlink to `/private/var`, so `tmpdir()` hands back `/var/folders/…/T`
+ * while the resolution below hands back `/private/var/folders/…/T`, and a
+ * list holding only the first form answers `false` for every path spelled
+ * the way `mkdtemp` hands it to a program.
+ *
+ * The corpus does NOT show this, and saying so is the point: real commands
+ * spell `/tmp` literally, so all 37 fixture commands clear either way. It
+ * was found by `isScratchPath, asserted directly` calling `tmpdir()`, which
+ * is what a program does and what a person does not. A sweep over what
+ * people typed cannot see a defect in what their programs compute.
+ *
+ * Read at call time rather than frozen at import, because `TMPDIR` is what a
+ * test harness moves when it wants its own scratch space, and a guard that
+ * cached the old value would refuse the new one.
+ *
+ * ## `TMPDIR` is the writer's variable, so it is not trusted
+ *
+ * The first version of this took `process.env.TMPDIR` as given. Measured:
+ *
+ *     TMPDIR unset                  isScratchPath(…/.rungate/x/…) = false
+ *     TMPDIR=$HOME/.rungate                                       = true
+ *
+ * The agent whose write is being judged sets the variable that decides
+ * whether the write is exempt, and pointing it at the run store switches the
+ * guard off for the one directory it exists to protect. `tmpdir()` is the
+ * same hole wearing a function call — on POSIX it READS `TMPDIR`.
+ *
+ * So `FIXED` is the whole of the trust, and the environment can only ever
+ * SELECT within it: a `TMPDIR` that does not already resolve inside a fixed
+ * root is dropped. A platform whose temp directory is somewhere else
+ * over-blocks, which is the direction this module is allowed to be wrong in.
+ */
+const FIXED_SCRATCH_ROOTS = ['/tmp', '/private/tmp', '/var/folders'];
+
+/**
+ * Trees that hold LIVE artifacts, wherever on the disk they are.
+ *
+ * This is SUBTRACTED from the exemption in `isScratchPath`, not merely used
+ * to vet the root list. The difference matters: vetting roots is a proxy for
+ * the property, and it only holds for roots somebody thought of. Subtracting
+ * the trees themselves IS the property — "a live artifact is never exempt" —
+ * and it keeps holding when a root is added later by someone who has not
+ * read this comment.
+ *
+ * The two mechanisms are also not interchangeable, and conflating them was
+ * measured. Dropping a ROOT because it contains a protected tree removes
+ * `/tmp` wholesale the moment `RUNGATE_WORK_DIR` points inside it — which a
+ * real corpus command does — and refuses every fixture on the machine.
+ * Subtracting the TREE removes only that subtree and leaves the rest of
+ * `/tmp` exempt. So the root list is vetted only against trees that are not
+ * themselves scratch, and the subtraction below applies unconditionally.
+ *
+ * ## The hook directories are here because a checkout CAN be the live hook
+ *
+ * A review argued that `PROTECTED_HOOKS` should lose the scratch exemption
+ * entirely, on the grounds that a `.hook.ts` under `/tmp` is as likely to be
+ * a real checkout as a fixture — worktrees under `/tmp` are routine here.
+ * The counter-argument offered was that a hook source in a checkout is not
+ * the live hook, so compromising one does nothing until it is deployed.
+ *
+ * That counter-argument is FALSE on this machine, and `lib/hook-target-tree.ts`
+ * is where it was measured: every registration in `~/.claude/settings.json`
+ * is spelled `${PAI_HOOKS_DIR}/…` or `${RUNGATE_HOOKS_DIR}/…`, and
+ * `RUNGATE_HOOKS_DIR` resolved to *a checkout that is not this one*, with
+ * fourteen hooks executing from it. #999's shell-injection fix never reached
+ * the bytes that run. A checkout is the live hook exactly when a variable
+ * says it is.
+ *
+ * So the answer is neither "refuse the exemption for hooks" nor "trust the
+ * checkout": resolve where the registrations actually point and subtract
+ * THAT, wherever it is — including when it is under `/tmp`. A hook in a
+ * worktree nothing registers stays a fixture, which is the case #1175 exists
+ * for; a hook in the tree that is actually wired stays protected, which is
+ * the case the review was worried about.
+ *
+ * `process.cwd()` is deliberately NOT here, and the reason is measured. A
+ * checkout under `/tmp` is ordinary on this machine — the worktree this was
+ * written in is `/private/tmp/rg-1175-wt` — so treating the working
+ * directory as protected drops `/private/tmp` from the roots, and because
+ * `/tmp` realpaths to it the walk then refuses every `/tmp` path as well.
+ * 12 of 145 tests red, measured.
+ */
+function protectedTrees(): string[] {
+  const home = process.env.HOME || '';
+  return [
+    // The run store — where 2,620 of 3,240 absolute artifact references live.
+    process.env.RUNGATE_WORK_DIR || '',
+    home ? join(home, '.rungate') : '',
+    home ? join(home, '.claude') : '',
+    // The trees a hook registration resolves to. Read from the environment
+    // because that is what the registrations are spelled with.
+    process.env.PAI_HOOKS_DIR || '',
+    process.env.RUNGATE_HOOKS_DIR || '',
+    home ? join(home, '.pai', 'hooks') : '',
+  ]
+    .filter(Boolean)
+    .map(p => resolve(p));
+}
+
+/** Is `p` inside, or equal to, any of `trees`? */
+function inAnyTree(p: string, trees: string[]): boolean {
+  return trees.some(t => p === t || p.startsWith(t + '/'));
+}
+
+function scratchRoots(): string[] {
+  const out: string[] = [];
+  const contains = (root: string, p: string) => p === root || p.startsWith(root + '/');
+
+  const fixed: string[] = [];
+  for (const r of FIXED_SCRATCH_ROOTS) {
+    const n = resolve(r);
+    fixed.push(n);
+    try {
+      fixed.push(realpathSync(n));
+    } catch {
+      // A root that is not on this disk is still a name a command can spell.
+    }
+  }
+
+  // A protected tree that is ITSELF inside a fixed scratch root is not a
+  // reason to drop that root. `RUNGATE_WORK_DIR=/tmp/e2e-gate-test` is a real
+  // corpus command — a harness deliberately putting the run store in scratch
+  // for a test — and without this clause it drops `/tmp` and refuses every
+  // fixture on the machine, which is the same self-defeat `process.cwd()`
+  // caused. Measured: `isScratchPath('/tmp/p/x')` goes false under that one
+  // environment variable.
+  const guarded = protectedTrees().filter(t => !fixed.some(f => contains(f, t)));
+  const add = (p: string) => {
+    if (p === '/' || out.includes(p)) return;
+    // The invariant, enforced rather than documented: an exemption root that
+    // contains a protected tree is not an exemption root.
+    if (guarded.some(t => contains(p, t))) return;
+    out.push(p);
+  };
+
+  for (const f of fixed) add(f);
+
+  // The environment SELECTS within the fixed set; it cannot extend it.
+  for (const r of [tmpdir(), process.env.TMPDIR ?? '']) {
+    if (!r || !r.startsWith('/')) continue;
+    const n = resolve(r);
+    let real = n;
+    try {
+      real = realpathSync(n);
+    } catch {
+      /* not on this disk; judge the spelling */
+    }
+    if (!fixed.some(f => contains(f, n) || contains(f, real))) continue;
+    add(n);
+    add(real);
+  }
+  return out;
+}
+
+/**
+ * Is this path demonstrably inside a scratch tree?
+ *
+ * Only an ABSOLUTE path can be placed in a tree, so everything else — a bare
+ * basename, a relative path, a `join(dir, "workflow-state.json")` whose `dir`
+ * lives in a variable — answers `false` and stays refused. That is the whole
+ * fail-closed property: this function's job is to say YES, and silence means
+ * the old behaviour.
+ *
+ * `resolve()` first, per #1129: a destination spelled `/tmp/../Users/me/
+ * .rungate/x/workflow-state.json` is not in `/tmp`, and comparing the
+ * unnormalised string would say it is.
+ *
+ * The deepest EXISTING ancestor is then realpath'd, which is the half
+ * `resolve()` cannot do. Without it, `ln -s ~/.rungate/slug /tmp/esc` followed
+ * by a write to `/tmp/esc/workflow-state.json` is a two-command bypass of the
+ * thing this guard protects. The stat happens only after a protected NAME has
+ * already matched, so the common command pays nothing for it.
+ *
+ * It does NOT close the case where the link is made by the SAME command —
+ * see `exemptionIsVoid`, which is where that is handled, because the answer
+ * is a property of the command and not of the path.
+ *
+ * An UNEXPANDED expansion is refused. `/tmp/$X/workflow-state.json` is not a
+ * path, it is a path the shell will build, and `$X` may be `../../Users/me/
+ * .rungate/slug`. Five of the six spellings a review raised were already
+ * refused by `resolve()` and the `startsWith('/')` precondition — `${X}`, the
+ * backtick form, `/tmp/../…`, `$HOME/…` and `~/…` — and this is the sixth.
+ * Measured cost of refusing it: 0 of the 37 commands this branch clears, with
+ * 209 corpus-wide carrying a `$` in an artifact path, none of them in the
+ * population at stake.
+ *
+ * Both exits below return `false`. They are all but unreachable — the
+ * deepest artifact path in the corpus is 6 components against a cap of 64,
+ * and the walk only runs out of parents if `realpathSync('/')` throws — but
+ * an unreachable fail-OPEN in a fail-closed module is a line that reads as
+ * permission, and the next person to make the walk reachable inherits it.
+ */
+
+/**
+ * Glob and brace metacharacters, tested against the DIRECTORY part only.
+ *
+ * `echo '{}' > /tmp/sym*​/workflow-state.json`, with `/tmp/syma` a symlink
+ * into the run store: `/tmp/sym*` does not exist, the walk climbs past it to
+ * `/tmp`, and the path is exempted — then the shell expands the glob and the
+ * write goes through the link. Same escape as the symlink case with no `ln`
+ * in the command for `exemptionIsVoid` to see.
+ *
+ * Only the directory part is tested, and that is measured rather than
+ * cautious. A glob in the BASENAME is already safe, because the directory
+ * above it is the thing `resolveThroughLinks` resolves — built and executed:
+ * with `SRC/syma` linked out of scratch, `SRC/syma/*.json` answers false and
+ * `SRC/sym*​/x` answered true. So the basename case needs no refusal, and
+ * refusing it anyway costs a real command: `rm -f /tmp/713-battery/
+ * pai-wrongfix/*.hook.ts` is 1 of the 37 this branch clears, and a blanket
+ * metacharacter class takes it back. Restricting the test to the directory
+ * part closes the escape at a measured cost of 0.
+ *
+ * The exact class a review proposed, `[$`*?[]{}~]` tested against the whole
+ * path, was swept over the same 5,573-command corpus: it takes back 1 of the
+ * 37, that `rm -f`. It does not ship on caution either way — it ships on the
+ * reading, and the reading is 1 against 0.
+ */
+const UNRESOLVED_DIR = /[*?[\]{}]/;
+export function isScratchPath(path: string): boolean {
+  if (!path || !path.startsWith('/')) return false;
+  if (/[$`]/.test(path)) return false;
+  // A glob in a DIRECTORY component is unresolvable and escapes; one in the
+  // basename does not. See `UNRESOLVED_DIR` for the measurement.
+  if (UNRESOLVED_DIR.test(dirname(path))) return false;
+
+  const normalised = resolve(path);
+  const real = resolveThroughLinks(normalised);
+  if (real === null) return false;
+
+  // The subtraction, applied to BOTH the spelling and the resolved path. A
+  // live artifact is never exempt, whichever of the two names it.
+  const live = protectedTrees();
+  if (inAnyTree(normalised, live) || inAnyTree(real, live)) return false;
+
+  const roots = scratchRoots();
+  return inAnyTree(normalised, roots) && inAnyTree(real, roots);
+}
+
+/**
+ * The path with its deepest EXISTING ancestor resolved through symlinks, and
+ * the not-yet-created tail re-attached. `null` when nothing in the chain can
+ * be resolved — which is the fail-closed answer, not a missing one.
+ */
+function resolveThroughLinks(normalised: string): string | null {
+  let dir = normalised;
+  let suffix = '';
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = realpathSync(dir);
+      return suffix ? resolve(real, suffix) : real;
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) return null;
+      suffix = suffix ? join(basename(dir), suffix) : basename(dir);
+      dir = parent;
+    }
+  }
+  return null;
+}
+
+/**
+ * Does this command do something that makes a resolved path untrustworthy?
+ *
+ * `isScratchPath` resolves the destination's existing ancestors at DECISION
+ * time. A command that creates a symbolic link before it writes invalidates
+ * that resolution between the decision and the execution, and the whole
+ * thing fits in one command:
+ *
+ *     ln -s ~/.rungate/victim /tmp/esc && echo '{}' > /tmp/esc/workflow-state.json
+ *
+ * At decision time `/tmp/esc` does not exist, the walk reaches `/tmp`, and
+ * the write is exempted. Then the shell creates the link and the write lands
+ * in the run store. Both halves were executed: the module allowed the
+ * command, and a real shell put the bytes through the link. This is a
+ * bypass, not a race — no second actor is required.
+ *
+ * `mkdir -p` is the overwhelmingly common thing a fixture does to a path that
+ * does not exist yet, and a directory cannot point out of its tree. Only a
+ * LINK can, so only link creation voids the exemption. Measured: 0 of the 37
+ * commands this branch clears create one, and 9 commands in the whole 5,550
+ * corpus match at all.
+ *
+ * ## The verb is resolved, not pattern-matched
+ *
+ * The first version tested `/(?:^|[\s;&|(])ln\s/` against the raw command,
+ * which requires whitespace or a separator immediately before `ln`. Measured:
+ * `ln -s`, `sudo ln` and `find -exec ln` voided, but **`/bin/ln -s … /tmp/x`
+ * and `\ln -s … /tmp/x` did not** — two spellings the shell resolves
+ * identically to the one that did, walking past the control the whole
+ * exemption rests on.
+ *
+ * `commandWord` already strips a leading path and a leading `\` or `(`, and
+ * already skips `sudo`, `env`, `xargs` and the other wrappers, because
+ * #1120 and #1184 taught it to. Running it per segment is one tokeniser
+ * instead of two and gets all of that for free, so the segment's resolved
+ * VERB is the primary test.
+ *
+ * `LINK_CREATION` stays as a second, broader net for the positions a command
+ * word cannot reach: `find . -exec ln …` resolves to `find`, and
+ * `symlinkSync` lives inside an interpreter body this module does not parse.
+ * It is read off the raw command for that reason — the link and the write
+ * are in different segments by construction.
+ *
+ * `mkdir -p` is the overwhelmingly common thing a fixture does to a path that
+ * does not exist yet, and a directory cannot point out of its tree. Only a
+ * LINK can, so only link creation voids the exemption. Measured: 0 of the 37
+ * commands this branch clears create one.
+ */
+const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
+
+function exemptionIsVoid(cmd: string): boolean {
+  if (LINK_CREATION.test(stripHeredocs(cmd))) return true;
+  return segments(cmd).some(seg => commandWord(seg) === 'ln');
+}
+
+/**
+ * Path-like words in `text` that contain `needle`.
+ *
+ * A word here ends at whitespace or at a character that cannot be inside a
+ * shell or source-literal path — a quote, a comma, a bracket, a semicolon.
+ * That is deliberately crude and deliberately in the refusing direction: when
+ * a path is assembled rather than written out, the word this returns is the
+ * fragment that WAS written, which is relative, which `isScratchPath` refuses
+ * to exempt.
+ *
+ * Case-folded for the same reason `names()` is (#1184): the default macOS
+ * filesystem resolves `WORKFLOW-STATE.JSON` and `workflow-state.json` to one
+ * inode, so a case-sensitive search here would find no path word for the
+ * uppercase spelling, and a name with no path words is not exempted — it
+ * would refuse rather than leak. Folding keeps the two readings agreeing
+ * instead of agreeing by accident.
+ */
+function pathWordsContaining(text: string, needle: string): string[] {
+  const out: string[] = [];
+  const hay = text.toLowerCase();
+  const pin = needle.toLowerCase();
+  let i = 0;
+  while ((i = hay.indexOf(pin, i)) !== -1) {
+    let s = i;
+    while (s > 0 && !/[\s'"`,;(){}[\]]/.test(hay[s - 1])) s--;
+    let e = i + pin.length;
+    while (e < hay.length && !/[\s'"`,;(){}[\]]/.test(hay[e])) e++;
+    out.push(text.slice(s, e)); // the ORIGINAL case: this is a path to resolve
+    i = e;
+  }
+  return out;
+}
 
 /**
  * Split a command at top-level `;`, `&&`, `||`, `|` and newline, leaving
@@ -578,6 +979,9 @@ export function writeTargets(segment: string, whole: string = segment): string[]
  * battery. A guard that refuses the repository's own mandated practice gets
  * switched off. So the test stays and gains the readings it was missing.
  */
+// #1175 moved `statSync` to the import block at the top, which `isScratchPath`
+// also reads from. Two `from 'fs'` statements in one module is legal and is
+// still one import of one module; one of them is what a reader greps for.
 function isDirDestination(dest: string, args: string[], whole: string): boolean {
   if (dest.endsWith('/')) return true; // `cp x d/` — the shell requires a dir
   if (args.length > 2) return true; // `cp a b c d` — d MUST be a directory
@@ -601,8 +1005,9 @@ function createdAsDirectory(dest: string, whole: string): boolean {
   return false;
 }
 
-// Declared beside its only reader, matching `lib/gate-result-protection.ts`.
-import { statSync } from 'fs';
+// `statSync` used to be declared here, beside its only reader. #1175 gave it
+// a second reader in `isScratchPath` at the top of the module, so the import
+// moved to the import block rather than being written twice.
 
 /**
  * Non-option arguments of a segment, dequoted. This is what an in-place verb
@@ -757,6 +1162,26 @@ function names(text: string, list: string[]): string | null {
   return null;
 }
 
+/**
+ * Protected artifacts this text names somewhere OTHER than a scratch tree
+ * (#1175).
+ *
+ * A name is exempted only when EVERY path word carrying it is scratch. One
+ * mention of the live artifact alongside ten fixtures still refuses, which is
+ * the direction a guard should err in and also the common real shape: a
+ * command that copies a fixture over a run's state names both.
+ */
+function namesOutsideScratch(text: string, list: string[], exempt: boolean): string[] {
+  const out: string[] = [];
+  for (const p of list) {
+    const words = pathWordsContaining(text, p);
+    if (words.length === 0) continue;
+    if (exempt && words.every(isScratchPath)) continue;
+    out.push(p);
+  }
+  return out;
+}
+
 const ALL_PROTECTED = [...PROTECTED_FILES, ...PROTECTED_HOOKS];
 
 /**
@@ -767,12 +1192,18 @@ const ALL_PROTECTED = [...PROTECTED_FILES, ...PROTECTED_HOOKS];
  * reason the checks above are structural: a guard tuned so wide that people
  * work around it protects nothing, and four real refusals of read-only work
  * is already a pattern.
+ *
+ * `exempt` is computed once from the WHOLE command and handed down, rather
+ * than recomputed per segment or per recursion. The command that voids the
+ * exemption puts the `ln` in one segment and the write in another, so a
+ * per-segment answer would never see both.
  */
-export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
+export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): BashWriteDecision {
   if (!cmd) return ALLOW;
   // A shell body can contain a shell body. Bounded so a crafted nest costs a
   // fixed amount of work rather than the session.
   if (depth > 3) return ALLOW;
+  const exempt = exemptIn ?? !exemptionIsVoid(cmd);
 
   for (const seg of segments(cmd)) {
     const bare = dequote(seg); // TARGET view: contents kept
@@ -784,6 +1215,9 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
     // The whole command is passed so the directory test can see a `mkdir`
     // in an EARLIER segment (#1196 R2). Everything else is per-segment.
     for (const target of writeTargets(seg, cmd)) {
+      // #1175: the target IS a path, so the tree question is asked directly
+      // here rather than through `namesOutsideScratch`.
+      if (exempt && isScratchPath(target)) continue;
       const pf = names(target, PROTECTED_FILES);
       if (pf) {
         return {
@@ -807,7 +1241,7 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
     //    text contains it, and `grep "rm -rf …"` must stay a grep.
     const verbView = `${word} ${code}`;
     if (IN_PLACE.some(p => p.test(verbView))) {
-      const pf = names(argumentsOf(seg).join(' '), ALL_PROTECTED);
+      const pf = namesOutsideScratch(argumentsOf(seg).join(' '), ALL_PROTECTED, exempt)[0];
       if (pf) {
         return {
           blocked: true,
@@ -829,15 +1263,16 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
     if (isInterpreter && SHELLS.test(word)) {
       const body = shellBody(seg);
       if (body) {
-        const inner = decideBashWrite(body, depth + 1);
+        const inner = decideBashWrite(body, depth + 1, exempt);
         if (inner.blocked) return inner;
       }
     }
 
     if (isInterpreter || isMutatingFind) {
+      const candidates = namesOutsideScratch(bare, ALL_PROTECTED, exempt);
       const pf = isMutatingFind
-        ? names(bare, ALL_PROTECTED)
-        : (ALL_PROTECTED.find(p => bare.includes(p) && writesNear(bare, p)) ?? null);
+        ? (candidates[0] ?? null)
+        : (candidates.find(p => writesNear(bare, p)) ?? null);
       if (pf) {
         return {
           blocked: true,
@@ -862,7 +1297,18 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
     //    commands naming a protected artifact, the widening newly blocks
     //    exactly one, and that one is real:
     //      `chmod 600 …/worktrees/agent-abbce…/hooks/lib/.gate-salt`
-    const permTarget = (word === 'chmod' || word === 'chflags') && names(bare, ALL_PROTECTED);
+    //
+    //    #1175 composes with that widening rather than replacing it: the
+    //    target list stays `ALL_PROTECTED` and the lookup moves to
+    //    `namesOutsideScratch`, so a `chmod` on a FIXTURE in a scratch tree
+    //    is not a permission change on a protected artifact. The widened
+    //    list and the tree scoping are independent and both are kept — a
+    //    textual merge that took either side alone would have silently
+    //    dropped one of them.
+    const permTarget =
+      word === 'chmod' || word === 'chflags'
+        ? (namesOutsideScratch(bare, ALL_PROTECTED, exempt)[0] ?? null)
+        : null;
     if (permTarget) {
       return {
         blocked: true,

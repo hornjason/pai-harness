@@ -22,8 +22,12 @@
 
 import { describe, test, expect } from "bun:test";
 import { spawnSync } from "child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { dirname, join, resolve } from "path";
 import {
   decideBashWrite,
+  isScratchPath,
   segments,
   stripQuoted,
   stripHeredocs,
@@ -35,18 +39,34 @@ import {
 const SALT = "." + "gate-" + "salt";
 const STATE = "workflow-" + "state.json";
 
+/**
+ * A root that is absolute and is not any platform's scratch tree.
+ *
+ * Every witness below moved here in #1175. They were written under `/tmp`,
+ * and `/tmp` is now the one place a protected NAME is not a protected
+ * ARTIFACT — so a witness left there would have been asserting the false
+ * positive this issue exists to remove. The move is not cosmetic: it is the
+ * behaviour change, and `#1175 WITNESS` below holds both halves of it
+ * against each other so the pair cannot drift apart.
+ *
+ * Deliberately not a path on this machine. A witness that only refuses
+ * because of where one developer keeps their runs is a witness about a
+ * machine.
+ */
+const LIVE = "/opt/bwprobe";
+
 describe("#1120 WITNESS: a write to a protected artifact is refused", () => {
   const cases: [string, string][] = [
-    ["a bare redirect — the control that proves the guard is wired", `echo x > /tmp/bwprobe/${SALT}`],
-    ["an allowlisted prefix in front of that redirect", `gh --version; echo x > /tmp/bwprobe/${SALT}`],
+    ["a bare redirect — the control that proves the guard is wired", `echo x > ${LIVE}/${SALT}`],
+    ["an allowlisted prefix in front of that redirect", `gh --version; echo x > ${LIVE}/${SALT}`],
     ["an allowlisted prefix in front of a chmod", `gh --version; chmod 777 lib/Foo.hook.ts`],
     ["an allowlisted prefix in front of the Keychain read", `gh --version; security find-generic-password -s pai-gate-salt -w`],
-    ["an interpreter one-liner that opens for write", `python3 -c "open('/tmp/p/${SALT}','w').write('x')"`],
+    ["an interpreter one-liner that opens for write", `python3 -c "open('${LIVE}/${SALT}','w').write('x')"`],
     ["the same interpreter reached by an absolute path", `/usr/bin/python3 -c "open('/x/${SALT}','w').write('x')"`],
     ["find -execdir, a plain synonym for -exec", `find . -name '*.json' -execdir rm /x/${STATE} ;`],
     ["sed -i, the ordinary way to edit a file from a shell", `sed -i '' 's/BUILD/DONE/' /Users/jhorn/.rungate/x/${STATE}`],
     ["cp carrying a flag before the destination", `cp -p /tmp/forged.json /Users/jhorn/.rungate/x/${STATE}`],
-    ["a redirect whose target is quoted", `echo x > "/tmp/bwprobe/${SALT}"`],
+    ["a redirect whose target is quoted", `echo x > "${LIVE}/${SALT}"`],
     ["chmod whose path is quoted", `chmod 777 "hooks/Foo.hook.ts"`],
     ["rm of the salt", `rm -f /Users/jhorn/Projects/rungate/gates/${SALT}`],
     ["a quoted cp of a hook into a hooks directory", `cp "/a/hooks/X.hook.ts" "/b/hooks/X.hook.ts"`],
@@ -140,7 +160,7 @@ describe("#1120: the code/data split each check depends on", () => {
 describe("#1120: the cheapest wrong fixes, run rather than described", () => {
   test("a guard that refuses everything passes every witness, and this separates it", () => {
     const refuseEverything = (_cmd: string) => ({ blocked: true, reason: "no" });
-    const witness = `gh --version; echo x > /tmp/p/${SALT}`;
+    const witness = `gh --version; echo x > ${LIVE}/${SALT}`;
     const control = "ls -la";
     // Both agree on the witness — which is why a witness alone proves nothing.
     expect(refuseEverything(witness).blocked).toBe(decideBashWrite(witness).blocked);
@@ -174,23 +194,23 @@ describe("#1176 WITNESS: a write the transformed view used to hide", () => {
   const cases: [string, string][] = [
     // G1. `[\s\S]*?` starts right after the delimiter word, so it ate the rest
     //     of the operator's line — and a redirect lives there.
-    ["G1 a heredoc whose operator line also carries the redirect", `cat <<EOF > /tmp/bw/${SALT}\nhello\nEOF`],
+    ["G1 a heredoc whose operator line also carries the redirect", `cat <<EOF > ${LIVE}/${SALT}\nhello\nEOF`],
     // G2. stripQuoted deletes quoted spans AND contents; the recovery pass
     //     only matched a target that was WHOLLY quoted, so a mid-word quote
     //     fell between the two.
     ["G2 a redirect target quoted in the middle of the word", `echo x > dir/"${STATE}"`],
     // G3. `.match` without /g, one capture group, but `tee` takes many files.
-    ["G3 tee writing a protected file as its second operand", `echo x | tee /tmp/a /tmp/bw/${STATE}`],
+    ["G3 tee writing a protected file as its second operand", `echo x | tee /tmp/a ${LIVE}/${STATE}`],
     // G4. The real invocation quotes the key, and stripQuoted deleted it, so
     //     the arm could not fire on the one shape it exists for.
     ["G4 the Keychain key name in quotes", `security find-generic-password -s 'pai-gate-salt' -w`],
     // G6. The lookbehind excluded `2`, but `2> file` truncates like `> file`.
-    ["G6 a stderr redirect, which truncates exactly like stdout", `echo x 2> /tmp/bw/${SALT}`],
+    ["G6 a stderr redirect, which truncates exactly like stdout", `echo x 2> ${LIVE}/${SALT}`],
     // G7. For a SHELL the `-c` body is shell, but it was matched against
     //     WRITE_INTENT, which enumerates Node and Python idioms only. Arm 1
     //     could not see it either, because stripQuoted deleted the body.
-    ["G7 a shell -c body containing a plain redirect", `bash -c 'echo x > /tmp/bw/${SALT}'`],
-    ["G7 the same through sh", `sh -c "rm -f /tmp/bw/${STATE}"`],
+    ["G7 a shell -c body containing a plain redirect", `bash -c 'echo x > ${LIVE}/${SALT}'`],
+    ["G7 the same through sh", `sh -c "rm -f ${LIVE}/${STATE}"`],
     // G8. Both of these are REAL commands from the corpus, and both are
     //     genuine writes that the #1176 rework briefly started allowing: an
     //     apostrophe inside a `#` comment opened a quote that stayed open
@@ -198,11 +218,11 @@ describe("#1176 WITNESS: a write the transformed view used to hide", () => {
     //     Found by the sweep, not by reading. A shell comment is not a quote.
     [
       "G8 an apostrophe in a comment must not hide a later redirect",
-      `# First, check if there's a test ${STATE} I can target\nmkdir -p /tmp/bw/rt\necho '{"phase":"BUILD"}' > /tmp/bw/rt/${STATE}`,
+      `# First, check if there's a test ${STATE} I can target\nmkdir -p ${LIVE}/rt\necho '{"phase":"BUILD"}' > ${LIVE}/rt/${STATE}`,
     ],
     [
       "G8 the same, hiding a write to a hook file",
-      `# they're on main\ngit show HEAD~1:hooks/AutoVerifyGate.hook.ts > /tmp/bw/hooks/AutoVerifyGate.hook.ts`,
+      `# they're on main\ngit show HEAD~1:hooks/AutoVerifyGate.hook.ts > ${LIVE}/hooks/AutoVerifyGate.hook.ts`,
     ],
   ];
   test.each(cases)("%s", (_label, cmd) => {
@@ -231,31 +251,39 @@ describe("#1176 CONTROL: the fixes must not widen the guard", () => {
  * heredoc rewrite. H1 and H5 are asserted on `stripHeredocs` DIRECTLY as well
  * as through a decision, because an over-strip and a clean parse produce the
  * same decision and only the first is a bug.
+ *
+ * #1175 moved every destination in this block from `/tmp/bw` to `LIVE`. None
+ * of these cases is about which tree the write lands in — they are about
+ * terminators, quoted verbs and letter case — and `/tmp` is now the one tree
+ * where a protected name is a fixture, so a witness left there would have
+ * been asserting the false positive #1175 removed rather than the bypass it
+ * was written for. The CONTROLS below keep their `/tmp` paths: they assert an
+ * ALLOW, which is the direction the move cannot fake.
  */
 describe("#1184 WITNESS: views, terminators and spellings", () => {
   const cases: [string, string][] = [
     // H1. #1176 replaced a terminator-anchored regex with a line scanner, and
     //     the scanner runs off the end when the terminator never arrives. The
     //     regex failed CLOSED here; the scanner failed open. A regression.
-    ["H1 an unterminated heredoc must not delete the lines after it", `cat <<EOF\necho x > /tmp/bw/${SALT}`],
-    ["H1b the same, hiding a hook write", `cat <<MARKER\ncp /tmp/evil.ts /tmp/bw/hooks/X.hook.ts`],
+    ["H1 an unterminated heredoc must not delete the lines after it", `cat <<EOF\necho x > ${LIVE}/${SALT}`],
+    ["H1b the same, hiding a hook write", `cat <<MARKER\ncp /tmp/evil.ts ${LIVE}/hooks/X.hook.ts`],
     // H5. `<<<` is a herestring. Matching it as a heredoc invents a delimiter
     //     that never terminates, which lands straight in H1.
-    ["H5 a herestring is not a heredoc", `grep x <<< "t"\necho y > /tmp/bw/${SALT}`],
+    ["H5 a herestring is not a heredoc", `grep x <<< "t"\necho y > ${LIVE}/${SALT}`],
     // H3. The mirror of #1176's F2: there the TARGET was read off the
     //     quote-stripped view, here the VERB is.
-    ["H3 a quoted command word still runs", `"chmod" 777 /tmp/bw/hooks/X.hook.ts`],
-    ["H3b a partly quoted command word", `ch"mod" 777 /tmp/bw/hooks/X.hook.ts`],
-    ["H3c a quoted interpreter", `"bash" -c 'echo x > /tmp/bw/${SALT}'`],
+    ["H3 a quoted command word still runs", `"chmod" 777 ${LIVE}/hooks/X.hook.ts`],
+    ["H3b a partly quoted command word", `ch"mod" 777 ${LIVE}/hooks/X.hook.ts`],
+    ["H3c a quoted interpreter", `"bash" -c 'echo x > ${LIVE}/${SALT}'`],
     // H4. A directory destination's real sink is join(dest, basename(src)).
     ["H4 cp into a directory, protected source basename", `cp /tmp/forged/${STATE} /Users/jhorn/.rungate/x/`],
     ["H4b mv into a directory", `mv /tmp/forged/${STATE} /Users/jhorn/.rungate/x/`],
     ["H4c cp a hook into a hooks directory", `cp /tmp/evil/X.hook.ts /Users/jhorn/Projects/rungate/hooks/`],
     // H6. Measured: this filesystem is case-insensitive, so these name the
     //     same files as their lowercase spellings.
-    ["H6 an uppercase gate artifact", `echo x > /tmp/bw/${STATE.toUpperCase()}`],
-    ["H6b an uppercase salt", `echo x > /tmp/bw/${SALT.toUpperCase()}`],
-    ["H6c a mixed-case hook", `cp /tmp/evil.ts /tmp/bw/hooks/X.HOOK.TS`],
+    ["H6 an uppercase gate artifact", `echo x > ${LIVE}/${STATE.toUpperCase()}`],
+    ["H6b an uppercase salt", `echo x > ${LIVE}/${SALT.toUpperCase()}`],
+    ["H6c a mixed-case hook", `cp /tmp/evil.ts ${LIVE}/hooks/X.HOOK.TS`],
     // H7. Constructed, not from the corpus — the key reaching `security`
     //     through a variable set in an earlier segment. Measured cost of
     //     matching the key across the whole command: 0 of 125,644.
@@ -274,7 +302,7 @@ describe("#1184 WITNESS: views, terminators and spellings", () => {
  * measured nothing while looking like a clean result.
  */
 describe("#1196 WITNESS: the verb, the filesystem, and the quoted operator", () => {
-  const HOOK = "/tmp/bw/hooks/X.hook" + ".ts";
+  const HOOK = LIVE + "/hooks/X.hook" + ".ts";
   const cases: [string, string][] = [
     // R1. #1188 made commandWord read `dequote(...)` then split on
     //     whitespace. That is not tokenisation: a quoted multi-word
@@ -287,7 +315,7 @@ describe("#1196 WITNESS: the verb, the filesystem, and the quoted operator", () 
     // R2. The destination's existence must not decide. A PreToolUse hook
     //     runs before the whole command, so in `mkdir -p d && cp <p> d` the
     //     directory never exists at decision time.
-    ["R2 a directory destination that does not exist yet", `mkdir -p /tmp/bwnope && cp /tmp/forged/${STATE} /tmp/bwnope`],
+    ["R2 a directory destination that does not exist yet", `mkdir -p ${LIVE}/bwnope && cp /tmp/forged/${STATE} ${LIVE}/bwnope`],
     // H6. `<<WORD` inside a quoted span is not a heredoc operator. H5 was
     //     the same mistake at the wrong CHARACTER position; this is the
     //     wrong QUOTING position, and both fall into the same body-drop.
@@ -381,11 +409,11 @@ describe("#1196 R3 WITNESS: a trailing redirect must not demote the destination"
  */
 describe("#1196 R4 WITNESS: a path-valued assignment must not become the verb", () => {
   const cases: [string, string][] = [
-    ["masking a mode change on a hook", `FOO=/x/grep chmod 777 /tmp/h/X.hook.ts`],
-    ["masking chflags on a hook", `FOO=/x/grep chflags uchg /tmp/h/X.hook.ts`],
+    ["masking a mode change on a hook", `FOO=/x/grep chmod 777 ${LIVE}/h/X.hook.ts`],
+    ["masking chflags on a hook", `FOO=/x/grep chflags uchg ${LIVE}/h/X.hook.ts`],
     ["masking cp into a protected path", `FOO=/x/grep cp /tmp/a /r/${STATE}`],
     ["masking an interpreter body", `FOO=/x/grep bun -e 'writeFileSync("/r/${STATE}","")'`],
-    ["an array-subscript assignment", `A[0]=/x/grep chmod 777 /tmp/h/X.hook.ts`],
+    ["an array-subscript assignment", `A[0]=/x/grep chmod 777 ${LIVE}/h/X.hook.ts`],
   ];
   test.each(cases)("%s", (_label, cmd) => {
     expect(decideBashWrite(cmd).blocked).toBe(true);
@@ -412,7 +440,11 @@ describe("#1196: the mechanisms, asserted directly", () => {
   });
 
   test("a directory destination is settled syntactically before the disk", () => {
-    const d = "/tmp/bw-no-such-dir-" + process.pid;
+    // #1175: a LIVE root, not `/tmp`. The oracles under test are about the
+    // DESTINATION being a directory; under `/tmp` the resulting target is a
+    // fixture and the row would assert the tree question instead of the one
+    // it is named for.
+    const d = LIVE + "/bw-no-such-dir-" + process.pid;
     // Oracle 1: a trailing slash. Oracle 2: more than two operands. Oracle 3:
     // a `mkdir` earlier in the same command. None of the three touches the
     // filesystem, and `d` does not exist.
@@ -474,7 +506,7 @@ describe("#1184: the mechanisms, asserted directly", () => {
   });
 
   test("protected names match whatever case the filesystem would fold", () => {
-    expect(decideBashWrite(`echo x > /tmp/bw/${STATE.toUpperCase()}`).blocked).toBe(true);
+    expect(decideBashWrite(`echo x > ${LIVE}/${STATE.toUpperCase()}`).blocked).toBe(true);
   });
 });
 
@@ -508,8 +540,639 @@ describe("#1176: the mechanisms, asserted directly", () => {
     // `&` becomes a separator, so the `>` opening the next segment is no
     // longer preceded by it. Locked in so the next review can be answered with
     // a run instead of an argument.
-    expect(segments(`echo x &> /tmp/bw/${SALT}`)).toEqual(["echo x", `> /tmp/bw/${SALT}`]);
-    expect(decideBashWrite(`echo x &> /tmp/bw/${SALT}`).blocked).toBe(true);
+    expect(segments(`echo x &> ${LIVE}/${SALT}`)).toEqual(["echo x", `> ${LIVE}/${SALT}`]);
+    expect(decideBashWrite(`echo x &> ${LIVE}/${SALT}`).blocked).toBe(true);
+  });
+});
+
+/**
+ * Covers #1175 — `PROTECTED_FILES` matched a NAME in any tree.
+ *
+ * Swept over 5,531 real commands from this machine's 35,261 transcripts, the
+ * guard as merged refuses 502. Thirty-seven of those are agents building test
+ * fixtures under `/tmp` — several of them fixtures for this very module — and
+ * every one is a true positive against the rule and a false positive against
+ * intent.
+ *
+ * The scoping is to the SCRATCH tree and not, as the issue's acceptance asked,
+ * to the project root. That is a measurement. Of the 3,240 absolute artifact
+ * references in the corpus, 16 are inside a repository tree and 3,141 are not
+ * — a live `workflow-state.json` lives in the run store, which is nobody's
+ * project root. `the cheapest wrong fixes` below runs the root-relative
+ * reading rather than arguing with it.
+ */
+describe("#1175 WITNESS: the same write is a fixture here and an artifact there", () => {
+  const SCRATCH = tmpdir();
+  const pairs: [string, (root: string) => string][] = [
+    ["a redirect", root => `echo '{}' > ${root}/p/${STATE}`],
+    ["a heredoc", root => `cat > ${root}/p/${STATE} <<'EOF'\n{"phase":"BUILD"}\nEOF`],
+    ["an interpreter opening for write", root => `python3 -I -c "import json; json.dump({}, open('${root}/p/${STATE}','w'))"`],
+    ["a node interpreter", root => `bun -e 'require("fs").writeFileSync("${root}/p/${STATE}","{}")'`],
+    ["cp over it", root => `cp -p src.json ${root}/p/${STATE}`],
+    ["sed -i on it", root => `sed -i '' 's/BUILD/DONE/' ${root}/p/${STATE}`],
+    ["rm of it", root => `rm -f ${root}/p/${STATE}`],
+    ["a shell -c body", root => `bash -c 'echo x > ${root}/p/${SALT}'`],
+    ["tee", root => `echo x | tee ${root}/p/${STATE}`],
+    ["chmod on a hook", root => `chmod 777 ${root}/p/Foo.hook.ts`],
+  ];
+
+  test.each(pairs)("%s under a scratch root is a fixture", (_label, build) => {
+    const d = decideBashWrite(build(SCRATCH));
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+
+  test.each(pairs)("%s under a live root is still refused", (_label, build) => {
+    expect(decideBashWrite(build(LIVE)).blocked).toBe(true);
+  });
+
+  test("the literal /tmp spelling is scratch as well as the resolved one", () => {
+    expect(decideBashWrite(`echo '{}' > /tmp/p/${STATE}`).blocked).toBe(false);
+    expect(decideBashWrite(`echo '{}' > /private/tmp/p/${STATE}`).blocked).toBe(false);
+  });
+});
+
+describe("#1175 CONTROL: an exemption that cannot be shown refuses", () => {
+  // The fail-closed half. A path this module cannot place in a tree is not a
+  // fixture by default — it keeps the behaviour it had before #1175. The
+  // acceptance asked for an unresolvable ROOT to refuse; there is no root
+  // here, and the equivalent is an unresolvable DESTINATION.
+  const cases: [string, string][] = [
+    ["a bare basename, which is the overwhelmingly common interpreter shape", `bun -e 'require("fs").writeFileSync("${STATE}","{}")'`],
+    ["a path assembled by join from a variable", `bun -e 'const p=join(dir,"${STATE}");require("fs").writeFileSync(p,"{}")'`],
+    ["a path assembled by concatenation", `bun -e 'require("fs").writeFileSync(dir+"/${STATE}","{}")'`],
+    ["a shell variable the command does not define", `echo x > $W/${STATE}`],
+    ["a relative path", `echo x > ./run/${STATE}`],
+    ["a scratch-looking path that climbs back out", `echo x > /tmp/../opt/run/${STATE}`],
+    ["one scratch mention does not exempt a live one in the same command", `cp /tmp/p/${STATE} ${LIVE}/p/${STATE}`],
+    ["the run store, which is where the artifact actually lives", `echo x > $HOME/.rungate/slug/${STATE}`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("a symlink out of the scratch tree is not an exemption", () => {
+    // Two commands is the whole attack: link a scratch name at the run store,
+    // then write through it. `resolve()` cannot see this — it normalises
+    // `..` and stops — so the deepest existing ancestor is realpath'd.
+    const dir = mkdtempSync(join(tmpdir(), "bw-link-"));
+    const link = join(dir, "esc");
+    try {
+      // Positive control: a plain name in that same scratch directory IS
+      // exempt, so a red below is about the link and not about the tree.
+      expect(isScratchPath(join(dir, STATE))).toBe(true);
+      // `/usr` stands in for the run store: it exists, so realpath resolves,
+      // and it is outside every temp root.
+      symlinkSync("/usr", link);
+      expect(isScratchPath(join(link, STATE))).toBe(false);
+      expect(decideBashWrite(`echo x > ${join(link, STATE)}`).blocked).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#1175: the cheapest wrong fixes, run rather than described", () => {
+  // A real corpus command: it rewrites every FAIL and PENDING verdict in a
+  // live run's state to SKIPPED. This is the thing the guard exists for.
+  const FORGE =
+    `cat /Users/jhorn/.rungate/ddb-562/${STATE} | python3 -c "\n` +
+    `import sys, json\nd = json.load(sys.stdin)\nd['phase'] = 'SKIPPED'\n` +
+    `json.dump(d, open('/Users/jhorn/.rungate/ddb-562/${STATE}','w'), indent=2)"`;
+
+  test("the real guard refuses it", () => {
+    expect(decideBashWrite(FORGE).blocked).toBe(true);
+  });
+
+  test("scoping to the PROJECT ROOT, as the issue asked, allows it", () => {
+    // #1175 AC-1 taken literally: protected == inside the project root.
+    const root = resolve(process.cwd());
+    const insideRoot = (p: string) => p === root || p.startsWith(root + "/");
+    const target = `/Users/jhorn/.rungate/ddb-562/${STATE}`;
+    expect(FORGE).toContain(target);
+    expect(insideRoot(target)).toBe(false); // so the root-relative rule exempts it
+    // Swept: this reading newly allows 169 of the 502 the guard refuses, 133
+    // of them naming an artifact at a real absolute path.
+  });
+
+  test("exempting any command that MENTIONS a scratch directory allows a live write", () => {
+    // The cheapest fix of all, and the shape `pai-config#474` was fixed for:
+    // a whole-command predicate consulted before anything looks at the
+    // destination. Swept: 192 newly allowed, 25 of them naming an artifact at
+    // a real absolute path.
+    const mentionsScratch = (cmd: string) => /\/tmp\/|\/var\/folders\/|mkdtemp|mktemp/.test(cmd);
+    const real = `T=$(mktemp -d /tmp/why-XXXXXX); cp "$T/${STATE}" /Users/jhorn/.rungate/x/${STATE}`;
+    expect(mentionsScratch(real)).toBe(true); // so the cheap fix allows it
+    expect(decideBashWrite(real).blocked).toBe(true); // and this module does not
+  });
+});
+
+describe("#1175: isScratchPath, asserted directly", () => {
+  test("only an absolute path can be placed in a tree", () => {
+    expect(isScratchPath(STATE)).toBe(false);
+    expect(isScratchPath(`./${STATE}`)).toBe(false);
+    expect(isScratchPath("")).toBe(false);
+  });
+
+  test("a sibling of a scratch root is not inside it", () => {
+    expect(isScratchPath(`/tmpfoo/${STATE}`)).toBe(false);
+    expect(isScratchPath(`/var/foldersx/${STATE}`)).toBe(false);
+  });
+
+  test("the platform temp directory is a scratch root whatever it is called", () => {
+    expect(isScratchPath(join(tmpdir(), "p", STATE))).toBe(true);
+  });
+
+  test("TMPDIR is read at call time, but it can only SELECT a fixed root", () => {
+    // This test used to assert that TMPDIR could NAME a new root, which is
+    // the defect the review of #1197 found: the writer sets the variable that
+    // decides whether their own write is exempt. Reading at call time is
+    // still the behaviour — a harness that moves TMPDIR inside /tmp is
+    // honoured — but naming a tree outside the fixed set now buys nothing.
+    const before = process.env.TMPDIR;
+    const inside = mkdtempSync(join("/tmp", "bw-tmpdir-"));
+    try {
+      process.env.TMPDIR = "/opt/relocated";
+      expect(isScratchPath(`/opt/relocated/${STATE}`)).toBe(false);
+      process.env.TMPDIR = inside;
+      expect(isScratchPath(join(inside, STATE))).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+      rmSync(inside, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Covers the review of #1197. Six findings were raised; two were real, one
+ * would have re-broken #1175, and a seventh defect was found by trying to
+ * build the witness for one of the unmeasured ones.
+ */
+describe("#1175 review: TMPDIR is the writer's variable", () => {
+  // The serious one. `scratchRoots()` took `process.env.TMPDIR` as given, so
+  // the agent whose write is being judged set the variable that decided
+  // whether the write was exempt.
+  const RUN = `${process.env.HOME}/.rungate/victim/${STATE}`;
+
+  test("pointing TMPDIR at the run store does not exempt the run store", () => {
+    const before = process.env.TMPDIR;
+    try {
+      expect(isScratchPath(RUN)).toBe(false); // control: refused to begin with
+      process.env.TMPDIR = `${process.env.HOME}/.rungate`;
+      expect(isScratchPath(RUN)).toBe(false);
+      expect(decideBashWrite(`echo x > ${RUN}`).blocked).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+    }
+  });
+
+  test.each([
+    ["the project tree", () => resolve(process.cwd())],
+    ["the home directory", () => process.env.HOME ?? "/"],
+    ["the run store's parent", () => `${process.env.HOME}/.rungate/..`],
+    ["the root of the disk", () => "/"],
+  ])("TMPDIR pointed at %s extends nothing", (_label, build) => {
+    const before = process.env.TMPDIR;
+    try {
+      process.env.TMPDIR = build();
+      // The invariant: no exemption root may contain a protected tree. Asserted
+      // through the only observable that matters — whether a real artifact is
+      // exempted — rather than by reading the list back.
+      expect(isScratchPath(RUN)).toBe(false);
+      expect(isScratchPath(`${LIVE}/${STATE}`)).toBe(false);
+      // and the fixed roots still work, so this is not a guard that died.
+      expect(isScratchPath(`/tmp/p/${STATE}`)).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+    }
+  });
+
+  test("a TMPDIR inside a fixed root is still honoured", () => {
+    const before = process.env.TMPDIR;
+    const inside = mkdtempSync(join("/tmp", "bw-sel-"));
+    try {
+      process.env.TMPDIR = inside;
+      expect(isScratchPath(join(inside, STATE))).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+      rmSync(inside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#1175 review: the six spellings of an escape", () => {
+  // Five of these were already refused before the review; they are the
+  // controls that say the design holds, and they are locked so the next
+  // review can be answered with a run. The sixth, `$X`, was the one leak.
+  const RUN = `${process.env.HOME}/.rungate/victim`;
+  const cases: [string, string][] = [
+    ["an unexpanded $X — the one that leaked", `echo x > /tmp/$X/${STATE}`],
+    ["the brace form", `echo x > /tmp/\${X}/${STATE}`],
+    ["a command substitution with no space in it", `echo x > /tmp/\`id\`/${STATE}`],
+    ["the same through $()", `echo x > /tmp/$(id)/${STATE}`],
+    ["climbing out with ..", `echo x > /tmp/../${RUN.slice(1)}/${STATE}`],
+    ["$HOME, which is not an absolute path until the shell expands it", `echo x > $HOME/.rungate/v/${STATE}`],
+    ["a tilde, same reason", `echo x > ~/.rungate/v/${STATE}`],
+  ];
+  test.each(cases)("%s is refused", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("refusing `$` costs the fixtures nothing", () => {
+    // The negative control for the widening: a plain fixture must still clear,
+    // or the refusal above is just the guard turning itself off.
+    expect(decideBashWrite(`echo x > /tmp/p/${STATE}`).blocked).toBe(false);
+  });
+});
+
+describe("#1175 review: a link made by the same command voids the exemption", () => {
+  // Recorded as unmeasured by the reviewer. Built here, and it is worse than
+  // the race that was described: no second actor and no timing window are
+  // needed, because the link and the write fit in one command.
+  const RUN = `${process.env.HOME}/.rungate/victim`;
+  const cases: [string, string][] = [
+    ["&& chained", `ln -s ${RUN} /tmp/esc && echo x > /tmp/esc/${STATE}`],
+    ["semicolon", `ln -s ${RUN} /tmp/esc; echo x > /tmp/esc/${STATE}`],
+    ["a heredoc write after the link", `ln -s ${RUN} /tmp/esc\ncat > /tmp/esc/${STATE} <<'EOF'\n{}\nEOF`],
+    ["symlinkSync inside an interpreter body", `bun -e 'symlinkSync("${RUN}","/tmp/esc"); writeFileSync("/tmp/esc/${STATE}","{}")'`],
+    ["python's os.symlink", `python3 -c "os.symlink('${RUN}','/tmp/esc'); open('/tmp/esc/${STATE}','w').write('x')"`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("the traversal half is real, not theoretical", () => {
+    // Executed rather than asserted: a write through a link lands at the
+    // link's target. Proved with a harmless filename, because the live
+    // BashWriteGuard refuses the real one — correctly.
+    const dir = mkdtempSync(join(tmpdir(), "bw-tgt-"));
+    const link = join(mkdtempSync(join(tmpdir(), "bw-src-")), "esc");
+    try {
+      symlinkSync(dir, link);
+      writeFileSync(join(link, "SENTINEL"), "through");
+      expect(readFileSync(join(dir, "SENTINEL"), "utf8")).toBe("through");
+    } finally {
+      rmSync(dirname(link), { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: mkdir -p does not void it, which is why `ln` and not creation", () => {
+    // A directory cannot point out of its tree. If this went red the voiding
+    // would be matching path creation in general, and every fixture would
+    // return to being refused.
+    expect(decideBashWrite(`mkdir -p /tmp/p && echo x > /tmp/p/${STATE}`).blocked).toBe(false);
+    expect(decideBashWrite(`bun run learn.ts > /tmp/p/${STATE}`).blocked).toBe(false);
+    expect(decideBashWrite(`echo kiln > /tmp/p/${STATE}`).blocked).toBe(false);
+  });
+});
+
+describe("#1175 review: the hook arm keeps the exemption — REFUSED suggestion", () => {
+  /**
+   * The review asked for the scratch exemption to be restricted to
+   * `PROTECTED_FILES`, leaving `PROTECTED_HOOKS` matching in every tree.
+   *
+   * Refused, and these are the rows that say why. Every real hook path stays
+   * blocked with or without the restriction, so it buys nothing; the ONLY
+   * behaviour it changes is refusing a hook file inside a scratch tree, which
+   * is the exact false positive #1175 exists to remove — `cp -p
+   * <real hook> /tmp/cmp/old-guard.hook.ts` is a recorded one, staging a
+   * comparison copy.
+   *
+   * Locked as a test so it is not raised a third time.
+   */
+  const REAL = [
+    `echo x > ${process.env.HOME}/.claude/hooks/X.hook.ts`,
+    `echo x > /tmp/../${(process.env.HOME ?? "").slice(1)}/.claude/hooks/X.hook.ts`,
+    `cp evil.ts ${LIVE}/hooks/X.hook.ts`,
+    `chmod 777 ${process.env.HOME}/.claude/hooks/X.hook.ts`,
+    `echo x > ${LIVE}/hooks/X.hook.ts`,
+  ];
+  test.each(REAL)("a hook OUTSIDE a scratch tree is still refused: %s", cmd => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  const FIXTURES = [
+    `cp -p /Users/x/hooks/Guard.hook.ts /tmp/cmp/old-guard.hook.ts`,
+    `echo x > /tmp/bwprobe/hooks/X.hook.ts`,
+    `chmod 777 /tmp/bwprobe/X.hook.ts`,
+  ];
+  test.each(FIXTURES)("a hook INSIDE one is the false positive #1175 removes: %s", cmd => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+});
+
+describe("#1175 review: a command substitution containing a SPACE — pre-existing, not this change", () => {
+  /**
+   * Found while building the six-spellings table. `writeTargets` reads an
+   * operand as a WORD, and a word ends at whitespace, so
+   *
+   *     echo x > /tmp/`id -un`/workflow-state.json
+   *
+   * yields the target `/tmp/\`id` — which names no protected artifact, so arm
+   * 1 never fires. The scratch exemption is not involved: `isScratchPath`
+   * refuses every one of these spellings.
+   *
+   * Measured on `origin/main` as well, including at a live run-store path, so
+   * it is a pre-existing limit of operand reading and NOT something #1175
+   * introduced. Filed separately rather than fixed here — widening `readWord`
+   * across whitespace is a change to the arm every other check depends on.
+   *
+   * What is asserted here is this module's own half, so a future fix to
+   * `readWord` lands on a guard that already refuses the path.
+   */
+  const spellings = [`/tmp/\`id -un\`/${STATE}`, `/tmp/$(id -un)/${STATE}`, `/tmp/\`id\`/${STATE}`, `/tmp/$(id)/${STATE}`];
+  test.each(spellings)("isScratchPath refuses %s", p => {
+    expect(isScratchPath(p)).toBe(false);
+  });
+});
+
+describe("#1175 review: the invariant must not switch the exemption off", () => {
+  /**
+   * Found by sweeping my own fix. The first version of the invariant dropped
+   * any scratch root containing a protected tree — and `RUNGATE_WORK_DIR=
+   * /tmp/e2e-gate-test` is a real corpus command, a harness deliberately
+   * putting the run store in scratch for a test. Under it, `/tmp` contained a
+   * protected tree, `/tmp` was dropped, and every fixture on the machine went
+   * back to being refused. Measured before the clause was added.
+   *
+   * A guard that turns itself off under one environment variable is worse
+   * than the hole it was closing, so a protected tree that is ITSELF inside a
+   * fixed root no longer drops that root.
+   */
+  const withEnv = <T,>(env: Record<string, string | undefined>, fn: () => T): T => {
+    const before: Record<string, string | undefined> = {};
+    for (const k of Object.keys(env)) before[k] = process.env[k];
+    try {
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      return fn();
+    } finally {
+      for (const [k, v] of Object.entries(before)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+
+  test("a run store inside /tmp does not drop /tmp", () => {
+    withEnv({ RUNGATE_WORK_DIR: "/tmp/e2e-gate-test" }, () => {
+      expect(isScratchPath(`/tmp/p/${STATE}`)).toBe(true);
+    });
+  });
+
+  test("a run store OUTSIDE scratch is still never exempt, however TMPDIR is pointed", () => {
+    withEnv({ RUNGATE_WORK_DIR: "/opt/runs", TMPDIR: "/opt/runs" }, () => {
+      expect(isScratchPath(`/opt/runs/v/${STATE}`)).toBe(false);
+      expect(isScratchPath(`/tmp/p/${STATE}`)).toBe(true); // and the guard is still alive
+    });
+  });
+
+  test("the fixed roots survive every environment in this block", () => {
+    // The negative control for all of the above: if this ever goes red, the
+    // invariant has started eating the roots again and the 37 cleared
+    // commands are quietly back to being refused.
+    for (const env of [
+      { TMPDIR: undefined },
+      { TMPDIR: `${process.env.HOME}/.rungate` },
+      { RUNGATE_WORK_DIR: "/tmp/x" },
+      { RUNGATE_WORK_DIR: "/opt/runs", TMPDIR: "/opt/runs" },
+    ]) {
+      withEnv(env, () => {
+        expect(isScratchPath(`/tmp/p/${STATE}`), JSON.stringify(env)).toBe(true);
+      });
+    }
+  });
+});
+
+describe("#1175 review round 2: live trees are SUBTRACTED, not approximated", () => {
+  /**
+   * Round one vetted the ROOT LIST against the run store. Round two subtracts
+   * the live trees from the exemption directly, which is the property rather
+   * than a proxy for it: it holds for a root nobody has added yet.
+   *
+   * The two mechanisms are not interchangeable and the difference is
+   * measured. Dropping a ROOT that contains a protected tree removes `/tmp`
+   * wholesale as soon as `RUNGATE_WORK_DIR` points inside it; subtracting the
+   * TREE removes only that subtree. Both rows are below.
+   */
+  const H = process.env.HOME!;
+  const withEnv = <T,>(env: Record<string, string | undefined>, fn: () => T): T => {
+    const before: Record<string, string | undefined> = {};
+    for (const k of Object.keys(env)) before[k] = process.env[k];
+    try {
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      return fn();
+    } finally {
+      for (const [k, v] of Object.entries(before)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+
+  const rows: [string, Record<string, string | undefined>, string, boolean][] = [
+    ["a plain fixture", {}, `/tmp/p/${STATE}`, true],
+    ["the run store", {}, `${H}/.rungate/v/${STATE}`, false],
+    ["the run store with TMPDIR aimed at it", { TMPDIR: `${H}/.rungate` }, `${H}/.rungate/v/${STATE}`, false],
+    ["…and /tmp is still alive under that TMPDIR", { TMPDIR: `${H}/.rungate` }, `/tmp/p/${STATE}`, true],
+    ["a run store relocated INTO /tmp — the subtree is subtracted", { RUNGATE_WORK_DIR: "/tmp/e2e" }, `/tmp/e2e/s/${STATE}`, false],
+    ["…and the rest of /tmp survives, which the root-vetting version did not", { RUNGATE_WORK_DIR: "/tmp/e2e" }, `/tmp/p/${STATE}`, true],
+    ["the WIRED hook tree, even in a /tmp worktree", { RUNGATE_HOOKS_DIR: "/tmp/wg97/hooks" }, "/tmp/wg97/hooks/X.hook.ts", false],
+    ["a /tmp worktree nothing registers is still a fixture", { RUNGATE_HOOKS_DIR: "/tmp/wg97/hooks" }, "/tmp/rv1188/hooks/X.hook.ts", true],
+    ["~/.pai/hooks", {}, `${H}/.pai/hooks/X.hook.ts`, false],
+    ["~/.claude/hooks", {}, `${H}/.claude/hooks/X.hook.ts`, false],
+    ["staging a comparison copy — the recorded false positive", {}, "/tmp/cmp/old-guard.hook.ts", true],
+  ];
+  test.each(rows)("%s", (_label, env, path, want) => {
+    expect(withEnv(env, () => isScratchPath(path))).toBe(want);
+  });
+});
+
+describe("#1175 review round 2: PROTECTED_HOOKS keeps the exemption, for a measured reason", () => {
+  /**
+   * The restriction was raised twice. Round one argued a regression and there
+   * was none. Round two argued something sharper and TRUE — a `.hook.ts`
+   * under `/tmp` is as likely to be a real checkout as a fixture, because
+   * worktrees under `/tmp` are routine here.
+   *
+   * The counter-argument offered for refusing it a second time — that a hook
+   * source in a checkout is never the live hook — is FALSE on this machine.
+   * Every registration in `~/.claude/settings.json` is spelled
+   * `${PAI_HOOKS_DIR}/…` or `${RUNGATE_HOOKS_DIR}/…`, and
+   * `lib/hook-target-tree.ts` records `RUNGATE_HOOKS_DIR` resolving to a
+   * checkout that was not this one, with fourteen hooks running from it and
+   * a merged security fix never reaching the bytes that execute.
+   *
+   * So neither "refuse the exemption" nor "trust the checkout" is right. The
+   * wired tree is subtracted wherever it is; an unwired one stays a fixture.
+   * These rows are the ones the restriction would change, and they are the
+   * bug #1175 exists to fix.
+   */
+  const fixtures = [
+    `cp -p /Users/x/hooks/Guard.hook.ts /tmp/cmp/old-guard.hook.ts`,
+    `rm -f /tmp/713-battery/pai-wrongfix/X.hook.ts`,
+    `cp /Users/jhorn/.pai/hooks/DocHygiene.hook.ts /tmp/DocHygiene.hook.ts.bak-299`,
+  ];
+  test.each(fixtures)("a hook in an unwired scratch tree is a fixture: %s", cmd => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+
+  test("the alternative — excluding every git work tree — is a proxy, and these rows say so", () => {
+    // Priced on the corpus: it costs 0 of the 37, same as the subtraction, so
+    // the corpus does NOT decide between them. It is declined on a ground the
+    // corpus cannot see: it answers "is this a checkout", and the property is
+    // "is this live". It misses a wired tree that is not a git work tree, and
+    // it refuses a fixture built inside a worktree — which is what the agents
+    // on this repo do.
+    //
+    // BUILT, not asserted about the ambient cwd. The first version of this
+    // case read `process.cwd()`, which is under /tmp on the machine the
+    // branch was written on and under /home/runner on the CI runner: it
+    // asserted the environment rather than the code, passed locally and went
+    // red on shard 3 only. The difference is removed here rather than the
+    // failure.
+    // `/tmp` rather than `tmpdir()`: it is a literal fixed root on both
+    // platforms, so the row cannot depend on what TMPDIR happens to be on
+    // the machine reading it — which is the defect this case just had.
+    const tree = mkdtempSync(join("/tmp", "bw-wt-"));
+    const plain = mkdtempSync(join("/tmp", "bw-plain-"));
+    try {
+      mkdirSync(join(tree, ".git"));
+      mkdirSync(join(tree, "hooks"));
+      const hook = join(tree, "hooks", "X.hook.ts");
+      writeFileSync(hook, "// fixture\n");
+      const loose = join(plain, "X.hook.ts");
+      writeFileSync(loose, "// fixture\n");
+
+      // the proxy, written out so its cost is visible rather than described
+      const inGitWorkTree = (p: string): boolean => {
+        let d = dirname(p);
+        while (d !== "/") {
+          if (existsSync(join(d, ".git"))) return true;
+          d = dirname(d);
+        }
+        return false;
+      };
+
+      // the row the two rules disagree on: scratch, a work tree, unwired
+      expect(inGitWorkTree(hook)).toBe(true); // the proxy refuses it
+      expect(isScratchPath(hook)).toBe(true); // the shipped rule exempts it
+
+      // and the control, so the proxy is not simply always true
+      expect(inGitWorkTree(loose)).toBe(false);
+      expect(isScratchPath(loose)).toBe(true);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#1175 review round 2: the expansion predicate stays narrow", () => {
+  test("the wide predicate would refuse a real fixture; the narrow one does not", () => {
+    // A review proposed /[$`*?~\\]|\$\(|\{/. Priced: 1 of the 37 cleared goes
+    // back to refused — a glob cleanup — and 975 corpus commands match it
+    // against 211 for the narrow one. The extra breadth buys only cases that
+    // were already blocked.
+    const glob = `rm -f /tmp/713-battery/pai-wrongfix/*.hook.ts && rmdir /tmp/713-battery/pai-wrongfix`;
+    expect(decideBashWrite(glob).blocked).toBe(false);
+    expect(/[$`*?~\\]|\$\(|\{/.test("/tmp/713-battery/pai-wrongfix/*.hook.ts")).toBe(true); // the wide one fires
+    expect(/[$`]/.test("/tmp/713-battery/pai-wrongfix/*.hook.ts")).toBe(false); // the shipped one does not
+    // and the leak the narrow one exists for is still closed
+    expect(isScratchPath(`/tmp/$X/${STATE}`)).toBe(false);
+  });
+});
+
+describe("#1175 review round 3: the verb is resolved, not pattern-matched", () => {
+  /**
+   * `exemptionIsVoid` tested `/(?:^|[\s;&|(])ln\s/` against the raw command,
+   * which needs whitespace or a separator immediately before `ln`. Two
+   * spellings the shell resolves identically walked straight past it, and
+   * this is the control the entire scratch exemption rests on.
+   *
+   * The fix is `commandWord` per segment rather than a wider regex: it
+   * already strips a leading path and a leading `\`, and already skips the
+   * wrappers, because #1120 and #1184 taught it to. One tokeniser, not two.
+   */
+  const RUN = `${process.env.HOME}/.rungate/victim`;
+  const spellings = [
+    ["plain", `ln -s ${RUN} /tmp/x`],
+    ["sudo wrapper", `sudo ln -s ${RUN} /tmp/x`],
+    ["path-qualified — walked past the old regex", `/bin/ln -s ${RUN} /tmp/x`],
+    ["backslash-escaped — walked past it too", `\\ln -s ${RUN} /tmp/x`],
+    ["env wrapper", `env ln -s ${RUN} /tmp/x`],
+    ["xargs wrapper", `xargs ln -s ${RUN} /tmp/x`],
+    ["via find -exec, which resolves to `find`", `find . -exec ln -s ${RUN} /tmp/x \;`],
+  ];
+  test.each(spellings)("%s voids the exemption", (_label, link) => {
+    expect(decideBashWrite(`${link} && echo y > /tmp/x/${STATE}`).blocked).toBe(true);
+  });
+
+  test("CONTROL: words that merely contain the letters do not void it", () => {
+    // If these go red the voiding has become a substring match and every
+    // fixture whose path happens to contain `ln` is refused.
+    for (const cmd of [
+      `echo kiln > /tmp/p/${STATE}`,
+      `bun run learn.ts > /tmp/p/${STATE}`,
+      `mkdir -p /tmp/p && echo x > /tmp/p/${STATE}`,
+    ]) {
+      const d = decideBashWrite(cmd);
+      expect(d.blocked, `refused: ${cmd} — ${d.reason}`).toBe(false);
+    }
+  });
+});
+
+describe("#1175 review round 3: a glob in a DIRECTORY component", () => {
+  /**
+   * `echo '{}' > /tmp/sym*​/workflow-state.json` with `/tmp/syma` a symlink
+   * into the run store: the literal does not exist, the walk climbs past it
+   * to `/tmp`, the path is exempted, and the shell then expands the glob
+   * through the link. The same escape as the `ln` case with no `ln` in the
+   * command to see.
+   *
+   * Only the DIRECTORY part is tested, and that is a measurement rather than
+   * caution. A basename glob is already safe because the directory above it
+   * is exactly what gets realpath'd — the executed proof is below. Refusing
+   * it anyway costs a real command, `rm -f /tmp/.../*.hook.ts`, 1 of the 37
+   * this branch clears.
+   */
+  test.each([`/tmp/sym*/${STATE}`, `/tmp/sym?/${STATE}`, `/tmp/[sx]ym/${STATE}`, `/tmp/{a,b}/${STATE}`])(
+    "a glob in a directory component is not exempt: %s",
+    p => {
+      expect(isScratchPath(p)).toBe(false);
+    },
+  );
+
+  test("a basename glob stays exempt, and the directory above it is still resolved", () => {
+    // Both halves executed. The link makes the directory resolve out of
+    // scratch, and the basename glob does not prevent that being seen — which
+    // is why the refusal is scoped to the directory part.
+    const src = mkdtempSync(join(tmpdir(), "bw-glob-"));
+    const out = mkdtempSync(join(tmpdir(), "bw-out-"));
+    try {
+      expect(isScratchPath(join(src, "*.json"))).toBe(true); // a real scratch dir
+      symlinkSync("/usr", join(src, "syma")); // now link it out of scratch
+      expect(isScratchPath(join(src, "syma", "*.json"))).toBe(false); // caught
+      expect(isScratchPath(join(src, "sym*", "x.json"))).toBe(false); // and the glob form
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  test("the real command a blanket metacharacter class would have cost", () => {
+    expect(decideBashWrite(`rm -f /tmp/713-battery/pai-wrongfix/*.hook.ts`).blocked).toBe(false);
   });
 });
 
@@ -539,7 +1202,7 @@ describe("#1203 WITNESS: a line continuation must not separate a verb from its t
   const cases: [string, string][] = [
     ["cp, whose destination is on the next line", `cp /tmp/x.json${CONT}${LIVE_TREE}/${STATE}`],
     ["mv, same shape", `mv /tmp/x${CONT}${LIVE_TREE}/${STATE}`],
-    ["chmod reached through two continuations", `chmod${CONT}777${CONT}/tmp/h/Y.hook.ts`],
+    ["chmod reached through two continuations", `chmod${CONT}777${CONT}${LIVE}/h/Y.hook.ts`],
     ["rm of the salt, continued", `rm${CONT}${LIVE_TREE}/${SALT}`],
     ["tee, whose file operand is continued", `tee${CONT}${LIVE_TREE}/${STATE}`],
     ["a redirect whose target is on the continuation line", `echo x >${CONT}${LIVE_TREE}/${SALT}`],
@@ -612,7 +1275,7 @@ describe("#1203 CONTROL: the join is the shell's join, not a blanket one", () =>
     // arm-4 test never fires, so this row is what separates the two spellings
     // of the fix. It is also a bypass in its own right.
     expect(commandWord(segments("ch\\\nmod 777 /tmp/h/Y.hook.ts")[0])).toBe("chmod");
-    expect(decideBashWrite("ch\\\nmod 777 /tmp/h/Y.hook.ts").blocked).toBe(true);
+    expect(decideBashWrite(`ch\\\nmod 777 ${LIVE}/h/Y.hook.ts`).blocked).toBe(true);
   });
 });
 
