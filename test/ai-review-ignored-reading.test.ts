@@ -159,7 +159,7 @@
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
   existsSync,
@@ -187,6 +187,15 @@ import {
   buildBaselineScript,
   buildDriftScript,
 } from "../lib/scaffold/ai-review-step";
+import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
+
+/**
+ * #1140: these cases are built on real `git` subprocesses and inherit bun's
+ * 5000ms default, which was never derived from what they cost. The budget is
+ * calibrated on the machine running the suite — see `helpers/git-fixture-budget.ts`
+ * for the measurements and the headroom.
+ */
+setDefaultTimeout(gitFixtureTestTimeout());
 
 /** The file the reviewer wants the detector not to see. */
 const PLANT = "planted-by-the-reviewer.md";
