@@ -560,6 +560,59 @@ phase('Verdict')
 
 const MAX_SELF_HEAL_ATTEMPTS = 3
 
+// ──── SELF-HEAL-COMMIT-START ────
+/**
+ * The commit-and-push the self-heal agent is told to run (#1082).
+ *
+ * Ported as TEXT from `workflows/ship.js` — its commit prompt's `main|master`
+ * refusal and its COMMIT-STAGING block — because `workflows/*.js` cannot
+ * import (#69). Two positions stating one policy is a real cost, and what
+ * keeps them from diverging is `test/prove-self-heal-commit.test.ts`: it
+ * evaluates this block and runs it against a real repository, so a guard that
+ * is present in the string but does not refuse goes red.
+ *
+ * Three defects on one line of the prompt this replaces:
+ *
+ *   - `git add -A` with nothing in front of it. It is still `add -A`, for
+ *     the reason ship.js gives: under `-C <root>` it stages exactly what
+ *     `git status --porcelain` reports, and the portable ways of enumerating
+ *     that output mangle filenames containing spaces. What changed is that
+ *     it is now unreachable unless the branch AND the tree have both been
+ *     read and both agreed. Self-heal runs in PROJECT_ROOT — the SHARED
+ *     checkout, not a per-run worktree — so an unguarded sweep there takes
+ *     every other session's uncommitted work with the fix.
+ *   - no branch refusal at all, where ship.js has one. #136/#267: unreviewed
+ *     agent output on the default branch is the failure being guarded.
+ *   - an unquoted path, so a project root containing a space broke the
+ *     command. It reaches the shell through `shellQuote` now; the other
+ *     unquoted interpolations in this file are #1086, not this change.
+ *
+ * The `""` arm is deliberate and is NOT in ship.js's version. A detached
+ * HEAD and an unreadable tree both print nothing, and falling through to the
+ * `*)` arm would commit there — `0`, `{}`, `null` and `""` are
+ * indistinguishable from success, so an unread branch refuses.
+ */
+function shellQuote(word) {
+  return `'${String(word).replace(/'/g, "'\\''")}'`
+}
+
+function selfHealCommitScript(dir, subject) {
+  const d = shellQuote(dir)
+  return [
+    `branch=$(git -C ${d} branch --show-current)`,
+    `case "$branch" in ""|main|master) echo "REFUSING: self-heal will not commit onto [$branch] — an empty branch is a reading that failed, not a branch"; exit 1;; esac`,
+    // The path goes in as the quoted ${d}, never as the raw ${dir}: inside a
+    // double-quoted shell string `$(...)` and backticks still expand.
+    `if [ -z "$(git -C ${d} status --porcelain)" ]; then`,
+    `  echo "RUNGATE_NO_CHANGES: git reports no modifications in" ${d} "— nothing to commit"; exit 1;`,
+    `fi`,
+    `git -C ${d} add -A`,
+    `git -C ${d} commit -m ${shellQuote(subject)}`,
+    `git -C ${d} push`,
+  ].join('\n')
+}
+// ──── SELF-HEAL-COMMIT-END ────
+
 function computeVerdict(criteriaResults) {
   const fc = criteriaResults.filter(cr => cr.verdict === 'FAIL').length
   const psc = criteriaResults.filter(cr => cr.verdict === 'PASS' || cr.verdict === 'SKIP').length
@@ -603,7 +656,13 @@ Body (first 2000 chars): ${(issueData.issueBody || '').slice(0, 2000)}
 2. Investigate why each criterion failed, in ${PROJECT_ROOT || '.'} — reach it with absolute paths or git -C, never with a top-level cd (#992).
 3. Fix the code to address each failure.
 4. Run tests: bun test, tsc --noEmit.
-5. Commit and push the fix: git -C ${PROJECT_ROOT || '.'} add -A && git -C ${PROJECT_ROOT || '.'} commit -m "fix(#${ISSUE}): prove self-heal iteration ${selfHealIteration}" && git -C ${PROJECT_ROOT || '.'} push
+5. Commit and push the fix. Run these in order, exactly as written:
+${selfHealCommitScript(PROJECT_ROOT || '.', `fix(#${ISSUE}): prove self-heal iteration ${selfHealIteration}`)}
+
+   The branch check is not optional and is not a formality (#136): if it
+   refuses, stop and report it — do not switch branches, do not create one,
+   and do not push anywhere else. A REFUSING line is the result this step
+   needs to see, not an obstacle to route around.
 
 Report what you fixed and evidence that each failed criterion is now addressed.
   `, { label: `self-heal-fix-${selfHealIteration}`, phase: 'Verdict', role: 'marcus' })
