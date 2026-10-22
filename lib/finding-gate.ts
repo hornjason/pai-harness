@@ -90,7 +90,6 @@
  * caller has votes to offer.
  */
 
-import { execFileSync } from "child_process";
 import { appendFileSync, mkdirSync, readFileSync } from "fs";
 import { dirname, resolve } from "path";
 
@@ -184,14 +183,22 @@ export interface GateOptions {
   limit?: number;
   /** Milliseconds the tracker read may take before the finding is UNMEASURED. */
   timeoutMs?: number;
-  /** For the test. Defaults to the real `gh issue list`. */
-  listIssues?: (limit: number) => string;
+  /** For the test. Defaults to the real Octokit read. */
+  listIssues?: (limit: number) => Promise<Array<{ number?: number; id?: string; title?: string; body?: string }>>
+    | Array<{ number?: number; id?: string; title?: string; body?: string }>;
   /** For the test. Defaults to appending to `logPath`. */
   log?: (row: unknown) => void;
 }
 
-/** The default comparison depth. 32 open issues at the time of writing. */
-export const DEFAULT_POPULATION_LIMIT = 120;
+/**
+ * The default comparison depth.
+ *
+ * 30 open issues at the time of writing, and the API caps a page at 100, so
+ * 100 is both the headroom and the ceiling: a tracker returning a full page
+ * is reported truncated — UNMEASURED, and therefore ALLOWED — rather than
+ * silently deduped against a partial corpus. This module does not paginate.
+ */
+export const DEFAULT_POPULATION_LIMIT = 100;
 
 /** The default tracker-read budget. Past this the finding is let through. */
 export const DEFAULT_TRACKER_TIMEOUT_MS = 10_000;
@@ -248,19 +255,18 @@ export function proposedIssues(cmd: string, cwd: string): ProposedIssue[] {
 }
 
 /** Read the comparison population. Throws; every throw is an allow upstream. */
-function existingFindings(
+async function existingFindings(
   options: GateOptions,
   limit: number,
-): Array<{ id: string; title: string; body: string }> {
-  let raw: string;
+): Promise<Array<{ id: string; title: string; body: string }>> {
+  let parsed: Array<{ number?: number; id?: string; title?: string; body?: string }>;
   let fromTracker = true;
   if (options.existingFile) {
-    raw = readFileSync(options.existingFile, "utf-8");
+    parsed = JSON.parse(readFileSync(options.existingFile, "utf-8"));
     fromTracker = false;
   } else {
-    raw = (options.listIssues ?? defaultListIssues(options))(limit + 1);
+    parsed = await (options.listIssues ?? defaultListIssues(options))(limit + 1);
   }
-  const parsed = JSON.parse(raw) as Array<{ number?: number; id?: string; title?: string; body?: string }>;
   if (!Array.isArray(parsed)) throw new Error("the comparison population is not a JSON array");
   if (fromTracker && parsed.length > limit) {
     // A dedupe against a truncated corpus reports "no duplicate" exactly as
@@ -282,32 +288,56 @@ function existingFindings(
 }
 
 /**
- * The tracker read.
+ * The tracker read, through Octokit.
  *
- * `--repo` is passed only when the caller named one. Otherwise `gh` resolves
- * the repository from `projectRoot`'s own `origin`, which is both the
- * correct answer and the one that cannot hardcode a consumer's slug into
- * harness code.
+ * **Not a `gh` subprocess**, and that is enforced rather than preferred:
+ * SC-893 of GITHUB-API-MIGRATION-SPEC.md refuses any `gh` reaching a
+ * subprocess from `lib/`, `hooks/` or `gates/`, and its known-exception list
+ * is empty. Infrastructure uses Octokit; agent prompts use the MCP tools.
+ * The first cut of this module shelled out to `gh issue list` and CI caught
+ * it — the migration costs nothing, because `resolveGitHubToken` reads the
+ * same `GH_TOKEN` the CLI authenticates with.
+ *
+ * The slug is the caller's when named, and otherwise comes from
+ * `projectRoot`'s own `origin` through `resolveRepoSlug` — the one resolver,
+ * so this cannot become the second place a repository name is guessed, and
+ * no consumer slug is ever hardcoded into harness code. An unresolvable
+ * remote throws, and every throw on this path is an allow.
+ *
+ * The timeout is a race rather than a child-process budget: there is no
+ * subprocess left to kill, and an Octokit call that never returns would
+ * otherwise hold the PreToolUse hook open indefinitely.
  */
 function defaultListIssues(options: GateOptions) {
-  return (limit: number): string =>
-    execFileSync(
-      "gh",
-      [
-        "issue", "list",
-        ...(options.repo?.trim() ? ["--repo", options.repo.trim()] : []),
-        "--state", "open",
-        "--limit", String(limit),
-        "--json", "number,title,body",
-      ],
-      {
-        cwd: options.projectRoot,
-        encoding: "utf-8",
-        timeout: options.timeoutMs ?? DEFAULT_TRACKER_TIMEOUT_MS,
-        maxBuffer: 32 * 1024 * 1024,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+  return async (limit: number): Promise<Array<{ number?: number; title?: string; body?: string }>> => {
+    const [{ createGitHubClient, listIssues }, { resolveRepoSlug }] = await Promise.all([
+      import("./github"),
+      import("./branch-cleanup"),
+    ]);
+    const slug = options.repo?.trim()
+      ? options.repo.trim()
+      : resolveRepoSlug({ projectRoot: options.projectRoot }).slug;
+    if (!slug) throw new Error(`cannot resolve a repository slug from ${options.projectRoot}`);
+
+    const ms = options.timeoutMs ?? DEFAULT_TRACKER_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        listIssues(createGitHubClient(), slug, {
+          state: "open",
+          // The API caps a page at 100, so a request for more is silently
+          // truncated. Asking for exactly `limit + 1` keeps the truncation
+          // check upstream honest: a full page means UNMEASURED, not clean.
+          per_page: Math.min(limit, 100),
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`the tracker read did not answer within ${ms}ms`)), ms);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
 }
 
 /**
@@ -374,7 +404,7 @@ export async function findingGateReading(
     // re-implements `duplicateOverlap`, which would be the two-deciders
     // shape. Only the "did it reach a reader" predicate differs, and it
     // differs because for this caller the honest answer genuinely differs.
-    const seen = [...existingFindings(options, limit)];
+    const seen = [...(await existingFindings(options, limit))];
     const rows: GateRow[] = [];
     for (const p of readable) {
       const finding = { id: UNFILED_ID, title: p.title, body: p.body };

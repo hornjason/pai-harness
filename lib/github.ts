@@ -30,6 +30,13 @@ export interface GitHubClient {
       createComment: (params: { owner: string; repo: string; issue_number: number; body: string }) => Promise<{ data: any }>;
       addLabels: (params: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<{ data: any }>;
       update: (params: { owner: string; repo: string; issue_number: number; state?: string; [key: string]: any }) => Promise<{ data: any }>;
+      /**
+       * Issues for one repository — **and its pull requests**, which this
+       * endpoint returns as issues carrying a `pull_request` key. Callers go
+       * through `listIssues`, which drops them; see its header for why that
+       * is not optional.
+       */
+      listForRepo: (params: { owner: string; repo: string; state?: string; per_page?: number; [key: string]: any }) => Promise<{ data: any[] }>;
     };
     pulls: {
       create: (params: { owner: string; repo: string; title: string; head: string; base: string; body?: string; draft?: boolean }) => Promise<{ data: any }>;
@@ -548,6 +555,30 @@ async function convertPRToDraft(
     { id: nodeId },
   );
   return true;
+}
+
+/**
+ * List issues, **pull requests excluded**.
+ *
+ * The REST issues endpoint returns pull requests as issues — every PR carries
+ * a `pull_request` key and is otherwise shaped like one. `gh issue list`
+ * filters them, so anything replacing a `gh issue list` subprocess has to
+ * filter them too (SC-893). Without it the open-issue corpus silently gains
+ * every open PR title, which for `lib/finding-gate.ts` means a finding can be
+ * refused as a duplicate of a pull request.
+ *
+ * `per_page` is capped at 100 by the API. A caller that needs a complete
+ * population must treat a full page as possibly truncated rather than
+ * complete; this function does not paginate and does not pretend to.
+ */
+export async function listIssues(
+  client: GitHubClient,
+  repoSlug: string,
+  opts?: { state?: "open" | "closed" | "all"; per_page?: number },
+): Promise<any[]> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.listForRepo({ owner, repo, ...opts });
+  return (response.data as any[]).filter(i => i.pull_request === undefined);
 }
 
 /**

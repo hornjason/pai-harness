@@ -293,18 +293,18 @@ describe("#1261 AC-3: every unreadable reading ALLOWS, because this gate fails o
       }),
     ],
     [
-      "the population is not JSON",
-      () => findingGateReading(cmd, ROOT, { ...base, listIssues: () => "not json at all" }),
+      "the tracker answers with something that is not a list",
+      () => findingGateReading(cmd, ROOT, { ...base, listIssues: () => ("not an array at all" as any) }),
     ],
     [
       "the population is JSON but not an array",
-      () => findingGateReading(cmd, ROOT, { ...base, listIssues: () => '{"oops":1}' }),
+      () => findingGateReading(cmd, ROOT, { ...base, listIssues: () => ({ oops: 1 } as any) }),
     ],
     [
       "an entry has neither `number` nor `id`",
       () => findingGateReading(cmd, ROOT, {
         ...base,
-        listIssues: () => JSON.stringify([{ title: "x", body: "y" }]),
+        listIssues: () => [{ title: "x", body: "y" }],
       }),
     ],
     [
@@ -312,9 +312,7 @@ describe("#1261 AC-3: every unreadable reading ALLOWS, because this gate fails o
       () => findingGateReading(cmd, ROOT, {
         ...base,
         limit: 2,
-        listIssues: () => JSON.stringify(
-          [1, 2, 3, 4].map(n => ({ number: n, title: `t${n}`, body: "b" })),
-        ),
+        listIssues: () => [1, 2, 3, 4].map(n => ({ number: n, title: `t${n}`, body: "b" })),
       }),
     ],
   ];
@@ -337,7 +335,7 @@ describe("#1261 AC-3: every unreadable reading ALLOWS, because this gate fails o
     ] as const) {
       const reading = await findingGateReading(command, ROOT, {
         ...base,
-        listIssues: () => JSON.stringify(EXISTING),
+        listIssues: () => EXISTING,
       });
       expect(reading.refusal, why).toBeNull();
       expect(reading.unmeasured, why).not.toBeNull();
@@ -351,7 +349,7 @@ describe("#1261 AC-3: every unreadable reading ALLOWS, because this gate fails o
     // same command is driven through a WORKING tracker read and must refuse.
     const reading = await findingGateReading(cmd, ROOT, {
       ...base,
-      listIssues: () => JSON.stringify(EXISTING),
+      listIssues: () => EXISTING,
     });
     expect(reading.refusal).not.toBeNull();
     expect(reading.refusal).toContain("#4242");
@@ -368,7 +366,7 @@ describe("#1261 AC-4: it gates on DUPLICATE and can gate on nothing else", () =>
     const reading = await findingGateReading(
       'gh issue create --title "nit: rename this variable" --body "style only, `fooBar` in lib/x.ts"',
       ROOT,
-      { projectRoot: ROOT, logPath: null, listIssues: () => JSON.stringify(EXISTING) },
+      { projectRoot: ROOT, logPath: null, listIssues: () => EXISTING },
     );
     expect(reading.refusal).toBeNull();
   });
@@ -384,7 +382,7 @@ describe("#1261 AC-4: it gates on DUPLICATE and can gate on nothing else", () =>
       const reading = await findingGateReading(shape, ROOT, {
         projectRoot: ROOT,
         logPath: null,
-        listIssues: () => JSON.stringify(EXISTING),
+        listIssues: () => EXISTING,
       });
       expect(reading.refusal, shape).toBeNull();
       const refusals = reading.rows.map(r => r.refusal).filter(r => r !== null);
@@ -447,7 +445,7 @@ describe("#1261 AC-5: every refusal is recorded where a human can read it", () =
       {
         projectRoot: ROOT,
         logPath: "/proc/definitely/not/writable/x.jsonl",
-        listIssues: () => JSON.stringify(EXISTING),
+        listIssues: () => EXISTING,
       },
     );
     // It is a duplicate, so it IS a refusal — the point is that the failed
@@ -486,7 +484,7 @@ describe("#1261: the command parse is the VerifyPhaseLock walk, not a second one
       `gh issue create --title "one" --body ${JSON.stringify(DUPLICATE_BODY)} && ` +
         `gh issue create --title "two" --body ${JSON.stringify(DUPLICATE_BODY)}`,
       ROOT,
-      { projectRoot: ROOT, logPath: null, listIssues: () => JSON.stringify([]) },
+      { projectRoot: ROOT, logPath: null, listIssues: () => [] },
     );
     expect(reading.refusal).not.toBeNull();
     const refused = reading.rows.filter(r => r.refusal === "DUPLICATE");
@@ -508,7 +506,7 @@ describe("#1261: the command parse is the VerifyPhaseLock walk, not a second one
         `gh issue create --title "two" --body ${JSON.stringify(third)} && ` +
         `gh issue create --title "three" --body ${JSON.stringify(third)}`,
       ROOT,
-      { projectRoot: ROOT, logPath: null, listIssues: () => JSON.stringify([]) },
+      { projectRoot: ROOT, logPath: null, listIssues: () => [] },
     );
     expect(reading.rows.filter(r => r.allowed)).toHaveLength(2);
     const refused = reading.rows.filter(r => !r.allowed);
@@ -584,6 +582,8 @@ describe("#1261 AC-6: the block routes through one constant, mutated and observe
       const deciderRewrites: Array<[string, string]> = [
         ['"./issue-create-override"', JSON.stringify(join(ROOT, "lib", "issue-create-override.ts"))],
         ['"./finding-arbiter"', JSON.stringify(join(ROOT, "lib", "finding-arbiter.ts"))],
+        ['"./github"', JSON.stringify(join(ROOT, "lib", "github.ts"))],
+        ['"./branch-cleanup"', JSON.stringify(join(ROOT, "lib", "branch-cleanup.ts"))],
       ];
       for (const [from, to] of deciderRewrites) deciderMutant = deciderMutant.split(from).join(to);
       writeFileSync(join(dir, "finding-gate.ts"), deciderMutant);
