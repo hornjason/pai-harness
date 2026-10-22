@@ -3948,15 +3948,82 @@ export const AI_REVIEW_IGNORED_READING = "--ignored=matching";
  * - **It names a SHA-pinned dependency's documented scratch**, not a class of
  *   paths and not anything in this repository.
  *
- * ## UNMEASURED, and asserted so it cannot outlive its subject
+ * ## What the exemption used to cost, and no longer does (#1071)
  *
- * A write INSIDE `.claude-pr/` is not seen. That is true of every
- * collapsed-ignored directory under `matching` and is not special to this one;
- * it is the price of the entry count above. The case that asserts the
- * blindness is in `test/ai-review-ignored-reading.test.ts`, so the day the
- * reading starts seeing it, the note is refuted rather than left standing.
+ * `continue` on this entry did not drop a line — it dropped the ONLY line.
+ * `matching` collapses the whole ignored subtree to `!! .claude-pr/`, so
+ * exempting that entry left the reading EMPTY and the drift step with nothing
+ * to compare: `.claude-pr/EVIL.md` was invisible at any depth. The exemption
+ * stays, because the action still creates and ignores this directory
+ * mid-review and nothing separates it from a plant. What changed is that the
+ * reader now descends one level instead of returning — see
+ * `AI_REVIEW_SCRATCH_SCAN_LIMIT`.
  */
 export const AI_REVIEW_ACTION_SCRATCH = ".claude-pr/";
+
+/**
+ * How many entries of the exempted scratch the reader will report (#1071).
+ *
+ * ## The hole this bounds, and why descending one level closes it
+ *
+ * The exemption above is unavoidable and the entry it exempts is the whole
+ * reading, so everything under `.claude-pr/` was invisible. Closing that
+ * cannot mean "report the scratch's contents": the action fills it mid-review
+ * and the baseline was taken before, so every file in it is an addition and
+ * every pull request goes red. That is PR #1002's outage with extra steps,
+ * and it is why #1071 was filed rather than patched.
+ *
+ * The discriminator is read from the dependency's own source rather than
+ * guessed. `restoreConfigFromBase()` in `src/github/operations/restore-config.ts`
+ * at the pinned SHA is the only writer, and it writes exactly:
+ *
+ * ```ts
+ * rmSync(".claude-pr", { recursive: true, force: true });
+ * for (const p of SENSITIVE_PATHS) {
+ *   if (lstatSync(p, { throwIfNoEntry: false })) {
+ *     snapshotSensitivePath(p, `.claude-pr/${p}`, workTreeRealPath, tracked);
+ *   }
+ * }
+ * ```
+ *
+ * Every `p` is a single path component, so **the action creates nothing at the
+ * TOP of its scratch except a name from that list** — including the
+ * `recordPlaceholder` files, which land under the same `p`. A top-level entry
+ * with any other name had no second author, and that is a property of the
+ * writer, not a shape of the message.
+ *
+ * So the reader enumerates `.claude-pr/` at depth ONE, drops the mirrored
+ * names, and classifies the rest exactly as it classifies any other path. On
+ * a normal pull request that yields zero lines, by construction — which is
+ * what makes this green rather than hopeful.
+ *
+ * ## The names come from `AI_REVIEW_UNTRUSTED_PATHS`, and that is a widening
+ *
+ * That constant is required to be a SUPERSET of the action's list, and it
+ * currently holds two names the action does not snapshot — `.gitignore` and
+ * `.gitattributes`, added by #856 because they are inputs to the measurement.
+ * So `.claude-pr/.gitignore` stays unreported. Stated rather than hidden, and
+ * asserted, but not repaired with a second list: a list that is a SUBSET of
+ * the action's reds every pull request the first time the action's list
+ * grows, and a superset costs two blind names. One declaring position, and
+ * the error that remains is the survivable one.
+ *
+ * ## Volume, which is the bound the issue asked for
+ *
+ * `-maxdepth 1`, so the cost is the number of top-level entries — ten, not
+ * the size of a copy of the pull request's `.claude/` tree. No `hash-object`
+ * runs for a mirrored name. The limit below bounds what a REVIEWER can make
+ * the reader print; truncating it cannot flip the verdict, because one line
+ * is already a refusal.
+ *
+ * ## WHAT THIS DOES NOT FIX
+ *
+ * A write under a mirrored name — `.claude-pr/.claude/EVIL.md` — is still
+ * invisible. That is `--ignored=matching`'s collapse, the same bound
+ * `AI_REVIEW_PRESENT_UNHASHABLE` already states, and it is asserted in
+ * `test/ai-review-ignored-reading.test.ts` so it cannot outlive its subject.
+ */
+export const AI_REVIEW_SCRATCH_SCAN_LIMIT = 50;
 
 /**
  * What a path that is PRESENT but not a regular file hashes to (#1061,
@@ -4097,8 +4164,91 @@ export const AI_REVIEW_PRESENT_UNHASHABLE = "not-a-regular-file";
  * content.
  */
 
-export const AI_REVIEW_TREE_READER = `read_tree() {
-  local raw line xy p h
+export const AI_REVIEW_TREE_READER = `classify_path() {
+  local p h
+  p="\${1}"
+  case "\${p}" in
+    '"'*) h=unquotable ;;
+    *)
+      if [ -f "\${p}" ]; then
+        # --no-filters, or the repository's own text/eol conversion is
+        # applied before hashing and two DIFFERENT working-tree blobs
+        # collapse to one hash (#856 F3). Measured under \`* text eol=lf\`:
+        # "x\\r\\n" and "x\\n" both hash 587be6b4…, and with --no-filters
+        # they are db127bf6… and 587be6b4…. The reading is only a reading
+        # of content if the hash is of the bytes on disk.
+        # Isolated for the same reason as the status below (#960). It is
+        # the \`-c\` half that matters here: \`--no-filters\` already
+        # defeats a text/eol conversion, but a hash taken under the
+        # reviewer's config is still a reading the reviewer chose.
+        h=$(${AI_REVIEW_GIT_ISOLATED} hash-object --no-filters -- "\${p}" 2>/dev/null) || h=unreadable
+      # PRESENT but not a regular file, which is not a deletion. \`-e\`
+      # FOLLOWS symlinks, so it is false for a dangling one — \`-L\` is the
+      # half that catches it, and leaving it out is how #1061 came up
+      # short. See AI_REVIEW_PRESENT_UNHASHABLE.
+      elif [ -e "\${p}" ] || [ -L "\${p}" ]; then
+        h=${AI_REVIEW_PRESENT_UNHASHABLE}
+      else
+        h=absent
+      fi
+      ;;
+  esac
+  printf '%s %s\\n' "\${h}" "\${p}"
+}
+
+# The interior of the one exempted entry, one level deep (#1071). Split out of
+# the loop below so there is exactly ONE classifier: every path this finds goes
+# through \`classify_path\` rather than through a copy of it, so whoever next
+# changes how a path is turned into a token changes it here too without
+# knowing this function exists.
+#
+# \`\${1}\` is the scratch entry git just reported, carrying git's own trailing
+# slash, so the globs below expand against its contents. Three of them,
+# because a single \`*\` does not match a leading dot and the two dot forms
+# skip \`.\` and \`..\`. Globbing rather than \`find\`: a filename may contain a
+# newline, and \`find | while read\` would split one entry into two and report
+# neither.
+#
+# NOTHING here asks what kind of thing an entry is. #1070 made
+# \`classify_path\` ask the property — present-and-hashable against
+# present-and-not against gone — so a directory, a fifo and a dangling link
+# planted here are all answered by the one classifier. An earlier draft of
+# this walk tested \`[ -d \]\` to hand a directory on in git's collapsed shape;
+# that was a second decider for a question #1070 already answers, and it is
+# gone rather than left beside it.
+read_scratch() {
+  local root e name u mirrored n
+  root="\${1}"
+  n=0
+  for e in "\${root}"* "\${root}".[!.]* "\${root}"..?*; do
+    # An unmatched glob comes back as the pattern itself. \`-L\` as well as
+    # \`-e\`, because \`-e\` follows symlinks and is false for a dangling one —
+    # which is a thing the reviewer can create and the reader must still
+    # report (#1070).
+    { [ -e "\${e}" ] || [ -L "\${e}" ]; } || continue
+    name="\${e##*/}"
+    # The action snapshots each of these paths into the scratch under its own
+    # name, and every one of them is a single component, so a top-level entry
+    # with any other name is not the action's. See
+    # AI_REVIEW_SCRATCH_SCAN_LIMIT.
+    mirrored=
+    for u in ${AI_REVIEW_UNTRUSTED_PATHS.map(p => "'" + p + "'").join(" ")}; do
+      if [ "\${name}" = "\${u}" ]; then
+        mirrored=1
+        break
+      fi
+    done
+    [ -z "\${mirrored}" ] || continue
+    n=$((n + 1))
+    if [ "\${n}" -gt ${AI_REVIEW_SCRATCH_SCAN_LIMIT} ]; then
+      break
+    fi
+    classify_path "\${e}"
+  done
+}
+
+read_tree() {
+  local raw line xy p
   # Checked on its own line, never captured into an assignment: \`x=$(...)\`
   # DISCARDS the exit code, so a git that failed produces the same empty
   # string a clean tree produces, and "unreadable" would pass as "clean".
@@ -4128,36 +4278,16 @@ export const AI_REVIEW_TREE_READER = `read_tree() {
     # a path merely starting with the name, or carrying anything after the
     # slash, is still reported. See AI_REVIEW_ACTION_SCRATCH for why an
     # exemption is unavoidable at all.
+    #
+    # DESCEND rather than \`continue\` (#1071). This entry is not one line of
+    # the reading, it IS the reading — \`matching\` collapses the whole subtree
+    # into it — so skipping it left the comparison empty and everything the
+    # reviewer wrote under that path invisible at any depth.
     if [ "\${p}" = "${AI_REVIEW_ACTION_SCRATCH}" ]; then
+      read_scratch "\${p}"
       continue
     fi
-    case "\${p}" in
-      '"'*) h=unquotable ;;
-      *)
-        if [ -f "\${p}" ]; then
-          # --no-filters, or the repository's own text/eol conversion is
-          # applied before hashing and two DIFFERENT working-tree blobs
-          # collapse to one hash (#856 F3). Measured under \`* text eol=lf\`:
-          # "x\\r\\n" and "x\\n" both hash 587be6b4…, and with --no-filters
-          # they are db127bf6… and 587be6b4…. The reading is only a reading
-          # of content if the hash is of the bytes on disk.
-          # Isolated for the same reason as the status above (#960). It is
-          # the \`-c\` half that matters here: \`--no-filters\` already
-          # defeats a text/eol conversion, but a hash taken under the
-          # reviewer's config is still a reading the reviewer chose.
-          h=$(${AI_REVIEW_GIT_ISOLATED} hash-object --no-filters -- "\${p}" 2>/dev/null) || h=unreadable
-        # PRESENT but not a regular file, which is not a deletion. \`-e\`
-        # FOLLOWS symlinks, so it is false for a dangling one — \`-L\` is the
-        # half that catches it, and leaving it out is how #1061 came up
-        # short. See AI_REVIEW_PRESENT_UNHASHABLE.
-        elif [ -e "\${p}" ] || [ -L "\${p}" ]; then
-          h=${AI_REVIEW_PRESENT_UNHASHABLE}
-        else
-          h=absent
-        fi
-        ;;
-    esac
-    printf '%s %s\\n' "\${h}" "\${p}"
+    classify_path "\${p}"
   done
 }`;
 

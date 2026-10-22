@@ -148,10 +148,10 @@
  *    not change. AC-6/limit ASSERTS the blindness, so it is recorded rather
  *    than implied, and whoever makes it visible deletes the note rather than
  *    leaving it to outlive its subject.
- * 2. **A write inside `.claude-pr/`** is invisible for the same reason plus
- *    the exemption. AC-8/inside asserts it. The action populates that
- *    directory with copies of the pull request's own config, which the
- *    reviewer is allowed to read and which is not the code under review.
+ * 2. **A write inside `.claude-pr/` under a name the action snapshots** —
+ *    `.claude-pr/.claude/EVIL.md` — is invisible for the same reason plus the
+ *    exemption. AC-8/limit asserts it. The TOP of that directory is read as
+ *    of #1071 and AC-11 is that half; what is left is one level down.
  * 3. **`.git/config` as a door is covered by #965's `-c` flags, not by
  *    anything here.** AC-5 is the control that says so by measurement rather
  *    than by citation.
@@ -179,9 +179,11 @@ import {
   AI_REVIEW_DRIFT_TITLE,
   AI_REVIEW_PRESENT_UNHASHABLE,
   AI_REVIEW_IGNORED_READING,
+  AI_REVIEW_SCRATCH_SCAN_LIMIT,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
   AI_REVIEW_TREE_BEFORE_VAR,
   AI_REVIEW_TREE_READER,
+  AI_REVIEW_UNTRUSTED_PATHS,
   buildBaselineScript,
   buildDriftScript,
 } from "../lib/scaffold/ai-review-step";
@@ -767,21 +769,311 @@ describe("AC-8 (#969): the exemption is one exact path, not a prefix and not a c
     expect(drift.stderr).toContain("evil-scratch/");
   });
 
-  test("limit (UNMEASURED): a plant INSIDE the scratch is not seen", () => {
-    // Asserted so the note cannot outlive its subject. The action populates
-    // this directory with copies of the pull request's own config, which the
-    // reviewer may read and which is not the code under review.
+  test("limit (UNMEASURED): a plant under a MIRRORED name inside the scratch is not seen", () => {
+    // #1071 moved this bound rather than removing it, and the case moved with
+    // it rather than being deleted. The TOP of the scratch is now read (AC-11
+    // below); what is still invisible is a write under one of the names the
+    // action itself snapshots, because `matching` collapses the subtree and
+    // the reader descends exactly one level.
+    //
+    // Asserted so the note cannot outlive its subject: the day the reader
+    // goes deeper, this reds and whoever made it true deletes the note in
+    // AI_REVIEW_SCRATCH_SCAN_LIMIT rather than leaving it standing.
     const f = checkout();
     rmSync(join(f.work, PLANT));
     actionScratch(f);
     const before = readTree(f, "hardened").stdout;
-    f.write(".claude-pr/EVIL.md", "the reviewer wrote this\n");
+    f.write(".claude-pr/.claude/EVIL.md", "the reviewer wrote this\n");
     const after = readTree(f, "hardened").stdout;
     expect(
       after,
-      "a write inside the scratch is now visible — good, and the UNMEASURED note in this " +
-        "file's docblock and in AI_REVIEW_ACTION_SCRATCH is stale",
+      "a write under a mirrored name inside the scratch is now visible — good, and the " +
+        "UNMEASURED note in this file's docblock and in AI_REVIEW_SCRATCH_SCAN_LIMIT is stale",
     ).toBe(before);
+    expect(
+      before,
+      "the fixture never built the scratch, so the blindness this records is the fixture's",
+    ).not.toContain(".claude-pr");
+  });
+});
+
+// ── AC-11: the exempted subtree is read one level down (#1071) ────────────
+
+/**
+ * The exemption above dropped the ONLY line. `--ignored=matching` collapses
+ * the whole ignored subtree to `!! .claude-pr/`, and that entry is the one
+ * exempted, so the reading was EMPTY and the drift step had nothing to
+ * compare — `.claude-pr/EVIL.md` was invisible at any depth.
+ *
+ * The exemption is unavoidable and stays. What changed is that the reader
+ * DESCENDS one level instead of returning, drops the names the action
+ * snapshots, and classifies the rest through the same `classify_path` the
+ * rest of the reading goes through.
+ *
+ * ## The mutant, and why it is this one
+ *
+ * `AI_REVIEW_SCRATCH_SCAN_LIMIT` is driven to 0, mechanically, from the
+ * exported constant. The counter starts at 1, so the walk breaks on its first
+ * entry and the reader is the pre-#1071 reader exactly — an empty reading for
+ * the scratch — without a hand-written copy of the old bash that would stay
+ * green while the shipped one was gutted.
+ *
+ * ## The measured battery, and WHICH assertion each row reddens
+ *
+ * Run over this file alone, 37 cases, on the tree that carries #1070.
+ * `lib/scaffold/ai-review-step.ts` was restored from a `cp` backup after every
+ * row — never `git checkout --` — and confirmed byte-identical by sha256
+ * afterwards. **The baseline row was read before any mutation row.**
+ *
+ * | Row | Mutation | Measured | Which assertions |
+ * |---|---|---|---|
+ * | **baseline** | unmutated | **37 pass, 0 fail** | — |
+ * | **M10** | the descent stripped: `AI_REVIEW_SCRATCH_SCAN_LIMIT` driven to 0 | **5 of 37** | AC-11 ×5 — empty, end-to-end, directory, symlink, bound |
+ * | **M11** | the `-L` half of the glob guard dropped | **1 of 37** | AC-11/symlink |
+ * | **M12** | the mirror filter removed — every scratch entry reported | **7 of 37** | AC-7/green, AC-7/control, AC-8/limit, AC-10/control, AC-11/CONTROL, AC-11/volume, AC-11/widening |
+ * | **M13** | **the cheapest wrong fix** — the conditional exemption #1071 proposes | **5 of 37** | the same five as M10 |
+ *
+ * **The input on which mutant and original differ, named and run rather than
+ * assumed.** M10: `.claude-pr/EVIL.md` written after the action's scratch —
+ * the original reports `<sha1> .claude-pr/EVIL.md`, the mutant reports
+ * nothing. M11: a dangling `.claude-pr/evil-link` — `[ -e ]` follows the link
+ * and is false, so the mutant drops the entry before anything classifies it.
+ * M12: `.claude-pr/.claude/settings.json`, which the action itself writes —
+ * the mutant reports it and the drift step refuses, which IS PR #1002's
+ * outage.
+ *
+ * **There is no row for the directory shape, and that is the composition with
+ * #1070 rather than an omission.** An earlier draft of the walk tested
+ * `[ -d ]` so it could hand a directory on in git's collapsed shape, and that
+ * draft HAD such a row. #1070 landed first and taught `classify_path` to ask
+ * the property, so the shape test was deleted rather than rebased: there is
+ * nothing left in the walk to mutate, and `AC-11/ONE decider` is what says so
+ * — it reds under M10 because the entry vanishes, and it would red again the
+ * day someone re-introduces a second decider that answers `absent`.
+ *
+ * **M13 is the cheapest wrong fix and it is run, not argued.** #1071 measured
+ * the conditional exemption as a no-op — the collapsed form only exists once
+ * the action has written `/.claude-pr/` to `.git/info/exclude`, which is
+ * after the baseline, so the baseline can never carry it and the guard's
+ * condition is always true. Implemented faithfully (`grep -F -x -q` against
+ * the baseline file, the descent removed) it reds exactly the five rows M10
+ * reds, which is the measurement agreeing with the issue. The five are REAL,
+ * not vacuous: each one asserts an observable difference in the reading, and
+ * the mutant produces the pre-#1071 reading.
+ *
+ * **M12 is the row that matters most**, because it is the only mutation that
+ * can take the fleet down: it reds both #1002 controls plus this suite's new
+ * one. The thing keeping every pull request green is witnessed, not assumed.
+ */
+describe("AC-11 (#1071): a reviewer write at the top of the scratch is REFUSED", () => {
+  /** The pre-#1071 reader: the descent, stripped from the constant that bounds it. */
+  const noDescent = (s: string) =>
+    s.split(`-gt ${AI_REVIEW_SCRATCH_SCAN_LIMIT}`).join("-gt 0");
+
+  test("the reading was EMPTY and is now one line naming the path", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    actionScratch(f);
+    f.write(".claude-pr/EVIL.md", "the reviewer wrote this\n");
+
+    const before = sh(
+      `set -uo pipefail\n${noDescent(AI_REVIEW_TREE_READER)}\nread_tree\n`,
+      f.work,
+      stepEnv(f.home),
+    );
+    expect(before.code, `the pre-#1071 reader failed outright:\n${before.stderr}`).toBe(0);
+    expect(
+      before.stdout.trim(),
+      "the pre-#1071 reading is not empty, so the defect this case is about was never " +
+        "reproduced and the hardened half below proves nothing",
+    ).toBe("");
+
+    const after = readTree(f, "hardened");
+    expect(after.code, `the shipped reader failed outright:\n${after.stderr}`).toBe(0);
+    expect(
+      after.stdout,
+      "a reviewer write at the top of the exempted subtree is still invisible",
+    ).toContain(".claude-pr/EVIL.md");
+    expect(
+      after.stdout.split("\n").find(l => l.endsWith(".claude-pr/EVIL.md")),
+      "the plant came back without a content hash, so it is enumerated but not read",
+    ).toMatch(/^[0-9a-f]{40} /);
+  });
+
+  test("end to end: the real baseline and drift steps refuse it and name it", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    const before = runBaseline(f, "hardened");
+
+    // The action, then the reviewer, in that order — the only order in which
+    // the exemption is in force when the reviewer writes.
+    actionScratch(f);
+    f.write(".claude-pr/EVIL.md", "the reviewer wrote this\n");
+
+    const drift = runDrift(f, "hardened", before);
+    expect(
+      drift.code,
+      "the drift step waved through a reviewer write inside the exempted subtree:\n" +
+        `${drift.stdout}\n${drift.stderr}`,
+    ).not.toBe(0);
+    expect(drift.stderr, "the refusal does not name the path").toContain(".claude-pr/EVIL.md");
+    expect(drift.stderr).toContain(AI_REVIEW_DRIFT_TITLE);
+  });
+
+  test("THE CONTROL: every name the action snapshots is still exempt, so #1002 stays closed", () => {
+    // The case this whole issue was deferred for. The scratch is built with a
+    // top-level entry for EVERY name in AI_REVIEW_UNTRUSTED_PATHS — driven
+    // from the constant the reader reads, so a name added to one and not the
+    // other reds here rather than on every pull request in the repository.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    const before = runBaseline(f, "hardened");
+
+    // Both shapes the snapshot produces: `cpSync` of a directory, and of a
+    // single file. Alternated rather than picked, because the mirror test
+    // runs before the reader knows which it is.
+    AI_REVIEW_UNTRUSTED_PATHS.forEach((p, i) => {
+      if (i % 2 === 0) f.write(`.claude-pr/${p}/nested/copy.md`, "snapshotted by the action\n");
+      else f.write(`.claude-pr/${p}`, "snapshotted by the action\n");
+    });
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    const drift = runDrift(f, "hardened", before);
+    expect(
+      drift.code,
+      "the exemption broke: this is PR #1002's outage, a REQUIRED check red on every pull " +
+        `request in the repository\n${drift.stdout}\n${drift.stderr}`,
+    ).toBe(0);
+  });
+
+  test("volume: a mirrored subtree is NOT enumerated — the walk is one level", () => {
+    // `.claude-pr/` holds a copy of the pull request's own `.claude/` tree, so
+    // its size is attacker-influenced. The reading must stay proportional to
+    // the number of top-level entries, not to the size of that copy.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    for (let i = 0; i < 60; i++) f.write(`.claude-pr/.claude/rules/r${i}.md`, "x\n");
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    const lines = readTree(f, "hardened")
+      .stdout.split("\n")
+      .filter(l => l.length > 0);
+    expect(
+      lines.filter(l => l.includes(".claude-pr/")).length,
+      `the reader enumerated the scratch (${lines.length} lines):\n${lines.join("\n")}`,
+    ).toBe(0);
+  });
+
+  test("ONE decider: a planted DIRECTORY gets #1070's token, not `absent`", () => {
+    // Composed rather than duplicated. The walk asks nothing about what kind
+    // of thing the entry is — it hands the path to `classify_path`, which
+    // #1070 taught to ask the PROPERTY. So a directory planted at the top of
+    // the scratch is answered by the same branch that answers one planted
+    // anywhere else, and no `[ -d ]` test lives in the walk to disagree with
+    // it later. `absent` is the lie #1061/#1070 are about, and it is a value
+    // #989's classifier branches on.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    f.write(".claude-pr/evil/payload.md", "the reviewer wrote this\n");
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    const line = readTree(f, "hardened")
+      .stdout.split("\n")
+      .find(l => l.endsWith(" .claude-pr/evil"));
+    expect(line, "a directory planted at the top of the scratch is not reported at all").toBeDefined();
+    expect(
+      line,
+      "a directory sitting on disk is reported `absent`, which is false about it AND is the " +
+        "token #989 reads as the action having deleted a restored path",
+    ).toBe(`${AI_REVIEW_PRESENT_UNHASHABLE} .claude-pr/evil`);
+  });
+
+  test("a DANGLING symlink at the top of the scratch is still reported", () => {
+    // `-e` follows symlinks and is false for a dangling one, so the glob
+    // guard needs `-L` as well or the entry is dropped before it is ever
+    // classified. That omission is how #1061 came up short (#1070), met here
+    // in a new walk. The TOKEN is #1070's to decide; what this asserts is
+    // that the path reaches the reading at all.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    mkdirSync(join(f.work, ".claude-pr"), { recursive: true });
+    symlinkSync("/nonexistent/target", join(f.work, ".claude-pr", "evil-link"));
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    expect(
+      readTree(f, "hardened").stdout,
+      "a dangling symlink the reviewer planted at the top of the scratch is invisible — " +
+        "the glob guard dropped it before anything could classify it",
+    ).toContain(".claude-pr/evil-link");
+  });
+
+  test("ONE classifier: the reader turns a path into a token in exactly one place", () => {
+    // The walk is a second place paths enter the reading, and the cheapest
+    // way to write it was to inline the hashing. Two copies of `[ -f ]` +
+    // `hash-object` is two deciders for one question, and #1070 is already
+    // open against the single copy — a fork here would be fixed in one of
+    // them (`.claude/rules/checks-must-be-able-to-fail.md`).
+    expect(
+      AI_REVIEW_TREE_READER.split("hash-object").length - 1,
+      "the reader hashes a path in more than one place, so a change to how a path becomes a " +
+        "token can land in one of them and leave the other behind",
+    ).toBe(1);
+    expect(
+      AI_REVIEW_TREE_READER.split("h=absent").length - 1,
+      "the reader decides `absent` in more than one place",
+    ).toBe(1);
+    expect(
+      AI_REVIEW_TREE_READER.split(/^\s*classify_path "/m).length - 1,
+      "the reader does not route both of its path sources through one classifier",
+    ).toBeGreaterThan(1);
+  });
+
+  test("the bound truncates the reading, and truncation cannot flip the verdict", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    const before = runBaseline(f, "hardened");
+    for (let i = 0; i < AI_REVIEW_SCRATCH_SCAN_LIMIT + 20; i++) {
+      f.write(`.claude-pr/EVIL-${i}.md`, "the reviewer wrote this\n");
+    }
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    const lines = readTree(f, "hardened")
+      .stdout.split("\n")
+      .filter(l => l.includes(".claude-pr/"));
+    expect(
+      lines.length,
+      `the walk is unbounded (${lines.length} lines), so a reviewer sets the cost of the step`,
+    ).toBeLessThanOrEqual(AI_REVIEW_SCRATCH_SCAN_LIMIT);
+    expect(lines.length, "the bound truncated the reading to nothing").toBeGreaterThan(0);
+
+    const drift = runDrift(f, "hardened", before);
+    expect(
+      drift.code,
+      `a truncated reading went green, so the bound is a bypass:\n${drift.stdout}\n${drift.stderr}`,
+    ).not.toBe(0);
+  });
+
+  test("the widening is stated and asserted: `.claude-pr/.gitignore` is exempt", () => {
+    // AI_REVIEW_UNTRUSTED_PATHS is a SUPERSET of the action's snapshot list —
+    // `.gitignore` and `.gitattributes` were added by #856 and the action does
+    // not snapshot them. Using it as the mirror list therefore exempts two
+    // names nothing writes. Recorded rather than hidden, and not repaired with
+    // a second list: a SUBSET reds every pull request the first time the
+    // action's list grows, and a superset costs these two names.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    f.write(".claude-pr/.gitignore", "the reviewer wrote this\n");
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    expect(
+      readTree(f, "hardened").stdout,
+      "`.claude-pr/.gitignore` is now reported — good, and the widening paragraph in " +
+        "AI_REVIEW_SCRATCH_SCAN_LIMIT is stale",
+    ).not.toContain(".claude-pr/.gitignore");
+    expect(
+      AI_REVIEW_UNTRUSTED_PATHS,
+      "the widening this case records is gone from the list it comes from",
+    ).toContain(".gitignore");
   });
 });
 
