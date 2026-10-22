@@ -151,7 +151,7 @@
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -167,6 +167,15 @@ import {
   buildDriftScript,
   buildRestoreScript,
 } from "../lib/scaffold/ai-review-step";
+import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
+
+/**
+ * #1140: these cases are built on real `git` subprocesses and inherit bun's
+ * 5000ms default, which was never derived from what they cost. The budget is
+ * calibrated on the machine running the suite — see `helpers/git-fixture-budget.ts`
+ * for the measurements and the headroom.
+ */
+setDefaultTimeout(gitFixtureTestTimeout());
 
 /** Inside the restored set, and modified by the pull request — like #815. */
 const RESTORED = ".claude/rules/a-restored-rule.md";
