@@ -2680,13 +2680,23 @@ export function writeManagedFile(
  * and it would be wrong the first time a different sub-key joins the map.
  */
 function revocationActions(label: string, revoked: readonly RevokedSubKey[]): string[] {
-  return revoked.map(
-    r =>
-      `REVOKED: ${label} no longer declares \`${r.section}: ${r.key}\` — the harness ` +
-      `computes that sub-key and this project's \`ci\` config no longer produces it, so ` +
-      `the grant has nothing left to justify it. Name \`${r.section}\` in ` +
-      `\`ci.workflowOverrides\` to keep it, and re-scaffold.`,
-  );
+  return revoked.map(r => {
+    // The override hatch is named per TOP-LEVEL key, so an authored path
+    // (`on.pull_request`) has to advise `on` and not the path it was found
+    // at. Advice naming a key `ci.workflowOverrides` would reject is worse
+    // than none: the consumer follows it and the filter goes anyway.
+    const topLevel = r.section.split(".")[0];
+    const keep =
+      `Name \`${topLevel}\` in \`ci.workflowOverrides\` to keep it, and re-scaffold.`;
+    return r.reason === "authored"
+      ? `REVOKED: ${label} no longer declares \`${r.section}: ${r.key}\` — the harness ` +
+          `authors that path and this version of the generator does not emit it, so the ` +
+          `value here is one the harness itself wrote and has since changed its mind ` +
+          `about. ${keep}`
+      : `REVOKED: ${label} no longer declares \`${r.section}: ${r.key}\` — the harness ` +
+          `computes that sub-key and this project's \`ci\` config no longer produces it, so ` +
+          `the grant has nothing left to justify it. ${keep}`;
+  });
 }
 
 /** One globally installed CI tool, and the exact version it is pinned to. */
