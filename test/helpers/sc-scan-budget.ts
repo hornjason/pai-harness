@@ -115,16 +115,20 @@
  * membership direction only: every file on the roster must declare.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync, statSync } from "fs";
 import { dirname, join } from "path";
 
 import type { BudgetSurface } from "../../lib/junit-checks";
 import { perTestTimeoutDeclarations } from "../../lib/per-test-timeouts";
+import { stripJsComments } from "../../lib/strip-js-comments";
 import { walkTestFiles } from "../../lib/walk-test-files";
 import { scanTestTree } from "../../scripts/sync-sc-status";
 
 /** `test/`, the tree the scan walks and the tree the roster lives in. */
 const TEST_DIR = dirname(import.meta.dir);
+
+/** The repository root, where the wrapper directories live. */
+const REPO_ROOT = dirname(TEST_DIR);
 
 /**
  * How many scans are timed. The SLOWEST is the reading.
@@ -203,28 +207,201 @@ export const BUDGET_FLOOR_MS = 30_000;
  * in both directions: a file that starts calling one of these functions and
  * is not here fails, and a name here that no longer calls one fails too.
  *
- * The criterion is deliberately the WIDER one — "calls an entry point at
- * all", not "calls it against the real tree". Telling those apart from
+ * The criterion is deliberately the WIDER one — "reaches an entry point at
+ * all", not "reaches it against the real tree". Telling those apart from
  * source means guessing whether a directory expression denotes the
  * repository's own `test/`, and a detector narrower than what it detects is
  * the second shape in `.claude/rules/checks-must-be-able-to-fail.md`. The
  * cost of being wide is that a file whose every call plants a scratch
- * directory — `sc-claim-forms.test.ts` today — carries a
- * `setDefaultTimeout` it does not need. That is a harmless line. The other
- * direction silently exempts the file this issue is about.
+ * directory — `sc-claim-forms.test.ts`, and `sync-sc-status.test.ts` at 2ms
+ * — carries a `setDefaultTimeout` it does not need. That is a harmless
+ * line. The other direction silently exempts the file this issue is about.
+ *
+ * ## #1271 widened "calls" to "reaches"
+ *
+ * Three files joined, and the two that matter were paying the full cost
+ * while governed by nothing. Measured at load average 160:
+ *
+ * | file | worst case | reaches the scan via |
+ * |---|---|---|
+ * | `sc-binding-split.test.ts` | **4093ms** | `claimedScKeys` |
+ * | `ticked-sc-cover.test.ts` | **3317ms** | `claimedScKeys` |
+ * | `sync-sc-status.test.ts` | 2ms | `generateReport`, on a scratch tree |
+ *
+ * 4093ms is 82% of the 5000ms that file inherited. It was the WORST file in
+ * #1223's population and it was never on the roster, because its call is
+ * one level down inside `scripts/sync-sc-status.ts`. See
+ * `scanReachingSymbols` for why the repair is the fixpoint and not four
+ * more names in an alternation.
+ *
+ * ## One file LEFT, and it says the old reader was wrong both ways
+ *
+ * `sc-coverage-claims.test.ts` was a member and is not one now. Its only
+ * occurrence of an entry point is test DATA — a source line built inside a
+ * single-quoted string at `test/sc-coverage-claims.test.ts:128` — so it
+ * never called the scan at all. The superseded reader matched raw text, so
+ * it admitted a file for a string and exempted a file for a wrapper: wrong
+ * in both directions, and only one of them was loud.
+ *
+ * Its `setDefaultTimeout` is deliberately left in place. A file may declare
+ * a budget whether or not a roster knows about it — `declaresOwnBudget` is
+ * the criterion `lib/junit-checks.ts` actually uses — and removing a budget
+ * to tidy a list is a behaviour change made for a bookkeeping reason.
  */
 export const SC_SCAN_SUITES = [
+  "sc-binding-split.test.ts",
   "sc-claim-forms.test.ts",
-  "sc-coverage-claims.test.ts",
   "sc-id-namespace.test.ts",
   "sc-todo-credit.test.ts",
   "sync-sc-status-matching.test.ts",
   "sync-sc-status-recursive-walk.test.ts",
+  "sync-sc-status.test.ts",
   "sync-sc-todo-outranks-comment.test.ts",
+  "ticked-sc-cover.test.ts",
 ] as const;
 
-/** The call that makes a file a member. One binding, so there is one thing to mutate. */
-export const SCAN_ENTRY_POINTS = /\b(findTestFilesForSCs|intendedOnly|scanTestTree)\s*\(/;
+/**
+ * The primitive that actually walks the test tree. Everything expensive
+ * reaches it; nothing reaches it by accident.
+ *
+ * This is the seed of the reachability fixpoint below, and it is the one
+ * thing here that is written down rather than derived — because it is the
+ * definition of the cost, not a guess about who pays it.
+ */
+export const SCAN_PRIMITIVE = "walkTestFiles";
+
+/** Where a wrapper can live: the directories a test file imports helpers from. */
+export const SCAN_WRAPPER_DIRS = ["lib", "scripts"] as const;
+
+/**
+ * A source file as CODE: comments blanked, and the contents of every string,
+ * template and regex literal blanked with it.
+ *
+ * Both halves are load-bearing, and both were learned from this detector
+ * conscripting files that scan nothing. A test file that *discusses* the
+ * scan in a comment, or hands a call-shaped string to an assertion as data,
+ * is not calling anything — and `test/sc-scan-cost.test.ts` did both while
+ * #1271 was being written, joining its own roster twice.
+ *
+ * Narrowing the view this way cannot hide a real call, because a real call
+ * is never inside a comment or a literal. That is the only reason it is
+ * safe: every other narrowing of this detector trades a false member for a
+ * silently exempt one, which is the direction #1271 exists to close.
+ */
+function readAsCode(file: string): string {
+  return stripJsComments(readFileSync(file, "utf-8"), { blankLiterals: true });
+}
+
+/** Every `.ts` file under `dir`, recursively. */
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      if (entry !== "node_modules") sourceFiles(full, out);
+    } else if (full.endsWith(".ts")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every exported symbol in `lib/` and `scripts/` that REACHES the tree walk.
+ *
+ * ## Why this is a fixpoint and not a list of three names
+ *
+ * #1271. `SCAN_ENTRY_POINTS` used to be the literal alternation
+ * `findTestFilesForSCs|intendedOnly|scanTestTree`, matched against a test
+ * file's own source. That is a membership test on three identifier
+ * SPELLINGS, and it cannot see a call one level down: `sc-binding-split.
+ * test.ts` calls `claimedScKeys`, which calls the credit entry point inside
+ * `scripts/sync-sc-status.ts`. So the file that was **worst** in #1223 —
+ * 7958ms and 8192ms, 64% over the inherited default — was not on the roster,
+ * got no budget, and went green only as a side effect of the scan being
+ * cheapened. Measured at load 160 after that cheapening it is still 4093ms,
+ * which is 82% of the 5000ms it inherits.
+ *
+ * Adding the wrapper names to the alternation is the repair that does not
+ * hold: it changes the ROSTER without changing how membership is DETERMINED,
+ * so the next wrapper is invisible again. `lib/junit-checks.ts` says this
+ * about `GIT_FIXTURE_SUITES` in almost these words (#1172), and it is the
+ * same defect one layer down.
+ *
+ * So membership is REACHABILITY, computed from the tree on every run. A
+ * wrapper added tomorrow is picked up without anyone editing this file.
+ *
+ * ## What it reads, and what it cannot see
+ *
+ * Comments are stripped first. Without that, a file that merely *discusses*
+ * the scan is conscripted into the roster — which is not hypothetical: the
+ * first draft of #1271's own regression test wrote an entry point in call
+ * shape inside a comment and made `test/sc-scan-cost.test.ts` a member.
+ *
+ * Both `export function f()` and `export const f = () =>` are read, though
+ * no scan-reaching wrapper uses the second form today. It is handled so the
+ * detector does not depend on a style that could change, which is the second
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * It is a NAME-level reader, not a type-aware one: a symbol re-exported
+ * under a different name, or reached through a method call, is not followed.
+ * That direction is toward NOT crediting, which costs a missing budget and
+ * is the direction `test/sc-scan-cost.test.ts` holds a positive control for.
+ */
+export function scanReachingSymbols(repoRoot: string = REPO_ROOT): string[] {
+  const marker = /^export (?:async )?function (\w+)|^export const (\w+)\s*(?::[^=]*)?=/gm;
+  const bodies: Array<{ name: string; body: string }> = [];
+
+  for (const dir of SCAN_WRAPPER_DIRS) {
+    for (const file of sourceFiles(join(repoRoot, dir))) {
+      const source = readAsCode(file);
+      const marks: Array<[string, number]> = [];
+      marker.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = marker.exec(source)) !== null) marks.push([m[1] ?? m[2], m.index]);
+      for (let i = 0; i < marks.length; i++) {
+        const end = i + 1 < marks.length ? marks[i + 1][1] : source.length;
+        bodies.push({ name: marks[i][0], body: source.slice(marks[i][1], end) });
+      }
+    }
+  }
+
+  const reaching = new Set<string>([SCAN_PRIMITIVE]);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const fn of bodies) {
+      if (reaching.has(fn.name)) continue;
+      for (const seen of reaching) {
+        if (new RegExp(`\\b${seen}\\s*\\(`).test(fn.body)) {
+          reaching.add(fn.name);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  reaching.delete(SCAN_PRIMITIVE);
+  return [...reaching].sort();
+}
+
+/**
+ * The call that makes a file a member, built from the derived symbol set.
+ *
+ * One binding, so there is one thing to mutate.
+ */
+export function scanEntryPointPattern(symbols: readonly string[]): RegExp {
+  if (symbols.length === 0) {
+    // An empty alternation is `()`, which matches every file. A reader that
+    // found nothing must credit nothing, not everything.
+    return /(?!)/;
+  }
+  return new RegExp(`\\b(${symbols.join("|")})\\s*\\(`);
+}
 
 /**
  * The roster, read off the tree.
@@ -232,10 +409,11 @@ export const SCAN_ENTRY_POINTS = /\b(findTestFilesForSCs|intendedOnly|scanTestTr
  * Sorted, so the comparison in `test/sc-scan-cost.test.ts` is about
  * membership and not about the order `walkTestFiles` happens to return.
  */
-export function scScanCallers(testDir: string = TEST_DIR): string[] {
+export function scScanCallers(testDir: string = TEST_DIR, repoRoot: string = REPO_ROOT): string[] {
+  const pattern = scanEntryPointPattern(scanReachingSymbols(repoRoot));
   return walkTestFiles(testDir)
     .filter(f => !f.includes("/"))
-    .filter(f => SCAN_ENTRY_POINTS.test(readFileSync(join(testDir, f), "utf-8")))
+    .filter(f => pattern.test(readAsCode(join(testDir, f))))
     .sort();
 }
 
@@ -249,8 +427,20 @@ export function scScanCallers(testDir: string = TEST_DIR): string[] {
  */
 export const GROWTH_FRACTION = 0.5;
 
-/** The surface the budget governs. Every file that reads the SC registry lives here. */
-export const SC_SCAN_SURFACE = /^(sc-|sync-sc-).*\.test\.ts$/;
+/**
+ * The surface the budget governs. Every file that reads the SC registry lives here.
+ *
+ * `ticked-sc-` was added by #1271, which put `ticked-sc-cover.test.ts` on
+ * the roster: a surface narrower than its own membership would let the
+ * growth check certify a member it cannot see.
+ *
+ * This stays a NAME-SHAPE heuristic deliberately, and deliberately WIDER
+ * than `SC_SCAN_SUITES`. Deriving it from the member list instead would make
+ * the growth check a list consulting itself about its own completeness,
+ * which is the defect #1172 is filed about — the check exists precisely to
+ * find files the roster does not have yet.
+ */
+export const SC_SCAN_SURFACE = /^(sc-|sync-sc-|ticked-sc-).*\.test\.ts$/;
 
 /**
  * Does `test/<basename>` open with a `setDefaultTimeout(…)`?

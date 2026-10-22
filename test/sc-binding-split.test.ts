@@ -19,17 +19,25 @@
  * project's honesty.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
 import {
   splitUnmatchedChecked,
   unclaimedCensusResidue,
   uncoveredTickedScs,
 } from "../lib/sc-cover";
 import { claimedScKeys, scopedKey } from "../scripts/sync-sc-status";
+
+// This file reaches the whole-tree scan through `claimedScKeys` (#1271). It
+// was the WORST case in #1223 — 7958ms and 8192ms — and carried no budget,
+// because the roster matched entry-point spellings in a test file's own
+// source and this one's call is a level down. Measured 4093ms at load 160,
+// against the 5000ms it used to inherit.
+setDefaultTimeout(scScanTestTimeout());
 
 const REPO = join(import.meta.dir, "..");
 const SPECS = join(REPO, "specs");

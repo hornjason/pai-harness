@@ -18,10 +18,11 @@
  * these cases can short-circuit it and watch the ratchet stop refusing.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
 import {
   isSuperseded,
   ratchetViolations,
@@ -29,6 +30,11 @@ import {
   uncoveredTickedScs,
 } from "../lib/sc-cover";
 import { claimedScKeys, scopedKey } from "../scripts/sync-sc-status";
+
+// Reaches the whole-tree scan through `claimedScKeys` (#1271). Measured
+// 3317ms at load 160 against the 5000ms this file used to inherit — inside
+// the line, but not by the margin a contended afternoon respects.
+setDefaultTimeout(scScanTestTimeout());
 
 const REPO = join(import.meta.dir, "..");
 const SPECS = join(REPO, "specs");

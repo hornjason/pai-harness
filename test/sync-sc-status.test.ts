@@ -5,7 +5,7 @@
  * to check SCs that have no hand-written test, and flips their checkboxes
  * when the conformity assertion passes.
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import {
@@ -18,6 +18,15 @@ import {
   findDuplicateSCIds,
   type UncheckedSC,
 } from "../scripts/sync-sc-status";
+
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+
+// Reaches the scan through `generateReport` (#1271), but every call here
+// plants a fixture tree, so its worst case is 2ms. This line is the cost of
+// the membership criterion being "reaches an entry point" rather than
+// "reaches it against the real tree" — the wide direction is deliberate,
+// and a budget this file never uses is the harmless half of it.
+setDefaultTimeout(scScanTestTimeout());
 
 const FIXTURE_ROOT = join(import.meta.dir, "fixtures", "sync-sc-fixture");
 const FIXTURE_SPECS = join(FIXTURE_ROOT, "specs");

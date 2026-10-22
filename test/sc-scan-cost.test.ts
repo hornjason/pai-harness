@@ -70,14 +70,17 @@ import {
   BUDGET_FLOOR_MS,
   HEADROOM_MULTIPLE,
   INHERITED_DEFAULT_MS,
-  SCAN_ENTRY_POINTS,
+  SCAN_PRIMITIVE,
   SC_SCAN_SUITES,
+  SC_SCAN_SURFACE,
   SLOWEST_CASE_IN_SCANS,
   calibrateScScan,
   declaresFileBudget,
   scScanBudget,
   scScanCallers,
   scScanTestTimeout,
+  scanEntryPointPattern,
+  scanReachingSymbols,
   type ScScanCalibration,
 } from "./helpers/sc-scan-budget";
 
@@ -216,16 +219,112 @@ describe("#1223: the roster is read off the tree, in both directions", () => {
     expect(
       scScanCallers(TEST_DIR),
       "SC_SCAN_SUITES in test/helpers/sc-scan-budget.ts has drifted from the tree — a file " +
-        "started or stopped calling findTestFilesForSCs/intendedOnly/scanTestTree",
+        "started or stopped reaching the tree scan. The roster is derived by reachability " +
+        "from " +
+        SCAN_PRIMITIVE +
+        ", so a NEW WRAPPER moves it too, not only a new call site.",
     ).toEqual([...SC_SCAN_SUITES]);
   });
 
   test("the entry-point pattern finds the call this issue was about", () => {
     // The positive control. A pattern that matched nothing would satisfy
     // both cases above perfectly.
+    const pattern = scanEntryPointPattern(scanReachingSymbols(REPO));
     const src = readFileSync(join(TEST_DIR, "sc-id-namespace.test.ts"), "utf-8");
-    expect(SCAN_ENTRY_POINTS.test(src)).toBe(true);
-    expect(SCAN_ENTRY_POINTS.test("const x = 1;\n")).toBe(false);
+    expect(pattern.test(src)).toBe(true);
+    expect(pattern.test("const x = 1;\n")).toBe(false);
+  });
+});
+
+describe("#1271: membership is REACHING the scan, not spelling one of its names", () => {
+  /** What the roster used to be: three names, written down. */
+  const SPELLED_OUT = /\b(findTestFilesForSCs|intendedOnly|scanTestTree)\s*\(/;
+
+  /** The roster as the superseded mechanism would compute it. */
+  function callersBySpelling(): string[] {
+    return walkTestFiles(TEST_DIR)
+      .filter(f => !f.includes("/"))
+      .filter(f => SPELLED_OUT.test(readFileSync(join(TEST_DIR, f), "utf-8")))
+      .sort();
+  }
+
+  test("the superseded mechanism misses it, so the fixpoint is what is working", () => {
+    // The negative control, and the reason this is not a roster edit.
+    // Spelling four more names into an alternation would make the case
+    // below pass while leaving membership determined the same way — the
+    // fifth shape in `.claude/rules/checks-must-be-able-to-fail.md`, a case
+    // that goes green under the cheapest wrong fix. So the wrong fix is
+    // built here and measured: it does NOT find the file.
+    expect(
+      callersBySpelling(),
+      "the three-name alternation now finds sc-binding-split.test.ts — if that is real the " +
+        "file grew a direct call, and this control no longer separates the two mechanisms",
+    ).not.toContain("sc-binding-split.test.ts");
+
+    expect(scScanCallers(TEST_DIR, REPO)).toContain("sc-binding-split.test.ts");
+  });
+
+  test("the fixpoint is transitive — it credits the wrapper, not just the entry points", () => {
+    const symbols = scanReachingSymbols(REPO);
+    // `claimedScKeys` walks nothing itself. It is reachable only because it
+    // calls the credit entry point, which calls the scan.
+    expect(symbols).toContain("claimedScKeys");
+    expect(symbols).not.toContain(SCAN_PRIMITIVE);
+  });
+
+  test("a file that only MENTIONS the scan in a comment is not conscripted", () => {
+    // Not hypothetical, and it happened TWICE while this block was written:
+    // first as an entry point spelled in call shape inside a comment, then
+    // as one inside a string literal in the probe below. Both times this
+    // file — which scans nothing — joined its own roster. The detector
+    // reads comments (stripped) and string literals (not stripped), so a
+    // probe must be assembled rather than written out.
+    const pattern = scanEntryPointPattern(scanReachingSymbols(REPO));
+    const wrapperCall = "claimedScKeys" + "(specs, dir);\n";
+    expect(pattern.test(wrapperCall)).toBe(true);
+    expect(scScanCallers(TEST_DIR, REPO)).not.toContain("sc-scan-cost.test.ts");
+  });
+
+  test("a reader that found nothing credits nothing, not everything", () => {
+    // An empty alternation is `()`, which matches every file — so a broken
+    // fixpoint would put the WHOLE TREE on the roster and read as a very
+    // thorough success. Fail closed in the direction that is loud.
+    const empty = scanEntryPointPattern([]);
+    expect(empty.test("findTestFilesForSCs(a, b, c);\n")).toBe(false);
+    expect(empty.test("")).toBe(false);
+  });
+
+  test("the surface is wider than its own membership, and contains all of it", () => {
+    // A growth check whose pattern excludes a member cannot see that member
+    // go slow. The other direction — deriving the pattern FROM the members —
+    // is the #1172 defect, a list consulting itself about its completeness.
+    const outside = SC_SCAN_SUITES.filter(f => !SC_SCAN_SURFACE.test(f));
+    expect(
+      outside,
+      "these roster members do not match SC_SCAN_SURFACE, so the growth check in " +
+        "lib/junit-checks.ts would never read them: widen the pattern in " +
+        "test/helpers/sc-scan-budget.ts",
+    ).toEqual([]);
+    expect(SC_SCAN_SURFACE.test("sc-a-file-not-on-the-roster.test.ts")).toBe(true);
+  });
+
+  test("a file that reaches the scan only through a wrapper is a caller", () => {
+    // `sc-binding-split.test.ts` calls `claimedScKeys`, which calls the
+    // credit entry point inside `scripts/sync-sc-status.ts`. The call that
+    // costs the time is one level down from the test file, so a regex over
+    // the test file's own source cannot see it — and the file that was WORST
+    // in #1223 (7958ms / 8192ms) was therefore governed by nothing.
+    //
+    // This comment does not spell any entry point in call shape on purpose:
+    // the first draft wrote one, and the detector — which reads comments too
+    // — conscripted THIS file into the roster. See the comment-stripping case
+    // below.
+    expect(
+      scScanCallers(TEST_DIR),
+      "sc-binding-split.test.ts reaches the tree scan through claimedScKeys and is not " +
+        "detected as a caller: membership is matching identifier spellings rather than " +
+        "reachability (#1271)",
+    ).toContain("sc-binding-split.test.ts");
   });
 });
 
