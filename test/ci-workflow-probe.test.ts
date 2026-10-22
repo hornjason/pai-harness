@@ -41,7 +41,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -121,6 +121,20 @@ beforeAll(() => {
   chmodSync(make("unreadableWorkflows", ["ci.yml"]) + "/.github/workflows", 0o000);
   chmodSync(make("unreadableGithub", ["ci.yml"]) + "/.github", 0o000);
 
+  // A workflow reached through a SYMLINK. GitHub Actions runs it, so a probe
+  // that cannot see it reports 0 and takes the no-CI exemption — the same
+  // fail-open as the unreadable directory, through a different door. The
+  // target lives OUTSIDE the walked tree, so the fixture cannot satisfy the
+  // assertion by a route that bypasses the link.
+  const linkTarget = join(root, "outside", "ci.yml");
+  mkdirSync(join(root, "outside"), { recursive: true });
+  writeFileSync(linkTarget, "on: push\n");
+  symlinkSync(linkTarget, join(make("symlinkedWorkflow", []), ".github", "workflows", "ci.yml"));
+
+  // `commitDir` itself present and not traversable. `[ -d ]` alone says yes
+  // to this, and then `.github` is invisible and the count is 0.
+  chmodSync(make("unreadableCommitDir", ["ci.yml"]), 0o000);
+
   const plain = join(root, "noCi");
   mkdirSync(plain, { recursive: true });
   dirs.noCi = plain;
@@ -129,8 +143,9 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  for (const n of ["unreadableWorkflows", "unreadableGithub"]) {
+  for (const n of ["unreadableWorkflows", "unreadableGithub", "unreadableCommitDir"]) {
     try {
+      chmodSync(dirs[n]!, 0o755);
       chmodSync(join(dirs[n]!, ".github"), 0o755);
       chmodSync(join(dirs[n]!, ".github", "workflows"), 0o755);
     } catch {
@@ -148,7 +163,13 @@ describe("#1098: the probe distinguishes a count of zero from a count not taken"
     ["both", "OK", 2],
     ["emptyWorkflowsDir", "OK", 0],
     ["noCi", "OK", 0],
+    // A symlinked workflow file is a workflow. `-type f` skipped it, which
+    // reported 0 and took the no-CI exemption — a fail-open reintroduced one
+    // `find` predicate at a time.
+    ["symlinkedWorkflow", "OK", 1],
     ["unreadableWorkflows", "FAILED", null],
+    // `[ -d ]` says yes to a directory that exists and cannot be entered.
+    ["unreadableCommitDir", "FAILED", null],
     ["unreadableGithub", "FAILED", null],
     ["missing", "FAILED", null],
   ];
@@ -456,6 +477,44 @@ describe("#1098: the zero exemption requires a probe that reported OK", () => {
     expect(schema.length, "the cut is the whole of ship.js").toBeLessThan(shipSource.length);
     expect(schema).toContain("workflowProbe");
     expect(schema).toContain("enum: ['OK', 'FAILED']");
+  });
+
+  test("the probe's directory is quoted at every call site, and SHELL-QUOTE-1 cannot see that", () => {
+    // `commitDir` is agent-derived (#155), and #1056 put every such value
+    // through `shellQuote` at the point of interpolation. This helper keeps
+    // that: the parameter is named `quotedDir` and both sites pass
+    // `shellQuote(commitDir)`, so the census in
+    // `test/workflow-shell-interpolation.test.ts` counts them as quoted.
+    //
+    // What that census CANNOT see is the inside of this function. SHELL-QUOTE-1
+    // matches `${<name>}` for names in its own TAINTED list, so a parameter
+    // rename moves the interpolations out of its population entirely — the
+    // membership-derivation gap #1103 is about, which this is a live instance
+    // of and which is NOT fixed here. So the contract is asserted locally
+    // instead: every interpolation in the body is the already-quoted
+    // parameter, and nothing else.
+    const body = markedBlock("WORKFLOW-PROBE");
+    const builder = body.slice(body.indexOf("function workflowProbeCommand("));
+    const interpolated = [...builder.matchAll(/\$\{([^}]*)\}/g)].map(m => m[1]);
+    expect(interpolated.length, "the builder interpolates nothing — this case measures nothing")
+      .toBeGreaterThan(0);
+    expect(
+      [...new Set(interpolated)],
+      "the probe body interpolates something other than its already-quoted parameter",
+    ).toEqual(["quotedDir"]);
+
+    // …and the parameter really is quoted by every caller. A site passing
+    // `commitDir` raw would satisfy the assertion above and still be bare.
+    const mentions = shipSource.split("workflowProbeCommand(").length - 1;
+    const declarations = shipSource.split("function workflowProbeCommand(quotedDir)").length - 1;
+    expect(declarations, "the builder is declared other than exactly once").toBe(1);
+    expect(mentions - declarations, "no call site found — this case measures nothing").toBe(2);
+    // Every mention that is not the declaration is the quoted spelling, so
+    // there is no third site reaching the shell with a raw path.
+    expect(
+      shipSource.split(PROBE_CALL).length - 1,
+      "a call site passes the directory without shellQuote",
+    ).toBe(mentions - declarations);
   });
 
   test("the probe is one binding — no site counts workflow files on its own", () => {

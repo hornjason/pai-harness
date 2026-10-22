@@ -6375,8 +6375,14 @@ const marcusWorktreePath = implementResult.buildResult?.worktreePath || PROJECT_
 // `agentResults` entry repeats.
 if (!collectDestination(marcusWorktreePath)) {
   log(`IMPLEMENT REFUSED: ${marcusWorktreePath} is not this run's project root nor one of its agent worktrees`)
+  // The path is carried in `worktreePath` and printed by the `log` above, and
+  // is deliberately NOT interpolated into this sentence. SHELL-QUOTE-1 holds
+  // bare interpolations of agent-reported bindings at zero across
+  // `workflows/*.js`, and its remedy is the right one here: this value never
+  // reaches a shell, so it belongs in a `log()` call and a structured field
+  // rather than in prose that is one edit away from being a command (#1056).
   return await terminalFailure('WORKTREE_PATH_REFUSED', {
-    reason: `the implement phase reported its worktree as ${marcusWorktreePath}, which is neither this run's project root nor a directory under its agent worktrees. Validation and fix iterations are addressed to that directory, so the run stops before either prompt is built rather than after (#1098, #155).`,
+    reason: `the implement phase reported a worktree that is neither this run's project root nor a directory under its agent worktrees — the path is in worktreePath below and in the IMPLEMENT REFUSED line above. Validation and fix iterations are addressed to that directory, so the run stops before either prompt is built rather than after (#1098, #155).`,
     worktreePath: marcusWorktreePath,
   })
 }
@@ -10211,11 +10217,19 @@ function shipStatusFor(proveVerdict, suiteReading) {
  */
 function workflowProbeCommand(quotedDir) {
   return [
-    `if [ ! -d ${quotedDir} ]; then echo WORKFLOW_PROBE_FAILED; exit 1; fi`,
+    // `-d` alone is not "I can look in here": a directory at mode 000 exists,
+    // `[ -d ]` says yes, and then `.github` is invisible to `[ -e ]` and the
+    // count comes out 0 — which is the exemption. Measured, not reasoned.
+    `if [ ! -d ${quotedDir} ] || [ ! -x ${quotedDir} ] || [ ! -r ${quotedDir} ]; then echo WORKFLOW_PROBE_FAILED; exit 1; fi`,
     `if [ -e ${quotedDir}/.github ] && [ ! -x ${quotedDir}/.github ]; then echo WORKFLOW_PROBE_FAILED; exit 1; fi`,
     `if [ ! -e ${quotedDir}/.github/workflows ]; then`,
     `  workflows=0`,
-    `elif ! found=$(find ${quotedDir}/.github/workflows -maxdepth 1 -type f \\( -name '*.yml' -o -name '*.yaml' \\)); then`,
+    // `-type f` would be the same fail-open one predicate further in: GitHub
+    // Actions runs a SYMLINKED workflow file, `find -type f` does not see
+    // one, and a repository whose `ci.yml` is a link would report 0 and
+    // undraft without reading CI. A dangling link still counts, which is the
+    // direction to be wrong in — it requires CI rather than exempting.
+    `elif ! found=$(find ${quotedDir}/.github/workflows -maxdepth 1 \\( -type f -o -type l \\) \\( -name '*.yml' -o -name '*.yaml' \\)); then`,
     `  echo WORKFLOW_PROBE_FAILED; exit 1`,
     `elif [ -z "$found" ]; then`,
     `  workflows=0`,

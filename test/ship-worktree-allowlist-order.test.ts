@@ -149,8 +149,15 @@ describe("#1098: the reported worktree is allowlisted at the assignment", () => 
     const got = await runGuard(FOREIGN);
     expect(got.marcusWorktreePath, "the run carried on holding a path it may not act in").toBeNull();
     expect(got.refusal?.status).toBe("WORKTREE_PATH_REFUSED");
-    expect(String(got.refusal?.reason)).toContain(FOREIGN);
+    // The path travels in the structured field and the log line, not in the
+    // reason prose: SHELL-QUOTE-1 holds bare interpolations of
+    // agent-reported bindings at zero in `workflows/*.js`, and a refusal
+    // sentence is prose one edit away from being a command (#1056).
+    expect(got.refusal?.worktreePath, "the refusal does not say which path it refused")
+      .toBe(FOREIGN);
     expect(got.logs.join("\n")).toContain("IMPLEMENT REFUSED");
+    expect(got.logs.join("\n"), "the operator cannot see which path was refused")
+      .toContain(FOREIGN);
   });
 
   test("an ordinary agent worktree is not refused", async () => {
