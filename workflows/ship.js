@@ -8180,11 +8180,23 @@ if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
     // `execSync` runs it through a shell on purpose: the value IS a shell
     // command the operator chose, and an argv array would break every
     // multi-command one.
+    //
+    // The refusal's exit code lives on ONE line (#1057). A container block
+    // with no `rebuildCommand` is UNMEASURED, not a rebuild that passed, and
+    // `test/verify-fanout.test.ts` proves that by running this program twice
+    // — once as written, once with this constant set to 0 — and asserting
+    // the real one refuses where the mutant does not. A second branch
+    // inlining its own `process.exit(1)` would survive that mutation and the
+    // case would go green having witnessed nothing, so there is exactly one
+    // occurrence and the test counts it.
+    // `.claude/rules/checks-must-be-able-to-fail.md`.
+    const REBUILD_REFUSE_EXIT = 1
     const rebuildRunner =
       'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));' +
       'const cmd=c&&c.container&&c.container.rebuildCommand;' +
       'if(typeof cmd!=="string"||cmd.length===0){' +
-      'console.error("UNMEASURED: resolved-config.json has no container.rebuildCommand");process.exit(1)}' +
+      'console.error("UNMEASURED: resolved-config.json has no container.rebuildCommand");' +
+      `process.exit(${REBUILD_REFUSE_EXIT})}` +
       'require("child_process").execSync(cmd,{stdio:"inherit"})'
     await timedAgent(`
 You have ONE task: rebuild the test container. Run this EXACT command and report the output:

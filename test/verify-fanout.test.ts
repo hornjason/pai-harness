@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 /**
@@ -706,5 +708,104 @@ describe("Verify fan-out: a container value that reaches a shell is not probed (
     await hostile.done;
     expect(hostile.labels).toContain("container-rebuild");
     expect(hostile.prompts.join("\n")).not.toContain(MARKER);
+  });
+
+  /**
+   * #1057 — the rebuild runner's UNMEASURED refusal, EXECUTED.
+   *
+   * Everything above this point asserts on prompt TEXT. That is the right
+   * check for "the command does not cross the prompt", and it is the wrong
+   * one for "a container block with no rebuildCommand refuses": the refusal
+   * is a sentence inside a string, and until something runs the string there
+   * is no evidence it can fail. Deleting the `if` leaves every case above
+   * green while the step goes on to `execSync(undefined)`.
+   *
+   * So the program is lifted out of the prompt the fan-out actually produced
+   * — not reimplemented here — and spawned against fixtures. The mutant half
+   * is the point: `REBUILD_REFUSE_EXIT` set to 0 must make the refusing
+   * fixtures pass, or the case is not witnessing the refusal, only the
+   * absence of a rebuild. `.claude/rules/checks-must-be-able-to-fail.md`.
+   */
+  describe("the rebuild runner refuses an absent command, and the refusal can fail (#1057)", () => {
+    /** The `bun -e` program as the agent receives it, un-shell-quoted. */
+    function runnerFromPrompt(prompt: string): string {
+      const at = prompt.indexOf("bun -e '");
+      expect(at, "the rebuild prompt no longer hands the agent a bun -e program").toBeGreaterThan(-1);
+      const from = at + "bun -e '".length;
+      const to = prompt.indexOf("'", from);
+      expect(to, "the bun -e argument is unterminated").toBeGreaterThan(from);
+      const runner = prompt.slice(from, to);
+      // shellQuote escapes an interior apostrophe as '\'' — the runner has
+      // none, and if one ever appears this slice would silently truncate the
+      // program and every case below would run a fragment.
+      expect(runner, "the runner now contains an apostrophe; this extraction would truncate it")
+        .not.toContain("'");
+      return runner;
+    }
+
+    /** One site for the refusal, so the mutation below cannot be bypassed. */
+    function assertOneExitSite(runner: string): void {
+      expect(
+        [...shipSource.matchAll(/const REBUILD_REFUSE_EXIT = 1$/gm)].length,
+        "REBUILD_REFUSE_EXIT is not declared exactly once in ship.js",
+      ).toBe(1);
+      expect(
+        [...runner.matchAll(/process\.exit\(1\)/g)].length,
+        "the runner has a second exit site, which would survive the mutation",
+      ).toBe(1);
+    }
+
+    function spawnRunner(runner: string, config: unknown) {
+      const dir = mkdtempSync(join(tmpdir(), "rungate-1057-"));
+      try {
+        const cfg = join(dir, "resolved-config.json");
+        writeFileSync(cfg, JSON.stringify(config));
+        const r = spawnSync("bun", ["-e", runner, cfg], { encoding: "utf-8", cwd: dir });
+        return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // Inert on purpose: this case proves the runner RUNS what the config
+    // holds, and nothing here may rebuild anything.
+    const INERT = "printf ran-1057";
+
+    const REFUSING: Array<[string, unknown]> = [
+      ["the container block has no rebuildCommand", { container: { port: 7776 } }],
+      ["rebuildCommand is the empty string", { container: { rebuildCommand: "" } }],
+      ["there is no container block at all", { dev: {} }],
+      ["rebuildCommand is not a string", { container: { rebuildCommand: ["make", "rebuild"] } }],
+    ];
+
+    test("it runs the command the resolved config holds", async () => {
+      // The positive control. Without it every row below is satisfied by a
+      // runner that refuses unconditionally.
+      const { done, prompts } = runWithContainer(CONTAINER);
+      await done;
+      const runner = runnerFromPrompt(prompts.find((p) => p.includes("rebuild the test container"))!);
+
+      const r = spawnRunner(runner, { container: { rebuildCommand: INERT } });
+      expect(r.code, `runner failed: ${r.err}`).toBe(0);
+      expect(r.out).toContain("ran-1057");
+    });
+
+    test.each(REFUSING)("%s is UNMEASURED, and the mutant does not refuse", async (_label, config) => {
+      const { done, prompts } = runWithContainer(CONTAINER);
+      await done;
+      const runner = runnerFromPrompt(prompts.find((p) => p.includes("rebuild the test container"))!);
+      assertOneExitSite(runner);
+
+      const real = spawnRunner(runner, config);
+      expect(real.code, "the runner did not refuse").not.toBe(0);
+      expect(real.err).toContain("UNMEASURED");
+      expect(real.err).toContain("container.rebuildCommand");
+
+      // The refusal removed, performed and observed. A green row here means
+      // the row above passed for a reason other than the refusal firing.
+      const mutant = runner.replace("process.exit(1)", "process.exit(0)");
+      expect(mutant, "the mutation changed nothing — the harness has no target").not.toBe(runner);
+      expect(spawnRunner(mutant, config).code, "the mutant refused too").toBe(0);
+    });
   });
 });
