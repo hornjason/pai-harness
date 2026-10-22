@@ -59,6 +59,22 @@ deployment path currently reaches zero hooks.
 | BashToolGuard | BashToolGuard.hook.ts | 82 | SC-457, SC-370 | Thin trigger — COMP-7 enforcement. Row added by #898's census, which is what first noticed it had none |
 | ProjectStateSync | ProjectStateSync.hook.ts | 43 | SC-370, SC-371 | Thin trigger — delegates to update-project-state.ts. **Registered nowhere (#910)** |
 | TopLevelCdGuard | TopLevelCdGuard.hook.ts | 108 | SC-370, SC-371 | Thin trigger — the parse and the rung both live in lib/top-level-cd.ts. **Registered as a HARD REFUSAL at project scope (#992)**, Jason's decision, taken with the measurement in hand rather than against it: 32.7% of 31,577 recorded commands carry a top-level `cd`, every one of them real, so it fires often by design. `#1040` built the WARN→FAIL ladder and took no rung; this takes `block` by moving `CD_GUARD_DEFAULT_MODE`, so `RUNGATE_CD_GUARD=warn\|off` still reverses it without code. Scoped to harnessed projects via lib/harness-project.ts. `.claude/settings.json` holds the `Bash` matcher; machine-wide registration would be `~/.claude/settings.json`, which no PR carries. The refusal exits through `CD_GUARD_DECISION`, the single mutable site |
+| SkillGuard | SkillGuard.hook.ts | 69 | SC-370, SC-371 | Good — migrated from `~/.pai/hooks` by #713. `BLOCKED_SKILLS` is the whole configuration; the keybindings-help position bias is a Claude Code platform defect, not a PAI one |
+| HarnessAFKGate | HarnessAFKGate.hook.ts | 85 | SC-370, SC-371 | Good — migrated by #713. Reads `WORK_DIR` from hooks/lib/paths (`RUNGATE_WORK_DIR`, else `~/.rungate`), so it is rungate-owned. The `.pai` docstring claimed `MEMORY/WORK/`; corrected here |
+| TeamInit | TeamInit.hook.ts | 85 | SC-370, SC-371 | Good — migrated by #713. Writes under Claude Code's own config dir, not a PAI one; idempotent, exits 0 on every error path |
+| ActionVerificationGate | ActionVerificationGate.hook.ts | 89 | SC-370, SC-371 | Good — migrated by #713. No file I/O and no path resolution at all; the most portable of the nine PRODUCT hooks |
+| GateResultProtection | GateResultProtection.hook.ts | 93 | SC-370, SC-371 | Acceptable — migrated by #713. Pure rungate gate integrity; reads no path the tool call did not already name |
+| BashWriteGuard | BashWriteGuard.hook.ts | 127 | SC-370, SC-371 | Acceptable — migrated by #713. Protects gate artifacts and hook files. The `*.hook.ts` arm is unscoped, so it would fire on a consumer authoring their own hooks — settle that before `deployToConsumers` |
+| DocHygiene | DocHygiene.hook.ts | 135 | SC-370, SC-371 | Acceptable — migrated by #713, thinned 220→135 lines onto `lib/frontmatter.ts`, which its own `.pai` header already named as the tested binding. **Stamps `owner: jason` as a literal**, so it cannot travel to consumers until the owner comes from config |
+
+The seven rows above are #713's migration of the PRODUCT-classified hooks in
+`docs/research/hook-tree-classification.md`. Two of that classification's nine
+were deliberately NOT migrated: `ForceBypassPermissions`, which forces
+permission bypass onto every Agent spawn and is a decision about a consumer's
+machine rather than a file move, and `HookIntegrity`, which hard-codes
+`~/.pai/hooks` and `~/.claude` and duplicates `HookCurrency.hook.ts` — the
+classification itself asks for those two to be reconciled rather than both
+shipped.
 
 ## Which hooks a consumer receives (#1047)
 
