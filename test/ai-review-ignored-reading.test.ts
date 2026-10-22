@@ -151,7 +151,7 @@
  * 2. **A write inside `.claude-pr/` under a name the action snapshots** —
  *    `.claude-pr/.claude/EVIL.md` — is invisible for the same reason plus the
  *    exemption. AC-8/limit asserts it. The TOP of that directory is read as
- *    of #1071 and AC-11 is that half; what is left is one level down.
+ *    of #1071 and AC-12 is that half; what is left is one level down.
  * 3. **`.git/config` as a door is covered by #965's `-c` flags, not by
  *    anything here.** AC-5 is the control that says so by measurement rather
  *    than by citation.
@@ -771,7 +771,7 @@ describe("AC-8 (#969): the exemption is one exact path, not a prefix and not a c
 
   test("limit (UNMEASURED): a plant under a MIRRORED name inside the scratch is not seen", () => {
     // #1071 moved this bound rather than removing it, and the case moved with
-    // it rather than being deleted. The TOP of the scratch is now read (AC-11
+    // it rather than being deleted. The TOP of the scratch is now read (AC-12
     // below); what is still invisible is a write under one of the names the
     // action itself snapshots, because `matching` collapses the subtree and
     // the reader descends exactly one level.
@@ -797,7 +797,7 @@ describe("AC-8 (#969): the exemption is one exact path, not a prefix and not a c
   });
 });
 
-// ── AC-11: the exempted subtree is read one level down (#1071) ────────────
+// ── AC-12: the exempted subtree is read one level down (#1071) ────────────
 
 /**
  * The exemption above dropped the ONLY line. `--ignored=matching` collapses
@@ -828,9 +828,9 @@ describe("AC-8 (#969): the exemption is one exact path, not a prefix and not a c
  * | Row | Mutation | Measured | Which assertions |
  * |---|---|---|---|
  * | **baseline** | unmutated | **37 pass, 0 fail** | — |
- * | **M10** | the descent stripped: `AI_REVIEW_SCRATCH_SCAN_LIMIT` driven to 0 | **5 of 37** | AC-11 ×5 — empty, end-to-end, directory, symlink, bound |
- * | **M11** | the `-L` half of the glob guard dropped | **1 of 37** | AC-11/symlink |
- * | **M12** | the mirror filter removed — every scratch entry reported | **7 of 37** | AC-7/green, AC-7/control, AC-8/limit, AC-10/control, AC-11/CONTROL, AC-11/volume, AC-11/widening |
+ * | **M10** | the descent stripped: `AI_REVIEW_SCRATCH_SCAN_LIMIT` driven to 0 | **5 of 37** | AC-12 ×5 — empty, end-to-end, directory, symlink, bound |
+ * | **M11** | the `-L` half of the glob guard dropped | **1 of 37** | AC-12/symlink |
+ * | **M12** | the mirror filter removed — every scratch entry reported | **7 of 37** | AC-7/green, AC-7/control, AC-8/limit, AC-10/control, AC-12/CONTROL, AC-12/volume, AC-12/widening |
  * | **M13** | **the cheapest wrong fix** — the conditional exemption #1071 proposes | **5 of 37** | the same five as M10 |
  *
  * **The input on which mutant and original differ, named and run rather than
@@ -847,7 +847,7 @@ describe("AC-8 (#969): the exemption is one exact path, not a prefix and not a c
  * `[ -d ]` so it could hand a directory on in git's collapsed shape, and that
  * draft HAD such a row. #1070 landed first and taught `classify_path` to ask
  * the property, so the shape test was deleted rather than rebased: there is
- * nothing left in the walk to mutate, and `AC-11/ONE decider` is what says so
+ * nothing left in the walk to mutate, and `AC-12/ONE decider` is what says so
  * — it reds under M10 because the entry vanishes, and it would red again the
  * day someone re-introduces a second decider that answers `absent`.
  *
@@ -865,7 +865,7 @@ describe("AC-8 (#969): the exemption is one exact path, not a prefix and not a c
  * can take the fleet down: it reds both #1002 controls plus this suite's new
  * one. The thing keeping every pull request green is witnessed, not assumed.
  */
-describe("AC-11 (#1071): a reviewer write at the top of the scratch is REFUSED", () => {
+describe("AC-12 (#1071): a reviewer write at the top of the scratch is REFUSED", () => {
   /** The pre-#1071 reader: the descent, stripped from the constant that bounds it. */
   const noDescent = (s: string) =>
     s.split(`-gt ${AI_REVIEW_SCRATCH_SCAN_LIMIT}`).join("-gt 0");
@@ -1290,5 +1290,218 @@ describe("AC-11 (#1070): PRESENT-but-not-a-file is not a deletion, whatever its 
       "the reader does not test for a dangling symlink, so `-e` alone decides and a dangling " +
         "link is still read as gone",
     ).toContain('[ -L "${p}" ]');
+  });
+});
+
+// ── AC-13: a scratch entry's NAME cannot forge a record (#1071 follow-up) ──
+
+/**
+ * `read_scratch` (#1071) is the first path source in this reader that does not
+ * come from git, and #1071 shipped without noticing what that costs.
+ *
+ * `classify_path`'s quoting guard was anchored at position 0 — `'"'*` — and it
+ * is right for git: porcelain v1 C-quotes any path carrying a newline, a quote
+ * or a backslash, so a git-derived path arrives already wrapped. The walk globs
+ * the FILESYSTEM. Nothing wraps those names, nothing rejected them, and the
+ * last line of `classify_path` prints the path. So an entry named with an
+ * embedded newline printed as TWO lines, and the second was indistinguishable
+ * from a record the reader produced — written by the exact actor the reader
+ * exists to measure, because #1071's whole premise is that a reviewer can
+ * write under that path.
+ *
+ * ## Measured on `origin/main` at `77dd0f7f`, the merge commit of #1081
+ *
+ * The reviewer creates one file, named `p<newline>absent .ripgreprc`:
+ *
+ * ```
+ * reading : de12637f… .claude-pr/p
+ *           absent .ripgreprc        <-- FORGED, and not a path on disk
+ * ```
+ *
+ * End to end through the real baseline and drift steps, with a base that does
+ * not carry `.ripgreprc`: the forged line reaches #989's twice-restored
+ * classifier, is acquitted, and is named in the UNMEASURED warning as
+ * *"restored a SECOND time by the review action"*. A reader of that annotation
+ * has been told the reviewer's own filename was the action's work.
+ *
+ * ## What it is NOT, stated so the fix is not oversold
+ *
+ * It is **not** a detection bypass. `added = after − before` only ADDS, so the
+ * entry's own genuine first line — `<sha> .claude-pr/p`, not under an untrusted
+ * path — stays in `added` and the step still exits 1. What the injection buys
+ * is a false attribution and attacker-chosen text in an annotation, which is
+ * the harm #1061 and #1070 each argued is worse than silence. AC-13/refuses is
+ * the case that pins the exit code so this stays honest in both directions.
+ *
+ * ## The fix is ONE decision, and the slash is why the witness looks like this
+ *
+ * A filename cannot contain `/`, so a forged record can only name a
+ * single-component path. That is not a mitigation: `.ripgreprc`, `.claude` and
+ * `CLAUDE.md` are all single components and all in `AI_REVIEW_UNTRUSTED_PATHS`,
+ * which is exactly the set #989's classifier acts on. The first draft of this
+ * case used `absent .claude/evil/` and could not be written to disk at all —
+ * kept here because a fixture that cannot be created is a case that would have
+ * gone green by erroring in setup.
+ *
+ * The guard lives in `classify_path`, not in the walk: "is this path safe to
+ * print" has one answer, and a second guard beside it is one decider with a
+ * spare. The redaction is unconditional on the `printf` for the same reason —
+ * a branch there would be that second decider, and for every git-derived path
+ * the expression is the identity.
+ *
+ * ## The measured battery, and which half does which job
+ *
+ * Run over this file alone. The source was restored from a `cp` backup after
+ * every row and confirmed byte-identical by sha256. **The baseline row was
+ * read before any mutation row.**
+ *
+ * | Row | Mutation | Measured | Which assertions |
+ * |---|---|---|---|
+ * | **baseline** | unmutated | **42 pass, 0 fail** | — |
+ * | **N1** | **the cheapest wrong fix** — `*'"'*` (a quote anywhere) instead of the newline | **1 of 42** | AC-13/REDACTED |
+ * | **N2** | the `printf` redaction removed, the `case` arm kept | **2 of 42** | AC-13/one-line, AC-13/end-to-end |
+ * | **N3** | both removed — the state shipped in #1081 | **3 of 42** | all three behavioural AC-13 cases |
+ *
+ * **The input on which mutant and original differ**: a scratch entry named
+ * `p<newline>absent .ripgreprc`. N3 prints two lines and the second is the
+ * forged record; the original prints `unquotable .claude-pr/p`.
+ *
+ * **N1 corrected a claim the first draft of this fix made.** The `case` arm
+ * was described as what closes the forgery. It is not — with a wrong arm and
+ * the truncation in place the reading is already one line, and only the TOKEN
+ * is wrong. So the two halves do different jobs: the truncation closes the
+ * forgery, the arm stops the reader asserting a content hash about a name it
+ * did not print and routes the entry into the UNMEASURED annotation. N2 and N3
+ * take them apart, and the source comment was rewritten to say so.
+ *
+ * **Would a quote-only case have survived the cheapest wrong fix? No — it
+ * would have been VACUOUS.** A name carrying a `"` and no newline matches
+ * `*'"'*`, so N1 goes green on it and the case witnesses nothing. That is
+ * exactly why every behavioural case here is built around the newline: the
+ * newline is what forges a record, and it is the input the cheapest wrong fix
+ * does not cover.
+ */
+describe("AC-13 (#1071 follow-up): a filesystem-derived name cannot forge a record", () => {
+  /** The injected record the reviewer wants in the reading. */
+  const FORGED = "absent .ripgreprc";
+  /** One file, one name, one newline. `.ripgreprc` is in AI_REVIEW_UNTRUSTED_PATHS. */
+  const FORGING_NAME = `p\n${FORGED}`;
+
+  test("the reading carries ONE line for the entry, and it is not the forged record", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    actionScratch(f);
+    writeFileSync(join(f.work, ".claude-pr", FORGING_NAME), "the reviewer wrote this\n");
+
+    const out = readTree(f, "hardened");
+    expect(out.code, `the reader failed outright:\n${out.stderr}`).toBe(0);
+    const lines = out.stdout.split("\n").filter(l => l.length > 0);
+
+    expect(
+      lines,
+      "the reviewer's FILENAME is a record in the tree reading — it was printed unescaped, " +
+        "split on its own newline, and the second half is indistinguishable from a line this " +
+        "reader produced",
+    ).not.toContain(FORGED);
+    expect(
+      lines.filter(l => l.includes(".claude-pr/p")).length,
+      `the entry produced ${lines.length} lines, not one:\n${lines.join("\n")}`,
+    ).toBe(1);
+  });
+
+  test("REDACTED, not dropped: the entry still produces a line, with a token #989 cannot acquit", () => {
+    // Silence here would be the blindness #1071 closed, re-entered through its
+    // own fix: an entry that prints nothing is an entry the reviewer suppresses
+    // by choosing a name. The token matters as much as the line — `unquotable`
+    // is fixed by position, so the record cannot read `absent` and #989's
+    // deleted-path branch cannot claim it.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    actionScratch(f);
+    writeFileSync(join(f.work, ".claude-pr", FORGING_NAME), "the reviewer wrote this\n");
+
+    const line = readTree(f, "hardened")
+      .stdout.split("\n")
+      .find(l => l.includes(".claude-pr/p"));
+    expect(
+      line,
+      "the entry produced no line at all, so a reviewer hides a write by putting a newline " +
+        "in its name — which is the blindness this reader exists to close",
+    ).toBeDefined();
+    expect(line, "the redacted record is not a single whole line").toBe("unquotable .claude-pr/p");
+  });
+
+  test("end to end: REFUSED, and the forged path is in no annotation", () => {
+    // Both directions. The exit code is the half that keeps this honest: the
+    // defect was never a bypass, and a case asserting only "it now refuses"
+    // would have been green BEFORE the fix too.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    // The base must NOT carry `.ripgreprc`, or #989 keeps the forged line for
+    // the ordinary reason and the acquittal this case is about never happens.
+    f.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const before = runBaseline(f, "hardened");
+
+    actionScratch(f);
+    writeFileSync(join(f.work, ".claude-pr", FORGING_NAME), "the reviewer wrote this\n");
+
+    const drift = runDrift(f, "hardened", before, {
+      [AI_REVIEW_BASE_REMOTE_VAR]: "refs/remotes/origin/main",
+    });
+    expect(
+      drift.code,
+      `the reviewer's write inside the scratch was waved through:\n${drift.stdout}\n${drift.stderr}`,
+    ).not.toBe(0);
+    expect(
+      drift.stdout,
+      "the reviewer's filename was attributed to the review action's second restore (#989) — " +
+        "a false attribution the reviewer authored by choosing a name",
+    ).not.toContain(FORGED);
+    expect(
+      drift.stderr,
+      "the reviewer's filename reaches the refusal as a forged record rather than as a path",
+    ).not.toContain(FORGED);
+    expect(drift.stderr, "the refusal does not name the entry").toContain(".claude-pr/p");
+  });
+
+  test("the guard is ONE decider: the walk adds no quoting test of its own", () => {
+    // Two guards answering "is this path safe to print" are one decider with a
+    // spare — a mutation of either leaves the other holding every case up
+    // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). The walk
+    // is allowed to find paths; it is not allowed to decide this.
+    const reader = AI_REVIEW_TREE_READER;
+    const walk = reader.slice(reader.indexOf("read_scratch() {"), reader.indexOf("read_tree() {"));
+    expect(walk, "the walk was not located, so the assertion below passes vacuously").toContain(
+      "classify_path",
+    );
+    expect(
+      walk.includes("unquotable"),
+      "the walk decides quoting for itself, so `classify_path` is no longer the one place " +
+        "that answers it and the two can be changed apart",
+    ).toBe(false);
+    // The ASSIGNMENT, not the word. The first draft counted `unquotable` over
+    // the whole reader and reddened on the prose in the comment explaining the
+    // guard — searching the document instead of the slice, which is the trap
+    // `.claude/rules/checks-must-be-able-to-fail.md` names.
+    expect(
+      reader.split("h=unquotable").length - 1,
+      "the reader decides `unquotable` in more than one place, so the two can disagree",
+    ).toBe(1);
+  });
+
+  test("the control: a git-derived path is untouched by the redaction", () => {
+    // The redaction is unconditional, so it runs over every path the reader
+    // reports. Git quotes a path carrying a newline, so for every git-derived
+    // path the expression must be the identity — if it is not, this change
+    // silently truncates ordinary filenames.
+    const f = checkout();
+    f.write("sub/dir/ordinary name with spaces.md", "x\n");
+    const out = readTree(f, "hardened").stdout;
+    expect(
+      out,
+      "an ordinary path came back truncated, so the redaction is not the identity on the " +
+        "source it was never meant to touch",
+    ).toContain("sub/dir/ordinary name with spaces.md");
+    expect(out, "the fixture's own plant went missing").toContain(PLANT);
   });
 });

@@ -1,4 +1,4 @@
-# generated-sha: 4389c71f0baf1bd8
+# generated-sha: d02c351f62244386
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -574,8 +574,42 @@ jobs:
           classify_path() {
             local p h
             p="${1}"
+            # ONE quoting decision, for every source that reaches this function.
+            #
+            # The leading-quote test is git's shape: porcelain v1 C-quotes a path
+            # carrying a newline, a quote or a backslash, so a git-derived path arrives
+            # already wrapped and matches here. `read_scratch` (#1071) does NOT get its
+            # paths from git — it globs the filesystem — so an attacker-chosen name
+            # reaches this function raw, and the line below PRINTS it. A name carrying a
+            # newline therefore printed as TWO lines, and the second was indistinguishable
+            # from a record this function produced: a reviewer naming a file
+            # `p<newline>absent .ripgreprc` wrote `absent .ripgreprc` into the reading,
+            # which is the token #989's classifier acquits on and reports as the review
+            # action's own restore. Measured on `origin/main` at `77dd0f7f`: exit 1 from
+            # the reviewer's own genuine line, and the forged path named in the
+            # twice-restored warning as the ACTION's work.
+            #
+            # Asked HERE and not in the walk, deliberately. "Is this path safe to print"
+            # has one answer, and two guards answering it are one decider with a spare —
+            # a mutation of either leaves the other holding the case up
+            # (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). The next
+            # path source inherits this instead of needing a third.
+            #
+            # THE NEWLINE IS THE ONE THAT MATTERS, and a quote-anywhere test is the
+            # cheapest wrong fix: a quote or a backslash in the MIDDLE of a name
+            # corrupts a field, while only a newline forges a RECORD. A case built
+            # around a quoted filename goes green on the newline and witnesses nothing.
+            #
+            # WHAT THIS ARM DOES AND DOES NOT DO, measured rather than claimed. It is
+            # the truncation below that closes the forgery — with this arm wrong and the
+            # truncation in place, the reading is still one line (battery row N1, 1 of
+            # 42). What the arm adds is an HONEST TOKEN: without it the line carries a
+            # content hash against a path name that is NOT the name on disk — only its
+            # first line — and `unquotable` is what routes the entry into
+            # the drift step's UNMEASURED annotation instead. Two jobs, both needed,
+            # and neither is the other's spare — N2 and N3 take them apart.
             case "${p}" in
-              '"'*) h=unquotable ;;
+              '"'*|*$'\n'*) h=unquotable ;;
               *)
                 if [ -f "${p}" ]; then
                   # --no-filters, or the repository's own text/eol conversion is
@@ -600,7 +634,21 @@ jobs:
                 fi
                 ;;
             esac
-            printf '%s %s\n' "${h}" "${p}"
+            # REDACTED to its first line, not dropped, and truncated unconditionally
+            # rather than inside the `unquotable` arm.
+            #
+            # Unconditionally, because a branch here would be the second decider the
+            # `case` above exists to avoid, and because it costs nothing: git never
+            # hands this function a raw newline — it quotes such a path — so for every
+            # git-derived path this expression is the identity.
+            #
+            # Not dropped, because an entry that produces NO line is an entry the
+            # reviewer suppresses by choosing a name, and that is the blindness #1071
+            # exists to close, re-entered through its own fix. One line, with a token
+            # fixed at `unquotable` by position: it cannot read `absent`, so #989
+            # cannot acquit it, and it stays in `added` and refuses. The UNMEASURED
+            # annotation names it, so the truncation is reported rather than silent.
+            printf '%s %s\n' "${h}" "${p%%$'\n'*}"
           }
 
           # The interior of the one exempted entry, one level deep (#1071). Split out of
@@ -1052,8 +1100,42 @@ jobs:
           classify_path() {
             local p h
             p="${1}"
+            # ONE quoting decision, for every source that reaches this function.
+            #
+            # The leading-quote test is git's shape: porcelain v1 C-quotes a path
+            # carrying a newline, a quote or a backslash, so a git-derived path arrives
+            # already wrapped and matches here. `read_scratch` (#1071) does NOT get its
+            # paths from git — it globs the filesystem — so an attacker-chosen name
+            # reaches this function raw, and the line below PRINTS it. A name carrying a
+            # newline therefore printed as TWO lines, and the second was indistinguishable
+            # from a record this function produced: a reviewer naming a file
+            # `p<newline>absent .ripgreprc` wrote `absent .ripgreprc` into the reading,
+            # which is the token #989's classifier acquits on and reports as the review
+            # action's own restore. Measured on `origin/main` at `77dd0f7f`: exit 1 from
+            # the reviewer's own genuine line, and the forged path named in the
+            # twice-restored warning as the ACTION's work.
+            #
+            # Asked HERE and not in the walk, deliberately. "Is this path safe to print"
+            # has one answer, and two guards answering it are one decider with a spare —
+            # a mutation of either leaves the other holding the case up
+            # (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). The next
+            # path source inherits this instead of needing a third.
+            #
+            # THE NEWLINE IS THE ONE THAT MATTERS, and a quote-anywhere test is the
+            # cheapest wrong fix: a quote or a backslash in the MIDDLE of a name
+            # corrupts a field, while only a newline forges a RECORD. A case built
+            # around a quoted filename goes green on the newline and witnesses nothing.
+            #
+            # WHAT THIS ARM DOES AND DOES NOT DO, measured rather than claimed. It is
+            # the truncation below that closes the forgery — with this arm wrong and the
+            # truncation in place, the reading is still one line (battery row N1, 1 of
+            # 42). What the arm adds is an HONEST TOKEN: without it the line carries a
+            # content hash against a path name that is NOT the name on disk — only its
+            # first line — and `unquotable` is what routes the entry into
+            # the drift step's UNMEASURED annotation instead. Two jobs, both needed,
+            # and neither is the other's spare — N2 and N3 take them apart.
             case "${p}" in
-              '"'*) h=unquotable ;;
+              '"'*|*$'\n'*) h=unquotable ;;
               *)
                 if [ -f "${p}" ]; then
                   # --no-filters, or the repository's own text/eol conversion is
@@ -1078,7 +1160,21 @@ jobs:
                 fi
                 ;;
             esac
-            printf '%s %s\n' "${h}" "${p}"
+            # REDACTED to its first line, not dropped, and truncated unconditionally
+            # rather than inside the `unquotable` arm.
+            #
+            # Unconditionally, because a branch here would be the second decider the
+            # `case` above exists to avoid, and because it costs nothing: git never
+            # hands this function a raw newline — it quotes such a path — so for every
+            # git-derived path this expression is the identity.
+            #
+            # Not dropped, because an entry that produces NO line is an entry the
+            # reviewer suppresses by choosing a name, and that is the blindness #1071
+            # exists to close, re-entered through its own fix. One line, with a token
+            # fixed at `unquotable` by position: it cannot read `absent`, so #989
+            # cannot acquit it, and it stays in `added` and refuses. The UNMEASURED
+            # annotation names it, so the truncation is reported rather than silent.
+            printf '%s %s\n' "${h}" "${p%%$'\n'*}"
           }
 
           # The interior of the one exempted entry, one level deep (#1071). Split out of
