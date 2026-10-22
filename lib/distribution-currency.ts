@@ -66,8 +66,11 @@
  */
 import {
   contentAgrees,
+  STANDING_CAUSE_HEADLINE,
   type ArtifactStanding,
   type ContentDifference,
+  type StandingCause,
+  type UnmeasuredReason,
 } from "./published-artifact";
 
 /**
@@ -103,6 +106,37 @@ export interface DistributionCurrency {
   publishedVersion: string | null;
   /** Non-empty exactly when `reading` is `UNMEASURED`. */
   unmeasuredReasons: string[];
+  /**
+   * WHICH condition produced the refusal (#1117). Empty when `CURRENT`.
+   * Never an input to `currencyRefusal` — a cause makes a red legible, it
+   * does not decide whether there is one.
+   */
+  causes: StandingCause[];
+}
+
+/**
+ * The conditions behind THIS reading, which is not the standing's question.
+ *
+ * `standingCauses` answers it for `artifactStanding`'s label. This answers it
+ * for the consumer's question, and the two genuinely disagree on an input
+ * this module already names: a tree at `0.7.0` against a published `0.6.0`
+ * whose content differs is `AHEAD` with no cause at all, and `STALE` with
+ * `CONTENT` — because a consumer still cannot obtain this tree. Reusing
+ * `standingCauses` here would make the version ordering an input to this
+ * module after all, which is exactly what the header says it is not.
+ *
+ * The SENTENCES are not restated: both selectors render through
+ * `STANDING_CAUSE_HEADLINE`, so there is one declaring position for the text
+ * and two readings that select from it.
+ */
+function currencyCauses(reading: CurrencyReading, unmeasured: UnmeasuredReason[]): StandingCause[] {
+  if (reading === "UNMEASURED") {
+    const seen: StandingCause[] = [];
+    for (const r of unmeasured) if (!seen.includes(r.cause)) seen.push(r.cause);
+    return seen.length > 0 ? seen : ["UNCLASSIFIED"];
+  }
+  if (reading === "STALE") return ["CONTENT"];
+  return [];
 }
 
 /**
@@ -126,19 +160,23 @@ export function distributionCurrency(s: ArtifactStanding): DistributionCurrency 
     publishedVersion: s.publishedVersion,
   };
   if (s.reading === "UNMEASURED" || d === null) {
+    const unmeasured: UnmeasuredReason[] =
+      s.unmeasured.length > 0
+        ? s.unmeasured
+        : [{ cause: "UNCLASSIFIED", text: "the content comparison was not performed" }];
     return {
       ...base,
       reading: "UNMEASURED",
-      unmeasuredReasons:
-        s.unmeasuredReasons.length > 0
-          ? s.unmeasuredReasons
-          : ["the content comparison was not performed"],
+      unmeasuredReasons: unmeasured.map(r => r.text),
+      causes: currencyCauses("UNMEASURED", unmeasured),
     };
   }
+  const reading: CurrencyReading = contentAgrees(d) ? "CURRENT" : "STALE";
   return {
     ...base,
-    reading: contentAgrees(d) ? "CURRENT" : "STALE",
+    reading,
     unmeasuredReasons: [],
+    causes: currencyCauses(reading, []),
   };
 }
 
@@ -148,10 +186,15 @@ export function distributionCurrency(s: ArtifactStanding): DistributionCurrency 
  * One exported binding, so there is one thing to mutate. A second predicate
  * over the same fields would always agree with this one and would survive any
  * mutation of it.
+ *
+ * `c.causes` leads each message (#1117) and is read by neither branch: the
+ * set of states this refuses is exactly what it was before the cause existed.
  */
 export function currencyRefusal(c: DistributionCurrency): string | null {
+  const why = currencyHeadline(c);
   if (c.reading === "UNMEASURED") {
     return (
+      `${why} ` +
       `UNMEASURED: nothing was compared — ${c.unmeasuredReasons.join("; ")}. ` +
       `A reading that could not be taken is not one that passed, so this exits ` +
       `non-zero rather than reporting that the distribution is fine.`
@@ -160,6 +203,7 @@ export function currencyRefusal(c: DistributionCurrency): string | null {
   if (c.reading === "STALE") {
     const n = c.staleFiles.length + c.missingFiles.length + c.removedFiles.length;
     return (
+      `${why} ` +
       `STALE: a consumer running \`bunx rungate\` today does NOT get this tree. ` +
       `rungate@${c.publishedVersion} on the registry differs from what this tree ` +
       `would publish in ${n} files — ${c.staleFiles.length} whose bytes differ, ` +
@@ -173,10 +217,16 @@ export function currencyRefusal(c: DistributionCurrency): string | null {
   return null;
 }
 
+/** Every condition behind this refusal, as sentences. `""` when nothing refuses. */
+export function currencyHeadline(c: DistributionCurrency): string {
+  return c.causes.map(x => STANDING_CAUSE_HEADLINE[x]).join(" ");
+}
+
 /** Every number this reading produced, whether or not it refuses. */
 export function currencyReportLines(c: DistributionCurrency): string[] {
   return [
     `distribution currency: ${c.reading}`,
+    `  condition                ${c.causes.length > 0 ? c.causes.join(", ") : "none"}`,
     `  published version        ${c.publishedVersion ?? "UNREAD"}`,
     `  commits since its tag    ${c.commitsAhead ?? "UNREAD"}`,
     `  files differing in bytes ${c.staleFiles.length}`,

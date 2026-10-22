@@ -327,6 +327,37 @@ export function contentDifference(local: ArtifactFile[], published: ArtifactFile
 
 export type ArtifactReading = "MATCHED" | "DIVERGED" | "AHEAD" | "BEHIND" | "UNMEASURED";
 
+/**
+ * WHICH condition produced a red (#1117). Never a verdict.
+ *
+ * #875 refuses two conditions that arrive looking alike — a registry nobody
+ * could reach, and a registry serving different software under this tree's
+ * version string. On 2026-10-21 they arrived together, were collapsed into
+ * one, and the first reading on four PRs was "my change broke something".
+ * They are not the same fact and they do not have the same remedy: a re-run
+ * clears the first and will never clear the second.
+ *
+ * Nothing here is consulted by `artifactViolations` or by `currencyRefusal`.
+ * A cause changes no verdict; it says whose red it is.
+ */
+export type StandingCause =
+  /** The registry could not be read. External to this branch; a re-run may clear it. */
+  | "REGISTRY"
+  /** This checkout could not be packed — `npm`, the working tree, the runner. */
+  | "TOOLCHAIN"
+  /** The two version strings exist and cannot be ordered against each other. */
+  | "VERSIONS"
+  /** The comparison WAS taken and the two differ. Only a release clears it. */
+  | "CONTENT"
+  /** A reason arrived with no cause attached. Never attributed to a cause that did not claim it. */
+  | "UNCLASSIFIED";
+
+/** A reason and the condition that produced it. */
+export interface UnmeasuredReason {
+  cause: StandingCause;
+  text: string;
+}
+
 export interface ArtifactStanding {
   reading: ArtifactReading;
   /** `package.json`'s version in the tree that was packed. */
@@ -340,7 +371,67 @@ export interface ArtifactStanding {
   /** Why `commitsAhead` is null, when it is. Reported; never gated on. */
   distanceNote: string | null;
   /** Non-empty exactly when `reading` is `UNMEASURED`. */
+  unmeasured: UnmeasuredReason[];
+  /**
+   * The same list, rendered. A projection of `unmeasured` computed in
+   * `artifactStanding` and nowhere else, so the two cannot disagree about
+   * what was wrong — a second list built beside it would always agree with
+   * this one and would survive any mutation of it.
+   */
   unmeasuredReasons: string[];
+}
+
+/**
+ * One sentence per condition, declared once.
+ *
+ * A total `Record`, so a new `StandingCause` is a build error rather than a
+ * red with no sentence beside it — `.claude/rules/config-access.md`.
+ */
+export const STANDING_CAUSE_HEADLINE: Record<StandingCause, string> = {
+  REGISTRY:
+    "REGISTRY — the npm registry could not be read from this runner. This is not your branch: " +
+    "nothing in the diff can cause it or clear it, and a re-run may.",
+  TOOLCHAIN:
+    "TOOLCHAIN — this checkout could not be packed, so there was nothing to compare the registry " +
+    "against. Your branch only if it changed packaging.",
+  VERSIONS:
+    "VERSIONS — the tree's version and the registry's cannot be ordered against each other. " +
+    "This tree; a re-run will not clear it.",
+  CONTENT:
+    "CONTENT — the registry and this tree are DIFFERENT SOFTWARE under one version string. " +
+    "This repository, standing, and not your branch: only a release clears it, and a re-run never will.",
+  UNCLASSIFIED:
+    "UNCLASSIFIED — a reason arrived with no condition attached, so nobody can say whose red this " +
+    "is. Treat it as unmeasured and tag the reason at the point that produces it.",
+};
+
+/**
+ * The single binding that says which condition produced a standing's red.
+ *
+ * One binding, so there is one thing to mutate. It reads the causes the
+ * producers attached; it does not re-derive them from the rendered text,
+ * which would be a second decider that agrees with the first on every input
+ * anyone has — and a detector narrower than what it detects besides.
+ *
+ * Empty for a standing that does not refuse. Order is the order the reasons
+ * arrived in, de-duplicated, so a standing with two registry reasons names
+ * the registry once.
+ */
+export function standingCauses(s: ArtifactStanding): StandingCause[] {
+  if (s.reading === "UNMEASURED") {
+    const seen: StandingCause[] = [];
+    for (const r of s.unmeasured) if (!seen.includes(r.cause)) seen.push(r.cause);
+    return seen;
+  }
+  if (s.reading === "DIVERGED") return ["CONTENT"];
+  return [];
+}
+
+/** Every condition behind a red, as sentences. `""` when nothing refuses. */
+export function standingHeadline(s: ArtifactStanding): string {
+  return standingCauses(s)
+    .map(c => STANDING_CAUSE_HEADLINE[c])
+    .join(" ");
 }
 
 /** `0.6.0` → `[0,6,0]`; anything else → `null`. Prerelease suffixes are ignored. */
@@ -361,6 +452,21 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 | null {
 }
 
 /**
+ * The only place the two reason views are built, so they cannot disagree.
+ *
+ * `unmeasuredReasons` is the repo-wide shape every other `UNMEASURED` reading
+ * in this tree carries, and callers of it are unchanged; `unmeasured` is the
+ * same list with the condition still attached. Deriving one from the other
+ * here is the difference between two projections and two deciders.
+ */
+function project(reasons: UnmeasuredReason[]): {
+  unmeasured: UnmeasuredReason[];
+  unmeasuredReasons: string[];
+} {
+  return { unmeasured: reasons, unmeasuredReasons: reasons.map(r => r.text) };
+}
+
+/**
  * The single place that turns the readings into a verdict.
  *
  * Pure: every input is passed in, so a case can construct any state including
@@ -372,6 +478,14 @@ export function artifactStanding(input: {
   difference: ContentDifference | null;
   commitsAhead?: number | null;
   distanceNote?: string | null;
+  /** Reasons carrying the condition that produced them. Preferred (#1117). */
+  unmeasured?: UnmeasuredReason[];
+  /**
+   * Reasons with no condition attached. Accepted, and classified
+   * `UNCLASSIFIED` rather than folded into whichever cause looks likeliest —
+   * a reason attributed to a condition that did not claim it is worse than
+   * one that says nobody tagged it.
+   */
   unmeasuredReasons?: string[];
 }): ArtifactStanding {
   const base = {
@@ -381,12 +495,30 @@ export function artifactStanding(input: {
     commitsAhead: input.commitsAhead ?? null,
     distanceNote: input.distanceNote ?? null,
   };
-  const reasons = [...(input.unmeasuredReasons ?? [])];
-  if (input.treeVersion === null) reasons.push("the tree's version could not be read");
-  if (input.publishedVersion === null) reasons.push("the registry's published version could not be read");
-  if (input.difference === null) reasons.push("the content comparison was not performed");
+  /** One list. `unmeasured` and `unmeasuredReasons` are both read off it. */
+  const reasons: UnmeasuredReason[] = [
+    ...(input.unmeasured ?? []),
+    ...(input.unmeasuredReasons ?? []).map(text => ({ cause: "UNCLASSIFIED" as const, text })),
+  ];
+  // The three below are CONSEQUENCES of a reading that failed, so each is
+  // attributed to the input that failed and never to `CONTENT`. `CONTENT` is
+  // reachable only from `DIVERGED` — a comparison that was taken. That is
+  // what stops an unreachable registry reporting a divergence it never
+  // measured, which is #1117's whole complaint.
+  if (input.treeVersion === null) {
+    reasons.push({ cause: "TOOLCHAIN", text: "the tree's version could not be read" });
+  }
+  if (input.publishedVersion === null) {
+    reasons.push({ cause: "REGISTRY", text: "the registry's published version could not be read" });
+  }
+  if (input.difference === null) {
+    reasons.push({
+      cause: input.treeVersion === null ? "TOOLCHAIN" : "REGISTRY",
+      text: "the content comparison was not performed",
+    });
+  }
   if (reasons.length > 0) {
-    return { ...base, reading: "UNMEASURED", unmeasuredReasons: reasons };
+    return { ...base, reading: "UNMEASURED", ...project(reasons) };
   }
 
   const order = compareVersions(input.treeVersion!, input.publishedVersion!);
@@ -394,17 +526,20 @@ export function artifactStanding(input: {
     return {
       ...base,
       reading: "UNMEASURED",
-      unmeasuredReasons: [
-        `cannot order ${JSON.stringify(input.treeVersion)} against ${JSON.stringify(input.publishedVersion)}`,
-      ],
+      ...project([
+        {
+          cause: "VERSIONS",
+          text: `cannot order ${JSON.stringify(input.treeVersion)} against ${JSON.stringify(input.publishedVersion)}`,
+        },
+      ]),
     };
   }
-  if (order > 0) return { ...base, reading: "AHEAD", unmeasuredReasons: [] };
-  if (order < 0) return { ...base, reading: "BEHIND", unmeasuredReasons: [] };
+  if (order > 0) return { ...base, reading: "AHEAD", ...project([]) };
+  if (order < 0) return { ...base, reading: "BEHIND", ...project([]) };
   return {
     ...base,
     reading: contentAgrees(input.difference!) ? "MATCHED" : "DIVERGED",
-    unmeasuredReasons: [],
+    ...project([]),
   };
 }
 
@@ -414,11 +549,16 @@ export function artifactStanding(input: {
  * A projection of `reading` and nothing else — a second predicate over the
  * same facts would always agree with this one and would survive any mutation
  * of it.
+ *
+ * `standingHeadline` leads each message (#1117) and is not consulted by the
+ * branch above it: the set of states this refuses is exactly what it was.
+ * A cause makes a red legible; it never makes one go away.
  */
 export function artifactViolations(s: ArtifactStanding): string[] {
   if (s.reading === "UNMEASURED") {
     return [
-      `UNMEASURED: the published artifact was not compared against this tree — ` +
+      `${standingHeadline(s)} ` +
+        `UNMEASURED: the published artifact was not compared against this tree — ` +
         s.unmeasuredReasons.join("; ") +
         `. A comparison that could not be taken is not one that passed.`,
     ];
@@ -426,7 +566,8 @@ export function artifactViolations(s: ArtifactStanding): string[] {
   if (s.reading === "DIVERGED") {
     const d = s.difference!;
     return [
-      `rungate@${s.publishedVersion} on the registry and the ${s.treeVersion} tree are ` +
+      `${standingHeadline(s)} ` +
+        `rungate@${s.publishedVersion} on the registry and the ${s.treeVersion} tree are ` +
         `DIFFERENT SOFTWARE under the SAME version string: ${d.differing.length} of the published ` +
         `artifact's ${d.publishedCount} files differ in content, ${d.onlyLocal.length} files the ` +
         `tree would publish are absent from it, and ${d.onlyPublished.length} of its files are gone ` +
@@ -480,7 +621,10 @@ export async function measureArtifactStanding(opts: {
   let treeVersion: string | null = null;
   let publishedVersion: string | null = null;
   let difference: ContentDifference | null = null;
-  const reasons: string[] = [];
+  // Each catch tags its own reason, because the catch is the only position
+  // that knows which reading failed. A classifier downstream would have to
+  // guess from the text, which is a detector narrower than what it detects.
+  const reasons: UnmeasuredReason[] = [];
 
   let local: ArtifactFile[] = [];
   try {
@@ -488,13 +632,13 @@ export async function measureArtifactStanding(opts: {
     treeVersion = pack.version;
     local = pack.files;
   } catch (e) {
-    reasons.push((e as Error).message);
+    reasons.push({ cause: "TOOLCHAIN", text: (e as Error).message });
   }
 
   try {
     publishedVersion = await opts.latestVersion(opts.pkg);
   } catch (e) {
-    reasons.push(`registry: ${(e as Error).message}`);
+    reasons.push({ cause: "REGISTRY", text: `registry: ${(e as Error).message}` });
   }
 
   if (publishedVersion !== null && local.length > 0) {
@@ -505,7 +649,7 @@ export async function measureArtifactStanding(opts: {
       });
       difference = contentDifference(local, remote);
     } catch (e) {
-      reasons.push((e as Error).message);
+      reasons.push({ cause: "REGISTRY", text: (e as Error).message });
     }
   }
 
@@ -520,6 +664,6 @@ export async function measureArtifactStanding(opts: {
     difference,
     commitsAhead: distance.commits,
     distanceNote: distance.note,
-    unmeasuredReasons: reasons,
+    unmeasured: reasons,
   });
 }
