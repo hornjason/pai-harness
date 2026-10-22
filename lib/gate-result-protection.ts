@@ -160,9 +160,19 @@ const EDIT_CORRUPTS_REASON =
   'for every write after it.' +
   REPAIR_HINT;
 
-/** The artifact this module guards. */
+/**
+ * The artifact this module guards.
+ *
+ * #1184: the comparison is case-FOLDED. Measured on this machine,
+ * `WORKFLOW-STATE.JSON` and `workflow-state.json` resolve to the same inode,
+ * because the default macOS filesystem is case-insensitive — so an uppercase
+ * spelling reached the same file with the guard switched off. On a
+ * case-sensitive filesystem they are genuinely different files and folding
+ * costs only a refusal of a name that cannot coexist with the real one on
+ * the platform where the bypass exists.
+ */
 export function isWorkflowState(filePath: string): boolean {
-  return filePath.endsWith('workflow-state.json');
+  return filePath.toLowerCase().endsWith('workflow-state.json');
 }
 
 /** Whitespace-tolerant, because JSON is. */

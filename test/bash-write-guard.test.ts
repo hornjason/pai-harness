@@ -225,6 +225,90 @@ describe("#1176 CONTROL: the fixes must not widen the guard", () => {
   });
 });
 
+/**
+ * Covers #1184 — five more bypasses, one of them introduced by #1176's own
+ * heredoc rewrite. H1 and H5 are asserted on `stripHeredocs` DIRECTLY as well
+ * as through a decision, because an over-strip and a clean parse produce the
+ * same decision and only the first is a bug.
+ */
+describe("#1184 WITNESS: views, terminators and spellings", () => {
+  const cases: [string, string][] = [
+    // H1. #1176 replaced a terminator-anchored regex with a line scanner, and
+    //     the scanner runs off the end when the terminator never arrives. The
+    //     regex failed CLOSED here; the scanner failed open. A regression.
+    ["H1 an unterminated heredoc must not delete the lines after it", `cat <<EOF\necho x > /tmp/bw/${SALT}`],
+    ["H1b the same, hiding a hook write", `cat <<MARKER\ncp /tmp/evil.ts /tmp/bw/hooks/X.hook.ts`],
+    // H5. `<<<` is a herestring. Matching it as a heredoc invents a delimiter
+    //     that never terminates, which lands straight in H1.
+    ["H5 a herestring is not a heredoc", `grep x <<< "t"\necho y > /tmp/bw/${SALT}`],
+    // H3. The mirror of #1176's F2: there the TARGET was read off the
+    //     quote-stripped view, here the VERB is.
+    ["H3 a quoted command word still runs", `"chmod" 777 /tmp/bw/hooks/X.hook.ts`],
+    ["H3b a partly quoted command word", `ch"mod" 777 /tmp/bw/hooks/X.hook.ts`],
+    ["H3c a quoted interpreter", `"bash" -c 'echo x > /tmp/bw/${SALT}'`],
+    // H4. A directory destination's real sink is join(dest, basename(src)).
+    ["H4 cp into a directory, protected source basename", `cp /tmp/forged/${STATE} /Users/jhorn/.rungate/x/`],
+    ["H4b mv into a directory", `mv /tmp/forged/${STATE} /Users/jhorn/.rungate/x/`],
+    ["H4c cp a hook into a hooks directory", `cp /tmp/evil/X.hook.ts /Users/jhorn/Projects/rungate/hooks/`],
+    // H6. Measured: this filesystem is case-insensitive, so these name the
+    //     same files as their lowercase spellings.
+    ["H6 an uppercase gate artifact", `echo x > /tmp/bw/${STATE.toUpperCase()}`],
+    ["H6b an uppercase salt", `echo x > /tmp/bw/${SALT.toUpperCase()}`],
+    ["H6c a mixed-case hook", `cp /tmp/evil.ts /tmp/bw/hooks/X.HOOK.TS`],
+    // H7. Constructed, not from the corpus — the key reaching `security`
+    //     through a variable set in an earlier segment. Measured cost of
+    //     matching the key across the whole command: 0 of 125,644.
+    ["H7 the keychain key arriving via a variable", `KEY=pai-gate-salt; security find-generic-password -s "$KEY" -w`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+});
+
+describe("#1184 CONTROL: the fixes must not widen the guard", () => {
+  const cases: [string, string][] = [
+    ["a terminated heredoc still drops its body", `cat <<EOF > /tmp/bw/notes.md\nchmod 777 evil.hook.ts\nEOF`],
+    ["a herestring feeding an ordinary read", `grep -n phase <<< "some text"`],
+    ["an unterminated heredoc writing nothing protected", `cat <<EOF\necho hello > /tmp/bw/ordinary.txt`],
+    ["copying a protected file OUT to a plain name is a read", `cp /x/${STATE} /tmp/backup.json`],
+    ["cp into a directory with an unprotected source", `cp /tmp/notes.md /Users/jhorn/.rungate/x/`],
+    ["a quoted grep PATTERN is still not a verb", `git show HEAD:f | grep -nE "chmod|chflags"`],
+    ["an ordinary read", "ls -la"],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+});
+
+describe("#1184: the mechanisms, asserted directly", () => {
+  test("an unterminated heredoc leaves the text after it UNCHANGED", () => {
+    // The decision-level case cannot tell an over-strip from a clean parse.
+    // This can: the bytes must survive.
+    const cmd = `cat <<EOF\necho x > /tmp/bw/${SALT}`;
+    expect(stripHeredocs(cmd)).toContain(`echo x > /tmp/bw/${SALT}`);
+  });
+
+  test("a herestring is not treated as a heredoc", () => {
+    expect(stripHeredocs(`grep x <<< "t"\necho y > /tmp/f`)).toContain("echo y > /tmp/f");
+  });
+
+  test("commandWord resolves a quoted verb", () => {
+    expect(commandWord(`"chmod" 777 x.hook.ts`)).toBe("chmod");
+    expect(commandWord(`ch"mod" 777 x.hook.ts`)).toBe("chmod");
+    // …and still does not promote a quoted grep PATTERN to a verb.
+    expect(commandWord(`grep -nE "chmod" f`)).toBe("grep");
+  });
+
+  test("a directory destination resolves to dest/basename for every source", () => {
+    expect(writeTargets(`cp /tmp/forged/${STATE} /Users/jhorn/.rungate/x/`).join(" ")).toContain(STATE);
+  });
+
+  test("protected names match whatever case the filesystem would fold", () => {
+    expect(decideBashWrite(`echo x > /tmp/bw/${STATE.toUpperCase()}`).blocked).toBe(true);
+  });
+});
+
 describe("#1176: the mechanisms, asserted directly", () => {
   test("stripHeredocs keeps the operator's own line and drops only the body", () => {
     const out = stripHeredocs("cat <<EOF > out.txt\nbody line\nEOF");
