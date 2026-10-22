@@ -275,7 +275,7 @@ function run(
   const named = opts.names === undefined ? planted : opts.names;
   if (named !== null) env.GOOGLE_GHA_CREDS_PATH = named;
 
-  const r = Bun.spawnSync(["bash", scriptPath], { cwd: workspace, env });
+  const r = Bun.spawnSync(["bash", "-e", scriptPath], { cwd: workspace, env });
   const exported: Record<string, string> = {};
   for (const line of readFileSync(envFile, "utf-8").split("\n")) {
     const m = /^([A-Z_][A-Z_0-9]*)=(.*)$/.exec(line);

@@ -216,7 +216,7 @@ function stepEnv(home: string, extra: Record<string, string> = {}): Record<strin
 function sh(script: string, cwd: string, env: Record<string, string>): Run {
   const path = join(scratchDir("ai-review-gci-script-"), "step.sh");
   writeFileSync(path, script);
-  const r = Bun.spawnSync(["bash", path], { cwd, env });
+  const r = Bun.spawnSync(["bash", "-e", path], { cwd, env });
   return {
     code: r.exitCode,
     stdout: new TextDecoder().decode(r.stdout),

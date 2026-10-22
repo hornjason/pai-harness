@@ -177,7 +177,7 @@ function sh(script: string, cwd: string, env: Record<string, string>): Run {
   const dir = scratchDir("ai-review-seal-script-");
   const path = join(dir, "step.sh");
   writeFileSync(path, script);
-  const r = Bun.spawnSync(["bash", path], { cwd, env: { ...GIT_ENV(), ...env } });
+  const r = Bun.spawnSync(["bash", "-e", path], { cwd, env: { ...GIT_ENV(), ...env } });
   return {
     code: r.exitCode,
     stdout: new TextDecoder().decode(r.stdout),

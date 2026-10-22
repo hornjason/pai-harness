@@ -112,7 +112,7 @@ function aiReviewWorkflow(): any {
 function runIn(dir: string, script: string, env: Record<string, string>) {
   const path = join(dir, "script.sh");
   writeFileSync(path, script);
-  const r = Bun.spawnSync(["bash", path], {
+  const r = Bun.spawnSync(["bash", "-e", path], {
     cwd: dir,
     env: { PATH: stubBunxAbsent(), HOME: dir, ...env },
   });
