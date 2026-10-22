@@ -133,13 +133,34 @@ describe("the container rebuild command never reaches an agent unguarded", () =>
     ).toBeLessThan(prompt);
   });
 
-  test("the interpolation appears only after the guard", () => {
-    const guard = SHIP.indexOf("if (rebuildCmd)");
-    const uses = [...SHIP.matchAll(/\$\{rebuildCmd\}/g)].map((m) => m.index!);
-    expect(uses.length, "no ${rebuildCmd} interpolation found").toBeGreaterThan(0);
-    for (const at of uses) {
-      expect(at, `a \${rebuildCmd} interpolation at ${at} precedes the guard at ${guard}`).toBeGreaterThan(guard);
-    }
+  /**
+   * This used to read "the interpolation appears only after the guard", and
+   * it asserted that at least one `${rebuildCmd}` interpolation existed.
+   *
+   * #1031 removed the interpolation, which makes the old assertion require
+   * the presence of the thing this guard worries about. The property it was
+   * reaching for is unchanged and now holds more strongly: the command's
+   * TEXT reaches no prompt at all. `rebuildCmd` survives only as the boolean
+   * the `if` above tests.
+   *
+   * Why that is stronger rather than lateral: the value ship.js holds is the
+   * setup agent's restatement of a config file it cannot read (#69), not the
+   * file. Reading the command out of `resolved-config.json` at execution
+   * time is the only version in which the command an agent runs is the
+   * command the operator wrote.
+   */
+  test("the rebuild command's text reaches no prompt — it is read from the resolved config", () => {
+    expect(
+      [...SHIP.matchAll(/\$\{rebuildCmd\}/g)].length,
+      "ship.js interpolates the restated rebuild command into a prompt again (#1031)",
+    ).toBe(0);
+
+    const prompt = SHIP.indexOf("ONE task: rebuild the test container");
+    expect(SHIP.indexOf("c.container.rebuildCommand"), "the rebuild step no longer reads the command from a file").toBeGreaterThan(-1);
+    expect(
+      SHIP.indexOf("resolved-config.json", prompt),
+      "the rebuild prompt no longer names resolved-config.json, so where the command comes from is unstated",
+    ).toBeGreaterThan(prompt);
   });
 
   test("a container block without rebuildCommand resolves to undefined, not a default", () => {

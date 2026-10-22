@@ -248,6 +248,59 @@ export type ContainerProbe =
  */
 export const CONTAINER_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
+/**
+ * A character in `healthPath` that means something to a shell (#1031).
+ *
+ * Same set as `SHELL_METACHARACTERS` in `lib/workflow-security.ts`, and
+ * deliberately so: that is the set this project already decided reaches a
+ * shell unsafely, and a second, kinder set here would be a second answer to
+ * the same question.
+ *
+ * ## Why `healthPath` needs this when the config file is trusted
+ *
+ * `.claude/rungate/config.json` IS trusted. It is the operator's own file,
+ * `scripts/resolve-config.ts` is the only thing that reads it, and
+ * `container.rebuildCommand` is arbitrary command execution by design — a
+ * consumer who puts a destructive command behind that key has configured
+ * their own run to do that. Gating a trusted file against its own author is
+ * theatre, and #1031 names it as the cheapest wrong fix on offer.
+ *
+ * But the value that reaches the shell is not that file. `workflows/ship.js`
+ * cannot read files — the Workflow sandbox has no module loading (#69) — so
+ * the block it hands this function is `setupResult.config.container`: the
+ * **setup agent's restatement** of a file ship.js never sees, filtered on
+ * the way back by a JSON schema that constrains types and no values, and
+ * produced in a prompt that also carries issue-authored text. ship.js
+ * already names that channel for its neighbouring fields — *the reply agrees
+ * with whatever was put in it*, the #530 shape — and routes `harnessSha`
+ * through `rookReviewSha` rather than interpolating it, for this reason.
+ *
+ * So the trusted object and the interpolated object are different objects,
+ * and `healthPath` is the one free-form component of the URL this builds.
+ * `host` is already charset-filtered above and `port` is already a number;
+ * without this rule `/h;id` is an absolute path that is not `//`, so it
+ * becomes a `probe` and `;id` runs.
+ *
+ * REFUSED as `unmeasured`, never sanitised: a quietly repaired path probes a
+ * URL nobody configured and records the answer as the container's.
+ *
+ * ## Why this is narrower than `SHELL_METACHARACTERS`
+ *
+ * That set refuses `?`, `#`, `*`, `[`, `~` and `!`, and a health path is
+ * allowed all of them: `/h?token=…` is a shape this module already supports
+ * on purpose — `safeForRecord` exists to redact exactly that query string,
+ * and `SC-2485` asserts it. Refusing `?` here would delete a documented
+ * consumer shape to block a glob that the quoting added by #1031 at both
+ * `curl` sites already makes inert.
+ *
+ * What stays refused is the set no URL path needs and that ends a quoted
+ * shell word or starts a substitution: `;` `&` `|` `$` `` ` `` `"` `'` `\`
+ * `<` `>` `{` `}`, whitespace, and control characters. Every payload #1031
+ * named — `/h;id`, `/$(id)`, a backtick, `/h'` — is in it.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTAINER_HEALTH_PATH_UNSAFE = /[;&|$`"'\\<>{}\s\u0000-\u001f]/;
+
 export function containerProbeTarget(
   container:
     | { port?: unknown; healthPath?: unknown; hosts?: unknown; rebuildCommand?: unknown }
@@ -296,6 +349,19 @@ export function containerProbeTarget(
       detail:
         `a container is configured at ${host} port ${port} and container.healthPath is not ` +
         "an absolute path, so nothing was probed. This is UNMEASURED, not DOWN",
+    };
+  }
+  // #1031 — see CONTAINER_HEALTH_PATH_UNSAFE. The refused value is NOT echoed
+  // into the detail: this string is interpolated into a `bun -e` program in an
+  // agent prompt and written to a durable artefact, which is the last place
+  // the thing we just refused should turn up.
+  if (healthPath.length > 200 || CONTAINER_HEALTH_PATH_UNSAFE.test(healthPath)) {
+    return {
+      kind: "unmeasured",
+      detail:
+        `a container is configured at ${host} port ${port} and container.healthPath carries ` +
+        "whitespace, a shell metacharacter or over 200 characters, so nothing was probed. " +
+        "It reaches a curl command an agent runs. This is UNMEASURED, not DOWN",
     };
   }
   const url = `http://${host}:${port}${healthPath}`;
