@@ -113,20 +113,27 @@ describe("prove.js heredocSafe (#137)", () => {
 });
 
 describe("AC-1: lib/workflow-security.ts exported surface", () => {
-  test("exports exactly eleven security functions", () => {
+  test("exports exactly twelve security functions", () => {
     // Nine since #400 added `pathRefusal`, the single path-safety decider
     // that `validateFilePaths` and ship.js's claim audit both call. Eleven
-    // since #533 added the two argument-shape refusals.
+    // since #533 added the two argument-shape refusals. Twelve since #1086
+    // moved `shellQuote` here, because four workflow files now carry an
+    // inline copy of it and before that there was one, anchored to nothing.
     //
     // The number is the point, not the number itself: an export added here
-    // without a parity block below is a library copy that ship.js's inlined
-    // mirror can silently drift from, and this row is what notices.
+    // without a parity block is a library copy that an inlined mirror can
+    // silently drift from, and this row is what notices. `shellQuote`'s
+    // parity block is NOT below — it is in
+    // `test/workflow-prompt-top-level-cd.test.ts`, which runs all four
+    // copies against this one on a shared input table rather than just
+    // ship.js's. Adding a thirteenth export means adding its parity block in
+    // one of those two places and saying here which.
     const source = readFileSync(
       join(REPO_ROOT, "lib", "workflow-security.ts"),
       "utf-8",
     );
     const exported = source.match(/^export function /gm) || [];
-    expect(exported.length).toBe(11);
+    expect(exported.length).toBe(12);
   });
 });
 

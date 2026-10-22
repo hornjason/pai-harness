@@ -63,6 +63,22 @@ const PROJECT_ROOT = parsedArgs.projectRoot
 const HARNESS_ROOT = parsedArgs.harnessRoot
 const ISSUE_REPO = parsedArgs.issueRepo || parsedArgs.repo || 'hornjason/pai-config'
 
+// ──── SHELL-QUOTE-START ────
+// Single-quote a shell word. Single quotes are the only shell quoting with
+// no interior expansion at all, so a path containing a space, a `$` or a
+// backtick all survive. `"${…}"` stops at the space and leaves the rest
+// expanding, which is the cheapest wrong fix for #1086 and not accepted.
+//
+// INLINED, not imported: the workflow sandbox has no require, no dynamic
+// import() and no filesystem (#69). `lib/workflow-security.ts` is the
+// source of truth; test/workflow-prompt-top-level-cd.test.ts runs every
+// copy against the same inputs and fails on any divergence, so changing
+// one means changing all of them.
+function shellQuote(word) {
+  return `'${String(word).replace(/'/g, "'\\''")}'`
+}
+// ──── SHELL-QUOTE-END ────
+
 // Read test config and compliance.threshold through the one loader (#1035,
 // ADR-002 D1). This prompt used to name the project's config file by path,
 // which is the violation D1 describes: for a consumer on the directory layout
@@ -71,7 +87,7 @@ const ISSUE_REPO = parsedArgs.issueRepo || parsedArgs.repo || 'hornjason/pai-con
 const testConfig = await agent(`
 Run exactly this and report what it printed:
 
-bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT}
+bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${shellQuote(PROJECT_ROOT)}
 
 It prints this project's resolved rungate config as JSON on stdout, through the
 one loader that understands every supported config layout. Do NOT read the
@@ -171,7 +187,7 @@ Find the workflow transcript directory and run compliance grading:
    Extract the directory path from the result.
 
 2. Run grading:
-   bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts <found-dir> --project ${PROJECT_ROOT} ${workDir}
+   bun --cwd ${shellQuote(PROJECT_ROOT)} ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts <found-dir> --project ${shellQuote(PROJECT_ROOT)} ${workDir}
 
 3. Return the JSON output. If no transcripts found, return {"grades": []}.
 `, { label: 'grade-compliance', phase: 'Heal', schema: {
@@ -211,7 +227,7 @@ Analyze agent transcripts for efficiency metrics:
    TDIR=$(dirname $(find ~/.claude/projects/ -maxdepth 6 -name "agent-*.jsonl" -path "*/workflows/*" -newer ${workDir}/workflow-state.json 2>/dev/null | head -1))
 
 2. Run the transcript analyzer:
-   bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json
+   bun --cwd ${shellQuote(PROJECT_ROOT)} ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json
 
 3. Return the JSON array output. If no transcripts found, return [].
 `, { label: 'analyze-efficiency', phase: 'Heal', schema: {
@@ -489,10 +505,10 @@ ${(rca.affectedFiles || []).join('\n') || 'Determine from root cause'}
 2. Apply the fix — for HARNESS_BUG fixes, patch BOTH:
    a. The instance (workflow-state.json) so this run passes
    b. The generator (ship.js, gates/*.ts) so future runs don't hit the same bug
-3. Run: ( cd ${PROJECT_ROOT} && ${testCommand} ) 2>&1 | tail -10
+3. Run: ( cd ${shellQuote(PROJECT_ROOT)} && ${testCommand} ) 2>&1 | tail -10
    Set the Bash tool's timeout parameter to ${testTimeout}. Do NOT use the shell 'timeout' command.
 4. If tests pass, commit with message: "fix: ${rca.fixDescription.slice(0, 60)}"
-5. Push to main: git -C ${PROJECT_ROOT} push origin main
+5. Push to main: git -C ${shellQuote(PROJECT_ROOT)} push origin main
 6. Report success/failure — list instance fixes AND generator fixes separately
 
 Do NOT introduce new features. Only fix the specific root cause.
@@ -525,11 +541,11 @@ const verify = await agent(`
 Verify the fix for issue #${ISSUE} after the heal cycle.
 
 1. Run the test suite:
-   ( cd ${PROJECT_ROOT} && ${testCommand} ) 2>&1 | tail -10
+   ( cd ${shellQuote(PROJECT_ROOT)} && ${testCommand} ) 2>&1 | tail -10
    Set the Bash tool's timeout parameter to ${testTimeout}. Do NOT use the shell 'timeout' command.
 
 2. Run the ship gate to verify it passes now:
-   TEST_WORK_DIR="${workDir}" bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/gates/run-gate.ts ship ${workDir}/workflow-state.json 2>&1 | tail -20
+   TEST_WORK_DIR="${workDir}" bun --cwd ${shellQuote(PROJECT_ROOT)} ${HARNESS_ROOT}/gates/run-gate.ts ship ${workDir}/workflow-state.json 2>&1 | tail -20
    Set timeout to ${testTimeout}.
 
 3. Report:

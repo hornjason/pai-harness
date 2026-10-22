@@ -54,6 +54,35 @@ export function pathRefusal(
   return null;
 }
 
+/**
+ * Single-quote a shell word (#1086).
+ *
+ * Single quotes are the only shell quoting with no interior expansion at all,
+ * so this is safe for a path containing a space, a `$`, a backtick or a
+ * newline alike. Double quotes stop at the space and leave the rest
+ * expanding, which is the cheapest wrong fix for #1086 and the shape a
+ * security review already caught once inside `gitDerivedStaging`.
+ *
+ * ## Why this lives here as well as in four workflow files
+ *
+ * `workflows/*.js` runs in a sandbox with no `require`, no dynamic `import()`
+ * and no filesystem (#69), so a workflow cannot load this module and must
+ * carry an inline copy — the same arrangement as `pathRefusal` above. This is
+ * the source of truth for those copies, and
+ * `test/workflow-prompt-top-level-cd.test.ts` runs every copy against the
+ * same inputs as this one and fails on any divergence. Change one, change
+ * them all.
+ *
+ * Before #1086 there was one copy, in `workflows/ship.js`, anchored to
+ * nothing: `lib/run-branch.ts` records that ship.js "owns `shellQuote`", and
+ * that was accurate while one file needed it. Four unanchored copies is a
+ * different proposition, which is why the ownership moved rather than being
+ * duplicated three more times.
+ */
+export function shellQuote(word: unknown): string {
+  return `'${String(word).replace(/'/g, "'\\''")}'`;
+}
+
 export function buildSafeGitAdd(filesChanged: string[]): string {
   const validated = validateFilePaths(filesChanged);
   if (validated.rejected.length > 0) {

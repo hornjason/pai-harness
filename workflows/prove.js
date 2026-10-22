@@ -198,7 +198,7 @@ const issueData = await agent(`
 Read this GitHub issue and extract the goal.
 
 Retrieve the issue:
-  bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-get --repo ${ISSUE_REPO} --issue ${ISSUE}
+  bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-get --repo ${ISSUE_REPO} --issue ${ISSUE}
 
 It prints one JSON object with number, title, body, state and labels.
 
@@ -232,7 +232,7 @@ log(`Goal: "${issueData.issueTitle}" — UI ACs: ${issueData.hasUIACs ? 'yes' : 
 const projectConfigResult = await agent(`
 Run exactly this and report the result:
 
-bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT} --out ${RESOLVED_CONFIG_PATH}
+bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${shellQuote(PROJECT_ROOT)} --out ${RESOLVED_CONFIG_PATH}
 
 It writes this project's resolved rungate config to that path and prints the
 same JSON on stdout. Do NOT read the project's own config file — it may be in
@@ -283,15 +283,15 @@ Verify the fix for issue #${ISSUE} is on main:
    If it exists, read it and extract mergeCommitSha.
 
 2. If mergeCommitSha exists:
-   git -C ${PROJECT_ROOT || '.'} branch --contains <sha> | grep -q main && echo "ON_MAIN" || echo "NOT_ON_MAIN"
+   git -C ${shellQuote(PROJECT_ROOT || '.')} branch --contains <sha> | grep -q main && echo "ON_MAIN" || echo "NOT_ON_MAIN"
 
 3. If no mergeCommitSha (standalone mode):
-   git -C ${PROJECT_ROOT || '.'} log --oneline --all --grep="#${ISSUE}" | head -5
+   git -C ${shellQuote(PROJECT_ROOT || '.')} log --oneline --all --grep="#${ISSUE}" | head -5
    Use the latest commit SHA found.
-   Verify it is on main: git -C ${PROJECT_ROOT || '.'} branch --contains <sha> | grep -q main
+   Verify it is on main: git -C ${shellQuote(PROJECT_ROOT || '.')} branch --contains <sha> | grep -q main
 
 4. Get current HEAD:
-   git -C ${PROJECT_ROOT || '.'} rev-parse HEAD
+   git -C ${shellQuote(PROJECT_ROOT || '.')} rev-parse HEAD
 
 Report: deployed (boolean), commitSHA (the fix commit or HEAD), branch, reason.
 `, { label: 'deploy-check', phase: 'Verify-Deployed', schema: DEPLOY_CHECK_SCHEMA })
@@ -334,7 +334,7 @@ config file.
    is not a failed one, and a guessed path 404s on a server that is up.
 2. Otherwise try: curl -sf "<dev.apiBase><dev.healthPath>" -o /dev/null && echo "DEV_UP" || echo "DEV_DOWN"
 3. If DEV_DOWN and dev.start exists:
-   - Run: ( cd ${PROJECT_ROOT} && <dev.start> ) &
+   - Run: ( cd ${shellQuote(PROJECT_ROOT)} && <dev.start> ) &
    - Wait 10 seconds, then retry the health check
    - Report: started (boolean), apiBase, command used
 4. If DEV_UP: report already running
@@ -414,7 +414,7 @@ if (needsQuinn) {
       await agent(`
 You have ONE task: start the prove container with prod data. Run this EXACT command and report the output:
 
-( cd ${PROJECT_ROOT} && ${proveUpCmd} ) 2>&1 | tail -20
+( cd ${shellQuote(PROJECT_ROOT)} && ${proveUpCmd} ) 2>&1 | tail -20
 
 After it completes, verify the container is up: curl -s -o /dev/null -w "%{http_code}" http://${proveHost}:${provePort}${proveHealthPath}
 Report the output.
@@ -475,7 +475,7 @@ Prove container base: http://${(containerConfig?.hosts || [])[0] || 'CONFIG_MISS
 ${quinnACs}
 
 ## Test Plan for #${ISSUE} on PROVE CONTAINER
-1. Verify fix deployed: git -C ${PROJECT_ROOT} rev-parse --short HEAD should match ${COMMIT_SHA.slice(0, 8)}
+1. Verify fix deployed: git -C ${shellQuote(PROJECT_ROOT)} rev-parse --short HEAD should match ${COMMIT_SHA.slice(0, 8)}
 2. For each AC:
    a. browser_navigate(prove container URL + page path from the resolved config's pages map)
    b. browser_snapshot() — verify page loaded
@@ -592,9 +592,21 @@ const MAX_SELF_HEAL_ATTEMPTS = 3
  * `*)` arm would commit there — `0`, `{}`, `null` and `""` are
  * indistinguishable from success, so an unread branch refuses.
  */
+// ──── SHELL-QUOTE-START ────
+// Single-quote a shell word. Single quotes are the only shell quoting with
+// no interior expansion at all, so a path containing a space, a `$` or a
+// backtick all survive. `"${…}"` stops at the space and leaves the rest
+// expanding, which is the cheapest wrong fix for #1086 and not accepted.
+//
+// INLINED, not imported: the workflow sandbox has no require, no dynamic
+// import() and no filesystem (#69). `lib/workflow-security.ts` is the
+// source of truth; test/workflow-prompt-top-level-cd.test.ts runs every
+// copy against the same inputs and fails on any divergence, so changing
+// one means changing all of them.
 function shellQuote(word) {
   return `'${String(word).replace(/'/g, "'\\''")}'`
 }
+// ──── SHELL-QUOTE-END ────
 
 function selfHealCommitScript(dir, subject) {
   const d = shellQuote(dir)
@@ -684,7 +696,7 @@ ${(issueData.successCriteria || []).map((sc, i) => `${i + 1}. ${sc}`).join('\n')
 ${failSummary}
 
 ## Fix Commit
-Run: git -C ${PROJECT_ROOT || '.'} rev-parse --short HEAD
+Run: git -C ${shellQuote(PROJECT_ROOT || '.')} rev-parse --short HEAD
 
 ## Instructions
 1. For CODE ACs: run evidence commands (grep, bun test, curl) against current code.
@@ -785,7 +797,7 @@ mkdir -p ${WORK_DIR} && cat > ${WORK_DIR}/proof-comment.md <<'RUNGATE_PROOF_EOF'
 ${safeProofComment}
 RUNGATE_PROOF_EOF
 
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/proof-comment.md
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/proof-comment.md
 
 Report the JSON it prints. If it exits non-zero, report the failure — do NOT fall back to gh.
 `, { label: 'post-comment', phase: 'Output' })
@@ -801,14 +813,14 @@ test -f ${GOAL_RECORD_PATH} && echo "CHAIN" || echo "STANDALONE"
   await agent(`
 Add the "proven" label to issue #${ISSUE}:
 
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
 
 That appends. It does not replace whatever labels triage already put on the issue.
 ${String(chainMode).includes('CHAIN') ? `
 Then close it (chain mode — goal-record.json exists) and say why:
 
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} --body "Issue closed by /prove — verdict: PROVEN"
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} --body "Issue closed by /prove — verdict: PROVEN"
 ` : '# Standalone mode — do NOT close the issue'}
 Report each command's exit status. If any exits non-zero, report the failure — do NOT fall back to gh.
   `, { label: 'label-close', phase: 'Output' })
@@ -821,7 +833,7 @@ Read ${GOAL_RECORD_PATH} (if it exists) and the issue body to extract D-NNN deci
 
 First, save the issue to a file:
 
-mkdir -p ${WORK_DIR} && bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-get --repo ${ISSUE_REPO} --issue ${ISSUE} > ${WORK_DIR}/issue.json
+mkdir -p ${WORK_DIR} && bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-get --repo ${ISSUE_REPO} --issue ${ISSUE} > ${WORK_DIR}/issue.json
 
 Then run this command. It reads the body out of that file itself — do not paste
 the body into the command, and do not edit the command:
@@ -855,7 +867,7 @@ Report the JSON result. If spec was updated, commit the changed spec file.
   await agent(`
 Post a re-investigation comment:
 
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
   --body "Prove verdict: UNPROVEN — issue remains open for re-investigation"
 
 If it exits non-zero, report the failure — do NOT fall back to gh.
@@ -865,7 +877,7 @@ If it exits non-zero, report the failure — do NOT fall back to gh.
   await agent(`
 Post an inconclusive comment:
 
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
   --body "Prove verdict: INCONCLUSIVE — could not reproduce. Manual investigation needed."
 
 If it exits non-zero, report the failure — do NOT fall back to gh.
@@ -886,7 +898,7 @@ log(`Telemetry logged — prove #${ISSUE}: ${verdict}`)
 if (containerConfig) {
   const proveDownCmd = containerConfig.proveDownCommand || 'echo "no prove-down command configured"'
   await agent(`
-Run: ( cd ${PROJECT_ROOT} && ${proveDownCmd} ) 2>&1 || true
+Run: ( cd ${shellQuote(PROJECT_ROOT)} && ${proveDownCmd} ) 2>&1 || true
 Report output.
   `, { label: 'prove-container-down', phase: 'Output' })
 }
