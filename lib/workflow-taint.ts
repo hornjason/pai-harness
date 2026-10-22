@@ -80,7 +80,7 @@ export const AGENT_SPAWNING_GLOBALS: readonly string[] = ["agent", "parallel"];
  * pattern-matched: a function is a sanitiser because someone decided it is,
  * and adding one here is the decision, visible in a diff.
  */
-export const SANITISERS: readonly string[] = ["shellQuote", "heredocSafe"];
+export const SANITISERS: readonly string[] = ["shellQuote"];
 
 /**
  * Calls whose arguments reach the run's own output and never a shell.
@@ -139,24 +139,48 @@ function calleeName(node: unknown): string | null {
   return null;
 }
 
+/**
+ * Every name a binding target introduces.
+ *
+ * Destructuring counts (#1113). `const { branch } = await agent(…)` binds
+ * `branch` to agent text as surely as `const r = await agent(…)` binds `r`,
+ * and a reader of `bindings()` that only emitted for `Identifier` saw neither
+ * the name nor the hole where it should have been — a checker's silence,
+ * which is the thing this module exists to stop. Nested patterns, array
+ * patterns, defaults and rest elements all reach the same place.
+ */
+function boundNames(target: Node): string[] {
+  if (target.type === "Identifier") return [target.name as string];
+  const names: string[] = [];
+  for (const node of walk(target)) {
+    if (node.type === "Property" && isNode(node.value)) names.push(...boundNames(node.value));
+    if (node.type === "RestElement" && isNode(node.argument)) names.push(...boundNames(node.argument));
+    if (node.type === "AssignmentPattern" && isNode(node.left)) names.push(...boundNames(node.left));
+    if (node.type === "ArrayPattern") {
+      for (const el of node.elements as (Node | null)[]) if (el && isNode(el)) names.push(...boundNames(el));
+    }
+  }
+  // A property VALUE that is a plain Identifier is the bound name; the KEY is
+  // not, and `walk` reaches both, so the dedupe is not cosmetic.
+  return [...new Set(names)];
+}
+
 /** Every `<name> = <expression>` in the tree, declaration or assignment. */
 function bindings(tree: Node): { name: string; rhs: Node; topLevel: boolean }[] {
   const top = new Set<string>();
   for (const stmt of tree.body as Node[]) {
     if (stmt.type !== "VariableDeclaration") continue;
     for (const dec of stmt.declarations as Node[]) {
-      if (isNode(dec.id) && dec.id.type === "Identifier") top.add(dec.id.name as string);
+      if (isNode(dec.id)) for (const name of boundNames(dec.id)) top.add(name);
     }
   }
   const out: { name: string; rhs: Node; topLevel: boolean }[] = [];
   for (const node of walk(tree)) {
-    if (node.type === "VariableDeclarator" && isNode(node.id) && node.id.type === "Identifier" && isNode(node.init)) {
-      const name = node.id.name as string;
-      out.push({ name, rhs: node.init, topLevel: top.has(name) });
+    if (node.type === "VariableDeclarator" && isNode(node.id) && isNode(node.init)) {
+      for (const name of boundNames(node.id)) out.push({ name, rhs: node.init, topLevel: top.has(name) });
     }
-    if (node.type === "AssignmentExpression" && isNode(node.left) && node.left.type === "Identifier" && isNode(node.right)) {
-      const name = node.left.name as string;
-      out.push({ name, rhs: node.right, topLevel: top.has(name) });
+    if (node.type === "AssignmentExpression" && isNode(node.left) && isNode(node.right)) {
+      for (const name of boundNames(node.left)) out.push({ name, rhs: node.right, topLevel: top.has(name) });
     }
   }
   return out;
@@ -207,7 +231,7 @@ export interface TaintedName {
  * inside that helper and means nothing outside it. The top-level bindings get
  * the whole file.
  */
-function analyse(source: string): { members: Map<string, string>; scopes: TaintScope[]; sanitiserAliases: Set<string> } {
+function analyse(source: string): { members: Map<string, string>; scopes: TaintScope[]; sanitiserAliases: Set<string>; seeds: Set<string> } {
   const tree = parse(source, PARSE_OPTIONS) as unknown as Node;
   const fns = functionsByName(tree);
   const all = bindings(tree);
@@ -379,7 +403,7 @@ function analyse(source: string): { members: Map<string, string>; scopes: TaintS
 
   }
 
-  return { members, scopes, sanitiserAliases };
+  return { members, scopes, sanitiserAliases, seeds };
 }
 
 /**
@@ -412,7 +436,7 @@ export interface BareInterpolation {
  */
 export function bareAgentInterpolations(relPath: string, source: string): BareInterpolation[] {
   const tree = parse(source, PARSE_OPTIONS) as unknown as Node;
-  const { scopes, sanitiserAliases } = analyse(source);
+  const { scopes, sanitiserAliases, seeds } = analyse(source);
   /** `shellQuote(x)`, or a helper parameter bound to it at every call site. */
   const sanitisedCall = (expr: Node) => {
     const callee = calleeName(expr.callee);
@@ -421,22 +445,86 @@ export function bareAgentInterpolations(relPath: string, source: string): BareIn
   const taintedAt = (name: string, at: number) =>
     scopes.some(s => s.name === name && at >= s.from && at <= s.to);
 
-  const messageRanges: [number, number][] = [];
+  // ── The message exemption is an ARGUMENT, not a byte range (#1113) ──
+  //
+  // `log(\`… ${f(\`git -C ${dir} x\`)} …\`)` has a command inside it, and a
+  // range test exempts the lot because the inner literal sits between the
+  // outer call's first and last byte. Only the literals the call receives
+  // DIRECTLY are messages. `callee.type === "Identifier"` as well, so
+  // `log.foo(…)` and `logger.warn(…)` are not this exemption — `calleeName`
+  // walks a member chain to its root on purpose, and that is the wrong
+  // question here.
+  const messageLiterals = new Set<Node>();
+  const messageConcats = new Set<Node>();
   for (const node of walk(tree)) {
     if (node.type !== "CallExpression" && node.type !== "NewExpression") continue;
-    if (MESSAGE_CALLEES.includes(calleeName(node.callee) ?? "")) messageRanges.push([node.start, node.end]);
+    if (!isNode(node.callee) || node.callee.type !== "Identifier") continue;
+    if (!MESSAGE_CALLEES.includes(node.callee.name as string)) continue;
+    for (const arg of node.arguments as Node[]) {
+      if (arg.type === "TemplateLiteral") messageLiterals.add(arg);
+      // `log('a: ' + \`b ${x}\`)` is still one message.
+      if (arg.type === "BinaryExpression") {
+        messageConcats.add(arg);
+        for (const sub of walk(arg)) {
+          if (sub.type === "TemplateLiteral") messageLiterals.add(sub);
+          if (sub.type === "BinaryExpression") messageConcats.add(sub);
+        }
+      }
+    }
   }
-  const inMessage = (at: number) => messageRanges.some(([from, to]) => at >= from && at <= to);
 
   const found: BareInterpolation[] = [];
+  const record = (at: number, name: string, expr: Node) => {
+    const where = `${relPath}:${source.slice(0, at).split("\n").length}`;
+    if (found.some(f => f.where === where && f.name === name)) return;
+    found.push({
+      where,
+      name,
+      expression: source.slice(expr.start, expr.end).replace(/\s+/g, " ").slice(0, 80),
+    });
+  };
+
+  // ── A template literal is not the only way to build a string (#1113) ──
+  //
+  // `'git -C ' + workDir + ' status'` reaches the same shell and was
+  // invisible, which is a sink SHAPE the scanner could not see rather than a
+  // value it decided was safe — the same class of silence as the comment
+  // regex and the destructuring. Measured at 18 sites and 7 names on this
+  // tree, every one of them a name the template scan already reports, so it
+  // costs no new classifications and closes the shape.
+  //
+  // A string literal has to be in the expression: `a + b` on two numbers is
+  // arithmetic, and `${count + 1}` is not a command.
+  for (const node of walk(tree)) {
+    if (node.type !== "BinaryExpression" || node.operator !== "+") continue;
+    if (messageConcats.has(node)) continue;
+    let hasStringLiteral = false;
+    const names = new Set<string>();
+    for (const sub of walk(node)) {
+      if (sub.type === "Literal" && typeof sub.value === "string") hasStringLiteral = true;
+      if (sub.type !== "Identifier") continue;
+      const ref = sub.name as string;
+      if (seeds.has(ref) || taintedAt(ref, sub.start)) names.add(ref);
+    }
+    if (!hasStringLiteral) continue;
+    for (const name of names) record(node.start, name, node);
+  }
+
   for (const node of walk(tree)) {
     if (node.type !== "TemplateLiteral") continue;
+    if (messageLiterals.has(node)) continue;
     for (const expr of node.expressions as Node[]) {
       if (expr.type === "CallExpression" && sanitisedCall(expr)) continue;
-      if (inMessage(expr.start)) continue;
       const names = new Set<string>();
       for (const sub of walk(expr)) {
-        if (sub.type === "Identifier" && taintedAt(sub.name as string, sub.start)) names.add(sub.name as string);
+        if (sub.type !== "Identifier") continue;
+        const ref = sub.name as string;
+        // A SEED is reported wherever it is interpolated, whatever its scope.
+        // Members are top-level only — measured, and the 200/490 count that
+        // justifies that restriction is about PROPAGATION, which is a
+        // different question from whether to report a value that came
+        // straight out of an agent call (#1113).
+        if (seeds.has(ref) || taintedAt(ref, sub.start)) names.add(ref);
       }
       if (names.size === 0) continue;
       const line = source.slice(0, expr.start).split("\n").length;

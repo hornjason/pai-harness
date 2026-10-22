@@ -133,6 +133,43 @@ const CLASSIFIED: Record<string, string> = {
     "prose into a prompt: `.detail` is composed by `containerProbeTarget` from its own literals " +
     "plus a host that passed `CONTAINER_HOST` and a port that passed an integer range check",
 
+  // ── workflows/ship.js, block-scoped agent replies ──────────────────
+  // Reported wherever they are interpolated, whatever their scope: these come
+  // straight out of an agent call, and gating the REPORT on top-level the way
+  // propagation is gated would have made a whole class of them silent
+  // (#1113).
+  "workflows/ship.js:verifyResult":
+    "prose into a prompt: the verify gate's failure lines, joined into a sentence. Reached by " +
+    "`'…' + …`, not by a template — the concatenation shape the scanner could not see (#1113)",
+  "workflows/ship.js:result":
+    "prose into a prompt: `result.result` or the sentence 'did not report a result'",
+  "workflows/ship.js:evidenceQuality":
+    "prose into a prompt: `.reason`, a sentence this file composed in `dryRunEvidenceQuality`",
+  "workflows/ship.js:established":
+    "prose into a prompt: `.refusal`, composed by this file when the run ref could not be made",
+  "workflows/ship.js:reread":
+    "prose into a prompt: `.refusal`, composed by this file",
+  "workflows/ship.js:waveBase":
+    "prose into a prompt: `.refusal`, composed by this file",
+  "workflows/ship.js:integrated":
+    "prose into a prompt: `.detail`, composed by this file when a wave did not integrate",
+  "workflows/ship.js:kept":
+    "prose into a prompt: `.detail`, composed by this file about preserved work",
+  "workflows/ship.js:ciStep":
+    "prose into a prompt: `.reason`, composed by this file from CI's own verdict",
+  "workflows/ship.js:persistResult":
+    "prose into a prompt: `.error`, or the sentence 'no receipt returned'",
+  "workflows/ship.js:suiteResult":
+    "structured, not text: the suite verdict word, or the literal 'unset'",
+  "workflows/ship.js:reReviewed":
+    "prose into a prompt: wrapped in `describeShaValue`, in a sentence about the re-review",
+  "workflows/ship.js:ready":
+    "prose into a prompt: sub-issue titles, joined into a sentence. Nested one level inside a " +
+    "`log()` message, which the direct-argument exemption deliberately does not reach",
+  "workflows/ship.js:envCheck":
+    "prose into a prompt: container host readings, nested one level inside a `log()` message — " +
+    "same deliberate reach of the direct-argument rule",
+
   // ── workflows/ship.js, helper parameters ───────────────────────────
   // Not top-level bindings: parameters that a member was passed into, which
   // the analysis follows one hop because a value crossing a function boundary
@@ -203,8 +240,40 @@ const CLASSIFIED: Record<string, string> = {
     "prose into a prompt: `.verdict`, rendered as one bullet of the proof comment",
   "workflows/prove.js:proveEvidence":
     "structured, not text: `JSON.stringify(proveEvidence, null, 2)`, written as the evidence file",
+  "workflows/prove.js:screenshotUploadResult":
+    "prose into a prompt: markdown image links, concatenated under an '## Evidence Screenshots' " +
+    "heading. Also a concatenation rather than a template",
+  "workflows/prove.js:verdict":
+    "structured, not text: `cr.verdict`, one of the gate's verdict words, as a markdown bullet",
+  "workflows/prove.js:chainMode":
+    "structured, not text: `String(chainMode).includes('CHAIN')` picks between two literal " +
+    "sentences, so the value itself never reaches the string",
+  "workflows/prove.js:safeProofComment":
+    "a command, not a value: the proof comment already through `heredocSafe` for the delimiter " +
+    "this very literal opens. Classified per site rather than carried by the name, because " +
+    "heredoc-safety is a fact about ONE heredoc and a name can travel to another (#1113)",
+
+  // ── workflows/verify.js ────────────────────────────────────────────
+  // Both are `container.*` out of the project's resolved config, named as
+  // words in a `podman` command. verify.js has no `shellQuote` and cannot
+  // import one (#69). Left classified rather than fixed because the value is
+  // the project's own configuration rather than anything an agent reported —
+  // the weakest entry in this table, and the one to revisit first if
+  // consumers start writing that config from a template.
+  "workflows/verify.js:CONTAINER_NAME":
+    "a command, not a value: `container.name` from the resolved config, named in `podman ps` " +
+    "and `podman exec`",
+  "workflows/verify.js:CONTAINER_APP_ROOT":
+    "a command, not a value: `container.appRoot` from the resolved config, the path `podman " +
+    "exec … test -f` checks under",
 
   // ── workflows/council.js ───────────────────────────────────────────
+  "workflows/council.js:codebaseResearch":
+    "prose into a prompt: a researcher agent's findings, quoted under '## Codebase Research'. " +
+    "Destructured out of `await parallel([…])`, which is how the destructuring blind spot in " +
+    "`bindings()` showed up at all (#1113)",
+  "workflows/council.js:externalResearch":
+    "prose into a prompt: the same, under '## External Research'",
   "workflows/council.js:round1Transcript":
     "prose into a prompt: the council's own round-1 positions, quoted back to the next round",
   "workflows/council.js:round2Transcript":
@@ -352,7 +421,7 @@ describe("#1103: the census can fail, and fails on the thing that got past it", 
     expect(bareAgentInterpolations("planted.js", planted)).toEqual([]);
   });
 
-  test("shellQuote and heredocSafe are the only ways out", () => {
+  test("shellQuote is the only way out, and heredocSafe deliberately is not", () => {
     const quoted = [
       "const thing = await agent(`do work`)",
       "const p = thing.path",
@@ -360,23 +429,125 @@ describe("#1103: the census can fail, and fails on the thing that got past it", 
     ].join("\n");
     expect(bareAgentInterpolations("planted.js", quoted)).toEqual([]);
 
-    // …and a binding whose every assignment is a sanitiser call carries it.
-    const carried = [
+    // `shellQuote` is context-free: its output is one shell word wherever it
+    // lands. `heredocSafe` is not — it makes a value safe inside a heredoc
+    // opened with the delimiter it was GIVEN, and a name carrying that
+    // property to a site that opens no heredoc, or opens a different one, is
+    // marked safe for a context it never reached (#1113). So it is reported
+    // and classified per site rather than carried by the name.
+    const heredoc = [
       "const thing = await agent(`do work`)",
       "const safe = heredocSafe(thing.body, 'EOF')",
       "const cmd = `cat <<EOF\\n${safe}\\nEOF`",
     ].join("\n");
-    expect(bareAgentInterpolations("planted.js", carried)).toEqual([]);
+    expect(bareAgentInterpolations("planted.js", heredoc).map(f => f.name)).toEqual(["safe"]);
 
-    // Not a free pass for the NAME: a second assignment that does not
-    // sanitise puts it back in the population.
-    const halfSafe = [
+    // The case that cost the exemption: the same binding reaching a command
+    // that opens no heredoc at all. Under the old rule this was silent.
+    const travelled = [
       "const thing = await agent(`do work`)",
-      "let safe = heredocSafe(thing.body, 'EOF')",
-      "safe = thing.body",
-      "const cmd = `cat <<EOF\\n${safe}\\nEOF`",
+      "const safe = heredocSafe(thing.body, 'EOF')",
+      "const cmd = `git -C ${safe} status`",
     ].join("\n");
-    expect(bareAgentInterpolations("planted.js", halfSafe).map(f => f.name)).toEqual(["safe"]);
+    expect(bareAgentInterpolations("planted.js", travelled).map(f => f.name)).toEqual(["safe"]);
+  });
+
+  test("a concatenated command is a sink too", () => {
+    // A template literal is not the only way to build a string, and
+    // `'git -C ' + workDir` reached the same shell invisibly — a sink SHAPE
+    // the scanner could not see, which is the same class of silence as the
+    // comment regex and the destructuring (#1113).
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const workDir = thing.workDir",
+      "const cmd = 'git -C ' + workDir + ' status'",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted).map(f => f.name)).toEqual(["workDir"]);
+
+    // Arithmetic is not a command: a `+` with no string literal in it is not
+    // a sink, or every `${i + 1}` in these files would be one.
+    const arithmetic = [
+      "const thing = await agent(`do work`)",
+      "const n = thing.count",
+      "const total = n + 1",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", arithmetic)).toEqual([]);
+
+    // And a concatenated MESSAGE is still a message.
+    const message = [
+      "const thing = await agent(`do work`)",
+      "const p = thing.path",
+      "log('staged into ' + p)",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", message)).toEqual([]);
+  });
+
+  test("a destructured agent reply is a binding — the invisible one", () => {
+    // `bindings()` only emitted for `dec.id.type === "Identifier"`, so this
+    // whole shape bound nothing and the checker said nothing (#1113). Object,
+    // nested, array, rename and default all reach the same place.
+    const planted = [
+      "const { branch } = await agent(`find the branch`)",
+      "const cmd = `git push origin HEAD:${branch}`",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted).map(f => f.name)).toEqual(["branch"]);
+
+    const renamed = [
+      "const { worktreePath: wt } = await agent(`build it`)",
+      "const cmd = `git -C ${wt} status`",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", renamed).map(f => f.name)).toEqual(["wt"]);
+
+    const array = [
+      "const [first] = await parallel([() => agent(`a`)])",
+      "const cmd = `echo ${first}`",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", array).map(f => f.name)).toEqual(["first"]);
+  });
+
+  test("a block-scoped agent reply is reported where it is interpolated", () => {
+    // Members are top-level only, and that restriction is about PROPAGATION —
+    // measured at 200 names if widened. Whether to REPORT a value that came
+    // straight out of an agent call is a different question, and gating it on
+    // the same flag made a whole class of them silent (#1113).
+    const planted = [
+      "if (cond) {",
+      "  const reply = await agent(`do work`)",
+      "  const cmd = `git -C ${reply.worktreePath} status`",
+      "}",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted).map(f => f.name)).toEqual(["reply"]);
+  });
+
+  test("a template nested inside a log() call is not exempt by proximity", () => {
+    // The exemption was a byte range, so anything between a `log(` call's
+    // first and last byte was a message — including a command built inside
+    // it. It is the DIRECT arguments that are messages (#1113).
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const p = thing.path",
+      "log(`ran ${build(`git -C ${p} status`)}`)",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted).map(f => f.name)).toEqual(["p"]);
+
+    // And the direct argument itself is still exempt, including when the
+    // message is assembled with `+`.
+    const message = [
+      "const thing = await agent(`do work`)",
+      "const p = thing.path",
+      "log(`staged into ${p}`)",
+      "log('prefix: ' + `and ${p}`)",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", message)).toEqual([]);
+
+    // `log.foo()` and `logger.warn()` are not this exemption: the callee has
+    // to BE the name, not merely be rooted at it.
+    const memberCall = [
+      "const thing = await agent(`do work`)",
+      "const p = thing.path",
+      "log.verbose(`staged into ${p}`)",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", memberCall).map(f => f.name)).toEqual(["p"]);
   });
 
   test("a bullet inside a prompt is not a comment — the regex this replaced thought it was", () => {

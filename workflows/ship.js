@@ -379,6 +379,23 @@ function isSafeBranchName(name) {
   return true
 }
 
+/**
+ * `main`, `refs/heads/main` and `origin/main` as one name (#1113).
+ *
+ * Only for COMPARING a reported ref against a branch this run must not push
+ * to. It is not a sanitiser and it is not a validator: it strips a prefix, so
+ * feeding it hostile text returns hostile text with a prefix gone. The
+ * refusals that use it run `isSafeBranchName` on the unstripped value in the
+ * same breath, which is the half that decides whether the string is a branch
+ * name at all.
+ */
+function bareBranchName(ref) {
+  return String(ref ?? '')
+    .trim()
+    .replace(/^refs\/(?:heads|remotes)\//, '')
+    .replace(/^origin\//, '')
+}
+
 // Mirror of repoSlugRefusal / rootPathRefusal in lib/workflow-security.ts —
 // see the note at the top of this block. Change one, change the other; the
 // integration test runs both against the same inputs.
@@ -7291,7 +7308,31 @@ function reusablePriorBranch(prior) {
   // work to a ref nobody chose. Refusing falls back to the plain `HEAD` this
   // function already returns for every other reason, which is the behaviour a
   // run with no usable prior branch gets anyway.
-  if (!isSafeBranchName(prior.branch)) refusals.push('it is not a usable branch name')
+  //
+  // Shape is not identity, and the first version of this check confused them
+  // (#1113). `isSafeBranchName('main')` is TRUE — right length, matches
+  // SAFE_BRANCH, no `..`, no `//`, no trailing `/` or `.lock` — so a reply of
+  // `{branch: 'main', isMerged: false, isBehind: false}` passed every refusal
+  // here and became `HEAD:main`. The `#136` abort that catches it is 120
+  // lines further down, accurate and too late, and it stays there as the
+  // backstop rather than as the guard.
+  const nominated = String(prior.branch).trim()
+  if (!isSafeBranchName(nominated)) refusals.push('it is not a usable branch name')
+  if (/^refs\//.test(nominated) || nominated.includes('/heads/') || nominated.includes('/remotes/')) {
+    refusals.push('it is a fully-qualified ref rather than a branch name, and `HEAD:refs/heads/x` ' +
+      'reaches the same place by a different spelling')
+  }
+  // Normalised first, so `main`, `refs/heads/main` and `origin/main` are one
+  // case and not three. `DEFAULT_BRANCHES` is this file's existing answer to
+  // "which branch is the one nobody may push unreviewed work onto" — the same
+  // binding `runRefRefusal` uses — rather than a second pair written here that
+  // could drift from it. `primaryBranchBefore` covers the consumer whose
+  // default is neither: it is the branch the project checkout was on when this
+  // run launched, which is the #136 fact in the first place.
+  const bare = bareBranchName(nominated)
+  if (DEFAULT_BRANCHES.has(bare) || (primaryBranchBefore && bare === bareBranchName(primaryBranchBefore))) {
+    refusals.push(`it is the default branch (${bare}), and ship does not push a run's work onto it (#136)`)
+  }
   if (prior.isMerged === true) refusals.push('its work is already in the base branch')
   else if (prior.isMerged !== false) refusals.push('whether it is already merged was never measured')
   if (prior.isBehind === true) {
