@@ -194,6 +194,11 @@ describe("#141: importing the generator does not run it", () => {
 
     writeFileSync(target, sentinel);
     try {
+      // late-env-ok: this child only observes whether importing the module
+      // WRITES, and the sentinel survives or does not whatever HARNESS_ROOT
+      // says; the root only selects where a write would land, and the claim
+      // is that no write happens at all. The sibling case below, which does
+      // depend on the root, passes env explicitly.
       const proc = Bun.spawnSync(
         ["bun", "-e", 'await import("./scripts/sync-spec-tests.ts")'],
         { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },

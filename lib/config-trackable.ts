@@ -147,6 +147,15 @@ function git(root: string, args: string[], input?: string) {
     encoding: "utf-8",
     timeout: 120_000,
     maxBuffer: 16 * 1024 * 1024,
+    // The child gets the environment this process HAS, not the one it
+    // started with. Under Bun those differ: a `process.env` write made
+    // after start does not reach a child given no `env` option, and under
+    // Node it does (#1096, measured with a Node control). Nothing in
+    // production writes these late, so this changes no shipped behaviour —
+    // what it changes is that `test/config-trackable.test.ts`'s hermetic
+    // HOME now reaches the git THIS function spawns, which is the half its
+    // fixture was written for and the half that was inert.
+    env: { ...process.env },
   });
   if (r.error) return { status: -1, stdout: "", stderr: r.error.message };
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
