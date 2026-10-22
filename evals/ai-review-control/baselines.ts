@@ -1,0 +1,100 @@
+/**
+ * ai-review-control/baselines.ts — frozen outcome readings, loaded back as
+ * `FindingOutcomeSummary` so a comparison does not have to re-derive one
+ * (#1278).
+ *
+ * ## Why a baseline is stored at all
+ *
+ * Most of what `outcomes-run.ts` reads is append-only and could be rebuilt
+ * later: git history does not change, and an issue's `created_at` is fixed.
+ * One part is not. The script reads each issue's **current** `state`, so a
+ * finding that is OPEN today and closed next week reads differently in a run
+ * taken next week — and the 30 OPEN rows in the pre-arbiter reading are
+ * exactly the rows whose fate is undecided. Re-deriving the reading as of a
+ * past date is possible with a `closed_at` filter nobody has written; a
+ * stored artefact is the cheaper honest answer, and it removes the question.
+ *
+ * ## What a baseline is NOT
+ *
+ * **It is not a drop-in `before` arm for a temporal comparison, and nothing
+ * here will pretend otherwise.** `compareReviewOutcomes` refuses unequal
+ * populations by design — a smaller sweep is not an improvement — and a
+ * tracker run taken after a filing-path change is a different population. So
+ * `compareReviewOutcomes(loadBaseline("pre-arbiter"), aLaterFullRun)` returns
+ * UNMEASURED, correctly, every time.
+ *
+ * That refusal is the feature. A mechanism whose whole job is to file less
+ * makes "fewer findings" structurally tempting to read as success, and the
+ * one comparison this module will not perform is the one that rewards it.
+ *
+ * The comparison that genuinely prices such a mechanism is the same-population
+ * one: score the adjudicated batch twice, once with nothing suppressed and
+ * once with the withholding applied, so the arms differ only in `suppressed`
+ * and the population cannot shrink. A withheld candidate stays in the corpus.
+ */
+import { readFileSync } from "fs";
+import { join } from "path";
+
+import type { FindingOutcomeSummary } from "./outcomes";
+
+/** Non-zero for every refusal, through one constant. */
+export const BASELINE_REFUSED = "baseline refused";
+
+export interface OutcomeBaseline {
+  name: string;
+  /** The 40-character commit the reading was taken at. */
+  pinnedCommit: string;
+  measuredAt: string;
+  repo: string;
+  command: string;
+  plantsAgreed: number;
+  plantsTotal: number;
+  why: string;
+  comparableWith: string;
+  summary: FindingOutcomeSummary;
+}
+
+/**
+ * Load a stored reading.
+ *
+ * Refuses rather than returning a partial baseline. A number whose provenance
+ * is missing is a number nobody can date, and the failure mode this guards is
+ * a truncated or hand-edited artefact reading as a measurement: `0`, `{}` and
+ * a half-written file are all indistinguishable from success, so each of the
+ * provenance fields is required by name.
+ *
+ * The plants matter most of the three checks. A reading whose known-positives
+ * disagreed was never a reading, and freezing one would preserve a blind
+ * detector's output as ground truth for everything measured against it after.
+ */
+export function loadBaseline(name: string, dir?: string): OutcomeBaseline {
+  const path = join(dir ?? join(import.meta.dir, "baselines"), `${name}.json`);
+  const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<OutcomeBaseline>;
+
+  for (const field of ["name", "pinnedCommit", "measuredAt", "repo", "why", "comparableWith"] as const) {
+    const v = raw[field];
+    if (typeof v !== "string" || v === "") {
+      throw new Error(`${BASELINE_REFUSED}: ${path} has no \`${field}\`. A stored reading without its provenance is a number nobody can date.`);
+    }
+  }
+
+  // A short SHA and a wrong-length string are indistinguishable to a reader,
+  // and `gh run list --commit` silently returns nothing for the former.
+  if (!/^[0-9a-f]{40}$/.test(raw.pinnedCommit!)) {
+    throw new Error(`${BASELINE_REFUSED}: ${path} pins \`${raw.pinnedCommit}\`, which is not a 40-character SHA.`);
+  }
+
+  if (raw.summary === undefined || raw.summary.usable !== true) {
+    throw new Error(`${BASELINE_REFUSED}: ${path} stores a summary that is not usable, so it was never a reading.`);
+  }
+
+  if (raw.plantsAgreed !== raw.plantsTotal || (raw.plantsTotal ?? 0) === 0) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} records ${raw.plantsAgreed} of ${raw.plantsTotal} plants agreeing. ` +
+        "A sweep that cannot see its own known-positives is not distinguishable from a blind one, and " +
+        "freezing its output would make a blind detector the ground truth for everything compared to it.",
+    );
+  }
+
+  return raw as OutcomeBaseline;
+}
