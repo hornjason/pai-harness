@@ -168,7 +168,39 @@ registry, and goes red when either drifts. Bumping `package.json` without
 updating this line turns it red, which is what makes a release a two-commit
 operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-18)** — tree `0.6.0`, published `rungate@0.6.0`.
+- **Distribution standing (2026-10-21)** — tree `0.7.0`, published `rungate@0.6.0`.
+
+**The two numbers differ on purpose, and this is the publish-pending state.**
+`distributionViolations` compares the first to `package.json` and the second to
+the registry **independently** — nothing requires them to be equal — so the
+line above is the supported way to say "bumped, not yet shipped". It is the
+same state the `v0.6.0` tag carried (*tree `0.6.0`, published `rungate@0.5.0`*)
+while its pipeline ran. The second number moves in a follow-up commit once the
+registry serves `0.7.0`, and that is the "two-commit operation" the paragraph
+above refers to.
+
+**Why `0.7.0` and not `0.6.1`.** Two hundred and fourteen commits past
+`v0.6.0`, carrying features and not only fixes — the `ai-review-findings`
+command is new public surface. On this file's own test (*observable behaviour
+changes, not fixes*) a minor is the honest signal on 0.x. The `exports` map is
+unchanged at the same five subpaths, so nothing here is breaking.
+
+**What 0.7.0 is actually for, stated plainly: the `ai-review-findings` command
+does not exist in any installable version.** Measured against the published
+tarball rather than inferred — `rungate@0.6.0` contains 192 files, and neither
+`scripts/ai-review-findings.ts` nor `lib/scaffold/ai-review-findings.ts` is
+among them. Its `files[]` predates the script, and its `lib/cli-commands.ts`
+has no `ai-review-findings` entry at all, so a consumer does not even get the
+registered-but-missing error `bin/rungate.ts` raises for this case — the
+command is simply unknown. `npm pack --dry-run` on this tree reports 257 files
+and all four of the path's members. #675 and #1013 are both dead until a
+release carries them, and this is that release.
+
+**`files[]` needed no change, and that was checked rather than assumed.**
+`scripts/ai-review-findings.ts` was added to it after `0.6.0` was cut. Its only
+non-stdlib dependency is `../lib/scaffold/ai-review-findings`, which `lib/` already
+covers, and it reads no file by path — so `CLOSURE-1` and `CLOSURE-8` are
+satisfied as they stand.
 
 **Why `0.6.0` and not `0.5.1`.** Fifty-two commits past `v0.5.0`, carrying
 features and not only fixes — `#630`'s auth ladder, `#626`'s contract-parity
