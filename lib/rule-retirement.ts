@@ -139,6 +139,54 @@ interface GitResult {
 }
 
 /**
+ * The four fields `git()` reads off a spawn, and nothing else.
+ *
+ * Narrower than `SpawnSyncReturns` on purpose: these are exactly the values
+ * the branches below decide on, so a reading handed to the seam cannot
+ * accidentally carry a field the decision never consults.
+ */
+export interface GitSpawnReading {
+  error?: Error;
+  signal?: NodeJS.Signals | null;
+  status?: number | null;
+  stdout?: string | null;
+  stderr?: string | null;
+}
+
+export type GitSpawner = (
+  root: string,
+  args: readonly string[],
+  stdin: string | undefined,
+  timeoutMs: number,
+) => GitSpawnReading;
+
+/**
+ * The ONE spawn this module makes, exported so the kill path has a witness.
+ *
+ * There is no way to make git hang on demand, so `r.error` and `r.signal`
+ * are otherwise branches no case reaches — and an unreachable branch is the
+ * shape this repository pays for most. The previous attempt at a witness was
+ * a real 1 ms deadline at a real repository, which asserts that git LOSES a
+ * race: on a warm runner git wins it, the read is RESOLVES, and `main` goes
+ * red accusing code that is behaving correctly (#1063). Worse, the runner
+ * that produced that failure answered in 19.53 ms, so the 1 ms deadline was
+ * not enforced there at all — which also rules out pointing the deadline at
+ * a command that cannot finish, because on a platform that drops the
+ * deadline that command does not finish.
+ *
+ * So the kill is injected rather than raced for. A seam is a default
+ * parameter the production path always takes; a flag read inside the
+ * decision would be a second decider, which is the thing to avoid.
+ */
+export const spawnGit: GitSpawner = (root, args, stdin, timeoutMs) =>
+  spawnSync("git", ["-C", root, ...args], {
+    timeout: timeoutMs,
+    maxBuffer: 16 * 1024 * 1024,
+    encoding: "utf-8",
+    input: stdin,
+  });
+
+/**
  * Run git and say whether the ANSWER is usable, not merely what it exited.
  *
  * A boolean `ok` rather than a status number, because the one thing callers
@@ -161,13 +209,14 @@ interface GitResult {
  * `--batch-check`, which reports absence, ambiguity and type in its OUTPUT
  * and reserves a non-zero exit for not having run.
  */
-function git(root: string, args: string[], stdin?: string, timeoutMs = GIT_TIMEOUT_MS): GitResult {
-  const r = spawnSync("git", ["-C", root, ...args], {
-    timeout: timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
-    encoding: "utf-8",
-    input: stdin,
-  });
+function git(
+  root: string,
+  args: string[],
+  stdin?: string,
+  timeoutMs = GIT_TIMEOUT_MS,
+  spawn: GitSpawner = spawnGit,
+): GitResult {
+  const r = spawn(root, args, stdin, timeoutMs);
   // A timeout arrives as `error` on some platforms and as `signal` on
   // others, and reading only `status` makes a killed process look like a
   // clean non-zero exit. Both are checked, and both are named in `detail`
@@ -241,13 +290,10 @@ export function batchCheckShas(
   root: string,
   shas: readonly string[],
   history: HistoryState,
-  /**
-   * The TOTAL deadline for the pass. A parameter rather than only a
-   * constant so the kill path has a witness: with no way to make git hang
-   * on demand, `r.error`/`r.signal` are otherwise branches no case reaches,
-   * and an unreachable branch is the shape this repository pays for most.
-   */
+  /** The TOTAL deadline for the pass, threaded to the one spawn below. */
   timeoutMs = GIT_TIMEOUT_MS,
+  /** The one spawn, injectable so the kill path has a witness — see `spawnGit`. */
+  spawn: GitSpawner = spawnGit,
 ): Map<string, CitationReading> {
   const out = new Map<string, CitationReading>();
   if (shas.length === 0) return out;
@@ -272,7 +318,7 @@ export function batchCheckShas(
     });
   }
 
-  const r = git(root, ["cat-file", "--batch-check"], shas.join("\n") + "\n", timeoutMs);
+  const r = git(root, ["cat-file", "--batch-check"], shas.join("\n") + "\n", timeoutMs, spawn);
   if (!r.ok) {
     return all({ reading: "UNMEASURED", detail: `${r.detail} (${GIT_UNREADABLE})` });
   }
