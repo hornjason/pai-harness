@@ -1,4 +1,4 @@
-# generated-sha: 22f43215908b1d1e
+# generated-sha: 6a777fbac2268d09
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
@@ -130,12 +130,114 @@ jobs:
     # protection configurations read a skip as satisfied — which would make
     # this aggregate a gate that cannot refuse.
     if: always()
+    permissions:
+      contents: read
+      # #1181. The aggregate asks the Actions API how many shards actually
+      # concluded, because `needs.test-shard.result` collapses a matrix into
+      # one word and reported `success` for three legs that never ran.
+      actions: read
     steps:
-      - name: Every shard passed
+      - name: Every shard concluded, and every shard passed
+        env:
+          # Every GitHub-side value arrives here, and the script below holds
+          # no GitHub expression at all — that is what lets a test execute
+          # the shipped text with a stubbed gh and watch it refuse (#1181).
+          SHARD_ROLLUP: ${{ needs.test-shard.result }}
+          SHARD_EXPECTED: "4"
+          SHARD_JOB_NAME: test-shard
+          SHARD_REPO: ${{ github.repository }}
+          SHARD_RUN_ID: ${{ github.run_id }}
+          SHARD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          result='${{ needs.test-shard.result }}'
-          if [ "$result" != "success" ]; then
-            echo "::error::test-shard concluded '$result' — the suite is not green."
+          set -uo pipefail
+
+          # 1. The rollup, read exactly as it is read today. A failed or a cancelled
+          #    shard reaches this job through `if: always()` and refuses here, with
+          #    the same sentence it has always printed.
+          rollup="${SHARD_ROLLUP:-}"
+          if [ "$rollup" != "success" ]; then
+            echo "::error::test-shard concluded '$rollup' — the suite is not green."
             exit 1
           fi
-          echo "All 4 shards passed."
+
+          # 2. A success rollup is not a measurement. Everything below establishes how
+          #    many shards this run actually concluded (#1181).
+          expected="${SHARD_EXPECTED:-}"
+          case "$expected" in
+            "" | *[!0-9]*)
+              echo "::error::SHARD_EXPECTED is '$expected', which is not a shard count. UNMEASURED, so refusing."
+              exit 1
+              ;;
+          esac
+          if [ "$expected" -lt 1 ]; then
+            echo "::error::SHARD_EXPECTED is $expected, so this job would assert nothing. UNMEASURED, so refusing."
+            exit 1
+          fi
+
+          job_name="${SHARD_JOB_NAME:-test-shard}"
+          attempts="${SHARD_POLL_ATTEMPTS:-3}"
+          pause="${SHARD_POLL_SECONDS:-5}"
+          attempt=1
+
+          while : ; do
+            rows="$(gh api --paginate \
+              "repos/${SHARD_REPO}/actions/runs/${SHARD_RUN_ID}/attempts/${SHARD_RUN_ATTEMPT}/jobs?per_page=100" \
+              --jq '.jobs[] | [.name, (.conclusion // "none")] | @tsv' 2>&1)"
+            api_status=$?
+            if [ "$api_status" -ne 0 ]; then
+              # No reading at all. This is the one branch most likely to be written
+              # fail-open, and fail-open here reproduces the defect exactly.
+              echo "::error::could not read this run's jobs from the Actions API (gh exit $api_status): $rows"
+              echo "::error::the shard count is UNMEASURED, which is not a pass. Refusing."
+              exit 1
+            fi
+
+            seen=0
+            passed=0
+            pending=0
+            detail=""
+            while IFS="$(printf '\t')" read -r name conclusion; do
+              [ -n "$name" ] || continue
+              case "$name" in
+                "$job_name ("*")") ;;
+                *) continue ;;
+              esac
+              seen=$((seen + 1))
+              case "$conclusion" in
+                success) passed=$((passed + 1)) ;;
+                none | "")
+                  pending=$((pending + 1))
+                  detail="$detail \"$name\"=no-conclusion"
+                  ;;
+                *) detail="$detail \"$name\"=$conclusion" ;;
+              esac
+            done <<< "$rows"
+
+            # Complete reading, or out of attempts. The loop is for API propagation
+            # lag on an ordinary run, not for the defect.
+            if [ "$pending" -eq 0 ] && [ "$seen" -ge "$expected" ]; then break; fi
+            if [ "$attempt" -ge "$attempts" ]; then break; fi
+            attempt=$((attempt + 1))
+            sleep "$pause"
+          done
+
+          if [ "$seen" -ne "$expected" ]; then
+            echo "::error::this run reports $seen \"$job_name\" jobs, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
+            exit 1
+          fi
+
+          if [ "$pending" -ne 0 ]; then
+            echo "::error::$pending of $expected shards produced NO conclusion:$detail"
+            echo "::error::a shard that never concluded is UNMEASURED, not a pass — this is #1181, where three of four were queued and the aggregate went green."
+            exit 1
+          fi
+
+          if [ "$passed" -ne "$expected" ]; then
+            echo "::error::$passed of $expected shards concluded success:$detail"
+            exit 1
+          fi
+
+          # $passed is the measured count, never the generated one. The sentence on
+          # run 39799846607 said "All 4 shards passed" because the generator wrote 4.
+          echo "All $passed shards concluded, and all $passed passed."
