@@ -40,6 +40,7 @@ import { readFileSync } from "fs";
 
 import {
   arbitrate,
+  UNFILED_ID,
   verdictSummary,
   type Finding,
   type Verdict,
@@ -182,7 +183,7 @@ function main(): number {
   }
 
   const finding: Finding = {
-    id: "new",
+    id: UNFILED_ID,
     title: args.title,
     body: readFileSync(args.bodyFile, "utf-8"),
     ...(args.outOfScope ? { outOfScope: { reason: args.outOfScope } } : {}),
