@@ -31,11 +31,12 @@ A failing check announces itself. A check that cannot fail looks exactly like a
 check that is satisfied — and it looks *better* over time, because it never
 flakes and never blocks anyone. The quieter it is, the more it is trusted.
 
-Five shapes to watch for. The first three are taken from the list above. The
+Six shapes to watch for. The first three are taken from the list above. The
 fourth is the one that list could not contain, because it is invisible to
 exactly the kind of after-the-fact reading that produced the list. The fifth
 is invisible to the question this whole file asks — *can this check fail?* —
-because the honest answer is yes, today.
+because the honest answer is yes, today. The sixth is invisible to the test's
+own output.
 
 - **Fail-open error handling.** A `catch` that returns "no problems found", or
   a parse failure that defaults to an empty violation list. Anything that can
@@ -55,6 +56,12 @@ because the honest answer is yes, today.
   reason, against exactly what it is pointed at. It also stops failing under
   the cheapest repair somebody reaches for — so it certifies the regression
   it was written to block, at the moment that regression arrives.
+- **Green on the exit code, witnessing the wrong mechanism.** Right input,
+  wide enough detector, a real assertion — and the run never reached the
+  mechanism, because something earlier produced the SAME observable. Two
+  mechanisms, one signal, and the case asserts on the signal. **A status code
+  is almost never specific to one mechanism**: assert something only the
+  intended one can emit.
 
 ### On the fourth shape
 
@@ -68,6 +75,14 @@ expected, not a row that comes back zero.
 Measured six times across #415, #420, #436 and #445, with the pair and the
 count for each: `reference/check-failure-worked-instances.md`, *On the fourth
 shape*.
+
+### On the sixth shape
+
+Reading the test cannot find it — the failure is byte-identical to the success
+on the channel being observed. The worked instance (#1236/#1259), where
+`bash -e` aborted a step before its own refusal and produced the refusal's
+exact exit status with empty stderr, is in
+`reference/check-failure-worked-instances.md`, *On the sixth shape*.
 
 ## In practice
 

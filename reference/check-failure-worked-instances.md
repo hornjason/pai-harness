@@ -1852,3 +1852,78 @@ renaming it to `suiteVerdictRefusal` turns 4 red, every one of them throwing
 `could not build the mutant: the binding signature appears 0 times`. Neither
 mutation is left in the tree; both were run and reverted, and the counts are
 recorded in specs/HARNESS-STANDARD.md beside SC-615..617.
+
+### On the sixth shape: green on the exit code, witnessing the wrong mechanism (#1236, #1259)
+
+The generated `ai-review-rounds` step counts prior review rounds from a GitHub
+Actions API response and refuses when it cannot read one. The refusal is an
+`::error title=AI review rounds UNMEASURED::` annotation and a non-zero exit —
+deliberately not a silent `round=1`, which is the *Silent Default
+Substitution* anti-pattern in `.claude/rules/config-access.md`.
+
+The case planted an unparseable body and asserted the step exits non-zero. It
+was green on the first run, before the refusal had been written.
+
+What produced the exit was this, with no `|| total=` on the end:
+
+```bash
+total=$(printf '%s' "${body}" | grep -oE '"total_count"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
+```
+
+Actions runs `run:` blocks as `bash -e`, and an assignment whose only word is a
+failing `$(...)` aborts the shell at that line. On an unparseable body the
+second `grep` matches nothing, exits 1, and the script dies **before** reaching
+its own annotation.
+
+| | status | stderr |
+|---|---|---|
+| intended refusal | 1 | the UNMEASURED annotation |
+| what actually ran | 1 | empty |
+
+Identical on the only channel the case observed. The exit code is produced by
+`bash -e` and by the refusal alike, so no amount of re-reading the test finds
+this: the test is correct about what it asserts, and what it asserts cannot
+distinguish the two.
+
+**How it was found:** by predicting the stderr before reading it. The step was
+expected to name the three credentials in its annotation; the run showed
+nothing at all. A prediction about a *second* channel is what separated them —
+the same discipline the fourth shape needs, applied to output rather than to
+counts.
+
+**The fix, and the generalisation.** `|| total=` makes the empty reading
+reachable, and the case now asserts the annotation text as well as the status.
+That is the rule the shape reduces to: **assert something only the intended
+mechanism can produce.** A status code is almost never that, and neither is
+"threw" or "returned null" — each is reachable from a dozen places upstream.
+
+Two more instances of the same shape were live in the same file and fixed in
+the same change, both from `bash -e`: a `$(...)` in a conditional's subject,
+and a comment whose text contained the literal the one-constant assertion
+counted, which took the count from two to three and aborted the file for a
+reason unrelated to any refusal.
+
+#### The remedy, measured (#1259)
+
+Two more AC-S3 cases in `test/ai-review-rounds-step.test.ts` asserted the
+status and not the annotation. Both were reaching the real refusal — no hidden
+defect — so this measures the *instrument*, not a bug: how much the two
+assertions can tell apart.
+
+The mutant removes every `echo "::error title=…"` from the generated script
+and leaves the exits alone, which is precisely what a `bash -e` abort looks
+like from outside. Run over both cases:
+
+| case | real | mutant |
+|---|---|---|
+| `total_count` of 0 | status 1, annotation present | status 1, annotation **absent** |
+| blank branch | status 1, annotation present | status 1, annotation **absent** |
+
+The status column is identical on both sides. **The old assertion is green in
+every cell of this table**; the stderr assertion is red in exactly the two
+cells where the mechanism did not run. That is the whole shape in one
+measurement, and it is why the remedy is not "assert more" but "assert on a
+channel the wrong mechanism cannot write".
+
+The mutation was run from a scratch file and deleted; nothing in the tree
+carries it.
