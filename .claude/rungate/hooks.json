@@ -4,33 +4,37 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/BashToolGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "matcher": "Bash",
-    "description": "Blocks cat/head/tail file reading \u2014 enforces COMP-7 mechanically (Tier 3)"
+    "description": "Blocks cat/head/tail file reading — enforces COMP-7 mechanically (Tier 3)"
   },
   {
     "name": "TopLevelCdGuard",
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TopLevelCdGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "project",
     "matcher": "Bash",
-    "description": "Refuses a Bash command whose TOP LEVEL begins with or chains to `cd` \u2014 a top-level cd moves the SESSION's working directory, which worktree isolation resolves against, so it kills a peer agent's worktree creation hours later with no error naming the cause. Hard refusal, Jason's decision on #992, taken with the measured 32.7%-of-31,577 hit rate in hand; #1040 built the warn/block/off ladder and this takes `block` as the default, so RUNGATE_CD_GUARD=warn|off reverses it without a code change. Scoped to harnessed projects via lib/harness-project.ts. Project scope: ${CLAUDE_PROJECT_DIR} is the worktree, every worktree carries the committed .claude/settings.json, and worktree isolation is a harness concern. The parse is lib/top-level-cd.ts; read its WHAT THIS DOES NOT COVER block."
+    "description": "Refuses a Bash command whose TOP LEVEL begins with or chains to `cd` — a top-level cd moves the SESSION's working directory, which worktree isolation resolves against, so it kills a peer agent's worktree creation hours later with no error naming the cause. Hard refusal, Jason's decision on #992, taken with the measured 32.7%-of-31,577 hit rate in hand; #1040 built the warn/block/off ladder and this takes `block` as the default, so RUNGATE_CD_GUARD=warn|off reverses it without a code change. Scoped to harnessed projects via lib/harness-project.ts. Project scope: ${CLAUDE_PROJECT_DIR} is the worktree, every worktree carries the committed .claude/settings.json, and worktree isolation is a harness concern. The parse is lib/top-level-cd.ts; read its WHAT THIS DOES NOT COVER block."
   },
   {
     "name": "TestSuiteGuard",
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "matcher": "Bash",
-    "description": "Blocks a full test suite (bun test) once the worker has spent its rate \u2014 enforces DIR-L29 mechanically (Tier 3). The rate lives in lib/test-suite-lock.ts."
+    "description": "Blocks a full test suite (bun test) once the worker has spent its rate — enforces DIR-L29 mechanically (Tier 3). The rate lives in lib/test-suite-lock.ts."
   },
   {
     "name": "TestSuiteRelease",
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteRelease.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "matcher": "Bash",
     "description": "Hands a full suite its concurrency slot back when it finishes, so the next session is not stuck waiting out the 420s TTL (#67). Registered in user settings; #910 reported it registered nowhere after counting this file alone."
@@ -40,6 +44,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/AgentBriefGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "project",
     "matcher": "Agent",
     "description": "Validates agent brief templates and enforces ship-active marker"
@@ -49,6 +54,7 @@
     "hookFor": "SubagentStop",
     "command": "bun ${RUNGATE_HOOKS_DIR}/AgentVerdictCapture.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "description": "Captures agent verdicts and writes to workflow-state.json"
   },
@@ -57,6 +63,7 @@
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/AutoVerifyGate.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "matcher": "Agent",
     "description": "Nudges DA to run verify gate after agent completion"
@@ -66,6 +73,7 @@
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/CommitEnforcement.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "matcher": "Agent",
     "description": "Detects uncommitted changes and UI file changes in agent worktrees"
@@ -75,6 +83,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/GateEnforcement.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "matcher": ".*",
     "description": "Nags on gate failures and blocks Skill calls after max strikes"
@@ -84,6 +93,8 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/IssueCloseGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, not harness-only. Couples to two things a fresh consumer does not have: a GitHub issue tracker wired to ship-gate, and the HMAC `.gate-salt` it validates PASS provenance against. With neither present it declines on every call, and a guard that declines on every call is indistinguishable from one that is not installed. It ships in the tarball; a project registers it once ship-gate runs against its tracker.",
     "scope": "user",
     "matcher": "Bash",
     "description": "Blocks gh issue close without ship-gate PASS and HMAC validation"
@@ -93,6 +104,8 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/MergeGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, not harness-only. Reads `.ship-active` markers under WORK_DIR and a verify-gate PASS out of workflow-state.json; a project that has not run the ship loop has neither, so it warns about nothing. Ships in the tarball; register it once the ship loop runs.",
     "scope": "user",
     "matcher": "Bash",
     "description": "Early warning on git merge to main without verify-gate passing"
@@ -102,6 +115,7 @@
     "hookFor": "PostCompact",
     "command": "bun ${RUNGATE_HOOKS_DIR}/PostCompact.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "description": "Re-injects critical rules after context window compaction"
   },
@@ -110,16 +124,20 @@
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/SpecConformityTrigger.hook.ts",
     "enabled": false,
+    "deployToConsumers": false,
+    "notDeployedReason": "HARNESS-ONLY, and downstream of `enabled: false` — see disabledReason. A disabled entry that also claimed consumer deployment would be two answers to one question. Re-classify if and when it is re-enabled.",
     "scope": "project",
     "matcher": "Edit|Write",
     "description": "Auto-runs conformity when spec files are modified",
-    "disabledReason": "package.json already runs scripts/sync-sc-status.ts as posttest, so this would be a second decider for one question \u2014 the fourth shape in .claude/rules/checks-must-be-able-to-fail.md, where a mutation of either leaves the other holding the case up. The two triggers are also not equivalent, and the posttest one is the better of them: it ticks coverage after a suite run, where this one ticks it on a text edit, with no test having been run. #479."
+    "disabledReason": "package.json already runs scripts/sync-sc-status.ts as posttest, so this would be a second decider for one question — the fourth shape in .claude/rules/checks-must-be-able-to-fail.md, where a mutation of either leaves the other holding the case up. The two triggers are also not equivalent, and the posttest one is the better of them: it ticks coverage after a suite run, where this one ticks it on a text edit, with no test having been run. #479."
   },
   {
     "name": "SpecSCGuard",
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/SpecSCGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, not harness-only. Validates new SC lines against `config/matcher-registry.json`, which means it has nothing to say until the project has specs carrying SCs. Ships in the tarball; register it once `specs/` exists.",
     "scope": "project",
     "matcher": "Edit|Write",
     "description": "Validates new SC lines in spec files have matching patterns"
@@ -129,6 +147,7 @@
     "hookFor": "SessionStart",
     "command": "bun ${RUNGATE_HOOKS_DIR}/HookCurrency.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "project",
     "description": "Reports installed git hooks that are not the generator output (#879)"
   },
@@ -137,6 +156,7 @@
     "hookFor": "SessionStart",
     "command": "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "user",
     "description": "Cleans up stale workflow-state.json and ship-active files"
   },
@@ -145,15 +165,19 @@
     "hookFor": "TaskCompleted",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TaskCompleted.hook.ts",
     "enabled": false,
+    "deployToConsumers": false,
+    "notDeployedReason": "HARNESS-ONLY, and downstream of `enabled: false` — see disabledReason. It spawns a CONCURRENT full suite, which is the thing lib/test-suite-lock.ts exists to prevent, so deploying it to a consumer would export the defect that disabled it here. Re-classify if and when it is re-enabled.",
     "scope": "project",
     "description": "Quality gates before task completion (tests, uncommitted changes, conformity)",
-    "disabledReason": "checkTests spawns a full bun test with a 120000 ms timeout and this suite measures around 400 s, so the run can never finish \u2014 every completion would report a timed-out non-zero exit with no parseable failure count, which the code turns into a warning. It also spawns a CONCURRENT full suite, which is what DIR-L29 and lib/test-suite-lock.ts exist to prevent and what jetsam-killed the machine once already. Re-enable only after the timeout exceeds the measured suite duration and the spawn goes through the suite lock. #479."
+    "disabledReason": "checkTests spawns a full bun test with a 120000 ms timeout and this suite measures around 400 s, so the run can never finish — every completion would report a timed-out non-zero exit with no parseable failure count, which the code turns into a warning. It also spawns a CONCURRENT full suite, which is what DIR-L29 and lib/test-suite-lock.ts exist to prevent and what jetsam-killed the machine once already. Re-enable only after the timeout exceeds the measured suite duration and the spawn goes through the suite lock. #479."
   },
   {
     "name": "VerifyPhaseLock",
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/VerifyPhaseLock.hook.ts",
     "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, not harness-only. Blocks `gh issue create` during the VERIFY phase, so it presumes both a GitHub tracker and an active rungate workflow. Ships in the tarball; register it once the project ships through phases against a tracker.",
     "scope": "user",
     "matcher": "Bash",
     "description": "Blocks gh issue create during VERIFY phase"
@@ -163,6 +187,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/WorkflowStateGuard.hook.ts",
     "enabled": true,
+    "deployToConsumers": true,
     "scope": "project",
     "matcher": "Write|Edit",
     "description": "Blocks direct Write/Edit of workflow-state.json"
@@ -172,6 +197,8 @@
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/ProjectStateSync.hook.ts",
     "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "HARNESS-ONLY today, by two independent facts and not by preference. It execs `<projectRoot>/scripts/update-project-state.ts`, which `package.json` `files[]` does not publish, so on a consumer `projectStateTarget` returns `declined-no-generator` on every write — zero reading as success, the shape #1047 is about. And #910's #296 blast-radius question is open: it is registered on BOTH Write and Edit at user scope, so it would fire on every agent edit in a consumer's worktree, and PROJECT-STATE.md is DA-owned. Deploying it is blocked on publishing the generator AND closing #910; revisit on either, not on neither.",
     "scope": "user",
     "matcher": "Write|Edit",
     "description": "Regenerates PROJECT-STATE.md when project-state.json is written. Registered in user settings on BOTH Write and Edit; whether it should fire on every agent edit is open on #910 (#296 blast radius)."

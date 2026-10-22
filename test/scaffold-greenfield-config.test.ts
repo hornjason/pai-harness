@@ -194,6 +194,100 @@ describe("AC-8: hooks.json drives consumer hook deployment under the directory l
     expect(commands).not.toContain("HarnessOnly");
   });
 
+  test("DEPLOYED names the hooks, because a count cannot be checked against a registry (#1047)", () => {
+    const actions: string[] = [];
+    deployHooksToConsumers(tmpRoot, actions);
+    const line = actions.find(a => a.startsWith("DEPLOYED:"));
+    expect(line, "no DEPLOYED action was emitted").toBeDefined();
+    expect(line).toContain("DeployedGuard");
+  });
+
+  test("#1047: a registry where nobody opted in reads UNMEASURED, not success", () => {
+    // THE case this issue turns on, and the one the cheapest wrong fix —
+    // adding `hooks/` to `files[]` — does not reach. Before this change the
+    // same input produced `SKIP: All hooks already deployed to consumer-a`,
+    // which is the `else` of `deployed > 0` claiming a fact about hooks that
+    // were never eligible. That line and a correct run over a project that
+    // genuinely wanted no hooks were byte-identical, which is why 0 of 20
+    // entries holding the flag survived to a release.
+    const noneRoot = join(ROOT, "test", ".tmp-consumer-nobody-opted-in");
+    rmSync(noneRoot, { recursive: true, force: true });
+    mkdirSync(join(noneRoot, ".claude", "rungate"), { recursive: true });
+    mkdirSync(join(noneRoot, "consumer-c"), { recursive: true });
+    writeFileSync(
+      join(noneRoot, ".claude", "rungate", "config.json"),
+      JSON.stringify({ project: "none", consumers: ["consumer-c"] }),
+    );
+    writeFileSync(
+      join(noneRoot, ".claude", "rungate", "hooks.json"),
+      JSON.stringify([
+        {
+          name: "Undeclared",
+          hookFor: "PreToolUse",
+          command: "bun ${RUNGATE_HOOKS_DIR}/Undeclared.hook.ts",
+          enabled: true,
+        },
+        {
+          name: "DeclaredNo",
+          hookFor: "PreToolUse",
+          command: "bun ${RUNGATE_HOOKS_DIR}/DeclaredNo.hook.ts",
+          enabled: true,
+          deployToConsumers: false,
+        },
+      ]),
+    );
+
+    try {
+      const actions: string[] = [];
+      deployHooksToConsumers(noneRoot, actions);
+
+      const unmeasured = actions.filter(a => a.startsWith("UNMEASURED:"));
+      expect(unmeasured, "an empty eligible set must produce a reading").toHaveLength(1);
+      // The separating content, not just the label: the count is what tells
+      // "0 of 2 opted in" apart from "this project declares no hooks".
+      expect(unmeasured[0]).toContain("0 of 2");
+
+      // And it must NOT claim a deployment happened, by any wording.
+      expect(actions.filter(a => a.startsWith("DEPLOYED:"))).toEqual([]);
+      expect(actions.join("\n")).not.toContain("already deployed");
+      expect(existsSync(join(noneRoot, "consumer-c", ".claude", "settings.local.json"))).toBe(false);
+    } finally {
+      rmSync(noneRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("#1047: every early exit leaves a reading rather than returning in silence", () => {
+    // Four returns used to emit nothing at all, so a caller could not tell
+    // "no config", "no hooks array", "no consumers" and "ran fine" apart.
+    const bareRoot = join(ROOT, "test", ".tmp-consumer-silent-exits");
+    rmSync(bareRoot, { recursive: true, force: true });
+    mkdirSync(join(bareRoot, ".claude", "rungate"), { recursive: true });
+    try {
+      // hooks declared, consumers absent
+      writeFileSync(
+        join(bareRoot, ".claude", "rungate", "config.json"),
+        JSON.stringify({ project: "bare" }),
+      );
+      writeFileSync(
+        join(bareRoot, ".claude", "rungate", "hooks.json"),
+        JSON.stringify([
+          {
+            name: "Any",
+            hookFor: "PreToolUse",
+            command: "bun ${RUNGATE_HOOKS_DIR}/Any.hook.ts",
+            enabled: true,
+            deployToConsumers: true,
+          },
+        ]),
+      );
+      const noConsumers: string[] = [];
+      deployHooksToConsumers(bareRoot, noConsumers);
+      expect(noConsumers.join("\n")).toContain("no consumers");
+    } finally {
+      rmSync(bareRoot, { recursive: true, force: true });
+    }
+  });
+
   test("a second consumer deployment run is idempotent", () => {
     deployHooksToConsumers(tmpRoot, []);
     deployHooksToConsumers(tmpRoot, []);
