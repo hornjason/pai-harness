@@ -18,6 +18,7 @@ import {
   logSignal,
   logEnforcementSignal,
   logDocHygieneSignals,
+  runGateEnforcement,
   type GateFailure,
   type GatePending,
   type WorkflowGateFailure,
@@ -201,13 +202,13 @@ describe('gate-enforcement', () => {
 
   describe('findWorkflowGateFailure', () => {
     it('returns null when workDir does not exist', () => {
-      const result = findWorkflowGateFailure('/nonexistent/path');
+      const result = findWorkflowGateFailure('/nonexistent/path').failure;
       expect(result).toBeNull();
     });
 
     it('returns null when no workflow files exist', () => {
       mkdirSync(join(tempDir, 'some-slug'), { recursive: true });
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result).toBeNull();
     });
 
@@ -222,7 +223,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'test', detail: 'fail' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result).toBeNull();
     });
 
@@ -237,7 +238,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'ac-count', detail: 'no ACs defined' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result).not.toBeNull();
       expect(result!.gate).toBe('scope');
       expect(result!.issue).toBe(42);
@@ -259,7 +260,7 @@ describe('gate-enforcement', () => {
           { type: 'OUTCOME', verdict: 'FAIL' },
         ],
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result).not.toBeNull();
       expect(result!.hasOutcomeAcFailure).toBe(true);
     });
@@ -278,7 +279,7 @@ describe('gate-enforcement', () => {
           { type: 'OUTCOME', verdict: 'PASS' },
         ],
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result).not.toBeNull();
       expect(result!.hasOutcomeAcFailure).toBe(false);
     });
@@ -294,7 +295,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'x', detail: 'y' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result!.slug).toBe('custom-slug');
     });
 
@@ -308,7 +309,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'x', detail: 'y' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result!.slug).toBe('fallback-dir');
     });
 
@@ -328,7 +329,7 @@ describe('gate-enforcement', () => {
           },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result!.failures[0].check).toBe('alt-id');
       expect(result!.failures[0].detail).toBe('alt-msg');
     });
@@ -343,7 +344,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'nested', detail: 'found' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir);
+      const result = findWorkflowGateFailure(tempDir).failure;
       expect(result).not.toBeNull();
       expect(result!.issue).toBe(361);
     });
@@ -497,5 +498,227 @@ describe('gate-enforcement', () => {
         logSignal('/nonexistent/dir', '/nonexistent/dir/file.jsonl', { type: 'test' });
       }).not.toThrow();
     });
+  });
+});
+
+// ── #1155: an unparseable workflow state is UNMEASURED, not "no gate failure" ──
+//
+// Every row below is labelled control or witness. The controls exist because
+// the refusal must not swallow the legitimate readings: a first run with no
+// work directory, and a clean state, both still report no failure.
+
+describe('#1155 findWorkflowGateFailure: UNMEASURED refuses, it does not pass', () => {
+  let base: string;
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'gate-enf-1155-'));
+  });
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  function state(slug: string, content: string): void {
+    mkdirSync(join(base, slug), { recursive: true });
+    writeFileSync(join(base, slug, 'workflow-state.json'), content);
+  }
+
+  const CLEAN = JSON.stringify({ phase: 'BUILD', issue: 1, gates: { scope: { result: 'PASS' } } });
+  const FAILING = JSON.stringify({
+    phase: 'BUILD',
+    issue: 42,
+    slug: 'real',
+    gates: { scope: { result: 'FAIL', failures: [{ check: 'ac-count', detail: 'none' }] } },
+  });
+
+  // ── controls ───────────────────────────────────────────────────────────
+
+  it('control: an absent work directory is MEASURED and reports no failure', () => {
+    const scan = findWorkflowGateFailure(join(base, 'never-created'));
+    expect(scan.reading).toBe('MEASURED');
+    expect(scan.failure).toBeNull();
+    expect(scan.unmeasuredReasons).toEqual([]);
+  });
+
+  it('control: an empty work directory is MEASURED and reports no failure', () => {
+    expect(findWorkflowGateFailure(base).reading).toBe('MEASURED');
+    expect(findWorkflowGateFailure(base).failure).toBeNull();
+  });
+
+  it('control: a clean state is MEASURED and reports no failure', () => {
+    state('clean', CLEAN);
+    const scan = findWorkflowGateFailure(base);
+    expect(scan.reading).toBe('MEASURED');
+    expect(scan.failure).toBeNull();
+    expect(scan.unmeasuredReasons).toEqual([]);
+  });
+
+  it('control: a DONE phase is MEASURED and reports no failure', () => {
+    state('done', JSON.stringify({
+      phase: 'DONE', issue: 2,
+      gates: { scope: { result: 'FAIL', failures: [{ check: 'x', detail: 'y' }] } },
+    }));
+    const scan = findWorkflowGateFailure(base);
+    expect(scan.reading).toBe('MEASURED');
+    expect(scan.failure).toBeNull();
+  });
+
+  it('control: a real gate FAIL is still MEASURED and still reported', () => {
+    state('real', FAILING);
+    const scan = findWorkflowGateFailure(base);
+    expect(scan.reading).toBe('MEASURED');
+    expect(scan.failure?.gate).toBe('scope');
+    expect(scan.failure?.issue).toBe(42);
+  });
+
+  // ── witnesses: the catch in checkWorkflowFile ──────────────────────────
+  //
+  // Measured 2026-10-22: three distinct throw sources reach that one catch —
+  // a JSON SyntaxError, a TypeError from reading `.phase` off a parsed
+  // `null`, and an fs error when the path cannot be read at all.
+
+  it('witness: an unparseable state is UNMEASURED, not no-failure', () => {
+    state('corrupt', '{');
+    const scan = findWorkflowGateFailure(base);
+    expect(scan.reading).toBe('UNMEASURED');
+    expect(scan.failure).toBeNull();
+    expect(scan.unmeasuredReasons.join('\n')).toContain('corrupt');
+  });
+
+  it('witness: a state that is not JSON at all is UNMEASURED', () => {
+    state('garbage', 'not json at all');
+    expect(findWorkflowGateFailure(base).reading).toBe('UNMEASURED');
+  });
+
+  it('witness: an unreadable state path is UNMEASURED', () => {
+    // A directory where the file should be: readFileSync throws EISDIR for
+    // every uid, so this does not go green by accident when tests run as root.
+    mkdirSync(join(base, 'eisdir', 'workflow-state.json'), { recursive: true });
+    expect(findWorkflowGateFailure(base).reading).toBe('UNMEASURED');
+  });
+
+  // ── witnesses: the non-object parses, which never throw at all ─────────
+  //
+  // These reach no catch. `JSON.parse` succeeds, `.phase` is undefined and
+  // `gates || {}` is empty, so the old code returned null down the NORMAL
+  // path. The catch was never the only fail-open here.
+
+  it.each([
+    ['null', 'null'],
+    ['an array', '[]'],
+    ['a number', '42'],
+    ['a string', '"hi"'],
+  ])('witness: a state parsing to %s is UNMEASURED', (_label, content) => {
+    state('nonobject', content);
+    expect(findWorkflowGateFailure(base).reading).toBe('UNMEASURED');
+  });
+
+  // ── witnesses: the two catches in findWorkflowGateFailure itself ───────
+
+  it('witness: an unparseable NESTED state is UNMEASURED', () => {
+    mkdirSync(join(base, 'pai', '361'), { recursive: true });
+    writeFileSync(join(base, 'pai', '361', 'workflow-state.json'), '{');
+    expect(findWorkflowGateFailure(base).reading).toBe('UNMEASURED');
+  });
+
+  it('witness: a work directory that cannot be listed is UNMEASURED', () => {
+    const notADir = join(base, 'file-not-dir');
+    writeFileSync(notADir, 'x');
+    const scan = findWorkflowGateFailure(notADir);
+    expect(scan.reading).toBe('UNMEASURED');
+    expect(scan.failure).toBeNull();
+  });
+
+  // ── a refusal does not discard the readable run ────────────────────────
+
+  it('witness: a corrupt sibling does not hide a real FAIL next to it', () => {
+    state('aaa-corrupt', '{');
+    state('zzz-real', FAILING);
+    const scan = findWorkflowGateFailure(base);
+    expect(scan.failure?.issue).toBe(42);
+    expect(scan.reading).toBe('UNMEASURED');
+  });
+
+  // The same two files the other way round. Both orderings must agree, or
+  // `reading` is a fact about readdir rather than about the work directory.
+  it('witness: a corrupt sibling is reported even when it sorts AFTER the FAIL', () => {
+    state('aaa-real', FAILING);
+    state('zzz-corrupt', '{');
+    const scan = findWorkflowGateFailure(base);
+    expect(scan.failure?.issue).toBe(42);
+    expect(scan.reading).toBe('UNMEASURED');
+    expect(scan.unmeasuredReasons.join('\n')).toContain('zzz-corrupt');
+  });
+});
+
+describe('#1155 runGateEnforcement: the refusal, and the repair path it leaves open', () => {
+  let base: string;
+  let workDir: string;
+  let pendingFile: string;
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'gate-enf-run-1155-'));
+    workDir = join(base, 'work');
+    mkdirSync(join(workDir, 'corrupt'), { recursive: true });
+    writeFileSync(join(workDir, 'corrupt', 'workflow-state.json'), '{');
+    pendingFile = join(base, 'gate-pending.json');
+  });
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  function run(toolName: string) {
+    return runGateEnforcement({
+      workDir,
+      signalsDir: join(base, 'signals'),
+      signalsFile: join(base, 'signals', 'signals.jsonl'),
+      pendingFile,
+      projectRoot: join(base, 'root'),
+      sessionId: 's-1155',
+      toolName,
+    });
+  }
+
+  it('witness: a Skill call is blocked while the state cannot be read', () => {
+    const r = run('Skill');
+    expect(r.action).toBe('block');
+    expect(JSON.parse(r.stdout!).decision).toBe('block');
+  });
+
+  it('witness: the refusal names the artifact and a repair command', () => {
+    const reason = JSON.parse(run('Skill').stdout!).reason as string;
+    expect(reason).toContain('UNMEASURED');
+    expect(reason).toContain('workflow-state.json');
+    expect(reason).toContain('writeWorkflowState');
+  });
+
+  // The deadlock control. Measured 2026-10-22: WorkflowStateGuard refuses
+  // Write/Edit of this artifact and names a `bun -e … writeWorkflowState`
+  // repair; BashWriteGuard only inspects `>`/`>>`/tee/cp/mv targets, so that
+  // command is allowed. The repair therefore runs over Bash — and a refusal
+  // that also blocked Bash would make a corrupt state unrepairable.
+  it('control: Bash is NOT blocked — the repair path stays reachable', () => {
+    const r = run('Bash');
+    expect(r.action).not.toBe('block');
+  });
+
+  it('control: Read and Edit are not blocked either', () => {
+    expect(run('Read').action).not.toBe('block');
+    expect(run('Edit').action).not.toBe('block');
+  });
+
+  it('witness: an unmeasured reading does not clear the strike counter', () => {
+    writeFileSync(pendingFile, JSON.stringify({ issue: 9, gate: 'verify', strike_count: 2 }));
+    run('Bash');
+    expect(existsSync(pendingFile)).toBe(true);
+  });
+
+  it('control: a clean work directory still clears the strike counter', () => {
+    rmSync(join(workDir, 'corrupt'), { recursive: true, force: true });
+    writeFileSync(pendingFile, JSON.stringify({ issue: 9, gate: 'verify', strike_count: 2 }));
+    const r = run('Bash');
+    expect(r.action).toBe('pass');
+    expect(existsSync(pendingFile)).toBe(false);
   });
 });

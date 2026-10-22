@@ -22,14 +22,16 @@
  * perfectly and measure nothing at all — *N readers finding nothing is
  * perfect agreement*.
  *
- * ## The fail-open this deliberately does not inherit
+ * ## The fail-open this deliberately did not inherit
  *
  * `lib/gate-enforcement.ts` walks the same `workflow-state.json` files and
- * wraps the walk in `catch { skip }`, so a corrupt store reads as an empty
- * one. `AC-unreadable` asserts the opposite for this reader: a state file
- * that will not parse is `RUN_STORE_UNREADABLE` and the reading is
- * `UNMEASURED`, because "no run ever refused" and "I could not read the runs"
- * are opposite facts about a project's history.
+ * used to wrap the walk in `catch { skip }`, so a corrupt store read as an
+ * empty one. `AC-unreadable` asserted the opposite for this reader from the
+ * start: a state file that will not parse is `RUN_STORE_UNREADABLE` and the
+ * reading is `UNMEASURED`, because "no run ever refused" and "I could not
+ * read the runs" are opposite facts about a project's history. That reader
+ * was right and the other one has since been brought into line — #1155 gave
+ * `gate-enforcement` the same `MEASURED`/`UNMEASURED` reading.
  */
 
 // SPEC-REF: RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md § Success Criteria
@@ -244,9 +246,9 @@ describe("#545: every intake source declares what it needs and refuses without i
 
 describe("#545: gate refusals are mined per check, and an unreadable store refuses", () => {
   test("AC-unreadable: a state file that will not parse is UNMEASURED, not an empty store", () => {
-    // The fail-open `lib/gate-enforcement.ts` has over the same files, not
-    // inherited. Broken to prove it: the fixture's second run is a state file
-    // containing `{` and nothing else.
+    // The fail-open `lib/gate-enforcement.ts` had over the same files, not
+    // inherited here and since closed there by #1155. Broken to prove it: the
+    // fixture's second run is a state file containing `{` and nothing else.
     const store = storeWith("corrupt", {
       "proj-ok": gateRun(1, [{ check: "check-a: refused" }], "2026-10-19T06:15:45Z"),
       "proj-bad": "{",
