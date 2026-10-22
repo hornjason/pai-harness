@@ -47,9 +47,15 @@ import { join } from "path";
 
 import {
   AI_REVIEW_FINDINGS_PATH_VAR,
+  AI_REVIEW_OVERRIDE_LABEL,
+  AI_REVIEW_OVERRIDE_VALUE,
+  AI_REVIEW_OVERRIDE_VAR,
   AI_REVIEW_REQUIRE_VALUE,
   AI_REVIEW_REQUIRE_VAR,
+  AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_UNMEASURED_TITLE,
+  AI_REVIEW_WAIVED_TITLE,
+  buildAuthDetectScript,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
 import { stubBunxAbsent } from "./helpers/stub-bunx";
@@ -97,6 +103,10 @@ function run(opts: {
   payload: string | null;
   outcome?: string;
   require?: boolean;
+  /** #1180: the pull-request label that waives a no-payload refusal. */
+  waive?: boolean;
+  /** #1180: the resolved credential mode, `vertex` unless a case says otherwise. */
+  mode?: string;
   unsetPath?: boolean;
 }): Run {
   const dir = scratchDir();
@@ -108,11 +118,12 @@ function run(opts: {
 
   const env: Record<string, string> = {
     PATH: stubBunxAbsent(),
-    AI_REVIEW_MODE: "vertex",
+    AI_REVIEW_MODE: opts.mode ?? "vertex",
     AI_REVIEW_ACTION_OUTCOME: opts.outcome ?? "success",
   };
   if (!opts.unsetPath) env[AI_REVIEW_FINDINGS_PATH_VAR] = findings;
   if (opts.require) env[AI_REVIEW_REQUIRE_VAR] = AI_REVIEW_REQUIRE_VALUE;
+  if (opts.waive) env[AI_REVIEW_OVERRIDE_VAR] = AI_REVIEW_OVERRIDE_VALUE;
 
   const r = Bun.spawnSync(["bash", "-e", scriptPath], { cwd: dir, env });
   return {
@@ -138,7 +149,17 @@ describe("AC-1/AC-2: a success with no payload is UNMEASURED, and says why", () 
       r.out,
       "the step still announces a completed review over a run that had none",
     ).not.toContain(COMPLETION_CLAIM);
-    expect(r.code).toBe(0);
+    // #1180 inverted this line, and the line is the whole issue. It read
+    // `toBe(0)`: the step named the state UNMEASURED in a warning and then
+    // exited 0, so the annotation was the only difference between "reviewed
+    // and found clean" and "nobody looked" — and nothing in a check list
+    // shows an annotation. Measured on PR #1154, `ai-review` reported success
+    // in 14 seconds, on a repository where it is one of two required checks
+    // and auto-merge is the standing policy.
+    expect(
+      r.code,
+      "a reviewer that wrote no payload still passes the required check",
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
   });
 
   test("it names the cause a consumer will actually hit", () => {
@@ -315,5 +336,135 @@ describe("AC-6: nothing in the reading depends on upstream log text", () => {
     // Non-emptiness first: a script that named the variable nowhere would
     // satisfy the prohibition above vacuously.
     expect(buildReviewRunScript(FIXTURE_VERSION)).toContain(AI_REVIEW_FINDINGS_PATH_VAR);
+  });
+});
+
+// ── #1180: the refusal is unconditional, and the waiver is the only way out ──
+
+/**
+ * #1180. The states above all held before this issue; what did not hold is
+ * that any of them cost anything. Every one of them exited 0 unless
+ * `RUNGATE_REQUIRE_AI_REVIEW` was set, and on this repository it never has
+ * been — the variable 404s. So `ai-review` went green in 14 seconds on
+ * PR #1154 having read nothing, while being one of two required checks on a
+ * repository that auto-merges on them.
+ *
+ * The general form is worse than the instance and is what these cases are
+ * mostly about: the action refuses to review a workflow file that differs
+ * from the copy on the default branch, so **the one file the gate's
+ * correctness depends on was the only file a pull request could change
+ * without review.** That is the shape of every real attack on a review
+ * control and also the shape of an honest mistake, which is likelier here.
+ */
+describe("#1180: a reviewer that wrote no payload fails whether or not the flag is set", () => {
+  test("#1180: the refusal does not consult the require switch", () => {
+    // The pair, varying ONE input. Both refuse, so the flag is not the
+    // decider — which is the claim. A single run could not tell "refuses
+    // because the flag happens to be set in this fixture" from "refuses".
+    const off = run({ payload: null });
+    const on = run({ payload: null, require: true });
+    expect(off.code, "a payload-less review still passes with the flag unset").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(on.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(off.err).toContain(`::error title=${AI_REVIEW_UNMEASURED_TITLE}`);
+  });
+
+  test("#1180: the refusal says the flag is not what refused", () => {
+    // A refusal that reads as the flag's doing sends the next operator to
+    // unset the flag, which is both the wrong lever and not set.
+    const err = run({ payload: null }).err;
+    expect(err).toContain("does NOT consult");
+    expect(err).toContain(AI_REVIEW_REQUIRE_VAR);
+  });
+
+  test("#1180: the label waives the refusal and names itself in the output", () => {
+    // UNMEASURED-and-waived is a THIRD state. It is green like CLEAN and
+    // measured like neither, so it carries its own title: #1180 asks that a
+    // reader of the check list can tell them apart, and an annotation that
+    // shares the UNMEASURED title cannot be told from the warning above it.
+    const r = run({ payload: null, waive: true });
+    expect(r.code, "the waiver did not waive, so the gate is a lockout").toBe(0);
+    expect(r.out).toContain(`::warning title=${AI_REVIEW_WAIVED_TITLE}`);
+    expect(r.out).toContain(AI_REVIEW_OVERRIDE_LABEL);
+    expect(r.out, "a waived run claims a review it did not have").not.toContain(
+      COMPLETION_CLAIM,
+    );
+  });
+
+  test("#1180: a waived run still prints the route it waived", () => {
+    // The waiver is read AFTER the warning for this reason: a green run that
+    // dropped the explanation would be the fail-open with a label in front
+    // of it, and the operator who applied the label would have nothing to
+    // read about what they waived.
+    const r = run({ payload: null, waive: true });
+    expect(r.out).toContain("WITHOUT writing a findings payload");
+    expect(r.out).toContain("default branch");
+  });
+
+  test("#1180: the waiver cannot turn a BLOCKING review green", () => {
+    // The waiver's blast radius, asserted rather than intended. It sits in
+    // the no-payload branch only; a payload that exists is adjudicated and
+    // the adjudicator's exit code is the step's, label or no label. A waiver
+    // that reached the verdict would be a one-label bypass of every finding
+    // the reviewer has ever written, which is strictly worse than #1180.
+    const waived = run({ payload: PAYLOAD, waive: true });
+    const plain = run({ payload: PAYLOAD });
+    expect(waived.code, "the waiver reached past the no-payload branch").not.toBe(0);
+    expect(waived.code).toBe(plain.code);
+    expect(waived.out, "the adjudicated branch emitted the waiver's title").not.toContain(
+      AI_REVIEW_WAIVED_TITLE,
+    );
+  });
+
+  test("#1180: an unconfigured tree is still not reddened by this", () => {
+    // The scope line, and the reason the flag survives. The module header's
+    // standing promise is that a tree which has never configured a
+    // credential does not get a red pipeline on its first scaffold — no
+    // review was ATTEMPTED there, which is a different fact from a reviewer
+    // that ran and produced nothing. `mode=none` must still exit 0.
+    expect(run({ payload: null, mode: "none" }).code).toBe(0);
+  });
+
+  test("#1180: the cheapest wrong fix is the flag, and it is a lockout", () => {
+    // Named and MEASURED, not dismissed in prose. The 5pm repair for #1180
+    // is to set RUNGATE_REQUIRE_AI_REVIEW=true and change no code. It does
+    // make the measured instance red — and it is the wrong fix twice over.
+    //
+    // Here: with the flag set and NOTHING else, a payload-less run has no
+    // route to green at all. On a repository with enforce_admins on, that is
+    // not a strict gate, it is a workflow file that can never be changed
+    // again — including to fix the gate. The waiver is what separates the
+    // two, and the pair below is the measurement: same flag, one input
+    // different.
+    const lockedOut = run({ payload: null, require: true });
+    const waivedUnderFlag = run({ payload: null, require: true, waive: true });
+    expect(lockedOut.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(
+      waivedUnderFlag.code,
+      "the waiver does not reach the flagged path, so setting the flag is a lockout",
+    ).toBe(0);
+  });
+
+  test("#1180: and the flag reddens the first scaffold, which is the auth step's", () => {
+    // The flag's OTHER cost, measured on the step that actually carries it.
+    // A tree with no credential has not had a review; the module header's
+    // standing promise is that this state annotates rather than reddens, and
+    // the flag breaks that promise for every consumer who sets it to fix
+    // #1180. The refusal in this pull request does not, because it fires
+    // only where a credential resolved and the action ran.
+    const dir = scratchDir();
+    const scriptPath = join(dir, "auth.sh");
+    writeFileSync(scriptPath, buildAuthDetectScript({ config: null, reason: "no vertex config in this fixture" }));
+    const spawn = (env: Record<string, string>) =>
+      Bun.spawnSync(["bash", "-e", scriptPath], {
+        cwd: dir,
+        env: { PATH: "/bin:/usr/bin", GITHUB_OUTPUT: join(dir, "out.txt"), ...env },
+      }).exitCode;
+    expect(spawn({}), "an unconfigured tree reddens before the flag is even set").toBe(0);
+    expect(
+      spawn({ [AI_REVIEW_REQUIRE_VAR]: AI_REVIEW_REQUIRE_VALUE }),
+      "the flag does not redden an unconfigured tree, so it has no cost to weigh",
+    ).not.toBe(0);
   });
 });

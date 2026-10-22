@@ -147,10 +147,14 @@ import {
   AI_REVIEW_APP_INSTALL_CAUSE,
   AI_REVIEW_EXECUTION_FILE_VAR,
   AI_REVIEW_FINDINGS_PATH_VAR,
+  AI_REVIEW_OVERRIDE_LABEL,
+  AI_REVIEW_OVERRIDE_VALUE,
+  AI_REVIEW_OVERRIDE_VAR,
   AI_REVIEW_REQUIRE_VALUE,
   AI_REVIEW_REQUIRE_VAR,
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_UNMEASURED_TITLE,
+  AI_REVIEW_WAIVED_TITLE,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
 import { stubBunxAbsent } from "./helpers/stub-bunx";
@@ -192,6 +196,8 @@ function runReport(opts: {
   execution: string | null | "unreadable";
   outcome?: string;
   require?: boolean;
+  /** #1180: the pull-request label that waives a no-payload refusal. */
+  waive?: boolean;
   script?: string;
 }): Run {
   const dir = mkdtempSync(join(tmpdir(), "ai-review-failroute-"));
@@ -216,6 +222,7 @@ function runReport(opts: {
     env[AI_REVIEW_EXECUTION_FILE_VAR] = exec;
   }
   if (opts.require) env[AI_REVIEW_REQUIRE_VAR] = AI_REVIEW_REQUIRE_VALUE;
+  if (opts.waive) env[AI_REVIEW_OVERRIDE_VAR] = AI_REVIEW_OVERRIDE_VALUE;
 
   const r = Bun.spawnSync(["bash", "-e", scriptPath], { cwd: dir, env });
   return {
@@ -385,11 +392,44 @@ describe("AC-F6 (#826): every failure route exits the same way", () => {
       ["payload present", { payload: PAYLOAD, execution: REJECTED }],
     ];
 
-  test("AC-F6a: without the require switch, every route exits 0", () => {
+  // #1180 inverted the expected code here, and the invariant AC-F6 is about
+  // is unchanged: the route decides the SENTENCE and never the exit code.
+  // Before #1180 every route exited 0 with the switch off, which is the
+  // measured defect — `ai-review` reported success in 14 seconds on PR #1154
+  // having read nothing, on a repository where the switch has never been set
+  // and `ai-review` is one of two required checks on auto-merge.
+  //
+  // F6a and F6b are now a PAIR and not two spellings of one assertion: the
+  // first says the refusal fires with the flag absent, the second says the
+  // flag does not change it. Together they state that the flag is not the
+  // decider on this branch, which is the whole of #1180. The waiver is the
+  // only input that changes the code, and F6d is where that is measured.
+  test("AC-F6a: without the require switch, every route refuses anyway (#1180)", () => {
     for (const [name, opts] of routes) {
       const r = runReport(opts);
-      expect(r.code, `route ${name} changed the exit code\nstdout:\n${r.out}\nstderr:\n${r.err}`).toBe(
-        0,
+      expect(r.code, `route ${name} passed a review that never happened\nstdout:\n${r.out}\nstderr:\n${r.err}`).toBe(
+        AI_REVIEW_REQUIRED_EXIT,
+      );
+      expect(r.err, `route ${name} refused without an error annotation`).toContain(
+        `::error title=${AI_REVIEW_UNMEASURED_TITLE}`,
+      );
+    }
+  });
+
+  test("AC-F6d: the waiver label passes every route, and says it waived one (#1180)", () => {
+    // The control that keeps F6a from being a lockout, and the control that
+    // keeps the waiver from being invisible: a green run reached this way
+    // carries its own title, so a reader of the check list can tell it from
+    // a review that was read. Asserted on BOTH halves — a waiver that exits
+    // 0 silently is the fail-open with an extra variable in front of it.
+    for (const [name, opts] of routes) {
+      const r = runReport({ ...opts, waive: true });
+      expect(r.code, `route ${name} refused despite the waiver\nstderr:\n${r.err}`).toBe(0);
+      expect(r.out, `route ${name} was waived with no annotation saying so`).toContain(
+        `::warning title=${AI_REVIEW_WAIVED_TITLE}`,
+      );
+      expect(r.out, `route ${name} does not name the label that waived it`).toContain(
+        AI_REVIEW_OVERRIDE_LABEL,
       );
     }
   });

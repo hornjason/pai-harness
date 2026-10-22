@@ -74,6 +74,8 @@ import {
   buildAuthDetectStep,
   buildBaselineScript,
   buildDriftScript,
+  AI_REVIEW_OVERRIDE_VALUE,
+  AI_REVIEW_OVERRIDE_VAR,
   AI_REVIEW_APP_INSTALL_401,
   AI_REVIEW_UNMEASURED_TITLE,
   AI_REVIEW_APP_INSTALL_CAUSE,
@@ -414,14 +416,21 @@ describe("AC-5: a configured credential emits no UNMEASURED annotation", () => {
 // "No credential, so no review" and "a credential, but nothing wired to use
 // it" are the same state to a required check. Both are UNMEASURED.
 describe("AC-7: every mode the job can resolve says what it measured", () => {
-  test("AC-7: a resolved mode emits exactly one UNMEASURED warning and exits 0", () => {
+  test("AC-7: a resolved mode emits exactly one UNMEASURED warning and refuses (#1180)", () => {
     const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { AI_REVIEW_MODE: "vertex" });
     const warnings = run.stdout
       .split("\n")
       .filter(l => l.startsWith("::warning") && l.includes("UNMEASURED"));
     expect(warnings.length, `a resolved mode reviewed nothing in silence\n${run.stdout}`).toBe(1);
     expect(warnings[0]).toContain("#631");
-    expect(run.code, "a tree that has not opted in must not go red").toBe(0);
+    // #1180 renamed this case and inverted its last line. It read "a tree
+    // that has not opted in must not go red" — and a RESOLVED mode is a tree
+    // that configured a credential and ran the action, which is not the tree
+    // the opt-in is about. The opt-in protects a tree with NO credential,
+    // and `mode none` below is where that is still asserted.
+    expect(run.code, "a credentialed tree passed a review that produced nothing").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
   });
 
   test("AC-7: every credentialed mode in the ladder annotates, not just the first", () => {
@@ -507,13 +516,28 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
   });
 
   test("AC-7: the refusal reads the variable exactly, like the auth step does", () => {
+    // Driven on the ABSENT-mode branch since #1180, because that is where
+    // the variable still decides anything. On a resolved mode the refusal is
+    // now unconditional, so running this there would assert the exactness of
+    // a reading nothing consults — a case green over a decider that is not
+    // the decider, which is exactly the vacuity it was written against.
+    //
+    // The property is unchanged: a variable that turns a gate on must match
+    // one exact string, or it is a gate that turns itself on by accident.
     for (const value of ["TRUE", "True", "1", "yes", "truthy", "true "]) {
       const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
-        AI_REVIEW_MODE: "vertex",
         RUNGATE_REQUIRE_AI_REVIEW: value,
       });
       expect(run.code, `${JSON.stringify(value)} turned the gate on by accident`).toBe(0);
     }
+    // The control: the exact string DOES turn it on, or the loop above is
+    // satisfied by a branch that never refuses.
+    expect(
+      runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+        RUNGATE_REQUIRE_AI_REVIEW: "true",
+      }).code,
+      "the exact value stopped refusing, so the loop above measures nothing",
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
   });
 
   test("AC-7: the step is in the generated file, verbatim, and carries no `if`", () => {
@@ -543,7 +567,16 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript(FIXTURE_VERSION));
     const run = runAuthScript(quiet, { AI_REVIEW_MODE: "vertex" });
     expect(run.stdout).not.toContain("UNMEASURED");
-    expect(run.code).toBe(0);
+    // The silence is still the defect and is still what this case measures.
+    // What changed with #1180 is that silence is no longer ALSO green: the
+    // refusal is a second, independent signal, so the shipped-in-#641 state
+    // now costs a red check as well as an unread log. Asserted rather than
+    // dropped — a mutant that went green here would mean the annotation and
+    // the exit code are one decider wearing two names.
+    expect(
+      run.code,
+      "stripping the annotation also stripped the refusal, so they are one decider",
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
   });
 });
 
@@ -947,8 +980,16 @@ describe("AC-9 (#1013): the job's exit code comes from the adjudicator's reading
     // And the verdicts differ too, which is the half a text comparison
     // cannot see: an attempted-but-unread review refuses, a review the
     // action never completed warns and leaves the opt-in to decide.
+    // Both refuse since #1180, and the pair is still a pair: what separates
+    // them is the SENTENCE, which is the half the text comparison above
+    // measures. The exit codes agreeing is the point — a review the action
+    // never completed and a review nobody read are both "no measurement",
+    // and the branch that used to leave one of them to an unset opt-in is
+    // the 14-second green on PR #1154.
     expect(ran.code, "an unread payload stopped refusing").toBe(AI_REVIEW_REQUIRED_EXIT);
-    expect(failed.code, "a not-completed action started refusing without the opt-in").toBe(0);
+    expect(failed.code, "a not-completed action still passes without the opt-in").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
   });
 
   test("AC-9: the silent exit is what this would have shipped", () => {
@@ -1092,7 +1133,13 @@ describe("#803: a non-zero exit with no payload names the app install", () => {
     const lines = run.stdout.trimEnd().split("\n");
     expect(lines.length, `the annotation broke into ${lines.length} lines:\n${run.stdout}`).toBe(1);
     expect(lines[0]).toStartWith(`::warning title=${AI_REVIEW_UNMEASURED_TITLE}::`);
-    expect(run.stderr).toBe("");
+    // stderr carries the #1180 refusal now and did not before. The property
+    // this line is for is unchanged — the annotation does not spill across
+    // streams or lines — so it is asserted as one line of the right shape
+    // rather than as emptiness, which stopped being the reading.
+    const errLines = run.stderr.trimEnd().split("\n");
+    expect(errLines.length, `the refusal broke into ${errLines.length} lines`).toBe(1);
+    expect(errLines[0]).toStartWith(`::error title=${AI_REVIEW_UNMEASURED_TITLE}::`);
   });
 
   test("the three other UNMEASURED states do NOT carry it — each has its own cause", () => {
@@ -1130,16 +1177,30 @@ describe("#803: a non-zero exit with no payload names the app install", () => {
     }
   });
 
-  test("RUNGATE_REQUIRE_AI_REVIEW still decides whether this refuses or warns", () => {
-    // Not special-cased into always-green, and not special-cased into
-    // always-red: the same switch as every other unmeasured state.
-    const warn = failed();
-    expect(warn.code, "the default became a refusal").toBe(0);
-    const refuse = failed({ RUNGATE_REQUIRE_AI_REVIEW: "true" });
-    expect(refuse.code, "the switch no longer refuses this state").toBe(1);
-    expect(refuse.stdout, "the remedy is gone from the refusing path").toContain(
-      AI_REVIEW_APP_INSTALL_URL,
-    );
+  test("RUNGATE_REQUIRE_AI_REVIEW no longer decides this, and the remedy survives (#1180)", () => {
+    // Renamed and inverted by #1180. It read "still decides whether this
+    // refuses or warns", and the warn half asserted exit 0 on the default —
+    // which is the measured defect: a 401 against the Claude Code GitHub App
+    // produced a green required check on every repository that had not set a
+    // variable, and none had.
+    //
+    // The switch is not special-cased into always-green or always-red; it is
+    // simply not the decider here any more. What the case still has to hold
+    // is that the REMEDY survives on the refusing path, because a refusal
+    // that drops the install URL is a red check nobody can act on.
+    const both = [failed(), failed({ RUNGATE_REQUIRE_AI_REVIEW: "true" })];
+    for (const r of both) {
+      expect(r.code, "a 401 against the review app still passes").toBe(AI_REVIEW_REQUIRED_EXIT);
+      expect(r.stdout, "the remedy is gone from the refusing path").toContain(
+        AI_REVIEW_APP_INSTALL_URL,
+      );
+    }
+    // And the waiver is the input that still moves it, or the equality above
+    // is satisfied by a branch with one exit in it.
+    expect(
+      failed({ [AI_REVIEW_OVERRIDE_VAR]: AI_REVIEW_OVERRIDE_VALUE }).code,
+      "the waiver does not reach this branch, so the state is a lockout",
+    ).toBe(0);
   });
 
   test("the committed workflow carries the generator's report script verbatim", () => {

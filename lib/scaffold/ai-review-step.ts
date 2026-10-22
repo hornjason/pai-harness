@@ -33,6 +33,27 @@
  * how a consumer opts in, and it is matched against the exact string `true`
  * — not `TRUE`, not `1`, not a prefix. A loose reading of a variable that
  * turns a gate on is a gate that turns itself on by accident.
+ *
+ * ## The flag's remit, and where it stops (#1180)
+ *
+ * That paragraph is about a tree with NO CREDENTIAL. It was also, until
+ * #1180, the only thing standing between a green check and a review that
+ * never ran: every unmeasured state consulted the flag and exited 0 when it
+ * was unset, and on this repository it has never been set. `ai-review`
+ * reported SUCCESS in 14 seconds on PR #1154 having read nothing, as one of
+ * two required checks on an auto-merging repository.
+ *
+ * The split is now by whether a review was ATTEMPTED:
+ *
+ *   * **No credential, or no mode at all** — nothing was attempted. The flag
+ *     still decides, unchanged, for the reason above.
+ *   * **A credential resolved and the action ran** — something was attempted
+ *     and produced no payload. That FAILS on every tree, with no flag.
+ *
+ * The pull request this is guaranteed to catch is the one that EDITS this
+ * workflow, which the action refuses to review — the change most likely to
+ * need a review was the change silently exempt from it.
+ * `AI_REVIEW_OVERRIDE_LABEL` keeps that from being a lockout.
  */
 
 /**
@@ -189,6 +210,40 @@ export const AI_REVIEW_REQUIRE_VAR = "RUNGATE_REQUIRE_AI_REVIEW";
 /** The exact value of that variable which turns the refusal on. */
 export const AI_REVIEW_REQUIRE_VALUE = "true";
 
+/**
+ * The pull-request label that waives a no-payload refusal, for ONE pull
+ * request, on the record (#1180).
+ *
+ * **Why a waiver has to exist.** The refusal is unconditional, and the action
+ * refuses to run when `AI_REVIEW_WORKFLOW_FILE` differs from the copy on the
+ * default branch — so a pull request that edits the workflow produces no
+ * payload by design. With `enforce_admins` on, no waiver means the one file
+ * the gate depends on can never be changed again, including to fix it.
+ *
+ * **Why a label and not a variable.** The state #1180 is about is a gate whose
+ * safety depends on a repository variable nobody set; a second variable is the
+ * same shape, a standing bypass no pull request has to mention. A label is
+ * scoped to one pull request, carries the account that applied it in the
+ * timeline, and is named in the annotation — so "waived" and "passed" are
+ * different sentences in the check output. Applying it needs write access,
+ * which a fork contributor does not have.
+ *
+ * **Why `contains()` and not a parse.** The runner evaluates the filter before
+ * the step starts and binds the literal `true` or `false`, so the bash side is
+ * the exact-string compare `AI_REVIEW_REQUIRE_VAR` already uses and no label
+ * text reaches the runner. Reading `GITHUB_EVENT_PATH` instead would put the
+ * pull request's own title and body — which the branch under review controls —
+ * in front of a text match that waives the review. On an event with no pull
+ * request the filter yields nothing and `contains` yields `false`.
+ */
+export const AI_REVIEW_OVERRIDE_LABEL = "ai-review-override";
+
+/** The environment variable the label reading is bound to. */
+export const AI_REVIEW_OVERRIDE_VAR = "AI_REVIEW_OVERRIDE";
+
+/** The exact value of that variable which waives the refusal. */
+export const AI_REVIEW_OVERRIDE_VALUE = "true";
+
 /** The step's `id:`, so a later step can read `steps.<id>.outputs.mode`. */
 export const AI_REVIEW_AUTH_STEP_ID = "ai-review-auth";
 
@@ -281,6 +336,17 @@ export const AI_REVIEW_AUTH_STEP_NAME = "Detect AI review credentials";
 
 /** The annotation title, shared by the warning and the refusal. */
 export const AI_REVIEW_UNMEASURED_TITLE = "AI review UNMEASURED";
+
+/**
+ * The title carried by a run that was UNMEASURED and passed anyway, because
+ * `AI_REVIEW_OVERRIDE_LABEL` was on the pull request (#1180).
+ *
+ * Its own title: a waived run is a THIRD state, green like CLEAN and measured
+ * like neither, and #1180 asks that a reader of the check list can tell them
+ * apart. Sharing the UNMEASURED title would make the waiver the one transition
+ * in this job with no name of its own.
+ */
+export const AI_REVIEW_WAIVED_TITLE = "AI review WAIVED";
 
 /**
  * The title that says a review was READ, carried by the one branch that can
@@ -2564,6 +2630,13 @@ Every one of those member names is required on every finding. A finding
 missing \`${f.file}\` or \`${f.summary}\` reaches a maintainer as an annotation
 naming no code and no defect, which is the same as not reporting it.
 
+On a finding whose severity BLOCKS, that requirement is now read back and
+enforced: a blocking finding missing any of \`${f.file}\`, \`${f.line}\`,
+\`${f.summary}\` or \`${f.failureScenario}\` — absent, null or blank — makes the
+whole review unreadable and fails the job as UNMEASURED. So do not raise a
+finding to ${blocking} unless you can name the file and the line it is on.
+Say it at a non-blocking severity instead, or read further until you can.
+
 Rules for the payload, each of which a later step enforces:
 
 - Severities ${blocking} block the pull request. Severities ${passive} do not.
@@ -2832,11 +2905,28 @@ export function buildReviewRunScript(version: string): string {
     `beyond that this job cannot say which route produced the failure. This ` +
     `check is UNMEASURED, not a passing review.`;
 
+  // #1180, and unconditional for the same reason `skippedRefusal` is. This
+  // branch is further from a pass than that one — the action did not even
+  // exit zero — so a tree on which the payload-less SUCCESS fails and the
+  // payload-less FAILURE passes would be refusing the better-behaved of two
+  // identical outcomes.
   const refusal =
-    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the review ` +
-    `action (#631) did not complete, so this pull request has no AI review. ` +
-    `Failing rather than reporting a green check for a review that never ` +
-    `happened.`;
+    `The review action (#631) did not complete, so this pull request has no ` +
+    `AI review. Failing rather than reporting a green check for a review ` +
+    `that never happened. This refusal does NOT consult ` +
+    `${AI_REVIEW_REQUIRE_VAR} — that flag is for a tree with no credential, ` +
+    `and a credential resolved here (#1180). Read the route above for what ` +
+    `the action got as far as doing; label the pull request ` +
+    `'${AI_REVIEW_OVERRIDE_LABEL}' to waive this ONE check on the record if ` +
+    `a human is going to read the diff instead.`;
+
+  const waived =
+    `This pull request carries the '${AI_REVIEW_OVERRIDE_LABEL}' label, so ` +
+    `the refusal above is WAIVED and this check passes having measured ` +
+    `nothing. The review action did not complete; no AI review was read on ` +
+    `this pull request and this is not one. A human applied the label and ` +
+    `the pull request's timeline records which account and when. Remove the ` +
+    `label to put the refusal back.`;
 
   // The third state, and the one most easily mistaken for a pass: the
   // reviewer ran, wrote a payload, and the ADJUDICATOR could not run over it
@@ -2948,11 +3038,35 @@ export function buildReviewRunScript(version: string): string {
     `adds it, is skipped by design. This check is UNMEASURED, not a passing ` +
     `review.`;
 
+  // #1180. No longer mentions ${AI_REVIEW_REQUIRE_VAR}, because the refusal no
+  // longer consults it — see the module header for the split. #1013's
+  // neighbouring branch already says the half of it that was true then: "a
+  // payload exists, so a review was attempted; nobody read it is a failure on
+  // every tree, not an opt-in". A payload nobody WROTE is the same fact one
+  // state earlier, and this is it.
   const skippedRefusal =
-    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and the review ` +
-    `action exited successfully without writing a findings payload, so this ` +
-    `pull request has no AI review. Failing rather than reporting a green ` +
-    `check for a review that never ran.`;
+    `The review action exited successfully WITHOUT writing a findings ` +
+    `payload, so this pull request has no AI review. Failing rather than ` +
+    `reporting a green check for a review that never ran: a required check ` +
+    `that passes when the reviewer did not run is not a gate. This refusal ` +
+    `does NOT consult ${AI_REVIEW_REQUIRE_VAR} — that flag is for a tree with ` +
+    `no credential, where no review was ATTEMPTED; one was attempted here and ` +
+    `it produced nothing (#1180). If the reviewer declined because this pull ` +
+    `request edits ${AI_REVIEW_WORKFLOW_FILE}, which it refuses to review ` +
+    `against a copy that differs from the default branch, label the pull ` +
+    `request '${AI_REVIEW_OVERRIDE_LABEL}' to waive this ONE check on the ` +
+    `record and have a human read the diff instead.`;
+
+  // The waiver's own sentence: what was waived, and by what. A warning that
+  // does not say what happened is a warning nobody can act on
+  // (`.claude/rules/config-access.md`).
+  const skippedWaived =
+    `This pull request carries the '${AI_REVIEW_OVERRIDE_LABEL}' label, so ` +
+    `the refusal above is WAIVED and this check passes having measured ` +
+    `nothing. The reviewer wrote no findings payload; no AI review was read ` +
+    `on this pull request and this is not one. A human applied the label and ` +
+    `the pull request's timeline records which account and when. Remove the ` +
+    `label to put the refusal back.`;
 
   // #826: WHICH of three routes produced the empty payload, measured.
   //
@@ -3335,11 +3449,20 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
   fi
 
   echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::$(escape_annotation "\${route}")"
-  if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
-    echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${skippedRefusal}" >&2
-    exit ${AI_REVIEW_REQUIRED_EXIT}
+
+  # #1180. NO \${${AI_REVIEW_REQUIRE_VAR}} CHECK HERE — the refusal below is
+  # unconditional. The flag governs the branches ABOVE, where no credential
+  # resolved and no review was attempted; by here one was, and produced
+  # nothing. The waiver is the label, which is per pull request and recorded,
+  # and it is read AFTER the warning so that a waived run still carries the
+  # route that explains what it waived.
+  if [ "\${${AI_REVIEW_OVERRIDE_VAR}:-}" = "${AI_REVIEW_OVERRIDE_VALUE}" ]; then
+    echo "::warning title=${AI_REVIEW_WAIVED_TITLE}::${skippedWaived}"
+    exit 0
   fi
-  exit 0
+
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${skippedRefusal}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
 # #826. The action did not complete. WHICH of five states that is, read from
@@ -3376,12 +3499,14 @@ fi
 
 echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::$(escape_annotation "\${route}")"
 
-if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
-  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2
-  exit ${AI_REVIEW_REQUIRED_EXIT}
+# #1180, and unconditional for the reason the success branch above states.
+if [ "\${${AI_REVIEW_OVERRIDE_VAR}:-}" = "${AI_REVIEW_OVERRIDE_VALUE}" ]; then
+  echo "::warning title=${AI_REVIEW_WAIVED_TITLE}::${waived}"
+  exit 0
 fi
 
-exit 0
+echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2
+exit ${AI_REVIEW_REQUIRED_EXIT}
 `;
 }
 
@@ -5493,6 +5618,10 @@ export function buildReviewRunStep(
     // exits 0, so a reading a consumer could configure would be a switch for
     // turning every unmeasured pull request green.
     `    ${AI_REVIEW_EVENT_VAR}: \${{ github.event_name }}`,
+    // #1180. The per-pull-request waiver, resolved by the RUNNER into the
+    // literal `true` or `false` so no label text reaches the step. See
+    // `AI_REVIEW_OVERRIDE_LABEL` for why this is a label and not a variable.
+    `    ${AI_REVIEW_OVERRIDE_VAR}: \${{ contains(github.event.pull_request.labels.*.name, '${AI_REVIEW_OVERRIDE_LABEL}') }}`,
     `  run: |`,
     ...buildReviewRunScript(version).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];

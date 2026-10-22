@@ -58,7 +58,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { CLI_COMMANDS } from "../lib/cli-commands";
-import { AI_REVIEW_REQUIRED_EXIT, AI_REVIEW_FINDINGS_KEY, AI_REVIEW_VERDICT_KEY } from "../lib/scaffold/ai-review-step";
+import { AI_REVIEW_REQUIRED_EXIT, AI_REVIEW_FINDING_FIELDS, AI_REVIEW_FINDINGS_KEY, AI_REVIEW_VERDICT_KEY } from "../lib/scaffold/ai-review-step";
 
 const ROOT = join(import.meta.dir, "..");
 const COMMAND = "ai-review-findings";
@@ -90,10 +90,26 @@ function runCli(args: string[]) {
   }
 }
 
+/**
+ * A CONTRACT-COMPLETE blocking payload, built from the field map (#1166).
+ *
+ * It used to carry `detail` — a key the contract never declares — and no
+ * `failure_scenario`, and the reader adjudicated it BLOCKED regardless. That
+ * is #1166 in one fixture: the suite's own blocking payload did not satisfy
+ * the contract the prompt states, so nothing here could have noticed that
+ * nothing enforced it.
+ */
 const BLOCKING = {
   [AI_REVIEW_VERDICT_KEY]: "BLOCK",
   [AI_REVIEW_FINDINGS_KEY]: [
-    { severity: "critical", file: "lib/thing.ts", line: 12, detail: "a credential is logged in plain text" },
+    {
+      [AI_REVIEW_FINDING_FIELDS.severity]: "critical",
+      [AI_REVIEW_FINDING_FIELDS.file]: "lib/thing.ts",
+      [AI_REVIEW_FINDING_FIELDS.line]: 12,
+      [AI_REVIEW_FINDING_FIELDS.summary]: "a credential is logged in plain text",
+      [AI_REVIEW_FINDING_FIELDS.failureScenario]:
+        "any run with GCP_SA_KEY set writes the key to the job log",
+    },
   ],
 };
 
