@@ -8,83 +8,59 @@
  *
  * PURPOSE:
  * Block direct writes to workflow-state.json that modify gate result fields.
- * Gate results must be produced by gate-runner.ts, not written directly.
+ * Gate results must be produced by the gate runner, not written directly.
  *
  * PROTECTED FIELDS:
- *  - gates.scope.result, gates.verify.result, gates.ship.result
- *  - phase = "DONE" (only gate-runner advances to DONE)
+ *  - gates.<name>.result, for every name in lib/gate-names.ts
+ *  - phase = "DONE" (only the gate runner advances to DONE)
  *
  * ALLOWED:
  *  - Writes that don't target workflow-state.json
  *  - Writes to workflow-state.json that don't touch gate result fields
  *    (e.g., adding ACs, updating changelog, setting phase to BUILD/SCOPE/VERIFY)
  *
- * PORTABILITY (#713): `workflow-state.json` is a rungate gate artifact and the
- * only import is `./lib/parseStdin`. No PAI-owned path is read, so this guards
- * the same artifact on a consumer repo as it does here.
+ * REFUSED, and this is the #1137 change:
+ *  - A Write to workflow-state.json whose content does not parse as JSON.
+ *    It used to be allowed. See lib/gate-result-protection.ts for why that
+ *    was backwards, and for why the Edit branch decodes unicode escapes.
  *
- * Issue: #471
+ * PORTABILITY (#713): `workflow-state.json` is a rungate gate artifact. Both
+ * imports are rungate-owned and both sit in `package.json` `files[]`, so this
+ * guards the same artifact on a consumer repo as it does here.
+ *
+ * Issues: #471, #1137
  */
 
 import { parseHookInput } from './lib/parseStdin';
+import { decideGateResultWrite } from '../lib/gate-result-protection';
 
 async function main() {
   const input = await parseHookInput();
+  // No parseable hook payload is not a tool call we can read, and every hook
+  // in this tree treats it as a no-op. It is not the decision surface: by
+  // definition it names no file, so it cannot be a write to a gate artifact.
   if (!input) process.exit(0);
 
-  const toolName = input.tool_name || '';
-  const toolInput = input.tool_input || {};
-
-  // Only check Write and Edit targeting workflow-state.json
-  const filePath: string = (toolInput.file_path as string) || '';
-  if (!filePath.endsWith('workflow-state.json')) {
-    process.exit(0);
+  let decision;
+  try {
+    decision = decideGateResultWrite(
+      input.tool_name || '',
+      (input.tool_input || {}) as Record<string, unknown>,
+    );
+  } catch (e) {
+    // A guard that crashes must not thereby allow the thing it guards (#1137).
+    // Scoped to a payload that already named workflow-state.json, so a bug
+    // here refuses writes to one artifact rather than bricking the session.
+    const named = String((input.tool_input as { file_path?: unknown })?.file_path ?? '');
+    if (!named.endsWith('workflow-state.json')) process.exit(0);
+    decision = {
+      blocked: true,
+      reason: `Refused: gate-result protection could not evaluate this write (${String(e)}).`,
+    };
   }
 
-  let blocked = false;
-  let reason = '';
-
-  if (toolName === 'Write') {
-    // For Write: parse the content parameter as JSON, check gate fields
-    const content: string = (toolInput.content as string) || '';
-    try {
-      const parsed = JSON.parse(content);
-      const hasGateResult =
-        parsed.gates?.scope?.result ||
-        parsed.gates?.verify?.result ||
-        parsed.gates?.ship?.result;
-      const hasDonePhase = parsed.phase === 'DONE';
-
-      if (hasGateResult || hasDonePhase) {
-        blocked = true;
-        reason = hasGateResult
-          ? 'Gate results must be produced by gate-runner.ts, not written directly.'
-          : 'Phase DONE must be set by gate-runner.ts after ship gate passes.';
-      }
-    } catch {
-      // Not valid JSON — allow (might be a partial write or non-JSON content)
-    }
-  } else if (toolName === 'Edit') {
-    // For Edit: check if new_string contains gate result patterns
-    const newString: string = (toolInput.new_string as string) || '';
-    const gateResultPattern =
-      newString.includes('"result": "PASS"') ||
-      newString.includes('"result": "FAIL"') ||
-      newString.includes('"result":"PASS"') ||
-      newString.includes('"result":"FAIL"');
-    const donePhasePattern =
-      newString.includes('"phase": "DONE"') || newString.includes('"phase":"DONE"');
-
-    if (gateResultPattern || donePhasePattern) {
-      blocked = true;
-      reason = gateResultPattern
-        ? 'Gate results must be produced by gate-runner.ts, not written directly.'
-        : 'Phase DONE must be set by gate-runner.ts after ship gate passes.';
-    }
-  }
-
-  if (blocked) {
-    console.log(JSON.stringify({ decision: 'block', reason }));
+  if (decision.blocked) {
+    console.log(JSON.stringify({ decision: 'block', reason: decision.reason }));
   }
   // If not blocked, exit silently (allow)
   process.exit(0);

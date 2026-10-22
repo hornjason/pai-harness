@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { checkDocHygiene } from './doc-hygiene';
+import { BLOCKING_GATES } from './gate-names';
 
 export interface GateFailure {
   check: string;
@@ -108,7 +109,10 @@ function checkWorkflowFile(wfPath: string, slug: string): WorkflowGateFailure | 
     if (wf.phase === 'DONE') return null;
 
     const gates = wf.gates || {};
-    for (const gateName of ['scope', 'verify', 'ship']) {
+    // #1137: the registry, not a second copy of it. This list and
+    // GateResultProtection's agreed on every input anyone had, so nothing
+    // could go red when they diverged.
+    for (const gateName of BLOCKING_GATES) {
       const gate = gates[gateName];
       if (gate?.result === 'FAIL' && Array.isArray(gate.failures) && gate.failures.length > 0) {
         const acs = Array.isArray(wf.acs) ? wf.acs : [];
