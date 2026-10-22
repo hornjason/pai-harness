@@ -464,6 +464,12 @@ export const SOURCE_DIRS = [
   // unlisted directory is not a test failure, it is TDD going ungraded for
   // everything written there.
   "bin",
+  // #1169 added the first `.ts` under evals/ — the reviewer negative control
+  // and its subjects — and the derived test caught it on the first CI run,
+  // exactly as it caught bin/. Listing it is the fix the comment above
+  // prescribes: an eval that executes is implementation, and leaving it out
+  // would grade every future write there as NO_SOURCE.
+  "evals",
 ] as const;
 
 /** Whether a written path is implementation rather than test or docs. */
