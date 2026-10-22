@@ -22,6 +22,13 @@
  * the project root because a live `workflow-state.json` is not in the project
  * root — see `lib/bash-write-guard.ts` for the measurement.
  *
+ * #1240: a heredoc or herestring handed to an INTERPRETER is a program and
+ * is decided as one. Before that the body was stripped before every arm and
+ * only a `-c`/`-e` body was read back, so `bash <<'EOF'` and `python3 <<'PY'`
+ * reached a live gate artifact with the guard deciding on the single word
+ * `bash`. A body fed to anything else — `cat > doc.md <<'EOF'`,
+ * `gh --body-file - <<'EOF'` — is still a DOCUMENT and still stripped.
+ *
  * THE DECISION LIVES IN `lib/bash-write-guard.ts` (#1120), which is where
  * the reasoning and the measurements are. It was extracted for the same
  * reason #1137 extracted `lib/gate-result-protection.ts`: a decision that

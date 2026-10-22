@@ -27,6 +27,7 @@ import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import {
   decideBashWrite,
+  interpreterPrograms,
   isScratchPath,
   segments,
   stripQuoted,
@@ -1617,5 +1618,99 @@ describe("#1146: xattr's mutating forms are -w, -d and -c, read off the tool", (
   test("CONTROL: the cluster rule still needs a protected target", () => {
     expect(decideBashWrite("xattr -c /tmp/notes.md").blocked).toBe(false);
     expect(decideBashWrite("xattr -cr ~/Projects/x/README.md").blocked).toBe(false);
+  });
+});
+
+/**
+ * #1240: a heredoc fed to an INTERPRETER is a program, not a document.
+ *
+ * Pre-existing on `origin/main`, not introduced by #1175 — every witness
+ * below was measured against `git show origin/main:lib/bash-write-guard.ts`
+ * and reads ALLOW there, with no symlink and no `ln` anywhere.
+ *
+ * `stripHeredocs` deletes the body before every arm, and arm 3a only reads a
+ * body back as shell when the segment also carries `-c`/`-e`. A
+ * `bash <<'EOF'` segment carries neither, so the guard decided on the single
+ * word `bash` while the program underneath wrote whatever it liked.
+ *
+ * The controls are the load-bearing half. A fix of "stop stripping heredocs"
+ * passes every witness and reintroduces the 1,860-command over-blocking that
+ * stripping exists to prevent, so a document heredoc, a `gh --body-file -`
+ * heredoc and an interpreter heredoc writing a genuine fixture all assert
+ * ALLOW.
+ */
+describe("#1240 WITNESS: a program handed to an interpreter on stdin", () => {
+  const VICTIM = `${LIVE}/run/${STATE}`;
+  const witnesses: [string, string][] = [
+    ["bash", `bash <<'EOF'\necho '{}' > ${VICTIM}\nEOF`],
+    ["sh", `sh <<'SH'\necho '{}' > ${VICTIM}\nSH`],
+    ["zsh", `zsh <<'Z'\necho '{}' > ${VICTIM}\nZ`],
+    ["an unquoted delimiter", `bash <<EOF\necho '{}' > ${VICTIM}\nEOF`],
+    ["an indented terminator", `bash <<-'EOF'\n\techo '{}' > ${VICTIM}\n\tEOF`],
+    ["a pipe into an interpreter", `cat <<'EOF' | bash\necho '{}' > ${VICTIM}\nEOF`],
+    ["a path-spelled interpreter", `/bin/bash <<'EOF'\necho '{}' > ${VICTIM}\nEOF`],
+    // Not in the issue's table, measured here: a HERESTRING reaches the same
+    // interpreter by a route `heredocDelimiter` deliberately excludes
+    // (#1184 — it has no terminator), and is allowed for the other half of
+    // the mechanism: the `>` sits in a quoted span the VERB view removes.
+    ["a herestring", `bash <<<"echo '{}' > ${VICTIM}"`],
+    // A python body is not shell. Reading it as shell finds nothing, which
+    // is why it needs arm 3's treatment — a declared write verb near the
+    // name — rather than the shell recursion.
+    ["python, which is not shell", `python3 <<'PY'\nopen("${VICTIM}", "w").write("{}")\nPY`],
+    ["an ln inside the body, the originally reported case", `bash <<'EOF'\nln -s ${LIVE}/run /tmp/bw1240esc\necho '{}' > /tmp/bw1240esc/${STATE}\nEOF`],
+  ];
+  test.each(witnesses)("a write to a live artifact through %s is refused", (_n, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("CONTROL: a document heredoc keeps its exemption", () => {
+    const cmd = `cat > /tmp/bw1240/notes.md <<'EOF'\necho '{}' > ${VICTIM}\nln -s a b\nEOF`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("CONTROL: a gh body heredoc still passes — pai-config#474's shape", () => {
+    const cmd = `gh issue comment 1 --body-file - <<'EOF'\nThe guard refuses a write to ${STATE}\nEOF`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("CONTROL: an interpreter heredoc writing a FIXTURE is still allowed", () => {
+    const cmd = `bash <<'EOF'\necho '{}' > /tmp/bw1240/${STATE}\nEOF`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("CONTROL: an interpreter heredoc that only READS is still allowed", () => {
+    const cmd = `python3 <<'PY'\nimport json\nprint(json.load(open("${VICTIM}"))["phase"])\nPY`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  /**
+   * The arm asks for an ABSOLUTE path, and that is measured rather than
+   * cautious. Accepting a relative spelling newly refused 23 real commands
+   * in the 5,602-command corpus, every one of them an agent building hook
+   * FIXTURES in a `/tmp` tree with an assembled path: the only word carrying
+   * `.hook.ts` is the relative suffix, which cannot be shown to be scratch,
+   * so the fail-closed reading correctly declines to exempt it — and the
+   * work #1175 exists to unblock would have been refused by the arm added
+   * beside it. With the absolute requirement the same sweep newly blocks 15,
+   * and all 15 write a live `workflow-state.json` in the run store.
+   */
+  test("a relative spelling in a body is not evidence of a protected artifact", () => {
+    const assembled = `python3 <<'PY'\nimport os\nopen(os.path.join(dst, n + ".hook.ts"), "w").write("// stand-in")\nPY`;
+    expect(decideBashWrite(assembled).blocked).toBe(false);
+    // and the absolute spelling of the same write is refused, so the row
+    // above is not passing because the arm is dead
+    const absolute = `python3 <<'PY'\nopen("${LIVE}/hooks/X.hook.ts", "w").write("// stand-in")\nPY`;
+    expect(decideBashWrite(absolute).blocked).toBe(true);
+  });
+
+  test("MECHANISM: only an interpreter's heredoc is returned as a program", () => {
+    expect(interpreterPrograms(`bash <<'EOF'\nx\nEOF`).map(p => p.program)).toEqual(["x"]);
+    expect(interpreterPrograms(`cat > f <<'EOF'\nx\nEOF`)).toEqual([]);
+    expect(interpreterPrograms(`cat <<'EOF' | bash\nx\nEOF`).map(p => p.shell)).toEqual([true]);
+    expect(interpreterPrograms(`python3 <<'PY'\nx\nPY`).map(p => p.shell)).toEqual([false]);
+    // An UNTERMINATED heredoc is already visible to every arm (#1184 emits
+    // it unchanged), so returning it here would decide the same bytes twice.
+    expect(interpreterPrograms(`bash <<'EOF'\nx`)).toEqual([]);
   });
 });

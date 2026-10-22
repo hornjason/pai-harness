@@ -89,6 +89,7 @@
 import { realpathSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
+import { isInterpreterWord, isShellWord } from './interpreters';
 
 /** Gate artifacts. A write to any of these must come from the gate runner. */
 export const PROTECTED_FILES = ['workflow-state.json', '.gate-salt', '/witnesses/'];
@@ -425,9 +426,18 @@ function resolveThroughLinks(normalised: string): string | null {
  */
 const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 
+/**
+ * #1240: both tests read a view that KEEPS the text an interpreter is going
+ * to run. `stripHeredocs` deletes a heredoc body, so an `ln` inside
+ * `bash <<'EOF'` was invisible to the first test; `segments(cmd)` over the
+ * raw command does not make a body's lines into segments, so it was
+ * invisible to the second as well. One view, built once, fed to both.
+ */
 function exemptionIsVoid(cmd: string): boolean {
-  if (LINK_CREATION.test(stripHeredocs(cmd))) return true;
-  return segments(cmd).some(seg => commandWord(seg) === 'ln');
+  const programs = interpreterPrograms(cmd).map(p => p.program);
+  const view = [stripHeredocs(cmd), ...programs].join('\n');
+  if (LINK_CREATION.test(view)) return true;
+  return segments(view).some(seg => commandWord(seg) === 'ln');
 }
 
 /**
@@ -679,6 +689,81 @@ function heredocDelimiter(line: string): string | null {
     if (open[m.index]) return m[2];
   }
   return null;
+}
+
+/**
+ * Does the heredoc opened on this line hand its body to an interpreter?
+ *
+ * Two ways it can. The segment carrying the operator IS an interpreter
+ * (`bash <<'EOF'`), or the operator's segment is piped into one
+ * (`cat <<'EOF' | bash`). Everything else — `cat > doc.md <<'EOF'`,
+ * `gh issue comment --body-file - <<'EOF'` — is a DOCUMENT, and stripping
+ * those bodies is what stopped 1,860 real commands from being refused for
+ * quoting the words this guard looks for. That distinction is the whole
+ * reason this is a predicate rather than "stop stripping heredocs".
+ */
+function heredocInterpreter(line: string): string | null {
+  const segs = segments(line);
+  const ownerIdx = segs.findIndex(s => heredocDelimiter(s) !== null);
+  if (ownerIdx === -1) return null;
+  const owner = commandWord(segs[ownerIdx]);
+  if (isInterpreterWord(owner)) return owner;
+  const opAt = line.search(/(?<!<)<<(?!<)/);
+  if (opAt === -1 || !line.slice(opAt).includes('|')) return null;
+  return segs.slice(ownerIdx + 1).map(commandWord).find(isInterpreterWord) ?? null;
+}
+
+/**
+ * The program text this command hands to an interpreter on stdin (#1240).
+ *
+ * A heredoc body fed to an interpreter, and a herestring operand of one.
+ * Deliberately NOT the `-c`/`-e` form: arm 3a already reads that, and
+ * returning it here would decide it twice.
+ *
+ * An UNTERMINATED heredoc is not returned. `stripHeredocs` already emits
+ * those lines unchanged — the #1184 fail-closed direction — so every arm
+ * can already see them, and returning them again would double-count a body
+ * that is not hidden in the first place.
+ */
+export function interpreterPrograms(cmd: string): Array<{ shell: boolean; program: string }> {
+  const out: Array<{ shell: boolean; program: string }> = [];
+  const lines = cmd.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    i++;
+    if (/^\s*#/.test(line)) continue; // a comment cannot open either form
+
+    // A HERESTRING has no body and no terminator, which is why
+    // `heredocDelimiter` excludes it (#1184). It is still a program, and it
+    // is invisible for the other half of the mechanism: the `>` inside it
+    // sits in a quoted span that the VERB view removes.
+    const hs = /(?<!<)<<<(?!<)([\s\S]*)$/.exec(line);
+    if (hs) {
+      const owner = segments(line).find(s => /(?<!<)<<<(?!<)/.test(s));
+      const word = owner ? commandWord(owner) : '';
+      if (isInterpreterWord(word)) {
+        out.push({ shell: isShellWord(word), program: dequote(hs[1]).trim() });
+      }
+    }
+
+    const delim = heredocDelimiter(line);
+    if (!delim) continue;
+    const body: string[] = [];
+    let j = i;
+    while (j < lines.length && lines[j].trim() !== delim) {
+      body.push(lines[j]);
+      j++;
+    }
+    if (j < lines.length) {
+      const word = heredocInterpreter(line);
+      if (word) out.push({ shell: isShellWord(word), program: body.join('\n') });
+      i = j + 1;
+    } else {
+      i = j; // unterminated: already visible, see the docblock
+    }
+  }
+  return out.filter(p => p.program !== '');
 }
 
 /** Remove quote characters, keep the contents. Use when looking for a TARGET. */
@@ -1083,8 +1168,10 @@ const IN_PLACE = [
   /\bxattr\b[^\n]*\s-[A-Za-z]*[cdw][A-Za-z]*\b/,
 ];
 
-/** Interpreters whose argument is a program this module cannot read. */
-const INTERPRETERS = /^(?:python[23]?|perl|ruby|node|bun|deno|osascript|sh|bash|zsh|dash|ksh|php)$/;
+// #1240: the list moved to `lib/interpreters.ts`, which `lib/bash-file-read.ts`
+// now reads too. Two modules were answering "is this an interpreter" with two
+// different lists, and the narrower one was why a `python3` heredoc read as a
+// document.
 
 /**
  * Interpreters whose `-c` argument is SHELL — which this module can read.
@@ -1093,8 +1180,9 @@ const INTERPRETERS = /^(?:python[23]?|perl|ruby|node|bun|deno|osascript|sh|bash|
  * Python idioms, so `bash -c 'echo x > <protected>'` matched nothing and was
  * allowed. Arm 1 could not see it either, because the body is quoted. The
  * body is shell, the module parses shell, so it recurses instead of guessing.
+ *
+ * #1240: also in `lib/interpreters.ts` as `isShellWord`.
  */
-const SHELLS = /^(?:sh|bash|zsh|dash|ksh)$/;
 
 /** The `-c` body of a shell invocation, dequoted. */
 function shellBody(segment: string): string {
@@ -1182,6 +1270,37 @@ function namesOutsideScratch(text: string, list: string[], exempt: boolean): str
   return out;
 }
 
+/**
+ * Protected names in a program body, counting only ABSOLUTE spellings
+ * outside a scratch tree (#1240).
+ *
+ * The stricter reading exists because of what it costs otherwise, measured
+ * rather than reasoned: scanning an interpreter body for a protected NAME
+ * newly refused **23** real commands, and every one of them was an agent
+ * building hook FIXTURES in a `/tmp` tree with an assembled path —
+ * `open(os.path.join(dst, n), "w")`, where the only word carrying
+ * `.hook.ts` is the relative suffix itself. A relative fragment cannot be
+ * shown to be scratch, so the fail-closed reading in `isScratchPath`
+ * correctly refuses to exempt it, and the result is that the fixture work
+ * #1175 exists to unblock gets refused by the arm added beside it.
+ *
+ * So this arm asks for an absolute path. The spelling it is there to catch
+ * — `open("<run store>/workflow-state.json", "w")` inside a heredoc — is
+ * absolute, and the 23 are not. The arm it mirrors (arm 3, the `-c` form)
+ * keeps its looser reading: that behaviour is pre-existing and measured,
+ * and tightening it is not this change's business.
+ */
+function absoluteNamesOutsideScratch(text: string, exempt: boolean): string[] {
+  const out: string[] = [];
+  for (const p of ALL_PROTECTED) {
+    const words = pathWordsContaining(text, p).filter(w => w.startsWith('/'));
+    if (words.length === 0) continue;
+    if (exempt && words.every(isScratchPath)) continue;
+    out.push(p);
+  }
+  return out;
+}
+
 const ALL_PROTECTED = [...PROTECTED_FILES, ...PROTECTED_HOOKS];
 
 /**
@@ -1204,6 +1323,35 @@ export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): Bas
   // fixed amount of work rather than the session.
   if (depth > 3) return ALLOW;
   const exempt = exemptIn ?? !exemptionIsVoid(cmd);
+
+  // #1240: a program handed to an interpreter on stdin. `stripHeredocs`
+  // deletes the body before every arm below, and arm 3a only reads a body
+  // back when the segment also carries `-c`/`-e` — which `bash <<'EOF'` does
+  // not. The result was that the guard decided on the single word `bash`
+  // while the program underneath wrote whatever it liked. Each program is
+  // re-entered as a command in its own right, and recomputes its own
+  // exemption: an `ln` in the body is the body's business.
+  // A SHELL body is read as shell; anything else gets the treatment arm 3
+  // gives a `-c` body it cannot parse — a declared write verb near the name
+  // of a protected artifact. Reading a Python body as shell finds nothing,
+  // which is how `python3 <<'PY'` stayed allowed after the shell spellings
+  // were closed.
+  for (const { shell, program } of interpreterPrograms(cmd)) {
+    if (shell) {
+      const inner = decideBashWrite(program, depth + 1, exempt && !exemptionIsVoid(program));
+      if (inner.blocked) return inner;
+      continue;
+    }
+    const pf = absoluteNamesOutsideScratch(program, exempt).find(p => writesNear(program, p));
+    if (pf) {
+      return {
+        blocked: true,
+        reason:
+          `Bash command runs an interpreter or a mutating \`find\` naming "${pf}". ` +
+          `What it writes cannot be read off the command line, so it is refused.`,
+      };
+    }
+  }
 
   for (const seg of segments(cmd)) {
     const bare = dequote(seg); // TARGET view: contents kept
@@ -1255,12 +1403,12 @@ export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): Bas
     //    this asks for a declared write verb rather than refusing every
     //    interpreter that names a protected artifact, and for what that
     //    concession costs.
-    const isInterpreter = INTERPRETERS.test(word) && /\s-[a-z]*[ce]\b/.test(code);
+    const isInterpreter = isInterpreterWord(word) && /\s-[a-z]*[ce]\b/.test(code);
     const isMutatingFind = word === 'find' && FIND_MUTATING.test(code);
 
     // 3a. A shell `-c` body is shell. Read it as shell rather than scanning
     //     it for Node and Python idioms it will never contain (#1176).
-    if (isInterpreter && SHELLS.test(word)) {
+    if (isInterpreter && isShellWord(word)) {
       const body = shellBody(seg);
       if (body) {
         const inner = decideBashWrite(body, depth + 1, exempt);
