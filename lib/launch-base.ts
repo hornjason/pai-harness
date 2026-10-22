@@ -60,6 +60,7 @@
  * battery's reach entirely.
  */
 import { spawnSync } from "child_process";
+import { resolve } from "path";
 
 import { canonicalRoot } from "./paths";
 import { readWorktreeRemote, redactRemote, repoSlug } from "./worktree-repo";
@@ -182,14 +183,32 @@ function nonCanonicalRoots(roots: {
       };
     }
     if (canonical === given) continue;
+
+    // TWO conditions, and they are reported apart because only one of them
+    // is about symlinks. Comparing `canonical` straight back against the raw
+    // string folds them together, and then a root spelled `…/rungate/` is
+    // refused with "which is a symlink to …/rungate" — a false statement
+    // about the operator's disk, offering as a remedy the path they just
+    // typed with one character removed. Found by the AI review of PR #1150.
+    //
+    // Both still refuse. A non-normalised root breaks the comparison in
+    // ship.js just as surely: it builds `${root}/.claude/worktrees/` and a
+    // trailing slash makes that a doubled separator no git-reported path
+    // matches. The verdict is the same; the sentence is not.
+    const normalised = resolve(given);
+    const why =
+      canonical !== normalised
+        ? `it is a symlink to ${safe(canonical)} — one directory under two names`
+        : `it is not a normalised path; it names ${safe(canonical)} with redundant or relative segments`;
+
     return {
       reading: "NON_CANONICAL_ROOT",
       refusal:
-        `${name} was given as ${safe(given)}, which is a symlink to ${safe(canonical)} — one directory ` +
-        "under two names. `git rev-parse --show-toplevel` resolves symlinks and every path git reports " +
-        "is canonical, but `collectDestination` in workflows/ship.js compares roots as STRINGS and " +
-        "cannot resolve anything: the sandbox has no filesystem (#69). So this run would refuse its own " +
-        `agent worktrees, and the refusal would read as "this directory is not yours". Relaunch with ` +
+        `${name} was given as ${safe(given)}, and ${why}. ` +
+        "`git rev-parse --show-toplevel` resolves symlinks and every path git reports is canonical, " +
+        "but `collectDestination` in workflows/ship.js compares roots as STRINGS and cannot resolve " +
+        "anything: the sandbox has no filesystem (#69). So this run would refuse its own agent " +
+        `worktrees, and the refusal would read as "this directory is not yours". Relaunch with ` +
         `${name} set to ${safe(canonical)}`,
     };
   }

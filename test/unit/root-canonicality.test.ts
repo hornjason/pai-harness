@@ -189,6 +189,58 @@ describe("#1129: launchBaseReading can report a non-canonical root", () => {
     expect(launchBaseReading(canonical, canonical, undefined).reading).toBe("SAME_CHECKOUT");
   });
 
+  // Found by the AI review of PR #1150, and it was right. The first version
+  // compared the fully canonicalised path against the RAW root string, so
+  // every difference between them read as a symlink — including the ones
+  // `resolve()` alone accounts for. A root spelled `…/rungate/` was refused
+  // with "which is a symlink to …/rungate", which is a false statement about
+  // the operator's disk, and the remedy it offered was the path they had
+  // just typed with one character removed.
+  //
+  // Both spellings still REFUSE: a trailing slash genuinely breaks the
+  // comparison in ship.js, which builds `${root}/.claude/worktrees/` and
+  // would get a doubled separator. What changes is that the refusal now
+  // says which of the two it is.
+  for (const [label, suffix] of [
+    ["a trailing slash", "/"],
+    ["a dot segment", "/."],
+    // Through `.git`, which EXISTS. A traversal through a directory that
+    // does not (`/sub/..`) is UNMEASURED and correctly so — `git -C` cannot
+    // enter it either, so the reading never reaches the canonicality check.
+    ["a traversal segment", "/.git/.."],
+  ] as const) {
+    test(`${label} refuses WITHOUT claiming a symlink that is not there`, () => {
+      const { canonical } = twoNamedRepo();
+      const reading = launchBaseReading(canonical, `${canonical}${suffix}`);
+      expect(reading.reading).toBe("NON_CANONICAL_ROOT");
+
+      const refusal = launchBaseRefusal(canonical, `${canonical}${suffix}`) ?? "";
+      // The CLAIM, not the word. The shared tail explains that
+      // `--show-toplevel` resolves symlinks, which is true of every reading
+      // and is not an assertion about this root; banning the substring
+      // outright would fail on an accurate sentence.
+      expect(refusal, "a non-normalised root is not a symlink").not.toContain("is a symlink to");
+      expect(refusal, "the reason should name the real one").toContain("not a normalised path");
+      expect(refusal).toContain(canonical);
+    });
+  }
+
+  test("a symlinked root is still called a symlink — the discrimination, not just the absence", () => {
+    // The control for the three cases above. Asserting only "does not say
+    // symlink" would stay green if the word were deleted everywhere.
+    const { canonical, linked } = twoNamedRepo();
+    expect(launchBaseRefusal(canonical, linked) ?? "").toContain("is a symlink to");
+  });
+
+  test("a symlinked root spelled with a trailing slash is still caught", () => {
+    // The two conditions compose: normalising first must not swallow the
+    // symlink check for a root that has both.
+    const { canonical, linked } = twoNamedRepo();
+    const reading = launchBaseReading(canonical, `${linked}/`);
+    expect(reading.reading).toBe("NON_CANONICAL_ROOT");
+    expect(launchBaseRefusal(canonical, `${linked}/`) ?? "").toContain(canonical);
+  });
+
   test("an unresolvable root is UNMEASURED, and that is not NON_CANONICAL_ROOT", () => {
     const { canonical } = twoNamedRepo();
     // Kept apart on purpose: "this root has two names" is fixed by
