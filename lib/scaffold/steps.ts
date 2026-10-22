@@ -3503,6 +3503,36 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(vertex, {
  * directly — as this did — meant a project on the directory layout deployed
  * nothing and said nothing, because the early return is indistinguishable
  * from "this project has no hooks" (#70).
+ *
+ * ## Every exit leaves a reading (#1047)
+ *
+ * #70 fixed one silent return and left four. Measured on this repository on
+ * 2026-10-21: zero of twenty registry entries set `deployToConsumers`, so the
+ * eligible set was empty on every run this function has ever had, and the
+ * only line it emitted was `SKIP: All hooks already deployed to <consumer>` —
+ * which is a claim about hooks that were never eligible, printed by the
+ * `else` of `deployed > 0`. A caller reading the action list saw a successful
+ * no-op. So did the release.
+ *
+ * Four outcomes used to arrive as one, or as nothing:
+ *
+ * | what happened | what it said before | what it says now |
+ * |---|---|---|
+ * | no rungate config at all | nothing | `SKIP:` naming the root |
+ * | config has no `hooks` array | nothing | `SKIP:` naming the absence |
+ * | no `consumers` declared | nothing | `SKIP:` naming the absence |
+ * | hooks exist, none opted in | `SKIP: All hooks already deployed` | `UNMEASURED:` with the count |
+ * | all eligible already present | `SKIP: All hooks already deployed` | `SKIP:` with the eligible count |
+ *
+ * The UNMEASURED row is the one the issue turns on. `0 deployed because the
+ * project wanted none` and `0 deployed because nobody set the flag` are
+ * different facts and only one of them is fine; the first is now a `SKIP`
+ * over a non-empty eligible set and the second is an `UNMEASURED` that names
+ * how many entries were read and how many opted in. `.claude/rules/
+ * config-access.md`: a reading is not `0`, `{}`, `null` or silence.
+ *
+ * A DEPLOYED line also names the hooks, because a count cannot be checked
+ * against a registry and a list can.
  */
 export function deployHooksToConsumers(root: string, actions: string[]): void {
   let harness: any;
@@ -3514,10 +3544,36 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
     actions.push(`SKIP: hook deployment — unreadable rungate config: ${(err as Error).message}`);
     return;
   }
-  if (!harness) return;
+  if (!harness) {
+    actions.push(`SKIP: hook deployment — no rungate config under ${root}`);
+    return;
+  }
 
-  if (!harness?.hooks || !Array.isArray(harness.hooks)) return;
-  if (!harness?.consumers || !Array.isArray(harness.consumers) || harness.consumers.length === 0) return;
+  if (!harness?.hooks || !Array.isArray(harness.hooks)) {
+    actions.push("SKIP: hook deployment — the rungate config declares no hooks array");
+    return;
+  }
+  if (!harness?.consumers || !Array.isArray(harness.consumers) || harness.consumers.length === 0) {
+    actions.push("SKIP: hook deployment — the rungate config declares no consumers");
+    return;
+  }
+
+  // Taken ONCE, before any consumer loop, because it is a fact about the
+  // registry and not about a consumer. Reporting it per-consumer would make
+  // a repository with no consumers unable to say it, which is the same
+  // silence one layer down.
+  const eligible = harness.hooks.filter(
+    (h: any) => h?.enabled && h?.hookFor && h?.command && h?.deployToConsumers === true,
+  );
+  if (eligible.length === 0) {
+    actions.push(
+      `UNMEASURED: hook deployment — 0 of ${harness.hooks.length} registry entries set ` +
+        `deployToConsumers, so nothing was eligible and nothing declined it. This is not ` +
+        `"this project wants no hooks"; it is "nobody said". Set deployToConsumers on the ` +
+        `entries a consumer needs, or false with a notDeployedReason on the ones it does not.`,
+    );
+    return;
+  }
 
   const hooksDir = join(root, "hooks");
 
@@ -3541,11 +3597,8 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
 
     if (!settings.hooks) settings.hooks = {};
 
-    let deployed = 0;
-    for (const hook of harness.hooks) {
-      if (!hook.enabled || !hook.hookFor || !hook.command) continue;
-      if (hook.deployToConsumers !== true) continue;
-
+    const deployedNames: string[] = [];
+    for (const hook of eligible) {
       const resolvedCommand = hook.command.replace("${RUNGATE_HOOKS_DIR}", hooksDir);
       const hookType = hook.hookFor as string;
 
@@ -3561,14 +3614,21 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
       if (hook.matcher) hookEntry.matcher = hook.matcher;
 
       settings.hooks[hookType].push(hookEntry);
-      deployed++;
+      deployedNames.push(hook.name);
     }
 
-    if (deployed > 0) {
+    if (deployedNames.length > 0) {
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-      actions.push(`DEPLOYED: ${deployed} hooks to ${consumer}/.claude/settings.local.json`);
+      actions.push(
+        `DEPLOYED: ${deployedNames.length} hooks to ${consumer}/.claude/settings.local.json ` +
+          `— ${deployedNames.join(", ")}`,
+      );
     } else {
-      actions.push(`SKIP: All hooks already deployed to ${consumer}`);
+      // Reachable only with a non-empty eligible set, so this now means what
+      // it says. The `eligible.length === 0` guard above took the other case.
+      actions.push(
+        `SKIP: all ${eligible.length} eligible hooks already deployed to ${consumer}`,
+      );
     }
   }
 }

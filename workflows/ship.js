@@ -3498,6 +3498,16 @@ console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
    nothing" and silently drops the project to the LIGHT tier floor):
 bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT} --out ${WORK_DIR}/resolved-config.json
 
+   Report its EXIT STATUS as configResolved (#1065). Exit ZERO is
+   configResolved: true, and the JSON it printed is config. A NON-ZERO exit,
+   or no ${WORK_DIR}/resolved-config.json on disk afterwards, is
+   configResolved: false — and then omit config entirely. Do NOT substitute
+   {} for a config that did not resolve: an empty object is a real state a
+   project can be in, it reads as "configured with nothing", and the run
+   derives from it whether the UI, container and prove subsystems run at all.
+   ALWAYS return configResolved. A reply without it is read as UNMEASURED and
+   ENDS the run, because a reading nobody took is not a reading that passed.
+
 3. Prior branch detect:
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
 
@@ -3523,7 +3533,7 @@ the harness checkout to make the warning go away: the warning is a reading
 of what graded you, and changing the grader mid-run is the thing it exists
 to make visible.
 
-Return: acCount from step 1, the full JSON from step 2 as config, prior
+Return: acCount from step 1, configResolved and config from step 2, prior
 branch from step 3, and the three harness fields from step 4.
 Report priorBranch exactly as detection returned it — branch (bare name), refName
 (the git-resolvable ref), commitCount, which is null when git could not count,
@@ -3533,6 +3543,14 @@ null in all four: it means git could not answer, not that the branch is current.
     type: 'object',
     properties: {
       acCount: { type: 'number' },
+      // #1065. The reading the tier is derived from, declared so the relay
+      // cannot drop it: a schema is a FILTER on the reply, not a description
+      // of it (#646), and a boolean the declaration does not demand is a
+      // boolean that arrives absent with nothing saying so. `config` stays
+      // undeclared-as-required on purpose — a run whose config did not
+      // resolve has none to report, and demanding one would make it invent
+      // the empty object this whole binding exists to refuse.
+      configResolved: { type: 'boolean' },
       config: { type: 'object', properties: { pages: { type: 'object' }, apiUrl: { type: 'string' }, uiUrl: { type: 'string' }, container: { type: 'object', properties: { port: { type: 'number' }, rebuildCommand: { type: 'string' }, healthPath: { type: 'string' }, hosts: { type: 'array', items: { type: 'string' } } } }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } },
       priorBranch: { type: 'object', properties: { branch: { type: 'string' }, refName: { type: 'string' }, commitCount: { type: ['number', 'null'] }, behindCount: { type: ['number', 'null'] }, isBehind: { type: ['boolean', 'null'] }, isMerged: { type: ['boolean', 'null'] } } },
       // #602. A structured-output schema is a FILTER on the reply, not a
@@ -3546,7 +3564,7 @@ null in all four: it means git could not answer, not that the branch is current.
       harnessSha: { type: ['string', 'null'] },
       harnessWarning: { type: ['string', 'null'] },
     },
-    required: ['acCount'],
+    required: ['acCount', 'configResolved'],
   } })
 
   if (!setupResult || setupResult.acCount === 0) {
@@ -3638,8 +3656,92 @@ const FROZEN_AC_HASH = JSON.stringify(FROZEN_AC_DEFS)
 // here would be a second normalisation rule — and it was already a divergent
 // one, since the agent prompts read the raw cat while only this variable saw
 // the shim.
-const projectConfigResult = setupResult?.config || {}
-const projectConfig = projectConfigResult || {}
+// ──── CONFIG-RESOLUTION-REFUSAL-START ────
+/**
+ * #1065. Say whether the setup step resolved a config, and refuse the run
+ * when it did not.
+ *
+ * This line used to read the setup reply's config through an or-empty-object
+ * fallback — the expression is not quoted here, because the guard below
+ * searches this file for it and a comment reciting what was removed is
+ * evidence it is still there. It sat twenty lines below a
+ * comment arguing that no such fallback existed: *"an unresolvable config
+ * must fail setup, not arrive as an empty object that reads as 'configured
+ * with nothing' and silently drops the project to the LIGHT tier floor."*
+ * The argument was that `scripts/resolve-config.ts` exits non-zero, so the
+ * caller never sees one. Two things let it through anyway, both measured on
+ * the tree that shipped it:
+ *
+ * - `configResolved` was not a field, and `config` is not in the schema's
+ *   `required` list, so a reply carrying neither validated (#646).
+ * - the only refusal between the spawn and here read `acCount`.
+ *
+ * So `{}` arrived, `hasUI` and `hasContainer` were derived from it, the tier
+ * fell to the LIGHT floor, and the scope gate, Quinn local, container verify
+ * and prove did not run — with the run still reporting DONE. That is #310's
+ * defect with the fallback moved from the shell into the JavaScript, and
+ * #274's measurement is the one that says what it costs: the harm is not the
+ * string "LIGHT", it is four tier-gated statements that stopped executing.
+ *
+ * **One decider, and it is not here.** `resolveConfig` in
+ * `lib/config-loader.ts` already reports which of three cases it hit, and
+ * `scripts/resolve-config.ts` carries that across the subprocess boundary
+ * `workflows/*.js` cannot import across (#69) by exiting non-zero. This
+ * function decides nothing about a config; it reads the setup agent's
+ * RESTATEMENT of that exit status, exactly as the `harnessReading` block
+ * above reads a restatement of the provenance recorder's. A second opinion
+ * here — re-deriving resolution from the shape of `config` — would be two
+ * deciders answering one question, and no behavioural test could tell them
+ * apart.
+ *
+ * The three refusals are three different facts and each says which:
+ *
+ * | reading | what it means |
+ * |---|---|
+ * | the field is absent | UNMEASURED. Nobody looked, or the relay dropped it |
+ * | `configResolved: false` | the resolver ran and refused. A real answer |
+ * | `true` with no `config` object | the relay dropped the object (#646) |
+ *
+ * UNMEASURED is not clean, and it is the arm that matters: `0`, `{}`, `null`,
+ * `SKIP` and silence are indistinguishable from success
+ * (`.claude/rules/config-access.md`). A `configResolved: true` carrying
+ * `config: {}` is NOT any of these — it is a project that declares no pages
+ * and no container, which is an ordinary CLI library and runs LIGHT
+ * correctly. That pair is the whole distinction, and it is why this returns
+ * null for one and a reason for the other.
+ */
+function configResolutionRefusal(setupResult) {
+  const reply = setupResult && typeof setupResult === 'object' ? setupResult : {}
+  if (!('configResolved' in reply)) {
+    return 'UNMEASURED: setup returned no configResolved reading, so nothing says whether ' +
+      `${PROJECT_ROOT}'s config resolved. An unread config and a config declaring nothing ` +
+      'are the same empty object here, and the ceremony tier is derived from it (#1065)'
+  }
+  if (reply.configResolved !== true) {
+    return 'setup reported configResolved: false — scripts/resolve-config.ts could not resolve a ' +
+      `config under ${PROJECT_ROOT}/.claude. Deriving hasUI and hasContainer from that would ` +
+      'floor the tier to LIGHT and skip the scope gate, Quinn local, container verify and prove ' +
+      '(#1065)'
+  }
+  if (!reply.config || typeof reply.config !== 'object' || Array.isArray(reply.config)) {
+    return 'setup reported configResolved: true but returned no config object — the reading says ' +
+      'the resolver succeeded and the object it produced did not arrive, which is a dropped ' +
+      'relay field and not an empty config (#646, #1065)'
+  }
+  return null
+}
+// ──── CONFIG-RESOLUTION-REFUSAL-END ────
+
+const configRefusal = configResolutionRefusal(setupResult)
+if (configRefusal) {
+  log(`CONFIG_UNRESOLVED: ${configRefusal}`)
+  return await terminalFailure('CONFIG_UNRESOLVED', { reason: configRefusal })
+}
+
+// Reached only through the refusal above, so this is the resolver's own
+// object and never a substitute for one. No `|| {}`: the fallback is what
+// #1065 is, and a TypeError here would mean the refusal stopped refusing.
+const projectConfig = setupResult.config
 const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
 const hasContainer = !!(projectConfig.container)
