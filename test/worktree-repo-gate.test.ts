@@ -300,7 +300,7 @@ describe("SC-1545: ship.js produces the list and run-gate.ts persists it", () =>
     // Workflow sandbox is not available to a test.
     expect(shipSource).toContain("runWorktrees = worktreeRecords(");
     expect(shipSource).toContain("--worktrees ${shellQuote(JSON.stringify(runWorktrees))}");
-    expect(shipSource).toContain("--tree-under-test ${gateCwd}${worktreesFlag}");
+    expect(shipSource).toContain("--tree-under-test ${shellQuote(gateCwd)}${worktreesFlag}");
   });
 
   test("run-gate.ts persists a supplied list and clears a stale one", () => {

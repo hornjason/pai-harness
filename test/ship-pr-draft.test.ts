@@ -401,7 +401,7 @@ describe("#46: the undraft cannot happen without a live CI pass", () => {
     // one or the no-workflows branch. A third, unchained one would be the
     // bypass — it reads as a harmless duplicate and undoes the whole thing.
     const invocations = [
-      ...PROVE_TAIL.matchAll(/bun --cwd \$\{HARNESS_ROOT\} scripts\/github-op\.ts pr-ready/g),
+      ...PROVE_TAIL.matchAll(/bun --cwd \$\{shellQuote\(HARNESS_ROOT\)\} scripts\/github-op\.ts pr-ready/g),
     ];
     expect(invocations).toHaveLength(2);
 
@@ -420,9 +420,21 @@ describe("#46: the undraft cannot happen without a live CI pass", () => {
     const undraft = PROVE_TAIL.slice(PROVE_TAIL.indexOf("Take the PR out of draft"));
     // Both name their directory on the command since #1056 — the block no
     // longer reaches `${commitDir}` by moving the session into it.
-    expect(undraft).toContain("sha=$(git -C ${commitDir} rev-parse HEAD)");
-    expect(undraft).toMatch(/workflows=\$\(ls \$\{commitDir\}\/\.github\/workflows[^\n]*wc -l/);
+    expect(undraft).toContain("sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)");
+    expect(undraft).toMatch(
+      /workflows=\$\(find \$\{shellQuote\(commitDir\)\}\/\.github\/workflows[^\n]*wc -l/,
+    );
     expect(undraft).toContain('--sha "$sha"');
+
+    // …and a count of 0 is a READING, not the shape a broken probe also
+    // produces. `ls <dir>/*.yml <dir>/*.yaml` returned 0 under zsh for a
+    // repository holding `ci.yml`, because an unmatched second glob aborts
+    // the command — and 0 is the branch that undrafts WITHOUT reading CI.
+    expect(
+      undraft,
+      "the probe no longer distinguishes 'no CI configured' from 'could not look', " +
+        "and the two reach the same undraft-without-checking branch",
+    ).toContain("WORKFLOW_PROBE_FAILED");
 
     // The interpolated values that ARE allowed are the ones ship.js knows
     // first-hand: the repo slug and the PR number it opened. Neither is a

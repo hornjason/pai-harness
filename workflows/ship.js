@@ -2414,8 +2414,8 @@ let runWorktrees = []
 
 async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) {
   const gateCwd = gateOpts.cwd || PROJECT_ROOT
-  const cwdFlag = gateCwd !== PROJECT_ROOT ? `--cwd ${gateCwd} ` : ''
-  const evidenceEnv = gateCwd !== PROJECT_ROOT ? `EVIDENCE_CWD=${gateCwd} ` : ''
+  const cwdFlag = gateCwd !== PROJECT_ROOT ? `--cwd ${shellQuote(gateCwd)} ` : ''
+  const evidenceEnv = gateCwd !== PROJECT_ROOT ? `EVIDENCE_CWD=${shellQuote(gateCwd)} ` : ''
   // #414 — shellQuote because these paths originate in agent replies (#155)
   // and this string is pasted into a command. Omitted entirely when the run
   // built in no worktree, so run-gate.ts clears a stale list rather than
@@ -2448,7 +2448,7 @@ async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) 
     const result = await timedAgent(`
 Run the ${gateName} gate and classify any failures:
 
-1. Run: ${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${cwdFlag}${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} --tree-under-test ${gateCwd}${worktreesFlag} 2>&1
+1. Run: ${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${cwdFlag}${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} --tree-under-test ${shellQuote(gateCwd)}${worktreesFlag} 2>&1
 2. Read ${WORK_DIR}/workflow-state.json for gate result
 3. If FAIL, classify failures: bun -e "
    import {classifyFailures} from '${HARNESS_ROOT}/gates/error-classifier.ts';
@@ -3296,7 +3296,7 @@ ${acListBlock(discovery.acs)}
    Write the title to its own file too — it comes from a spec heading, and a
    quote or a backtick in that heading would otherwise be read by the shell:
 
-   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-create --repo ${ISSUE_REPO} \\
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-create --repo ${ISSUE_REPO} \\
      --title-file ${WORK_DIR}/subissue-N-title.txt --body-file ${WORK_DIR}/subissue-N.md
 
    The title file holds one line: "#${ISSUE} Phase N: [phase description]".
@@ -3327,14 +3327,14 @@ ${acListBlock(discovery.acs)}
    over it when reading the goal — write them verbatim or the next run's goal
    becomes this banner (#202). Then run:
 
-   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
 5. Write your grouping to ${WORK_DIR}/phase2-grouping.json:
 
    {"phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase": "Phase 2", "acIds": ["AC-5", ...]}]}
 
 6. Verify the issues you created actually carry their ACs. Run:
 
-   bun --cwd ${HARNESS_ROOT} scripts/verify-phase2-bodies.ts --repo ${ISSUE_REPO} \\
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/verify-phase2-bodies.ts --repo ${ISSUE_REPO} \\
      --acs ${WORK_DIR}/phase2-acs.json --grouping ${WORK_DIR}/phase2-grouping.json
 
    It reads each sub-issue back FROM GITHUB and compares its
@@ -4234,10 +4234,10 @@ If a prior branch exists (non-empty branch field), bring it into the working
 tree — but NOT onto the default branch (#136). Substitute the refName field
 from the JSON above for <refName>:
 
-  branch=$(git -C ${PROJECT_ROOT} branch --show-current)
+  branch=$(git -C ${shellQuote(PROJECT_ROOT)} branch --show-current)
   case "$branch" in
     main|master) echo "SKIPPED MERGE: checkout is on $branch" ;;
-    *) git -C ${PROJECT_ROOT} merge <refName> --no-edit ;;
+    *) git -C ${shellQuote(PROJECT_ROOT)} merge <refName> --no-edit ;;
   esac
 
 If it skips, that is a correct outcome, not an error: this workflow does not
@@ -6530,8 +6530,8 @@ Read ${PROJECT_ROOT}/AGENTS.md for project context.
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## Working Directory
-IMPORTANT: Validate against Marcus's worktree at: ${marcusWorktreePath}
-Run all file checks, tests, and validations against that directory, using absolute paths under ${marcusWorktreePath}.
+IMPORTANT: Validate against Marcus's worktree at: ${shellQuote(marcusWorktreePath)}
+Run all file checks, tests, and validations against that directory, using absolute paths under ${shellQuote(marcusWorktreePath)}.
 This is where Marcus made the code changes — do NOT validate against the main branch.
 
 ## Environment
@@ -6596,8 +6596,8 @@ Do NOT screenshot after every browser_snapshot().
 
     log(`Quinn local: FAIL — sending back to Marcus (attempt ${validateAttempt}/3)`)
     const fixResult = await briefedAgent(`
-IMPORTANT: Work in the worktree at: ${marcusWorktreePath}
-Use absolute paths under ${marcusWorktreePath}, or \`git -C ${marcusWorktreePath} <subcommand>\`. Do NOT \`cd\` at the top level of a Bash call: it moves the session and breaks worktree creation for peer agents (#992).
+IMPORTANT: Work in the worktree at: ${shellQuote(marcusWorktreePath)}
+Use absolute paths under ${shellQuote(marcusWorktreePath)}, or \`git -C ${shellQuote(marcusWorktreePath)} <subcommand>\`. Do NOT \`cd\` at the top level of a Bash call: it moves the session and breaks worktree creation for peer agents (#992).
 
 Quinn found issues for issue #${ISSUE}:
 ${(quinnLocalResult?.failures || []).join('\n')}
@@ -6632,6 +6632,34 @@ const agentResults = implementResult.buildResult?.agentResults || []
 const distinctWorktrees = [...new Set(agentResults.map(r => r.worktreePath).filter(Boolean))]
 let commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
 let alreadyStaged = false
+
+// ──── COMMIT-DIR-VALIDATED-START ────
+// One decider, at the source (#1056).
+//
+// `marcusWorktreePath` is `implementResult.buildResult?.worktreePath` — an
+// AGENT's reply (#155) — and `commitDir` is interpolated into a shell command
+// at twenty-odd sites downstream. Validating the twenty-odd interpolations is
+// twenty-odd chances to forget; validating the VALUE is one. The second
+// assignment, `commitDir = collectInto` below, is already behind this same
+// function via `collectAgentWork`; this is the first assignment catching up,
+// and it was the unguarded one.
+//
+// The quoting downstream stays. `collectDestination`'s own docblock is
+// explicit that neither layer is sufficient alone: quoting a path to another
+// project still commits another project's files, and an allowlist that
+// forgets to quote still executes `$(...)`. This is the first layer, not a
+// replacement for the second.
+//
+// Refuses rather than falling back to PROJECT_ROOT. A silent fallback would
+// commit from the shared checkout — which sits on the default branch, which
+// the commit step refuses by name (#136) — and the run would die later with a
+// reason that names neither this value nor the agent that reported it.
+if (commitDir !== PROJECT_ROOT && !collectDestination(commitDir)) {
+  return shipFailed('Commit', 'the implement step reported a worktree this run will not commit from: ' +
+    `${String(commitDir).slice(0, 200)} is neither this run's project root nor one of its agent ` +
+    'worktrees, and it reaches a shell command as a path (#1056, #155)')
+}
+// ──── COMMIT-DIR-VALIDATED-END ────
 
 // ──── COLLECT-DESTINATION-START ────
 /**
@@ -7133,13 +7161,13 @@ const commitResult = await timedAgent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
 1. Commit and push. Run these in order, exactly as written:
-   branch=$(git -C ${commitDir} branch --show-current)
+   branch=$(git -C ${shellQuote(commitDir)} branch --show-current)
    case "$branch" in main|master) echo "REFUSING: on $branch — ship never commits to the default branch"; exit 1;; esac
    ${gitAddForCommit}
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/github-op.ts`)} commit-subject \\
      --repo ${shellQuote(ISSUE_REPO)} --issue ${ISSUE} --out ${shellQuote(commitSubjectPath)}
-   git -C ${commitDir} commit -F ${shellQuote(commitSubjectPath)}
-   git -C ${commitDir} push -u origin ${pushTarget}
+   git -C ${shellQuote(commitDir)} commit -F ${shellQuote(commitSubjectPath)}
+   git -C ${shellQuote(commitDir)} push -u origin ${pushTarget}
 
    The branch check is not optional and is not a formality. #136: a run pushed
    straight to main, and the ref it wrote was chosen by an agent recovering
@@ -7156,8 +7184,8 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    not a reason to compose one.
 
 2. Get branch info:
-   branch=$(git -C ${commitDir} branch --show-current)
-   sha=$(git -C ${commitDir} rev-parse --short HEAD)
+   branch=$(git -C ${shellQuote(commitDir)} branch --show-current)
+   sha=$(git -C ${shellQuote(commitDir)} rev-parse --short HEAD)
 
 3. Record the commit in workflow-state.json. Run exactly this:
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
@@ -7600,9 +7628,9 @@ if (verifyResult?.result === 'FAIL') {
       // ──── DELETION-VERDICT-END ────
       const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
-prevBuild=$(git -C ${commitDir} rev-parse HEAD)   # this is parentSha, and the buildCommit the gate graded
-${reimplGitAdd} && git -C ${commitDir} commit -m "fix(#${ISSUE}): verify gate regression fix" && git -C ${commitDir} push origin HEAD:${shipBranch}
-sha=$(git -C ${commitDir} rev-parse HEAD)   # this is commitSha
+prevBuild=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)   # this is parentSha, and the buildCommit the gate graded
+${reimplGitAdd} && git -C ${shellQuote(commitDir)} commit -m "fix(#${ISSUE}): verify gate regression fix" && git -C ${shellQuote(commitDir)} push origin HEAD:${shipBranch}
+sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)   # this is commitSha
 
 Report both SHAs exactly as git printed them. Do NOT invent a value for either
 one, and do NOT report the same SHA twice to make the step look successful —
@@ -8346,7 +8374,7 @@ You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## COMMIT SHA VERIFICATION (MANDATORY)
 Read ${WORK_DIR}/workflow-state.json and get the buildCommit value.
-Run: git -C ${PROJECT_ROOT} rev-parse --short HEAD
+Run: git -C ${shellQuote(PROJECT_ROOT)} rev-parse --short HEAD
 Verify HEAD matches buildCommit from workflow-state.json.
 If mismatch, FAIL with "Container running wrong version — HEAD {actual} != buildCommit {expected}."
 
@@ -8680,7 +8708,7 @@ substitute one for the other — reporting them as equal when they are not is
 the failure this step exists to catch (#169).
 
 1. The commit the work branch ends at. Run exactly:
-     git -C ${commitDir} rev-parse HEAD
+     git -C ${shellQuote(commitDir)} rev-parse HEAD
    Report what it printed as headSha.
 
 2. The commit the security review was pinned to. Read
@@ -9330,7 +9358,7 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
   const persistResult = await timedAgent(`
 Run exactly this command and report its result:
 
-  bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/scripts/persist-compliance.ts ${WORK_DIR} ${HARNESS_ROOT} ${ISSUE}
+  bun --cwd ${shellQuote(PROJECT_ROOT)} ${HARNESS_ROOT}/scripts/persist-compliance.ts ${WORK_DIR} ${HARNESS_ROOT} ${ISSUE}
 
 It prints human-readable progress on stderr and a single JSON receipt on stdout.
 
@@ -9669,7 +9697,7 @@ Fixes #${ISSUE}
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 RUNGATE_PR_BODY_EOF
 
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts pr-upsert --repo ${REPO} \\
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts pr-upsert --repo ${REPO} \\
   --head ${shipBranch} --base main \\
   --title-from-issue ${ISSUE} --issue-repo ${ISSUE_REPO} \\
   --body-file ${WORK_DIR}/pr-body.md --draft
@@ -9753,9 +9781,9 @@ if (shipResult?.result !== 'PASS') {
       const quinnShipVerdictValue = quinnShipVerdict(quinnContainerRan, quinnContainerResult, quinnLocalVerdict)
       const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
-git -C ${commitDir} rev-parse HEAD   # this is parentSha
-${reimplShipGitAdd} && git -C ${commitDir} commit -m "fix(#${ISSUE}): ship gate regression fix" && git -C ${commitDir} push origin HEAD:${shipBranch}
-sha=$(git -C ${commitDir} rev-parse HEAD)   # this is commitSha
+git -C ${shellQuote(commitDir)} rev-parse HEAD   # this is parentSha
+${reimplShipGitAdd} && git -C ${shellQuote(commitDir)} commit -m "fix(#${ISSUE}): ship gate regression fix" && git -C ${shellQuote(commitDir)} push origin HEAD:${shipBranch}
+sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)   # this is commitSha
 
 Report both SHAs exactly as git printed them. Do NOT invent a value for either
 one, and do NOT report the same SHA twice to make the step look successful —
@@ -9897,11 +9925,11 @@ const finalizeResult = await timedAgent(`
 Do ALL of these tasks in order:
 
 1. Post the prove result on the issue:
-   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
      --body "Ship verdict: ${proveVerdict} (${discovery.ceremonyTier} ceremony — via ship.js)"
 ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in this order:
-   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
-   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
    issue-label appends; it does not replace the labels triage already set.
 ` : ''}   If any of these exits non-zero, report the failure — do NOT fall back to gh.
 
@@ -9914,7 +9942,7 @@ ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in t
    bun -e "import {cleanupWorktrees} from '${HARNESS_ROOT}/lib/worktree-cleanup.ts'; const r = await cleanupWorktrees({projectRoot:'${PROJECT_ROOT}'}); console.log(JSON.stringify(r))" 2>/dev/null || echo "cleanup skipped"
 
 4. Scan stale issues:
-   bun --cwd ${HARNESS_ROOT} scripts/scan-stale-issues.ts --repo ${ISSUE_REPO} --exclude ${ISSUE} 2>/dev/null || echo "scan skipped"
+   bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/scan-stale-issues.ts --repo ${ISSUE_REPO} --exclude ${ISSUE} 2>/dev/null || echo "scan skipped"
 
 5. Put the shared checkout back, and remove this run's branch (#640). Run
    exactly this:
@@ -10166,12 +10194,19 @@ function prReadiness(status, pr, ci) {
 // pick one. An ambiguous input is how a gate ends up satisfied by the
 // convenient half.
 const ciStep = prStep?.ok === true ? await timedAgent(`
-Read CI's verdict on the commit this run pushed. Run exactly these commands in
-${commitDir}:
+Read CI's verdict on the commit this run pushed. Every path below is already
+absolute, so run them from wherever you are:
 
-sha=$(git -C ${commitDir} rev-parse HEAD)
-workflows=$(ls ${commitDir}/.github/workflows/*.yml ${commitDir}/.github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
-bun --cwd ${HARNESS_ROOT} scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 600000
+sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)
+test -d ${shellQuote(commitDir)} || { echo "WORKFLOW_PROBE_FAILED: cannot read" ${shellQuote(commitDir)} "— a count of 0 here would take the no-CI exemption and undraft without reading CI (#1056)"; exit 1; }
+workflows=$(find ${shellQuote(commitDir)}/.github/workflows -maxdepth 1 \\( -name '*.yml' -o -name '*.yaml' \\) 2>/dev/null | wc -l | tr -d ' ')
+bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 600000
+
+The \`test -d\` line is not decoration. A count of 0 means "this repository
+has no CI" and takes a branch that undrafts the PR WITHOUT reading CI, so a
+probe that merely FAILED would reach the same 0 and wave the PR through — the
+two are byte-identical to the \`if\` below. Run the block unchanged, and if it
+prints WORKFLOW_PROBE_FAILED report that rather than working around it.
 
 The SHA comes from git, not from you. Do NOT pass a branch name: the checks
 endpoint accepts one and answers about whatever commit that branch pointed at
@@ -10217,14 +10252,19 @@ if (prState.action === 'MARK_READY') {
   const ready = await timedAgent(`
 Take the PR out of draft. Run exactly this one block, unchanged:
 
-sha=$(git -C ${commitDir} rev-parse HEAD)
-workflows=$(ls ${commitDir}/.github/workflows/*.yml ${commitDir}/.github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
+sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)
+test -d ${shellQuote(commitDir)} || { echo "WORKFLOW_PROBE_FAILED: cannot read" ${shellQuote(commitDir)} "— a count of 0 here would take the no-CI exemption and undraft without reading CI (#1056)"; exit 1; }
+workflows=$(find ${shellQuote(commitDir)}/.github/workflows -maxdepth 1 \\( -name '*.yml' -o -name '*.yaml' \\) 2>/dev/null | wc -l | tr -d ' ')
 if [ "$workflows" -eq 0 ]; then
-  bun --cwd ${HARNESS_ROOT} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+  bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
 else
-  bun --cwd ${HARNESS_ROOT} scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 300000 \\
-    && bun --cwd ${HARNESS_ROOT} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+  bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 300000 \\
+    && bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
 fi
+
+The \`test -d\` line is not decoration either: a count of 0 takes the branch
+that undrafts WITHOUT reading CI, so a probe that merely failed would reach
+that same 0. If it prints WORKFLOW_PROBE_FAILED, report it and stop.
 
 The \`&&\` is the whole point and is not yours to split (#46). CI's verdict
 reached this workflow through a reply you typed, and a reply is not a reading:
