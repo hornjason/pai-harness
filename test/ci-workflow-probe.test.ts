@@ -131,6 +131,30 @@ beforeAll(() => {
   writeFileSync(linkTarget, "on: push\n");
   symlinkSync(linkTarget, join(make("symlinkedWorkflow", []), ".github", "workflows", "ci.yml"));
 
+  // The same shape one level up: `.github/workflows` is itself a link to a
+  // directory. `find` does not descend a symlinked START POINT without `-L`,
+  // so the enumeration came back empty and the project reported 0 — and this
+  // one survived the `-type f` fix, because the predicate was never what
+  // stopped it. The real directory is outside the walked tree for the same
+  // reason as above: the fixture must not be satisfiable without the link.
+  const linkedDir = join(root, "outsideDir");
+  mkdirSync(linkedDir, { recursive: true });
+  writeFileSync(join(linkedDir, "ci.yml"), "on: push\n");
+  const symDirProj = join(root, "symlinkedWorkflowsDir");
+  mkdirSync(join(symDirProj, ".github"), { recursive: true });
+  symlinkSync(linkedDir, join(symDirProj, ".github", "workflows"));
+  dirs.symlinkedWorkflowsDir = symDirProj;
+
+  // A DANGLING link is the control that keeps `-L` from becoming the
+  // narrowing it was meant to repair. Under `-L` a broken link is reported
+  // as a link and `-type f` is false of it, so `-type l` is the only reason
+  // this counts — and counting it asks for CI rather than exempting the run,
+  // which is the direction this probe is allowed to be wrong in.
+  symlinkSync(
+    join(root, "noSuchTarget.yml"),
+    join(make("danglingWorkflow", []), ".github", "workflows", "ci.yml"),
+  );
+
   // `commitDir` itself present and not traversable. `[ -d ]` alone says yes
   // to this, and then `.github` is invisible and the count is 0.
   chmodSync(make("unreadableCommitDir", ["ci.yml"]), 0o000);
@@ -167,6 +191,12 @@ describe("#1098: the probe distinguishes a count of zero from a count not taken"
     // reported 0 and took the no-CI exemption — a fail-open reintroduced one
     // `find` predicate at a time.
     ["symlinkedWorkflow", "OK", 1],
+    // …and a symlinked workflows DIRECTORY, which `-type f` never touched:
+    // `find` will not descend a linked start point without `-L`.
+    ["symlinkedWorkflowsDir", "OK", 1],
+    // A broken link counts. `-L` alone would report 0 here, which is the
+    // exemption, so the two predicates are load-bearing in opposite cases.
+    ["danglingWorkflow", "OK", 1],
     ["unreadableWorkflows", "FAILED", null],
     // `[ -d ]` says yes to a directory that exists and cannot be entered.
     ["unreadableCommitDir", "FAILED", null],

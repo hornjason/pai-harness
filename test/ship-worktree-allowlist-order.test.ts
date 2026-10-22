@@ -145,6 +145,36 @@ describe("#1098: the reported worktree is allowlisted at the assignment", () => 
       .toBeGreaterThan(validateAt);
   });
 
+  test("#1101's commitDir guard is a second binding, and it is below both prompts", () => {
+    // Which of the two orderings this fix closes, measured rather than
+    // asserted in prose. #1101 added COMMIT-DIR-VALIDATED, and on the tree
+    // this branch is cut from it is the FIRST allowlist question asked about
+    // anything derived from the implement reply — but `commitDir` is derived
+    // from `marcusWorktreePath` and the check sits after both prompts have
+    // been built, so the two agents have already been pointed at the
+    // directory. The binding the prompts interpolate is the one that needed
+    // a guard ahead of them, and that is the ordering closed here.
+    const assignAt = shipSource.indexOf(
+      "const marcusWorktreePath = implementResult.buildResult?.worktreePath",
+    );
+    const commitGuardAt = shipSource.indexOf(
+      "if (commitDir !== PROJECT_ROOT && !collectDestination(commitDir)) {",
+    );
+    const validateAt = shipSource.indexOf("IMPORTANT: Validate against Marcus's worktree at:");
+    const fixAt = shipSource.indexOf("IMPORTANT: Work in the worktree at:");
+
+    expect(assignAt, "the assignment this issue is about is gone").toBeGreaterThan(-1);
+    expect(commitGuardAt, "#1101's commitDir guard is gone — this case measures nothing")
+      .toBeGreaterThan(-1);
+    // It is NOT a duplicate of this fix: it is asked after both prompts…
+    expect(commitGuardAt, "#1101's guard moved above the Validate prompt")
+      .toBeGreaterThan(validateAt);
+    expect(commitGuardAt, "#1101's guard moved above the Fix prompt").toBeGreaterThan(fixAt);
+    // …and this run's guard is asked before either of them.
+    expect(shipSource.indexOf(GUARD)).toBeGreaterThan(assignAt);
+    expect(shipSource.indexOf(GUARD)).toBeLessThan(commitGuardAt);
+  });
+
   test("a worktree outside the allowlist ends the run", async () => {
     const got = await runGuard(FOREIGN);
     expect(got.marcusWorktreePath, "the run carried on holding a path it may not act in").toBeNull();

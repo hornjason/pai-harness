@@ -10221,15 +10221,24 @@ function workflowProbeCommand(quotedDir) {
     // `[ -d ]` says yes, and then `.github` is invisible to `[ -e ]` and the
     // count comes out 0 — which is the exemption. Measured, not reasoned.
     `if [ ! -d ${quotedDir} ] || [ ! -x ${quotedDir} ] || [ ! -r ${quotedDir} ]; then echo WORKFLOW_PROBE_FAILED; exit 1; fi`,
+    // Gated on `-e` deliberately. The reading is sound BECAUSE the line above
+    // already refused an untraversable `${quotedDir}`, so a false `-e` here
+    // means absent and cannot mean "could not look". Asking `[ ! -x ]`
+    // unconditionally instead refuses every project that has no `.github` at
+    // all — the probe-that-refuses-everything this issue's acceptance row
+    // exists to stop. Measured both ways; the control is below.
     `if [ -e ${quotedDir}/.github ] && [ ! -x ${quotedDir}/.github ]; then echo WORKFLOW_PROBE_FAILED; exit 1; fi`,
     `if [ ! -e ${quotedDir}/.github/workflows ]; then`,
     `  workflows=0`,
-    // `-type f` would be the same fail-open one predicate further in: GitHub
-    // Actions runs a SYMLINKED workflow file, `find -type f` does not see
-    // one, and a repository whose `ci.yml` is a link would report 0 and
-    // undraft without reading CI. A dangling link still counts, which is the
-    // direction to be wrong in — it requires CI rather than exempting.
-    `elif ! found=$(find ${quotedDir}/.github/workflows -maxdepth 1 \\( -type f -o -type l \\) \\( -name '*.yml' -o -name '*.yaml' \\)); then`,
+    // Every narrowing of this enumeration fails toward "no CI here, ship it",
+    // so the two symlink shapes GitHub Actions honours are both counted and
+    // both measured. `-type f` alone misses a symlinked `ci.yml`; without
+    // `-L`, a symlinked `.github/workflows` DIRECTORY is not descended into
+    // at all and the probe reports 0 for a project whose CI runs. `-type l`
+    // is kept beside `-L` on purpose: under `-L` a DANGLING link is reported
+    // as a link, so it counts, and the run asks for CI rather than exempting
+    // itself. That is the direction this probe is allowed to be wrong in.
+    `elif ! found=$(find -L ${quotedDir}/.github/workflows -maxdepth 1 \\( -type f -o -type l \\) \\( -name '*.yml' -o -name '*.yaml' \\)); then`,
     `  echo WORKFLOW_PROBE_FAILED; exit 1`,
     `elif [ -z "$found" ]; then`,
     `  workflows=0`,
