@@ -3591,6 +3591,21 @@ export function buildReviewRunScript(version: string): string {
     `transcript, not from the payload: a reviewer that skipped the file is ` +
     `not a witness to whether it read the file.`;
 
+  // The fourth state, and the only one here that is about this step rather
+  // than about the reviewer. `escape_ere` is pure parameter substitution and
+  // has nothing to fail at, so this is unreachable as written — it exists
+  // because the alternative to refusing is an UNESCAPED anchor, which is a
+  // wildcard, which is the bypass this whole repair is about.
+  const conventionsUnanchored =
+    `${AI_REVIEW_CONVENTIONS_FILE} is in this checkout and this step could ` +
+    `not escape its own working directory for the pattern that anchors the ` +
+    `reviewer's read to it. Refusing rather than matching on an unanchored ` +
+    `name: an unescaped path is a pattern whose '.' is a wildcard, so the ` +
+    `anchor stops being an anchor and a read of any file called ` +
+    `${AI_REVIEW_CONVENTIONS_FILE} anywhere in the tree would be credited — ` +
+    `including one this pull request added. This check is UNMEASURED, not a ` +
+    `passing review.`;
+
   const conventionsRead =
     `The reviewer read ${AI_REVIEW_CONVENTIONS_FILE} before it concluded — a ` +
     `tool call naming that path is in the action's execution transcript. ` +
@@ -3847,6 +3862,8 @@ set -uo pipefail
 
 ${AI_REVIEW_ANNOTATION_ESCAPE}
 
+${AI_REVIEW_ERE_ESCAPE}
+
 # #867, and FIRST, because on this event none of the readings below can hold.
 #
 # The job runs on \`merge_group\` so that a repository which has made
@@ -3946,7 +3963,50 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     # property is the presence of a string.
     if [ -f "${AI_REVIEW_CONVENTIONS_FILE}" ]; then
       if [ -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
-        if grep -qE '"file_path"[[:space:]]*:[[:space:]]*"([^"]*/)?${AI_REVIEW_CONVENTIONS_FILE_PATTERN}"' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
+        # The matcher, repaired. The shipped one looked for
+        # \`"file_path": ".../REVIEW.md"\` and nothing else, and it had two
+        # ways to be satisfied without the conventions ever being read:
+        #
+        #   * a \`Write\` block carries that same text. \`Write\` is in the
+        #     reviewer's allowedTools and the granted \`--add-dir\` lies
+        #     OUTSIDE the checkout, so a write there is not even caught by
+        #     the drift step. The check's whole purpose is to be the one
+        #     thing a reviewer cannot satisfy without reading.
+        #   * \`([^"]*/)?\` matched ANY directory, so a \`sub/REVIEW.md\`
+        #     credited a check that is about the ROOT file — and the root
+        #     file is the one the restore step takes from the base. A branch
+        #     adding its own \`docs/REVIEW.md\` could have the reviewer read
+        #     that and still pass.
+        #
+        # So the tool NAME is bound to the path, and the path is anchored on
+        # the step's own working directory — \${PWD}, which is the same
+        # directory the \`-f\` test above read, so the two cannot disagree.
+        # Escaped through \`escape_ere\`: a runner path is
+        # \`/home/runner/work/<repo>/<repo>\` and a repository name may carry
+        # a \`.\`, which interpolated raw is a wildcard and no anchor at all.
+        # The bare name is accepted alongside it because the agent's own cwd
+        # is the workspace, so \`REVIEW.md\` is a legitimate spelling.
+        if ! conv_ws=\$(escape_ere "\${PWD}"); then
+          echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${conventionsUnanchored}" >&2
+          exit ${AI_REVIEW_REQUIRED_EXIT}
+        fi
+        conv_path="(\${conv_ws}/)?${AI_REVIEW_CONVENTIONS_FILE_PATTERN}"
+
+        # BOTH key orders, because the order is not ours to choose: the block
+        # is whatever the SDK's object serialises to and nothing here pins
+        # it. \`[^{}]\` is what binds the two keys to ONE block — it cannot
+        # cross into a neighbouring tool_use, so a \`Write\` next to a
+        # \`Read\` of something else can never be read as one call.
+        conv_a='"name"[[:space:]]*:[[:space:]]*"Read"[^{}]*\\{[^{}]*"file_path"[[:space:]]*:[[:space:]]*"'"\${conv_path}"'"'
+        conv_b='"file_path"[[:space:]]*:[[:space:]]*"'"\${conv_path}"'"[^{}]*\\}[^{}]*"name"[[:space:]]*:[[:space:]]*"Read"'
+
+        # Flattened first. \`grep\` is line-oriented and the upstream
+        # \`writeExecutionFile\` decides whether this document is one line or
+        # many; a multi-key pattern over the pretty form would match nothing
+        # and refuse every review. \`tr\` is already a dependency of the
+        # restore step. A \`tr\` that is missing takes the pipeline non-zero,
+        # which lands on the refusal below — the correct direction.
+        if tr -d '\\n' < "\${${AI_REVIEW_EXECUTION_FILE_VAR}}" | grep -qE "\${conv_a}|\${conv_b}"; then
           echo "::notice title=${AI_REVIEW_CONVENTIONS_TITLE}::${conventionsRead}"
         else
           echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${conventionsUnread}" >&2
@@ -4850,6 +4910,51 @@ export const AI_REVIEW_ANNOTATION_ESCAPE = `escape_annotation() {
   v="\${v//%/%25}"
   v="\${v//$'\\r'/%0D}"
   v="\${v//$'\\n'/%0A}"
+  printf '%s' "\${v}"
+}`;
+
+/**
+ * The one encoder for a value going into a POSIX ERE (#1167 review).
+ *
+ * The conventions check anchors the reviewer's read on the step's own
+ * working directory, and that directory is a runner path this generator does
+ * not choose — `/home/runner/work/<repo>/<repo>`, where a repository name may
+ * legally carry a `.`. Interpolated raw, that `.` is a wildcard, and the
+ * anchor the whole repair is about stops being an anchor.
+ *
+ * **The whole metacharacter set, not the one character today's input
+ * contains.** An escaper that handles only the observed case is the same
+ * defect one level down, and the next person to change the anchored value
+ * will not re-derive the set.
+ *
+ * Backslash FIRST, or every escape this function adds afterwards gets
+ * re-escaped — the same ordering constraint `escape_annotation` states for
+ * `%`. Pure bash substitution rather than `sed`: a command substitution in
+ * an assignment aborts the step under the runner's \`bash -e\` when it fails
+ * (#1110), and this has nothing to fail at.
+ */
+export const AI_REVIEW_ERE_ESCAPE = `escape_ere() {
+  local v="\$1"
+  # A literal \`}\` cannot be written inline as a substitution PATTERN: the
+  # parser ends the expansion at it, which silently turns the line into a
+  # shorter replacement plus a stray brace appended to every result. Measured:
+  # \`escape_ere /plain/path\` returned \`/plain/path}\`. Binding it to a
+  # variable moves the brace past the parse and is the only form that works.
+  local cb='}'
+  v="\${v//\\\\/\\\\\\\\}"
+  v="\${v//./\\\\.}"
+  v="\${v//[/\\\\[}"
+  v="\${v//]/\\\\]}"
+  v="\${v//(/\\\\(}"
+  v="\${v//)/\\\\)}"
+  v="\${v//\\{/\\\\{}"
+  v="\${v//\${cb}/\\\\\${cb}}"
+  v="\${v//\\*/\\\\*}"
+  v="\${v//+/\\\\+}"
+  v="\${v//\\?/\\\\?}"
+  v="\${v//|/\\\\|}"
+  v="\${v//^/\\\\^}"
+  v="\${v//\$/\\\\\$}"
   printf '%s' "\${v}"
 }`;
 

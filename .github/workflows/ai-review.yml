@@ -1,4 +1,4 @@
-# generated-sha: 9da95fd06208f52c
+# generated-sha: 7233afc05b2fe913
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1012,7 +1012,7 @@ jobs:
           use_vertex: ${{ steps.ai-review-auth.outputs.mode == 'vertex' }}
           claude_code_oauth_token: ${{ steps.ai-review-auth.outputs.mode == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           anthropic_api_key: ${{ steps.ai-review-auth.outputs.mode == 'api-key' && secrets.ANTHROPIC_API_KEY || '' }}
-          claude_args: --model claude-sonnet-5 --max-turns 80 --allowedTools Read,Grep,Glob,Write --setting-sources user --add-dir ${{ steps.ai-review-prepare.outputs.dir }} --disallowedTools Bash,BashOutput,KillShell,Task,SlashCommand,ExitPlanMode,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Edit(./**)${{ steps.ai-review-creds-relocate.outputs.denyread }}
+          claude_args: --model claude-sonnet-5 --max-turns 50 --allowedTools Read,Grep,Glob,Write --setting-sources user --add-dir ${{ steps.ai-review-prepare.outputs.dir }} --disallowedTools Bash,BashOutput,KillShell,Task,SlashCommand,ExitPlanMode,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Edit(./**)${{ steps.ai-review-creds-relocate.outputs.denyread }}
           prompt: |
             Review the changes on this branch for correctness defects: bugs that
             produce a wrong result, a crash, or data loss on some input you can name.
@@ -1156,6 +1156,31 @@ jobs:
             printf '%s' "${v}"
           }
 
+          escape_ere() {
+            local v="$1"
+            # A literal `}` cannot be written inline as a substitution PATTERN: the
+            # parser ends the expansion at it, which silently turns the line into a
+            # shorter replacement plus a stray brace appended to every result. Measured:
+            # `escape_ere /plain/path` returned `/plain/path}`. Binding it to a
+            # variable moves the brace past the parse and is the only form that works.
+            local cb='}'
+            v="${v//\\/\\\\}"
+            v="${v//./\\.}"
+            v="${v//[/\\[}"
+            v="${v//]/\\]}"
+            v="${v//(/\\(}"
+            v="${v//)/\\)}"
+            v="${v//\{/\\{}"
+            v="${v//${cb}/\\${cb}}"
+            v="${v//\*/\\*}"
+            v="${v//+/\\+}"
+            v="${v//\?/\\?}"
+            v="${v//|/\\|}"
+            v="${v//^/\\^}"
+            v="${v//$/\\$}"
+            printf '%s' "${v}"
+          }
+
           # #867, and FIRST, because on this event none of the readings below can hold.
           #
           # The job runs on `merge_group` so that a repository which has made
@@ -1255,7 +1280,50 @@ jobs:
               # property is the presence of a string.
               if [ -f "REVIEW.md" ]; then
                 if [ -s "${AI_REVIEW_EXECUTION_FILE:-}" ]; then
-                  if grep -qE '"file_path"[[:space:]]*:[[:space:]]*"([^"]*/)?REVIEW\.md"' "${AI_REVIEW_EXECUTION_FILE}"; then
+                  # The matcher, repaired. The shipped one looked for
+                  # `"file_path": ".../REVIEW.md"` and nothing else, and it had two
+                  # ways to be satisfied without the conventions ever being read:
+                  #
+                  #   * a `Write` block carries that same text. `Write` is in the
+                  #     reviewer's allowedTools and the granted `--add-dir` lies
+                  #     OUTSIDE the checkout, so a write there is not even caught by
+                  #     the drift step. The check's whole purpose is to be the one
+                  #     thing a reviewer cannot satisfy without reading.
+                  #   * `([^"]*/)?` matched ANY directory, so a `sub/REVIEW.md`
+                  #     credited a check that is about the ROOT file — and the root
+                  #     file is the one the restore step takes from the base. A branch
+                  #     adding its own `docs/REVIEW.md` could have the reviewer read
+                  #     that and still pass.
+                  #
+                  # So the tool NAME is bound to the path, and the path is anchored on
+                  # the step's own working directory — ${PWD}, which is the same
+                  # directory the `-f` test above read, so the two cannot disagree.
+                  # Escaped through `escape_ere`: a runner path is
+                  # `/home/runner/work/<repo>/<repo>` and a repository name may carry
+                  # a `.`, which interpolated raw is a wildcard and no anchor at all.
+                  # The bare name is accepted alongside it because the agent's own cwd
+                  # is the workspace, so `REVIEW.md` is a legitimate spelling.
+                  if ! conv_ws=$(escape_ere "${PWD}"); then
+                    echo "::error title=AI review UNMEASURED::REVIEW.md is in this checkout and this step could not escape its own working directory for the pattern that anchors the reviewer's read to it. Refusing rather than matching on an unanchored name: an unescaped path is a pattern whose '.' is a wildcard, so the anchor stops being an anchor and a read of any file called REVIEW.md anywhere in the tree would be credited — including one this pull request added. This check is UNMEASURED, not a passing review." >&2
+                    exit 1
+                  fi
+                  conv_path="(${conv_ws}/)?REVIEW\.md"
+
+                  # BOTH key orders, because the order is not ours to choose: the block
+                  # is whatever the SDK's object serialises to and nothing here pins
+                  # it. `[^{}]` is what binds the two keys to ONE block — it cannot
+                  # cross into a neighbouring tool_use, so a `Write` next to a
+                  # `Read` of something else can never be read as one call.
+                  conv_a='"name"[[:space:]]*:[[:space:]]*"Read"[^{}]*\{[^{}]*"file_path"[[:space:]]*:[[:space:]]*"'"${conv_path}"'"'
+                  conv_b='"file_path"[[:space:]]*:[[:space:]]*"'"${conv_path}"'"[^{}]*\}[^{}]*"name"[[:space:]]*:[[:space:]]*"Read"'
+
+                  # Flattened first. `grep` is line-oriented and the upstream
+                  # `writeExecutionFile` decides whether this document is one line or
+                  # many; a multi-key pattern over the pretty form would match nothing
+                  # and refuse every review. `tr` is already a dependency of the
+                  # restore step. A `tr` that is missing takes the pipeline non-zero,
+                  # which lands on the refusal below — the correct direction.
+                  if tr -d '\n' < "${AI_REVIEW_EXECUTION_FILE}" | grep -qE "${conv_a}|${conv_b}"; then
                     echo "::notice title=AI review conventions loaded::The reviewer read REVIEW.md before it concluded — a tool call naming that path is in the action's execution transcript. This says the conventions were LOADED and says nothing about whether the findings honour them; the cap on non-blocking findings and the evidence each one carries are adjudicated from the payload separately. Its absence on a run that wrote a payload is a refusal, not a silence."
                   else
                     echo "::error title=AI review UNMEASURED::The AI review completed and wrote a findings payload, and its execution transcript carries no read of REVIEW.md. That file is in this checkout and the reviewer's prompt names it as the first thing to read: it states what a defect looks like in this repository, which paths carry generated or deliberately planted code that must not be flagged, and what evidence a finding has to carry. A review conducted without it is not the review this repository specifies, and its findings were produced against conventions it never saw. The payload is therefore UNMEASURED against those conventions — not clean — and the findings in it are not adjudicated. Failing rather than reporting a green check for a review that ignored the one document written for it. This reading is taken from the action's own execution transcript, not from the payload: a reviewer that skipped the file is not a witness to whether it read the file." >&2
@@ -1464,7 +1532,7 @@ jobs:
             # rejecting a review the CLI completed, which at the pinned SHA is the turn
             # accounting in base-action/src/run-claude-sdk.ts:244-250.
             if grep -qE '"subtype"[[:space:]]*:[[:space:]]*"success"' "${AI_REVIEW_EXECUTION_FILE}"; then
-              route="The review action (#631) did not complete, and its execution file reports the reviewer reported a SUCCESSFUL result. So the CLI finished and the ACTION rejected the run afterwards — at the pinned SHA the one thing that does this is the action's own turn accounting, which throws when the completed run's turn count exceeds --max-turns. Read the execution file's num_turns against the configured maximum, which this job sets to 80; raising it is the lever if they are close. The Claude Code GitHub App is NOT the cause here — the reviewer could not have run at all without it. This check is UNMEASURED, not a passing review."
+              route="The review action (#631) did not complete, and its execution file reports the reviewer reported a SUCCESSFUL result. So the CLI finished and the ACTION rejected the run afterwards — at the pinned SHA the one thing that does this is the action's own turn accounting, which throws when the completed run's turn count exceeds --max-turns. Read the execution file's num_turns against the configured maximum, which this job sets to 50; raising it is the lever if they are close. The Claude Code GitHub App is NOT the cause here — the reviewer could not have run at all without it. This check is UNMEASURED, not a passing review."
             else
               route="The review action (#631) did not complete, and it DID write an execution file, so the reviewer executed and this is not the case where the action declined before running. The Claude Code GitHub App is installed — the agent could not have started otherwise — so that is not worth checking. Read the execution file for the result subtype, the turn count and the permission denials, and the action's own log for the error it exited on. This check is UNMEASURED, not a passing review."
             fi
