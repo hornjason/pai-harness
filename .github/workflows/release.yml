@@ -89,8 +89,34 @@ jobs:
       # deliberate: a release is irreversible, so "could not measure" has to
       # stop the pipeline where it happened rather than surface three steps
       # later as a test failure nobody reads as an environment fault.
-      - name: Fetch the comparison base the ratchets measure against
-        run: git fetch --no-tags --depth=200 origin '+refs/heads/main:refs/remotes/origin/main'
+      #
+      # A THIRD guard needs this fetch and was not in the list above, which
+      # is why `--no-tags --depth=200` was wrong in two independent ways and
+      # no release could ever pass (#1067). `publishedTagDistance` probes
+      # `v<published>^{commit}` with plain git and reports `commitsAhead:
+      # null` when it is absent, and `test/distribution-currency.test.ts`
+      # refuses a null — correctly, because a reading nobody took is not a
+      # reading that passed. So:
+      #
+      #   --no-tags   removed the PUBLISHED tag, which is the one thing that
+      #               probe needs. The tag being released is HEAD; the tag it
+      #               measures FROM is the previous release's, and nothing in
+      #               a tag checkout carries it.
+      #   --depth=200 was a number nobody maintains. Measured 2026-10-22:
+      #               `v0.6.0..origin/main` is 223 commits, so even with tags
+      #               fetched the PATH between them is outside a 200-commit
+      #               window and `rev-list --count` cannot walk it. It was
+      #               adequate when written and stopped being so without
+      #               anything in this file changing — the margin is set by
+      #               how many commits a release cycle accumulates, which is
+      #               not a quantity this workflow owns.
+      #
+      # Both are replaced by full history rather than by a bigger number,
+      # because a bigger number fails again at the next long cycle and fails
+      # the same silent way: a reading that could not be taken, surfacing as
+      # a red assertion three steps from its cause.
+      - name: Fetch the comparison base and the published tag
+        run: git fetch origin '+refs/heads/main:refs/remotes/origin/main' '+refs/tags/*:refs/tags/*'
 
       # Pinned, not "latest". The header argues this for every `uses:` and the
       # argument is the same for a RUNTIME fetched at job time: this job can
