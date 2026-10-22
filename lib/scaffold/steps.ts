@@ -2818,6 +2818,7 @@ export const SHARD_AGGREGATE_ENV = {
   rollup: "SHARD_ROLLUP",
   expected: "SHARD_EXPECTED",
   jobName: "SHARD_JOB_NAME",
+  attempt: "SHARD_ATTEMPT",
   markerDir: "SHARD_MARKER_DIR",
 } as const;
 
@@ -2831,18 +2832,35 @@ export const SHARD_AGGREGATE_ENV = {
 export const SHARD_MARKER_ENV = {
   index: "SHARD_INDEX",
   status: "SHARD_STATUS",
+  attempt: "SHARD_ATTEMPT",
   dir: "SHARD_MARKER_DIR",
 } as const;
 
 /**
- * The artifact name one shard's marker is uploaded under, and the glob the
- * aggregate downloads (#1190).
+ * The artifact name one shard's marker is uploaded under (#1190).
  *
- * v4 artifacts are immutable and names must be unique within a run, so the
- * matrix index is part of the name — the shape `actions/upload-artifact`'s
- * own README prescribes for a matrix. The aggregate matches on the prefix
- * rather than enumerating names, so the two sides agree through this one
- * declaration instead of through two copies of a loop bound.
+ * The full name is `<prefix><run_attempt>-<shard>`, and **both** halves are
+ * load-bearing.
+ *
+ * `<shard>` because v4 artifacts are immutable and names must be unique
+ * within a run — the shape `actions/upload-artifact`'s own README prescribes
+ * for a matrix.
+ *
+ * `<run_attempt>` because **artifacts are scoped to the RUN, not the
+ * attempt**, and that was measured rather than assumed. On run `39835866754`
+ * a two-leg matrix was re-run with "Re-run failed jobs"; on attempt 2 the
+ * aggregate's download reported `Found 2 artifact(s)` and read
+ * `shard-1 => success attempt=1` — evidence written by a leg that **did not
+ * execute in attempt 2 at all**. Without the attempt in the name, a re-run in
+ * which a leg never executes reads that leg's stale `success` as proof it
+ * ran, which is #1181 reintroduced with a required check gone green over
+ * shards that did not run.
+ *
+ * The aggregate matches on the prefix rather than enumerating names, so the
+ * two sides agree through this one declaration instead of through two copies
+ * of a loop bound. It downloads EVERY attempt's artifacts deliberately: a
+ * pattern narrowed to this attempt would make a stale leg indistinguishable
+ * from a leg that never ran, and those want different sentences.
  */
 export const SHARD_MARKER_ARTIFACT_PREFIX = "rungate-shard-marker-";
 
@@ -2934,7 +2952,21 @@ fi
 
 job_name="\${${E.jobName}:-test-shard}"
 
-# 3. The evidence, written by the shards about THEMSELVES. Each leg's last
+# 3. THIS attempt. Artifacts belong to the run, not the attempt — measured on
+#    run 39835866754, where attempt 2's download reported \`Found 2
+#    artifact(s)\` and handed back a marker a leg wrote in attempt 1 and never
+#    rewrote, because that leg did not execute in attempt 2 at all. Reading it
+#    as evidence about attempt 2 is #1181 with a required check green over
+#    shards that did not run, so the attempt is part of what gets checked.
+attempt="\${${E.attempt}:-}"
+case "$attempt" in
+  "" | *[!0-9]*)
+    echo "::error::${E.attempt} is '$attempt', which is not a run attempt, so no marker can be dated. UNMEASURED, so refusing."
+    exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+    ;;
+esac
+
+# 4. The evidence, written by the shards about THEMSELVES. Each leg's last
 #    step writes one file naming its own status and uploads it; a leg that
 #    was created and never executed uploads nothing, and nothing is exactly
 #    what run 39799846607's three queued shards would have left (#1190).
@@ -2954,40 +2986,88 @@ if [ ! -d "$dir" ]; then
   exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
 fi
 
-# Every marker on disk, whatever its index. Counted separately from the
-# 1..expected walk below so a marker the matrix never declared disagrees out
-# loud instead of being skipped by a loop that only looks where it expects.
+# Every artifact directory belonging to THIS attempt. Counted off the disk
+# rather than off the 1..expected walk below, so a leg that contributed more
+# than its own evidence disagrees out loud instead of being skipped by a loop
+# that only looks where it expects.
 found=0
-for marker in "$dir"/${SHARD_MARKER_FILE_PREFIX}*; do
-  [ -f "$marker" ] || continue
+for art in "$dir"/${SHARD_MARKER_ARTIFACT_PREFIX}"$attempt"-*; do
+  [ -d "$art" ] || continue
   found=$((found + 1))
 done
 
 passed=0
 missing=0
+stale=0
+unbound=0
 detail=""
 n=1
 while [ "$n" -le "$expected" ]; do
-  marker="$dir/${SHARD_MARKER_FILE_PREFIX}$n"
-  if [ ! -f "$marker" ]; then
-    missing=$((missing + 1))
-    detail="$detail \\"$job_name ($n)\\"=no-marker"
-  else
-    # \`|| status=…\` rather than a bare assignment. GitHub runs a \`run:\`
-    # block as \`bash -e\`, and under errexit an assignment whose only word
-    # is a failing command substitution aborts the shell THERE — so the bare
-    # form never reaches the handlers below, and the operator gets a red job
-    # with no sentence saying why. Measured in #1191 on this same step: a
-    # \`||\` compound is exempt from errexit, plain \`bash\` hid the defect
-    # and \`bash -e\` showed it.
-    status=""
-    status="$(tr -d '[:space:]' < "$marker")" || status="unreadable"
-    case "$status" in
-      success) passed=$((passed + 1)) ;;
-      "") detail="$detail \\"$job_name ($n)\\"=empty-marker" ;;
-      *) detail="$detail \\"$job_name ($n)\\"=$status" ;;
-    esac
+  want="${SHARD_MARKER_FILE_PREFIX}$n"
+  art="$dir/${SHARD_MARKER_ARTIFACT_PREFIX}$attempt-$n"
+
+  if [ ! -d "$art" ]; then
+    # No evidence from this attempt. Evidence from an EARLIER one is not
+    # evidence about this one, but it is a different diagnosis and gets a
+    # different sentence: a partial re-run leaves exactly this state for
+    # every leg GitHub chose not to re-run.
+    older=""
+    for cand in "$dir"/${SHARD_MARKER_ARTIFACT_PREFIX}*-"$n"; do
+      [ -d "$cand" ] || continue
+      older="$older \${cand##*/}"
+    done
+    if [ -n "$older" ]; then
+      stale=$((stale + 1))
+      detail="$detail \\"$job_name ($n)\\"=only-from:$older"
+    else
+      missing=$((missing + 1))
+      detail="$detail \\"$job_name ($n)\\"=no-marker"
+    fi
+    n=$((n + 1))
+    continue
   fi
+
+  # One artifact carries one leg's marker and nothing else. The upload names
+  # a single FILE, so this can only fail if something upstream changed —
+  # which is the point: "each leg produced its own marker" is the claim, and
+  # a flattened directory read by filename alone does not measure it.
+  files=0
+  for f in "$art"/*; do
+    [ -f "$f" ] || continue
+    files=$((files + 1))
+  done
+  if [ "$files" -ne 1 ] || [ ! -f "$art/$want" ]; then
+    unbound=$((unbound + 1))
+    detail="$detail \\"$job_name ($n)\\"=artifact-holds-$files-file\\(s\\)-not-just-$want"
+    n=$((n + 1))
+    continue
+  fi
+
+  # \`|| true\` rather than a bare \`read\`. GitHub runs a \`run:\` block as
+  # \`bash -e\`, and under errexit a \`read\` that returns non-zero aborts the
+  # shell THERE — so the handlers below never run and the operator gets a red
+  # job with no sentence saying why. Measured in #1191 on this same step.
+  mstatus=""
+  mattempt=""
+  mshard=""
+  read -r mstatus mattempt mshard < "$art/$want" || true
+
+  # The body is the SECOND binding, independent of the name. A name is a
+  # convention the generator controls; a body is a reading. A generator bug
+  # that templates the wrong attempt into the name is caught here and only
+  # here — which is why adding the attempt to the name alone is not the fix.
+  if [ "$mattempt" != "$attempt" ] || [ "$mshard" != "$n" ]; then
+    unbound=$((unbound + 1))
+    detail="$detail \\"$job_name ($n)\\"=marker-says-attempt-'$mattempt'-shard-'$mshard'"
+    n=$((n + 1))
+    continue
+  fi
+
+  case "$mstatus" in
+    success) passed=$((passed + 1)) ;;
+    "") detail="$detail \\"$job_name ($n)\\"=empty-marker" ;;
+    *) detail="$detail \\"$job_name ($n)\\"=$mstatus" ;;
+  esac
   n=$((n + 1))
 done
 
@@ -2997,8 +3077,20 @@ if [ "$missing" -ne 0 ]; then
   exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
 fi
 
+if [ "$stale" -ne 0 ]; then
+  echo "::error::$stale of $expected shards left no marker for attempt $attempt, only for an earlier one:$detail"
+  echo "::error::artifacts belong to the RUN, not the attempt, so an older marker is readable here and says nothing about attempt $attempt. Re-run ALL jobs — a partial re-run leaves the legs it did not re-run UNMEASURED, and UNMEASURED is not a pass."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
+if [ "$unbound" -ne 0 ]; then
+  echo "::error::$unbound of $expected shard markers do not identify the leg and attempt that wrote them:$detail"
+  echo "::error::evidence that cannot be tied to one leg of this attempt is UNMEASURED, not a pass. Refusing."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
 if [ "$found" -ne "$expected" ]; then
-  echo "::error::this run left $found shard markers, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
+  echo "::error::attempt $attempt left $found shard-marker artifacts, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
   exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
 fi
 
@@ -3022,12 +3114,27 @@ echo "All $passed shards concluded, and all $passed passed."
  * the aggregate distinguishes "ran and was red" from "never ran" — collapsing
  * those two is #1181.
  *
- * `overwrite: true` is load-bearing and is about **re-runs**. v4 artifacts are
- * immutable and a name may exist once per run, so on "Re-run failed jobs" the
- * re-running leg would otherwise hit a conflict and go red for a reason that
- * has nothing to do with the suite. Overwriting matches GitHub's own re-run
- * semantics: the legs that are not re-run keep the markers they already
- * earned, which is the same thing `needs` does with their results.
+ * The artifact name carries the run attempt as well as the matrix index, and
+ * so does the marker's BODY. Two independent bindings, because a name is a
+ * convention the generator controls and a body is a reading: a generator that
+ * templated the wrong expression into the name would still be caught. The
+ * attempt is there because artifacts are scoped to the run — see
+ * `SHARD_MARKER_ARTIFACT_PREFIX` for the run this was measured on.
+ *
+ * The attempt in the name also removes the need for `overwrite`, which the
+ * first draft of #1190 carried: names are now unique per attempt, so a
+ * re-running leg collides with nothing and no deletion primitive is needed.
+ *
+ * `path:` names a single FILE, not the directory. A directory upload plus the
+ * aggregate's `merge-multiple` flatten would discard the name's binding on
+ * the reading side — a leg that wrote `shard-1`, `shard-2`, `shard-3` into
+ * its own temp directory would contribute evidence for legs it is not, and
+ * "each leg produced its own marker" would not be what the check measures.
+ * Measured on run 39836500284: the leg writes a decoy `shard-99` and the
+ * artifact carries only `shard-<its own index>`.
+ *
+ * The directory is created FRESH each run, so nothing an earlier step left
+ * behind can ship as evidence.
  *
  * `if-no-files-found: error` because a marker step that produced no file is a
  * shard whose evidence is UNMEASURED, and the honest place to say so is in
@@ -3036,6 +3143,7 @@ echo "All $passed shards concluded, and all $passed passed."
 export function buildShardMarkerSteps(indent: string): string {
   const M = SHARD_MARKER_ENV;
   const dir = `\${{ runner.temp }}/rungate-shard-marker`;
+  const file = `${SHARD_MARKER_FILE_PREFIX}\${{ matrix.shard }}`;
   const lines = [
     `# #1190. The aggregate below counts these instead of asking the Actions`,
     `# API: \`gh\` is a GitHub-hosted-image fact rather than a runner fact, and`,
@@ -3046,17 +3154,22 @@ export function buildShardMarkerSteps(indent: string): string {
     `  env:`,
     `    ${M.index}: \${{ matrix.shard }}`,
     `    ${M.status}: \${{ job.status }}`,
+    `    ${M.attempt}: \${{ github.run_attempt }}`,
     `    ${M.dir}: ${dir}`,
     `  run: |`,
+    `    # Fresh, so nothing an earlier step left behind ships as evidence.`,
+    `    rm -r "$${M.dir}" 2>/dev/null || true`,
     `    mkdir -p "$${M.dir}"`,
-    `    printf '%s\\n' "$${M.status}" > "$${M.dir}/${SHARD_MARKER_FILE_PREFIX}$${M.index}"`,
+    `    # status, attempt and leg — the body the aggregate cross-checks`,
+    `    # against the artifact's own name.`,
+    `    printf '%s %s %s\\n' "$${M.status}" "$${M.attempt}" "$${M.index}" > "$${M.dir}/${SHARD_MARKER_FILE_PREFIX}$${M.index}"`,
     `- uses: ${actionRef("actions/upload-artifact")}`,
     `  if: always()`,
     `  with:`,
-    `    name: ${SHARD_MARKER_ARTIFACT_PREFIX}\${{ matrix.shard }}`,
-    `    path: ${dir}/`,
+    `    name: ${SHARD_MARKER_ARTIFACT_PREFIX}\${{ github.run_attempt }}-\${{ matrix.shard }}`,
+    `    # One FILE, so this leg cannot ship evidence about another leg.`,
+    `    path: ${dir}/${file}`,
     `    if-no-files-found: error`,
-    `    overwrite: true`,
     `    retention-days: 1`,
   ];
   return lines.map(line => `${indent}${line}`).join("\n");
@@ -3541,8 +3654,14 @@ ${buildShardMarkerSteps("      ")}
         # correctly red and silent is the expensive half.
         continue-on-error: true
         with:
+          # EVERY attempt's markers, not just this one's. The script dates
+          # each marker itself, so a leg whose only evidence is older gets
+          # "re-run all jobs" rather than "never ran" — a pattern narrowed to
+          # this attempt would make those two indistinguishable.
           pattern: ${SHARD_MARKER_ARTIFACT_PREFIX}*
-          merge-multiple: true
+          # NO merge-multiple: each artifact keeps its own directory, which
+          # is what ties a marker to the leg that uploaded it. Flattening
+          # discards that and the reading falls back to filenames alone.
           path: \${{ runner.temp }}/rungate-shard-markers
       - name: Every shard concluded, and every shard passed
         env:
@@ -3552,6 +3671,7 @@ ${buildShardMarkerSteps("      ")}
           ${SHARD_AGGREGATE_ENV.rollup}: \${{ needs.test-shard.result }}
           ${SHARD_AGGREGATE_ENV.expected}: "${shards}"
           ${SHARD_AGGREGATE_ENV.jobName}: test-shard
+          ${SHARD_AGGREGATE_ENV.attempt}: \${{ github.run_attempt }}
           ${SHARD_AGGREGATE_ENV.markerDir}: \${{ runner.temp }}/rungate-shard-markers
         run: |
 ${indentedScript(buildShardAggregateScript(), "          ")}
