@@ -9,6 +9,15 @@
     "description": "Blocks cat/head/tail file reading \u2014 enforces COMP-7 mechanically (Tier 3)"
   },
   {
+    "name": "TopLevelCdGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/TopLevelCdGuard.hook.ts",
+    "enabled": true,
+    "scope": "project",
+    "matcher": "Bash",
+    "description": "Refuses a Bash command whose TOP LEVEL begins with or chains to `cd` \u2014 a top-level cd moves the SESSION's working directory, which worktree isolation resolves against, so it kills a peer agent's worktree creation hours later with no error naming the cause. Hard refusal, Jason's decision on #992, taken with the measured 32.7%-of-31,577 hit rate in hand; #1040 built the warn/block/off ladder and this takes `block` as the default, so RUNGATE_CD_GUARD=warn|off reverses it without a code change. Scoped to harnessed projects via lib/harness-project.ts. Project scope: ${CLAUDE_PROJECT_DIR} is the worktree, every worktree carries the committed .claude/settings.json, and worktree isolation is a harness concern. The parse is lib/top-level-cd.ts; read its WHAT THIS DOES NOT COVER block."
+  },
+  {
     "name": "TestSuiteGuard",
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",

@@ -27,6 +27,23 @@
  * command, and `exec cd` — because distinguishing them needs the shell's own
  * semantics and the saving is one retype.
  *
+ * An input this cannot READ is refused for the same reason and said out loud:
+ * a command that is absent, or not a string, has not been examined and found
+ * clean. See `unreadableMessage`, and the `|| ''` it replaced.
+ *
+ * ## KNOWN FALSE REFUSALS — the direction this is allowed to be wrong in
+ *
+ * A `#` comment is not parsed. `ls # cd /tmp` is allowed because `ls` is the
+ * segment's first token, but a comment carrying a separator —
+ * `make # fails; cd /x is not the fix` — splits and the tail reads as a
+ * top-level `cd`. Both forms are asserted in `test/top-level-cd.test.ts`.
+ *
+ * Stripping comments would fix it and was deliberately not done: a `#` inside
+ * `$(…)` on one line comments out the closing paren, so a stripper unbalances
+ * the depth counter and a later top-level `cd` falls INSIDE the unclosed
+ * subshell and is allowed. That trades a rare false refusal for a new
+ * false-allow path, which is the wrong direction.
+ *
  * ## WHAT THIS DOES NOT COVER
  *
  * Every form below moves the session and is NOT refused. They are asserted as
@@ -59,6 +76,19 @@ export interface CdRefusal {
   /** What the caller is told, naming the alternatives. */
   message: string;
 }
+
+/**
+ * THE refusal exit, declared once.
+ *
+ * `hooks/TopLevelCdGuard.hook.ts` emits this as its `decision` and has no
+ * literal of its own, so there is exactly one site to mutate and a case that
+ * observes a refusal can be proved to have observed THIS one
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, *For a script whose job is
+ * to exit non-zero*). A second inlined `'block'` anywhere in the hook would
+ * survive the mutation and the case would go green having witnessed nothing —
+ * `test/top-level-cd.test.ts` asserts the literal appears exactly once.
+ */
+export const CD_GUARD_DECISION = 'block';
 
 /** Builtins that move the shell's own working directory. */
 const SHELL_MOVERS = new Set(['cd', 'pushd', 'popd']);
@@ -241,12 +271,46 @@ function refusalMessage(segment: string): string {
 }
 
 /**
+ * What the caller is told when the command could not be read at all.
+ *
+ * A Bash tool call always carries a command string. If one arrives without
+ * one, the guard has not examined a command and found it clean — it has
+ * examined nothing, and `0`, `{}`, `null` and silence are indistinguishable
+ * from success (`.claude/rules/config-access.md`). The previous shape here
+ * was `payload.tool_input?.command || ''`, which is that defect exactly: an
+ * absent command became an empty one and the guard passed over it.
+ */
+function unreadableMessage(command: unknown): string {
+  return [
+    '#992: refusing a Bash command this guard could not read.',
+    '',
+    `Received: ${typeof command} ${JSON.stringify(command) ?? String(command)}`,
+    '',
+    'This is UNMEASURED, not clean. The guard refuses a top-level `cd`, and it',
+    'cannot tell whether this command carries one, so it refuses rather than',
+    'reporting a pass it did not earn.',
+    '',
+    'Re-send the call with a command string. If a Bash call legitimately has',
+    'no command, that is a bug in the caller, not in this guard.',
+  ].join('\n');
+}
+
+/**
  * Does this command move the session's working directory at the top level?
  *
  * Returns the refusal, or null when the command is clean. THE one decider:
  * every caller — the hook, any future grader — asks this and nothing else.
+ *
+ * Takes `unknown` deliberately. The hook's input is JSON off a pipe, so the
+ * command's type is an assumption until it is checked, and the check belongs
+ * with the decision rather than at the call site where a `|| ''` is one
+ * keystroke away.
  */
-export function topLevelCdRefusal(command: string): CdRefusal | null {
+export function topLevelCdRefusal(command: unknown): CdRefusal | null {
+  if (typeof command !== 'string' || command.trim() === '') {
+    return { segment: '<unreadable>', message: unreadableMessage(command) };
+  }
+
   for (const segment of topLevelSegments(stripHeredocBodies(command))) {
     const name = firstCommandName(segment);
     if (name === null) continue;
@@ -278,22 +342,41 @@ export function topLevelCdRefusal(command: string): CdRefusal | null {
  *
  * So `cd` is not an occasional lapse, it is the dominant navigation idiom,
  * and most instances are harmless — a top-level `cd` costs something only in
- * a session with concurrent agents holding worktrees. **A hard refusal is
- * mis-scoped rather than mis-tuned**, and `warn` is the rung that produces
- * the decay evidence a promotion to `block` would need.
+ * a session with concurrent agents holding worktrees.
+ *
+ * ## The default is `block`, and that is a decision, not a reading
+ *
+ * The paragraphs above are the argument for `warn` and they are left intact
+ * because they are the honest case against what this now does. **Jason took
+ * `block`** (#992), with the 32.7% in hand: the scoping to harnessed
+ * projects is the answer to "mis-scoped rather than mis-tuned", and a rung
+ * that costs a retype is preferred to one that costs a peer's half-day. The
+ * first rung of the ladder exists and was skipped deliberately.
+ *
+ * `RUNGATE_CD_GUARD=warn` and `=off` are both still reachable, so reversing
+ * this needs no code change — which is the property #1040 built the mode for.
  *
  * ## An unrecognised value is not silently a default
  *
- * It resolves to `warn` — the least disruptive rung — and the caller is told
- * which value it did not understand. `0`, `{}` and silence being
- * indistinguishable from success is `.claude/rules/config-access.md`, and a
- * typo'd `RUNGATE_CD_GUARD=blcok` degrading quietly to the default is that
- * shape exactly.
+ * It resolves to the default rung and the caller is TOLD which value it did
+ * not understand. `0`, `{}` and silence being indistinguishable from success
+ * is `.claude/rules/config-access.md`, and a typo'd
+ * `RUNGATE_CD_GUARD=blcok` degrading quietly is that shape exactly. Note the
+ * direction moved with the default: an unreadable value now refuses rather
+ * than warns, which is the same "err toward refusal" this module takes
+ * everywhere else.
  */
 export type CdGuardMode = "warn" | "block" | "off";
 
-/** The env var selecting the rung. Absent means `warn`. */
+/** The env var selecting the rung. Absent means `block` — see above. */
 export const CD_GUARD_MODE_VAR = "RUNGATE_CD_GUARD";
+
+/**
+ * The rung taken when nothing selects one. Declared once so the decision is
+ * a single site a mutation can move, and so `cdGuardMode`'s two default
+ * paths — absent value and unrecognised value — cannot drift apart.
+ */
+export const CD_GUARD_DEFAULT_MODE: CdGuardMode = "block";
 
 export interface CdGuardModeReading {
   mode: CdGuardMode;
@@ -303,8 +386,8 @@ export interface CdGuardModeReading {
 
 export function cdGuardMode(env: NodeJS.ProcessEnv = process.env): CdGuardModeReading {
   const raw = env[CD_GUARD_MODE_VAR];
-  if (raw === undefined || raw === "") return { mode: "warn" };
+  if (raw === undefined || raw === "") return { mode: CD_GUARD_DEFAULT_MODE };
   const v = raw.trim().toLowerCase();
   if (v === "warn" || v === "block" || v === "off") return { mode: v };
-  return { mode: "warn", unrecognised: raw };
+  return { mode: CD_GUARD_DEFAULT_MODE, unrecognised: raw };
 }
