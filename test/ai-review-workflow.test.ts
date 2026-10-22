@@ -60,6 +60,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
 import {
+  AI_REVIEW_ADJUDICATED_TITLE,
   AI_REVIEW_ADJUDICATOR_PACKAGE,
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
@@ -735,6 +736,152 @@ describe("AC-9 (#1013): the job's exit code comes from the adjudicator's reading
       `the adjudicator ran from ${cwd}, which is not the payload's directory`,
     ).toBeDefined();
     expect(run.code).toBe(0);
+  });
+
+  test("AC-9h (#1087): an adjudicated payload says so under its own title, in both directions", () => {
+    // The positive reading. Every other terminal state in this step is an
+    // absence — a warning under a title three conditions share, or, since
+    // #1110, no annotation at all — so "a review happened" was being inferred
+    // from what did NOT come back. Measured on the 22 ai-review runs between
+    // #1076 merging and 03:09:36Z on 2026-10-22: 22 green, 9 adjudicated, 8
+    // skipped by the action's own workflow validation, 5 green with neither.
+    //
+    // Both verdict directions, because the annotation is about whether a
+    // verdict was READ and not about which verdict it was. A notice emitted
+    // only on the clean path would be a second spelling of exit 0.
+    const clean = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`echo "${OUTCOME_LINE} CLEAN"; exit 0`),
+    }, PAYLOAD);
+    const blocked = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`echo "${OUTCOME_LINE} BLOCKED"; exit ${AI_REVIEW_REQUIRED_EXIT}`),
+    }, PAYLOAD);
+
+    // The annotation LINE, not the string anywhere in the output: the outcome
+    // line is printed verbatim a few lines earlier, so searching the whole
+    // stream for it would pass on a notice that carried no reading.
+    const noticeOf = (text: string) =>
+      text.split("\n").find(l => l.startsWith(`::notice title=${AI_REVIEW_ADJUDICATED_TITLE}::`));
+
+    expect(
+      noticeOf(clean.stdout),
+      `a clean adjudication emitted no ${AI_REVIEW_ADJUDICATED_TITLE} notice:\n${clean.stdout}`,
+    ).toBeDefined();
+    expect(noticeOf(clean.stdout), "the notice carries no verdict").toContain(
+      `${OUTCOME_LINE} CLEAN`,
+    );
+    expect(clean.code).toBe(0);
+
+    expect(
+      noticeOf(blocked.stdout),
+      `a blocking adjudication emitted no notice, so a red check cannot be told ` +
+        `from one that broke before the verdict:\n${blocked.stdout}`,
+    ).toBeDefined();
+    expect(noticeOf(blocked.stdout)).toContain(`${OUTCOME_LINE} BLOCKED`);
+    expect(blocked.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+
+    // The reader prints more than the outcome line — its own `::error`
+    // payload goes to stderr and both streams are captured — so the lift has
+    // to stop at the first newline. A value that ran past it would put a
+    // second line inside a `::notice`, which GitHub reads as the end of the
+    // annotation and the start of ordinary log output.
+    const noisy = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(
+        `echo "reading 3 findings"\n` +
+          `echo "${OUTCOME_LINE} CLEAN"\n` +
+          `echo "advisory: 2 findings recorded, 0 blocking"\n` +
+          `exit 0`,
+      ),
+    }, PAYLOAD);
+    const noisyNotice = noticeOf(noisy.stdout);
+    expect(noisyNotice, `no notice came back:\n${noisy.stdout}`).toContain(`${OUTCOME_LINE} CLEAN`);
+    expect(
+      noisyNotice,
+      "the annotation swallowed the line after the verdict, so it is no longer one line",
+    ).not.toContain("advisory: 2 findings");
+    expect(
+      noisyNotice,
+      "the annotation starts at the reader's first line rather than at the verdict",
+    ).not.toContain("reading 3 findings");
+    expect(noisy.code).toBe(0);
+
+    // And the two titles stay tellable apart by a reader that greps, which is
+    // what the fleet queries in #1087 and #1105 both do.
+    expect(AI_REVIEW_ADJUDICATED_TITLE).not.toBe(AI_REVIEW_UNMEASURED_TITLE);
+    expect(
+      AI_REVIEW_ADJUDICATED_TITLE,
+      "the adjudicated title contains the UNMEASURED one, so a substring reader conflates them",
+    ).not.toContain(AI_REVIEW_UNMEASURED_TITLE);
+    expect(AI_REVIEW_UNMEASURED_TITLE).not.toContain(AI_REVIEW_ADJUDICATED_TITLE);
+  });
+
+  test("AC-9i (#1087): THE PAIR and the cheapest wrong fix — only a verdict earns the title", () => {
+    // Half of the fix is that the title appears. The other half, and the one
+    // that makes it evidence, is that it CANNOT appear otherwise: a notice
+    // emitted on every green run would be a second way to say "the job
+    // finished", which is the reading #1087 is about.
+    //
+    // The three states that produce a green check with no verdict, each run:
+    const unverdicted = {
+      "no credential": runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+        AI_REVIEW_MODE: "",
+      }),
+      "action skipped itself, no payload": runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+        AI_REVIEW_MODE: "vertex",
+        AI_REVIEW_ACTION_OUTCOME: "success",
+      }),
+      "action did not complete": runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+        AI_REVIEW_MODE: "vertex",
+        AI_REVIEW_ACTION_OUTCOME: "failure",
+      }),
+    };
+    for (const [state, run] of Object.entries(unverdicted)) {
+      expect(
+        `${run.stdout}${run.stderr}`,
+        `'${state}' claimed an adjudication it never had`,
+      ).not.toContain(AI_REVIEW_ADJUDICATED_TITLE);
+    }
+
+    // THE CHEAPEST WRONG FIX, run rather than described: keep the notice and
+    // widen the arm that guards it to `*)`. It is the five-minute version —
+    // the step already captured the adjudicator's output, so "annotate what
+    // came back" looks like the same change and is green on AC-9h.
+    const original = buildReviewRunScript(FIXTURE_VERSION);
+    const widened = original.replace(`*"${OUTCOME_LINE}"*)`, "*)");
+    expect(widened, "the mutation did not apply").not.toBe(original);
+
+    // The input they differ on, named: a `bunx` that prints NOTHING and exits
+    // 0, with a payload on disk. Nothing adjudicated it, and no exit code
+    // says so — the same shape AC-9e uses, because it is the one state where
+    // every cheap reading of "did it run" agrees with success.
+    const silent = {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`exit 0`),
+    };
+    const mutantRun = runAuthScript(widened, silent, PAYLOAD);
+    expect(
+      `${mutantRun.stdout}${mutantRun.stderr}`,
+      "the mutant did not differ — this case witnesses nothing",
+    ).toContain(AI_REVIEW_ADJUDICATED_TITLE);
+    expect(mutantRun.code, "the mutant is not the plausible fix it is meant to be").toBe(0);
+
+    const originalRun = runAuthScript(original, silent, PAYLOAD);
+    expect(
+      `${originalRun.stdout}${originalRun.stderr}`,
+      `an adjudication that never happened was annotated as one:\n${originalRun.stdout}`,
+    ).not.toContain(AI_REVIEW_ADJUDICATED_TITLE);
+
+    // Not vacuously: the original is refusing here for #1013's reason, and
+    // this case would pass on a step that emitted no notice ANYWHERE. AC-9h
+    // is the half that stops that, and the two are only evidence together.
+    expect(originalRun.code).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(originalRun.stderr).toContain(AI_REVIEW_UNMEASURED_TITLE);
   });
 
   test("AC-9f: the two completed/not-completed states say different things", () => {

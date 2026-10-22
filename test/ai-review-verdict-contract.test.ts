@@ -106,6 +106,7 @@ import { join } from "path";
 
 import {
   AI_REVIEW_ACTION_STEP_ID,
+  AI_REVIEW_ADJUDICATED_TITLE,
   AI_REVIEW_BLOCK_VERDICT,
   AI_REVIEW_FINDINGS_COMMAND,
   AI_REVIEW_OUTCOME_LINE,
@@ -620,6 +621,28 @@ describe("AC-4 (#675): a fixture shaped by the SHIPPED prompt drives the real re
       clean.status,
       `an advisory finding failed the check:\n${clean.stdout}\n${clean.stderr}`,
     ).toBe(0);
+
+    // #1087. The same two runs, read the way a required check's consumers
+    // read it: by annotation rather than by log. The adjudicated title is
+    // on BOTH, because what it reports is that a verdict was taken — the
+    // exit codes above are what separate the verdicts from each other.
+    //
+    // Asserted here and not only in `ai-review-workflow.test.ts` because
+    // that suite plants the adjudicator's answers. This one runs the real
+    // reader over a real payload through the COMMITTED bash, so it is the
+    // case that would notice the annotation being emitted from a value the
+    // reader never produces.
+    for (const [name, run] of [["blocking", blocked], ["advisory", clean]] as const) {
+      const notice = run.stdout
+        .split("\n")
+        .find(l => l.startsWith(`::notice title=${AI_REVIEW_ADJUDICATED_TITLE}::`));
+      expect(
+        notice,
+        `the committed step adjudicated the ${name} payload and said so nowhere a check ` +
+          `consumer can read:\n${run.stdout}`,
+      ).toBeDefined();
+      expect(notice, "the notice carries no verdict").toContain(OUTCOME_LINE);
+    }
   });
 
   test("AC-4f: the cheapest wrong fix for AC-4, measured — exit code alone cannot see the reading", () => {

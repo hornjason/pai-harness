@@ -282,6 +282,41 @@ export const AI_REVIEW_AUTH_STEP_NAME = "Detect AI review credentials";
 /** The annotation title, shared by the warning and the refusal. */
 export const AI_REVIEW_UNMEASURED_TITLE = "AI review UNMEASURED";
 
+/**
+ * The title that says a review was READ, carried by the one branch that can
+ * only be reached by reading one (#1087).
+ *
+ * Everything else this step emits is an absence. A green `ai-review` meant
+ * "no `AI_REVIEW_UNMEASURED_TITLE` warning came back", and absence is the
+ * weakest evidence this file accepts anywhere else — it is the Silent Default
+ * Substitution the module header is about, applied to the gate's own result.
+ * Three conditions emit that title (the report step, #989's restored-base
+ * reading, and whatever is split off next), #1110 showed a state that emits
+ * NO annotation at all, and a skipped action emits none either. So the
+ * absence has at least four causes and cannot be read backwards into "a
+ * review happened".
+ *
+ * Measured over the 22 `ai-review` runs that completed between #1076 merging
+ * at 01:54:48Z and 03:09:36Z on 2026-10-22: **22 green, 9 adjudicated, 8
+ * skipped by the action's workflow validation, 5 green with neither** — and
+ * telling those apart took a full log download per run plus a regex on the
+ * timestamped line, because `gh run view --log` echoes the whole `run:`
+ * script and an unfiltered grep finds every branch that did NOT execute. The
+ * fleet query in #1087 counted that echo twice before this was noticed.
+ *
+ * A `::notice` is the cheapest thing that is readable from outside the job:
+ * it lands in `check-runs/<id>/annotations` beside the conclusion, which is
+ * what a required check's consumers already read. With it, green-plus-this
+ * is an adjudicated CLEAN, green-without is a review that did not happen,
+ * red-plus-this is a verdict, and red-without is a job that broke before the
+ * verdict — four states, no log parsing.
+ *
+ * Distinct from `AI_REVIEW_UNMEASURED_TITLE` and not a substring of it in
+ * either direction, for the reason #1105 gave: a reader that greps titles
+ * conflates a title that contains another.
+ */
+export const AI_REVIEW_ADJUDICATED_TITLE = "AI review adjudicated";
+
 /** The reporting step's `id:`. Separate from the auth step, so each has one job. */
 export const AI_REVIEW_RUN_STEP_ID = "ai-review-run";
 
@@ -2852,6 +2887,31 @@ export function buildReviewRunScript(version: string): string {
     `the registry, that bun is not on this runner, or that the registry was ` +
     `unreachable — the command's own output is printed above this line.`;
 
+  // #1087. The sentence that travels with the positive reading. It names what
+  // the ABSENCE of this annotation means, because that is the half a reader
+  // gets wrong: on a green run it was being read as "the review was clean".
+  //
+  // Two words this sentence may not spell, both for reasons older than it:
+  //
+  // - the other title's, because `test/ai-review-workflow.test.ts` AC-9a
+  //   asserts a clean adjudication's output contains no "UNMEASURED"
+  //   anywhere, and prose here that used the term would make an operator's
+  //   `grep` on a green run report a state that did not occur;
+  // - the action's skip sentence unhyphenated, because
+  //   `test/ai-review-payload-reading.test.ts` AC-6 refuses that phrase
+  //   anywhere in this script — the reading must never depend on upstream
+  //   log prose, and the check cannot tell a grep from a mention. `skipped`
+  //   above hyphenates for the same reason.
+  const adjudicatedEvidence =
+    `read from the findings payload by '${adjudicator}', whose exit code is ` +
+    `this step's. This annotation is the only one this job emits that an ` +
+    `unread payload cannot produce — the branch is entered on the outcome ` +
+    `line and nothing else — so a run carrying this title had a review AND a ` +
+    `verdict on it. Its ABSENCE on a green run is not a clean review: it ` +
+    `means no payload was written, or the action skipped itself on its own ` +
+    `workflow-validation guard, or the step died before the reading — none ` +
+    `of which measured anything.`;
+
   // The FOURTH state, and the reason the third one had to be split (#816):
   // the action exited ZERO having not reviewed anything.
   //
@@ -3187,6 +3247,37 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     # a refusal too.
     case "\${adjudication}" in
       *"${AI_REVIEW_OUTCOME_LINE}"*)
+        # THE POSITIVE READING (#1087), emitted inside the arm and above both
+        # exits, so it is carried by a blocking verdict as well as a clean
+        # one. What it distinguishes is not CLEAN from BLOCKED — the exit code
+        # already does that — but "a verdict" from "no verdict", which nothing
+        # outside this job could tell apart while every terminal state was
+        # either a shared-title warning or silence.
+        #
+        # The outcome line is lifted out of the captured output rather than
+        # re-derived: \`\${adjudication}\` is what the reader actually printed,
+        # and a second spelling of the verdict computed here could disagree
+        # with the exit code this step is about to use (#295).
+        #
+        # Lifted by PARAMETER EXPANSION and not by \`grep | head\`, for two
+        # independent reasons. \`test/ai-review-security-repairs.test.ts\`
+        # AC-14a refuses any \`\$(\` in an annotation that is not
+        # \`escape_annotation\` — the encoder is the one command an annotation
+        # may run, and a pipeline inside its argument is a second one. And an
+        # expansion has no exit status to abort on: a \`grep\` that matched
+        # nothing exits 1, which under the runner's \`bash -e\` would kill the
+        # step between the adjudication and the verdict, which is #1110
+        # exactly. The two-step form takes everything after the marker, then
+        # everything before the first newline, then puts the marker back.
+        #
+        # \`escape_annotation\` IS applied here, where the comment above
+        # declines it for the reader's own \`::error\` payload. The difference
+        # is whose string it is: that one arrives pre-escaped and escaping it
+        # twice turns \`%\` into \`%2525\`, while this one is assembled by this
+        # step out of a line the reader never escaped.
+        verdict="\${adjudication#*${AI_REVIEW_OUTCOME_LINE}}"
+        verdict="${AI_REVIEW_OUTCOME_LINE}\${verdict%%\$'\\n'*}"
+        echo "::notice title=${AI_REVIEW_ADJUDICATED_TITLE}::$(escape_annotation "\${verdict}") — ${adjudicatedEvidence}"
         if [ "\${adjudicated}" = 0 ]; then
           exit 0
         fi
