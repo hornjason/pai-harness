@@ -91,7 +91,12 @@ import { spawnSync } from "child_process";
 import { resolve, sep } from "path";
 
 import { contentHash } from "./content-hash";
-import { promoteCandidates, type PromotableCandidate, type PromotionReading } from "./rule-promotion";
+import {
+  promoteCandidates,
+  type PromotableCandidate,
+  type PromotionReading,
+  type WithheldReason,
+} from "./rule-promotion";
 import {
   classifyCategory,
   DROPPED_CATEGORIES,
@@ -679,9 +684,104 @@ export function verdictSummary(v: Verdict): string {
  */
 export const FILING_BUDGET_FINDINGS = 6;
 
+/**
+ * Why a candidate did not reach a reader.
+ *
+ * `NO_QUORUM` and `DROPPED_CATEGORY` are **separate values and must stay
+ * separate**. They are the two filters this module adds, and collapsing them
+ * into one "suppressed" reason would make the quorum and the category filter
+ * inseparable in exactly the A/B that exists to price them apart.
+ *
+ * `WithheldReason` is `lib/rule-promotion.ts`'s own vocabulary, reused rather
+ * than restated: the promoter decides which candidates it withheld and why,
+ * and a parallel enum here would be a second name for one decision.
+ *
+ * - `BATCH_UNMEASURED` — the candidate was fine and the BATCH was not. A
+ *   candidate refused `UNMEASURED` in its own right carries `UNMEASURED`;
+ *   the two are deliberately distinguishable, because the first set is what
+ *   explains the second.
+ * - `UNACCOUNTED` — the promoter returned this candidate in neither
+ *   `promoted` nor `withheld`. It partitions its input, so this cannot
+ *   happen; it is named instead of defaulted so that if the partition ever
+ *   breaks the ledger says so rather than reporting a plausible reason.
+ */
+export type WithheldBy =
+  | ArbiterRefusal
+  | WithheldReason
+  | "BATCH_UNMEASURED"
+  | "UNACCOUNTED";
+
+/**
+ * One row per finding the batch considered, **including the ones it withheld**.
+ *
+ * ## Why this exists at all
+ *
+ * The quorum's cardinality (`VERIFIER_GROUP_SIZE`, `VERIFIER_QUORUM`) is a
+ * defended default and not a measurement, and the category filter's only
+ * backwards reading is a safety one — 0 dropped of 385 known-real findings.
+ * Both gaps have the same cause: **nothing records a finding before it is
+ * filed.** The tracker is post-filing by construction, there are no inline
+ * review comments to mine, and a candidate the quorum votes down leaves no
+ * artefact anywhere. So the population those numbers would be derived from
+ * does not exist in history and **cannot be reconstructed from it** — it has
+ * to be written down at the moment the candidate is withheld, or never.
+ *
+ * This is that record. It is deliberately a list of rows and not a tally: a
+ * count cannot be joined against an outcome later, and the join is the whole
+ * point.
+ *
+ * ## How it is read
+ *
+ * `evals/ai-review-control/outcomes.ts`'s `compareReviewOutcomes(before,
+ * after)` prices a filter, and it returns UNMEASURED on a population
+ * mismatch by design — so both sides are built from **this same ledger**,
+ * differing only in which rows carry `suppressed`. Three summaries, two
+ * comparisons:
+ *
+ * | summary | rows marked suppressed |
+ * |---|---|
+ * | baseline | none |
+ * | quorum-only | `withheldBy === "NO_QUORUM"` |
+ * | both | `withheldBy` is `NO_QUORUM` or `DROPPED_CATEGORY` |
+ *
+ * `compare(baseline, quorumOnly)` prices the quorum; `compare(quorumOnly,
+ * both)` prices the category filter on top of it. The attribution lives in
+ * **which pair you compare**, which is why that function's `suppressed` is a
+ * reasonless boolean and why the reason lives here instead.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * - **Findings no hunter produced.** This records what was *considered*, not
+ *   what was missable. A bug nobody reported is invisible here, and no
+ *   amount of this data will price recall.
+ * - **Whether a withheld candidate was right to be withheld.** That needs an
+ *   outcome, which arrives later and from somewhere else. This supplies the
+ *   left-hand side of that join and nothing more.
+ */
+export interface CandidateRecord {
+  id: string;
+  symptomHash: string;
+  category: FindingCategory;
+  severity: Severity | null;
+  disposition: Disposition;
+  refusal: ArbiterRefusal | null;
+  /** Did it reach a reader — a PR comment or a filed issue? */
+  emitted: boolean;
+  /** Why not. `null` exactly when `emitted` is true. */
+  withheldBy: WithheldBy | null;
+  /** The vote, when one was taken. `null` when no group was convened. */
+  jury: JuryReading | null;
+}
+
 export interface BatchReading {
   /** Per-finding verdicts, in input order. */
   verdicts: Verdict[];
+  /**
+   * EVERY candidate the batch considered, in input order, withheld ones
+   * included. Exactly one row per input finding — `compareReviewOutcomes`
+   * refuses a population mismatch, and this is the population.
+   */
+  candidates: CandidateRecord[];
   /**
    * Ids to post as inline comments, **ranked by severity** — Important, then
    * Pre-existing, then Nit. This is the default output and it is deliberately
@@ -762,17 +862,30 @@ export function arbitrateBatch(
     if (verdict.disposition !== "DROP") seen.push(finding);
   }
 
+  // ── Everything below is keyed by POSITION, never by id ─────────────────
+  //
+  // `UNFILED_ID` is the id of every finding that has not been filed yet, so
+  // ids are not unique within a batch: the #1195/#1196 incident arrives as
+  // two rows both reading `"new"`, one of which is dropped as a duplicate of
+  // the other. A lookup by id resolves both to whichever came first, which
+  // would title one candidate with the other's title and mark a withheld
+  // candidate as emitted. The index is the only identity a candidate has
+  // before it is filed.
+  const withIndex = verdicts.map((verdict, index) => ({ verdict, index }));
   const bySeverity = (a: Verdict, b: Verdict) =>
     SEVERITY_RANK[a.severity ?? "Important"] - SEVERITY_RANK[b.severity ?? "Important"];
-  const toComment = verdicts.filter(v => v.disposition === "COMMENT").sort(bySeverity).map(v => v.id);
+  const commented = withIndex
+    .filter(({ verdict }) => verdict.disposition === "COMMENT")
+    .sort((a, b) => bySeverity(a.verdict, b.verdict));
+  const toComment = commented.map(({ verdict }) => verdict.id);
 
-  const declared: PromotableCandidate[] = verdicts
-    .filter(v => v.disposition === "ISSUE")
-    .map(v => ({
-      rule: findings.find(f => f.id === v.id)!.title,
-      source: `finding:${v.id}`,
-      hash: v.symptomHash,
-      evidence: { kind: "finding" as const, date, citation: v.reason, issues: [] },
+  const declared: PromotableCandidate[] = withIndex
+    .filter(({ verdict }) => verdict.disposition === "ISSUE")
+    .map(({ verdict, index }) => ({
+      rule: findings[index]!.title,
+      source: `finding:${index}`,
+      hash: verdict.symptomHash,
+      evidence: { kind: "finding" as const, date, citation: verdict.reason, issues: [] },
     }));
 
   // The arbiter's own reading is an upstream, so a batch in which nothing
@@ -793,13 +906,49 @@ export function arbitrateBatch(
   // evaluated "does not report a measured zero" while it reported a measured
   // LIST. Gated here rather than in `promoteCandidates`, which has other
   // callers whose semantics are not ours to change.
+  const position = (c: PromotableCandidate) => Number(c.source.replace(/^finding:/, ""));
+  const filed = promotion.reading === "MEASURED" ? promotion.promoted.map(position) : [];
+  const emitted = new Set<number>([...commented.map(c => c.index), ...filed]);
+
+  // The promoter's own per-candidate reason, read rather than re-derived. A
+  // second opinion here about why something was not promoted would be two
+  // deciders over one question, and the one that is not consulted is the one
+  // that silently rots (`.claude/rules/checks-must-be-able-to-fail.md`).
+  const promoterReason = new Map<number, WithheldReason>(
+    promotion.withheld.map(w => [position(w.candidate), w.reason]),
+  );
+
+  const candidates: CandidateRecord[] = verdicts.map((verdict, index) => ({
+    id: verdict.id,
+    symptomHash: verdict.symptomHash,
+    category: verdict.category,
+    severity: verdict.severity,
+    disposition: verdict.disposition,
+    refusal: verdict.refusal,
+    emitted: emitted.has(index),
+    withheldBy: emitted.has(index)
+      ? null
+      : // A refusal is the candidate's OWN reading and outranks everything
+        // after it: this one never reached the promoter. Note that a
+        // candidate refused `UNMEASURED` is recorded as `UNMEASURED`, not
+        // `BATCH_UNMEASURED` — the first says this finding could not be
+        // evaluated, the second says the batch could not be, and conflating
+        // them would lose the only row that says WHY the batch folded.
+        (verdict.refusal ??
+        // Then the batch fold. It outranks the promoter's reason because an
+        // UNMEASURED batch ranked an incomplete population, so "over budget"
+        // read off that ranking is a number nobody should act on.
+        (promotion.reading === "UNMEASURED"
+          ? "BATCH_UNMEASURED"
+          : (promoterReason.get(index) ?? "UNACCOUNTED"))),
+    jury: verdict.jury,
+  }));
+
   return {
     verdicts,
+    candidates,
     toComment,
     promotion,
-    toFile:
-      promotion.reading === "MEASURED"
-        ? promotion.promoted.map(c => c.source.replace(/^finding:/, ""))
-        : [],
+    toFile: filed.map(index => findings[index]!.id),
   };
 }
