@@ -82,6 +82,7 @@ import {
   type WriteStrategy,
 } from "./owned-files";
 import type { SectionSpec } from "../agents-md-sections";
+import { hookRegistrationPath } from "../hook-trees";
 
 /**
  * Look for a declared health route in the places a server declares one.
@@ -3592,7 +3593,37 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
     const settingsPath = join(consumerRoot, ".claude", "settings.local.json");
     let settings: any = {};
     if (existsSync(settingsPath)) {
-      try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch {}
+      // A corrupt config is never a missing config (`.claude/rules/
+      // config-access.md`). The `catch {}` this replaces left `settings` as
+      // `{}` and then fell through to `writeFileSync` — so a consumer's
+      // settings.local.json that failed to parse for any reason, including a
+      // half-written file or a merge conflict marker, was OVERWRITTEN with a
+      // file containing nothing but our hooks. Their permissions, their
+      // allowlists, their own hook registrations: gone, silently, during a
+      // run whose purpose was to add three lines.
+      //
+      // Refuse this consumer and keep going to the next. Repairing somebody
+      // else's security settings is not a decision a scaffold step gets to
+      // take, and neither is discarding them.
+      try {
+        settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      } catch (err) {
+        actions.push(
+          `SKIP: ${consumer} — .claude/settings.local.json exists but does not parse ` +
+            `(${(err as Error).message}). Refusing to overwrite it. Fix the file and re-run.`,
+        );
+        continue;
+      }
+      if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+        // `JSON.parse("null")` and `JSON.parse("[]")` both succeed and both
+        // take `settings.hooks = {}` without complaint, so the parse alone
+        // does not establish that this is a settings object.
+        actions.push(
+          `SKIP: ${consumer} — .claude/settings.local.json parses but is not an object. ` +
+            `Refusing to overwrite it.`,
+        );
+        continue;
+      }
     }
 
     if (!settings.hooks) settings.hooks = {};
@@ -3604,9 +3635,24 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
 
       if (!settings.hooks[hookType]) settings.hooks[hookType] = [];
 
-      // Check if this hook is already deployed
+      // Is this hook already deployed? Asked through the repo's one parse for
+      // the question (`lib/hook-trees.ts`), not with a substring test.
+      //
+      // `h.command.includes(hook.name)` matched anywhere in the string, so an
+      // unrelated entry could shadow a hook and the deployment would silently
+      // decide it was already there: a consumer's own
+      // `bun ./scripts/lint.ts # skip MergeGuard` suppresses MergeGuard, and
+      // any hook whose name is a substring of another's — which nothing in
+      // the registry forbids — suppresses its longer sibling. The failure is
+      // invisible, because "already deployed" and "deployed" produce the same
+      // absence of a complaint.
+      //
+      // `hookRegistrationPath` answers the registration question off the
+      // EXECUTED path, so a mention in a comment or an argument is a mention.
       const existing = settings.hooks[hookType].find(
-        (h: any) => h.command === resolvedCommand || (h.command && h.command.includes(hook.name))
+        (h: any) =>
+          h?.command === resolvedCommand ||
+          (typeof h?.command === "string" && hookRegistrationPath(h.command, hook.name) !== null),
       );
       if (existing) continue;
 

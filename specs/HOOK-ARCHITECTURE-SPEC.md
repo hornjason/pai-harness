@@ -112,6 +112,14 @@ hooks, because a count cannot be checked against a registry and a list can.
 
 ### Verdicts
 
+**12 SHIP, 4 OPT-IN, 4 HARNESS-ONLY.** `StaleTTLCleanup` was classified SHIP in the
+first pass and corrected on review: the classification had been made from the
+hook's header and first screen, and the destructive arm is behind an
+`await import` sixty lines down. AC-15 in `test/hook-traceability.test.ts` is
+the mechanical form of that correction — it walks what a shipping hook
+reaches, through `await import` as well as `import … from`, and refuses a
+remote-destructive git call. **Reading a hook's header is not classifying it.**
+
 | Hook | Consumer | Why |
 |---|---|---|
 | BashToolGuard | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
@@ -125,10 +133,10 @@ hooks, because a count cannot be checked against a registry and a list can.
 | GateEnforcement | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
 | PostCompact | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
 | HookCurrency | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
-| StaleTTLCleanup | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
 | WorkflowStateGuard | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
 | IssueCloseGuard | OPT-IN | Couples to two things a fresh consumer does not have: a GitHub issue tracker wired to ship-gate, and the HMAC `.gate-salt` it validates PASS provenance against. With neither present it declines on every call, and a guard that declines on every call is indistinguishable from one that is not installed. It ships in the tarball; a project registers it once ship-gate runs against its tracker. |
 | MergeGuard | OPT-IN | Reads `.ship-active` markers under WORK_DIR and a verify-gate PASS out of workflow-state.json; a project that has not run the ship loop has neither, so it warns about nothing. Ships in the tarball; register it once the ship loop runs. |
+| StaleTTLCleanup | HARNESS-ONLY | Deletes remote branches at every SessionStart. Sixty lines below a header promising a file sweep, `await import('../lib/branch-cleanup.ts')` runs `cleanupStaleBranches({maxAgeDays: 7})`, which issues `git push origin --delete` per stale branch; the open-PR guard that is meant to spare one defaults its slug to `hornjason/pai-harness`, so on a consumer it answers about THIS repository and can never say stop. It fails OPEN for the consumer who HAS a token, since this repository is public. See the registry entry for what would have to change first. |
 | SpecConformityTrigger | HARNESS-ONLY | A disabled entry that also claimed consumer deployment would be two answers to one question. Re-classify if and when it is re-enabled. |
 | SpecSCGuard | OPT-IN | Validates new SC lines against `config/matcher-registry.json`, which means it has nothing to say until the project has specs carrying SCs. Ships in the tarball; register it once `specs/` exists. |
 | TaskCompleted | HARNESS-ONLY | It spawns a CONCURRENT full suite, which is the thing lib/test-suite-lock.ts exists to prevent, so deploying it to a consumer would export the defect that disabled it here. Re-classify if and when it is re-enabled. |

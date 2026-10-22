@@ -156,7 +156,8 @@
     "hookFor": "SessionStart",
     "command": "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
     "enabled": true,
-    "deployToConsumers": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "HARNESS-ONLY, and the one entry in this registry that could do a consumer real harm. It is not the `cleanStaleFiles` sweep its header advertises: sixty lines down, behind `await import('../lib/branch-cleanup.ts')`, it calls `cleanupStaleBranches({maxAgeDays: 7})` at EVERY SessionStart, which walks `refs/remotes/origin/*` and runs `git push origin --delete <branch>` on each one it judges stale. The guard that is meant to spare a branch is `hasOpenPR`, and `lib/branch-cleanup.ts` defaults its slug to `hornjason/pai-harness` when no `repo` is passed — which the hook does not pass. So on a consumer the open-PR question is asked about THIS repository, their branch names are absent from it, `hasPR` comes back false with no error, and the delete runs against THEIR origin. It fails OPEN precisely for the equipped consumer: with no token `listPRs` throws and `cleanupBranch` refuses, but this repository is PUBLIC, so any valid token reads our PRs successfully and returns the empty list that authorises the deletion. BEFORE THIS MAY BE RECONSIDERED: `cleanupStaleBranches` must take the repository slug from the calling project and REFUSE when it cannot resolve one — a default slug is not a default, it is a different question — and the branch-deletion arm needs the explicit arming `reapOrphans` already has via `armedFromEnv`. Either alone is insufficient. The worktree, scratch-dir and orphan-reaper arms of this same hook were not separately cleared for consumer use and would need their own reading.",
     "scope": "user",
     "description": "Cleans up stale workflow-state.json and ship-active files"
   },
