@@ -25,6 +25,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
+import { listOpenIssues } from "../lib/github";
 import {
   adjudicateFiling,
   filingAttempts,
@@ -161,7 +162,7 @@ beforeAll(() => {
   symlinkSync(join(REPO, "lib"), join(scratch, "lib"));
   symlinkSync(join(REPO, "hooks", "lib"), join(mutantDir, "lib"));
 
-  const WIRING = "const gate = filingGate(cmd, { projectRoot: process.cwd() });";
+  const WIRING = "const gate = await filingGate(cmd, { projectRoot: process.cwd() });";
   const source = readFileSync(HOOK, "utf-8");
   const occurrences = source.split(WIRING).length - 1;
   // Seventh shape: a mutation that did not apply reddens for the wrong
@@ -198,16 +199,77 @@ describe("#1261 the parts the decision is built from", () => {
     expect(attempts).toHaveLength(1);
   });
 
-  test("FG-4: an unreadable tracker is UNMEASURED, never ALLOW", () => {
-    const v = adjudicateFiling(filingAttempts(NOVEL_FILING)[0], () => null);
+  test("FG-4: an unreadable tracker is UNMEASURED, never ALLOW", async () => {
+    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => null);
     expect(v.outcome).toBe("UNMEASURED");
     expect(v.refusal).toBe("UNMEASURED");
   });
 
-  test("FG-5: an EMPTY tracker is a reading, and allows", () => {
-    const v = adjudicateFiling(filingAttempts(NOVEL_FILING)[0], () => []);
+  test("FG-5: an EMPTY tracker is a reading, and allows", async () => {
+    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => []);
     expect(v.outcome).toBe("ALLOW");
     expect(v.refusal).toBeNull();
+  });
+
+  test("FG-15: a dropped category refuses without ever reading the tracker", async () => {
+    let asked = 0;
+    const v = await adjudicateFiling(filingAttempts(DROPPED_FILING)[0], async () => {
+      asked += 1;
+      return [];
+    });
+    expect(v.refusal).toBe("DROPPED_CATEGORY");
+    // The cost order is the claim, so it is measured and not asserted in prose.
+    expect(asked, "the free stage must run before the one that costs an API call").toBe(0);
+  });
+
+  /**
+   * The AI review's finding on #1282, turned into a case.
+   *
+   * `title.trim() === ""` was one disjunct of the UNMEASURED test, so a
+   * filing with no `--title` and a body naming the symptom skipped the dedupe
+   * entirely — and reported "names no symbol, no file and no reading" about a
+   * body naming all three. The reason was false for exactly the input that
+   * triggered it, which is the only kind of wrong reason that matters.
+   */
+  test("FG-17: a blank title does not stop the body being deduplicated", async () => {
+    const attempt = {
+      title: "",
+      body: "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234.",
+      labels: [],
+      bodyFromFile: false,
+    };
+    const v = await adjudicateFiling(attempt, async () =>
+      OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })),
+    );
+    expect(v.outcome).toBe("REFUSE");
+    expect(v.refusal).toBe("DUPLICATE");
+    expect(v.duplicateOf).toEqual(["900"]);
+  });
+
+  test("FG-18: a body-file filing is UNMEASURED, and says that rather than guessing", async () => {
+    const v = await adjudicateFiling(
+      { title: "retryBudget misbehaves", body: "", labels: [], bodyFromFile: true },
+      async () => [],
+    );
+    expect(v.outcome).toBe("UNMEASURED");
+    expect(v.reason).toContain("in a file");
+  });
+
+  test("FG-16: listOpenIssues drops pull requests, which the REST API returns as issues", async () => {
+    const client = {
+      rest: {
+        issues: {
+          listForRepo: async () => ({
+            data: [
+              { number: 10, title: "a real issue", body: "x" },
+              { number: 11, title: "a pull request", body: "y", pull_request: { url: "…" } },
+            ],
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof listOpenIssues>[0];
+    const issues = await listOpenIssues(client, "owner/repo");
+    expect(issues.map(i => i.number)).toEqual([10]);
   });
 });
 

@@ -100,7 +100,7 @@ async function main() {
   // unadjudicated generally — open issues sat flat at 32 across three
   // readings while 8 closed and 8 were filed — so a gate that only runs
   // inside one phase would leave the intake rate untouched.
-  const gate = filingGate(cmd, { projectRoot: process.cwd() });
+  const gate = await filingGate(cmd, { projectRoot: process.cwd() });
   const unrecorded = gate.rows.filter(row => !recordAdjudication(row)).length;
 
   if (gate.refusal !== null) {

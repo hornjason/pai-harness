@@ -84,11 +84,12 @@
  *   that join and nothing more, exactly as `CandidateRecord` says of itself.
  */
 
-import { spawnSync } from "child_process";
 import { appendFileSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
+import { resolveRepoSlug } from "./branch-cleanup";
+import { createGitHubClient, listOpenIssues } from "./github";
 import {
   duplicateCollisions,
   symptomHash,
@@ -119,9 +120,6 @@ export const FILING_OVERRIDE_LABEL = "arbiter-override";
 
 /** How many open issues the dedupe compares against. */
 export const OPEN_ISSUE_LIMIT = 100;
-
-/** How long `gh issue list` gets before the reading is UNMEASURED. */
-export const OPEN_ISSUE_TIMEOUT_MS = 20_000;
 
 /** One `gh issue create` clause, as much of it as the two stages read. */
 export interface FilingAttempt {
@@ -218,10 +216,10 @@ export function filingAttempts(cmd: string): FilingAttempt[] {
  * distinction `.claude/rules/config-access.md` makes about a corrupt config,
  * applied to the one input this gate cannot produce itself.
  */
-export function adjudicateFiling(
+export async function adjudicateFiling(
   attempt: FilingAttempt,
-  readExisting: () => readonly Finding[] | null,
-): FilingAdjudication {
+  readExisting: () => Promise<readonly Finding[] | null>,
+): Promise<FilingAdjudication> {
   const finding: Finding = { id: UNFILED_ID, title: attempt.title, body: attempt.body };
   const category = classifyCategory(finding);
   const base = {
@@ -244,19 +242,38 @@ export function adjudicateFiling(
   }
 
   // ── can the symptom be read out of this command at all? ──
-  if (attempt.title.trim() === "" || symptomKeys(finding).length === 0) {
+  //
+  // Two UNMEASURED arms, and they are separate because they are separate
+  // facts. The first cut asked `title.trim() === "" || keys.length === 0`,
+  // which the AI review on #1282 caught: a filing with a blank `--title` and
+  // a full `--body` HAS a readable symptom, so that disjunct skipped the
+  // dedupe on an input it could have adjudicated — and then printed "names no
+  // symbol, no file and no reading" about a body naming all three. A reason
+  // that is false for the input it was emitted on is worse than no reason.
+  //
+  // The title is read by `classifyCategory` above and nowhere here, so a
+  // blank one costs the category stage its input and costs the dedupe
+  // nothing: `symptomKeys` contributes title symbols and paths but no
+  // quantities, so a title is never what makes a pair a duplicate anyway.
+  if (attempt.bodyFromFile) {
     return {
       ...base,
       outcome: "UNMEASURED",
       refusal: "UNMEASURED",
-      reason: attempt.bodyFromFile
-        ? "the body is in a file, so the keys this would be deduplicated on are not in the command"
-        : "the filing names no symbol, no file and no reading, so there is nothing to deduplicate it on",
+      reason: "the body is in a file, so the keys this would be deduplicated on are not in the command",
+    };
+  }
+  if (symptomKeys(finding).length === 0) {
+    return {
+      ...base,
+      outcome: "UNMEASURED",
+      refusal: "UNMEASURED",
+      reason: "the filing names no symbol, no file and no reading, so there is nothing to deduplicate it on",
     };
   }
 
   // ── is this new? ──
-  const existing = readExisting();
+  const existing = await readExisting();
   if (existing === null) {
     return {
       ...base,
@@ -296,14 +313,31 @@ export function adjudicateFiling(
  * `gh` that is missing, unauthenticated, rate-limited, slow or returning
  * something unexpected cannot be mistaken for a clean tracker.
  *
- * `RUNGATE_OPEN_FINDINGS` names a JSON file to read instead of calling `gh`.
- * It is a production seam and not a test hook — a consumer on a non-GitHub
- * tracker, or an agent working offline, has no other way to supply the
- * comparison set. Pointing it at an empty array switches the dedupe off, and
- * that is the direction this gate is allowed to be wrong in: the result is a
- * duplicate reaching the tracker, never a real finding silenced.
+ * **Through Octokit and never the GitHub CLI.** `lib/`, `hooks/` and `gates/`
+ * may not reach `gh` as a subprocess — GITHUB-API-MIGRATION-SPEC.md's SC-893,
+ * enforced by a ratchet in `test/ticked-sc-cover.test.ts` whose known-offender
+ * list #395 emptied and which refuses in both directions. The first cut of
+ * this file shelled out and CI caught it. The architectural reason is the one
+ * `getIssueLabels` records: a hook runs in whatever environment the session
+ * has, and a subprocess needs the CLI installed and authenticated there.
+ *
+ * **The cost, stated because it decides what this gate does on a dev box:**
+ * `createGitHubClient` needs `GITHUB_TOKEN` or `GH_TOKEN`, and a developer's
+ * GitHub credential usually lives in the CLI's keyring and not in the
+ * environment. With no token this returns `null`, the dedupe is UNMEASURED,
+ * and only the category stage runs. That is visible rather than silent — the
+ * ledger row says `UNMEASURED` and the agent is told — and it is the honest
+ * reading: nobody asked the tracker. Export a token, or supply the set below.
+ *
+ * `RUNGATE_OPEN_FINDINGS` names a JSON file to read instead of calling the
+ * API. It is a production seam and not a test hook — a consumer on a
+ * non-GitHub tracker, an agent working offline, or a session with no token
+ * has no other way to supply the comparison set. Pointing it at an empty
+ * array switches the dedupe off, and that is the direction this gate is
+ * allowed to be wrong in: the result is a duplicate reaching the tracker,
+ * never a real finding silenced.
  */
-export function openFindings(projectRoot: string): readonly Finding[] | null {
+export async function openFindings(projectRoot: string): Promise<readonly Finding[] | null> {
   const override = process.env.RUNGATE_OPEN_FINDINGS;
   if (override !== undefined && override !== "") {
     try {
@@ -312,20 +346,20 @@ export function openFindings(projectRoot: string): readonly Finding[] | null {
       return null;
     }
   }
-  const r = spawnSync(
-    "gh",
-    ["issue", "list", "--state", "open", "--limit", String(OPEN_ISSUE_LIMIT), "--json", "number,title,body"],
-    { cwd: projectRoot, encoding: "utf-8", timeout: OPEN_ISSUE_TIMEOUT_MS },
-  );
-  if (r.status !== 0 || typeof r.stdout !== "string" || r.stdout.trim() === "") return null;
   try {
-    return asFindings(JSON.parse(r.stdout));
+    const { slug } = resolveRepoSlug({ projectRoot });
+    if (slug === null) return null;
+    const issues = await listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT);
+    return issues.map(i => ({ id: String(i.number), title: i.title, body: i.body }));
   } catch {
+    // Every failure lands here as `null`, which is "nobody asked" and not
+    // "nothing matched" — a missing token, a 403, a rate limit and an
+    // unreachable API are all states this must not report as a clean tracker.
     return null;
   }
 }
 
-/** `gh`'s rows as `Finding`s, or `null` if the shape is not what we asked for. */
+/** Supplied rows as `Finding`s, or `null` if the shape is not what we asked for. */
 function asFindings(parsed: unknown): readonly Finding[] | null {
   if (!Array.isArray(parsed)) return null;
   const out: Finding[] = [];
@@ -387,30 +421,32 @@ const NO_FILING: FilingGateReading = { refusal: null, note: null, rows: [] };
  * One exported entry so `hooks/VerifyPhaseLock.hook.ts` stays a trigger and
  * the decision stays in `lib/` (#365, HOOK-ARCHITECTURE-SPEC).
  */
-export function filingGate(
+export async function filingGate(
   cmd: string,
   options: {
     projectRoot: string;
     now?: string;
-    readExisting?: (projectRoot: string) => readonly Finding[] | null;
+    readExisting?: (projectRoot: string) => Promise<readonly Finding[] | null>;
   },
-): FilingGateReading {
+): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
   if (attempts.length === 0) return NO_FILING;
 
   const at = options.now ?? new Date().toISOString();
   const read = options.readExisting ?? openFindings;
   // Read once per command, not once per clause: two creates in one command
-  // adjudicated against two different snapshots is a reading nobody can act on.
-  let cached: readonly Finding[] | null | undefined;
-  const readExisting = () => (cached === undefined ? (cached = read(options.projectRoot)) : cached);
+  // adjudicated against two different snapshots is a reading nobody can act
+  // on. The PROMISE is cached rather than its value, so two clauses cannot
+  // both start a request before either has resolved.
+  let cached: Promise<readonly Finding[] | null> | undefined;
+  const readExisting = () => (cached ??= read(options.projectRoot));
 
   const rows: FilingLedgerRow[] = [];
   const refusals: string[] = [];
   const notes: string[] = [];
 
   for (const attempt of attempts) {
-    const verdict = adjudicateFiling(attempt, readExisting);
+    const verdict = await adjudicateFiling(attempt, readExisting);
     const overridden = verdict.outcome === "REFUSE" && attempt.labels.includes(FILING_OVERRIDE_LABEL);
     const emitted = verdict.outcome !== "REFUSE" || overridden;
 
