@@ -548,3 +548,30 @@ describe("#1137 non-object content is UNMEASURED, and UNMEASURED refuses", () =>
     expect(blockedReason(write("0"))).toMatch(/object/i);
   });
 });
+
+/**
+ * Covers #1184 — `isWorkflowState` matched case-sensitively.
+ *
+ * This asserts a PLATFORM fact, so it states which world it is in rather
+ * than assuming one. Measured on the development machine: the lowercase and
+ * uppercase spellings returned the SAME INODE, because the default macOS
+ * filesystem is case-insensitive — so the uppercase name reached the real
+ * artifact with the guard switched off. The fold is correct on a
+ * case-sensitive filesystem too, where it merely refuses a name that cannot
+ * coexist with the real one, so the case runs everywhere.
+ */
+describe("#1184: the guarded artifact is recognised whatever its case", () => {
+  const UPPER = "/x/work/slug/WORKFLOW-STATE.JSON";
+
+  test("WITNESS: a Write of a bare string to the UPPERCASE spelling is blocked", () => {
+    expect(blockedReason(write('"DONE"', UPPER))).toMatch(/object/i);
+  });
+
+  test("WITNESS: a mixed-case spelling is blocked too", () => {
+    expect(blockedReason(write("[]", "/x/work/slug/Workflow-State.json"))).toMatch(/object/i);
+  });
+
+  test("CONTROL: an unrelated .json file is still not guarded", () => {
+    expect(write('"DONE"', "/x/work/slug/package.json").stdout.trim()).toBe("");
+  });
+});

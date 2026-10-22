@@ -147,8 +147,25 @@ export function stripHeredocs(s: string): string {
     if (isComment) continue; // a comment cannot open a heredoc
     const delim = heredocDelimiter(line);
     if (!delim) continue;
-    while (i < lines.length && lines[i].trim() !== delim) i++;
-    if (i < lines.length) i++; // the terminator itself
+    // #1184: buffer the body rather than consuming to end-of-input. A
+    // heredoc whose terminator never arrives is not a heredoc this module can
+    // trust, and dropping the rest of the command is a BYPASS — `cat <<EOF`
+    // followed by a write on the next line used to read as a bare `cat`. The
+    // regex this scanner replaced required the terminator to match, so it
+    // failed closed; the first version of the scanner failed open. Keeping
+    // the bytes is the direction a guard is allowed to be wrong in.
+    const body: string[] = [];
+    let j = i;
+    while (j < lines.length && lines[j].trim() !== delim) {
+      body.push(lines[j]);
+      j++;
+    }
+    if (j < lines.length) {
+      i = j + 1; // terminated: the body and the terminator are the document
+    } else {
+      out.push(...body); // never terminated: emit unchanged
+      i = j;
+    }
   }
   return out.join('\n');
 }
@@ -167,7 +184,10 @@ export function stripHeredocs(s: string): string {
  * otherwise read — and is recorded rather than half-fixed.
  */
 function heredocDelimiter(line: string): string | null {
-  const m = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line);
+  // #1184: `(?<!<)` and `(?!<)` exclude a `<<<` HERESTRING, which has no
+  // terminator at all. Matching one invented a delimiter from the quoted text
+  // after it and then ran straight into the unterminated case above.
+  const m = /(?<!<)<<(?!<)-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line);
   return m ? m[2] : null;
 }
 
@@ -185,8 +205,20 @@ const WRAPPERS = /^(?:sudo|env|nohup|time|command|xargs)$/;
  * an argument.
  */
 export function commandWord(segment: string): string {
-  for (const raw of stripQuoted(segment).trim().split(/\s+/)) {
-    const tok = raw.replace(/^.*\//, ''); // `/usr/bin/python3` -> `python3`
+  // #1184: read the DEQUOTED token stream, not the quote-stripped one. This
+  // is the mirror of #1176's F2 — there the TARGET was read off a view the
+  // writer controls, here the VERB was: `stripQuoted` deleted `"chmod"`
+  // outright, so `"chmod" 777 x.hook.ts` resolved its command word to `777`
+  // and the shell ran chmod anyway. Quoting a verb changes nothing about
+  // what executes, so it must change nothing about what the guard reads.
+  //
+  // The grep-PATTERN false positive this function was protecting against is
+  // unaffected: `grep -nE "chmod" f` still resolves to `grep`, because the
+  // real verb comes FIRST and a pattern is never in first position.
+  for (const raw of dequote(stripHeredocs(segment)).trim().split(/\s+/)) {
+    const tok = raw
+      .replace(/^[({\\]+/, '') // `(cmd …`, `{ cmd …`, `\cmd` — alias bypass
+      .replace(/^.*\//, ''); // `/usr/bin/python3` -> `python3`
     if (!tok || tok.includes('=') || tok.startsWith('-')) continue;
     if (WRAPPERS.test(tok)) continue;
     return tok;
@@ -301,9 +333,39 @@ export function writeTargets(segment: string): string[] {
   const word = commandWord(segment);
   if (word === 'cp' || word === 'mv' || word === 'install' || word === 'rsync') {
     const args = words.slice(1).filter(a => !a.startsWith('-'));
-    if (args.length >= 2) targets.push(args[args.length - 1]);
+    if (args.length >= 2) {
+      const dest = args[args.length - 1];
+      targets.push(dest);
+      // #1184: when the destination is a DIRECTORY the real sink is
+      // `dest/basename(src)`, for every source. `cp /tmp/forged/
+      // workflow-state.json /Users/jhorn/.rungate/x/` names no protected
+      // artifact in its last argument and writes one.
+      if (isDirDestination(dest)) {
+        for (const src of args.slice(0, -1)) {
+          targets.push(`${dest.replace(/\/+$/, '')}/${src.replace(/^.*\//, '')}`);
+        }
+      }
+    }
   }
   return targets;
+}
+
+/**
+ * Does this destination name a directory? A trailing slash settles it without
+ * touching the disk; otherwise one `stat`, which is allowed to fail — a path
+ * that cannot be examined is treated as a plain file, because the plain-file
+ * reading is what the last-argument test already covers.
+ */
+// Declared beside its only reader, matching `lib/gate-result-protection.ts`.
+import { statSync } from 'fs';
+
+function isDirDestination(dest: string): boolean {
+  if (dest.endsWith('/')) return true;
+  try {
+    return statSync(dest).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -420,9 +482,19 @@ const WRITE_INTENT =
 /** `find` actions that run or delete rather than print. */
 const FIND_MUTATING = /\s-(?:delete|exec|execdir|ok|okdir)\b/;
 
-/** Does this text name a protected artifact? Pass a DEQUOTED segment. */
+/**
+ * Does this text name a protected artifact? Pass a DEQUOTED segment.
+ *
+ * #1184: folded to lower case. Measured on this machine, `WORKFLOW-STATE.JSON`
+ * and `workflow-state.json` resolve to the SAME INODE — the default macOS
+ * filesystem is case-insensitive — so a case-sensitive match let the
+ * uppercase spelling of every protected artifact through. On a case-sensitive
+ * filesystem the two are different files, so folding costs only a refusal of
+ * a file that cannot coexist with the real one where it matters.
+ */
 function names(text: string, list: string[]): string | null {
-  for (const p of list) if (text.includes(p)) return p;
+  const hay = text.toLowerCase();
+  for (const p of list) if (hay.includes(p.toLowerCase())) return p;
   return null;
 }
 
@@ -467,7 +539,13 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
     //    be an ARGUMENT — not any text in the segment. `sed -i '' "s/|
     //    X.hook.ts |/…/" NOTES.md` edits a markdown file and merely mentions
     //    a hook in its script; matching the whole segment refused it.
-    if (IN_PLACE.some(p => p.test(code))) {
+    //    #1184: the resolved command word is prepended, so a QUOTED in-place
+    //    verb is still seen. Prepending rather than testing the dequoted
+    //    segment keeps the measured false positive out: `sed -i '' "s/|
+    //    X.hook.ts |/…/" NOTES.md` must not match `rm` because some quoted
+    //    text contains it, and `grep "rm -rf …"` must stay a grep.
+    const verbView = `${word} ${code}`;
+    if (IN_PLACE.some(p => p.test(verbView))) {
       const pf = names(argumentsOf(seg).join(' '), ALL_PROTECTED);
       if (pf) {
         return {
@@ -528,7 +606,19 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
     //    `security find-generic-password -s 'pai-gate-salt'`, could not fire
     //    it. The prose case is now separated by POSITION instead: the command
     //    word must BE `security`, which an issue comment's `gh` never is.
-    if (word === 'security' && bare.includes('pai-gate-salt')) {
+    //    #1184: the key is matched across the WHOLE command, not just this
+    //    segment, so `KEY=pai-gate-salt; security … -s "$KEY"` cannot hide it
+    //    behind a variable. Measured cost: 0 commands in an unfiltered corpus
+    //    of 125,644. The command word must still BE `security`, which is what
+    //    keeps the `gh issue comment` prose case allowed.
+    //
+    //    The other half of that suggestion — firing on any keychain
+    //    SUBCOMMAND whether or not the key is named — is refused. In the same
+    //    corpus only TWO commands have `security` as their command word, and
+    //    widening to subcommands newly blocks exactly one: `security
+    //    find-generic-password -h`, a help invocation. One false positive,
+    //    zero true positives, no evidence of the risk it was meant to cover.
+    if (word === 'security' && dequote(cmd).toLowerCase().includes('pai-gate-salt')) {
       return { blocked: true, reason: 'Access to gate salt Keychain entry blocked.' };
     }
   }
