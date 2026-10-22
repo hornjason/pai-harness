@@ -128,7 +128,10 @@ describe("#1137 BLOCKING_GATES is a priority list, and is live in its one consum
             gates: { [gate]: { result: "FAIL", failures: [{ check: "X", detail: "d" }] } },
           }),
         );
-        const found = findWorkflowGateFailure(base).failure;
+        // #1155: `failure` lives on the measured variant only. These fixtures
+        // are well-formed, so anything else is itself the failure to report.
+        const s = findWorkflowGateFailure(base);
+        const found = s.reading === "MEASURED" ? s.failure : null;
         if (found?.gate !== gate) missed.push(gate);
         rmSync(join(base, slug), { recursive: true, force: true });
       }
