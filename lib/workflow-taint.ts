@@ -231,7 +231,7 @@ export interface TaintedName {
  * inside that helper and means nothing outside it. The top-level bindings get
  * the whole file.
  */
-function analyse(source: string): { members: Map<string, string>; scopes: TaintScope[]; sanitiserAliases: Set<string>; seeds: Set<string> } {
+function analyse(source: string): { members: Map<string, string>; scopes: TaintScope[]; aliasScopes: TaintScope[]; seeds: Set<string> } {
   const tree = parse(source, PARSE_OPTIONS) as unknown as Node;
   const fns = functionsByName(tree);
   const all = bindings(tree);
@@ -311,21 +311,62 @@ function analyse(source: string): { members: Map<string, string>; scopes: TaintS
   // that only knows the name `shellQuote` reads every one of its correctly
   // quoted sites as bare — the mirror image of the rename this all started
   // with, and it would bury the real findings in noise.
-  const sanitiserAliases = new Set<string>();
+  // ── "inside that function" is the load-bearing clause (#1114) ──
+  //
+  // The first version of this held a flat `Set<string>` of parameter NAMES,
+  // so the moment any function anywhere bound `shellQuote` to a parameter
+  // called `quote`, the name `quote` was a sanitiser in all four files — and
+  // an unrelated helper with its own `quote` parameter, bound to anything at
+  // all, got a free pass on every interpolation while the census reported
+  // clean. Latent rather than live when it was found (three functions take a
+  // `quote`, all seven call sites pass the real one), which is exactly the
+  // kind of hole that becomes live on somebody else's unrelated commit.
+  //
+  // So an alias is a RANGE, like every other fact in this module, and it is
+  // UNANIMOUS: a function called twice, once with `shellQuote` and once with
+  // something else, sanitises on neither. That is the rule `sanitised` above
+  // already uses for assignments — "every assignment, not the first" — and
+  // the asymmetry between them was the second half of the bug.
+  //
+  // The transitive arm stays but is a fixpoint rather than a single pass:
+  // whether an alias reached a further parameter used to depend on where the
+  // call sites happened to sit in `walk` order, so the same tree could
+  // analyse two ways.
+  const aliasScopes: TaintScope[] = [];
+  const isAliasAt = (name: string, at: number) =>
+    aliasScopes.some(a => a.name === name && at >= a.from && at <= a.to);
+  /** `shellQuote`, or a parameter that is one AT THIS POSITION. */
+  const sanitisesAt = (name: string | null, at: number) =>
+    !!name && (SANITISERS.includes(name) || isAliasAt(name, at));
+
+  const callsByFunction = new Map<string, Node[]>();
   for (const node of walk(tree)) {
     if (node.type !== "CallExpression") continue;
-    const fn = fnRanges.get(calleeName(node.callee) ?? "");
-    if (!fn) continue;
-    const params = paramNames(fn);
-    (node.arguments as Node[]).forEach((arg, i) => {
-      const param = params[i];
-      if (!param) return;
-      if (arg.type === "Identifier" && SANITISERS.includes(arg.name as string)) sanitiserAliases.add(param);
-      if (arg.type === "Identifier" && sanitiserAliases.has(arg.name as string)) sanitiserAliases.add(param);
-    });
+    const name = calleeName(node.callee);
+    if (!name || !fnRanges.has(name)) continue;
+    callsByFunction.set(name, [...(callsByFunction.get(name) ?? []), node]);
   }
-  const sanitises = (name: string | null) =>
-    !!name && (SANITISERS.includes(name) || sanitiserAliases.has(name));
+
+  for (let again = true; again; ) {
+    again = false;
+    for (const [fnName, fn] of fnRanges) {
+      const calls = callsByFunction.get(fnName) ?? [];
+      // A function nobody calls tells us nothing about its parameters.
+      if (calls.length === 0) continue;
+      paramNames(fn).forEach((param, i) => {
+        if (!param || isAliasAt(param, fn.start)) return;
+        const everyCallSite = calls.every(call => {
+          const arg = (call.arguments as Node[])[i];
+          // A call site that omits the argument is a call site that does not
+          // pass the quoter.
+          return !!arg && arg.type === "Identifier" && sanitisesAt(arg.name as string, arg.start);
+        });
+        if (!everyCallSite) return;
+        aliasScopes.push({ name: param, why: `${fnName}()'s quoter`, from: fn.start, to: fn.end });
+        again = true;
+      });
+    }
+  }
 
   for (let again = true; again; ) {
     again = false;
@@ -380,16 +421,29 @@ function analyse(source: string): { members: Map<string, string>; scopes: TaintS
     for (const node of walk(tree)) {
       if (node.type !== "CallExpression") continue;
       const callee = calleeName(node.callee);
-      if (!callee || sanitises(callee) || MESSAGE_CALLEES.includes(callee)) continue;
+      if (!callee || sanitisesAt(callee, node.start) || MESSAGE_CALLEES.includes(callee)) continue;
       const fn = fnRanges.get(callee);
       if (!fn) continue;
       const params = paramNames(fn);
       (node.arguments as Node[]).forEach((arg, i) => {
         const param = params[i];
         if (!param) return;
+        // `helper(shellQuote(commitDir))` passes a quoted value, so the
+        // parameter is not agent text. Without this, every helper that takes
+        // an already-quoted path — which is the shape #1112 adds — would be
+        // reported, and the fix for it would be to UNQUOTE the call site.
         let tainted = false;
         for (const sub of walk(arg)) {
+          if (sub.type === "CallExpression" && sanitisesAt(calleeName(sub.callee), sub.start)) continue;
           if (sub.type === "Identifier" && members.has(sub.name as string)) {
+            const insideSanitiser = [...walk(arg)].some(
+              c =>
+                c.type === "CallExpression" &&
+                sanitisesAt(calleeName(c.callee), c.start) &&
+                sub.start >= c.start &&
+                sub.end <= c.end,
+            );
+            if (insideSanitiser) continue;
             tainted = true;
             break;
           }
@@ -403,7 +457,7 @@ function analyse(source: string): { members: Map<string, string>; scopes: TaintS
 
   }
 
-  return { members, scopes, sanitiserAliases, seeds };
+  return { members, scopes, aliasScopes, seeds };
 }
 
 /**
@@ -436,14 +490,41 @@ export interface BareInterpolation {
  */
 export function bareAgentInterpolations(relPath: string, source: string): BareInterpolation[] {
   const tree = parse(source, PARSE_OPTIONS) as unknown as Node;
-  const { scopes, sanitiserAliases, seeds } = analyse(source);
-  /** `shellQuote(x)`, or a helper parameter bound to it at every call site. */
+  const { scopes, aliasScopes, seeds } = analyse(source);
+  /**
+   * `shellQuote(x)`, or a helper parameter that is the quoter AT THIS
+   * POSITION — a name, a function, and a byte range, never a bare name
+   * (#1114).
+   */
   const sanitisedCall = (expr: Node) => {
     const callee = calleeName(expr.callee);
-    return !!callee && (SANITISERS.includes(callee) || sanitiserAliases.has(callee));
+    if (!callee) return false;
+    if (SANITISERS.includes(callee)) return true;
+    return aliasScopes.some(a => a.name === callee && expr.start >= a.from && expr.start <= a.to);
   };
   const taintedAt = (name: string, at: number) =>
     scopes.some(s => s.name === name && at >= s.from && at <= s.to);
+
+  /**
+   * Identifiers in `expr` that are NOT inside a sanitiser call.
+   *
+   * `${probe(shellQuote(commitDir))}` is not a bare interpolation of
+   * `commitDir`: the only thing reaching the string is what `shellQuote`
+   * returned. Checking only the outermost call missed this, and the cheapest
+   * way to silence the resulting report would have been to unquote the call
+   * site — a check that pays for green with the defect it exists to find.
+   */
+  const unsanitisedIdentifiers = (expr: Node): Node[] => {
+    const safeRanges: [number, number][] = [];
+    for (const sub of walk(expr)) {
+      if (sub.type === "CallExpression" && sanitisedCall(sub)) safeRanges.push([sub.start, sub.end]);
+    }
+    return [...walk(expr)].filter(
+      sub =>
+        sub.type === "Identifier" &&
+        !safeRanges.some(([from, to]) => sub.start >= from && sub.end <= to),
+    );
+  };
 
   // ── The message exemption is an ARGUMENT, not a byte range (#1113) ──
   //
@@ -502,7 +583,8 @@ export function bareAgentInterpolations(relPath: string, source: string): BareIn
     const names = new Set<string>();
     for (const sub of walk(node)) {
       if (sub.type === "Literal" && typeof sub.value === "string") hasStringLiteral = true;
-      if (sub.type !== "Identifier") continue;
+    }
+    for (const sub of unsanitisedIdentifiers(node)) {
       const ref = sub.name as string;
       if (seeds.has(ref) || taintedAt(ref, sub.start)) names.add(ref);
     }
@@ -516,8 +598,7 @@ export function bareAgentInterpolations(relPath: string, source: string): BareIn
     for (const expr of node.expressions as Node[]) {
       if (expr.type === "CallExpression" && sanitisedCall(expr)) continue;
       const names = new Set<string>();
-      for (const sub of walk(expr)) {
-        if (sub.type !== "Identifier") continue;
+      for (const sub of unsanitisedIdentifiers(expr)) {
         const ref = sub.name as string;
         // A SEED is reported wherever it is interpolated, whatever its scope.
         // Members are top-level only — measured, and the 200/490 count that

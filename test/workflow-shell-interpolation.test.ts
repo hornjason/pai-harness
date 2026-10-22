@@ -661,6 +661,77 @@ describe("#1103: the census can fail, and fails on the thing that got past it", 
     expect(bareAgentInterpolations("planted.js", unquoted).map(f => f.name)).toEqual(["root"]);
   });
 
+  test("a quoter alias is one function's parameter, not a name (#1114)", () => {
+    // The alias was a flat set of parameter NAMES, so once any function
+    // anywhere bound `shellQuote` to a `quote`, the name `quote` was a
+    // sanitiser in every file — and an unrelated helper with its own `quote`,
+    // bound to anything at all, got a free pass while the census reported
+    // clean. Latent when it was found, which is the kind of hole that goes
+    // live on somebody else's unrelated commit.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const dirFromAgent = thing.worktreePath",
+      "function real(root, quote) { return `( cd ${quote(root)} && bun test )` }",
+      "function fake(root, quote) { return `( cd ${quote(root)} && bun test )` }",
+      "const identity = x => x",
+      "const a = real(dirFromAgent, shellQuote)",
+      "const b = fake(dirFromAgent, identity)",
+    ].join("\n");
+
+    // `real`'s site is quoted; `fake`'s is not, and sharing a parameter name
+    // with `real` must not make it so.
+    const found = bareAgentInterpolations("planted.js", planted);
+    expect(found.map(f => `${f.where} ${f.name}`)).toEqual(["planted.js:4 root"]);
+  });
+
+  test("an alias is unanimous across call sites, not won by the first", () => {
+    // `sanitised` above has always used "every assignment, not the first";
+    // the alias used the first call site, and that asymmetry was the bug. A
+    // function called twice, once with the quoter and once without, quotes on
+    // neither occasion.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const dirFromAgent = thing.worktreePath",
+      "function maybe(root, quote) { return `( cd ${quote(root)} && bun test )` }",
+      "const identity = x => x",
+      "const a = maybe(dirFromAgent, shellQuote)",
+      "const b = maybe(dirFromAgent, identity)",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted).map(f => f.name)).toEqual(["root"]);
+
+    // The control: unanimous call sites still make it the quoter, or the
+    // repo's own `suiteCaptureCommand` idiom reds everywhere and the census
+    // becomes noise people dismiss.
+    const unanimous = planted.replace("const b = maybe(dirFromAgent, identity)", "const b = maybe(dirFromAgent, shellQuote)");
+    expect(bareAgentInterpolations("planted.js", unanimous)).toEqual([]);
+
+    // …and a call site that omits the argument is a call site that does not
+    // pass the quoter.
+    const omitted = planted.replace("const b = maybe(dirFromAgent, identity)", "const b = maybe(dirFromAgent)");
+    expect(bareAgentInterpolations("planted.js", omitted).map(f => f.name)).toEqual(["root"]);
+  });
+
+  test("an already-quoted argument does not taint the parameter it binds to", () => {
+    // `workflowProbeCommand(shellQuote(commitDir))` is the shape #1112 adds.
+    // Without this the helper's interior reds, and the cheapest way to green
+    // it would be to UNQUOTE the call site.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const commitDir = thing.worktreePath",
+      "function probe(quotedDir) { return `test -d ${quotedDir} || exit 1` }",
+      "const cmd = `${probe(shellQuote(commitDir))}`",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted)).toEqual([]);
+
+    // The control, and the whole reason the exemption is narrow: drop the
+    // quoting at the call site and both ends report again.
+    const unquoted = planted.replace("probe(shellQuote(commitDir))", "probe(commitDir)");
+    expect(bareAgentInterpolations("planted.js", unquoted).map(f => f.name).sort()).toEqual([
+      "commitDir",
+      "quotedDir",
+    ]);
+  });
+
   test("a helper called with something no agent touched taints nothing", () => {
     // The control for the hop. If passing ANY argument tainted the parameter,
     // every helper in the file would be in the population and the
