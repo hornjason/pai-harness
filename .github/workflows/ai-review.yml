@@ -1,4 +1,4 @@
-# generated-sha: ff3f7c2d8f6e36db
+# generated-sha: 4d46497870ae4ce3
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -574,7 +574,7 @@ jobs:
             # Checked on its own line, never captured into an assignment: `x=$(...)`
             # DISCARDS the exit code, so a git that failed produces the same empty
             # string a clean tree produces, and "unreadable" would pass as "clean".
-            if ! raw=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' status --porcelain --untracked-files=all 2>&1); then
+            if ! raw=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' status --porcelain --untracked-files=all --ignored=matching 2>&1); then
               printf '%s' "${raw}"
               return 1
             fi
@@ -589,6 +589,20 @@ jobs:
               case "${xy}" in
                 R*|C*) p="${p##* -> }" ;;
               esac
+              # The review tool's own scratch, and ONLY it.
+              # Spelled as an `if`, not `[ … ] && continue`. The runner runs these
+              # steps under `bash -e` and the terse form looked like it would kill the
+              # loop on the first NON-matching path; measured, it does not — bash
+              # exempts the left operand of an AND-OR list from -e. So this is
+              # legibility, not a defect being avoided, and saying which it is costs
+              # nothing. The trailing slash below is git's own: a file never reads with
+              # one, so this cannot match a file the reviewer wrote. An EXACT match, so
+              # a path merely starting with the name, or carrying anything after the
+              # slash, is still reported. See AI_REVIEW_ACTION_SCRATCH for why an
+              # exemption is unavoidable at all.
+              if [ "${p}" = ".claude-pr/" ]; then
+                continue
+              fi
               case "${p}" in
                 '"'*) h=unquotable ;;
                 *)
@@ -928,7 +942,7 @@ jobs:
             # Checked on its own line, never captured into an assignment: `x=$(...)`
             # DISCARDS the exit code, so a git that failed produces the same empty
             # string a clean tree produces, and "unreadable" would pass as "clean".
-            if ! raw=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' status --porcelain --untracked-files=all 2>&1); then
+            if ! raw=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' status --porcelain --untracked-files=all --ignored=matching 2>&1); then
               printf '%s' "${raw}"
               return 1
             fi
@@ -943,6 +957,20 @@ jobs:
               case "${xy}" in
                 R*|C*) p="${p##* -> }" ;;
               esac
+              # The review tool's own scratch, and ONLY it.
+              # Spelled as an `if`, not `[ … ] && continue`. The runner runs these
+              # steps under `bash -e` and the terse form looked like it would kill the
+              # loop on the first NON-matching path; measured, it does not — bash
+              # exempts the left operand of an AND-OR list from -e. So this is
+              # legibility, not a defect being avoided, and saying which it is costs
+              # nothing. The trailing slash below is git's own: a file never reads with
+              # one, so this cannot match a file the reviewer wrote. An EXACT match, so
+              # a path merely starting with the name, or carrying anything after the
+              # slash, is still reported. See AI_REVIEW_ACTION_SCRATCH for why an
+              # exemption is unavoidable at all.
+              if [ "${p}" = ".claude-pr/" ]; then
+                continue
+              fi
               case "${p}" in
                 '"'*) h=unquotable ;;
                 *)
