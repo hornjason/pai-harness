@@ -174,7 +174,9 @@ import { dirname, join } from "path";
 
 import {
   AI_REVIEW_ACTION_SCRATCH,
+  AI_REVIEW_BASE_REMOTE_VAR,
   AI_REVIEW_DRIFT_TITLE,
+  AI_REVIEW_IGNORED_DIR_HASH,
   AI_REVIEW_IGNORED_READING,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
   AI_REVIEW_TREE_BEFORE_VAR,
@@ -357,7 +359,12 @@ function runBaseline(f: Fixture, v: Variant): { path: string; sha: string } {
 }
 
 /** The drift step, run for real against a baseline this fixture took. */
-function runDrift(f: Fixture, v: Variant, before: { path: string; sha: string }): Run {
+function runDrift(
+  f: Fixture,
+  v: Variant,
+  before: { path: string; sha: string },
+  extra: Record<string, string> = {},
+): Run {
   const swap = (s: string) => (v === "hardened" ? s : unignore(s));
   return sh(
     swap(buildDriftScript()),
@@ -370,6 +377,7 @@ function runDrift(f: Fixture, v: Variant, before: { path: string; sha: string })
       AI_REVIEW_MODE: "vertex",
       [AI_REVIEW_TREE_BEFORE_VAR]: before.path,
       [AI_REVIEW_TREE_BEFORE_SHA_VAR]: before.sha,
+      ...extra,
     }),
   );
 }
@@ -798,5 +806,104 @@ describe("AC-9: the mutants are honest", () => {
     expect(AI_REVIEW_TREE_READER, "the shipped reader does not ask for ignored paths at all").toContain(
       `--untracked-files=all ${AI_REVIEW_IGNORED_READING}`,
     );
+  });
+});
+
+// ── AC-10: a collapsed ignored DIRECTORY is not reported as absent (#1061) ──
+
+/**
+ * `AI_REVIEW_IGNORED_READING` made `git status` emit directory entries for
+ * the first time, and `read_tree`'s `[ -f ]` is false for one, so a present
+ * directory was stamped `absent`. That token is not cosmetic: #989's
+ * twice-restored classifier branches on it to mean *the action deleted a
+ * restored path* and ACQUITS, so a reviewer that writes an ignored directory
+ * under one of the untrusted paths was passed AND attributed to the action.
+ */
+describe("AC-10 (#1061): an ignored directory the reviewer creates is not `absent`", () => {
+  /** The two things the reviewer does, and nothing else. */
+  function plantIgnoredDir(f: Fixture, dir: string): void {
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `/${dir}/\n`);
+    f.write(`${dir}/payload.md`, "the reviewer wrote this\n");
+  }
+
+  test("the token says directory, so #989's deleted-path branch cannot claim it", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT), { force: true });
+    plantIgnoredDir(f, "ignored-tree");
+
+    const out = readTree(f, "hardened").stdout;
+    const line = out.split("\n").find(l => l.endsWith(" ignored-tree/"));
+    expect(line, `the fixture's ignored directory is not in the reading:\n${out}`).toBeDefined();
+    expect(
+      line,
+      "a directory sitting on disk is reported `absent`, which is false about it AND is the " +
+        "token #989 reads as the action having deleted a restored path",
+    ).toBe(`${AI_REVIEW_IGNORED_DIR_HASH} ignored-tree/`);
+  });
+
+  test("end to end: the plant under an untrusted path is REFUSED, not acquitted", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT), { force: true });
+    // Under `.claude`, so the line reaches #989's twice-restored classifier
+    // — which is the whole of this defect. A plant anywhere else never gets
+    // there and was refused before this change.
+    //
+    // The base ref is REQUIRED for this fixture to measure anything. Without
+    // it the classifier refuses UNMEASURED two branches earlier, and the
+    // case goes green on a tree carrying the defect — measured, and the
+    // first draft of this case did exactly that.
+    f.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const before = runBaseline(f, "hardened");
+    plantIgnoredDir(f, ".claude/evil");
+
+    const run = runDrift(f, "hardened", before, {
+      [AI_REVIEW_BASE_REMOTE_VAR]: "refs/remotes/origin/main",
+    });
+    expect(
+      run.code,
+      "the drift step ACQUITTED a directory the reviewer created under an untrusted path — " +
+        `one line in .git/info/exclude and the gate passes:\n${run.stdout}\n${run.stderr}`,
+    ).not.toBe(0);
+    expect(run.stderr, "the refusal does not name the plant").toContain(".claude/evil/");
+    expect(run.stderr).toContain(AI_REVIEW_DRIFT_TITLE);
+    // The direction matters as much as the refusal: reported as the action's
+    // own restore is the acquittal this case exists against, and it is a
+    // WARNING, so a case reading only the exit code would not see it.
+    expect(
+      run.stdout,
+      "the plant was attributed to the review action's second restore (#989) rather than to " +
+        "the reviewer — a false attribution is worse than silence",
+    ).not.toContain(".claude/evil/");
+  });
+
+  test("control: the action's own scratch is still exempt, so #1002 stays closed", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT), { force: true });
+    const before = runBaseline(f, "hardened");
+    actionScratch(f);
+    const run = runDrift(f, "hardened", before);
+    expect(
+      run.code,
+      "the exemption broke: this is PR #1002's outage, a REQUIRED check red on every pull " +
+        `request in the repository\n${run.stdout}\n${run.stderr}`,
+    ).toBe(0);
+  });
+
+  test("control: the token is not a reason to enumerate — one line per ignored tree", () => {
+    const f = checkout();
+    f.write(".gitignore", "node_modules/\n");
+    f.git("add", "-A");
+    f.git("commit", "-qm", "ignore");
+    for (let i = 0; i < 40; i++) f.write(`node_modules/pkg/f${i}.js`, "x\n");
+
+    const lines = readTree(f, "hardened").stdout.split("\n").filter(l => l.length > 0);
+    expect(
+      lines.filter(l => l.includes("node_modules/pkg/")).length,
+      `the ignored tree was enumerated file by file (${lines.length} lines)`,
+    ).toBe(0);
+    expect(
+      lines.filter(l => l === `${AI_REVIEW_IGNORED_DIR_HASH} node_modules/`).length,
+      "the ignored tree is not reported as one directory line",
+    ).toBe(1);
   });
 });

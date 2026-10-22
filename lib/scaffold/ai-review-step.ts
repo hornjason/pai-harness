@@ -3815,6 +3815,62 @@ export const AI_REVIEW_IGNORED_READING = "--ignored=matching";
 export const AI_REVIEW_ACTION_SCRATCH = ".claude-pr/";
 
 /**
+ * What a collapsed ignored DIRECTORY hashes to (#1061).
+ *
+ * ## `absent` was true of every input the reader could be handed, until #969
+ *
+ * `--untracked-files=all` alone never yields a directory entry — that is
+ * what `all` means — so `[ -f "${p}" ]` was a total question and its `else`
+ * branch was always right. `AI_REVIEW_IGNORED_READING` introduces the one
+ * input it is wrong about: a wholly-ignored directory, reported collapsed
+ * with a trailing slash, present on disk, and stamped `absent`.
+ *
+ * ## Why that is not a cosmetic lie
+ *
+ * `absent` is a VALUE the drift step branches on. #989's twice-restored
+ * classifier reads it as *the action deleted a restored path*, asks the base
+ * whether it carries the file, and on `no` files the line under `restored` —
+ * acquitted, and reported as the action's work rather than the reviewer's.
+ * A directory can reach that branch, and the question it is then asked is a
+ * question about a file.
+ *
+ * Measured against `origin/main` at `d8f76417`, git 2.50.1, driving the real
+ * `buildBaselineScript()` and `buildDriftScript()`. The reviewer does exactly
+ * two things between the two readings — appends `/.claude/evil/` to
+ * `.git/info/exclude`, and writes `.claude/evil/payload.md`:
+ *
+ * | reader | `git status` | drift |
+ * |---|---|---|
+ * | before this change | `!! .claude/evil/` | **exit 0**, warning: *"NOT counted as a reviewer write (#989). Paths: `absent .claude/evil/`"* |
+ * | with this token | `!! .claude/evil/` | **exit 1**: *"The reviewer modified the tree it was reviewing: `ignored-dir .claude/evil/`"* |
+ *
+ * The refusal is not a new rule. The line simply stops entering the `absent`
+ * branch, falls through to the blob comparison, resolves nothing on the base,
+ * and stays in `added` — which is the tight direction that comparison already
+ * documents.
+ *
+ * `.claude/evil/` is deliberately NOT `AI_REVIEW_ACTION_SCRATCH`: that
+ * exemption is exact and correctly does not match, and this change does not
+ * touch it. PR #1002's outage stays closed, which `AC-7/green` is the control
+ * for.
+ *
+ * ## Not folded into the UNMEASURED warning, deliberately
+ *
+ * `unquotable` and `unreadable` are annotated. `node_modules/` is one of
+ * these on every run of every consumer, so annotating them floods — the
+ * failure `AI_REVIEW_IGNORED_READING` already names, met one branch over.
+ *
+ * ## WHAT THIS DOES NOT FIX
+ *
+ * The collapsed entry carries no content hash, so a write INSIDE a directory
+ * that was already ignored at baseline is still invisible and a modification
+ * inside one still produces a byte-identical line. Unchanged, UNMEASURED,
+ * and already asserted by `AC-8/inside`. `--ignored=traditional` is the only
+ * setting that sees it, at 1508 lines on this checkout.
+ */
+export const AI_REVIEW_IGNORED_DIR_HASH = "ignored-dir";
+
+/**
  * The one reading of the tree, shared by the baseline step and the drift step
  * (#853). It emits one line per dirty path:
  *
@@ -3918,6 +3974,11 @@ export const AI_REVIEW_TREE_READER = `read_tree() {
     fi
     case "\${p}" in
       '"'*) h=unquotable ;;
+      # A wholly-ignored directory, reported COLLAPSED with git's own
+      # trailing slash. It is PRESENT, so \`absent\` would be false — and
+      # \`absent\` is a value the drift step branches on, so the lie does not
+      # stay cosmetic. See AI_REVIEW_IGNORED_DIR_HASH.
+      */) h=${AI_REVIEW_IGNORED_DIR_HASH} ;;
       *)
         if [ -f "\${p}" ]; then
           # --no-filters, or the repository's own text/eol conversion is
