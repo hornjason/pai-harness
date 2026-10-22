@@ -30,6 +30,7 @@ import {
   citedSymbols,
   duplicateOverlap,
   sharedKeys,
+  symptomHash,
   symptomKeys,
   UNFILED_ID,
   type Finding,
@@ -1100,14 +1101,22 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     suppress: (c: CandidateRecord) => boolean,
   ): ReviewFinding[] =>
     ledger.map((c, i) => ({
-      // The symptom hash, because a candidate nobody filed has no issue
-      // number and never will. `ReviewFinding.id` was a number when this was
-      // written, which forced a consumer to keep its own index-to-hash
-      // mapping; #1253 widened it to a string precisely so the stable
-      // identity can be the id, and so a corpus that repeats one is refused
-      // rather than scored — two rows sharing a key overwrite each other's
-      // citations and move a fixed finding into the cost bucket.
-      id: c.symptomHash,
+      // The position in this ledger, which is unique by construction.
+      //
+      // #1258 keyed this on `c.symptomHash` and that was wrong (#1272).
+      // `symptomHash` hashes the SORTED SYMPTOM KEY SET, so one reading
+      // written two ways hashes the same — while the dedupe matches on the
+      // key INTERSECTION, so two genuine duplicates can hash differently. It
+      // is a similarity identity, and a row identity is a different thing.
+      // Keying a corpus on it collides exactly on the pair the ledger exists
+      // to record, trips the duplicate refusal added in #1253, and reads as a
+      // broken emitter rather than as the wrong key.
+      //
+      // An index does not survive a join to anything outside one corpus, and
+      // this is one corpus. `CandidateRecord.key` (#1263) is the cross-corpus
+      // answer — `${batch}/${index}`, unique by construction, `null` when the
+      // caller names no batch — and this becomes `id: c.key!` once it lands.
+      id: String(i),
       filedAt: 1_000,
       closed: KNOWN[i]!.closed,
       citations: KNOWN[i]!.fixed === true ? [{ sha: `c${i}`, at: 2_000, filesChanged: 3 }] : [],
@@ -1175,6 +1184,51 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     // finding the CATEGORY filter dropped, and no further comparison exists
     // that could tell them apart.
     expect(priced.fixedDelta).toBe(-1);
+  });
+
+  // #1272: the bridge's key must be unique by construction, and `symptomHash`
+  // is not. It hashes the SORTED SYMPTOM KEY SET, so one reading written two
+  // ways hashes the same — while the dedupe matches on the key INTERSECTION,
+  // so two genuine duplicates can hash differently. Neither a unique key nor
+  // a duplicate key: a similarity identity, which is a different thing from a
+  // row identity.
+  //
+  // The five candidates above happen to hash distinctly, so keying on the
+  // hash passed every case in this file while the property it implied was
+  // false — `.claude/rules/checks-must-be-able-to-fail.md`, third shape. The
+  // pair below is the one the ledger EXISTS to record: an original and the
+  // exact re-report that was withheld against it.
+  test("#1272: two wordings of one reading are two rows, so the bridge keys them apart", () => {
+    const wordedA: Finding = {
+      id: "w1",
+      title: "`alphaHandler11` drops messages",
+      body: "`alphaHandler11` drops 211 of 811 messages.",
+    };
+    const wordedB: Finding = {
+      id: "w2",
+      title: "messages lost in `alphaHandler11`",
+      body: "Of 811 handled, `alphaHandler11` loses 211.",
+    };
+
+    // CONTROL: without this the case is vacuous — it would assert that two
+    // rows with different hashes get different ids, which any keying does.
+    expect(symptomHash(wordedA)).toBe(symptomHash(wordedB));
+
+    const pair = arbitrateBatch([wordedA, wordedB], opts({ votes: DISSENT })).candidates;
+    expect(pair.length).toBe(2);
+
+    const ids = bridge(pair, () => false).map(f => f.id);
+    expect(new Set(ids).size).toBe(2);
+
+    // And the consequence, which is why the key matters rather than being
+    // tidiness: a duplicate id makes `summariseFindingOutcomes` refuse the
+    // whole corpus (#1253), so a collision here reads as a broken emitter
+    // rather than as the wrong key.
+    const read = summariseFindingOutcomes(
+      readFindingOutcomes(bridge(pair, () => false), new Set<string>()),
+      "#1272 colliding pair",
+    );
+    expect(read.detail.join(" ")).not.toContain("duplicate finding ids");
   });
 });
 
