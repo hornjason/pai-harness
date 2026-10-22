@@ -1100,10 +1100,14 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     suppress: (c: CandidateRecord) => boolean,
   ): ReviewFinding[] =>
     ledger.map((c, i) => ({
-      // The index, because a candidate nobody filed has no issue number and
-      // never will. `symptomHash` is the stable identity; `ReviewFinding.id`
-      // is a number, so a real consumer needs a mapping it keeps itself.
-      id: i,
+      // The symptom hash, because a candidate nobody filed has no issue
+      // number and never will. `ReviewFinding.id` was a number when this was
+      // written, which forced a consumer to keep its own index-to-hash
+      // mapping; #1253 widened it to a string precisely so the stable
+      // identity can be the id, and so a corpus that repeats one is refused
+      // rather than scored — two rows sharing a key overwrite each other's
+      // citations and move a fixed finding into the cost bucket.
+      id: c.symptomHash,
       filedAt: 1_000,
       closed: KNOWN[i]!.closed,
       citations: KNOWN[i]!.fixed === true ? [{ sha: `c${i}`, at: 2_000, filesChanged: 3 }] : [],
@@ -1113,7 +1117,7 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     }));
 
   const summarise = (ledger: readonly CandidateRecord[], label: string, s: (c: CandidateRecord) => boolean) =>
-    summariseFindingOutcomes(readFindingOutcomes(bridge(ledger, s), new Set<number>()), label);
+    summariseFindingOutcomes(readFindingOutcomes(bridge(ledger, s), new Set<string>()), label);
 
   test("CONTROL: the corpus carries both buckets, at the positions the outcomes assume", () => {
     const ledger = corpus();
