@@ -75,6 +75,67 @@
 import { execFileSync } from "child_process";
 import { lstatSync, readdirSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
+import { gitIsolatedArgs, gitIsolatedEnv } from "../lib/git-isolation";
+
+/**
+ * The ONE place this script runs `git` (#1048).
+ *
+ * ## Why a seam and not the flags at each call site
+ *
+ * `git -C <dir>` runs the configuration of whatever repository it is pointed
+ * at, and this tool's whole purpose is to point it at directories nobody is
+ * currently thinking about — 175 of them on the machine this was written on
+ * (`git worktree list --porcelain | grep -c '^worktree '`, 2026-10-22 01:30;
+ * the number moves every time a session starts or finishes). So the question
+ * is not whether these two call sites are isolated today. It is whether the
+ * THIRD one will be, and a call site is the unit that gets forgotten.
+ *
+ * `lib/git-isolation.ts` is the single declaring position for WHAT isolation
+ * is. This function is the single declaring position for WHERE this module
+ * applies it. Adding the `-c` flags inline at both sites would have been the
+ * cheaper change and is the thing #1001 exists to prevent: two spellings that
+ * drift, with nothing comparing them.
+ *
+ * ## What was measured, because "read-only subcommand" is not a safety class
+ *
+ * git 2.50.1, a scratch repo whose own `.git/config` carries the poison —
+ * the scope `GIT_CONFIG_GLOBAL=/dev/null` cannot reach:
+ *
+ * | subcommand | poisoned key | unisolated | isolated |
+ * |---|---|---|---|
+ * | `--no-optional-locks status --porcelain` | `core.fsmonitor` | **ran it** | not run |
+ * | `--no-optional-locks status --porcelain` | `core.excludesFile` | **plant INVISIBLE** | `?? plant.txt` |
+ * | `--no-optional-locks status --porcelain` | `core.hooksPath` | not fired | not fired |
+ * | `status --porcelain` (no lock flag) | `core.hooksPath` | **hook fired** | not fired |
+ * | `worktree list --porcelain` | all three | nothing fired | nothing fired |
+ *
+ * Three things follow, and only the first is the security argument:
+ *
+ *   1. `--no-optional-locks` does NOT stop `core.fsmonitor`. It stops the
+ *      index WRITE, so `post-index-change` does not fire — which means the
+ *      hook exposure here was closed by a flag chosen for an unrelated
+ *      reason, and would reopen the day somebody drops it.
+ *   2. **`core.excludesFile` falsifies the reading itself.** An untracked
+ *      file goes invisible, so a worktree holding work reports CLEAN — in
+ *      the tool whose output decides what is safe to remove. That is a
+ *      correctness defect, not a parity argument, and it is the one that
+ *      would bite on this machine first.
+ *   3. `worktree list` executed nothing under any of the three. It is
+ *      genuinely `rev-parse`-class, and no behavioural case can witness its
+ *      isolation — see `test/worktree-census.test.ts`, which says so rather
+ *      than shipping a fixture that would pass either way.
+ *
+ * Isolation changes no output on this machine: no global, system or local
+ * config here sets any key in `GIT_ISOLATION_CONFIG` (measured 2026-10-22).
+ */
+function censusGit(args: readonly string[], maxBuffer?: number): string {
+  return execFileSync("git", gitIsolatedArgs(args), {
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    env: gitIsolatedEnv(),
+    ...(maxBuffer === undefined ? {} : { maxBuffer }),
+  });
+}
 
 /**
  * The one exit code every refusal travels through, declared exactly once.
@@ -269,15 +330,13 @@ export function mergeReading(
  * `--no-optional-locks` because this reads worktrees other sessions are
  * using: without it, status refreshes and rewrites the index, which is a
  * write into somebody else's run from a tool whose whole claim is that it
- * only reads.
+ * only reads. It buys nothing against `core.fsmonitor`, which `status` runs
+ * either way — that is `censusGit`'s job, and the measurement is there.
  */
 export function cleanReading(dir: string): Measured<{ clean: boolean; entries: number }> {
   let out: string;
   try {
-    out = execFileSync("git", ["--no-optional-locks", "-C", dir, "status", "--porcelain"], {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    out = censusGit(["--no-optional-locks", "-C", dir, "status", "--porcelain"]);
   } catch (e) {
     const msg = String((e as Error).message || "").split("\n").slice(0, 2).join(" ").trim();
     return couldNotRead(`git status failed: ${msg}`);
@@ -828,11 +887,7 @@ export function parseArgs(argv: string[]): Args {
 /** `git worktree list --porcelain`, or a refusal naming why it could not run. */
 export function readWorktreeList(repo: string): string {
   try {
-    return execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    return censusGit(["-C", repo, "worktree", "list", "--porcelain"], 64 * 1024 * 1024);
   } catch (e) {
     const msg = String((e as Error).message || "").split("\n").slice(0, 2).join(" ").trim();
     throw new CensusRefused(`cannot list worktrees in ${repo}: ${msg}`);
