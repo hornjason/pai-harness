@@ -3,7 +3,7 @@ description: A check is only worth what it fails on — prove a guard can go red
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-16
+updated: 2026-10-22
 ---
 
 ## The rule
@@ -31,12 +31,14 @@ A failing check announces itself. A check that cannot fail looks exactly like a
 check that is satisfied — and it looks *better* over time, because it never
 flakes and never blocks anyone. The quieter it is, the more it is trusted.
 
-Six shapes to watch for. The first three are taken from the list above. The
+Seven shapes to watch for. The first three are taken from the list above. The
 fourth is the one that list could not contain, because it is invisible to
 exactly the kind of after-the-fact reading that produced the list. The fifth
 is invisible to the question this whole file asks — *can this check fail?* —
 because the honest answer is yes, today. The sixth is invisible to the test's
-own output.
+own output. The seventh is invisible to the mutation battery the fourth one
+requires, because the battery is the instrument and no instrument reports its
+own range.
 
 - **Fail-open error handling.** A `catch` that returns "no problems found", or
   a parse failure that defaults to an empty violation list. Anything that can
@@ -62,6 +64,11 @@ own output.
   mechanisms, one signal, and the case asserts on the signal. **A status code
   is almost never specific to one mechanism**: assert something only the
   intended one can emit.
+- **A battery that varies one axis while the defect sits on the other.** Every
+  row mutates the guard and every row hands it the same shape of input, so no
+  count in the table can come back wrong about an input nobody wrote. The rows
+  match their predictions because the prediction and the battery share a blind
+  spot. Name what every row holds fixed, then write the row that does not.
 
 ### On the fourth shape
 
@@ -83,6 +90,21 @@ on the channel being observed. The worked instance (#1236/#1259), where
 `bash -e` aborted a step before its own refusal and produced the refusal's
 exact exit status with empty stderr, is in
 `reference/check-failure-worked-instances.md`, *On the sixth shape*.
+
+### On the seventh shape
+
+**Predict the membership, not just the total.** A matching count is necessary
+and not sufficient. A row that reddens because **the mutation did not apply**
+— a mutant that failed to load, or one that deleted the string another case
+rewrites — reads identically to the guard behaving differently. And **a
+mutation is a thing you spell**: two defensible spellings are two
+experiments, and one row of #1246 gave 6 then 5, the 5 matching the predicted
+count while differing from the predicted set.
+
+Same family as *a battery whose fixtures all meet a precondition* next door —
+there the fixed axis is a precondition, here the input. Both, with the
+numbers: `reference/check-failure-worked-instances.md`, *The same blindness
+with the axes swapped*.
 
 ## In practice
 
