@@ -41,7 +41,9 @@ import { dirname, join } from "path";
 
 import {
   AMBIGUOUS_SHA,
+  GIT_TIMEOUT_MS,
   GIT_UNREADABLE,
+  type GitSpawnReading,
   NOT_A_COMMIT,
   NOT_A_GIT_REPOSITORY,
   SHALLOW_HISTORY,
@@ -348,22 +350,62 @@ describe("SC-1941: a non-zero git is NOT an absent commit", () => {
   test("a git that is KILLED reads UNMEASURED, and the detail says it was killed", () => {
     // The destructive direction again, and the one the exit code cannot
     // express: a timeout under load must not retire rules that resolve.
-    // Driven with a real 1 ms deadline against a real repository, so the
-    // kill is git's, not a flag this test set.
+    //
+    // Driven through the module's one spawn seam, NOT through a wall-clock
+    // deadline. The deadline version of this case — a real 1 ms budget at a
+    // real two-commit repository — asserted that git LOSES a race, and a
+    // warm runner wins it: #1063 is `main` red with RESOLVES here, the same
+    // commit green on a slower run, and the failure accuses `batchCheckShas`
+    // for behaving correctly. The runner that produced it answered in
+    // 19.53 ms, so the 1 ms deadline was not enforced there at all, which
+    // also rules out the other race-free-looking repair — pointing the
+    // deadline at a command that cannot finish hangs on exactly the platform
+    // that drops the deadline.
     const { dir, shas } = repoWithCommits("killed", 2);
-    const read = batchCheckShas(dir, [shas[0]!], readHistoryState(dir), 1).get(shas[0]!)!;
-    expect(read.reading).toBe("UNMEASURED");
-    expect(read.detail).toContain(GIT_UNREADABLE);
-    // Not "exited null". The verdict alone would be the same if the
-    // error and signal branches were deleted — `status` is null on a kill
-    // and `null !== 0` — so the DETAIL is what distinguishes them, and it
-    // is what a reader needs to tell a timeout from a broken repository.
-    expect(read.detail).toMatch(/ETIMEDOUT|killed by SIG/);
+    const history = readHistoryState(dir);
 
-    // The same sha, the same repository, a workable deadline: RESOLVES.
-    expect(
-      batchCheckShas(dir, [shas[0]!], readHistoryState(dir)).get(shas[0]!)!.reading,
-    ).toBe("RESOLVES");
+    // Both branches, because `git()` reads `error` and `signal` separately
+    // and each is deletable on its own. A real kill produces ONE of them,
+    // chosen by the platform, so the deadline version could never witness
+    // more than whichever one this machine happens to raise.
+    const kills: Array<[string, GitSpawnReading, RegExp]> = [
+      [
+        "an error",
+        { error: Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null, signal: null, stdout: "" },
+        /ETIMEDOUT/,
+      ],
+      ["a signal", { signal: "SIGTERM", status: null, stdout: "" }, /killed by SIGTERM/],
+    ];
+    for (const [label, killed, detail] of kills) {
+      const read = batchCheckShas(dir, [shas[0]!], history, GIT_TIMEOUT_MS, () => killed).get(
+        shas[0]!,
+      )!;
+      expect(read.reading, label).toBe("UNMEASURED");
+      expect(read.detail, label).toContain(GIT_UNREADABLE);
+      // Not "exited null". The verdict alone would be the same if the
+      // error and signal branches were deleted — `status` is null on a kill
+      // and `null !== 0` — so the DETAIL is what distinguishes them, and it
+      // is what a reader needs to tell a timeout from a broken repository.
+      expect(read.detail, label).toMatch(detail);
+    }
+
+    // The deadline reaches the spawn rather than being re-derived there. It
+    // is the only way a caller can bound the pass, and a spawn spelling
+    // `GIT_TIMEOUT_MS` of its own would ignore the argument in silence —
+    // which is what the parameter was for before the seam existed, so
+    // nothing else now watches it.
+    let saw: number | undefined;
+    batchCheckShas(dir, [shas[0]!], history, 1_234, (_root, _args, _stdin, ms) => {
+      saw = ms;
+      return { signal: "SIGTERM", status: null, stdout: "" };
+    });
+    expect(saw, "the pass deadline did not reach the spawn").toBe(1_234);
+
+    // The same sha, the same repository, the REAL spawn: RESOLVES. The
+    // control, and it is not decoration — a `batchCheckShas` that answered
+    // UNMEASURED to everything satisfies every assertion above, and so does
+    // a default spawner that no longer runs git.
+    expect(batchCheckShas(dir, [shas[0]!], history).get(shas[0]!)!.reading).toBe("RESOLVES");
   });
 });
 
