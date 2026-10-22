@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync, statSync } from "fs";
 import { readdirSorted } from "./readdir-sorted";
+import { fileExtensions } from "./file-extensions";
 import { join, basename } from "path";
 import { resolveConfig } from "./config-loader";
 // A leaf, not a generator. SC-365 / AC-3 keeps generation logic out of the
@@ -476,9 +477,10 @@ function scanDirs(root: string): DirEntry[] {
       const full = join(root, entry);
       try {
         if (!statSync(full).isDirectory()) continue;
-        const files = readdirSorted(full, { recursive: true });
-        const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-        dirs.push({ name: entry, types: [...exts].slice(0, 5) });
+        // One binding for what a "type" is, shared with
+        // `scripts/generate-code-map.ts` and `generateCodeMapInline` (#1200).
+        // The copy that used to be here reported directory names.
+        dirs.push({ name: entry, types: fileExtensions(full) });
       } catch {}
     }
   } catch {}
