@@ -4,11 +4,12 @@
  * ## What this is pointed at
  *
  * `archiveAndPurge` walks every top-level directory under the harness work
- * root and renames it into `.archive` on `mtime` and `phase` alone. Ten
- * runner processes on asaCommandCenter's pool share `/home/gharunner`, so
- * they share `$HOME/.rungate`, so a SessionStart on one of them archives a
- * sibling's live run directory. The sibling then fails in a step that did
- * nothing wrong, which reads as a flaky test rather than as contention.
+ * root and renames it into `.archive` on `mtime` and `phase` alone. A
+ * self-hosted pool running several runner processes under one service
+ * account shares a `$HOME`, so it shares `$HOME/.rungate`, so a SessionStart
+ * on one runner archives a sibling's live run directory. The sibling then
+ * fails in a step that did nothing wrong, which reads as a flaky test rather
+ * than as contention.
  *
  * ## The measurement trap these cases are built around
  *

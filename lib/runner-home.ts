@@ -5,10 +5,10 @@
  *
  * `lib/stale-cleanup.ts` walks every top-level directory under the harness
  * work root and renames or deletes it on `mtime` and `phase` alone. It has
- * never had an ownership check. On asaCommandCenter's pool, ten runner
- * processes share `/home/gharunner`, so they also share
- * `$HOME/.rungate` — and a SessionStart on runner-5 archives runner-4's live
- * run directory the moment runner-4's `workflow-state.json` looks stale.
+ * never had an ownership check. A self-hosted pool that runs several runner
+ * processes under one service account shares a `$HOME`, so those runners also
+ * share `$HOME/.rungate` — and a SessionStart on runner-5 archives runner-4's
+ * live run directory the moment runner-4's `workflow-state.json` looks stale.
  *
  * The failure that produces is NON-LOCAL. Runner-4 fails in a step that did
  * nothing wrong, because a sibling moved a file underneath it. It reads as a
