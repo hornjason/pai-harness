@@ -9,6 +9,7 @@
 
 import { readdirSync, readFileSync, statSync, unlinkSync, existsSync, rmdirSync, renameSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
+import { workRootOwnership, workRootRefusalLine, type WorkRootVerdict } from './runner-home';
 
 /**
  * Recursively find files by name under a directory.
@@ -32,6 +33,13 @@ function findFiles(dir: string, name: string): string[] {
 export interface CleanupResult {
   deleted: number;
   logs: string[];
+  /**
+   * Whether the sweep declined to touch this root (#904).
+   *
+   * `deleted: 0` is what a refusal and a clean root both produce, so the
+   * counts cannot carry this. See `lib/runner-home.ts`.
+   */
+  refused: boolean;
 }
 
 export interface ArchiveResult {
@@ -39,6 +47,8 @@ export interface ArchiveResult {
   purged: number;
   skipped: number;
   logs: string[];
+  /** Whether the sweep declined to touch this root (#904). */
+  refused: boolean;
 }
 
 /**
@@ -52,7 +62,22 @@ export function archiveAndPurge(
   workDir: string,
   archiveTtlMs: number,
   purgeTtlMs: number,
+  env: NodeJS.ProcessEnv = process.env,
 ): ArchiveResult {
+  // Guarded here as well as in `cleanStaleFiles` because this is exported and
+  // destructive. A refusal reachable only through the caller is a side door,
+  // and the next caller walks through it (#904).
+  const verdict = workRootOwnership(workDir, env);
+  if (!verdict.sweep) {
+    return {
+      archived: 0,
+      purged: 0,
+      skipped: 0,
+      logs: [workRootRefusalLine(workDir, verdict)],
+      refused: true,
+    };
+  }
+
   const now = Date.now();
   let archived = 0;
   let purged = 0;
@@ -185,7 +210,7 @@ export function archiveAndPurge(
     } catch {}
   }
 
-  return { archived, purged, skipped, logs };
+  return { archived, purged, skipped, logs, refused: false };
 }
 
 /**
@@ -196,7 +221,16 @@ export function cleanStaleFiles(
   workDir: string,
   fourHoursMs: number,
   sevenDaysMs: number,
+  env: NodeJS.ProcessEnv = process.env,
 ): CleanupResult {
+  // Decided before the `.ship-active` walk, not just before the archive pass:
+  // a sibling runner's `.ship-active` is state it is relying on, and deleting
+  // it is the same harm one function lower down (#904).
+  const verdict: WorkRootVerdict = workRootOwnership(workDir, env);
+  if (!verdict.sweep) {
+    return { deleted: 0, logs: [workRootRefusalLine(workDir, verdict)], refused: true };
+  }
+
   const now = Date.now();
   let deleted = 0;
   const logs: string[] = [];
@@ -215,10 +249,10 @@ export function cleanStaleFiles(
 
   // Archive and purge work directories
   const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-  const archiveResult = archiveAndPurge(workDir, fourHoursMs, thirtyDaysMs);
+  const archiveResult = archiveAndPurge(workDir, fourHoursMs, thirtyDaysMs, env);
 
   // Merge logs
   logs.push(...archiveResult.logs);
 
-  return { deleted, logs };
+  return { deleted, logs, refused: archiveResult.refused };
 }
