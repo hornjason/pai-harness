@@ -43,7 +43,14 @@ const SPECS = join(REPO, "specs");
  */
 const BANKED: Record<string, number> = {
   "bootstrap-data-flow/success-criteria.md": 120,
-  "INSTRUCTION-COMPLIANCE-SPEC.md": 12,
+  // 12 -> 11 on 2026-10-22 (#1161). SC-453 — "runBehavioralCompliance
+  // spawns fresh agent + auditor" — was ticked while no declaration, export,
+  // caller or test for that function existed, 167 lines below the same
+  // spec's own "(to be built)". It is now a SUPERSEDED pointer to SC-242 of
+  // bootstrap-data-flow/success-criteria.md, which tracks the same criterion
+  // and is correctly unticked, so it leaves this census as a pointer rather
+  // than as a criterion anybody proved. The honest way down, by withdrawal.
+  "INSTRUCTION-COMPLIANCE-SPEC.md": 11,
   "AGENTS-MD-TEMPLATE-SPEC.md": 10,
   "CONFIG-DRIVEN-TESTING-SPEC.md": 8,
   "AGENT-BRIEF-TEMPLATE-SPEC.md": 2,
