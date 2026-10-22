@@ -19,7 +19,7 @@
  * A bare ID in a comment is itself read as a coverage claim (#149), so a test
  * about the matcher would otherwise certify the criteria it talks about.
  */
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -29,6 +29,11 @@ import {
   readScRegistry,
 } from "../scripts/sync-sc-status";
 import { buildScRegistry } from "../lib/sc-ids";
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+// The per-test budget for a case that scans the whole test tree (#1223).
+// Calibrated on this machine and this tree rather than written down, so it
+// has no expiry — see test/helpers/sc-scan-budget.ts.
+setDefaultTimeout(scScanTestTimeout());
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(REPO_ROOT, "specs");

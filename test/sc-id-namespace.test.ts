@@ -66,7 +66,7 @@
  * means a declaring mention now ticks a live criterion that is false. Covers
  * SC-1410 and SC-1411 of HARNESS-STANDARD.md.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -95,10 +95,41 @@ import {
   findUncheckedSCs,
   readScRegistry,
   unqualifiedClaims,
+  type ScCredit,
 } from "../scripts/sync-sc-status";
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+
+setDefaultTimeout(scScanTestTimeout());
 
 const REPO = join(import.meta.dir, "..");
 const SPEC = "FIXTURE-SPEC.md";
+
+/**
+ * The whole-registry credit map, computed once for the whole file (#1223).
+ *
+ * Two cases below ask the identical question — `findTestFilesForSCs(all,
+ * reg)` over the real tree — and read different views of the one answer. It
+ * is the most expensive reading in this file by an order of magnitude, and
+ * it was being paid twice.
+ *
+ * Memoising it is safe HERE and is not safe inside `findTestFilesForSCs`,
+ * which is why the sharing lives at the call site: this file's input is the
+ * repository's own `test/` directory and its own registry, neither of which
+ * moves during a run, while the scratch-directory callers rewrite their
+ * input between calls. See `scanTestTree`.
+ */
+let wholeRegistryCreditMemo: Map<string, ScCredit[]> | null = null;
+
+function wholeRegistryCredit(): Map<string, ScCredit[]> {
+  if (wholeRegistryCreditMemo === null) {
+    const reg = readScRegistry();
+    const all = [...reg.byId.entries()].flatMap(([id, specs]) =>
+      specs.map(specFile => ({ id, specFile })),
+    );
+    wholeRegistryCreditMemo = findTestFilesForSCs(all, reg);
+  }
+  return wholeRegistryCreditMemo;
+}
 
 const scratch = mkdtempSync(join(tmpdir(), "sc-ns-"));
 function testDirWith(name: string, body: string): string {
@@ -289,11 +320,7 @@ describe("#358: an issue's own criterion is not the registry's", () => {
     // The outcome, measured on the repo. Before this change, SC-1..SC-7 were
     // credited by 16 file-mentions and every one was prose about a different
     // issue's criteria.
-    const reg = readScRegistry();
-    const all = [...reg.byId.entries()].flatMap(([id, specs]) =>
-      specs.map(specFile => ({ id, specFile })),
-    );
-    const bad = [...findTestFilesForSCs(all, reg).entries()].flatMap(([f, credits]) =>
+    const bad = [...wholeRegistryCredit().entries()].flatMap(([f, credits]) =>
       credits.filter(c => isIssueShaped(c.id)).map(c => `${f} claims ${c.id}`),
     );
     expect(bad).toEqual([]);
@@ -303,11 +330,7 @@ describe("#358: an issue's own criterion is not the registry's", () => {
     // Crediting nothing satisfies every negative case in this file. 244 ids
     // were credited when this shipped; the floor is below that so ordinary
     // churn does not trip it.
-    const reg = readScRegistry();
-    const all = [...reg.byId.entries()].flatMap(([id, specs]) =>
-      specs.map(specFile => ({ id, specFile })),
-    );
-    const ids = new Set([...findTestFilesForSCs(all, reg).values()].flat().map(c => c.id));
+    const ids = new Set([...wholeRegistryCredit().values()].flat().map(c => c.id));
     expect(ids.size).toBeGreaterThan(200);
   });
 

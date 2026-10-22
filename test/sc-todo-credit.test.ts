@@ -16,7 +16,7 @@
  * a parser test, because the defect is which call shapes count and that is
  * a fact about the scanner's regex, not about anybody's model of it.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "fs";
 import { globSync } from "fs";
 import { join } from "path";
@@ -31,6 +31,12 @@ import {
   readScRegistry,
   type UncheckedSC,
 } from "../scripts/sync-sc-status";
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+
+// The per-test budget for a case that scans the whole test tree (#1223).
+// Calibrated on this machine and this tree rather than written down, so it
+// has no expiry — see test/helpers/sc-scan-budget.ts.
+setDefaultTimeout(scScanTestTimeout());
 
 const REPO_ROOT = join(import.meta.dir, "..");
 

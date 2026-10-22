@@ -41,7 +41,7 @@
  * in an ordinary nested tree IN THE SAME FIXTURE, and asserts the first is
  * refused while the second is credited. Either half alone passes vacuously.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -50,6 +50,11 @@ import { readSpecs, splitUnmatchedChecked } from "../lib/sc-cover";
 import { isTemplateSpec, parseScDeclarations } from "../lib/sc-ids";
 import { claimedScKeys, intendedOnly, scopedKey } from "../scripts/sync-sc-status";
 import { walkTestFiles } from "../lib/walk-test-files";
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+// The per-test budget for a case that scans the whole test tree (#1223).
+// Calibrated on this machine and this tree rather than written down, so it
+// has no expiry — see test/helpers/sc-scan-budget.ts.
+setDefaultTimeout(scScanTestTimeout());
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(REPO_ROOT, "specs");
@@ -201,13 +206,35 @@ describe("#733 AC-3: one binding, not three walks", () => {
     ).toEqual([]);
   });
 
-  test("all three sites go through the exported walker", () => {
+  /**
+   * How many places in the script walk the test tree.
+   *
+   * An EQUALITY, so it refuses a fall as well as a rise. #733 wrote this as
+   * `>= 3` against the three walks that existed then, and the direction that
+   * guard could not see is the one that arrived: #1223 folded two of the
+   * three into `scanTestTree` — a correct change — and a one-sided check had
+   * no way to tell that from the walker being bypassed.
+   *
+   * The two that remain, by the function that owns them:
+   *
+   *  - `scanTestTree`, the one tree-wide claim scan, which `intendedOnly`
+   *    and `findTestFilesForSCs` now share;
+   *  - `generateReport`, which lists the files behind each credit.
+   *
+   * Changing this number means adding or removing a walk. Say which in the
+   * commit, and check the new one goes through `walkTestFiles` — the case
+   * above only sees the `readdirSync(x).filter(` spelling.
+   */
+  const WALK_SITES = 2;
+
+  test("every test-tree walk in the script goes through the exported walker", () => {
     const raw = readFileSync(SCRIPT, "utf-8");
     const uses = raw.match(/walkTestFiles\(/g) || [];
     expect(
       uses.length,
-      `expected the three walks to call walkTestFiles; found ${uses.length} call(s)`,
-    ).toBeGreaterThanOrEqual(3);
+      `the script has ${uses.length} walkTestFiles call(s), not ${WALK_SITES} — a walk was ` +
+        `added or removed. Update WALK_SITES here and say which in the commit`,
+    ).toBe(WALK_SITES);
   });
 });
 

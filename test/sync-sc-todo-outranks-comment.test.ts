@@ -95,7 +95,7 @@
  * that judgement and this change does not make it either — it stops a tool
  * making it from a docstring in a file about something else.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -108,6 +108,12 @@ import {
   intendedOnly,
   readScRegistry,
 } from "../scripts/sync-sc-status";
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+
+// The per-test budget for a case that scans the whole test tree (#1223).
+// Calibrated on this machine and this tree rather than written down, so it
+// has no expiry — see test/helpers/sc-scan-budget.ts.
+setDefaultTimeout(scScanTestTimeout());
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SYNC_SOURCE = join(REPO_ROOT, "scripts", "sync-sc-status.ts");
@@ -216,12 +222,29 @@ describe("#810: a todo declaration outranks a comment that cites the id", () => 
     // the parameter list and returns a cut of the signature, which contains
     // no call at all. A cut that reads the wrong region is the failure mode
     // `lib/source-slice.ts` exists against, met from the caller's side.
-    const decide = structuralCut(readFileSync(SYNC_SOURCE, "utf-8"), "  const dir = testDir || TEST_DIR;", {
+    //
+    // #1223 renamed the binding and did not add a second one. The intended
+    // set used to be computed in `intendedOnly`'s loop, which the credit
+    // function called; it is now computed in `intendedFrom`, which BOTH call
+    // — `intendedOnly` is a two-line wrapper over it. That is strictly one
+    // binding rather than one-and-a-caller, so this case checks both halves
+    // of the funnel instead of only the credit side.
+    const source = readFileSync(SYNC_SOURCE, "utf-8");
+    const decide = structuralCut(source, "  const dir = testDir || TEST_DIR;", {
       endAnchor: "\n}",
     });
     expect(decide.length, "the credit function was not found — the anchor moved").toBeGreaterThan(200);
-    expect(decide, "the cut is not the credit function").toContain("coverageClaimSites(source)");
-    expect(decide, "findTestFilesForSCs does not consult intendedOnly").toContain("intendedOnly(");
+    expect(decide, "the cut is not the credit function").toContain("wanted.get(id)");
+    expect(decide, "findTestFilesForSCs does not consult the intended-set binding").toContain(
+      "intendedFrom(",
+    );
+
+    const reported = structuralCut(source, "export function intendedOnly(", { endAnchor: "\n}" });
+    expect(reported.length, "intendedOnly was not found — the anchor moved").toBeGreaterThan(50);
+    expect(
+      reported,
+      "intendedOnly computes its own intended set — that is a second decider, not one binding",
+    ).toContain("intendedFrom(");
   });
 
   test("AC-4: the live tree — the four are reported as intent, and flipped by nothing", () => {
