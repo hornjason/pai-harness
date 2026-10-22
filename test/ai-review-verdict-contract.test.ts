@@ -98,7 +98,7 @@
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -119,6 +119,7 @@ import {
   AI_REVIEW_SEVERITY_KEY,
   AI_REVIEW_VERDICT_KEY,
   AI_REVIEW_WORKFLOW_FILE,
+  buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
 
 const ROOT = join(import.meta.dir, "..");
@@ -481,34 +482,38 @@ describe("AC-5 (#675): the contract the SHIPPED workflow states, against the dec
 
 // ── AC-4: a blocking fixture from the shipped prompt, through the reader ─
 
-describe("AC-4 (#675): a fixture shaped by the SHIPPED prompt drives the real reading", () => {
-  /**
-   * A findings payload built out of the member names the committed workflow
-   * shows the agent, at the severity the declared table says blocks.
-   *
-   * Nothing here is hand-typed except the values, which the contract does not
-   * constrain. If the shipped prompt and the reader disagree about a name,
-   * this fixture carries the prompt's name and the reader fails to read it —
-   * which is the defect being measured rather than a test bug.
-   */
-  function fixtureFromPrompt(severity: string, verdict: string): Record<string, unknown> {
-    const t = template();
-    const shape = templateFinding(t)!;
-    const finding: Record<string, unknown> = {};
-    for (const name of Object.keys(shape)) {
-      finding[name] =
-        name === AI_REVIEW_SEVERITY_KEY
-          ? severity
-          : typeof shape[name] === "number"
-            ? 12
-            : `fixture ${name}`;
-    }
-    return { [AI_REVIEW_FINDINGS_KEY]: [finding], [AI_REVIEW_VERDICT_KEY]: verdict };
+/**
+ * A findings payload built out of the member names the committed workflow
+ * shows the agent, at the severity the declared table says blocks.
+ *
+ * Nothing here is hand-typed except the values, which the contract does not
+ * constrain. If the shipped prompt and the reader disagree about a name,
+ * this fixture carries the prompt's name and the reader fails to read it —
+ * which is the defect being measured rather than a test bug.
+ *
+ * At module scope because AC-5's exit-constant pair drives the same fixture
+ * through a mutant of the step. Two copies of it would be two fixtures that
+ * agree today, which is the shape this whole file exists to refuse.
+ */
+function fixtureFromPrompt(severity: string, verdict: string): Record<string, unknown> {
+  const t = template();
+  const shape = templateFinding(t)!;
+  const finding: Record<string, unknown> = {};
+  for (const name of Object.keys(shape)) {
+    finding[name] =
+      name === AI_REVIEW_SEVERITY_KEY
+        ? severity
+        : typeof shape[name] === "number"
+          ? 12
+          : `fixture ${name}`;
   }
+  return { [AI_REVIEW_FINDINGS_KEY]: [finding], [AI_REVIEW_VERDICT_KEY]: verdict };
+}
 
-  const BLOCKING_SEVERITY = Object.keys(AI_REVIEW_SEVERITIES).find(s => AI_REVIEW_SEVERITIES[s])!;
-  const PASSIVE_SEVERITY = Object.keys(AI_REVIEW_SEVERITIES).find(s => !AI_REVIEW_SEVERITIES[s])!;
+const BLOCKING_SEVERITY = Object.keys(AI_REVIEW_SEVERITIES).find(s => AI_REVIEW_SEVERITIES[s])!;
+const PASSIVE_SEVERITY = Object.keys(AI_REVIEW_SEVERITIES).find(s => !AI_REVIEW_SEVERITIES[s])!;
 
+describe("AC-4 (#675): a fixture shaped by the SHIPPED prompt drives the real reading", () => {
   test("AC-4a: the declared table has a blocking word and an advisory one", () => {
     // The control for the pair below. Without it, a table where every word
     // blocks makes AC-4c's exit-0 case impossible and a table where none
@@ -615,5 +620,205 @@ describe("AC-4 (#675): a fixture shaped by the SHIPPED prompt drives the real re
       clean.status,
       `an advisory finding failed the check:\n${clean.stdout}\n${clean.stderr}`,
     ).toBe(0);
+  });
+
+  test("AC-4f: the cheapest wrong fix for AC-4, measured — exit code alone cannot see the reading", () => {
+    // #675 AC-4 says a blocking fixture must "make the ai-review job exit
+    // non-zero instead of reporting success". The obvious test for that
+    // sentence asserts the exit code and nothing else — and until #1110 it
+    // would have passed against a step that adjudicated NOTHING.
+    //
+    // Under GitHub's `bash -e`, the pre-#1110 adjudication aborted the shell
+    // at the capture, so a blocking fixture exited 1 because the SHELL died,
+    // not because the reader refused. AI_REVIEW_REQUIRED_EXIT is also 1, so
+    // the two are the same number. This case performs that script and shows
+    // the naive assertion passing over an empty log.
+    //
+    // Reconstructed rather than remembered, and verified to have LANDED: a
+    // mutation that silently does not apply comes back looking like evidence.
+    const real = committedRunScript();
+    const lines = real.split("\n");
+    const at = lines.findIndex(
+      (l) => !l.trim().startsWith("#") && l.trimEnd().endsWith("|| adjudicated=$?"),
+    );
+    expect(
+      at,
+      "the shipped step no longer carries '|| adjudicated=$?', so there is nothing for this " +
+        "case to undo and it would measure the fixed script twice (#1110)",
+    ).toBeGreaterThan(-1);
+    const indent = lines[at].match(/^\s*/)![0];
+    lines[at] = `${lines[at].replace(/\s*\|\|\s*adjudicated=\$\?\s*$/, "")}\n${indent}adjudicated=$?`;
+    const seed = lines.findIndex((l) => !l.trim().startsWith("#") && l.trim() === "adjudicated=0");
+    expect(seed, "the shipped step does not seed 'adjudicated=0'").toBeGreaterThan(-1);
+    lines.splice(seed, 1);
+    const preFix = lines.join("\n");
+    expect(preFix, "the reconstruction did not change the script").not.toBe(real);
+
+    const r = runCommittedStep(
+      preFix,
+      payloadFile(fixtureFromPrompt(BLOCKING_SEVERITY, AI_REVIEW_BLOCK_VERDICT)),
+    );
+
+    // The naive AC-4 assertion. It passes. That is the finding.
+    expect(
+      r.status,
+      "the pre-#1110 script did NOT exit non-zero on a blocking fixture, so this row is no " +
+        "longer measuring the wrong fix AC-4e exists to rule out",
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+
+    // And nothing adjudicated. AC-4e asserts the outcome line for this reason
+    // and not for tidiness: it is the only part of the reading that an aborted
+    // shell cannot fake.
+    expect(
+      r.stdout.trim(),
+      `the pre-#1110 script produced output, so the abort is not what AC-4e is holding ` +
+        `apart from a real verdict:\n${r.stdout}`,
+    ).toBe("");
+  });
+});
+
+// ── AC-5, second half: the job's refusal is bound to the exit constant ───
+//
+// #675 AC-5's second clause — *"a mutant with the exit constant zeroed stops
+// refusing a blocking fixture"* — was met at the MODULE
+// (`test/ai-review-exit-binding.test.ts` AC-8e, over
+// `lib/scaffold/ai-review-findings.ts`) and at the AUTH SCRIPT
+// (`test/ai-review-scaffold.test.ts` AC-6b, over `buildAuthDetectScript`).
+// Neither drives a blocking fixture through the VERDICT step, which is the
+// artefact the criterion is written about.
+//
+// It could not be measured before #1110. With the adjudication dead under
+// `bash -e`, a blocking fixture exited 1 from the shell aborting, and the
+// MUTANT exited 1 for the same reason — so the mutant "still refused" and the
+// case went red while the constant was bound correctly all along. AC-4f above
+// is that state, performed.
+
+describe("AC-5 (#675): the VERDICT STEP's refusal is routed through the exit constant", () => {
+  /** The generating version, parsed out of the artefact rather than retyped. */
+  function shippedVersion(): string {
+    const m = committedRunScript().match(
+      new RegExp(`bunx\\s+\\S+@(\\S+)\\s+${COMMAND}`),
+    );
+    if (m === null) throw new Error("no adjudicator version in the committed verdict step");
+    return m[1];
+  }
+
+  /** `exit <code>` as a whole statement, never as a substring of prose. */
+  function exitLines(script: string, code: number): number {
+    return script
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("#") && l.trim() === `exit ${code}`).length;
+  }
+
+  let mutantScript = "";
+
+  beforeAll(async () => {
+    // The module is import-free by design, so the mutant runs from a temp
+    // directory. A later relative import would make it die on module
+    // resolution, and a mutant that never loaded reads as one that refused.
+    const source = readFileSync(join(ROOT, "lib", "scaffold", "ai-review-step.ts"), "utf-8");
+    const mutated = source.replace(
+      /AI_REVIEW_REQUIRED_EXIT\s*=\s*1\b/,
+      "AI_REVIEW_REQUIRED_EXIT = 0",
+    );
+    if (mutated === source) {
+      throw new Error(
+        "could not build the mutant: no `AI_REVIEW_REQUIRED_EXIT = 1` in " +
+          "lib/scaffold/ai-review-step.ts",
+      );
+    }
+    const dir = mkdtempSync(join(tmpdir(), "ai-review-675-mutant-"));
+    const path = join(dir, "ai-review-step.ts");
+    writeFileSync(path, mutated);
+    const mod = (await import(path)) as { buildReviewRunScript: (v: string) => string };
+    mutantScript = mod.buildReviewRunScript(shippedVersion());
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("AC-5e: the instrument — the mutant is a mutation of the step that SHIPS", () => {
+    // Without this the pair below measures a script nobody runs. The real
+    // module, at the version the artefact names, must reproduce the committed
+    // step exactly — then zeroing the constant mutates that same artefact.
+    const committed = committedRunScript();
+    expect(
+      buildReviewRunScript(shippedVersion()),
+      "the committed verdict step is not what the generator emits at the version it names, " +
+        "so the mutant below is a mutation of something else",
+    ).toBe(committed);
+
+    // The mutation LANDED, asserted on whole statements. A `toContain("exit 1")`
+    // here would be satisfied by the step's own comments, which quote exit
+    // codes while explaining them — the same unfalsifiable shape #1110 hit
+    // twice.
+    expect(mutantScript, "the mutant is byte-identical to the real script").not.toBe(committed);
+    expect(
+      exitLines(committed, 1),
+      "the shipped verdict step has no `exit 1` statement, so there is no refusal to neutralise",
+    ).toBeGreaterThan(0);
+    expect(
+      exitLines(mutantScript, 1),
+      "the mutant still carries `exit 1` statements — some refusal inlines its literal and " +
+        "bypasses AI_REVIEW_REQUIRED_EXIT entirely",
+    ).toBe(0);
+    expect(
+      exitLines(mutantScript, 0),
+      "the mutant lost statements rather than converting them, so it is a different script " +
+        "and not a neutralised one",
+    ).toBe(exitLines(committed, 0) + exitLines(committed, 1));
+  });
+
+  test("AC-5f: a blocking fixture refuses through the real step and NOT through the mutant", () => {
+    // The criterion, executed. The real verdict step refuses a blocking
+    // fixture; the mutant, whose only difference is the exported constant,
+    // reports the identical verdict and exits 0.
+    const payload = payloadFile(fixtureFromPrompt(BLOCKING_SEVERITY, AI_REVIEW_BLOCK_VERDICT));
+    const real = runCommittedStep(committedRunScript(), payload);
+    expect(
+      real.stdout,
+      `nothing adjudicated, so the exit code below says nothing:\n${real.stdout}\n${real.stderr}`,
+    ).toContain(OUTCOME_LINE);
+    expect(real.stdout).toContain("BLOCKED");
+    expect(
+      real.status,
+      `a blocking finding reported a GREEN ai-review check:\n${real.stdout}\n${real.stderr}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+
+    const mutant = runCommittedStep(
+      mutantScript,
+      payloadFile(fixtureFromPrompt(BLOCKING_SEVERITY, AI_REVIEW_BLOCK_VERDICT)),
+    );
+    expect(
+      mutant.status,
+      `the mutant (AI_REVIEW_REQUIRED_EXIT = 0) still exited ${mutant.status} on a blocking ` +
+        `fixture — the job's refusal is NOT coming from the constant, so zeroing it proves ` +
+        `nothing and no later case can claim the binding\n${mutant.stdout}\n${mutant.stderr}`,
+    ).toBe(0);
+
+    // The half that separates a neutralised refusal from a mutant that simply
+    // stopped working. If the mutant went quiet, its exit 0 is a crash, not
+    // evidence — and a crash and a bound constant look identical in the code
+    // above.
+    expect(
+      mutant.stdout,
+      "the mutant said something different, so it is not the same reading with the refusal " +
+        "removed",
+    ).toBe(real.stdout);
+  });
+
+  test("AC-5g: a clean fixture exits 0 under both — the mutant is not globally quiet", () => {
+    // The direction control for AC-5f. Without it, a mutant wedged at exit 0
+    // satisfies that case for a reason that has nothing to do with the
+    // constant, and a real script wedged non-zero would too.
+    const clean = () => payloadFile(fixtureFromPrompt(PASSIVE_SEVERITY, AI_REVIEW_PASS_VERDICT));
+    const real = runCommittedStep(committedRunScript(), clean());
+    const mutant = runCommittedStep(mutantScript, clean());
+
+    expect(real.stdout).toContain("CLEAN");
+    expect(real.status, `an advisory finding failed the check:\n${real.stderr}`).toBe(0);
+    expect(mutant.status).toBe(0);
+    expect(
+      mutant.stdout,
+      "the mutant stopped reading the payload, so it is not a mutant of this reading",
+    ).toBe(real.stdout);
   });
 });
