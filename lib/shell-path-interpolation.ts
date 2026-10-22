@@ -76,12 +76,18 @@
  *   marker and executed standalone by its own test, so it cannot reference
  *   anything outside itself; new code should use `shellQuote`.
  * - **A quoted value reaching the site through a variable** is accepted via
- *   `quotedBindings`, which is a file-wide name scan with no scope analysis.
- *   A later `const d = somethingElse()` in another function of the same file
- *   would launder the name.
+ *   `quoterBindingsByLine`, which resolves the name against the scope chain
+ *   at the use. This used to be a file-wide name scan, and a later
+ *   `const d = somethingElse()` in another function laundered the name —
+ *   closed in #1106, with the measurement in that function's docblock.
+ *   What remains is narrower: the resolver trusts `acorn`'s parse, so a name
+ *   introduced by something it models as a binding and a human does not —
+ *   or the reverse — is resolved acorn's way, not the shell's.
  *
  * Issue: #1086. Related: #1056 (the `cd` rewrite), #992 (the guard it serves).
  */
+
+import { parse } from "acorn";
 
 import { stripJsComments } from "./strip-js-comments";
 
@@ -178,25 +184,213 @@ function endOfInterpolation(s: string, open: number): number {
 }
 
 /**
- * Names bound in this source to a quoter call, so `${d}` three lines below
- * `const d = shellQuote(dir)` is not refused.
+ * Which names are quoter-bound AT EACH LINE: `1-based line -> names`.
  *
- * This is how `gitDerivedStaging` in `workflows/ship.js` is written, and it
- * is written that way on purpose — the quoted value is used four times and
- * one of them is inside a double-quoted `echo`, where re-quoting at the site
- * would be wrong. The exemplar predates this check; the check accommodates
- * it rather than the other way round.
+ * `${d}` three lines below `const d = shellQuote(dir)` is not refused, which
+ * is how `gitDerivedStaging` in `workflows/ship.js` is written and is written
+ * that way on purpose — the quoted value is used twice and one use sits
+ * inside a double-quoted `echo`, where re-quoting at the site would be wrong.
+ * The exemplar predates this check; the check accommodates it rather than the
+ * other way round.
+ *
+ * ## Why this resolves scopes instead of scanning names (#1106)
+ *
+ * The first version of this returned ONE set of names for the whole file,
+ * which made the exemption an alias granted by bare name. A security review
+ * measured the consequence: `ship.js` binds `d` four times and only the one
+ * at `gitDerivedStaging` is a quoter, so injecting `git -C ${d}` beside any
+ * of the other three produced **0 refusals**, while the same line with
+ * `${zz}` produced **1**. The decider laundered an unquoted interpolation
+ * whenever the variable happened to share a name with a quoter elsewhere in
+ * the file.
+ *
+ * **"Bound exactly once in the file" is NOT the fix, and measuring says so.**
+ * It sounds equivalent and is not: under it `ship.js`'s `d` — four
+ * declarations — stops being laundered everywhere, including at the two real
+ * `git -C ${d}` uses inside `gitDerivedStaging`, which are correctly quoted.
+ * That turns 0 refusals into 2 false ones and breaks the exemplar this check
+ * exists to accommodate. The correct claim is the narrower one: *bound, in a
+ * scope that encloses this use, to a quoter* — which is what this computes.
+ *
+ * Resolution is innermost-scope-outward over a real parse, so a parameter, a
+ * destructuring target, a `catch` binding and a `for` head all shadow an
+ * outer quoter. A name scan cannot see any of those, because none of them is
+ * spelled `const NAME =`.
+ *
+ * ## It fails CLOSED
+ *
+ * A source acorn cannot parse launders nothing, so an unparseable file is
+ * refused on every bare interpolation rather than exempted on all of them.
+ * The opposite default would make a syntax error the most effective way to
+ * switch this check off.
  */
-export function quotedBindings(source: string): Set<string> {
-  const names = new Set<string>();
-  const re = new RegExp(
-    `(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:${QUOTER_NAMES.join("|")})\\s*\\(`,
-    "g",
-  );
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(source))) names.add(m[1]);
-  return names;
+export function quoterBindingsByLine(source: string): Map<number, Set<string>> {
+  const byLine = new Map<number, Set<string>>();
+
+  let program: AcornNode;
+  try {
+    program = parse(source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      // The workflow files are function BODIES, not modules — every one of
+      // them carries a top-level `return`, and without these two acorn
+      // rejects all six. Measured: with them, all six parse.
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+      locations: true,
+    }) as unknown as AcornNode;
+  } catch {
+    return byLine; // fail closed: nothing is laundered
+  }
+
+  interface Scope {
+    parent: Scope | null;
+    /** name -> the offset at which it is bound, and whether that is a quoter. */
+    names: Map<string, { start: number; quoter: boolean }>;
+  }
+  const scopeOf = new Map<AcornNode, Scope>();
+
+  const bindName = (scope: Scope, name: string, start: number, quoter: boolean) => {
+    // First binding in a scope wins the position; a redeclaration of the same
+    // name in one scope is only ever a reason NOT to launder, so a later
+    // non-quoter binding clears the flag rather than being ignored.
+    const prior = scope.names.get(name);
+    if (prior === undefined) scope.names.set(name, { start, quoter });
+    else if (!quoter) prior.quoter = false;
+  };
+
+  /** Every name a binding pattern introduces. */
+  const patternNames = (value: unknown, out: string[]): void => {
+    if (!isNode(value)) return;
+    const node = value as AcornNode;
+    switch (node.type) {
+      case "Identifier": out.push(node.name as string); break;
+      case "ObjectPattern":
+        for (const p of asNodes(node.properties)) patternNames(p.value ?? p.argument, out);
+        break;
+      case "ArrayPattern": for (const e of asNodes(node.elements)) patternNames(e, out); break;
+      case "AssignmentPattern": patternNames(node.left, out); break;
+      case "RestElement": patternNames(node.argument, out); break;
+      default: break;
+    }
+  };
+
+  const isQuoterInit = (init: unknown): boolean => {
+    if (!isNode(init)) return false;
+    const node = init as AcornNode;
+    if (node.type !== "CallExpression") return false;
+    const callee = node.callee;
+    return (
+      isNode(callee) &&
+      (callee as AcornNode).type === "Identifier" &&
+      (QUOTER_NAMES as readonly string[]).includes((callee as AcornNode).name as string)
+    );
+  };
+
+  const SCOPED = new Set([
+    "Program", "FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression",
+    "BlockStatement", "ForStatement", "ForInStatement", "ForOfStatement", "CatchClause",
+  ]);
+
+  // Pass 1: build the scope tree and its bindings.
+  const build = (node: AcornNode, parent: Scope | null): void => {
+    let scope = parent;
+    if (SCOPED.has(node.type)) {
+      scope = { parent, names: new Map() };
+      scopeOf.set(node, scope);
+    }
+    if (scope) {
+      if (node.type === "VariableDeclarator") {
+        const names: string[] = [];
+        patternNames(node.id, names);
+        // A quoter only ever launders a PLAIN identifier binding: destructuring
+        // out of a quoter's return value is not a quoted string.
+        const quoter =
+          isNode(node.id) && (node.id as AcornNode).type === "Identifier" && isQuoterInit(node.init);
+        for (const n of names) bindName(scope, n, node.start as number, quoter);
+      } else if (
+        node.type === "FunctionDeclaration" || node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression"
+      ) {
+        const names: string[] = [];
+        for (const p of asNodes(node.params)) patternNames(p, names);
+        for (const n of names) bindName(scope, n, node.start as number, false);
+        if (isNode(node.id) && parent) {
+          bindName(parent, (node.id as AcornNode).name as string, node.start as number, false);
+        }
+      } else if (node.type === "CatchClause" && node.param) {
+        const names: string[] = [];
+        patternNames(node.param, names);
+        for (const n of names) bindName(scope, n, node.start as number, false);
+      } else if (node.type === "ClassDeclaration" && isNode(node.id)) {
+        bindName(scope, (node.id as AcornNode).name as string, node.start as number, false);
+      }
+    }
+    for (const child of childNodes(node)) build(child, scope);
+  };
+  build(program, null);
+
+  // Pass 2: resolve every bare `${name}` against the scope chain at its site.
+  const resolve = (scope: Scope | null, name: string, useStart: number): boolean => {
+    for (let s = scope; s; s = s.parent) {
+      const b = s.names.get(name);
+      // A binding that starts AFTER the use does not govern it. Requiring
+      // this is the safe direction: it only ever withholds laundering.
+      if (b && b.start <= useStart) return b.quoter;
+      if (b) return false;
+    }
+    return false;
+  };
+
+  const visit = (node: AcornNode, scope: Scope | null): void => {
+    const here = scopeOf.get(node) ?? scope;
+    if (node.type === "TemplateLiteral") {
+      for (const expr of asNodes(node.expressions)) {
+        if (expr.type !== "Identifier") continue;
+        if (!resolve(here, expr.name as string, expr.start as number)) continue;
+        const line = (expr.loc as { start: { line: number } } | undefined)?.start.line;
+        if (line === undefined) continue;
+        let set = byLine.get(line);
+        if (!set) byLine.set(line, (set = new Set()));
+        set.add(expr.name as string);
+      }
+    }
+    for (const child of childNodes(node)) visit(child, here);
+  };
+  visit(program, null);
+
+  return byLine;
 }
+
+/** Child AST nodes of `node`, in no particular order. */
+function childNodes(node: AcornNode): AcornNode[] {
+  const out: AcornNode[] = [];
+  for (const key of Object.keys(node)) {
+    if (key === "loc" || key === "type" || key === "start" || key === "end") continue;
+    const value = (node as Record<string, unknown>)[key];
+    if (Array.isArray(value)) {
+      for (const v of value) if (isNode(v)) out.push(v as AcornNode);
+    } else if (isNode(value)) out.push(value as AcornNode);
+  }
+  return out;
+}
+
+function isNode(v: unknown): boolean {
+  return !!v && typeof v === "object" && typeof (v as { type?: unknown }).type === "string";
+}
+
+/** The AST nodes in an array-valued AST property, skipping holes. */
+function asNodes(v: unknown): AcornNode[] {
+  return Array.isArray(v) ? (v.filter(isNode) as AcornNode[]) : [];
+}
+
+/** The shape of an acorn node this module reads. Deliberately loose. */
+type AcornNode = {
+  type: string;
+  start?: number;
+  end?: number;
+  [key: string]: unknown;
+};
 
 /**
  * Every unquoted directory interpolation on this line.
@@ -287,12 +481,17 @@ export function barePathInterpolationsIn(source: string): LocatedBarePath[] {
   const code = stripJsComments(source);
   // Over the STRIPPED copy, so a `const d = shellQuote(x)` written in a
   // comment cannot launder the name `d` for real code elsewhere.
-  const quoted = quotedBindings(code);
+  //
+  // Per LINE, not per file (#1106). A file-wide set made the exemption an
+  // alias granted by bare name, so a `${d}` anywhere in `ship.js` was
+  // accepted because some other function bound a `d` to a quoter.
+  const quoted = quoterBindingsByLine(code);
+  const none: ReadonlySet<string> = new Set();
   const found: LocatedBarePath[] = [];
   code
     .split("\n")
     .forEach((line, i) => {
-      for (const b of barePathInterpolations(line, quoted)) {
+      for (const b of barePathInterpolations(line, quoted.get(i + 1) ?? none)) {
         found.push({ ...b, line: i + 1 });
       }
     });
