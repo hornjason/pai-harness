@@ -357,7 +357,7 @@ describe("#1086: the scan can fail, and fails on the right input", () => {
       found.map(f => `${f.line}: ${f.form} ${f.expression}`),
       "the `${d}` under `const d = String(...)` was accepted because another function " +
         "in the same file binds `d` to a quoter — lib/shell-path-interpolation.ts, " +
-        "quoterBindingsByLine.",
+        "launderedQuoterSites.",
     ).toEqual(["7: -C ${d}"]);
   });
 
@@ -429,6 +429,87 @@ describe("#1086: the scan can fail, and fails on the right input", () => {
       "  ) ) )",
     ].join("\n");
     expect(barePathInterpolationsIn(broken)).toHaveLength(1);
+  });
+
+  // ── #1131: the exemption is a SITE, not a line ─────────────────────────
+
+  test("#1131: two uses of one name on ONE line resolve independently", () => {
+    // #1106 moved the exemption from file-wide to per-line. A line is still
+    // coarser than the thing being decided: these sources are 10,000-line
+    // template-literal soup where two functions routinely share a line, and
+    // the laundering was handed to the line as a SET OF NAMES — so the
+    // quoter's own `${d}` exempted every other `${d}` beside it.
+    //
+    // Both orderings, because a decider that keeps the first site's answer
+    // and one that keeps the last are both wrong and only one of them is
+    // visible from a single ordering.
+    const quotedFirst =
+      "function a(dir) { const d = shellQuote(dir); return `git -C ${d} x` }" +
+      " function b(dir) { const d = String(dir); return `bun --cwd ${d} y` }";
+    expect(
+      barePathInterpolationsIn(quotedFirst),
+      "the `${d}` under `const d = String(...)` was accepted because another binding " +
+        "ON THE SAME LINE is a quoter — lib/shell-path-interpolation.ts, launderedQuoterSites.",
+    ).toEqual([{ form: "--cwd", expression: "${d}", quoting: "none", line: 1 }]);
+
+    const quotedSecond =
+      "function b(dir) { const d = String(dir); return `bun --cwd ${d} y` }" +
+      " function a(dir) { const d = shellQuote(dir); return `git -C ${d} x` }";
+    expect(barePathInterpolationsIn(quotedSecond), "ordering changed the answer").toEqual([
+      { form: "--cwd", expression: "${d}", quoting: "none", line: 1 },
+    ]);
+  });
+
+  test("#1131: `${ d }` is the same site — the offset is the identifier's, not the `$`'s", () => {
+    // The offset handed down has to be the one acorn gave the Identifier.
+    // Deriving it from the `${` is right for `${d}` and one character short
+    // for every interpolation written with a space, which launders nothing
+    // and refuses a correctly-quoted path. No other case here spells an
+    // interpolation with interior spaces, so without this the arithmetic is
+    // only ever exercised at its easy value.
+    const source = [
+      "function a(dir) {",
+      "  const d = shellQuote(dir)",
+      "  return `git -C ${ d } add -A`",
+      "}",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toEqual([]);
+  });
+
+  test("#1131: a quoter-bound name that is REASSIGNED stops being laundered", () => {
+    // Pass 1 records what a name is bound to at its declaration. An
+    // assignment afterwards replaces the value and the declaration still
+    // says `shellQuote`, so the exemption outlives the thing that earned it.
+    // Clearing on any assignment to the binding fails toward refusal.
+    const source = [
+      "let d = shellQuote(root)",
+      "d = String(other)",
+      "const cmd = `git -C ${d} status`",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toHaveLength(1);
+  });
+
+  test("#1131: ... and an UpdateExpression on it clears the exemption too", () => {
+    // `d++` on a quoted string is nonsense; it is also an assignment to the
+    // binding, spelled so that an `AssignmentExpression` walk never sees it.
+    // Without this case that half of the walk is unwitnessed.
+    const source = [
+      "let d = shellQuote(root)",
+      "d++",
+      "const cmd = `git -C ${d} status`",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toHaveLength(1);
+  });
+
+  test("#1131: the control — without the reassignment the same source launders", () => {
+    // Both cases above are satisfied by a decider that stopped laundering
+    // `let` bindings, or stopped laundering anything. This is the input that
+    // separates those from one that saw the assignment.
+    const source = [
+      "let d = shellQuote(root)",
+      "const cmd = `git -C ${d} status`",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toEqual([]);
   });
 
   test("the cheapest wrong fix IS found: double quotes are not accepted", () => {

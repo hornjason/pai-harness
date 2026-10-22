@@ -76,7 +76,7 @@
  *   marker and executed standalone by its own test, so it cannot reference
  *   anything outside itself; new code should use `shellQuote`.
  * - **A quoted value reaching the site through a variable** is accepted via
- *   `quoterBindingsByLine`, which resolves the name against the scope chain
+ *   `launderedQuoterSites`, which resolves the name against the scope chain
  *   at the use. This used to be a file-wide name scan, and a later
  *   `const d = somethingElse()` in another function laundered the name —
  *   closed in #1106, with the measurement in that function's docblock.
@@ -184,7 +184,12 @@ function endOfInterpolation(s: string, open: number): number {
 }
 
 /**
- * Which names are quoter-bound AT EACH LINE: `1-based line -> names`.
+ * The SOURCE OFFSET of every `${name}` that resolves to a quoter binding.
+ *
+ * One entry per interpolation site, keyed by the offset of the identifier
+ * itself, so the decision travels with the site rather than with anything
+ * around it. A caller asks "is the identifier at THIS offset laundered?" and
+ * gets an answer about that identifier and no other.
  *
  * `${d}` three lines below `const d = shellQuote(dir)` is not refused, which
  * is how `gitDerivedStaging` in `workflows/ship.js` is written and is written
@@ -217,6 +222,29 @@ function endOfInterpolation(s: string, open: number): number {
  * outer quoter. A name scan cannot see any of those, because none of them is
  * spelled `const NAME =`.
  *
+ * ## Why an OFFSET and not a line (#1131)
+ *
+ * #1106's first repair keyed the exemption by line, as a set of names. A line
+ * is still coarser than the decision: these files are 10,000-line
+ * template-literal soup, two functions share a line routinely, and under a
+ * per-line name set the quoter's own `${d}` exempted every other `${d}`
+ * beside it. That is the same alias defect #1106 closed, with a smaller
+ * radius. Keyed by `expr.start` there is no radius at all.
+ *
+ * ## A reassignment clears the flag
+ *
+ * Pass 1 records what a name was bound to AT ITS DECLARATION. `let d =
+ * shellQuote(x)` followed by `d = something()` leaves the declaration saying
+ * `shellQuote`, so the exemption outlives the value that earned it. Any
+ * assignment or update to a quoter-bound name clears the flag — toward
+ * refusal, which is the direction this is allowed to be wrong in.
+ *
+ * It is LATENT, not observed: measured across the six `workflows/*.js` on
+ * 2026-10-22 there are **3** quoter declarations (`script` and `d` in
+ * `ship.js`, `d` in `prove.js`) and **0** reassignments of any of them, all
+ * three being `const`. So this moves no live reading and is here because the
+ * next quoter binding does not have to be a `const`.
+ *
  * ## It fails CLOSED
  *
  * A source acorn cannot parse launders nothing, so an unparseable file is
@@ -224,8 +252,8 @@ function endOfInterpolation(s: string, open: number): number {
  * The opposite default would make a syntax error the most effective way to
  * switch this check off.
  */
-export function quoterBindingsByLine(source: string): Map<number, Set<string>> {
-  const byLine = new Map<number, Set<string>>();
+export function launderedQuoterSites(source: string): ReadonlySet<number> {
+  const sites = new Set<number>();
 
   let program: AcornNode;
   try {
@@ -237,10 +265,9 @@ export function quoterBindingsByLine(source: string): Map<number, Set<string>> {
       // rejects all six. Measured: with them, all six parse.
       allowReturnOutsideFunction: true,
       allowAwaitOutsideFunction: true,
-      locations: true,
     }) as unknown as AcornNode;
   } catch {
-    return byLine; // fail closed: nothing is laundered
+    return sites; // fail closed: nothing is laundered
   }
 
   interface Scope {
@@ -330,6 +357,38 @@ export function quoterBindingsByLine(source: string): Map<number, Set<string>> {
   };
   build(program, null);
 
+  /** The innermost binding of `name` visible from `scope`, if any. */
+  const bindingFor = (scope: Scope | null, name: string) => {
+    for (let s = scope; s; s = s.parent) {
+      const b = s.names.get(name);
+      if (b) return b;
+    }
+    return undefined;
+  };
+
+  // Pass 1.5: any assignment to a binding clears its quoter flag, wherever in
+  // the file it sits. Position is not consulted deliberately — a use BEFORE
+  // the assignment is still laundered by the declaration under a positional
+  // reading, and this check's one allowed direction of error is refusal.
+  const clearReassigned = (node: AcornNode, scope: Scope | null): void => {
+    const here = scopeOf.get(node) ?? scope;
+    const target =
+      node.type === "AssignmentExpression" ? node.left
+      : node.type === "UpdateExpression" ? node.argument
+      : undefined;
+    // Through `patternNames`, so `[d] = xs` and `({ d } = o)` clear it too.
+    // A `MemberExpression` target yields no names: `a.b = x` does not rebind
+    // `a`, and treating it as a rebind would refuse the exemplar.
+    const names: string[] = [];
+    patternNames(target, names);
+    for (const n of names) {
+      const b = bindingFor(here, n);
+      if (b) b.quoter = false;
+    }
+    for (const child of childNodes(node)) clearReassigned(child, here);
+  };
+  clearReassigned(program, null);
+
   // Pass 2: resolve every bare `${name}` against the scope chain at its site.
   const resolve = (scope: Scope | null, name: string, useStart: number): boolean => {
     for (let s = scope; s; s = s.parent) {
@@ -347,19 +406,16 @@ export function quoterBindingsByLine(source: string): Map<number, Set<string>> {
     if (node.type === "TemplateLiteral") {
       for (const expr of asNodes(node.expressions)) {
         if (expr.type !== "Identifier") continue;
-        if (!resolve(here, expr.name as string, expr.start as number)) continue;
-        const line = (expr.loc as { start: { line: number } } | undefined)?.start.line;
-        if (line === undefined) continue;
-        let set = byLine.get(line);
-        if (!set) byLine.set(line, (set = new Set()));
-        set.add(expr.name as string);
+        if (expr.start === undefined) continue;
+        if (!resolve(here, expr.name as string, expr.start)) continue;
+        sites.add(expr.start);
       }
     }
     for (const child of childNodes(node)) visit(child, here);
   };
   visit(program, null);
 
-  return byLine;
+  return sites;
 }
 
 /** Child AST nodes of `node`, in no particular order. */
@@ -404,10 +460,17 @@ type AcornNode = {
  * Takes a LINE rather than a file because the unit a report has to name is a
  * line, and because these sources are 10,000-line template-literal soup
  * where no larger unit has a boundary worth finding.
+ *
+ * `isLaundered` is asked about ONE SITE — the name and the offset of the
+ * identifier inside this line — rather than handed a set of exempt names
+ * (#1131). A set is an alias: it answers for every occurrence that spells
+ * itself the same way, and two functions share a line here routinely. The
+ * default says no to everything, so a caller that does not resolve bindings
+ * refuses more rather than less.
  */
 export function barePathInterpolations(
   line: string,
-  quotedNames: ReadonlySet<string> = new Set(),
+  isLaundered: (name: string, offsetInLine: number) => boolean = () => false,
 ): BarePathInterpolation[] {
   const found: BarePathInterpolation[] = [];
 
@@ -435,10 +498,15 @@ export function barePathInterpolations(
     if (end === -1) continue; // unbalanced: the line is not what it looks like
 
     const expression = line.slice(at, end);
-    const inner = expression.slice(2, -1).trim();
+    const raw = expression.slice(2, -1);
+    const inner = raw.trim();
 
     if (isQuoterCall(inner)) continue;
-    if (quotedNames.has(inner)) continue;
+    // The identifier's OWN offset within the line, so the caller answers
+    // about this site rather than about anything else sharing the line.
+    // `at` is the `$`; `+2` clears `${`; the rest is whatever `trim` took,
+    // because `${ d }` is legal and the parser's identifier starts at `d`.
+    if (isLaundered(inner, at + 2 + (raw.length - raw.trimStart().length))) continue;
 
     found.push({
       form,
@@ -482,19 +550,24 @@ export function barePathInterpolationsIn(source: string): LocatedBarePath[] {
   // Over the STRIPPED copy, so a `const d = shellQuote(x)` written in a
   // comment cannot launder the name `d` for real code elsewhere.
   //
-  // Per LINE, not per file (#1106). A file-wide set made the exemption an
-  // alias granted by bare name, so a `${d}` anywhere in `ship.js` was
-  // accepted because some other function bound a `d` to a quoter.
-  const quoted = quoterBindingsByLine(code);
-  const none: ReadonlySet<string> = new Set();
+  // Per SITE, not per file (#1106) and not per line (#1131). Both coarser
+  // keys made the exemption an alias granted by bare name: a file-wide set
+  // laundered a `${d}` anywhere in `ship.js` because some other function
+  // bound a `d` to a quoter, and a per-line set did the same to every `${d}`
+  // sharing a line with the quoter's own use.
+  const laundered = launderedQuoterSites(code);
   const found: LocatedBarePath[] = [];
-  code
-    .split("\n")
-    .forEach((line, i) => {
-      for (const b of barePathInterpolations(line, quoted.get(i + 1) ?? none)) {
-        found.push({ ...b, line: i + 1 });
-      }
-    });
+  let lineStart = 0;
+  for (const [i, line] of code.split("\n").entries()) {
+    // The offsets in `laundered` are into `code`, which `stripJsComments`
+    // keeps byte-identical in length to `source`, so this arithmetic is the
+    // parser's own numbering and not a reconstruction of it.
+    const at = lineStart;
+    for (const b of barePathInterpolations(line, (_n, off) => laundered.has(at + off))) {
+      found.push({ ...b, line: i + 1 });
+    }
+    lineStart += line.length + 1; // the "\n" `split` removed
+  }
   return found;
 }
 
