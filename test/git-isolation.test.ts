@@ -43,7 +43,13 @@ import {
   gitIsolatedEnv,
   gitIsolatedShellPrefix,
 } from "../lib/git-isolation";
-import { agentWorktreesBase, confinedWorktreePath } from "../lib/agent-worktree";
+import {
+  agentWorktreeSubject,
+  gitWorktreeBase,
+  mostRecentAgentWorktree,
+  registeredWorktreePath,
+  registeredWorktrees,
+} from "../lib/agent-worktree";
 import { AI_REVIEW_GIT_ISOLATED } from "../lib/scaffold/ai-review-step";
 
 const ROOT = join(import.meta.dir, "..");
@@ -179,108 +185,182 @@ describe("#1001 — the isolation set is declared once and projected twice", () 
   });
 });
 
-describe("#1001 — the worktree path is confined, not just matched", () => {
-  /** A base with one real worktree directory in it. */
-  function base(): { base: string; wt: string } {
-    const home = tmp();
-    const b = join(home, ".claude", ".claude", "worktrees");
-    const wt = join(b, "agent-abc123");
-    mkdirSync(wt, { recursive: true });
-    return { base: b, wt };
+describe("#1001 — the subject is a REGISTERED worktree, not a path shape", () => {
+  /**
+   * A real repository with one commit and two linked worktrees, created the
+   * way the harness creates them: `git worktree add` under `.claude/worktrees`
+   * relative to the main checkout.
+   */
+  function repo(): { root: string; base: string; agent: string; other: string; workflow: string } {
+    const root = realpathSync(tmp());
+    const g = (...a: string[]) =>
+      execFileSync("git", gitIsolatedArgs(["-C", root, ...a]), { stdio: "ignore", env: gitIsolatedEnv() });
+    execFileSync("git", gitIsolatedArgs(["-C", root, "init", "-q", "-b", "main"]), { stdio: "ignore", env: gitIsolatedEnv() });
+    writeFileSync(join(root, "seed.txt"), "x");
+    g("add", "seed.txt");
+    g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed");
+    const base = join(root, ".claude", "worktrees");
+    const agent = join(base, "agent-abc123");
+    const other = join(base, "agent-def456");
+    // A WORKFLOW worktree, registered and newer than both agent ones. The
+    // fallback must not pick it: `CommitEnforcement`'s subject is a subagent
+    // worktree, and attributing a subagent's uncommitted work to the
+    // workflow tree is the misattribution in a different costume.
+    const workflow = join(base, "wf_01234567-abc-9");
+    g("worktree", "add", "-q", "-b", "wt-a", agent);
+    g("worktree", "add", "-q", "-b", "wt-b", other);
+    g("worktree", "add", "-q", "-b", "wt-w", workflow);
+    return { root, base, agent, other, workflow };
   }
 
-  test("AC-W1: a path inside the base resolves", () => {
-    const { base: b, wt } = base();
-    expect(confinedWorktreePath(wt, b)).toBe(realpathSync(wt));
+  test("AC-R1 CONTROL: a registered linked worktree IS the subject", () => {
+    // Without this the refusals below are equally consistent with a
+    // confinement that refuses everything — which is exactly the state this
+    // PR exists to fix, reported as success.
+    const { root, agent } = repo();
+    const wts = registeredWorktrees(root);
+    expect(wts, "git could not be asked — every arm below is vacuous").not.toBeNull();
+    expect(registeredWorktreePath(agent, wts)).toBe(realpathSync(agent));
   });
 
-  test("AC-W2: a `..` escape is REFUSED, and it matches the hook's regex", () => {
-    // The regex accepts this: it is a slash, a non-space run, `worktrees/`,
-    // `agent-<hex>`, and a non-space run. A string prefix test accepts it
-    // too. Only resolution rejects it.
-    const { base: b } = base();
-    // Concatenated, NOT `join`: `join` normalises `..` away, so building the
-    // input with it produces a path that never contained the escape and an
-    // arm that passes while witnessing nothing. Caught by the reachability
-    // assertion below, which is why it is here.
-    const escape = `${b}${sep}agent-abc123${sep}..${sep}..${sep}..${sep}..${sep}etc`;
+  test("AC-R2: an UNREGISTERED directory in the right place is refused", () => {
+    // The arm the previous fix could not express, and the whole reason for
+    // this one. A path-confined check accepts this: it is under the base,
+    // it resolves, and its name is `agent-<hex>`. Only asking git refuses
+    // it. `Write` can create this directory; `Write` cannot register it.
+    const { root, base } = repo();
+    const planted = join(base, "agent-f00ba7");
+    mkdirSync(planted, { recursive: true });
+    const wts = registeredWorktrees(root);
+    expect(planted.startsWith(realpathSync(base)), "the arm's input is not under the base").toBe(true);
+    expect(registeredWorktreePath(planted, wts)).toBeNull();
+  });
+
+  test("AC-R3: the PRIMARY checkout is not an agent worktree", () => {
+    const { root } = repo();
+    const wts = registeredWorktrees(root)!;
+    expect(wts).not.toContain(root);
+    expect(registeredWorktreePath(root, wts)).toBeNull();
+  });
+
+  test("AC-R4: a `..` escape is refused, and it matches the hook's regex", () => {
+    // Concatenated, NOT `join`: `join` normalises `..` away, so an input
+    // built with it never contains the escape and the arm witnesses nothing.
+    const { root, base } = repo();
+    const escape = `${base}${sep}agent-abc123${sep}..${sep}..${sep}..${sep}..${sep}etc`;
     expect(escape).toContain("..");
-    expect(/\/[^\s]*worktrees\/agent-[a-f0-9]+[^\s]*/i.test(escape), "the arm's input does not reach the defect").toBe(true);
-    expect(confinedWorktreePath(escape, b)).toBeNull();
+    expect(/\/[^\s]*worktrees\/agent-[a-f0-9]+[^\s]*/i.test(escape), "the input does not reach the defect").toBe(true);
+    expect(registeredWorktreePath(escape, registeredWorktrees(root))).toBeNull();
   });
 
-  test("AC-W3: a SYMLINK out of the base is REFUSED", () => {
-    const { base: b } = base();
+  test("AC-R5: a symlink out of the tree is refused", () => {
+    const { root, base } = repo();
     const outside = tmp();
-    const link = join(b, "agent-deadbeef");
+    const link = join(base, "agent-deadbe");
     symlinkSync(outside, link);
-    expect(confinedWorktreePath(link, b)).toBeNull();
+    expect(registeredWorktreePath(link, registeredWorktrees(root))).toBeNull();
   });
 
-  test("AC-W4: a sibling whose name EXTENDS the base is refused", () => {
-    // `…/worktrees-evil` passes `startsWith("…/worktrees")`. The separator
-    // in the comparison is what stops it.
-    const { base: b } = base();
-    const evil = b + "-evil";
-    mkdirSync(join(evil, "agent-abc123"), { recursive: true });
-    expect(evil.startsWith(b), "the arm's input does not exercise the separator").toBe(true);
-    expect(confinedWorktreePath(join(evil, "agent-abc123"), b)).toBeNull();
+  test("AC-R6: `could not ask git` is NULL, not an empty list", () => {
+    // Two different answers, and collapsing them is how a refusal becomes
+    // "nothing matched, carry on". A repo with no linked worktrees answers
+    // [] and still refuses; a non-repo answers null.
+    const notARepo = realpathSync(tmp());
+    expect(registeredWorktrees(notARepo)).toBeNull();
+
+    const bare = realpathSync(tmp());
+    execFileSync("git", gitIsolatedArgs(["-C", bare, "init", "-q"]), { stdio: "ignore", env: gitIsolatedEnv() });
+    expect(registeredWorktrees(bare), "a repo with no linked worktrees should answer []").toEqual([]);
+    expect(registeredWorktreePath(bare, registeredWorktrees(bare))).toBeNull();
   });
 
-  test("AC-W5: a path outside the base entirely is refused", () => {
-    const { base: b } = base();
-    expect(confinedWorktreePath(tmp(), b)).toBeNull();
-    expect(confinedWorktreePath("/etc", b)).toBeNull();
+  test("AC-R7: a named-but-unregistered candidate is TERMINAL", () => {
+    // The misattribution. PR #1024 refused the candidate and then fell
+    // through to "most recently modified", so a reply naming a worktree the
+    // confinement did not recognise produced a signal about a DIFFERENT
+    // agent's tree. The fallback must not be reachable from a refusal.
+    const { root, base, agent } = repo();
+    const planted = join(base, "agent-f00ba7");
+    mkdirSync(planted, { recursive: true });
+    const wts = registeredWorktrees(root);
+
+    // A registered worktree exists and is exactly what the fallback would
+    // pick, so "null" here cannot be mistaken for "there was nothing to
+    // fall back to".
+    expect(mostRecentAgentWorktree(wts), "the fallback has nothing to return — the arm proves nothing").not.toBeNull();
+    expect(agentWorktreeSubject(`done in ${planted}`, "T", {}, wts)).toBeNull();
+    // And the reply that names NOTHING still reaches the fallback.
+    expect(agentWorktreeSubject("done, no path here", "T", {}, wts)).toBe(realpathSync(mostRecentAgentWorktree(wts)!));
+    // A named, registered candidate is returned rather than the most recent.
+    expect(agentWorktreeSubject(`done in ${agent}`, "T", {}, wts)).toBe(realpathSync(agent));
   });
 
-  test("AC-W6: the base itself is not a worktree", () => {
-    const { base: b } = base();
-    expect(confinedWorktreePath(b, b)).toBeNull();
+  test("AC-R8: the fallback returns a REGISTERED worktree named like an agent", () => {
+    const { root, base, workflow } = repo();
+    mkdirSync(join(base, "agent-f00ba7"), { recursive: true });
+    const wts = registeredWorktrees(root)!;
+    const picked = mostRecentAgentWorktree(wts);
+    expect(picked).not.toBeNull();
+    expect(wts).toContain(picked!);
+    // The workflow worktree is registered and was created LAST, so a
+    // fallback without the name test picks it. This is the input that makes
+    // the name test measurable rather than decorative.
+    expect(wts, "the fixture has no workflow worktree — the name test is unmeasured here")
+      .toContain(realpathSync(workflow));
+    expect(picked, "the fallback picked a workflow worktree").not.toBe(realpathSync(workflow));
+    expect(mostRecentAgentWorktree(null), "a null list must not become a pick").toBeNull();
+    expect(mostRecentAgentWorktree([]), "an empty list must not become a pick").toBeNull();
   });
 
-  test("AC-W7: an absent base refuses everything", () => {
-    // MEASURED LIMIT, stated rather than implied. This arm reddens when
-    // confinement is removed wholesale (mutant N1), so it is not inert. It
-    // does NOT distinguish the module's `catch { return null }` on the base
-    // from a `catch` that fell through to the unresolved path: mutant N3
-    // made exactly that change and reddened **0 of 16**.
-    //
-    // The reason is structural, not a gap in the inputs: if the base cannot
-    // be resolved, no candidate under it can be resolved either, so the
-    // prefix test refuses on its own and the explicit refusal is already
-    // implied. I could not name an input on which mutant and original
-    // differ, and per `.claude/rules/checks-must-be-able-to-fail.md` that
-    // zero is recorded here rather than left to look like coverage. The
-    // `catch` stays because a reader should not have to re-derive this.
-    const absent = join(tmp(), "no-such-base");
-    expect(confinedWorktreePath("/etc", absent)).toBeNull();
-    expect(confinedWorktreePath(absent, absent)).toBeNull();
+  test("AC-R9: the derived base is where registered worktrees ACTUALLY are", () => {
+    // The arm that would have caught the defect this PR fixes. The previous
+    // base was `$HOME/.claude/.claude/worktrees`; on this machine it holds
+    // 16 stale directories and ZERO registered worktrees, while 136 live
+    // ones sit under the repo-local base. A base nothing is registered
+    // under is a confinement that cannot fail.
+    const { root } = repo();
+    const derived = gitWorktreeBase(root);
+    expect(derived, "git could not say where worktrees live").not.toBeNull();
+    const wts = registeredWorktrees(root)!;
+    expect(wts.length, "no linked worktrees in the fixture — the arm is vacuous").toBeGreaterThan(0);
+    for (const wt of wts) {
+      expect(wt.startsWith(realpathSync(derived!) + sep), `${wt} is not under the derived base ${derived}`).toBe(true);
+    }
   });
 
-  test("AC-W8: a nonexistent path inside the base is refused", () => {
-    const { base: b } = base();
-    expect(confinedWorktreePath(join(b, "agent-ffffff"), b)).toBeNull();
+  test("AC-R10: `gitWorktreeBase` has ONE definition", () => {
+    // It moved here from `scripts/collect-worktree-files.ts` because a hook
+    // cannot import a script, and the hook guessed instead. A re-export
+    // keeps that script's callers working; a second `function` body would
+    // be the drift starting again.
+    const offenders: string[] = [];
+    const walk = (d: string) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        if (e.isDirectory()) { if (e.name !== "node_modules") walk(p); continue; }
+        if (!e.name.endsWith(".ts") || e.name.endsWith(".test.ts")) continue;
+        const rel = p.slice(ROOT.length + 1);
+        if (rel === "lib/agent-worktree.ts") continue;
+        if (/function\s+gitWorktreeBase\s*\(/.test(readFileSync(p, "utf-8"))) offenders.push(rel);
+      }
+    };
+    for (const d of ["lib", "hooks", "gates", "scripts"]) walk(join(ROOT, d));
+    expect(offenders, `a second definition of gitWorktreeBase: ${offenders.join(", ")}`).toEqual([]);
   });
 
-  test("AC-W9: the base is read from the environment, not hardcoded", () => {
-    expect(agentWorktreesBase({ HOME: "/h" })).toBe(join("/h", ".claude", ".claude", "worktrees"));
-    // And it is the spelling the hook's fallback branch already used, so
-    // this is a consolidation rather than a new declaring position.
-    const hook = readFileSync(join(ROOT, "hooks", "CommitEnforcement.hook.ts"), "utf-8");
-    expect(hook).toContain("agentWorktreesBase()");
-    expect(hook, "the inline base literal is still in the hook").not.toContain("'.claude', '.claude', 'worktrees'");
-  });
-
-  test("AC-W10: both git call sites in the hook are isolated AND confined", () => {
+  test("AC-R11: the hook reaches git only through the subject and the isolation", () => {
     // A source assertion, deliberately: driving the hook to each exec needs
-    // a real agent worktree under a real HOME, and a check that can only run
-    // on this machine is one CI answers vacuously. This one a runner can
-    // answer.
+    // a live agent worktree registered to THIS repository, which a CI runner
+    // does not have — an arm whose input is absent there passes vacuously.
+    // This one a runner can answer.
     const hook = readFileSync(join(ROOT, "hooks", "CommitEnforcement.hook.ts"), "utf-8");
     const calls = [...hook.matchAll(/execFileSync\('git',\s*([^,]+),/g)].map(m => m[1]);
     expect(calls.length, "the hook no longer has two git call sites — re-read this arm").toBe(2);
     for (const c of calls) expect(c, `a git call site bypasses the isolation: ${c}`).toContain("gitIsolatedArgs(");
-    expect((hook.match(/confinedWorktreePath\(/g) ?? []).length, "a worktree candidate reaches git unconfined").toBe(2);
     expect((hook.match(/env: gitIsolatedEnv\(\)/g) ?? []).length).toBe(2);
+    expect((hook.match(/agentWorktreeSubject\(/g) ?? []).length, "the subject is resolved somewhere else").toBe(1);
+    // And no path-shaped base survives in the hook.
+    expect(hook, "a worktrees base literal is back in the hook").not.toContain("'.claude', '.claude', 'worktrees'");
+    expect(hook, "the hook is scanning a directory again").not.toContain("readdirSync");
   });
 });

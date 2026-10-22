@@ -15,18 +15,18 @@
  * aditi) — true of NOTHING until #1000, because the config that detection
  * reads was in no commit; see `hooks/lib/agentDetection.ts`.
  *
- * The worktree it acts on comes out of an agent-authored reply, so it is
- * CONFINED and git runs ISOLATED — `lib/agent-worktree.ts`,
- * `lib/git-isolation.ts` (#1001).
+ * The worktree it acts on comes out of an agent-authored reply, so it must
+ * be a REGISTERED worktree of this harness's own repo and git runs ISOLATED
+ * — `lib/agent-worktree.ts`, `lib/git-isolation.ts` (#1001).
  *
  * Issue: #361, #343, #1000, #1001
  */
 
 import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { findWorkflowForIssue, extractIssueNumber } from './lib/findWorkflow'
-import { agentWorktreesBase, confinedWorktreePath } from '../lib/agent-worktree'
+import { agentWorktreeSubject } from '../lib/agent-worktree'
 import { gitIsolatedArgs, gitIsolatedEnv } from '../lib/git-isolation'
 import { WORK_DIR, SIGNAL_DIR } from './lib/paths'
 import { parseHookInput } from './lib/parseStdin';
@@ -52,30 +52,12 @@ async function main() {
   // tool emitted. Only a string is regex-able; anything else means no path here.
   const respContent = typeof resp === 'string' ? resp : resp?.content
   const respText = typeof respContent === 'string' ? respContent : ''
-  let worktreePath: string | null = null
 
-  // A regex match on an agent-authored reply is a CANDIDATE, not a
-  // confinement (#1001) — both branches resolve it against the base.
-  const pathMatch = respText.match(/(?:\/[^\s]*worktrees\/agent-[a-f0-9]+[^\s]*)/i)
-  if (pathMatch) {
-    worktreePath = confinedWorktreePath(pathMatch[0])
-  }
-
-  // Fallback: scan worktrees directory for most recently modified
-  if (!worktreePath) {
-    const wtBase = agentWorktreesBase()
-    try {
-      const entries = readdirSync(wtBase, { withFileTypes: true })
-        .filter(e => e.isDirectory() && e.name.startsWith('agent-'))
-        .map(e => ({ name: e.name, mtime: statSync(join(wtBase, e.name)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)
-      // Confined too: the entry is a name, but the directory it names may
-      // be a symlink out of the base.
-      if (entries.length > 0) worktreePath = confinedWorktreePath(join(wtBase, entries[0].name))
-    } catch {}
-  }
-
-  if (!worktreePath) process.exit(0)  // unconfined, or gone: realpath already proved existence
+  // A registered worktree of this harness's OWN repo, or nothing (#1001).
+  // A named-but-unregistered candidate is a TERMINAL refusal in there — the
+  // fall-through to the scan is what made the previous fix misattribute.
+  const worktreePath = agentWorktreeSubject(respText, 'CommitEnforcement', { agent: agent.key })
+  if (!worktreePath) process.exit(0)
 
   // Resolve slug early — needed by both UI detection and uncommitted-changes tripwire
   const issueNum = extractIssueNumber(toolInput.prompt || '')

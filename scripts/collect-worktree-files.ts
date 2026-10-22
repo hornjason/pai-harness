@@ -29,6 +29,7 @@ import { execFileSync } from "child_process";
 import { existsSync, readFileSync, realpathSync } from "fs";
 import { isAbsolute, join, relative, resolve } from "path";
 import { collectWorktreeFiles, groupFilesByWorktree, type AgentBuildResult } from "../lib/worktree-collect";
+import { gitWorktreeBase } from "../lib/agent-worktree";
 
 /**
  * The worktrees git knows about AND that live under this run's worktree base.
@@ -56,61 +57,17 @@ import { collectWorktreeFiles, groupFilesByWorktree, type AgentBuildResult } fro
  * base would authorise nothing there and refuse the whole collection.
  */
 /**
- * Where git itself puts this repo's agent worktrees (#120).
+ * MOVED to `lib/agent-worktree.ts` (#1001), re-exported here so this script's
+ * callers and `test/collect-worktree-authorisation.test.ts` are unchanged.
  *
- * `git worktree add` run from inside a linked worktree resolves against the
- * COMMON dir, so agent worktrees land under the main checkout regardless of
- * which worktree the caller is in. Neither `projectRoot` nor `harnessRoot`
- * controls that, which is why passing both only *happens* to work: it covers
- * the usual case where one of the two is the main checkout, and fails
- * silently whenever neither is — including when a caller deliberately points
- * harnessRoot at their own worktree to avoid executing another session's
- * uncommitted code (#77).
- *
- * Asking git removes the guess. Returns null rather than throwing: this is an
- * additional base, and losing it should degrade to the caller-supplied
- * behaviour, not fail the collection. The failure is logged, though — a
- * silent catch would turn "git is broken" into "there is no such directory",
- * which is the fail-open shape this project keeps getting bitten by.
+ * It moved because `hooks/CommitEnforcement.hook.ts` needed the same question
+ * answered — where does git actually put this repo's worktrees — and could
+ * not import a script. It guessed instead, and confined itself to a base with
+ * zero registered worktrees on it. #120's "asking git removes the guess" had
+ * been written down once, in here, where the second caller could not reach
+ * it.
  */
-export function gitWorktreeBase(projectRoot: string): string | null {
-  let commonDir: string;
-  try {
-    commonDir = execFileSync(
-      "git",
-      ["-C", projectRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    ).trim();
-  } catch (e) {
-    // Not a repository is the ordinary case and not worth shouting about;
-    // anything else means git is present but unhappy, and the caller is about
-    // to make an authorisation decision with less information than it thinks.
-    const msg = (e as Error).message || "";
-    if (!/not a git repository/i.test(msg)) {
-      console.error(`collect: WARNING could not ask git where worktrees live: ${msg.split("\n")[0]}`);
-    }
-    return null;
-  }
-  if (!commonDir) return null;
-
-  // <main>/.git -> <main>. Anchored to a trailing path segment so a repo at
-  // /srv/.github or a directory merely containing ".git" in its name is not
-  // silently truncated. A bare repo (no trailing /.git) yields no match and
-  // returns null — it has no working tree, so no agent worktrees either.
-  const mainRepo = commonDir.replace(/\/\.git\/?$/, "");
-  if (mainRepo === commonDir || mainRepo === "") return null;
-
-  // Resolve before handing it out. The comparison downstream is against
-  // realpath'd worktree paths, and on macOS /tmp is a symlink to /private/tmp
-  // — an unresolved base silently matches nothing.
-  let resolved: string;
-  try {
-    resolved = realpathSync(mainRepo);
-  } catch {
-    return null;
-  }
-  return join(resolved, ".claude", "worktrees");
-}
+export { gitWorktreeBase };
 
 /**
  * Which of this repo's worktrees may be collected from.
