@@ -130,7 +130,12 @@ function runAggregate(opts: {
   const scriptPath = join(dir, "aggregate.sh");
   writeFileSync(scriptPath, opts.script ?? buildShardAggregateScript());
 
-  const r = Bun.spawnSync(["/bin/bash", scriptPath], {
+  // `-e`, because that is the shell GitHub runs a `run:` block under. Read
+  // off run 39806067718's own step echo: `shell: /usr/bin/bash -e {0}`.
+  // Without it these cases supply a shell the generated step does not, and
+  // the first version of this file did exactly that — the API-failure case
+  // passed here and would have skipped its own annotation on the runner.
+  const r = Bun.spawnSync(["/bin/bash", "-e", scriptPath], {
     cwd: dir,
     env: {
       PATH: `${bin}:/usr/bin:/bin`,
@@ -233,7 +238,13 @@ describe("#1181: the shard aggregate refuses a run it did not measure", () => {
     // defect again, arriving through a different door.
     const r = runAggregate({ jobs: RUN_39799846607, rollup: "success", ghFails: true });
     expect(r.code).not.toBe(0);
+    // The annotation, not just the exit code. Under `bash -e` a bare
+    // `rows="$(gh …)"` followed by `api_status=$?` aborts at the assignment
+    // and this line never prints: red, with no sentence saying why. That is
+    // what the `|| api_status=$?` form in the generator is for, and this
+    // assertion is what holds it in place.
     expect(r.out + r.err).toContain("UNMEASURED");
+    expect(r.out + r.err).toContain("could not read this run's jobs from the Actions API");
     expect(
       runAggregate({ jobs: RUN_39799846607, rollup: "success", ghFails: true, script: mutantScript() }).code,
     ).toBe(0);
