@@ -405,6 +405,24 @@ function readWord(s: string, i: number): [string, number] {
       let depth = 0;
       let j = i;
       for (; j < s.length; j++) {
+        // A parenthesis inside a STRING LITERAL is data, not grammar.
+        // Counting it dropped the depth to zero early, ended the word in the
+        // middle of the substitution, and left a `"` whose partner had
+        // already been consumed — so the quote branch above then took
+        // `close === -1` and swallowed the rest of the line INCLUDING the
+        // `>` operator. No operator, no target, allow:
+        //
+        //     echo $(echo "x)") > <protected>     ran, and wrote
+        //
+        // This is #1205's own sentence a second time — the bug is what the
+        // scanner cannot see, not the substitution — so it is fixed the same
+        // way rather than by special-casing the literal that exposed it.
+        const q = s[j];
+        if (q === "'" || q === '"') {
+          const close = s.indexOf(q, j + 1);
+          j = close === -1 ? s.length : close; // the loop's j++ steps past it
+          continue;
+        }
         if (s[j] === '(') depth++;
         else if (s[j] === ')' && --depth === 0) {
           j++;
@@ -639,12 +657,25 @@ const IN_PLACE = [
   // is what was blocking writes to the hooks on this machine — so removing it
   // is a mutation of hook integrity by any reading.
   //
-  // Narrow to the WRITING flags on purpose. Measured on the 5,059 commands
-  // this guard allows that name a protected artifact: a bare `/\bxattr\b/`
-  // newly blocks 3, of which 2 are real `xattr <hook>` READS of the attribute
-  // list. `-d`/`-w`/`-s` newly blocks 1, and that one is the deletion above.
-  // Two false positives bought nothing, so they are not bought.
-  /\bxattr\b[^\n]*\s-[dws]\b/,
+  // The mutating forms are read off `xattr --help`, not guessed:
+  //
+  //   xattr [-lrsvx] file …             list      READ
+  //   xattr -p [-lrsvx] attr file …     print     READ
+  //   xattr -w [-rsx] attr value file   set       MUTATES
+  //   xattr -d [-rsv] attr file …       delete    MUTATES
+  //   xattr -c [-rsv] file …            clear ALL MUTATES
+  //
+  // So the letters are `c`, `d`, `w` — and they may sit ANYWHERE in a flag
+  // cluster, which is why this does not read a single letter. The first
+  // revision of this PR shipped `-[dws]`, wrong in both directions against
+  // that table: it missed `-c`, which deletes every attribute on the file,
+  // and it refused `-s`, which only says "act on the symbolic link itself".
+  // Seven of fifteen spellings were decided wrongly.
+  //
+  // A bare invocation carries no leading dash, so the READ that this arm
+  // must not refuse — two real corpus commands run `xattr <hook>` to inspect
+  // the attribute list — is excluded by construction rather than by a list.
+  /\bxattr\b[^\n]*\s-[A-Za-z]*[cdw][A-Za-z]*\b/,
 ];
 
 /** Interpreters whose argument is a program this module cannot read. */

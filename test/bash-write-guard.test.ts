@@ -21,6 +21,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { spawnSync } from "child_process";
 import {
   decideBashWrite,
   segments,
@@ -833,5 +834,125 @@ describe("#1203: an escaped quote outside a quote does not OPEN one", () => {
     // above that handles it, not this one. Both halves must hold at once.
     expect(decideBashWrite("echo 'a'\\''b' ; rm /r/x").blocked).toBe(false);
     expect(segments("echo 'a'\\''b' ; rm /r/x")).toEqual(["echo 'a'\\''b'", "rm /r/x"]);
+  });
+});
+
+/**
+ * `bash -n` — does this spelling even parse? A guard that lets through a
+ * string the shell refuses to run has let through nothing, and this is the
+ * only thing that tells a bypass apart from a typo. Used in both directions
+ * below: to prove the witnesses are programs, and to prove the fail-open
+ * exits the review flagged are unreachable.
+ */
+function parses(cmd: string): boolean {
+  return spawnSync("/bin/bash", ["-n", "-c", cmd], { encoding: "utf8" }).status === 0;
+}
+
+describe("#1205 WITNESS: the $() depth scan must skip quoted spans", () => {
+  // Raised by the plugin security review against the pushed branch and
+  // confirmed by execution. The depth counter counted a `)` that was INSIDE
+  // a string literal, dropped to zero early and ended the word mid
+  // substitution. The leftover `"` then had no partner, so `readWord`'s
+  // quote branch took `close === -1` and swallowed the rest of the line —
+  // including the `>` operator. No operator, no target, ALLOW.
+  //
+  // It is the same sentence as #1205 itself: the bug is what the scanner
+  // cannot see, not the substitution.
+  const cases: [string, string][] = [
+    ["a paren inside DOUBLE quotes", `echo $(echo "x)") > ${LIVE_TREE}/${SALT}`],
+    ["a paren inside SINGLE quotes", `echo $(echo 'x)') > ${LIVE_TREE}/${SALT}`],
+    ["the quoted paren in the second of two substitutions", `echo $(date) $(echo "x)") > ${LIVE_TREE}/${SALT}`],
+    ["a quoted paren in a tee operand's neighbour", `echo $(echo "x)") | tee ${LIVE_TREE}/${STATE}`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("CONTROL: every witness above is a program bash will run", () => {
+    // Without this the witnesses prove nothing — a string the shell refuses
+    // is not a bypass. The review's own reproduction wrote a file through
+    // the first spelling.
+    for (const [, cmd] of cases) expect(parses(cmd)).toBe(true);
+  });
+});
+
+describe("#1205 CONTROL: skipping quoted spans is not widening the scan", () => {
+  test("a balanced substitution with no quotes is unchanged", () => {
+    expect(decideBashWrite(`echo $(echo x) > ${LIVE_TREE}/${SALT}`).blocked).toBe(true);
+    expect(writeTargets(`echo x > $(dirname /a/b)/${STATE}`)).toEqual([`$(dirname /a/b)/${STATE}`]);
+  });
+
+  test("a substitution-built path naming nothing protected stays allowed", () => {
+    expect(decideBashWrite("echo x > $(mktemp -d)/out.txt").blocked).toBe(false);
+    expect(decideBashWrite('echo $(echo "x)") > /tmp/out.txt').blocked).toBe(false);
+  });
+
+  test("the three UNTERMINATED spellings are bash syntax errors, so no refusal path is added", () => {
+    // The security review called these fail-open and asked for an
+    // `unparseable` flag. They ARE the consume-to-end branch, and the branch
+    // is deliberate — but the question is moot: none of them is a program,
+    // so there is no write for a refusal to prevent. Machinery guarding an
+    // unreachable state costs real commands and protects nothing.
+    //
+    // Recorded as an assertion rather than as prose so that if any of these
+    // ever becomes valid shell, this row goes red and the decision is re-made
+    // with evidence instead of being inherited.
+    const unterminated = [
+      "echo x > `id -un/" + STATE,
+      `echo x > /tmp/$(id -un/${STATE}`,
+      `echo x > "${LIVE_TREE}/${STATE}`,
+      // The spelling that genuinely ALLOWs: an unterminated quote placed
+      // BEFORE the operator swallows the `>` itself. Also not a program.
+      `echo "x > ${LIVE_TREE}/${STATE}`,
+    ];
+    for (const cmd of unterminated) expect(parses(cmd)).toBe(false);
+  });
+});
+
+describe("#1146: xattr's mutating forms are -w, -d and -c, read off the tool", () => {
+  // `xattr --help` on macOS:
+  //   xattr [-lrsvx] file …                    list      — a READ
+  //   xattr -p [-lrsvx] attr file …            print     — a READ
+  //   xattr -w [-rsx] attr value file …        set       — MUTATES
+  //   xattr -d [-rsv] attr file …              delete    — MUTATES
+  //   xattr -c [-rsv] file …                   clear ALL — MUTATES
+  //
+  // The pattern shipped in the first revision of this PR, `-[dws]`, is wrong
+  // in BOTH directions against that: it misses `-c`, which deletes every
+  // attribute on the file, and it treats `-s` — "act on the symbolic link
+  // itself" — as a mutation. It also reads a single letter, so any cluster
+  // hides the verb.
+  const mutating: [string, string][] = [
+    ["-d, the recorded corpus command", `xattr -d com.apple.provenance /h/X.hook.ts`],
+    ["-w", `xattr -w a b /h/X.hook.ts`],
+    ["-c, which clears every attribute", `xattr -c /h/X.hook.ts`],
+    ["-rc, the mutating letter last in the cluster", `xattr -rc /h/X.hook.ts`],
+    ["-cr, the mutating letter FIRST in the cluster", `xattr -cr /h/X.hook.ts`],
+    ["-dr, same shape with delete", `xattr -dr a /h/X.hook.ts`],
+    ["-sw, a read modifier in front of a write", `xattr -sw a b /h/X.hook.ts`],
+  ];
+  test.each(mutating)("%s mutates", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  const reads: [string, string][] = [
+    ["a bare invocation lists attributes", `xattr /h/X.hook.ts`],
+    ["-l is long format", `xattr -l /h/X.hook.ts`],
+    ["-p prints one attribute", `xattr -p com.apple.provenance /h/X.hook.ts`],
+    ["-lr", `xattr -lr /h/X.hook.ts`],
+    ["-x is hex output", `xattr -x /h/X.hook.ts`],
+    ["-rsv are all modifiers", `xattr -rsv /h/X.hook.ts`],
+    // This one CHANGES with this revision: `-[dws]` refused it. `-s` does not
+    // mutate, so refusing it was a false positive — stated rather than
+    // quietly dropped.
+    ["-s alone acts on the link and reads", `xattr -s /h/X.hook.ts`],
+  ];
+  test.each(reads)("%s stays allowed", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("CONTROL: the cluster rule still needs a protected target", () => {
+    expect(decideBashWrite("xattr -c /tmp/notes.md").blocked).toBe(false);
+    expect(decideBashWrite("xattr -cr ~/Projects/x/README.md").blocked).toBe(false);
   });
 });
