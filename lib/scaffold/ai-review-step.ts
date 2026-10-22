@@ -225,8 +225,34 @@ export const AI_REVIEW_REQUIRE_VALUE = "true";
  * same shape, a standing bypass no pull request has to mention. A label is
  * scoped to one pull request, carries the account that applied it in the
  * timeline, and is named in the annotation — so "waived" and "passed" are
- * different sentences in the check output. Applying it needs write access,
- * which a fork contributor does not have.
+ * different sentences in the check output.
+ *
+ * **Who can waive (#1207).** The boundary is **repository write**, and the
+ * previous sentence here said something narrower and therefore misleading: it
+ * reasoned from *"a fork contributor does not have write access"*, which is
+ * true and is not the line that matters. Applying a label needs the `pull
+ * requests: write` permission, which every collaborator at `write` or above
+ * holds — on this repository a wider set than "not a fork contributor"
+ * suggests, and on a consumer repository a set nobody here can see. What the
+ * waiver buys is therefore ATTRIBUTION and not gatekeeping: the timeline names
+ * the account and the moment, and the check output says WAIVED rather than
+ * passed. Anybody who could merge the pull request could also waive it, and
+ * the design does not pretend otherwise.
+ *
+ * **It is a STANDING waiver, decided and not overlooked (#1207).** The label
+ * survives every later push to the pull request, so a review waived while the
+ * diff was three lines stays waived after it grows. The alternative — binding
+ * the waiver to the head SHA — was considered and rejected: `contains()` reads
+ * the label NAME and the payload carries no application time, so pinning it to
+ * a commit means a label per push (`ai-review-override:<sha>`), which is
+ * friction an operator routes around by re-applying it every time, i.e. the
+ * same standing waiver with more steps. What makes the standing form
+ * acceptable is that it is not silent: the waiver re-emits
+ * `AI_REVIEW_WAIVED_TITLE` on EVERY run while the label is on, so the latest
+ * check output on the latest push says it was waived, and the annotation
+ * itself says the waiver is standing. Removing the label puts the refusal
+ * back — which is now true, because `labeled`/`unlabeled` are in
+ * `AI_REVIEW_PULL_REQUEST_TYPES`.
  *
  * **Why `contains()` and not a parse.** The runner evaluates the filter before
  * the step starts and binds the literal `true` or `false`, so the bash side is
@@ -243,6 +269,49 @@ export const AI_REVIEW_OVERRIDE_VAR = "AI_REVIEW_OVERRIDE";
 
 /** The exact value of that variable which waives the refusal. */
 export const AI_REVIEW_OVERRIDE_VALUE = "true";
+
+/**
+ * The `pull_request` activity types `AI_REVIEW_WORKFLOW_FILE` subscribes to —
+ * the three GitHub defaults, PLUS the two the waiver needs (#1207).
+ *
+ * **The measured defect.** `AI_REVIEW_OVERRIDE_VAR` resolves from
+ * `contains(github.event.pull_request.labels.*.name, …)`, which reads the
+ * EVENT PAYLOAD and not live repository state. With no `types:` key the
+ * trigger takes GitHub's defaults — `opened`, `synchronize`, `reopened` — and
+ * `labeled` is not among them, so applying the label fired nothing. Re-running
+ * did not help either: a re-run replays the ORIGINAL payload, which predates
+ * the label. Measured on #1198: `gh run rerun --failed` came back `failure`,
+ * unchanged, and `gh pr close` + `gh pr reopen` — `reopened` IS a default —
+ * flipped the same commit from `ai-review fail 13s` to `ai-review pass 14s`
+ * with no code change. So the escape hatch the refusal text documents could
+ * not be exercised by the action it documents, and the close/reopen
+ * workaround CLEARS auto-merge, which an operator loses silently.
+ *
+ * **All five are spelled, and that is the trap.** `types:` REPLACES the
+ * default set rather than extending it. Writing `types: [labeled]` would fix
+ * the waiver and stop `ai-review` running on ordinary pushes — a required
+ * check that no longer reports, which is the silent hang
+ * `test/merge-group-trigger.test.ts` exists about, arrived at from the other
+ * direction. `unlabeled` is here because the annotation promises *"Remove the
+ * label to put the refusal back"*, and without it that sentence is false too.
+ *
+ * **This is `ai-review`'s trigger and NOT the shared one.** `ci.yml` and
+ * `gates.yml` keep `CI_PULL_REQUEST_TRIGGER` with the defaults. A label is not
+ * a code change, and subscribing the full suite to `labeled`/`unlabeled` buys
+ * no coverage and spends a runner on every triage label anybody applies. Only
+ * this workflow reads a label, so only this workflow subscribes to label
+ * events.
+ *
+ * One exported binding, so the generator and the case that counts the five are
+ * reading the same list rather than two hand-typed copies that agree.
+ */
+export const AI_REVIEW_PULL_REQUEST_TYPES: readonly string[] = [
+  "opened",
+  "synchronize",
+  "reopened",
+  "labeled",
+  "unlabeled",
+];
 
 /** The step's `id:`, so a later step can read `steps.<id>.outputs.mode`. */
 export const AI_REVIEW_AUTH_STEP_ID = "ai-review-auth";
@@ -347,6 +416,27 @@ export const AI_REVIEW_UNMEASURED_TITLE = "AI review UNMEASURED";
  * in this job with no name of its own.
  */
 export const AI_REVIEW_WAIVED_TITLE = "AI review WAIVED";
+
+/**
+ * The sentence every waiver annotation ends on, so both of them say the same
+ * thing about how long the waiver lasts (#1207).
+ *
+ * See `AI_REVIEW_OVERRIDE_LABEL` for the decision. The short version: the
+ * waiver is standing by design, and the price of that is that it has to SAY
+ * so, on every run it passes, in the annotation a maintainer actually reads —
+ * otherwise the pull request that was waived at three lines is still waived at
+ * three hundred and nothing on the check ever mentioned it.
+ *
+ * One binding, carried into both branches. Two hand-typed copies of a sentence
+ * about a standing bypass is how one of them gets updated.
+ */
+export const AI_REVIEW_STANDING_WAIVER_NOTE =
+  `This waiver is STANDING: it survives every later push to this pull ` +
+  `request, so the diff that finally merges may be much larger than the one ` +
+  `that was waived — this annotation re-appears on every run while the label ` +
+  `is on, and that is the only notice you get. Remove the label to put the ` +
+  `refusal back on the next push, or now: this workflow subscribes to the ` +
+  `'unlabeled' activity type, so removing it re-runs the check.`;
 
 /**
  * The title that says a review was READ, carried by the one branch that can
@@ -2923,10 +3013,50 @@ export function buildReviewRunScript(version: string): string {
   const waived =
     `This pull request carries the '${AI_REVIEW_OVERRIDE_LABEL}' label, so ` +
     `the refusal above is WAIVED and this check passes having measured ` +
-    `nothing. The review action did not complete; no AI review was read on ` +
-    `this pull request and this is not one. A human applied the label and ` +
-    `the pull request's timeline records which account and when. Remove the ` +
-    `label to put the refusal back.`;
+    `nothing. The review action did not complete and wrote NO findings ` +
+    `payload, so no AI review was read on this pull request and this is not ` +
+    `one. A human applied the label and the pull request's timeline records ` +
+    `which account and when. ${AI_REVIEW_STANDING_WAIVER_NOTE}`;
+
+  // #1207. The branch the waiver must NOT reach, and the asymmetry this fixes.
+  //
+  // The success branch above cannot waive over a payload: `-s` adjudicates
+  // first and the waiver sits inside the block entered only when there is
+  // nothing to read. This branch had no such ordering — `${waived}` fired
+  // after the route switch whatever the switch had found, including the
+  // `${pendingPayload}` route, where a findings payload IS on disk and may
+  // carry a `critical`. Its own sentence then asserted "no AI review was read
+  // on this pull request and this is not one", which is false exactly when a
+  // payload exists, and that sentence is what a maintainer acts on.
+  //
+  // THE FIX IS NOT TO ADJUDICATE HERE, and that is a decision rather than an
+  // omission. The issue proposed mirroring the success branch literally — run
+  // the adjudicator when `-s` holds — and on this branch that is strictly
+  // WEAKER than refusing. `${pendingPayload}` says why the adjudicator is not
+  // run: the action died around the write, so a half-written findings array is
+  // indistinguishable from a clean one. Adjudicating a truncated payload to
+  // CLEAN and then letting the label waive it is the fail-open with two extra
+  // steps. Refusing on a payload PRESENT covers both — the blocking case the
+  // issue names and the untrustworthy-clean case it does not.
+  //
+  // The lockout the waiver exists to prevent is untouched: that state is a
+  // pull request editing ${AI_REVIEW_WORKFLOW_FILE}, which the action declines
+  // on its workflow-validation guard and exits SUCCESS with no payload — the
+  // branch above, which still waives.
+  const waiverWithPayload =
+    `This pull request carries the '${AI_REVIEW_OVERRIDE_LABEL}' label and ` +
+    `the waiver does NOT apply here. The label waives "nobody looked"; a ` +
+    `findings payload IS present at the path this job gave the reviewer, so ` +
+    `somebody looked and wrote a result, and this job will not pass a run ` +
+    `whose own artefact may carry a blocking finding it declined to read. ` +
+    `The payload is NOT adjudicated for the reason the route above states — ` +
+    `the action did not complete, and a partially written findings list is ` +
+    `indistinguishable from a clean one — so neither "it is clean" nor "it ` +
+    `blocks" is a reading this run can take, and waiving on an unread payload ` +
+    `would be passing a review nobody adjudicated (#1207). Read the payload ` +
+    `and the execution file, then re-run: a run whose action COMPLETES ` +
+    `adjudicates the payload for real. This check is UNMEASURED, not a ` +
+    `passing review.`;
 
   // The third state, and the one most easily mistaken for a pass: the
   // reviewer ran, wrote a payload, and the ADJUDICATOR could not run over it
@@ -3065,8 +3195,8 @@ export function buildReviewRunScript(version: string): string {
     `the refusal above is WAIVED and this check passes having measured ` +
     `nothing. The reviewer wrote no findings payload; no AI review was read ` +
     `on this pull request and this is not one. A human applied the label and ` +
-    `the pull request's timeline records which account and when. Remove the ` +
-    `label to put the refusal back.`;
+    `the pull request's timeline records which account and when. ` +
+    `${AI_REVIEW_STANDING_WAIVER_NOTE}`;
 
   // #826: WHICH of three routes produced the empty payload, measured.
   //
@@ -3500,9 +3630,31 @@ fi
 echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::$(escape_annotation "\${route}")"
 
 # #1180, and unconditional for the reason the success branch above states.
+#
+# #1207: the payload test is INSIDE the waiver and not beside it, so there is
+# one reading of \${${AI_REVIEW_OVERRIDE_VAR}} on this branch and the two
+# outcomes are visibly the two halves of one decision. The success branch
+# reaches its waiver only when \`-s\` on the payload is false; this is that
+# ordering, expressed where this branch's route switch has already run so the
+# route still prints above whichever half is taken.
 if [ "\${${AI_REVIEW_OVERRIDE_VAR}:-}" = "${AI_REVIEW_OVERRIDE_VALUE}" ]; then
-  echo "::warning title=${AI_REVIEW_WAIVED_TITLE}::${waived}"
-  exit 0
+  # \`! -s\` AND NOT \`-s\` WITH THE ARMS SWAPPED, which would read the same and
+  # is not. \`test/ai-review-payload-reading.test.ts\` AC-5 builds its mutant by
+  # locating the SUCCESS branch's payload reading as the single
+  # \`\\n  if [ -s "\` in this module, and ABORTS rather than mutating a line
+  # nobody chose when a second one appears — which is how this spelling was
+  # arrived at rather than guessed. Written this way there is one \`-s\` reading
+  # at that indent and it is still the success branch's, so the instrument
+  # stays unambiguous without being widened to accommodate this branch.
+  #
+  # It is also the clause the issue asks for, said in its own words: reach the
+  # waiver only when there is genuinely nothing to adjudicate.
+  if [ ! -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
+    echo "::warning title=${AI_REVIEW_WAIVED_TITLE}::${waived}"
+    exit 0
+  fi
+  echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${waiverWithPayload}" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
 echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${refusal}" >&2

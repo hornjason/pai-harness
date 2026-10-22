@@ -35,6 +35,7 @@ import {
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
 import {
   AI_REVIEW_JOB,
+  AI_REVIEW_PULL_REQUEST_TYPES,
   aiReviewScaffoldAction,
   buildAuthDetectStep,
   buildOutcomesHeader,
@@ -3233,6 +3234,30 @@ export const CI_PULL_REQUEST_TRIGGER = `  # NO branches: filter, deliberately (#
   # no new coverage.
   pull_request:`;
 
+/**
+ * `ai-review.yml`'s own `on.pull_request`: `CI_PULL_REQUEST_TRIGGER`'s body
+ * plus an explicit `types:` list (#1207).
+ *
+ * Why this workflow and no other, why all five types are spelled, and what the
+ * label could not do without them: `AI_REVIEW_PULL_REQUEST_TYPES` in
+ * `lib/scaffold/ai-review-step.ts`, which is the single list this renders.
+ *
+ * Built FROM `CI_PULL_REQUEST_TRIGGER` rather than beside it. The no-`branches:`
+ * rationale is #1136's and is identical here; a second copy of that comment
+ * block is a second thing to update when the reasoning moves, and
+ * `test/stacked-pr-ci-trigger.test.ts` checks all four generated bodies for the
+ * property it describes.
+ */
+export const AI_REVIEW_PULL_REQUEST_TRIGGER = `${CI_PULL_REQUEST_TRIGGER}
+    # #1207. The three GitHub defaults, PLUS \`labeled\`/\`unlabeled\` — and
+    # the defaults are spelled because \`types:\` REPLACES them rather than
+    # extending them. Omitting them would fix the waiver and stop this
+    # required check running on ordinary pushes.
+    #
+    # Only this workflow subscribes to label events, because only this
+    # workflow reads a label. A label is not a code change.
+    types: [${AI_REVIEW_PULL_REQUEST_TYPES.join(", ")}]`;
+
 export const CI_CONCURRENCY = `# The GROUP does the work here, not the flag. A run is only ever cancelled by
 # another run in the SAME group, so keying a push on its own commit makes the
 # question moot: there is never a second occupant to do the cancelling.
@@ -3773,7 +3798,7 @@ on:
   # See the block comment in lib/scaffold/steps.ts: no branches: filter, and
   # its absence hangs a merge queue silently rather than failing it (#867).
   merge_group:
-${CI_PULL_REQUEST_TRIGGER}
+${AI_REVIEW_PULL_REQUEST_TRIGGER}
 
 ${aiReviewPermissions}
 

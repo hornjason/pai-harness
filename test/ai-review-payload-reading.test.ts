@@ -291,6 +291,14 @@ describe("AC-5: the pre-#816 script is shown reporting the false sentence", () =
     // spaces; the failure branch's is at column 0. The leading newline and
     // indent are the discriminator, and the count below still aborts if a
     // third one appears rather than mutating a line nobody chose.
+    //
+    // It aborted once more in #1207, which added a payload reading to the
+    // failure branch's waiver at this exact indent, and the repair was the
+    // one prescribed above rather than a wider needle: that reading is
+    // spelled `! -s` — "waive only when there is nothing to adjudicate",
+    // which is what the branch means — so it is a different string and this
+    // needle still names one line. Nothing here was loosened to let it
+    // through; if you are about to raise the count, read that comment first.
     const needle = '\n  if [ -s "\\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]';
     const count = source.split(needle).length - 1;
     if (count !== 1) {
