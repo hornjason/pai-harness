@@ -171,24 +171,81 @@ export function stripHeredocs(s: string): string {
 }
 
 /**
- * The delimiter word of a `<<WORD` on this line, if any.
+ * Which character positions on this line are OUTSIDE every quoted span.
  *
- * #1176: deliberately NOT quote-aware, and that is load-bearing. Restricting
- * this to a top-level `<<` — the obvious hardening — was tried and REDDENS
- * the recorded `pai-config#474` false positive, whose heredoc is legitimately
- * nested inside `"$(cat <<'EOF' … )"`. A heredoc inside a command
- * substitution inside double quotes is a real heredoc; telling it apart from
- * `echo "<<EOF"` needs command-substitution nesting, which is a shell parser.
- * So `echo "<<EOF"` followed by a later bare `EOF` line still over-strips.
- * That direction over-blocks nothing — it deletes text the checks would
- * otherwise read — and is recorded rather than half-fixed.
+ * A `$(` opens a COMMAND SUBSTITUTION, and the shell parses its contents as a
+ * fresh command with fresh quoting — so text inside `"$( … )"` is unquoted
+ * even though it sits between double quotes. That one rule is the whole
+ * difference between the two cases in #1196's H6, and it is why this is a
+ * small stack rather than a boolean. Single quotes do not substitute, so a
+ * `$(` inside them is literal and opens nothing.
+ *
+ * Deliberately per-line, matching its only caller: a quote opened on an
+ * earlier line reads as unquoted here. That is the behaviour this function
+ * replaced — which was not quote-aware at all — so no case gets worse, and
+ * the direction it is wrong in deletes text rather than admitting it.
+ */
+function unquotedPositions(line: string): boolean[] {
+  const open = new Array<boolean>(line.length).fill(false);
+  const stack: string[] = ['']; // quote state per substitution depth
+  let i = 0;
+  while (i < line.length) {
+    const q = stack[stack.length - 1];
+    const c = line[i];
+    if (q === "'") {
+      if (c === "'") stack[stack.length - 1] = '';
+      i++;
+    } else if (q === '"') {
+      if (c === '\\') i += 2;
+      else if (c === '$' && line[i + 1] === '(') (stack.push(''), (i += 2));
+      else if (c === '"') (stack[stack.length - 1] = ''), i++;
+      else i++;
+    } else if (c === '\\') {
+      i += 2;
+    } else if (c === '$' && line[i + 1] === '(') {
+      open[i] = open[i + 1] = true;
+      stack.push('');
+      i += 2;
+    } else if (c === ')' && stack.length > 1) {
+      stack.pop();
+      i++;
+    } else if (c === '"' || c === "'") {
+      stack[stack.length - 1] = c;
+      i++;
+    } else {
+      open[i] = true;
+      i++;
+    }
+  }
+  return open;
+}
+
+/**
+ * The delimiter word of a `<<WORD` on this line, if any — at a position the
+ * shell would read as an operator rather than as text.
+ *
+ * #1176 left this NOT quote-aware on purpose, because the obvious hardening
+ * ("must be top-level") REDDENS the recorded `pai-config#474` false positive,
+ * whose heredoc is legitimately nested inside `"$(cat <<'EOF' … )"`. That
+ * reasoning was right about the fix it tried and wrong about the conclusion:
+ * the distinction is not depth, it is whether a command substitution has
+ * reset the quoting. #1196 pays for the small stack that tells them apart.
+ *
+ * What it buys: `bun -e 'x = "<<EOF"'` opened a heredoc, so every following
+ * line up to a bare `EOF` was deleted as a document — a quoted STRING chose
+ * what the guard could see. H5 was this same body-drop reached through the
+ * wrong character position (`<<<`); this is the wrong quoting position.
  */
 function heredocDelimiter(line: string): string | null {
   // #1184: `(?<!<)` and `(?!<)` exclude a `<<<` HERESTRING, which has no
   // terminator at all. Matching one invented a delimiter from the quoted text
   // after it and then ran straight into the unterminated case above.
-  const m = /(?<!<)<<(?!<)-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line);
-  return m ? m[2] : null;
+  const re = /(?<!<)<<(?!<)-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  const open = unquotedPositions(line);
+  for (let m = re.exec(line); m; m = re.exec(line)) {
+    if (open[m.index]) return m[2];
+  }
+  return null;
 }
 
 /** Remove quote characters, keep the contents. Use when looking for a TARGET. */
@@ -215,7 +272,26 @@ export function commandWord(segment: string): string {
   // The grep-PATTERN false positive this function was protecting against is
   // unaffected: `grep -nE "chmod" f` still resolves to `grep`, because the
   // real verb comes FIRST and a pattern is never in first position.
-  for (const raw of dequote(stripHeredocs(segment)).trim().split(/\s+/)) {
+  //
+  // #1196: the TOKENS come from `scanSegment`, the same quote-aware pass the
+  // redirect scan uses. The #1184 spelling was `dequote(...).split(/\s+/)`,
+  // which removes the quote characters and THEN splits on whitespace — so a
+  // quoted value's internal spaces become token boundaries. `A="1 grep" cp
+  // <protected> /tmp/x` split to `A=1`, `grep`, `cp`, …: the `=` skip
+  // consumed only `A=1` and the verb resolved to `grep`, which is on the
+  // read-only side, so the `cp` was allowed. A quoted span must stay inside
+  // its word; `readWord` already does that, and now there is one tokeniser
+  // rather than two spellings of the idea.
+  for (const raw of scanSegment(segment).words) {
+    // A token carrying WHITESPACE is not a verb. It is what the quote-aware
+    // tokeniser above is for — `A="1 grep"` is one word — and the same
+    // property makes `--body "## Goal … chflags uchg …"` one word too. The
+    // first spelling of this fix returned that whole document as the command
+    // word, and `decideBashWrite` tests `IN_PLACE` against `${word} ${code}`:
+    // a `gh issue create` whose body described chflags on a hook was refused,
+    // which is the recorded `pai-config#474` family. The shell cannot run a
+    // verb named `chmod 777` either, so nothing executable is lost.
+    if (/\s/.test(raw)) continue;
     const tok = raw
       .replace(/^[({\\]+/, '') // `(cmd …`, `{ cmd …`, `\cmd` — alias bypass
       .replace(/^.*\//, ''); // `/usr/bin/python3` -> `python3`
@@ -283,7 +359,18 @@ function isWriteOperand(op: string): boolean {
  * was seen by neither pass. Scanning finds the operator at a position and
  * then reads the operand as a word, which is the same rule the shell uses.
  */
-export function writeTargets(segment: string): string[] {
+/**
+ * One left-to-right pass over a segment, returning its WORDS and its
+ * redirect TARGETS.
+ *
+ * #1196 made this the single tokeniser. `commandWord` previously did its own
+ * `dequote(...).split(/\s+/)`, which is not tokenisation: it let a quoted
+ * multi-word assignment VALUE break into separate tokens, so
+ * `A="1 grep" cp …` dropped only `A=1` on the `includes('=')` skip and
+ * resolved the verb to `grep`. Here a quoted span stays INSIDE its word, so
+ * the same input yields the single token `A=1 grep`, which is skipped whole.
+ */
+function scanSegment(segment: string): { words: string[]; targets: string[] } {
   const targets: string[] = [];
   const words: string[] = [];
   const s = stripHeredocs(segment);
@@ -316,8 +403,26 @@ export function writeTargets(segment: string): string[] {
     }
     const [w, next] = readWord(s, i);
     i = next === i ? i + 1 : next;
+    // #1196 R3: an IO NUMBER is not a word. POSIX: an unquoted digit string
+    // immediately preceding `<` or `>` names a file descriptor, so the `2`
+    // in `2>/dev/null` belongs to the redirect. Emitting it as a word put it
+    // in LAST position among a `cp`'s arguments, which is where this module
+    // looks for the destination — so `cp /tmp/x.json /r/<protected>
+    // 2>/dev/null` read its destination as `2` and the real one was demoted
+    // to a source. Measured on the corpus: four genuine writes to a gate
+    // artifact or a hook, allowed by #1188, and found only because a
+    // classifier written for a different question made the same mistake.
+    if (w && /^\d+$/.test(w) && (s[i] === '>' || s[i] === '<')) continue;
     if (w) words.push(w);
   }
+  return { words, targets };
+}
+
+/**
+ * Paths a segment writes through shell redirection or a copying verb.
+ */
+export function writeTargets(segment: string, whole: string = segment): string[] {
+  const { words, targets } = scanSegment(segment);
 
   // `tee` takes MANY files. Reading only the first operand let
   // `tee /tmp/a <protected>` through (#1176).
@@ -336,11 +441,9 @@ export function writeTargets(segment: string): string[] {
     if (args.length >= 2) {
       const dest = args[args.length - 1];
       targets.push(dest);
-      // #1184: when the destination is a DIRECTORY the real sink is
-      // `dest/basename(src)`, for every source. `cp /tmp/forged/
-      // workflow-state.json /Users/jhorn/.rungate/x/` names no protected
-      // artifact in its last argument and writes one.
-      if (isDirDestination(dest)) {
+      // When the destination is a DIRECTORY the real sink is
+      // `dest/basename(src)`, for every source (#1184).
+      if (isDirDestination(dest, args, whole)) {
         for (const src of args.slice(0, -1)) {
           targets.push(`${dest.replace(/\/+$/, '')}/${src.replace(/^.*\//, '')}`);
         }
@@ -351,22 +454,51 @@ export function writeTargets(segment: string): string[] {
 }
 
 /**
- * Does this destination name a directory? A trailing slash settles it without
- * touching the disk; otherwise one `stat`, which is allowed to fail — a path
- * that cannot be examined is treated as a plain file, because the plain-file
- * reading is what the last-argument test already covers.
+ * Does this destination name a DIRECTORY? Four oracles, three of them
+ * syntactic, in the order they settle the question cheaply.
+ *
+ * #1184 asked only the fourth, `statSync`, and that is #1196's R2: a
+ * PreToolUse hook decides before ANY of the command has run, so in
+ * `mkdir -p d && cp <protected> d` the directory never exists at decision
+ * time. Measured both ways on the same command — directory absent ALLOW,
+ * directory present BLOCK. A guard whose answer depends on a directory the
+ * same command is about to create is not a guard.
+ *
+ * The reviewer's simpler repair was to delete the test and push
+ * `dest/basename(src)` unconditionally. Measured on 5,543 corpus commands
+ * naming a protected artifact, that refuses 19 real commands and catches no
+ * real write that the oracles below miss — every one of the 19 is a
+ * protected file copied OUT to a plain destination, and 11 of those are the
+ * `cp hooks/X.hook.ts /tmp/x.bak` backup that
+ * `.claude/rules/checks-must-be-able-to-fail.md` requires before a mutation
+ * battery. A guard that refuses the repository's own mandated practice gets
+ * switched off. So the test stays and gains the readings it was missing.
  */
-// Declared beside its only reader, matching `lib/gate-result-protection.ts`.
-import { statSync } from 'fs';
-
-function isDirDestination(dest: string): boolean {
-  if (dest.endsWith('/')) return true;
+function isDirDestination(dest: string, args: string[], whole: string): boolean {
+  if (dest.endsWith('/')) return true; // `cp x d/` — the shell requires a dir
+  if (args.length > 2) return true; // `cp a b c d` — d MUST be a directory
+  if (createdAsDirectory(dest, whole)) return true; // `mkdir -p d && cp x d`
   try {
     return statSync(dest).isDirectory();
   } catch {
-    return false;
+    return false; // unreadable reads as a plain file; that is the last-arg case
   }
 }
+
+/** Does some earlier segment of this same command `mkdir` the destination? */
+function createdAsDirectory(dest: string, whole: string): boolean {
+  const want = dest.replace(/\/+$/, '');
+  for (const seg of segments(whole)) {
+    if (commandWord(seg) !== 'mkdir') continue;
+    for (const a of scanSegment(seg).words.slice(1)) {
+      if (!a.startsWith('-') && a.replace(/\/+$/, '') === want) return true;
+    }
+  }
+  return false;
+}
+
+// Declared beside its only reader, matching `lib/gate-result-protection.ts`.
+import { statSync } from 'fs';
 
 /**
  * Non-option arguments of a segment, dequoted. This is what an in-place verb
@@ -522,7 +654,9 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
 
     // 1. Shell redirection and copying verbs. Never exempted by anything:
     //    this is the arm the old allowlist sat above, which is #1120.
-    for (const target of writeTargets(seg)) {
+    // The whole command is passed so the directory test can see a `mkdir`
+    // in an EARLIER segment (#1196 R2). Everything else is per-segment.
+    for (const target of writeTargets(seg, cmd)) {
       const pf = names(target, PROTECTED_FILES);
       if (pf) {
         return {

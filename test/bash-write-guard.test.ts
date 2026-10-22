@@ -265,6 +265,140 @@ describe("#1184 WITNESS: views, terminators and spellings", () => {
   });
 });
 
+/**
+ * Covers #1196 — two regressions #1188 shipped, plus H6.
+ *
+ * R1 and R2 are mine. Every case is labelled witness or control, because the
+ * first fixture written for R2 used an unprotected source basename and
+ * measured nothing while looking like a clean result.
+ */
+describe("#1196 WITNESS: the verb, the filesystem, and the quoted operator", () => {
+  const HOOK = "/tmp/bw/hooks/X.hook" + ".ts";
+  const cases: [string, string][] = [
+    // R1. #1188 made commandWord read `dequote(...)` then split on
+    //     whitespace. That is not tokenisation: a quoted multi-word
+    //     assignment VALUE survives the split as separate tokens and only
+    //     the first carries the `=` that the skip looks for, so the verb
+    //     resolves to a word out of the assignment.
+    ["R1 an assignment prefix must not hide cp", `A="1 grep" cp /tmp/forged/${STATE} /x/${STATE}`],
+    ["R1b the same for mv", `A="1 grep" mv /tmp/forged/${STATE} /x/${STATE}`],
+    ["R1c the same for a hook mode change", `A="1 grep" chmod 777 ${HOOK}`],
+    // R2. The destination's existence must not decide. A PreToolUse hook
+    //     runs before the whole command, so in `mkdir -p d && cp <p> d` the
+    //     directory never exists at decision time.
+    ["R2 a directory destination that does not exist yet", `mkdir -p /tmp/bwnope && cp /tmp/forged/${STATE} /tmp/bwnope`],
+    // H6. `<<WORD` inside a quoted span is not a heredoc operator. H5 was
+    //     the same mistake at the wrong CHARACTER position; this is the
+    //     wrong QUOTING position, and both fall into the same body-drop.
+    ["H6 a quoted heredoc operator must not eat the next lines", `bun -e 'x = "<<EOF"'\nrm -rf /x/${STATE}\nEOF`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+});
+
+describe("#1196 CONTROL: what must keep working", () => {
+  const cases: [string, string][] = [
+    // A heredoc nested in a command substitution inside double quotes is a
+    // REAL heredoc. This is the recorded pai-config#474 false positive and
+    // the reason H6 cannot be fixed by a plain "not inside quotes" test.
+    [
+      "pai-config#474 — a real heredoc inside \"$(…)\"",
+      `gh issue close 473 --comment "$(cat <<'EOF'\n- Run \`chflags uchg\` on hooks/X.hook.ts\nEOF\n)"`,
+    ],
+    ["an ordinary assignment prefix on a harmless command", `FOO=1 ls -la`],
+    ["a quoted multi-word assignment on a harmless command", `A="1 grep" ls -la`],
+    ["an ordinary read", "ls -la"],
+    // R2's cost, measured. The reviewer's simpler repair — push
+    // `dest/basename(src)` unconditionally — refuses all four of these, and
+    // on the corpus it refuses 19 real commands of exactly this shape while
+    // catching no real write the directory oracles miss. The first two are
+    // the backup `.claude/rules/checks-must-be-able-to-fail.md` tells an
+    // agent to take before mutating a guard.
+    ["backing up a hook before a mutation battery", `cp hooks/X.hook.ts /tmp/g239.bak`],
+    ["the same with a quoted path", `cp "$W/hooks/X.hook.ts" "$B/hook.ts"`],
+    ["staging gate state for a probe", `cp /Users/jhorn/.rungate/x/${STATE} /tmp/ws-254-probe.json`],
+    ["copying a hook out with -p", `cp -p /Users/jhorn/Projects/rungate/hooks/X.hook.ts /tmp/cmp/old.ts`],
+    // R1's own cost, found by the corpus sweep and not by review. Making the
+    // tokeniser quote-aware makes a `--body "…"` ONE word, and the first
+    // spelling returned that whole document as the command word — so a
+    // continuation line of a `gh issue create` whose body described
+    // `chflags uchg` on hook files matched IN_PLACE and was refused. Same
+    // family as pai-config#474 above, reached through the verb rather than
+    // through the heredoc.
+    [
+      "gh issue create whose BODY describes chflags on hooks",
+      `gh issue create --repo hornjason/pai-config --label "p1-ship-next" \\\n  --title "Production lockdown — Keychain salt migration + hook immutable flags" \\\n  --body "## Goal\nHarden the enforcement stack.\n\n## Steps (human execution)\n4. find ~/.pai/hooks -name '*.hook.ts' -exec chflags uchg {} +\n5. chflags uchg ~/.claude/settings.json" 2>&1`,
+    ],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+});
+
+/**
+ * Covers #1196 R3 — an IO number read as an argument.
+ *
+ * Not relayed with the other three. The corpus sweep run for R2's cost found
+ * it: four commands in the newly-blocked list were genuine writes INTO a
+ * protected path, which #1188 should already have refused. `2>/dev/null` is
+ * the whole bypass, and the head build was catching them only as a side
+ * effect of the unconditional-directory rule — a case going green under a
+ * fix aimed at something else, which is the fifth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+describe("#1196 R3 WITNESS: a trailing redirect must not demote the destination", () => {
+  const cases: [string, string][] = [
+    ["cp with 2>/dev/null", `cp /tmp/x.json /r/${STATE} 2>/dev/null`],
+    ["cp with 2>&1", `cp /tmp/x.json /r/${STATE} 2>&1`],
+    ["cp with >/dev/null 2>&1", `cp /tmp/x.json /r/${STATE} >/dev/null 2>&1`],
+    ["mv with 2>/dev/null", `mv /tmp/x.json /r/${STATE} 2>/dev/null`],
+    ["a hook, from the corpus", `cp /tmp/x.ts /Users/jhorn/.claude/hooks/Y.hook.ts 2>/dev/null`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("the IO number is dropped, and a real numeric argument is not", () => {
+    // `2` is a descriptor here, so the destination is the last word.
+    expect(writeTargets(`cp /tmp/x.json /r/${STATE} 2>/dev/null`)).toContain(`/r/${STATE}`);
+    // …but a bare `2` that is not followed by a redirect is an argument.
+    expect(writeTargets(`cp 2 /r/${STATE}`)).toContain(`/r/${STATE}`);
+  });
+});
+
+describe("#1196: the mechanisms, asserted directly", () => {
+  test("a quoted multi-word assignment value stays inside its token", () => {
+    expect(commandWord(`A="1 grep" cp /tmp/forged/${STATE} /x/${STATE}`)).toBe("cp");
+    // …and the #1184 behaviour it must not undo.
+    expect(commandWord(`"chmod" 777 x.hook.ts`)).toBe("chmod");
+    expect(commandWord(`grep -nE "chmod" f`)).toBe("grep");
+  });
+
+  test("a directory destination is settled syntactically before the disk", () => {
+    const d = "/tmp/bw-no-such-dir-" + process.pid;
+    // Oracle 1: a trailing slash. Oracle 2: more than two operands. Oracle 3:
+    // a `mkdir` earlier in the same command. None of the three touches the
+    // filesystem, and `d` does not exist.
+    expect(decideBashWrite(`cp /tmp/forged/${STATE} ${d}/`).blocked).toBe(true);
+    expect(decideBashWrite(`cp /tmp/forged/${STATE} /tmp/a.json ${d}`).blocked).toBe(true);
+    expect(decideBashWrite(`mkdir -p ${d} && cp /tmp/forged/${STATE} ${d}`).blocked).toBe(true);
+    // And with no oracle satisfied it is a plain destination: a read.
+    expect(decideBashWrite(`cp /tmp/forged/${STATE} ${d}`).blocked).toBe(false);
+  });
+
+  test("a quoted `<<WORD` is not a heredoc operator, but one inside $( ) is", () => {
+    // Quoted text: the lines after it must survive.
+    expect(stripHeredocs(`bun -e 'x = "<<EOF"'\nrm -rf /x/f\nEOF`)).toContain("rm -rf /x/f");
+    // Command substitution resets quoting, so this one IS a heredoc and its
+    // body is the document being written.
+    expect(stripHeredocs(`gh x --body "$(cat <<'EOF'\nchflags uchg hooks/X.hook.ts\nEOF\n)"`)).not.toContain(
+      "chflags uchg",
+    );
+  });
+});
+
 describe("#1184 CONTROL: the fixes must not widen the guard", () => {
   const cases: [string, string][] = [
     ["a terminated heredoc still drops its body", `cat <<EOF > /tmp/bw/notes.md\nchmod 777 evil.hook.ts\nEOF`],
