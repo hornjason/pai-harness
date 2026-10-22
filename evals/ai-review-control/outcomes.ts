@@ -130,14 +130,22 @@ export interface FindingCitation {
 }
 
 export interface ReviewFinding {
-  id: number;
+  /**
+   * Unique within the corpus, and a STRING.
+   *
+   * A withheld candidate has no issue number and never will — it was never
+   * filed — so the only stable identity it carries is its symptom hash. A
+   * numeric encoding of a hash is #1253 with a harder trigger: hash 1169 and
+   * issue #1169 key the same row. The backfill emits `String(issue.number)`.
+   */
+  id: string;
   /** Epoch seconds. A citation older than this is not a citation. */
   filedAt: number;
   closed: boolean;
   /** Every commit naming this id, before the filter. */
   citations: readonly FindingCitation[];
   /** Ids the close named — a duplicate's target, typically. */
-  closedInFavourOf: readonly number[];
+  closedInFavourOf: readonly string[];
   /** The responder's own answer, when one was recorded. */
   declared: FindingDisposition | null;
   /**
@@ -153,13 +161,13 @@ export interface ReviewFinding {
 }
 
 export interface FindingOutcomeReading {
-  id: number;
+  id: string;
   outcome: FindingOutcome;
   /** Citations that survived the filter. */
   citations: FindingCitation[];
   dropped: { sha: string; reason: CitationDropReason }[];
   /** The ids walked to reach SUPERSEDED, nearest first. Empty otherwise. */
-  supersedeChain: number[];
+  supersedeChain: string[];
   /** Sentences from the producing code — never re-derived by a caller. */
   detail: string[];
 }
@@ -235,28 +243,28 @@ export const CITATION_FILTER =
  */
 export const REVIEW_OUTCOME_PLANTS = [
   {
-    id: 1169,
+    id: "1169",
     expect: "FIXED" as const,
     why:
       "closed by dbf1044579ed750a0caac3ac82940bad86834e1f, 'feat(#1169): a negative control " +
       "for the reviewer', merged as PR #1201 nine files changed, four hours after it was filed",
   },
   {
-    id: 473,
+    id: "473",
     expect: "SUPERSEDED" as const,
     why:
       "no commit ever cited it; its close names #481 and #483, and #483 is a merged pull " +
       "request rather than a finding — the one-hop case, and the one that needs the shipped set",
   },
   {
-    id: 547,
+    id: "547",
     expect: "SUPERSEDED" as const,
     why:
       "names #530, which is itself a duplicate — the transitive case, and the one that caught " +
       "the first version of this module scoring 26 of 98 links as NO_ACTION",
   },
   {
-    id: 23,
+    id: "23",
     expect: "NO_ACTION" as const,
     why:
       "closed with no comment, no commit and no superseding reference — one of the 56 findings " +
@@ -280,11 +288,11 @@ function dispositionOutcome(d: FindingDisposition): FindingOutcome {
  */
 export function readFindingOutcomes(
   findings: readonly ReviewFinding[],
-  shippedIds: ReadonlySet<number>,
+  shippedIds: ReadonlySet<string>,
 ): FindingOutcomeReading[] {
   const byId = new Map(findings.map(f => [f.id, f]));
-  const kept = new Map<number, FindingCitation[]>();
-  const dropped = new Map<number, { sha: string; reason: CitationDropReason }[]>();
+  const kept = new Map<string, FindingCitation[]>();
+  const dropped = new Map<string, { sha: string; reason: CitationDropReason }[]>();
 
   for (const f of findings) {
     const keep: FindingCitation[] = [];
@@ -302,7 +310,7 @@ export function readFindingOutcomes(
   }
 
   /** True when this id's own evidence is a landed change. */
-  const isFixed = (id: number): boolean => {
+  const isFixed = (id: string): boolean => {
     const f = byId.get(id);
     if (f === undefined) return shippedIds.has(id);
     return f.closed && (kept.get(id)?.length ?? 0) > 0;
@@ -316,7 +324,7 @@ export function readFindingOutcomes(
    * "not superseded" without poisoning the answer for a caller that entered
    * the cycle from outside it.
    */
-  const walk = (id: number, seen: Set<number>): number[] | null => {
+  const walk = (id: string, seen: Set<string>): string[] | null => {
     const f = byId.get(id);
     if (f === undefined) return shippedIds.has(id) ? [] : null;
     if (seen.has(id)) return null;
@@ -338,7 +346,7 @@ export function readFindingOutcomes(
       detail.push(`citation ${d.sha.slice(0, 8)} dropped: ${d.reason}`);
     }
 
-    const base = { id: f.id, citations, dropped: drops, supersedeChain: [] as number[], detail };
+    const base = { id: f.id, citations, dropped: drops, supersedeChain: [] as string[], detail };
 
     // FIRST. A withheld candidate has no outcome to derive — whatever the
     // tracker says about it describes a finding nobody was shown.
@@ -412,11 +420,42 @@ export function summariseFindingOutcomes(
   const detail: string[] = [];
   for (const r of readings) detail.push(...r.detail);
 
+  // #1253. Two readings with the same id are not a tidy-up, they are a corpus
+  // this module cannot score: `readFindingOutcomes` keys its citation map on
+  // the id, so the later row's citations overwrite the earlier row's and a
+  // genuinely FIXED finding is reported NO_ACTION. Measured on b80c4985 —
+  // `7:NO_ACTION 7:NO_ACTION`, fixed=0 where it should be 1.
+  //
+  // The direction is why this refuses rather than warns: the row moves OUT of
+  // `fixed` and INTO `cost`, which is precisely the REGRESSION reading
+  // `compareReviewOutcomes` exists to detect. A corpus that manufactures the
+  // instrument's own alarm must not be scored.
+  //
+  // Not deduplicated and not last-wins. Which of two same-keyed rows the
+  // caller meant is not something this module can know, and guessing is the
+  // Silent Default Substitution the config-access rule names.
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const r of readings) {
+    if (seen.has(r.id)) repeated.add(r.id);
+    seen.add(r.id);
+  }
+  const unique = repeated.size === 0;
+  if (!unique) {
+    detail.push(
+      `duplicate finding ids, so this corpus cannot be scored: ` +
+        `${[...repeated].sort().join(", ")}. Each id must be unique — a repeated one makes ` +
+        "one row's citations overwrite another's, which moves a fixed finding into the cost " +
+        "bucket and reads as a regression that did not happen. An unfiled candidate has no " +
+        "issue number; give it its symptom hash.",
+    );
+  }
+
   // A finding reaches a terminal state by being answered OR by being withheld.
   // Requiring `closed > 0` alone would call a totally silenced reviewer
   // UNMEASURED, and a filter that suppressed everything is the one reading
   // this must be able to call a regression.
-  const usable = readings.length > 0 && closed + suppressed > 0;
+  const usable = unique && readings.length > 0 && closed + suppressed > 0;
   if (!usable) {
     detail.push(
       `this run measured nothing it can report on: ${readings.length} finding(s), ` +
