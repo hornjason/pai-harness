@@ -11,9 +11,29 @@
  *
  * A gate verdict must not be writable by the thing being gated. The guard
  * therefore has to be at least as good at reading JSON as the readers of
- * `workflow-state.json` are, and the version this replaces was not: it
- * enumerated two spacings of one key with `String.includes`, so
- * `"result"  :  "PASS"` walked past it.
+ * `workflow-state.json` are, and the version this replaces was not.
+ *
+ * ## Three ways the first draft could be stepped around, and the shape of each fix
+ *
+ * **Spelling.** It enumerated two spacings of one key with `String.includes`,
+ * so `"result"  :  "PASS"` walked past. Fixed by deciding on parsed structure
+ * where there is one, and on a whitespace-tolerant, escape-decoded pattern
+ * where there is not.
+ *
+ * **A list that could go stale.** It enumerated `scope`, `verify`, `ship`.
+ * `gates/gate-executor.ts` also calls `writeGateResult` with `merge`, `gaps`
+ * and (through its dynamic call) `prove`, so three persisted gate results
+ * were unguarded. The fix is NOT a longer list — it is no list: a `result`
+ * under ANY key of `gates` is refused. An allowlist on a security boundary is
+ * correct until someone adds a gate, and nothing makes the next person update
+ * it. Gate-agnostic cannot go stale, so "is the list complete?" stops being
+ * askable. See `lib/gate-names.ts` for why the lists that remain are not this.
+ *
+ * **Erasure.** It asked "does the incoming content contain a result?", so a
+ * bypass only had to make the answer no. A forged PASS was the attack it was
+ * written against; DELETING a FAIL reaches the same end and was invisible to
+ * any content-only reading. So the decision now also reads what is already at
+ * `file_path` and refuses a write that drops a result that is there.
  *
  * ## Two inputs, two readings, and why they differ
  *
@@ -24,8 +44,7 @@
  *
  * **`Edit` hands us a fragment** — `new_string` is spliced into the file, and
  * a fragment is usually not valid JSON — so there is nothing to parse and the
- * reading falls back to a pattern. Two consequences follow, and both are the
- * reason the branches are not shared:
+ * reading falls back to a pattern. Two consequences follow:
  *
  *  - The pattern tolerates whitespace, because JSON does.
  *  - `\uXXXX` IS decoded first, by hand. On the Write path the parser does
@@ -40,27 +59,25 @@
  * JSON string are decoded too. That over-blocks a string nobody writes into
  * this file, and the direction is the correct one to be wrong in.
  *
- * ## The Edit pattern is gate-agnostic on purpose
+ * ## Where UNMEASURED refuses, and the one place it does not
  *
- * It matches `"result": "PASS"` anywhere in the fragment rather than only
- * under a name in `PROTECTED_GATES`. A fragment carries no reliable parent
- * key, so scoping it to the registry would make the guard WEAKER than the
- * registry — it would have to guess. Gate-agnostic is a superset of the
- * registry, so a name added to `PROTECTED_GATES` is already covered here,
- * and `lib/gate-names.ts` is what the Write branch iterates.
+ * A workflow state is always a JSON object. Content that does not parse, or
+ * that parses to an array, a `null` or a scalar, is a reading the guard could
+ * not take — and a reading that could not be taken is not one that passed.
+ * Both refuse. The first draft allowed both, which is the same fail-open as
+ * the `catch { // allow }` this issue was filed about, wearing two more hats.
  *
- * ## An unparseable Write is REFUSED
- *
- * The version this replaces caught the parse error and allowed the write,
- * reasoning that it "might be a partial write". There is no partial write:
- * the Write tool replaces the whole file. And every reader of this artifact
- * does `JSON.parse(readFileSync(...))` — `lib/gate-enforcement.ts` and
- * `gates/orchestrator.ts` both — so content that does not parse is either
- * corruption or an evasion, and the one input an attacker fully controls was
- * the one that bypassed the guard. Fail closed.
+ * The exception is the PRIOR state read for the erasure check. If the file
+ * already on disk is unreadable or unparseable, the erasure question is
+ * UNMEASURED and the write is allowed to proceed on its own merits. Refusing
+ * there would make one corrupt state file permanently unwritable by the only
+ * tool that could repair it — a guard nobody can get out from under gets
+ * switched off, and then it guards nothing. The forgery and non-object
+ * refusals still apply to that same write, so the incoming content is never
+ * unexamined; it is only the comparison that is skipped.
  */
 
-import { PROTECTED_GATES } from './gate-names';
+import { existsSync, readFileSync } from 'fs';
 
 export interface GateWriteDecision {
   blocked: boolean;
@@ -77,6 +94,18 @@ const UNPARSEABLE_REASON =
   'Refused: the content of this write to workflow-state.json could not be parsed as JSON. ' +
   'Gate results are protected, and a guard cannot read a file it cannot parse — so an ' +
   'unparseable write to this path is refused rather than allowed. Write valid JSON.';
+const NON_OBJECT_REASON =
+  'Refused: this write to workflow-state.json parses to something that is not a JSON object. ' +
+  'A workflow state is always an object, so this reading is UNMEASURED — and UNMEASURED ' +
+  'refuses rather than passes.';
+
+function erasureReason(dropped: string[]): string {
+  return (
+    `Refused: this write removes or changes an existing gate result (${dropped.join(', ')}). ` +
+    'Erasing a FAIL reaches the same end as forging a PASS. Gate results are produced by ' +
+    'gate-runner.ts and are not editable directly.'
+  );
+}
 
 /** The artifact this module guards. */
 export function isWorkflowState(filePath: string): boolean {
@@ -97,23 +126,55 @@ export function decodeUnicodeEscapes(text: string): string {
   );
 }
 
-/** Does this parsed state set a protected gate's result, or phase DONE? */
-function decideParsed(parsed: unknown): GateWriteDecision {
-  if (parsed === null || typeof parsed !== 'object') return ALLOW;
-  const state = parsed as { gates?: Record<string, { result?: unknown }>; phase?: unknown };
+/** A plain JSON object — not an array, not null, not a scalar. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
 
-  const gates = state.gates;
-  if (gates && typeof gates === 'object') {
-    for (const gate of PROTECTED_GATES) {
-      if (gates[gate]?.result) return { blocked: true, reason: GATE_RESULT_REASON };
+/**
+ * Every `gates.<name>.result` present, keyed by gate name.
+ *
+ * Gate-AGNOSTIC: it iterates the keys the content actually carries rather
+ * than a list of names this module knows. That is what makes it impossible
+ * for a new gate to arrive unguarded.
+ */
+export function collectGateResults(parsed: unknown): Map<string, string> {
+  const found = new Map<string, string>();
+  if (!isPlainObject(parsed)) return found;
+  const gates = parsed.gates;
+  if (!isPlainObject(gates)) return found;
+  for (const [name, record] of Object.entries(gates)) {
+    if (isPlainObject(record) && record.result !== undefined && record.result !== null) {
+      found.set(name, String(record.result));
     }
+  }
+  return found;
+}
+
+/** The gate results already on disk at `filePath`, or null if unreadable. */
+function existingGateResults(filePath: string): Map<string, string> | null {
+  try {
+    if (!existsSync(filePath)) return new Map();
+    return collectGateResults(JSON.parse(readFileSync(filePath, 'utf-8')));
+  } catch {
+    // UNMEASURED for the erasure question only — see the module docstring.
+    return null;
+  }
+}
+
+/** Does this parsed state set a gate result, or phase DONE? */
+function decideParsed(parsed: unknown): GateWriteDecision {
+  if (!isPlainObject(parsed)) return { blocked: true, reason: NON_OBJECT_REASON };
+
+  if (collectGateResults(parsed).size > 0) {
+    return { blocked: true, reason: GATE_RESULT_REASON };
   }
 
   // Case-insensitive to match the Edit path. Readers compare `=== 'DONE'`
   // exactly, so a lowercase spelling is not a live bypass — but only the gate
   // runner sets this field at all, so refusing both spellings costs nothing
   // and keeps the two branches from disagreeing about one input.
-  if (typeof state.phase === 'string' && state.phase.toUpperCase() === 'DONE') {
+  if (typeof parsed.phase === 'string' && parsed.phase.toUpperCase() === 'DONE') {
     return { blocked: true, reason: DONE_PHASE_REASON };
   }
 
@@ -121,10 +182,18 @@ function decideParsed(parsed: unknown): GateWriteDecision {
 }
 
 /** Does this Edit fragment set a gate result, or phase DONE? */
-function decideFragment(newString: string): GateWriteDecision {
+function decideFragment(newString: string, oldString: string): GateWriteDecision {
   const text = decodeUnicodeEscapes(newString);
   if (RESULT_PATTERN.test(text)) return { blocked: true, reason: GATE_RESULT_REASON };
   if (DONE_PHASE_PATTERN.test(text)) return { blocked: true, reason: DONE_PHASE_REASON };
+
+  // Erasure: the text being replaced carried a result and the replacement
+  // does not. Same end as a forged PASS, and invisible to `new_string` alone.
+  const replaced = decodeUnicodeEscapes(oldString);
+  if (RESULT_PATTERN.test(replaced)) {
+    return { blocked: true, reason: erasureReason(['an edited gate record']) };
+  }
+
   return ALLOW;
 }
 
@@ -150,12 +219,26 @@ export function decideGateResultWrite(
     } catch {
       return { blocked: true, reason: UNPARSEABLE_REASON };
     }
-    return decideParsed(parsed);
+
+    const onContent = decideParsed(parsed);
+    if (onContent.blocked) return onContent;
+
+    // The content carries no gate result. If the file already on disk does,
+    // this write drops it.
+    const before = existingGateResults(filePath);
+    if (before && before.size > 0) {
+      const after = collectGateResults(parsed);
+      const dropped = [...before.keys()].filter(g => after.get(g) !== before.get(g));
+      if (dropped.length > 0) return { blocked: true, reason: erasureReason(dropped) };
+    }
+
+    return ALLOW;
   }
 
   if (toolName === 'Edit') {
     const newString = typeof toolInput.new_string === 'string' ? toolInput.new_string : '';
-    return decideFragment(newString);
+    const oldString = typeof toolInput.old_string === 'string' ? toolInput.old_string : '';
+    return decideFragment(newString, oldString);
   }
 
   return ALLOW;

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join, resolve } from "path";
 
 /**
@@ -184,5 +186,137 @@ describe("#1137 the parsed-structure path keeps the behaviour it had", () => {
 
   test("CONTROL: a tool that is neither Write nor Edit is allowed", () => {
     expectAllowed(runHook({ tool_name: "Read", tool_input: { file_path: STATE } }));
+  });
+});
+
+// ── Second review round: erasure, and non-object content ─────────────────
+
+/**
+ * A state file on disk, so the guard can compare against what is already
+ * there. The erasure bypass is invisible to any content-only reading.
+ */
+function withStateFile(existing: unknown, fn: (path: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "grp-erase-"));
+  try {
+    const path = join(dir, "workflow-state.json");
+    writeFileSync(path, JSON.stringify(existing));
+    fn(path);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("#1137 a gate result cannot be bypassed by ERASING it", () => {
+  // The guard asked "does the incoming content contain a result?" — so a
+  // bypass only had to make the answer no. A forged PASS was the attack it
+  // was written against; a deleted FAIL reaches the same end and was
+  // invisible. Measured ALLOWED against this branch before this case existed.
+  test("WITNESS: a Write that drops an existing gate result is blocked", () => {
+    withStateFile({ phase: "SHIP", gates: { scope: { result: "PASS", attempt: 1 } } }, path => {
+      const r = write(JSON.stringify({ phase: "SHIP" }), path);
+      expect(blockedReason(r)).toMatch(/remov|eras/i);
+    });
+  });
+
+  test("WITNESS: the refusal NAMES every gate result the write drops", () => {
+    withStateFile(
+      { gates: { scope: { result: "PASS" }, verify: { result: "FAIL" } } },
+      path => {
+        // The gate records survive; their `result` fields do not. Content
+        // carrying a result would be refused as forgery FIRST and never
+        // reach the erasure comparison — so a case that kept one would be
+        // asserting the wrong rule. This one reaches it.
+        const r = write(
+          JSON.stringify({ gates: { scope: { attempt: 1 }, verify: { attempt: 2 } } }),
+          path,
+        );
+        const reason = blockedReason(r);
+        expect(reason).toMatch(/scope/);
+        expect(reason).toMatch(/verify/);
+      },
+    );
+  });
+
+  test("WITNESS: a Write that changes an existing result is blocked", () => {
+    withStateFile({ gates: { verify: { result: "FAIL" } } }, path => {
+      // FAIL -> PASS is caught as forgery, which is the stronger refusal of
+      // the two. Asserted so the ordering is pinned rather than incidental.
+      expect(blockedReason(write(JSON.stringify({ gates: { verify: { result: "PASS" } } }), path)))
+        .toContain("gate-runner");
+    });
+  });
+
+  test("WITNESS: an Edit whose old_string holds a result and new_string does not is blocked", () => {
+    const r = runHook({
+      tool_name: "Edit",
+      tool_input: {
+        file_path: STATE,
+        old_string: '"scope": { "result": "FAIL", "attempt": 2 }',
+        new_string: '"scope": { "attempt": 2 }',
+      },
+    });
+    expect(blockedReason(r)).toMatch(/remov|eras/i);
+  });
+
+  test("CONTROL: a Write to a state that never had a gate result is allowed", () => {
+    withStateFile({ phase: "BUILD", acs: [] }, path => {
+      expectAllowed(write(JSON.stringify({ phase: "BUILD", acs: [{ id: "AC-1" }] }), path));
+    });
+  });
+
+  test("CONTROL: a Write to a path with no file on disk yet is allowed", () => {
+    withStateFile({ phase: "BUILD" }, path => {
+      const fresh = path.replace("workflow-state.json", "new/workflow-state.json");
+      expectAllowed(write(JSON.stringify({ phase: "GOAL" }), fresh));
+    });
+  });
+
+  test("CONTROL: an Edit that touches neither old nor new result is allowed", () => {
+    expectAllowed(
+      runHook({
+        tool_name: "Edit",
+        tool_input: {
+          file_path: STATE,
+          old_string: '"phase": "BUILD"',
+          new_string: '"phase": "VERIFY"',
+        },
+      }),
+    );
+  });
+
+  test("CONTROL: an existing state file that is itself corrupt does not brick writes", () => {
+    // An unreadable prior state is UNMEASURED for the ERASURE question
+    // specifically. Refusing here would make one corrupt file permanently
+    // unwritable by the only tool that could repair it.
+    const dir = mkdtempSync(join(tmpdir(), "grp-corrupt-"));
+    try {
+      const path = join(dir, "workflow-state.json");
+      writeFileSync(path, "{ not json");
+      expectAllowed(write(JSON.stringify({ phase: "BUILD" }), path));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#1137 non-object content is UNMEASURED, and UNMEASURED refuses", () => {
+  // Same class as the `catch { // allow }` this issue was filed about: a
+  // workflow state is always an object, so an array, a null or a bare scalar
+  // is a reading the guard cannot take — and a reading that could not be
+  // taken is not one that passed.
+  test("WITNESS: a Write of [] is blocked", () => {
+    expect(blockedReason(write("[]"))).toMatch(/object/i);
+  });
+
+  test("WITNESS: a Write of null is blocked", () => {
+    expect(blockedReason(write("null"))).toMatch(/object/i);
+  });
+
+  test("WITNESS: a Write of a bare string is blocked", () => {
+    expect(blockedReason(write('"DONE"'))).toMatch(/object/i);
+  });
+
+  test("WITNESS: a Write of a bare number is blocked", () => {
+    expect(blockedReason(write("0"))).toMatch(/object/i);
   });
 });
