@@ -37,6 +37,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   DISTRIBUTION_STALE_EXIT,
+  currencyHeadline,
   currencyRefusal,
   currencyReportLines,
   distributionCurrency,
@@ -46,6 +47,8 @@ import {
   artifactStanding,
   artifactViolations,
   measureArtifactStanding,
+  STANDING_CAUSE_HEADLINE,
+  standingCauses,
   type ArtifactStanding,
   type ContentDifference,
   type RunCommand,
@@ -162,7 +165,9 @@ describe("#875: a reading nobody took refuses, and never skips", () => {
     treeVersion: "0.6.0",
     publishedVersion: null,
     difference: null,
-    unmeasuredReasons: ["registry: could not reach https://registry.npmjs.org"],
+    unmeasured: [
+      { cause: "REGISTRY", text: "registry: could not reach https://registry.npmjs.org" },
+    ],
   });
 
   test("an unreachable registry is UNMEASURED, not CURRENT", () => {
@@ -180,10 +185,58 @@ describe("#875: a reading nobody took refuses, and never skips", () => {
       ...unmeasured,
       reading: "MATCHED",
       difference: null,
+      unmeasured: [],
       unmeasuredReasons: [],
     });
     expect(c.reading).toBe("UNMEASURED");
     expect(currencyRefusal(c)).toContain("the content comparison was not performed");
+    // …and it names a condition too, rather than an empty headline (#1117).
+    expect(c.causes).toEqual(["UNCLASSIFIED"]);
+  });
+});
+
+describe("#1117: the refusal says which condition produced it", () => {
+  const transport = distributionCurrency(
+    artifactStanding({
+      treeVersion: "0.7.0",
+      publishedVersion: null,
+      difference: null,
+      unmeasured: [{ cause: "REGISTRY", text: "registry: registry returned 503 for rungate" }],
+    }),
+  );
+  const content = distributionCurrency(standingAt("0.6.0"));
+
+  test("a transport failure and a content divergence refuse with different sentences", () => {
+    expect(transport.reading).toBe("UNMEASURED");
+    expect(content.reading).toBe("STALE");
+    expect(transport.causes).toEqual(["REGISTRY"]);
+    expect(content.causes).toEqual(["CONTENT"]);
+    expect(currencyHeadline(transport)).not.toBe(currencyHeadline(content));
+    // Both still refuse, and each refusal carries its own sentence.
+    expect(currencyRefusal(transport)).toContain(currencyHeadline(transport));
+    expect(currencyRefusal(content)).toContain(currencyHeadline(content));
+    expect(currencyReportLines(content).join("\n")).toContain("CONTENT");
+  });
+
+  test("the input on which the two cause readings disagree, named", () => {
+    // `standingCauses` and this module's own selector are not one decider
+    // wearing two hats, and the distinguishing input is the one this module's
+    // header already names: a tree at 0.7.0 against a published 0.6.0 whose
+    // content differs. The standing is AHEAD with no condition at all — no
+    // label is lying — and the currency is STALE with CONTENT, because a
+    // consumer still cannot obtain this tree.
+    const bumped = standingAt("0.7.0");
+    expect(bumped.reading).toBe("AHEAD");
+    expect(standingCauses(bumped)).toEqual([]);
+    expect(artifactViolations(bumped)).toEqual([]);
+
+    const c = distributionCurrency(bumped);
+    expect(c.reading).toBe("STALE");
+    expect(c.causes).toEqual(["CONTENT"]);
+    expect(currencyRefusal(c)).not.toBeNull();
+    // The sentences come from ONE table, so the two readings cannot drift
+    // apart in wording while agreeing about the condition.
+    expect(currencyHeadline(c)).toBe(STANDING_CAUSE_HEADLINE.CONTENT);
   });
 });
 
@@ -257,9 +310,10 @@ describe("#875: the live tree, and the script that reports it", () => {
     // The instrument control. It asserts a reading happened, not that it
     // passed: with the registry blocked this is UNMEASURED and the case fails.
     // A skip would have been a green over a tree nobody looked at.
-    expect(live.reading, `nothing was compared: ${live.unmeasuredReasons.join("; ")}`).not.toBe(
-      "UNMEASURED",
-    );
+    expect(
+      live.reading,
+      `${currencyHeadline(live)}\nnothing was compared: ${live.unmeasuredReasons.join("; ")}`,
+    ).not.toBe("UNMEASURED");
     expect(live.commitsAhead).not.toBeNull();
   });
 
