@@ -53,7 +53,9 @@ import { toolchainParity } from "../scripts/contract-parity";
 const UNPINNED = "UNPINNED";
 
 /** The two files `createCiWorkflows` writes that install bun. */
-const GENERATED = ["ci.yml", "gates.yml"] as const;
+// #1013 added the third: `ai-review.yml` installs bun for the findings
+// adjudicator, and it resolves the version from the same single declaration.
+const GENERATED = ["ai-review.yml", "ci.yml", "gates.yml"] as const;
 
 interface SetupBunStep {
   file: string;
@@ -145,7 +147,7 @@ describe("#932: a declared moving tag is emitted as UNPINNED at every rung", () 
     // generated workflows, and all of them pass against a generator that
     // emitted no bun step whatsoever.
     const steps = setupBunStepsUnder(join(fixture({ configVersion: "1.2.0" }), ".github", "workflows"));
-    expect(steps.length, "the two generated workflows that install bun").toBe(GENERATED.length);
+    expect(steps.length, "the generated workflows that install bun").toBe(GENERATED.length);
     expect([...new Set(steps.map(s => s.file))].sort()).toEqual([...GENERATED].sort());
   });
 

@@ -66,6 +66,7 @@ import {
   AI_REVIEW_BLOCK_VERDICT,
   AI_REVIEW_FINDING_FIELDS,
   AI_REVIEW_FINDINGS_KEY,
+  AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_PASS_VERDICT,
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_SEVERITIES,
@@ -77,6 +78,7 @@ export {
   AI_REVIEW_BLOCK_VERDICT,
   AI_REVIEW_FINDING_FIELDS,
   AI_REVIEW_FINDINGS_KEY,
+  AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_PASS_VERDICT,
   AI_REVIEW_SEVERITIES,
   AI_REVIEW_SEVERITY_KEY,
@@ -384,7 +386,11 @@ export function main(argv: string[]): number {
         )
       : readAiReviewFindingsFile(path);
 
-  console.log(`ai-review findings outcome: ${reading.outcome}`);
+  // FIRST, and before any branch below can return. The generated workflow step
+  // greps its own output for this prefix and will not read the exit code as a
+  // verdict without it (#1013) — an adjudicator that could not run and one that
+  // refused both exit non-zero, and only this line tells them apart.
+  console.log(`${AI_REVIEW_OUTCOME_LINE} ${reading.outcome}`);
 
   // The ONE place a value reaches a workflow command. Everything upstream of
   // here — `renderFinding`, every `detail` sentence, `aiReviewRefusal` — builds

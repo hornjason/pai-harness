@@ -104,6 +104,7 @@ import { join } from "path";
 
 import { AI_REVIEW_WORKFLOW_FILE } from "../lib/scaffold/ai-review-step";
 import { createCiWorkflows } from "../lib/scaffold/steps";
+import { BUN_VERSION_FILE } from "../lib/bun-version";
 
 const REPO = join(import.meta.dir, "..");
 const RATCHET = join(REPO, ".claude", "ai-review-surface-ratchet.json");
@@ -152,6 +153,12 @@ describe("AC-12 (#857): the committed ai-review workflow came out of the generat
     scratch.push(dir);
     mkdirSync(join(dir, ".claude"), { recursive: true });
     cpSync(join(REPO, ".claude", "rungate"), join(dir, ".claude", "rungate"), { recursive: true });
+    // #1013: the job now installs bun, and `declaredBunVersion` prefers
+    // `.bun-version` over `ci.bunVersion`. A fixture carrying only the config
+    // declares a DIFFERENT thing from this repository and the comparison
+    // below would fail on the difference between the two fixtures rather
+    // than on anything about the committed file.
+    cpSync(join(REPO, BUN_VERSION_FILE), join(dir, BUN_VERSION_FILE));
 
     createCiWorkflows(dir, []);
 

@@ -151,6 +151,16 @@ import {
   buildRestoreScript,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
+import { stubBunxAbsent } from "./helpers/stub-bunx";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 const RESTORED = ".claude/rules/a-restored-rule.md";
 /** Outside the restored set, so the restore step leaves it alone. */
@@ -168,7 +178,7 @@ function scratchDir(prefix: string): string {
 }
 
 const GIT_ENV = (): Record<string, string> => ({
-  PATH: process.env.PATH ?? "/usr/bin:/bin",
+  PATH: stubBunxAbsent(),
   GIT_AUTHOR_NAME: "t",
   GIT_AUTHOR_EMAIL: "t@example.invalid",
   GIT_COMMITTER_NAME: "t",
@@ -297,7 +307,7 @@ function runDrift(f: Fixture, before: string, sha: string): Run {
 const SCRIPTS: ReadonlyArray<readonly [string, string]> = [
   ["creds-relocate", buildCredsRelocateScript()],
   ["auth-detect", buildAuthDetectScript({ config: null, mode: "none" } as never)],
-  ["review-run", buildReviewRunScript()],
+  ["review-run", buildReviewRunScript(FIXTURE_VERSION)],
   ["prepare", buildPrepareScript()],
   ["restore", buildRestoreScript()],
   ["baseline", buildBaselineScript()],

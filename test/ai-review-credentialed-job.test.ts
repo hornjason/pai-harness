@@ -66,6 +66,7 @@ import {
 import { CLAUDE_CODE_ACTION, CLAUDE_CODE_ACTION_SHA } from "../lib/claude-code-action";
 import { GOOGLE_AUTH_ACTION, GOOGLE_AUTH_ACTION_SHA } from "../lib/google-auth-action";
 import { actionRef } from "../lib/workflow-actions";
+import { declaredBunVersion, setupBunWith } from "../lib/bun-version";
 
 /**
  * The fixture's `ci` block, and the one reading of it every case shares.
@@ -90,11 +91,33 @@ const FIXTURE_CI = {
 };
 
 const VERTEX: VertexCiDecision = vertexCiConfig(FIXTURE_CI);
-const REFS = {
-  checkout: actionRef("actions/checkout"),
-  auth: actionRef(GOOGLE_AUTH_ACTION),
-  review: actionRef(CLAUDE_CODE_ACTION),
-};
+/**
+ * `setupBunWith` is read from the PROJECT the case compares against, not from
+ * this repository (#1013). `declaredBunVersion` prefers `.bun-version` over
+ * `ci.bunVersion`, and the fixture scaffolded below declares only the second —
+ * so a reference taken here would differ from the generated file for a reason
+ * that is about the two fixtures rather than about the step.
+ */
+function REFS(root: string) {
+  return {
+    checkout: actionRef("actions/checkout"),
+    auth: actionRef(GOOGLE_AUTH_ACTION),
+    review: actionRef(CLAUDE_CODE_ACTION),
+    setupBun: actionRef("oven-sh/setup-bun"),
+    setupBunWith: setupBunWith(declaredBunVersion(root), "    "),
+  };
+}
+
+/**
+ * The GENERATING version (#1013). This file compares the builder's output to a
+ * REAL scaffold, so the two have to be driven with the same version — a
+ * fixture would make the comparison fail for a reason that is not about the
+ * prompt it is checking.
+ */
+function harnessVersion(): string {
+  const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf-8"));
+  return String(pkg.version);
+}
 
 const SOURCE_PATH = join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step.ts");
 const source = readFileSync(SOURCE_PATH, "utf-8");
@@ -156,7 +179,12 @@ beforeAll(() => {
 
 interface Mutant {
   buildReviewPrompt: () => string;
-  buildReviewRunStep: (vertex: VertexCiDecision, refs: typeof REFS, indent?: string) => string;
+  buildReviewRunStep: (
+    vertex: VertexCiDecision,
+    refs: ReturnType<typeof REFS>,
+    version: string,
+    indent?: string,
+  ) => string;
 }
 
 let mutantSeq = 0;
@@ -406,7 +434,7 @@ describe("AC-6b: the review prompt interpolates the findings path and key", () =
       `the prompt still names ${AI_REVIEW_FINDINGS_PATH_VAR} after the constant changed — ` +
         `the path is typed into the prompt a second time`,
     ).not.toContain(AI_REVIEW_FINDINGS_PATH_VAR);
-    expect(mutant.buildReviewRunStep(VERTEX, REFS)).toContain("mutant.json");
+    expect(mutant.buildReviewRunStep(VERTEX, REFS(PROJECT), "0.0.0-fixture")).toContain("mutant.json");
   });
 
   test("AC-6b: changing the key constant moves the prompt — no second spelling", async () => {
@@ -427,7 +455,7 @@ describe("AC-6b: the review prompt interpolates the findings path and key", () =
   });
 
   test("AC-6b: the prompt reaches the generated file through the builder, verbatim", () => {
-    expect(generated()).toContain(buildReviewRunStep(VERTEX, REFS));
+    expect(generated()).toContain(buildReviewRunStep(VERTEX, REFS(PROJECT), harnessVersion()));
     const prompt = String(step(AI_REVIEW_ACTION_STEP_ID).with?.prompt ?? "");
     expect(
       prompt.trimEnd(),

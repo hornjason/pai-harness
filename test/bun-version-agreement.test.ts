@@ -54,6 +54,14 @@ import {
 import { createCiWorkflows } from "../lib/scaffold/steps";
 
 const REPO_ROOT = join(import.meta.dir, "..");
+/**
+ * How many `setup-bun` steps `createCiWorkflows` emits: one in `ci.yml`, one
+ * in `gates.yml`, and since #1013 one in `ai-review.yml`, which installs bun
+ * for the findings adjudicator. Declared once, because three cases below
+ * count them and three literals would drift apart.
+ */
+const GENERATED_BUN_STEPS = 3;
+
 const WORKFLOW_DIR = join(REPO_ROOT, ".github", "workflows");
 
 /** One `oven-sh/setup-bun` step, and what it says about which Bun to install. */
@@ -126,9 +134,10 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
   test("every setup-bun step is read, and the scan says how many it read", () => {
     // The coverage assertion, first and on its own. Every case below is
     // satisfied by an empty reading, so the reading is established before any
-    // of them run. Seven workflow files carry a setup-bun step today:
-    // action-pins, ci, claude-review, gates, issue-audit, release and
-    // suite-flake. `claude-review` joined in #732, which needs bun on PATH
+    // of them run. Eight workflow files carry a setup-bun step today:
+    // action-pins, ai-review, ci, claude-review, gates, issue-audit, release
+    // and suite-flake. `ai-review` joined in #1013, which runs the findings
+    // adjudicator through `bunx`; `claude-review` joined in #732, which needs bun on PATH
     // for the post-step that reads what the review actually did;
     // `action-pins` joined in #789, the weekly freshness check for the pins
     // this file is about; `suite-flake` joined in #323, which runs the suite
@@ -142,10 +151,11 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
     // meant to turn this red once.
     const steps = setupBunStepsUnder(WORKFLOW_DIR);
     expect(steps.length, "fewer setup-bun steps than this repo has workflows that install bun")
-      .toBeGreaterThanOrEqual(7);
+      .toBeGreaterThanOrEqual(8);
     const files = new Set(steps.map(s => s.file));
     expect([...files].sort()).toEqual([
       "action-pins.yml",
+      "ai-review.yml",
       "ci.yml",
       "claude-review.yml",
       "gates.yml",
@@ -229,8 +239,8 @@ describe("AC-1: the generator derives the bun step from the module, not from a l
     const b = fixture("declares-4-5-6", { file: "4.5.6" });
     const stepsA = setupBunStepsUnder(join(a, ".github", "workflows"));
     const stepsB = setupBunStepsUnder(join(b, ".github", "workflows"));
-    expect(stepsA.length).toBe(2);
-    expect(stepsB.length).toBe(2);
+    expect(stepsA.length).toBe(GENERATED_BUN_STEPS);
+    expect(stepsB.length).toBe(GENERATED_BUN_STEPS);
     // Both point at their own declaration, and the declarations differ.
     for (const s of [...stepsA, ...stepsB]) expect(s.versionFile).toBe(BUN_VERSION_FILE);
     expect(readFileSync(join(a, BUN_VERSION_FILE), "utf-8").trim()).toBe("1.2.3");
@@ -245,7 +255,7 @@ describe("AC-1: the generator derives the bun step from the module, not from a l
     // operator declared — verbatim, which is the whole of AC-7 at this rung.
     const root = fixture("config-only", { configVersion: "1.2.0" });
     const steps = setupBunStepsUnder(join(root, ".github", "workflows"));
-    expect(steps.length).toBe(2);
+    expect(steps.length).toBe(GENERATED_BUN_STEPS);
     for (const s of steps) expect(s.version).toBe("1.2.0");
     const decision = declaredBunVersion(root);
     expect(decision.source).toBe("config");
@@ -395,7 +405,7 @@ describe("AC-7: an unresolvable declared version produces workflows naming it, w
 
   test("the generated workflows resolve exactly the unresolvable value", () => {
     const steps = setupBunStepsUnder(join(root, ".github", "workflows"));
-    expect(steps.length).toBe(2);
+    expect(steps.length).toBe(GENERATED_BUN_STEPS);
     for (const step of steps) {
       expect(step.versionFile, `${step.file} stopped reading the declaration`).toBe(BUN_VERSION_FILE);
       expect(step.version, `${step.file} substituted a version of its own`).toBeNull();
@@ -406,7 +416,7 @@ describe("AC-7: an unresolvable declared version produces workflows naming it, w
   });
 
   test("no fallback to latest appears anywhere in the generated workflows", () => {
-    for (const file of ["ci.yml", "gates.yml"]) {
+    for (const file of ["ai-review.yml", "ci.yml", "gates.yml"]) {
       const text = readFileSync(join(root, ".github", "workflows", file), "utf-8");
       for (const tag of MOVING_BUN_TAGS) {
         expect(text, `${file} fell back to ${tag}`).not.toMatch(

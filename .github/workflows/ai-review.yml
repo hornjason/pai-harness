@@ -1,4 +1,4 @@
-# generated-sha: f24209362ed0a63f
+# generated-sha: 899d0784b88942ab
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -16,12 +16,6 @@
 #        declares.
 #      Set the repository variable RUNGATE_REQUIRE_AI_REVIEW to
 #      'true' to make an unmeasured review FAIL instead of warn.
-#
-# NOT YET: the first outcome is not enforced. The findings reader exists
-# and is reachable as `rungate ai-review-findings`, and no step in this job runs
-# it (#675) — so a blocking finding is reported in the comments and the
-# check is green. The job says so on every run rather than exiting 0 in
-# silence; "reviewed, and nobody read the result" is its own state.
 #
 # This job is deliberately unconditional. A job skipped by a condition reports
 # `skipped`, which a required status check can be configured to accept, and
@@ -265,6 +259,14 @@ jobs:
           echo "ai-review findings path: ${path}"
           echo "path=${path}" >> "${GITHUB_OUTPUT}"
           echo "dir=${dir}" >> "${GITHUB_OUTPUT}"
+      - name: Install bun for the findings adjudicator
+        id: ai-review-setup-bun
+        continue-on-error: true
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # Pinned by .bun-version — the project's single declaration (#622).
+          # setup-bun reads that file, so there is no version spelled here to drift from it.
+          bun-version-file: ".bun-version"
       - name: Authenticate to Vertex AI
         id: ai-review-vertex-auth
         continue-on-error: true
@@ -848,9 +850,50 @@ jobs:
             # is the honest direction: the prepare step did not run, so nobody can say a
             # review happened.
             if [ -s "${AI_REVIEW_FINDINGS_PATH:-}" ]; then
-              echo "::warning title=AI review UNMEASURED::The AI review completed and wrote a findings payload, but no step in this job reads it yet (#675), so a blocking finding would not fail this check. The review is UNMEASURED as a GATE — the comments are real, the verdict is not enforced."
+              # #1013. The adjudication, and the ONLY branch in this file whose exit
+              # code comes from something other than this script.
+              #
+              # Resolved inside `run:`, never in an `if:`. A step skipped by `if:`
+              # reports *skipped*, and a skipped required check can be treated as
+              # satisfied — the module header's standing rule, and it applies hardest
+              # here, where the thing being skipped is the verdict.
+              #
+              # Both streams are captured: the reader writes its `::error` annotation
+              # to stderr and the outcome line to stdout, and this branch needs to read
+              # the second while still SHOWING the first. The output is re-printed
+              # verbatim rather than through `escape_annotation` — the reader escapes
+              # its own annotation payloads (one escaper, in `ai-review-findings.ts`),
+              # and escaping it twice turns `%` into `%2525` and the annotation into
+              # noise.
+              adjudication=$(bunx rungate@0.7.0 ai-review-findings "${AI_REVIEW_FINDINGS_PATH}" 2>&1)
+              adjudicated=$?
+              printf '%s\n' "${adjudication}"
+
+              # DID IT RUN, asked before WHAT IT SAID. Without this line a registry that
+              # is down, a runner without bun and a review carrying a `critical` all
+              # exit 1 and all read as a blocked pull request.
+              #
+              # The code is MAPPED rather than passed through, so every non-zero exit in
+              # this script is still the one exported constant — `test/ai-review-
+              # scaffold.test.ts` AC-6b refuses a literal here, and a bare
+              # `exit ${adjudicated}` would be a refusal the mutation that zeroes
+              # ${AI_REVIEW_REQUIRED_EXIT} could not reach. It re-states the same value
+              # rather than adding one: the reader's own refusals already route through
+              # that constant (`test/ai-review-exit-binding.test.ts`), so the only
+              # thing this widens is a reader that ran and died some other way, which is
+              # a refusal too.
+              case "${adjudication}" in
+                *"ai-review findings outcome:"*)
+                  if [ "${adjudicated}" = 0 ]; then
+                    exit 0
+                  fi
+                  exit 1
+                  ;;
+              esac
+
+              echo "::warning title=AI review UNMEASURED::The AI review completed and wrote a findings payload, and the step that adjudicates it produced no reading: 'bunx rungate@0.7.0 ai-review-findings' printed no 'ai-review findings outcome:' line, so it did not run. An exit code alone cannot say — a refusal and a command that could not start both exit non-zero — so this is reported as UNMEASURED rather than read as a verdict. The usual cause is that rungate@0.7.0 is not on the registry yet, or that bun is not on this runner. The review's comments are real; the gate is not enforced on this run."
               if [ "${RUNGATE_REQUIRE_AI_REVIEW:-}" = "true" ]; then
-                echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and nothing in this job adjudicates the findings payload (#675), so a blocking finding would report green. Failing rather than reporting a passing gate for a verdict nobody read." >&2
+                echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and nothing adjudicated the findings payload on this run, so a blocking finding would report green. Failing rather than reporting a passing gate for a verdict nobody read." >&2
                 exit 1
               fi
               exit 0
@@ -898,7 +941,7 @@ jobs:
           # prints, no branch below reads it, and ${AI_REVIEW_REQUIRED_EXIT} is reached
           # through the same single check whichever route holds.
           if [ -s "${AI_REVIEW_FINDINGS_PATH:-}" ]; then
-            route="The review action (#631) did not complete, and yet a findings payload IS present at the path this job gave the reviewer. So the reviewer ran and wrote a result, and the action failed around it. The payload is NOT adjudicated — nothing in this job reads one (#675) — and a run whose action did not complete is not a run whose review can be trusted to be whole. Read the execution file and the action's own log before treating that file as a verdict. This check is UNMEASURED, not a passing review."
+            route="The review action (#631) did not complete, and yet a findings payload IS present at the path this job gave the reviewer. So the reviewer ran and wrote a result, and the action failed around it. The payload is NOT adjudicated — the adjudicator reads a review that COMPLETED, and a partially written findings list is indistinguishable from a clean one — and a run whose action did not complete is not a run whose review can be trusted to be whole. Read the execution file and the action's own log before treating that file as a verdict. This check is UNMEASURED, not a passing review."
           elif [ -s "${AI_REVIEW_EXECUTION_FILE:-}" ]; then
             # A text read of a JSON document, deliberately — see the success branch.
             # `"subtype": "success"` inside a run whose ACTION failed is the action

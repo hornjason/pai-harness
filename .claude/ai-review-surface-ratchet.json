@@ -21,6 +21,25 @@
       "issue": 989,
       "why": "The case asserted the drift step REFUSES a restore that landed after the baseline, as the behavioural control proving #836's reorder is load-bearing. #989 made the drift step classify a changed path in the twice-restored set BY CONTENT against the base branch, and the bytes a late restore leaves ARE the base's \u2014 so it is now acquitted, which is the correct answer: the reviewer did not write them, and saying it did is the misattribution #824 and #851 each measured at length. The order is still asserted, directly and over both the generated and the committed workflow, by the `orders restore before baseline` case in the same file; this one was a behavioural PROXY for that property and has stopped tracking it, and a proxy that passes for the wrong reason is worse than no proxy. The subject and the document under test are unchanged and the case did not get weaker: it now requires the classification to fire, to name the file, and to not call it a reviewer write, so DELETING the classification turns it red in the other direction. AC-M4b in test/ai-review-moving-base.test.ts asserts the same acquittal from the other side, so the two cannot drift apart silently."
     }
+,
+    {
+      "from": "AC-9: a successful review warns that its findings are not enforced",
+      "to": "AC-9b: a BLOCKED reading fails the job \u2014 #675's second half",
+      "issue": 1013,
+      "why": "The case asserted the SHIPPED posture of the day: a completed review's payload is warned about and the check goes green, because no step ran the reader. #1013 made the step run it, so the posture the case protected no longer exists \u2014 a payload carrying a blocking finding now exits non-zero, which is the state #675 AC-4 asked for and this case was the record of NOT having. The subject is unchanged (a completed review, a payload on disk, what the job does with it) and the case got STRONGER: it now requires the exit code to move, so deleting the adjudication turns it red, where before deleting the warning turned it red. The warn-and-pass direction did not vanish with it \u2014 AC-9c asserts it for the one state where it is still correct, an adjudicator that could not run, and AC-9a asserts a clean reading still passes, so the refusal is not unconditional."
+    },
+    {
+      "from": "AC-9: a consumer who required a review is refused an unenforced one",
+      "to": "AC-9d: a consumer who required a review is refused an unadjudicated one",
+      "issue": 1013,
+      "why": "Same property, narrower subject. RUNGATE_REQUIRE_AI_REVIEW had to cover \"a payload nobody reads\" because nothing in the job read one; after #1013 something does, so what remains for it to cover is an adjudicator that could not run. The assertion direction, the variable and the exit code are unchanged; the input moved from \"a payload, always\" to \"a payload and a bunx that produced no reading\"."
+    },
+    {
+      "from": "AC-9: the two completed/not-completed states say different things",
+      "to": "AC-9f: the two completed/not-completed states say different things",
+      "issue": 1013,
+      "why": "Renumbered only, for the a-f ordering #1013 gave the block. The pair, the one varied reading and both assertions are unchanged apart from what the two sentences are compared on: the old form looked for \"#675\" in the completed sentence, which #1013 removed from it, so it looks for the adjudicator package name the sentence now carries."
+    }
   ],
   "titles": [
     "#677 AC5: a consumer who required a review and got no reading is refused",
@@ -160,10 +179,10 @@
     "AC-8f: nothing is double-encoded \u2014 one escaper, applied once",
     "AC-8f: the detail of one finding is capped",
     "AC-8f: the escaper is reachable and encodes all three characters",
-    "AC-9: a consumer who required a review is refused an unenforced one",
-    "AC-9: a successful review warns that its findings are not enforced",
+    "AC-9d: a consumer who required a review is refused an unadjudicated one",
+    "AC-9b: a BLOCKED reading fails the job \u2014 #675's second half",
     "AC-9: the silent exit is what this would have shipped",
-    "AC-9: the two completed/not-completed states say different things",
+    "AC-9f: the two completed/not-completed states say different things",
     "AC-A1: the COMMITTED workflow's report step carries the findings path",
     "AC-A2: the GENERATOR emits it, so the fix is not only in the artifact",
     "AC-A3: the action step still has it too \u2014 this adds a binding, it does not move one",

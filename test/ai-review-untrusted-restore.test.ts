@@ -132,6 +132,7 @@ import {
   type VertexCiDecision,
 } from "../lib/scaffold/ai-review-step";
 import { actionRef } from "../lib/workflow-actions";
+import { declaredBunVersion, setupBunWith } from "../lib/bun-version";
 import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
 import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
 
@@ -180,11 +181,19 @@ function stepIds(yaml: string): string[] {
 
 /** The generator's own output, wrapped in just enough YAML to parse. */
 function generatedJob(): string {
-  const steps = buildReviewRunStep(VERTEX, {
-    checkout: actionRef("actions/checkout"),
-    auth: actionRef(GOOGLE_AUTH_ACTION),
-    review: actionRef(CLAUDE_CODE_ACTION),
-  });
+  const steps = buildReviewRunStep(
+    VERTEX,
+    {
+      checkout: actionRef("actions/checkout"),
+      auth: actionRef(GOOGLE_AUTH_ACTION),
+      review: actionRef(CLAUDE_CODE_ACTION),
+      setupBun: actionRef("oven-sh/setup-bun"),
+      setupBunWith: setupBunWith(declaredBunVersion(join(import.meta.dir, "..")), "    "),
+    },
+    // A fixture version for the adjudicator's `bunx` pin (#1013). This file is
+    // about what the restore step restores, and the pin is not part of it.
+    "0.0.0-fixture",
+  );
   return `name: fixture\non:\n  pull_request:\njobs:\n  ${AI_REVIEW_JOB}:\n    runs-on: ubuntu-latest\n    steps:\n${steps}`;
 }
 
