@@ -759,6 +759,35 @@ export type WithheldBy =
  *   left-hand side of that join and nothing more.
  */
 export interface CandidateRecord {
+  /**
+   * A key unique across every ledger produced under the same `batch`, for a
+   * consumer that scores a corpus keyed by one field.
+   *
+   * **`null` when the caller named no batch**, and that is the honest
+   * reading rather than a gap. Neither of the other two fields can do this
+   * job and both look as though they can:
+   *
+   * - `id` is `UNFILED_ID` for everything that has not been filed, which is
+   *   every candidate the ledger exists to record.
+   * - `symptomHash` is not unique either. Measured on an exact re-report
+   *   under two different titles: **1 distinct hash across 2 rows**, the
+   *   original and the duplicate that collided with it. And it does not even
+   *   identify the collision — the real #1195/#1196 pair hashes to
+   *   `11f1ca58d515` and `609a1838a74d`, two different values for one
+   *   symptom, because the dedupe matches on SHARED keys and not on the
+   *   whole set.
+   *
+   * A duplicate key does not degrade a score, it inverts one: in
+   * `evals/ai-review-control/outcomes.ts` two rows sharing a key meant the
+   * second overwrote the first, so a finding with a real fixing commit read
+   * `NO_ACTION` and landed in `cost` — noise manufactured out of a fix.
+   * That module now refuses a repeated key outright, which is why the
+   * failure here must be an absent key and never a plausible one.
+   *
+   * It is position-derived rather than content-derived on purpose: unique by
+   * construction, with no collision bookkeeping to be a second decider.
+   */
+  key: string | null;
   id: string;
   symptomHash: string;
   category: FindingCategory;
@@ -847,7 +876,7 @@ function walkOrder(findings: readonly Finding[]): Array<{ finding: Finding; inde
  */
 export function arbitrateBatch(
   findings: readonly Finding[],
-  options: ArbitrateOptions & { budget?: number; now?: string },
+  options: ArbitrateOptions & { budget?: number; now?: string; batch?: string },
 ): BatchReading {
   const date = options.now ?? new Date().toISOString();
   const seen: Finding[] = [...options.existing];
@@ -919,6 +948,12 @@ export function arbitrateBatch(
   );
 
   const candidates: CandidateRecord[] = verdicts.map((verdict, index) => ({
+    // The batch name is REQUIRED for a key rather than defaulted, because a
+    // default would make every batch's first row collide with every other
+    // batch's first row — the corpus a consumer builds is many batches
+    // concatenated, and a plausible key is the one failure mode that
+    // silently shrinks it.
+    key: options.batch === undefined ? null : `${options.batch}/${index}`,
     id: verdict.id,
     symptomHash: verdict.symptomHash,
     category: verdict.category,
