@@ -349,6 +349,73 @@ report its own coverage** — how many files it read of how many it could see.
 `36/426` and `426/426` are the same PASS today, and no reader can tell them
 apart from the output.
 
+### The same blindness with the axes swapped: every row varied the detector (#1233, #1246)
+
+The section above is about fixtures that all satisfy a precondition. This is
+its mirror, and it earns a separate entry because the axis held fixed here is
+the one nobody thinks to interrogate: **the input**. The rule file's seventh
+shape is these two together.
+
+#1233 shipped a check proving the AI reviewer had read `REVIEW.md` before it
+concluded. The evidence was a grep over the action's execution transcript:
+
+```
+grep -qE '"file_path"[[:space:]]*:[[:space:]]*"([^"]*/)?REVIEW\.md"' "${AI_REVIEW_EXECUTION_FILE}"
+```
+
+A five-row battery ran over it before it merged. Every row matched its
+predicted count and its predicted case names, including the cheapest wrong
+fix at 3 red. By every diagnostic already in this file it was a model
+battery.
+
+What it could not see: a `Write` whose `file_path` ends in `REVIEW.md` emits
+the same text in the transcript as a `Read` does, and `Write` was in the
+reviewer's granted tools. So a reviewer that never read the conventions and
+merely wrote the file passed — on a check whose whole purpose is to be
+unsatisfiable without reading. The path was unanchored too, so a branch's own
+`sub/REVIEW.md` credited a check about the base-restored root file.
+
+**Every row mutated the matcher. Every row fed it a `Read`.** No count in
+that table could have come back wrong about a `Write`, because no row
+contained one. The battery varied the detector and held the input fixed, and
+the defect was a property of the input.
+
+It was found by a reader varying the tool, not by the battery — the #59 route
+above, reading the mechanism rather than running it. Both halves were then
+added as cases and **watched red before the repair**: 16 pass, 3 fail.
+
+#### A mutation is a thing you spell
+
+The repaired battery is eight rows over 22 cases, and the row the change
+rests on — M3, *the shipped matcher restored* — was run twice, before and
+after a rebase. It returned **6, then 5, against a prediction of 5**.
+
+| Run | Red | Against a prediction of C1d, C1e, C9, C9b, C11 |
+|---|---|---|
+| first spelling | 6 | C1d, C1e, C9, C9b, C11, **C12** |
+| second spelling | 5 | C1d, C1e, C9, C11, **C12** — C9b green |
+
+Read as a bare number, the second run confirms the prediction exactly. It
+does not: `C9b` was predicted and stayed green, `C12` was not predicted and
+reddened. **The count agreed and the membership did not.**
+
+The two runs differ because the two spellings are two experiments. The first
+replaced the whole `conv_path`/`conv_a`/`conv_b` machinery with the shipped
+one-liner, which deletes the very string C9b rewrites to build its own
+mutant — so C9b reddened on *"the mutation did not apply"*, the failure mode
+this file already warns about, and not on behaviour. The second kept the
+variables and restored only the semantics, which is the better experiment: it
+changes the behaviour under test and nothing else.
+
+`C12`'s appearance in both is the cross-cutting case working rather than
+noise. It is the only case whose subject is the anchor itself, so it reds on
+any mutation that removes the anchor as well as on the one that unescapes it;
+the prediction filed it under a single row and forgot that.
+
+**So: a battery that reports counts without memberships cannot distinguish
+"the guard behaved differently" from "the mutation did not apply."** Predict
+the case list, and write down which spelling you ran.
+
 ### On the fifth shape: a case that goes green under the wrong fix (#492, #518)
 
 The other four are properties of a check as it stands. This one is a property
