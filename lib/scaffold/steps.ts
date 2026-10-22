@@ -9,6 +9,7 @@
  */
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, statSync } from "fs";
 import { readdirSorted } from "../readdir-sorted";
+import { fileExtensions } from "../file-extensions";
 import { join, basename, dirname, resolve, sep } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
@@ -1564,9 +1565,11 @@ function generateCodeMapInline(root: string, outPath: string, actions: string[])
     const full = join(root, entry);
     try {
       if (!statSync(full).isDirectory()) continue;
-      const files = readdirSorted(full, { recursive: true });
-      const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-      dirs.push({ name: entry, types: [...exts].slice(0, 5) });
+      // One binding for what a "type" is, shared with `lib/scanner.ts` and
+      // `scripts/generate-code-map.ts` (#1200). This is the fallback that
+      // runs when the script is unavailable, so a copy here reintroduces
+      // whatever the other two fix.
+      dirs.push({ name: entry, types: fileExtensions(full) });
     } catch {}
   }
   // Unsorted. Row order is `directoryTable`'s single decision (#1163).

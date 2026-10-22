@@ -2,7 +2,7 @@
 doc-type: code-map
 status: generated
 updated: 2026-10-22
-scanned-at-sha: f3b83563
+scanned-at-sha: dbf10445
 generator: rungate/scripts/generate-code-map.ts
 ---
 
@@ -38,19 +38,19 @@ row as orientation, not as a fact about your working tree.
 
 | Directory | Types |
 |-----------|-------|
-| .claude/ | json, output-styles, agents, rungate, routines |
+| .claude/ | json, md |
 | bin/ | ts |
 | config/ | json, yaml |
-| docs/ | research, adr, council, session-log, guides |
-| evals/ | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
-| gates/ | ts, toml, md, sha256, test-fixtures |
-| hooks/ | ts, lib, json |
-| lib/ | ts, validators, generators, scaffold |
+| docs/ | md |
+| evals/ | json, md, sh, ts, yaml |
+| gates/ | json, md, sha256, toml, ts |
+| hooks/ | json, ts |
+| lib/ | ts |
 | prompts/ | md |
-| scripts/ | ts, sh, git-hooks, lib, git-hooks/pre-push |
-| specs/ | md, bootstrap-data-flow, json |
-| templates/ | agent-briefs, md |
-| test/ | ts, unit, types, json, fixtures |
+| scripts/ | sh, ts |
+| specs/ | json, md |
+| templates/ | md |
+| test/ | example, json, jsonl, md, ts |
 | workflows/ | js |
 
 ## Code Health (fallow)
