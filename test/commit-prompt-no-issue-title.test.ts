@@ -229,7 +229,7 @@ describe("#706 AC-1: the COMMIT prompt interpolates no issue title", () => {
       "   git commit -m ${shellQuote(shipCommitSubject(ISSUE, goalData.issueTitle))}";
     expect(taintedInterpolations(planted).length, "the scan cannot see the pre-#706 line").toBe(1);
     // And it is not matching everything: the line that replaced it.
-    expect(taintedInterpolations("   git -C ${commitDir} commit -F ${shellQuote(commitSubjectPath)}")).toEqual([]);
+    expect(taintedInterpolations("   git -C ${shellQuote(commitDir)} commit -F ${shellQuote(commitSubjectPath)}")).toEqual([]);
   });
 
   test("AC-1: the region really is the COMMIT prompt, not an empty or whole-file cut", () => {
@@ -362,7 +362,7 @@ describe("#706 AC-2: the subject is composed by a script and read from a file", 
       "commit-subject \\",
     );
     expect(COMMIT_BLOCK, "the subject path reaches git unquoted").toContain(
-      "git -C ${commitDir} commit -F ${shellQuote(commitSubjectPath)}",
+      "git -C ${shellQuote(commitDir)} commit -F ${shellQuote(commitSubjectPath)}",
     );
     expect(COMMIT_BLOCK, "the out path reaches the command unquoted").toContain(
       "--out ${shellQuote(commitSubjectPath)}",

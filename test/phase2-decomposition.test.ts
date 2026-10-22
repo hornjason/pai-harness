@@ -375,7 +375,7 @@ describe("SC-1487: ship.js's inline copy and the library agree", () => {
     const src = readFileSync(SHIP, "utf-8");
     expect(src, "the prompt never showed the agent the statements it was asked to carry")
       .toContain("${acListBlock(discovery.acs)}");
-    expect(src).toContain("bun --cwd ${HARNESS_ROOT} scripts/verify-phase2-bodies.ts --repo ${ISSUE_REPO}");
+    expect(src).toContain("bun --cwd ${shellQuote(HARNESS_ROOT)} scripts/verify-phase2-bodies.ts --repo ${ISSUE_REPO}");
     expect(src, "the structural refusal is not wired into the run").toContain("DECOMPOSITION_REFUSED");
   });
 
