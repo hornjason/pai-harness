@@ -294,7 +294,7 @@ describe("JURY-5: what the filter would have dropped on real findings", () => {
  * who rejected a finding was counted as agreeing with it.
  *
  * The end-to-end direction case, with the exit codes and the coercion control,
- * is `AR-14` in `test/finding-arbiter.test.ts`. These are the field-level
+ * is `AR-16` in `test/finding-arbiter.test.ts`. These are the field-level
  * cases, including the two the CLI block does not reach: `category` and
  * `severity` carry the same defect as `real` and are refused for the reasons
  * the first test here measures.

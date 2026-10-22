@@ -34,7 +34,15 @@ import {
   UNFILED_ID,
   type Finding,
 } from "../lib/finding-arbiter";
+import type { CandidateRecord } from "../lib/finding-arbiter";
 import { INCOMPLETE_GROUP, SEVERITY_RANK, type VerifierVote } from "../lib/finding-jury";
+import {
+  compareReviewOutcomes,
+  readFindingOutcomes,
+  summariseFindingOutcomes,
+  type FindingDisposition,
+  type ReviewFinding,
+} from "../evals/ai-review-control/outcomes";
 
 /**
  * A full, agreeing verifier group.
@@ -810,7 +818,364 @@ describe("AR-13: the dedupe is one-hop on purpose", () => {
 });
 
 /**
- * AR-14: a malformed ballot is UNMEASURED, not a dissent (#1235).
+ * AR-14: the candidate ledger.
+ *
+ * Every number this module's two filters rest on is a default rather than a
+ * measurement, and the reason is the same in both cases: **nothing records a
+ * finding before it is filed.** The tracker is post-filing by construction.
+ * So the population that would price the quorum and the category filter is
+ * not somewhere we have not looked — it does not exist, and the only moment
+ * it can be written down is the moment a candidate is withheld.
+ *
+ * That makes the WITHHELD rows the entire point of this structure, and it is
+ * what every case below is pointed at. A ledger that recorded only what got
+ * posted would be a second copy of `toComment`.
+ */
+describe("AR-14: the candidate ledger — the withheld rows are the point", () => {
+  /** Distinct measured readings, so no two of these collide by symptom. */
+  const outOfScope = (n: number): Finding => ({
+    id: `s${n}`,
+    title: `reading ${n}`,
+    body: `\`widgetHandler\` leaks ${100 + n} descriptors across ${900 + n} runs.`,
+    outOfScope: { reason: "a different subsystem owns this" },
+  });
+  const inScope = (n: number): Finding => ({
+    id: `c${n}`,
+    title: `reading ${n}`,
+    body: `\`alphaHandler${n}\` drops ${200 + n} of ${800 + n} messages.`,
+  });
+  /** `typo` is `DROP_SIGNALS`' style vocabulary, and the scope is the title. */
+  const styleNit: Finding = {
+    id: "nitpicked",
+    title: "fix the typo in the banner",
+    body: "`bannerText` is spelled wrong in 1 of 2 places.",
+  };
+
+  /**
+   * One batch carrying every bucket the ledger can report except
+   * `NO_QUORUM`, which is batch-wide — `ArbitrateOptions.votes` is one ballot
+   * for the whole call, so a dissenting group cannot sit beside an agreeing
+   * one in a single batch. It gets its own case below.
+   *
+   * The integers are predicted here and asserted, rather than read off the
+   * run: `FILING_BUDGET_FINDINGS + 2` out-of-scope findings file the budget
+   * and evict exactly two.
+   */
+  const mixed = () => {
+    const filed: Finding = {
+      id: "9001",
+      title: "already filed",
+      body: "`zetaHandler` fails 311 of 742 times.",
+    };
+    const dup: Finding = {
+      id: UNFILED_ID,
+      title: "reworded, same symptom",
+      body: "742 runs, 311 failures in `zetaHandler`.",
+    };
+    const findings = [
+      inScope(1),
+      styleNit,
+      dup,
+      ...Array.from({ length: FILING_BUDGET_FINDINGS + 2 }, (_, i) => outOfScope(i)),
+    ];
+    return { findings, reading: arbitrateBatch(findings, opts({ existing: [filed] })) };
+  };
+
+  test("THE POPULATION: one row per input finding, in input order, ids included", () => {
+    const { findings, reading } = mixed();
+    expect(reading.candidates.length).toBe(findings.length);
+    expect(reading.candidates.map(c => c.id)).toEqual(findings.map(f => f.id));
+  });
+
+  /**
+   * THE CONTROL FOR EVERY ZERO BELOW.
+   *
+   * Read this row first. The counts here are the planted ones, so a later
+   * assertion that some bucket is empty means the bucket was looked at and
+   * found empty — rather than the ledger having stopped reporting.
+   */
+  test("CONTROL: the planted batch reaches four distinct buckets, at the predicted counts", () => {
+    const { reading } = mixed();
+    const count = (w: string) => reading.candidates.filter(c => c.withheldBy === w).length;
+    expect(count("DUPLICATE")).toBe(1);
+    expect(count("DROPPED_CATEGORY")).toBe(1);
+    expect(count("OVER_BUDGET")).toBe(2);
+    expect(reading.candidates.filter(c => c.emitted).length).toBe(1 + FILING_BUDGET_FINDINGS);
+    expect(reading.candidates.filter(c => c.withheldBy === "UNACCOUNTED")).toEqual([]);
+  });
+
+  test("emitted and withheldBy are one fact: null exactly when it reached a reader", () => {
+    const { reading } = mixed();
+    for (const c of reading.candidates) {
+      expect(c.emitted).toBe(c.withheldBy === null);
+    }
+    const emitted = reading.candidates.filter(c => c.emitted).map(c => c.id).sort();
+    expect(emitted).toEqual([...reading.toComment, ...reading.toFile].sort());
+  });
+
+  /**
+   * THE TWO FILTERS STAY IN SEPARATE BUCKETS.
+   *
+   * This is the property the A/B rests on, and it is the one a tidy-up would
+   * take away first: `NO_QUORUM` and `DROPPED_CATEGORY` are both "a filter
+   * withheld it", and folding them into one `SUPPRESSED` would read as a
+   * simplification. It would also make the quorum and the category filter
+   * impossible to price apart, because the attribution lives in which pair of
+   * summaries you compare and nowhere else.
+   */
+  test("NO_QUORUM and DROPPED_CATEGORY are different values, not one 'suppressed'", () => {
+    const dissent: VerifierVote[] = [
+      { verifier: "v1", real: true, reason: "reproduced" },
+      { verifier: "v2", real: false, reason: "could not reproduce" },
+      { verifier: "v3", real: false, reason: "could not reproduce" },
+    ];
+    const noQuorum = arbitrateBatch([inScope(1), inScope(2)], opts({ votes: dissent }));
+    expect(noQuorum.candidates.map(c => c.withheldBy)).toEqual(["NO_QUORUM", "NO_QUORUM"]);
+    expect(noQuorum.candidates.every(c => c.emitted)).toBe(false);
+
+    const dropped = mixed().reading.candidates.filter(c => c.withheldBy === "DROPPED_CATEGORY");
+    expect(dropped.length).toBe(1);
+    // The separation itself, stated as the assertion rather than implied by
+    // the two rows above being in different tests.
+    expect(new Set([...noQuorum.candidates, ...dropped].map(c => c.withheldBy)).size).toBe(2);
+  });
+
+  /**
+   * THE INPUT THE CLI ACTUALLY SENDS.
+   *
+   * Every unfiled finding carries `UNFILED_ID`, so ids are not unique within
+   * a batch. Keying emission on the id — the obvious way to write this —
+   * marks BOTH incident rows emitted the moment either one is, so the
+   * duplicate that was withheld is recorded as having been posted. The
+   * ledger would then report the opposite of the thing it exists to record.
+   */
+  test("duplicate ids do not cross-contaminate: one incident row emitted, one withheld", () => {
+    const incident = (
+      JSON.parse(
+        readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1195-1196.json"), "utf-8"),
+      ) as Finding[]
+    ).map(f => ({ ...f, id: UNFILED_ID }));
+    const r = arbitrateBatch(incident, opts({ existing: [] }));
+    expect(r.candidates.map(c => c.id)).toEqual([UNFILED_ID, UNFILED_ID]);
+    expect(r.candidates.filter(c => c.emitted).length).toBe(1);
+    expect(r.candidates.filter(c => c.withheldBy === "DUPLICATE").length).toBe(1);
+    // The symptom hash is what distinguishes them, and it is the only join
+    // key a never-filed candidate has. Both rows carry one.
+    expect(r.candidates.every(c => c.symptomHash.length > 0)).toBe(true);
+  });
+
+  /**
+   * A candidate refused UNMEASURED and a candidate the BATCH could not
+   * evaluate are different rows, and the first set is what explains the
+   * second. Collapsing them loses the only evidence of why the fold happened.
+   */
+  test("BATCH_UNMEASURED is distinguishable from the row that caused it", () => {
+    const vague: Finding = { id: "vague", title: "slow", body: "it feels slow" };
+    const r = arbitrateBatch([outOfScope(1), outOfScope(2), vague], opts());
+    expect(r.promotion.reading).toBe("UNMEASURED");
+    expect(r.toFile).toEqual([]);
+    const by = Object.fromEntries(r.candidates.map(c => [c.id, c.withheldBy]));
+    expect(by["vague"]).toBe("UNMEASURED");
+    expect(by["s1"]).toBe("BATCH_UNMEASURED");
+    expect(by["s2"]).toBe("BATCH_UNMEASURED");
+    // The shape being guarded against: the promoter still ranked a list, so
+    // "over budget" is available here and would be the plausible wrong answer.
+    expect(r.promotion.promoted.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * THE CASE THAT BINDS THE PRECEDENCE, found by the mutation that was meant
+   * to break the row above and broke nothing.
+   *
+   * In that row the promoter withheld nothing, so consulting it first or
+   * second gave the same answer and the ordering was a second decider no
+   * case could see (`.claude/rules/checks-must-be-able-to-fail.md`, fourth
+   * shape). This input separates them: the batch is UNMEASURED **and** over
+   * budget, so the promoter has a real `OVER_BUDGET` reason for two rows.
+   *
+   * `BATCH_UNMEASURED` has to win. Nothing was filed at all — `toFile` is
+   * empty — so recording two of eight candidates as "ranked below the cut"
+   * describes a cut that was never applied, off a ranking taken over a
+   * population that could not be evaluated.
+   */
+  test("an UNMEASURED batch that is ALSO over budget reports the fold, not the cut", () => {
+    const vague: Finding = { id: "vague", title: "slow", body: "it feels slow" };
+    const over = Array.from({ length: FILING_BUDGET_FINDINGS + 2 }, (_, i) => outOfScope(i));
+    const r = arbitrateBatch([...over, vague], opts());
+    expect(r.promotion.reading).toBe("UNMEASURED");
+    expect(r.toFile).toEqual([]);
+    // The promoter really did produce the plausible wrong answer for two of
+    // them — without this the row below could be vacuous.
+    expect(r.promotion.withheld.filter(w => w.reason === "OVER_BUDGET").length).toBe(2);
+    expect(r.candidates.filter(c => c.withheldBy === "OVER_BUDGET")).toEqual([]);
+    expect(r.candidates.filter(c => c.withheldBy === "BATCH_UNMEASURED").length).toBe(over.length);
+  });
+
+  test("the withheld reason is the promoter's own, read rather than re-derived", () => {
+    const { reading } = mixed();
+    const overBudget = reading.candidates.filter(c => c.withheldBy === "OVER_BUDGET").map(c => c.id);
+    const promoterSaid = reading.promotion.withheld
+      .filter(w => w.reason === "OVER_BUDGET")
+      .map(w => reading.candidates[Number(w.candidate.source.replace(/^finding:/, ""))]!.id);
+    expect(overBudget.sort()).toEqual(promoterSaid.sort());
+    expect(overBudget.length).toBe(2);
+  });
+});
+
+/**
+ * AR-15: the ledger is sufficient for `compareReviewOutcomes`, and the two
+ * filters come out priced apart.
+ *
+ * `compareReviewOutcomes` refuses a population mismatch by design, so a
+ * filter can only be graded against a corpus of the SAME size in which the
+ * withheld rows are present and flagged. That corpus is exactly this ledger,
+ * read three times:
+ *
+ * | summary | rows flagged `suppressed` |
+ * |---|---|
+ * | baseline | none |
+ * | quorum-only | `withheldBy === "NO_QUORUM"` |
+ * | both | `NO_QUORUM` or `DROPPED_CATEGORY` |
+ *
+ * `compare(baseline, quorumOnly)` prices the quorum; `compare(quorumOnly,
+ * both)` prices the category filter on top of it. Nothing in the comparison
+ * says which filter it is looking at — the attribution is entirely in which
+ * pair you compare, which is why the ledger has to keep the two buckets
+ * apart and why folding them into one `SUPPRESSED` would end this.
+ *
+ * ## WHAT THIS IS NOT
+ *
+ * **It is not a measurement of either filter.** The outcomes below are
+ * planted so the two comparisons come out in OPPOSITE directions, which is
+ * the demonstration: one ledger, two prices, one of them a regression. The
+ * real numbers need a corpus of live batches with real outcomes attached
+ * later, and the whole reason this structure exists is that no such corpus
+ * can be reconstructed from anything we have today.
+ *
+ * ## Why the corpus is two batches
+ *
+ * The quorum runs BEFORE the category check in `arbitrate`, and a batch
+ * carries one ballot, so a `NO_QUORUM` row and a `DROPPED_CATEGORY` row
+ * cannot come from the same call. Ledgers concatenate — which is how a real
+ * A/B would run it anyway, one batch per pull request.
+ */
+describe("AR-15: one ledger, three summaries, the two filters priced apart", () => {
+  const measurable = (n: number): Finding => ({
+    id: `m${n}`,
+    title: `reading ${n}`,
+    body: `\`alphaHandler${n}\` drops ${200 + n} of ${800 + n} messages.`,
+  });
+  const styleNit: Finding = {
+    id: "nitpicked",
+    title: "fix the typo in the banner",
+    body: "`bannerText` is spelled wrong in 1 of 2 places.",
+  };
+  const DISSENT: VerifierVote[] = [
+    { verifier: "v1", real: true, reason: "reproduced" },
+    { verifier: "v2", real: false, reason: "could not reproduce" },
+    { verifier: "v3", real: false, reason: "could not reproduce" },
+  ];
+
+  const corpus = (): CandidateRecord[] => [
+    ...arbitrateBatch([measurable(11), measurable(12)], opts({ votes: DISSENT })).candidates,
+    ...arbitrateBatch([measurable(21), styleNit, measurable(22)], opts()).candidates,
+  ];
+
+  /**
+   * What each candidate WOULD have come to had nothing withheld it. In a real
+   * A/B these arrive from the tracker months later; here they are planted, and
+   * they are the only planted thing.
+   */
+  type Known = { closed: boolean; declared: FindingDisposition | null; fixed?: boolean };
+  const KNOWN: Known[] = [
+    { closed: true, declared: "wrong" }, // 0  NO_QUORUM, and it was noise
+    { closed: true, declared: null }, // 1  NO_QUORUM, closed with nothing landed
+    { closed: true, declared: null, fixed: true }, // 2  posted, and fixed
+    { closed: true, declared: null, fixed: true }, // 3  DROPPED_CATEGORY, and REAL
+    { closed: true, declared: "intentional" }, // 4  posted, and noise
+  ];
+
+  const bridge = (
+    ledger: readonly CandidateRecord[],
+    suppress: (c: CandidateRecord) => boolean,
+  ): ReviewFinding[] =>
+    ledger.map((c, i) => ({
+      // The index, because a candidate nobody filed has no issue number and
+      // never will. `symptomHash` is the stable identity; `ReviewFinding.id`
+      // is a number, so a real consumer needs a mapping it keeps itself.
+      id: i,
+      filedAt: 1_000,
+      closed: KNOWN[i]!.closed,
+      citations: KNOWN[i]!.fixed === true ? [{ sha: `c${i}`, at: 2_000, filesChanged: 3 }] : [],
+      closedInFavourOf: [],
+      declared: KNOWN[i]!.declared,
+      suppressed: suppress(c),
+    }));
+
+  const summarise = (ledger: readonly CandidateRecord[], label: string, s: (c: CandidateRecord) => boolean) =>
+    summariseFindingOutcomes(readFindingOutcomes(bridge(ledger, s), new Set<number>()), label);
+
+  test("CONTROL: the corpus carries both buckets, at the positions the outcomes assume", () => {
+    const ledger = corpus();
+    expect(ledger.length).toBe(KNOWN.length);
+    expect(ledger.map(c => c.withheldBy)).toEqual([
+      "NO_QUORUM",
+      "NO_QUORUM",
+      null,
+      "DROPPED_CATEGORY",
+      null,
+    ]);
+  });
+
+  test("the quorum reads IMPROVED and the category filter on top of it reads REGRESSION", () => {
+    const ledger = corpus();
+    const baseline = summarise(ledger, "every candidate, nothing withheld", () => false);
+    const quorumOnly = summarise(ledger, "quorum applied", c => c.withheldBy === "NO_QUORUM");
+    const both = summarise(ledger, "quorum and category applied", c =>
+      c.withheldBy === "NO_QUORUM" || c.withheldBy === "DROPPED_CATEGORY");
+
+    // Same corpus three times. A size difference here is the one thing
+    // `compareReviewOutcomes` refuses outright, so it is asserted and not
+    // assumed.
+    expect([baseline.population, quorumOnly.population, both.population]).toEqual([5, 5, 5]);
+    expect([baseline.suppressed, quorumOnly.suppressed, both.suppressed]).toEqual([0, 2, 3]);
+
+    const quorumPrice = compareReviewOutcomes(baseline, quorumOnly);
+    expect(quorumPrice.verdict).toBe("IMPROVED");
+    expect(quorumPrice.fixedDelta).toBe(0);
+    expect(quorumPrice.costDelta).toBe(-2);
+
+    const categoryPrice = compareReviewOutcomes(quorumOnly, both);
+    expect(categoryPrice.verdict).toBe("REGRESSION");
+    expect(categoryPrice.fixedDelta).toBe(-1);
+  });
+
+  /**
+   * THE FOLD, PERFORMED. If the ledger named one `SUPPRESSED` for both
+   * filters, the only summary a consumer could build is the "both" one — and
+   * the regression the category filter caused would be reported as the
+   * quorum's price, with no second comparison available to separate them.
+   */
+  test("MUTATION: with the buckets folded, the quorum is blamed for the category filter's loss", () => {
+    const ledger = corpus();
+    const folded = ledger.map(c => ({
+      ...c,
+      withheldBy: c.withheldBy === "DROPPED_CATEGORY" ? "NO_QUORUM" : c.withheldBy,
+    })) as CandidateRecord[];
+    const baseline = summarise(folded, "every candidate", () => false);
+    const oneBucket = summarise(folded, "the only filter a folded ledger can describe", c =>
+      c.withheldBy === "NO_QUORUM");
+    const priced = compareReviewOutcomes(baseline, oneBucket);
+    expect(priced.verdict).toBe("REGRESSION");
+    // The quorum lost nothing. Under the fold it is charged for the one real
+    // finding the CATEGORY filter dropped, and no further comparison exists
+    // that could tell them apart.
+    expect(priced.fixedDelta).toBe(-1);
+  });
+});
+
+/**
+ * AR-16: a malformed ballot is UNMEASURED, not a dissent (#1235).
  *
  * `readVotes` cast the parsed JSON to `VerifierVote[]` with no shape check, and
  * `juryReading` counts agreement with `votes.filter(v => v.real)` — a truthy
@@ -851,7 +1216,7 @@ describe("AR-13: the dedupe is one-hop on purpose", () => {
  * verifier did not report", when in fact it reported unreadably. Different
  * facts, and the refusal has to name the right one.
  */
-describe("AR-14: a malformed ballot is UNMEASURED, not a dissent", () => {
+describe("AR-16: a malformed ballot is UNMEASURED, not a dissent", () => {
   const script = join(import.meta.dir, "..", "scripts", "arbitrate-finding.ts");
   let scratch = "";
 

@@ -279,7 +279,7 @@ function shapeOf(value: unknown): string {
  * be read is not a vote that was cast, and counting it as a no is a second
  * reading nobody took — `.claude/rules/config-access.md`'s *Silent Default
  * Substitution*. One unreadable entry among two genuine yeses still clears a
- * 2-of-3 quorum under coercion, and `test/finding-arbiter.test.ts`'s `AR-14`
+ * 2-of-3 quorum under coercion, and `test/finding-arbiter.test.ts`'s `AR-16`
  * case `B` is that input.
  *
  * Nor is the entry dropped. A two-vote ballot against a declared group of
