@@ -162,6 +162,19 @@ function bindings(tree: Node): { name: string; rhs: Node; topLevel: boolean }[] 
   return out;
 }
 
+/** A name that holds agent text, and the byte range over which it does. */
+interface TaintScope {
+  name: string;
+  why: string;
+  from: number;
+  to: number;
+}
+
+/** Parameter names of a function node, in order; non-Identifier params are null. */
+function paramNames(fn: Node): (string | null)[] {
+  return (fn.params as Node[]).map(p => (p.type === "Identifier" ? (p.name as string) : null));
+}
+
 /** Functions declared in the file, by name, including `const f = () => …`. */
 function functionsByName(tree: Node): Map<string, Node> {
   const fns = new Map<string, Node>();
@@ -188,12 +201,13 @@ export interface TaintedName {
 }
 
 /**
- * Top-level bindings in one workflow file that can hold text an agent wrote.
+ * The whole analysis: which names hold agent text, and over what byte range.
  *
- * Exported so a caller can show its working, and so the mutation cases can run
- * the derivation over a planted source rather than over the live tree.
+ * A range rather than a flat set because a helper's parameter is agent-derived
+ * inside that helper and means nothing outside it. The top-level bindings get
+ * the whole file.
  */
-export function agentDerivedNames(source: string): Map<string, string> {
+function analyse(source: string): { members: Map<string, string>; scopes: TaintScope[]; sanitiserAliases: Set<string> } {
   const tree = parse(source, PARSE_OPTIONS) as unknown as Node;
   const fns = functionsByName(tree);
   const all = bindings(tree);
@@ -239,30 +253,144 @@ export function agentDerivedNames(source: string): Map<string, string> {
   }
 
   const members = new Map<string, string>();
+  const scopes: TaintScope[] = [];
+  const whole = { from: 0, to: source.length };
+
+  /** Is `name` agent-derived at this position? */
+  const taintedAt = (name: string, at: number) =>
+    scopes.some(s => s.name === name && at >= s.from && at <= s.to);
+
+  const addScope = (scope: TaintScope) => {
+    if (scopes.some(s => s.name === scope.name && s.from === scope.from && s.to === scope.to)) {
+      return false;
+    }
+    scopes.push(scope);
+    return true;
+  };
+
   for (const { name, topLevel } of all) {
-    if (topLevel && seeds.has(name) && !sanitised.has(name)) members.set(name, "an agent call");
+    if (topLevel && seeds.has(name) && !sanitised.has(name)) {
+      members.set(name, "an agent call");
+      addScope({ name, why: "an agent call", ...whole });
+    }
   }
+
+  // Where a helper's parameter is, so argument taint can be given a range.
+  const fnRanges = new Map<string, Node>(fns);
+
+  // ── The quoter travels as an argument, so the alias is a sanitiser too ──
+  //
+  // `suiteCaptureCommand(projectRoot, testCommand, workDir, shellQuote)` with
+  // `function suiteCaptureCommand(projectRoot, testCommand, workDir, quote)`
+  // is this repo's idiom for a helper that must quote without importing
+  // (#69). Inside that helper the sanitiser is called `quote`, and a check
+  // that only knows the name `shellQuote` reads every one of its correctly
+  // quoted sites as bare — the mirror image of the rename this all started
+  // with, and it would bury the real findings in noise.
+  const sanitiserAliases = new Set<string>();
+  for (const node of walk(tree)) {
+    if (node.type !== "CallExpression") continue;
+    const fn = fnRanges.get(calleeName(node.callee) ?? "");
+    if (!fn) continue;
+    const params = paramNames(fn);
+    (node.arguments as Node[]).forEach((arg, i) => {
+      const param = params[i];
+      if (!param) return;
+      if (arg.type === "Identifier" && SANITISERS.includes(arg.name as string)) sanitiserAliases.add(param);
+      if (arg.type === "Identifier" && sanitiserAliases.has(arg.name as string)) sanitiserAliases.add(param);
+    });
+  }
+  const sanitises = (name: string | null) =>
+    !!name && (SANITISERS.includes(name) || sanitiserAliases.has(name));
+
   for (let again = true; again; ) {
     again = false;
+
+    // Top-level bindings, as before.
     for (const { name, rhs, topLevel } of all) {
       if (!topLevel || members.has(name) || sanitised.has(name)) continue;
       for (const node of walk(rhs)) {
         if (node.type !== "Identifier") continue;
         const ref = node.name as string;
-        if (seeds.has(ref)) {
-          members.set(name, `${ref}, an agent reply`);
-          again = true;
-          break;
-        }
-        if (members.has(ref)) {
-          members.set(name, ref);
-          again = true;
-          break;
-        }
+        const why = seeds.has(ref) ? `${ref}, an agent reply` : taintedAt(ref, node.start) ? ref : null;
+        if (!why) continue;
+        members.set(name, why);
+        addScope({ name, why, ...whole });
+        again = true;
+        break;
       }
     }
+
+    // ── The rename, and why a source-side list could not survive it (#1103) ──
+    //
+    // `workflowProbeCommand(commitDir)` with `function workflowProbeCommand(dir)`
+    // puts an agent-derived path into a shell string under a name no list has
+    // ever heard of, and nobody forgot anything: the value crossed a function
+    // boundary and changed its name, which is what function boundaries are for.
+    //
+    // So taint crosses with it. A member passed as an argument taints the
+    // parameter it binds to, over that function's body and no further.
+    // Sanitisers and message calls are excluded — `shellQuote(commitDir)`
+    // taints nothing, which is the whole point of calling it, and a parameter
+    // the call site bound to `shellQuote` counts as one (`quote` in
+    // `suiteCaptureCommand(…, shellQuote)`).
+    //
+    // ONE hop, from a top-level member only, and that is a measured choice
+    // rather than a simplification. Counted on this tree:
+    //
+    //   members only, no parameters            38 names / 106 sites
+    //   + one hop from a member  ← this        54 names / 137 sites
+    //   + locals inside those helpers          88 names / 200 sites
+    //   + transitive parameter-to-parameter   149 names / 343 sites
+    //
+    // The last two are almost entirely refusal-sentence builders. They are
+    // not a stricter check at that size, they are a list nobody reads, and a
+    // classification nobody reads is the failure this whole file is about.
+    //
+    // **The hole this leaves, stated rather than hidden:** a local declared
+    // INSIDE a helper and derived from a tainted parameter is not followed —
+    // `function f(dir) { const d = `${dir}/x`; return `cmd ${d}` }` reports
+    // the `${dir}`, not the `${d}`. The first interpolation is still caught,
+    // so the helper cannot go dark; a helper that only ever uses the derived
+    // copy can.
+    for (const node of walk(tree)) {
+      if (node.type !== "CallExpression") continue;
+      const callee = calleeName(node.callee);
+      if (!callee || sanitises(callee) || MESSAGE_CALLEES.includes(callee)) continue;
+      const fn = fnRanges.get(callee);
+      if (!fn) continue;
+      const params = paramNames(fn);
+      (node.arguments as Node[]).forEach((arg, i) => {
+        const param = params[i];
+        if (!param) return;
+        let tainted = false;
+        for (const sub of walk(arg)) {
+          if (sub.type === "Identifier" && members.has(sub.name as string)) {
+            tainted = true;
+            break;
+          }
+        }
+        if (!tainted) return;
+        if (addScope({ name: param, why: `${callee}()'s argument ${i + 1}`, from: fn.start, to: fn.end })) {
+          again = true;
+        }
+      });
+    }
+
   }
-  return members;
+
+  return { members, scopes, sanitiserAliases };
+}
+
+/**
+ * Top-level bindings in one workflow file that can hold text an agent wrote.
+ *
+ * The named half of the analysis, kept as its own export because the floor
+ * assertion in the test reads it: a derivation that stopped matching would
+ * otherwise report a clean tree rather than an empty one.
+ */
+export function agentDerivedNames(source: string): Map<string, string> {
+  return analyse(source).members;
 }
 
 export interface BareInterpolation {
@@ -284,7 +412,14 @@ export interface BareInterpolation {
  */
 export function bareAgentInterpolations(relPath: string, source: string): BareInterpolation[] {
   const tree = parse(source, PARSE_OPTIONS) as unknown as Node;
-  const members = agentDerivedNames(source);
+  const { scopes, sanitiserAliases } = analyse(source);
+  /** `shellQuote(x)`, or a helper parameter bound to it at every call site. */
+  const sanitisedCall = (expr: Node) => {
+    const callee = calleeName(expr.callee);
+    return !!callee && (SANITISERS.includes(callee) || sanitiserAliases.has(callee));
+  };
+  const taintedAt = (name: string, at: number) =>
+    scopes.some(s => s.name === name && at >= s.from && at <= s.to);
 
   const messageRanges: [number, number][] = [];
   for (const node of walk(tree)) {
@@ -297,11 +432,11 @@ export function bareAgentInterpolations(relPath: string, source: string): BareIn
   for (const node of walk(tree)) {
     if (node.type !== "TemplateLiteral") continue;
     for (const expr of node.expressions as Node[]) {
-      if (expr.type === "CallExpression" && SANITISERS.includes(calleeName(expr.callee) ?? "")) continue;
+      if (expr.type === "CallExpression" && sanitisedCall(expr)) continue;
       if (inMessage(expr.start)) continue;
       const names = new Set<string>();
       for (const sub of walk(expr)) {
-        if (sub.type === "Identifier" && members.has(sub.name as string)) names.add(sub.name as string);
+        if (sub.type === "Identifier" && taintedAt(sub.name as string, sub.start)) names.add(sub.name as string);
       }
       if (names.size === 0) continue;
       const line = source.slice(0, expr.start).split("\n").length;

@@ -3828,7 +3828,10 @@ function localEnvClause(field, url, configKey) {
       `environments.local.${field} = "SKIP" with skipReason "no ${configKey} in the resolved config". ` +
       `Do not go looking for one.`
   }
-  return `curl ${url} and write environments.local.${field} = PASS or FAIL from what it answered. ` +
+  // Quoted because it is a word in a command the agent runs, and it arrives
+  // from the resolved config by way of an agent reading it back (#1103). The
+  // other two interpolations on this line are literals from the caller.
+  return `curl ${shellQuote(url)} and write environments.local.${field} = PASS or FAIL from what it answered. ` +
     `SKIP is NOT available for this project — the URL is resolved above, so a check you could not ` +
     `complete is a FAIL, not a skip.`
 }

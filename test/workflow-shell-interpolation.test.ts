@@ -133,6 +133,47 @@ const CLASSIFIED: Record<string, string> = {
     "prose into a prompt: `.detail` is composed by `containerProbeTarget` from its own literals " +
     "plus a host that passed `CONTAINER_HOST` and a port that passed an integer range check",
 
+  // ── workflows/ship.js, helper parameters ───────────────────────────
+  // Not top-level bindings: parameters that a member was passed into, which
+  // the analysis follows one hop because a value crossing a function boundary
+  // changes its name and that is what function boundaries are for. These
+  // fifteen are what that hop added on this tree.
+  "workflows/ship.js:o":
+    "a command, not a value: `o.suiteCapture` and `o.recorder` are the suite and recorder command " +
+    "lines, composed by `suiteCaptureCommand` and `recorderCommand` with the quoter passed in",
+  "workflows/ship.js:prompt":
+    "prose into a prompt: `timedAgent`'s own prompt argument, concatenated with the timing " +
+    "instruction before being handed to `agent`. It IS the prompt",
+  "workflows/ship.js:healContext":
+    "prose into a prompt: a paragraph about what the previous attempt got wrong",
+  "workflows/ship.js:context":
+    "prose into a prompt: the regression context sentence, or nothing",
+  "workflows/ship.js:prior":
+    "prose into a prompt: `prior.behindCount` in the refusal sentence `reusablePriorBranch` " +
+    "composes. `prior.branch` itself now passes `isSafeBranchName` before it is used at all",
+  "workflows/ship.js:record":
+    "a command, not a value: `prodQuinnAssignment` composes a JavaScript statement for `bun -e`",
+  "workflows/ship.js:currency":
+    "prose into a prompt: wrapped in `describeShaValue`, in a `reason:` sentence",
+  "workflows/ship.js:measuredSha":
+    "prose into a prompt: wrapped in `describeSuiteShaValue`, in a `reason:` sentence",
+  "workflows/ship.js:v":
+    "structured, not text: `describeShaValue`'s own argument — `v.length` for an array, and " +
+    "`JSON.stringify(v)` for everything that reaches the final line",
+  "workflows/ship.js:r":
+    "prose into a prompt: evidence-quality reasons, joined into a sentence about what was not " +
+    "measured",
+  "workflows/ship.js:reading":
+    "structured, not text: `JSON.stringify(reading.verdict)` inside a refusal sentence",
+  "workflows/ship.js:reply":
+    "structured, not text: `JSON.stringify(reply.outcome)` inside a refusal sentence",
+  "workflows/ship.js:existingPR":
+    "structured, not text: `JSON.stringify(existingPR)` inside a refusal sentence",
+  "workflows/ship.js:results":
+    "structured, not text: `typeof results`, which is one of eight words",
+  "workflows/ship.js:status":
+    "structured, not text: `String(status)` in a readiness sentence",
+
   // ── workflows/ship-and-heal.js ─────────────────────────────────────
   "workflows/ship-and-heal.js:workDir":
     "refused at the source: anything that is not a plain absolute path is dropped to '' at the " +
@@ -395,6 +436,70 @@ describe("#1103: the census can fail, and fails on the thing that got past it", 
       "const cmd = `git -C ${p} add -A`",
     ].join("\n");
     expect(bareAgentInterpolations("planted.js", mixed).map(f => f.name)).toEqual(["p"]);
+  });
+
+  test("extraction into a helper renames the binding and does NOT lose it", () => {
+    // The second live instance of #1103, and the one that defeats a list
+    // without anybody omitting anything: `commitDir` is classified, the
+    // interpolation is bare, and at the interpolation site the binding is
+    // called `dir`. The list was still correct and simply stopped applying.
+    //
+    // A value crossing a function boundary and changing its name is what
+    // function boundaries are FOR, so the taint crosses with it: a member
+    // passed as an argument taints the parameter it binds to, over that
+    // function's body and no further.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const commitDir = thing.worktreePath",
+      "function workflowProbeCommand(dir) {",
+      "  return `if [ ! -d ${dir} ]; then echo PROBE_FAILED; exit 1; fi`",
+      "}",
+      "const probe = `${workflowProbeCommand(commitDir)}`",
+    ].join("\n");
+
+    const found = bareAgentInterpolations("planted.js", planted);
+    // Both ends of the hop, which is the right answer: the call site passes an
+    // unsanitised member into a string, and the body puts it in a command.
+    // Either one is a place to fix it, and reporting only the second would
+    // send a reader into the helper for a decision the caller can make.
+    expect(found.map(f => `${f.where} ${f.name}`).sort()).toEqual([
+      "planted.js:4 dir",
+      "planted.js:6 commitDir",
+    ]);
+  });
+
+  test("the quoter travels as an argument, and its alias is still the quoter", () => {
+    // The mirror image, and the reason the row above does not drown in noise.
+    // `suiteCaptureCommand(projectRoot, cmd, workDir, shellQuote)` is this
+    // repo's idiom for a helper that must quote without importing (#69).
+    // Inside it the sanitiser is called `quote`, and a check that only knows
+    // the name `shellQuote` reads every correctly quoted site as bare.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const dirFromAgent = thing.worktreePath",
+      "function capture(root, quote) {",
+      "  return `( cd ${quote(root)} && bun test )`",
+      "}",
+      "const cmd = capture(dirFromAgent, shellQuote)",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted)).toEqual([]);
+
+    // And the alias is not a blanket pass for the parameter: used WITHOUT the
+    // quoter it is still a bare interpolation.
+    const unquoted = planted.replace("${quote(root)}", "${root}");
+    expect(bareAgentInterpolations("planted.js", unquoted).map(f => f.name)).toEqual(["root"]);
+  });
+
+  test("a helper called with something no agent touched taints nothing", () => {
+    // The control for the hop. If passing ANY argument tainted the parameter,
+    // every helper in the file would be in the population and the
+    // classification table would be the file.
+    const planted = [
+      "const WORK_DIR = args.workDir",
+      "function probe(dir) { return `test -d ${dir}` }",
+      "const cmd = `${probe(WORK_DIR)}`",
+    ].join("\n");
+    expect(bareAgentInterpolations("planted.js", planted)).toEqual([]);
   });
 
   test("a wrapper around agent() is a spawner too, without being named", () => {
