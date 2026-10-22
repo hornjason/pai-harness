@@ -73,15 +73,22 @@ if (PROJECT_ROOT) try {
   for (const e of sr.errors) log(`SCRATCH cleanup error: ${e}`);
 } catch (e) { log(`SCRATCH cleanup error: ${e}`); }
 
-// Branch cleanup
+// Branch cleanup (#516, #1079). Thin trigger: lib/branch-cleanup.ts holds
+// every decision. This arm issues `git push origin --delete`, the one
+// irreversible thing this hook does and the only thing in it that reaches a
+// remote, at EVERY SessionStart from the shared checkout — so it is DISARMED
+// by default and signals nothing. Set RUNGATE_BRANCH_CLEANUP=1 to arm it.
+//
+// A disarmed arm and a run that could not resolve the repository both say so
+// by name: zero deletions has three causes here and only one is a clean
+// sweep. `.claude/rungate/hooks.json` names this arming and the #1079 slug
+// refusal as the two things that must BOTH hold before this hook may be
+// reconsidered for consumer deployment.
 if (PROJECT_ROOT) try {
-  const { cleanupStaleBranches } = await import('../lib/branch-cleanup.ts');
-  const projectRoot = PROJECT_ROOT;
-  const br = await cleanupStaleBranches({ projectRoot, maxAgeDays: 7 });
-  if (br.deleted.length) {
-    deletedCount += br.deleted.length;
-    log(`BRANCH cleanup [${projectRoot}]: deleted ${br.deleted.length} stale remote branches`);
-  }
+  const { runBranchCleanupArm } = await import('../lib/branch-cleanup.ts');
+  const br = await runBranchCleanupArm({ projectRoot: PROJECT_ROOT, maxAgeDays: 7 });
+  deletedCount += br.deleted;
+  for (const line of br.lines) log(line);
 } catch (e) { log(`BRANCH cleanup error: ${e}`); }
 
 // Orphaned test-suite processes (#690). Thin trigger: lib/orphan-reaper.ts

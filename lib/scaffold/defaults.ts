@@ -258,20 +258,27 @@ export function buildDefaultHooks(): HookRegistration[] {
       // Short form: at every SessionStart it runs
       // `cleanupStaleBranches({maxAgeDays: 7})`, which issues
       // `git push origin --delete` per stale branch, gated by an open-PR
-      // check that `lib/branch-cleanup.ts` defaults to the slug
-      // `hornjason/pai-harness` — so on a consumer the guard asks about THIS
-      // repository and can never say stop. A classification made by reading
+      // check that `lib/branch-cleanup.ts` USED to default to the slug
+      // `hornjason/pai-harness` — so on a consumer the guard asked about THIS
+      // repository and could never say stop. A classification made by reading
       // a hook's header is not a classification; follow the dynamic imports.
+      //
+      // #1079 closed the slug half: the slug is resolved from the project's
+      // own `origin` and an unresolvable one REFUSES the delete, and the arm
+      // is disarmed unless `RUNGATE_BRANCH_CLEANUP=1`. That is necessary and
+      // not sufficient — the worktree, scratch-dir and orphan-reaper arms of
+      // this same hook have never been separately cleared for consumer use.
       name: "StaleTTLCleanup",
       hookFor: "SessionStart",
       command: "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
       enabled: true,
       deployToConsumers: false,
       notDeployedReason:
-        "HARNESS-ONLY. Deletes remote branches at every SessionStart via " +
-        "cleanupStaleBranches, behind an open-PR guard whose repository slug defaults to " +
-        "this repository — so on a consumer the guard answers a question about the wrong " +
-        "repo and the delete runs against theirs. See the registry entry for the full reading.",
+        "HARNESS-ONLY. Can delete remote branches at SessionStart via cleanupStaleBranches. " +
+        "#1079 removed the slug default that made the open-PR guard ask about THIS repository " +
+        "on a consumer, and disarmed the arm behind RUNGATE_BRANCH_CLEANUP — necessary, not " +
+        "sufficient. Its worktree, scratch-dir and orphan-reaper arms have never been cleared " +
+        "for consumer use and need their own reading. See the registry entry.",
       scope: "user",
       description: "Cleans up stale workflow-state.json and ship-active files",
     },

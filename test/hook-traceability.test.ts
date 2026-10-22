@@ -573,8 +573,12 @@ describe("#1047: every hook declares whether a consumer receives it", () => {
    * which imports `cleanStaleFiles`. Sixty lines down, behind
    * `await import('../lib/branch-cleanup.ts')`, it runs
    * `git push origin --delete` per stale branch at every SessionStart, gated
-   * by an open-PR check whose slug defaults to THIS repository, so on a
-   * consumer the guard asks about the wrong repo and can never say stop.
+   * by an open-PR check whose slug defaulted to THIS repository, so on a
+   * consumer the guard asked about the wrong repo and could never say stop.
+   * #1079 removed that default — the slug now comes from the project's own
+   * `origin` and an unresolvable one refuses the delete — and disarmed the
+   * arm behind `RUNGATE_BRANCH_CLEANUP`. The hook still reaches the
+   * destructive call, which is what this case is about.
    *
    * AC-11 through AC-14 cannot see that: they check that somebody WROTE an
    * answer, never that the answer is true. This one reads the code the hook
