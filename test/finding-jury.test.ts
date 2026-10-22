@@ -72,6 +72,31 @@ describe("JURY-1: an unreadable vote refuses, it does not decide", () => {
     expect(r.passed).toBe(false);
   });
 
+  /**
+   * The quorum is compared against the BALLOT, not against the declaration.
+   * With the 3/2 defaults, five votes of which two agree returned
+   * `passed: true` — 2 of 5, a majority of nothing — because an over-size
+   * ballot was accepted as a larger group it had never declared.
+   */
+  test("an over-size ballot is UNMEASURED, not a bigger group", () => {
+    const five = [
+      vote("a", true), vote("b", true),
+      vote("c", false), vote("d", false), vote("e", false),
+    ];
+    const r = juryReading(five); // groupSize 3, quorum 2
+    expect(r.agree).toBe(VERIFIER_QUORUM);
+    expect(r.reading).toBe("UNMEASURED");
+    expect(r.passed).toBe(false);
+  });
+
+  test("CONTROL: the same five votes DECLARED as a group of five read fine", () => {
+    const five = [
+      vote("a", true), vote("b", true), vote("c", true),
+      vote("d", false), vote("e", false),
+    ];
+    expect(juryReading(five, { groupSize: 5, quorum: 3 }).reading).toBe("MEASURED");
+  });
+
   test("the cardinalities are configurable, and 5/3 behaves", () => {
     const five = [vote("a", true), vote("b", true), vote("c", true), vote("d", false), vote("e", false)];
     const r = juryReading(five, { groupSize: 5, quorum: 3 });
@@ -96,7 +121,42 @@ describe("JURY-2: the category is the verifiers' when they gave one", () => {
       vote("b", true, { category: "cleanup" }),
       vote("c", true, { category: "correctness" }),
     ];
+    // Two of three real votes, which is the outright majority a drop needs.
     expect(juryCategory(finding, votes)).toBe("cleanup");
+  });
+
+  /**
+   * One tagger is not the group. Under a plain plurality, three real votes
+   * with ONE `cleanup` tag returned `cleanup` and the finding was dropped —
+   * a single voice suppressing what the group had passed.
+   */
+  test("one tagger of three cannot drop a finding the group passed", () => {
+    const finding = { title: "commandWord returns the wrong verb", body: "x" };
+    const votes = [
+      vote("a", true, { category: "cleanup" }),
+      vote("b", true),
+      vote("c", true),
+    ];
+    expect(juryCategory(finding, votes)).toBe("correctness");
+  });
+
+  test("CONTROL: two taggers of three — an outright majority — do drop it", () => {
+    const finding = { title: "commandWord returns the wrong verb", body: "x" };
+    const votes = [
+      vote("a", true, { category: "cleanup" }),
+      vote("b", true, { category: "cleanup" }),
+      vote("c", true),
+    ];
+    expect(juryCategory(finding, votes)).toBe("cleanup");
+  });
+
+  test("a tie between a drop and a keep resolves toward keep", () => {
+    const finding = { title: "an unremarkable title", body: "x" };
+    const votes = [
+      vote("a", true, { category: "cleanup" }),
+      vote("b", true, { category: "security" }),
+    ];
+    expect(juryCategory(finding, votes)).toBe("security");
   });
 
   test("a verifier who called it NOT real does not get to categorise it", () => {

@@ -31,6 +31,7 @@ import {
   duplicateOverlap,
   sharedKeys,
   symptomKeys,
+  UNFILED_ID,
   type Finding,
 } from "../lib/finding-arbiter";
 import { SEVERITY_RANK, type VerifierVote } from "../lib/finding-jury";
@@ -546,6 +547,31 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
     expect(overlap.keys).toContain("sym:commandWord");
     expect(overlap.keys).toContain("sym:isDirDestination");
     expect(overlap.keys).toContain("sym:statSync");
+  });
+
+  /**
+   * THE PAIR IS THE TEST, NOT EITHER ROW.
+   *
+   * The row below runs the fixtures under their real ids, `1195` and `1196`,
+   * and it was green on the merged code. The CLI does not produce that input:
+   * it labels every unfiled finding `UNFILED_ID`, so the real batch is two
+   * findings both carrying `"new"` — and the self-skip guard, keyed on the id
+   * string, made each skip the other AS ITSELF. Measured on merged main: 2
+   * survivors under `"new"`/`"new"`, 1 under the real ids. A case that is
+   * green for a true reason about an input the production caller never sends
+   * is the fifth shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+   */
+  test("BOTH IDS UNFILED — the input the CLI actually sends — still yields one survivor", () => {
+    const asNew = incident.map(f => ({ ...f, id: UNFILED_ID }));
+    const r = arbitrateBatch(asNew, opts({ existing: [] }));
+    expect(r.toComment.length).toBe(1);
+    expect(r.verdicts.filter(v => v.refusal === "DUPLICATE").length).toBe(1);
+  });
+
+  test("a finding is never a duplicate of itself, by reference, even when ids collide", () => {
+    const [a] = incident;
+    const self = arbitrate(a, opts({ existing: [a] }));
+    expect(self.refusal).not.toBe("DUPLICATE");
   });
 
   test("ONE BATCH, EMPTY TRACKER: exactly one of them survives", () => {
