@@ -1,7 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { coverageClaimIds } from "../scripts/sync-sc-status";
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+// The per-test budget for a case that scans the whole test tree (#1223).
+// Calibrated on this machine and this tree rather than written down, so it
+// has no expiry — see test/helpers/sc-scan-budget.ts.
+setDefaultTimeout(scScanTestTimeout());
 
 /**
  * #149 — a test that merely embeds an SC line as fixture data was counted as

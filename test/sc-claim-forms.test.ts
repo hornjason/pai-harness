@@ -12,7 +12,7 @@
  * and #352 hit it again. The 9900s are declared by no spec, so no example
  * below can mint a credit however it is written.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -21,6 +21,14 @@ import { structuralCut } from "../lib/source-slice";
 import { commentMask, enclosingComment } from "../lib/strip-js-comments";
 import { buildScRegistry } from "../lib/sc-ids";
 import { coverageClaimSites, findTestFilesForSCs } from "../scripts/sync-sc-status";
+import { scScanTestTimeout } from "./helpers/sc-scan-budget";
+
+// The per-test budget for a case that scans the whole test tree (#1223).
+// Calibrated on this machine and this tree rather than written down, so it
+// has no expiry — see test/helpers/sc-scan-budget.ts. Every call in THIS
+// file plants a scratch directory, so the budget is not load-bearing here;
+// the roster is deliberately wider than the cases that need it.
+setDefaultTimeout(scScanTestTimeout());
 
 /** Ask the owner about the first id in a comment, the way the scanner does. */
 function formOf(comment: string, id = "SC-9901"): ClaimForm | null {
