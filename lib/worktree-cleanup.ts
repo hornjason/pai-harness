@@ -12,6 +12,61 @@
 import { readdirSync, realpathSync, statSync, existsSync, readFileSync, rmSync } from "fs";
 import { join, isAbsolute } from "path";
 import { spawnSync } from "child_process";
+import { gitIsolatedArgs, gitIsolatedEnv } from "./git-isolation";
+
+/**
+ * The ONE place this module runs `git` (#1097).
+ *
+ * ## Why isolation matters more here than anywhere it has been applied yet
+ *
+ * Every other consumer of `lib/git-isolation.ts` reads. This one deletes.
+ * The chain is three steps and it was live on `origin/main`:
+ *
+ *   1. `core.excludesFile` makes an untracked file invisible to
+ *      `git status --porcelain`. Measured on git 2.50.1 by #1048/#1090.
+ *   2. The dirty check below reads clean, so the worktree falls through
+ *      every remaining check.
+ *   3. `git worktree remove --force` takes the tree, and the file that
+ *      existed in exactly one place is gone.
+ *
+ * **The guard meant to spare the work is the reading that was tampered
+ * with**, which is why no amount of care in the checks downstream of it
+ * helps. #1090 isolated the census — the module that REPORTS the same
+ * reading — and did not touch this one.
+ *
+ * Latent rather than active when this shipped: none of
+ * `core.excludesFile`, `core.hooksPath` or `core.fsmonitor` was set in any
+ * scope on the machine (measured 2026-10-22). What makes it worth fixing
+ * is that a global gitignore is ordinary advice, setting one silently arms
+ * this, and the failure is silent — the summary prints `N removed` and
+ * nothing says what was in them.
+ *
+ * ## One seam, not the flags at each site
+ *
+ * There are eight `git` invocations in this module. `lib/git-isolation.ts`
+ * is the single declaring position for WHAT isolation is; this is the
+ * single declaring position for WHERE this module applies it. Pasting the
+ * `-c` flags at eight call sites is the cheaper change and is measured as
+ * the cheapest WRONG fix in #1090's battery: it works, and it reinstates
+ * the drifting spellings #1001 removed.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * `rmSync` on an orphaned checkout, in the `removeOrphans` arm below. Git
+ * has no registration for that directory — that is the definition of the
+ * bucket — so there is no git invocation there to isolate and no config
+ * that could steer it. It is a recursive delete of content nothing has
+ * classified, which is why it is off by default; that is #436's argument
+ * and this change does not touch it.
+ */
+function cleanupGit(args: readonly string[], cwd: string, timeout: number) {
+  return spawnSync("git", gitIsolatedArgs(args), {
+    cwd,
+    encoding: "utf-8",
+    timeout,
+    env: gitIsolatedEnv(),
+  });
+}
 
 export interface CleanupResult {
   removed: string[];
@@ -78,15 +133,11 @@ export interface CleanupOptions {
  * safety check reverted.
  */
 export function unpushedCommitCount(projectRoot: string, branch: string): number | null {
-  const remotes = spawnSync("git", ["remote"], {
-    cwd: projectRoot, encoding: "utf-8", timeout: 5000,
-  });
+  const remotes = cleanupGit(["remote"], projectRoot, 5000);
   if (remotes.status !== 0) return null;
   if (!remotes.stdout.split("\n").map(r => r.trim()).includes("origin")) return 0;
 
-  const count = spawnSync("git", ["rev-list", "--count", branch, "--not", "--remotes=origin"], {
-    cwd: projectRoot, encoding: "utf-8", timeout: 10_000,
-  });
+  const count = cleanupGit(["rev-list", "--count", branch, "--not", "--remotes=origin"], projectRoot, 10_000);
   if (count.status !== 0) return null;
   const n = parseInt(count.stdout.trim(), 10);
   return Number.isFinite(n) ? n : null;
@@ -124,13 +175,11 @@ export type OriginState =
   | { kind: "on-origin" };
 
 export function originState(projectRoot: string, branch: string): OriginState {
-  const remotes = spawnSync("git", ["remote"], { cwd: projectRoot, encoding: "utf-8", timeout: 5000 });
+  const remotes = cleanupGit(["remote"], projectRoot, 5000);
   if (remotes.status !== 0) return { kind: "unknown" };
   if (!remotes.stdout.split("\n").map(r => r.trim()).includes("origin")) return { kind: "no-origin" };
 
-  const count = spawnSync("git", ["rev-list", "--count", branch, "--not", "--remotes=origin"], {
-    cwd: projectRoot, encoding: "utf-8", timeout: 10_000,
-  });
+  const count = cleanupGit(["rev-list", "--count", branch, "--not", "--remotes=origin"], projectRoot, 10_000);
   if (count.status !== 0) return { kind: "unknown" };
   const n = parseInt(count.stdout.trim(), 10);
   if (!Number.isFinite(n)) return { kind: "unknown" };
@@ -193,9 +242,7 @@ export function removalKeepReason(
  * permission — the same rule `unpushedCommitCount` follows for `null`.
  */
 export function lockedWorktreePaths(projectRoot: string): Set<string> | null {
-  const list = spawnSync("git", ["worktree", "list", "--porcelain"], {
-    cwd: projectRoot, encoding: "utf-8", timeout: 15_000,
-  });
+  const list = cleanupGit(["worktree", "list", "--porcelain"], projectRoot, 15_000);
   if (list.status !== 0) return null;
 
   const paths = new Set<string>();
@@ -420,11 +467,7 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
     }
 
     // Check for uncommitted changes
-    const statusCheck = spawnSync("git", ["status", "--porcelain"], {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      timeout: 5000,
-    });
+    const statusCheck = cleanupGit(["status", "--porcelain"], worktreePath, 5000);
 
     if (statusCheck.status !== 0) {
       result.errors.push(`Failed to check git status for ${entry}: ${statusCheck.stderr}`);
@@ -438,11 +481,7 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
     }
 
     // Get branch name
-    const branchCheck = spawnSync("git", ["-C", worktreePath, "branch", "--show-current"], {
-      cwd: projectRoot,
-      encoding: "utf-8",
-      timeout: 5000,
-    });
+    const branchCheck = cleanupGit(["-C", worktreePath, "branch", "--show-current"], projectRoot, 5000);
 
     if (branchCheck.status !== 0) {
       result.errors.push(`Failed to get branch name for ${entry}: ${branchCheck.stderr}`);
@@ -475,11 +514,7 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
     // asks whether BRANCH is an ancestor of main. Reversed, every branch cut
     // from main would look merged and cleanup would delete unmerged work.
     // test/unit/worktree-cleanup-merge.test.ts pins both directions.
-    const mergeCheck = spawnSync("git", ["merge-base", "--is-ancestor", branchName, "main"], {
-      cwd: projectRoot,
-      encoding: "utf-8",
-      timeout: 5000,
-    });
+    const mergeCheck = cleanupGit(["merge-base", "--is-ancestor", branchName, "main"], projectRoot, 5000);
 
     // Exit 0 = merged, 1 = not merged. Anything else (128: bad revision, no
     // `main`, not a repo) is an error, NOT a verdict — treating it as "not
@@ -507,11 +542,7 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
     }
 
     // All safety checks passed — remove the worktree
-    const removeResult = spawnSync("git", ["worktree", "remove", "--force", worktreePath], {
-      cwd: projectRoot,
-      encoding: "utf-8",
-      timeout: 15000,
-    });
+    const removeResult = cleanupGit(["worktree", "remove", "--force", worktreePath], projectRoot, 15000);
 
     if (removeResult.status !== 0) {
       result.errors.push(`Failed to remove ${entry}: ${removeResult.stderr}`);
@@ -521,11 +552,7 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
   }
 
   // Prune worktree references
-  const pruneResult = spawnSync("git", ["worktree", "prune"], {
-    cwd: projectRoot,
-    encoding: "utf-8",
-    timeout: 5000,
-  });
+  const pruneResult = cleanupGit(["worktree", "prune"], projectRoot, 5000);
 
   if (pruneResult.status !== 0) {
     result.errors.push(`Failed to prune worktree references: ${pruneResult.stderr}`);
