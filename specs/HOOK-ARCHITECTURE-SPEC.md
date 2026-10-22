@@ -65,7 +65,7 @@ deployment path currently reaches zero hooks.
 | ActionVerificationGate | ActionVerificationGate.hook.ts | 89 | SC-370, SC-371 | Good — migrated by #713. No file I/O and no path resolution at all; the most portable of the nine PRODUCT hooks |
 | GateResultProtection | GateResultProtection.hook.ts | 93 | SC-370, SC-371 | Acceptable — migrated by #713. Pure rungate gate integrity; reads no path the tool call did not already name |
 | BashWriteGuard | BashWriteGuard.hook.ts | 127 | SC-370, SC-371 | Acceptable — migrated by #713. Protects gate artifacts and hook files. The `*.hook.ts` arm is unscoped, so it would fire on a consumer authoring their own hooks — settle that before `deployToConsumers` |
-| DocHygiene | DocHygiene.hook.ts | 135 | SC-370, SC-371 | Acceptable — migrated by #713, thinned 220→135 lines onto `lib/frontmatter.ts`, which its own `.pai` header already named as the tested binding. **Stamps `owner: jason` as a literal**, so it cannot travel to consumers until the owner comes from config |
+| DocHygiene | DocHygiene.hook.ts | 148 | SC-370, SC-371 | Acceptable — migrated by #713, thinned 220→135 lines onto `lib/frontmatter.ts`, which its own `.pai` header already named as the tested binding. Stamped `owner: jason` as a literal until #1119, which **omits the key** rather than sourcing it from config: nothing downstream reads it, so a config field would transport a value with no consumer. The three keys it still stamps are all inferable from the document or the clock |
 
 The seven rows above are #713's migration of the PRODUCT-classified hooks in
 `docs/research/hook-tree-classification.md`. Two of that classification's nine

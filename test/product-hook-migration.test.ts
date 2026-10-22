@@ -306,12 +306,14 @@ describe("#713 DocHygiene: stamps through lib/frontmatter, add-only", () => {
     return { dir, path, payload: JSON.stringify({ tool_name: "Write", tool_input: { file_path: path } }) };
   }
 
-  test("WITNESS: a doc with no frontmatter gets the four required fields", () => {
+  test("WITNESS: a doc with no frontmatter gets the three inferable fields", () => {
+    // Three, not four, since #1119. `owner:` left this set because it is the
+    // one key the hook cannot infer — see the #1119 witness below.
     const { dir, path, payload } = doc("# My Doc\n\nbody\n");
     try {
       runHook("DocHygiene.hook.ts", payload);
       const out = readFileSync(path, "utf-8");
-      for (const key of ["doc-type:", "status:", "owner:", "updated:"]) expect(out).toContain(key);
+      for (const key of ["doc-type:", "status:", "updated:"]) expect(out).toContain(key);
       expect(out, "the body must survive the stamp").toContain("body");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -338,6 +340,33 @@ describe("#713 DocHygiene: stamps through lib/frontmatter, add-only", () => {
       const first = readFileSync(path, "utf-8");
       runHook("DocHygiene.hook.ts", payload);
       expect(readFileSync(path, "utf-8")).toBe(first);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#1119 WITNESS: a generated doc carries NO owner key", () => {
+    // The hook used to stamp `owner: 'jason'` as a literal, so a consumer's
+    // markdown inherited this repository's owner. There is no config value to
+    // put in its place — nothing downstream reads the key, measured over
+    // `lib`, `hooks`, `bin` and `gates` — so the key is omitted rather than
+    // defaulted. A default owner is the same defect as the literal: it writes
+    // a value nobody chose into somebody else's file.
+    //
+    // This is the case the cheapest wrong fix fails. Reading the owner from
+    // config with `'jason'` as the fallback passes every configured-owner
+    // test ever written and lands this exact file, unchanged, on a consumer.
+    const { dir, path, payload } = doc("# My Doc\n\nbody\n");
+    try {
+      runHook("DocHygiene.hook.ts", payload);
+      const out = readFileSync(path, "utf-8");
+      expect(out, "no owner may be invented for a doc that declares none").not.toContain("owner:");
+      expect(out, "the literal must not survive under any spelling").not.toContain("jason");
+      // The negative control. Three assertions saying a key is ABSENT also
+      // hold against a hook that stamps nothing at all, so the three keys the
+      // hook still owns are asserted present in the same breath.
+      for (const key of ["doc-type:", "status:", "updated:"]) expect(out).toContain(key);
+      expect(out, "the body must survive the stamp").toContain("body");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

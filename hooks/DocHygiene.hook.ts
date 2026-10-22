@@ -4,8 +4,9 @@
  *
  * Governing SCs: SC-370 (traceability), SC-371 (thin trigger, under 150 lines)
  *
- * Stamps the four required frontmatter fields onto a markdown document that
+ * Stamps the three INFERABLE frontmatter fields onto a markdown document that
  * is missing them, and reports a doc that is not indexed in DOCS.md.
+ * `owner:` is deliberately not among them (#1119) — see the stamp call.
  *
  * PORTABILITY (#713): the `.pai` copy carried its own 90-line copy of the
  * frontmatter parser and said so in its header — "Mirror of lib/frontmatter.ts
@@ -81,10 +82,15 @@ function inferDocType(): string {
   return 'reference';
 }
 
+// #1119. No `owner:`, and no config key behind it. It was the literal
+// `'jason'`, writing this repo's owner into a consumer's documents. The keys
+// below are INFERRED from the document or the clock, which is what makes them
+// safe to invent; an owner is not, so the honest stamp is none. A configured
+// default is the same defect with a longer supply chain, and nothing
+// downstream reads the key. Add-only (#299) leaves a declared owner alone.
 const result = stampFrontmatter(content, {
   'doc-type': inferDocType(),
   status: 'active',
-  owner: 'jason',
   // #600. `updated:` is the day the author edited the document, which is a
   // LOCAL calendar day — not a UTC one. The raw spelling this replaces was
   // wrong for the four hours a day when the two disagree, and the stamp that
