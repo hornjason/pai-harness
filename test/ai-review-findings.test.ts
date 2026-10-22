@@ -7,6 +7,7 @@ import { AI_REVIEW_REQUIRED_EXIT, buildReviewPrompt } from "../lib/scaffold/ai-r
 import { stripJsComments } from "../lib/strip-js-comments";
 import type { AiReviewUnmeasuredReason } from "../lib/scaffold/ai-review-findings";
 import {
+  AI_REVIEW_BLOCKING_REQUIRED_FIELDS,
   AI_REVIEW_DETAIL_MAX,
   AI_REVIEW_FINDING_FIELDS,
   AI_REVIEW_FINDINGS_KEY,
@@ -170,6 +171,49 @@ describe("AC-8a: the findings key is declared once and spelled once", () => {
   });
 });
 
+/**
+ * A CONTRACT-COMPLETE finding, built from the field map (#1166).
+ *
+ * Every blocking fixture below is built from this rather than hand-typed,
+ * and the reason is the paragraph under AC-8e: before #1166 the suite's
+ * blocking fixtures carried a `severity` and a `title` the contract never
+ * declares, and the reader adjudicated them BLOCKED anyway. So the cases
+ * below asserted their properties over payloads no reviewer was ever asked
+ * to write — the fixtures satisfied the assertion through a path the real
+ * contract never takes, which is the sentence AC-8e was written to stop
+ * being true and which was still true of the fixtures saying it.
+ *
+ * `over` is how a case removes or varies exactly one field, so the pair
+ * discipline survives: `blockingFinding("high", { summary: undefined })`
+ * differs from the control in one member and nothing else.
+ */
+function blockingFinding(
+  severity: string,
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const base: Record<string, unknown> = {
+    [f.severity]: severity,
+    [f.file]: "lib/scaffold/ai-review-findings.ts",
+    [f.line]: 1,
+    [f.summary]: "x",
+    [f.failureScenario]: "a payload with no file, and a maintainer with nothing to read",
+  };
+  for (const [k, v] of Object.entries(over)) {
+    if (v === undefined) delete base[k];
+    else base[k] = v;
+  }
+  return base;
+}
+
+/** One payload, built from `blockingFinding`. */
+function payloadOf(verdict: string, findings: Record<string, unknown>[]): string {
+  return JSON.stringify({
+    [AI_REVIEW_VERDICT_KEY]: verdict,
+    [AI_REVIEW_FINDINGS_KEY]: findings,
+  });
+}
+
 // ── AC-8e: the fields a finding carries are one contract, not two ────────
 //
 // Wave 2's HIGH finding, which is #295 again with a different key. The reader
@@ -213,23 +257,46 @@ describe("AC-8e: a finding renders through the fields the prompt asks for", () =
     // quietly printing a severity and nothing else.
     const f = AI_REVIEW_FINDING_FIELDS;
     const payload = (key: string) =>
-      JSON.stringify({
-        [AI_REVIEW_VERDICT_KEY]: "BLOCK",
-        [AI_REVIEW_FINDINGS_KEY]: [{ [f.severity]: "critical", [key]: "creds in a log" }],
-      });
+      payloadOf("BLOCK", [
+        blockingFinding("critical", { [f.summary]: undefined, [key]: "creds in a log" }),
+      ]);
     const contract = payload(f.summary);
     const legacy = payload("title");
-    expect(legacy, "the pair carries more than one difference").toBe(
-      contract.replace(`"${f.summary}"`, '"title"'),
-    );
+
+    // Compared as PARSED objects and not as strings. Both sides are now
+    // built from the contract map (#1166), so the member the pair varies is
+    // re-inserted at a different position on each side and a byte compare
+    // reports an ordering difference as a second difference. The property is
+    // about which KEY carries the sentence, so it is asserted over the key
+    // sets: one member differs, and the value under it is the same.
+    const keysOf = (doc: string) =>
+      Object.keys((JSON.parse(doc)[AI_REVIEW_FINDINGS_KEY] as Record<string, unknown>[])[0]).sort();
+    const only = (a: string[], b: string[]) => a.filter(k => !b.includes(k));
+    expect(only(keysOf(contract), keysOf(legacy)), "the pair varies more than one member").toEqual([
+      f.summary,
+    ]);
+    expect(only(keysOf(legacy), keysOf(contract))).toEqual(["title"]);
 
     expect(aiReviewRefusal(readAiReviewFindings(contract))).toContain("creds in a log");
-    const legacyRefusal = aiReviewRefusal(readAiReviewFindings(legacy)) ?? "";
+
+    // #1166 strengthened the second half. The legacy finding used to render
+    // as `(no summary recorded)` and still adjudicate BLOCKED, which is the
+    // whole of #1166: a blocking finding with no summary cost a placeholder
+    // in an annotation and decided exactly what a real one decided. It is
+    // now a reading of its own and the refusal names the member that is
+    // missing, so the reviewer is told what to produce rather than the
+    // maintainer being told there is nothing to read.
+    const legacyReading = readAiReviewFindings(legacy);
+    expect(legacyReading.outcome).toBe("UNMEASURED");
+    expect(legacyReading.unmeasuredReasons).toContain("BLOCKING_FINDING_INCOMPLETE");
+    const legacyRefusal = aiReviewRefusal(legacyReading) ?? "";
     expect(
       legacyRefusal,
       "a finding carrying no contract field still reads as a reported defect",
-    ).toContain("(no summary recorded)");
-    expect(legacyRefusal).toContain("(no file recorded)");
+    ).toContain(f.summary);
+    expect(legacyRefusal, "the placeholder is back, so the contract is unenforced").not.toContain(
+      "(no summary recorded)",
+    );
   });
 
   test("AC-8e: every field the prompt declares is a field the reader reads", () => {
@@ -257,17 +324,13 @@ describe("AC-8f: values are percent-encoded before reaching an annotation", () =
     const f = AI_REVIEW_FINDING_FIELDS;
     const hostile = "benign\n::stop-commands::deadbeef\n::notice::all clear";
     const r = readAiReviewFindings(
-      JSON.stringify({
-        [AI_REVIEW_VERDICT_KEY]: "BLOCK",
-        [AI_REVIEW_FINDINGS_KEY]: [{ [f.severity]: "critical", [f.summary]: hostile }],
-      }),
+      payloadOf("BLOCK", [blockingFinding("critical", { [f.summary]: hostile })]),
     );
     expect(r.outcome, "the hostile payload was not even read as blocking").toBe("BLOCKED");
 
-    const lines = captureStderr(() => main([fixtureFile(JSON.stringify({
-      [AI_REVIEW_VERDICT_KEY]: "BLOCK",
-      [AI_REVIEW_FINDINGS_KEY]: [{ [f.severity]: "critical", [f.summary]: hostile }],
-    }))]));
+    const lines = captureStderr(() =>
+      main([fixtureFile(payloadOf("BLOCK", [blockingFinding("critical", { [f.summary]: hostile })]))]),
+    );
     expect(lines.length, `the annotation spans ${lines.length} lines:\n${lines.join("\n")}`).toBe(1);
 
     // GitHub parses a workflow command only at the START of a line, so the
@@ -289,10 +352,11 @@ describe("AC-8f: values are percent-encoded before reaching an annotation", () =
     // So `renderFinding` deliberately does not escape, and this is the case
     // that notices if it starts.
     const f = AI_REVIEW_FINDING_FIELDS;
-    const lines = captureStderr(() => main([fixtureFile(JSON.stringify({
-      [AI_REVIEW_VERDICT_KEY]: "BLOCK",
-      [AI_REVIEW_FINDINGS_KEY]: [{ [f.severity]: "critical", [f.summary]: "100% of runs" }],
-    }))]));
+    const lines = captureStderr(() =>
+      main([
+        fixtureFile(payloadOf("BLOCK", [blockingFinding("critical", { [f.summary]: "100% of runs" })])),
+      ]),
+    );
     expect(lines.length).toBe(1);
     expect(lines[0], "the percent sign was encoded twice").not.toContain("%2525");
     expect(lines[0]).toContain("100%25 of runs");
@@ -399,7 +463,7 @@ describe("AC-8b: a findings file that cannot be read is UNMEASURED, and refuses"
 describe("AC-8c: a verdict contradicting its own payload is refused", () => {
   test("AC-8c: PASS with a blocking finding is a contradiction, not a pass", () => {
     const r = readAiReviewFindings(
-      '{"verdict": "PASS", "findings": [{"severity": "critical", "title": "creds in a log"}]}',
+      payloadOf("PASS", [blockingFinding("critical", { summary: "creds in a log" })]),
     );
     expect(
       r.outcome,
@@ -423,9 +487,7 @@ describe("AC-8c: a verdict contradicting its own payload is refused", () => {
   test("AC-8c: an agreeing verdict is not a contradiction", () => {
     // Without this the contradiction could be unconditional, and the word
     // would stop meaning anything.
-    const blocking = readAiReviewFindings(
-      '{"verdict": "BLOCK", "findings": [{"severity": "high", "title": "x"}]}',
-    );
+    const blocking = readAiReviewFindings(payloadOf("BLOCK", [blockingFinding("high")]));
     expect(blocking.outcome).toBe("BLOCKED");
     const clean = readAiReviewFindings(
       '{"verdict": "PASS", "findings": [{"severity": "low", "title": "x"}]}',
@@ -448,7 +510,7 @@ describe("AC-8d: the blocking decision is computed from the severities", () => {
     // #585's pair discipline: one document is written, the other is DERIVED
     // from it by replacing the verdict word, so the pair cannot carry a second
     // difference. Two hand-written literals could.
-    const blockDoc = '{"verdict": "BLOCK", "findings": [{"severity": "critical", "title": "x"}]}';
+    const blockDoc = payloadOf("BLOCK", [blockingFinding("critical")]);
     const passDoc = blockDoc.replace('"BLOCK"', '"PASS"');
     expect(passDoc, "the derivation changed nothing").not.toBe(blockDoc);
     expect(
@@ -468,13 +530,12 @@ describe("AC-8d: the blocking decision is computed from the severities", () => {
   });
 
   test("AC-8d: a fixture file on disk carrying a real blocking finding turns the case red", () => {
-    const blocking = JSON.stringify({
-      verdict: "BLOCK",
-      findings: [
-        { severity: "low", title: "a nit" },
-        { severity: "critical", title: "the credentials file is echoed into the job log" },
-      ],
-    });
+    const blocking = payloadOf("BLOCK", [
+      { severity: "low", title: "a nit" },
+      blockingFinding("critical", {
+        summary: "the credentials file is echoed into the job log",
+      }),
+    ]);
     const path = fixtureFile(blocking);
     const r = readAiReviewFindingsFile(path);
     expect(r.outcome, `${path} did not block`).toBe("BLOCKED");
@@ -590,7 +651,16 @@ describe("#1178: a CONTRADICTION emits the findings it counted", () => {
       JSON.stringify({
         [AI_REVIEW_VERDICT_KEY]: "PASS",
         [AI_REVIEW_FINDINGS_KEY]: [
-          { [f.severity]: "critical", [f.file]: "a.ts", [f.line]: 1, [f.summary]: "creds in a log" },
+          {
+            // #1166: `failure_scenario` is required on a BLOCKING finding, so
+            // this fixture carries it. Everything these cases measure is
+            // unchanged — the member is never rendered into the refusal.
+            [f.severity]: "critical",
+            [f.file]: "a.ts",
+            [f.line]: 1,
+            [f.summary]: "creds in a log",
+            [f.failureScenario]: "any run with the key set writes it to the job log",
+          },
           { [f.severity]: "low", [f.file]: "b.ts", [f.line]: 2, [f.summary]: "a naming nit" },
         ],
       }),
@@ -619,7 +689,16 @@ describe("#1178: a CONTRADICTION emits the findings it counted", () => {
       JSON.stringify({
         [AI_REVIEW_VERDICT_KEY]: "BLOCK",
         [AI_REVIEW_FINDINGS_KEY]: [
-          { [f.severity]: "critical", [f.file]: "a.ts", [f.line]: 1, [f.summary]: "creds in a log" },
+          {
+            // #1166: `failure_scenario` is required on a BLOCKING finding, so
+            // this fixture carries it. Everything these cases measure is
+            // unchanged — the member is never rendered into the refusal.
+            [f.severity]: "critical",
+            [f.file]: "a.ts",
+            [f.line]: 1,
+            [f.summary]: "creds in a log",
+            [f.failureScenario]: "any run with the key set writes it to the job log",
+          },
           { [f.severity]: "low", [f.file]: "b.ts", [f.line]: 2, [f.summary]: "a naming nit" },
         ],
       }),
@@ -710,5 +789,150 @@ describe("#1178: a CONTRADICTION emits the findings it counted", () => {
     expect(lines[0], "the newline was dropped rather than encoded").toContain("%0A");
     expect(lines[0], "the percent sign was encoded twice").not.toContain("%2525");
     expect(lines[0]).toContain("100%25 broken");
+  });
+});
+
+
+// ── #1166: the payload contract is read back on blocking findings ────────
+
+/**
+ * #1166. The prompt tells the reviewer "every one of those member names is
+ * required on every finding" and, until this issue, nothing checked it.
+ * `AI_REVIEW_FINDING_FIELDS` was consumed only by `renderFinding`, which
+ * printed `(no file recorded)` and carried on, so a blocking finding with a
+ * fabricated `failure_scenario`, no `file` and no `line` adjudicated
+ * IDENTICALLY to one with real evidence under it. BLOCKED was BLOCKED.
+ *
+ * The exit code is the same before and after — a blocking finding failed the
+ * job then and fails it now — and that is the point worth stating rather than
+ * hiding: what changes is the READING, from "this pull request has a defect"
+ * to "this review cannot be read". The first sends a maintainer to argue with
+ * a finding that names no code; the second sends the reviewer back to produce
+ * one. #1137 is the measured instance, where two of three claims were real,
+ * none carried a file or a line, and the symbol was never written as a
+ * literal anywhere in the tree.
+ */
+describe("#1166: a blocking finding that breaks the payload contract is its own reading", () => {
+  const f = AI_REVIEW_FINDING_FIELDS;
+
+  test("#1166: the control — a contract-complete blocking finding adjudicates as before", () => {
+    // FIRST, and read before any case below. If the complete finding stopped
+    // blocking, every red row underneath would be a red instrument rather
+    // than a measurement of the contract.
+    const r = readAiReviewFindings(payloadOf("BLOCK", [blockingFinding("critical")]));
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blocked).toBe(true);
+    expect(r.unmeasuredReasons).toEqual([]);
+    expect(aiReviewExitCode(r)).toBe(AI_REVIEW_REQUIRED_EXIT);
+  });
+
+  test("#1166: each required member, removed one at a time, is caught", () => {
+    // One case per member and not one case over all four, because a check
+    // that fires on `file` alone and a check that fires on all four look
+    // identical from a single fixture missing everything.
+    for (const name of AI_REVIEW_BLOCKING_REQUIRED_FIELDS) {
+      const r = readAiReviewFindings(
+        payloadOf("BLOCK", [blockingFinding("critical", { [name]: undefined })]),
+      );
+      expect(r.outcome, `a blocking finding with no '${name}' still adjudicated`).toBe(
+        "UNMEASURED",
+      );
+      expect(r.unmeasuredReasons).toContain("BLOCKING_FINDING_INCOMPLETE");
+      expect(aiReviewRefusal(r) ?? "", `the refusal does not name '${name}'`).toContain(name);
+      expect(r.blocked, "a withheld decision was defaulted").toBeNull();
+    }
+    // Non-vacuity: the loop must have run over something.
+    expect(AI_REVIEW_BLOCKING_REQUIRED_FIELDS.length).toBe(4);
+    expect(AI_REVIEW_BLOCKING_REQUIRED_FIELDS).not.toContain(f.severity);
+  });
+
+  test("#1166: null and blank are the same fact as absent", () => {
+    // The cheapest wrong fix is `name in finding`, which is satisfied by
+    // `"file": ""`. A reviewer that writes an empty string has produced a
+    // member name and no evidence, and the annotation a maintainer reads is
+    // the same either way — so the three are one reading, measured rather
+    // than asserted to be equivalent.
+    for (const empty of [null, "", "   "]) {
+      const r = readAiReviewFindings(
+        payloadOf("BLOCK", [blockingFinding("high", { [f.file]: empty })]),
+      );
+      expect(r.outcome, `file ${JSON.stringify(empty)} satisfied the contract`).toBe("UNMEASURED");
+    }
+    // And the control for that repair: a present, non-blank value passes.
+    expect(
+      readAiReviewFindings(payloadOf("BLOCK", [blockingFinding("high", { [f.file]: "a.ts" })]))
+        .outcome,
+    ).toBe("BLOCKED");
+  });
+
+  test("#1166: a NON-blocking finding is not held to the contract", () => {
+    // The scope line, and it is deliberate. A non-blocking finding costs a
+    // line in an annotation; the tail of them is already being lost (#1162)
+    // and reddening a run over an incomplete `info` would lose more. What
+    // the contract protects is the one output worth forging: a red required
+    // check.
+    for (const severity of Object.keys(AI_REVIEW_SEVERITIES).filter(s => !AI_REVIEW_SEVERITIES[s])) {
+      const r = readAiReviewFindings(
+        payloadOf("PASS", [{ [f.severity]: severity, title: "a nit and nothing else" }]),
+      );
+      expect(r.outcome, `an advisory '${severity}' was held to the blocking contract`).toBe(
+        "CLEAN",
+      );
+      expect(aiReviewExitCode(r)).toBe(0);
+    }
+  });
+
+  test("#1166: an unreadable payload does not become 'contract satisfied'", () => {
+    // The UNMEASURED-safety line. The contract check runs over a parsed list
+    // of objects, so every state that never gets that far must keep its own
+    // reason — a payload that could not be read reporting the contract as
+    // met would be the fail-open one level out from the one being closed.
+    const unparseable = readAiReviewFindings('{"findings": [');
+    expect(unparseable.unmeasuredReasons).toEqual(["FINDINGS_UNPARSEABLE"]);
+    expect(unparseable.unmeasuredReasons).not.toContain("BLOCKING_FINDING_INCOMPLETE");
+
+    const noSeverity = readAiReviewFindings(payloadOf("BLOCK", [{ file: "a.ts" }]));
+    expect(noSeverity.unmeasuredReasons).toContain("SEVERITY_ABSENT");
+    expect(
+      noSeverity.unmeasuredReasons,
+      "a finding with no severity was also graded against the blocking contract, " +
+        "which is two deciders over one input",
+    ).not.toContain("BLOCKING_FINDING_INCOMPLETE");
+  });
+
+  test("#1166: the check can fail — the binding, zeroed", async () => {
+    // `.claude/rules/checks-must-be-able-to-fail.md`. One exported binding,
+    // so the removal is performed rather than described: with
+    // `blockingContractViolations` returning nothing, the incomplete finding
+    // must adjudicate exactly as the complete one does, which is the
+    // pre-#1166 behaviour and the defect. A case that stayed red under the
+    // mutation would be red for some other reason.
+    const incomplete = payloadOf("BLOCK", [blockingFinding("critical", { [f.file]: undefined })]);
+    expect(readAiReviewFindings(incomplete).outcome).toBe("UNMEASURED");
+
+    const source = readFileSync(
+      join(import.meta.dir, "..", "lib", "scaffold", "ai-review-findings.ts"),
+      "utf-8",
+    );
+    const needle = "return AI_REVIEW_BLOCKING_REQUIRED_FIELDS.filter(name => {";
+    expect(
+      source.split(needle).length - 1,
+      "could not build the mutant: the contract binding is not spelled once",
+    ).toBe(1);
+    const path = join(SCRATCH, "mutant-ai-review-findings.ts");
+    writeFileSync(
+      path,
+      source
+        .replace(needle, "return [].filter((name: string) => {")
+        .replace(/from "\.\/ai-review-step"/g, `from "${join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step")}"`),
+    );
+    const mutant = (await import(path)) as typeof import("../lib/scaffold/ai-review-findings");
+
+    expect(
+      mutant.readAiReviewFindings(incomplete).outcome,
+      "zeroing the contract binding changed nothing, so the case witnesses nothing",
+    ).toBe("BLOCKED");
+    expect(mutant.readAiReviewFindings(payloadOf("BLOCK", [blockingFinding("critical")])).outcome)
+      .toBe("BLOCKED");
   });
 });

@@ -48,6 +48,7 @@ import {
   AI_REVIEW_MAX_TURNS,
   AI_REVIEW_REQUIRE_VALUE,
   AI_REVIEW_REQUIRE_VAR,
+  AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_UNMEASURED_TITLE,
   AI_REVIEW_WORKFLOW_FILE,
   aiReviewClaudeArgs,
@@ -221,7 +222,14 @@ describe("AC-4: a review that exhausted its budget is UNMEASURED, not a pass", (
     expect(r.out, `stderr was:\n${r.err}`).toContain(`::warning title=${AI_REVIEW_UNMEASURED_TITLE}`);
     expect(r.out).toContain("no findings payload was written");
     expect(r.out).toContain("UNMEASURED, not a passing review");
-    expect(r.code, "the step itself failed, which is a different state").toBe(0);
+    // #1180 inverted this line. It read `toBe(0)` with the note "the step
+    // itself failed, which is a different state" — true of the STEP and not
+    // of the CHECK, which was green over a review that burned its whole turn
+    // budget and wrote nothing. A credential resolved and the reviewer ran,
+    // so this is an attempted measurement that did not produce one.
+    expect(r.code, "an exhausted review still passes the required check").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
   });
 
   test("a consumer that required the review gets a refusal, not a warning alone", () => {

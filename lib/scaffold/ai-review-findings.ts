@@ -26,6 +26,20 @@
  * `test/ai-review-findings.test.ts` fails the suite if a second spelling of it
  * appears anywhere in this module.
  *
+ * ## Why the payload contract is read back (#1166)
+ *
+ * The prompt states a contract — "every one of those member names is required
+ * on every finding" — and until #1166 nothing checked it. This module
+ * validated a severity and a verdict word; `AI_REVIEW_FINDING_FIELDS` was
+ * consumed only by `renderFinding`, which printed `(no file recorded)` and
+ * carried on. So a BLOCKING finding with a fabricated `failure_scenario`, no
+ * `file` and no `line` adjudicated identically to one with real evidence
+ * under it, and the module's own philosophy — do not take the agent's word
+ * for it — reached one level short of the thing the agent is asked to write.
+ *
+ * It is read back on blocking findings and nowhere else. See
+ * `blockingContractViolations` for why that line and not a stricter one.
+ *
  * ## Why so many ways to be UNMEASURED
  *
  * `0`, `{}`, `null` and `SKIP` are indistinguishable from success; UNMEASURED
@@ -185,8 +199,53 @@ export type AiReviewUnmeasuredReason =
   | "FINDING_NOT_AN_OBJECT"
   | "SEVERITY_ABSENT"
   | "SEVERITY_UNRECOGNISED"
+  | "BLOCKING_FINDING_INCOMPLETE"
   | "VERDICT_ABSENT"
   | "VERDICT_UNRECOGNISED";
+
+/**
+ * The fields a BLOCKING finding must carry, derived from the one contract map
+ * rather than re-listed (#1166).
+ *
+ * `severity` is excluded because it is read before this runs and has its own
+ * two reasons; a second check of it would be the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — two deciders agreeing about
+ * one input, of which a mutation leaves either one holding the case up.
+ */
+export const AI_REVIEW_BLOCKING_REQUIRED_FIELDS: readonly string[] = Object.entries(
+  AI_REVIEW_FINDING_FIELDS,
+)
+  .filter(([key]) => key !== "severity")
+  .map(([, name]) => name);
+
+/**
+ * The contract fields a blocking finding failed to supply, in contract order.
+ *
+ * ONE binding, exported, so a test can mutate it and prove the refusal below
+ * is what the case observed rather than an unrelated reason firing.
+ *
+ * Absent, `null`, and blank are the same fact: the annotation a maintainer
+ * acts on names no code either way. `renderFinding` has printed
+ * `(no file recorded)` for this since #631 and carried on, so a blocking
+ * finding with a fabricated `failure_scenario`, no `file` and no `line`
+ * adjudicated IDENTICALLY to one with evidence under it — BLOCKED is BLOCKED,
+ * and the prompt's "every one of those member names is required on every
+ * finding" was enforced by nothing.
+ *
+ * Measured instance, 2026-10-22, #1137: a HIGH claimed `PROTECTED_GATES` was
+ * missing three gate names. Two of the three were real, the finding cited no
+ * file and no line, and the names are never written as literals anywhere —
+ * the write is `state.gates[gate] = …` inside `writeGateResult`. Requiring a
+ * file and a line would have forced the reviewer to produce the site or drop
+ * the finding; what happened instead was a round of argument from a grep.
+ */
+export function blockingContractViolations(finding: Record<string, unknown>): string[] {
+  return AI_REVIEW_BLOCKING_REQUIRED_FIELDS.filter(name => {
+    const value = finding[name];
+    if (value === undefined || value === null) return true;
+    return typeof value === "string" && value.trim() === "";
+  });
+}
 
 export interface AiReviewFindingsReading {
   /** The single discriminator. Everything else is a projection of the same pass. */
@@ -314,6 +373,23 @@ export function readAiReviewFindings(raw: string | null): AiReviewFindingsReadin
       return;
     }
     if (blocks) {
+      // #1166, and BLOCKING findings only. A non-blocking finding costs a
+      // line in an annotation and nothing else, so holding it to the same
+      // contract would redden runs over the cheap tail the module is already
+      // losing (#1162) — and an incomplete `info` is not a decision anybody
+      // acts on. What a blocking finding buys is a red required check, which
+      // is the one output of this module worth forging.
+      const missing = blockingContractViolations(finding);
+      if (missing.length > 0) {
+        reasons.push("BLOCKING_FINDING_INCOMPLETE");
+        detail.push(
+          `finding ${i} blocks (severity ${JSON.stringify(severity)}) and carries no ` +
+            `${missing.join(", ")}. A blocking finding that names no code is not a ` +
+            `finding a maintainer can act on or refute, and the contract the ` +
+            `reviewer was given requires every field on every finding`,
+        );
+        return;
+      }
       blocking.push(item);
       detail.push(renderFinding(i, finding));
     }
