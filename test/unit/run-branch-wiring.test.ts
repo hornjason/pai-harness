@@ -88,14 +88,18 @@ describe("#640 SC-1/SC-2: the checkout's starting branch is read before anything
     expect(runBranchSetupScript("${shellQuote(ref)}")).toContain(
       "git switch -c ${shellQuote(ref)}",
     );
-    expect(ESTABLISH).toContain("cd ${shellQuote(PROJECT_ROOT)}");
+    // The `cd` is inside a SUBSHELL since #1056 — the session's own working
+    // directory never moves, and the checkout it operates on is still the
+    // shared primary, which is the property this case is pinning.
+    expect(ESTABLISH).toContain("( cd ${shellQuote(PROJECT_ROOT)}");
     // And the wave commit really does run in the primary, which is the
     // reason the checkout is needed. Without this the claim above is a
-    // comment rather than a fact about the code.
+    // comment rather than a fact about the code. `git -C` names the
+    // repository on the command rather than relying on an inherited cwd
+    // (#1056), so the directory is asserted where the commit actually is.
     const integrate = structuralCut(SHIP, "async function integrateWave(", { balanced: "{" });
     expect(integrate.length).toBeGreaterThan(300);
-    expect(integrate).toContain("cd ${shellQuote(PROJECT_ROOT)}");
-    expect(integrate).toContain("git commit -m");
+    expect(integrate).toContain("git -C ${shellQuote(PROJECT_ROOT)} commit -m");
   });
 
   test("the starting branch is captured BEFORE the switch, not after", () => {
@@ -176,7 +180,7 @@ describe("#640 SC-1/SC-3: the run puts the checkout back and removes its branch"
     // source-text assertion cannot notice that it has stopped describing the
     // code, so the call site and the thing it calls are each asserted.
     expect(FINALIZE).toContain("runBranchRestoreShell({ withDelete: true })");
-    expect(STEP).toContain('git switch "$before"');
+    expect(STEP).toContain('git -C ${shellQuote(PROJECT_ROOT)} switch "$before"');
     expect(STEP).toContain("--mode delete");
     expect(STEP).toContain("--mode drift");
 
@@ -197,7 +201,7 @@ describe("#640 SC-1/SC-3: the run puts the checkout back and removes its branch"
     // And nothing downstream of that branch can run: the early return is
     // what makes it a skip rather than a message printed beside a switch.
     const guardAt = STEP.indexOf("if (!primaryBranchBefore) {");
-    const switchAt = STEP.indexOf('git switch "$before"');
+    const switchAt = STEP.indexOf('git -C ${shellQuote(PROJECT_ROOT)} switch "$before"');
     expect(switchAt).toBeGreaterThan(guardAt);
     expect(STEP.slice(guardAt, switchAt)).toContain("return `");
   });

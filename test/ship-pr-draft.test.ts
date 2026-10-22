@@ -400,7 +400,9 @@ describe("#46: the undraft cannot happen without a live CI pass", () => {
     // Every `pr-ready` invocation in the undraft step is either the chained
     // one or the no-workflows branch. A third, unchained one would be the
     // bypass — it reads as a harmless duplicate and undoes the whole thing.
-    const invocations = [...PROVE_TAIL.matchAll(/bun scripts\/github-op\.ts pr-ready/g)];
+    const invocations = [
+      ...PROVE_TAIL.matchAll(/bun --cwd \$\{HARNESS_ROOT\} scripts\/github-op\.ts pr-ready/g),
+    ];
     expect(invocations).toHaveLength(2);
 
     // And the exemption branch is guarded by the workflow count rather than
@@ -416,8 +418,10 @@ describe("#46: the undraft cannot happen without a live CI pass", () => {
     // being asked — and `--sha` is the field that decides WHICH commit's CI
     // is consulted, so a typed value is a stale-reading primitive.
     const undraft = PROVE_TAIL.slice(PROVE_TAIL.indexOf("Take the PR out of draft"));
-    expect(undraft).toContain("sha=$(git rev-parse HEAD)");
-    expect(undraft).toMatch(/workflows=\$\(ls \.github\/workflows[^\n]*wc -l/);
+    // Both name their directory on the command since #1056 — the block no
+    // longer reaches `${commitDir}` by moving the session into it.
+    expect(undraft).toContain("sha=$(git -C ${commitDir} rev-parse HEAD)");
+    expect(undraft).toMatch(/workflows=\$\(ls \$\{commitDir\}\/\.github\/workflows[^\n]*wc -l/);
     expect(undraft).toContain('--sha "$sha"');
 
     // The interpolated values that ARE allowed are the ones ship.js knows

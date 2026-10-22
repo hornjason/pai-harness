@@ -72,7 +72,11 @@ function pushCommands(source: string): string[] {
   return source
     .split("\n")
     .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line))
-    .flatMap(line => [...line.matchAll(/git push[^\n`&|;]*/g)].map(m => m[0].trim()));
+    // `-C <dir>` is optional and part of the match: #1056 moved every push in
+    // these prompts from `cd <dir> && git push` to `git -C <dir> push`, and a
+    // pattern anchored on the bare two words would have swept ZERO pushes
+    // while reporting the file clean.
+    .flatMap(line => [...line.matchAll(/git (?:-C \S+ )?push[^\n`&|;]*/g)].map(m => m[0].trim()));
 }
 
 describe("#136: no push leaves its target to the agent", () => {

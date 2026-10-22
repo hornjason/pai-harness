@@ -112,7 +112,7 @@ log('Running mechanical verification: tsc + tests + container + smoke')
 const mechanical = await parallel([
   () => agent(`
 Run TypeScript type checking on the project:
-cd ${PROJECT_ROOT} && ${TYPECHECK_CMD} 2>&1 | tail -20
+( cd ${PROJECT_ROOT} && ${TYPECHECK_CMD} ) 2>&1 | tail -20
 Report PASS if no errors, FAIL with the error output if errors found.
   `, { label: 'tsc', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA }),
 
@@ -121,7 +121,7 @@ Report PASS if no errors, FAIL with the error output if errors found.
   TEST_CMD
     ? () => agent(`
 Run the unit test suite:
-cd ${PROJECT_ROOT} && ${TEST_CMD} 2>&1 | tail -30
+( cd ${PROJECT_ROOT} && ${TEST_CMD} ) 2>&1 | tail -30
 Report PASS with the test count if all pass, FAIL with failing test names.
 If the command ran ZERO tests, report FAIL — a suite that matched nothing has
 not passed, it has not run.

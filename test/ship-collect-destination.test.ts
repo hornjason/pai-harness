@@ -106,7 +106,10 @@ describe("#155: every path in the collect command is quoted", () => {
     const block = shipSource.slice(start, end);
     const commandLine = block
       .split("\n")
-      .find(l => l.includes("collect-worktree-files.ts") && l.trimStart().startsWith("cd "));
+      // `bun --cwd` and not `cd …  &&` since #1056: a top-level `cd` in a
+      // prompt is refused by the registered guard, and the destination is now
+      // named on the command rather than reached by moving the session.
+      .find(l => l.includes("collect-worktree-files.ts") && l.trimStart().startsWith("bun --cwd "));
     expect(commandLine).toBeDefined();
 
     // The allowlist and the quoting are independent layers and the line needs

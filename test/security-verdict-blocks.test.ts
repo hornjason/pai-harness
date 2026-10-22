@@ -448,7 +448,7 @@ describe("AC-2: the review scope is the commit SHA", () => {
     // ship.js's quoting rather than restating it.
     const spaced = rookScopeCommand("/My Projects/p", "/h", SHA, "/w/s.json");
     expect(spaced).toContain(`--project ${shellQuote("/My Projects/p")}`);
-    expect(spaced).toContain(`cd ${shellQuote("/My Projects/p")}`);
+    expect(spaced).toContain(`--cwd ${shellQuote("/My Projects/p")}`);
   });
 
   test("rookReviewSha accepts a SHA and refuses anything else", () => {
@@ -908,7 +908,7 @@ describe("#169 refusal path: a stale review stops the run", () => {
       shipSource.indexOf("// ──── REVIEW-CURRENCY-PROBE-END ────"),
     );
     expect(probe, "ship.js has no review-currency probe").not.toBe("");
-    expect(probe).toContain("git rev-parse HEAD");
+    expect(probe).toContain("git -C ${commitDir} rev-parse HEAD");
     expect(probe, "the probe does not read the recorded review SHA back").toContain("testedSha");
     expect(probe).toContain("workflow-state.json");
     const required = probe.match(/required:\s*\[([^\]]*)\]/)?.[1] ?? "";

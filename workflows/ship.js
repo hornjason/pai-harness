@@ -540,7 +540,7 @@ function suiteOutputPath(workDir) {
  * exits 1, so the exit code was never the thing being read.
  */
 function suiteCaptureCommand(projectRoot, testCommand, workDir, quote) {
-  return `cd ${quote(projectRoot)} && ${testCommand} 2>&1 | tee ${quote(suiteOutputPath(workDir))}`
+  return `( cd ${quote(projectRoot)} && ${testCommand} ) 2>&1 | tee ${quote(suiteOutputPath(workDir))}`
 }
 
 /**
@@ -1073,9 +1073,8 @@ function runBranchRestoreShell(opts) {
     // Not a failure and not a pass. The run never read where the checkout
     // started, so it cannot claim to have put it back — and `git switch ""`
     // would be a guess dressed as a restore.
-    return `   cd ${shellQuote(PROJECT_ROOT)}\n` +
-      `   echo "RESTORE: NOT_READ"\n` +
-      `   echo "AFTER: $(git branch --show-current)"\n`
+    return `   echo "RESTORE: NOT_READ"\n` +
+      `   echo "AFTER: $(git -C ${shellQuote(PROJECT_ROOT)} branch --show-current)"\n`
   }
   const runRef = runRefName(ISSUE)
   // The switch is CONDITIONAL on the checkout being on this run's own ref.
@@ -1087,20 +1086,19 @@ function runBranchRestoreShell(opts) {
   // left the checkout somewhere" and "the checkout is somewhere unexpected"
   // are different facts, and only the first is this run's to fix. The second
   // is reported by name and left alone.
-  return `   cd ${shellQuote(PROJECT_ROOT)}
-   before=${shellQuote(primaryBranchBefore)}
+  return `   before=${shellQuote(primaryBranchBefore)}
    run_ref=${shellQuote(runRef)}
-   current=$(git branch --show-current)
+   current=$(git -C ${shellQuote(PROJECT_ROOT)} branch --show-current)
    if [ "$current" = "$before" ]; then
      echo "RESTORE: ALREADY_ON_START"
    elif [ "$current" = "$run_ref" ]; then
-     git switch "$before" && echo "RESTORE: SWITCHED_BACK" || echo "RESTORE: SWITCH_FAILED"
+     git -C ${shellQuote(PROJECT_ROOT)} switch "$before" && echo "RESTORE: SWITCHED_BACK" || echo "RESTORE: SWITCH_FAILED"
    else
      echo "RESTORE: FOREIGN_BRANCH"
    fi
 ${withDelete ? `   bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode delete --repo ${shellQuote(PROJECT_ROOT)} --issue ${ISSUE} --base ${shellQuote(primaryBranchBefore)} || echo "DELETE_REFUSED"
 ` : `   echo "DELETE: NOT_ATTEMPTED"
-`}   after=$(git branch --show-current)
+`}   after=$(git -C ${shellQuote(PROJECT_ROOT)} branch --show-current)
    echo "AFTER: $after"
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/check-run-branch.ts`)} --mode drift --before ${shellQuote(primaryBranchBefore)} --after "$after" || true
 `
@@ -2014,7 +2012,7 @@ function acListBlock(acs) {
 
 function phase2AcsCommand(harnessRoot, workDir, acs) {
   const payload = JSON.stringify(acs.map(a => ({ id: a.id, statement: a.statement, specElement: a.specElement })))
-  return `cd ${harnessRoot} && bun -e 'require("fs").writeFileSync(process.argv[1], process.argv[2])' ` +
+  return `bun --cwd ${harnessRoot} -e 'require("fs").writeFileSync(process.argv[1], process.argv[2])' ` +
     `${workDir}/phase2-acs.json ${shellSingleQuote(payload)}`
 }
 
@@ -2416,7 +2414,7 @@ let runWorktrees = []
 
 async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) {
   const gateCwd = gateOpts.cwd || PROJECT_ROOT
-  const cdPrefix = gateCwd !== PROJECT_ROOT ? `cd ${gateCwd} && ` : ''
+  const cwdFlag = gateCwd !== PROJECT_ROOT ? `--cwd ${gateCwd} ` : ''
   const evidenceEnv = gateCwd !== PROJECT_ROOT ? `EVIDENCE_CWD=${gateCwd} ` : ''
   // #414 — shellQuote because these paths originate in agent replies (#155)
   // and this string is pasted into a command. Omitted entirely when the run
@@ -2450,7 +2448,7 @@ async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) 
     const result = await timedAgent(`
 Run the ${gateName} gate and classify any failures:
 
-1. Run: ${cdPrefix}${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} --tree-under-test ${gateCwd}${worktreesFlag} 2>&1
+1. Run: ${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${cwdFlag}${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} --tree-under-test ${gateCwd}${worktreesFlag} 2>&1
 2. Read ${WORK_DIR}/workflow-state.json for gate result
 3. If FAIL, classify failures: bun -e "
    import {classifyFailures} from '${HARNESS_ROOT}/gates/error-classifier.ts';
@@ -3298,7 +3296,7 @@ ${acListBlock(discovery.acs)}
    Write the title to its own file too — it comes from a spec heading, and a
    quote or a backtick in that heading would otherwise be read by the shell:
 
-   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-create --repo ${ISSUE_REPO} \\
+   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-create --repo ${ISSUE_REPO} \\
      --title-file ${WORK_DIR}/subissue-N-title.txt --body-file ${WORK_DIR}/subissue-N.md
 
    The title file holds one line: "#${ISSUE} Phase N: [phase description]".
@@ -3329,14 +3327,14 @@ ${acListBlock(discovery.acs)}
    over it when reading the goal — write them verbatim or the next run's goal
    becomes this banner (#202). Then run:
 
-   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
+   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
 5. Write your grouping to ${WORK_DIR}/phase2-grouping.json:
 
    {"phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase": "Phase 2", "acIds": ["AC-5", ...]}]}
 
 6. Verify the issues you created actually carry their ACs. Run:
 
-   cd ${HARNESS_ROOT} && bun scripts/verify-phase2-bodies.ts --repo ${ISSUE_REPO} \\
+   bun --cwd ${HARNESS_ROOT} scripts/verify-phase2-bodies.ts --repo ${ISSUE_REPO} \\
      --acs ${WORK_DIR}/phase2-acs.json --grouping ${WORK_DIR}/phase2-grouping.json
 
    It reads each sub-issue back FROM GITHUB and compares its
@@ -4064,7 +4062,7 @@ in this order, and do NOT edit environments.local.tests by hand — a result
 with no SHA beside it is not evidence, and hand-writing one is how a count
 that predates the final commit got read as a clean suite:
   ${suiteCaptureCommand(PROJECT_ROOT, testCommand, WORK_DIR, shellQuote)}   # timeout: ${testTimeout}
-  cd ${PROJECT_ROOT} && ${recorderCommand(HARNESS_ROOT, WORK_DIR, PROJECT_ROOT, shellQuote)}
+  ${recorderCommand(HARNESS_ROOT, WORK_DIR, PROJECT_ROOT, shellQuote)}
 Do NOT type a count anywhere, and do NOT add flags. The recorder reads the
 summary out of the file the first command captured and derives both the count
 and the verdict from it, so there is no flag for either (#469). It reads the
@@ -4134,11 +4132,10 @@ If a prior branch exists (non-empty branch field), bring it into the working
 tree — but NOT onto the default branch (#136). Substitute the refName field
 from the JSON above for <refName>:
 
-  cd ${PROJECT_ROOT}
-  branch=$(git branch --show-current)
+  branch=$(git -C ${PROJECT_ROOT} branch --show-current)
   case "$branch" in
     main|master) echo "SKIPPED MERGE: checkout is on $branch" ;;
-    *) git merge <refName> --no-edit ;;
+    *) git -C ${PROJECT_ROOT} merge <refName> --no-edit ;;
   esac
 
 If it skips, that is a correct outcome, not an error: this workflow does not
@@ -5072,7 +5069,7 @@ async function establishRunRef() {
   const reply = await timedAgent(`
 Run exactly this in ${shellQuote(PROJECT_ROOT)} and report what it prints.
 
-cd ${shellQuote(PROJECT_ROOT)}
+( cd ${shellQuote(PROJECT_ROOT)}
 before=$(git branch --show-current)
 echo "BEFORE: $before"
 if [ -n "$before" ]; then
@@ -5085,7 +5082,7 @@ echo "PRIOR_TIP: $priorTip"
 branch=$(git branch --show-current)
 ${runBranchSetupScript(shellQuote(ref))}
 git branch --show-current
-echo "HEAD_AFTER: $(git rev-parse HEAD)"
+echo "HEAD_AFTER: $(git rev-parse HEAD)" )
 
 Report the LAST line as branch — the branch the checkout is on after the
 command, not the one it was on before, and not the one the command asked for.
@@ -5259,11 +5256,10 @@ async function integrateWave(accepted, waveIndex, totalWaves, runRef) {
   const reply = await timedAgent(`
 Commit wave ${waveIndex + 1}'s collected output. Run exactly this:
 
-cd ${shellQuote(PROJECT_ROOT)}
-branch=$(git branch --show-current)
+branch=$(git -C ${shellQuote(PROJECT_ROOT)} branch --show-current)
 case "$branch" in main|master) echo "REFUSING: on $branch"; exit 1;; esac
-git commit -m ${shellQuote(`wip(#${ISSUE}): wave ${waveIndex + 1} of ${totalWaves}`)}
-git rev-parse --short HEAD
+git -C ${shellQuote(PROJECT_ROOT)} commit -m ${shellQuote(`wip(#${ISSUE}): wave ${waveIndex + 1} of ${totalWaves}`)}
+git -C ${shellQuote(PROJECT_ROOT)} rev-parse --short HEAD
 
 The branch check is not a formality and it is not the same check ship.js
 already made. ship.js asked before wave 1; this asks now, in the directory
@@ -6433,7 +6429,7 @@ You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## Working Directory
 IMPORTANT: Validate against Marcus's worktree at: ${marcusWorktreePath}
-Run all file checks, tests, and validations from that directory (cd ${marcusWorktreePath}).
+Run all file checks, tests, and validations against that directory, using absolute paths under ${marcusWorktreePath}.
 This is where Marcus made the code changes — do NOT validate against the main branch.
 
 ## Environment
@@ -6499,7 +6495,7 @@ Do NOT screenshot after every browser_snapshot().
     log(`Quinn local: FAIL — sending back to Marcus (attempt ${validateAttempt}/3)`)
     const fixResult = await briefedAgent(`
 IMPORTANT: Work in the worktree at: ${marcusWorktreePath}
-cd ${marcusWorktreePath} before making any changes.
+Use absolute paths under ${marcusWorktreePath}, or \`git -C ${marcusWorktreePath} <subcommand>\`. Do NOT \`cd\` at the top level of a Bash call: it moves the session and breaks worktree creation for peer agents (#992).
 
 Quinn found issues for issue #${ISSUE}:
 ${(quinnLocalResult?.failures || []).join('\n')}
@@ -6911,7 +6907,7 @@ Run exactly this and report the result:
 cat > ${shellQuote(`${WORK_DIR}/worktree-groups.json`)} <<'RUNGATE_GROUPS_EOF'
 ${groupsJson}
 RUNGATE_GROUPS_EOF
-cd ${shellQuote(dest)} && bun ${shellQuote(`${HARNESS_ROOT}/scripts/collect-worktree-files.ts`)} ${shellQuote(`${WORK_DIR}/worktree-groups.json`)} ${shellQuote(dest)} ${shellQuote(`${PROJECT_ROOT}/.claude/worktrees`)} ${shellQuote(`${HARNESS_ROOT}/.claude/worktrees`)}
+bun --cwd ${shellQuote(dest)} ${shellQuote(`${HARNESS_ROOT}/scripts/collect-worktree-files.ts`)} ${shellQuote(`${WORK_DIR}/worktree-groups.json`)} ${shellQuote(dest)} ${shellQuote(`${PROJECT_ROOT}/.claude/worktrees`)} ${shellQuote(`${HARNESS_ROOT}/.claude/worktrees`)}
 
 Set ok to true ONLY if the command exited zero. Set collected to the number in
 its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
@@ -7020,7 +7016,7 @@ const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 // filesChanged is reporting metadata now, not the input to `git add` (#115).
 log(`Marcus reported ${(implementResult.buildResult?.filesChanged || []).length} changed file(s); staging from git status`)
 const gitAddForCommit = alreadyStaged
-  ? 'git diff --cached --quiet && echo "NOTHING_STAGED" || true'
+  ? `git -C ${shellQuote(commitDir)} diff --cached --quiet && echo "NOTHING_STAGED" || true`
   : gitDerivedStaging(commitDir)
 // What Quinn said, as opposed to what the ceremony tier implies she would have
 // said if she had run (#173).
@@ -7035,14 +7031,13 @@ const commitResult = await timedAgent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
 1. Commit and push. Run these in order, exactly as written:
-   cd ${commitDir}
-   branch=$(git branch --show-current)
+   branch=$(git -C ${commitDir} branch --show-current)
    case "$branch" in main|master) echo "REFUSING: on $branch — ship never commits to the default branch"; exit 1;; esac
    ${gitAddForCommit}
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/github-op.ts`)} commit-subject \\
      --repo ${shellQuote(ISSUE_REPO)} --issue ${ISSUE} --out ${shellQuote(commitSubjectPath)}
-   git commit -F ${shellQuote(commitSubjectPath)}
-   git push -u origin ${pushTarget}
+   git -C ${commitDir} commit -F ${shellQuote(commitSubjectPath)}
+   git -C ${commitDir} push -u origin ${pushTarget}
 
    The branch check is not optional and is not a formality. #136: a run pushed
    straight to main, and the ref it wrote was chosen by an agent recovering
@@ -7059,8 +7054,8 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    not a reason to compose one.
 
 2. Get branch info:
-   branch=$(git branch --show-current)
-   sha=$(git rev-parse --short HEAD)
+   branch=$(git -C ${commitDir} branch --show-current)
+   sha=$(git -C ${commitDir} rev-parse --short HEAD)
 
 3. Record the commit in workflow-state.json. Run exactly this:
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
@@ -7238,7 +7233,7 @@ if (verifyResult?.result === 'FAIL') {
       // only baseDir and PROJECT_ROOT, and the commit was refused on a
       // completed fix. Staging from git status removes the file list from
       // the path entirely, so there is nothing left to relativize.
-      const reimplGitAdd = gathered.staged ? 'git diff --cached --quiet; true' : gitDerivedStaging(commitDir)
+      const reimplGitAdd = gathered.staged ? `git -C ${shellQuote(commitDir)} diff --cached --quiet; true` : gitDerivedStaging(commitDir)
       // ──── DELETION-VERDICT-START ────
       /**
        * What the recommit-verify agent is allowed to hand back (#684).
@@ -7503,10 +7498,9 @@ if (verifyResult?.result === 'FAIL') {
       // ──── DELETION-VERDICT-END ────
       const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
-cd ${commitDir}
-prevBuild=$(git rev-parse HEAD)   # this is parentSha, and the buildCommit the gate graded
-${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push origin HEAD:${shipBranch}
-sha=$(git rev-parse HEAD)   # this is commitSha
+prevBuild=$(git -C ${commitDir} rev-parse HEAD)   # this is parentSha, and the buildCommit the gate graded
+${reimplGitAdd} && git -C ${commitDir} commit -m "fix(#${ISSUE}): verify gate regression fix" && git -C ${commitDir} push origin HEAD:${shipBranch}
+sha=$(git -C ${commitDir} rev-parse HEAD)   # this is commitSha
 
 Report both SHAs exactly as git printed them. Do NOT invent a value for either
 one, and do NOT report the same SHA twice to make the step look successful —
@@ -8073,7 +8067,7 @@ function rookScopeCommand(projectRoot, harnessRoot, sha, outPath, base) {
   // and executed standalone by test/security-verdict-blocks.test.ts, so a
   // reference to anything outside it is a test that cannot run.
   const q = w => `'${String(w).replace(/'/g, "'\\''")}'`
-  return `cd ${q(projectRoot)} && bun ${q(`${harnessRoot}/scripts/rook-review-scope.ts`)} ` +
+  return `bun --cwd ${q(projectRoot)} ${q(`${harnessRoot}/scripts/rook-review-scope.ts`)} ` +
     `--project ${q(projectRoot)} --sha ${pinned}` +
     (pinnedBase ? ` --base ${pinnedBase}` : '') +
     ` --out ${q(outPath)}`
@@ -8209,7 +8203,7 @@ if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
     await timedAgent(`
 You have ONE task: rebuild the test container. Run this EXACT command and report the output:
 
-cd ${shellQuote(PROJECT_ROOT)} && bun -e ${shellQuote(rebuildRunner)} ${shellQuote(`${WORK_DIR}/resolved-config.json`)} 2>&1 | tail -20
+bun --cwd ${shellQuote(PROJECT_ROOT)} -e ${shellQuote(rebuildRunner)} ${shellQuote(`${WORK_DIR}/resolved-config.json`)} 2>&1 | tail -20
 
 It reads container.rebuildCommand out of this run's resolved config and runs
 it. Do NOT substitute a command of your own and do NOT retype a rebuild
@@ -8250,7 +8244,7 @@ You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## COMMIT SHA VERIFICATION (MANDATORY)
 Read ${WORK_DIR}/workflow-state.json and get the buildCommit value.
-Run: cd ${PROJECT_ROOT} && git rev-parse --short HEAD
+Run: git -C ${PROJECT_ROOT} rev-parse --short HEAD
 Verify HEAD matches buildCommit from workflow-state.json.
 If mismatch, FAIL with "Container running wrong version — HEAD {actual} != buildCommit {expected}."
 
@@ -8463,7 +8457,7 @@ log(`SECURITY: ${securityVerdict.verdict} (spawned=${securityVerdict.spawned})`)
 await timedAgent(`
 Run exactly this command and report its output:
 
-  cd ${shellQuote(PROJECT_ROOT)} && bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-security-verdict.ts`)} \\
+  bun --cwd ${shellQuote(PROJECT_ROOT)} ${shellQuote(`${HARNESS_ROOT}/scripts/record-security-verdict.ts`)} \\
     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
     --verdict ${shellQuote(securityVerdict.verdict)} --spawned ${shellQuote(String(securityVerdict.spawned))} \\
     --findings ${shellQuote(findingsPath)} --scope ${shellQuote(scopePath)}
@@ -8498,7 +8492,7 @@ async function recordExhaustedSecurityReview(rounds) {
   await timedAgent(`
 Run exactly this command and report its output:
 
-  cd ${shellQuote(PROJECT_ROOT)} && bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-security-verdict.ts`)} \\
+  bun --cwd ${shellQuote(PROJECT_ROOT)} ${shellQuote(`${HARNESS_ROOT}/scripts/record-security-verdict.ts`)} \\
     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
     --verdict EXHAUSTED --spawned true --rounds ${shellQuote(String(rounds))}
 
@@ -8584,7 +8578,7 @@ substitute one for the other — reporting them as equal when they are not is
 the failure this step exists to catch (#169).
 
 1. The commit the work branch ends at. Run exactly:
-     cd ${commitDir} && git rev-parse HEAD
+     git -C ${commitDir} rev-parse HEAD
    Report what it printed as headSha.
 
 2. The commit the security review was pinned to. Read
@@ -9234,7 +9228,7 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
   const persistResult = await timedAgent(`
 Run exactly this command and report its result:
 
-  cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/persist-compliance.ts ${WORK_DIR} ${HARNESS_ROOT} ${ISSUE}
+  bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/scripts/persist-compliance.ts ${WORK_DIR} ${HARNESS_ROOT} ${ISSUE}
 
 It prints human-readable progress on stderr and a single JSON receipt on stdout.
 
@@ -9573,7 +9567,7 @@ Fixes #${ISSUE}
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 RUNGATE_PR_BODY_EOF
 
-cd ${HARNESS_ROOT} && bun scripts/github-op.ts pr-upsert --repo ${REPO} \\
+bun --cwd ${HARNESS_ROOT} scripts/github-op.ts pr-upsert --repo ${REPO} \\
   --head ${shipBranch} --base main \\
   --title-from-issue ${ISSUE} --issue-repo ${ISSUE_REPO} \\
   --body-file ${WORK_DIR}/pr-body.md --draft
@@ -9651,16 +9645,15 @@ if (shipResult?.result !== 'PASS') {
         log(`Ship regression work could not be collected (#155): ${gathered.detail}`)
         return shipFailed('Ship', `BUILD regression work could not be collected: ${gathered.detail}`)
       }
-      const reimplShipGitAdd = gathered.staged ? 'git diff --cached --quiet; true' : gitDerivedStaging(commitDir)
+      const reimplShipGitAdd = gathered.staged ? `git -C ${shellQuote(commitDir)} diff --cached --quiet; true` : gitDerivedStaging(commitDir)
       // The most recent Quinn measurement this run has, which by the Ship
       // phase is the container one when it ran (#169 AC-6). Never the tier.
       const quinnShipVerdictValue = quinnShipVerdict(quinnContainerRan, quinnContainerResult, quinnLocalVerdict)
       const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
-cd ${commitDir}
-git rev-parse HEAD   # this is parentSha
-${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push origin HEAD:${shipBranch}
-sha=$(git rev-parse HEAD)   # this is commitSha
+git -C ${commitDir} rev-parse HEAD   # this is parentSha
+${reimplShipGitAdd} && git -C ${commitDir} commit -m "fix(#${ISSUE}): ship gate regression fix" && git -C ${commitDir} push origin HEAD:${shipBranch}
+sha=$(git -C ${commitDir} rev-parse HEAD)   # this is commitSha
 
 Report both SHAs exactly as git printed them. Do NOT invent a value for either
 one, and do NOT report the same SHA twice to make the step look successful —
@@ -9802,11 +9795,11 @@ const finalizeResult = await timedAgent(`
 Do ALL of these tasks in order:
 
 1. Post the prove result on the issue:
-   cd ${HARNESS_ROOT} && bun scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
+   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
      --body "Ship verdict: ${proveVerdict} (${discovery.ceremonyTier} ceremony — via ship.js)"
 ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in this order:
-   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
-   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
+   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
+   bun --cwd ${HARNESS_ROOT} scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
    issue-label appends; it does not replace the labels triage already set.
 ` : ''}   If any of these exits non-zero, report the failure — do NOT fall back to gh.
 
@@ -9819,7 +9812,7 @@ ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in t
    bun -e "import {cleanupWorktrees} from '${HARNESS_ROOT}/lib/worktree-cleanup.ts'; const r = await cleanupWorktrees({projectRoot:'${PROJECT_ROOT}'}); console.log(JSON.stringify(r))" 2>/dev/null || echo "cleanup skipped"
 
 4. Scan stale issues:
-   cd ${HARNESS_ROOT} && bun scripts/scan-stale-issues.ts --repo ${ISSUE_REPO} --exclude ${ISSUE} 2>/dev/null || echo "scan skipped"
+   bun --cwd ${HARNESS_ROOT} scripts/scan-stale-issues.ts --repo ${ISSUE_REPO} --exclude ${ISSUE} 2>/dev/null || echo "scan skipped"
 
 5. Put the shared checkout back, and remove this run's branch (#640). Run
    exactly this:
@@ -10074,10 +10067,9 @@ const ciStep = prStep?.ok === true ? await timedAgent(`
 Read CI's verdict on the commit this run pushed. Run exactly these commands in
 ${commitDir}:
 
-cd ${commitDir}
-sha=$(git rev-parse HEAD)
-workflows=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
-cd ${HARNESS_ROOT} && bun scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 600000
+sha=$(git -C ${commitDir} rev-parse HEAD)
+workflows=$(ls ${commitDir}/.github/workflows/*.yml ${commitDir}/.github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
+bun --cwd ${HARNESS_ROOT} scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 600000
 
 The SHA comes from git, not from you. Do NOT pass a branch name: the checks
 endpoint accepts one and answers about whatever commit that branch pointed at
@@ -10123,15 +10115,13 @@ if (prState.action === 'MARK_READY') {
   const ready = await timedAgent(`
 Take the PR out of draft. Run exactly this one block, unchanged:
 
-cd ${commitDir}
-sha=$(git rev-parse HEAD)
-workflows=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
-cd ${HARNESS_ROOT}
+sha=$(git -C ${commitDir} rev-parse HEAD)
+workflows=$(ls ${commitDir}/.github/workflows/*.yml ${commitDir}/.github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
 if [ "$workflows" -eq 0 ]; then
-  bun scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+  bun --cwd ${HARNESS_ROOT} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
 else
-  bun scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 300000 \\
-    && bun scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+  bun --cwd ${HARNESS_ROOT} scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 300000 \\
+    && bun --cwd ${HARNESS_ROOT} scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
 fi
 
 The \`&&\` is the whole point and is not yours to split (#46). CI's verdict

@@ -118,7 +118,12 @@ beforeAll(() => {
     "Do NOT run tests — the test suite was already validated.",
     { endAnchor: "2. Get branch info:" },
   );
-  const found = commitBlock.match(/^\s*git commit -F (.+)$/m);
+  // The `-C <dir>` is optional in the pattern and dropped from the
+  // composition below: #1056 named the repository on the command rather than
+  // reaching it with a top-level `cd`, and which directory git runs in is not
+  // what this file measures. The captured group — the PATH EXPRESSION — is,
+  // and it is still taken out of ship.js rather than written here.
+  const found = commitBlock.match(/^\s*git (?:-C \S+ )?commit -F (.+)$/m);
   if (!found) throw new Error("the COMMIT phase's `git commit -F` line is not in the cut");
   const [, pathExpr] = found;
 
@@ -448,7 +453,7 @@ describe("AC-6: one position composes a commit subject, and ship.js is not one",
     // file are three assertions that would hold over an empty string: the
     // file really is ship.js, and it really does still run the commit step.
     expect(shipSource, "the source read here is not ship.js").toContain("function shellQuote(");
-    expect(shipSource).toContain("git commit -F ");
+    expect(shipSource).toContain("commit -F ");
   });
 
   test("AC-6: the comparison is not vacuous — the fixtures reach the transform", () => {
