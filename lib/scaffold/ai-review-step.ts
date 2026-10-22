@@ -2438,7 +2438,7 @@ exit 0
 export function buildAuthDetectStep(vertex: VertexCiDecision, indent = "      "): string {
   const env = [
     ...AI_REVIEW_AUTH_PRECEDENCE.map(c => `${c.secret}: \${{ secrets.${c.secret} }}`),
-    `${AI_REVIEW_REQUIRE_VAR}: \${{ vars.${AI_REVIEW_REQUIRE_VAR} }}`,
+    `${AI_REVIEW_REQUIRE_VAR}: "${AI_REVIEW_REQUIRE_VALUE}"`,
   ];
 
   // The migration read, and the one value in this file that arrives as a
@@ -5362,7 +5362,7 @@ export function buildReviewRunStep(
     // variables, and the findings path not among them.
     `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
     `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
-    `    ${AI_REVIEW_REQUIRE_VAR}: \${{ vars.${AI_REVIEW_REQUIRE_VAR} }}`,
+    `    ${AI_REVIEW_REQUIRE_VAR}: "${AI_REVIEW_REQUIRE_VALUE}"`,
     // #867. Set by the runner, not by the repository — the branch it selects
     // exits 0, so a reading a consumer could configure would be a switch for
     // turning every unmeasured pull request green.
