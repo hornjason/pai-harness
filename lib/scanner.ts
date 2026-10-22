@@ -478,8 +478,13 @@ function scanDirs(root: string): DirEntry[] {
       try {
         if (!statSync(full).isDirectory()) continue;
         // One binding for what a "type" is, shared with
-        // `scripts/generate-code-map.ts` and `generateCodeMapInline` (#1200).
-        // The copy that used to be here reported directory names.
+        // `scripts/generate-code-map.ts` and the scaffold's inline fallback
+        // in `lib/scaffold/steps.ts` (#1200). The copy that used to be here
+        // reported directory names.
+        //
+        // Naming that fallback by its function would red
+        // `test/unit/scanner.test.ts`: it greps this file's raw TEXT for
+        // generator symbols, so a COMMENT mentioning one reads as an import.
         dirs.push({ name: entry, types: fileExtensions(full) });
       } catch {}
     }
