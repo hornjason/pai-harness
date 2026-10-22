@@ -1,4 +1,4 @@
-# generated-sha: bec96d1fdffa81bb
+# generated-sha: ff3f7c2d8f6e36db
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -497,7 +497,7 @@ jobs:
 
           # Checked on its own line, never captured into an assignment, for the reason
           # the baseline step states.
-          if ! out=$(git --config-env=http.extraheader=AI_REVIEW_GIT_AUTH fetch --no-tags --depth=1 \
+          if ! out=$(git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null --config-env=http.extraheader=AI_REVIEW_GIT_AUTH fetch --no-tags --depth=1 \
             origin "+refs/heads/${base_ref}:${base_remote}" 2>&1); then
             echo "::error title=AI review modified the tree::could not fetch the base $(escape_annotation "${base_ref}"), so the untrusted paths were NOT restored and this run is UNMEASURED: $(escape_annotation "${out}")" >&2
             exit 1
@@ -513,14 +513,14 @@ jobs:
           # scanner that greps for a rule filename cannot tell a citation from a
           # sentence about one, and test/rule-provenance.test.ts caught exactly that.)
           for path in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes'; do
-            if ! out=$(git rm -rfq --ignore-unmatch -- "${path}" 2>&1); then
+            if ! out=$(git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null rm -rfq --ignore-unmatch -- "${path}" 2>&1); then
               echo "::error title=AI review modified the tree::could not clear $(escape_annotation "${path}") before restoring it from the base, so the reviewer would read the pull request's own copy: $(escape_annotation "${out}")" >&2
               exit 1
             fi
             # Absent from the base is a RESULT, not a failure: a path this pull request
             # introduces is correctly left deleted, and `git checkout` would refuse.
-            if git cat-file -e "${base_remote}:${path}" 2>/dev/null; then
-              if ! out=$(git checkout "${base_remote}" -- "${path}" 2>&1); then
+            if git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null cat-file -e "${base_remote}:${path}" 2>/dev/null; then
+              if ! out=$(git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null checkout "${base_remote}" -- "${path}" 2>&1); then
                 echo "::error title=AI review modified the tree::could not restore $(escape_annotation "${path}") from the pull request base, so this run is UNMEASURED: $(escape_annotation "${out}")" >&2
                 exit 1
               fi
