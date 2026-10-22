@@ -207,6 +207,48 @@ it holds the same table as executed rows. Prose here and a table there is
 deliberate: the one that can go stale is this one, and the other one goes red
 when it does.
 
+### Which tree the table was measured against (#713, #1216)
+
+A decision table that does not name its tree has the defect it describes:
+right about some bytes, silent about which. The contract measures
+`<this tree>/hooks/` — the copies this repository owns and publishes — and the
+test asserts that provenance rather than stating it, by resolving the paths it
+spawned and refusing any that land outside the tree the suite runs from.
+
+Which copy a *session* executes is a different question and cannot be answered
+from a path, because every registration is spelled through a variable.
+`registrationTree` in `lib/hook-trees.ts` answers which root a command is
+*spelled* with; `lib/hook-target-tree.ts` answers which directory that root
+names on the machine reading it. #999 is the cost of conflating them — the
+spelling was right and the executing bytes were another tree's.
+
+Resolved with `registeredTreeCensus` on 2026-10-22, `repoRoot` as the shared
+primary checkout, reading `MEASURED` over four registrations with no
+unresolved variables:
+
+| hook | scope | spelled through | target |
+|---|---|---|---|
+| `WorkflowStateGuard` | project-settings | `CLAUDE_PROJECT_DIR` | in-repo |
+| `WorkflowStateGuard` | repo-registry | `RUNGATE_HOOKS_DIR` | in-repo |
+| `GateResultProtection` | user-settings, ×2 | `PAI_HOOKS_DIR` | **foreign** |
+
+So the blanket guard's rows describe bytes that run. The specific guard's rows
+describe bytes this repository owns that a session on this machine **does
+not** execute — which is #713, and it means a merged fix to the repo copy does
+not reach a live session. Nothing here claims anything about that other tree's
+contents; it was not read, and the resolution is from the registration strings
+and `env` blocks alone.
+
+Two cautions for anyone repeating the reading:
+
+- `RUNGATE_HOOKS_DIR` names the shared primary checkout, so the same
+  registration reads `in-repo` from there and `foreign` from every agent
+  worktree. A `foreign` verdict means nothing until you know which root
+  produced it.
+- An `in-repo` resolution does not make the bytes current. That checkout was
+  measured 180 commits behind `origin/main` — #1216. `hook-target-tree`
+  answers *which directory*, never *which commit*.
+
 ### Who is authoritative for what
 
 | hook | authoritative for | matcher | reach |

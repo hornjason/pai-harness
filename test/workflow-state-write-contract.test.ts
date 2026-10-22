@@ -42,6 +42,55 @@
  * positive controls below are asserted before any row is read. Without them a
  * table of fourteen `ALLOWED`s would look like a clean bill of health.
  *
+ * ## WHICH TREE these readings are from, and how that was resolved (#713, #1216)
+ *
+ * A decision table that does not name its tree has the defect it is trying to
+ * describe: correct about some bytes, silent about which. So this one names
+ * it, and the naming is a reading rather than a comment — see
+ * "the tree under measurement" below, which resolves the spawned paths and
+ * asserts they are inside the tree the suite itself runs from.
+ *
+ * **These rows measure `<this tree>/hooks/`** — the copies this repository
+ * owns, reviews and publishes. That is the right scope for a contract test
+ * and it is also a LIMIT, because it is not automatically what executes in a
+ * session on any particular machine.
+ *
+ * Which copy executes cannot be decided by looking at a path. Every
+ * registration is spelled through a variable, so the question is what that
+ * variable resolves to on the machine doing the reading —
+ * `lib/hook-target-tree.ts` is the binding that answers it, and
+ * `registrationTree` in `lib/hook-trees.ts` deliberately does NOT: it answers
+ * which root a command is *spelled* with, and the spelling was right in #999
+ * while the bytes were a different tree's.
+ *
+ * Resolved with `registeredTreeCensus` on 2026-10-22 against this machine,
+ * with `repoRoot` as the shared primary checkout — reading `MEASURED`, four
+ * registrations examined, no unresolved variables:
+ *
+ * | hook | scope | spelled through | resolves to | target |
+ * |---|---|---|---|---|
+ * | `WorkflowStateGuard` | project-settings | `CLAUDE_PROJECT_DIR` | `<repo>/hooks/` | in-repo |
+ * | `WorkflowStateGuard` | repo-registry | `RUNGATE_HOOKS_DIR` | `<repo>/hooks/` | in-repo |
+ * | `GateResultProtection` | user-settings, ×2 (Write, Edit) | `PAI_HOOKS_DIR` | a tree outside this repository | **foreign** |
+ *
+ * So the blanket guard's rows describe bytes that do run. **The specific
+ * guard's rows describe bytes this repository owns and that a session on this
+ * machine does not execute** — its user-scope registration resolves outside
+ * the repo entirely, which is #713, and it means a merged fix to the repo
+ * copy does not reach a live session. Nothing here is a claim about the
+ * contents of that other tree; it was not read, and the resolution is from
+ * the registration strings and the `env` blocks alone.
+ *
+ * Two further cautions a reader needs, both measured rather than reasoned:
+ *
+ *  - `RUNGATE_HOOKS_DIR` names the shared primary checkout, so the same
+ *    registration reads `in-repo` from there and `foreign` from every agent
+ *    worktree. A `foreign` verdict is only a finding once you know which root
+ *    produced it.
+ *  - Resolving `in-repo` does not make the bytes CURRENT. That primary
+ *    checkout was measured 180 commits behind `origin/main`, which is #1216.
+ *    `hook-target-tree` answers *which directory*, never *which commit*.
+ *
  * ## Changing this file
  *
  * A row whose reading moves means a hook's behaviour moved. Update the row in
@@ -50,9 +99,9 @@
  */
 
 import { test, expect, describe, beforeAll } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
 
 const ROOT = join(import.meta.dir, "..");
 const BLANKET = join(ROOT, "hooks", "WorkflowStateGuard.hook.ts");
@@ -270,8 +319,18 @@ const CONTRACT: Row[] = [
   },
 ];
 
+/**
+ * Every path actually handed to `Bun.spawn`, as it was spawned.
+ *
+ * Collected rather than re-derived: the provenance case below asserts the
+ * tree the rows were MEASURED against, and re-computing the constants there
+ * would assert that two copies of one expression agree — the vacuous shape.
+ */
+const spawnedPaths = new Set<string>();
+
 /** One hook, one payload, one reading — or UNMEASURED. */
 async function decide(hookPath: string, payload: unknown): Promise<string> {
+  spawnedPaths.add(hookPath);
   const proc = Bun.spawn(["bun", hookPath], {
     stdin: "pipe",
     stdout: "pipe",
@@ -344,6 +403,61 @@ describe("#1152 the load path is live before any row is read", () => {
   test("neither hook is a blanket refuser", () => {
     const control = readings.get("10 unrelated-file");
     expect([control?.blanket, control?.specific]).toEqual(["ALLOWED", "ALLOWED"]);
+  });
+});
+
+describe("#1152 the tree under measurement, named by reading it (#713, #1216)", () => {
+  // A table that does not name its tree is the #999 defect in miniature:
+  // right about some bytes, silent about which. These assert the provenance
+  // instead of asserting it in a comment, and they are about the paths that
+  // were SPAWNED, not about the constants re-evaluated a second time.
+  //
+  // What makes them able to fail, measured rather than asserted: copy the
+  // specific guard and the two modules it imports into a temp tree, so it
+  // loads and decides IDENTICALLY, then point SPECIFIC at that copy. Both
+  // cases below go red and all fourteen rows stay green — which is exactly
+  // the failure mode they exist for, since a table measuring another
+  // checkout's bytes reads no differently from one measuring this repo's.
+  //
+  // The primary checkout is not usable as that mutation: it predates #713's
+  // migration and has no copy of this hook at all, so pointing there is a
+  // load error and reddens every row instead of isolating provenance.
+  const hooksDir = realpathSync(join(ROOT, "hooks"));
+
+  // Derived from ROOT, deliberately NOT from BLANKET/SPECIFIC. Comparing the
+  // spawned set against the same two constants that produced it is a
+  // declaration asserting itself: measured, a mutation repointing SPECIFIC at
+  // an identical-behaviour copy in another tree left that version green, and
+  // only the realpath case below caught it. This is the second time the
+  // vacuous shape got into this file — both times by comparing a reading
+  // against the expression that generated it.
+  const expected = ["GateResultProtection", "WorkflowStateGuard"].map((h) =>
+    join(ROOT, "hooks", `${h}.hook.ts`),
+  );
+
+  test("the rows spawned exactly the two hooks this contract is about", () => {
+    expect(
+      [...spawnedPaths].sort(),
+      "the rows measured a different set of binaries than the two this contract names, so " +
+        "the table above is about something other than what it claims",
+    ).toEqual(expected.sort());
+  });
+
+  test("every spawned hook resolves inside the tree this suite runs from", () => {
+    const escaped = [...spawnedPaths]
+      .map((p) => ({ p, real: realpathSync(p) }))
+      .filter(({ real }) => dirname(real) !== hooksDir);
+
+    expect(
+      escaped.map(({ p, real }) => `${p} -> ${real}`),
+      `A row above would then be describing bytes from another checkout while reading as ` +
+        `this repository's contract. Expected every spawned hook under ${hooksDir}.\n\n` +
+        `This is the in-repo half of the question only. Which copy a SESSION executes is a ` +
+        `different reading — the registrations are spelled through variables, and ` +
+        `lib/hook-target-tree.ts resolves them. As of #1152 the specific guard's user-scope ` +
+        `registration resolves OUTSIDE this repository (#713), and an in-repo resolution ` +
+        `still says nothing about how current the bytes are (#1216).`,
+    ).toEqual([]);
   });
 });
 
