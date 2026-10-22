@@ -182,9 +182,20 @@ describe("AC-S3: UNMEASURED is red, and the refusal can fail", () => {
     expect(sh.outputs[AI_REVIEW_ROUND_OUTPUT]).toBeUndefined();
   }, 30_000);
 
+  // The three cases below each assert the ANNOTATION as well as the status,
+  // and that is the point rather than belt-and-braces. `bash -e` aborts this
+  // script on any unguarded command failure, with the very status the refusal
+  // exits on and nothing on stderr — so a status-only assertion is green for
+  // an abort and green for the refusal alike, and cannot tell them apart.
+  // That is the sixth shape in `.claude/rules/checks-must-be-able-to-fail.md`
+  // and it was live in this file (#1236): assert something only the intended
+  // mechanism can produce.
   test("AC-S3: a count of ZERO refuses — it has not counted this run", () => {
     const sh = runRounds({ AI_REVIEW_EVENT: "pull_request" }, "0");
     expect(sh.status).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(sh.stderr, "exited with the right status but wrote no annotation").toContain(
+      AI_REVIEW_ROUNDS_TITLE,
+    );
     expect(sh.outputs[AI_REVIEW_ROUND_OUTPUT]).toBeUndefined();
   }, 30_000);
 
@@ -192,8 +203,11 @@ describe("AC-S3: UNMEASURED is red, and the refusal can fail", () => {
     for (const blank of ["AI_REVIEW_ROUNDS_BRANCH", "AI_REVIEW_ROUNDS_TOKEN"]) {
       const sh = runRounds({ AI_REVIEW_EVENT: "pull_request", [blank]: "" }, "2");
       expect(sh.status, blank).toBe(AI_REVIEW_REQUIRED_EXIT);
+      expect(sh.stderr, `${blank}: right status, no annotation`).toContain(
+        AI_REVIEW_ROUNDS_TITLE,
+      );
     }
-  });
+  }, 30_000);
 
   test("AC-S3: the MUTANT — exit 0 instead of the constant — stops refusing", () => {
     // The removal of the non-zero exit, performed and observed. Without it a
