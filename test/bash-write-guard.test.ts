@@ -800,8 +800,38 @@ describe("#1203: an escaped quote outside a quote does not OPEN one", () => {
     expect(decideBashWrite(cmd).blocked).toBe(true);
   });
 
-  test("CONTROL: a backslash inside single quotes is still data", () => {
-    const quoted = "echo 'a\\'b'";
-    expect(segments(quoted)).toEqual([quoted]);
+  test("F14: a literal backslash before a closing SINGLE quote ends the span", () => {
+    // Raised by the AI review against the first revision of this PR, and it
+    // was right — the first version of this very describe asserted the defect
+    // as intended behaviour, in a control that passed vacuously because the
+    // string it used contained no separator to swallow.
+    //
+    // Inside single quotes POSIX sh escapes NOTHING, not even a backslash, so
+    // the first `'` always closes. Treating `\'` as an escape there kept the
+    // span open past its real end and swallowed the separator AND the verb.
+    expect(segments("echo 'a\\' ; rm /r/x")).toEqual(["echo 'a\\'", "rm /r/x"]);
+  });
+
+  test("F14 WITNESS: the swallowed segment is a real bypass of the verb-gated arms", () => {
+    // Arm 4 requires the COMMAND WORD to be chmod. With the span held open,
+    // the whole command is one segment whose command word is `echo`, so the
+    // arm never fires. ALLOW on origin/main, BLOCK here. The redirect and
+    // in-place arms happened to survive it, which is why this needs the
+    // command-word-gated arm to show the hole at all.
+    expect(decideBashWrite("echo 'x\\' ; chmod 777 /h/Y.hook.ts").blocked).toBe(true);
+  });
+
+  test("CONTROL: inside DOUBLE quotes a backslash IS an escape", () => {
+    // The two cases are told apart rather than handled by one rule, so this
+    // is the row that stops the fix becoming "a quote always closes".
+    expect(segments('echo "a\\" ; rm /r/x"')).toHaveLength(1);
+  });
+
+  test("CONTROL: the `'\\''` idiom is unaffected by the single-quote rule", () => {
+    // Its backslash sits OUTSIDE the quotes — between the closing quote of
+    // one span and the opening quote of the next — so it is the escape branch
+    // above that handles it, not this one. Both halves must hold at once.
+    expect(decideBashWrite("echo 'a'\\''b' ; rm /r/x").blocked).toBe(false);
+    expect(segments("echo 'a'\\''b' ; rm /r/x")).toEqual(["echo 'a'\\''b'", "rm /r/x"]);
   });
 });

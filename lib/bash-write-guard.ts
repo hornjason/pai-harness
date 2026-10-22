@@ -87,7 +87,14 @@ export function segments(cmd: string): string[] {
     const c = cmd[i];
     if (quote) {
       cur += c;
-      if (c === quote && cmd[i - 1] !== '\\') quote = null;
+      // #1203: inside SINGLE quotes nothing is escaped, not even a backslash,
+      // so the first `'` always closes. Treating `\'` as an escape there kept
+      // the span open past its real end, and everything after it — the
+      // separator AND the write verb — was swallowed into one segment where
+      // `commandWord` could never reach the verb. Inside DOUBLE quotes `\"`
+      // IS an escape, which is why the two cases are told apart rather than
+      // handled by one rule.
+      if (c === quote && (quote === "'" || cmd[i - 1] !== '\\')) quote = null;
       continue;
     }
     if (c === '"' || c === "'") {
