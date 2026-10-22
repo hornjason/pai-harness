@@ -2932,8 +2932,13 @@ if [ "\${${AI_REVIEW_EVENT_VAR}:-}" = merge_group ]; then
   exit 0
 fi
 
-if [ -z "\${AI_REVIEW_ROUNDS_BRANCH:-}" ] || [ -z "\${AI_REVIEW_ROUNDS_TOKEN:-}" ]; then
-  echo "::error title=${AI_REVIEW_ROUNDS_TITLE}::This job cannot tell which review round it is on: the head branch or the API token is missing from its environment, so the number of previous AI reviews of this pull request is unreadable. Refusing rather than assuming a first round — a round counter that reads 12 as 1 is a bound that resets on every run, so the cap would never be reached and nothing would ever be suppressed. The job needs 'actions: read' in its permissions block." >&2
+# \`AI_REVIEW_ROUNDS_SINCE\` is in this refusal and not defaulted, deliberately
+# (#1281). An unset value would widen the query back to the whole branch NAME
+# — the exact defect — and it would do it silently, because the response is
+# well-formed and the count is a plausible integer. There is no reading of
+# "this PR's rounds" available without it, so its absence is UNMEASURED.
+if [ -z "\${AI_REVIEW_ROUNDS_BRANCH:-}" ] || [ -z "\${AI_REVIEW_ROUNDS_TOKEN:-}" ] || [ -z "\${AI_REVIEW_ROUNDS_SINCE:-}" ]; then
+  echo "::error title=${AI_REVIEW_ROUNDS_TITLE}::This job cannot tell which review round it is on: the head branch, the pull request's creation time or the API token is missing from its environment, so the number of previous AI reviews of this pull request is unreadable. The creation time is what scopes the count to THIS pull request rather than to every run the branch NAME has ever had (#1281), so an absent one is not a wider reading, it is no reading. Refusing rather than assuming a first round — a round counter that reads 12 as 1 is a bound that resets on every run, so the cap would never be reached and nothing would ever be suppressed. The job needs 'actions: read' in its permissions block." >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
 fi
 
@@ -2948,6 +2953,7 @@ for attempt in 1 2 3; do
     --header "X-GitHub-Api-Version: 2022-11-28" \\
     --header "Authorization: Bearer \${AI_REVIEW_ROUNDS_TOKEN}" \\
     --data-urlencode "branch=\${AI_REVIEW_ROUNDS_BRANCH}" \\
+    --data-urlencode "created=>=\${AI_REVIEW_ROUNDS_SINCE}" \\
     --data "event=pull_request" \\
     --data "per_page=1" \\
     "\${AI_REVIEW_ROUNDS_API}/repos/\${AI_REVIEW_ROUNDS_REPO}/actions/workflows/${AI_REVIEW_WORKFLOW_FILE}/runs" 2>&1) || body=
@@ -6352,6 +6358,16 @@ export function buildReviewRunStep(
     // bash, and the script hands it to `curl --data-urlencode` rather than
     // splicing it into a URL.
     `    AI_REVIEW_ROUNDS_BRANCH: \${{ github.event.pull_request.head.ref }}`,
+    // A branch NAME is not a pull request (#1281). Branch names are reused —
+    // reopened work, a deleted branch recreated — and the runs API has no
+    // `pull_request=` filter, so a branch-only query hands this PR the
+    // previous one's round count and a fresh PR can hit the cap having never
+    // been reviewed. This is the PR's own creation time, straight off the
+    // event payload with no extra API call, and the query asks for runs at or
+    // after it. Runs belonging to an earlier PR on the same branch name are
+    // all strictly before it, because GitHub does not permit two open PRs
+    // with the same head.
+    `    AI_REVIEW_ROUNDS_SINCE: \${{ github.event.pull_request.created_at }}`,
     `    AI_REVIEW_ROUNDS_REPO: \${{ github.repository }}`,
     `    AI_REVIEW_ROUNDS_API: \${{ github.api_url }}`,
     `    AI_REVIEW_ROUNDS_TOKEN: \${{ secrets.GITHUB_TOKEN }}`,
