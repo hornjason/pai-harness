@@ -31,25 +31,94 @@ hypothesis and several did not survive it — see *Where the names misled*.
 
 ## The premise that has to be fixed first
 
-Jason's framing — "we ship everything in rungate as a product to consumers and
-needs to have it all in the package" — is not true of hooks today, in two
-independent ways, and neither is fixed by moving files:
+> **BOTH PREMISES BELOW WERE TRUE WHEN WRITTEN AND ARE NOW FALSE.** Corrected
+> by #713's migration PR on 2026-10-21. Both were load-bearing: together they
+> said consumer deployment was dormant, and a brief written from them put a
+> constraint on a window that was already open. The original text is kept
+> struck through rather than deleted, because what this document got wrong is
+> the more useful half of it.
+>
+> Re-derive rather than inherit — every reading below was taken from
+> `origin/main` at `3b5770e7`:
+>
+> ```
+> git show origin/main:package.json                      # files[] contains hooks/
+> git show origin/main:.claude/rungate/hooks.json        # 20 entries
+> ```
 
-1. **`hooks/` is not in the npm package.** The `files` array in `package.json`
-   lists `bin/`, `lib/`, `prompts/`, `config/`, `templates/`, a set of
-   `scripts/`, and `specs/SPEC-TEMPLATE.md`. `hooks/` is absent. A consumer who
-   installs rungate receives no hook files at all.
-2. **No hook opts in to consumer deployment.** `deployHooksToConsumers` in
-   `lib/scaffold/steps.ts` implements SC-472 and skips any entry whose
-   `deployToConsumers` is not exactly `true`. All 19 entries in
-   `.claude/rungate/hooks.json` leave the field unset, and `.claude/rungate.json`
-   has no `hooks` key at all. The mechanism is built, wired and reaching zero
-   hooks.
+~~Jason's framing — "we ship everything in rungate as a product to consumers and
+needs to have it all in the package" — is not true of hooks today, in two
+independent ways, and neither is fixed by moving files:~~
+
+1. ~~**`hooks/` is not in the npm package.**~~ **SUPERSEDED.** `hooks/` **is**
+   in the `files` array on `origin/main`, between `lib/` and `prompts/`. A
+   consumer who installs rungate now receives every hook file in the
+   directory. Part 2 of the three-part migration below has landed.
+2. ~~**No hook opts in to consumer deployment.** … All 19 entries leave the
+   field unset.~~ **SUPERSEDED, and wrong in both halves.** There are **20**
+   entries, not 19, and **12 of them set `deployToConsumers: true`** — not
+   zero. Counted 2026-10-21:
+
+   | reading | count |
+   |---|---|
+   | entries | 20 |
+   | `deployToConsumers: true` | 12 |
+   | `deployToConsumers: false` | 8 |
+   | field absent | 0 |
+
+   `true`: BashToolGuard, TopLevelCdGuard, TestSuiteGuard, TestSuiteRelease,
+   AgentBriefGuard, AgentVerdictCapture, AutoVerifyGate, CommitEnforcement,
+   GateEnforcement, PostCompact, HookCurrency, WorkflowStateGuard.
+   `false` with a reason: IssueCloseGuard, MergeGuard, SpecConformityTrigger,
+   SpecSCGuard, StaleTTLCleanup, TaskCompleted, VerifyPhaseLock,
+   ProjectStateSync.
+
+   The field is now mandatory: #1047's AC-11 refuses an entry that leaves it
+   unset, which is why the absent count is 0 and cannot drift back up.
+
+**The same stale claim survives in code.** `deployHooksToConsumers`'s own
+docblock in `lib/scaffold/steps.ts` still reads *"Measured on this repository
+on 2026-10-21: zero of twenty registry entries set `deployToConsumers`"*. It
+is a comment, not behaviour — the function reads the live config — but it is
+the identical error in a second position, and a reader who finds it will
+re-derive the wrong conclusion. Not corrected by #713's PR, which touched no
+file under `lib/`; worth a one-line follow-up.
 
 So the migration this table feeds has three parts, not one: move the PRODUCT
 hooks into `hooks/`, add `hooks/` to the package `files` array, and set
-`deployToConsumers: true` on the entries a consumer actually needs. Moving files
-alone changes nothing a consumer can observe.
+`deployToConsumers: true` on the entries a consumer actually needs. **Parts 2
+and 3 have both landed in substance**; #713's PR is part 1. Moving files alone
+changes nothing a consumer can observe — but the other two parts, which have,
+now do.
+
+### What the three parts add up to for a consumer
+
+Nobody has written this sentence down, and it is an emergent property of three
+separate PRs rather than a decision anybody took:
+
+`hooks/` ships in the package, 12 entries are marked for deployment, and
+#1095 pointed the generated command at
+`${CLAUDE_PROJECT_DIR}/node_modules/rungate/hooks` — a path that now resolves,
+because of part 2. Those three facts together mean **consumer hook deployment
+is fully live**, where before any one of them it was not.
+
+Two qualifications, both measured, because the alarming version of that
+sentence is not the accurate one:
+
+- **Publishing deploys nothing by itself.** `deployHooksToConsumers` runs from
+  the scaffold's write-steps, not from `npm install`. The trigger is a
+  scaffold run, and what it writes is `.claude/settings.local.json` inside
+  each declared consumer.
+- **`consumers` is `[]` on `origin/main` today**, so the function returns
+  early and writes nothing to anyone. The first scaffold run after a consumer
+  is declared is when 12 hook registrations appear in that consumer's
+  settings.
+
+So this is not "the next release writes to somebody's machine". It is "the
+mechanism is armed, and the first declared consumer receives twelve hooks."
+That may be exactly what was wanted — the framing at the top of this document
+asks for rungate to ship as a product — but it should be a sentence somebody
+decided to write rather than a property that emerged.
 
 ## Verdicts
 
