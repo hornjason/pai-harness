@@ -192,6 +192,31 @@ const DUPLICATE_RATCHET = [
   "MergeGuard",
   "StaleTTLCleanup",
   "VerifyPhaseLock",
+  // #713's migration of the PRODUCT-classified hooks adds seven names to this
+  // list ON PURPOSE, and the count going from 8 to 15 is the honest reading of
+  // what that migration does rather than a regression it hides.
+  //
+  // A duplicate here means "this name exists in both trees". Before the
+  // migration these seven existed ONLY in `~/.pai/hooks`, so the repo could
+  // not test them, could not publish them, and could not fix them — which is
+  // the condition #713 was filed about. Bringing them into `hooks/` is what
+  // makes them duplicates, and the duplicate is strictly better than the
+  // absence it replaces.
+  //
+  // Clearing them is the OTHER half of #713 and is deliberately not done here:
+  // the `.pai` copies carry `uchg` and are refused by a live PreToolUse guard
+  // (SC-4, still not met), and re-pointing the registrations is a write to
+  // `~/.claude/settings.json`, a file this repo does not own. This entry is
+  // not a waiver of that work — the ratchet refuses in BOTH directions, so
+  // deleting a `.pai` copy without lowering this list in the same commit
+  // fails, which is exactly the pressure that should exist.
+  "ActionVerificationGate",
+  "BashWriteGuard",
+  "DocHygiene",
+  "GateResultProtection",
+  "HarnessAFKGate",
+  "SkillGuard",
+  "TeamInit",
 ] as const;
 
 /**
@@ -216,7 +241,34 @@ const DUPLICATE_RATCHET = [
  * path, nor on the hook names, of which there are thirty behind this one
  * fact.
  */
-const FOREIGN_SPELLING_RATCHET: string[] = ["RUNGATE_HOOKS_DIR"];
+const FOREIGN_SPELLING_RATCHET: string[] = ["RUNGATE_HOOKS_DIR", "PAI_HOOKS_DIR"];
+
+/**
+ * `PAI_HOOKS_DIR` banked by #713's migration, measured 2026-10-21 by parsing
+ * `~/.claude/settings.json` rather than grepping it.
+ *
+ * **What it costs, stated plainly.** The seven hooks #713 migrated are
+ * registered in user settings as `${PAI_HOOKS_DIR}/<Name>.hook.ts`, which
+ * resolves into `~/.pai/hooks`. So for those seven, the bytes this repository
+ * now tests and publishes are NOT the bytes that execute on this machine —
+ * every case in `test/product-hook-migration.test.ts` is green against a copy
+ * no live session reaches. That is the same defect #999 hit on
+ * `ProjectStateSync`, where a merged security fix never reached the running
+ * code, and it is worth being blunt that the migration does not fix it.
+ *
+ * **Why the entry is nevertheless correct rather than a dodge.** Before this
+ * PR those seven files were outside the repository altogether, so the gap was
+ * total and invisible. Now the repo owns a tested, published copy and this
+ * line names the remaining distance. Closing it is one line in
+ * `~/.claude/settings.json` — a file this repo does not own, under a standing
+ * do-not-touch while `~/.pai/hooks` holds `uchg` flags and orphaned staged
+ * work (`cd24a91e`, tag `orphaned-staged-20261021`).
+ *
+ * Keyed on the VARIABLE, like the entry above it, because the resolved
+ * directory is a machine path and there are nine hook names behind this one
+ * fact. The ratchet refuses in both directions, so re-pointing the variable
+ * without deleting this entry in the same commit fails.
+ */
 
 const PAI_HOOKS = join(homedir(), ".pai", "hooks");
 const RUNGATE_HOOKS = join(ROOT, "hooks");

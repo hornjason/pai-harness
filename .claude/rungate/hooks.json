@@ -203,5 +203,81 @@
     "scope": "user",
     "matcher": "Write|Edit",
     "description": "Regenerates PROJECT-STATE.md when project-state.json is written. Registered in user settings on BOTH Write and Edit; whether it should fire on every agent edit is open on #910 (#296 blast radius)."
+  },
+  {
+    "name": "ActionVerificationGate",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/ActionVerificationGate.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, and the strongest candidate of #713's seven. Zero file I/O, zero PAI paths, one import — it regex-matches state-changing Bash and injects a verify-before-reporting reminder, which behaves identically on a repo that has never heard of rungate. It is false here only because #713 moves files into the package and does not decide deployment; #1084 is why those are separate commits. Recommend true in the follow-up that turns deployment on.",
+    "scope": "user",
+    "matcher": "Bash",
+    "description": "Injects a verify-before-reporting reminder after a state-changing Bash command appears to succeed. Migrated from ~/.pai/hooks by #713."
+  },
+  {
+    "name": "BashWriteGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/BashWriteGuard.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, with one blast-radius question to settle before it travels. Every artifact it protects (workflow-state.json, .gate-salt, witnesses/) is a rungate gate artifact, so a consumer running gates wants it. But it also blocks ALL Bash writes to any *.hook.ts, and a consumer AUTHORING hooks would hit that guard on their own files with a message about gate integrity. Decide whether the hook-file arm should be scoped to the rungate hooks directory before setting true.",
+    "scope": "user",
+    "matcher": "Bash",
+    "description": "Blocks Bash writes to gate artifacts and hook files, and chmod/chflags on hook files. Migrated from ~/.pai/hooks by #713."
+  },
+  {
+    "name": "DocHygiene",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/DocHygiene.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN and NOT YET SHIPPABLE: it stamps `owner: jason` as a literal. On a consumer every markdown file they write would be stamped with this repository owner's name, which is wrong on their machine and not something a consumer could be expected to debug. Deploying it is blocked on reading the owner from config — the scaffold already knows the consumer's slug and roles — not merely on a decision. Found while migrating under #713; flagged rather than fixed, because changing the stamped value changes behaviour for this repo too.",
+    "scope": "user",
+    "matcher": "Write|Edit",
+    "description": "Stamps the four required frontmatter fields onto markdown docs and reports docs missing from DOCS.md. Thin trigger over lib/frontmatter.ts. Migrated from ~/.pai/hooks by #713."
+  },
+  {
+    "name": "GateResultProtection",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/GateResultProtection.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN. Pure rungate gate integrity — it refuses a Write or Edit that sets gates.*.result or phase DONE in workflow-state.json directly instead of through the gate runner, and it reads no path outside the file the tool call already names. A consumer running gates needs exactly this, so it should travel once #713's follow-up turns deployment on. False here only because this PR adds files to the package and does not enable deployment.",
+    "scope": "user",
+    "matcher": "Write|Edit",
+    "description": "Blocks direct Write/Edit of gate result fields and phase DONE in workflow-state.json. Migrated from ~/.pai/hooks by #713."
+  },
+  {
+    "name": "HarnessAFKGate",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/HarnessAFKGate.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, and self-limiting: it blocks AskUserQuestion only while the most recent PRD under WORK_DIR sits in build/execute/verify, and allows everything when no PRD exists at all, so on a consumer who never runs an AFK harness it is inert. The PRD-driven ship lifecycle is rungate's own, so it belongs with the product. Gate it on the consumer actually using AFK runs rather than on scaffold time.",
+    "scope": "user",
+    "matcher": "AskUserQuestion",
+    "description": "Blocks AskUserQuestion while a PRD is in a post-approval phase, so AFK runs are not stalled on a prompt. Migrated from ~/.pai/hooks by #713."
+  },
+  {
+    "name": "SkillGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/SkillGuard.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN, and the case for deploying it is the strongest of the seven on the merits: the keybindings-help position-bias false positive is a Claude Code platform defect that reaches every consumer equally, and BLOCKED_SKILLS plus one import is the entire hook. The argument against is that it hard-codes an opinion about a FIRST-PARTY skill, so a consumer gets a block they never configured. Worth Jason's call rather than an agent's.",
+    "scope": "user",
+    "matcher": "Skill",
+    "description": "Blocks the keybindings-help position-bias false positive. Migrated from ~/.pai/hooks by #713."
+  },
+  {
+    "name": "TeamInit",
+    "hookFor": "SessionStart",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/TeamInit.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN. It writes teams/session-<id>/config.json under Claude Code's OWN configuration directory, which exists on every machine running Claude Code whether or not PAI is installed, and the compaction bug it fixes hits any agent-spawning product. It is idempotent and exits zero on every error path. False here only because #713 does not enable deployment; it also writes outside the consumer's repo, which is worth stating out loud before it travels.",
+    "scope": "user",
+    "description": "Creates the per-session team config whose absence makes typed agent spawns fail after compaction. Migrated from ~/.pai/hooks by #713."
   }
 ]
