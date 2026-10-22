@@ -2892,10 +2892,19 @@ pause="\${${E.pollSeconds}:-5}"
 attempt=1
 
 while : ; do
+  # \`|| api_status=$?\` rather than a bare assignment followed by \`$?\`.
+  # GitHub runs a \`run:\` block as \`bash -e\`, and under errexit an
+  # assignment whose only word is a failing command substitution aborts the
+  # shell THERE — so the bare form never reaches the handler below, and the
+  # operator gets a red job with gh's stderr captured into a variable
+  # nothing prints. Measured: \`bash -e\` skipped the handler, \`bash\` ran
+  # it. A \`||\` compound is exempt from errexit and \`$?\` is still the
+  # substitution's. Same #826 shape this whole step is written against: a
+  # script proved correct under a shell the generated step does not use.
+  api_status=0
   rows="$(gh api --paginate \\
     "repos/\${${E.repo}}/actions/runs/\${${E.runId}}/attempts/\${${E.runAttempt}}/jobs?per_page=100" \\
-    --jq '.jobs[] | [.name, (.conclusion // "none")] | @tsv' 2>&1)"
-  api_status=$?
+    --jq '.jobs[] | [.name, (.conclusion // "none")] | @tsv' 2>&1)" || api_status=$?
   if [ "$api_status" -ne 0 ]; then
     # No reading at all. This is the one branch most likely to be written
     # fail-open, and fail-open here reproduces the defect exactly.
