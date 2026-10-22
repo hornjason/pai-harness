@@ -18,6 +18,12 @@
       "kind": "clean",
       "candidate": "clean.ts",
       "why": "A behaviour-preserving refactor of the same baseline: two locals renamed and the operand test extracted to a named function. test/review-negative-control.test.ts proves the premise by running baseline and candidate over the same command table and requiring every row to agree."
+    },
+    {
+      "id": "suite-lock-redirect/clean-loop",
+      "kind": "clean",
+      "candidate": "clean-loop.ts",
+      "why": "A second clean subject, and deliberately a different KIND of refactor from clean.ts (#1225). The for-loop becomes a while with an explicit cursor and the trailing `!operands.some(...)` becomes an early return, so the control-flow rewrite and the lookahead arithmetic are both inside the diff — the shape a reviewer is most likely to flag on suspicion. clean.ts only renames and extracts, so a reviewer could stay QUIET on it by finding nothing textual to object to; one clean subject is a sample, not a control set. Same premise proof: every row of the command table must agree with the baseline."
     }
   ]
 }
