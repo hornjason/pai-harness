@@ -343,6 +343,24 @@ describe("JURY-6: the ballot is read, not cast", () => {
     expect(() => parseVotes(ballot)).toThrow(expected);
   });
 
+  /**
+   * The membership test must not walk the prototype chain.
+   *
+   * Caught by the AI reviewer on this PR's first push, and it is this issue's
+   * own defect reintroduced inside its fix: `v.category in CATEGORY_MEMBERS`
+   * is `true` for every `Object.prototype` key, so `category: "constructor"`
+   * was accepted, and an accepted-but-unrecognised category is absent from
+   * `DROPPED_CATEGORIES` and therefore reads as a **keep**. Eight values were
+   * wrongly accepted across the two fields before `Object.hasOwn`.
+   */
+  test.each(["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"])(
+    "refuses the inherited key %p in both `category` and `severity`",
+    key => {
+      expect(() => parseVotes([{ ...good, category: key }])).toThrow("unknown `category`");
+      expect(() => parseVotes([{ ...good, severity: key }])).toThrow("unknown `severity`");
+    },
+  );
+
   test("the refusal names the entry and the reading it refused to take", () => {
     expect(() => parseVotes([good, { verifier: "v2", real: "false", reason: "no" }]))
       .toThrow("vote 1 of the ballot");

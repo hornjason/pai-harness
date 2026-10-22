@@ -300,6 +300,14 @@ function shapeOf(value: unknown): string {
  * An unrecognised `severity` indexes `SEVERITY_RANK` to `undefined`, making
  * the sort comparator in `severityOf` return `NaN`.
  *
+ * **`Object.hasOwn`, never the `in` operator**, and this is not a style
+ * preference. `in` walks the prototype chain, so `"constructor" in
+ * CATEGORY_MEMBERS` is `true` and a vote claiming `category: "constructor"`
+ * was accepted — an accepted-but-unrecognised category is absent from
+ * `DROPPED_CATEGORIES` and so reads as a **keep**, which is this function's
+ * own defect reintroduced inside its fix. Eight values were wrongly accepted
+ * across the two fields; `JURY-6` runs five of them against both.
+ *
  * @throws if the ballot is not an array, or any entry is not a well-formed vote.
  */
 export function parseVotes(parsed: unknown): readonly VerifierVote[] {
@@ -327,13 +335,13 @@ export function parseVotes(parsed: unknown): readonly VerifierVote[] {
     if (typeof v.reason !== "string") {
       throw new Error(`${where}, from \`${v.verifier}\`, has no \`reason\` (${shapeOf(v.reason)}): ${UNREADABLE_VOTE}`);
     }
-    if (v.category !== undefined && !(typeof v.category === "string" && v.category in CATEGORY_MEMBERS)) {
+    if (v.category !== undefined && !(typeof v.category === "string" && Object.hasOwn(CATEGORY_MEMBERS, v.category))) {
       throw new Error(
         `${where}, from \`${v.verifier}\`, names an unknown \`category\` (${shapeOf(v.category)}): ` +
         `an unrecognised category is not a dropped one, so it would read as a keep — ${UNREADABLE_VOTE}`,
       );
     }
-    if (v.severity !== undefined && !(typeof v.severity === "string" && v.severity in SEVERITY_RANK)) {
+    if (v.severity !== undefined && !(typeof v.severity === "string" && Object.hasOwn(SEVERITY_RANK, v.severity))) {
       throw new Error(
         `${where}, from \`${v.verifier}\`, names an unknown \`severity\` (${shapeOf(v.severity)}): ` +
         `it has no rank, so the severity sort would compare against NaN — ${UNREADABLE_VOTE}`,
