@@ -199,6 +199,26 @@ describe("#1082: staging is derived from git, and is reachable only past the gua
   });
 });
 
+/**
+ * Scoped to `workflows/prove.js`, deliberately — read this before widening it.
+ *
+ * `workflows/ship.js` has two commit instructions with no `main|master`
+ * refusal either — the Verify and Ship regression re-commits, built from
+ * `reimplGitAdd` and `reimplShipGitAdd` (`ship.js:7604` and `:9757` as of
+ * 2026-10-21; grep the two names, the lines will move). Each is a
+ * `${gitAdd} && git -C <dir> commit && git -C <dir> push` chain. Point this
+ * census at ship.js and both go red.
+ *
+ * They are not the defect #1082 fixed, and adding the guard there would be
+ * cargo-culting it. Both push to an EXPLICIT `HEAD:${shipBranch}` rather than
+ * to whatever branch the checkout is on, and `establishRunRef` has already
+ * put that ref off the default branch before either can run — so the input
+ * this file's refusal cases are built on cannot reach them. The other half of
+ * #1082, the staging, they already have: both go through `gitDerivedStaging`.
+ *
+ * The remaining gap is consistency, not exposure. Widen this census to ship.js
+ * only together with a reason that survives the paragraph above.
+ */
 describe("#1082: the prompt carries no second, unguarded commit path", () => {
   test("every `add -A` and every `git … push` in prove.js is inside the block", () => {
     // No exemption list by design: a second commit instruction added outside
