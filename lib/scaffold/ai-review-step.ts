@@ -3372,7 +3372,7 @@ export ${AI_REVIEW_GIT_AUTH_VAR}
 
 # Checked on its own line, never captured into an assignment, for the reason
 # the baseline step states.
-if ! out=$(git --config-env=http.extraheader=${AI_REVIEW_GIT_AUTH_VAR} fetch --no-tags --depth=1 \\
+if ! out=$(${AI_REVIEW_GIT_KEYS_ONLY} --config-env=http.extraheader=${AI_REVIEW_GIT_AUTH_VAR} fetch --no-tags --depth=1 \\
   origin "+refs/heads/\${base_ref}:\${base_remote}" 2>&1); then
   echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not fetch the base $(escape_annotation "\${base_ref}"), so the untrusted paths were NOT restored and this run is UNMEASURED: $(escape_annotation "\${out}")" >&2
   exit ${AI_REVIEW_REQUIRED_EXIT}
@@ -3388,14 +3388,14 @@ unset ${AI_REVIEW_GIT_AUTH_VAR}
 # scanner that greps for a rule filename cannot tell a citation from a
 # sentence about one, and test/rule-provenance.test.ts caught exactly that.)
 for path in ${quoted}; do
-  if ! out=$(git rm -rfq --ignore-unmatch -- "\${path}" 2>&1); then
+  if ! out=$(${AI_REVIEW_GIT_KEYS_ONLY} rm -rfq --ignore-unmatch -- "\${path}" 2>&1); then
     echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not clear $(escape_annotation "\${path}") before restoring it from the base, so the reviewer would read the pull request's own copy: $(escape_annotation "\${out}")" >&2
     exit ${AI_REVIEW_REQUIRED_EXIT}
   fi
   # Absent from the base is a RESULT, not a failure: a path this pull request
   # introduces is correctly left deleted, and \`git checkout\` would refuse.
-  if git cat-file -e "\${base_remote}:\${path}" 2>/dev/null; then
-    if ! out=$(git checkout "\${base_remote}" -- "\${path}" 2>&1); then
+  if ${AI_REVIEW_GIT_KEYS_ONLY} cat-file -e "\${base_remote}:\${path}" 2>/dev/null; then
+    if ! out=$(${AI_REVIEW_GIT_KEYS_ONLY} checkout "\${base_remote}" -- "\${path}" 2>&1); then
       echo "::error title=${AI_REVIEW_DRIFT_TITLE}::could not restore $(escape_annotation "\${path}") from the pull request base, so this run is UNMEASURED: $(escape_annotation "\${out}")" >&2
       exit ${AI_REVIEW_REQUIRED_EXIT}
     fi
@@ -3599,6 +3599,11 @@ const SHA256_HELPER = `sha256_of() {
  * a self-hosted runner legitimately keeps in `~/.gitconfig`. Different
  * trade-off, different decision, not folded in here silently.
  *
+ * #967 took that decision and `AI_REVIEW_GIT_KEYS_ONLY` below is its answer:
+ * the `-c` half only, no env vars, measured against an `insteadOf` rewrite.
+ * The `-c` keys themselves are now shared between the two prefixes through
+ * `AI_REVIEW_GIT_NEUTRALISED_KEYS`, so a key added to one reaches both.
+ *
  * ## BOUND to `lib/git-isolation.ts`, and NOT by an import (#1001)
  *
  * The decision — which env vars, which `-c` pairs — lives in
@@ -3626,10 +3631,77 @@ const SHA256_HELPER = `sha256_of() {
  * guarantee than a single expression and a stronger one than a comment;
  * saying which it is matters more than the difference.
  */
+export const AI_REVIEW_GIT_NEUTRALISED_KEYS =
+  "-c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null";
+
 export const AI_REVIEW_GIT_ISOLATED =
   "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 " +
-  "git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null " +
+  `git ${AI_REVIEW_GIT_NEUTRALISED_KEYS} ` +
   "-c safe.directory='*'";
+
+/**
+ * The restore step's prefix (#967): the `-c` half of the isolation above, and
+ * deliberately NOT the env vars.
+ *
+ * ## What it closes, measured
+ *
+ * `buildRestoreScript` runs four more git commands and #960/#965 left all four
+ * alone. Same exposure as the reader: the reviewer runs as the same user on a
+ * pool where `$HOME` persists, so a prior job's reviewer can leave a
+ * `~/.gitconfig` this step reads. The step running BEFORE the reviewer does not
+ * help — the poison does not have to come from this job. Measured in a scratch
+ * repository with a `file://` origin, git 2.50.1, `~/.gitconfig` naming a
+ * marker-writing `core.fsmonitor` and a `core.hooksPath` holding a
+ * marker-writing `reference-transaction` hook:
+ *
+ * | invocation | unhardened | `-c` flags only |
+ * |---|---|---|
+ * | `fetch --no-tags --depth=1` (ref actually updated) | **fsmonitor RAN and the hook FIRED** | neither |
+ * | `rm -rfq --ignore-unmatch` | **fsmonitor RAN** | not run |
+ *
+ * Both vectors are arbitrary command execution as the runner user inside the
+ * step whose job is to replace reviewer-influenced files with their base
+ * versions.
+ *
+ * ## Why NOT `AI_REVIEW_GIT_ISOLATED`, which is the whole decision
+ *
+ * `fetch` is a NETWORK call. A self-hosted runner legitimately keeps
+ * `http.proxy`, `http.sslCAInfo` and `url.<base>.insteadOf` in `~/.gitconfig`,
+ * and the env vars discard the whole file. That turns a working fetch into a
+ * refusal on exactly the runners this hardening is for — the issue's own "must
+ * not become a refusal", arriving one step earlier than #965's did. Measured,
+ * same scratch repository, `origin` set to a scheme that only an `insteadOf`
+ * rewrite in `~/.gitconfig` resolves:
+ *
+ * | prefix | fetch |
+ * |---|---|
+ * | unhardened | exit 0 |
+ * | `-c` flags only (what ships here) | **exit 0** |
+ * | the reader's full prefix, env vars included | **exit 128, `'remote-rungate-test' is not a git command`** |
+ *
+ * Command scope outranks global AND local, so the `-c` half alone kills both
+ * measured execution vectors in both scopes while leaving proxy, CA bundle and
+ * `insteadOf` intact. `safe.directory` is correspondingly NOT needed and NOT
+ * included: the global file is still being read, so `actions/checkout`'s own
+ * entry is still in force and this step grants nothing beyond it.
+ *
+ * ## What it does not cover, rather than left to be discovered
+ *
+ * The env vars are defence in depth against keys nobody enumerated, and this
+ * step does not have them. A `~/.gitconfig` key outside the three above that
+ * makes `fetch`, `rm`, `cat-file` or `checkout` execute something is still
+ * read here. That is the price of keeping the network call working, it is
+ * chosen rather than overlooked, and no case in the suite witnesses it.
+ *
+ * ## Re-landed on its own (#1002, #1008)
+ *
+ * This shipped once inside #1002 beside #969's `--ignored=matching`, and the
+ * revert that undid #969's outage took this with it. The two changes are
+ * independent: #969's widened a reading and broke every pull request in the
+ * repository; this one narrows what a git process is allowed to execute and
+ * broke nothing. Bundling them is what made one revert cost two fixes.
+ */
+export const AI_REVIEW_GIT_KEYS_ONLY = `git ${AI_REVIEW_GIT_NEUTRALISED_KEYS}`;
 
 /**
  * The one reading of the tree, shared by the baseline step and the drift step
