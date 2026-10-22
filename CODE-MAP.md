@@ -1,8 +1,8 @@
 ---
 doc-type: code-map
 status: generated
-updated: 2026-10-21
-scanned-at-sha: 4d5fee21
+updated: 2026-10-22
+scanned-at-sha: 7b5d0e6c
 generator: rungate/scripts/generate-code-map.ts
 ---
 
@@ -31,15 +31,15 @@ Regenerate when src/ has commits since scanned-at-sha.
 
 | Directory | Files | Types |
 |-----------|-------|-------|
-| test/ | 622 | ts, unit, types, json, fixtures |
-| lib/ | 194 | ts, validators, generators, scaffold |
-| scripts/ | 87 | ts, sh, git-hooks, lib, git-hooks/pre-push |
+| test/ | 668 | ts, unit, types, json, fixtures |
+| lib/ | 210 | ts, validators, generators, scaffold |
+| scripts/ | 92 | ts, sh, git-hooks, lib, git-hooks/pre-push |
 | evals/ | 86 | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
-| docs/ | 46 | research, adr, council, session-log, guides |
-| .claude/ | 39 | json, output-styles, agents, rungate, routines |
+| docs/ | 47 | research, adr, council, session-log, guides |
 | gates/ | 38 | ts, toml, md, sha256, test-fixtures |
+| .claude/ | 38 | json, output-styles, agents, rungate, routines |
+| hooks/ | 35 | ts, lib, json |
 | specs/ | 34 | md, bootstrap-data-flow, json |
-| hooks/ | 27 | ts, lib |
 | prompts/ | 24 | md |
 | config/ | 9 | json, yaml |
 | templates/ | 9 | agent-briefs, md |
