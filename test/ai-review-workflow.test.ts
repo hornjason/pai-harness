@@ -54,7 +54,7 @@
  * `AI_REVIEW_WORKFLOW_FILE` (what `lib/conformity.ts` reads back) to the
  * literal in the tuple `test/release-guard.test.ts` pins.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -88,6 +88,15 @@ import { actionRef } from "../lib/workflow-actions";
 import { declaredBunVersion, setupBunWith } from "../lib/bun-version";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
 import { stubBunx, stubBunxAbsent } from "./helpers/stub-bunx";
+import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
+
+/**
+ * #1140: these cases are built on real `git` subprocesses and inherit bun's
+ * 5000ms default, which was never derived from what they cost. The budget is
+ * calibrated on the machine running the suite — see `helpers/git-fixture-budget.ts`
+ * for the measurements and the headroom.
+ */
+setDefaultTimeout(gitFixtureTestTimeout());
 
 /**
  * A fixture version for the adjudicator's `bunx` pin (#1013), never the

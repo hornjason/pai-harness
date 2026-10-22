@@ -127,11 +127,33 @@ export const BUDGET_FLOOR_MS = 120_000;
 /**
  * The `ai-review-*` suites whose cases are built on real `git` subprocesses.
  *
- * These are the six carrying a case above 2500ms — half the budget this issue
- * is about — in the 540-case reading of 2026-10-22. Named rather than
- * detected because what qualifies a file is the measured cost of its fixture,
- * and a file can spawn `git` once and be fast; the census in
- * `ai-review-fixture-budget.test.ts` is what holds the list to its claim.
+ * Six of the seven carry a case above 2500ms — half the budget this issue is
+ * about — in the 540-case reading of 2026-10-22.
+ *
+ * **`ai-review-workflow.test.ts` is the seventh and it is here on different
+ * evidence, which is worth stating because the two kinds are not equally
+ * strong.** Its intrinsic cost is an order of magnitude below the other six:
+ * measured at load 207, the whole file runs in 10.12s, 62 pass, and its
+ * slowest case is **1160ms**. It was nonetheless reported failing at
+ * **15.1s and 15.6s**, and the file is byte-identical to the one that was
+ * measured — three commits separate that reading from this one and none
+ * touches this file or `lib/scaffold/ai-review-step.ts`.
+ *
+ * I could not reproduce it: **14 runs, 0 failures** (10 consecutive standalone
+ * at load ~80, one standalone at load 207, three in company at loads
+ * 213/207/141). So it is included on a reading I did not take, and the reason
+ * that is not credulity is the inflation factor measured elsewhere in this
+ * file — 6.2x between an ordinary load and a thrashing one. A 1160ms case
+ * needs ~4.3x to cross 5000ms, which is *inside* the range this machine has
+ * been measured to produce. A low intrinsic cost is a later crossing, not an
+ * exemption.
+ *
+ * So the criterion is NOT "measured above 2500ms" — that is a property of the
+ * load the sample was taken at. It is "the fixtures spawn real subprocesses,
+ * so the case inflates superlinearly under contention". The census in
+ * `ai-review-fixture-budget.test.ts` holds the list to its claim in the
+ * membership direction only; see the follow-up filed against the growth
+ * direction.
  */
 export const GIT_FIXTURE_SUITES = [
   "ai-review-ignored-reading.test.ts",
@@ -140,6 +162,7 @@ export const GIT_FIXTURE_SUITES = [
   "ai-review-restore-isolation.test.ts",
   "ai-review-security-repairs.test.ts",
   "ai-review-untrusted-restore.test.ts",
+  "ai-review-workflow.test.ts",
 ] as const;
 
 export interface GitFixtureCalibration {
