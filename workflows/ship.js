@@ -6331,8 +6331,7 @@ if (mDecomposition && mDecomposition.subIssues && mDecomposition.subIssues.lengt
 // named the path to two agents. It hoists, so asking it here costs nothing
 // structurally and moves the refusal ahead of both prompts.
 const preCollectIdentity = worktreeIdentityViolations(
-  implementResult.buildResult?.agentResults, REPO,
-  { requirePath: true, allowPath: collectDestination })
+  implementResult.buildResult?.agentResults, REPO, { requirePath: true })
 if (preCollectIdentity.length > 0) {
   for (const r of preCollectIdentity) log(`COLLECT REFUSED: ${r}`)
   return await terminalFailure('WORKTREE_REPO_MISMATCH', {
@@ -6345,6 +6344,30 @@ if (preCollectIdentity.length > 0) {
       ...(r && r.worktreeRepo ? { worktreeRepo: redactRemote(r.worktreeRepo) } : {}),
     })),
   })
+}
+
+// Identity is clean, so every violation the SAME binding reports with
+// `allowPath` supplied is a DESTINATION violation and nothing else — the
+// second call is a superset of the first, and the first came back empty.
+// Asked as its own question because it needs its own exit: reporting "this
+// directory is not one this run owns" under WORKTREE_REPO_MISMATCH names the
+// repository as the problem when the repository is fine, and an exit whose
+// name contradicts its reason is the #524 defect, not a variant of it.
+//
+// It refuses in #1056's words and through #1056's exit deliberately. This is
+// the same decision that guard makes about the same value, asked before the
+// prompts instead of after; a second status and a second sentence for one
+// decision is two vocabularies for one fact, and the next reader cannot tell
+// which of them is authoritative.
+const strayDestinations = worktreeIdentityViolations(
+  implementResult.buildResult?.agentResults, REPO,
+  { requirePath: true, allowPath: collectDestination })
+if (strayDestinations.length > 0) {
+  for (const r of strayDestinations) log(`COLLECT REFUSED: ${r}`)
+  return await shipFailed('Implement',
+    'the implement step reported a worktree this run will not commit from: ' +
+    `${strayDestinations.join('; ').slice(0, 400)} — refused before the Validate and Fix ` +
+    'prompts name the path to an agent, not after (#1098, #1056, #155)')
 }
 
 // The reply passed. Record where it came from so the gates can ask the same
@@ -6381,10 +6404,15 @@ if (!collectDestination(marcusWorktreePath)) {
   // `workflows/*.js`, and its remedy is the right one here: this value never
   // reaches a shell, so it belongs in a `log()` call and a structured field
   // rather than in prose that is one edit away from being a command (#1056).
-  return await terminalFailure('WORKTREE_PATH_REFUSED', {
-    reason: `the implement phase reported a worktree that is neither this run's project root nor a directory under its agent worktrees — the path is in worktreePath below and in the IMPLEMENT REFUSED line above. Validation and fix iterations are addressed to that directory, so the run stops before either prompt is built rather than after (#1098, #155).`,
-    worktreePath: marcusWorktreePath,
-  })
+  // #1056's exit and #1056's sentence, for the reason given at the identity
+  // boundary above: one decision about one value, asked earlier. The value is
+  // sliced rather than interpolated bare, which is the form #1056 uses and
+  // the form SHELL-QUOTE-1 is satisfied by.
+  return await shipFailed('Implement',
+    'the implement step reported a worktree this run will not commit from: ' +
+    `${String(marcusWorktreePath).slice(0, 200)} is neither this run's project root nor one of ` +
+    'its agent worktrees, and the Validate and Fix prompts address an agent to it, so the run ' +
+    'stops before either prompt is built rather than after (#1098, #1056, #155)')
 }
 // ──── MARCUS-WORKTREE-END ────
 

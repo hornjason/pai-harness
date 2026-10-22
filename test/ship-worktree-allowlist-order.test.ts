@@ -57,7 +57,7 @@ const collectDestination = new Function(
 )() as (dir: unknown, projectRoot?: string, harnessRoot?: string) => string | null;
 
 interface GuardRun {
-  refusal: { status: string; reason?: string; worktreePath?: string } | null;
+  refusal: { phase: string; reason: string } | null;
   marcusWorktreePath: string | null;
   logs: string[];
 }
@@ -82,7 +82,10 @@ function runGuard(worktreePath: unknown, source = shipSource): Promise<GuardRun>
     "PROJECT_ROOT",
     "collectDestination",
     "log",
-    "terminalFailure",
+    // `shipFailed`, not `terminalFailure`: this refusal is #1056's, emitted
+    // earlier. One decision gets one exit and one sentence wherever it is
+    // asked, and `test/terminal-failure-reason.test.ts` owns that contract.
+    "shipFailed",
     `return (async () => {\n${body}\nreturn { refusal: null, marcusWorktreePath }\n})()`,
   );
   return run(
@@ -90,8 +93,8 @@ function runGuard(worktreePath: unknown, source = shipSource): Promise<GuardRun>
     PROJECT_ROOT,
     (d: unknown) => collectDestination(d, PROJECT_ROOT, HARNESS_ROOT),
     (m: string) => logs.push(String(m)),
-    async (status: string, extra: Record<string, unknown>) => ({
-      refusal: { status, ...extra },
+    async (phase: string, reason: string) => ({
+      refusal: { phase, reason },
       marcusWorktreePath: null,
     }),
   ).then((r: Omit<GuardRun, "logs">) => ({ ...r, logs }));
@@ -178,13 +181,18 @@ describe("#1098: the reported worktree is allowlisted at the assignment", () => 
   test("a worktree outside the allowlist ends the run", async () => {
     const got = await runGuard(FOREIGN);
     expect(got.marcusWorktreePath, "the run carried on holding a path it may not act in").toBeNull();
-    expect(got.refusal?.status).toBe("WORKTREE_PATH_REFUSED");
-    // The path travels in the structured field and the log line, not in the
-    // reason prose: SHELL-QUOTE-1 holds bare interpolations of
-    // agent-reported bindings at zero in `workflows/*.js`, and a refusal
-    // sentence is prose one edit away from being a command (#1056).
-    expect(got.refusal?.worktreePath, "the refusal does not say which path it refused")
-      .toBe(FOREIGN);
+    // #1056's exit, because this is #1056's decision asked earlier. A
+    // second status for the same refusal would be two vocabularies for one
+    // fact, and `test/terminal-failure-reason.test.ts` SC-#1056 asserts this
+    // sentence survives wherever the question is asked.
+    expect(got.refusal?.phase).toBe("Implement");
+    expect(String(got.refusal?.reason))
+      .toContain("the implement step reported a worktree this run will not commit from");
+    // The path is named, sliced rather than interpolated bare — the form
+    // #1056 uses and the one SHELL-QUOTE-1 is satisfied by, since a refusal
+    // sentence is prose one edit away from being a command.
+    expect(String(got.refusal?.reason), "the refusal does not say which path it refused")
+      .toContain(FOREIGN);
     expect(got.logs.join("\n")).toContain("IMPLEMENT REFUSED");
     expect(got.logs.join("\n"), "the operator cannot see which path was refused")
       .toContain(FOREIGN);
@@ -222,8 +230,8 @@ describe("#1098: the reported worktree is allowlisted at the assignment", () => 
       `${PROJECT_ROOT}-sibling`,
     ]) {
       const got = await runGuard(bad);
-      expect(got.refusal?.status, `${JSON.stringify(bad)} was allowed through`)
-        .toBe("WORKTREE_PATH_REFUSED");
+      expect(String(got.refusal?.reason), `${JSON.stringify(bad)} was allowed through`)
+        .toContain("the implement step reported a worktree this run will not commit from");
     }
   });
 

@@ -596,7 +596,7 @@ function loadCollectBoundary(source = shipSource) {
   // declaration the assignment would create a sloppy-mode global and the
   // control tests below would pass over a block that recorded nothing.
   const run = new Function(
-    "implementResult", "REPO", "log", "terminalFailure",
+    "implementResult", "REPO", "log", "terminalFailure", "shipFailed",
     "worktreeIdentityViolations", "redactRemote", "worktreeRecords", "collectDestination",
     `let runWorktrees = []\nreturn (async () => {\n${body}\nreturn { shipped: true, runWorktrees }\n})()`,
   );
@@ -608,6 +608,10 @@ function loadCollectBoundary(source = shipSource) {
         repo,
         (m: string) => logs.push(String(m)),
         async (status: string, extra: Record<string, unknown>) => ({ status, ...extra }),
+        // A DESTINATION refusal is not a repo mismatch and must not exit as
+        // one. It leaves through #1056's own exit, so the two are told apart
+        // by the cases below rather than sharing a name (#524, #1098).
+        async (phase: string, reason: string) => ({ status: "SHIP_FAILED", phase, reason }),
         worktreeIdentityViolations,
         redactRemote,
         worktreeRecords,
@@ -706,8 +710,17 @@ describe("SC-1448: the run stops at the collection boundary, not after it", () =
       RUN_REPO,
     );
     expect(got.status, "a directory this run does not own reached the collector")
-      .toBe("WORKTREE_REPO_MISMATCH");
+      .toBe("SHIP_FAILED");
     expect(String(got.reason)).toContain("not a directory this run may act in");
+    // …and NOT under the repository's name. The repository matched; saying
+    // WORKTREE_REPO_MISMATCH here would be an exit contradicting its own
+    // reason, which is the #524 defect rather than a variant of it. The
+    // identity case above asserts the other half, so the two exits are told
+    // apart by two cases and not by one.
+    expect(got.status, "a destination refusal left under the repo-mismatch exit")
+      .not.toBe("WORKTREE_REPO_MISMATCH");
+    expect(String(got.reason))
+      .toContain("the implement step reported a worktree this run will not commit from");
     expect(logs.join("\n")).toContain("COLLECT REFUSED");
   });
 
