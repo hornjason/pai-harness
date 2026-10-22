@@ -908,7 +908,7 @@ describe("#169 refusal path: a stale review stops the run", () => {
       shipSource.indexOf("// ──── REVIEW-CURRENCY-PROBE-END ────"),
     );
     expect(probe, "ship.js has no review-currency probe").not.toBe("");
-    expect(probe).toContain("git -C ${commitDir} rev-parse HEAD");
+    expect(probe).toContain("git -C ${shellQuote(commitDir)} rev-parse HEAD");
     expect(probe, "the probe does not read the recorded review SHA back").toContain("testedSha");
     expect(probe).toContain("workflow-state.json");
     const required = probe.match(/required:\s*\[([^\]]*)\]/)?.[1] ?? "";

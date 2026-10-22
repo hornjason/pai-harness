@@ -211,6 +211,21 @@ describe("#524: the exits that carried no reason now carry a specific one", () =
     return (r.result ?? {}) as Record<string, unknown>;
   };
 
+  /**
+   * A worktree path the run will actually commit from.
+   *
+   * Under `${projectRoot}/.claude/worktrees`, because that is where agent
+   * worktrees live — `lib/agent-worktree.ts` counts 136 of them there and
+   * none anywhere else — and because #1056 made `commitDir` go through
+   * `collectDestination` at its source, so a path outside that tree is now
+   * refused at the Commit phase rather than interpolated into a `git -C`.
+   *
+   * These rows were written with `/tmp/wt`, which no live worktree resembles.
+   * That made them stop at the new refusal instead of reaching the exits they
+   * are about — the same trap the #218 note below describes, one guard later.
+   */
+  const OWNED_WORKTREE = "/tmp/p/.claude/worktrees/wt";
+
   test("SC-1802: an implement phase that returned nothing says so", async () => {
     // The case #524 was filed on, driven through the real control flow: the
     // agent produces no reply at all, `buildResult` is undefined, and the
@@ -238,7 +253,7 @@ describe("#524: the exits that carried no reason now carry a specific one", () =
     // the reply names the run's own repo. Without that the row measures
     // #218's refusal and never reaches the one it is about, which is how a
     // fixture passes through a path that bypasses the feature.
-    const owned = (s: any) => ({ ...s, worktreePath: "/tmp/wt", worktreeRepo: "git@github.com:o/r.git" });
+    const owned = (s: any) => ({ ...s, worktreePath: OWNED_WORKTREE, worktreeRepo: "git@github.com:o/r.git" });
 
     const quiet = resultOf(await run({ marcus: (s: any) => ({ ...owned(s), success: false, findings: [] }) }));
     expect(quiet.status).toBe("IMPLEMENT_FAILED");
@@ -265,7 +280,7 @@ describe("#524: the exits that carried no reason now carry a specific one", () =
     // stops at IMPLEMENT_FAILED and never reaches the exit it is about.
     const owned = (s: any) => ({
       ...s,
-      worktreePath: "/tmp/wt",
+      worktreePath: OWNED_WORKTREE,
       worktreeRepo: "git@github.com:o/r.git",
       filesChanged: ["lib/a.ts"],
     });
@@ -281,6 +296,46 @@ describe("#524: the exits that carried no reason now carry a specific one", () =
     // operator to different places, and one sentinel for both would not.
     expect(String(answered.reason)).not.toContain("returned nothing at all");
     for (const r of [silent, answered]) expect(String(r.reason)).not.toContain(SENTINEL);
+  });
+
+  test("#1056: a worktree the run will not commit from is refused by name, at the source", async () => {
+    // The guard the fixture above had to be moved for, driven the other way.
+    //
+    // `worktreePath` is the implement AGENT's reply (#155) and `commitDir`
+    // takes it verbatim, then reaches a shell as a path at twenty-odd sites.
+    // Quoting each of those is twenty-odd chances to forget; this is the one
+    // decider, and `test/workflow-shell-interpolation.test.ts` holds the
+    // quoting at zero bare sites behind it. Neither layer is sufficient
+    // alone — a quoted path to another project still commits another
+    // project's files.
+    //
+    // Refusing beats falling back to the project root: the root sits on the
+    // default branch, which the commit step refuses by name (#136), so the
+    // fallback would end the run with a reason naming neither this value nor
+    // the agent that reported it.
+    const stray = (s: any) => ({
+      ...s,
+      worktreePath: "/tmp/somewhere-else",
+      worktreeRepo: "git@github.com:o/r.git",
+      filesChanged: ["lib/a.ts"],
+    });
+
+    const out = resultOf(await run({ marcus: stray }));
+    expect(out.status).toBe("SHIP_FAILED");
+    // Names the value and the agent, not just the category.
+    expect(String(out.reason)).toContain("/tmp/somewhere-else");
+    expect(String(out.reason)).toContain("the implement step reported a worktree");
+    expect(String(out.reason)).not.toContain(SENTINEL);
+
+    // The control, and it is the whole point of the row: the ONLY difference
+    // from the passing case is where the worktree sits. Without this, a run
+    // that failed for any other reason would satisfy the assertions above and
+    // the guard could be refusing every path, including the legitimate ones.
+    const fine = resultOf(await run({
+      marcus: (s: any) => ({ ...stray(s), worktreePath: OWNED_WORKTREE }),
+      commit: (s: any) => ({ ...s, commitSha: "" }),
+    }));
+    expect(fine.status).toBe("COMMIT_FAILED");
   });
 
   test("SC-1804: the deny-list refusal reaches the result instead of only the log", async () => {

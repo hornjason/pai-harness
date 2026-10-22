@@ -213,7 +213,7 @@ describe("prior-branch: ship.js consumes the resolvable ref (#164)", () => {
     // nothing.
     // The repository is named on the command since #1056; the placeholder
     // this case is about is the one after `merge`.
-    expect(shipSource).toContain("git -C ${PROJECT_ROOT} merge <refName> --no-edit");
+    expect(shipSource).toContain("git -C ${shellQuote(PROJECT_ROOT)} merge <refName> --no-edit");
     expect(shipSource).not.toContain("merge <branch> --no-edit");
   });
 
