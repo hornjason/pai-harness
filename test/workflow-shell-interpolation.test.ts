@@ -794,6 +794,109 @@ describe("#1103: the census can fail, and fails on the thing that got past it", 
     expect(found.map(f => `${f.where} ${f.name}`)).toEqual(["planted.js:4 root"]);
   });
 
+  test("an inner binding of the alias name shadows it, rather than inheriting it", () => {
+    // An alias was a byte SPAN, and a nested function that re-binds the name
+    // sits inside that span. So an inner `quote` that is a plain formatter —
+    // not a quoter at all — inherited the outer "this is a sanitiser"
+    // verdict, and every interpolation it wrapped read as safe. Fail-open,
+    // and invisible: the census reports clean while it happens.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const dirFromAgent = thing.worktreePath",
+      "const label = x => `[${x}]`",
+      "function outer(root, quote) {",
+      "  function inner(p, quote) { return `( cd ${quote(p)} && bun test )` }",
+      "  const t = inner(dirFromAgent, label)",
+      "  return `${quote(root)} ${t}`",
+      "}",
+      "const a = outer(dirFromAgent, shellQuote)",
+    ].join("\n");
+
+    // `inner`'s `quote` is `label`, a formatter, so line 5 is bare. `outer`'s
+    // own `${quote(root)}` on line 7 is genuinely quoted and must stay
+    // silent, or the fix is just "report everything" — which is why this
+    // asserts the exact list rather than that line 5 appears in it.
+    //
+    // `inner` is called on its own line rather than inside the returned
+    // template on purpose: an interpolated `${inner(dirFromAgent, …)}` would
+    // report `dirFromAgent` for reaching a non-sanitiser call, which is
+    // correct behaviour and would have masked what this row measures.
+    const found = bareAgentInterpolations("planted.js", planted);
+    expect(found.map(f => `${f.where} ${f.name}`)).toEqual(["planted.js:5 p"]);
+  });
+
+  test("a function whose identifier escapes gets no alias at all", () => {
+    // Unanimity is computed over the call sites the walk can see: identifiers
+    // in callee position. If the function's identifier is passed, assigned,
+    // returned or stored, there are call sites outside that set and `every`
+    // over the visible subset returns true for free. You cannot establish
+    // unanimity over a set you cannot enumerate, so the honest answer is to
+    // decline — this is a fail-CLOSED rule, and the row below is what it
+    // costs: a visibly-quoted site reported anyway.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const dirFromAgent = thing.worktreePath",
+      "function build(root, quote) { return `( cd ${quote(root)} && bun test )` }",
+      "const run = fn => fn(dirFromAgent, x => `[${x}]`)",
+      "const a = build(dirFromAgent, shellQuote)",
+      "const b = run(build)",
+    ].join("\n");
+
+    // `build` is handed to `run` on line 6, which calls it with a formatter
+    // the walk never sees as a call site of `build`. One visible call site
+    // passing `shellQuote` is not unanimity.
+    const found = bareAgentInterpolations("planted.js", planted);
+    expect(found.map(f => `${f.where} ${f.name}`)).toEqual(["planted.js:3 root"]);
+
+    // The control: the same file with the escape removed. Now the call set IS
+    // enumerable, it IS unanimous, and the site is silent — or this row would
+    // pass against a rule that never grants an alias to anything.
+    const noEscape = planted.split("\n").filter(l => !/run\(/.test(l)).join("\n");
+    expect(bareAgentInterpolations("planted.js", noEscape)).toEqual([]);
+  });
+
+  test("reaching THROUGH the quoter's name is not calling the quoter", () => {
+    // `calleeName` roots a member call at its OBJECT, not its property — so
+    // the hole is not `x.quote(…)`, which roots at `x` and was always
+    // reported. It is a call whose object IS the sanitiser:
+    // `shellQuote.toString(dir)` rooted at `shellQuote`, counted as a
+    // sanitiser call, and returned the function's SOURCE while the census
+    // said nothing. Requiring an Identifier callee is the fix, and it is the
+    // rule the message exemption in this module already applies.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const dirFromAgent = thing.worktreePath",
+      "const a = `( cd ${shellQuote.toString(dirFromAgent)} && bun test )`",
+      "const b = `( cd ${shellQuote(dirFromAgent)} && bun test )`",
+    ].join("\n");
+
+    // Line 4 is the control: the real call, still silent. Without it this row
+    // is satisfied by a rule that stops recognising `shellQuote` at all.
+    const found = bareAgentInterpolations("planted.js", planted);
+    expect(found.map(f => `${f.where} ${f.name}`)).toEqual(["planted.js:3 dirFromAgent"]);
+  });
+
+  test("a sanitiser call shields its arguments, not everything inside it", () => {
+    // The two halves of the same finding in one expression. `shellQuote[key]`
+    // rooted at `shellQuote`, so the call read as sanitised; and the safe
+    // range was the WHOLE call expression rather than the arguments, so
+    // `key` — agent-derived, sitting in the computed callee, never passed to
+    // any quoter — was suppressed along with it. Before the fix this file
+    // reported nothing at all.
+    const planted = [
+      "const thing = await agent(`do work`)",
+      "const key = thing.which",
+      "const dirFromAgent = thing.worktreePath",
+      "const a = `( cd ${shellQuote[key](dirFromAgent)} && bun test )`",
+    ].join("\n");
+
+    const found = bareAgentInterpolations("planted.js", planted);
+    expect(found.map(f => `${f.where} ${f.name}`)).toEqual([
+      "planted.js:4 key",
+      "planted.js:4 dirFromAgent",
+    ]);
+  });
+
   test("an alias is unanimous across call sites, not won by the first", () => {
     // `sanitised` above has always used "every assignment, not the first";
     // the alias used the first call site, and that asymmetry was the bug. A

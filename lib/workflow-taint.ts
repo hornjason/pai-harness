@@ -192,6 +192,88 @@ interface TaintScope {
   why: string;
   from: number;
   to: number;
+  /**
+   * Byte spans inside `[from, to]` where the name means something else.
+   *
+   * A byte span is not a lexical scope. An inner function that re-binds the
+   * name sits INSIDE the outer span, so without this it inherits the outer
+   * verdict instead of shadowing it — and for an alias that means an inner
+   * `quote` which is a plain string formatter is read as a sanitiser
+   * everywhere the outer function's body reaches. Fail-open, and invisible.
+   */
+  holes?: [number, number][];
+}
+
+/** Is `at` inside the scope, and not inside one of its shadowed holes? */
+function covers(scope: TaintScope, at: number): boolean {
+  if (at < scope.from || at > scope.to) return false;
+  return !(scope.holes ?? []).some(([from, to]) => at >= from && at <= to);
+}
+
+/**
+ * Spans inside `fn` where `name` is re-bound and therefore is not `fn`'s.
+ *
+ * Nested parameters, nested `var`/`let`/`const`, and nested function
+ * declarations all shadow. The function's own node is skipped, or every
+ * parameter would shadow itself.
+ */
+function shadowsOf(fn: Node, name: string): [number, number][] {
+  const holes: [number, number][] = [];
+  for (const node of walk(fn)) {
+    if (node === fn) continue;
+    const isFn =
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression";
+    if (isFn) {
+      if (paramNames(node).includes(name)) holes.push([node.start, node.end]);
+      if (isNode(node.id) && node.id.name === name) holes.push([node.start, node.end]);
+      continue;
+    }
+    if (node.type === "VariableDeclarator" && isNode(node.id) && boundNames(node.id).includes(name)) {
+      // From the declarator to the end of the function: a `const` rebinding
+      // the name governs the rest of its block, and the block's end is the
+      // nearest cheap over-approximation that stays FAIL-CLOSED.
+      holes.push([node.start, fn.end]);
+    }
+  }
+  return holes;
+}
+
+/**
+ * Names in `fns` whose identifier is used anywhere other than as a callee.
+ *
+ * If a function's identifier is assigned, passed as an argument, returned or
+ * stored, then `callsByFunction` cannot see every call site — and unanimity
+ * over the subset you can see is not unanimity. The honest answer is to
+ * decline to grant that function's parameters any alias at all, so this list
+ * is consulted to FAIL CLOSED rather than to widen anything.
+ */
+function escapedFunctions(tree: Node, fns: Map<string, Node>): Set<string> {
+  const referencedAsCallee = new Set<Node>();
+  const declarationIds = new Set<Node>();
+  const notAReference = new Set<Node>();
+
+  for (const node of walk(tree)) {
+    if (node.type === "CallExpression" && isNode(node.callee) && node.callee.type === "Identifier") {
+      referencedAsCallee.add(node.callee);
+    }
+    if (isNode(node.id) && node.id.type === "Identifier") declarationIds.add(node.id);
+    // `a.foo` and `{ foo: … }` mention the name without referring to the
+    // binding, unless the lookup is computed.
+    if (node.type === "MemberExpression" && !node.computed && isNode(node.property)) {
+      notAReference.add(node.property);
+    }
+    if (node.type === "Property" && !node.computed && isNode(node.key)) notAReference.add(node.key);
+  }
+
+  const escaped = new Set<string>();
+  for (const node of walk(tree)) {
+    if (node.type !== "Identifier" || !fns.has(node.name as string)) continue;
+    if (referencedAsCallee.has(node) || declarationIds.has(node) || notAReference.has(node)) continue;
+    escaped.add(node.name as string);
+  }
+  return escaped;
 }
 
 /** Parameter names of a function node, in order; non-Identifier params are null. */
@@ -334,27 +416,39 @@ function analyse(source: string): { members: Map<string, string>; scopes: TaintS
   // analyse two ways.
   const aliasScopes: TaintScope[] = [];
   const isAliasAt = (name: string, at: number) =>
-    aliasScopes.some(a => a.name === name && at >= a.from && at <= a.to);
+    aliasScopes.some(a => a.name === name && covers(a, at));
   /** `shellQuote`, or a parameter that is one AT THIS POSITION. */
   const sanitisesAt = (name: string | null, at: number) =>
     !!name && (SANITISERS.includes(name) || isAliasAt(name, at));
 
+  // Only an identifier in callee position is a call this analysis can see, and
+  // only a function whose identifier never escapes has a call set it can
+  // enumerate. Both halves fail closed.
+  const escaped = escapedFunctions(tree, fnRanges);
   const callsByFunction = new Map<string, Node[]>();
   for (const node of walk(tree)) {
     if (node.type !== "CallExpression") continue;
-    const name = calleeName(node.callee);
-    if (!name || !fnRanges.has(name)) continue;
+    if (!isNode(node.callee) || node.callee.type !== "Identifier") continue;
+    const name = node.callee.name as string;
+    if (!fnRanges.has(name)) continue;
     callsByFunction.set(name, [...(callsByFunction.get(name) ?? []), node]);
   }
 
   for (let again = true; again; ) {
     again = false;
     for (const [fnName, fn] of fnRanges) {
+      // Unanimity over a call set you cannot enumerate is not unanimity.
+      if (escaped.has(fnName)) continue;
       const calls = callsByFunction.get(fnName) ?? [];
       // A function nobody calls tells us nothing about its parameters.
       if (calls.length === 0) continue;
       paramNames(fn).forEach((param, i) => {
-        if (!param || isAliasAt(param, fn.start)) return;
+        if (!param) return;
+        // Exact range, not `isAliasAt`: a nested parameter of the same name
+        // lands inside this one's span, and an `isAliasAt` guard would skip
+        // evaluating it on its OWN call sites and let it inherit this
+        // verdict. Only an identical span is the same fact already recorded.
+        if (aliasScopes.some(a => a.name === param && a.from === fn.start && a.to === fn.end)) return;
         const everyCallSite = calls.every(call => {
           const arg = (call.arguments as Node[])[i];
           // A call site that omits the argument is a call site that does not
@@ -362,7 +456,13 @@ function analyse(source: string): { members: Map<string, string>; scopes: TaintS
           return !!arg && arg.type === "Identifier" && sanitisesAt(arg.name as string, arg.start);
         });
         if (!everyCallSite) return;
-        aliasScopes.push({ name: param, why: `${fnName}()'s quoter`, from: fn.start, to: fn.end });
+        aliasScopes.push({
+          name: param,
+          why: `${fnName}()'s quoter`,
+          from: fn.start,
+          to: fn.end,
+          holes: shadowsOf(fn, param),
+        });
         again = true;
       });
     }
@@ -497,10 +597,14 @@ export function bareAgentInterpolations(relPath: string, source: string): BareIn
    * (#1114).
    */
   const sanitisedCall = (expr: Node) => {
-    const callee = calleeName(expr.callee);
-    if (!callee) return false;
+    // Identifier callee only. `calleeName` roots `x.quote(…)` at `quote`, so
+    // going through it accepted a METHOD that merely shares a name with the
+    // quoter — and it is the same rule the message exemption below already
+    // applies, so this is a consistency fix as much as a security one.
+    if (!isNode(expr.callee) || expr.callee.type !== "Identifier") return false;
+    const callee = expr.callee.name as string;
     if (SANITISERS.includes(callee)) return true;
-    return aliasScopes.some(a => a.name === callee && expr.start >= a.from && expr.start <= a.to);
+    return aliasScopes.some(a => a.name === callee && covers(a, expr.start));
   };
   const taintedAt = (name: string, at: number) =>
     scopes.some(s => s.name === name && at >= s.from && at <= s.to);
@@ -517,7 +621,13 @@ export function bareAgentInterpolations(relPath: string, source: string): BareIn
   const unsanitisedIdentifiers = (expr: Node): Node[] => {
     const safeRanges: [number, number][] = [];
     for (const sub of walk(expr)) {
-      if (sub.type === "CallExpression" && sanitisedCall(sub)) safeRanges.push([sub.start, sub.end]);
+      if (sub.type !== "CallExpression" || !sanitisedCall(sub)) continue;
+      // The ARGUMENTS the quoter consumes, not the whole call expression.
+      // `shellQuote` returns a quoted copy of what it is given; an identifier
+      // somewhere else in the same expression — a computed callee, say — is
+      // not something it ever saw, and whitelisting the entire span
+      // suppressed it anyway.
+      for (const arg of sub.arguments as Node[]) if (isNode(arg)) safeRanges.push([arg.start, arg.end]);
     }
     return [...walk(expr)].filter(
       sub =>
