@@ -167,6 +167,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -176,7 +177,7 @@ import {
   AI_REVIEW_ACTION_SCRATCH,
   AI_REVIEW_BASE_REMOTE_VAR,
   AI_REVIEW_DRIFT_TITLE,
-  AI_REVIEW_IGNORED_DIR_HASH,
+  AI_REVIEW_PRESENT_UNHASHABLE,
   AI_REVIEW_IGNORED_READING,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
   AI_REVIEW_TREE_BEFORE_VAR,
@@ -838,7 +839,7 @@ describe("AC-10 (#1061): an ignored directory the reviewer creates is not `absen
       line,
       "a directory sitting on disk is reported `absent`, which is false about it AND is the " +
         "token #989 reads as the action having deleted a restored path",
-    ).toBe(`${AI_REVIEW_IGNORED_DIR_HASH} ignored-tree/`);
+    ).toBe(`${AI_REVIEW_PRESENT_UNHASHABLE} ignored-tree/`);
   });
 
   test("end to end: the plant under an untrusted path is REFUSED, not acquitted", () => {
@@ -902,8 +903,100 @@ describe("AC-10 (#1061): an ignored directory the reviewer creates is not `absen
       `the ignored tree was enumerated file by file (${lines.length} lines)`,
     ).toBe(0);
     expect(
-      lines.filter(l => l === `${AI_REVIEW_IGNORED_DIR_HASH} node_modules/`).length,
+      lines.filter(l => l === `${AI_REVIEW_PRESENT_UNHASHABLE} node_modules/`).length,
       "the ignored tree is not reported as one directory line",
     ).toBe(1);
+  });
+});
+
+// ── AC-11: the property, not the shape (#1070) ────────────────────────────
+
+/**
+ * #1061 keyed the discriminator on git's trailing slash, which is the shape
+ * of a collapsed directory and not the property either shape has. `[ -f ]`
+ * is false for a dangling symlink, a fifo and a socket too, and none of
+ * those carries a slash — so a second route to #989's acquittal survived.
+ */
+describe("AC-11 (#1070): PRESENT-but-not-a-file is not a deletion, whatever its shape", () => {
+  test("a dangling symlink under an untrusted path is REFUSED, not acquitted", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT), { force: true });
+    // Committed BEFORE the baseline, so the directory the plant goes into is
+    // not itself drift and the base carries it.
+    f.write(".claude/settings.json", "{}\n");
+    f.git("add", "-A");
+    f.git("commit", "-qm", "claude dir");
+    // Required, or #989's classifier refuses UNMEASURED two branches earlier
+    // and this case passes on a tree carrying the defect.
+    f.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const before = runBaseline(f, "hardened");
+
+    // No directory and no trailing slash: the shape #1061's arm cannot see.
+    // `[ -e ]` follows the link and is false, which is why the reader needs
+    // `[ -L ]` as well.
+    symlinkSync("/nonexistent/target", join(f.work, ".claude", "evil-link"));
+
+    const run = runDrift(f, "hardened", before, {
+      [AI_REVIEW_BASE_REMOTE_VAR]: "refs/remotes/origin/main",
+    });
+    expect(
+      run.code,
+      "the drift step ACQUITTED a dangling symlink the reviewer created under an untrusted " +
+        `path — one symlink and the gate passes:\n${run.stdout}\n${run.stderr}`,
+    ).not.toBe(0);
+    expect(run.stderr, "the refusal does not name the plant").toContain(".claude/evil-link");
+    expect(
+      run.stdout,
+      "the plant was credited to the review action's second restore (#989) rather than to " +
+        "the reviewer — a false attribution is worse than silence",
+    ).not.toContain(".claude/evil-link");
+  });
+
+  test("the reader distinguishes present-but-unhashable from gone", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT), { force: true });
+    symlinkSync("/nonexistent/target", join(f.work, "dangling"));
+    const line = readTree(f, "hardened")
+      .stdout.split("\n")
+      .find(l => l.endsWith(" dangling"));
+    expect(line, "the dangling symlink is not in the reading at all").toBeDefined();
+    expect(
+      line,
+      "a path sitting on disk is reported `absent`, which is the token #989 reads as the " +
+        "action having deleted a restored file",
+    ).toBe(`${AI_REVIEW_PRESENT_UNHASHABLE} dangling`);
+  });
+
+  test("deletion control: `absent` still means gone, so this is a repair not a widening", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT), { force: true });
+    // A TRACKED file, deleted. Without this the change could have retired
+    // the `absent` branch altogether and every case above would still pass.
+    rmSync(join(f.work, "tracked.ts"));
+    const line = readTree(f, "hardened")
+      .stdout.split("\n")
+      .find(l => l.endsWith(" tracked.ts"));
+    expect(line, "the deleted file is not in the reading").toBeDefined();
+    expect(
+      line,
+      "a genuinely deleted file no longer reads `absent`, so #989's deleted-path branch has " +
+        "been made unreachable — that is a widening, not the repair this claims to be",
+    ).toBe("absent tracked.ts");
+  });
+
+  test("one decider: the trailing-slash arm is gone, not kept beside the -e test", () => {
+    // Two guards answering one question are behaviourally one, and a
+    // mutation of either leaves the other holding every case up
+    // (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+    expect(
+      AI_REVIEW_TREE_READER,
+      "the reader still carries a trailing-slash case beside the -e/-L test, which is a " +
+        "second decider for the question that test already answers",
+    ).not.toContain("*/) h=");
+    expect(
+      AI_REVIEW_TREE_READER,
+      "the reader does not test for a dangling symlink, so `-e` alone decides and a dangling " +
+        "link is still read as gone",
+    ).toContain('[ -L "${p}" ]');
   });
 });
