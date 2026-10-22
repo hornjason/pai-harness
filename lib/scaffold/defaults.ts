@@ -248,11 +248,30 @@ export function buildDefaultHooks(): HookRegistration[] {
       description: "Re-injects critical rules after context window compaction",
     },
     {
+      // NOT deployed, and the description below is why the first pass got it
+      // wrong: it says "stale workflow-state.json and ship-active files", and
+      // the hook's first screen agrees. The branch deletion is sixty lines
+      // down behind an `await import`. See `notDeployedReason` on this entry
+      // in `.claude/rungate/hooks.json` for the full reading and for the two
+      // things that would have to change before it could be reconsidered.
+      //
+      // Short form: at every SessionStart it runs
+      // `cleanupStaleBranches({maxAgeDays: 7})`, which issues
+      // `git push origin --delete` per stale branch, gated by an open-PR
+      // check that `lib/branch-cleanup.ts` defaults to the slug
+      // `hornjason/pai-harness` — so on a consumer the guard asks about THIS
+      // repository and can never say stop. A classification made by reading
+      // a hook's header is not a classification; follow the dynamic imports.
       name: "StaleTTLCleanup",
       hookFor: "SessionStart",
       command: "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
       enabled: true,
-      deployToConsumers: true,
+      deployToConsumers: false,
+      notDeployedReason:
+        "HARNESS-ONLY. Deletes remote branches at every SessionStart via " +
+        "cleanupStaleBranches, behind an open-PR guard whose repository slug defaults to " +
+        "this repository — so on a consumer the guard answers a question about the wrong " +
+        "repo and the delete runs against theirs. See the registry entry for the full reading.",
       scope: "user",
       description: "Cleans up stale workflow-state.json and ship-active files",
     },

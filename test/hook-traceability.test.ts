@@ -565,6 +565,93 @@ describe("#1047: every hook declares whether a consumer receives it", () => {
     ).toEqual([]);
   });
 
+  /**
+   * The regression test for the way AC-11 was sincerely wrong (#1047 review).
+   *
+   * `StaleTTLCleanup` was classified SHIP by reading its header — "Cleans up
+   * stale workflow-state.json and ship-active files" — and its first screen,
+   * which imports `cleanStaleFiles`. Sixty lines down, behind
+   * `await import('../lib/branch-cleanup.ts')`, it runs
+   * `git push origin --delete` per stale branch at every SessionStart, gated
+   * by an open-PR check whose slug defaults to THIS repository, so on a
+   * consumer the guard asks about the wrong repo and can never say stop.
+   *
+   * AC-11 through AC-14 cannot see that: they check that somebody WROTE an
+   * answer, never that the answer is true. This one reads the code the hook
+   * reaches. It is deliberately narrow — remote-destructive git only, the
+   * class that cost somebody else's branches — because a broad "is this
+   * dangerous" scan would be noise, and noise is how the next real one gets
+   * waved through.
+   */
+  test("AC-15: no hook marked for consumers reaches a remote-destructive git call", () => {
+    // `push --delete`, `branch -D`, `reset --hard`, `clean -fd`, spelled as
+    // the argv arrays this tree actually uses.
+    const DESTRUCTIVE =
+      /"--delete"|'--delete'|"-D"\s*,|'-D'\s*,|"--hard"|'--hard'|"clean"\s*,\s*"-|'clean'\s*,\s*'-/;
+
+    const seen = new Set<string>();
+    /** Every repo-relative module a file reaches, static or `await import`. */
+    function reach(relPath: string, depth: number): string[] {
+      if (depth === 0 || seen.has(relPath)) return [];
+      seen.add(relPath);
+      const abs = join(HARNESS_ROOT, relPath);
+      if (!existsSync(abs)) return [];
+      const src = readFileSync(abs, "utf-8");
+      const out = [relPath];
+      // Both syntaxes. The defect lived in the second one, and a scan that
+      // knew only `import … from` would have reported this hook clean —
+      // which is #484's lesson arriving in a new file.
+      for (const m of src.matchAll(/(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
+        const spec = m[1].replace(/\.ts$/, "");
+        const base = relPath.slice(0, relPath.lastIndexOf("/"));
+        const resolved = resolve("/" + base, spec).slice(1);
+        for (const cand of [`${resolved}.ts`, `${resolved}/index.ts`]) {
+          if (existsSync(join(HARNESS_ROOT, cand))) out.push(...reach(cand, depth - 1));
+        }
+      }
+      return out;
+    }
+
+    const offenders: string[] = [];
+    for (const h of entries.filter(e => e?.deployToConsumers === true)) {
+      seen.clear();
+      for (const mod of reach(`hooks/${h.name}.hook.ts`, 4)) {
+        if (DESTRUCTIVE.test(readFileSync(join(HARNESS_ROOT, mod), "utf-8"))) {
+          offenders.push(`${h.name} reaches ${mod}`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      remedyMessage({
+        root: HARNESS_ROOT,
+        check: "#1047 AC-15",
+        violations: offenders,
+        fix:
+          "set `deployToConsumers: false` with a notDeployedReason naming the destructive " +
+          "call, or move the destructive arm behind explicit arming the way " +
+          "lib/orphan-reaper.ts does with armedFromEnv. A consumer must not receive a hook " +
+          "that deletes their branches because our header said it tidied files.",
+      }),
+    ).toEqual([]);
+
+    // The population is currently empty, which is the third shape — so the
+    // walk and the pattern are driven over the real offender directly. If
+    // either broke, this is where it shows, not in a clean census above.
+    seen.clear();
+    const stale = reach("hooks/StaleTTLCleanup.hook.ts", 4);
+    expect(stale, "the walk must follow `await import`").toContain("lib/branch-cleanup.ts");
+    expect(DESTRUCTIVE.test(readFileSync(join(HARNESS_ROOT, "lib/branch-cleanup.ts"), "utf-8")))
+      .toBe(true);
+    // And that it is held back, which is the fact the walk exists to protect.
+    expect(entries.find(e => e?.name === "StaleTTLCleanup")?.deployToConsumers).toBe(false);
+    // A negative control: a hook that ships must NOT trip the pattern, or
+    // the check is matching everything and witnessing nothing.
+    seen.clear();
+    const benign = reach("hooks/WorkflowStateGuard.hook.ts", 4);
+    expect(benign.some(m => DESTRUCTIVE.test(readFileSync(join(HARNESS_ROOT, m), "utf-8")))).toBe(false);
+  });
+
   test("AC-14: the three verdicts are each reachable, and the predicate separates them", () => {
     // AC-11 through AC-13 are equalities against `[]` over a tree that is
     // currently clean, so each runs its filter and finds nothing — the third

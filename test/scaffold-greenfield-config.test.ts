@@ -288,6 +288,68 @@ describe("AC-8: hooks.json drives consumer hook deployment under the directory l
     }
   });
 
+  test("#1047 review: a consumer's unparseable settings.local.json is refused, never overwritten", () => {
+    // `.claude/rules/config-access.md` — a corrupt config is never a missing
+    // config — applied to somebody else's security settings. The `catch {}`
+    // this replaces left `settings` as `{}` and then WROTE, so a consumer's
+    // permissions and allowlists were replaced by a file holding our hooks.
+    const settingsPath = join(consumerDir, ".claude", "settings.local.json");
+    mkdirSync(join(consumerDir, ".claude"), { recursive: true });
+    const corrupt = '{"permissions": {"allow": ["Bash(ls:*)"]},\n<<<<<<< HEAD\n';
+    writeFileSync(settingsPath, corrupt);
+
+    const actions: string[] = [];
+    deployHooksToConsumers(tmpRoot, actions);
+
+    // The separating assertion is the BYTES, not the action line: a refusal
+    // that still wrote would emit a SKIP and pass a label-only check.
+    expect(readFileSync(settingsPath, "utf-8")).toBe(corrupt);
+    expect(actions.join("\n")).toContain("does not parse");
+    expect(actions.filter(a => a.startsWith("DEPLOYED:"))).toEqual([]);
+  });
+
+  test("#1047 review: settings.local.json that parses to a non-object is refused too", () => {
+    // `JSON.parse("null")` and `JSON.parse("[]")` both succeed, and both take
+    // `settings.hooks = {}` without complaint — so the parse succeeding does
+    // not establish that the file is a settings object.
+    const settingsPath = join(consumerDir, ".claude", "settings.local.json");
+    mkdirSync(join(consumerDir, ".claude"), { recursive: true });
+    for (const payload of ["null", "[]", '"a string"']) {
+      writeFileSync(settingsPath, payload);
+      const actions: string[] = [];
+      deployHooksToConsumers(tmpRoot, actions);
+      expect(readFileSync(settingsPath, "utf-8"), payload).toBe(payload);
+      expect(actions.join("\n"), payload).toContain("is not an object");
+    }
+  });
+
+  test("#1047 review: a mention of a hook's name does not shadow its deployment", () => {
+    // `h.command.includes(hook.name)` matched anywhere in the string, so a
+    // consumer's own unrelated entry could suppress one of our hooks and the
+    // run would report success — "already deployed" and "deployed" produce
+    // the same absence of a complaint.
+    const settingsPath = join(consumerDir, ".claude", "settings.local.json");
+    mkdirSync(join(consumerDir, ".claude"), { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ command: "bun ./scripts/their-own-lint.ts # unrelated to DeployedGuard" }],
+        },
+      }),
+    );
+
+    const actions: string[] = [];
+    deployHooksToConsumers(tmpRoot, actions);
+
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    const commands = settings.hooks.PreToolUse.map((h: any) => h.command);
+    expect(commands).toHaveLength(2);
+    expect(commands.some((c: string) => c.endsWith("/DeployedGuard.hook.ts"))).toBe(true);
+    // Theirs is untouched.
+    expect(commands.some((c: string) => c.includes("their-own-lint"))).toBe(true);
+  });
+
   test("a second consumer deployment run is idempotent", () => {
     deployHooksToConsumers(tmpRoot, []);
     deployHooksToConsumers(tmpRoot, []);
