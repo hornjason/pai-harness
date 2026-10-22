@@ -235,6 +235,10 @@ describe("#1004: a census test reaches the SELECTED set", () => {
     expect(s.mode).toBe("SELECTED");
     expect(s.censusFired, "a row fired on a plain source edit").toEqual([]);
     expect(s.censusTests).toEqual([]);
+    // #1054 added a third contributor to the same union, so the control has
+    // to say that one is quiet too — otherwise a text router that fired on
+    // everything would pass here by hiding inside `tests`.
+    expect(s.textTests, "the text router fired on a change nothing lifts").toEqual([]);
     expect(s.tests, "the union added files no row asked for").toEqual(s.graphTests);
     expect(s.tests, "the graph selection itself moved").toEqual(["test/thing.test.ts"]);
   });
@@ -255,7 +259,7 @@ describe("#1004: the artefact says which half each test came from", () => {
     expect(s.censusTests, "a graph-reached test was re-attributed to the census").not.toContain(
       "test/sc-binding-split.test.ts",
     );
-    expect(s.tests).toEqual([...s.graphTests, ...s.censusTests]);
+    expect(s.tests).toEqual([...s.graphTests, ...s.censusTests, ...s.textTests]);
     expect(
       s.tests.length,
       `a path is listed twice, so bun test would run it twice: ${s.tests.join(" ")}`,

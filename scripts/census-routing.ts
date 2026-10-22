@@ -60,6 +60,14 @@ export interface Change {
   isNew: boolean;
   added: string[];
   removed: string[];
+  /**
+   * New-side hunk positions, 1-based, as `@@ -a,b +start,lines @@` gives
+   * them. No census trigger reads these — `lib/text-dependents.ts` (#1054)
+   * does, to say whether a change landed inside a region some other file
+   * lifts. They ride along here rather than in a second `git diff` because
+   * two readings of the same diff are two things that can disagree.
+   */
+  hunks: { start: number; lines: number }[];
 }
 
 export interface CensusTrigger {
@@ -209,11 +217,16 @@ export function parseUnifiedDiff(text: string): Change[] {
   for (const line of text.split("\n")) {
     const header = /^diff --git a\/(.*) b\/(.*)$/.exec(line);
     if (header) {
-      cur = { path: header[2], isNew: false, added: [], removed: [] };
+      cur = { path: header[2], isNew: false, added: [], removed: [], hunks: [] };
       changes.push(cur);
       continue;
     }
     if (!cur) continue;
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      cur.hunks.push({ start: Number(hunk[1]), lines: hunk[2] === undefined ? 1 : Number(hunk[2]) });
+      continue;
+    }
     if (line.startsWith("new file mode")) cur.isNew = true;
     else if (line.startsWith("+++") || line.startsWith("---")) continue;
     else if (line.startsWith("+")) cur.added.push(line.slice(1));
@@ -247,6 +260,7 @@ export function changesFor(root: string, base?: string): Change[] {
     prev.isNew ||= c.isNew;
     prev.added.push(...c.added);
     prev.removed.push(...c.removed);
+    prev.hunks.push(...c.hunks);
   };
 
   for (const d of [
@@ -266,7 +280,16 @@ export function changesFor(root: string, base?: string): Change[] {
       // Unreadable or binary: the path still fires the path-only rows, which
       // is the direction that over-runs rather than under-runs.
     }
-    absorb({ path, isNew: true, added, removed: [] });
+    // An untracked file has no diff, so every line of it is new: one hunk
+    // covering the whole file. Dropping `hunks` here instead would make an
+    // untracked file indistinguishable from a diff whose hunks were not read.
+    absorb({
+      path,
+      isNew: true,
+      added,
+      removed: [],
+      hunks: added.length > 0 ? [{ start: 1, lines: added.length }] : [],
+    });
   }
 
   return [...byPath.values()];
