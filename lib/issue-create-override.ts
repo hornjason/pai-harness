@@ -291,29 +291,42 @@ export interface FlagQuery {
   short?: string;
   /** `gh` reads `--label a,b` as two labels. A title is one value. */
   commaSeparated?: boolean;
-  /**
-   * The short letter that may carry its value ATTACHED — `-lfollow-up`.
-   *
-   * **Declared per query rather than derived from `short`, and that is
-   * deliberate.** Widening the attached form to every short flag is a
-   * LOOSENING of this lock, not a tidy-up: under the generic arity rule
-   * `gh issue create -aalice --label bug` consumes `--label` as `-a`'s value,
-   * so `labelValues` returns `[]` and the command is refused. Teach the walk
-   * that `-a` is attachable and `bug` becomes visible — the same command is
-   * now allowed, and nothing about the command changed. So the only letter
-   * this is ever passed is `l`, which is the behaviour this file already had,
-   * and a query that wants `--title` reads the spaced and `=` forms only.
-   */
-  attachedShort?: string;
 }
 
 /** `--label` / `-l`, the one query this file's own decision needs. */
-export const LABEL_FLAG: FlagQuery = {
-  long: "--label",
-  short: "-l",
-  commaSeparated: true,
-  attachedShort: "l",
-};
+export const LABEL_FLAG: FlagQuery = { long: "--label", short: "-l", commaSeparated: true };
+
+/**
+ * Short flags of `gh issue create` whose value may be ATTACHED: `-lfollow-up`.
+ *
+ * `-a` assignee, `-b` body, `-F` body-file, `-l` label, `-m` milestone,
+ * `-p` project, `-t` title, `-T` template, `-R` repo. `-w` and `-h` are
+ * boolean and live in `BOOLEAN_FLAGS`.
+ *
+ * **One table, consulted by every query, because where a token ends is a
+ * property of the COMMAND and not of the question being asked.** The first
+ * cut of this made it a per-query letter, so a walk looking for `--title`
+ * recognised `-tFoo` as attached while a walk looking for `--label` read the
+ * same token as an unknown flag and blindly consumed the one after it. Two
+ * readings of one command line, disagreeing about token boundaries — found
+ * by the AI review on #1282, which is right that the consequence is a
+ * silently dropped argument: `gh issue create -tFoo --body "…"` lost the
+ * body, so the finding arrived with no symptom and escaped the dedupe.
+ *
+ * It is a real change to `labelValues`, and in the direction of accuracy.
+ * `gh issue create -aalice --label follow-up` applies the override label and
+ * was REFUSED before this, because `-aalice` ate the `--label`. That was the
+ * accepted error direction — a missed label is a refusal — but it was still
+ * a wrong answer about a command somebody can type, and nothing about the
+ * widening lets a label be read where none was written: the token after an
+ * attached short is now parsed on its own merits rather than swallowed, and
+ * it still has to BE a `--label` argument to count. An unknown short flag is
+ * absent from this table and keeps the old conservative default.
+ */
+const VALUE_SHORT_FLAGS = new Set(["a", "b", "F", "l", "m", "p", "t", "T", "R"]);
+
+/** `-lfollow-up` — a short flag with its value glued on. */
+const ATTACHED_SHORT = /^-([A-Za-z])[^-=]/;
 
 /**
  * The values passed to one flag of a `gh issue create` clause.
@@ -345,9 +358,14 @@ export function flagValues(tokens: string[], q: FlagQuery): string[] {
       if (i + 1 < tokens.length) add(tokens[++i]);
       continue;
     }
-    // `-lfollow-up` — pflag lets a short flag carry its value attached.
-    if (q.attachedShort !== undefined && new RegExp(`^-${q.attachedShort}[^-=]`).test(t)) {
-      add(t.slice(2));
+    // `-lfollow-up` — pflag lets a short flag carry its value attached. Its
+    // value is IN the token, so it consumes nothing whether or not it is the
+    // flag this query is collecting. That second half is the fix: a query
+    // that skipped it here would also skip the `continue` and eat the next
+    // token, which is the desync `VALUE_SHORT_FLAGS` exists to prevent.
+    const attached = ATTACHED_SHORT.exec(t);
+    if (attached !== null && VALUE_SHORT_FLAGS.has(attached[1])) {
+      if (q.short === `-${attached[1]}`) add(t.slice(2));
       continue;
     }
     if (!BOOLEAN_FLAGS.has(t)) i++; // this flag eats the next token

@@ -199,6 +199,31 @@ describe("#1261 the parts the decision is built from", () => {
     expect(attempts).toHaveLength(1);
   });
 
+  /**
+   * The AI review's second finding on #1282.
+   *
+   * An attached short flag — `-tFoo` — was recognised by the query collecting
+   * `--title` and read as an unknown flag by every other query, so a walk
+   * looking for `--body` or `--label` consumed the token AFTER it. The body
+   * was dropped, the finding arrived with no symptom, and it escaped the
+   * dedupe as UNMEASURED. One arity table, consulted by all three.
+   */
+  test("FG-19: an attached short flag consumes nothing, so no later flag is dropped", () => {
+    const [a] = filingAttempts(
+      'gh issue create -tretryBudget --body "`retryBudget` in lib/command-retry.ts" --label bug',
+    );
+    expect(a.title).toBe("retryBudget");
+    expect(a.body, "the body was eaten by the attached -t").toContain("lib/command-retry.ts");
+    expect(a.labels, "the label was eaten too").toEqual(["bug"]);
+  });
+
+  test("FG-20: every query agrees about where an unrelated attached short ends", () => {
+    const [a] = filingAttempts('gh issue create -aalice --title "x" --body "y" --label follow-up');
+    expect(a.title).toBe("x");
+    expect(a.body).toBe("y");
+    expect(a.labels).toEqual(["follow-up"]);
+  });
+
   test("FG-4: an unreadable tracker is UNMEASURED, never ALLOW", async () => {
     const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => null);
     expect(v.outcome).toBe("UNMEASURED");

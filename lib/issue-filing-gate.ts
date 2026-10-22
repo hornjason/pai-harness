@@ -179,11 +179,13 @@ export interface FilingLedgerRow {
   overridden: boolean;
 }
 
-/** `--title` / `-t`. No attached short form; see `FlagQuery.attachedShort`. */
+/**
+ * The three flags this gate reads, through the same arity walk the VERIFY
+ * lock uses. None is comma-separated: `gh` splits a `--label` list on commas
+ * and a title containing one is still a title.
+ */
 const TITLE_FLAG = { long: "--title", short: "-t" };
-/** `--body` / `-b`. */
 const BODY_FLAG = { long: "--body", short: "-b" };
-/** `--body-file` / `-F`. */
 const BODY_FILE_FLAG = { long: "--body-file", short: "-F" };
 
 /**

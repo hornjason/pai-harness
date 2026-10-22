@@ -141,6 +141,18 @@ const TABLE: Array<[string, boolean, string]> = [
   ["gh issue create -lfollow-up", true, "pflag lets a short flag carry its value attached"],
   ["gh issue create --web --label follow-up", true,
     "a BOOLEAN flag eats nothing — assuming it did would refuse a real override"],
+  // #1261: an ATTACHED short flag eats nothing either, for the same reason.
+  // Both of these were REFUSED before `VALUE_SHORT_FLAGS` — `-aalice` and
+  // `-tx` were unknown flags under the conservative default, so each ate the
+  // `--label` that followed it and the override went unseen. That was the
+  // allowed error direction and it was still a wrong answer about a command
+  // somebody types. Nothing here lets a label be read where none was
+  // written: the following token is parsed on its own merits, and it still
+  // has to be a real `--label` argument.
+  ["gh issue create -aalice --label follow-up", true,
+    "an attached short carries its own value, so it does not swallow the override"],
+  [`gh issue create -tx --label bug`, false,
+    "...and the control: the token after it is read, and `bug` is not an override"],
 
   // Documented as out of scope, asserted so the boundary is a measurement
   // rather than a claim. See the module docblock.
