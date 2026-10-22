@@ -130,6 +130,44 @@ export function renderFinding(index: number, finding: Record<string, unknown>): 
   return line.length > AI_REVIEW_DETAIL_MAX ? `${line.slice(0, AI_REVIEW_DETAIL_MAX)}…` : line;
 }
 
+/**
+ * EVERY finding a reading counted, rendered — not only the blocking ones.
+ *
+ * `detail` is not this list and must not become it. It is populated inside
+ * `if (blocks)` in the loop below, which is correct for a BLOCKED refusal:
+ * that annotation names what is stopping the pull request, and enumerating
+ * the advisory tail beside it buries the thing a maintainer has to act on.
+ *
+ * But it is wrong for a CONTRADICTION (#1178). The shape actually seen in CI
+ * — `BLOCK over 0 of 1 blocking finding(s)`, on runs 39770912983 and
+ * 39795440261 and at roughly 6 of the last 20 runs — is a verdict of BLOCK
+ * over a payload whose findings are all advisory. Every one of them is
+ * filtered out of `detail`, so the refusal printed the arithmetic and
+ * nothing else, and the one observation the reviewer made was destroyed by
+ * the code reporting it. A re-run returns CLEAN and writes no contradiction,
+ * so the loss is permanent: #1170's finding is gone.
+ *
+ * Rendered through `renderFinding` at the same index, so this list is a
+ * SUPERSET of `detail` built by the same function rather than a second
+ * renderer that can drift — and the contradiction arm uses it INSTEAD of
+ * `detail`, never alongside it, which is what keeps a blocking finding from
+ * being printed twice.
+ *
+ * Every item is already known to be an object carrying a declared severity
+ * by the time a reading is anything other than UNMEASURED, so the fallback
+ * arm is unreachable from `aiReviewRefusal`. It exists because the function
+ * is exported and `unknown[]` is what it is handed: a renderer that throws
+ * on a shape it was told it would never see is a refusal nobody can read.
+ */
+export function renderCountedFindings(reported: unknown[] | null): string[] {
+  if (reported === null) return [];
+  return reported.map((item, i) =>
+    item !== null && typeof item === "object" && !Array.isArray(item)
+      ? renderFinding(i, item as Record<string, unknown>)
+      : `finding ${i} is ${JSON.stringify(item)}`,
+  );
+}
+
 /** The annotation title the script prints its refusal under. */
 export const AI_REVIEW_FINDINGS_TITLE = "AI review findings";
 
@@ -354,14 +392,39 @@ export function aiReviewRefusal(reading: AiReviewFindingsReading): string | null
         `The AI review reported ${reading.blockingReported?.length ?? 0} blocking ` +
         `finding(s). ${detail}`.trimEnd()
       );
-    case "CONTRADICTION":
+    case "CONTRADICTION": {
+      // THE WHOLE PAYLOAD, not `detail` (#1178). `detail` holds only the
+      // findings that block, and the contradiction this issue is about —
+      // `BLOCK over 0 of 1` — is one where none of them do, so `detail` is
+      // empty and the refusal was arithmetic with the evidence stripped out.
+      //
+      // The annotation is the right place for it and the only durable one.
+      // The payload file lives under `$RUNNER_TEMP` and dies with the runner;
+      // three attempts to retrieve #1170's from there returned nothing. This
+      // string reaches `::error` at the single emission site in `main()`, the
+      // generated step captures the reader with `2>&1` and `printf`s the
+      // capture, and GitHub records the result against the check run — so it
+      // outlives the job, and it outlives a later re-run that comes back
+      // CLEAN. Which is the point: a contradiction that resolves on retry
+      // still has to leave something countable behind.
+      //
+      // Used INSTEAD of `detail` rather than appended to it. The two overlap
+      // exactly on the blocking findings, so appending would print those
+      // twice, and a duplicate reads as two findings.
+      const counted = renderCountedFindings(reading.reported);
+      const payload = counted.length > 0
+        ? `${counted.join("; ")}. `
+        : `The payload records no findings at all. `;
       return (
         `The AI review's verdict ${JSON.stringify(reading.verdict)} contradicts its ` +
         `own payload: ${reading.blockingReported?.length ?? 0} of ` +
-        `${reading.reported?.length ?? 0} finding(s) block. ${detail}` +
+        `${reading.reported?.length ?? 0} finding(s) block. ${payload}` +
         `A verdict that disagrees with the findings beneath it is a contradiction, ` +
-        `not a result.`
+        `not a result. The findings above are what the reviewer actually wrote; ` +
+        `they are reported here because this is the only place they survive the ` +
+        `job, and a re-run that comes back clean will not produce them again.`
       );
+    }
   }
 }
 
