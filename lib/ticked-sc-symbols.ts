@@ -47,7 +47,7 @@
  *   directions rather than trusting this paragraph.
  */
 import { existsSync, readFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 
 import { isSuperseded } from "./sc-cover";
 import { parseScDeclarations, isTemplateSpec } from "./sc-ids";
@@ -127,6 +127,70 @@ export function symbolsNamedBy(statement: string): string[] {
 }
 
 /**
+ * A file artifact: a basename and a known extension (#1217).
+ *
+ * `CAMEL_CASE` cannot see one. Every symbol this repo writes has an interior
+ * capital and every file it writes is kebab-case, so the two populations do
+ * not overlap at all — which is why this is a second pattern and not a wider
+ * first one. Measured: SC-135 and SC-108 are the same defect, one orphaned
+ * `workflow-state.json` field each, and the camelCase sweep saw only SC-135
+ * because SC-108 spells its artifact `quinn-journey.yaml` and names no field.
+ *
+ * The extension is the whole of the prose filter, and it has to be: a bare
+ * hyphenated token matches "non-coding", "intent-based" and "near-enough".
+ * Measured on this tree, hyphen-only scored 247 rows of which essentially all
+ * were English; requiring an extension scores 1.
+ */
+const FILE_ARTIFACT = /\b[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:json|ts|tsx|js|mjs|cjs|ya?ml|sh)\b/g;
+
+/**
+ * The file artifacts a criterion names, as basenames.
+ *
+ * Basenames on both sides, because a criterion writes the path it cares about
+ * — `~/.rungate/{slug}/quinn-journey.yaml`, `.rungate/navigability-score.json`
+ * — and the tree writes a different one for the same file. Comparing paths
+ * would report every artifact in the spec list.
+ */
+export function artifactsNamedBy(statement: string): string[] {
+  return [
+    ...new Set([...withoutGlobs(statement).matchAll(FILE_ARTIFACT)].map(m => basename(m[0]))),
+  ].sort();
+}
+
+/**
+ * Drop whitespace-delimited tokens carrying a wildcard — they are patterns.
+ *
+ * SC-1690 of `CONFIG-DIRECTORY-STRUCTURE-SPEC.md` names `src/**` + `/*.spec.tsx`
+ * as a glob the census counts. Nothing is being claimed to exist, and
+ * `basename` on it yields `spec.tsx`, a file that cannot exist under that
+ * name. Unlike SC-678's metavariables — where narrowing the pattern would
+ * also have stopped catching a real symbol written inside a code span — a
+ * glob never claims a specific file, so there is no defect this hides.
+ */
+function withoutGlobs(statement: string): string {
+  return statement
+    .split(/\s+/)
+    .filter(tok => !tok.includes("*") && !tok.includes("?"))
+    .join(" ");
+}
+
+/**
+ * `test.todo("SC-237: …")` is a declaration that something is NOT built.
+ *
+ * This is the comment case again in a position comment-stripping cannot
+ * reach. `test/phase-5.test.ts` holds `test.todo("SC-237: navigability-score
+ * .json has required fields")`, so a detector indexing string literals reads
+ * the repository's own statement that the file is unwritten as evidence that
+ * it exists. Measured, one input both ways: SC-237 scores a row with todo
+ * titles dropped and scores none with them indexed.
+ *
+ * Only the TITLE is dropped, not the call — a `todo` is still a token, and
+ * widening this to the whole statement would hide real references in the
+ * same file.
+ */
+const TODO_TITLE = /\.todo\s*\(\s*(["'`])(?:\\.|(?!\1)[^\\])*\1/g;
+
+/**
  * Every identifier occurring in executable source or structured data.
  *
  * Returned as a bare set rather than a per-file index on purpose: the question
@@ -138,22 +202,59 @@ export function codeIdentifiers(
   dirs: readonly string[] = SYMBOL_SEARCH_DIRS,
   exclude: readonly string[] = SELF_REFERENTIAL_FILES,
 ): Set<string> {
+  return indexTree(root, dirs, exclude).identifiers;
+}
+
+/**
+ * One walk, both indexes.
+ *
+ * The two halves were separate functions when the artifact index landed, and
+ * the real tree's self-reference case then read the whole tree FOUR times
+ * instead of twice and timed out at 5,995 ms against bun's 5,000 ms default.
+ * Reading every file twice to answer two questions about the same bytes is
+ * the kind of cost that gets paid for by raising a budget, which `bunfig
+ * .toml` says this suite will not do — so it is folded here instead. With one
+ * walk the same case runs in about half that.
+ *
+ * **Artifact presence is two readings, unioned, because neither alone is
+ * honest:**
+ *
+ *  - **on disk.** `lib/rule-registry.ts` exists and its name occurs inside no
+ *    other file, because an import spells it `./rule-registry`. A text-only
+ *    reading scores 252 rows on this tree and 251 of them are files you can
+ *    `ls`.
+ *  - **named in indexed text.** `.rungate/navigability-score.json` is a
+ *    runtime output; a clean checkout never contains one, so a
+ *    filesystem-only reading would demand that generated artifacts be
+ *    committed.
+ */
+function indexTree(
+  root: string,
+  dirs: readonly string[] = SYMBOL_SEARCH_DIRS,
+  exclude: readonly string[] = SELF_REFERENTIAL_FILES,
+): { identifiers: Set<string>; artifacts: Set<string> } {
   const skip = new Set(exclude);
-  const ids = new Set<string>();
+  const identifiers = new Set<string>();
+  const artifacts = new Set<string>();
   for (const d of dirs) {
     const dir = join(root, d);
     if (!existsSync(dir)) continue;
     for (const entry of readdirSync(dir, { recursive: true, encoding: "utf-8" })) {
       if (typeof entry !== "string") continue;
+      // A file that exists is present, whatever its extension and whether or
+      // not anything names it.
+      artifacts.add(basename(entry));
       if (skip.has(`${d}/${entry}`)) continue;
       const isCode = CODE_EXTENSION.test(entry);
       if (!isCode && !DATA_EXTENSION.test(entry)) continue;
       const raw = readFileSync(join(dir, entry), "utf-8");
       const text = isCode ? stripJsComments(raw) : raw;
-      for (const m of text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) ids.add(m[0]);
+      for (const m of text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) identifiers.add(m[0]);
+      const named = isCode ? text.replace(TODO_TITLE, ".todo(") : text;
+      for (const m of named.matchAll(FILE_ARTIFACT)) artifacts.add(basename(m[0]));
     }
   }
-  return ids;
+  return { identifiers, artifacts };
 }
 
 export interface AbsentSymbol {
@@ -164,6 +265,8 @@ export interface AbsentSymbol {
   symbol: string;
   /** `<spec>::<id>::<symbol>` — the row the ratchet banks. */
   key: string;
+  /** Which pattern named it. The bank's key shape is the same for both. */
+  kind: "symbol" | "artifact";
 }
 
 export interface AbsentSymbolScan {
@@ -173,8 +276,12 @@ export interface AbsentSymbolScan {
   tickedScanned: number;
   /** Ticked criteria naming any symbol at all — the population actually at risk. */
   tickedNamingSymbols: number;
+  /** Ticked criteria naming any file artifact — the second population (#1217). */
+  tickedNamingArtifacts: number;
   /** Identifiers indexed out of source and data. */
   identifiersIndexed: number;
+  /** File artifacts found on disk or named in indexed text (#1217). */
+  artifactsIndexed: number;
 }
 
 export function absentSymbolKey(specFile: string, id: string, symbol: string): string {
@@ -195,10 +302,11 @@ export function scanTickedScSymbols(opts: {
   dirs?: readonly string[];
   exclude?: readonly string[];
 }): AbsentSymbolScan {
-  const ids = codeIdentifiers(opts.projectRoot, opts.dirs, opts.exclude);
+  const { identifiers: ids, artifacts } = indexTree(opts.projectRoot, opts.dirs, opts.exclude);
   const violations: AbsentSymbol[] = [];
   let tickedScanned = 0;
   let tickedNamingSymbols = 0;
+  let tickedNamingArtifacts = 0;
 
   for (const rel of collectSpecFiles(opts.specsDir)) {
     if (isTemplateSpec(rel)) continue;
@@ -222,6 +330,20 @@ export function scanTickedScSymbols(opts: {
           statement: sc.statement,
           symbol,
           key: absentSymbolKey(rel, sc.id, symbol),
+          kind: "symbol",
+        });
+      }
+      const files = artifactsNamedBy(sc.statement);
+      if (files.length > 0) tickedNamingArtifacts++;
+      for (const symbol of files) {
+        if (artifacts.has(symbol)) continue;
+        violations.push({
+          id: sc.id,
+          specFile: rel,
+          statement: sc.statement,
+          symbol,
+          key: absentSymbolKey(rel, sc.id, symbol),
+          kind: "artifact",
         });
       }
     }
@@ -232,6 +354,8 @@ export function scanTickedScSymbols(opts: {
     violations,
     tickedScanned,
     tickedNamingSymbols,
+    tickedNamingArtifacts,
     identifiersIndexed: ids.size,
+    artifactsIndexed: artifacts.size,
   };
 }

@@ -55,7 +55,13 @@ const SPECS = join(REPO, "specs");
 // is now a SUPERSEDED pointer to SC-242, the unticked criterion tracking the
 // same thing. The subset relation asserted below carried the edit — the
 // per-spec census in `test/ticked-sc-cover.test.ts` moved by the same one.
-const UNCLAIMED_RATCHET = 152;
+//
+// 152 -> 150 on 2026-10-22 (#1217). Three criteria of
+// bootstrap-data-flow/success-criteria.md were unticked — SC-108 and SC-135,
+// one orphaned `workflow-state.json` field each, and SC-237, a JSON schema
+// for a file nothing writes — and two of them were in the unclaimed half.
+// The per-spec census moved 120 -> 118 in the same commit.
+const UNCLAIMED_RATCHET = 150;
 
 /**
  * Checked, unmatchable, and a test file DOES declare it.
