@@ -368,6 +368,40 @@ describe("#1196 R3 WITNESS: a trailing redirect must not demote the destination"
   });
 });
 
+/**
+ * Covers #1196 R4 — an assignment prefix whose VALUE is a path.
+ *
+ * The same defect #1196 names, reached through a different assignment shape.
+ * `commandWord` ran `^.*\/` before testing for `=`, so the strip took the
+ * `=` away with the directory part and `FOO=/x/grep` was returned spelled
+ * `grep` — a fake verb standing in front of the real one. ALLOW on
+ * origin/main and ALLOW behind the first spelling of the R1 fix; the same
+ * commands with no prefix BLOCK.
+ */
+describe("#1196 R4 WITNESS: a path-valued assignment must not become the verb", () => {
+  const cases: [string, string][] = [
+    ["masking a mode change on a hook", `FOO=/x/grep chmod 777 /tmp/h/X.hook.ts`],
+    ["masking chflags on a hook", `FOO=/x/grep chflags uchg /tmp/h/X.hook.ts`],
+    ["masking cp into a protected path", `FOO=/x/grep cp /tmp/a /r/${STATE}`],
+    ["masking an interpreter body", `FOO=/x/grep bun -e 'writeFileSync("/r/${STATE}","")'`],
+    ["an array-subscript assignment", `A[0]=/x/grep chmod 777 /tmp/h/X.hook.ts`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("a real path is not mistaken for an assignment", () => {
+    // The POSIX shape, not `includes('=')`: this one does not start with an
+    // identifier, so it stays a verb.
+    expect(commandWord(`/opt/a=b/bin/chmod 777 x`)).toBe("chmod");
+    expect(commandWord(`FOO=/x/grep chmod 777 x`)).toBe("chmod");
+    // An assignment with no verb after it resolves to nothing, and nothing
+    // is what the arms must then find.
+    expect(commandWord(`FOO=/x/${STATE}`)).toBe("");
+    expect(decideBashWrite(`FOO=/x/${STATE}`).blocked).toBe(false);
+  });
+});
+
 describe("#1196: the mechanisms, asserted directly", () => {
   test("a quoted multi-word assignment value stays inside its token", () => {
     expect(commandWord(`A="1 grep" cp /tmp/forged/${STATE} /x/${STATE}`)).toBe("cp");

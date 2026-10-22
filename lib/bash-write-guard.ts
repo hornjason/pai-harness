@@ -257,6 +257,13 @@ export function dequote(s: string): string {
 const WRAPPERS = /^(?:sudo|env|nohup|time|command|xargs)$/;
 
 /**
+ * A variable assignment prefix, by the POSIX shape: an identifier, an
+ * optional array subscript, then `=`. Read on the raw token — see
+ * `commandWord`, where recognising it only after the path strip was a bypass.
+ */
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?=/;
+
+/**
  * The command word of a segment — the first token that is not a wrapper, an
  * assignment or an option. Read off `stripQuoted`, because a quoted token is
  * an argument.
@@ -292,6 +299,19 @@ export function commandWord(segment: string): string {
     // which is the recorded `pai-config#474` family. The shell cannot run a
     // verb named `chmod 777` either, so nothing executable is lost.
     if (/\s/.test(raw)) continue;
+    // An assignment prefix is recognised on the RAW token, before the path
+    // strip. #1196: the strip runs `^.*\/` and takes the `=` away with the
+    // directory part, so `FOO=/x/grep` arrived at the `includes('=')` test
+    // spelled `grep` and was returned as the command word — a fake verb in
+    // front of the real one. `FOO=/x/grep chmod 777 <hook>` was ALLOW on
+    // main and ALLOW behind the first #1196 fix; `chmod 777 <hook>` BLOCKs.
+    // Four arms were reachable this way. Same defect this issue names, a
+    // different assignment shape: the prefix hides the verb either way.
+    //
+    // Matched by the POSIX shape rather than by `includes('=')` so a real
+    // path is not mistaken for one — `/opt/a=b/bin/tool` does not start
+    // with an identifier, and the test below still catches the rest.
+    if (ASSIGNMENT.test(raw)) continue;
     const tok = raw
       .replace(/^[({\\]+/, '') // `(cmd …`, `{ cmd …`, `\cmd` — alias bypass
       .replace(/^.*\//, ''); // `/usr/bin/python3` -> `python3`
