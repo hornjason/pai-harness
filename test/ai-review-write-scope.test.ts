@@ -112,7 +112,7 @@ function runPrepare(
 
   const scriptPath = join(home, "prepare.sh");
   writeFileSync(scriptPath, buildPrepareScript());
-  const r = Bun.spawnSync(["bash", scriptPath], {
+  const r = Bun.spawnSync(["bash", "-e", scriptPath], {
     cwd: home,
     env: {
       PATH: path,

@@ -199,7 +199,7 @@ function runReportStep(
     writeFileSync(findings, payload);
     planted.AI_REVIEW_FINDINGS_PATH = findings;
   }
-  const r = Bun.spawnSync(["bash", path], {
+  const r = Bun.spawnSync(["bash", "-e", path], {
     cwd: dir,
     env: { PATH: stubBunxAbsent(), ...planted, ...env },
   });

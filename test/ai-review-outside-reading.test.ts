@@ -342,7 +342,7 @@ function sh(script: string, cwd: string, env: Record<string, string>): Run {
   const dir = scratchDir("ai-review-outside-script-");
   const path = join(dir, "step.sh");
   writeFileSync(path, script);
-  const r = Bun.spawnSync(["bash", path], { cwd, env: { ...GIT_ENV(), HOME: env.HOME ?? "/tmp", ...env } });
+  const r = Bun.spawnSync(["bash", "-e", path], { cwd, env: { ...GIT_ENV(), HOME: env.HOME ?? "/tmp", ...env } });
   return {
     code: r.exitCode,
     stdout: new TextDecoder().decode(r.stdout),

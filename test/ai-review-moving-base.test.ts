@@ -261,7 +261,7 @@ function gitMay(cwd: string, ...a: string[]): void {
 function sh(script: string, cwd: string, env: Record<string, string>): Run {
   const file = join(scratchDir("ai-review-moving-sh-"), "step.sh");
   writeFileSync(file, script);
-  const r = Bun.spawnSync(["bash", file], {
+  const r = Bun.spawnSync(["bash", "-e", file], {
     cwd,
     // A scratch HOME: the drift step walks `$HOME` for writes outside the
     // checkout (#843 finding 1), and pointing that at a developer's home

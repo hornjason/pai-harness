@@ -312,7 +312,7 @@ const GIT_ENV = () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin" });
 function sh(script: string, cwd: string, env: Record<string, string>): Run {
   const file = join(scratchDir("ai-review-restore-sh-"), "step.sh");
   writeFileSync(file, script);
-  const r = Bun.spawnSync(["bash", file], {
+  const r = Bun.spawnSync(["bash", "-e", file], {
     cwd,
     // A scratch HOME, not the developer's. #843 finding 1 added a
     // `find "$HOME"` to the drift step, so a suite pointed at a real home

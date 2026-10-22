@@ -597,7 +597,7 @@ async function runAuthScript(
   writeFileSync(script, step.run);
   writeFileSync(output, "");
 
-  const r = spawnSync("bash", [script], {
+  const r = spawnSync("bash", ["-e", script], {
     encoding: "utf-8",
     env: { PATH: process.env.PATH ?? "", GITHUB_OUTPUT: output, ...env },
   });

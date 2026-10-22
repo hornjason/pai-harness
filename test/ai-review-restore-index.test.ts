@@ -213,7 +213,7 @@ interface Fixture {
 function sh(script: string, f: Fixture, env: Record<string, string>): Run {
   const path = join(scratchDir("ai-review-ri-script-"), "step.sh");
   writeFileSync(path, script);
-  const r = Bun.spawnSync(["bash", path], {
+  const r = Bun.spawnSync(["bash", "-e", path], {
     cwd: f.work,
     env: { ...GIT_ENV(), HOME: f.home, RUNNER_TEMP: f.runnerTemp, GITHUB_WORKSPACE: f.work, ...env },
   });

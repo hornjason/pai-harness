@@ -101,7 +101,7 @@ function runScript(script: string, env: Record<string, string>): Run {
   writeFileSync(sh, script);
   writeFileSync(outFile, "");
 
-  const r = spawnSync("bash", [sh], {
+  const r = spawnSync("bash", ["-e", sh], {
     encoding: "utf-8",
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",

@@ -3754,7 +3754,19 @@ base_remote="refs/remotes/origin/\${base_ref}"
 
 # Through the environment, never \`-c\`: a value passed with \`-c\` is in the
 # command line of the git process and readable by anything that can run \`ps\`.
-${AI_REVIEW_GIT_AUTH_VAR}="AUTHORIZATION: basic $(printf 'x-access-token:%s' "\${GITHUB_TOKEN:-}" | base64 | tr -d '\\n')"
+#
+# Wrapped in \`if !\` rather than left a bare assignment, which is the idiom the
+# fetch below already uses and for the same reason (#1116). GitHub runs this
+# step as \`bash -e\`, and with \`pipefail\` set an assignment from a pipeline
+# takes the pipeline's status, so any failure here would abort the step on
+# this line: no annotation, no exit code of ours, nothing on stdout. That is
+# the shape of #1110. These three commands are local and a failure is remote,
+# but "this cannot fail" is exactly what was believed about the adjudication
+# until an npm 503 falsified it.
+if ! ${AI_REVIEW_GIT_AUTH_VAR}="AUTHORIZATION: basic $(printf 'x-access-token:%s' "\${GITHUB_TOKEN:-}" | base64 | tr -d '\\n')"; then
+  echo "::error title=AI review modified the tree::could not build the credential header used to fetch the pull request base, so the untrusted paths were NOT restored and this run is UNMEASURED." >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+fi
 export ${AI_REVIEW_GIT_AUTH_VAR}
 
 # Checked on its own line, never captured into an assignment, for the reason

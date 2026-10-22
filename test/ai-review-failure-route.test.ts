@@ -217,7 +217,7 @@ function runReport(opts: {
   }
   if (opts.require) env[AI_REVIEW_REQUIRE_VAR] = AI_REVIEW_REQUIRE_VALUE;
 
-  const r = Bun.spawnSync(["bash", scriptPath], { cwd: dir, env });
+  const r = Bun.spawnSync(["bash", "-e", scriptPath], { cwd: dir, env });
   return {
     code: r.exitCode,
     out: new TextDecoder().decode(r.stdout),

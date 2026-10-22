@@ -1067,7 +1067,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     writeFileSync(baselineSh, buildBaselineScript());
     const baselineOut = join(runnerTemp, "github-output");
     writeFileSync(baselineOut, "");
-    const b = Bun.spawnSync(["bash", baselineSh], {
+    const b = Bun.spawnSync(["bash", "-e", baselineSh], {
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -1084,7 +1084,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     plant(dir);
     const sh = join(scratchDir("ai-review-drift-script-"), "drift.sh");
     writeFileSync(sh, script);
-    const r = Bun.spawnSync(["bash", sh], {
+    const r = Bun.spawnSync(["bash", "-e", sh], {
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -1193,7 +1193,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     // reading git at all — two refusals, one assertion, neither isolated.
     const beforePath = join(scratchDir("ai-review-drift-nonrepo-temp-"), "before.txt");
     writeFileSync(beforePath, "");
-    const r = Bun.spawnSync(["bash", sh], {
+    const r = Bun.spawnSync(["bash", "-e", sh], {
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -1310,7 +1310,7 @@ describe("AC-10: the drift step reads the whole worktree, not just tracked diffs
     const dir = scratchDir("ai-review-drift-nobaseline-");
     const sh = join(scratchDir("ai-review-drift-nobaseline-script-"), "drift.sh");
     writeFileSync(sh, buildDriftScript());
-    const r = Bun.spawnSync(["bash", sh], {
+    const r = Bun.spawnSync(["bash", "-e", sh], {
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -1414,7 +1414,7 @@ function runAuthScript(
     writeFileSync(findings, payload);
     planted.AI_REVIEW_FINDINGS_PATH = findings;
   }
-  const r = Bun.spawnSync(["bash", sh], {
+  const r = Bun.spawnSync(["bash", "-e", sh], {
     env: {
       // `bunx` is stubbed absent by DEFAULT (#1013). A case that supplies a
       // payload and does not plant one would otherwise run the real command,

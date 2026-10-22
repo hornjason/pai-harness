@@ -182,7 +182,7 @@ function run(script: string, opts: { adc?: "default" | "relocated" | "env" | "da
   const sh = join(dir, "auth-detect.sh");
   writeFileSync(sh, script);
   writeFileSync(env.GITHUB_OUTPUT, "");
-  const r = spawnSync("bash", [sh], { encoding: "utf-8", env });
+  const r = spawnSync("bash", ["-e", sh], { encoding: "utf-8", env });
   const stdout = `${r.stdout ?? ""}${r.stderr ?? ""}`;
 
   const outputs: Record<string, string> = {};
