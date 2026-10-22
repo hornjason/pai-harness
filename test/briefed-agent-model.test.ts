@@ -246,26 +246,35 @@ describe("AC-3 (#227): the brief stays ahead of the timing instruction", () => {
   });
 });
 
-describe("the two config layouts agree about models", () => {
-  // The bug above was survivable only because nothing compared them.
-  // tryLoadRungateConfig prefers the directory form; the ship skill reads the
-  // monolith directly. While both files exist, a disagreement means the
-  // pipeline runs one model and every check reports the other.
-  const readJson = (p: string) => JSON.parse(readFileSync(join(REPO_ROOT, p), "utf-8"));
-
-  test("roles.json and rungate.json configure the same model for every role", () => {
-    const monolith = readJson(".claude/rungate.json").roles as Record<string, { model?: string }>;
-    const directory = readJson(".claude/rungate/roles.json") as Record<string, { model?: string }>;
-
-    const disagreements: string[] = [];
-    for (const role of new Set([...Object.keys(monolith), ...Object.keys(directory)])) {
-      const a = monolith[role]?.model;
-      const b = directory[role]?.model;
-      if (a !== b) disagreements.push(`${role}: rungate.json=${a} roles.json=${b}`);
-    }
-    expect(
-      disagreements,
-      "the file the ship skill reads disagrees with the file conformity checks (#90)",
-    ).toEqual([]);
-  });
-});
+/*
+ * REMOVED in #1035: `describe("the two config layouts agree about models")`.
+ *
+ * It compared `.claude/rungate.json`'s `roles[x].model` against
+ * `.claude/rungate/roles.json`'s, and its own comment stated the premise:
+ * *"While both files exist, a disagreement means the pipeline runs one model
+ * and every check reports the other."* ADR-001 Step E deleted the monolith
+ * from this repo, so there is no second position to disagree with and the
+ * comparison has no subject.
+ *
+ * This is the distinction the issue asked to be made explicitly, because the
+ * two cases look identical from the diff. **Deleting a test because the
+ * change made it pass is wrong. Deleting one because its subject no longer
+ * exists is right.** This is the second: the arm did not go green, it went
+ * ENOENT, and repointing it at the surviving file would have compared
+ * `roles.json` with `roles.json` — the self-referential shape in
+ * `.claude/rules/self-referential-tests.md`, which reddens for nothing.
+ *
+ * Nothing is left uncovered, and neither replacement is written here, because
+ * a second decider for a fact another check already owns is the fourth shape
+ * in `.claude/rules/checks-must-be-able-to-fail.md` — both read as covered
+ * and a mutation of either leaves the other holding the case up:
+ *
+ * | the property it held | what holds it now |
+ * |---|---|
+ * | there is only ONE position declaring a role's model | `test/config-single-layout.test.ts` AC-2 — the monolith's absence, asserted |
+ * | the briefs agree with that position | `AGENT-8` in `lib/conformity.ts`, through `tryLoadRungateConfig` (#90) |
+ * | `roleConfig.model` reaches the agent call | the `briefedAgent` arms above, which are the subject of this file |
+ *
+ * The consumer case the arm was really about is unaffected: a project on the
+ * monolith layout has one file too, and `AGENT-8` reads whichever one it has.
+ */

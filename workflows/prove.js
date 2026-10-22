@@ -132,6 +132,10 @@ const WORK_DIR = parsedArgs.workDir || `${HOME}/.rungate/${SLUG}`
 // asserts this workflow names the helper.
 const SCREENSHOT_DIR = `${WORK_DIR}/screenshots`
 const PROVE_PROMPT = `${HARNESS_ROOT}/gates/prompts/prove-reproducer.md`
+// #1035: the run artefact every prompt below reads instead of the project's
+// own config file (ADR-002 D1). Written once, by scripts/resolve-config.ts,
+// into this run's work directory — never into the project tree.
+const RESOLVED_CONFIG_PATH = `${WORK_DIR}/resolved-config.json`
 
 // ── Agent brief loader (config-driven) ────────────────────
 const ROLES = parsedArgs.roles || {}
@@ -217,13 +221,35 @@ Extract from the issue-get result:
 if (!issueData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
 log(`Goal: "${issueData.issueTitle}" — UI ACs: ${issueData.hasUIACs ? 'yes' : 'no'}`)
 
-// ── Load project config from rungate.json ──
+// ── Resolve the project config, once, into this run's work directory ──
+// #1035: every prompt below used to name the project's config file by path.
+// That is ADR-002 D1's violation and it had already stopped working for any
+// consumer on the directory layout — the instruction pointed at a file that
+// is not there, the agent reported `{}`, and an unconfigured prove run and a
+// project with no container were the same reading. `scripts/resolve-config.ts`
+// is the subprocess boundary: it understands every supported layout,
+// normalises the keys, and refuses rather than returning an empty object.
 const projectConfigResult = await agent(`
-Read ${PROJECT_ROOT}/.claude/rungate.json and return its contents as JSON.
-If the file doesn't exist, return an empty object {}.
+Run exactly this and report the result:
+
+bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT} --out ${RESOLVED_CONFIG_PATH}
+
+It writes this project's resolved rungate config to that path and prints the
+same JSON on stdout. Do NOT read the project's own config file — it may be in
+either of two layouts and the keys in it are the authored spellings rather
+than the normalised ones every instruction in this run uses.
+
+If it exits ZERO, report configResolved: true and the fields below from the
+JSON it printed.
+
+If it exits NON-ZERO it could not resolve a config. Report
+configResolved: false and nothing else. Do NOT invent an empty object: a
+project with no resolvable config has not been read, and that is a different
+state from one that configures no container.
 `, { label: 'load-config', schema: {
   type: 'object',
   properties: {
+    configResolved: { type: 'boolean' },
     pages: { type: 'object' },
     apiUrl: { type: 'string' },
     uiUrl: { type: 'string' },
@@ -236,6 +262,10 @@ If the file doesn't exist, return an empty object {}.
     }},
   },
 }})
+const configResolved = projectConfigResult?.configResolved === true
+if (!configResolved) {
+  log(`Config UNRESOLVED at ${PROJECT_ROOT} — container and page config are UNMEASURED, not absent`)
+}
 const projectConfig = projectConfigResult || {}
 const containerConfig = projectConfig.container || null
 
@@ -293,10 +323,13 @@ if (PROJECT_ROOT) {
   // is UNMEASURED, and the agent is told so explicitly — guessing a route 404s
   // on a healthy server and "could not check" must never become "it is down".
   await agent(`
-Check if the dev server is running. Read ${PROJECT_ROOT}/.claude/rungate.json to get
-dev.apiBase, dev.healthPath and dev.start.
+Check if the dev server is running. Read ${RESOLVED_CONFIG_PATH} to get
+dev.apiBase, dev.healthPath and dev.start. That is this run's resolved config,
+written by scripts/resolve-config.ts at Goal. Do NOT read the project's own
+config file.
 
-1. If dev.apiBase or dev.healthPath is missing, report UNMEASURED and stop. Do NOT
+1. If ${RESOLVED_CONFIG_PATH} does not exist, or dev.apiBase or dev.healthPath
+   is missing, report UNMEASURED and stop. Do NOT
    guess a health route and do NOT report the server as down — an unconfigured probe
    is not a failed one, and a guessed path 404s on a server that is up.
 2. Otherwise try: curl -sf "<dev.apiBase><dev.healthPath>" -o /dev/null && echo "DEV_UP" || echo "DEV_DOWN"
@@ -319,8 +352,9 @@ Check for before-state evidence:
 2. If workflow-state.json exists, read it and extract beforeState field.
 3. Read the issue body for reproduction steps.
 
-Check project harness for API/UI bases:
-4. test -f ${PROJECT_ROOT}/.claude/rungate.json && cat ${PROJECT_ROOT}/.claude/rungate.json || echo "NO_HARNESS"
+Check this run's resolved config for API/UI bases — written by
+scripts/resolve-config.ts at Goal. Do NOT read the project's own config file:
+4. test -f ${RESOLVED_CONFIG_PATH} && cat ${RESOLVED_CONFIG_PATH} || echo "CONFIG_UNRESOLVED"
 
 Report the before-state description, reproduction steps, apiBase, and uiBase.
 Return as a string summary.
@@ -369,7 +403,7 @@ if (needsQuinn) {
 
   // Start prove container with prod data (config-driven)
   if (!containerConfig) {
-    log('WARN: No container config in rungate.json — skipping prove container')
+    log('WARN: No container config in the resolved config — skipping prove container')
   } else {
     const proveUpCmd = containerConfig.proveUpCommand || containerConfig.rebuildCommand
     const provePort = containerConfig.port
@@ -432,7 +466,9 @@ its own workspace root, which is not this directory and will not be collected.
 Only files in the directory above are attached to the pull request.
 
 ## Target URLs
-Read ${PROJECT_ROOT}/.claude/rungate.json for page paths and container config.
+Read ${RESOLVED_CONFIG_PATH} for page paths and container config — this run's
+resolved config, written by scripts/resolve-config.ts at Goal. Do NOT read the
+project's own config file.
 Prove container base: http://${(containerConfig?.hosts || [])[0] || 'CONFIG_MISSING'}:${containerConfig?.port || 'CONFIG_MISSING'}
 
 ## ACs to verify (UI/OUTCOME — skipped by B3)
@@ -441,7 +477,7 @@ ${quinnACs}
 ## Test Plan for #${ISSUE} on PROVE CONTAINER
 1. Verify fix deployed: cd ${PROJECT_ROOT} && git rev-parse --short HEAD should match ${COMMIT_SHA.slice(0, 8)}
 2. For each AC:
-   a. browser_navigate(prove container URL + page path from rungate.json)
+   a. browser_navigate(prove container URL + page path from the resolved config's pages map)
    b. browser_snapshot() — verify page loaded
    c. Perform action (browser_click, browser_type, etc.)
    d. browser_snapshot() or browser_verify_text_visible() to verify

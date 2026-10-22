@@ -172,7 +172,10 @@ describe("#274 AC-2: the container path executes, observed by its own labels", (
 
 // ── Tier-gated site 4: the container-declined arm, by its log ────────
 
-const SKIP_LOG = "No container config in rungate.json — skipping container verify";
+// #1035: the log named `rungate.json`, the legacy monolith, which is not
+// where a consumer on the directory layout keeps its container config and is
+// not what ship.js reads either — it reads this run's resolved config.
+const SKIP_LOG = "No container config in the resolved config — skipping container verify";
 
 describe("#274 AC-2: the container-declined arm executes and says the config declined", () => {
   test("it emits the skip log and spawns nothing", async () => {

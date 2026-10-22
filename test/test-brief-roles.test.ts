@@ -5,6 +5,7 @@ import { extractDirectives, extractDirectivesWithRules } from "../lib/directive-
 import { checkCompliance, computeScore } from "../lib/transcript-checker.js";
 import { createWorktree, type WorktreeConfig } from "../lib/worktree-isolation.js";
 import { MAX_ITERATIONS, DEFAULT_TARGET_SCORE, buildIteration, isTargetReached, canContinue } from "../lib/hill-climb.js";
+import { loadRoleConfig } from "../lib/config-readers.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -41,24 +42,27 @@ describe("test-brief-roles", () => {
     }
   });
 
-  test("rungate.json has standardTask for all 6 roles (AC-8)", () => {
-    const configPath = join(ROOT, ".claude/rungate.json");
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+  // Both arms below read `.claude/rungate.json` by path until #1035. ADR-001
+  // Step E deleted that file from this repo and ADR-001's D1 forbade the path
+  // read before it did; `loadRoleConfig` is the one reader and understands
+  // both layouts.
+  test("the roles config has standardTask for all 6 roles (AC-8)", () => {
+    const roles = loadRoleConfig(ROOT);
 
-    const roles = Object.keys(config.roles || {});
-    expect(roles.length).toBeGreaterThanOrEqual(6);
+    expect(Object.keys(roles).length).toBeGreaterThanOrEqual(6);
 
     for (const role of SUPPORTED_ROLES) {
-      expect(config.roles[role]).toBeDefined();
-      expect(config.roles[role].standardTask).toBeTruthy();
+      expect(roles[role]).toBeDefined();
+      expect(roles[role].standardTask).toBeTruthy();
     }
   });
 
-  test("rungate.json roles have brief paths that exist", () => {
-    const configPath = join(ROOT, ".claude/rungate.json");
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+  test("the roles config's brief paths exist", () => {
+    const roles = loadRoleConfig(ROOT);
 
-    for (const [role, roleConfig] of Object.entries(config.roles as Record<string, { brief: string }>)) {
+    // Positive control: an empty roles config iterates nothing and passes.
+    expect(Object.keys(roles).length).toBeGreaterThanOrEqual(6);
+    for (const [, roleConfig] of Object.entries(roles)) {
       const briefPath = join(ROOT, roleConfig.brief);
       expect(existsSync(briefPath)).toBe(true);
     }

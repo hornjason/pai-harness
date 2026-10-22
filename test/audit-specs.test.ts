@@ -7,6 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { scaffoldPipelineSource } from "./helpers/scaffold-fixture";
+import { loadRungateConfig } from "../lib/config-loader";
 
 // ── Test fixture helpers ─────────────────────────────────────
 
@@ -545,10 +546,12 @@ governs: test
   // ── AC-6: Consumer specs excluded from strict migration ────────
 
   describe("AC-6: consumer specs excluded", () => {
-    test("rungate.json consumers array is empty", () => {
-      const config = JSON.parse(
-        readFileSync(join(import.meta.dir, "..", ".claude", "rungate.json"), "utf-8")
-      );
+    test("the resolved config's consumers array is empty", () => {
+      // #1035: read `.claude/rungate.json` by path until ADR-001 Step E
+      // deleted it. `loadRungateConfig` throws on a missing or malformed
+      // config, which is the behaviour this arm wants — an unreadable config
+      // is not a config with no consumers in it.
+      const config = loadRungateConfig(join(import.meta.dir, ".."));
       expect(config.consumers).toEqual([]);
     });
 

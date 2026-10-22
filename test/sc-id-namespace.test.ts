@@ -87,6 +87,7 @@ import {
   scMentionPattern,
 } from "../lib/sc-ids";
 import { extractSCs } from "../lib/conformity";
+import { loadRungateConfig } from "../lib/config-loader";
 import { nextSCNumber } from "../lib/create-sc";
 import {
   coverageClaimSites,
@@ -668,10 +669,17 @@ describe("SC-884: the reported false credit, and the renumbering that removed it
   });
 
   test("the criterion it falsely certified is still unsatisfied", () => {
-    // The regression, stated as the fact rather than as the checkbox: if
-    // `.claude/rungate.json` ever grows a `keyFiles` field this test is the
+    // The regression, stated as the fact rather than as the checkbox: if the
+    // project's rungate config ever grows a `keyFiles` field this test is the
     // one that says so, and the tick becomes legitimate.
-    const cfg = JSON.parse(readFileSync(join(REPO, ".claude", "rungate.json"), "utf-8"));
+    //
+    // #1035: this read `.claude/rungate.json` by path, which ADR-001 Step E
+    // deleted. `loadRungateConfig` reads whichever layout the project is on
+    // and `ResolvedConfigSchema` is `.passthrough()`, so a `keyFiles` key
+    // authored in `.claude/rungate/config.json` survives to be seen here —
+    // a stripping validator would have made this arm permanently false and
+    // the tick permanently illegitimate, which looks the same from outside.
+    const cfg = loadRungateConfig(REPO) as Record<string, unknown>;
     const spec = readFileSync(join(SPECS_392, "SCAFFOLD-DECOMPOSITION-SPEC.md"), "utf-8");
     const ticked = spec.includes(`- [x] ${FORMERLY_COLLIDING}:`);
     expect(

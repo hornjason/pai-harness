@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
+import { loadRoleConfig } from "../lib/config-readers";
 
 const FIXTURE = join(import.meta.dir, "fixtures/golden-project");
 const OUTPUT = "/tmp/rungate-agent-brief-template-test";
@@ -119,10 +120,20 @@ describe("Agent Brief Template Tests", () => {
       expect(stepsSrc).toMatch(/harness\?\.roles|roles.*config|getAgentMeta/);
     });
 
-    test("rungate.json roles have description, tools, and model fields", () => {
-      const configPath = join(import.meta.dir, "..", ".claude", "rungate.json");
-      const config = JSON.parse(readFileSync(configPath, "utf-8"));
-      const roles = config.roles || {};
+    test("the roles config gives every role description, tools, and model", () => {
+      // #1035: this read `.claude/rungate.json` by path. ADR-001 Step E
+      // deleted that file from this repo, and D1 forbade the path read
+      // before it did — `loadRoleConfig` is the one reader, and it
+      // understands both layouts, so this arm keeps working on a consumer
+      // that never migrated.
+      const roles = loadRoleConfig(join(import.meta.dir, "..")) as Record<string, any>;
+      // Positive control: with no roles the sweep below iterates nothing and
+      // passes having read no config at all — which is exactly what the path
+      // read would have degraded to if the loader had been given a fallback.
+      expect(
+        Object.keys(roles).length,
+        "the roles config is empty — the sweep below would certify nothing",
+      ).toBeGreaterThanOrEqual(6);
       for (const [name, role] of Object.entries(roles) as [string, any][]) {
         expect(role.description).toBeTruthy();
         expect(role.tools).toBeTruthy();

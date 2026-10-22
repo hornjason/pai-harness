@@ -26,28 +26,30 @@
  * so the monolith's copy was never read here by anything; it existed only to
  * be counted by a census and believed. AC-2 keeps it gone.
  *
- * ## Why the whole monolith is NOT deleted here, measured
+ * ## Step E landed in #1035, and the populations it had to clear first
  *
  * ADR-001's Step E is *"Delete `.claude/rungate.json` from rungate; repo runs
  * directory-only"*, precondition *"B green — not before"*. The precondition
- * is met for the readers ADR-001 counted: `scanConfigAccess` is down from 89
+ * was met for the readers ADR-001 counted: `scanConfigAccess` is down from 89
  * across 25 production files to **9**, all in `lib/scaffold/steps.ts`, all
  * taking a consumer `root` and checking `.claude/rungate/config.json` first.
  *
- * **It is not met for two populations that count was never over**, and both
- * were found by doing it and reading the failures rather than by reasoning:
+ * **It was not met for two populations that count was never over**, and both
+ * were found by doing it and reading the failures rather than by reasoning.
+ * #910 recorded them; #1035 re-measured them on a tree ten days further on
+ * and cleared them. Both numbers are kept, because the drift between them is
+ * the point:
  *
- * | population | state |
- * |---|---|
- * | test files reading the monolith by path | **7 files, 8 failures** — `agent-brief-template`, `audit-specs`, `briefed-agent-model`, `config-trackable`, `sc-id-namespace`, `test-brief-roles`, `unit/bash-tool-guard` |
- * | agent PROMPTS naming it | `workflows/ship.js`, `prove.js`, `ship-and-heal.js` — already violations of ADR-002's *"no agent prompt may instruct an agent to read those paths"* |
+ * | population | #910, 2026-10-21 00:00 | #1035, re-measured |
+ * |---|---|---|
+ * | test files reading the monolith by path | 7 files, 8 failures | **5 files, 6 failures** — `config-trackable` and `unit/bash-tool-guard` had stopped needing it |
+ * | agent PROMPTS naming it | 11, across `ship.js`, `prove.js`, `ship-and-heal.js` | 11, all repointed at the run's `resolved-config.json` |
  *
- * Deleting the file is correct and is a migration of its own, with a rule
- * already written for the second half. Doing it inside a hook-cluster ticket
- * would bury it. Filed separately with these measurements; SC-5 is closed by
- * the narrower change, which is what SC-5 actually asks for.
+ * The five test files now go through `lib/config-loader.ts` and
+ * `lib/config-readers.ts`, which is what ADR-001's D1 asked for in the first
+ * place — the deletion did not create those violations, it made them visible.
  *
- * Issue: #910 SC-5. Refs ADR-001, ADR-002, #214, #992.
+ * Issue: #910 SC-5, #1035. Refs ADR-001, ADR-002, #214, #992.
  */
 
 import { describe, test, expect } from "bun:test";
@@ -68,17 +70,37 @@ describe("#910 SC-5 — one position declares where hooks live", () => {
     expect(JSON.parse(readFileSync(REGISTRY, "utf-8")).length).toBeGreaterThan(0);
   });
 
-  test("AC-2: the legacy monolith declares NO hooks", () => {
-    // SC-5's actual ask. The file may still exist — ADR-001 Step E is a
-    // separate migration — but it must not carry a second hook list for a
-    // census to find, count and believe.
-    if (!existsSync(MONOLITH)) return; // Step E landed; nothing to declare.
-    const monolith = JSON.parse(readFileSync(MONOLITH, "utf-8"));
+  test("AC-2: the legacy monolith is GONE — ADR-001 Step E (#1035)", () => {
+    // #910 SC-5 asked only that the monolith stop declaring hooks, and this
+    // arm used to say so with `if (!existsSync(MONOLITH)) return` in front of
+    // it. Step E landed, so that guard would now return on its first line and
+    // the arm would certify nothing — the vacuous shape in
+    // `.claude/rules/checks-must-be-able-to-fail.md`. It is replaced by the
+    // stronger property the deletion established, which subsumes it: a file
+    // that is not there declares no hooks, no models, no consumers and no
+    // roles.
+    //
+    // This is the check SC-5 of #1035 asks for — *"a check refuses its
+    // return"*. Step E is a property the repo executes on every run, not a
+    // one-time deletion, which is the whole lesson of ADR-001's standing note
+    // that *"this ADR was correct and had no effect, because the half that
+    // was enforcement is the half that did not ship"*.
+    //
+    // It is scoped to THIS repository and lives in `test/`, deliberately. It
+    // is not a conformity rule and must never become one: both layouts are
+    // supported indefinitely and consumers in the wild are on both
+    // (`.claude/rules/config-access.md`). What is forbidden is rungate — the
+    // tool that generates the directory layout — carrying the layout it
+    // migrates people off, *"a state its own scaffold cannot produce"*.
     expect(
-      "hooks" in monolith,
-      "`.claude/rungate.json` declares hooks again. resolveConfig prefers the directory layout, " +
-        "so nothing reads this copy and nothing keeps it current — it went four entries behind " +
-        "while #910 was open. Hooks are declared in .claude/rungate/hooks.json (#910 SC-5).",
+      existsSync(MONOLITH),
+      "`.claude/rungate.json` is back. ADR-001 Step E deleted it: this repo runs " +
+        "directory-only, from `.claude/rungate/{config,roles,hooks,compliance}.json`. " +
+        "A monolith beside a directory is not a fallback — `resolveConfig` prefers the " +
+        "directory and never reads it, so the copy exists only to be found by a census, " +
+        "counted and believed. If you need to add config, add it under `.claude/rungate/`. " +
+        "If a consumer needs the monolith layout, that is still supported and is a " +
+        "different repository (#1035, ADR-001 Step E).",
     ).toBe(false);
   });
 

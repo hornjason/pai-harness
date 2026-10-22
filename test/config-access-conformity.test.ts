@@ -151,13 +151,31 @@ describe("SC-1429: the scanners read code, and enough of it", () => {
   test("CHECK-2 sees inside prompt text, which is what ADR-001's check could not", () => {
     // The eleven sites ADR-001's TypeScript-source scan missed all live
     // inside template literals handed to agents. A scanner that blanked
-    // literals would report zero here and look like success.
+    // literals would report zero and look like success.
+    //
+    // #1035: the positive control used to be `counts` containing
+    // `workflows/ship.js` — i.e. THIS repo being in violation. ADR-001 Step E
+    // cleared the last eleven, and a control that goes red when the thing it
+    // guards is finally fixed is a control that can only ever be satisfied by
+    // the defect. The reach assertion stays on the real tree; the "sees
+    // inside a template literal" half moves to a planted one, where it can be
+    // true forever and still fail if the scanner starts blanking literals.
     const got = scanPromptConfigAccess(REPO);
     expect(got.filesScanned, "no workflows were read").toBeGreaterThan(0);
+    expect(got.bytesScanned, "the workflows were read as empty").toBeGreaterThan(100_000);
+
+    const planted = scanPromptConfigAccess(project({
+      "workflows/ship.js": [
+        "const PROJECT_ROOT = process.argv[2]",
+        "await agent(`",
+        "Read ${PROJECT_ROOT}/.claude/rungate.json and report what it says.",
+        "`)",
+      ].join("\n"),
+    }));
     expect(
-      Object.keys(got.counts),
-      "no workflow config access found — either it is all migrated (lower the ratchet) or the scan is blind to prompts",
-    ).toContain("workflows/ship.js");
+      planted.counts,
+      "CONFIG-2 is blind to config paths inside a template literal — the whole population ADR-001 missed",
+    ).toEqual({ "workflows/ship.js": 1 });
   });
 
   test("comments are not counted as access", () => {
@@ -234,11 +252,26 @@ describe("SC-1431: the ratchet is data, scoped per check", () => {
     expect(Object.keys(sources).some(k => k.startsWith("workflows/"))).toBe(false);
     expect(Object.keys(workflows).every(k => k.startsWith("workflows/"))).toBe(true);
     expect(Object.keys(sources).length).toBeGreaterThan(0);
-    expect(Object.keys(workflows).length).toBeGreaterThan(0);
     expect(
       Object.keys(sources).length + Object.keys(workflows).length,
       "scoping dropped or duplicated entries",
     ).toBe(Object.keys(readConfigAccessRatchet(REPO)).length);
+
+    // #1035: `workflows` is EMPTY on this repo now — ADR-001 Step E cleared
+    // the last eleven prompt sites and their entries went with them, in the
+    // same commit, as the both-ways ratchet requires. So the live tree can no
+    // longer demonstrate that the split puts anything in the workflows half,
+    // and `expect(workflows.length).toBeGreaterThan(0)` was a control that
+    // only the defect could satisfy. The partition is proved on a planted
+    // ratchet instead, which varies both halves rather than one.
+    const planted = project({
+      ".claude/config-access-ratchet.json": JSON.stringify({
+        "lib/reader.ts": 2,
+        "workflows/ship.js": 3,
+      }),
+    });
+    expect(readConfigAccessRatchet(planted, "sources")).toEqual({ "lib/reader.ts": 2 });
+    expect(readConfigAccessRatchet(planted, "workflows")).toEqual({ "workflows/ship.js": 3 });
   });
 
   test("a project with no ratchet file gets zero tolerance", () => {
@@ -1055,15 +1088,26 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
       // `both checks are registered by the GENERATOR` above holds the
       // other half: that a consumer's suite runs CONFIG-2 at all. Together
       // they are the whole claim; separately neither is.
-      const prompt = scanPromptConfigAccess(REPO);
-      const scanned = Object.keys(prompt.counts);
-      expect(scanned.length, "CONFIG-2 read nothing, so it is measuring nothing for CONFIG-1")
+      // #1035: this measured `prompt.counts` over THIS repo — the map of
+      // files found IN VIOLATION, not the map of files read. Step E cleared
+      // the last eleven, `counts` went empty, and the arm went red while the
+      // property it names was untouched: CONFIG-2 still walks `workflows/`.
+      // Reading a violation census as a reach census is the same conflation
+      // the check itself exists to prevent, so the reach is measured by
+      // PLANTING a violation in each declined directory and asking whether
+      // CONFIG-2 finds it. That cannot be satisfied by the repo being dirty,
+      // and it still fails the moment a directory leaves CONFIG-2's walk.
+      expect(scanPromptConfigAccess(REPO).filesScanned, "CONFIG-2 read no workflow at all")
         .toBeGreaterThan(0);
       for (const d of CONFIG_1_DECLINES) {
+        const planted = scanPromptConfigAccess(project({
+          [`${d}/probe.js`]: 'const c = require("./.claude/rungate.json");\n',
+          "README.md": "# d",
+        }));
         expect(
-          scanned.filter(f => f.startsWith(`${d}/`)).length,
-          `CONFIG-1 declines ${d}/ as "CONFIG-2's territory", but CONFIG-2 reads no file there`,
-        ).toBeGreaterThan(0);
+          Object.keys(planted.counts),
+          `CONFIG-1 declines ${d}/ as "CONFIG-2's territory", but CONFIG-2 does not read it`,
+        ).toEqual([`${d}/probe.js`]);
       }
     });
 

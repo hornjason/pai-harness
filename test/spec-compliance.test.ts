@@ -475,9 +475,17 @@ describe("#589: ship-and-heal grading and violation handling", () => {
     expect(HEAL_JS).toMatch(/verify.*brief|brief.*verif/i);
   });
 
-  test("AC-5: compliance threshold reads from rungate.json with default 80", () => {
-    // Must read compliance.threshold from rungate.json config, not just parsedArgs
-    expect(HEAL_JS).toMatch(/rungate\.json.*compliance.*threshold|compliance\.threshold.*rungate/i);
+  test("AC-5: compliance threshold reads from the project config with default 80", () => {
+    // Must read compliance.threshold from the project's config, not just parsedArgs.
+    //
+    // #1035: this matched the literal `rungate.json`, the legacy monolith, in
+    // a prompt that told the agent to read it by path. ADR-002 D1 forbids
+    // that and it had already stopped working for a consumer on the directory
+    // layout. The AC is unchanged — the threshold still comes from the
+    // project's config and still defaults to 80 — so what the arm asserts is
+    // the same fact through its current channel: the resolver that reads
+    // whichever layout the project is on.
+    expect(HEAL_JS).toMatch(/resolve-config\.ts[\s\S]*compliance\.threshold/i);
     // Default of 80 when not configured
     expect(HEAL_JS).toContain("|| 80");
   });

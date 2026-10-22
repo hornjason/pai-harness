@@ -22,6 +22,10 @@ governs: rungate config access — single-loader policy, null-vs-throw contract,
 > produce — and the stale monolith is 8 days *newer* than the directory config the canonical
 > loader actually reads.
 >
+> **Step E is done as of 2026-10-21 (#1035)** — the repo runs directory-only and a test
+> refuses the file's return. See *Step E, done* below the remediation table for the
+> three populations it had to clear and what each measured. The rest of this note stands.
+>
 > This ADR was correct and had no effect, because the half that was enforcement is the half
 > that did not ship. It is now an instance of the defect class it describes:
 > *"A rule nothing executes is not a rule."* ADR-002 supersedes the enforcement design and
@@ -238,11 +242,46 @@ Ordered remediation:
 | B | Loader unification per D1/D2; conformity check green | A |
 | C | Fix `scripts/scaffold-rungate-config.ts:97` to emit populated default roles | independent of A/B; fixes #70 |
 | D | Observability per D3 | B |
-| E | Delete `.claude/rungate.json` from rungate; repo runs directory-only | B green — **not before** |
+| E | Delete `.claude/rungate.json` from rungate; repo runs directory-only | B green — **not before** — **DONE 2026-10-21 (#1035)** |
 
 **Step E before step B breaks the 24 monolith readers immediately, including `lib/conformity.ts`
 itself, which would take the test suite down with it.** Step A is cheap, reversible, and catches the
 entire class without touching rungate's own `.claude/`. It goes first.
+
+### Step E, done — the preconditions as measured, not as assumed
+
+Ten days after the standing note above, and in three parts, because the
+precondition was met for the population this ADR counted and for no other.
+The numbers come from running the deletion and reading the failures; #910
+took the first reading and backed out with it, #1035 re-took it and cleared
+the three populations.
+
+| population | 2026-10-11 (this ADR) | 2026-10-21, re-measured | after #1035 |
+|---|---|---|---|
+| `scanConfigAccess` direct reads | 89 across 25 production files | 9, all `lib/scaffold/steps.ts`, each taking a consumer `root` and checking the directory first | 9, unchanged — none reads rungate's own config |
+| test files reading the monolith by path | not counted | 5 files, 6 failures | 0 — all five go through `lib/config-loader.ts` / `lib/config-readers.ts`, which is what D1 asked for |
+| agent PROMPTS naming it | not counted — `scanConfigAccess` cannot see prompt text | 11, across `workflows/{ship,prove,ship-and-heal}.js` | 0 — every one reads the run's `resolved-config.json`, written by `scripts/resolve-config.ts` |
+
+Two of those three were invisible to the count this ADR was written against,
+and both were standing violations of D1 that the deletion did not create — it
+made them bite. The prompt population was invisible *by construction*:
+`scanConfigAccess` walks TypeScript sources, and a path inside a template
+literal handed to an agent is not one. `runPromptConfigAccessValidation`
+(CONFIG-2, ADR-002 D4) is the check that can see them, and all three workflow
+files are now out of `.claude/config-access-ratchet.json` entirely — a file
+absent from the ratchet is allowed nothing, so a returning prompt read fails
+the suite rather than warning.
+
+**The deletion is durable.** `generateOrAuditProjectHarness` branches on
+`hasDirectory` before the monolith and never writes `rungate.json` beside one,
+asserted by `test/scaffold-generators.test.ts`, so a self-scaffold does not
+put it back.
+
+**And it is enforced, which is the half this ADR's standing note says did not
+ship.** `test/config-single-layout.test.ts` AC-2 asserts the file's absence on
+every run. It is deliberately a test in `test/` and not a conformity rule:
+both layouts stay supported indefinitely and consumers in the wild are on
+both. What is forbidden is rungate carrying the layout it migrates people off.
 
 ---
 

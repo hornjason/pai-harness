@@ -450,7 +450,12 @@ describe("#273: every anchor the suite still uses is classified, and the classif
     // HEAL_JS.indexOf("GRADE") is the live example of the defect this issue is
     // about, still in the suite: it lands on a comment.
     expect(resolvesInComment(HEAL_SRC, "GRADE")).toBe(true);
-    expect(HEAL_SRC.slice(0, HEAL_SRC.indexOf("GRADE")).split("\n").length).toBe(132);
+    // 132 until #1035, which added 22 lines above it: the `test-config` prompt
+    // stopped naming the project's config file by path and now runs
+    // scripts/resolve-config.ts across the subprocess boundary instead. The
+    // number moving is the point of the arm — it records WHERE a comment-
+    // resolving anchor lands, so an edit anywhere above it has to be noticed.
+    expect(HEAL_SRC.slice(0, HEAL_SRC.indexOf("GRADE")).split("\n").length).toBe(154);
     expect(resolvesInComment(HEAL_SRC, "'SHIPPED'")).toBe(false);
     expect(resolvesInComment(HEAL_SRC, "label: 'remediate'")).toBe(false);
   });
