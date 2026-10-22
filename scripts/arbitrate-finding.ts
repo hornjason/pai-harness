@@ -45,7 +45,7 @@ import {
   type Finding,
   type Verdict,
 } from "../lib/finding-arbiter";
-import { renderComment, type VerifierVote } from "../lib/finding-jury";
+import { parseVotes, renderComment, type VerifierVote } from "../lib/finding-jury";
 
 interface Args {
   title: string;
@@ -145,10 +145,21 @@ function existingFindings(args: Args): Finding[] {
   });
 }
 
+/**
+ * The ballot, validated rather than cast (#1235).
+ *
+ * This used to check `Array.isArray` and then `parsed as VerifierVote[]`, so
+ * no entry was ever looked at — and `juryReading` counts agreement by
+ * truthiness, which made `"real": "false"` a yes. `parseVotes` owns the shape
+ * check; it throws, and `main`'s catch turns that into `DROP (UNMEASURED)`,
+ * because a ballot that could not be read is not a ballot that passed.
+ */
 function readVotes(path: string): readonly VerifierVote[] {
-  const parsed = JSON.parse(readFileSync(path, "utf-8"));
-  if (!Array.isArray(parsed)) throw new Error(`--votes ${path} is not a JSON array of votes`);
-  return parsed as VerifierVote[];
+  try {
+    return parseVotes(JSON.parse(readFileSync(path, "utf-8")));
+  } catch (error) {
+    throw new Error(`--votes ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function emit(args: Args, verdict: Verdict, finding: Finding): void {

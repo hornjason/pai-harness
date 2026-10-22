@@ -232,6 +232,131 @@ export interface VerifierVote {
   severity?: Severity;
 }
 
+/**
+ * Every category name, bound to the union by the compiler.
+ *
+ * A `Record<FindingCategory, true>` is exhaustive: add a member to the union
+ * and this object fails to typecheck until it carries it. That is the point —
+ * a hand-written array would quietly stop recognising the new category and
+ * `parseVotes` would start refusing a vote that is in fact well-formed.
+ */
+const CATEGORY_MEMBERS: Record<FindingCategory, true> = {
+  correctness: true,
+  security: true,
+  performance: true,
+  style: true,
+  diagnostics: true,
+  cleanup: true,
+  unclassified: true,
+};
+
+/** What a malformed entry is called in the refusal. One string, one binding. */
+export const UNREADABLE_VOTE = "a vote nobody can read is UNMEASURED, not a dissent";
+
+/** `"a string"`, `3`, `null` — enough to identify the entry without echoing a body. */
+function shapeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  return typeof value === "string" ? `the string ${JSON.stringify(value)}` : `a ${typeof value}`;
+}
+
+/**
+ * Read an untrusted ballot, or refuse it.
+ *
+ * **This is the boundary, and it is the whole of #1235.** `readVotes` in
+ * `scripts/arbitrate-finding.ts` checked that the parsed JSON was an array and
+ * then cast it — `parsed as VerifierVote[]` — so nothing ever looked at an
+ * entry. `juryReading` counts agreement with `votes.filter(v => v.real)`, a
+ * truthy test, and **the string `"false"` is truthy**. A verifier who wrote
+ * `"real": "false"` was counted as agreeing with the finding they rejected.
+ * Measured before the fix: three votes, all three rejecting, two of them
+ * spelling it `"false"`, returned `MEASURED passed=true` at `2 of 3`.
+ *
+ * ## Why this refuses the ballot instead of coercing the vote
+ *
+ * The cheap repair is to read `"false"` as `false`. It fixes the headline case
+ * and is wrong in the same direction: it invents a dissent. A vote that cannot
+ * be read is not a vote that was cast, and counting it as a no is a second
+ * reading nobody took — `.claude/rules/config-access.md`'s *Silent Default
+ * Substitution*. One unreadable entry among two genuine yeses still clears a
+ * 2-of-3 quorum under coercion, and `test/finding-arbiter.test.ts`'s `AR-16`
+ * case `B` is that input.
+ *
+ * Nor is the entry dropped. A two-vote ballot against a declared group of
+ * three refuses as `INCOMPLETE_GROUP` — "a verifier did not report" — when in
+ * fact it reported unreadably. Both refuse; only one names what happened.
+ *
+ * ## Why here and not in `juryReading`
+ *
+ * `juryReading` owns the *group* properties — `INCOMPLETE_GROUP`,
+ * `REPEATED_VERIFIER`, `NON_MAJORITY_QUORUM` — and should keep owning only
+ * those. They are facts about a ballot already known to be made of votes. This
+ * is the question of whether it is, and it belongs where the JSON enters.
+ *
+ * Validating the whole declared interface rather than only `real` is
+ * deliberate: the cast asserted every field, so every field was unchecked, and
+ * two of the others carry the same defect. An unrecognised `category` is not
+ * in `DROPPED_CATEGORIES`, so it reads to `juryCategory` as a keep category.
+ * An unrecognised `severity` indexes `SEVERITY_RANK` to `undefined`, making
+ * the sort comparator in `severityOf` return `NaN`.
+ *
+ * **`Object.hasOwn`, never the `in` operator**, and this is not a style
+ * preference. `in` walks the prototype chain, so `"constructor" in
+ * CATEGORY_MEMBERS` is `true` and a vote claiming `category: "constructor"`
+ * was accepted — an accepted-but-unrecognised category is absent from
+ * `DROPPED_CATEGORIES` and so reads as a **keep**, which is this function's
+ * own defect reintroduced inside its fix. Eight values were wrongly accepted
+ * across the two fields; `JURY-6` runs five of them against both.
+ *
+ * @throws if the ballot is not an array, or any entry is not a well-formed vote.
+ */
+export function parseVotes(parsed: unknown): readonly VerifierVote[] {
+  if (!Array.isArray(parsed)) {
+    throw new Error(`the ballot is ${shapeOf(parsed)}, not a JSON array of votes`);
+  }
+  return parsed.map((entry, at): VerifierVote => {
+    const where = `vote ${at} of the ballot`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error(`${where} is ${shapeOf(entry)}, not an object: ${UNREADABLE_VOTE}`);
+    }
+    const v = entry as Record<string, unknown>;
+    if (typeof v.verifier !== "string" || v.verifier === "") {
+      throw new Error(
+        `${where} has no \`verifier\` id (${shapeOf(v.verifier)}): an anonymous vote cannot be ` +
+        `checked for independence, so ${UNREADABLE_VOTE}`,
+      );
+    }
+    if (typeof v.real !== "boolean") {
+      throw new Error(
+        `${where}, from \`${v.verifier}\`, has a non-boolean \`real\` (${shapeOf(v.real)}): ` +
+        `agreement is counted by truthiness, so this would read as a yes — ${UNREADABLE_VOTE}`,
+      );
+    }
+    if (typeof v.reason !== "string") {
+      throw new Error(`${where}, from \`${v.verifier}\`, has no \`reason\` (${shapeOf(v.reason)}): ${UNREADABLE_VOTE}`);
+    }
+    if (v.category !== undefined && !(typeof v.category === "string" && Object.hasOwn(CATEGORY_MEMBERS, v.category))) {
+      throw new Error(
+        `${where}, from \`${v.verifier}\`, names an unknown \`category\` (${shapeOf(v.category)}): ` +
+        `an unrecognised category is not a dropped one, so it would read as a keep — ${UNREADABLE_VOTE}`,
+      );
+    }
+    if (v.severity !== undefined && !(typeof v.severity === "string" && Object.hasOwn(SEVERITY_RANK, v.severity))) {
+      throw new Error(
+        `${where}, from \`${v.verifier}\`, names an unknown \`severity\` (${shapeOf(v.severity)}): ` +
+        `it has no rank, so the severity sort would compare against NaN — ${UNREADABLE_VOTE}`,
+      );
+    }
+    return {
+      verifier: v.verifier,
+      real: v.real,
+      reason: v.reason,
+      ...(v.category !== undefined ? { category: v.category as FindingCategory } : {}),
+      ...(v.severity !== undefined ? { severity: v.severity as Severity } : {}),
+    };
+  });
+}
+
 export interface JuryConfig {
   groupSize?: number;
   quorum?: number;
