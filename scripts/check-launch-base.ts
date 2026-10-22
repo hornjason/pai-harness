@@ -18,7 +18,14 @@
  * So the only position left is the launcher — whatever invokes the
  * workflow. It runs this, and does not launch on a non-zero exit:
  *
- *     bun scripts/check-launch-base.ts --project-root <dir> [--cwd <dir>]
+ *     bun scripts/check-launch-base.ts --project-root <dir> [--harness-root <dir>] [--cwd <dir>]
+ *
+ * It also refuses a root that is reached through a SYMLINK (#1129), naming
+ * the canonical spelling to relaunch with. That check belongs here for the
+ * same reason the rest of the file does: `workflows/ship.js` compares roots
+ * as strings and cannot resolve one, so a symlinked root makes it refuse its
+ * own agent worktrees. This is the last point before launch at which the
+ * value can still be corrected.
  *
  * `--cwd` defaults to `process.cwd()`, which is the whole point: the
  * launcher runs in the session whose directory is in question, so the
@@ -43,7 +50,11 @@ import { launchBaseReading } from "../lib/launch-base";
 /** The one exit code every refusal travels through. */
 export const REFUSE_EXIT = 1;
 
-const OPTIONS = new Set(["project-root", "cwd"]);
+// `harness-root` is OPTIONAL, and deliberately so: the roots are two
+// separate arguments to the run and a launcher that only knows one of them
+// should still get the check it can have. An absent value is skipped, never
+// treated as canonical (#1129).
+const OPTIONS = new Set(["project-root", "harness-root", "cwd"]);
 
 class Refused extends Error {}
 
@@ -69,7 +80,11 @@ if (import.meta.main) {
     // session being checked, so the thing under test is its own ambient
     // state. Everywhere else in this repo an ambient default is the defect
     // (#644 is about exactly that) — here it is the measurement.
-    const reading = launchBaseReading(args.cwd ?? process.cwd(), args["project-root"]);
+    const reading = launchBaseReading(
+      args.cwd ?? process.cwd(),
+      args["project-root"],
+      args["harness-root"],
+    );
 
     console.log(JSON.stringify(reading, null, 2));
 
