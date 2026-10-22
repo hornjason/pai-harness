@@ -64,6 +64,8 @@ import {
   AI_REVIEW_ADJUDICATOR_PACKAGE,
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_CONVENTIONS_FILE,
+  AI_REVIEW_EXECUTION_FILE_VAR,
   AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
@@ -673,6 +675,51 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
 
 /** A findings payload, so these cases are about #1013 and not about #816's skip. */
 const PAYLOAD = '{"findings": [], "verdict": "PASS"}';
+
+/**
+ * An execution transcript carrying a read of the conventions file (#1167).
+ *
+ * This harness runs the step with the SUITE's working directory, which is
+ * this repository — so `REVIEW.md` is in the "checkout" these cases present,
+ * and since #1167 the payload branch refuses a payload whose transcript does
+ * not show the reviewer reading it.
+ *
+ * Supplied to the two cases below that assert something about the branch
+ * BEYOND the conventions reading. It is an input they were missing, not an
+ * assertion being relaxed: a real run that wrote a payload always has a
+ * transcript beside it — measured across this repository's last 40 review
+ * runs, and run `39835040833` is one with both — so a fixture with a payload
+ * and no transcript modelled a state the runner does not produce. Neither
+ * case's subject, varied input or assertion direction moves.
+ *
+ * `ai-review-conventions.test.ts` is where the conventions reading itself is
+ * asserted, in both directions.
+ */
+const CONVENTIONS_TRANSCRIPT = (() => {
+  const dir = scratchDir("ai-review-transcript-");
+  const path = join(dir, "claude-execution-output.json");
+  writeFileSync(
+    path,
+    JSON.stringify([
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Read",
+              input: {
+                file_path: `/home/runner/work/pai-harness/pai-harness/${AI_REVIEW_CONVENTIONS_FILE}`,
+              },
+            },
+          ],
+        },
+      },
+      { type: "result", subtype: "success", is_error: false, num_turns: 9 },
+    ]),
+  );
+  return { [AI_REVIEW_EXECUTION_FILE_VAR]: path };
+})();
 
 /**
  * The adjudicator's answers, planted (#1013).
@@ -1744,6 +1791,20 @@ function runAuthScript(
     const findings = join(dir, "ai-review-findings.json");
     writeFileSync(findings, payload);
     planted.AI_REVIEW_FINDINGS_PATH = findings;
+    // #1167, and attached to the PAYLOAD rather than offered separately:
+    // the two travel together on a runner. A payload exists only if the
+    // reviewer executed, and a reviewer that executed leaves a transcript —
+    // measured across this repository's last 40 review runs, where
+    // `AI_REVIEW_EXECUTION_FILE` is set on all five that ran the agent and
+    // empty only on the skips, which write no payload. A fixture with one
+    // and not the other modelled a state the runner does not produce, and
+    // since #1167 the payload branch reads the transcript for the
+    // conventions load.
+    //
+    // `...env` still wins, so a case about a different transcript sets its
+    // own; `ai-review-conventions.test.ts` is where that reading is the
+    // subject, with its own workspace.
+    Object.assign(planted, CONVENTIONS_TRANSCRIPT);
   }
   const r = Bun.spawnSync(["bash", "-e", sh], {
     env: {

@@ -1,4 +1,4 @@
-# generated-sha: 371eea5b6ba4cd67
+# generated-sha: d8f60da837d25be8
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
@@ -128,17 +128,22 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard }}
           SHARD_STATUS: ${{ job.status }}
+          SHARD_ATTEMPT: ${{ github.run_attempt }}
           SHARD_MARKER_DIR: ${{ runner.temp }}/rungate-shard-marker
         run: |
+          # Fresh, so nothing an earlier step left behind ships as evidence.
+          rm -r "$SHARD_MARKER_DIR" 2>/dev/null || true
           mkdir -p "$SHARD_MARKER_DIR"
-          printf '%s\n' "$SHARD_STATUS" > "$SHARD_MARKER_DIR/shard-$SHARD_INDEX"
+          # status, attempt and leg — the body the aggregate cross-checks
+          # against the artifact's own name.
+          printf '%s %s %s\n' "$SHARD_STATUS" "$SHARD_ATTEMPT" "$SHARD_INDEX" > "$SHARD_MARKER_DIR/shard-$SHARD_INDEX"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: rungate-shard-marker-${{ matrix.shard }}
-          path: ${{ runner.temp }}/rungate-shard-marker/
+          name: rungate-shard-marker-${{ github.run_attempt }}-${{ matrix.shard }}
+          # One FILE, so this leg cannot ship evidence about another leg.
+          path: ${{ runner.temp }}/rungate-shard-marker/shard-${{ matrix.shard }}
           if-no-files-found: error
-          overwrite: true
           retention-days: 1
 
   # The aggregate. Named "test" because that is the context branch protection
@@ -168,8 +173,14 @@ jobs:
         # correctly red and silent is the expensive half.
         continue-on-error: true
         with:
+          # EVERY attempt's markers, not just this one's. The script dates
+          # each marker itself, so a leg whose only evidence is older gets
+          # "re-run all jobs" rather than "never ran" — a pattern narrowed to
+          # this attempt would make those two indistinguishable.
           pattern: rungate-shard-marker-*
-          merge-multiple: true
+          # NO merge-multiple: each artifact keeps its own directory, which
+          # is what ties a marker to the leg that uploaded it. Flattening
+          # discards that and the reading falls back to filenames alone.
           path: ${{ runner.temp }}/rungate-shard-markers
       - name: Every shard concluded, and every shard passed
         env:
@@ -179,6 +190,7 @@ jobs:
           SHARD_ROLLUP: ${{ needs.test-shard.result }}
           SHARD_EXPECTED: "4"
           SHARD_JOB_NAME: test-shard
+          SHARD_ATTEMPT: ${{ github.run_attempt }}
           SHARD_MARKER_DIR: ${{ runner.temp }}/rungate-shard-markers
         run: |
           set -uo pipefail
@@ -208,7 +220,21 @@ jobs:
 
           job_name="${SHARD_JOB_NAME:-test-shard}"
 
-          # 3. The evidence, written by the shards about THEMSELVES. Each leg's last
+          # 3. THIS attempt. Artifacts belong to the run, not the attempt — measured on
+          #    run 39835866754, where attempt 2's download reported `Found 2
+          #    artifact(s)` and handed back a marker a leg wrote in attempt 1 and never
+          #    rewrote, because that leg did not execute in attempt 2 at all. Reading it
+          #    as evidence about attempt 2 is #1181 with a required check green over
+          #    shards that did not run, so the attempt is part of what gets checked.
+          attempt="${SHARD_ATTEMPT:-}"
+          case "$attempt" in
+            "" | *[!0-9]*)
+              echo "::error::SHARD_ATTEMPT is '$attempt', which is not a run attempt, so no marker can be dated. UNMEASURED, so refusing."
+              exit 1
+              ;;
+          esac
+
+          # 4. The evidence, written by the shards about THEMSELVES. Each leg's last
           #    step writes one file naming its own status and uploads it; a leg that
           #    was created and never executed uploads nothing, and nothing is exactly
           #    what run 39799846607's three queued shards would have left (#1190).
@@ -228,40 +254,88 @@ jobs:
             exit 1
           fi
 
-          # Every marker on disk, whatever its index. Counted separately from the
-          # 1..expected walk below so a marker the matrix never declared disagrees out
-          # loud instead of being skipped by a loop that only looks where it expects.
+          # Every artifact directory belonging to THIS attempt. Counted off the disk
+          # rather than off the 1..expected walk below, so a leg that contributed more
+          # than its own evidence disagrees out loud instead of being skipped by a loop
+          # that only looks where it expects.
           found=0
-          for marker in "$dir"/shard-*; do
-            [ -f "$marker" ] || continue
+          for art in "$dir"/rungate-shard-marker-"$attempt"-*; do
+            [ -d "$art" ] || continue
             found=$((found + 1))
           done
 
           passed=0
           missing=0
+          stale=0
+          unbound=0
           detail=""
           n=1
           while [ "$n" -le "$expected" ]; do
-            marker="$dir/shard-$n"
-            if [ ! -f "$marker" ]; then
-              missing=$((missing + 1))
-              detail="$detail \"$job_name ($n)\"=no-marker"
-            else
-              # `|| status=…` rather than a bare assignment. GitHub runs a `run:`
-              # block as `bash -e`, and under errexit an assignment whose only word
-              # is a failing command substitution aborts the shell THERE — so the bare
-              # form never reaches the handlers below, and the operator gets a red job
-              # with no sentence saying why. Measured in #1191 on this same step: a
-              # `||` compound is exempt from errexit, plain `bash` hid the defect
-              # and `bash -e` showed it.
-              status=""
-              status="$(tr -d '[:space:]' < "$marker")" || status="unreadable"
-              case "$status" in
-                success) passed=$((passed + 1)) ;;
-                "") detail="$detail \"$job_name ($n)\"=empty-marker" ;;
-                *) detail="$detail \"$job_name ($n)\"=$status" ;;
-              esac
+            want="shard-$n"
+            art="$dir/rungate-shard-marker-$attempt-$n"
+
+            if [ ! -d "$art" ]; then
+              # No evidence from this attempt. Evidence from an EARLIER one is not
+              # evidence about this one, but it is a different diagnosis and gets a
+              # different sentence: a partial re-run leaves exactly this state for
+              # every leg GitHub chose not to re-run.
+              older=""
+              for cand in "$dir"/rungate-shard-marker-*-"$n"; do
+                [ -d "$cand" ] || continue
+                older="$older ${cand##*/}"
+              done
+              if [ -n "$older" ]; then
+                stale=$((stale + 1))
+                detail="$detail \"$job_name ($n)\"=only-from:$older"
+              else
+                missing=$((missing + 1))
+                detail="$detail \"$job_name ($n)\"=no-marker"
+              fi
+              n=$((n + 1))
+              continue
             fi
+
+            # One artifact carries one leg's marker and nothing else. The upload names
+            # a single FILE, so this can only fail if something upstream changed —
+            # which is the point: "each leg produced its own marker" is the claim, and
+            # a flattened directory read by filename alone does not measure it.
+            files=0
+            for f in "$art"/*; do
+              [ -f "$f" ] || continue
+              files=$((files + 1))
+            done
+            if [ "$files" -ne 1 ] || [ ! -f "$art/$want" ]; then
+              unbound=$((unbound + 1))
+              detail="$detail \"$job_name ($n)\"=artifact-holds-$files-file\(s\)-not-just-$want"
+              n=$((n + 1))
+              continue
+            fi
+
+            # `|| true` rather than a bare `read`. GitHub runs a `run:` block as
+            # `bash -e`, and under errexit a `read` that returns non-zero aborts the
+            # shell THERE — so the handlers below never run and the operator gets a red
+            # job with no sentence saying why. Measured in #1191 on this same step.
+            mstatus=""
+            mattempt=""
+            mshard=""
+            read -r mstatus mattempt mshard < "$art/$want" || true
+
+            # The body is the SECOND binding, independent of the name. A name is a
+            # convention the generator controls; a body is a reading. A generator bug
+            # that templates the wrong attempt into the name is caught here and only
+            # here — which is why adding the attempt to the name alone is not the fix.
+            if [ "$mattempt" != "$attempt" ] || [ "$mshard" != "$n" ]; then
+              unbound=$((unbound + 1))
+              detail="$detail \"$job_name ($n)\"=marker-says-attempt-'$mattempt'-shard-'$mshard'"
+              n=$((n + 1))
+              continue
+            fi
+
+            case "$mstatus" in
+              success) passed=$((passed + 1)) ;;
+              "") detail="$detail \"$job_name ($n)\"=empty-marker" ;;
+              *) detail="$detail \"$job_name ($n)\"=$mstatus" ;;
+            esac
             n=$((n + 1))
           done
 
@@ -271,8 +345,20 @@ jobs:
             exit 1
           fi
 
+          if [ "$stale" -ne 0 ]; then
+            echo "::error::$stale of $expected shards left no marker for attempt $attempt, only for an earlier one:$detail"
+            echo "::error::artifacts belong to the RUN, not the attempt, so an older marker is readable here and says nothing about attempt $attempt. Re-run ALL jobs — a partial re-run leaves the legs it did not re-run UNMEASURED, and UNMEASURED is not a pass."
+            exit 1
+          fi
+
+          if [ "$unbound" -ne 0 ]; then
+            echo "::error::$unbound of $expected shard markers do not identify the leg and attempt that wrote them:$detail"
+            echo "::error::evidence that cannot be tied to one leg of this attempt is UNMEASURED, not a pass. Refusing."
+            exit 1
+          fi
+
           if [ "$found" -ne "$expected" ]; then
-            echo "::error::this run left $found shard markers, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
+            echo "::error::attempt $attempt left $found shard-marker artifacts, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
             exit 1
           fi
 
