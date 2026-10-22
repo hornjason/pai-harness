@@ -33,11 +33,16 @@
  *   is #1110 and is already fixed in #1115. They are not fourteen findings;
  *   they are fourteen witnesses to one, and they become its regression
  *   coverage once both land.
- * - **a test artefact** — **zero**. Not one case in any suite deliberately
- *   drove a script into a failing state to read an intermediate value. This is
- *   the outcome that made the sweep safe, and it was not predictable in
- *   advance; it is the reason the issue asked for the count instead of a
- *   bulk change.
+ * - **a test artefact** — **one**, and it arrived after the count was taken.
+ *   The sweep measured zero: not one case in any suite then present
+ *   deliberately drove a script into a failing state to read an intermediate
+ *   value, and that outcome is what made the sweep safe. #1115 then landed
+ *   `ai-review-shell-semantics.test.ts`, whose entire subject IS the `-e`
+ *   difference, so it drives both shells on purpose — `RUNNER_SHELL_FLAGS`
+ *   for its real assertions and a literal `[]` at three control sites. The
+ *   count is corrected here rather than left standing, because a stale number
+ *   in a document is a claim, and this one would be false by exactly the
+ *   mechanism this file is about.
  * - **a no-op** — 15 of the 21 suites. Their steps DO contain exposed
  *   statements (11 of them), but none returns non-zero in any state the suites
  *   drive.
@@ -94,30 +99,111 @@ function aiReviewSuites(): string[] {
  */
 const BASH_CALL = /(?:Bun\.)?spawnSync\(\s*(?:\[\s*)?"bash"\s*,\s*(?:\[\s*)?([^\n)]*)/g;
 
+/**
+ * A flag list that SPREADS an identifier, rather than spelling its flags.
+ *
+ * `spawnSync("bash", [...flags, sh])` does not say which shell it drives;
+ * the caller does, per call. The call site cannot answer the question, so
+ * reading it as an unswitched runner is wrong — see `PARAMETERISED` below.
+ */
+const SPREAD_ID = /\.\.\.([A-Za-z_$][\w$]*)/;
+
+/**
+ * A declared array of runner flags opening with the flag GitHub supplies —
+ * `const RUNNER_SHELL_FLAGS = ["-e"];` and anything of that shape.
+ */
+const DECLARED_RUNNER_FLAGS = new RegExp(`=\\s*\\[\\s*"${RUNNER_FLAG}"\\s*[,\\]]`);
+
+/**
+ * PARAMETERISED RUNNERS, and why this is narrower than an exemption.
+ *
+ * #1115 landed a suite whose subject is the `-e` difference itself, so it
+ * drives both shells deliberately through one helper taking `flags` as a
+ * parameter. Matching call-site syntax reads that single site as a single
+ * unswitched runner, which is a false positive — and it is a false positive
+ * on the one suite in this repository you would least want this check
+ * switched off for.
+ *
+ * The repair is NOT a list of exempt files. An allowlist naming a file
+ * becomes evidence that file was considered, it justifies itself on the next
+ * reading, and it blinds the check to everything else in the file for all
+ * time.
+ *
+ * Instead: a spread identifier is recognised as a PARAMETER, and the file
+ * must still PROVE it carries the flag — it has to declare a runner-flag
+ * array containing `-e` somewhere. A suite that drives plain bash and only
+ * plain bash declares no such array and is still reported. So this is the
+ * check gaining precision, not losing coverage, and
+ * `the control for the parameterised arm` below is what holds that line: a
+ * spread whose file declares flags WITHOUT `-e` must still be an offender,
+ * or this is an exemption with extra steps.
+ */
+function offenders(src: string, label: string): { sites: number; found: string[] } {
+  const found: string[] = [];
+  let sites = 0;
+  for (const m of src.matchAll(BASH_CALL)) {
+    sites++;
+    // Only the argv array, not the options object that follows it. A `-e`
+    // after the `]` is not a flag, and `env: { ...GIT_ENV }` is not a
+    // parameterised flag list — reading the whole tail for either one
+    // reports both where neither is true.
+    const argv = m[1].split("]")[0] ?? "";
+    // The literal is asked FIRST, so every site that passes today keeps the
+    // answer it has today and the parameterised arm can only ever acquit a
+    // site the old reading had already condemned.
+    const switched =
+      argv.includes(`"${RUNNER_FLAG}"`) ||
+      (SPREAD_ID.test(argv) && DECLARED_RUNNER_FLAGS.test(src));
+    if (!switched) found.push(`${label}: ${m[0].slice(0, 80)}`);
+  }
+  return { sites, found };
+}
+
 describe("AC-1 (#1116): every ai-review runner uses the shell GitHub uses", () => {
   test("no suite drives a generated step as plain bash", () => {
-    const offenders: string[] = [];
+    const all: string[] = [];
     let sites = 0;
     for (const f of aiReviewSuites()) {
-      const src = readFileSync(join(ROOT, "test", f), "utf-8");
-      for (const m of src.matchAll(BASH_CALL)) {
-        sites++;
-        if (!m[1].includes(`"${RUNNER_FLAG}"`)) offenders.push(`${f}: ${m[0].slice(0, 80)}`);
-      }
+      const r = offenders(readFileSync(join(ROOT, "test", f), "utf-8"), f);
+      sites += r.sites;
+      all.push(...r.found);
     }
     // The scan must have found the population it is policing. A regex that
     // matches nothing reports a perfect sweep, which is the same output as a
     // real one (#1110's lesson, one layer up).
     expect(sites).toBeGreaterThanOrEqual(26);
-    expect(offenders).toEqual([]);
+    expect(all).toEqual([]);
   });
 
   test("the control: the scan reports a runner that lacks the flag", () => {
     const planted = `const r = Bun.spawnSync(["bash", path], { cwd, env });`;
-    const found = [...planted.matchAll(BASH_CALL)].filter(
-      (m) => !m[1].includes(`"${RUNNER_FLAG}"`),
-    );
-    expect(found).toHaveLength(1);
+    expect(offenders(planted, "planted").found).toHaveLength(1);
+  });
+
+  test("the control for the parameterised arm: a spread whose flags lack the runner flag is still reported", () => {
+    // Same call-site syntax as the real parameterised runner. The ONLY
+    // difference is what the file declares, which is the whole of what the
+    // parameterised arm reads — so if this went green, the arm would be
+    // trusting the spread rather than the declaration.
+    const planted = `const FLAGS = ["-u"];\nconst r = spawnSync("bash", [...FLAGS, sh], { cwd });`;
+    expect(offenders(planted, "planted").found).toHaveLength(1);
+  });
+
+  test("the control for the declaration form: the flag mentioned but not DECLARED is still reported", () => {
+    // Without this case the parameterised arm would be indistinguishable from
+    // `src.includes('"-e"')`, and a suite could acquit itself with a comment.
+    // The real file declares the flag exactly once, so the mutation that
+    // reddens it removes the only occurrence and cannot tell the two apart —
+    // which is why this one is planted rather than measured.
+    const planted = `// drives it without "-e" on purpose\nconst r = spawnSync("bash", [...flags, sh], { cwd });`;
+    expect(offenders(planted, "planted").found).toHaveLength(1);
+  });
+
+  test("the pair: the same spread IS accepted once the file declares the runner flag", () => {
+    const planted = `const FLAGS = ["-e"];\nconst r = spawnSync("bash", [...FLAGS, sh], { cwd });`;
+    const r = offenders(planted, "planted");
+    expect(r.sites).toBe(1);
+    expect(r.found).toEqual([]);
   });
 });
 
