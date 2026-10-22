@@ -2233,21 +2233,34 @@ export const AI_REVIEW_RUNTIME_CONFIG_TITLE = "AI review runtime config UNMEASUR
  * **2026-10-22: there is now a distribution, and 50 sat inside it.** `num_turns`
  * read from the execution file of 7 consecutive AI Review runs on this repo:
  *
- * | 28 | 38 | 39 | 42 | **49** | **51** | **51** |
+ * | 24 | 25 | 28 | 30 | 36 | 38 | 39 | 41 | 42 | **49** | **51** | **51** | **66** |
  *
- * The 49 is the reading that decides this, not the 51s. It is a run that
- * **passed**, one turn under the ceiling — so the ceiling was not catching an
- * outlier, it was clipping the top of the ordinary working range, and two of
- * seven runs lost their review to it. A budget set at the observed maximum is
- * a budget that fires again on the next slightly larger diff.
+ * The 49 is the reading that condemns 50, and it is not either 51: it is a run
+ * that **passed**, one turn under the ceiling. So 50 was not catching an
+ * outlier, it was clipping the top of the ordinary working range. A budget set
+ * at the observed maximum fires again on the next slightly larger diff.
  *
- * 80 is ~57% headroom over the largest reading, bounding the worst case near
- * \$4 per pull request. That is deliberately not a doubling of the new
- * maximum: the point of the guard is an upper bound on cost, and the failure
- * it prevents is unbounded spend, while the failure it was causing is a
- * discarded review — which costs a full re-run, blocks the pull request, and
- * reads in the UI exactly like a finding. Both are real; they are not equal,
- * and the cheap one to be wrong about is the budget.
+ * **The top of this distribution is moving, and there is a mechanism.** #1243
+ * pinned `scope` to `full` unconditionally, so every round now re-reads the
+ * whole branch instead of a diff. The 66 — the largest reading here, and on a
+ * THREE-LINE diff — is from after that merge, as are three of the four highest
+ * readings. Treat the pre-#1243 rows as a different population; they were
+ * taken against a reviewer that could narrow its own scope and this one cannot.
+ *
+ * 80 is therefore ~21% over the observed maximum, not the ~57% an earlier
+ * draft of this comment claimed against a maximum of 51. It bounds the worst
+ * case near \$4 per pull request. It is deliberately not a doubling: the guard
+ * exists to put an upper bound on cost, and the two failures are both real and
+ * not equal — unbounded spend is the expensive one to be wrong about, while a
+ * discarded review costs a full re-run, blocks the pull request, and reads in
+ * the UI exactly like a finding. The cheap one to be wrong about is the budget.
+ *
+ * **21% is thin and is not where this should settle.** 80 covers every reading
+ * above, so it is supported; 100 would only be more cautious, and picking it
+ * off a single 66 would repeat in the other direction the exact error that
+ * produced 50 from a single 25. Re-derive once there are twenty-odd readings
+ * taken wholly after #1243 — that is #1257, and it is the honest next step
+ * rather than a number argued for here.
  *
  * Revise it with more n, not with the next single overrun.
  *
