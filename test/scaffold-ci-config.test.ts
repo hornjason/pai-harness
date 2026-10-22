@@ -49,12 +49,17 @@ describe("AC-1: ci.yml parses as valid YAML with glob branches", () => {
     expect(() => Bun.YAML.parse(yml)).not.toThrow();
   });
 
-  test("ci.yml keeps every glob branch on push and pull_request", () => {
+  test("ci.yml keeps every glob branch on push, and filters no base on pull_request", () => {
     const parsed = Bun.YAML.parse(readWorkflow("ci.yml")) as any;
     // YAML 1.1 folds a bare `on` key to boolean true; accept either spelling.
     const triggers = parsed.on ?? parsed[true as unknown as string];
     expect(triggers.push.branches).toEqual(GLOB_BRANCHES);
-    expect(triggers.pull_request.branches).toEqual(GLOB_BRANCHES);
+    // #1136: `ci.branches` reaches `push` only. It used to reach
+    // `pull_request` too, which left a PR based on a feature branch matching
+    // nothing and running nothing — while reporting CLEAN, because an absent
+    // workflow leaves no required check pending. The quoting this file exists
+    // to prove is still proved, by the `push` list above.
+    expect(triggers.pull_request).toBeNull();
   });
 });
 
@@ -64,11 +69,12 @@ describe("AC-2: gates.yml parses as valid YAML with glob branches", () => {
     expect(() => Bun.YAML.parse(yml)).not.toThrow();
   });
 
-  test("gates.yml keeps every glob branch on push and pull_request", () => {
+  test("gates.yml keeps every glob branch on push, and filters no base on pull_request", () => {
     const parsed = Bun.YAML.parse(readWorkflow("gates.yml")) as any;
     const triggers = parsed.on ?? parsed[true as unknown as string];
     expect(triggers.push.branches).toEqual(GLOB_BRANCHES);
-    expect(triggers.pull_request.branches).toEqual(GLOB_BRANCHES);
+    // #1136, as in ci.yml above.
+    expect(triggers.pull_request).toBeNull();
   });
 });
 
