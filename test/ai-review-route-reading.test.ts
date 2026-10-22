@@ -137,6 +137,8 @@ import {
   AI_REVIEW_FINDINGS_PATH_VAR,
   AI_REVIEW_JOB,
   AI_REVIEW_PREPARE_STEP_ID,
+  AI_REVIEW_OVERRIDE_VALUE,
+  AI_REVIEW_OVERRIDE_VAR,
   AI_REVIEW_REQUIRE_VALUE,
   AI_REVIEW_REQUIRE_VAR,
   AI_REVIEW_RUN_STEP_ID,
@@ -235,6 +237,8 @@ function runReport(opts: {
   payload: string | null;
   execution: string | null;
   require?: boolean;
+  /** #1180: the pull-request label that waives a no-payload refusal. */
+  waive?: boolean;
   script?: string;
 }): Run {
   const dir = scratchDir();
@@ -256,6 +260,7 @@ function runReport(opts: {
     env[AI_REVIEW_EXECUTION_FILE_VAR] = exec;
   }
   if (opts.require) env[AI_REVIEW_REQUIRE_VAR] = AI_REVIEW_REQUIRE_VALUE;
+  if (opts.waive) env[AI_REVIEW_OVERRIDE_VAR] = AI_REVIEW_OVERRIDE_VALUE;
 
   const r = Bun.spawnSync(["bash", "-e", scriptPath], { cwd: dir, env });
   return {
@@ -428,13 +433,22 @@ describe("AC-B (#826): the annotation names the route it measured", () => {
         `the route moved the exit code with ${AI_REVIEW_REQUIRE_VAR}=${require}`,
       ).toEqual([declined.code, declined.code, declined.code]);
     }
-    // And the control: the switch still does what it is for, or the equality
-    // above is satisfied by a script that never refuses at all.
-    expect(runReport({ payload: null, execution: null, require: false }).code).toBe(0);
+    // And the control, which must name an input that MOVES the code or the
+    // equality above is satisfied by a script with one exit in it.
+    //
+    // #1180 changed which input that is. The pair used to be the require
+    // switch; the refusal on this branch no longer consults it — a reviewer
+    // that wrote no payload fails on every tree — so the switch is now on the
+    // constant side of the equality and would make this control vacuous in
+    // the other direction. The waiver label is the input that still varies.
     expect(
-      runReport({ payload: null, execution: null, require: true }).code,
-      "the require switch stopped refusing, so AC-B5's equality means nothing",
+      runReport({ payload: null, execution: null, require: false }).code,
+      "a payload-less run passed with the require switch off, which is #1180",
     ).not.toBe(0);
+    expect(
+      runReport({ payload: null, execution: null, waive: true }).code,
+      "the waiver stopped waiving, so AC-B5's equality means nothing",
+    ).toBe(0);
   });
 
   test("AC-B6: the COMMITTED workflow hands the report step the action's execution file", () => {

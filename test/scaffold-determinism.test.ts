@@ -221,17 +221,55 @@ describe("SC-364: re-scaffold produces identical output", () => {
       sh("git", ["add", "-A"], fresh);
       sh("git", ["commit", "-q", "-m", "init"], fresh);
 
-      scaffold(fresh);
+      const report = scaffold(fresh);
       const first = readFileSync(join(fresh, "CODE-MAP.md"), "utf-8");
 
       // Each of these is a thing the SAME run created after the code map used
       // to be generated. Before #123 every one of them was absent or zero.
-      expect(first, "first-run CODE-MAP.md does not list specs/ — scaffold created it this run")
-        .toMatch(/\|\s*specs\/\s*\|\s*[1-9]/);
+      //
+      // The `specs/` witness USED TO BE a per-directory file count of `[1-9]`,
+      // and #1163 removed that column — it was wrong in 22 of 50 consecutive
+      // commits on this repo and no gate could hold it. This case is the one
+      // consumer of the census that grep did not find, because it matched the
+      // number rather than the header.
+      //
+      // The replacement is not weaker. `[1-9]` said only "the directory was
+      // not empty"; the types cell says WHAT was in it, so `md` is direct
+      // evidence that `copySpecTemplateIfEmpty` had already run when the map
+      // was scanned. A scaffold that created `specs/` and put nothing in it
+      // renders `| specs/ |  |` — measured, that is exactly what the empty
+      // `scripts/` row looks like — so the empty-directory case still reds.
+      expect(first, "first-run CODE-MAP.md does not list specs/ with a spec in it — scaffold wrote one this run")
+        .toMatch(/\|\s*specs\/\s*\|[^|\n]*\bmd\b/);
       expect(first, "first-run CODE-MAP.md reports no devDependency — addPaiHarnessDevDep added one this run")
         .toMatch(/\|\s*Dev dependencies\s*\|\s*[1-9]/);
-      expect(first, "first-run CODE-MAP.md does not see .claude/agents/ — generateAgentBriefsStep wrote it this run")
-        .toMatch(/\|\s*\.claude\/\s*\|[^|]*\|[^|]*agents/);
+      // The third witness USED TO BE `| .claude/ | … agents … |`, and the
+      // ONLY reason that cell ever contained the word `agents` was the defect
+      // #1200 removed: `readdirSync(…, { recursive: true })` returns
+      // directories as well as files, and `"agents".split(".").pop()` is
+      // `"agents"`. The Types column reports file extensions now, so
+      // `.claude/` reads `json, md` and no cell in CODE-MAP.md names a
+      // subdirectory any more. #1200 predicted this move for the `specs/`
+      // witness above and it survived; this one did not, because it was
+      // reading the bug.
+      //
+      // So it moves, and the move is stated here. It also lands on a
+      // STRONGER reading than the one it left. The property is ORDER —
+      // `generateAgentBriefsStep` (Phase 1.5) must run before
+      // `generateCodeMapStep` (Phase 3.5), which is the whole of #123 — and
+      // the scaffold's own action log states that order outright instead of
+      // letting it be inferred from a table cell. Nothing a future scanner
+      // leaks into `Types` can satisfy it, and a `.claude/` row that exists
+      // for some other step's sake cannot either.
+      const briefsAt = report.indexOf("CREATED: .claude/agents/");
+      const mapAt = report.indexOf("CREATED: CODE-MAP.md");
+      expect(briefsAt, `the scaffold never reported creating .claude/agents/:\n${report}`)
+        .toBeGreaterThan(-1);
+      expect(mapAt, `the scaffold never reported creating CODE-MAP.md:\n${report}`).toBeGreaterThan(-1);
+      expect(
+        briefsAt,
+        "CODE-MAP.md was written before .claude/agents/ existed — the Phase 3.5 ordering #123 fixed has regressed",
+      ).toBeLessThan(mapAt);
 
       // ...and it is already the fixed point: a second run changes nothing.
       scaffold(fresh);

@@ -146,11 +146,17 @@ import { join } from "path";
 import {
   AI_REVIEW_APP_INSTALL_CAUSE,
   AI_REVIEW_EXECUTION_FILE_VAR,
+  AI_REVIEW_FINDING_FIELDS,
   AI_REVIEW_FINDINGS_PATH_VAR,
+  AI_REVIEW_OVERRIDE_LABEL,
+  AI_REVIEW_OVERRIDE_VALUE,
+  AI_REVIEW_OVERRIDE_VAR,
   AI_REVIEW_REQUIRE_VALUE,
   AI_REVIEW_REQUIRE_VAR,
   AI_REVIEW_REQUIRED_EXIT,
+  AI_REVIEW_STANDING_WAIVER_NOTE,
   AI_REVIEW_UNMEASURED_TITLE,
+  AI_REVIEW_WAIVED_TITLE,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
 import { stubBunxAbsent } from "./helpers/stub-bunx";
@@ -192,6 +198,8 @@ function runReport(opts: {
   execution: string | null | "unreadable";
   outcome?: string;
   require?: boolean;
+  /** #1180: the pull-request label that waives a no-payload refusal. */
+  waive?: boolean;
   script?: string;
 }): Run {
   const dir = mkdtempSync(join(tmpdir(), "ai-review-failroute-"));
@@ -216,6 +224,7 @@ function runReport(opts: {
     env[AI_REVIEW_EXECUTION_FILE_VAR] = exec;
   }
   if (opts.require) env[AI_REVIEW_REQUIRE_VAR] = AI_REVIEW_REQUIRE_VALUE;
+  if (opts.waive) env[AI_REVIEW_OVERRIDE_VAR] = AI_REVIEW_OVERRIDE_VALUE;
 
   const r = Bun.spawnSync(["bash", "-e", scriptPath], { cwd: dir, env });
   return {
@@ -385,11 +394,60 @@ describe("AC-F6 (#826): every failure route exits the same way", () => {
       ["payload present", { payload: PAYLOAD, execution: REJECTED }],
     ];
 
-  test("AC-F6a: without the require switch, every route exits 0", () => {
+  // #1180 inverted the expected code here, and the invariant AC-F6 is about
+  // is unchanged: the route decides the SENTENCE and never the exit code.
+  // Before #1180 every route exited 0 with the switch off, which is the
+  // measured defect — `ai-review` reported success in 14 seconds on PR #1154
+  // having read nothing, on a repository where the switch has never been set
+  // and `ai-review` is one of two required checks on auto-merge.
+  //
+  // F6a and F6b are now a PAIR and not two spellings of one assertion: the
+  // first says the refusal fires with the flag absent, the second says the
+  // flag does not change it. Together they state that the flag is not the
+  // decider on this branch, which is the whole of #1180. The waiver is the
+  // only input that changes the code, and F6d is where that is measured.
+  test("AC-F6a: without the require switch, every route refuses anyway (#1180)", () => {
     for (const [name, opts] of routes) {
       const r = runReport(opts);
-      expect(r.code, `route ${name} changed the exit code\nstdout:\n${r.out}\nstderr:\n${r.err}`).toBe(
-        0,
+      expect(r.code, `route ${name} passed a review that never happened\nstdout:\n${r.out}\nstderr:\n${r.err}`).toBe(
+        AI_REVIEW_REQUIRED_EXIT,
+      );
+      expect(r.err, `route ${name} refused without an error annotation`).toContain(
+        `::error title=${AI_REVIEW_UNMEASURED_TITLE}`,
+      );
+    }
+  });
+
+  /**
+   * Narrowed by #1207 from "every route" to "every route with NO payload",
+   * and the title says so. The fifth route — a findings payload on disk —
+   * moved to AC-F8, which asserts the opposite direction for it.
+   *
+   * The lockout control this case exists to be is unaffected: the state that
+   * would lock the repository out is a pull request editing the workflow,
+   * which the action declines and exits SUCCESS with no payload. That is the
+   * success branch, and `payload: null` here is the same shape on this one.
+   */
+  const noPayloadRoutes = routes.filter(([, o]) => o.payload === null);
+
+  test("AC-F6d: the waiver label passes every route that wrote no payload (#1180, #1207)", () => {
+    // The control that keeps F6a from being a lockout, and the control that
+    // keeps the waiver from being invisible: a green run reached this way
+    // carries its own title, so a reader of the check list can tell it from
+    // a review that was read. Asserted on BOTH halves — a waiver that exits
+    // 0 silently is the fail-open with an extra variable in front of it.
+    expect(
+      noPayloadRoutes.length,
+      "the #1207 filter removed every route, so this case now asserts nothing",
+    ).toBe(4);
+    for (const [name, opts] of noPayloadRoutes) {
+      const r = runReport({ ...opts, waive: true });
+      expect(r.code, `route ${name} refused despite the waiver\nstderr:\n${r.err}`).toBe(0);
+      expect(r.out, `route ${name} was waived with no annotation saying so`).toContain(
+        `::warning title=${AI_REVIEW_WAIVED_TITLE}`,
+      );
+      expect(r.out, `route ${name} does not name the label that waived it`).toContain(
+        AI_REVIEW_OVERRIDE_LABEL,
       );
     }
   });
@@ -414,6 +472,120 @@ describe("AC-F6 (#826): every failure route exits the same way", () => {
     expect(seen.size, "the five failure routes do not produce five distinct messages").toBe(
       routes.length,
     );
+  });
+});
+
+// ── AC-F8: the waiver does not reach a payload nobody adjudicated ────────
+
+/**
+ * A contract-complete BLOCKING payload, built from `AI_REVIEW_FINDING_FIELDS`
+ * rather than hand-typed.
+ *
+ * #1198 found eight fixtures across four suites carrying keys the contract
+ * never declares, adjudicating BLOCKED anyway — so a hand-typed fixture here
+ * could be missing a required member and this case would still look right.
+ * Deriving it from the contract map means a field added to the contract
+ * reaches this fixture rather than quietly leaving it incomplete.
+ */
+const BLOCKING_PAYLOAD = JSON.stringify({
+  findings: [
+    {
+      [AI_REVIEW_FINDING_FIELDS.severity]: "critical",
+      [AI_REVIEW_FINDING_FIELDS.file]: "lib/scaffold/ai-review-step.ts",
+      [AI_REVIEW_FINDING_FIELDS.line]: 1,
+      [AI_REVIEW_FINDING_FIELDS.summary]: "a blocking finding, with its evidence",
+      [AI_REVIEW_FINDING_FIELDS.failureScenario]: "the gate passes over an unread critical",
+    },
+  ],
+  verdict: "BLOCK",
+});
+
+/**
+ * AC-F8 (#1207): the failure branch's waiver is read in the same ORDER the
+ * success branch reads it — after the payload, not before.
+ *
+ * On the success branch the waiver is unreachable once a payload exists: `-s`
+ * adjudicates first and the waiver sits inside the block entered only when
+ * there is nothing to read. This branch had no such ordering. `${waived}`
+ * fired after the route switch whatever the switch found, including the route
+ * where a findings payload IS on disk — and its own sentence then asserted
+ * "no AI review was read on this pull request and this is not one", which is
+ * false exactly when a payload exists.
+ *
+ * **What is asserted, and why it is not "adjudicate it".** The issue proposed
+ * mirroring the success branch literally. On this branch that is weaker: the
+ * action died around the write, so a half-written findings array is
+ * indistinguishable from a clean one, and adjudicating a truncated payload to
+ * CLEAN and then waiving it is the fail-open with two extra steps. So the
+ * claim is a payload PRESENT is not waivable — which covers the blocking case
+ * the issue names AND the untrustworthy-clean case it does not.
+ *
+ * **What was broken to prove it.** With the generator at `dbf10445` these
+ * three cases are 3 red and the rest of the file green; AC-F8c is the one
+ * that separates the fix from deleting the waiver outright.
+ */
+describe("AC-F8 (#1207): a findings payload on disk is not waivable on the failure branch", () => {
+  test("AC-F8: a BLOCKING payload with the label applied still refuses", () => {
+    // The issue's own acceptance case:
+    // `{ payload: PAYLOAD_WITH_BLOCKING_FINDING, outcome: 'failure', waive: true }`.
+    const r = runReport({ payload: BLOCKING_PAYLOAD, execution: REJECTED, waive: true });
+    expect(
+      r.code,
+      `the label waived a run whose payload carries a critical nobody read\nstdout:\n${r.out}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(r.err, "the refusal carried no error annotation").toContain(
+      `::error title=${AI_REVIEW_UNMEASURED_TITLE}`,
+    );
+    expect(
+      r.out,
+      "the run still claims it waived something, which is the sentence #1207 is about",
+    ).not.toContain(`::warning title=${AI_REVIEW_WAIVED_TITLE}`);
+  });
+
+  test("AC-F8b: a CLEAN payload is not waivable either — the reading is presence", () => {
+    // The direction that keeps AC-F8 from being satisfied by adjudicating.
+    // This branch cannot tell a clean payload from a truncated one, so
+    // "clean" is not a reading it may act on, and a waiver that depended on
+    // one would be passing on a document nobody can trust.
+    const r = runReport({ payload: PAYLOAD, execution: REJECTED, waive: true });
+    expect(
+      r.code,
+      `an unadjudicated payload was waived because it happened to parse clean\nstdout:\n${r.out}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(r.err, "the refusal does not say why the label did not apply").toContain(
+      AI_REVIEW_OVERRIDE_LABEL,
+    );
+  });
+
+  test("AC-F8c: the control — with NO payload the same label still waives", () => {
+    // Deleting the waiver is the cheapest fix for AC-F8 and AC-F8b, and it
+    // re-creates the lockout #1180 shipped the waiver to prevent: a pull
+    // request editing the workflow can then never go green. This case is red
+    // under that repair, and `payload: null` is the only input that differs
+    // from AC-F8b.
+    const r = runReport({ payload: null, execution: REJECTED, waive: true });
+    expect(
+      r.code,
+      `the waiver was removed rather than ordered — this is the #1180 lockout\nstderr:\n${r.err}`,
+    ).toBe(0);
+    expect(r.out, "the pass carried no WAIVED annotation").toContain(
+      `::warning title=${AI_REVIEW_WAIVED_TITLE}`,
+    );
+  });
+
+  test("AC-F8d: both waiver annotations say the waiver is standing (#1207)", () => {
+    // The product decision, recorded where an operator reads it. The label
+    // survives every later push, so a pull request waived at three lines is
+    // still waived at three hundred; the annotation is the only notice, and
+    // it is emitted on every run while the label is on.
+    for (const outcome of ["failure", "success"]) {
+      const r = runReport({ payload: null, execution: null, outcome, waive: true });
+      expect(r.code, `the ${outcome} branch refused a waived run with no payload`).toBe(0);
+      expect(
+        r.out,
+        `the ${outcome} branch's waiver does not say it survives later pushes`,
+      ).toContain(AI_REVIEW_STANDING_WAIVER_NOTE);
+    }
   });
 });
 

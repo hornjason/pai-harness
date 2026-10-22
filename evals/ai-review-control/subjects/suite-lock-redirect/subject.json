@@ -1,0 +1,23 @@
+{
+  "id": "suite-lock-redirect",
+  "reviewPath": "lib/test-suite-lock.ts",
+  "baseline": "baseline.ts",
+  "provenance": "A compacted, self-contained copy of the full-suite detector in lib/test-suite-lock.ts. A copy on purpose: a subject whose source is the live module moves every time the module does, and a control that moves is not a control.",
+  "cases": [
+    {
+      "id": "suite-lock-redirect/planted",
+      "kind": "planted",
+      "candidate": "planted.ts",
+      "lines": [4, 5],
+      "marker": "REDIRECT =",
+      "defect": "The redirect pattern lost its `&` alternative, so `&>` and `&>>` are not recognised as redirection operators.",
+      "failureScenario": "`bun test &>/tmp/out` leaves the token `&>/tmp/out` in the operand list. It contains a `/`, so the detector calls the run targeted and returns false, and the guard built on it lets an unscoped full suite through. The doc comment one line above still claims `&>>` is covered, so the file contradicts itself in the diff."
+    },
+    {
+      "id": "suite-lock-redirect/clean",
+      "kind": "clean",
+      "candidate": "clean.ts",
+      "why": "A behaviour-preserving refactor of the same baseline: two locals renamed and the operand test extracted to a named function. test/review-negative-control.test.ts proves the premise by running baseline and candidate over the same command table and requiring every row to agree."
+    }
+  ]
+}

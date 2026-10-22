@@ -111,6 +111,17 @@ function attr(tag: string, name: string): string | null {
 interface ScannedTestcase {
   /** The full name, rebuilt from the `<testsuite>` nesting. */
   name: string;
+  /**
+   * The source file, as the report spells it — MEASURED on bun 1.3.14,
+   * `file="test/ai-review-wif.test.ts"`, repo-relative with the directory
+   * on the front (#1172).
+   *
+   * Read from the `<testcase>` attribute rather than from the outermost
+   * `<testsuite>` name, with that name as the fallback. Both carry it
+   * today; the attribute is the one that stays correct if a testcase is
+   * ever emitted outside a file-level suite.
+   */
+  file: string;
   /** The `time` attribute in MILLISECONDS, or `NaN` when it carries none. */
   ms: number;
   /** False for a `<skipped />` testcase — filtered out, `.skip` or `.todo`. */
@@ -173,6 +184,7 @@ function scanJunitTestcases(xml: string): { cases: ScannedTestcase[]; skipped: n
       // Everything above it is a `describe`.
       const testcase: ScannedTestcase = {
         name: [...suites.slice(1), attr(rest, "name") ?? ""].join(" > "),
+        file: attr(rest, "file") ?? suites[0] ?? "",
         ms: durationMs(rest),
         ran: true,
         failure: null,
@@ -351,6 +363,8 @@ export function unionNames(base: string[] | null, extra: string[]): string[] | n
 export interface TestcaseDuration {
   /** The full name, as the console prints it. */
   name: string;
+  /** The source file the report attributes it to, e.g. `test/a.test.ts`. */
+  file: string;
   /** Milliseconds. */
   ms: number;
   /** The runner killed it: bun wrote `<failure type="TimeoutError" />`. */
@@ -390,7 +404,7 @@ export function parseJunitDurations(xml: string): JunitDurationReading {
   const ran = scan.cases.filter(c => c.ran);
   const durations = ran
     .filter(c => Number.isFinite(c.ms))
-    .map(c => ({ name: c.name, ms: c.ms, timedOut: c.failure === "TimeoutError" }));
+    .map(c => ({ name: c.name, file: c.file, ms: c.ms, timedOut: c.failure === "TimeoutError" }));
   return {
     durations,
     count: durations.length,
@@ -533,4 +547,228 @@ export function timeoutProximityViolations(
     }
   }
   return out;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * #1172: a per-file budget list that can see files that are NOT on it
+ *
+ * `GIT_FIXTURE_SUITES` names the `ai-review-*` suites whose cases are built
+ * on real `git` subprocesses and which therefore declare a calibrated
+ * file-level budget instead of inheriting bun's default. `AC-3` of #1140
+ * iterates that list and asserts each named file declares one. That holds
+ * the list to its claim in **one direction only**: a file that is ON the
+ * list must declare. It says nothing about a file that should be on it and
+ * is not.
+ *
+ * So the list can go stale in silence. Someone adds an eighth `ai-review-*`
+ * suite built on `checkout()`, it inherits 5000ms, nothing reddens, and the
+ * first anyone hears is the "is this red mine?" rebase tax #1140 was filed
+ * about. That is the same shape as an allowlist whose own entries are the
+ * evidence for them: the budget governs its members and cannot see arrivals.
+ *
+ * ## Why the structural rule is not the fix, measured
+ *
+ * "Every `ai-review-*` suite that spawns `bash` and `git` must declare" is
+ * over-broad. Measured on 2026-10-22 it catches `ai-review-wif` and
+ * `ai-review-baseline-seal`, neither of which has a case above 2500ms.
+ * Handing a fast file a 120s ceiling costs hang-detection latency — a
+ * genuine hang reports in two minutes instead of five seconds — for no
+ * benefit. The criterion that actually qualifies a file is **the measured
+ * cost of its fixture**, and that needs a duration reading.
+ *
+ * ## …and nor is widening the list, which is the cheapest wrong fix
+ *
+ * Adding today's near-misses to `GIT_FIXTURE_SUITES` changes the membership
+ * ROSTER without changing how membership is DETERMINED, so the next arrival
+ * is exactly as invisible as this one was. `test/ai-review-fixture-budget.ts`
+ * performs that repair over a planted eighth file and measures what it
+ * reports, rather than dismissing it in prose.
+ *
+ * ## So the criterion is DECLARATION, not membership — and the two already disagree
+ *
+ * This check therefore does not ask "is this file on the list". It asks
+ * "does this file declare a budget of its own", read off the TREE. The two
+ * are not the same question, and the first real reading taken through this
+ * code proved it: over 562 cases of the live `ai-review-*` surface,
+ * `ai-review-fixture-budget.test.ts` carried a 5083.13ms case, was **not**
+ * on `GIT_FIXTURE_SUITES`, and was in no danger whatever, because it opens
+ * with `setDefaultTimeout(gitFixtureTestTimeout())`. A membership criterion
+ * reports that file forever; a declaration criterion reports nothing,
+ * truthfully, and still reports the eighth suite that declares nothing.
+ *
+ * The list survives for the job it can do — `budgetSurfaceCoverage` uses it
+ * to decide whether a reading COVERS the surface — and for `AC-3`, which
+ * holds its named files to declaring. Neither of those gates this check.
+ *
+ * ## UNMEASURED, never green
+ *
+ * A `bun test` run cannot read its own JUnit report — the file is written
+ * when the run ends — so the population arrives from outside via
+ * `SUITE_JUNIT_REPORT`, exactly as in #621. Two readings, not one verdict:
+ * `budgetSurfaceCoverage` answers "did this report see the surface at all?"
+ * and `budgetMembershipViolations` answers "is anything it saw unbudgeted?".
+ * An empty report satisfies the second perfectly, which is why the first
+ * exists and why the second stays SILENT on an empty reading rather than
+ * refusing it — if both refused, a red row could not say which broke.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** A set of files held to a per-file budget, and the rule for joining it. */
+export interface BudgetSurface {
+  /** Names the surface in a failure message, e.g. `the ai-review-* suites`. */
+  label: string;
+  /**
+   * Which files the question is about, matched against the BASENAME.
+   *
+   * Basename because the two spellings disagree: bun writes
+   * `file="test/ai-review-wif.test.ts"` and the member lists in this repo
+   * hold bare `"ai-review-wif.test.ts"`. Comparing the two directly is a
+   * check that matches nothing and reports clean — the quietest possible
+   * version of this defect.
+   */
+  pattern: RegExp;
+  /**
+   * Does this file already declare a budget of its own? Read off the TREE.
+   *
+   * THIS is the criterion, and it is deliberately not "is it on `members`".
+   * A file that declares is not inheriting `inheritedMs`, so it is not at
+   * risk, whether or not any list knows about it — and the two readings
+   * already disagree on the live surface. See the block above.
+   */
+  declaresOwnBudget: (basename: string) => boolean;
+  /**
+   * The roster, used ONLY to judge whether a reading covers the surface.
+   *
+   * It does not gate `budgetMembershipViolations`. If it did, the check
+   * would be a list consulting itself about its own completeness, which is
+   * the defect #1172 is filed about.
+   */
+  members: readonly string[];
+  /** What a file on this surface inherits when it declares nothing. */
+  inheritedMs: number;
+  /**
+   * The fraction of `inheritedMs` at or above which a non-member qualifies.
+   *
+   * Not 1.0. A case that has already crossed the inherited budget has
+   * already gone red, and a list that only admits files after they have
+   * failed is the rebase tax rather than a guard against it. #1140 measured
+   * the population at 2500–7500ms against a 5000ms line, so half the
+   * inherited budget is the band where a file is one busy afternoon from
+   * red.
+   */
+  qualifyingFraction: number;
+}
+
+/** The last path segment, for comparing a report's spelling to a member list. */
+function basenameOf(file: string): string {
+  const i = file.lastIndexOf("/");
+  return i === -1 ? file : file.slice(i + 1);
+}
+
+/** `pattern` without `g`/`y`, whose `lastIndex` makes `.test()` alternate. */
+function stateless(pattern: RegExp): RegExp {
+  return new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ""));
+}
+
+/** Every testcase in `reading` that belongs to `surface`. */
+function onSurface(reading: JunitDurationReading, surface: BudgetSurface): TestcaseDuration[] {
+  const re = stateless(surface.pattern);
+  return (reading.durations ?? []).filter(d => re.test(basenameOf(d.file)));
+}
+
+/**
+ * What is wrong with the READING, before anything is concluded from it.
+ *
+ * A report of the whole suite with the surface filtered out passes
+ * `durationCoverageViolations` — it read thousands of durations — and
+ * satisfies the membership check by containing none of the files it is
+ * about. So the surface has its own coverage question, and it is the one
+ * that matters here.
+ */
+export function budgetSurfaceCoverage(
+  reading: JunitDurationReading,
+  surface: BudgetSurface,
+  source: string,
+): string[] {
+  if (reading.durations === null) {
+    return [
+      `UNMEASURED: the JUnit report at ${source} could not be read ` +
+        `(${reading.reason ?? "no reason recorded"}), so nothing is known about what ${surface.label} cost (#1172)`,
+    ];
+  }
+  const seen = onSurface(reading, surface);
+  if (seen.length === 0) {
+    return [
+      `UNMEASURED: the JUnit report at ${source} carries ${reading.count} testcase durations and NONE of ` +
+        `them is on ${surface.label} — a report that did not see the surface satisfies the membership ` +
+        `check by having nothing to check, which is not a measurement (#1172)`,
+    ];
+  }
+  const files = new Set(seen.map(d => basenameOf(d.file)));
+  const unseenMembers = surface.members.filter(m => !files.has(m));
+  if (unseenMembers.length > 0) {
+    return [
+      `UNMEASURED: ${unseenMembers.length} of ${surface.members.length} files already on the list do not ` +
+        `appear in ${source} (${unseenMembers.join(", ")}) — the reading covers part of ${surface.label}, ` +
+        `so a qualifying file outside that part is invisible to it (#1172)`,
+    ];
+  }
+  return [];
+}
+
+/**
+ * Every file on `surface` that has earned a budget and has not been given
+ * one — named, with the case and the duration that qualified it.
+ *
+ * ## Three classes, and only one of them is a finding
+ *
+ * | What the report shows | What it means | Reported |
+ * |---|---|---|
+ * | an UNDECLARED file with a case at or above the qualifying band | it inherits a budget it is about to outgrow | **yes** |
+ * | a file that DECLARES, at any duration | it is not inheriting anything; its raised ceiling is why it is slow and green | no |
+ * | an undeclared file whose slowest case is under the band | fast, and a 120s ceiling would cost it hang-detection for nothing | no |
+ *
+ * The second row is what makes this usable rather than circular. A declared
+ * file's durations are taken UNDER the raised budget, so comparing them to
+ * the inherited default would report every one of them forever and train
+ * its reader to ignore the check — the cost #1140 is filed about,
+ * reintroduced by the guard against it.
+ *
+ * SILENT on a reading of nothing, deliberately — `budgetSurfaceCoverage` is
+ * the question about an empty reading, and keeping them apart is what makes
+ * a red row say which one broke.
+ */
+export function budgetMembershipViolations(
+  reading: JunitDurationReading,
+  surface: BudgetSurface,
+): string[] {
+  if (!Number.isFinite(surface.inheritedMs) || surface.inheritedMs <= 0) {
+    return [
+      `no usable inherited budget to compare against (${surface.inheritedMs}) — a budget of zero or NaN ` +
+        `qualifies every file rather than none, which is noise and not a finding (#1172)`,
+    ];
+  }
+  const floor = surface.inheritedMs * surface.qualifyingFraction;
+
+  /** The slowest qualifying case per undeclared file, so one file is one row. */
+  const worst = new Map<string, TestcaseDuration>();
+  for (const d of onSurface(reading, surface)) {
+    const base = basenameOf(d.file);
+    if (!(d.ms >= floor)) continue;
+    // Asked per FILE, not per case, and asked last so a fast file never
+    // costs a source read.
+    if (surface.declaresOwnBudget(base)) continue;
+    const held = worst.get(base);
+    if (held === undefined || d.ms > held.ms) worst.set(base, d);
+  }
+
+  return [...worst.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([file, d]) =>
+        `${file} is on ${surface.label}, declares no budget of its own, and its case "${d.name}" took ` +
+        `${d.ms.toFixed(2)}ms — ${((d.ms / surface.inheritedMs) * 100).toFixed(1)}% of the ` +
+        `${surface.inheritedMs}ms it inherits. It is one busy run from a red that is about machine load ` +
+        `and not about the code. Add it to the budget list and declare the file-level budget, or make ` +
+        `it faster (#1172)`,
+    );
 }

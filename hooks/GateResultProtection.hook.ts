@@ -28,7 +28,33 @@
  * imports are rungate-owned and both sit in `package.json` `files[]`, so this
  * guards the same artifact on a consumer repo as it does here.
  *
- * Issues: #471, #1137
+ * ## One of two hooks on this artifact, and what this one is authoritative for (#1152)
+ *
+ * `WorkflowStateGuard.hook.ts` matches the same tool calls. The split:
+ *
+ *  - `WorkflowStateGuard` is authoritative for **whether a tool call may
+ *    write the artifact at all**, and refuses every Write/Edit of it.
+ *  - THIS hook is authoritative for **what a permitted write may contain**.
+ *
+ * Neither subsumes the other. Because the blanket guard fires first in THIS
+ * repository, this hook's ALLOW-path is not observable from an ordinary
+ * session here — that is #1152, and the reason the contract test runs each
+ * hook on its own rather than through a session.
+ *
+ * Note the reach is the opposite way round from what #1152's body assumes:
+ * `WorkflowStateGuard` is `deployToConsumers: true` and this hook is
+ * `deployToConsumers: false` (OPT-IN), so a scaffolded consumer gets the
+ * blanket guard and not this one. If that flag is ever turned on, this hook's
+ * refusals become part of a consumer's write contract and the authority table
+ * in the spec needs rewriting.
+ *
+ * The contract is executed, not described:
+ * `test/workflow-state-write-contract.test.ts` runs both hooks over one corpus
+ * and records both answers. Change either hook and update that table and
+ * `specs/HOOK-ARCHITECTURE-SPEC.md` § "The workflow-state.json write contract"
+ * in the same commit.
+ *
+ * Issues: #471, #1137, #1152
  */
 
 import { parseHookInput } from './lib/parseStdin';

@@ -9,6 +9,7 @@
  */
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, statSync } from "fs";
 import { readdirSorted } from "../readdir-sorted";
+import { fileExtensions } from "../file-extensions";
 import { join, basename, dirname, resolve, sep } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
@@ -35,6 +36,7 @@ import {
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
 import {
   AI_REVIEW_JOB,
+  AI_REVIEW_PULL_REQUEST_TYPES,
   aiReviewScaffoldAction,
   buildAuthDetectStep,
   buildOutcomesHeader,
@@ -1556,19 +1558,21 @@ export function generateCodeMapStep(
 function generateCodeMapInline(root: string, outPath: string, actions: string[]): void {
   const name = basename(root);
   const skip = new Set(["node_modules", ".git", "reference", "dist", "build", ".next", ".fallow"]);
-  const dirs: Array<{ name: string; fileCount: number; types: string[] }> = [];
+  const dirs: Array<{ name: string; types: string[] }> = [];
   for (const entry of readdirSorted(root)) {
     if (entry.startsWith(".") && entry !== ".claude") continue;
     if (skip.has(entry)) continue;
     const full = join(root, entry);
     try {
       if (!statSync(full).isDirectory()) continue;
-      const files = readdirSorted(full, { recursive: true });
-      const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-      dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
+      // One binding for what a "type" is, shared with `lib/scanner.ts` and
+      // `scripts/generate-code-map.ts` (#1200). This is the fallback that
+      // runs when the script is unavailable, so a copy here reintroduces
+      // whatever the other two fix.
+      dirs.push({ name: entry, types: fileExtensions(full) });
     } catch {}
   }
-  dirs.sort((a, b) => b.fileCount - a.fileCount);
+  // Unsorted. Row order is `directoryTable`'s single decision (#1163).
 
   let deps = 0, devDeps = 0;
   const pkgPath = join(root, "package.json");
@@ -2816,20 +2820,44 @@ export const SHARD_AGGREGATE_REFUSAL_EXIT = 1;
  *
  * The script contains **no `${{ }}` expression at all**. Every GitHub-side
  * value arrives through the step's `env:`, which is what makes the shipped
- * script text executable by a test with a stubbed `gh` on PATH. A script that
- * can only run inside Actions is a script no negative control can reach, and
- * the negative control is the whole of #1181.
+ * script text executable by a test that plants a marker directory on disk. A
+ * script that can only run inside Actions is a script no negative control can
+ * reach, and the negative control is the whole of #1181.
  */
 export const SHARD_AGGREGATE_ENV = {
   rollup: "SHARD_ROLLUP",
   expected: "SHARD_EXPECTED",
   jobName: "SHARD_JOB_NAME",
-  repo: "SHARD_REPO",
-  runId: "SHARD_RUN_ID",
-  runAttempt: "SHARD_RUN_ATTEMPT",
-  pollAttempts: "SHARD_POLL_ATTEMPTS",
-  pollSeconds: "SHARD_POLL_SECONDS",
+  markerDir: "SHARD_MARKER_DIR",
 } as const;
+
+/**
+ * Environment variable names the per-shard marker step writes from (#1190).
+ *
+ * Separate from `SHARD_AGGREGATE_ENV` because they are read on the other side
+ * of the fan-in, by a different job, and a single map would suggest one step
+ * sets them all.
+ */
+export const SHARD_MARKER_ENV = {
+  index: "SHARD_INDEX",
+  status: "SHARD_STATUS",
+  dir: "SHARD_MARKER_DIR",
+} as const;
+
+/**
+ * The artifact name one shard's marker is uploaded under, and the glob the
+ * aggregate downloads (#1190).
+ *
+ * v4 artifacts are immutable and names must be unique within a run, so the
+ * matrix index is part of the name — the shape `actions/upload-artifact`'s
+ * own README prescribes for a matrix. The aggregate matches on the prefix
+ * rather than enumerating names, so the two sides agree through this one
+ * declaration instead of through two copies of a loop bound.
+ */
+export const SHARD_MARKER_ARTIFACT_PREFIX = "rungate-shard-marker-";
+
+/** The file one shard writes inside its marker directory, by index. */
+export const SHARD_MARKER_FILE_PREFIX = "shard-";
 
 /**
  * The shard aggregate's verdict script — it asserts that it MEASURED (#1181).
@@ -2853,21 +2881,39 @@ export const SHARD_AGGREGATE_ENV = {
  * ## What this does instead
  *
  * The rollup is still read first, so a failed or a cancelled shard produces
- * exactly the diagnostic it produces today. Then the job asks the Actions API
- * how many `test-shard (N)` jobs this run **actually concluded**, and refuses
- * unless that count equals the matrix width. The printed count is the measured
- * one, never the generated one: a sentence that says "4" because the generator
- * wrote "4" is the thing that lied on `39799846607`.
+ * exactly the diagnostic it produces today. Then the job counts the markers
+ * the shards wrote **about themselves** — one tiny artifact per matrix leg,
+ * uploaded by the leg as its last step — and refuses unless there is one per
+ * declared shard and every one of them says `success`. The printed count is
+ * the measured one, never the generated one: a sentence that says "4" because
+ * the generator wrote "4" is the thing that lied on `39799846607`.
  *
- * Every reading that cannot be taken is a refusal. No `gh`, no token, an API
- * error, a malformed count — all exit non-zero, because UNMEASURED is not a
- * pass. A consumer whose runner has no `gh` gets a red required check rather
- * than a green one that measured nothing.
+ * Every reading that cannot be taken is a refusal. No marker directory, a
+ * missing marker, an unreadable marker, a malformed count — all exit
+ * non-zero, because UNMEASURED is not a pass.
  *
- * The poll exists for propagation lag, not for the defect: `needs` already
- * gates on the legs being terminal, so on an ordinary run the first reading
- * is complete and the loop costs nothing. It bounds how long a genuinely
- * stalled shard delays the refusal.
+ * ## Why not the Actions API (#1190)
+ *
+ * #1189 answered the same question with `gh api …/jobs`, which worked and
+ * cost every consumer two things the generated `test` job never needed
+ * before: **`gh` on the runner image**, which is a GitHub-hosted-image fact
+ * and not a runner fact — a self-hosted or container `runs-on`, which
+ * `ci.runner` lets a consumer choose, has no `gh` — and **`actions: read` on
+ * the job's token**. A marker needs neither. The runner reaches the artifact
+ * service for the run it is already in, so upload and same-run download take
+ * no `permissions:` scope and no token at all (`actions/download-artifact`'s
+ * README: a `github-token` and `actions: read` are "required when downloading
+ * artifacts from a different repository or from a different workflow run").
+ *
+ * A marker is also strictly better evidence than a conclusion. The API says
+ * what GitHub recorded about a job; a marker is a file the job's own shell
+ * wrote, so a leg that was created and then never executed leaves nothing
+ * behind — which is exactly `39799846607`'s three queued shards.
+ *
+ * And the poll is gone with it. It existed for API propagation lag; a marker
+ * uploaded before the leg concluded is downloadable the moment `needs` lets
+ * this job start, so there is no lag to wait out and no `SHARD_POLL_*` knob
+ * to surface in config.
  */
 export function buildShardAggregateScript(): string {
   const E = SHARD_AGGREGATE_ENV;
@@ -2883,7 +2929,7 @@ if [ "$rollup" != "success" ]; then
 fi
 
 # 2. A success rollup is not a measurement. Everything below establishes how
-#    many shards this run actually concluded (#1181).
+#    many shards this run actually EXECUTED (#1181).
 expected="\${${E.expected}:-}"
 case "$expected" in
   "" | *[!0-9]*)
@@ -2897,69 +2943,72 @@ if [ "$expected" -lt 1 ]; then
 fi
 
 job_name="\${${E.jobName}:-test-shard}"
-attempts="\${${E.pollAttempts}:-3}"
-pause="\${${E.pollSeconds}:-5}"
-attempt=1
 
-while : ; do
-  # \`|| api_status=$?\` rather than a bare assignment followed by \`$?\`.
-  # GitHub runs a \`run:\` block as \`bash -e\`, and under errexit an
-  # assignment whose only word is a failing command substitution aborts the
-  # shell THERE — so the bare form never reaches the handler below, and the
-  # operator gets a red job with gh's stderr captured into a variable
-  # nothing prints. Measured: \`bash -e\` skipped the handler, \`bash\` ran
-  # it. A \`||\` compound is exempt from errexit and \`$?\` is still the
-  # substitution's. Same #826 shape this whole step is written against: a
-  # script proved correct under a shell the generated step does not use.
-  api_status=0
-  rows="$(gh api --paginate \\
-    "repos/\${${E.repo}}/actions/runs/\${${E.runId}}/attempts/\${${E.runAttempt}}/jobs?per_page=100" \\
-    --jq '.jobs[] | [.name, (.conclusion // "none")] | @tsv' 2>&1)" || api_status=$?
-  if [ "$api_status" -ne 0 ]; then
-    # No reading at all. This is the one branch most likely to be written
-    # fail-open, and fail-open here reproduces the defect exactly.
-    echo "::error::could not read this run's jobs from the Actions API (gh exit $api_status): $rows"
-    echo "::error::the shard count is UNMEASURED, which is not a pass. Refusing."
-    exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
-  fi
-
-  seen=0
-  passed=0
-  pending=0
-  detail=""
-  while IFS="$(printf '\\t')" read -r name conclusion; do
-    [ -n "$name" ] || continue
-    case "$name" in
-      "$job_name ("*")") ;;
-      *) continue ;;
-    esac
-    seen=$((seen + 1))
-    case "$conclusion" in
-      success) passed=$((passed + 1)) ;;
-      none | "")
-        pending=$((pending + 1))
-        detail="$detail \\"$name\\"=no-conclusion"
-        ;;
-      *) detail="$detail \\"$name\\"=$conclusion" ;;
-    esac
-  done <<< "$rows"
-
-  # Complete reading, or out of attempts. The loop is for API propagation
-  # lag on an ordinary run, not for the defect.
-  if [ "$pending" -eq 0 ] && [ "$seen" -ge "$expected" ]; then break; fi
-  if [ "$attempt" -ge "$attempts" ]; then break; fi
-  attempt=$((attempt + 1))
-  sleep "$pause"
-done
-
-if [ "$seen" -ne "$expected" ]; then
-  echo "::error::this run reports $seen \\"$job_name\\" jobs, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
+# 3. The evidence, written by the shards about THEMSELVES. Each leg's last
+#    step writes one file naming its own status and uploads it; a leg that
+#    was created and never executed uploads nothing, and nothing is exactly
+#    what run 39799846607's three queued shards would have left (#1190).
+dir="\${${E.markerDir}:-}"
+if [ -z "$dir" ]; then
+  echo "::error::${E.markerDir} is unset, so this job has nowhere to read the shards' own evidence."
+  echo "::error::the shard count is UNMEASURED, which is not a pass. Refusing."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+if [ ! -d "$dir" ]; then
+  # The download produced nothing at all. This is the one branch most likely
+  # to be written fail-open — the download step is \`continue-on-error\` so
+  # that the refusal is THIS script's, with a sentence, rather than the
+  # action's bare red — and fail-open here reproduces the defect exactly.
+  echo "::error::no shard markers were downloaded: '$dir' does not exist, so not one of the $expected shards left evidence that it ran."
+  echo "::error::the shard count is UNMEASURED, which is not a pass. Refusing."
   exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
 fi
 
-if [ "$pending" -ne 0 ]; then
-  echo "::error::$pending of $expected shards produced NO conclusion:$detail"
-  echo "::error::a shard that never concluded is UNMEASURED, not a pass — this is #1181, where three of four were queued and the aggregate went green."
+# Every marker on disk, whatever its index. Counted separately from the
+# 1..expected walk below so a marker the matrix never declared disagrees out
+# loud instead of being skipped by a loop that only looks where it expects.
+found=0
+for marker in "$dir"/${SHARD_MARKER_FILE_PREFIX}*; do
+  [ -f "$marker" ] || continue
+  found=$((found + 1))
+done
+
+passed=0
+missing=0
+detail=""
+n=1
+while [ "$n" -le "$expected" ]; do
+  marker="$dir/${SHARD_MARKER_FILE_PREFIX}$n"
+  if [ ! -f "$marker" ]; then
+    missing=$((missing + 1))
+    detail="$detail \\"$job_name ($n)\\"=no-marker"
+  else
+    # \`|| status=…\` rather than a bare assignment. GitHub runs a \`run:\`
+    # block as \`bash -e\`, and under errexit an assignment whose only word
+    # is a failing command substitution aborts the shell THERE — so the bare
+    # form never reaches the handlers below, and the operator gets a red job
+    # with no sentence saying why. Measured in #1191 on this same step: a
+    # \`||\` compound is exempt from errexit, plain \`bash\` hid the defect
+    # and \`bash -e\` showed it.
+    status=""
+    status="$(tr -d '[:space:]' < "$marker")" || status="unreadable"
+    case "$status" in
+      success) passed=$((passed + 1)) ;;
+      "") detail="$detail \\"$job_name ($n)\\"=empty-marker" ;;
+      *) detail="$detail \\"$job_name ($n)\\"=$status" ;;
+    esac
+  fi
+  n=$((n + 1))
+done
+
+if [ "$missing" -ne 0 ]; then
+  echo "::error::$missing of $expected shards left NO marker, so they never executed:$detail"
+  echo "::error::a shard that never ran is UNMEASURED, not a pass — this is #1181, where three of four were queued and the aggregate went green."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
+if [ "$found" -ne "$expected" ]; then
+  echo "::error::this run left $found shard markers, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
   exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
 fi
 
@@ -2972,6 +3021,55 @@ fi
 # run 39799846607 said "All 4 shards passed" because the generator wrote 4.
 echo "All $passed shards concluded, and all $passed passed."
 `;
+}
+
+/**
+ * The steps one matrix leg runs to leave evidence that it executed (#1190).
+ *
+ * Two steps rather than one: a shell step writes the file, and
+ * `actions/upload-artifact` carries it to the one place a sibling job can
+ * read. Both are `if: always()`, because a leg that FAILED still executed and
+ * the aggregate distinguishes "ran and was red" from "never ran" — collapsing
+ * those two is #1181.
+ *
+ * `overwrite: true` is load-bearing and is about **re-runs**. v4 artifacts are
+ * immutable and a name may exist once per run, so on "Re-run failed jobs" the
+ * re-running leg would otherwise hit a conflict and go red for a reason that
+ * has nothing to do with the suite. Overwriting matches GitHub's own re-run
+ * semantics: the legs that are not re-run keep the markers they already
+ * earned, which is the same thing `needs` does with their results.
+ *
+ * `if-no-files-found: error` because a marker step that produced no file is a
+ * shard whose evidence is UNMEASURED, and the honest place to say so is in
+ * the leg that failed to write it.
+ */
+export function buildShardMarkerSteps(indent: string): string {
+  const M = SHARD_MARKER_ENV;
+  const dir = `\${{ runner.temp }}/rungate-shard-marker`;
+  const lines = [
+    `# #1190. The aggregate below counts these instead of asking the Actions`,
+    `# API: \`gh\` is a GitHub-hosted-image fact rather than a runner fact, and`,
+    `# \`actions: read\` is a scope a consumer's token has to be granted. A`,
+    `# marker needs neither — same run, same artifact service.`,
+    `- name: Record that this shard executed`,
+    `  if: always()`,
+    `  env:`,
+    `    ${M.index}: \${{ matrix.shard }}`,
+    `    ${M.status}: \${{ job.status }}`,
+    `    ${M.dir}: ${dir}`,
+    `  run: |`,
+    `    mkdir -p "$${M.dir}"`,
+    `    printf '%s\\n' "$${M.status}" > "$${M.dir}/${SHARD_MARKER_FILE_PREFIX}$${M.index}"`,
+    `- uses: ${actionRef("actions/upload-artifact")}`,
+    `  if: always()`,
+    `  with:`,
+    `    name: ${SHARD_MARKER_ARTIFACT_PREFIX}\${{ matrix.shard }}`,
+    `    path: ${dir}/`,
+    `    if-no-files-found: error`,
+    `    overwrite: true`,
+    `    retention-days: 1`,
+  ];
+  return lines.map(line => `${indent}${line}`).join("\n");
 }
 
 /** Indent a script for a YAML block scalar, leaving blank lines blank. */
@@ -3148,6 +3246,30 @@ export const CI_PULL_REQUEST_TRIGGER = `  # NO branches: filter, deliberately (#
   # Removing it there too duplicates a run on every feature-branch push for
   # no new coverage.
   pull_request:`;
+
+/**
+ * `ai-review.yml`'s own `on.pull_request`: `CI_PULL_REQUEST_TRIGGER`'s body
+ * plus an explicit `types:` list (#1207).
+ *
+ * Why this workflow and no other, why all five types are spelled, and what the
+ * label could not do without them: `AI_REVIEW_PULL_REQUEST_TYPES` in
+ * `lib/scaffold/ai-review-step.ts`, which is the single list this renders.
+ *
+ * Built FROM `CI_PULL_REQUEST_TRIGGER` rather than beside it. The no-`branches:`
+ * rationale is #1136's and is identical here; a second copy of that comment
+ * block is a second thing to update when the reasoning moves, and
+ * `test/stacked-pr-ci-trigger.test.ts` checks all four generated bodies for the
+ * property it describes.
+ */
+export const AI_REVIEW_PULL_REQUEST_TRIGGER = `${CI_PULL_REQUEST_TRIGGER}
+    # #1207. The three GitHub defaults, PLUS \`labeled\`/\`unlabeled\` — and
+    # the defaults are spelled because \`types:\` REPLACES them rather than
+    # extending them. Omitting them would fix the waiver and stop this
+    # required check running on ordinary pushes.
+    #
+    # Only this workflow subscribes to label events, because only this
+    # workflow reads a label. A label is not a code change.
+    types: [${AI_REVIEW_PULL_REQUEST_TYPES.join(", ")}]`;
 
 export const CI_CONCURRENCY = `# The GROUP does the work here, not the flag. A run is only ever cancelled by
 # another run in the SAME group, so keying a push on its own commit makes the
@@ -3400,6 +3522,7 @@ ${baseRefStep}
 ${bunStep}
       - run: bun install${globalTools.step}${ciSetupStep()}
       - run: ${test.command} --shard=\${{ matrix.shard }}/${shards}${typecheckStep}
+${buildShardMarkerSteps("      ")}
 
   # The aggregate. Named "test" because that is the context branch protection
   # requires; it exists to turn N shard results into the one verdict.
@@ -3411,25 +3534,35 @@ ${bunStep}
     # protection configurations read a skip as satisfied — which would make
     # this aggregate a gate that cannot refuse.
     if: always()
+    # #1190. \`contents: read\` and nothing else. #1189 also took
+    # \`actions: read\` so the step could \`gh api\` this run's jobs, which
+    # worked and made every consumer's required check depend on a token scope
+    # and on \`gh\` being present — neither of which the generated test job
+    # needed before, and neither of which a self-hosted or container
+    # \`ci.runner\` is guaranteed to have. Same-run artifacts take no scope
+    # and no token.
     permissions:
       contents: read
-      # #1181. The aggregate asks the Actions API how many shards actually
-      # concluded, because \`needs.test-shard.result\` collapses a matrix into
-      # one word and reported \`success\` for three legs that never ran.
-      actions: read
     steps:
+      - uses: ${actionRef("actions/download-artifact")}
+        # continue-on-error so the REFUSAL is the script's and carries a
+        # sentence. A download that fails here is still red either way, but
+        # the action's own error names none of this — and a check that is
+        # correctly red and silent is the expensive half.
+        continue-on-error: true
+        with:
+          pattern: ${SHARD_MARKER_ARTIFACT_PREFIX}*
+          merge-multiple: true
+          path: \${{ runner.temp }}/rungate-shard-markers
       - name: Every shard concluded, and every shard passed
         env:
           # Every GitHub-side value arrives here, and the script below holds
           # no GitHub expression at all — that is what lets a test execute
-          # the shipped text with a stubbed gh and watch it refuse (#1181).
+          # the shipped text against a planted marker directory (#1181).
           ${SHARD_AGGREGATE_ENV.rollup}: \${{ needs.test-shard.result }}
           ${SHARD_AGGREGATE_ENV.expected}: "${shards}"
           ${SHARD_AGGREGATE_ENV.jobName}: test-shard
-          ${SHARD_AGGREGATE_ENV.repo}: \${{ github.repository }}
-          ${SHARD_AGGREGATE_ENV.runId}: \${{ github.run_id }}
-          ${SHARD_AGGREGATE_ENV.runAttempt}: \${{ github.run_attempt }}
-          GH_TOKEN: \${{ github.token }}
+          ${SHARD_AGGREGATE_ENV.markerDir}: \${{ runner.temp }}/rungate-shard-markers
         run: |
 ${indentedScript(buildShardAggregateScript(), "          ")}
 `
@@ -3678,7 +3811,7 @@ on:
   # See the block comment in lib/scaffold/steps.ts: no branches: filter, and
   # its absence hangs a merge queue silently rather than failing it (#867).
   merge_group:
-${CI_PULL_REQUEST_TRIGGER}
+${AI_REVIEW_PULL_REQUEST_TRIGGER}
 
 ${aiReviewPermissions}
 

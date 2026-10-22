@@ -145,6 +145,24 @@ export const PINNING: readonly ActionPin[] = [
     version: "v4",
     why: "GitHub's own namespace on GitHub's own runner; the tag is how a security patch reaches a consumer who is not watching",
   },
+  // #1190. The shard aggregate's evidence channel. These are the two actions
+  // that let a shard prove it EXECUTED without the aggregate asking the
+  // Actions API: `gh` is only on GitHub's own runner images and `actions:
+  // read` is a scope a job has to be granted, whereas the artifact service
+  // is reached by the runner itself for the run it is already in. Same
+  // first-party reasoning as `actions/checkout` above.
+  {
+    action: "actions/upload-artifact",
+    style: "tag",
+    version: "v4",
+    why: "GitHub's own namespace on GitHub's own runner; the tag is how a security patch reaches a consumer who is not watching",
+  },
+  {
+    action: "actions/download-artifact",
+    style: "tag",
+    version: "v4",
+    why: "GitHub's own namespace on GitHub's own runner; the tag is how a security patch reaches a consumer who is not watching",
+  },
   {
     action: "oven-sh/setup-bun",
     style: "sha",

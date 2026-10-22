@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync, statSync } from "fs";
 import { readdirSorted } from "./readdir-sorted";
+import { fileExtensions } from "./file-extensions";
 import { join, basename } from "path";
 import { resolveConfig } from "./config-loader";
 // A leaf, not a generator. SC-365 / AC-3 keeps generation logic out of the
@@ -476,14 +477,22 @@ function scanDirs(root: string): DirEntry[] {
       const full = join(root, entry);
       try {
         if (!statSync(full).isDirectory()) continue;
-        const files = readdirSorted(full, { recursive: true });
-        const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-        dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
+        // One binding for what a "type" is, shared with
+        // `scripts/generate-code-map.ts` and the scaffold's inline fallback
+        // in `lib/scaffold/steps.ts` (#1200). The copy that used to be here
+        // reported directory names.
+        //
+        // Naming that fallback by its function would red
+        // `test/unit/scanner.test.ts`: it greps this file's raw TEXT for
+        // generator symbols, so a COMMENT mentioning one reads as an import.
+        dirs.push({ name: entry, types: fileExtensions(full) });
       } catch {}
     }
   } catch {}
 
-  dirs.sort((a, b) => b.fileCount - a.fileCount);
+  // Unsorted. Row order is `directoryTable`'s single decision (#1163) — this
+  // used to sort by `fileCount`, which is how the census survived one
+  // indirection past being printed. See `DirEntry` for the measurement.
   return dirs;
 }
 
