@@ -1014,6 +1014,21 @@ export const AI_REVIEW_FINDINGS_PATH_VAR = "AI_REVIEW_FINDINGS_PATH";
  */
 export const AI_REVIEW_EXECUTION_FILE_VAR = "AI_REVIEW_EXECUTION_FILE";
 
+/**
+ * The execution file's denial counter, as the report step matches it (#1087).
+ *
+ * One spelling, because the route block greps it three times — for the key's
+ * presence, for a zero, and implicitly for everything else — and three
+ * literals would be three things to get subtly out of step with each other.
+ *
+ * It is the pinned action's own field name, written by the SDK into the file
+ * `setExecutionFileOutputIfPresent` names. Matched as TEXT rather than parsed,
+ * for the reason the turn-budget branch beside it states: a runner is not
+ * guaranteed `jq`, and the cost of a false match here is a different
+ * explanatory sentence, never a different exit code.
+ */
+export const AI_REVIEW_DENIALS_KEY = "permission_denials_count";
+
 export const AI_REVIEW_PREPARE_STEP_ID = "ai-review-prepare";
 
 export const AI_REVIEW_PREPARE_STEP_NAME = "Choose a findings path outside the checkout";
@@ -1797,6 +1812,58 @@ export const AI_REVIEW_RUNTIME_CONFIG_UNMEASURED =
   `finding 1). ` +
   `This run is UNMEASURED at these paths, which is not the same as a run ` +
   `in which the reviewer did not write to them. Paths`;
+
+/**
+ * The annotation title the reading above carries, and why it is NOT
+ * `AI_REVIEW_UNMEASURED_TITLE` (#1087).
+ *
+ * ## The measurement that went wrong
+ *
+ * Two steps emitted one title. The report step says `AI review UNMEASURED`
+ * when it cannot say a review happened at all; the drift step said the same
+ * words about a run in which the review DID happen, was adjudicated, and one
+ * named sub-reading — the runtime's own config under `$HOME` — could not be
+ * taken. Those are not the same claim and only one of them is about whether
+ * the pull request was reviewed.
+ *
+ * The consequence was a fleet query, run over this repository's own history:
+ *
+ * ```
+ * gh api repos/<o>/<r>/check-runs/$JID/annotations \
+ *   --jq '[.[]|select(.title=="AI review UNMEASURED")]|length'
+ * → of 30 most recent GREEN ai-review runs: real=0  unmeasured=30
+ * ```
+ *
+ * read as "0 of 30 green runs produced a review". Classifying the same runs
+ * by MESSAGE instead of title: 29 of 40 were this reading, and 17 of them had
+ * written a real findings payload. The three newest carried `ai-review
+ * findings outcome: CLEAN` beside the annotation that was being counted as
+ * its absence. The gate was working and the count said it had never run.
+ *
+ * ## Why a title and not a level
+ *
+ * Both readings are `::warning`, both exit 0, and neither should change: the
+ * runtime-config blind spot is real and naming it is #871's whole point.
+ * Nothing here is quieter than it was — the message is unchanged, the
+ * annotation still appears on every run that earns it. What changes is that a
+ * reader counting one title is no longer counting the other.
+ *
+ * ## The boundary, stated, because the next reading has to pick a side
+ *
+ * This title is for "the review happened and a NAMED sub-reading could not be
+ * taken". `AI_REVIEW_UNMEASURED_TITLE` stays on everything that means "this
+ * job cannot say a review happened" — including the drift step's own
+ * no-usable-`$HOME` branch, which is unmeasured about the reviewer rather
+ * than about a path list, and keeps the original title for exactly that
+ * reason.
+ *
+ * It does not contain `AI_REVIEW_UNMEASURED_TITLE` as a substring, so a
+ * reader who greps rather than compares is separated too. That is deliberate
+ * and `test/ai-review-outside-reading.test.ts` asserts it, because a title
+ * that merely extends the other would read as fixed while leaving every
+ * `grep -c` in the same state.
+ */
+export const AI_REVIEW_RUNTIME_CONFIG_TITLE = "AI review runtime config UNMEASURED";
 
 /**
  * The reviewer's turn budget. One declaring position; see `aiReviewClaudeArgs`.
@@ -2596,6 +2663,41 @@ export const AI_REVIEW_APP_INSTALL_CAUSE =
   `${AI_REVIEW_APP_INSTALL_URL} and re-run. This job cannot read that log, ` +
   `so it is naming a likely cause and not reporting a measured one.`;
 
+/**
+ * The step that says which of the states above this run is in.
+ *
+ * ## Reading the log these messages send you to, without being lied to (#1087)
+ *
+ * Several routes here end in "search the step's log for X". Whoever follows
+ * that instruction will reach for:
+ *
+ * ```
+ * gh run view <id> -R <owner>/<repo> --log
+ * ```
+ *
+ * and that output contains **every branch of every `if` in this file**,
+ * whether or not it ran. The runner echoes each step's whole script back
+ * before executing it, one line at a time, each prefixed with a literal
+ * `^[[36;1m` (ESC `[36;1m`, cyan). So an unfiltered `grep` over it reports
+ * code as though it were output: grepping for `mode=none` returns a hit on
+ * every run, because the line is in the script that prints `mode=vertex`.
+ *
+ * Filter the echo before reading anything:
+ *
+ * ```
+ * gh run view <id> -R <o>/<r> --log | perl -ne 'print unless /\Q^[[36;1m\E/'
+ * ```
+ *
+ * Note the `^[` there is two literal characters in the downloaded bytes, not
+ * an escape — `grep -F $'\e[36;1m'` matches nothing against it, which is the
+ * failure that looks like "the filter is not needed".
+ *
+ * This cost two readers of #1087 a wrong conclusion each: one relayed
+ * `mode=none` as a missing credential off an echoed line, and one spent a
+ * pass reading the generated script as though it were the run. It is written
+ * here rather than in a rules file because the people who hit it are the
+ * people these annotations have just sent to the log.
+ */
 export function buildReviewRunScript(version: string): string {
   // The exact command the success branch runs. Built here so the comments
   // below and the bash are one string, and so a test can name it.
@@ -2803,15 +2905,52 @@ export function buildReviewRunScript(version: string): string {
   // what keeps it from being the second decider the comment above declines to
   // build, and it is asserted in `test/ai-review-route-reading.test.ts`
   // (AC-B5) rather than left as an intention.
-  const executed =
+  // #1087. The three sentences below replace ONE that guessed. It read
+  // "a reviewer that ran and wrote nothing is usually one that could not
+  // write to the findings path", and the execution files say otherwise:
+  // every cause-B run sampled on this repository reported
+  // `permission_denials_count: 0` — runs 39707821002 (22 turns), 39708155573
+  // (40), 39707657746 (43), 39707621271 (47) and 39708162846 (51). The guess
+  // cost two readers a dead end before anyone stat'ed the number it was
+  // guessing about, which is this file's own standing complaint about a
+  // default substituted for a reading, made about its own prose.
+  //
+  // So the denial count is READ, by the same text match the turn-budget
+  // branch above uses and for the same reason: a runner is not guaranteed
+  // `jq`, and a false match here costs a different explanatory sentence
+  // rather than a different verdict. Three states and not two — a file that
+  // does not carry the key at all is not a file reporting zero, and calling
+  // it zero would be the substitution this branch exists to stop making.
+  const executedNoDenials =
     `The review action exited successfully WITHOUT writing a findings ` +
     `payload, so no AI review ran on this pull request — and the reviewer ` +
     `DID execute: the action wrote an execution file, so this is NOT the ` +
     `case where it declined before running, and nothing about the workflow ` +
-    `file is worth checking. Read that execution file for the turn count ` +
-    `and the permission denials; a reviewer that ran and wrote nothing is ` +
-    `usually one that could not write to the findings path, which is outside ` +
-    `the checkout. This check is UNMEASURED, not a passing review.`;
+    `file is worth checking. Its execution file reports ` +
+    `permission_denials_count 0, so the reviewer was never refused a call: ` +
+    `access to the findings path is NOT the cause and reading it as one is a ` +
+    `dead end (#1087). Read the execution file for the turn count and what ` +
+    `the reviewer spent its turns on instead. This check is UNMEASURED, not ` +
+    `a passing review.`;
+
+  const executedDenied =
+    `The review action exited successfully WITHOUT writing a findings ` +
+    `payload, so no AI review ran on this pull request — and the reviewer ` +
+    `DID execute: the action wrote an execution file, and that file reports ` +
+    `a NON-ZERO permission_denials_count, so the reviewer was refused at ` +
+    `least one call. Read the denials in the execution file: a reviewer ` +
+    `refused its own output file is the one case where the findings path, ` +
+    `which is outside the checkout, is worth checking. This check is ` +
+    `UNMEASURED, not a passing review.`;
+
+  const executedDenialsUnknown =
+    `The review action exited successfully WITHOUT writing a findings ` +
+    `payload, so no AI review ran on this pull request — and the reviewer ` +
+    `DID execute: the action wrote an execution file. That file carries no ` +
+    `permission_denials_count, so whether the reviewer was refused anything ` +
+    `is UNMEASURED too and this job will not guess at it (#1087). Read the ` +
+    `execution file and the action's own log. This check is UNMEASURED, not ` +
+    `a passing review.`;
 
   const exhausted =
     `The review action exited successfully WITHOUT writing a findings ` +
@@ -3044,8 +3183,28 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
     # different explanatory sentence rather than a different verdict.
     if grep -qE '"subtype"[[:space:]]*:[[:space:]]*"error_max_turns"' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
       route="${exhausted}"
+    elif ! grep -qE '"${AI_REVIEW_DENIALS_KEY}"[[:space:]]*:' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
+      # Asked FIRST, because the two readings below are both about a number
+      # that may not be there, and "absent" answered last is "absent" reported
+      # as whichever branch fell through to it.
+      route="${executedDenialsUnknown}"
+    elif grep -qE '"${AI_REVIEW_DENIALS_KEY}"[[:space:]]*:[[:space:]]*0[[:space:]]*(,|\}|$)' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
+      # The end-anchor is \`(,|}|$)\` and the \`$\` is the whole of it. grep is
+      # LINE-based: it strips the newline before matching, so in the
+      # pretty-printed file the action actually writes — where this field is
+      # the last member of the result object — the character after \`0\` is the
+      # end of the line and nothing else. A \`[,}]\` class alone therefore
+      # fails to match a genuine zero, which is the failing direction: the
+      # zero route would be unreachable and every executed run would report
+      # denials it did not have.
+      #
+      # That is not a hypothetical. The first draft of this branch was
+      # \`[,}]\`, and \`test/ai-review-route-reading.test.ts\` AC-C4 caught it by
+      # pairing the three routes and finding two of them printing one
+      # sentence. The trailing \`,\` and \`}\` are kept for a compact file.
+      route="${executedNoDenials}"
     else
-      route="${executed}"
+      route="${executedDenied}"
     fi
   elif [ -n "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
     # Named but unreadable. Reporting that as the declined route would be a
@@ -4765,7 +4924,7 @@ ${AI_REVIEW_RUNTIME_CONFIG_PATHS.map((p, i) => {
     \\) \\
     2>/dev/null | head -50 || true)
   if [ -n "\${runtime_config}" ]; then
-    echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${runtimeConfig}: $(escape_annotation "\${runtime_config}")"
+    echo "::warning title=${AI_REVIEW_RUNTIME_CONFIG_TITLE}::${runtimeConfig}: $(escape_annotation "\${runtime_config}")"
   fi
 
   if [ -n "\${outside}" ]; then
