@@ -1077,9 +1077,12 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     { verifier: "v3", real: false, reason: "could not reproduce" },
   ];
 
+  // Each batch names itself, which is what makes `key` usable as the corpus
+  // id across the concatenation. Two batches, because the quorum runs before
+  // the category check and one call carries one ballot.
   const corpus = (): CandidateRecord[] => [
-    ...arbitrateBatch([measurable(11), measurable(12)], opts({ votes: DISSENT })).candidates,
-    ...arbitrateBatch([measurable(21), styleNit, measurable(22)], opts()).candidates,
+    ...arbitrateBatch([measurable(11), measurable(12)], opts({ votes: DISSENT, batch: "pr-a" })).candidates,
+    ...arbitrateBatch([measurable(21), styleNit, measurable(22)], opts({ batch: "pr-b" })).candidates,
   ];
 
   /**
@@ -1101,7 +1104,8 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     suppress: (c: CandidateRecord) => boolean,
   ): ReviewFinding[] =>
     ledger.map((c, i) => ({
-      // The position in this ledger, which is unique by construction.
+      // `CandidateRecord.key` — the landed form of what #1273 wrote this
+      // line as a placeholder for.
       //
       // #1258 keyed this on `c.symptomHash` and that was wrong (#1272).
       // `symptomHash` hashes the SORTED SYMPTOM KEY SET, so one reading
@@ -1112,11 +1116,15 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
       // to record, trips the duplicate refusal added in #1253, and reads as a
       // broken emitter rather than as the wrong key.
       //
-      // An index does not survive a join to anything outside one corpus, and
-      // this is one corpus. `CandidateRecord.key` (#1263) is the cross-corpus
-      // answer — `${batch}/${index}`, unique by construction, `null` when the
-      // caller names no batch — and this becomes `id: c.key!` once it lands.
-      id: String(i),
+      // #1273 then keyed it on the position in this ledger, which is unique
+      // by construction and correct for a single corpus. It does not survive
+      // a join to anything outside one — and this corpus is already two
+      // batches concatenated, so the index is global here only because the
+      // test happens to build both halves in one expression. `key` is
+      // `${batch}/${index}`: unique across every ledger produced under
+      // distinct batch names, `null` when the caller names none. AR-17
+      // measures why neither of the other two fields can do it.
+      id: c.key!,
       filedAt: 1_000,
       closed: KNOWN[i]!.closed,
       citations: KNOWN[i]!.fixed === true ? [{ sha: `c${i}`, at: 2_000, filesChanged: 3 }] : [],
@@ -1214,7 +1222,10 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     // rows with different hashes get different ids, which any keying does.
     expect(symptomHash(wordedA)).toBe(symptomHash(wordedB));
 
-    const pair = arbitrateBatch([wordedA, wordedB], opts({ votes: DISSENT })).candidates;
+    // The batch is named, because `key` is `null` without one and a null id
+    // would make this case pass or fail for a reason about the fixture
+    // rather than about the keying. AR-17 covers the unnamed reading.
+    const pair = arbitrateBatch([wordedA, wordedB], opts({ votes: DISSENT, batch: "pr-1272" })).candidates;
     expect(pair.length).toBe(2);
 
     const ids = bridge(pair, () => false).map(f => f.id);
@@ -1370,5 +1381,105 @@ describe("AR-16: a malformed ballot is UNMEASURED, not a dissent", () => {
     const r = run("not-an-object.json");
     expect(r.code).toBe(1);
     expect(r.out).toContain("UNMEASURED");
+  });
+});
+
+
+/**
+ * AR-17: the corpus key.
+ *
+ * `evals/ai-review-control/outcomes.ts` scores a corpus keyed by one field,
+ * and a repeated key there does not weaken a score — it inverts one. Two
+ * rows sharing a key meant the second overwrote the first, so a finding with
+ * a real fixing commit read `NO_ACTION` and landed in `cost`: noise
+ * manufactured out of a fix, which `compareReviewOutcomes` would then grade
+ * as a regression that never happened.
+ *
+ * The obvious key for a candidate nobody filed is its symptom hash. The
+ * rows below measure why that is wrong, and why the ledger reports an absent
+ * key rather than a plausible one.
+ */
+describe("AR-17: the corpus key is unique by construction, or it is absent", () => {
+  /** Identical readings under different wordings. Both unfiled. */
+  const reReport = (title: string): Finding => ({
+    id: UNFILED_ID,
+    title,
+    body: "`zetaHandler` fails 311 of 742 times in `lib/z.ts`.",
+  });
+
+  /**
+   * THE CONTROL, AND THE MEASUREMENT. Read this before the rows after it:
+   * it establishes that the collision is real and present in this fixture,
+   * so a later assertion about distinct keys is not holding vacuously.
+   */
+  test("CONTROL: symptomHash collides — 1 distinct hash across 2 rows", () => {
+    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts());
+    expect(r.candidates.length).toBe(2);
+    expect(new Set(r.candidates.map(c => c.symptomHash)).size).toBe(1);
+    // And the ids collide too, for the separate reason that neither is filed.
+    expect(new Set(r.candidates.map(c => c.id))).toEqual(new Set([UNFILED_ID]));
+    // One posted, one withheld: exactly the pair a corpus must keep apart.
+    expect(r.candidates.map(c => c.withheldBy)).toEqual([null, "DUPLICATE"]);
+  });
+
+  /**
+   * The hash does not identify the collision either, which is the half that
+   * is easy to miss: the dedupe matches on SHARED keys, not on the whole
+   * set, so two findings can be duplicates of each other and hash apart.
+   */
+  test("the real #1195/#1196 pair are duplicates with DIFFERENT hashes", () => {
+    const incident = JSON.parse(
+      readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1195-1196.json"), "utf-8"),
+    ) as Finding[];
+    expect(duplicateOverlap(incident[0]!, incident[1]!).duplicate).toBe(true);
+    const r = arbitrateBatch(incident.map(f => ({ ...f, id: UNFILED_ID })), opts());
+    expect(new Set(r.candidates.map(c => c.symptomHash)).size).toBe(2);
+  });
+
+  test("named a batch, every key is distinct even where the hash and the id are not", () => {
+    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts({ batch: "pr-1251" }));
+    expect(r.candidates.map(c => c.key)).toEqual(["pr-1251/0", "pr-1251/1"]);
+    expect(new Set(r.candidates.map(c => c.key)).size).toBe(r.candidates.length);
+  });
+
+  test("two batches concatenate without collision, which is the corpus a consumer builds", () => {
+    const a = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts({ batch: "pr-1" }));
+    const b = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts({ batch: "pr-2" }));
+    const corpus = [...a.candidates, ...b.candidates];
+    expect(new Set(corpus.map(c => c.key)).size).toBe(4);
+  });
+
+  /**
+   * NOT A GAP. A ledger whose caller named no batch cannot be concatenated
+   * with another, and `null` says so at the point of use. A key invented
+   * here would collide with the next batch's first row and shrink the corpus
+   * silently, which is the one direction the instrument must not fail in.
+   */
+  test("unnamed, the key is absent rather than plausible", () => {
+    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts());
+    expect(r.candidates.map(c => c.key)).toEqual([null, null]);
+  });
+
+  /**
+   * WHAT EVERY ROW ABOVE HOLDS FIXED: each `arbitrateBatch` call is given a
+   * batch name no other call uses. That is the axis the mutations never
+   * vary, so none of their counts could have come back wrong about it
+   * (`.claude/rules/checks-must-be-able-to-fail.md`, seventh shape).
+   *
+   * Written out, the gap is the caller's obligation and the ledger cannot
+   * discharge it: `arbitrateBatch` sees one call and has no way to know a
+   * name was used before. Reusing one collides exactly as a default would,
+   * and the row below is here so that is discovered on this line rather
+   * than in a corpus that quietly halved.
+   */
+  test("the batch name must be unique PER CALL — the ledger cannot check this for you", () => {
+    const one = arbitrateBatch([reReport("one wording")], opts({ batch: "pr-1" }));
+    const two = arbitrateBatch([reReport("another wording")], opts({ batch: "pr-1" }));
+    const corpus = [...one.candidates, ...two.candidates];
+    expect(corpus.length).toBe(2);
+    // Not an endorsement — a statement of the contract's edge. Downstream,
+    // `summariseFindingOutcomes` refuses a repeated key rather than scoring
+    // it, so this surfaces as a refusal and never as a quiet shrink.
+    expect(new Set(corpus.map(c => c.key)).size).toBe(1);
   });
 });
