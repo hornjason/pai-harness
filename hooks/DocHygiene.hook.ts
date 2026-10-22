@@ -26,6 +26,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { dirname, basename, join } from 'path';
 import { stampFrontmatter } from '../lib/frontmatter';
+import { localCalendarDay } from '../lib/local-calendar-day';
 
 const input = JSON.parse(readFileSync(0, 'utf-8'));
 const toolInput = input?.tool_input || {};
@@ -84,7 +85,13 @@ const result = stampFrontmatter(content, {
   'doc-type': inferDocType(),
   status: 'active',
   owner: 'jason',
-  updated: new Date().toISOString().slice(0, 10),
+  // #600. `updated:` is the day the author edited the document, which is a
+  // LOCAL calendar day — not a UTC one. The raw spelling this replaces was
+  // wrong for the four hours a day when the two disagree, and the stamp that
+  // results is written, committed and then read as a date by everything
+  // downstream. `localCalendarDay` is the one binding for this question, and
+  // its own docstring names `updated:` frontmatter as the case it exists for.
+  updated: localCalendarDay(),
 });
 
 if (result.refused) {
