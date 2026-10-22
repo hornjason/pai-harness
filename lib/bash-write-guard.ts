@@ -129,7 +129,46 @@ export function stripQuoted(s: string): string {
  * command writing it.
  */
 export function stripHeredocs(s: string): string {
-  return s.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\s*\2\s*$/gm, ' ');
+  const lines = s.split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // A whole-line `#` comment is prose, and its APOSTROPHE is not a quote.
+    // #1176: `# First, check if there's a test workflow-state.json` opened a
+    // quote that stayed open across the newline and swallowed the redirect on
+    // a later line, so a real write to a protected file read as quoted text.
+    // Two commands in a 5,513-command corpus did exactly this, both of them
+    // genuine writes. Dropped here rather than in each caller because every
+    // arm reaches this function first.
+    const isComment = /^\s*#/.test(line);
+    out.push(isComment ? '' : line); // #1176: the OPERATOR's line is kept — see below.
+    i++;
+    if (isComment) continue; // a comment cannot open a heredoc
+    const delim = heredocDelimiter(line);
+    if (!delim) continue;
+    while (i < lines.length && lines[i].trim() !== delim) i++;
+    if (i < lines.length) i++; // the terminator itself
+  }
+  return out.join('\n');
+}
+
+/**
+ * The delimiter word of a `<<WORD` on this line, if any.
+ *
+ * #1176: deliberately NOT quote-aware, and that is load-bearing. Restricting
+ * this to a top-level `<<` — the obvious hardening — was tried and REDDENS
+ * the recorded `pai-config#474` false positive, whose heredoc is legitimately
+ * nested inside `"$(cat <<'EOF' … )"`. A heredoc inside a command
+ * substitution inside double quotes is a real heredoc; telling it apart from
+ * `echo "<<EOF"` needs command-substitution nesting, which is a shell parser.
+ * So `echo "<<EOF"` followed by a later bare `EOF` line still over-strips.
+ * That direction over-blocks nothing — it deletes text the checks would
+ * otherwise read — and is recorded rather than half-fixed.
+ */
+function heredocDelimiter(line: string): string | null {
+  const m = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line);
+  return m ? m[2] : null;
 }
 
 /** Remove quote characters, keep the contents. Use when looking for a TARGET. */
@@ -163,33 +202,105 @@ export function commandWord(segment: string): string {
  * then dequoted, because `> "x/.gate-salt"` writes the same file as `>
  * x/.gate-salt`.
  */
+/**
+ * Read one word starting at `i`, honouring quotes. Returns the word's
+ * CONTENTS — quote characters removed, contents kept — and the index after
+ * it, so `dir/"workflow-state.json"` reads as one word and not as two halves
+ * either side of a span that was deleted.
+ */
+function readWord(s: string, i: number): [string, number] {
+  let w = '';
+  while (i < s.length) {
+    const c = s[i];
+    if (c === ' ' || c === '\t' || c === '\n') break;
+    if (c === '>' || c === '<') break; // an operator ends a word
+    if (c === "'" || c === '"') {
+      const close = s.indexOf(c, i + 1);
+      const end = close === -1 ? s.length : close;
+      w += s.slice(i + 1, end);
+      i = end + 1;
+      continue;
+    }
+    w += c;
+    i++;
+  }
+  return [w, i];
+}
+
+/**
+ * Is this redirect operand a PATH being written, or plumbing?
+ *
+ * `2>&1` and `>&2` name a descriptor, not a file. Keeping that distinction is
+ * what lets `2>` count as a write at all (#1176): without it, dropping `2`
+ * from the old lookbehind would have turned every `2>&1` in the corpus into
+ * a write to a file called `&1`.
+ */
+function isWriteOperand(op: string): boolean {
+  if (!op) return false;
+  if (/^&?\d+$/.test(op) || op === '-') return false;
+  return op !== '/dev/null' && op !== '/dev/stderr' && op !== '/dev/stdout';
+}
+
+/**
+ * Paths a segment writes through shell redirection or a copying verb.
+ *
+ * #1176 replaced three substring matches with one left-to-right scan. The
+ * substring version read redirects off `stripQuoted`, which deletes quoted
+ * spans AND their contents, then tried to recover a wholly-quoted target in a
+ * second pass — so a target quoted in the MIDDLE of the word (`> dir/"x"`)
+ * was seen by neither pass. Scanning finds the operator at a position and
+ * then reads the operand as a word, which is the same rule the shell uses.
+ */
 export function writeTargets(segment: string): string[] {
   const targets: string[] = [];
-  const code = stripQuoted(segment);
-  // `> file` and `>> file`, but not `2>` or `&>` — those are stderr plumbing.
-  for (const m of code.matchAll(/(?<![2&])\s*>{1,2}\s*(\S+)/g)) {
-    if (m[1] && m[1] !== '/dev/null') targets.push(dequote(m[1]));
+  const words: string[] = [];
+  const s = stripHeredocs(segment);
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === ' ' || c === '\t' || c === '\n') {
+      i++;
+      continue;
+    }
+    if (c === '>') {
+      i++;
+      if (s[i] === '>') i++;
+      while (s[i] === ' ' || s[i] === '\t') i++;
+      // `>&1` — the `&` belongs to the operand, so readWord keeps it and
+      // isWriteOperand rejects it.
+      const [operand, next] = readWord(s, i);
+      i = next;
+      if (isWriteOperand(operand)) targets.push(operand);
+      continue;
+    }
+    if (c === '<') {
+      // An input redirect reads; skip it and its operand so the operand is
+      // never mistaken for a command word.
+      i++;
+      if (s[i] === '<') i++;
+      while (s[i] === ' ' || s[i] === '\t') i++;
+      i = readWord(s, i)[1];
+      continue;
+    }
+    const [w, next] = readWord(s, i);
+    i = next === i ? i + 1 : next;
+    if (w) words.push(w);
   }
-  // A quoted redirect target survives quote-stripping as nothing at all, so
-  // it is recovered separately rather than lost.
-  for (const m of segment.matchAll(/(?<![2&])\s*>{1,2}\s*(['"])([^'"]+)\1/g)) targets.push(m[2]);
-  const tee = code.match(/\btee\s+(?:-a\s+)?(\S+)/);
-  if (tee) targets.push(dequote(tee[1]));
+
+  // `tee` takes MANY files. Reading only the first operand let
+  // `tee /tmp/a <protected>` through (#1176).
+  const teeAt = words.findIndex(w => w.replace(/^.*\//, '') === 'tee');
+  if (teeAt !== -1) {
+    for (const w of words.slice(teeAt + 1)) if (!w.startsWith('-')) targets.push(w);
+  }
+
   // `cp`/`mv` take the LAST non-option argument as the destination. Reading
   // the second token instead — which this did until #1120 — mis-parses every
   // invocation carrying a flag: `cp -p src /x/workflow-state.json` read the
   // destination as `src` and never examined the real one.
-  //
-  // Arguments are DEQUOTED rather than stripped. Stripping them was measured
-  // to lose the destination entirely for `cp "a/X.hook.ts" "b/X.hook.ts"`,
-  // which is a real hook write that then read as having no target.
   const word = commandWord(segment);
   if (word === 'cp' || word === 'mv' || word === 'install' || word === 'rsync') {
-    const args = dequote(segment)
-      .trim()
-      .split(/\s+/)
-      .slice(1)
-      .filter(a => !a.startsWith('-'));
+    const args = words.slice(1).filter(a => !a.startsWith('-'));
     if (args.length >= 2) targets.push(args[args.length - 1]);
   }
   return targets;
@@ -247,7 +358,23 @@ const IN_PLACE = [
 ];
 
 /** Interpreters whose argument is a program this module cannot read. */
-const INTERPRETERS = /^(?:python[23]?|perl|ruby|node|bun|deno|osascript|sh|bash|zsh|php)$/;
+const INTERPRETERS = /^(?:python[23]?|perl|ruby|node|bun|deno|osascript|sh|bash|zsh|dash|ksh|php)$/;
+
+/**
+ * Interpreters whose `-c` argument is SHELL — which this module can read.
+ *
+ * #1176: these were being handed to `WRITE_INTENT`, which enumerates Node and
+ * Python idioms, so `bash -c 'echo x > <protected>'` matched nothing and was
+ * allowed. Arm 1 could not see it either, because the body is quoted. The
+ * body is shell, the module parses shell, so it recurses instead of guessing.
+ */
+const SHELLS = /^(?:sh|bash|zsh|dash|ksh)$/;
+
+/** The `-c` body of a shell invocation, dequoted. */
+function shellBody(segment: string): string {
+  const m = /\s-[a-z]*c\s+([\s\S]+)$/.exec(segment);
+  return m ? dequote(m[1]).trim() : '';
+}
 
 /**
  * Declared write intent inside an interpreter body.
@@ -272,6 +399,24 @@ const INTERPRETERS = /^(?:python[23]?|perl|ruby|node|bun|deno|osascript|sh|bash|
 const WRITE_INTENT =
   /\b(?:writeFileSync|appendFileSync|createWriteStream|copyFileSync|renameSync|unlinkSync|rmSync|truncateSync|write_text|json\.dump|os\.remove|os\.rename|os\.replace|os\.unlink|shutil\.(?:copy|move|rmtree))\b|(?<!stdout)(?<!stderr)\.write\s*\(|\bopen\s*\([^)]*['"][wax]\+?['"]/;
 
+/**
+ * #1176 measured the suggested widening of WRITE_INTENT to shell idioms —
+ * `>`, `>>`, `tee`, `rm`, `mv`, `cp`, `dd of=`, `truncate` — so that a
+ * NON-shell interpreter shelling out would also fire. It is not implemented.
+ *
+ * Measured: 100 newly blocked against 4 without it, on 5,513 real commands.
+ * Sampling the extra 96 found them to be reads, and the mechanism is
+ * specific: `>{1,2}\s*\S` matches `=>`, so every arrow function in a
+ * `bun -e` body became a declared write. `x=>x.id==="AC-4"` is not a write.
+ *
+ * The same lesson as the interpreter widening this module already records:
+ * matching SHELL idioms inside a body that is not shell matches the host
+ * language instead. A shell body is handled properly by recursion (see
+ * SHELLS); a Python or Node body that shells out would need its
+ * `os.system`/`subprocess`/`execSync` argument extracted and recursed, which
+ * is a real fix and a different issue from this one.
+ */
+
 /** `find` actions that run or delete rather than print. */
 const FIND_MUTATING = /\s-(?:delete|exec|execdir|ok|okdir)\b/;
 
@@ -292,8 +437,11 @@ const ALL_PROTECTED = [...PROTECTED_FILES, ...PROTECTED_HOOKS];
  * work around it protects nothing, and four real refusals of read-only work
  * is already a pattern.
  */
-export function decideBashWrite(cmd: string): BashWriteDecision {
+export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
   if (!cmd) return ALLOW;
+  // A shell body can contain a shell body. Bounded so a crafted nest costs a
+  // fixed amount of work rather than the session.
+  if (depth > 3) return ALLOW;
 
   for (const seg of segments(cmd)) {
     const bare = dequote(seg); // TARGET view: contents kept
@@ -336,6 +484,17 @@ export function decideBashWrite(cmd: string): BashWriteDecision {
     //    concession costs.
     const isInterpreter = INTERPRETERS.test(word) && /\s-[a-z]*[ce]\b/.test(code);
     const isMutatingFind = word === 'find' && FIND_MUTATING.test(code);
+
+    // 3a. A shell `-c` body is shell. Read it as shell rather than scanning
+    //     it for Node and Python idioms it will never contain (#1176).
+    if (isInterpreter && SHELLS.test(word)) {
+      const body = shellBody(seg);
+      if (body) {
+        const inner = decideBashWrite(body, depth + 1);
+        if (inner.blocked) return inner;
+      }
+    }
+
     if (isInterpreter || isMutatingFind) {
       const pf = isMutatingFind
         ? names(bare, ALL_PROTECTED)
@@ -357,16 +516,21 @@ export function decideBashWrite(cmd: string): BashWriteDecision {
     if ((word === 'chmod' || word === 'chflags') && names(bare, PROTECTED_HOOKS)) {
       return { blocked: true, reason: 'Permission change on hook file blocked. Hook integrity is protected.' };
     }
-  }
 
-  // 5. The gate salt in the Keychain. Exempted by nothing — unlike `chmod`,
-  //    which turns up innocently in docs and greps, `pai-gate-salt` beside
-  //    `security` has no benign INVOCATION. It has a benign MENTION though,
-  //    and two real commands hit it: issue comments quoting the very command
-  //    they were proposing to guard. So it reads the code, not the prose.
-  const codeOnly = stripQuoted(cmd);
-  if (codeOnly.includes('pai-gate-salt') && codeOnly.includes('security')) {
-    return { blocked: true, reason: 'Access to gate salt Keychain entry blocked.' };
+    // 5. The gate salt in the Keychain. Exempted by nothing — unlike `chmod`,
+    //    which turns up innocently in docs and greps, `security` INVOKED on
+    //    the gate-salt entry has no benign form. It has a benign MENTION
+    //    though, and two real commands hit it: issue comments quoting the
+    //    very command they proposed to guard.
+    //
+    //    #1176: this used to read `stripQuoted(cmd)` over the whole command,
+    //    which deleted the quoted key name outright — so the real invocation,
+    //    `security find-generic-password -s 'pai-gate-salt'`, could not fire
+    //    it. The prose case is now separated by POSITION instead: the command
+    //    word must BE `security`, which an issue comment's `gh` never is.
+    if (word === 'security' && bare.includes('pai-gate-salt')) {
+      return { blocked: true, reason: 'Access to gate salt Keychain entry blocked.' };
+    }
   }
 
   return ALLOW;
