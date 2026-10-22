@@ -1,4 +1,4 @@
-# generated-sha: e3806bb74fedd0e5
+# generated-sha: 5e5570bd45c1f9d0
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1069,6 +1069,37 @@ jobs:
               # a refusal too.
               case "${adjudication}" in
                 *"ai-review findings outcome:"*)
+                  # THE POSITIVE READING (#1087), emitted inside the arm and above both
+                  # exits, so it is carried by a blocking verdict as well as a clean
+                  # one. What it distinguishes is not CLEAN from BLOCKED — the exit code
+                  # already does that — but "a verdict" from "no verdict", which nothing
+                  # outside this job could tell apart while every terminal state was
+                  # either a shared-title warning or silence.
+                  #
+                  # The outcome line is lifted out of the captured output rather than
+                  # re-derived: `${adjudication}` is what the reader actually printed,
+                  # and a second spelling of the verdict computed here could disagree
+                  # with the exit code this step is about to use (#295).
+                  #
+                  # Lifted by PARAMETER EXPANSION and not by `grep | head`, for two
+                  # independent reasons. `test/ai-review-security-repairs.test.ts`
+                  # AC-14a refuses any `$(` in an annotation that is not
+                  # `escape_annotation` — the encoder is the one command an annotation
+                  # may run, and a pipeline inside its argument is a second one. And an
+                  # expansion has no exit status to abort on: a `grep` that matched
+                  # nothing exits 1, which under the runner's `bash -e` would kill the
+                  # step between the adjudication and the verdict, which is #1110
+                  # exactly. The two-step form takes everything after the marker, then
+                  # everything before the first newline, then puts the marker back.
+                  #
+                  # `escape_annotation` IS applied here, where the comment above
+                  # declines it for the reader's own `::error` payload. The difference
+                  # is whose string it is: that one arrives pre-escaped and escaping it
+                  # twice turns `%` into `%2525`, while this one is assembled by this
+                  # step out of a line the reader never escaped.
+                  verdict="${adjudication#*ai-review findings outcome:}"
+                  verdict="ai-review findings outcome:${verdict%%$'\n'*}"
+                  echo "::notice title=AI review adjudicated::$(escape_annotation "${verdict}") — read from the findings payload by 'bunx rungate@0.7.0 ai-review-findings', whose exit code is this step's. This annotation is the only one this job emits that an unread payload cannot produce — the branch is entered on the outcome line and nothing else — so a run carrying this title had a review AND a verdict on it. Its ABSENCE on a green run is not a clean review: it means no payload was written, or the action skipped itself on its own workflow-validation guard, or the step died before the reading — none of which measured anything."
                   if [ "${adjudicated}" = 0 ]; then
                     exit 0
                   fi
