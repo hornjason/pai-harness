@@ -477,9 +477,18 @@ describe("#1285: every cited shape ordinal resolves to a shape that exists", () 
     // Deleting ONE bullet invalidates only the highest ordinal, and the
     // highest ordinal is cited by two files: this one and the rule itself.
     // A check proved against that population is a check proved against its
-    // own footnote. The population actually at risk is `fourth`, at 142
-    // files — so the second mutant cuts the list to three, which is both a
-    // realistic renumber and the length the consumer template already uses.
+    // own footnote. The population actually at risk is `fourth`, cited by
+    // well over a hundred files — so the second mutant cuts the list to
+    // three, which is both a realistic renumber and the length the consumer
+    // template already uses.
+    //
+    // Deliberately not a figure (#1293). The count MOVES — it went 156 → 157
+    // → 159 in a few hours while two of us measured it — and it is
+    // scope-dependent: on main at ad54fb0b, "fourth shape" matched 133
+    // `.ts`/`.js` files, 144 adding `.md`, 148 across all types, and 141
+    // under this scanner's own scope. A bare number beside a check reads as
+    // authoritative and three of those four are wrong for this instrument.
+    // The binding is the floor asserted below, not a number in prose.
     const cited = citedOrdinals();
     expect(unresolved(ruleText, cited), "precondition: the real tree is clean").toEqual([]);
 
