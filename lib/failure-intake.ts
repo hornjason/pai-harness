@@ -79,7 +79,13 @@ import { join } from "path";
 import { contentHash } from "./content-hash";
 
 /** Where a candidate's evidence came from. */
-export type EvidenceKind = "fix-commit" | "revert-commit";
+/**
+ * `gate-refusal` is produced by `lib/intake-sources.ts`, not by this module
+ * (#545). It lives here because `CandidateEvidence` is the one declaration
+ * every producer writes against — a second kind union would be two tables
+ * agreeing until they did not.
+ */
+export type EvidenceKind = "fix-commit" | "revert-commit" | "gate-refusal";
 
 export interface CandidateEvidence {
   kind: EvidenceKind;

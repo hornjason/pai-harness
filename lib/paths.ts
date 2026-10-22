@@ -175,10 +175,31 @@ export function paiRoot(): string {
   return process.env.PAI_ROOT || paiHomeDir();
 }
 
+/**
+ * The run store's root — every run's `workflow-state.json` lives one level
+ * under this.
+ *
+ * Extracted from `workDir` rather than written beside it (#545). The
+ * expression was about to have a second author: `lib/intake-sources.ts` mines
+ * gate refusals out of the store and needs the ROOT, not a per-slug path, and
+ * `lib/gap-scanner.ts` already assembles its own copy. Two places spelling one
+ * location is the shape `paiHomeDir`'s own docstring above records going
+ * wrong — same anonymous expression, two meanings, nothing in the output
+ * saying which.
+ *
+ * `process.env.HOME || ""` is kept exactly as it was. It is not what I would
+ * write — it degrades to a relative `.rungate` when HOME is unset, which is
+ * the defect `paiHomeDir` was fixed for — but changing it here would alter
+ * `workDir`'s behaviour under an empty HOME, which is the configuration the
+ * intake tests deliberately run in. Noted rather than silently repaired.
+ */
+export function workStoreRoot(): string {
+  return process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate");
+}
+
 export function workDir(slug: string): string {
   if (slug.includes('..') || slug.startsWith('/')) throw new Error(`Invalid slug: ${slug}`);
-  const base = process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate");
-  return join(base, slug);
+  return join(workStoreRoot(), slug);
 }
 
 export function gateSaltPath(): string {
