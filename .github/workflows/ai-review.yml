@@ -1,4 +1,4 @@
-# generated-sha: d02c351f62244386
+# generated-sha: 4472b9775440d0df
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -259,14 +259,6 @@ jobs:
           echo "ai-review findings path: ${path}"
           echo "path=${path}" >> "${GITHUB_OUTPUT}"
           echo "dir=${dir}" >> "${GITHUB_OUTPUT}"
-      - name: Install bun for the findings adjudicator
-        id: ai-review-setup-bun
-        continue-on-error: true
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          # Pinned by .bun-version — the project's single declaration (#622).
-          # setup-bun reads that file, so there is no version spelled here to drift from it.
-          bun-version-file: ".bun-version"
       - name: Authenticate to Vertex AI
         id: ai-review-vertex-auth
         continue-on-error: true
@@ -514,7 +506,7 @@ jobs:
           # the thing being prevented. (The path is described rather than written: a
           # scanner that greps for a rule filename cannot tell a citation from a
           # sentence about one, and test/rule-provenance.test.ts caught exactly that.)
-          for path in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes'; do
+          for path in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes' '.bun-version'; do
             if ! out=$(git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null rm -rfq --ignore-unmatch -- "${path}" 2>&1); then
               echo "::error title=AI review modified the tree::could not clear $(escape_annotation "${path}") before restoring it from the base, so the reviewer would read the pull request's own copy: $(escape_annotation "${out}")" >&2
               exit 1
@@ -529,7 +521,7 @@ jobs:
             fi
           done
 
-          echo "ai-review restored from ${base_remote}: .claude .claude.json .mcp.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky .gitignore .gitattributes"
+          echo "ai-review restored from ${base_remote}: .claude .claude.json .mcp.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky .gitignore .gitattributes .bun-version"
 
           # #989. The drift step needs this ref to tell the ACTION's second restore from
           # a reviewer write, and the ref name is decided here. Written and read back
@@ -550,6 +542,14 @@ jobs:
             echo "::error title=AI review modified the tree::the base ref was written to GITHUB_OUTPUT and is not there when read back. A write that returned success and landed nowhere is the same empty value as a write that never happened, and the drift step would refuse every run for a cause nothing names. Refusing" >&2
             exit 1
           fi
+      - name: Install bun for the findings adjudicator
+        id: ai-review-setup-bun
+        continue-on-error: true
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # Pinned by .bun-version — the project's single declaration (#622).
+          # setup-bun reads that file, so there is no version spelled here to drift from it.
+          bun-version-file: ".bun-version"
       - name: Read the tree before the reviewer runs
         id: ai-review-baseline
         run: |
@@ -687,7 +687,7 @@ jobs:
               # with any other name is not the action's. See
               # AI_REVIEW_SCRATCH_SCAN_LIMIT.
               mirrored=
-              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes'; do
+              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes' '.bun-version'; do
                 if [ "${name}" = "${u}" ]; then
                   mirrored=1
                   break
@@ -976,7 +976,24 @@ jobs:
               # its own annotation payloads (one escaper, in `ai-review-findings.ts`),
               # and escaping it twice turns `%` into `%2525` and the annotation into
               # noise.
-              adjudication=$(bunx rungate@0.7.0 ai-review-findings "${AI_REVIEW_FINDINGS_PATH}" 2>&1)
+              #
+              # RUN FROM THE PAYLOAD'S OWN DIRECTORY, not from the checkout. `bunx`
+              # resolves `bunfig.toml`, `.npmrc`, `package.json` and `node_modules`
+              # by walking UP from the working directory, and a step's working directory
+              # is ${GITHUB_WORKSPACE} — the tree under review. A branch that adds a
+              # `bunfig.toml` naming its own registry, or a `node_modules/.bin`
+              # entry, would choose what this credentialed job executes. On THIS
+              # repository the trigger is `pull_request`, so a fork gets no secrets and
+              # the attacker would need push access; this file is a GENERATOR, and the
+              # job it writes lands in consumer repositories whose trigger and trust
+              # settings nobody here can see. The consumer is the threat model.
+              #
+              # The payload's directory is the right cwd and needs no new wiring: the
+              # prepare step puts it under ${RUNNER_TEMP} and REFUSES the run if that
+              # is unset, so it is outside the checkout by construction rather than by
+              # convention. A `cd` that fails takes the subshell non-zero with no
+              # outcome line, which the reading below fails closed on.
+              adjudication=$(cd "$(dirname "${AI_REVIEW_FINDINGS_PATH}")" && bunx rungate@0.7.0 ai-review-findings "${AI_REVIEW_FINDINGS_PATH}" 2>&1)
               adjudicated=$?
               printf '%s\n' "${adjudication}"
 
@@ -1002,12 +1019,12 @@ jobs:
                   ;;
               esac
 
-              echo "::warning title=AI review UNMEASURED::The AI review completed and wrote a findings payload, and the step that adjudicates it produced no reading: 'bunx rungate@0.7.0 ai-review-findings' printed no 'ai-review findings outcome:' line, so it did not run. An exit code alone cannot say — a refusal and a command that could not start both exit non-zero — so this is reported as UNMEASURED rather than read as a verdict. The usual cause is that rungate@0.7.0 is not on the registry yet, or that bun is not on this runner. The review's comments are real; the gate is not enforced on this run."
-              if [ "${RUNGATE_REQUIRE_AI_REVIEW:-}" = "true" ]; then
-                echo "::error title=AI review UNMEASURED::RUNGATE_REQUIRE_AI_REVIEW is 'true' and nothing adjudicated the findings payload on this run, so a blocking finding would report green. Failing rather than reporting a passing gate for a verdict nobody read." >&2
-                exit 1
-              fi
-              exit 0
+              # NO RUNGATE_REQUIRE_AI_REVIEW CHECK HERE, deliberately — see the sentence
+              # this prints. A payload exists, so a review was attempted; "nobody read
+              # it" is a failure on every tree, not an opt-in. The flag still governs
+              # every branch above and below, where nothing was attempted at all.
+              echo "::error title=AI review UNMEASURED::The AI review completed and wrote a findings payload, and the step that adjudicates it produced no reading: 'bunx rungate@0.7.0 ai-review-findings' printed no 'ai-review findings outcome:' line, so it did not run. The payload is therefore UNMEASURED — not clean. Failing rather than reporting a green check for a review whose findings nobody read; a blocking finding and an adjudication that never happened look identical from outside this job. This is NOT the RUNGATE_REQUIRE_AI_REVIEW case: that flag is for a tree with no credential, where no review was attempted. One was attempted here and its result is sitting at the findings path unread. The usual causes are that rungate@0.7.0 is not on the registry, that bun is not on this runner, or that the registry was unreachable — the command's own output is printed above this line." >&2
+              exit 1
             fi
 
             # Which route, and nothing else. `route` is a string this block prints; no
@@ -1213,7 +1230,7 @@ jobs:
               # with any other name is not the action's. See
               # AI_REVIEW_SCRATCH_SCAN_LIMIT.
               mirrored=
-              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes'; do
+              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes' '.bun-version'; do
                 if [ "${name}" = "${u}" ]; then
                   mirrored=1
                   break
@@ -1513,7 +1530,7 @@ jobs:
             while IFS= read -r line; do
               [ -n "${line}" ] || continue
               p="${line#* }"
-              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes'; do
+              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes' '.bun-version'; do
                 case "${p}" in
                   "${u}"|"${u}"/*) ambiguous=1; break ;;
                 esac
@@ -1549,7 +1566,7 @@ jobs:
               # had no second actor, so matching the base there is a reviewer
               # reverting the branch and is the finding, not the floor.
               twice=
-              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes'; do
+              for u in '.claude' '.claude.json' '.mcp.json' '.gitmodules' '.ripgreprc' 'CLAUDE.md' 'CLAUDE.local.md' '.husky' '.gitignore' '.gitattributes' '.bun-version'; do
                 case "${p}" in
                   "${u}"|"${u}"/*) twice=1; break ;;
                 esac

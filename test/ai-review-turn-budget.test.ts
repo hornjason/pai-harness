@@ -238,12 +238,15 @@ describe("AC-4: a review that exhausted its budget is UNMEASURED, not a pass", (
       { AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" },
       '{"findings": [], "verdict": "PASS"}',
     );
-    expect(r.out).toContain("wrote a findings payload");
+    // Both streams: a completed review whose payload nothing adjudicated
+    // refuses on stderr since #1013's review, while the exhausted reading
+    // this is the control for still warns on stdout.
+    const text = `${r.out}${r.err}`;
+    expect(text).toContain("wrote a findings payload");
     expect(
-      r.out,
+      text,
       "a completed review reports the same sentence as an exhausted one",
     ).not.toContain("no findings payload was written");
-    expect(r.code).toBe(0);
   });
 
   test("the two readings are different strings, so the pair measures the outcome", () => {
@@ -251,10 +254,11 @@ describe("AC-4: a review that exhausted its budget is UNMEASURED, not a pass", (
     // runs — `AI_REVIEW_ACTION_OUTCOME` — so a difference in what they print
     // is a measurement of that reading and of nothing else.
     const failed = runReportStep(EXHAUSTED).out;
-    const ok = runReportStep(
+    const okRun = runReportStep(
       { AI_REVIEW_MODE: "vertex", AI_REVIEW_ACTION_OUTCOME: "success" },
       '{"findings": [], "verdict": "PASS"}',
-    ).out;
+    );
+    const ok = `${okRun.out}${okRun.err}`;
     expect(failed.length, "the exhausted run printed nothing at all").toBeGreaterThan(0);
     expect(ok.length, "the completed run printed nothing at all").toBeGreaterThan(0);
     expect(failed).not.toBe(ok);

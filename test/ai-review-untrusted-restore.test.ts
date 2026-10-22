@@ -122,6 +122,7 @@ import {
   AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
   AI_REVIEW_RESTORE_STEP_ID,
+  AI_REVIEW_SETUP_BUN_STEP_ID,
   AI_REVIEW_RESTORE_STEP_NAME,
   AI_REVIEW_UNTRUSTED_PATHS,
   AI_REVIEW_WORKSPACE_WRITE_DENY,
@@ -132,7 +133,7 @@ import {
   type VertexCiDecision,
 } from "../lib/scaffold/ai-review-step";
 import { actionRef } from "../lib/workflow-actions";
-import { declaredBunVersion, setupBunWith } from "../lib/bun-version";
+import { BUN_VERSION_FILE, declaredBunVersion, setupBunWith } from "../lib/bun-version";
 import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
 import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
 
@@ -215,6 +216,33 @@ describe("AC-1: the restore is a harness-owned step, strictly before the baselin
       expect(at(AI_REVIEW_RESTORE_STEP_ID)).toBeLessThan(at(AI_REVIEW_BASELINE_STEP_ID));
       expect(at(AI_REVIEW_BASELINE_STEP_ID)).toBeLessThan(at(AI_REVIEW_DRIFT_STEP_ID));
     });
+
+    test(`${label} installs bun after the restore and before the baseline`, () => {
+      // #1013 review. `setup-bun` reads the bun declaration out of the
+      // CHECKOUT, and the bun it installs then runs the findings adjudicator
+      // in a credentialed job — so a step that runs before the restore lets
+      // the branch under review choose its own reviewer's interpreter.
+      // Restoring the file (the case below) buys nothing without this order.
+      //
+      // The upper bound is #836's, the same one the restore has: anything
+      // written into the workspace after the baseline is taken lands in the
+      // REVIEWER's column in the drift reading.
+      const ids = stepIds(yaml);
+      const at = (id: string) => {
+        const i = ids.indexOf(id);
+        expect(i, `${label} has no step with id ${id}`).toBeGreaterThanOrEqual(0);
+        return i;
+      };
+      expect(
+        at(AI_REVIEW_SETUP_BUN_STEP_ID),
+        `${label} installs bun before the restore, so the pull request's own ` +
+          `${BUN_VERSION_FILE} selects the runtime`,
+      ).toBeGreaterThan(at(AI_REVIEW_RESTORE_STEP_ID));
+      expect(
+        at(AI_REVIEW_SETUP_BUN_STEP_ID),
+        `${label} installs bun after the baseline, so its footprint is attributed to the reviewer`,
+      ).toBeLessThan(at(AI_REVIEW_BASELINE_STEP_ID));
+    });
   }
 
   test("the step is the harness's own `run:`, not a third-party action", () => {
@@ -237,6 +265,21 @@ describe("AC-1: the restore is a harness-owned step, strictly before the baselin
     expect(step.env?.[AI_REVIEW_BASE_REF_VAR]).toBe(
       "${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}",
     );
+  });
+
+  test("#1013 review: the bun declaration is restored, and under the name bun-version.ts declares", () => {
+    // `lib/scaffold/ai-review-step.ts` has no relative imports — 27 suites
+    // copy it into an `mkdtemp` — so it spells this filename as a literal
+    // and cannot read `BUN_VERSION_FILE`. That is a second declaring
+    // position for one name, and this is the repair: the literal is compared
+    // to the constant, so the two cannot drift apart in silence. A rename in
+    // `lib/bun-version.ts` turns this red instead of quietly leaving the
+    // ai-review job restoring a file nothing writes.
+    expect(
+      AI_REVIEW_UNTRUSTED_PATHS,
+      `the ai-review job no longer restores ${BUN_VERSION_FILE} from the base, so the branch ` +
+        `under review chooses which bun runs the findings adjudicator in a credentialed job`,
+    ).toContain(BUN_VERSION_FILE);
   });
 
   test("every path the action restores is a path this step restores", () => {
