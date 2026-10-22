@@ -44,7 +44,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 
 import { canonicalRoot, harnessRootFor } from "../../lib/paths";
 import { launchBaseReading, launchBaseRefusal } from "../../lib/launch-base";
@@ -280,6 +280,47 @@ describe("#1129: what canonical roots do and do not fix in ship.js", () => {
     // SYMLINK-HINT refusal in ship.js still covers.
     expect(collectDestination(linkedWorktree, root, root)).toBeNull();
   });
+
+  /**
+   * Why a non-normalised root is REFUSED and not waved through.
+   *
+   * It was suggested during review that a trailing slash or a relative
+   * segment should be *accepted*, on the grounds that no symlink is
+   * involved. No symlink is involved — and containment breaks anyway, which
+   * is the only thing that decides it. `collectDestination` builds
+   * `${projectRoot}/.claude/worktrees` by concatenation and compares with
+   * `startsWith`, so `<root>/` yields a doubled separator and `<root>/./`
+   * keeps the dot literally; the paths `git worktree list` reports are
+   * canonical and match neither.
+   *
+   * Accepting those spellings would let the run start and then refuse its
+   * own agent worktrees — #1129 exactly, reached by a different spelling.
+   * A gate that passes an input the thing downstream cannot use is a false
+   * negative, and in a containment path that is the expensive direction.
+   *
+   * Each row proves its own premise rather than asserting it: `resolve()`
+   * must actually change the spelling, or the case is not testing what it
+   * claims. An earlier version of this measurement built the paths with
+   * `join()`, which normalises `.` and `..` silently — two rows passed while
+   * measuring the canonical path twice.
+   */
+  for (const [label, spell] of [
+    ["a trailing slash", (r: string) => `${r}/`],
+    ["a dot segment", (r: string) => r.replace(/\/([^/]+)$/, "/./$1")],
+    ["a traversal segment", (r: string) => `${r}/.git/..`],
+  ] as const) {
+    test(`${label} breaks containment, which is why the gate refuses it`, () => {
+      const { canonical } = twoNamedRepo();
+      const worktree = `${canonical}/.claude/worktrees/wf_a-1`;
+      const root = spell(canonical);
+
+      expect(resolve(root), `${label} must really be non-normalised`).not.toBe(root);
+      expect(collectDestination(worktree, root, root)).toBeNull();
+
+      // And the gate catches it before the run spends anything.
+      expect(launchBaseReading(canonical, root).reading).toBe("NON_CANONICAL_ROOT");
+    });
+  }
 
   test("the control: canonical root, canonical target, unchanged", () => {
     const { canonical } = twoNamedRepo();
