@@ -2901,6 +2901,60 @@ export function globalToolInstallStep(ci: unknown, indent = "      "): GlobalToo
  * declares `cancel-in-progress` keeps its own value, and this reaches only the
  * consumers that have no concurrency block at all.
  */
+/**
+ * The `on.pull_request` trigger, carrying NO `branches:` filter — the one
+ * shared binding every generated workflow renders (#1136).
+ *
+ * The filter used to be the same `branchList` emitted under `on.push`, which
+ * made a pull request whose BASE was a feature branch match nothing and
+ * trigger nothing: no `test`, no shards, no `gates`, no `ai-review`. Measured
+ * on this repository before the change, by full 40-char head SHA — a short SHA
+ * silently returns zero runs, so the two look identical and the query must use
+ * the full one:
+ *
+ *   witness  #1128  base feat/713-migrate-product-hooks   0 runs
+ *   witness  #1133  base feat/713-migrate-product-hooks   0 runs
+ *   control  #1125  base main                             3 runs
+ *   control  #1134  base main                             3 runs
+ *
+ * Base branch is the only input that differs. Both witnesses merged: with no
+ * workflow triggered there is no required check left pending, so a pull
+ * request that measured NOTHING is reported to the merge box exactly as a
+ * green one is. That is the half worth naming — the gap is invisible from the
+ * side that acts on it.
+ *
+ * `on.push` KEEPS its filter, and that is not an oversight. The two keys
+ * answer different questions: `push.branches` is "which branches earn a CI run
+ * on their own", `pull_request.branches` was answering "which bases may be
+ * merged into", which nothing here ever wanted to ask. Deleting `branchList`
+ * from both — the cheapest wrong fix, and it does turn every witness above
+ * green — fires a full CI run on every push to every feature branch on top of
+ * the `pull_request` run already covering that commit. Sampled over 25 recent
+ * merged PRs: 44 commits, mean 1.76 pushes each, against 72 push-event runs in
+ * the last 300. Roughly an order of magnitude of duplicated runner time for no
+ * new coverage. The `on.push` cases in test/stacked-pr-ci-trigger.test.ts are
+ * the control that stays red for it.
+ *
+ * Enumerating the namespaces instead (`feat/**`, `fix/**`) would have covered
+ * all 6 of the non-`main`-based PRs in the last 200, so history cannot falsify
+ * it. The prospective count can: of those 200, 24 head branches sit outside
+ * both namespaces — `chore/`, `rg/`, `wt/`, `docs/`, `revert/`, bare names —
+ * and any of them can be a base tomorrow. An allowlist re-creates this exact
+ * defect the first time someone picks a prefix nobody enumerated, and does it
+ * silently, which is the property that made #1136 cost two merges.
+ */
+export const CI_PULL_REQUEST_TRIGGER = `  # NO branches: filter, deliberately (#1136). A pull request based on a
+  # feature branch matched no entry here and so triggered nothing at all —
+  # and because no required check was left pending, it reported CLEAN. A
+  # stack is how multi-part work is built in this repo, so the changes
+  # least likely to run CI were the ones most likely to need it.
+  #
+  # Where a \`push\` trigger exists it KEEPS its filter — that key asks which
+  # branches earn a run on their own, which is a different question.
+  # Removing it there too duplicates a run on every feature-branch push for
+  # no new coverage.
+  pull_request:`;
+
 export const CI_CONCURRENCY = `# The GROUP does the work here, not the flag. A run is only ever cancelled by
 # another run in the SAME group, so keying a push on its own commit makes the
 # question moot: there is never a second occupant to do the cancelling.
@@ -3122,9 +3176,7 @@ on:
   push:
     branches:
 ${branchList}
-  pull_request:
-    branches:
-${branchList}
+${CI_PULL_REQUEST_TRIGGER}
 
 ${CI_CONCURRENCY}
 permissions:
@@ -3188,9 +3240,7 @@ on:
   push:
     branches:
 ${branchList}
-  pull_request:
-    branches:
-${branchList}
+${CI_PULL_REQUEST_TRIGGER}
 
 ${CI_CONCURRENCY}
 permissions:
@@ -3229,9 +3279,7 @@ on:
   push:
     branches:
 ${branchList}
-  pull_request:
-    branches:
-${branchList}
+${CI_PULL_REQUEST_TRIGGER}
 
 permissions:
   # Least privilege, and it matters most on the consumers. A workflow with
@@ -3424,9 +3472,7 @@ on:
   # See the block comment in lib/scaffold/steps.ts: no branches: filter, and
   # its absence hangs a merge queue silently rather than failing it (#867).
   merge_group:
-  pull_request:
-    branches:
-${branchList}
+${CI_PULL_REQUEST_TRIGGER}
 
 ${aiReviewPermissions}
 
