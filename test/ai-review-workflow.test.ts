@@ -60,8 +60,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
 import {
+  AI_REVIEW_ADJUDICATOR_PACKAGE,
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
   AI_REVIEW_REQUIRED_EXIT,
@@ -82,7 +84,18 @@ import {
 import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
 import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
 import { actionRef } from "../lib/workflow-actions";
+import { declaredBunVersion, setupBunWith } from "../lib/bun-version";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
+import { stubBunx } from "./helpers/stub-bunx";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 /** Four patterns, including a bare `*` and a `**` glob — AC-3's fixture. */
 const BRANCHES = ["main", "*", "*-dev", "release/**"];
@@ -95,11 +108,35 @@ const RUNNER = "ubuntu-latest";
  * and could never notice the generator stopping at one of them.
  */
 const NO_VERTEX = vertexCiConfig({ runner: RUNNER, bunVersion: "1.2.0", branches: BRANCHES });
-const REFS = {
-  checkout: actionRef("actions/checkout"),
-  auth: actionRef(GOOGLE_AUTH_ACTION),
-  review: actionRef(CLAUDE_CODE_ACTION),
-};
+/**
+ * `setupBunWith` is read from the PROJECT the case compares against, not from
+ * this repository (#1013). `declaredBunVersion` prefers `.bun-version` over
+ * `ci.bunVersion`, and the fixture scaffolded below declares only the second —
+ * so a reference taken here would differ from the generated file for a reason
+ * that is about the two fixtures rather than about the step.
+ */
+function REFS(root: string) {
+  return {
+    checkout: actionRef("actions/checkout"),
+    auth: actionRef(GOOGLE_AUTH_ACTION),
+    review: actionRef(CLAUDE_CODE_ACTION),
+    setupBun: actionRef("oven-sh/setup-bun"),
+    setupBunWith: setupBunWith(declaredBunVersion(root), "    "),
+  };
+}
+
+/**
+ * The GENERATING version, read the way the generator reads it (#1013).
+ *
+ * `FIXTURE_VERSION` is right everywhere a case drives the builder alone, and
+ * wrong in the one case that compares the builder's output to a REAL scaffold:
+ * there the two have to agree, and a fixture would make it fail for a reason
+ * that is not about the step.
+ */
+function harnessVersion(): string {
+  const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf-8"));
+  return String(pkg.version);
+}
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -343,7 +380,7 @@ describe("AC-5: a configured credential emits no UNMEASURED annotation", () => {
 // it" are the same state to a required check. Both are UNMEASURED.
 describe("AC-7: every mode the job can resolve says what it measured", () => {
   test("AC-7: a resolved mode emits exactly one UNMEASURED warning and exits 0", () => {
-    const run = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: "vertex" });
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { AI_REVIEW_MODE: "vertex" });
     const warnings = run.stdout
       .split("\n")
       .filter(l => l.startsWith("::warning") && l.includes("UNMEASURED"));
@@ -356,7 +393,7 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     // Enumerated from the ladder rather than spot-checked: a fourth mode
     // added later with its own quiet exit would otherwise ship unobserved.
     for (const c of AI_REVIEW_AUTH_PRECEDENCE) {
-      const run = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: c.mode });
+      const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { AI_REVIEW_MODE: c.mode });
       const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
       expect(warnings.length, `mode ${c.mode} passed quietly\n${run.stdout}`).toBe(1);
     }
@@ -365,7 +402,7 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
   test("AC-7: mode none is silent here, because the auth step already said it", () => {
     // One state reported once. Annotating `none` in both steps would make a
     // single unmeasured review look like two.
-    const run = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: "none" });
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { AI_REVIEW_MODE: "none" });
     expect(run.stdout).not.toContain("UNMEASURED");
     expect(run.code).toBe(0);
   });
@@ -382,7 +419,7 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
   // Substitution* (`.claude/rules/config-access.md`) in the file that rule's
   // own UNMEASURED section is about.
   test("#677 AC5: an absent mode is UNMEASURED, not a silent none", () => {
-    const run = runAuthScript(buildReviewRunScript(), {});
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {});
     const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
     expect(
       warnings.length,
@@ -398,8 +435,8 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     // The pair, varying exactly one thing. Without this the case above is
     // satisfied by annotating BOTH, which would re-report one state twice
     // and undo the case directly above this block.
-    const absent = runAuthScript(buildReviewRunScript(), {});
-    const explicit = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: "none" });
+    const absent = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {});
+    const explicit = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { AI_REVIEW_MODE: "none" });
     expect(absent.stdout).not.toBe(explicit.stdout);
     expect(explicit.stdout, "an explicit none started annotating again").not.toContain("UNMEASURED");
   });
@@ -408,7 +445,7 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     // The whole point of distinguishing the states. Before this, a repo with
     // RUNGATE_REQUIRE_AI_REVIEW=true whose auth step failed to produce an
     // output passed the required check in silence.
-    const run = runAuthScript(buildReviewRunScript(), { RUNGATE_REQUIRE_AI_REVIEW: "true" });
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { RUNGATE_REQUIRE_AI_REVIEW: "true" });
     expect(run.code, `an absent reading passed a required review\n${run.stdout}${run.stderr}`).toBe(
       AI_REVIEW_REQUIRED_EXIT,
     );
@@ -419,13 +456,13 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
     // A gate that turns itself on by accident is the other failure. Only the
     // exact string `true` refuses; the loose readings must not.
     for (const loose of ["TRUE", "1", "truthy", "yes", ""]) {
-      const run = runAuthScript(buildReviewRunScript(), { RUNGATE_REQUIRE_AI_REVIEW: loose });
+      const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { RUNGATE_REQUIRE_AI_REVIEW: loose });
       expect(run.code, `RUNGATE_REQUIRE_AI_REVIEW=${JSON.stringify(loose)} refused`).toBe(0);
     }
   });
 
   test("AC-7: a consumer who required a review and got none is refused", () => {
-    const run = runAuthScript(buildReviewRunScript(), {
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       AI_REVIEW_MODE: "vertex",
       RUNGATE_REQUIRE_AI_REVIEW: "true",
     });
@@ -436,7 +473,7 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
 
   test("AC-7: the refusal reads the variable exactly, like the auth step does", () => {
     for (const value of ["TRUE", "True", "1", "yes", "truthy", "true "]) {
-      const run = runAuthScript(buildReviewRunScript(), {
+      const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
         AI_REVIEW_MODE: "vertex",
         RUNGATE_REQUIRE_AI_REVIEW: value,
       });
@@ -445,7 +482,7 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
   });
 
   test("AC-7: the step is in the generated file, verbatim, and carries no `if`", () => {
-    expect(generated()).toContain(buildReviewRunStep(NO_VERTEX, REFS));
+    expect(generated()).toContain(buildReviewRunStep(NO_VERTEX, REFS(PROJECT), harnessVersion()));
     const doc = Bun.YAML.parse(generated()) as any;
     const steps = doc.jobs[AI_REVIEW_JOB].steps;
     const step = steps.find((s: any) => s.id === AI_REVIEW_RUN_STEP_ID);
@@ -467,81 +504,183 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
   test("AC-7: a review step that passes quietly is what this would have shipped", () => {
     // The mutant, run rather than described: strip the annotation and the
     // resolved-mode case becomes the silent green PR #641 actually produced.
-    const quiet = buildReviewRunScript().replace(/^echo "::warning.*$/m, ":");
-    expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript());
+    const quiet = buildReviewRunScript(FIXTURE_VERSION).replace(/^echo "::warning.*$/m, ":");
+    expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript(FIXTURE_VERSION));
     const run = runAuthScript(quiet, { AI_REVIEW_MODE: "vertex" });
     expect(run.stdout).not.toContain("UNMEASURED");
     expect(run.code).toBe(0);
   });
 });
 
-// ── AC-9: a reviewer that completed, with nobody reading its verdict ─────
+// ── AC-9: a reviewer that completed, and the verdict taken over it ───────
 
-/** A findings payload, so these cases are about #675 and not about #816's skip. */
+/** A findings payload, so these cases are about #1013 and not about #816's skip. */
 const PAYLOAD = '{"findings": [], "verdict": "PASS"}';
 
-describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
-  test("AC-9: a successful review warns that its findings are not enforced", () => {
-    // The fail-open the security review named: the reviewer runs, writes a
-    // payload carrying a `critical`, and no step in this job reads it, so the
-    // check is green. Wiring the reader needs a way for a scaffolded consumer
-    // — which has no copy of rungate's sources — to execute it, which is #675.
-    // Until then the state is reported rather than exited-zero in silence.
-    const run = runAuthScript(buildReviewRunScript(), {
+/**
+ * The adjudicator's answers, planted (#1013).
+ *
+ * The real command is NOT run here. It names the tree's own version and would
+ * reach the npm registry from a unit test — see `test/helpers/stub-bunx.ts`.
+ * What is under test in this block is not the reader (that is
+ * `ai-review-verdict-contract.test.ts`, driven through the real CLI) but the
+ * STEP's reading of what came back, so the answers it has to tell apart are
+ * planted and the one input that separates them is the outcome line.
+ */
+const plantedBunx = stubBunx;
+
+/** What the reader prints before it decides anything. One declaration, imported. */
+const OUTCOME_LINE = AI_REVIEW_OUTCOME_LINE;
+
+describe("AC-9 (#1013): the job's exit code comes from the adjudicator's reading", () => {
+  test("AC-9a: a CLEAN reading passes, so the refusal below is not unconditional", () => {
+    // The control. Without it a step that exited non-zero on every payload
+    // would satisfy AC-9b, and "the gate fires" would be indistinguishable
+    // from "the gate is stuck closed".
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`echo "${OUTCOME_LINE} CLEAN"; exit 0`),
+    }, PAYLOAD);
+    expect(run.stdout, "the adjudicator's own output is not in the log").toContain(OUTCOME_LINE);
+    expect(run.stdout, "a clean adjudication still reported UNMEASURED").not.toContain("UNMEASURED");
+    expect(run.code, `a clean reading failed the check:\n${run.stdout}\n${run.stderr}`).toBe(0);
+  });
+
+  test("AC-9b: a BLOCKED reading fails the job — #675's second half", () => {
+    // The thing #675 asked for and #1013 delivered: a blocking finding makes
+    // the ai-review JOB exit non-zero. Before this the step warned and exited
+    // 0, so a `critical` was a green check.
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(
+        `echo "${OUTCOME_LINE} BLOCKED"\n` +
+          `echo "::error title=AI review findings::1 blocking finding" >&2\n` +
+          `exit ${AI_REVIEW_REQUIRED_EXIT}`,
+      ),
+    }, PAYLOAD);
+    expect(run.stdout, "the adjudicator did not run").toContain(OUTCOME_LINE);
+    expect(
+      run.stdout,
+      "the reader's refusal annotation never reached the log, so nobody can see why",
+    ).toContain("::error title=AI review findings::");
+    expect(
+      run.code,
+      `a blocking reading reported a green check:\n${run.stdout}\n${run.stderr}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+  });
+
+  test("AC-9c: an adjudicator that could NOT run is UNMEASURED, not a refusal", () => {
+    // The distinction the whole branch exists for, and the one the cheapest
+    // wrong fix loses. `AI_REVIEW_REQUIRED_EXIT` is 1 and so is a `bunx` that
+    // could not resolve the package — so a step that read the exit code alone
+    // would report an UNINSTALLABLE checker as a blocked pull request, on
+    // every pull request, and the obvious repair for that is to delete the
+    // step. The input that separates them is the outcome line, not the code.
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`echo "error: package not found" >&2; exit 1`),
     }, PAYLOAD);
     const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
     expect(
       warnings.length,
-      `a completed review with no adjudication passed quietly\n${run.stdout}`,
+      `an adjudication that never happened passed quietly\n${run.stdout}`,
     ).toBe(1);
-    expect(warnings[0], "the annotation does not say where the gap is tracked").toContain("#675");
-    expect(run.code, "a tree that has not opted in must not go red").toBe(0);
+    expect(
+      warnings[0],
+      "the annotation does not name the command that failed to produce a reading",
+    ).toContain(`${AI_REVIEW_ADJUDICATOR_PACKAGE}@${FIXTURE_VERSION}`);
+    expect(
+      run.stdout,
+      "the failed command's own output was swallowed, so nobody can see why",
+    ).toContain("package not found");
+    expect(run.code, "a tree that has not opted in must not go red on a registry outage").toBe(0);
   });
 
-  test("AC-9: a consumer who required a review is refused an unenforced one", () => {
+  test("AC-9d: a consumer who required a review is refused an unadjudicated one", () => {
     // RUNGATE_REQUIRE_AI_REVIEW means "a review I cannot read must not report
-    // green". A payload nobody reads is a review nobody read, so the same
-    // variable has to cover it — otherwise the opt-in buys a green check over
-    // a blocking finding, which is the exact thing it was added to prevent.
-    const run = runAuthScript(buildReviewRunScript(), {
+    // green". A payload nothing adjudicated is a review nobody read, so the
+    // same variable has to cover it — otherwise the opt-in buys a green check
+    // over a blocking finding, which is what it was added to prevent.
+    const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
       RUNGATE_REQUIRE_AI_REVIEW: "true",
+      PATH: plantedBunx(`exit 127`),
     }, PAYLOAD);
-    expect(run.code, "the opt-in refusal did not fire for an unread payload").toBe(1);
-    expect(run.stderr).toContain("#675");
+    expect(run.code, "the opt-in refusal did not fire for an unadjudicated payload").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(run.stderr).toContain("RUNGATE_REQUIRE_AI_REVIEW");
   });
 
-  test("AC-9: the two completed/not-completed states say different things", () => {
+  test("AC-9e: THE CHEAPEST WRONG FIX — exit on the code alone, with no proof it ran", () => {
+    // Named and RUN, not argued about. The five-minute version of this branch
+    // is `bunx … ; exit $?`, and it is green on AC-9a and AC-9b both. Deleting
+    // the run-proof is that fix performed, and the input on which it differs
+    // from the original is AC-9c's: a `bunx` that exits 1 having printed
+    // nothing. Original: exit 0 and an UNMEASURED annotation. Mutant: exit 1,
+    // a red required check, and no annotation saying what went wrong.
+    const naive = buildReviewRunScript(FIXTURE_VERSION).replace(
+      /\n *case "\$\{adjudication\}" in\n(?:.*\n)*? *esac\n/,
+      '\n    exit ${adjudicated}\n',
+    );
+    expect(naive, "the mutation did not apply").not.toBe(buildReviewRunScript(FIXTURE_VERSION));
+
+    const env = {
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`echo "error: package not found" >&2; exit 1`),
+    };
+    const mutant = runAuthScript(naive, env, PAYLOAD);
+    expect(
+      mutant.code,
+      "the mutant did not differ — this case witnesses nothing about the run-proof",
+    ).toBe(1);
+    expect(mutant.stdout).not.toContain("UNMEASURED");
+
+    // And the mutant is still green on the two cases a happy-path suite would
+    // have written, which is WHY it is the cheap fix rather than an obvious
+    // error.
+    const clean = runAuthScript(naive, {
+      ...env,
+      PATH: plantedBunx(`echo "${OUTCOME_LINE} CLEAN"; exit 0`),
+    }, PAYLOAD);
+    expect(clean.code, "the mutant is not actually a plausible fix").toBe(0);
+  });
+
+  test("AC-9f: the two completed/not-completed states say different things", () => {
     // A pair varying ONE reading. Without this, one sentence could cover both
     // and "the reviewer never ran" would be indistinguishable from "the
-    // reviewer ran and nobody read it" — different facts, different fixes.
+    // reviewer ran and nothing adjudicated it" — different facts, different
+    // fixes.
     const base = { AI_REVIEW_MODE: "vertex" };
-    const ran = runAuthScript(buildReviewRunScript(), {
+    const ran = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       ...base,
       AI_REVIEW_ACTION_OUTCOME: "success",
+      PATH: plantedBunx(`exit 127`),
     }, PAYLOAD);
-    const failed = runAuthScript(buildReviewRunScript(), {
+    const failed = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       ...base,
       AI_REVIEW_ACTION_OUTCOME: "failure",
     });
     expect(ran.stdout, "one sentence for two states").not.toBe(failed.stdout);
     expect(failed.stdout).toContain("#631");
-    expect(failed.stdout).not.toContain("#675");
-    expect(ran.stdout).toContain("#675");
+    expect(failed.stdout).not.toContain(AI_REVIEW_ADJUDICATOR_PACKAGE);
+    expect(ran.stdout).toContain(AI_REVIEW_ADJUDICATOR_PACKAGE);
   });
 
   test("AC-9: the silent exit is what this would have shipped", () => {
     // The mutant, run rather than described: restore the bare `exit 0` on the
     // success path and a review carrying a critical finding is a green check
     // with nothing in the log saying so.
-    const quiet = buildReviewRunScript().replace(
+    const quiet = buildReviewRunScript(FIXTURE_VERSION).replace(
       /if \[ "\$\{AI_REVIEW_ACTION_OUTCOME:-\}" = success \]; then\n(?:.*\n)*?fi\n/,
       'if [ "${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then\n  exit 0\nfi\n',
     );
-    expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript());
+    expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript(FIXTURE_VERSION));
     const run = runAuthScript(quiet, {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "success",
@@ -612,7 +751,7 @@ describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
  * Both were predicted on the assumption that mutating the report script
  * breaks something about the committed workflow. Nothing did: `AC-1` above
  * compares the AUTH step, and every other case here drives
- * `buildReviewRunScript()` directly. So `.github/workflows/ai-review.yml`
+ * `buildReviewRunScript` directly. So `.github/workflows/ai-review.yml`
  * could carry a report script the generator no longer produces and this
  * whole file would stay green. The verbatim case was added for that, and
  * P1 is 4.
@@ -636,7 +775,7 @@ describe("AC-9: a payload nobody adjudicates is UNMEASURED as a gate", () => {
  */
 describe("#803: a non-zero exit with no payload names the app install", () => {
   const failed = (env: Record<string, string> = {}) =>
-    runAuthScript(buildReviewRunScript(), {
+    runAuthScript(buildReviewRunScript(FIXTURE_VERSION), {
       AI_REVIEW_MODE: "vertex",
       AI_REVIEW_ACTION_OUTCOME: "failure",
       ...env,
@@ -696,7 +835,7 @@ describe("#803: a non-zero exit with no payload names the app install", () => {
       },
     ] as const;
     for (const o of others) {
-      const run = runAuthScript(buildReviewRunScript(), { ...o.env }, o.payload);
+      const run = runAuthScript(buildReviewRunScript(FIXTURE_VERSION), { ...o.env }, o.payload);
       expect(run.stdout, `${o.label} carries the app-install cause`).not.toContain(
         AI_REVIEW_APP_INSTALL_URL,
       );
@@ -725,8 +864,8 @@ describe("#803: a non-zero exit with no payload names the app install", () => {
     // because AC-1 above compares the AUTH step and nothing compared this
     // one. So the committed `ai-review.yml` could hold a report script the
     // generator no longer produces, and every test here would still pass —
-    // they all drive `buildReviewRunScript()` directly.
-    const indented = buildReviewRunScript()
+    // they all drive `buildReviewRunScript(…)` directly.
+    const indented = buildReviewRunScript(harnessVersion())
       .trimEnd()
       .split("\n")
       .map(l => (l ? `          ${l}` : ""))

@@ -209,10 +209,9 @@ export const AI_REVIEW_JOB = "ai-review";
 /**
  * Whether anything in the generated job READS the findings payload (#675).
  *
- * `false` today, and the one position that says so. The reader exists, is
- * tested, and is reachable as `rungate ai-review-findings` since #675's first
- * half — but no step in the emitted workflow runs it, so a `critical` finding
- * is a green check.
+ * `true` since #1013, and the one position that says so. The verdict step's
+ * success branch runs `AI_REVIEW_FINDINGS_COMMAND` over the payload and exits
+ * on what it returns, so a blocking finding fails the check.
  *
  * It is a constant rather than two sentences because two places describe this
  * state: `buildReviewRunScript`'s warning, which tells an operator mid-run,
@@ -222,10 +221,61 @@ export const AI_REVIEW_JOB = "ai-review";
  * enforcement over a job that has none. `test/ai-review-outcomes-header.test.ts`
  * holds them to this.
  *
- * Flip it when the adjudication step lands, and the caveat leaves the header
- * in the same commit.
+ * It does NOT claim the adjudicator ran on any particular runner. That is a
+ * per-run reading, and the step takes it per run — see
+ * `AI_REVIEW_OUTCOME_LINE`.
  */
-export const AI_REVIEW_FINDINGS_ADJUDICATED = false;
+export const AI_REVIEW_FINDINGS_ADJUDICATED = true;
+
+/**
+ * The npm package the generated job fetches the adjudicator from (#1013).
+ *
+ * The job runs `bunx <package>@<generating version> <command> <payload>` and
+ * nothing else. Three routes to running the reader were measured on #1013 and
+ * this is the only one that is not a security regression:
+ *
+ * - `bun install` from the checkout executes the pull request's own dependency
+ *   graph in a job holding `id-token: write`. `ai-review-restore-untrusted`
+ *   restores nine paths from the base and `package.json`/`bun.lock` are not
+ *   among them, and `--ignore-scripts` does not help when the next line runs
+ *   `node_modules/.bin/rungate`, which that manifest names.
+ * - `bun bin/rungate.ts` from the checkout runs the branch's own code in the
+ *   one job whose design is that the reviewer READS the branch.
+ * - `bunx <package>@<version>` reads no consumer manifest, writes no
+ *   `node_modules` into the workspace, and names its version in the generated
+ *   file, so it cannot drift without the file changing.
+ *
+ * The version is the GENERATING version, passed in rather than read here —
+ * this module has no relative imports (see `AiReviewActionRefs`). A tree whose
+ * version is not yet on the registry emits a command that cannot resolve, and
+ * that is the same correct-but-not-yet-resolvable output `harnessDevDepRange`
+ * in `lib/scaffold/steps.ts` has emitted since #364. It is not silent: a
+ * command that could not run produces no `AI_REVIEW_OUTCOME_LINE`, and the
+ * step reports UNMEASURED rather than reading the exit code as a verdict.
+ */
+export const AI_REVIEW_ADJUDICATOR_PACKAGE = "rungate";
+
+/** The subcommand inside it. Registered in `lib/cli-commands.ts`. */
+export const AI_REVIEW_FINDINGS_COMMAND = "ai-review-findings";
+
+/**
+ * The line the adjudicator prints BEFORE it decides anything — the proof that
+ * it ran at all (#1013).
+ *
+ * The exit code cannot carry that proof. `AI_REVIEW_REQUIRED_EXIT` is `1`, and
+ * so is a `bunx` that could not resolve the package, a `bun` that is not on the
+ * runner, and a dispatcher that threw. Reading `1` as "the review refused"
+ * makes an UNINSTALLABLE adjudicator indistinguishable from a blocking finding,
+ * and the obvious repair for a check that fails on every pull request is to
+ * delete it. So the step requires this line in the output before it treats the
+ * exit code as a verdict, and reports UNMEASURED when it is absent.
+ *
+ * Declared here and imported by `./ai-review-findings`, which prints it, so the
+ * printer and the bash that greps for it are one string. Two spellings that
+ * agree today is #295: the reader asked for a key no writer produced, every run
+ * came back empty, and empty read as clean.
+ */
+export const AI_REVIEW_OUTCOME_LINE = "ai-review findings outcome:";
 
 export const AI_REVIEW_AUTH_STEP_NAME = "Detect AI review credentials";
 
@@ -730,6 +780,30 @@ export interface AiReviewActionRefs {
   auth: string;
   /** `actionRef("anthropics/claude-code-action")`, declared by `lib/claude-code-action.ts`. */
   review: string;
+  /**
+   * `actionRef("oven-sh/setup-bun")` from `lib/workflow-actions.ts` (#1013).
+   *
+   * The adjudicator is `bunx`, and a GitHub-hosted runner has no bun. The
+   * step that installs it is the only thing standing between a consumer's
+   * first scaffold and an adjudication that silently cannot start.
+   */
+  setupBun: string;
+  /**
+   * That step's `with:` body, from `setupBunWith(declaredBunVersion(root))`.
+   *
+   * Rendered by the caller rather than here, and NOT optional. #622: the bun
+   * version had four positions and three spellings, and `lib/bun-version.ts`
+   * is now the single declaration every generated `setup-bun` resolves from —
+   * `test/bun-version-agreement.test.ts` AC-3 and
+   * `test/bun-version-moving-tag.test.ts` count the steps under
+   * `.github/workflows` and refuse one that names a version of its own, or
+   * none at all. A step emitted here without it is that defect reinstated in
+   * the one job that cannot afford a runtime surprise.
+   *
+   * Indented for the step body as the builder writes it — the whole block is
+   * re-indented by `indent` on the way out, like every script above.
+   */
+  setupBunWith: string;
 }
 
 /**
@@ -943,6 +1017,11 @@ export const AI_REVIEW_EXECUTION_FILE_VAR = "AI_REVIEW_EXECUTION_FILE";
 export const AI_REVIEW_PREPARE_STEP_ID = "ai-review-prepare";
 
 export const AI_REVIEW_PREPARE_STEP_NAME = "Choose a findings path outside the checkout";
+
+/** The step that puts `bunx` on the runner, so the verdict can adjudicate (#1013). */
+export const AI_REVIEW_SETUP_BUN_STEP_ID = "ai-review-setup-bun";
+
+export const AI_REVIEW_SETUP_BUN_STEP_NAME = "Install bun for the findings adjudicator";
 
 /** The basename, nonce aside. One spelling, so the glob and the write agree. */
 export const AI_REVIEW_FINDINGS_BASENAME = "ai-review-findings";
@@ -2069,7 +2148,7 @@ export function buildOutcomesHeader(
   const unenforced = adjudicated
     ? ""
     : `#\n# NOT YET: the first outcome is not enforced. The findings reader exists\n` +
-      `# and is reachable as \`rungate ${"ai-review-findings"}\`, and no step in this job runs\n` +
+      `# and is reachable as \`rungate ${AI_REVIEW_FINDINGS_COMMAND}\`, and no step in this job runs\n` +
       `# it (#675) — so a blocking finding is reported in the comments and the\n` +
       `# check is green. The job says so on every run rather than exiting 0 in\n` +
       `# silence; "reviewed, and nobody read the result" is its own state.\n`;
@@ -2517,7 +2596,12 @@ export const AI_REVIEW_APP_INSTALL_CAUSE =
   `${AI_REVIEW_APP_INSTALL_URL} and re-run. This job cannot read that log, ` +
   `so it is naming a likely cause and not reporting a measured one.`;
 
-export function buildReviewRunScript(): string {
+export function buildReviewRunScript(version: string): string {
+  // The exact command the success branch runs. Built here so the comments
+  // below and the bash are one string, and so a test can name it.
+  const adjudicator =
+    `bunx ${AI_REVIEW_ADJUDICATOR_PACKAGE}@${version} ${AI_REVIEW_FINDINGS_COMMAND}`;
+
   // The DECLINED route, and the only one of the five below on which the
   // app-install cause can be true: no execution file means the action never
   // got far enough to write one (#826).
@@ -2541,15 +2625,23 @@ export function buildReviewRunScript(): string {
   // asserted the opposite without stat'ing the path — this branch is reached
   // before the success branch's `-s` test, so nothing had ever looked. The
   // verdict does not soften: an action that did not complete has not produced
-  // a review whose payload can be trusted, and nothing reads it anyway (#675).
+  // a review whose payload can be trusted.
+  //
+  // The adjudicator is NOT run here, and that is deliberate (#1013). It
+  // adjudicates a COMPLETED review; a payload left behind by an action that
+  // died is a partial document, and reading it would turn "the review was cut
+  // short" into "the review found nothing" — a half-written findings array is
+  // indistinguishable from a clean one.
   const pendingPayload =
     `The review action (#631) did not complete, and yet a findings payload ` +
     `IS present at the path this job gave the reviewer. So the reviewer ran ` +
     `and wrote a result, and the action failed around it. The payload is NOT ` +
-    `adjudicated — nothing in this job reads one (#675) — and a run whose ` +
-    `action did not complete is not a run whose review can be trusted to be ` +
-    `whole. Read the execution file and the action's own log before treating ` +
-    `that file as a verdict. This check is UNMEASURED, not a passing review.`;
+    `adjudicated — the adjudicator reads a review that COMPLETED, and a ` +
+    `partially written findings list is indistinguishable from a clean one — ` +
+    `and a run whose action did not complete is not a run whose review can ` +
+    `be trusted to be whole. Read the execution file and the action's own log ` +
+    `before treating that file as a verdict. This check is UNMEASURED, not a ` +
+    `passing review.`;
 
   // The measured overshoot. `base-action/src/run-claude-sdk.ts` at the pinned
   // SHA writes the execution file at `:222` and only then throws at `:249`
@@ -2602,24 +2694,35 @@ export function buildReviewRunScript(): string {
     `happened.`;
 
   // The third state, and the one most easily mistaken for a pass: the
-  // reviewer ran, wrote a payload, and NOTHING IN THIS JOB READS IT. The
-  // reader exists and is tested (`lib/scaffold/ai-review-findings.ts`), but
-  // wiring it into the job needs a way for a scaffolded consumer — which has
-  // no copy of rungate's sources — to execute it, and that is #675.
+  // reviewer ran, wrote a payload, and the ADJUDICATOR could not run over it
+  // (#1013). Not "nobody wired it" — the command is right there in the step —
+  // but "the command this step named produced no reading".
   //
-  // Until then a run carrying a `critical` finding is a green check, so the
-  // job says so by name rather than exiting 0 in silence. "Reviewed, found
-  // nothing" and "reviewed, and nobody read the result" are different facts
-  // and only one of them is a pass.
+  // It is a distinct state from every other UNMEASURED here, and it is the one
+  // that has to stay distinct from a REFUSAL. `${AI_REVIEW_REQUIRED_EXIT}` is
+  // 1 and so is a `bunx` that could not resolve the package, so collapsing the
+  // two makes an uninstallable checker read as a blocked pull request — and
+  // the obvious repair for a check that is red on every pull request is to
+  // delete the step. The discriminator is `${AI_REVIEW_OUTCOME_LINE}`, which
+  // the reader prints before it decides anything.
+  //
+  // It follows the ${AI_REVIEW_REQUIRE_VAR} convention every other unmeasured
+  // state in this file follows: warn by default, refuse for a consumer who
+  // asked to be refused. A tree that has not opted in is not turned red by a
+  // registry outage.
   const unadjudicated =
-    `The AI review completed and wrote a findings payload, but no step in ` +
-    `this job reads it yet (#675), so a blocking finding would not fail this ` +
-    `check. The review is UNMEASURED as a GATE — the comments are real, the ` +
-    `verdict is not enforced.`;
+    `The AI review completed and wrote a findings payload, and the step that ` +
+    `adjudicates it produced no reading: '${adjudicator}' printed no ` +
+    `'${AI_REVIEW_OUTCOME_LINE}' line, so it did not run. An exit code alone ` +
+    `cannot say — a refusal and a command that could not start both exit ` +
+    `non-zero — so this is reported as UNMEASURED rather than read as a ` +
+    `verdict. The usual cause is that ${AI_REVIEW_ADJUDICATOR_PACKAGE}@${version} ` +
+    `is not on the registry yet, or that bun is not on this runner. The ` +
+    `review's comments are real; the gate is not enforced on this run.`;
 
   const unadjudicatedRefusal =
-    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and nothing in ` +
-    `this job adjudicates the findings payload (#675), so a blocking finding ` +
+    `${AI_REVIEW_REQUIRE_VAR} is '${AI_REVIEW_REQUIRE_VALUE}' and nothing ` +
+    `adjudicated the findings payload on this run, so a blocking finding ` +
     `would report green. Failing rather than reporting a passing gate for a ` +
     `verdict nobody read.`;
 
@@ -2848,6 +2951,47 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
   # is the honest direction: the prepare step did not run, so nobody can say a
   # review happened.
   if [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
+    # #1013. The adjudication, and the ONLY branch in this file whose exit
+    # code comes from something other than this script.
+    #
+    # Resolved inside \`run:\`, never in an \`if:\`. A step skipped by \`if:\`
+    # reports *skipped*, and a skipped required check can be treated as
+    # satisfied — the module header's standing rule, and it applies hardest
+    # here, where the thing being skipped is the verdict.
+    #
+    # Both streams are captured: the reader writes its \`::error\` annotation
+    # to stderr and the outcome line to stdout, and this branch needs to read
+    # the second while still SHOWING the first. The output is re-printed
+    # verbatim rather than through \`escape_annotation\` — the reader escapes
+    # its own annotation payloads (one escaper, in \`ai-review-findings.ts\`),
+    # and escaping it twice turns \`%\` into \`%2525\` and the annotation into
+    # noise.
+    adjudication=\$(${adjudicator} "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>&1)
+    adjudicated=\$?
+    printf '%s\\n' "\${adjudication}"
+
+    # DID IT RUN, asked before WHAT IT SAID. Without this line a registry that
+    # is down, a runner without bun and a review carrying a \`critical\` all
+    # exit 1 and all read as a blocked pull request.
+    #
+    # The code is MAPPED rather than passed through, so every non-zero exit in
+    # this script is still the one exported constant — \`test/ai-review-
+    # scaffold.test.ts\` AC-6b refuses a literal here, and a bare
+    # \`exit \${adjudicated}\` would be a refusal the mutation that zeroes
+    # \${AI_REVIEW_REQUIRED_EXIT} could not reach. It re-states the same value
+    # rather than adding one: the reader's own refusals already route through
+    # that constant (\`test/ai-review-exit-binding.test.ts\`), so the only
+    # thing this widens is a reader that ran and died some other way, which is
+    # a refusal too.
+    case "\${adjudication}" in
+      *"${AI_REVIEW_OUTCOME_LINE}"*)
+        if [ "\${adjudicated}" = 0 ]; then
+          exit 0
+        fi
+        exit ${AI_REVIEW_REQUIRED_EXIT}
+        ;;
+    esac
+
     echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicated}"
     if [ "\${${AI_REVIEW_REQUIRE_VAR}:-}" = "${AI_REVIEW_REQUIRE_VALUE}" ]; then
       echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${unadjudicatedRefusal}" >&2
@@ -4578,9 +4722,14 @@ function indented(lines: string[], indent: string): string {
 /**
  * The review steps, as YAML, ready to be indented under a job's `steps:`.
  *
- * Six steps, in the order they have to run: check out the branch, choose a
- * payload path outside it, authenticate to Vertex, run the reviewer, say
- * whether it ran, and refuse one that edited the tree it was reviewing.
+ * In the order they have to run: check out the branch, choose a payload path
+ * outside it, install bun for the adjudicator, authenticate to Vertex, run the
+ * reviewer, adjudicate its payload, and refuse one that edited the tree it was
+ * reviewing.
+ *
+ * `version` is the generating harness version, and it reaches the `bunx`
+ * invocation in the verdict step. It is a parameter rather than a read because
+ * this module has no relative imports — see `AiReviewActionRefs`.
  *
  * Every credential is gated on the mode the
  * auth step resolved rather than on the secret itself — the auth step is the
@@ -4594,6 +4743,7 @@ function indented(lines: string[], indent: string): string {
 export function buildReviewRunStep(
   vertex: VertexCiDecision,
   refs: AiReviewActionRefs,
+  version: string,
   indent = "      ",
 ): string {
   const modeIs = (mode: string) =>
@@ -4616,6 +4766,27 @@ export function buildReviewRunStep(
     `  id: ${AI_REVIEW_PREPARE_STEP_ID}`,
     `  run: |`,
     ...buildPrepareScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
+  // #1013. BEFORE the baseline, for #836's reason rather than for
+  // convenience: anything a step writes into GITHUB_WORKSPACE after the
+  // baseline is taken lands in the REVIEWER's column in the drift reading.
+  // This action writes to the runner's tool cache and to `~/.bun`, not to the
+  // checkout — but "it does not write there today" is the kind of belief the
+  // drift step exists to stop relying on, and taking it early makes whatever
+  // it does write cancel.
+  //
+  // `continue-on-error: true`, like every other step here: nothing in this
+  // job may have an `if:`, and a setup action that fails hard turns a runner
+  // with no bun into a RED check rather than an UNMEASURED one. The verdict
+  // step reads the adjudicator's own output and says which it was.
+  const setupBun = [
+    `- name: ${AI_REVIEW_SETUP_BUN_STEP_NAME}`,
+    `  id: ${AI_REVIEW_SETUP_BUN_STEP_ID}`,
+    `  continue-on-error: true`,
+    `  uses: ${refs.setupBun}`,
+    `  with:`,
+    ...refs.setupBunWith.trimEnd().split("\n"),
   ];
 
   // Workload Identity Federation, and NO service-account key (#677 AC-15).
@@ -4776,12 +4947,13 @@ export function buildReviewRunStep(
     // turning every unmeasured pull request green.
     `    ${AI_REVIEW_EVENT_VAR}: \${{ github.event_name }}`,
     `  run: |`,
-    ...buildReviewRunScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+    ...buildReviewRunScript(version).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
   return (
     indented(checkout, indent) +
     indented(prepare, indent) +
+    indented(setupBun, indent) +
     (vertexAuth.length === 0 ? "" : indented(vertexAuth, indent)) +
     (credsRelocate.length === 0 ? "" : indented(credsRelocate, indent)) +
     indented(restore, indent) +

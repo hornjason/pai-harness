@@ -11,7 +11,7 @@
  * AC-5 — "the generated job hands the review action exactly one exact pinned
  * model identifier, declared once and interpolated into `claude_args`" — is
  * **not implemented**, because there is nothing yet to hand it to.
- * `buildReviewRunScript()` is a placeholder whose own text says *"no review
+ * `buildReviewRunScript` is a placeholder whose own text says *"no review
  * step is wired into this job yet (#631)"*: there is no review action, no
  * `claude_args`, and no model input. #685's own Dependencies section says
  * Phase 1 must land first, and #631 is open.
@@ -58,6 +58,15 @@ import {
   vertexCiConfig,
 } from "../lib/scaffold/ai-review-step";
 import { createCiWorkflows } from "../lib/scaffold/steps";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 /**
  * Scaffold a real project and return the review workflow it actually wrote.

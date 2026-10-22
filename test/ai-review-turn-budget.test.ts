@@ -55,6 +55,16 @@ import {
   vertexCiConfig,
   type VertexCiDecision,
 } from "../lib/scaffold/ai-review-step";
+import { stubBunxAbsent } from "./helpers/stub-bunx";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 const SOURCE_PATH = join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step.ts");
 const source = readFileSync(SOURCE_PATH, "utf-8");
@@ -179,7 +189,7 @@ function runReportStep(
 ): { code: number; out: string; err: string } {
   const dir = scratchDir("ai-review-report-");
   const path = join(dir, "report.sh");
-  writeFileSync(path, buildReviewRunScript());
+  writeFileSync(path, buildReviewRunScript(FIXTURE_VERSION));
   // Since #816 a successful action with no payload is the SKIP state, not a
   // completed review. The control below is about a review that finished, so
   // it has to plant one.
@@ -191,7 +201,7 @@ function runReportStep(
   }
   const r = Bun.spawnSync(["bash", path], {
     cwd: dir,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...planted, ...env },
+    env: { PATH: stubBunxAbsent(), ...planted, ...env },
   });
   return {
     code: r.exitCode,

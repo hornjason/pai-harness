@@ -3433,11 +3433,29 @@ jobs:
   ${AI_REVIEW_JOB}:
     runs-on: ${runsOn}
     steps:
-${buildAuthDetectStep(vertex)}${buildReviewRunStep(vertex, {
-    checkout: actionRef("actions/checkout"),
-    auth: actionRef(GOOGLE_AUTH_ACTION),
-    review: actionRef(CLAUDE_CODE_ACTION),
-  })}`;
+${buildAuthDetectStep(vertex)}${buildReviewRunStep(
+    vertex,
+    {
+      checkout: actionRef("actions/checkout"),
+      auth: actionRef(GOOGLE_AUTH_ACTION),
+      review: actionRef(CLAUDE_CODE_ACTION),
+      setupBun: actionRef("oven-sh/setup-bun"),
+      // The same single declaration the test and gates jobs resolve from
+      // (#622), at the indent this job's step bodies use.
+      setupBunWith: setupBunWith(declaredBunVersion(root), "    "),
+    },
+    // #1013. The GENERATING version, and the same reading `harnessDevDepRange`
+    // takes — one function, so a scaffold cannot write a `bunx rungate@X` next
+    // to a `devDependencies` entry floored at a different minor.
+    //
+    // A tree running ahead of npm emits a command the registry cannot satisfy
+    // yet, exactly as that function's own docstring describes for the
+    // dependency range, and it becomes resolvable the moment the version
+    // ships. It is not silent in the window: the adjudicator prints no outcome
+    // line, and the verdict step reports UNMEASURED rather than reading the
+    // failure as a refusal.
+    harnessVersion(),
+  )}`;
 
   // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does
   // not own the file, and a consumer's own jobs have to survive the update

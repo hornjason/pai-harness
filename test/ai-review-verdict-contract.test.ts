@@ -66,35 +66,34 @@
  * the prompt asks for a shape the reader cannot read, the fixture inherits
  * the defect instead of papering over it.
  *
- * ## WHAT THIS DOES NOT COVER
+ * ## AC-4's second half, and where it is measured (#1013)
  *
- * AC-4's second half — *"makes the ai-review job exit non-zero"* — is NOT
- * closed here, and `AC-4c` asserts the gap rather than describing it, so it
- * goes red the day the wiring lands and nobody has to notice this paragraph.
- * The verdict step still emits its `#675` UNMEASURED warning over a payload
- * nothing reads. Three routes to running the reader inside that job were
- * measured and each is worse than the warning:
+ * *"makes the ai-review job exit non-zero"* is `AC-4e` below. It takes the
+ * bash out of the committed `ai-review.yml`, drives a fixture shaped by that
+ * same file's prompt through it, and asserts the JOB's exit code in both
+ * directions. Of the three routes to running the reader inside that job, one
+ * was taken and two were refused:
  *
- * 1. `setup-bun` + `bun install` — the job restores `.claude`, `CLAUDE.md`
- *    and seven other paths from the base, but **not `package.json` or
- *    `bun.lock`**. Installing a pull request's own manifest executes an
- *    untrusted dependency graph in a job holding `id-token: write`, and
- *    `--ignore-scripts` does not help when the next line runs
- *    `node_modules/.bin/rungate`, which that manifest names.
- * 2. `bunx rungate@<version>` pinned to the generating version — measured
- *    against npm on 2026-10-21: `rungate@0.6.0` is `latest`, matches
- *    `package.json`, and **does not contain `scripts/ai-review-findings.ts`
- *    or the `ai-review-findings` command**. Every consumer and this
- *    repository would adjudicate with a package that cannot, so the branch
- *    would be UNMEASURED on arrival — a check that can never fire, which is
- *    the defect class #675 is about.
- * 3. `bun bin/rungate.ts` from the checkout — runs the pull request's own
- *    code in the credentialed job, in a repository whose reviewer is not
- *    supposed to execute the branch it reads.
+ * 1. `bun install` from the checkout — REFUSED. The job restores `.claude`,
+ *    `CLAUDE.md` and seven other paths from the base, but **not
+ *    `package.json` or `bun.lock`**. Installing a pull request's own manifest
+ *    executes an untrusted dependency graph in a job holding
+ *    `id-token: write`, and `--ignore-scripts` does not help when the next
+ *    line runs `node_modules/.bin/rungate`, which that manifest names.
+ * 2. `bunx rungate@<generating version>` — TAKEN. No consumer manifest is
+ *    read, no `node_modules` reaches the workspace, and the version is a
+ *    literal in the generated file, so it cannot drift silently.
+ * 3. `bun bin/rungate.ts` from the checkout — REFUSED. Runs the pull
+ *    request's own code in the credentialed job, in a repository whose
+ *    reviewer is not supposed to execute the branch it reads.
  *
- * Route 2 becomes correct the moment a release ships the command. That is a
- * release-ordering decision rather than a design one, and it is filed as #1013
- * rather than guessed at.
+ * A tree whose version is ahead of npm — which this one usually is — emits a
+ * command the registry cannot satisfy yet. That window is **not** silent and
+ * is **not** a refusal: the adjudicator prints no outcome line, and the step
+ * reports UNMEASURED and follows `RUNGATE_REQUIRE_AI_REVIEW`. Collapsing it
+ * into the refusal would make an uninstallable checker look like a blocked
+ * pull request, and the obvious repair for that is to delete the step.
+ * `AC-9c` and `AC-9e` in `test/ai-review-workflow.test.ts` hold that apart.
  */
 
 // SPEC-REF: HARNESS-STANDARD.md § Success Criteria
@@ -108,6 +107,8 @@ import { join } from "path";
 import {
   AI_REVIEW_ACTION_STEP_ID,
   AI_REVIEW_BLOCK_VERDICT,
+  AI_REVIEW_FINDINGS_COMMAND,
+  AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_FINDINGS_KEY,
   AI_REVIEW_FINDING_FIELDS,
   AI_REVIEW_JOB,
@@ -122,10 +123,10 @@ import {
 
 const ROOT = join(import.meta.dir, "..");
 const COMMITTED = join(ROOT, ".github", "workflows", AI_REVIEW_WORKFLOW_FILE);
-const COMMAND = "ai-review-findings";
+const COMMAND = AI_REVIEW_FINDINGS_COMMAND;
 
-/** The line `main` prints before it decides anything. */
-const OUTCOME_LINE = "ai-review findings outcome:";
+/** The line `main` prints before it decides anything. Imported, not re-typed. */
+const OUTCOME_LINE = AI_REVIEW_OUTCOME_LINE;
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -239,6 +240,71 @@ function runCli(args: string[]) {
     cwd,
     timeout: 60_000,
   });
+}
+
+/** The verdict step's bash, out of the COMMITTED workflow document (#1013). */
+function committedRunScript(): string {
+  const doc = Bun.YAML.parse(committedText()) as any;
+  const step = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []).find(
+    (s: any) => s?.id === AI_REVIEW_RUN_STEP_ID,
+  );
+  if (step === undefined) {
+    throw new Error(`the committed workflow has no ${AI_REVIEW_RUN_STEP_ID} step`);
+  }
+  const script = String(step.run ?? "");
+  if (script.length < 500) {
+    throw new Error(`the committed ${AI_REVIEW_RUN_STEP_ID} step has no script`);
+  }
+  if (!script.includes(COMMAND)) {
+    throw new Error(
+      `the committed verdict step does not invoke '${COMMAND}', so the case below would ` +
+        `measure a step that adjudicates nothing (#1013)`,
+    );
+  }
+  return script;
+}
+
+/**
+ * Run that bash with a `bunx` that forwards to this tree's own `bin/rungate.ts`.
+ *
+ * The step's command is `bunx rungate@<generating version> <command> <path>`.
+ * Resolving that for real would make the case a test of what npm served today
+ * — the version is often ahead of the registry, by design (see
+ * `AI_REVIEW_ADJUDICATOR_PACKAGE`). The plant drops the package specifier and
+ * runs the identical command out of the checkout, so the reading, the
+ * severity table and the exit code are all the real ones.
+ *
+ * The environment is built from scratch rather than inherited, for the reason
+ * every runner in this repo does it: an inherited variable is a fixture that
+ * can satisfy the assertion without the feature.
+ */
+function runCommittedStep(script: string, payload: string): {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+} {
+  const dir = scratchDir();
+  const sh = join(dir, "verdict.sh");
+  writeFileSync(sh, script);
+
+  const bin = join(dir, "bunx");
+  writeFileSync(bin, `#!/bin/sh\nshift\nexec bun ${JSON.stringify(join(ROOT, "bin", "rungate.ts"))} "$@"\n`, {
+    mode: 0o755,
+  });
+
+  const r = spawnSync("bash", [sh], {
+    encoding: "utf-8",
+    cwd: dir,
+    timeout: 60_000,
+    env: {
+      PATH: `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      HOME: process.env.HOME ?? dir,
+      AI_REVIEW_MODE: "vertex",
+      AI_REVIEW_ACTION_OUTCOME: "success",
+      AI_REVIEW_FINDINGS_PATH: payload,
+    },
+  });
+  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
 // ── AC-5: the shipped contract, compared to the one declaration ──────────
@@ -499,33 +565,49 @@ describe("AC-4 (#675): a fixture shaped by the SHIPPED prompt drives the real re
     ).toContain("does not decide");
   });
 
-  test("AC-4e: BOUNDARY — the job's verdict step still reads no payload, and says so", () => {
-    // Asserted rather than written in a paragraph, so it goes red the day
-    // the wiring lands instead of quietly becoming a lie. AC-4's first half
-    // ("drives the real reading") is measured above; its second half ("makes
-    // the ai-review job exit non-zero") is NOT, and the three routes to it
-    // are measured in this file's header.
+  test("AC-4e: AC-4's job half — the COMMITTED step exits non-zero over a blocking payload", () => {
+    // #675 AC-4's second half, and the case #1013 replaced the boundary with.
+    // Everything above drives the reader alone; this drives the SHIPPED
+    // verdict step — the bash out of `.github/workflows/ai-review.yml` — over
+    // a fixture shaped by that same file's own prompt, and asserts the thing
+    // a required check is for: the JOB exits non-zero.
     //
-    // When this case reds: the step now adjudicates (#1013), so replace this
-    // case with the non-zero job-exit assertion, and edit its entry in
-    // .claude/ai-review-surface-ratchet.json with a `renames` row in the
-    // same commit.
-    const doc = Bun.YAML.parse(committedText()) as any;
-    const run = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []).find(
-      (s: any) => s?.id === AI_REVIEW_RUN_STEP_ID,
+    // The committed file and not `buildReviewRunScript()`. A builder compared
+    // to itself agrees by construction (#530); the artefact GitHub runs is
+    // the only document that can disagree.
+    //
+    // `bunx` is planted rather than run for real: the step names
+    // `rungate@<generating version>`, and resolving it would make this case a
+    // test of the npm registry's contents on the day it runs. The plant
+    // forwards to the real `bin/rungate.ts` in this tree, so the ADJUDICATION
+    // is genuine — the only thing substituted is how the binary is found.
+    const script = committedRunScript();
+    const payload = payloadFile(fixtureFromPrompt(BLOCKING_SEVERITY, AI_REVIEW_BLOCK_VERDICT));
+    const blocked = runCommittedStep(script, payload);
+
+    expect(
+      blocked.stdout,
+      `the committed step produced no '${OUTCOME_LINE}' line, so nothing adjudicated and ` +
+        `the exit code below says nothing:\n${blocked.stdout}\n${blocked.stderr}`,
+    ).toContain(OUTCOME_LINE);
+    expect(blocked.stdout).toContain("BLOCKED");
+    expect(
+      blocked.status,
+      `a blocking finding reported a GREEN ai-review check:\n${blocked.stdout}\n${blocked.stderr}`,
+    ).toBe(AI_REVIEW_REQUIRED_EXIT);
+
+    // The direction control. Without it a step wedged non-zero satisfies the
+    // assertion above, and "the gate fires" is indistinguishable from "the
+    // gate is stuck closed" — which is the failure mode that gets a required
+    // check deleted.
+    const clean = runCommittedStep(
+      script,
+      payloadFile(fixtureFromPrompt(PASSIVE_SEVERITY, AI_REVIEW_PASS_VERDICT)),
     );
-    expect(run, `the committed workflow has no ${AI_REVIEW_RUN_STEP_ID} step`).toBeDefined();
-    const script = String(run.run ?? "");
-    expect(script.length, "the verdict step has no script").toBeGreaterThan(500);
+    expect(clean.stdout).toContain("CLEAN");
     expect(
-      script,
-      `the verdict step now invokes '${COMMAND}' — AC-4's job half has landed, and this ` +
-        `boundary case is the thing to replace`,
-    ).not.toContain(COMMAND);
-    expect(
-      script,
-      "the step stopped naming #675 as the reason a blocking finding would not fail the check, " +
-        "without starting to adjudicate — the state is now unmeasured in both directions",
-    ).toContain("#675");
+      clean.status,
+      `an advisory finding failed the check:\n${clean.stdout}\n${clean.stderr}`,
+    ).toBe(0);
   });
 });

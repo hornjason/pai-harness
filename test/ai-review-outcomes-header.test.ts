@@ -53,6 +53,7 @@ import { join } from "path";
 import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_FINDINGS_ADJUDICATED,
+  AI_REVIEW_FINDINGS_COMMAND,
   AI_REVIEW_REQUIRE_VALUE,
   AI_REVIEW_REQUIRE_VAR,
   AI_REVIEW_WORKFLOW_FILE,
@@ -63,6 +64,15 @@ import {
 } from "../lib/scaffold/ai-review-step";
 import { OWNED_FILES } from "../lib/scaffold/owned-files";
 import { freshFixtureRoot } from "./helpers/scaffold-fixture";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 const ROOT = join(import.meta.dir, "..");
 const WORKFLOW = join(ROOT, ".github", "workflows", AI_REVIEW_WORKFLOW_FILE);
@@ -156,12 +166,25 @@ describe("#632: the generated review gate explains itself", () => {
 
     // And the two positions say the same thing about the live tree. If the
     // constant is ever flipped without the run script changing, this is the
-    // case that notices.
+    // case that notices — in whichever direction the tree currently sits, so
+    // it keeps working after #1013 flipped it rather than having to be
+    // rewritten the next time it moves.
     const live = buildOutcomesHeader(NO_VERTEX);
-    const script = buildReviewRunScript();
-    expect(AI_REVIEW_FINDINGS_ADJUDICATED).toBe(false);
-    expect(live).toBe(unwired);
-    expect(script, "the run script no longer reports the unread payload, but the header still does").toContain("#675");
+    const script = buildReviewRunScript(FIXTURE_VERSION);
+    if (AI_REVIEW_FINDINGS_ADJUDICATED) {
+      expect(live).toBe(wired);
+      expect(
+        script,
+        "the header says the findings are adjudicated and the run script does not invoke the " +
+          "adjudicator — a header promising enforcement over a job that has none",
+      ).toContain(AI_REVIEW_FINDINGS_COMMAND);
+    } else {
+      expect(live).toBe(unwired);
+      expect(
+        script,
+        "the run script no longer reports the unread payload, but the header still does",
+      ).toContain("#675");
+    }
   });
 
   test("AC-4: a real scaffold records one line saying the gate is inert, and what activates it", () => {

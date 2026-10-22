@@ -52,6 +52,16 @@ import {
   AI_REVIEW_UNMEASURED_TITLE,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
+import { stubBunxAbsent } from "./helpers/stub-bunx";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 const SOURCE_PATH = join(import.meta.dir, "..", "lib", "scaffold", "ai-review-step.ts");
 const source = readFileSync(SOURCE_PATH, "utf-8");
@@ -91,13 +101,13 @@ function run(opts: {
 }): Run {
   const dir = scratchDir();
   const scriptPath = join(dir, "report.sh");
-  writeFileSync(scriptPath, opts.script ?? buildReviewRunScript());
+  writeFileSync(scriptPath, opts.script ?? buildReviewRunScript(FIXTURE_VERSION));
 
   const findings = join(dir, "findings.json");
   if (opts.payload !== null) writeFileSync(findings, opts.payload);
 
   const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    PATH: stubBunxAbsent(),
     AI_REVIEW_MODE: "vertex",
     AI_REVIEW_ACTION_OUTCOME: opts.outcome ?? "success",
   };
@@ -180,7 +190,7 @@ describe("AC-3: a consumer that required the review is refused", () => {
     expect(withPayload.code).not.toBe(0);
     expect(without.code).not.toBe(0);
     expect(withPayload.err).not.toBe(without.err);
-    expect(withPayload.err).toContain("adjudicates");
+    expect(withPayload.err).toContain("adjudicated the findings payload");
     expect(without.err).toContain("never ran");
   });
 });
@@ -260,10 +270,10 @@ describe("AC-5: the pre-#816 script is shown reporting the false sentence", () =
     const dir = scratchDir();
     const path = join(dir, "ai-review-step.ts");
     writeFileSync(path, source.replace(needle, 'if true; then #'));
-    const mutant = (await import(path)) as { buildReviewRunScript: () => string };
+    const mutant = (await import(path)) as { buildReviewRunScript: (version: string) => string };
 
     const real = run({ payload: null, outcome: "success" });
-    const pre = run({ payload: null, outcome: "success", script: mutant.buildReviewRunScript() });
+    const pre = run({ payload: null, outcome: "success", script: mutant.buildReviewRunScript(FIXTURE_VERSION) });
 
     expect(
       pre.out,
@@ -281,7 +291,7 @@ describe("AC-6: nothing in the reading depends on upstream log text", () => {
     // Matched case-insensitively and across the whole module, because this is
     // a prohibition and the honest direction for it to be wrong in is toward
     // refusing something innocent.
-    const script = buildReviewRunScript();
+    const script = buildReviewRunScript(FIXTURE_VERSION);
     for (const phrase of ["workflow validation", "validation skip", "Exiting due to"]) {
       expect(
         script.toLowerCase().includes(phrase.toLowerCase()),
@@ -293,6 +303,6 @@ describe("AC-6: nothing in the reading depends on upstream log text", () => {
   test("the reading is of this job's own artefact", () => {
     // Non-emptiness first: a script that named the variable nowhere would
     // satisfy the prohibition above vacuously.
-    expect(buildReviewRunScript()).toContain(AI_REVIEW_FINDINGS_PATH_VAR);
+    expect(buildReviewRunScript(FIXTURE_VERSION)).toContain(AI_REVIEW_FINDINGS_PATH_VAR);
   });
 });

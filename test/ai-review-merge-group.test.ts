@@ -82,6 +82,16 @@ import {
   buildRestoreScript,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
+import { stubBunxAbsent } from "./helpers/stub-bunx";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 /**
  * The workflow this repository actually commits, parsed.
@@ -104,7 +114,7 @@ function runIn(dir: string, script: string, env: Record<string, string>) {
   writeFileSync(path, script);
   const r = Bun.spawnSync(["bash", path], {
     cwd: dir,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, ...env },
+    env: { PATH: stubBunxAbsent(), HOME: dir, ...env },
   });
   return {
     code: r.exitCode,
@@ -135,7 +145,7 @@ function gitFixture(): { dir: string; origin: string } {
     const r = Bun.spawnSync(["git", ...args], {
       cwd,
       env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        PATH: stubBunxAbsent(),
         HOME: root,
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_SYSTEM: "/dev/null",
@@ -300,7 +310,7 @@ describe("#867 SC-E/SC-F: the report step reaches a measured verdict on a queue 
     // passed anyway. That was the defect, asserted as the contract. The
     // passing verdict is the DEFAULT, so the default is what this case now
     // holds; the flagged consumer is `#939` below.
-    const r = run(buildReviewRunScript(), {
+    const r = run(buildReviewRunScript(FIXTURE_VERSION), {
       ...PR_ENV,
       [AI_REVIEW_REQUIRE_VAR]: "",
       [AI_REVIEW_EVENT_VAR]: "merge_group",
@@ -324,7 +334,7 @@ describe("#867 SC-E/SC-F: the report step reaches a measured verdict on a queue 
     // were written as a catch-all — or keyed on something a pull request also
     // satisfies — it would turn every UNMEASURED pull request green, which is
     // a far worse defect than the hang this issue is about.
-    const r = run(buildReviewRunScript(), { ...PR_ENV, [AI_REVIEW_EVENT_VAR]: "pull_request" });
+    const r = run(buildReviewRunScript(FIXTURE_VERSION), { ...PR_ENV, [AI_REVIEW_EVENT_VAR]: "pull_request" });
     expect(r.code, "the merge-group pass leaked onto pull_request").not.toBe(0);
     expect(r.err).toContain("UNMEASURED");
   });
@@ -333,7 +343,7 @@ describe("#867 SC-E/SC-F: the report step reaches a measured verdict on a queue 
     // Silent Default Substitution, in the direction that matters. An unset
     // variable must not reach the branch that exits 0 — a step that failed to
     // receive its environment would otherwise report a passing review.
-    const r = run(buildReviewRunScript(), PR_ENV);
+    const r = run(buildReviewRunScript(FIXTURE_VERSION), PR_ENV);
     expect(r.code, "an unset event name took the passing branch").not.toBe(0);
   });
 });
@@ -415,7 +425,7 @@ describe("#939: the merge_group pass is a default, and the fail-closed flag over
   };
 
   test("#939: a queue entry refuses when RUNGATE_REQUIRE_AI_REVIEW is set", () => {
-    const r = run(buildReviewRunScript(), {
+    const r = run(buildReviewRunScript(FIXTURE_VERSION), {
       ...QUEUE_ENV,
       [AI_REVIEW_REQUIRE_VAR]: AI_REVIEW_REQUIRE_VALUE,
     });
@@ -450,7 +460,7 @@ describe("#939: the merge_group pass is a default, and the fail-closed flag over
     // readings do. Each row reds on a looser comparison: `!= false` reds on
     // `false`, a case-insensitive match reds on `TRUE`, a truthiness test
     // reds on `1` and `yes`, an unquoted/trimmed compare reds on `true `.
-    const script = buildReviewRunScript();
+    const script = buildReviewRunScript(FIXTURE_VERSION);
     for (const [label, value] of [
       ["unset", undefined],
       ["empty", ""],
@@ -479,7 +489,7 @@ describe("#939: the merge_group pass is a default, and the fail-closed flag over
     //
     // `AI_REVIEW_MODE=none` is deliberately absent — see WHAT THIS DOES NOT
     // COVER. Every row below leaves the job with no verdict on the ref.
-    const script = buildReviewRunScript();
+    const script = buildReviewRunScript(FIXTURE_VERSION);
     const dir = mkdtempSync(join(tmpdir(), "rg-939-"));
     try {
       const findings = join(dir, "findings.json");

@@ -153,6 +153,16 @@ import {
   AI_REVIEW_UNMEASURED_TITLE,
   buildReviewRunScript,
 } from "../lib/scaffold/ai-review-step";
+import { stubBunxAbsent } from "./helpers/stub-bunx";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -187,13 +197,13 @@ function runReport(opts: {
   const dir = mkdtempSync(join(tmpdir(), "ai-review-failroute-"));
   scratch.push(dir);
   const scriptPath = join(dir, "report.sh");
-  writeFileSync(scriptPath, opts.script ?? buildReviewRunScript());
+  writeFileSync(scriptPath, opts.script ?? buildReviewRunScript(FIXTURE_VERSION));
 
   const findings = join(dir, "findings.json");
   if (opts.payload !== null) writeFileSync(findings, opts.payload);
 
   const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    PATH: stubBunxAbsent(),
     AI_REVIEW_MODE: "vertex",
     AI_REVIEW_ACTION_OUTCOME: opts.outcome ?? "failure",
     [AI_REVIEW_FINDINGS_PATH_VAR]: findings,

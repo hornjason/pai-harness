@@ -129,6 +129,7 @@ import { join } from "path";
 import { CLAUDE_CODE_ACTION } from "../lib/claude-code-action";
 import { GOOGLE_AUTH_ACTION } from "../lib/google-auth-action";
 import { actionRef } from "../lib/workflow-actions";
+import { declaredBunVersion, setupBunWith } from "../lib/bun-version";
 import type { VertexCiDecision } from "../lib/scaffold/ai-review-step";
 import {
   AI_REVIEW_ACTION_STEP_ID,
@@ -144,6 +145,16 @@ import {
   buildReviewRunScript,
   buildReviewRunStep,
 } from "../lib/scaffold/ai-review-step";
+import { stubBunxAbsent } from "./helpers/stub-bunx";
+
+/**
+ * A fixture version for the adjudicator's `bunx` pin (#1013), never the
+ * real one. `buildReviewRunScript` takes the generating version as an
+ * argument; passing `harnessVersion()` here would make every assertion
+ * below agree with the generator by construction.
+ */
+const FIXTURE_VERSION = "0.0.0-fixture";
+
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -188,11 +199,17 @@ const VERTEX: VertexCiDecision = {
 
 /** The same step as the GENERATOR emits it, so a fix cannot land in only one. */
 function generatedStep(id: string): any {
-  const steps = buildReviewRunStep(VERTEX, {
-    checkout: actionRef("actions/checkout"),
-    auth: actionRef(GOOGLE_AUTH_ACTION),
-    review: actionRef(CLAUDE_CODE_ACTION),
-  });
+  const steps = buildReviewRunStep(
+    VERTEX,
+    {
+      checkout: actionRef("actions/checkout"),
+      auth: actionRef(GOOGLE_AUTH_ACTION),
+      review: actionRef(CLAUDE_CODE_ACTION),
+      setupBun: actionRef("oven-sh/setup-bun"),
+      setupBunWith: setupBunWith(declaredBunVersion(join(import.meta.dir, "..")), "    "),
+    },
+    FIXTURE_VERSION,
+  );
   const yaml = `jobs:\n  ${AI_REVIEW_JOB}:\n    runs-on: ubuntu-latest\n    steps:\n${steps}`;
   const doc = Bun.YAML.parse(yaml) as any;
   const found = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []).find((s: any) => s?.id === id);
@@ -222,13 +239,13 @@ function runReport(opts: {
 }): Run {
   const dir = scratchDir();
   const scriptPath = join(dir, "report.sh");
-  writeFileSync(scriptPath, opts.script ?? buildReviewRunScript());
+  writeFileSync(scriptPath, opts.script ?? buildReviewRunScript(FIXTURE_VERSION));
 
   const findings = join(dir, "findings.json");
   if (opts.payload !== null) writeFileSync(findings, opts.payload);
 
   const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    PATH: stubBunxAbsent(),
     AI_REVIEW_MODE: "vertex",
     AI_REVIEW_ACTION_OUTCOME: "success",
     [AI_REVIEW_FINDINGS_PATH_VAR]: findings,
@@ -399,11 +416,11 @@ describe("AC-B (#826): the annotation names the route it measured", () => {
     // the step whose whole subject is not doing that.
     const dir = scratchDir();
     const scriptPath = join(dir, "report.sh");
-    writeFileSync(scriptPath, buildReviewRunScript());
+    writeFileSync(scriptPath, buildReviewRunScript(FIXTURE_VERSION));
     const r = Bun.spawnSync(["bash", scriptPath], {
       cwd: dir,
       env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        PATH: stubBunxAbsent(),
         AI_REVIEW_MODE: "vertex",
         AI_REVIEW_ACTION_OUTCOME: "success",
         [AI_REVIEW_FINDINGS_PATH_VAR]: join(dir, "findings.json"),
