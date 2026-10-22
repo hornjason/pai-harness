@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
@@ -370,16 +370,82 @@ describe("#1137 an Edit cannot erase the PATH to a result", () => {
     expectAllowed(
       editOn(
         { ...GATED, changelog: [] },
-        '"changelog": []',
-        '"changelog": [{"ts":"t","event":"note"}]',
+        '"changelog":[]',
+        '"changelog":[{"ts":"t","event":"note"}]',
       ),
     );
   });
 
-  test("CONTROL: an Edit whose old_string is not in the file passes", () => {
-    // The Edit tool itself refuses this, so the guard adds nothing and a
-    // confusing refusal here would be the kind that gets guards switched off.
-    expectAllowed(editOn(GATED, '"nowhere-in-this-file"', '"x"'));
+  // Adopting this refusal immediately reddened two CONTROLs in this file —
+  // the gated-changelog one and the already-DONE one — because both spelled
+  // `old_string` with spaces that `JSON.stringify` does not emit. They had
+  // been passing on the ALLOW this case removes, which means they modelled
+  // no edit at all: `.claude/rules/checks-must-be-able-to-fail.md`, third
+  // shape, in the very cases written to prove the guard is not a brick.
+  // Both fixtures are now byte-exact. Nothing about the guard changed to
+  // make them pass.
+  test("WITNESS: an Edit whose old_string is not in the file is refused", () => {
+    // Round 3 asserted the opposite, reasoning that the Edit tool refuses
+    // such an edit anyway. That is sound about the TOOL and the wrong party
+    // to reason about: the guard models the tool, and where they differ the
+    // guard is wrong. Over-blocking costs a retry; under-blocking costs the
+    // control.
+    expect(blockedReason(editOn(GATED, '"nowhere-in-this-file"', '"x"'))).toMatch(/model/i);
+  });
+
+  test("WITNESS: an Edit with an empty old_string is refused", () => {
+    expect(blockedReason(editOn(GATED, "", '"x"'))).toMatch(/model/i);
+  });
+
+  test("WITNESS: an Edit on a present-but-unreadable file is refused", () => {
+    // The Edit branch had its own existsSync + catch returning ALLOW, so an
+    // unreadable file allowed there and refused on the Write path. Measured.
+    const dir = mkdtempSync(join(tmpdir(), "grp-perm-"));
+    const path = join(dir, "workflow-state.json");
+    try {
+      writeFileSync(path, JSON.stringify(GATED));
+      chmodSync(path, 0o000);
+      const r = runHook({
+        tool_name: "Edit",
+        tool_input: { file_path: path, old_string: '"SHIP"', new_string: '"BUILD"' },
+      });
+      expect(blockedReason(r)).toMatch(/pars|read/i);
+    } finally {
+      try { chmodSync(path, 0o644); } catch { /* already gone */ }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("WITNESS: replace_all as a truthy non-boolean cannot smuggle an erasure", () => {
+    // `toolInput.replace_all === true` read `1` and `"true"` as false, so
+    // the guard modelled one replacement while the tool may do all.
+    // Measured ALLOWED for both, where a real `true` refused.
+    const dir = mkdtempSync(join(tmpdir(), "grp-ra-"));
+    try {
+      const path = join(dir, "workflow-state.json");
+      // The FIRST occurrence is outside `gates`; the second is the result.
+      writeFileSync(path, '{"a":{"result":"PASS"},"gates":{"scope":{"result":"PASS"}}}');
+      for (const replace_all of [true, 1, "true", "yes"]) {
+        const r = runHook({
+          tool_name: "Edit",
+          tool_input: {
+            file_path: path,
+            old_string: '"result":"PASS"',
+            new_string: '"result2":"PASS"',
+            replace_all,
+          },
+        });
+        expect(blockedReason(r), `replace_all: ${JSON.stringify(replace_all)}`).toMatch(
+          /remov|eras|chang/i,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: a single-occurrence edit is unaffected by modelling both splices", () => {
+    expectAllowed(editOn({ phase: "BUILD", note: "x" }, '"x"', '"y"'));
   });
 
   test("CONTROL: an ordinary Edit to an already-DONE run passes", () => {
@@ -391,8 +457,8 @@ describe("#1137 an Edit cannot erase the PATH to a result", () => {
     expectAllowed(
       editOn(
         { phase: "DONE", gates: { ship: { result: "PASS" } }, updatedTs: "2026-01-01" },
-        '"updatedTs": "2026-01-01"',
-        '"updatedTs": "2026-10-22"',
+        '"updatedTs":"2026-01-01"',
+        '"updatedTs":"2026-10-22"',
       ),
     );
   });
