@@ -1952,3 +1952,105 @@ describe("#1269 WITNESS: a protected tree is subtracted under both spellings", (
     }
   });
 });
+
+/**
+ * #1269 finding 2: arm 3's exemption asks about the whole body.
+ *
+ * Arm 3 refuses because an interpreter's program is OPAQUE — what it writes
+ * cannot be read off the command line. Deciding the exemption from a single
+ * path word contradicted that premise, because a destination can be
+ * computed. Measured against the module as merged, one of three computed
+ * spellings escaped; the other two happened to normalise back into the run
+ * store, which is luck and not coverage.
+ *
+ * This is a STOPGAP and the last case below says so by asserting what it
+ * still lets through. The durable repair is to resolve the write TARGET
+ * rather than read literals, which is filed on #1269.
+ */
+describe("#1269 WITNESS: a computed destination in an interpreter body", () => {
+  const RUN = `${process.env.HOME}/.rungate/run`;
+
+  test("a scratch literal rewritten into the run store is refused", () => {
+    const cmd = `bun -e 'writeFileSync("/tmp/x/${STATE}".replace("/tmp/x", "${RUN}"), "{}")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("the same shape with a hook file is refused", () => {
+    const cmd = `bun -e 'writeFileSync("/tmp/x/X.hook.ts".replace("/tmp/x", "${LIVE}/hooks"), "")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  // The controls. Without these the rule could be "refuse every interpreter
+  // body", which is the 1,760-of-5,060 over-blocking arm 3 exists past.
+  test("CONTROL: a body naming only scratch paths is still a fixture", () => {
+    const d = decideBashWrite(`bun -e 'writeFileSync("/tmp/fix/${STATE}", "{}")'`);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+
+  test("CONTROL: two scratch paths are still a fixture", () => {
+    const cmd = `python3 -I -c "import shutil; shutil.copy('/tmp/a/${STATE}', '/tmp/b/${STATE}')"`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("CONTROL: a literal run-store path was always refused", () => {
+    expect(decideBashWrite(`bun -e 'writeFileSync("${RUN}/${STATE}", "{}")'`).blocked).toBe(true);
+  });
+
+  test("MECHANISM: punctuation that looks like a path is not one", () => {
+    // `/` and the `//` of a comment are absolute-looking and are not paths.
+    // Counting them ended the exemption for two real fixture commands on
+    // the strength of a comment marker — 6 newly refused against 4 — so the
+    // test is "a slash followed by a non-slash", and this row is what
+    // separates the two spellings of it.
+    const cmd = `bun -e '// build the fixture\nwriteFileSync("/tmp/fix/${STATE}", "{}")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("MECHANISM: one non-scratch absolute literal anywhere in the body ends the exemption", () => {
+    // Identical write to the CONTROL above. The only difference is a second
+    // absolute path that is not scratch, and it is not the destination — so
+    // this row fails if the rule reads the carrying word rather than the
+    // body, which is exactly the mutation this case exists to catch.
+    const cmd = `bun -e 'readFileSync("${RUN}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  /**
+   * The spellings that DO NOT need this fix, measured rather than assumed.
+   * My first draft of this block asserted that a `$HOME`-assembled
+   * destination escapes. It does not — the carrying word is
+   * `/.rungate/run/workflow-state.json`, which is absolute and not scratch,
+   * so the body already failed the all-scratch test. Three of the four
+   * computed spellings I tried were refused on `origin/main` too, and only
+   * the `.replace` of a scratch literal ever escaped:
+   *
+   *     env + absolute suffix          main BLOCK   variant BLOCK
+   *     env var + absolute suffix      main BLOCK   variant BLOCK
+   *     command substitution           main BLOCK   variant BLOCK
+   *     replace of a scratch literal   main ALLOW   variant BLOCK   ← this fix
+   */
+  test("the computed spellings that were already refused stay refused", () => {
+    const run = `${process.env.HOME}/.rungate/run`;
+    for (const cmd of [
+      `bun -e 'writeFileSync(process.env.HOME + "/.rungate/run/${STATE}", "{}")'`,
+      `bun -e 'writeFileSync(process.env.RUNGATE_WORK_DIR + "/${STATE}", "{}")'`,
+      `bun -e 'writeFileSync("$(echo ${run})/${STATE}", "{}")'`,
+    ]) {
+      expect(decideBashWrite(cmd).blocked, cmd).toBe(true);
+    }
+  });
+
+  /**
+   * KNOWN LIMITATION, asserted so it is visible and goes red the day it is
+   * closed. It is NOT the exemption's doing and resolving the write target
+   * would not close it either: when the artifact NAME is assembled from
+   * pieces, `pathWordsContaining` finds no word carrying it, so arm 3 never
+   * gets a candidate to judge. Pre-existing — `origin/main` allows this row
+   * identically. Recorded here because the row next to it could otherwise
+   * be read as "computed destinations are handled".
+   */
+  test("LIMITATION: an assembled artifact NAME is invisible to every arm", () => {
+    const cmd = `python3 -c "import os; open(os.environ['RUNGATE_WORK_DIR'] + os.sep + 'workflow' + '-state.json','w').write('{}')"`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+});
