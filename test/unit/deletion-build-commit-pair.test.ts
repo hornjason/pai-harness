@@ -228,7 +228,10 @@ describe("#659 AC-4: the caller passes the two build commits", () => {
     const call = ship.split("\n").filter(l => l.includes("verify-no-deleted-cases.ts"));
     expect(call.length, "the deletion check is not called exactly once").toBe(1);
     const block = ship.slice(ship.indexOf(call[0]) - 2000, ship.indexOf(call[0]) + 500);
-    expect(block, "the pre-repair HEAD is never captured").toContain("prevBuild=$(git rev-parse HEAD)");
+    // `git -C ${commitDir}` since #1056 — the repair block names its
+    // repository rather than reaching it with a top-level `cd`.
+    expect(block, "the pre-repair HEAD is never captured")
+      .toMatch(/prevBuild=\$\(git (?:-C \S+ )?rev-parse HEAD\)/);
     expect(block).toContain('--previous "$prevBuild"');
     expect(block).toContain('--current "$sha"');
     expect(block, "the comparison was pointed at a base ref rather than the build commit")

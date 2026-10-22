@@ -184,7 +184,7 @@ export function acListBlock(acs: readonly DecomposedAc[]): string {
 export function phase2AcsCommand(harnessRoot: string, workDir: string, acs: readonly DecomposedAc[]): string {
   const payload = JSON.stringify(acs.map(a => ({ id: a.id, statement: a.statement, specElement: a.specElement })));
   return (
-    `cd ${harnessRoot} && bun -e 'require("fs").writeFileSync(process.argv[1], process.argv[2])' ` +
+    `bun --cwd ${harnessRoot} -e 'require("fs").writeFileSync(process.argv[1], process.argv[2])' ` +
     `${workDir}/phase2-acs.json ${shellSingleQuote(payload)}`
   );
 }

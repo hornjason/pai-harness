@@ -242,7 +242,7 @@ describe("SC-2118: the shell is one binding, and a failing run deletes nothing",
     // Non-vacuous: the two differ ONLY around the delete. Everything else —
     // the conditional switch, the drift reading — is in both, so this is a
     // measurement of the delete and not of two unrelated strings.
-    for (const shared of ['git switch "$before"', "--mode drift", 'echo "AFTER: $after"']) {
+    for (const shared of [`git -C '${PROJECT}' switch "$before"`, "--mode drift", 'echo "AFTER: $after"']) {
       expect(shipping).toContain(shared);
       expect(failing).toContain(shared);
     }
@@ -259,7 +259,7 @@ describe("SC-2118: the shell is one binding, and a failing run deletes nothing",
   test("a run that never read the starting branch switches nothing and says so", () => {
     const shell = load("").shell({ withDelete: true });
     expect(shell).toContain("RESTORE: NOT_READ");
-    expect(shell).not.toContain("git switch");
+    expect(shell).not.toContain('switch "$before"');
     expect(shell).not.toContain(DELETE_COMMAND);
   });
 
@@ -268,7 +268,7 @@ describe("SC-2118: the shell is one binding, and a failing run deletes nothing",
     // copy at another call site would survive any mutation of this one and
     // the case above would stay green over a dead binding
     // (.claude/rules/checks-must-be-able-to-fail.md, the fourth shape).
-    expect(shipSource.split('git switch "$before"')).toHaveLength(2);
+    expect(shipSource.split('git -C ${shellQuote(PROJECT_ROOT)} switch "$before"')).toHaveLength(2);
     expect(shipSource.split("function runBranchRestoreShell(")).toHaveLength(2);
     // …and both callers — the failing exits and the finalize step — reach it
     // through that one function.

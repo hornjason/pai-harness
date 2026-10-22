@@ -229,7 +229,7 @@ describe("#706 AC-1: the COMMIT prompt interpolates no issue title", () => {
       "   git commit -m ${shellQuote(shipCommitSubject(ISSUE, goalData.issueTitle))}";
     expect(taintedInterpolations(planted).length, "the scan cannot see the pre-#706 line").toBe(1);
     // And it is not matching everything: the line that replaced it.
-    expect(taintedInterpolations("   git commit -F ${shellQuote(commitSubjectPath)}")).toEqual([]);
+    expect(taintedInterpolations("   git -C ${commitDir} commit -F ${shellQuote(commitSubjectPath)}")).toEqual([]);
   });
 
   test("AC-1: the region really is the COMMIT prompt, not an empty or whole-file cut", () => {
@@ -307,7 +307,7 @@ describe("#706 AC-3: a title that reads as an instruction is nowhere in the prom
     // assertion above hold for the wrong reason.
     const prompt = composedPrompt(HOSTILE);
     expect(prompt.length, "the composed prompt is empty or a stub").toBeGreaterThan(800);
-    expect(prompt, "the composed prompt is not the commit step").toContain("git push -u origin HEAD");
+    expect(prompt, "the composed prompt is not the commit step").toContain("push -u origin HEAD");
     expect(prompt, "the interpolation that IS supposed to happen did not").toContain("/wt/a");
 
     // A second title, varying only in content, is equally absent — so the
@@ -349,7 +349,7 @@ describe("#706 AC-4: the guards the rewrite sits beside survive it verbatim", ()
     // the commit happening 416 characters before the guard.
     const lines = COMMIT_BLOCK.split("\n");
     const guard = lines.findIndex(l => /^\s*case "\$branch" in main\|master\)/.test(l));
-    const commit = lines.findIndex(l => /^\s*git commit -F\b/.test(l));
+    const commit = lines.findIndex(l => /^\s*git (?:-C \S+ )?commit -F\b/.test(l));
     expect(guard, "the branch guard is gone from the commit step").toBeGreaterThan(-1);
     expect(commit, "the commit step no longer commits").toBeGreaterThan(-1);
     expect(guard, "the commit happens before the branch is checked").toBeLessThan(commit);
@@ -362,7 +362,7 @@ describe("#706 AC-2: the subject is composed by a script and read from a file", 
       "commit-subject \\",
     );
     expect(COMMIT_BLOCK, "the subject path reaches git unquoted").toContain(
-      "git commit -F ${shellQuote(commitSubjectPath)}",
+      "git -C ${commitDir} commit -F ${shellQuote(commitSubjectPath)}",
     );
     expect(COMMIT_BLOCK, "the out path reaches the command unquoted").toContain(
       "--out ${shellQuote(commitSubjectPath)}",

@@ -211,8 +211,10 @@ describe("prior-branch: ship.js consumes the resolvable ref (#164)", () => {
     // The old prompt said `git merge <branch> --no-edit`, where <branch> was
     // the remote-stripped name. For an origin-only branch that resolves to
     // nothing.
-    expect(shipSource).toContain("git merge <refName> --no-edit");
-    expect(shipSource).not.toContain("git merge <branch> --no-edit");
+    // The repository is named on the command since #1056; the placeholder
+    // this case is about is the one after `merge`.
+    expect(shipSource).toContain("git -C ${PROJECT_ROOT} merge <refName> --no-edit");
+    expect(shipSource).not.toContain("merge <branch> --no-edit");
   });
 
   test("the refusal to merge onto the default branch survives", () => {

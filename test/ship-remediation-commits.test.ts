@@ -116,7 +116,11 @@ describe("#155: a remediation round's work is collected before it is committed",
   test("the collection runs before the commit, not after it", () => {
     for (const block of remediationBlocks(shipCode)) {
       const collect = block.indexOf("collectAgentWork(");
-      const commit = block.indexOf("git commit");
+      // `-C <dir>` is optional: #1056 moved these commits from a block headed
+      // by a top-level `cd` to one where each git command names its own
+      // repository. Anchored on the bare two words, this would find no commit
+      // at all and the ordering below would never be measured.
+      const commit = block.search(/git (?:-C \S+ )?commit\b/);
       expect(collect).toBeGreaterThanOrEqual(0);
       expect(commit).toBeGreaterThanOrEqual(0);
       expect(collect).toBeLessThan(commit);

@@ -326,7 +326,7 @@ export function rookScopeCommand(
   // quoting is not a SHA.
   const q = (w: string) => `'${String(w).replace(/'/g, "'\\''")}'`;
   return (
-    `cd ${q(projectRoot)} && bun ${q(`${harnessRoot}/scripts/rook-review-scope.ts`)} ` +
+    `bun --cwd ${q(projectRoot)} ${q(`${harnessRoot}/scripts/rook-review-scope.ts`)} ` +
     `--project ${q(projectRoot)} --sha ${pinned}` +
     (pinnedBase ? ` --base ${pinnedBase}` : "") +
     ` --out ${q(outPath)}`

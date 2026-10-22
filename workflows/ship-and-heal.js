@@ -121,7 +121,7 @@ try {
     log('Workflow nesting limit hit — falling back to direct ship via agent()')
     shipResult = await agent(`
 Run the ship workflow for issue #${ISSUE}:
-1. cd ${PROJECT_ROOT}
+1. Work against the project at ${PROJECT_ROOT}, with absolute paths — do NOT cd at the top level of a Bash call (#992)
 2. Read ${HARNESS_ROOT}/workflows/ship.js to understand the flow
 3. Execute the ship lifecycle: GOAL → DISCOVERY → SCOPE → IMPLEMENT → VERIFY → SHIP
 4. Use the project at ${PROJECT_ROOT} with harness at ${HARNESS_ROOT}
@@ -171,7 +171,7 @@ Find the workflow transcript directory and run compliance grading:
    Extract the directory path from the result.
 
 2. Run grading:
-   cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts <found-dir> --project ${PROJECT_ROOT} ${workDir}
+   bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts <found-dir> --project ${PROJECT_ROOT} ${workDir}
 
 3. Return the JSON output. If no transcripts found, return {"grades": []}.
 `, { label: 'grade-compliance', phase: 'Heal', schema: {
@@ -211,7 +211,7 @@ Analyze agent transcripts for efficiency metrics:
    TDIR=$(dirname $(find ~/.claude/projects/ -maxdepth 6 -name "agent-*.jsonl" -path "*/workflows/*" -newer ${workDir}/workflow-state.json 2>/dev/null | head -1))
 
 2. Run the transcript analyzer:
-   cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json
+   bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json
 
 3. Return the JSON array output. If no transcripts found, return [].
 `, { label: 'analyze-efficiency', phase: 'Heal', schema: {
@@ -388,7 +388,7 @@ ${violatedRoles.map(role => `- Read the brief template for ${role}: ${HARNESS_RO
 For each violation, apply the practice that was skipped:
 
 ${qualityViolations.some(v => /TDD/i.test(v.flag)) ? '- **TDD violated**: Write the tests that should have been written first. Verify the shipped code passes them. Fix any gaps found.\n' : ''}${qualityViolations.some(v => /spec|governing/i.test(v.flag)) ? '- **Spec not read**: Read the governing spec from AGENTS.md routing table. Verify the code conforms to all relevant SCs. Fix any drift.\n' : ''}${qualityViolations.some(v => /test.*first/i.test(v.flag)) ? '- **Tests not written first**: Review test coverage. Add missing edge case tests.\n' : ''}
-1. cd ${PROJECT_ROOT}
+1. Work against the project at ${PROJECT_ROOT}, with absolute paths — do NOT cd at the top level of a Bash call (#992)
 2. Read the brief template(s) listed above to understand the quality standards
 3. Read AGENTS.md to find the governing spec
 4. Apply the skipped practices above
@@ -489,10 +489,10 @@ ${(rca.affectedFiles || []).join('\n') || 'Determine from root cause'}
 2. Apply the fix — for HARNESS_BUG fixes, patch BOTH:
    a. The instance (workflow-state.json) so this run passes
    b. The generator (ship.js, gates/*.ts) so future runs don't hit the same bug
-3. Run: cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -10
+3. Run: ( cd ${PROJECT_ROOT} && ${testCommand} ) 2>&1 | tail -10
    Set the Bash tool's timeout parameter to ${testTimeout}. Do NOT use the shell 'timeout' command.
 4. If tests pass, commit with message: "fix: ${rca.fixDescription.slice(0, 60)}"
-5. Push to main: git push origin main
+5. Push to main: git -C ${PROJECT_ROOT} push origin main
 6. Report success/failure — list instance fixes AND generator fixes separately
 
 Do NOT introduce new features. Only fix the specific root cause.
@@ -525,11 +525,11 @@ const verify = await agent(`
 Verify the fix for issue #${ISSUE} after the heal cycle.
 
 1. Run the test suite:
-   cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -10
+   ( cd ${PROJECT_ROOT} && ${testCommand} ) 2>&1 | tail -10
    Set the Bash tool's timeout parameter to ${testTimeout}. Do NOT use the shell 'timeout' command.
 
 2. Run the ship gate to verify it passes now:
-   cd ${PROJECT_ROOT} && TEST_WORK_DIR="${workDir}" bun ${HARNESS_ROOT}/gates/run-gate.ts ship ${workDir}/workflow-state.json 2>&1 | tail -20
+   TEST_WORK_DIR="${workDir}" bun --cwd ${PROJECT_ROOT} ${HARNESS_ROOT}/gates/run-gate.ts ship ${workDir}/workflow-state.json 2>&1 | tail -20
    Set timeout to ${testTimeout}.
 
 3. Report:

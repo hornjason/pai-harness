@@ -729,9 +729,14 @@ describe("Verify fan-out: a container value that reaches a shell is not probed (
   describe("the rebuild runner refuses an absent command, and the refusal can fail (#1057)", () => {
     /** The `bun -e` program as the agent receives it, un-shell-quoted. */
     function runnerFromPrompt(prompt: string): string {
-      const at = prompt.indexOf("bun -e '");
+      // `--cwd <dir>` sits between `bun` and `-e` since #1056: the rebuild
+      // reaches PROJECT_ROOT by naming it on the command rather than with a
+      // top-level `cd` the registered guard refuses. Matched rather than
+      // spelled, so the extraction follows either form.
+      const head = prompt.match(/bun (?:--cwd \S+ )?-e '/);
+      const at = head?.index ?? -1;
       expect(at, "the rebuild prompt no longer hands the agent a bun -e program").toBeGreaterThan(-1);
-      const from = at + "bun -e '".length;
+      const from = at + head![0].length;
       const to = prompt.indexOf("'", from);
       expect(to, "the bun -e argument is unterminated").toBeGreaterThan(from);
       const runner = prompt.slice(from, to);
