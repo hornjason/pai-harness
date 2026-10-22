@@ -232,7 +232,7 @@
     "command": "bun ${RUNGATE_HOOKS_DIR}/DocHygiene.hook.ts",
     "enabled": true,
     "deployToConsumers": false,
-    "notDeployedReason": "OPT-IN and NOT YET SHIPPABLE: it stamps `owner: jason` as a literal. On a consumer every markdown file they write would be stamped with this repository owner's name, which is wrong on their machine and not something a consumer could be expected to debug. Deploying it is blocked on reading the owner from config — the scaffold already knows the consumer's slug and roles — not merely on a decision. Found while migrating under #713; flagged rather than fixed, because changing the stamped value changes behaviour for this repo too.",
+    "notDeployedReason": "OPT-IN. The shippability blocker is gone: #1119 removed the `owner: jason` literal, and the key is now omitted rather than defaulted, so a consumer's markdown carries nothing this repository chose for them. What remains is a taste decision, not a defect — stamping a doc header on every markdown a consumer writes is a convention they should opt into, and nothing here can tell whether they want it. Flip this to true only alongside a way for a consumer to decline it. Migrated under #713.",
     "scope": "user",
     "matcher": "Write|Edit",
     "description": "Stamps the four required frontmatter fields onto markdown docs and reports docs missing from DOCS.md. Thin trigger over lib/frontmatter.ts. Migrated from ~/.pai/hooks by #713."
