@@ -76,6 +76,35 @@ independent ways, and neither is fixed by moving files:~~
    The field is now mandatory: #1047's AC-11 refuses an entry that leaves it
    unset, which is why the absent count is 0 and cannot drift back up.
 
+### A third way this document misleads, found by acting on it
+
+Not a stale fact — a true observation generalised into a property of the tree.
+
+The `SecurityValidator` entry below describes a pattern store resolved through
+`paiPath` with a hard-coded `~/.claude/` read-only list, and warns that the
+*validator* is portable while the subsystem it reads is not. Read as guidance
+about the tree, it primes a reader to expect that shape widely.
+
+**It does not recur. `paiPath` appears in none of the nine PRODUCT hooks.**
+Measured while migrating them under #713:
+
+- `hooks/lib/parseStdin.ts` is **byte-identical** in both trees (`diff`
+  returns nothing).
+- `hooks/lib/paths.ts` exports an identical surface in both.
+- `getWorkDir()` resolves `RUNGATE_WORK_DIR`, else `~/.rungate` — rungate's
+  own directory. `getPaiDir()` resolves `PAI_DIR`, else `~/.claude`, which is
+  Claude Code's configuration directory, not a PAI one.
+
+Of the eight migratable hooks, **3 carry a PAI-path dependency under the broad
+reading** (a hard-coded PAI path *or* a `./lib/paths` import) and **1 under the
+strict reading** (`HookIntegrity` alone). #713's migration pre-registered
+predictions of 6 and 5-of-8-portable before reading any hook body, and both
+were wrong in the same direction for this reason.
+
+So: estimate migration cost from the per-hook verdicts below, not from the
+`SecurityValidator` entry. Anyone who generalises that one will over-estimate
+the work the same way twice.
+
 **The same stale claim survives in code.** `deployHooksToConsumers`'s own
 docblock in `lib/scaffold/steps.ts` still reads *"Measured on this repository
 on 2026-10-21: zero of twenty registry entries set `deployToConsumers`"*. It
