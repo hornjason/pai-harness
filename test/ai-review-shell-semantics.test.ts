@@ -18,6 +18,22 @@
  * No `adjudicated`, no `printf`, no `case`, no UNMEASURED annotation. Measured
  * live on run `39711570020`: 1.8 seconds, no stdout at all, exit 1.
  *
+ * ## What actually fired it, and it was not a blocking finding
+ *
+ * An npm registry 503 for the adjudicator's own package, at roughly
+ * 02:46–02:49Z, witnessed independently on two other pull requests by #875's
+ * distribution suite. So the silent failure is not reserved for the rare
+ * blocking review: **any npm hiccup silently reds a required check on every
+ * open pull request**, and the annotation that exists to say "the registry
+ * was unreachable, this is UNMEASURED, not a blocking finding" is exactly
+ * what `-e` deletes. The branch was written for that outage and had never
+ * once run during one.
+ *
+ * Hence two witnesses rather than one — `AC-1` for the block, `AC-3b` for the
+ * outage — and `AC-5` for the property that connects them: before the fix the
+ * two states are byte-identical from outside the job, and a maintainer
+ * reading a red check cannot tell "fix your code" from "retry the job".
+ *
  * Every case that drove that branch ran the script as plain `bash`, where the
  * same code works. The defect is invisible to the whole existing suite, and
  * that — not the missing `||` — is what this file exists to fix.
@@ -139,8 +155,29 @@ function plantBunx(dir: string, body: string): string {
 
 const BLOCKING = `echo "${AI_REVIEW_OUTCOME_LINE} BLOCKED"\nexit ${AI_REVIEW_REQUIRED_EXIT}`;
 const CLEAN = `echo "${AI_REVIEW_OUTCOME_LINE} CLEAN"\nexit 0`;
-/** What a shell reports for a command it cannot find — a `bunx` with no bun. */
+/** What a shell reports for a command it cannot find — a runner with no bun. */
 const CANNOT_START = "exit 127";
+
+/**
+ * The state that actually fired this, and the one with no coverage anywhere.
+ *
+ * At roughly 02:46–02:49Z the npm registry returned 503 for the adjudicator's
+ * package, witnessed independently on two other pull requests by #875's
+ * distribution suite. `bunx rungate@<version>` cannot start against a 503: it
+ * writes a resolution error and exits non-zero, which is the same shape as
+ * `CANNOT_START` in the step's eyes — no outcome line — but a DIFFERENT shape
+ * in the one respect the UNMEASURED annotation promises, because it says
+ * *"the command's own output is printed above this line"* and there is some.
+ *
+ * Under the broken script that text was captured into the shell and thrown
+ * away with it, so the sentence pointed at output that did not exist.
+ *
+ * The exit code is 1, not 127: the binary was found and failed. So this state
+ * and a genuine blocking finding agree on the exit code AND on the absence of
+ * stdout before the fix — `AC-5` is that pair, asserted.
+ */
+const REGISTRY_503_TEXT = "error: Failed to resolve rungate@0.7.0: registry returned 503";
+const REGISTRY_503 = `echo "${REGISTRY_503_TEXT}" >&2\nexit 1`;
 
 /**
  * Run a script with a planted adjudicator and a payload on disk.
@@ -289,6 +326,78 @@ describe("#1110: the verdict step under the shell GitHub actually supplies", () 
     ).toBe(AI_REVIEW_REQUIRED_EXIT);
   });
 
+  test("AC-3b: a registry 503 is UNMEASURED, and the adjudicator's own text reaches the reader", () => {
+    // The state the outage actually produced, and the reason the branch below
+    // the capture was written. A 503 is not a rare case reserved for blocking
+    // reviews: any npm hiccup takes this path on EVERY open pull request, and
+    // before the fix each of them reported a red required check with no
+    // output and no cause.
+    //
+    // Distinct from AC-3: the binary was FOUND and failed, so the exit code is
+    // 1 rather than 127 and there is diagnostic text. The annotation this
+    // branch prints ends "the command's own output is printed above this
+    // line", so the text reaching stdout is part of the contract and not
+    // incidental — an annotation pointing at output that was discarded is a
+    // sentence nobody can act on.
+    const r = runStep(committedRunScript(), REGISTRY_503, RUNNER_SHELL_FLAGS);
+    expect(
+      r.stderr,
+      `a registry outage produced no '${AI_REVIEW_UNMEASURED_TITLE}' annotation, so an ` +
+        `unreachable registry still reads as a blocked pull request (#1110)\n` +
+        `stdout:${JSON.stringify(r.stdout)}\nstderr:${JSON.stringify(r.stderr)}`,
+    ).toContain(AI_REVIEW_UNMEASURED_TITLE);
+    expect(
+      r.stdout,
+      `the adjudicator's own error text never reached the log, and the annotation above it ` +
+        `claims it did`,
+    ).toContain(REGISTRY_503_TEXT);
+    expect(r.status).toBe(AI_REVIEW_REQUIRED_EXIT);
+  });
+
+  test("AC-5: a blocking finding and a registry outage are TELLABLE APART from outside the job", () => {
+    // The issue's claim, stated as one assertion over two runs. Before the
+    // fix both states are byte-identical from outside: empty stdout, empty
+    // stderr, exit 1 — so a maintainer reading a red `ai-review` check cannot
+    // know whether to fix their code or retry the job. #1013 built this
+    // discrimination and `-e` deleted it.
+    //
+    // Both runs exit AI_REVIEW_REQUIRED_EXIT, deliberately: the verdict is the
+    // same and only the ATTRIBUTION differs, which is why the exit code is
+    // asserted equal here and the discrimination is asserted on the streams.
+    const script = committedRunScript();
+    const block = runStep(script, BLOCKING, RUNNER_SHELL_FLAGS);
+    const outage = runStep(script, REGISTRY_503, RUNNER_SHELL_FLAGS);
+
+    expect(
+      `${block.stdout}${block.stderr}`,
+      `a blocking finding and a registry outage produced identical output, which is the ` +
+        `defect #1110 describes rather than a property of this test`,
+    ).not.toBe(`${outage.stdout}${outage.stderr}`);
+
+    // Each state carries its own marker, and NOT the other's. A pair where
+    // both carry both would differ on some incidental byte and satisfy the
+    // inequality above while attributing nothing.
+    expect(block.stdout).toContain(AI_REVIEW_OUTCOME_LINE);
+    expect(
+      `${block.stdout}${block.stderr}`,
+      "a real blocking finding was reported as UNMEASURED",
+    ).not.toContain(AI_REVIEW_UNMEASURED_TITLE);
+
+    // Asserted on STDOUT and not on both streams: the UNMEASURED annotation
+    // quotes the outcome line in its own text — "printed no
+    // 'ai-review findings outcome:' line" — so a check over stderr here
+    // matches the explanation rather than a verdict. Stdout carries the
+    // adjudicator's captured output and nothing else, which is where an
+    // adjudicated verdict would actually appear.
+    expect(outage.stderr).toContain(AI_REVIEW_UNMEASURED_TITLE);
+    expect(
+      outage.stdout,
+      "a registry outage was reported as an adjudicated verdict",
+    ).not.toContain(AI_REVIEW_OUTCOME_LINE);
+
+    expect(block.status, "the verdict differs between the two states").toBe(outage.status);
+  });
+
   test("AC-4: the cheapest wrong fix, measured — plain `bash` passes against the BROKEN script", () => {
     // Why AC-1 is written with `-e` and not without it. The same assertion,
     // against the code that shipped the defect, under the shell the rest of
@@ -314,18 +423,43 @@ describe("#1110: the verdict step under the shell GitHub actually supplies", () 
     expect(mutantCode).toContain("adjudicated=$?");
     expect(mutantCode, "the mutant kept the seed line").not.toContain("adjudicated=0");
 
-    const wrongFix = runStep(mutant, BLOCKING, []);
+    // Both witnesses, because the outage is the state that happened and a
+    // wrong fix that only certified the block would still be a wrong fix.
+    const wrongFixBlock = runStep(mutant, BLOCKING, []);
     expect(
-      wrongFix.stdout,
+      wrongFixBlock.stdout,
       "a test running the generated step as plain `bash` was expected to pass against the " +
         "UNFIXED script — if it does not, this row is no longer measuring the wrong fix",
     ).toContain(AI_REVIEW_OUTCOME_LINE);
 
-    const realShell = runStep(mutant, BLOCKING, RUNNER_SHELL_FLAGS);
+    const wrongFixOutage = runStep(mutant, REGISTRY_503, []);
     expect(
-      realShell.stdout,
+      wrongFixOutage.stderr,
+      "AC-3b's assertion was expected to pass against the UNFIXED script under plain `bash` too",
+    ).toContain(AI_REVIEW_UNMEASURED_TITLE);
+
+    // And both fail under the shell GitHub supplies, which is the defect.
+    const realShellBlock = runStep(mutant, BLOCKING, RUNNER_SHELL_FLAGS);
+    expect(
+      realShellBlock.stdout,
       "the unfixed script printed the outcome line under `bash -e`, so `-e` is not what " +
         "AC-1 is measuring and the defect #1110 describes is not reproducible here",
     ).not.toContain(AI_REVIEW_OUTCOME_LINE);
+
+    const realShellOutage = runStep(mutant, REGISTRY_503, RUNNER_SHELL_FLAGS);
+    expect(
+      realShellOutage.stderr,
+      "the unfixed script annotated the outage under `bash -e`, so AC-3b is not measuring " +
+        "the shell either",
+    ).not.toContain(AI_REVIEW_UNMEASURED_TITLE);
+
+    // The pair, before the fix: byte-identical from outside the job. This is
+    // the sentence the issue's addendum turns on, measured rather than
+    // asserted in prose.
+    expect(
+      `${realShellBlock.stdout}|${realShellBlock.stderr}|${realShellBlock.status}`,
+      "the two states were already distinguishable under the unfixed script, so AC-5 is " +
+        "not measuring what #1110 says it measures",
+    ).toBe(`${realShellOutage.stdout}|${realShellOutage.stderr}|${realShellOutage.status}`);
   });
 });
