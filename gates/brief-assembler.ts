@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join, basename } from "path";
+import { join, basename, dirname } from "path";
+import { fileURLToPath } from "url";
 import { plantCanaries, getDefaultCanaries } from "../lib/canary.js";
 import { tryLoadRungateConfig } from "../lib/config-loader";
 import {
@@ -22,15 +23,35 @@ export interface AssembleResult {
   validated: boolean;
 }
 
-const BRIEF_POLICIES_PATH = join(
+/**
+ * The brief policies as the package ships them.
+ *
+ * #1174: this was `$HOME/.claude/skills/ship/brief-policies.json` and nothing
+ * else — a path that exists on exactly one machine — while the
+ * `config/brief-policies.json` the tarball actually carries was never read.
+ * "A control that can only run on one laptop is the same fail-open as #140",
+ * which is what `lib/issue-closure-audit.ts` says about its own
+ * `~/.rungate/{slug}/run/`.
+ *
+ * Resolved from this module's own location, so it follows the package to
+ * wherever it is installed. `lib/package-closure.ts` reads this expression
+ * statically and fails the suite if `config/` ever leaves `files[]`.
+ */
+const PACKAGED_BRIEF_POLICIES = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "config",
+  "brief-policies.json",
+);
+
+/** A local edit layered over the shipped policies. Absent is the normal case. */
+const BRIEF_POLICIES_OVERRIDE = join(
   process.env.HOME || "",
   ".claude",
   "skills",
   "ship",
   "brief-policies.json",
 );
-
-const REQUIRED_SECTIONS = ["Goal", "ACs", "Files", "Scope", "Verify"] as const;
 
 export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleResult> {
   const { slug, workDir, projectRoot } = opts;
@@ -342,32 +363,59 @@ function buildReportSection(): string {
   ].join("\n");
 }
 
+/**
+ * Shipped policies, with the `$HOME` copy layered over them when it exists.
+ *
+ * Deliberately unguarded. The previous reader wrapped the parse in `catch {}`
+ * and fell through to a hardcoded second copy of the patterns, so a trailing
+ * comma in the policy file read as "no policies" and the brief was then
+ * reported `validated: true` — UNMEASURED passing itself off as a pass.
+ * `.claude/rules/config-access.md` names that Silent Default Substitution and
+ * is explicit that a corrupt config is never a missing config.
+ */
+export function loadBriefPolicies(): any {
+  if (!existsSync(PACKAGED_BRIEF_POLICIES)) {
+    throw new Error(
+      `brief policies not found at ${PACKAGED_BRIEF_POLICIES}. The package ships ` +
+        `config/brief-policies.json; an installation without it cannot validate a brief, ` +
+        `and UNMEASURED refuses rather than passing.`,
+    );
+  }
+  const shipped = JSON.parse(readFileSync(PACKAGED_BRIEF_POLICIES, "utf-8"));
+  if (!existsSync(BRIEF_POLICIES_OVERRIDE)) return shipped;
+
+  // Per agent type, so an override naming only `marcus` does not delete the
+  // shipped `quinn` and `rook` entries.
+  const override = JSON.parse(readFileSync(BRIEF_POLICIES_OVERRIDE, "utf-8"));
+  return {
+    ...shipped,
+    ...override,
+    policies: { ...shipped.policies, ...override.policies },
+  };
+}
+
 function validateBrief(brief: string): boolean {
-  let policies: any = null;
-  if (existsSync(BRIEF_POLICIES_PATH)) {
-    try {
-      policies = JSON.parse(readFileSync(BRIEF_POLICIES_PATH, "utf-8"));
-    } catch {
-      // If policies can't be read, skip validation
-    }
+  return validateBriefAgainst(brief, loadBriefPolicies());
+}
+
+/**
+ * Split from the loader so the refusal below has an input a test can hand it.
+ * A refusal nothing can reach is a refusal nobody has watched fire — see
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+export function validateBriefAgainst(brief: string, policies: any): boolean {
+  const required = policies?.policies?.marcus?.requiredPatterns;
+
+  // An empty policy set validates every brief, which is indistinguishable
+  // from not validating at all — the exact state the issue asks be refused.
+  if (!Array.isArray(required) || required.length === 0) {
+    throw new Error(
+      `brief policies declare no requiredPatterns for "marcus". An empty policy set passes ` +
+        `every brief and cannot be told apart from no validation at all, so this refuses.`,
+    );
   }
 
-  if (!policies?.policies?.marcus?.requiredPatterns) {
-    // Fallback: check for required section headers
-    for (const section of REQUIRED_SECTIONS) {
-      const patterns: Record<string, RegExp> = {
-        Goal: /(?:goal|objective|task)/i,
-        ACs: /(?:acceptance criter|AC-|success criter)/i,
-        Files: /(?:files to|files changed|file.*read)/i,
-        Scope: /(?:scope.*not|do not touch|out of scope)/i,
-        Verify: /(?:verify|verification)/i,
-      };
-      if (!patterns[section]?.test(brief)) return false;
-    }
-    return true;
-  }
-
-  for (const pattern of policies.policies.marcus.requiredPatterns) {
+  for (const pattern of required) {
     let p = pattern.pattern as string;
     let flags = "";
     if (p.startsWith("(?i)")) {

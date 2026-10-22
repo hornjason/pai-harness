@@ -148,6 +148,7 @@ const TIER_1 = [
   { file: "lib/conformity.ts", check: "HYGIENE-4" },
   { file: "test/package-closure.test.ts", check: "CLOSURE-1" },
   { file: "test/package-closure.test.ts", check: "CLOSURE-8" },
+  { file: "test/package-closure.test.ts", check: "CLOSURE-14" },
   { file: "test/agents-md-spec-listing.test.ts", check: "SC-1891" },
 ];
 

@@ -279,6 +279,98 @@ function scanModuleRelativeJoins(raw: string): { resolved: RuntimeRead[]; unreso
 }
 
 /**
+ * A path an instruction STRING tells the user to run, rooted at the installed
+ * harness rather than at the user's own project.
+ *
+ * ## The third syntax (#1174)
+ *
+ * The two scanners above ask what published CODE reaches. Neither can see a
+ * path that only ever appears in a message, and a message is how this package
+ * hands a consumer the way out of a refusal.
+ *
+ * `REPAIR_HINT` in `lib/gate-result-protection.ts` is the documented repair
+ * for a corrupt `workflow-state.json`, and it names
+ * `<harness>/gates/orchestrator.ts`. `gates/` had **zero** entries in the
+ * published `0.8.0` tarball, so that command could not resolve for any npm
+ * consumer — and by #1137's design the guard printing it is deliberately
+ * unbypassable, so there was no second route out. `packageClosureViolations`
+ * reported the package closed the whole time, because every IMPORT and every
+ * READ did resolve. A detector narrower than what it detects, which is the
+ * shape `.claude/rules/checks-must-be-able-to-fail.md` names second and which
+ * #484 records one paragraph above having already made once.
+ *
+ * Shipping `hooks/` for the first time in 0.8.0 took this from two
+ * instructions to six. A published directory brings its instructions with it,
+ * so closing one packaging gap widens this surface rather than narrowing it —
+ * which is the argument for a check here instead of a one-time fix.
+ *
+ * ## Only harness-rooted paths count
+ *
+ * `lib/typescript-project.ts` emits `bun scripts/typecheck.ts`, and that
+ * `scripts/` is the CONSUMER's, where the scaffold writes one. Resolving a
+ * bare relative path against this package would invent a defect in the
+ * commonest kind of instruction we emit. So the path has to say it means the
+ * harness: an explicit `$HARNESS_ROOT`/`<harness>` anchor, or the `./` of a
+ * `bun -e` one-liner, which these hints run from the harness root.
+ */
+export interface InstructionPath {
+  /** How the string named the harness root, for the violation message. */
+  anchor: string;
+  /** Package-relative path the instruction names. */
+  path: string;
+}
+
+/** Spellings of "the installed harness package root" inside a message. */
+const HARNESS_ROOT_ANCHOR =
+  /(\$\{HARNESS_ROOT\}|\$HARNESS_ROOT|<harness>)\/((?:[\w.-]+\/)*[\w.-]+\.\w+)/g;
+
+/**
+ * The import specifier of a `bun -e` one-liner — a `./`-rooted path after the
+ * `from` keyword. Quotes are optional here because the hint is itself inside
+ * a string, so they arrive backslash-escaped as often as not.
+ *
+ * Spelled without an example of the thing it matches on purpose:
+ * `relativeImports` above scans RAW source, so a docstring quoting a real
+ * specifier is read as a phantom import and the mutation battery in
+ * `test/package-closure.test.ts` aborts rewriting it. Found by that battery.
+ */
+const BUN_EVAL_SPECIFIER = /from\s*\\?["']?\.\/((?:[\w.-]+\/)*[\w.-]+\.\w+)/g;
+
+export function instructionPaths(raw: string): InstructionPath[] {
+  // Comments out, string and template text kept. `runtimeReads` does the same
+  // thing for the same reason, and here the live tree proves it is needed in
+  // both directions: `lib/shell-path-interpolation.ts` explains shell quoting
+  // with a `${HARNESS_ROOT}/scripts/x.ts` example in a DOCSTRING, which a
+  // scanner reading raw source reports as a shipped instruction; and three of
+  // the six real instructions are template literals, which `keepStringContents`
+  // alone blanks. Either half alone gets the live tree wrong.
+  const source = stripStringsAndComments(raw, {
+    keepStringContents: true,
+    keepTemplateText: true,
+  });
+  const found: InstructionPath[] = [];
+  let m: RegExpExecArray | null;
+
+  HARNESS_ROOT_ANCHOR.lastIndex = 0;
+  while ((m = HARNESS_ROOT_ANCHOR.exec(source)) !== null) {
+    found.push({ anchor: m[1], path: m[2] });
+  }
+
+  // Scoped to the line carrying the `bun -e`, not to `./` generally: a bare
+  // `./` in any other message is relative to wherever the user is standing,
+  // and this package cannot say where that is.
+  for (const line of source.split("\n")) {
+    if (!line.includes("bun -e")) continue;
+    BUN_EVAL_SPECIFIER.lastIndex = 0;
+    while ((m = BUN_EVAL_SPECIFIER.exec(line)) !== null) {
+      found.push({ anchor: "bun -e .", path: m[1] });
+    }
+  }
+
+  return found;
+}
+
+/**
  * The single binding. `test/package-closure.test.ts` builds a mutant of this
  * module with the body short-circuited to `return []` and asserts the suite
  * goes quiet over a package that is genuinely broken — which is the only thing
@@ -340,6 +432,28 @@ export function packageClosureViolations(root: string, published: Set<string>): 
       if (!isPublished) {
         violations.push(
           `${file} reads ${read.expression} at runtime -> ${targetRel}, which files[] does not publish`,
+        );
+      }
+    }
+
+    // #1174. An instruction naming a path the tarball does not carry is the
+    // same closure property again, in the one syntax neither scanner above
+    // can reach — so it is answered here, against the same `published` set,
+    // rather than in a fourth checker that could drift from these three.
+    for (const { anchor, path } of instructionPaths(source)) {
+      // Absent from the working tree too is a different bug — a stale or
+      // illustrative path — and not this check's business. Same rule the
+      // import walker below applies, and on the live tree it is what keeps
+      // `$HARNESS_ROOT/scripts/x.ts` out of the violation list.
+      if (!existsSync(join(root, path))) continue;
+
+      const isPublished = statSync(join(root, path)).isDirectory()
+        ? [...published].some(p => p.startsWith(`${path}/`))
+        : published.has(path);
+
+      if (!isPublished) {
+        violations.push(
+          `${file} instructs the user to run ${anchor}/${path}, which files[] does not publish`,
         );
       }
     }
