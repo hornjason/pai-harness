@@ -751,3 +751,60 @@ describe("AR-12: the CLI contract", () => {
     expect(r.out).toContain("**Important**");
   });
 });
+
+/**
+ * NON-TRANSITIVITY IS DELIBERATE, and this is the control that says so.
+ *
+ * A peer measuring this repo's tracker found that declared duplicates are
+ * filed in CHAINS — #547 names #530, which is itself a duplicate — and that a
+ * one-hop reader misses most of them. That is true of their instrument and
+ * false of this one, and the difference is the whole reason this case exists:
+ * **their links are DECLARED and this key's edges are INFERRED.** Transitivity
+ * is sound over a declaration and unsound over a similarity.
+ *
+ * Measured over 220 issues from this tracker:
+ *
+ *     gh issue list --repo hornjason/pai-harness --state all --limit 220 \
+ *       --json number,title,body,state,stateReason
+ *
+ * 37 edges, and **50 open two-paths** of exactly the shape below — so the
+ * chain shape is common, not rare. Closing them transitively would merge the
+ * largest connected component, which holds **12 manifestly different issues**
+ * (a timezone-frame comparison, a test-census disagreement, a consumer
+ * tarball test, a hook registration 178 commits behind) into one symptom,
+ * withholding eleven real findings.
+ *
+ * The component is also held up by one node: **9 of its 12 edges touch #1187
+ * itself**, which is an issue *about* other findings and quotes their
+ * readings in order to argue from them. And the edges are weak — 3 to 5
+ * shared keys, typically a commonly-cited rules file plus two incidental
+ * integers — where both genuinely-duplicate pairs score **7**, and
+ * #1195/#1196's seven include five symbols naming the same functions.
+ *
+ * So the greedy one-hop walk is the correct instrument here, and a later
+ * change to a transitive or union-find dedupe is a regression. This case
+ * turns that change red.
+ */
+describe("AR-13: the dedupe is one-hop on purpose", () => {
+  // A and B share a reading; B and C share a different one; A and C share
+  // only the file. The same shape as the 50 measured on the real tracker.
+  const A: Finding = { id: "A", title: "alpha reading", body: "`alphaHandler` in `lib/x.ts` mishandles 111 of 222 operands." };
+  const B: Finding = { id: "B", title: "both readings", body: "`alphaHandler` in `lib/x.ts` mishandles 111 of 222 operands, and `betaHandler` leaks 333 across 444 runs." };
+  const C: Finding = { id: "C", title: "beta reading", body: "`betaHandler` in `lib/x.ts` leaks 333 descriptors across 444 runs." };
+
+  test("the fixture is a chain, not a clique — the premise this rests on", () => {
+    expect(duplicateOverlap(A, B).duplicate).toBe(true);
+    expect(duplicateOverlap(B, C).duplicate).toBe(true);
+    // The open edge. Without this the case would be about a clique and would
+    // prove nothing about transitivity.
+    expect(duplicateOverlap(A, C).duplicate).toBe(false);
+  });
+
+  test("a batch drops the middle and KEEPS both ends", () => {
+    const r = arbitrateBatch([A, B, C].map(f => ({ ...f, id: UNFILED_ID })), opts({ existing: [] }));
+    expect(r.verdicts.filter(v => v.refusal === "DUPLICATE").length).toBe(1);
+    // Two survivors, not one. A transitive dedupe would return one here and
+    // would be withholding a finding nothing says is a duplicate of anything.
+    expect(r.toComment.length).toBe(2);
+  });
+});
