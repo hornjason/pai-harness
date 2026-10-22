@@ -80,12 +80,20 @@ import { contentHash } from "./content-hash";
 
 /** Where a candidate's evidence came from. */
 /**
- * `gate-refusal` is produced by `lib/intake-sources.ts`, not by this module
- * (#545). It lives here because `CandidateEvidence` is the one declaration
- * every producer writes against — a second kind union would be two tables
+ * `gate-refusal` is produced by `lib/intake-sources.ts`, and `finding` by
+ * `lib/finding-arbiter.ts` (#1187) — neither by this module (#545). They
+ * live here because `CandidateEvidence` is the one declaration every
+ * producer writes against — a second kind union would be two tables
  * agreeing until they did not.
+ *
+ * `finding` was added rather than reusing one of the others because a
+ * finding that survived the filing arbiter is a different kind of
+ * observation from a commit subject or a gate refusal: it carries a symptom
+ * key, and the thing being budgeted is an ISSUE rather than a rule. The
+ * ranking and the cap are `lib/rule-promotion.ts`'s either way, which is the
+ * point of adding a member here instead of writing a second promoter.
  */
-export type EvidenceKind = "fix-commit" | "revert-commit" | "gate-refusal";
+export type EvidenceKind = "fix-commit" | "revert-commit" | "gate-refusal" | "finding";
 
 export interface CandidateEvidence {
   kind: EvidenceKind;
