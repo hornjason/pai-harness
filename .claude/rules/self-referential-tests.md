@@ -46,9 +46,20 @@ every one fails with a bare `expect(...).toEqual([])` and no guidance.
 | `SC-1891` | same population, second binding over `AGENTS.md` + `.claude/rules/*` | same row |
 | `DRIFT-2` untested specs | a new `testable: true` spec no test names | name the spec in a test |
 | `CLOSURE-1` / `CLOSURE-8` | a published file imports **or `readFileSync`s** something outside `files[]` | add it to `package.json` `files[]` |
+| `Cannot find module` from a `/tmp/…mutant…` path | a new **`import`** in a file some mutation battery copies into an `mkdtemp` | teach the copier to carry the dependency — or keep the file import-free and bind the value with an agreement assertion |
 
 `CLOSURE-8` is the one people miss: a `join(import.meta.dir, "..")` read is the
 same property as an import, expressed in different syntax.
+
+The last row cost PR #1024 three CI shards and is worse than it looks. Those
+batteries build a mutant by writing **one file** into a scratch directory, so a
+relative specifier added to the original resolves to nothing there and the
+mutant **fails to load**. Every case comparing real against mutant goes red —
+and the reds read as behavioural differences. Turn one around and it is the
+UNMEASURED shape: had a comparison been written so that a non-loading mutant
+resembled a *refusing* one, the whole battery would have gone **green while
+witnessing nothing**. This table previously warned about adding a *file*;
+nobody was warned about adding an *import*.
 
 ## Tier 2 — a hand-maintained list or number you must update
 

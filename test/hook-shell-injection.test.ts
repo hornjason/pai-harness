@@ -260,8 +260,8 @@ function driveHook(
   homeOverride?: string,
 ): { status: number | null; stderr: string; stdout: string } {
   // `homeOverride` so a caller can plant a fixture INSIDE the home the hook
-  // will read. Since #1001 `CommitEnforcement` confines its worktree to
-  // `$HOME/.claude/.claude/worktrees`, so a fixture elsewhere is refused
+  // will read. Since #1001 `CommitEnforcement`'s subject must be a worktree
+  // git reports for the repo, so a fixture the stub does not list is refused
   // before either exec and the arm witnesses nothing.
   const home = homeOverride ?? scratch("home");
   const r = spawnSync(process.execPath, [hookPath], {
@@ -322,25 +322,51 @@ function runProjectStateSync(hookPath: string, makeDirName: (canary: string) => 
 }
 
 /** One CommitEnforcement arm. The reach marker is a `git` stub earlier on `PATH`. */
-function runCommitEnforcement(hookPath: string, makeLeaf: (canary: string) => string) {
+function runCommitEnforcement(
+  hookPath: string,
+  makeLeaf: (canary: string) => string,
+  registered = true,
+) {
   const base = scratch("ce");
   const canary = join(base, "CANARY-INJECTED");
   const marker = join(base, "GIT-RAN");
   const bin = join(base, "bin");
   mkdirSync(bin, { recursive: true });
-  const stub = join(bin, "git");
-  // Prints nothing and exits 0, so neither exec call can succeed by accident
-  // and the hook's own behaviour past this point is irrelevant to the reading.
-  writeFileSync(stub, `#!/bin/sh\n: >> ${JSON.stringify(marker)}\nexit 0\n`);
-  chmodSync(stub, 0o755);
-
-  // Inside the hook's own HOME, because #1001 confines the worktree to
-  // `$HOME/.claude/.claude/worktrees/`. The payload still lives in the LEAF
-  // NAME, which is what these arms are about — confinement constrains where
-  // the directory is, not what it is called.
+  // REGISTERED, because since #1001 the hook's subject must appear in
+  // `git worktree list` for its own repository. The payload still lives in
+  // the LEAF NAME, which is what these arms are about — registration
+  // constrains WHICH tree, not what it is called, and `git worktree add`
+  // will happily create a directory named with shell metacharacters.
   const home = scratch("home");
-  const worktree = join(home, ".claude", ".claude", "worktrees", makeLeaf(canary));
+  const worktree = join(home, ".claude", "worktrees", makeLeaf(canary));
   mkdirSync(worktree, { recursive: true });
+  writeFileSync(join(worktree, ".git"), `gitdir: ${join(home, ".git", "worktrees", "w")}\n`);
+
+  const stub = join(bin, "git");
+  // The stub is the git ORACLE as well as the canary, and the two roles are
+  // kept apart by the subcommand. `rev-parse` and `worktree list` are how
+  // the hook LOCATES its subject; only `diff`/`status` are the calls these
+  // arms are about, so only those write the reach marker.
+  //
+  // Without that split the marker fires on the locating call and `reached`
+  // stops distinguishing anything — which is exactly what happened when the
+  // registration anchor landed: AC-4 went green on a hook that refused the
+  // path and never reached an exec at all, and AC-5 is what caught it.
+  // SINGLE quotes, not `JSON.stringify`. The fixture path contains the
+  // payload, and `"$(…)"` inside double quotes is expanded by sh — the stub
+  // would create the canary itself and the arm would report the hook as
+  // vulnerable when it is not. Measured: that is what the first version of
+  // this stub did.
+  const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+  writeFileSync(
+    stub,
+    `#!/bin/sh\nfor a in "$@"; do\n` +
+      `  case "$a" in\n` +
+      `    rev-parse) printf '%s\\n' ${sq(join(home, ".git"))}; exit 0;;\n` +
+      `    worktree)  ${registered ? `printf 'worktree %s\\n\\n' ${sq(worktree)}; ` : ""}exit 0;;\n` +
+      `  esac\ndone\n: >> ${sq(marker)}\nexit 0\n`,
+  );
+  chmodSync(stub, 0o755);
   const out = driveHook(
     hookPath,
     {
@@ -442,6 +468,19 @@ describe("#971: a tool-call file_path must never be parsed by a shell", () => {
       "git was never spawned, so this case never reached the exec — a clean canary here is the " +
         "regex or the existsSync guard, not the fix",
     ).toBe(true);
+  });
+
+  test("AC-4b: an UNREGISTERED worktree never reaches an exec at all", () => {
+    // The refusal itself, measured rather than inferred. Same fixture, same
+    // payload, same hook — the single difference is that `git worktree list`
+    // does not name it, so a `Write`-created directory with the right shape
+    // gets no further. This is also what keeps the refusal in the hook
+    // measurable: with only AC-4, deleting the `if (!worktreePath) exit`
+    // line reddens nothing, because AC-4's subject is always registered.
+    const r = runCommitEnforcement(stagedCommit([]).path, SPACELESS, false);
+    expect(r.injected, "an unregistered path was parsed by a shell").toBe(false);
+    expect(r.reached, "git ran on a worktree this repository does not have registered").toBe(false);
+    expect(r.status, "the hook crashed rather than declining").toBe(0);
   });
 
   test("AC-5 (#971 SC-3, sibling): the pre-#971 CommitEnforcement DOES execute them", () => {
