@@ -28,6 +28,15 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 
 ## Current State
 
+This table covers the hooks this repository owns. A second tree, `~/.pai/hooks`,
+supplies 45 further registrations on Jason's machine and shares eight names with
+this one. Which of those belong in the shipped package, which stay personal, and
+which copy wins for each duplicate is classified in
+`docs/research/hook-tree-classification.md` (#713). Read it before moving a hook
+between trees — it also records that `hooks/` is absent from `package.json`'s
+`files` array and that no entry here sets `deployToConsumers`, so SC-472's
+deployment path currently reaches zero hooks.
+
 | Hook | File | Lines | Governing SCs | Assessment |
 |------|------|-------|---------------|-----------|
 | AgentBriefGuard | AgentBriefGuard.hook.ts | 589 | SC-367, SC-370 | Deep logic in hook — extract to lib/ |
