@@ -1633,9 +1633,53 @@ export function runSpecDiscovery(root: string) {
     // here would turn every fresh consumer red on day one. It is kept as
     // `test.todo` — the honest report of a known-false property — rather than
     // as a pass.
-    const measured = existsSync(specsDir) ? countTestable() : null;
+    //
+    // The probe is TOTAL, and #1027 left it partial. `countTestable` does a
+    // `readFileSync` per spec file and ran bare in the `describe` body, so a
+    // file that vanished between `collectSpecFiles` and the read — or a
+    // dangling symlink, or an unreadable mode — threw at REGISTRATION time.
+    // A throw there does not fail this check: it aborts registration of
+    // everything after it in the file, and a check that never registered
+    // reports as not existing rather than as failing.
+    //
+    // Second order, and the worse half: `writeFindingsReport` runs from an
+    // `afterAll` that an aborted registration never reaches, so the previous
+    // run's `.rungate/conformity-findings.json` stays on disk and
+    // `readConformityFindings` (gates/gate-executor.ts) consumes it as
+    // current — byte-indistinguishable from a fresh clean one.
+    //
+    // That is the same sentence as the comment above, reached by exception
+    // instead of by reading: a tree that could not be measured has not
+    // passed. So the read is caught here and reported as UNMEASURED.
+    let measured: number | null = null;
+    let probeError: unknown = null;
+    try {
+      measured = existsSync(specsDir) ? countTestable() : null;
+    } catch (e) {
+      probeError = e;
+    }
 
-    if (measured === 0) {
+    if (probeError !== null) {
+      const why = probeError instanceof Error ? probeError.message : String(probeError);
+      addFinding({
+        ruleId: "SPEC-DISCOVERY-UNMEASURED",
+        severity: "FAIL",
+        file: "specs/",
+        message: `UNMEASURED: a spec under specs/ could not be read, so testability was never measured — ${why}`,
+        fixCommand: "Repair or remove the unreadable file named in the message, then re-run",
+      });
+      // A FAILING test, deliberately not the `test.todo` below. That todo is
+      // the grace for a tree with nothing marked testable — a fact this run
+      // READ. A tree it could not read is a different fact and must not
+      // borrow that grace, which is exactly what a per-file
+      // `catch { return false }` inside the filter would have let it do.
+      test("at least one testable spec exists (specs/ could not be read)", () => {
+        expect(
+          probeError,
+          `specs/ could not be read, so testability was never measured: ${why}`,
+        ).toBeNull();
+      });
+    } else if (measured === 0) {
       addFinding({
         ruleId: "SPEC-DISCOVERY-TESTABLE",
         severity: "WARN",
