@@ -1,4 +1,4 @@
-# generated-sha: e3806bb74fedd0e5
+# generated-sha: 9f05aedb657eaa7c
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -39,9 +39,16 @@ on:
   # See the block comment in lib/scaffold/steps.ts: no branches: filter, and
   # its absence hangs a merge queue silently rather than failing it (#867).
   merge_group:
+  # NO branches: filter, deliberately (#1136). A pull request based on a
+  # feature branch matched no entry here and so triggered nothing at all —
+  # and because no required check was left pending, it reported CLEAN. A
+  # stack is how multi-part work is built in this repo, so the changes
+  # least likely to run CI were the ones most likely to need it.
+  #
+  # `on.push` above keeps its filter: that key asks which branches earn a
+  # run on their own, which is a different question. Removing it there too
+  # duplicates a run on every feature-branch push for no new coverage.
   pull_request:
-    branches:
-      - "main"
 
 permissions:
   contents: read

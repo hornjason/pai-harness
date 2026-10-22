@@ -256,24 +256,45 @@ describe("AC-2: the job exists, and it can never conclude `skipped`", () => {
   });
 });
 
-describe("AC-3: the configured branches reach on.pull_request, quoted", () => {
-  test("AC-3: the file parses with four glob branch patterns", () => {
-    const doc = Bun.YAML.parse(generated()) as any;
-    const triggers = triggersOf(doc);
-    expect(triggers.pull_request.branches).toEqual(BRANCHES);
-    expect(BRANCHES.length).toBe(4);
+/**
+ * AC-3 was "the configured branches reach on.pull_request, quoted", and #1136
+ * removed the first half of it: `ci.branches` no longer reaches
+ * `on.pull_request` in any generated workflow, because a filter there meant a
+ * pull request based on a feature branch triggered this review and nothing
+ * else at all — while reporting CLEAN, since an absent workflow leaves no
+ * required check pending. Measured on hornjason/pai-harness: PRs #1128 and
+ * #1133, both based on `feat/713-migrate-product-hooks`, had 0 workflow runs
+ * against their head SHAs where same-era PRs based on `main` had 3.
+ *
+ * The second half survives and is still load-bearing, so it is asserted below
+ * against the one list that still exists — `on.push` in ci.yml, from the same
+ * fixture. A bare `*` is a YAML alias indicator and `*-dev` an unresolved
+ * alias: emit either unquoted anywhere and GitHub Actions refuses to parse
+ * the file. Dropping that case with the trigger would have retired a real
+ * regression test on the back of an unrelated change.
+ */
+describe("AC-3: no base filter on on.pull_request, and the branch globs stay quoted", () => {
+  test("AC-3: ai-review.yml restricts pull_request by no base branch", () => {
+    const triggers = triggersOf(Bun.YAML.parse(generated()) as any);
+    expect("pull_request" in triggers, "the pull_request trigger is gone entirely").toBe(true);
+    // `null` is the parse of a bare `pull_request:` key — the shape wanted.
+    expect(
+      triggers.pull_request === null ? [] : Object.keys(triggers.pull_request),
+      "ai-review.yml still filters pull_request by base branch (#1136)",
+    ).not.toContain("branches");
   });
 
-  test("AC-3: every pattern is emitted as a double-quoted scalar", () => {
-    // A bare `*` is a YAML alias indicator and `*-dev` an unresolved alias, so
-    // an unquoted list is a workflow GitHub Actions refuses to parse.
-    const yml = generated();
+  test("AC-3: the four glob patterns still reach ci.yml's push list, quoted", () => {
+    const ci = readFileSync(join(workflowsDir(), "ci.yml"), "utf-8");
+    const triggers = triggersOf(Bun.YAML.parse(ci) as any);
+    expect(triggers.push.branches).toEqual(BRANCHES);
+    expect(BRANCHES.length).toBe(4);
     for (const b of BRANCHES) {
-      expect(yml, `${b} is not quoted`).toContain(`      - ${JSON.stringify(b)}`);
+      expect(ci, `${b} is not quoted`).toContain(`      - ${JSON.stringify(b)}`);
     }
   });
 
-  test("AC-3: a project that configures no branches gets the default", () => {
+  test("AC-3: a project that configures no branches still gets the default on push", () => {
     const bare = scratchDir("ai-review-default-branch-");
     mkdirSync(join(bare, ".claude", "rungate"), { recursive: true });
     writeFileSync(
@@ -281,10 +302,14 @@ describe("AC-3: the configured branches reach on.pull_request, quoted", () => {
       JSON.stringify({ project: "bare", ci: { bunVersion: "1.2.0" } }, null, 2) + "\n",
     );
     createCiWorkflows(bare, []);
-    const doc = Bun.YAML.parse(
+    const ciDoc = Bun.YAML.parse(
+      readFileSync(join(bare, ".github", "workflows", "ci.yml"), "utf-8"),
+    ) as any;
+    expect(triggersOf(ciDoc).push.branches).toEqual(["main"]);
+    const aiDoc = Bun.YAML.parse(
       readFileSync(join(bare, ".github", "workflows", AI_REVIEW_WORKFLOW_FILE), "utf-8"),
     ) as any;
-    expect(triggersOf(doc).pull_request.branches).toEqual(["main"]);
+    expect(triggersOf(aiDoc).pull_request).toBeNull();
   });
 });
 
