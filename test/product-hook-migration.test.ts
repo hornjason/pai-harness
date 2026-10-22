@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
 import { join, resolve } from "path";
 
 /**
@@ -24,7 +23,8 @@ import { join, resolve } from "path";
  * that blocks everything it is shown.
  */
 
-const HOOKS = resolve(import.meta.dir, "..", "hooks");
+const ROOT = resolve(import.meta.dir, "..");
+const HOOKS = join(ROOT, "hooks");
 
 /** The seven files this issue brings into the package. */
 const MIGRATED = [
@@ -63,7 +63,22 @@ function runHook(file: string, stdin: string, env: Record<string, string | undef
   return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
-const scratch = (prefix: string) => mkdtempSync(join(tmpdir(), `rg713-${prefix}-`));
+/**
+ * Scratch roots live INSIDE the repo, not under `tmpdir()`.
+ *
+ * `DocHygiene.hook.ts` skips any path containing `/tmp/`, and on Linux
+ * `tmpdir()` IS `/tmp` — so every `mkdtemp` under it is a path the hook
+ * refuses to touch, and all three stamp witnesses would assert against a
+ * file nothing had stamped. The guard in `doc()` below caught exactly that
+ * and the suite was red on every Linux runner while passing on macOS, where
+ * `tmpdir()` is `/var/folders/…`.
+ *
+ * In-repo scratch is this project's existing convention and `.gitignore`
+ * carries its reason next to the other six prefixes. The mkdtemp suffix is
+ * still required (#323 SC-6): a fixed path is a shared mutable resource, and
+ * two suites running at once delete each other's fixtures mid-assertion.
+ */
+const scratch = (prefix: string) => mkdtempSync(join(ROOT, `.rg713-${prefix}-`));
 
 describe("#713: every migrated hook loads and runs under bun", () => {
   // Not the behavioural claim — the floor under it. A hook with a syntax
@@ -346,7 +361,7 @@ describe("#713: the cheapest wrong fix, run rather than described", () => {
     // `cp` the file and assert it exists. This is the migration test somebody
     // writes when the deadline is close, and here it is, passing against a
     // hook that does nothing whatsoever.
-    const dir = mkdtempSync(join(tmpdir(), "rg713-stub-"));
+    const dir = scratch("stub");
     try {
       const stub = join(dir, "SkillGuard.hook.ts");
       writeFileSync(stub, "process.exit(0)\n");
