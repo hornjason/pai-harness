@@ -511,3 +511,297 @@ describe("#1176: the mechanisms, asserted directly", () => {
     expect(decideBashWrite(`echo x &> /tmp/bw/${SALT}`).blocked).toBe(true);
   });
 });
+
+/**
+ * A root that is absolute and is not any platform's scratch tree.
+ *
+ * Separate from #1197's `LIVE` on purpose: that PR is open against this same
+ * file and declares its own constant at the top. A second identifier in a
+ * region #1197 does not touch is one merge without a conflict; a second
+ * declaration of the same name is a conflict for whoever rebases last.
+ *
+ * Witnesses below use it rather than `/tmp` because #1197 makes `/tmp` the
+ * one place a protected NAME is not a protected ARTIFACT. A witness planted
+ * under `/tmp` passes today and flips to ALLOW the moment #1197 lands — it
+ * would be asserting the false positive that PR exists to remove.
+ */
+const LIVE_TREE = "/opt/bwprobe";
+
+/** A backslash-newline, spelled once so the witnesses read as commands. */
+const CONT = " \\\n  ";
+
+describe("#1203 WITNESS: a line continuation must not separate a verb from its target", () => {
+  // The shell joins `\` + newline into one command BEFORE it does anything
+  // else. `segments()` split on the newline instead, so each continuation
+  // line became its own "command" and the verb never met its target. All six
+  // rows are ALLOW on `origin/main` @ dbf10445 and must be BLOCK.
+  const cases: [string, string][] = [
+    ["cp, whose destination is on the next line", `cp /tmp/x.json${CONT}${LIVE_TREE}/${STATE}`],
+    ["mv, same shape", `mv /tmp/x${CONT}${LIVE_TREE}/${STATE}`],
+    ["chmod reached through two continuations", `chmod${CONT}777${CONT}/tmp/h/Y.hook.ts`],
+    ["rm of the salt, continued", `rm${CONT}${LIVE_TREE}/${SALT}`],
+    ["tee, whose file operand is continued", `tee${CONT}${LIVE_TREE}/${STATE}`],
+    ["a redirect whose target is on the continuation line", `echo x >${CONT}${LIVE_TREE}/${SALT}`],
+    ["a continuation inside an interpreter invocation", `python3 -c${CONT}"open('${LIVE_TREE}/${SALT}','w').write('x')"`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+});
+
+describe("#1203 CONTROL: the join is the shell's join, not a blanket one", () => {
+  test("a backslash at end of line INSIDE single quotes is literal, not a continuation", () => {
+    // The cheapest wrong fix is `cmd.replace(/\\\n/g, ' ')` at the top of
+    // segments(). It passes every witness above and fails this row: inside a
+    // single quote the backslash is data, and the newline is data too.
+    const quoted = "echo 'a \\\nb'";
+    expect(segments(quoted)).toEqual([quoted]);
+  });
+
+  test("an ESCAPED backslash at end of line does not swallow the newline", () => {
+    // `\\` is one literal backslash; the newline after it still separates.
+    // A naive scanner that consumes `\` then looks at the next character
+    // reads the second `\` as the start of a continuation and joins two
+    // genuinely separate commands into one.
+    expect(segments("echo x \\\\\nls")).toEqual(["echo x \\\\", "ls"]);
+  });
+
+  test("F9: a real continued `git add` of hook sources stays allowed", () => {
+    // Recovered from the corpus. Before the join this command's continuation
+    // lines were read as commands in their own right, so `commandWord`
+    // returned `hooks/GateEnforcement.hook.ts` — a FILENAME as a verb. That
+    // mis-reading is the defect; joining must not turn the command into a
+    // refusal, because `git add` writes nothing the guard protects.
+    const cmd =
+      `git -C /Users/jhorn/Projects/rungate add${CONT}lib/gate-enforcement.ts${CONT}` +
+      `test/gate-enforcement.test.ts${CONT}hooks/GateEnforcement.hook.ts`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("F10: a real continued `grep -rn` across hook sources stays allowed", () => {
+    const cmd =
+      `grep -rn 'MEMORY.*WORK'${CONT}~/.claude/hooks/AgentBriefGuard.hook.ts${CONT}` +
+      `~/.claude/hooks/GateEnforcement.hook.ts`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("a heredoc body's continuations are the document, not commands", () => {
+    // The `pai-config#474` shape: a `gh` body written with a heredoc, whose
+    // lines are backslash-continued and whose text quotes a protected name.
+    const cmd = `gh issue create --body "$(cat <<'EOF'\nrun it with:\n  cp a \\\n  b/${STATE}\nEOF\n)"`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("MECHANISM: a continued command is ONE segment", () => {
+    // The join inserts NOTHING. `CONT` is a space, a backslash, a newline and
+    // two spaces; removing the backslash-newline leaves the three spaces that
+    // were really there. Every consumer splits on /\s+/ or skips whitespace,
+    // so the run is invisible to them — and asserting the exact string is
+    // what keeps "joined with nothing" distinguishable from "joined with a
+    // space", which the next row shows is a real difference.
+    expect(segments(`cp /tmp/x.json${CONT}${LIVE_TREE}/${STATE}`)).toEqual([
+      `cp /tmp/x.json   ${LIVE_TREE}/${STATE}`,
+    ]);
+  });
+
+  test("MECHANISM: a continuation INSIDE a verb rejoins the verb", () => {
+    // `ch\<nl>mod 777 x.hook.ts` runs chmod — the shell removes the
+    // backslash-newline with no separator, so the two halves are one token.
+    // Joining with a SPACE instead resolves the command word to `ch` and the
+    // arm-4 test never fires, so this row is what separates the two spellings
+    // of the fix. It is also a bypass in its own right.
+    expect(commandWord(segments("ch\\\nmod 777 /tmp/h/Y.hook.ts")[0])).toBe("chmod");
+    expect(decideBashWrite("ch\\\nmod 777 /tmp/h/Y.hook.ts").blocked).toBe(true);
+  });
+});
+
+describe("#1205 WITNESS: a command substitution containing a space is one word", () => {
+  // `readWord` ended the redirect operand at the first space, so a
+  // substitution with an argument split the target in half and the surviving
+  // fragment named no protected artifact. Arm 1 then never fired at all.
+  const cases: [string, string][] = [
+    ["a backtick substitution with an argument", "echo x > /tmp/`id -un`/" + STATE],
+    ["the $() spelling of the same thing", `echo x > /tmp/$(id -un)/${STATE}`],
+    ["the live run-store row — the witness #1205 names", "echo x > ~/.rungate/`id -un`/" + STATE],
+    ["a nested substitution", `echo x > $(dirname $(echo /a/b))/${STATE}`],
+    ["an UNTERMINATED substitution fails closed", `echo x > /tmp/$(id -un/${STATE}`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("MECHANISM: the operand survives whole rather than as a fragment", () => {
+    expect(writeTargets("echo x > /tmp/`id -un`/" + STATE)).toEqual(["/tmp/`id -un`/" + STATE]);
+    expect(writeTargets(`echo x > /tmp/$(id -un)/${STATE}`)).toEqual([`/tmp/$(id -un)/${STATE}`]);
+  });
+});
+
+describe("#1205 CONTROL: carrying the substitution is not refusing every $", () => {
+  test("the space-free form stays blocked — it was never the defect", () => {
+    expect(decideBashWrite("echo x > /tmp/`id`/" + STATE).blocked).toBe(true);
+  });
+
+  test("the already-quoted form stays blocked", () => {
+    expect(decideBashWrite(`echo x > "$(dirname /a/b)"/${STATE}`).blocked).toBe(true);
+  });
+
+  test("a substitution-built path naming NOTHING protected stays allowed", () => {
+    // This is the row that kills the cheapest wrong fix. #1205's acceptance
+    // offers "OR the whole operand is refused as unreadable", and refusing
+    // every operand containing `$(` or a backtick passes all five witnesses
+    // above. It also refuses this, which is ordinary work.
+    expect(decideBashWrite("echo x > $(mktemp -d)/out.txt").blocked).toBe(false);
+    expect(decideBashWrite("echo x > /tmp/`date +%s`/log.txt").blocked).toBe(false);
+  });
+
+  test("an ordinary operand is read exactly as before", () => {
+    expect(writeTargets("echo x > /tmp/plain.txt")).toEqual(["/tmp/plain.txt"]);
+    expect(writeTargets("ls -la 2>&1")).toEqual([]);
+    expect(writeTargets("ls -la 2>/dev/null")).toEqual([]);
+  });
+
+  test("a `>` INSIDE a substitution does not end the operand", () => {
+    expect(writeTargets(`echo x > $(f > /dev/null; echo d)/${STATE}`)).toEqual([
+      `$(f > /dev/null; echo d)/${STATE}`,
+    ]);
+  });
+});
+
+describe("#1146: the two gaps the issue names are already closed — locked, not re-fixed", () => {
+  // Re-derived against `origin/main` @ dbf10445 before any code was written.
+  // #1120 moved cp/mv destination extraction to the last non-option argument
+  // and #1184/#1188 filled IN_PLACE. Every row below is BLOCK on main today.
+  // They are regression locks, not new behaviour, and they are the reason
+  // this PR adds two verbs rather than the eight the issue lists.
+  const verbs: [string, string][] = [
+    ["sed -i", `sed -i s/a/b/ ${LIVE_TREE}/${STATE}`],
+    ["perl -i", `perl -i -pe s/a/b/ ${LIVE_TREE}/${STATE}`],
+    ["dd of=", `dd of=${LIVE_TREE}/${STATE} if=/dev/zero`],
+    ["truncate", `truncate -s0 ${LIVE_TREE}/${STATE}`],
+    ["rm", `rm ${LIVE_TREE}/${SALT}`],
+    ["ln", `ln -sf /tmp/a ${LIVE_TREE}/${STATE}`],
+    ["install", `install -m644 /tmp/a ${LIVE_TREE}/${STATE}`],
+    ["git checkout", `git checkout ${LIVE_TREE}/${STATE}`],
+    ["git restore", `git restore ${LIVE_TREE}/${STATE}`],
+    ["cp with a flag before the destination", `cp -p source.json ${LIVE_TREE}/${STATE}`],
+    ["mv with a flag before the destination", `mv -f source.json ${LIVE_TREE}/${STATE}`],
+    ["rsync with a flag before the destination", `rsync -a src ${LIVE_TREE}/${STATE}`],
+  ];
+  test.each(verbs)("%s already blocks on main", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+});
+
+describe("#1146 WITNESS: the two verbs the corpus says are worth adding", () => {
+  test("chmod on a NON-hook protected artifact — a real corpus command", () => {
+    // Arm 4 fired only on PROTECTED_HOOKS, so a permission change on the
+    // gate salt was allowed. Recovered verbatim from the transcript corpus;
+    // it is the single command this widening newly blocks in 5,059.
+    const cmd = `chmod 600 /Users/jhorn/.claude/.claude/worktrees/agent-abbce86bb83ada9c6/hooks/lib/${SALT}`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("chflags on a protected file", () => {
+    expect(decideBashWrite(`chflags uchg ${LIVE_TREE}/${STATE}`).blocked).toBe(true);
+  });
+
+  test("xattr -d on a hook — a real corpus command", () => {
+    // Also recovered verbatim. Extended attributes are file metadata, and
+    // `com.apple.provenance` is what was blocking writes to these hooks, so
+    // removing it is a mutation of hook integrity by any reading.
+    const cmd = "xattr -d com.apple.provenance /Users/jhorn/.pai/hooks/IssueCloseGuard.hook.ts";
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("xattr -w on a protected file", () => {
+    expect(decideBashWrite(`xattr -w k v ${LIVE_TREE}/${STATE}`).blocked).toBe(true);
+  });
+});
+
+describe("#1146 CONTROL: the verbs that did NOT earn their place", () => {
+  test("a bare `xattr` is a READ and stays allowed", () => {
+    // Two real corpus commands do exactly this. The broad `/\bxattr\b/`
+    // newly blocks 3 commands of which these 2 are reads; the narrow
+    // `-d`/`-w`/`-s` form newly blocks 1, and that one is the mutation
+    // above. This row is what separates the two patterns.
+    expect(decideBashWrite("xattr /Users/jhorn/.pai/hooks/IssueCloseGuard.hook.ts").blocked).toBe(false);
+    expect(decideBashWrite("ls -la@ /Users/jhorn/.pai/hooks/IssueCloseGuard.hook.ts").blocked).toBe(false);
+  });
+
+  test("F11: chmod is still a COMMAND WORD test, not a substring one", () => {
+    // Widening arm 4's TARGET list must not widen its VERB test.
+    //
+    // The obvious control here — #1120's `git show … | grep -nE
+    // "chmod|chflags"` — is VACUOUS for this mutation, and it was written
+    // that way first. It names no protected artifact, so the substring
+    // reading finds nothing to refuse and the row passes under the wrong fix
+    // as readily as under the right one. The separating shape has to carry
+    // BOTH halves: the verb as data AND a protected artifact as the target.
+    //
+    // So this is a real command from the corpus. Seven read-only commands
+    // there have that shape; the substring reading newly refuses all seven.
+    const cmd =
+      'grep -n "uchg\\|chflags\\|nouchg\\|schg" /Users/jhorn/.pai/hooks/BashWriteGuard.hook.ts 2>/dev/null';
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("chmod on an unprotected path stays allowed", () => {
+    expect(decideBashWrite("chmod 644 /tmp/notes.md").blocked).toBe(false);
+  });
+
+  test("touch, mkdir, mktemp and split were PRICED and left out", () => {
+    // Measured on the 5,059 allowed commands naming a protected artifact:
+    // touch 0 newly blocked, mkdir 1, mktemp 1, split 9 — and every one of
+    // the 11 was read and is a false positive (`split` matches `.split(`
+    // inside Python heredoc bodies; `mkdir -p <run store> && bun -e …` is
+    // arm 3's business, not a mutation by `mkdir`). A verb that newly blocks
+    // real work and catches nothing is a regression, so none shipped.
+    expect(decideBashWrite(`touch ${LIVE_TREE}/${STATE}`).blocked).toBe(false);
+    expect(decideBashWrite(`mkdir -p /Users/jhorn/.rungate/x && echo hi`).blocked).toBe(false);
+  });
+});
+
+describe("#1203: an escaped quote outside a quote does not OPEN one", () => {
+  // Not predicted, and found by the corpus sweep rather than by reading.
+  //
+  // Handling `\<newline>` meant deciding what the scanner does with a
+  // backslash generally, and the honest answer is the shell's: outside a
+  // quote, `\X` escapes X for every X. The scanner used to fall through to
+  // `cur += c` and then read the NEXT character normally — so `\'` opened a
+  // quote that never closed, the tracker desynchronised, and every separator
+  // for the rest of the command was swallowed or invented.
+  //
+  // `'\''` — close, escaped literal quote, reopen — is THE way to put an
+  // apostrophe inside a single-quoted shell string. It is everywhere in this
+  // machine's history: inside `sed` scripts, `jq` filters and `--body` text.
+
+  test("MECHANISM: the tracker stays in sync across `\\'`", () => {
+    // On `origin/main` this returns ONE segment: the `\'` opened a quote, so
+    // the `;` was read as quoted text instead of as a separator.
+    expect(segments("echo \\' ; rm /r/x")).toEqual(["echo \\'", "rm /r/x"]);
+  });
+
+  test("F12: a real `sed -i` on a real hook, ALLOWED on main", () => {
+    // Recovered from the corpus. The desync put `sed -i` and its target in
+    // different segments, so arm 2 read a verb with no protected argument.
+    const cmd = "sed -i '' 's|x|'\\''y'\\''|g' /Users/jhorn/.pai/hooks/X.hook.ts";
+    expect(segments(cmd)).toHaveLength(1);
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("F13: a real `jq … && mv` onto a LIVE run-store artifact, ALLOWED on main", () => {
+    // The serious one. A `jq` filter carrying `'\''` tore the command apart,
+    // and the `mv` that writes the live gate artifact landed in a fragment
+    // of its own with no verb the guard recognised.
+    const cmd =
+      `jq '.acs[3].evidenceMethod.command = "grep -ch '\\''x()'\\'' a.ts"' ` +
+      `/Users/jhorn/.rungate/ddb-1452/${STATE} > /tmp/ws-fix.json && ` +
+      `mv /tmp/ws-fix.json /Users/jhorn/.rungate/ddb-1452/${STATE}`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("CONTROL: a backslash inside single quotes is still data", () => {
+    const quoted = "echo 'a\\'b'";
+    expect(segments(quoted)).toEqual([quoted]);
+  });
+});
