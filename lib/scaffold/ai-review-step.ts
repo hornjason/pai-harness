@@ -3704,6 +3704,117 @@ export const AI_REVIEW_GIT_ISOLATED =
 export const AI_REVIEW_GIT_KEYS_ONLY = `git ${AI_REVIEW_GIT_NEUTRALISED_KEYS}`;
 
 /**
+ * The flag that takes the reading's answer off the reviewer's ignore files
+ * (#969).
+ *
+ * ## The door #965 left open
+ *
+ * #965 stopped the reviewer naming an ignore file through `~/.gitconfig`.
+ * Three doors are INSIDE the checkout the reviewer sits in: `.git/info/exclude`
+ * (fixed path, never reported by `git status` at any setting, untouched by
+ * `core.excludesFile=/dev/null`), `.gitignore` at any depth including one that
+ * hides itself, and `.git/config` — which the `-c` flags do outrank. So the
+ * reviewer writes one line and its plant stops appearing. The gate still reads
+ * a value the measured thing can write; only the address changed.
+ *
+ * Neutralising the ignore files is not available: "neutralise them" and
+ * "review them" are the same action for `.gitignore`, and a reader that
+ * ignores it reports every build artefact as a plant and refuses every pull
+ * request. `--ignored=matching` removes the DEPENDENCE instead — an ignored
+ * path is still enumerated and still cancels against the baseline, so the
+ * ignore files keep working and no longer decide the answer. Measured on this
+ * repository's own checkout, git 2.50.1:
+ *
+ * | reading | lines |
+ * |---|---|
+ * | `--untracked-files=all` (today) | 0 |
+ * | `+ --ignored=matching` (ships here) | **1** |
+ * | `+ --ignored=traditional` | 1508 |
+ *
+ * `matching`, not `traditional`: a directory matching a pattern is ONE entry
+ * rather than every file under it, and `read_tree` spawns one `hash-object`
+ * per reported path.
+ *
+ * ## The alternative the issue offers, rejected in writing
+ *
+ * Folding a hash of `.git/info/exclude`, `.gitignore` and `.git/config` into
+ * the reading as synthetic lines watches the dependence instead of removing
+ * it, and it manufactures the false drift `read_tree` dropped the porcelain
+ * status letters to avoid (#815): a path moving from untracked to ignored
+ * currently produces a byte-identical line and cancels. It would also go red
+ * on every single run, because the review action appends to
+ * `.git/info/exclude` itself — see `AI_REVIEW_ACTION_SCRATCH`.
+ */
+export const AI_REVIEW_IGNORED_READING = "--ignored=matching";
+
+/**
+ * The ONE path this reading does not report, and why it is not a denylist of
+ * one (#969, #1002, #1008).
+ *
+ * ## It shipped once without this and broke every pull request in the repo
+ *
+ * PR #1002 added the flag above and nothing else. Measured, attempt 1 of every
+ * run in the window — the run-level conclusion hides this, because four of the
+ * five were re-run after the revert and `gh run list` reports the latest
+ * attempt:
+ *
+ * ```
+ * 22:01:23  refuse=success     ← five consecutive greens before
+ * 22:03:34  refuse=success
+ * ---- #1002 merges 22:04:58Z ----
+ * 22:20:44  refuse=FAILURE     ← five of five after, every one
+ * 22:23:16  refuse=FAILURE        "The reviewer modified the tree it was
+ * 22:26:02  refuse=FAILURE         reviewing: absent .claude-pr/"
+ * 22:29:17  refuse=FAILURE
+ * 22:30:38  refuse=FAILURE
+ * ---- #1008 reverts 22:40:05Z ----
+ * 22:36:52  refuse=success     ← the revert branch's own run
+ * ```
+ *
+ * ## The cause, read from the action's source rather than guessed
+ *
+ * `anthropics/claude-code-action` at the pinned SHA copies the pull request's
+ * sensitive config into `.claude-pr/` for the review agents to read, and then
+ * calls `ensureClaudePrExcludedFromGit()`, which APPENDS its own pattern to
+ * `.git/info/exclude` (`src/github/operations/restore-config.ts`). It logs
+ * `Preserved PR's sensitive paths -> .claude-pr/ for review agents`.
+ *
+ * So the directory is ignored, by a mid-review write to the very file this
+ * flag exists to stop trusting. Without the flag it is invisible. With it,
+ * `matching` collapses it to one entry, `read_tree` finds no FILE at that path
+ * and stamps it `absent`, and the comparison reads the review tool's own
+ * scratch appearing as the reviewer deleting something.
+ *
+ * ## Why an exemption is unavoidable, said plainly rather than apologised for
+ *
+ * There is no structural property that separates this directory from a plant.
+ * The action creates it inside the checkout, mid-review, and ignores it. Any
+ * honest reading sees it. The choice is between naming one path and not
+ * closing the ignore-file door at all, and the door is worth more.
+ *
+ * What keeps it from being the denylist shape this repository is removing
+ * elsewhere:
+ *
+ * - **It is an EXACT match, not a prefix and not a glob.** `.claude-pr-evil/`,
+ *   `src/.claude-pr/` and `.claude-pr/plant.md` are all still reported. A
+ *   subtraction list grows; this cannot.
+ * - **It can only ever match a directory**, because git never reports a file
+ *   path with a trailing slash. A reviewer cannot write a FILE at this name
+ *   and disappear.
+ * - **It names a SHA-pinned dependency's documented scratch**, not a class of
+ *   paths and not anything in this repository.
+ *
+ * ## UNMEASURED, and asserted so it cannot outlive its subject
+ *
+ * A write INSIDE `.claude-pr/` is not seen. That is true of every
+ * collapsed-ignored directory under `matching` and is not special to this one;
+ * it is the price of the entry count above. The case that asserts the
+ * blindness is in `test/ai-review-ignored-reading.test.ts`, so the day the
+ * reading starts seeing it, the note is refuted rather than left standing.
+ */
+export const AI_REVIEW_ACTION_SCRATCH = ".claude-pr/";
+
+/**
  * The one reading of the tree, shared by the baseline step and the drift step
  * (#853). It emits one line per dirty path:
  *
@@ -3770,12 +3881,13 @@ export const AI_REVIEW_GIT_KEYS_ONLY = `git ${AI_REVIEW_GIT_NEUTRALISED_KEYS}`;
  * caught by the path appearing or disappearing; what is unmeasured is its
  * content.
  */
+
 export const AI_REVIEW_TREE_READER = `read_tree() {
   local raw line xy p h
   # Checked on its own line, never captured into an assignment: \`x=$(...)\`
   # DISCARDS the exit code, so a git that failed produces the same empty
   # string a clean tree produces, and "unreadable" would pass as "clean".
-  if ! raw=$(${AI_REVIEW_GIT_ISOLATED} status --porcelain --untracked-files=all 2>&1); then
+  if ! raw=$(${AI_REVIEW_GIT_ISOLATED} status --porcelain --untracked-files=all ${AI_REVIEW_IGNORED_READING} 2>&1); then
     printf '%s' "\${raw}"
     return 1
   fi
@@ -3790,6 +3902,20 @@ export const AI_REVIEW_TREE_READER = `read_tree() {
     case "\${xy}" in
       R*|C*) p="\${p##* -> }" ;;
     esac
+    # The review tool's own scratch, and ONLY it.
+    # Spelled as an \`if\`, not \`[ … ] && continue\`. The runner runs these
+    # steps under \`bash -e\` and the terse form looked like it would kill the
+    # loop on the first NON-matching path; measured, it does not — bash
+    # exempts the left operand of an AND-OR list from -e. So this is
+    # legibility, not a defect being avoided, and saying which it is costs
+    # nothing. The trailing slash below is git's own: a file never reads with
+    # one, so this cannot match a file the reviewer wrote. An EXACT match, so
+    # a path merely starting with the name, or carrying anything after the
+    # slash, is still reported. See AI_REVIEW_ACTION_SCRATCH for why an
+    # exemption is unavoidable at all.
+    if [ "\${p}" = "${AI_REVIEW_ACTION_SCRATCH}" ]; then
+      continue
+    fi
     case "\${p}" in
       '"'*) h=unquotable ;;
       *)
