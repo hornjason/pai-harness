@@ -148,7 +148,7 @@ describe("#1120: the cheapest wrong fixes, run rather than described", () => {
     expect(decideBashWrite(control).blocked).toBe(false);
   });
 
-  test("the recorded false positive is what deleting the allowlist cost", () => {
+  test("the recorded false positive is what deleting the allowlist cost (#1176 keeps it green)", () => {
     // Measured before this rework: emptying READ_ONLY_PREFIXES turned F4 red
     // while STILL allowing the interpreter bypass. The allowlist is gone now
     // for a different reason — the checks became structural, so it had no
@@ -156,5 +156,106 @@ describe("#1120: the cheapest wrong fixes, run rather than described", () => {
     // this time is not the same act.
     const f4 = `gh issue close 473 --comment "$(cat <<'EOF'\n- Run \`chflags uchg\` on hooks/X.hook.ts\nEOF\n)"`;
     expect(decideBashWrite(f4).blocked).toBe(false);
+  });
+});
+
+/**
+ * Covers #1176 — six parser-differential bypasses shipped in #1145.
+ *
+ * One class: a check reads a TRANSFORMED view of the command — heredoc
+ * stripped, quote stripped, segment split — and the transformation loses or
+ * relocates the exact token the check is looking for. Seven were claimed by a
+ * background review; six are real and the seventh is locked in below as a
+ * NON-defect, because it was reported twice against a revision that no longer
+ * exists and will be reported again.
+ */
+describe("#1176 WITNESS: a write the transformed view used to hide", () => {
+  const cases: [string, string][] = [
+    // G1. `[\s\S]*?` starts right after the delimiter word, so it ate the rest
+    //     of the operator's line — and a redirect lives there.
+    ["G1 a heredoc whose operator line also carries the redirect", `cat <<EOF > /tmp/bw/${SALT}\nhello\nEOF`],
+    // G2. stripQuoted deletes quoted spans AND contents; the recovery pass
+    //     only matched a target that was WHOLLY quoted, so a mid-word quote
+    //     fell between the two.
+    ["G2 a redirect target quoted in the middle of the word", `echo x > dir/"${STATE}"`],
+    // G3. `.match` without /g, one capture group, but `tee` takes many files.
+    ["G3 tee writing a protected file as its second operand", `echo x | tee /tmp/a /tmp/bw/${STATE}`],
+    // G4. The real invocation quotes the key, and stripQuoted deleted it, so
+    //     the arm could not fire on the one shape it exists for.
+    ["G4 the Keychain key name in quotes", `security find-generic-password -s 'pai-gate-salt' -w`],
+    // G6. The lookbehind excluded `2`, but `2> file` truncates like `> file`.
+    ["G6 a stderr redirect, which truncates exactly like stdout", `echo x 2> /tmp/bw/${SALT}`],
+    // G7. For a SHELL the `-c` body is shell, but it was matched against
+    //     WRITE_INTENT, which enumerates Node and Python idioms only. Arm 1
+    //     could not see it either, because stripQuoted deleted the body.
+    ["G7 a shell -c body containing a plain redirect", `bash -c 'echo x > /tmp/bw/${SALT}'`],
+    ["G7 the same through sh", `sh -c "rm -f /tmp/bw/${STATE}"`],
+    // G8. Both of these are REAL commands from the corpus, and both are
+    //     genuine writes that the #1176 rework briefly started allowing: an
+    //     apostrophe inside a `#` comment opened a quote that stayed open
+    //     across the newline and swallowed the redirect on a later line.
+    //     Found by the sweep, not by reading. A shell comment is not a quote.
+    [
+      "G8 an apostrophe in a comment must not hide a later redirect",
+      `# First, check if there's a test ${STATE} I can target\nmkdir -p /tmp/bw/rt\necho '{"phase":"BUILD"}' > /tmp/bw/rt/${STATE}`,
+    ],
+    [
+      "G8 the same, hiding a write to a hook file",
+      `# they're on main\ngit show HEAD~1:hooks/AutoVerifyGate.hook.ts > /tmp/bw/hooks/AutoVerifyGate.hook.ts`,
+    ],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+});
+
+describe("#1176 CONTROL: the fixes must not widen the guard", () => {
+  const cases: [string, string][] = [
+    ["a heredoc writing an ordinary file still passes", `cat <<EOF > /tmp/bw/notes.md\nhello\nEOF`],
+    ["tee to ordinary files", `echo x | tee /tmp/a /tmp/b`],
+    ["a shell -c body that writes nothing protected", `bash -c 'echo hello > /tmp/bw/ordinary.txt'`],
+    ["a shell -c body that only reads", `bash -c 'cat /tmp/bw/${STATE}'`],
+    ["the Keychain name merely quoted in prose, command word is gh", `gh issue comment 475 --body "run security find-generic-password -s 'pai-gate-salt'"`],
+    ["stderr discarded, the overwhelmingly common form", `grep -n phase ${STATE} 2>/dev/null`],
+    ["stderr duplication, which names no path at all", `bun test 2>&1 | tail -5`],
+  ];
+  test.each(cases)("%s", (_label, cmd) => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+});
+
+describe("#1176: the mechanisms, asserted directly", () => {
+  test("stripHeredocs keeps the operator's own line and drops only the body", () => {
+    const out = stripHeredocs("cat <<EOF > out.txt\nbody line\nEOF");
+    expect(out).toContain("> out.txt");
+    expect(out).not.toContain("body line");
+  });
+
+  test("writeTargets collects every tee operand, not just the first", () => {
+    expect(writeTargets(`tee /tmp/a /tmp/bw/${STATE}`)).toContain(`/tmp/bw/${STATE}`);
+  });
+
+  test("a mid-word quoted redirect target survives as a target", () => {
+    expect(writeTargets(`echo x > dir/"${STATE}"`).join(" ")).toContain(STATE);
+  });
+
+  test("2> is a write sink; 2>&1 and 2>/dev/null are not", () => {
+    expect(writeTargets(`echo x 2> /tmp/bw/${SALT}`)).toContain(`/tmp/bw/${SALT}`);
+    // The duplication form names a descriptor, not a path. This is the
+    // negative control for dropping `2` from the lookbehind — without it the
+    // fix would turn every `2>&1` in the corpus into a write.
+    expect(writeTargets("ls -la 2>&1")).toEqual([]);
+    expect(writeTargets("ls -la 2>/dev/null")).toEqual([]);
+  });
+
+  test("G5 is NOT a defect: over-splitting closes &> rather than opening it", () => {
+    // Reported twice, and real in the round-1 revision where the whole command
+    // hit the `(?<![2&])` lookbehind at once. Segmentation dissolved it: the
+    // `&` becomes a separator, so the `>` opening the next segment is no
+    // longer preceded by it. Locked in so the next review can be answered with
+    // a run instead of an argument.
+    expect(segments(`echo x &> /tmp/bw/${SALT}`)).toEqual(["echo x", `> /tmp/bw/${SALT}`]);
+    expect(decideBashWrite(`echo x &> /tmp/bw/${SALT}`).blocked).toBe(true);
   });
 });
