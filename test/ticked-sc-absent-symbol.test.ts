@@ -41,6 +41,7 @@ import { join } from "path";
 import {
   ABSENT_SYMBOL_RATCHET,
   SELF_REFERENTIAL_FILES,
+  artifactsNamedBy,
   scanTickedScSymbols,
   symbolsNamedBy,
 } from "../lib/ticked-sc-symbols";
@@ -267,5 +268,141 @@ describe("#1161: what counts as naming a symbol", () => {
     // proper noun, and a type name in a criterion is nearly always prose
     // about a shape rather than a claim that an identifier exists.
     expect(symbolsNamedBy("ComplianceReport is written to .rungate/")).toEqual([]);
+  });
+});
+
+/**
+ * #1217 — a tick may not name a FILE nobody wrote either.
+ *
+ * `CAMEL_CASE` and a kebab-case filename do not overlap, so the sweep above
+ * is blind to half of its own subject. The instance: `workflow-state.json`
+ * carried two fields declared and touched by nothing at all, recorded in the
+ * docblock of `test/state-contract.test.ts`. Each has exactly one ticked
+ * criterion. The camelCase sweep caught the one that spells its field
+ * (`proofOfFix`) and could not see the one that spells only its file
+ * (`quinn-journey.yaml`) — one defect, one of it visible, for no reason
+ * except how the sentence happened to be written.
+ *
+ * ## The two cheapest wrong fixes, both named before the repair
+ *
+ * **Index filenames the way identifiers are indexed — text only.** It scores
+ * 252 rows on this tree. 251 of them are files you can `ls`: `rule-registry
+ * .ts` exists and its name occurs inside no other file, because an import
+ * spells it `./rule-registry`. The disk case below is that reading, run.
+ *
+ * **Index the filesystem only.** `.rungate/navigability-score.json` is a
+ * runtime output; a clean checkout has none, so this demands generated
+ * artifacts be committed. The generated case below is that reading, run.
+ *
+ * Both are planted, in both directions, over otherwise identical trees.
+ */
+describe("#1217: the detector separates a present file from an absent one", () => {
+  const ON_DISK = "lives-on-disk.ts";
+  const GENERATED = "written-at-runtime.json";
+  const ABSENT_FILE = "nobody-writes-this.yaml";
+
+  /** `named` decides where the GENERATED file's name appears, if anywhere. */
+  function plantFiles(named: "code" | "todo" | "nowhere"): string {
+    const root = mkdtempSync(join(tmpdir(), "rg-1217-"));
+    mkdirSync(join(root, "specs"), { recursive: true });
+    mkdirSync(join(root, "lib"), { recursive: true });
+    mkdirSync(join(root, "test"), { recursive: true });
+    writeFileSync(
+      join(root, "specs", "PLANTED-SPEC.md"),
+      [
+        "---", "doc-type: spec", "testable: true", "governs: a planted thing", "---", "",
+        "# Planted", "", "## Success Criteria", "",
+        // Fixture ids in the 9700 range, for the reason the block above
+        // states: a real id in a test file is read as a coverage claim.
+        `- [x] SC-9721: the scanner reads ${ON_DISK} on every run`,
+        `- [x] SC-9722: the score is written to ~/.rungate/{slug}/${GENERATED}`,
+        `- [x] SC-9723: the journey is stored at ~/.rungate/{slug}/${ABSENT_FILE}`,
+        // The glob resolves to `planted.yaml`, a basename no file has — so
+        // without the wildcard filter this line scores a row, and with it
+        // scores none. A glob whose tail is a bare extension would match
+        // nothing either way and the case would be vacuous.
+        "- [x] SC-9724: every src/**/*.planted.yaml under the root is counted",
+        "",
+      ].join("\n"),
+    );
+    // Exists on disk, named in no other file's text — the ordinary case, and
+    // the one a text-only index gets wrong 251 times.
+    writeFileSync(join(root, "lib", ON_DISK), "export const x = 1;\n");
+    writeFileSync(
+      join(root, "test", "planted.test.ts"),
+      [
+        named === "code" ? `const out = "${GENERATED}";` : "",
+        named === "todo" ? `test.todo("SC-9722: ${GENERATED} has required fields");` : "",
+        "",
+      ].join("\n"),
+    );
+    return root;
+  }
+
+  function scanFiles(named: "code" | "todo" | "nowhere"): string[] {
+    const root = plantFiles(named);
+    try {
+      return scanTickedScSymbols({ specsDir: join(root, "specs"), projectRoot: root })
+        .violations.filter(v => v.kind === "artifact").map(v => v.key);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  test("a ticked criterion naming a file nothing writes is reported", () => {
+    expect(scanFiles("code")).toEqual([`PLANTED-SPEC.md::SC-9723::${ABSENT_FILE}`]);
+  });
+
+  test("a file that EXISTS ON DISK clears, though no text names it", () => {
+    // The positive control, and the 252-row wrong fix performed. `lib/
+    // rule-registry.ts` is this case on the real tree: three ticked criteria
+    // name it, it is right there, and an index built from file CONTENTS has
+    // never heard of it.
+    expect(
+      scanFiles("code"),
+      "a file sitting on disk was called absent — the scan is indexing text only",
+    ).not.toContain(`PLANTED-SPEC.md::SC-9721::${ON_DISK}`);
+  });
+
+  test("a GENERATED file clears when code names it — one input, one difference", () => {
+    // Pairs with the case below. Identical tree, identical spec; the only
+    // change is where the filename is written. If presence were read off the
+    // filesystem alone, both would be reported and neither case would mean
+    // anything.
+    expect(scanFiles("code")).not.toContain(`PLANTED-SPEC.md::SC-9722::${GENERATED}`);
+    expect(scanFiles("nowhere")).toContain(`PLANTED-SPEC.md::SC-9722::${GENERATED}`);
+  });
+
+  test("a name appearing only in a test.todo TITLE is still absent", () => {
+    // The comment case again, in a position comment-stripping cannot reach.
+    // A `todo` is the repository stating the thing is NOT built, so reading
+    // it as evidence of existence is the original defect exactly: `test/
+    // phase-5.test.ts` holds one for the criterion this issue unticked, and
+    // with todo titles indexed the row disappears.
+    expect(scanFiles("todo")).toContain(`PLANTED-SPEC.md::SC-9722::${GENERATED}`);
+  });
+
+  test("a glob names no file", () => {
+    // SC-1690 of CONFIG-DIRECTORY-STRUCTURE-SPEC.md is cited here, not
+    // claimed: it names a glob the census counts, and `basename` on it
+    // yields a name no file can have. Unlike the metavariable rows in the
+    // bank, excluding a wildcard token hides no real reference.
+    expect(scanFiles("code").join("\n")).not.toContain("SC-9724");
+    expect(artifactsNamedBy("counts `src/**/*.spec.tsx` and `src/*.test.ts`")).toEqual([]);
+  });
+
+  test("the comparison is by basename, so a criterion may write any path", () => {
+    // A criterion writes the path it cares about and the tree writes another
+    // for the same file. Comparing paths would report every artifact named
+    // in any spec, which is the vacuous direction.
+    expect(artifactsNamedBy("written to ~/.rungate/{slug}/a-thing.json")).toEqual(["a-thing.json"]);
+  });
+
+  test("English prose names no file", () => {
+    // The filter is the extension, and it has to be. Measured on this tree,
+    // accepting any hyphenated token scored 247 rows of which essentially
+    // all were sentences: "non-coding", "intent-based", "near-enough".
+    expect(artifactsNamedBy("Rejected candidates are logged with content-hash dedup")).toEqual([]);
+    expect(artifactsNamedBy("an intent-based, auto-detected work-area")).toEqual([]);
   });
 });

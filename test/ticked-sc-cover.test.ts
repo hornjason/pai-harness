@@ -42,7 +42,13 @@ const SPECS = join(REPO, "specs");
  * the list ratchets both ways so a spec that improves must say so here.
  */
 const BANKED: Record<string, number> = {
-  "bootstrap-data-flow/success-criteria.md": 120,
+  // 120 -> 118 on 2026-10-22 (#1217). SC-108, SC-135 and SC-237 were
+  // unticked: the first two each claim a `workflow-state.json` field that
+  // #317 deleted from the schema as an orphan declaration, and the third
+  // claims a JSON schema for `.rungate/navigability-score.json`, which
+  // nothing in the tree writes. Two of the three were in this census.
+  // Down by withdrawal, not by anybody proving a criterion.
+  "bootstrap-data-flow/success-criteria.md": 118,
   // 12 -> 11 on 2026-10-22 (#1161). SC-453 — "runBehavioralCompliance
   // spawns fresh agent + auditor" — was ticked while no declaration, export,
   // caller or test for that function existed, 167 lines below the same

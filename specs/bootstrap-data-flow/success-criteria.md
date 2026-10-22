@@ -227,7 +227,7 @@ testable: true
 - [x] SC-103: Evidence-to-tier mapping implemented in gate — evidenceMethod.type maps to correct tier per mapping table
 - [x] SC-104: File ownership model enforced — Tier 1 (harness-owned) always regenerated, Tier 2 (co-owned/hybrid) preserves user sections across re-scaffold, Tier 3 (user-owned) validated for structure only — scaffold never writes to them
 - [x] SC-105: Scaffold is idempotent — running from scratch produces same result as re-scaffold (Core Principle 6)
-- [x] SC-108: Quinn journey stored in slug directory (~/.rungate/{slug}/quinn-journey.yaml) — ephemeral, follows slug lifecycle
+- [ ] SC-108: Quinn journey stored in slug directory (~/.rungate/{slug}/quinn-journey.yaml) — ephemeral, follows slug lifecycle
 - [x] SC-109: Fix-on-find: silently dropped issues = FAIL at verify gate, not WARN
 - [x] SC-110: Port allocation for parallel worktrees checks for collisions before assigning offset
 - [x] SC-111: Escalation decision tree embedded in every agent brief — agents know research tools exist
@@ -240,7 +240,7 @@ testable: true
 - [x] SC-132: Tier D evidence (grep) capped at 25% of total evidence portfolio per issue — gate FAIL if exceeded
 - [x] SC-133: Brief-assembler rejects Quinn journeys over 8 steps and auto-splits into multiple journeys with entry conditions
 - [x] SC-134: Files changed outside brief's listed files → WARN "Files changed outside brief: {list}"
-- [x] SC-135: Gate cross-validates proofOfFix in workflow-state.json against prove-evidence.json — mismatch = FAIL
+- [ ] SC-135: Gate cross-validates proofOfFix in workflow-state.json against prove-evidence.json — mismatch = FAIL
 
 ### Phase 3 — Parallel Work
 
@@ -289,7 +289,7 @@ testable: true
 ### Phase 5 — Instruction Compliance
 
 - [ ] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json (behavioral)
-- [x] SC-237: navigability-score.json schema includes fileLoadRate, directHitRate, complianceRate, toolCallCount, canaryResults, timestamp
+- [ ] SC-237: navigability-score.json schema includes fileLoadRate, directHitRate, complianceRate, toolCallCount, canaryResults, timestamp
 - [x] SC-238: Canary values planted in generated files are checked by auditor — score = canaries triggered correctly / total canaries
 - [ ] SC-239: `rungate rule-health` cross-references instruction quality (agnix/RepoRails scores) with behavioral compliance (auditor data) → .rungate/rule-health.json with KEEP/RETIRE/FAILING/STALE verdicts
 - [x] SC-240: `lib/compliance.ts → runTemplateCompliance()` runs agnix + RepoRails on instruction files (prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md) via Bun.spawnSync — consumes their JSON output, does NOT reimplement scoring with regex
@@ -362,6 +362,8 @@ Concerns raised during spec review, evaluated, and documented for future referen
 - Activation mode declarations (SC-143): activation modes are metadata for the brief-assembler, not runtime config. The brief-assembler decides what to include based on mode + current context. A template with `mode: agent-decided` is included only when the brief-assembler judges it relevant to the issue type.
 - Rule lifecycle 90-day flag (SC-144): the WARN is advisory, not blocking. Some rules are permanent (security constraints, architectural invariants). The flag is a prompt for human review, not an expiration.
 - 15 tool-call compliance cliff: this is why the harness uses gates (post-hoc verification) rather than relying on agents to self-enforce rules during long sessions. The cliff validates the architectural decision, not a gap to fix.
+- SC-135 and SC-108 unticked (#1217): both claimed a `workflow-state.json` field, and both fields were **deleted** from the schema by #317 as orphan declarations — `proofOfFix` and `quinnJourneyPath` are named in the docblock of `test/state-contract.test.ts` as the two fields "declared and touched by nothing at all". Building either criterion now means re-adding a field that fix removed, which is a design decision this issue does not own. The ticks said the work was done; nothing in `gates/` reads either field. Unticking records the truth and leaves the design question open.
+- SC-237 unticked (#1217): it claimed a JSON schema for `.rungate/navigability-score.json`, a file nothing writes — SC-236, the criterion for the command that would produce it, sits directly above and is correctly unticked. `navigability` appears in no file under `lib/`, `scripts/`, `gates/`, `workflows/` or `bin/`; the only occurrence anywhere is a `test.todo` in `test/phase-5.test.ts`, which is the repository recording that it is unbuilt. A schema for a file nothing writes is a plan, and the plan is already stated by SC-236.
 
 ## Research Sources
 
