@@ -89,7 +89,12 @@ function expectMeasured(actions: string[], wanted: string) {
 }
 
 function run(root: string, ...args: string[]) {
-  const r = spawnSync("git", args, { cwd: root, encoding: "utf-8" });
+  // `env` explicitly, and the fixture above is why. Under Bun a
+  // `process.env` write made after process start does NOT reach a child
+  // given no `env` option, so the hermetic HOME set in `beforeAll` never
+  // arrived here: measured, a global `core.excludesFile` written after
+  // start is honoured by a bare spawn and neutralised by this one (#1096).
+  const r = spawnSync("git", args, { cwd: root, encoding: "utf-8", env: { ...process.env } });
   return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
@@ -286,7 +291,8 @@ describe("#505: a config in an ignored directory is deleted by an ordinary branc
     // designed, and the emitted block says so in a comment.
     const root = repo({ ".gitignore": ".claude/\n", ".claude/rungate/nested/config.json": CONFIG_BODY });
     ensureConfigTrackable(root, []);
-    const r = spawnSync("git", ["check-ignore", "--no-index", "-q", ".claude/rungate/nested/config.json"], { cwd: root });
+    const r = spawnSync("git", ["check-ignore", "--no-index", "-q", ".claude/rungate/nested/config.json"],
+      { cwd: root, env: { ...process.env } });
     expect(r.status, "a nested config was quietly un-ignored").toBe(0);
   });
 
