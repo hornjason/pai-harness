@@ -40,7 +40,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execFileSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 
@@ -61,6 +61,7 @@ import {
   parseWorktreeList,
   pruneWarnings,
   readLsof,
+  readWorktreeList,
   renderTable,
   took,
   unmeasuredReadings,
@@ -681,10 +682,15 @@ describe("a reading, not a reaper", () => {
    * the argument arrays and checking the subcommand against an allowlist is
    * the question that means what it says — and a new call site has to be
    * added here deliberately.
+   *
+   * The extractor reads `censusGit([...])` rather than `execFileSync("git",
+   * [...])` since #1048, because the argument arrays moved to the seam's
+   * callers. That is a counting arm updated to match new syntax; it still
+   * counts, and the count is still the thing a third call site has to pass.
    */
   test("git is only ever asked read-only questions", () => {
     const src = codeOnly(readFileSync(SCRIPT, "utf-8"));
-    const calls = [...src.matchAll(/execFileSync\(\s*"git",\s*\[([^\]]*)\]/g)];
+    const calls = [...src.matchAll(/censusGit\(\s*\[([^\]]*)\]/g)];
     expect(calls.length, "no git call sites were found — the extractor has stopped working").toBe(2);
     const verbs = calls.map(m =>
       [...m[1].matchAll(/"([^"]+)"/g)]
@@ -698,6 +704,236 @@ describe("a reading, not a reaper", () => {
 
   test("status is taken with --no-optional-locks, so reading does not write someone's index", () => {
     expect(readFileSync(SCRIPT, "utf-8")).toContain('"--no-optional-locks"');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * #1048 — every git this script runs is isolated, through one seam
+ * ------------------------------------------------------------------ */
+
+/**
+ * A repository whose OWN `.git/config` carries the poison.
+ *
+ * Local scope on purpose: it is the one scope `GIT_CONFIG_GLOBAL=/dev/null`
+ * cannot reach, so a case planted here is a case about the `-c` flags and
+ * not about the env vars. The env half gets its own case below, poisoning
+ * the global file instead — dropping either half must be its own red row.
+ */
+function poisonedRepo(tag: string, key: string, value: string) {
+  const dir = scratchDir(tag);
+  execFileSync("git", ["-c", "init.defaultBranch=main", "init", "-q", dir], { stdio: "ignore" });
+  git(dir, "config", "user.email", "t@example.invalid");
+  git(dir, "config", "user.name", "t");
+  writeFileSync(join(dir, "tracked.txt"), "hi\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "base");
+  // Untracked, so an excludesFile that names it can make a dirty tree read
+  // clean — which is the reading this whole script exists to produce.
+  writeFileSync(join(dir, "plant.txt"), "work somebody has not committed\n");
+  git(dir, "config", key, value);
+  return dir;
+}
+
+/** A `core.fsmonitor` that records having been run, then answers like none. */
+function fsmonitorRecorder(tag: string) {
+  const dir = scratchDir(tag);
+  const marker = join(dir, "fired");
+  const script = join(dir, "fsmonitor.sh");
+  writeFileSync(script, `#!/bin/bash\necho ran >> ${JSON.stringify(marker)}\nprintf '/\\0'\n`, { mode: 0o755 });
+  return { script, marker };
+}
+
+/** The pre-#1048 spelling, kept here as the control and nowhere else. */
+const unisolatedStatus = (dir: string, env?: NodeJS.ProcessEnv) =>
+  execFileSync("git", ["--no-optional-locks", "-C", dir, "status", "--porcelain"], {
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    ...(env ? { env } : {}),
+  });
+
+/**
+ * `cleanReading` under a poisoned ENVIRONMENT, which has to be a subprocess.
+ *
+ * Measured, and it is the reason this helper exists rather than a
+ * `process.env` assignment in the case: **in Bun, editing `process.env`
+ * after startup does not reach an `execFileSync` child that was given no
+ * explicit `env`.** A case that poisons `process.env` and calls
+ * `cleanReading` in-process is therefore green whether or not the seam
+ * applies `gitIsolatedEnv()` — it reaches its assertion by a route that
+ * bypasses the feature. That was the first draft of this case, and the
+ * battery is what found it: the pre-#1048 row came back 4 where 5 was
+ * predicted, and the env row reddened a source assertion instead of this
+ * one. The environment has to be poisoned at the child's START.
+ *
+ * `mode` picks which spelling runs inside that child — `real` goes through
+ * the script's own seam, `bare` is the pre-#1048 call, which is the control.
+ */
+function poisonedCleanReading(dir: string, env: NodeJS.ProcessEnv, mode: "real" | "bare") {
+  const probe = join(scratchDir("envprobe"), "probe.ts");
+  writeFileSync(probe, `
+import { execFileSync } from "child_process";
+const { cleanReading } = await import(${JSON.stringify(SCRIPT)});
+const dir = process.argv[2];
+let r;
+if (${JSON.stringify(mode)} === "real") {
+  r = cleanReading(dir);
+} else {
+  const out = execFileSync("git", ["--no-optional-locks", "-C", dir, "status", "--porcelain"],
+    { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+  const lines = out.split("\\n").filter((l: string) => l.trim() !== "");
+  r = { measured: true, value: { clean: lines.length === 0, entries: lines.length } };
+}
+console.log(JSON.stringify(r));
+`);
+  const p = Bun.spawnSync(["bun", probe, dir], { env });
+  const out = new TextDecoder().decode(p.stdout).trim();
+  const err = new TextDecoder().decode(p.stderr);
+  expect(p.exitCode, `the env probe did not run, so this case witnesses nothing:\n${err}`).toBe(0);
+  const parsed = JSON.parse(out);
+  expect(parsed.measured, `the probe's reading was refused: ${parsed.why}`).toBe(true);
+  return parsed.value as { clean: boolean; entries: number };
+}
+
+describe("git runs isolated, and the seam is the only door (#1048)", () => {
+  /**
+   * The `-c` half: a `core.fsmonitor` in the READ repository's own config.
+   *
+   * The control is not decoration. `--no-optional-locks` keeps the index
+   * write out, and the obvious inference — that nothing in the repo gets
+   * executed either — is false, which is the whole finding. Without the
+   * control this case would also be green on a git that never ran fsmonitor
+   * for `status`, and then it would witness nothing.
+   */
+  test("cleanReading does not execute the read repository's core.fsmonitor", () => {
+    const { script, marker } = fsmonitorRecorder("fsmon");
+    const dir = poisonedRepo("fsmon-repo", "core.fsmonitor", script);
+
+    unisolatedStatus(dir);
+    expect(
+      existsSync(marker),
+      "the control did not fire, so this git does not run fsmonitor for status and the case below witnesses nothing",
+    ).toBe(true);
+    rmSync(marker);
+
+    const reading = cleanReading(dir);
+    expect(reading.measured, `cleanReading refused: ${reading.measured ? "" : reading.why}`).toBe(true);
+    expect(existsSync(marker), "git executed core.fsmonitor out of the directory being read").toBe(false);
+  });
+
+  /**
+   * The env half, and the key had to be chosen rather than reached for.
+   *
+   * The obvious case — a `core.fsmonitor` in the GLOBAL file — witnesses
+   * nothing, and that is worth stating because it is the case a reader
+   * expects to find here. `-c` is COMMAND scope and outranks global, so
+   * `-c core.fsmonitor=` already covers the global spelling: drop
+   * `gitIsolatedEnv()` and such a case stays green. The env vars earn their
+   * place on the keys nobody enumerated.
+   *
+   * `status.showUntrackedFiles = no` is one of them, and it is the same
+   * correctness failure as `core.excludesFile` by another route: the
+   * untracked plant disappears and a worktree holding work reports CLEAN.
+   * Measured — unisolated: nothing; `-c` flags only, global still live:
+   * nothing; env vars: `?? plant.txt`.
+   */
+  test("a global config cannot hide untracked work from the clean reading", () => {
+    const cfgDir = scratchDir("globalcfg");
+    const cfg = join(cfgDir, "gitconfig");
+    writeFileSync(cfg, "[status]\n\tshowUntrackedFiles = no\n");
+    const dir = poisonedRepo("global-repo", "user.name", "t");
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: cfg };
+
+    expect(
+      poisonedCleanReading(dir, env, "bare").clean,
+      "the control saw the plant, so this key is not hiding anything and the case below witnesses nothing",
+    ).toBe(true);
+
+    expect(
+      poisonedCleanReading(dir, env, "real").clean,
+      "a tree holding an uncommitted file was reported clean",
+    ).toBe(false);
+  });
+
+  /**
+   * Isolation is a CORRECTNESS property here, not only a safety one.
+   *
+   * `core.excludesFile` hides untracked files from `status`. Unisolated, a
+   * worktree holding uncommitted work reports CLEAN — in the tool whose
+   * output decides what is safe to remove. This is the case that would bite
+   * first, and it is why "the subcommand is read-only" was never the
+   * question.
+   */
+  test("a repository cannot hide its own dirt from the clean reading", () => {
+    const exDir = scratchDir("excl");
+    const excludes = join(exDir, "excludes");
+    writeFileSync(excludes, "plant.txt\n");
+    const dir = poisonedRepo("excl-repo", "core.excludesFile", excludes);
+
+    expect(
+      unisolatedStatus(dir).split("\n").filter(l => l.trim() !== ""),
+      "the control saw the plant, so this excludesFile is not hiding anything and the case below witnesses nothing",
+    ).toEqual([]);
+
+    const reading = cleanReading(dir);
+    expect(reading.measured).toBe(true);
+    if (!reading.measured) return;
+    expect(reading.value.clean, "a tree holding an uncommitted file was reported clean").toBe(false);
+    expect(reading.value.entries).toBeGreaterThan(0);
+  });
+
+  /**
+   * `readWorktreeList` goes through the seam, and has NO behavioural witness.
+   *
+   * Measured, git 2.50.1, poison in the read repository's own config:
+   * `worktree list --porcelain` ran `core.fsmonitor` NOT at all, fired no
+   * `post-index-change` under `core.hooksPath`, and is unaffected by
+   * `core.excludesFile`. It never opens the working tree. So a case shaped
+   * like the three above would pass identically with the seam deleted —
+   * `.claude/rules/checks-must-be-able-to-fail.md`'s "a fixture must not
+   * satisfy the assertion by a route that bypasses the feature".
+   *
+   * What this case can honestly establish is the other direction: isolation
+   * does not BREAK the listing. Neutralising the global file also removes
+   * `actions/checkout`'s `safe.directory` entries, and `-c safe.directory=*`
+   * is what puts that back. The structural guarantee — that this call site
+   * cannot drift away from the seam — is the one-decider case below.
+   */
+  test("readWorktreeList still reads a real listing through the isolated seam", () => {
+    const dir = poisonedRepo("wtlist", "core.fsmonitor", "/nonexistent/should-never-run");
+    const out = readWorktreeList(dir);
+    expect(out).toContain(`worktree ${realpathSync(dir)}`);
+    expect(out).toContain("branch refs/heads/main");
+  });
+
+  /**
+   * One decider, asserted rather than left as a convention.
+   *
+   * The cheapest wrong fix for #1048 is to paste the `-c` flags inline at
+   * the two call sites: isolation works, both sites are covered, and there
+   * are two declaring positions that drift — which is the defect
+   * `lib/git-isolation.ts` was created to remove. This case is what that
+   * repair fails, because it counts DOORS and not flags.
+   */
+  test("exactly one execFileSync reaches git, and it is the isolated seam", () => {
+    const src = codeOnly(readFileSync(SCRIPT, "utf-8"));
+    // Every reach for git, not only the ones that look isolated. Counting
+    // `execFileSync("git", <identifier>(` alone would let a site passing a
+    // bare array through go uncounted — which is exactly the site this case
+    // exists to find, so the population has to be the wider one first.
+    const reaches = [...src.matchAll(/execFileSync\(\s*"git"\s*,/g)];
+    expect(
+      reaches.length,
+      "every git invocation in this module must go through one seam; a second door is a site that can drift",
+    ).toBe(1);
+    const doors = [...src.matchAll(/execFileSync\(\s*"git"\s*,\s*([A-Za-z_$][\w$]*)\(/g)];
+    expect(doors.length, "the one git invocation does not call anything to build its argv").toBe(1);
+    expect(doors[0][1], "the one door does not apply lib/git-isolation.ts").toBe("gitIsolatedArgs");
+    expect(src, "the seam must apply the env half too; the flags alone leave ~/.gitconfig live")
+      .toContain("env: gitIsolatedEnv()");
+    expect(
+      src.includes("-c core.fsmonitor") || src.includes('"core.fsmonitor"'),
+      "the isolation set must not be re-spelled here — lib/git-isolation.ts is the declaring position",
+    ).toBe(false);
   });
 });
 
