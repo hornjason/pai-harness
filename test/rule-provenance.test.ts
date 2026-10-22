@@ -352,3 +352,162 @@ describe("#370 SC-821: nothing cites a rule file that is not there", () => {
     }
   });
 });
+
+// ── #1285: "fourth shape" is a namespace, and nothing allocates it ──────
+//
+// 159 files in `.ts`/`.js` alone cite a shape of
+// `.claude/rules/checks-must-be-able-to-fail.md` by ORDINAL, and the count
+// grew 156 → 157 → 159 over a few hours while two agents were measuring it.
+// Renumbering the list — inserting a shape rather than appending one — is
+// correct locally and silently invalidates every one of those citations.
+// It is the SC-collision problem in different clothes: two correct edits,
+// one broken union, invisible on either diff.
+//
+// Credit: rg-1167-reviewmd raised the namespace; the check extends
+// `citedRulePaths`'s instrument rather than building a second one.
+describe("#1285: every cited shape ordinal resolves to a shape that exists", () => {
+  const SHAPE_RULE = "checks-must-be-able-to-fail.md";
+  const ORDINALS = [
+    "first", "second", "third", "fourth", "fifth",
+    "sixth", "seventh", "eighth", "ninth", "tenth",
+  ] as const;
+
+  // The intro counts in CARDINALS ("Seven shapes to watch for") and the
+  // citations name ORDINALS ("the seventh shape"). Two vocabularies for one
+  // fact, which is half the reason the two readings drift.
+  const CARDINALS = [
+    "one", "two", "three", "four", "five",
+    "six", "seven", "eight", "nine", "ten",
+  ] as const;
+
+  /** The citation scope. Wider than SCOPE above: most of these live in test/. */
+  const ORDINAL_SCOPE = [
+    "specs", "lib", "scripts", "gates", "hooks", "workflows", "bin", "test", ".claude/rules",
+  ];
+
+  function citedOrdinals(): Map<number, string[]> {
+    const cited = new Map<number, string[]>();
+    const re = new RegExp(`\\b(${ORDINALS.join("|")})\\s+shape\\b`, "gi");
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(p);
+          continue;
+        }
+        if (!/\.(md|ts|js)$/.test(e.name)) continue;
+        for (const m of readFileSync(p, "utf-8").matchAll(re)) {
+          const n = ORDINALS.indexOf(m[1].toLowerCase() as (typeof ORDINALS)[number]) + 1;
+          if (!cited.has(n)) cited.set(n, []);
+          const who = cited.get(n)!;
+          if (!who.includes(p)) who.push(p);
+        }
+      }
+    };
+    for (const d of ORDINAL_SCOPE) walk(join(ROOT, d));
+    return cited;
+  }
+
+  /**
+   * The one binding, and a pure function of the rule text so the mutant is a
+   * string rather than a spawn. Returns the two readings it took alongside
+   * the violations, because a caller cannot tell "nothing is wrong" from
+   * "nothing was read" if it only gets a list back.
+   */
+  function shapeReading(ruleText: string) {
+    // The bullets under the intro, up to the first `###`.
+    const body = ruleText.split("\n### ")[0];
+    const listed = (body.match(/^- \*\*/gm) ?? []).length;
+    // The intro's spelled count, which is prose and drifts independently.
+    const m = body.match(new RegExp(`\\b(${CARDINALS.join("|")})\\s+shapes to watch for`, "i"));
+    const declared = m ? CARDINALS.indexOf(m[1].toLowerCase() as (typeof CARDINALS)[number]) + 1 : 0;
+    return { listed, declared };
+  }
+
+  function unresolved(ruleText: string, cited: Map<number, string[]>): string[] {
+    const { listed } = shapeReading(ruleText);
+    return [...cited.entries()]
+      .filter(([n]) => n > listed)
+      .map(([n, who]) => `${ORDINALS[n - 1]} shape — ${who.length} citation(s), e.g. ${who[0]}`)
+      .sort();
+  }
+
+  const ruleText = readFileSync(join(ROOT, ".claude", "rules", SHAPE_RULE), "utf-8");
+
+  test("the instrument reads a real list, and its two readings agree", () => {
+    // The control, first, and both halves of it. A regex that stopped
+    // matching reports zero bullets, and then EVERY citation is unresolved
+    // and the next test fails loudly rather than quietly — but a reader
+    // would not know which of the two had broken. And the spelled count is
+    // a second reading of the same fact: "Seven shapes to watch for" above a
+    // list of six is a renumber half-applied, which is the thing this
+    // namespace is exposed to.
+    const { listed, declared } = shapeReading(ruleText);
+    expect(listed, "no shape bullets parsed — the instrument is broken").toBeGreaterThanOrEqual(5);
+    expect(
+      declared,
+      `the intro says ${declared} shapes and the list has ${listed}. Update both, or the ` +
+        `ordinal every other file cites stops meaning what the prose says it means (#1285)`,
+    ).toBe(listed);
+  });
+
+  test("every ordinal the repo cites names a shape that exists", () => {
+    const cited = citedOrdinals();
+    // The non-vacuity floor, before the assertion. Borrowed from "the scan
+    // is not vacuously empty" next door: without it a regex that stopped
+    // matching reports zero violations over an empty set, which is exactly
+    // the shape being enforced.
+    expect(cited.size, "no shape ordinals found at all — the scan is broken").toBeGreaterThanOrEqual(2);
+    expect(
+      (cited.get(4) ?? []).length,
+      "the most-cited ordinal in the repo registered zero citations",
+    ).toBeGreaterThanOrEqual(10);
+
+    expect(
+      unresolved(ruleText, cited),
+      `a file cites a shape by ordinal that ${SHAPE_RULE} no longer has. APPEND shapes, never ` +
+        `insert — renumbering is correct locally and silently invalidates every citation ` +
+        `elsewhere, and there are hundreds (#1285)`,
+    ).toEqual([]);
+  });
+
+  test("the MUTANT — a renumber — is caught, so the case above is not vacuous", () => {
+    // Two renumbers, because one of them proves almost nothing.
+    //
+    // Deleting ONE bullet invalidates only the highest ordinal, and the
+    // highest ordinal is cited by two files: this one and the rule itself.
+    // A check proved against that population is a check proved against its
+    // own footnote. The population actually at risk is `fourth`, at 142
+    // files — so the second mutant cuts the list to three, which is both a
+    // realistic renumber and the length the consumer template already uses.
+    const cited = citedOrdinals();
+    expect(unresolved(ruleText, cited), "precondition: the real tree is clean").toEqual([]);
+
+    const bullets = ruleText.match(/^- \*\*.*$/gm) ?? [];
+    const listed = shapeReading(ruleText).listed;
+    expect(bullets.length, "no bullets to remove — the mutation cannot apply").toBe(listed);
+
+    const drop = (n: number) =>
+      bullets.slice(-n).reduce((text, b) => text.replace(b, ""), ruleText);
+
+    // M1: the minimal renumber. Catches the highest ordinal only.
+    const m1 = drop(1);
+    expect(m1, "M1 did not apply — this measures nothing").not.toBe(ruleText);
+    expect(shapeReading(m1).listed).toBe(listed - 1);
+    expect(unresolved(m1, cited).join(" ")).toContain(ORDINALS[listed - 1]);
+
+    // M2: the renumber that reaches the population. `fourth` must be in it,
+    // and the message must carry its real citation count, or the check is
+    // protecting something smaller than it claims.
+    const m2 = drop(listed - 3);
+    expect(shapeReading(m2).listed, "M2 did not cut the list to three").toBe(3);
+    const caught = unresolved(m2, cited);
+    expect(caught.join(" "), "a renumber past the fourth shape went undetected").toContain(
+      "fourth shape",
+    );
+    expect(
+      (cited.get(4) ?? []).length,
+      "the fourth shape is the population this check exists for",
+    ).toBeGreaterThan(100);
+  });
+});
