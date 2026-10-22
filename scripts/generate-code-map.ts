@@ -11,6 +11,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync, statSync } from "fs";
 import { join, basename } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
+import { FRESHNESS_NOTICE, directoryTable } from "../lib/generators/code-map";
 import {
   fallowAvailable,
   fallowUnmeasuredNotice,
@@ -114,7 +115,7 @@ function scanRoutes(): Route[] {
 
 // ── Directory structure ──────────────────────────────────────
 
-interface DirSummary { name: string; fileCount: number; types: string[] }
+interface DirSummary { name: string; types: string[] }
 
 function scanDirectories(): DirSummary[] {
   const dirs: DirSummary[] = [];
@@ -128,10 +129,13 @@ function scanDirectories(): DirSummary[] {
       if (!statSync(full).isDirectory()) continue;
       const files = readdirSync(full, { recursive: true }).map(String);
       const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-      dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
+      dirs.push({ name: entry, types: [...exts].slice(0, 5) });
     } catch {}
   }
-  return dirs.sort((a, b) => b.fileCount - a.fileCount);
+  // Unsorted. Row order is `directoryTable`'s single decision (#1163) —
+  // this used to sort by `fileCount`, which is how the census survived one
+  // indirection past being printed.
+  return dirs;
 }
 
 // ── Component scanning (React) ───────────────────────────────
@@ -257,7 +261,9 @@ generator: rungate/scripts/generate-code-map.ts
 # Code Map — ${pkg.name}
 
 Auto-generated architecture snapshot. Re-run \`bun generate-code-map.ts ${projectPath}\` to refresh.
-Regenerate when src/ has commits since scanned-at-sha.`);
+Regenerate when src/ has commits since scanned-at-sha.
+
+${FRESHNESS_NOTICE}`);
 
 // Summary
 sections.push(`## Summary
@@ -276,12 +282,11 @@ sections.push(`## Summary
 | Module import mappings | ${consumerMappings.length} |
 | Page-component mappings | ${pageMappings.length} |`);
 
-// Directory structure
+// Directory structure. No `Files` column, and the order is `directoryTable`'s
+// rather than the scanner's — see `FRESHNESS_NOTICE` and #1163.
 sections.push(`## Directory Structure
 
-| Directory | Files | Types |
-|-----------|-------|-------|
-${dirs.map(d => `| ${d.name}/ | ${d.fileCount} | ${d.types.join(", ")} |`).join("\n")}`);
+${directoryTable(dirs)}`);
 
 // Routes
 if (routes.length > 0) {

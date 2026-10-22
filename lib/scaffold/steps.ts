@@ -1556,7 +1556,7 @@ export function generateCodeMapStep(
 function generateCodeMapInline(root: string, outPath: string, actions: string[]): void {
   const name = basename(root);
   const skip = new Set(["node_modules", ".git", "reference", "dist", "build", ".next", ".fallow"]);
-  const dirs: Array<{ name: string; fileCount: number; types: string[] }> = [];
+  const dirs: Array<{ name: string; types: string[] }> = [];
   for (const entry of readdirSorted(root)) {
     if (entry.startsWith(".") && entry !== ".claude") continue;
     if (skip.has(entry)) continue;
@@ -1565,10 +1565,10 @@ function generateCodeMapInline(root: string, outPath: string, actions: string[])
       if (!statSync(full).isDirectory()) continue;
       const files = readdirSorted(full, { recursive: true });
       const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-      dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
+      dirs.push({ name: entry, types: [...exts].slice(0, 5) });
     } catch {}
   }
-  dirs.sort((a, b) => b.fileCount - a.fileCount);
+  // Unsorted. Row order is `directoryTable`'s single decision (#1163).
 
   let deps = 0, devDeps = 0;
   const pkgPath = join(root, "package.json");

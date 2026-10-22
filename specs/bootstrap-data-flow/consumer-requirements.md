@@ -20,7 +20,7 @@ Read by: AGENTS.md (references it), agents/marcus.md (Module Dependencies, Code 
 | Section | What's In It | Who Reads It |
 |---------|-------------|--------------|
 | Summary | Counts: dirs, deps, routes, components, entry points, unused, circular | Quick orientation |
-| Directory Structure | Dirs with file counts and types | Project navigation |
+| Directory Structure | Dirs and their file types, ordered by name. **No file counts** — removed in #1163 after they were measured wrong in 22 of 50 consecutive commits, with no gate able to hold them | Project navigation |
 | Entry Points | package.json main/exports, Makefile entry targets | Agent orientation |
 | API Routes | Method, path, file, line for every route (framework-agnostic detection) | Marcus (endpoint awareness) |
 | UI Components | Component names (detected from component dirs, not hardcoded path) | Quinn (what exists to test) |

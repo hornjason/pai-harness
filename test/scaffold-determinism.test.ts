@@ -226,12 +226,25 @@ describe("SC-364: re-scaffold produces identical output", () => {
 
       // Each of these is a thing the SAME run created after the code map used
       // to be generated. Before #123 every one of them was absent or zero.
-      expect(first, "first-run CODE-MAP.md does not list specs/ — scaffold created it this run")
-        .toMatch(/\|\s*specs\/\s*\|\s*[1-9]/);
+      //
+      // The `specs/` witness USED TO BE a per-directory file count of `[1-9]`,
+      // and #1163 removed that column — it was wrong in 22 of 50 consecutive
+      // commits on this repo and no gate could hold it. This case is the one
+      // consumer of the census that grep did not find, because it matched the
+      // number rather than the header.
+      //
+      // The replacement is not weaker. `[1-9]` said only "the directory was
+      // not empty"; the types cell says WHAT was in it, so `md` is direct
+      // evidence that `copySpecTemplateIfEmpty` had already run when the map
+      // was scanned. A scaffold that created `specs/` and put nothing in it
+      // renders `| specs/ |  |` — measured, that is exactly what the empty
+      // `scripts/` row looks like — so the empty-directory case still reds.
+      expect(first, "first-run CODE-MAP.md does not list specs/ with a spec in it — scaffold wrote one this run")
+        .toMatch(/\|\s*specs\/\s*\|[^|\n]*\bmd\b/);
       expect(first, "first-run CODE-MAP.md reports no devDependency — addPaiHarnessDevDep added one this run")
         .toMatch(/\|\s*Dev dependencies\s*\|\s*[1-9]/);
       expect(first, "first-run CODE-MAP.md does not see .claude/agents/ — generateAgentBriefsStep wrote it this run")
-        .toMatch(/\|\s*\.claude\/\s*\|[^|]*\|[^|]*agents/);
+        .toMatch(/\|\s*\.claude\/\s*\|[^|\n]*agents/);
 
       // ...and it is already the fixed point: a second run changes nothing.
       scaffold(fresh);
