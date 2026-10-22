@@ -13,20 +13,36 @@
  * *is this here* and *is this current*, and all three are decidable by one
  * process with no model in it.
  *
- * So this module is three checks in cost order, each run only on what
- * survived the one before:
+ * So the checks run in cost order, each on what survived the one before:
  *
- * | stage | question | instrument |
- * |---|---|---|
- * | `DUPLICATE` | is this new? | string sets over the finding bodies |
- * | `OFF_MAIN` | is this here? | `git grep` against `origin/main` |
- * | `STALE_CITATION` | is this current? | the file's line count |
+ * | stage | question | instrument | on failure |
+ * |---|---|---|---|
+ * | 1 | is this new? | string sets over the finding bodies | `DUPLICATE` |
+ * | 2 | do enough verifiers call it real? | `lib/finding-jury.ts` counts votes the caller cast | `NO_QUORUM` |
+ * | 3 | is it the kind we post at all? | the category, verifier-supplied or keyed | `DROPPED_CATEGORY` |
+ * | 4 | which tree is it about? | `git grep` against `origin/main` | sets `scope`, never refuses |
+ * | 5 | is this current? | the file's line count | `STALE_CITATION` |
  *
- * Stage 2 (a failing command as the evidence gate) and stage 3 (a vote over
- * what survives 1 and 2) are #1187's own sequencing and are **not** here.
- * They stay filed. The reason for the split is cost: the expensive instrument
- * must never be spent on what `git grep` settles, and a vote is the most
- * expensive instrument the harness has.
+ * Stage 1 first and the vote second is the one ordering choice worth
+ * defending: a vote is the most expensive instrument the harness has, and
+ * spending three agent contexts to confirm a finding that a string-set
+ * comparison already knows is a duplicate is the failure #1187 measured.
+ *
+ * ## THE DEFAULT IS A COMMENT, NOT AN ISSUE
+ *
+ * #1187 asked which findings are worth **filing**, and that framing is wrong.
+ * The design it was drawn from files nothing: a surviving finding becomes an
+ * inline comment that **blocks the merge until it is answered** — fixed, or
+ * the thread closed with a reason. There is no backlog because findings never
+ * become backlog. We added the filing step, and it is why the tracker
+ * regenerates: measured 2026-10-22, 23 of 27 open issues were created the
+ * same day and 10 named one subsystem.
+ *
+ * So `Disposition` defaults to `COMMENT`, `ISSUE` requires an explicit
+ * declared reason from the caller (`Finding.outOfScope`), and what used to be
+ * the `OFF_MAIN` **refusal** is now the `scope` **reading** — a finding about
+ * an unmerged branch was never a bad finding, it was a comment on that branch
+ * all along. See `FindingScope`.
  *
  * ## Why the key is the measured symptom and not the title
  *
@@ -72,23 +88,58 @@
 
 import { existsSync, readFileSync } from "fs";
 import { spawnSync } from "child_process";
-import { isAbsolute, join } from "path";
+import { resolve, sep } from "path";
 
 import { contentHash } from "./content-hash";
 import { promoteCandidates, type PromotableCandidate, type PromotionReading } from "./rule-promotion";
+import {
+  classifyCategory,
+  DROPPED_CATEGORIES,
+  juryCategory,
+  juryReading,
+  severityOf,
+  SEVERITY_RANK,
+  type Disposition,
+  type FindingCategory,
+  type JuryConfig,
+  type JuryReading,
+  type Severity,
+  type VerifierVote,
+} from "./finding-jury";
 
-/** A finding, as little of one as the three checks need. */
+/** A finding, as little of one as the checks need. */
 export interface Finding {
   /** How the caller names it — an issue number, or `new` for an unfiled one. */
   id: string;
   title: string;
   body: string;
+  /**
+   * The ONE route to `ISSUE`, and it must be declared, never inferred.
+   *
+   * Filing is the exception: the work genuinely cannot ride along on this PR
+   * — a different subsystem, or a design decision somebody else owns. An
+   * *inferred* exception is exactly how a filing default comes back, so there
+   * is no heuristic here and there is no default: a caller that wants an
+   * issue says so and says why, in a sentence that ends up in the issue body.
+   */
+  outOfScope?: { reason: string };
 }
 
 export type SymptomKeyKind = "sym" | "file" | "qty";
 
-/** How many cited symbols `OFF_MAIN` will pay a `git grep` for. */
+/** How many cited symbols the branch-scope reading will pay a `git grep` for. */
 const MAX_SYMBOLS_PROBED = 8;
+
+/**
+ * How many `path:line` citations the currency reading will pay a file read for.
+ *
+ * The asymmetry this fixes ran the wrong way: `MAX_SYMBOLS_PROBED` bounded the
+ * *cheap* probe while the expensive one — a `readFileSync`, or a
+ * `git show origin/main:<path>` per citation — was unbounded. An AI reviewer's
+ * output is the one input on this path nobody audits, so a body naming four
+ * hundred `file.ts:N` pairs was a free way to wedge the arbiter.
+ */
+const MAX_LINES_PROBED = 8;
 
 /**
  * Identifiers that are code-shaped and carry no information about which
@@ -289,7 +340,7 @@ export function citedSymbols(finding: Finding): string[] {
     .slice(0, MAX_SYMBOLS_PROBED);
 }
 
-/** `path:line` citations a finding makes. */
+/** `path:line` citations a finding makes, capped at `MAX_LINES_PROBED`. */
 export function citedLines(finding: Finding): Array<{ path: string; line: number }> {
   const out: Array<{ path: string; line: number }> = [];
   const seen = new Set<string>();
@@ -300,8 +351,35 @@ export function citedLines(finding: Finding): Array<{ path: string; line: number
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ path: m[1], line: Number.parseInt(m[2], 10) });
+    if (out.length >= MAX_LINES_PROBED) break;
   }
   return out;
+}
+
+/**
+ * The absolute path a citation resolves to, or `null` if it escapes the root.
+ *
+ * The citation text comes from an AI reviewer's output and reaches
+ * `readFileSync`. The regex above cannot emit a leading `/`, so an absolute
+ * path never arrives — but `../` does, and `../../../../Users/…/settings.json`
+ * carries an allowlisted extension and matches cleanly. The payoff is only a
+ * line count and an existence oracle rather than content, which is why this is
+ * two lines and not a subsystem; it is here because an unaudited input should
+ * not be choosing which file the arbiter opens.
+ *
+ * **There is deliberately no separate `isAbsolute` rejection**, and this was
+ * measured rather than reasoned: one was written, and removing it changed
+ * **0 of 63** cases. `resolve(root, "/etc/hosts.json")` is `/etc/hosts.json`,
+ * which fails containment on its own — so the two guards answered one
+ * question, no behavioural test could tell them apart, and a mutation of
+ * either left the other holding the case up. That is the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, and the remedy for it is
+ * deletion, not a second assertion.
+ */
+export function containedCitationPath(projectRoot: string, cited: string): string | null {
+  const root = resolve(projectRoot);
+  const abs = resolve(root, cited);
+  return abs === root || abs.startsWith(root + sep) ? abs : null;
 }
 
 // ── The verdict ──────────────────────────────────────────────────────────
@@ -309,26 +387,56 @@ export function citedLines(finding: Finding): Array<{ path: string; line: number
 export type ArbiterRefusal =
   /** The symptom is already filed. `duplicateOf` names where. */
   | "DUPLICATE"
-  /** No cited symbol exists on `origin/main`. A PR comment, not an issue. */
-  | "OFF_MAIN"
+  /** The verifier group did not reach quorum on "is this real?". */
+  | "NO_QUORUM"
+  /** Style, diagnostics or cleanup. Dropped outright, never posted. */
+  | "DROPPED_CATEGORY"
   /** A cited line is past the end of the file it cites. */
   | "STALE_CITATION"
-  /** Nothing in the finding could be evaluated. Fails; never skips. */
+  /** Something could not be evaluated. Fails; never skips. */
   | "UNMEASURED";
+
+/**
+ * Which tree the finding describes.
+ *
+ * `OFF_MAIN` used to be a **refusal**, and the inversion of that is the
+ * central correction in this change. A finding whose symbols exist only on an
+ * unmerged branch is not a bad finding — it is a finding about the branch,
+ * which is precisely what an inline PR comment is for. Refusing it was the
+ * old shape, where the only two outcomes were "file an issue" and "nothing".
+ *
+ * It survives as a reading because it still decides one thing: a finding
+ * about code that exists only on this branch **cannot** be out-of-scope work
+ * for this PR, so it can never be routed to `ISSUE` however the caller marks
+ * it.
+ */
+export type FindingScope = "main" | "branch";
 
 export interface Verdict {
   id: string;
-  /** `true` only when every check that ran returned a reading, and passed. */
-  file: boolean;
+  /**
+   * What to do with it. **One field, because this is one decision** — a
+   * separate `file: boolean` alongside it would be a second decider over the
+   * same input, and a mutation of either would leave the other holding the
+   * case up (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+   */
+  disposition: Disposition;
   refusal: ArbiterRefusal | null;
   /** Why, in words a reader can act on without re-running anything. */
   reason: string;
+  /** `null` when the branch-scope reading was not reached. */
+  scope: FindingScope | null;
+  category: FindingCategory;
+  /** `null` when nothing could tag it; a dropped finding has no severity. */
+  severity: Severity | null;
+  /** The vote count, or `null` when no group was convened. */
+  jury: JuryReading | null;
   /** Issue ids whose symptom this one collides with. */
   duplicateOf: string[];
   /** The keys that produced the collision. Empty when there was none. */
   collidingKeys: string[];
   /**
-   * How many filed findings carry this symptom, this one included. #1187's
+   * How many findings carry this symptom, this one included. #1187's
    * acceptance: a duplicate increments a count rather than opening an issue.
    */
   occurrences: number;
@@ -338,8 +446,26 @@ export interface Verdict {
 export interface ArbitrateOptions {
   /** Repository root. `origin/main` is read from here; never checked out. */
   projectRoot: string;
-  /** Findings already filed. The dedupe compares against these only. */
+  /** Findings already posted or filed. The dedupe compares against these. */
   existing: readonly Finding[];
+  /**
+   * The separate verifier group's votes on "is this real?".
+   *
+   * **Absent is UNMEASURED, not a pass.** A finding nobody voted on has not
+   * cleared a quorum; it has not had one. Those are different states and only
+   * one of them is reportable. There is deliberately no `skipJury` escape —
+   * `skipRepoChecks` below exists because a caller may genuinely have no
+   * repository, and no caller genuinely has no verifiers.
+   */
+  votes?: readonly VerifierVote[];
+  /** Group size and quorum. Both default; see `lib/finding-jury.ts`. */
+  jury?: JuryConfig;
+  /**
+   * The PR's changed files. Supplying them is what makes `Pre-existing`
+   * decidable: a finding citing none of them is about code the change never
+   * touched. Absent, the pre-existing axis is simply not read.
+   */
+  changedFiles?: readonly string[];
   /**
    * Skip the two `git`-backed checks. For a caller with no repository, and
    * for the corpus measurement, which is about the key and nothing else.
@@ -358,16 +484,30 @@ export interface ArbitrateOptions {
  */
 export function arbitrate(finding: Finding, options: ArbitrateOptions): Verdict {
   const hash = symptomHash(finding);
-  const base = { id: finding.id, duplicateOf: [] as string[], collidingKeys: [] as string[], occurrences: 1, symptomHash: hash };
+  const votes = options.votes;
+  const category = votes ? juryCategory(finding, votes) : classifyCategory(finding);
+  const base = {
+    id: finding.id,
+    duplicateOf: [] as string[],
+    collidingKeys: [] as string[],
+    occurrences: 1,
+    symptomHash: hash,
+    scope: null as FindingScope | null,
+    category,
+    severity: null as Severity | null,
+    jury: null as JuryReading | null,
+  };
+  const drop = (refusal: ArbiterRefusal, reason: string, extra: Partial<Verdict> = {}): Verdict => ({
+    ...base,
+    ...extra,
+    disposition: "DROP",
+    refusal,
+    reason,
+  });
 
   const keys = symptomKeys(finding);
   if (keys.length === 0) {
-    return {
-      ...base,
-      file: false,
-      refusal: "UNMEASURED",
-      reason: "the finding names no symbol, no file and no reading — nothing here can be evaluated",
-    };
+    return drop("UNMEASURED", "the finding names no symbol, no file and no reading — nothing here can be evaluated");
   }
 
   // ── 1. is this new? ──
@@ -380,65 +520,71 @@ export function arbitrate(finding: Finding, options: ArbitrateOptions): Verdict 
   if (collisions.length > 0) {
     // Strongest overlap first, so the reader lands on the best match.
     collisions.sort((a, b) => b.keys.length - a.keys.length || a.id.localeCompare(b.id));
-    return {
-      ...base,
-      file: false,
-      refusal: "DUPLICATE",
-      reason:
-        `the symptom is already filed as ${collisions.map(c => c.id).join(", ")} — ` +
+    return drop(
+      "DUPLICATE",
+      `the symptom is already reported as ${collisions.map(c => c.id).join(", ")} — ` +
         `shared ${collisions[0].keys.length} key(s): ${collisions[0].keys.slice(0, 6).join(", ")}`,
-      duplicateOf: collisions.map(c => c.id),
-      collidingKeys: collisions[0].keys,
-      occurrences: collisions.length + 1,
-    };
+      {
+        duplicateOf: collisions.map(c => c.id),
+        collidingKeys: collisions[0].keys,
+        occurrences: collisions.length + 1,
+      },
+    );
+  }
+
+  // ── 2. do enough of the verifiers agree it is real? ──
+  if (votes === undefined) {
+    return drop("UNMEASURED", "no verifier group was convened, so no quorum was reached — not reaching one and not having one are different states");
+  }
+  const jury = juryReading(votes, options.jury);
+  if (jury.reading === "UNMEASURED") {
+    return drop("UNMEASURED", `the vote could not be read: ${jury.unmeasuredReasons.join("; ")}`, { jury });
+  }
+  if (!jury.passed) {
+    return drop(
+      "NO_QUORUM",
+      `${jury.agree} of ${jury.votes} verifiers called it real, quorum is ${jury.quorum}`,
+      { jury },
+    );
+  }
+  const withJury = { ...base, jury };
+
+  // ── 3. is it the kind of finding that gets posted at all? ──
+  if (DROPPED_CATEGORIES.has(category)) {
+    return drop(
+      "DROPPED_CATEGORY",
+      `${category} findings are dropped outright: they cost a review round and change no behaviour`,
+      { jury },
+    );
   }
 
   if (options.skipRepoChecks === true) {
-    return {
-      ...base,
-      file: false,
-      refusal: "UNMEASURED",
-      reason: "branch scope and citation currency were not read: skipRepoChecks",
-    };
+    return drop("UNMEASURED", "branch scope and citation currency were not read: skipRepoChecks", { jury });
   }
 
-  // ── 2. is this here? ──
+  // ── 4. which tree is it about? ──
   const symbols = citedSymbols(finding);
   if (symbols.length === 0) {
-    return {
-      ...base,
-      file: false,
-      refusal: "UNMEASURED",
-      reason: "the finding cites no symbol, so whether it describes `origin/main` cannot be read",
-    };
+    return drop("UNMEASURED", "the finding cites no symbol, so whether it describes `origin/main` cannot be read", { jury });
   }
   const probe = git(options.projectRoot, ["rev-parse", "--verify", "--quiet", "origin/main"]);
   if (!probe.ok) {
-    return {
-      ...base,
-      file: false,
-      refusal: "UNMEASURED",
-      reason: `no origin/main at ${options.projectRoot} — branch scope is unreadable, which fails rather than passes`,
-    };
+    return drop(
+      "UNMEASURED",
+      `no origin/main at ${options.projectRoot} — branch scope is unreadable, which fails rather than passes`,
+      { jury },
+    );
   }
   const present = symbols.filter(
     s => git(options.projectRoot, ["grep", "--quiet", "--fixed-strings", "-e", s, "origin/main"]).ok,
   );
-  if (present.length === 0) {
-    return {
-      ...base,
-      file: false,
-      refusal: "OFF_MAIN",
-      reason:
-        `none of the cited symbols exist on origin/main (${symbols.join(", ")}) — ` +
-        "this is a comment on the branch that carries them, not an issue",
-    };
-  }
+  const scope: FindingScope = present.length > 0 ? "main" : "branch";
 
-  // ── 3. is this current? ──
+  // ── 5. is this current? ──
   const stale: string[] = [];
   for (const c of citedLines(finding)) {
-    const abs = isAbsolute(c.path) ? c.path : join(options.projectRoot, c.path);
+    const abs = containedCitationPath(options.projectRoot, c.path);
+    if (abs === null) continue;
     let text: string | null = null;
     if (existsSync(abs)) {
       text = readFileSync(abs, "utf-8");
@@ -446,28 +592,53 @@ export function arbitrate(finding: Finding, options: ArbitrateOptions): Verdict 
       const shown = git(options.projectRoot, ["show", `origin/main:${c.path}`]);
       if (shown.ok) text = shown.out;
     }
-    // A path that resolves nowhere is not a stale citation — stage 2 is
-    // where an unresolvable citation is adjudicated, and guessing here would
-    // put a second decider in front of it.
+    // A path that resolves nowhere is not a stale citation — the evidence
+    // gate is where an unresolvable citation is adjudicated, and guessing
+    // here would put a second decider in front of it.
     if (text === null) continue;
     const lines = text.split("\n").length;
     if (c.line > lines) stale.push(`${c.path}:${c.line} (file is ${lines} lines)`);
   }
   if (stale.length > 0) {
-    return {
-      ...base,
-      file: false,
-      refusal: "STALE_CITATION",
-      reason: `cited line(s) past the end of the file: ${stale.join("; ")} — re-read before filing`,
-    };
+    return drop(
+      "STALE_CITATION",
+      `cited line(s) past the end of the file: ${stale.join("; ")} — re-read before posting`,
+      { jury, scope },
+    );
   }
 
-  return { ...base, file: true, refusal: null, reason: `cites ${present.join(", ")} on origin/main` };
+  // ── 6. where does it go? COMMENT unless somebody declared otherwise. ──
+  const severity = severityOf(finding, votes, options.changedFiles) ?? "Important";
+  const outOfScope = finding.outOfScope;
+  if (outOfScope !== undefined && outOfScope.reason.trim() !== "" && scope === "main") {
+    return {
+      ...withJury,
+      scope,
+      severity,
+      disposition: "ISSUE",
+      refusal: null,
+      reason: `out of scope for this change, declared: ${outOfScope.reason}`,
+    };
+  }
+  return {
+    ...withJury,
+    scope,
+    severity,
+    disposition: "COMMENT",
+    refusal: null,
+    reason:
+      scope === "main"
+        ? `${jury.agree} of ${jury.votes} verifiers agree; cites ${present.join(", ")} on origin/main`
+        : `${jury.agree} of ${jury.votes} verifiers agree; cites only branch symbols (${symbols.join(", ")}), so it is about this change`,
+  };
 }
 
 /** One line a caller can print without re-deriving any of the above. */
 export function verdictSummary(v: Verdict): string {
-  return v.file ? `FILE ${v.id}: ${v.reason}` : `${v.refusal} ${v.id}: ${v.reason}`;
+  const tag = v.severity ? `${v.severity}/${v.category}` : v.category;
+  return v.refusal === null
+    ? `${v.disposition} ${v.id} [${tag}]: ${v.reason}`
+    : `DROP ${v.id} (${v.refusal}): ${v.reason}`;
 }
 
 // ── The batch, and the cap that is not written here ──────────────────────
@@ -488,12 +659,40 @@ export function verdictSummary(v: Verdict): string {
 export const FILING_BUDGET_FINDINGS = 6;
 
 export interface BatchReading {
-  /** Per-finding stage-1 verdicts, in input order. */
+  /** Per-finding verdicts, in input order. */
   verdicts: Verdict[];
-  /** `lib/rule-promotion.ts`'s reading over the survivors. */
+  /**
+   * Ids to post as inline comments, **ranked by severity** — Important, then
+   * Pre-existing, then Nit. This is the default output and it is deliberately
+   * NOT budgeted: a comment blocks the merge until it is answered, so it
+   * leaves the system the same day. `FILING_BUDGET_FINDINGS` caps the other
+   * list, which is the one that accumulates.
+   */
+  toComment: string[];
+  /** `lib/rule-promotion.ts`'s reading over the declared-out-of-scope ones. */
   promotion: PromotionReading;
-  /** Ids cleared to file, after both the three checks and the budget. */
+  /** Ids cleared to file as issues, after the checks and the budget. */
   toFile: string[];
+}
+
+/**
+ * The order the batch is walked in.
+ *
+ * **Order is load-bearing and therefore pinned here**: with an
+ * accumulate-as-you-walk dedupe, whichever of a duplicate pair is seen first
+ * is the one that survives, so leaving it to array position would let the
+ * caller's iteration order silently decide which finding exists. Numeric ids
+ * compare numerically so `9` precedes `10`; everything else falls back to
+ * lexical, and the original index breaks remaining ties so the sort is total.
+ */
+function walkOrder(findings: readonly Finding[]): Array<{ finding: Finding; index: number }> {
+  return findings
+    .map((finding, index) => ({ finding, index }))
+    .sort((a, b) => {
+      const [x, y] = [Number(a.finding.id), Number(b.finding.id)];
+      const numeric = Number.isInteger(x) && Number.isInteger(y);
+      return (numeric ? x - y : a.finding.id.localeCompare(b.finding.id)) || a.index - b.index;
+    });
 }
 
 /**
@@ -508,18 +707,46 @@ export interface BatchReading {
  * What stage 1 adds is the three checks in front and a budget whose number
  * is its own.
  *
- * A finding refused by any of the three checks is withheld before it reaches
- * the promoter, so it cannot be ranked above one that passed them.
+ * A finding refused by any check is withheld before it reaches the promoter,
+ * so it cannot be ranked above one that passed them.
+ *
+ * ## The dedupe accumulates as it walks, and that is the whole point
+ *
+ * The first cut of this compared every finding against `options.existing` and
+ * nothing else. `existing` is a **fixed snapshot**, so two identical findings
+ * in one batch both read as new — which is exactly the incident that
+ * motivated #1187: #1195 and #1196, the same symptom, filed **one minute
+ * apart**, close enough that neither was in the tracker when the other was
+ * arbitrated. A tracker-only dedupe would not have stopped it, and
+ * `test/finding-arbiter.test.ts`'s `AR-9` drives the real pair through this
+ * function to prove the fix does.
+ *
+ * So each survivor joins the comparison set for everything walked after it.
+ * See `walkOrder` for why the order is pinned rather than inherited.
  */
 export function arbitrateBatch(
   findings: readonly Finding[],
   options: ArbitrateOptions & { budget?: number; now?: string },
 ): BatchReading {
-  const verdicts = findings.map(f => arbitrate(f, options));
   const date = options.now ?? new Date().toISOString();
+  const seen: Finding[] = [...options.existing];
+  const verdicts: Verdict[] = new Array(findings.length);
 
-  const survivors: PromotableCandidate[] = verdicts
-    .filter(v => v.file)
+  for (const { finding, index } of walkOrder(findings)) {
+    const verdict = arbitrate(finding, { ...options, existing: seen });
+    verdicts[index] = verdict;
+    // Only something that will actually be posted or filed occupies the
+    // space. A dropped finding leaves no artefact for a later one to
+    // duplicate, so it must not shadow one.
+    if (verdict.disposition !== "DROP") seen.push(finding);
+  }
+
+  const bySeverity = (a: Verdict, b: Verdict) =>
+    SEVERITY_RANK[a.severity ?? "Important"] - SEVERITY_RANK[b.severity ?? "Important"];
+  const toComment = verdicts.filter(v => v.disposition === "COMMENT").sort(bySeverity).map(v => v.id);
+
+  const declared: PromotableCandidate[] = verdicts
+    .filter(v => v.disposition === "ISSUE")
     .map(v => ({
       rule: findings.find(f => f.id === v.id)!.title,
       source: `finding:${v.id}`,
@@ -530,7 +757,7 @@ export function arbitrateBatch(
   // The arbiter's own reading is an upstream, so a batch in which nothing
   // could be evaluated does not report a measured zero.
   const unmeasured = verdicts.filter(v => v.refusal === "UNMEASURED");
-  const promotion = promoteCandidates(survivors, {
+  const promotion = promoteCandidates(declared, {
     budget: options.budget ?? FILING_BUDGET_FINDINGS,
     upstream: {
       reading: unmeasured.length > 0 ? "UNMEASURED" : "MEASURED",
@@ -538,9 +765,20 @@ export function arbitrateBatch(
     },
   });
 
+  // `promoteCandidates` returns a POPULATED `promoted` under an UNMEASURED
+  // reading — only its `budget < 1` branch empties it. So the discriminator
+  // has to be consulted here or it is computed and then ignored, and this
+  // function's own header would be claiming that a batch which could not be
+  // evaluated "does not report a measured zero" while it reported a measured
+  // LIST. Gated here rather than in `promoteCandidates`, which has other
+  // callers whose semantics are not ours to change.
   return {
     verdicts,
+    toComment,
     promotion,
-    toFile: promotion.promoted.map(c => c.source.replace(/^finding:/, "")),
+    toFile:
+      promotion.reading === "MEASURED"
+        ? promotion.promoted.map(c => c.source.replace(/^finding:/, ""))
+        : [],
   };
 }
