@@ -482,11 +482,27 @@ export interface WorktreeReport {
  * check" — it is a row claiming files with no checkable origin, and omitting
  * one field would skip the guard entirely. Callers that are about to act on
  * the rows pass `true`; callers merely surveying them do not.
+ *
+ * `allowPath` is the DESTINATION question asked at the same boundary (#1098).
+ * Identity answers "which repository is this a worktree of", read off the
+ * remote; it says nothing about whether the directory is one this run may act
+ * in. In `workflows/ship.js` those were two checks ~350 lines apart, and the
+ * second ran after two agents had already been told to validate and to fix
+ * inside the path. Asked here, every reported path is vetted once, before
+ * anything is interpolated into a prompt.
+ *
+ * It is asked where identity had nothing to say, not instead of it: a row in
+ * the wrong repository keeps #218's own refusal, which names the repository.
+ *
+ * The predicate is INJECTED, not referenced: ship.js's allowlist is declared
+ * in a different marked block and the identity block is sliced out and
+ * executed on its own. Absent, nothing is allowlisted — a caller merely
+ * surveying rows has no destination to vet.
  */
 export function worktreeIdentityViolations(
   reports: readonly WorktreeReport[] | null | undefined,
   expectedRepo: string | null | undefined,
-  opts: { requirePath?: boolean } = {},
+  opts: { requirePath?: boolean; allowPath?: (path: string) => unknown } = {},
 ): string[] {
   if (!Array.isArray(reports)) return [];
   const out: string[] = [];
@@ -494,7 +510,21 @@ export function worktreeIdentityViolations(
     const path = r && typeof r.worktreePath === "string" ? r.worktreePath.trim() : "";
     if (!path && !opts.requirePath) continue;
     const got = worktreeIdentity(path, expectedRepo, r?.worktreeRepo);
-    if (got.refusal) out.push(got.refusal);
+    if (got.refusal) {
+      out.push(got.refusal);
+      continue;
+    }
+    // AFTER the identity reading, and only where identity had nothing to
+    // say. A row that is a worktree of the wrong repository keeps #218's own
+    // refusal, which names the repository. What this adds is the case
+    // identity CANNOT see: a checkout of the RIGHT repository sitting in a
+    // directory this run does not own, which reads as a match.
+    if (path && typeof opts.allowPath === "function" && !opts.allowPath(path)) {
+      out.push(
+        `${path} is not this run's project root nor one of its agent worktrees, ` +
+          `so it is not a directory this run may act in (#1098)`,
+      );
+    }
   }
   return out;
 }

@@ -49,6 +49,22 @@ const STATUS_START = "// ──── PROVE-STATUS-START ────";
 const STATUS_END = "// ──── PROVE-STATUS-END ────";
 const READY_START = "// ──── PR-READINESS-START ────";
 const READY_END = "// ──── PR-READINESS-END ────";
+const PROBE_START = "// ──── WORKFLOW-PROBE-START ────";
+const PROBE_END = "// ──── WORKFLOW-PROBE-END ────";
+
+/**
+ * The shell the two prompts interpolate (#1098). Both call
+ * `workflowProbeCommand`, so the text an agent runs is produced here and not
+ * written out at either site — and a claim about that text has to be made
+ * where it is produced.
+ */
+function workflowProbeBlock(source: string = shipSource): string {
+  const cut = sliceBlock(source, PROBE_START, PROBE_END);
+  if (!cut.includes("function workflowProbeCommand(")) {
+    throw new Error("could not read the probe block: it no longer declares the builder");
+  }
+  return cut;
+}
 
 /**
  * Module scope on purpose: a missing marker throws while this file is loading,
@@ -338,7 +354,13 @@ describe("#46: CI's verdict decides whether the PR stops being a draft", () => {
     // Without this the gate would leave every PR a draft forever for any
     // consumer who has no GitHub Actions — which is how a correct check gets
     // switched off within a week.
-    const r = readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", workflowCount: 0, reason: "no check has been recorded" });
+    // `workflowProbe: "OK"` since #1098: the count alone is not the reading.
+    // #1101 made the SHELL refuse a `commitDir` it could not read, which the
+    // undraft block below is bound by — but this function reads an agent's
+    // JSON, so a reply of `{workflowCount: 0}` after a refused probe took the
+    // exemption anyway. The exemption is now keyed on the pair.
+    // `test/ci-workflow-probe.test.ts` drives the probe itself.
+    const r = readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", workflowCount: 0, workflowProbe: "OK", reason: "no check has been recorded" });
     expect(r.action).toBe("MARK_READY");
 
     // And the exemption is keyed on a COUNT the shell produced, not on the
@@ -348,9 +370,13 @@ describe("#46: CI's verdict decides whether the PR stops being a draft", () => {
     expect(readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", reason: "x" }).action).toBe("LEAVE_DRAFT");
     expect(readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", workflowCount: null }).action).toBe("LEAVE_DRAFT");
 
+    // A count of zero with no probe reading beside it is the third of those
+    // facts: the count could not be taken. Same refusal (#1098).
+    expect(readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", workflowCount: 0 }).action).toBe("LEAVE_DRAFT");
+
     // A count of zero does not rescue a status that was never earned, either
     // — the two conditions are independent and CI is checked last.
-    expect(readiness("SHIP_PASSED_SUITE_FAILED", OPENED, { verdict: "UNMEASURED", workflowCount: 0 }).action).toBe("LEAVE_DRAFT");
+    expect(readiness("SHIP_PASSED_SUITE_FAILED", OPENED, { verdict: "UNMEASURED", workflowCount: 0, workflowProbe: "OK" }).action).toBe("LEAVE_DRAFT");
   });
 
   test("SC-1775: removing the CI condition undrafts a run CI called red", () => {
@@ -421,17 +447,21 @@ describe("#46: the undraft cannot happen without a live CI pass", () => {
     // Both name their directory on the command since #1056 — the block no
     // longer reaches `${commitDir}` by moving the session into it.
     expect(undraft).toContain("sha=$(git -C ${shellQuote(commitDir)} rev-parse HEAD)");
-    expect(undraft).toMatch(
-      /workflows=\$\(find \$\{shellQuote\(commitDir\)\}\/\.github\/workflows[^\n]*wc -l/,
-    );
+    // The count still comes from the shell — through `workflowProbeCommand`
+    // since #1098, which is the one binding that produces it and so the one
+    // thing to mutate. The spelling moved; the property did not.
+    expect(undraft).toContain("${workflowProbeCommand(shellQuote(commitDir))}");
+    expect(undraft).toContain('[ "$workflows" -eq 0 ]');
     expect(undraft).toContain('--sha "$sha"');
 
     // …and a count of 0 is a READING, not the shape a broken probe also
     // produces. `ls <dir>/*.yml <dir>/*.yaml` returned 0 under zsh for a
     // repository holding `ci.yml`, because an unmatched second glob aborts
     // the command — and 0 is the branch that undrafts WITHOUT reading CI.
+    // The token is now emitted by the probe builder rather than inline, so
+    // the claim is asserted where the shell text is produced.
     expect(
-      undraft,
+      workflowProbeBlock(),
       "the probe no longer distinguishes 'no CI configured' from 'could not look', " +
         "and the two reach the same undraft-without-checking branch",
     ).toContain("WORKFLOW_PROBE_FAILED");

@@ -597,7 +597,7 @@ function loadCollectBoundary(source = shipSource) {
   // control tests below would pass over a block that recorded nothing.
   const run = new Function(
     "implementResult", "REPO", "log", "terminalFailure",
-    "worktreeIdentityViolations", "redactRemote", "worktreeRecords",
+    "worktreeIdentityViolations", "redactRemote", "worktreeRecords", "collectDestination",
     `let runWorktrees = []\nreturn (async () => {\n${body}\nreturn { shipped: true, runWorktrees }\n})()`,
   );
   return {
@@ -611,9 +611,19 @@ function loadCollectBoundary(source = shipSource) {
         worktreeIdentityViolations,
         redactRemote,
         worktreeRecords,
+        // #1098 — the block now vets the DESTINATION as well as the identity,
+        // and the allowlist lives in a different marked block. ship.js's real
+        // one, pinned to the roots these fixtures are written against: `RIGHT`
+        // sits under this repository's worktrees and `WT` does not.
+        (d: unknown) => shipCollectDestination(d, "/Users/jhorn/Projects/rungate", "/Users/jhorn/Projects/rungate"),
       ) as Promise<Record<string, unknown>>,
   };
 }
+
+/** ship.js's real allowlist, for the boundary harness above. */
+const shipCollectDestination = new Function(
+  `${markedBlock("COLLECT-DESTINATION")}\nreturn collectDestination`,
+)() as (dir: unknown, projectRoot?: string, harnessRoot?: string) => string | null;
 
 describe("SC-1448: the run stops at the collection boundary, not after it", () => {
   test("the block is at module top level, so a wrapper cannot switch it off", () => {
@@ -680,6 +690,24 @@ describe("SC-1448: the run stops at the collection boundary, not after it", () =
     expect(got.status, "the run carried on past a worktree in another repository")
       .toBe("WORKTREE_REPO_MISMATCH");
     expect(String(got.reason)).toContain("asacommandcenter");
+    expect(logs.join("\n")).toContain("COLLECT REFUSED");
+  });
+
+  test("a worktree of the RIGHT repository in the wrong place ends the run (#1098)", async () => {
+    // The case identity cannot see, driven through the real block. A clone
+    // of this repository parked somewhere else reports a matching remote, so
+    // every identity reading says match — and the directory is still not one
+    // this run may stage from, which is the question `collectDestination`
+    // answers and the one that used to be asked ~350 lines later.
+    const { call, logs } = loadCollectBoundary();
+    const elsewhere = "/Users/jhorn/Projects/some-other-clone";
+    const got = await call(
+      [{ worktreePath: elsewhere, worktreeRepo: "git@github.com:hornjason/pai-harness.git" }],
+      RUN_REPO,
+    );
+    expect(got.status, "a directory this run does not own reached the collector")
+      .toBe("WORKTREE_REPO_MISMATCH");
+    expect(String(got.reason)).toContain("not a directory this run may act in");
     expect(logs.join("\n")).toContain("COLLECT REFUSED");
   });
 
