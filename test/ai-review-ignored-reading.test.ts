@@ -1428,7 +1428,12 @@ describe("AC-13 (#1071 follow-up): a filesystem-derived name cannot forge a reco
       "the entry produced no line at all, so a reviewer hides a write by putting a newline " +
         "in its name — which is the blindness this reader exists to close",
     ).toBeDefined();
-    expect(line, "the redacted record is not a single whole line").toBe("unquotable .claude-pr/p");
+    // #1099 truncated here and #1104 escapes instead, so the expected bytes
+    // moved. The PROPERTY did not: one whole line, token `unquotable`, and the
+    // newline rendered rather than acted on.
+    expect(line, "the redacted record is not a single whole line").toBe(
+      "unquotable $'.claude-pr/p\\nabsent .ripgreprc'",
+    );
   });
 
   test("end to end: REFUSED, and the forged path is in no annotation", () => {
@@ -1452,15 +1457,21 @@ describe("AC-13 (#1071 follow-up): a filesystem-derived name cannot forge a reco
       drift.code,
       `the reviewer's write inside the scratch was waved through:\n${drift.stdout}\n${drift.stderr}`,
     ).not.toBe(0);
+    // A LINE equal to the forged record, not a substring. Since #1104 the
+    // escaped name legitimately CONTAINS that text — `$'.claude-pr/p\nabsent
+    // .ripgreprc'` — rendered inside one record rather than acted on as a
+    // record of its own. A substring check here would red on the fix and
+    // would have been asserting the wrong property all along.
+    const isForged = (s: string) => s.split("\n").some(l => l.trim() === FORGED);
     expect(
-      drift.stdout,
+      isForged(drift.stdout),
       "the reviewer's filename was attributed to the review action's second restore (#989) — " +
         "a false attribution the reviewer authored by choosing a name",
-    ).not.toContain(FORGED);
+    ).toBe(false);
     expect(
-      drift.stderr,
+      isForged(drift.stderr),
       "the reviewer's filename reaches the refusal as a forged record rather than as a path",
-    ).not.toContain(FORGED);
+    ).toBe(false);
     expect(drift.stderr, "the refusal does not name the entry").toContain(".claude-pr/p");
   });
 
@@ -1483,25 +1494,236 @@ describe("AC-13 (#1071 follow-up): a filesystem-derived name cannot forge a reco
     // the whole reader and reddened on the prose in the comment explaining the
     // guard — searching the document instead of the slice, which is the trap
     // `.claude/rules/checks-must-be-able-to-fail.md` names.
+    //
+    // TWO assignments since #1104, and the count alone stopped being the
+    // property: the token is set by two ARMS of one `case`, which is still one
+    // decider. So the claim is now where they are, not how many — both inside
+    // the classifier's own `case`, and none in the walk or the renderer.
+    const caseBlock = reader.slice(reader.indexOf('case "${p}" in'), reader.indexOf("esac"));
+    expect(caseBlock, "the classifier's case block was not located").toContain("h=unquotable");
+    expect(
+      reader.split("h=unquotable").length - 1,
+      "the number of places deciding `unquotable` moved; if that is deliberate, the claim " +
+        "below about all of them living in one `case` is what has to keep holding",
+    ).toBe(2);
+    expect(
+      caseBlock.split("h=unquotable").length - 1,
+      "an `unquotable` decision lives OUTSIDE the classifier's `case`, so two places decide " +
+        "it and they can be changed apart",
+    ).toBe(2);
+  });
+
+  test("the control: a git-derived path's record is BYTE-IDENTICAL to git's own shape", () => {
+    // This case was weaker than its comment claimed when #1099 wrote it, and
+    // #1104 found out why. It asserted the reading `toContain` the raw path
+    // and called that "the redaction is the identity". It passed — but not
+    // for the stated reason. **git C-quotes a porcelain path carrying a
+    // space**, measured on git 2.50.1:
+    //
+    //     ?? "ordinary name with spaces.md"
+    //
+    // so the raw substring was sitting INSIDE the quoted form and the
+    // assertion could not have told an escaped path from an untouched one.
+    // It is pinned to the whole line now, which is what makes it a control:
+    // the escape added by #1104 must not reach a path git already quoted, or
+    // every spaced filename in every consumer repository changes shape.
+    const f = checkout();
+    f.write("sub/dir/ordinary name with spaces.md", "x\n");
+    const line = readTree(f, "hardened")
+      .stdout.split("\n")
+      .find(l => l.includes("ordinary name with spaces"));
+    expect(line, "the spaced path is not in the reading at all").toBeDefined();
+    expect(
+      line,
+      "a path git had already quoted was escaped AGAIN, so the record for every spaced " +
+        "filename in every consumer repository just changed shape to buy nothing",
+    ).toBe('unquotable "sub/dir/ordinary name with spaces.md"');
+  });
+});
+
+// ── AC-14: the redacted record names the entry it is about (#1104) ────────
+
+/**
+ * #1099 made the record single-line by TRUNCATING the path at its first
+ * newline. That closed the forgery and left a reading a human cannot act on.
+ *
+ * ## Measured on `origin/main` at `6bb6038a`, #1099's own merge commit
+ *
+ * The reviewer creates a genuine `x` and an `x<newline>y` beside it:
+ *
+ * ```
+ * 6fc771e41b50ca95d537b571b73bfe5b368fe291 .claude-pr/x
+ * unquotable .claude-pr/x
+ * ```
+ *
+ * Two records, one path name. Fail-safe — both stay in `added` and both
+ * refuse — and only one of the two lines is about a file at that path.
+ *
+ * ## Why escaping and not full redaction
+ *
+ * Dropping the path (`unquotable` alone, or a fixed placeholder) removes the
+ * collision and costs more than it saves: two distinct plants would collapse
+ * to byte-identical lines, `grep -F -x -v` would fold them into one, and the
+ * refusal would name neither. `%q` is injective and single-line, so the name
+ * survives in full and two entries can never collide.
+ *
+ * ## The coupling this must not break, and it is not the obvious one
+ *
+ * `%q` is the IDENTITY for a path with no shell-special characters, which is
+ * why an unconditional version looks green. The drift step does
+ * `p="${line#* }"` and hands the result to `git cat-file -e <base>:<path>`
+ * (#989), so an escaped ordinary path stops resolving on the base and stops
+ * being acquitted. The characters that expose it are the ones git does NOT
+ * quote but `%q` DOES — `$`, `*`, `?`, `&`, `;`, `'` — not the space, which
+ * git quotes itself. AC-14/#989 is built on `$` for that reason.
+ *
+ * ## The measured battery
+ *
+ * Run over this file alone. The source was restored from a `cp` backup after
+ * every row and confirmed byte-identical by sha256. **The baseline row was
+ * read before any mutation row**, and every count was predicted before the
+ * battery ran — the `Predicted` column is that prediction, kept rather than
+ * quietly corrected.
+ *
+ * | Row | Mutation | Predicted | Measured | Which assertions |
+ * |---|---|---|---|---|
+ * | **baseline** | unmutated | 46 pass, 0 fail | **46 pass, 0 fail** | — |
+ * | **U1** | `%q` applied UNCONDITIONALLY | 2 | **3 of 46** | AC-13/control, **AC-14/#989**, + AC-14/renderer |
+ * | **U2** | the escape removed — the pre-#1099 forging state | 5 | **5 of 46** | AC-13/one-line, AC-13/REDACTED, AC-14/collision, AC-14/whole-name, + AC-14/renderer |
+ * | **U3** | truncation instead of escape — the #1099 shipped state | 3 | **4 of 46** | AC-13/REDACTED, AC-14/collision, AC-14/whole-name, + AC-14/renderer |
+ * | **U4** | the two `case` arms merged back into one | 2 | **3 of 46** | AC-13/ONE-decider, AC-13/control, + AC-14/renderer |
+ *
+ * **U1 is the row that matters**, and it answers a question asked before it
+ * ran: *does anything here actually exercise #989's path resolution, or would
+ * an unconditional escape red zero cases?* It reds `AC-14/#989`. The coupling
+ * is exercised and protected, not assumed.
+ *
+ * ### The rows that came back high, and the one member predicted wrong
+ *
+ * **AC-14/renderer is the extra in all four rows**, because it slices the
+ * renderer out of the reader and asserts its shape — any mutation of the
+ * renderer moves it. That makes it a vacuity guard rather than a behavioural
+ * witness, and it is recorded as one rather than counted as coverage.
+ *
+ * **U2 matched its count with a different membership, and that is the
+ * interesting miss.** `AC-13/end-to-end` was predicted to red and did not. It
+ * checks for a LINE equal to the forged record in the drift output; under U2
+ * the forged line reaches #989 and is named *inside* the twice-restored
+ * warning, so no output line equals it on its own. The case is therefore
+ * narrower than its name suggests — it catches a forged record that stands
+ * alone, not one quoted inside an annotation. Its witnesses are AC-13/one-line
+ * and the AC-14 pair; it is kept as the end-to-end exit-code control it
+ * genuinely is, with the limit written down rather than left to be found.
+ */
+describe("AC-14 (#1104): the escaped record is injective, and spares the paths git quoted", () => {
+  test("two entries whose names share a first line produce two DISTINCT records", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    mkdirSync(join(f.work, ".claude-pr"), { recursive: true });
+    writeFileSync(join(f.work, ".claude-pr", "x"), "genuine\n");
+    writeFileSync(join(f.work, ".claude-pr", "x\ny"), "the reviewer wrote this\n");
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    const lines = readTree(f, "hardened")
+      .stdout.split("\n")
+      .filter(l => l.includes(".claude-pr/"));
+    const paths = lines.map(l => l.slice(l.indexOf(" ") + 1));
+    expect(lines.length, `expected one record per entry, got:\n${lines.join("\n")}`).toBe(2);
+    expect(
+      new Set(paths).size,
+      `two entries produced records naming ONE path, so the refusal cannot say which file ` +
+        `it is about:\n${lines.join("\n")}`,
+    ).toBe(2);
+    // And the genuine entry is untouched: the escape is for the other one.
+    expect(lines.some(l => /^[0-9a-f]{40} \.claude-pr\/x$/.test(l)), "the genuine entry's record changed").toBe(
+      true,
+    );
+  });
+
+  test("the escaped record carries the WHOLE name, not a prefix of it", () => {
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    mkdirSync(join(f.work, ".claude-pr"), { recursive: true });
+    writeFileSync(join(f.work, ".claude-pr", "x\nabsent .ripgreprc"), "the reviewer wrote this\n");
+    appendFileSync(join(f.work, ".git", "info", "exclude"), `${ACTION_EXCLUDE_PATTERN}\n`);
+
+    const out = readTree(f, "hardened").stdout;
+    const lines = out.split("\n").filter(l => l.includes(".claude-pr/"));
+    expect(lines.length, `the entry produced ${lines.length} records:\n${out}`).toBe(1);
+    expect(
+      lines[0],
+      "the record does not carry the second half of the name, so the reader is told less " +
+        "than the reader of a truncated record was",
+    ).toContain("ripgreprc");
+    expect(
+      out.split("\n"),
+      "the name is back to forging a record of its own",
+    ).not.toContain("absent .ripgreprc");
+  });
+
+  test("#989 COUPLING: a `$` in a restored path still resolves on the base and is acquitted", () => {
+    // The case the unconditional version of this escape reds, and nothing
+    // else in this file can see. git does NOT quote `$` — it is printable
+    // ASCII — so such a path is reported RAW, is not `unquotable`, and
+    // reaches #989's `git cat-file -e <base>:<path>`. `%q` DOES escape it.
+    // Applied unconditionally, the path stops resolving on the base, the
+    // action's own restore stops being acquitted, and the reviewer is blamed
+    // for it. Exit code is the assertion, because the acquittal IS an exit 0.
+    // #989's actual shape: the base MOVED, so the action's second restore
+    // brings in bytes the baseline never saw. A first draft of this fixture
+    // deleted the file and restored identical bytes instead — the tree came
+    // back CLEAN, `added` was empty, and the case exited 0 while exercising
+    // nothing. It passed the exit-code half and was caught only by the
+    // assertion below that the path is actually named in #989's warning,
+    // which is why that assertion is here and not trimmed as redundant.
+    const f = checkout();
+    rmSync(join(f.work, PLANT));
+    f.write(".claude/has$dollar.md", "from the base\n");
+    f.git("add", "-A");
+    f.git("commit", "-qm", "base-commit");
+    f.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    f.write(".claude/has$dollar.md", "head version\n");
+    f.git("add", "-A");
+    f.git("commit", "-qm", "head-commit");
+
+    // Clean at baseline. At drift the path carries the BASE's bytes, so it
+    // differs from HEAD, enters `added`, and #989 must acquit it by resolving
+    // the path on the base — which is the resolution an escape would break.
+    const before = runBaseline(f, "hardened");
+    f.write(".claude/has$dollar.md", "from the base\n");
+
+    const drift = runDrift(f, "hardened", before, {
+      [AI_REVIEW_BASE_REMOTE_VAR]: "refs/remotes/origin/main",
+    });
+    expect(
+      drift.code,
+      "a restored path carrying a `$` no longer resolves on the base, so the review action's " +
+        `own restore is now blamed on the reviewer:\n${drift.stdout}\n${drift.stderr}`,
+    ).toBe(0);
+    expect(
+      drift.stdout,
+      "the path was not acquitted through #989's twice-restored branch, so this case is not " +
+        "exercising the coupling it claims to",
+    ).toContain("has$dollar.md");
+  });
+
+  test("the renderer reads the classifier's answer, it does not re-ask it", () => {
+    // One decider. The `case` decides whether a path can be printed as
+    // itself; the renderer keys off `${esc}`, which that `case` set. A
+    // renderer that tested `${p}` again would be a second decider for one
+    // question and the two could be changed apart (#1071's whole battery).
+    const reader = AI_REVIEW_TREE_READER;
+    const renderer = reader.slice(reader.lastIndexOf("if [ -n"), reader.indexOf("read_scratch() {"));
+    expect(renderer, "the renderer was not located, so the assertions below are vacuous").toContain(
+      "printf '%s %q",
+    );
+    expect(
+      renderer.includes('"${p}" in') || renderer.includes("$'\\n'"),
+      "the renderer inspects the PATH again instead of reading the classifier's answer",
+    ).toBe(false);
     expect(
       reader.split("h=unquotable").length - 1,
       "the reader decides `unquotable` in more than one place, so the two can disagree",
-    ).toBe(1);
-  });
-
-  test("the control: a git-derived path is untouched by the redaction", () => {
-    // The redaction is unconditional, so it runs over every path the reader
-    // reports. Git quotes a path carrying a newline, so for every git-derived
-    // path the expression must be the identity — if it is not, this change
-    // silently truncates ordinary filenames.
-    const f = checkout();
-    f.write("sub/dir/ordinary name with spaces.md", "x\n");
-    const out = readTree(f, "hardened").stdout;
-    expect(
-      out,
-      "an ordinary path came back truncated, so the redaction is not the identity on the " +
-        "source it was never meant to touch",
-    ).toContain("sub/dir/ordinary name with spaces.md");
-    expect(out, "the fixture's own plant went missing").toContain(PLANT);
+    ).toBe(2);
   });
 });

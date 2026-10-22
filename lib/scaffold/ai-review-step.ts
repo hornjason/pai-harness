@@ -4408,7 +4408,7 @@ export const AI_REVIEW_PRESENT_UNHASHABLE = "not-a-regular-file";
  */
 
 export const AI_REVIEW_TREE_READER = `classify_path() {
-  local p h
+  local p h esc
   p="\${1}"
   # ONE quoting decision, for every source that reaches this function.
   #
@@ -4436,17 +4436,23 @@ export const AI_REVIEW_TREE_READER = `classify_path() {
   # corrupts a field, while only a newline forges a RECORD. A case built
   # around a quoted filename goes green on the newline and witnesses nothing.
   #
-  # WHAT THIS ARM DOES AND DOES NOT DO, measured rather than claimed. It is
-  # the truncation below that closes the forgery — with this arm wrong and the
-  # truncation in place, the reading is still one line (battery row N1, 1 of
-  # 42). What the arm adds is an HONEST TOKEN: without it the line carries a
-  # content hash against a path name that is NOT the name on disk — only its
-  # first line — and \`unquotable\` is what routes the entry into
-  # the drift step's UNMEASURED annotation instead. Two jobs, both needed,
-  # and neither is the other's spare — N2 and N3 take them apart.
+  # TWO ARMS, ONE TOKEN (#1104). Both are \`unquotable\` and both raise
+  # UNMEASURED; they differ only in whether the name is already safe to print.
+  #
+  # git C-quotes a porcelain path carrying a space, a quote, a backslash or a
+  # control character — measured, git 2.50.1: \`"ordinary name with spaces.md"\`
+  # comes back WRAPPED. So a git-derived path is already single-line and
+  # already injective, and re-escaping it would change the record for every
+  # spaced filename in every consumer repository to buy nothing.
+  #
+  # A path from \`read_scratch\` was never seen by git and is wrapped by
+  # nothing. That is the one that needs escaping below, and \`esc\` is how the
+  # renderer knows which it is WITHOUT asking the question a second time.
   case "\${p}" in
-    '"'*|*$'\\n'*) h=unquotable ;;
+    '"'*) h=unquotable; esc= ;;
+    *$'\\n'*) h=unquotable; esc=1 ;;
     *)
+      esc=
       if [ -f "\${p}" ]; then
         # --no-filters, or the repository's own text/eol conversion is
         # applied before hashing and two DIFFERENT working-tree blobs
@@ -4470,21 +4476,38 @@ export const AI_REVIEW_TREE_READER = `classify_path() {
       fi
       ;;
   esac
-  # REDACTED to its first line, not dropped, and truncated unconditionally
-  # rather than inside the \`unquotable\` arm.
+  # ESCAPED, not truncated (#1104). The record must be one line, and it must
+  # name the entry it is about.
   #
-  # Unconditionally, because a branch here would be the second decider the
-  # \`case\` above exists to avoid, and because it costs nothing: git never
-  # hands this function a raw newline — it quotes such a path — so for every
-  # git-derived path this expression is the identity.
+  # The first repair truncated at the first newline. That made the record
+  # single-line and made the printed path NOT the path on disk, so a reviewer
+  # who writes both \`x\` and \`x<newline>y\` produced two records naming one
+  # path with two different tokens — fail-safe, both refuse, and a reading a
+  # human cannot act on. Full redaction is worse: two distinct plants collapse
+  # to byte-identical lines and the refusal names neither.
   #
-  # Not dropped, because an entry that produces NO line is an entry the
-  # reviewer suppresses by choosing a name, and that is the blindness #1071
-  # exists to close, re-entered through its own fix. One line, with a token
-  # fixed at \`unquotable\` by position: it cannot read \`absent\`, so #989
-  # cannot acquit it, and it stays in \`added\` and refuses. The UNMEASURED
-  # annotation names it, so the truncation is reported rather than silent.
-  printf '%s %s\\n' "\${h}" "\${p%%\$'\\n'*}"
+  # \`%q\` is injective and single-line, so the name survives in full and two
+  # entries can never collide. It is also the convention this reader already
+  # has for this condition — the docblock above describes a path git had to
+  # quote, and this is the same answer for a path git never saw.
+  #
+  # KEYED OFF \`\${esc}\`, NOT OFF \`\${p}\`. The \`case\` has already decided
+  # whether this path can be printed as itself; asking again here would be the
+  # second decider #1071 spent its whole battery avoiding, and the two could
+  # then be changed apart. This reads that answer.
+  #
+  # NOT UNCONDITIONAL, and this is the coupling to protect: \`%q\` escapes a
+  # SPACE, and the drift step does \`p="\${line#* }"\` and hands the result to
+  # \`git cat-file -e <base>:<path>\` (#989). An escaped ordinary path would
+  # stop resolving on the base, so every path with a space in it would stop
+  # being acquitted. \`%q\` is the identity for a path with no special
+  # characters, which is exactly why an unconditional version looks green and
+  # is not.
+  if [ -n "\${esc}" ]; then
+    printf '%s %q\\n' "\${h}" "\${p}"
+  else
+    printf '%s %s\\n' "\${h}" "\${p}"
+  fi
 }
 
 # The interior of the one exempted entry, one level deep (#1071). Split out of
