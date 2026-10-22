@@ -714,6 +714,8 @@ describe("#910 AC-5: both hooks are observed running, and a decline is not a sil
       // arm is about — it would go red on `declined-outside-repo`, which is
       // the anchor working rather than the evidence failing.
       execFileSync("git", ["-C", project, "init", "-q"], { stdio: "ignore" });
+      const track = () => execFileSync("git", ["-C", project, "add", "-A"], { stdio: "ignore" });
+      track();
       const env = { RUNGATE_WORK_DIR: dir };
       const write = (file: string) => ({
         tool_name: "Write",
@@ -733,6 +735,9 @@ describe("#910 AC-5: both hooks are observed running, and a decline is not a sil
 
       // In population, generator present: it ran.
       writeFileSync(join(project, "scripts", "update-project-state.ts"), "process.exit(0);\n");
+      // TRACKED: #1001's anchor refuses an untracked generator, so "present"
+      // now means present AND part of the project.
+      track();
       const synced = drive("ProjectStateSync.hook.ts", write(join(project, "project-state.json")), env);
       expect(synced.firings.map(f => f.outcome)).toEqual(["declined-no-generator", "synced"]);
 

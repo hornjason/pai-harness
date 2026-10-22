@@ -308,6 +308,10 @@ function runProjectStateSync(hookPath: string, makeDirName: (canary: string) => 
     join(projectRoot, "scripts", "update-project-state.ts"),
     `import { writeFileSync } from "fs";\nwriteFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(" "));\n`,
   );
+  // TRACKED, and AFTER the generator is written: since #1001's anchor an
+  // untracked generator is refused, so a fixture that only `git init`s
+  // stops before the spawn these arms measure.
+  execFileSync("git", ["-C", projectRoot, "add", "-A"], { stdio: "ignore" });
   const out = driveHook(hookPath, {
     tool_name: "Write",
     tool_input: { file_path: join(projectRoot, "project-state.json") },
