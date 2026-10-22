@@ -23,8 +23,21 @@ import {
   type GatePending,
   type WorkflowGateFailure,
   type EnforcementDecision,
+  type WorkflowScan,
 } from '../lib/gate-enforcement';
 import { readFileSync, existsSync } from 'fs';
+
+/**
+ * Narrow a scan to its measured variant. Deliberately a throwing assertion
+ * rather than a cast: `failure` exists only on that variant (#1155), and a
+ * test that wanted the failure also wanted the sweep to have been complete.
+ */
+function measured(scan: WorkflowScan): WorkflowGateFailure | null {
+  if (scan.reading !== 'MEASURED') {
+    throw new Error(`expected MEASURED, got UNMEASURED: ${scan.unmeasuredReasons.join('; ')}`);
+  }
+  return scan.failure;
+}
 
 function pendingFixture(over: Partial<GatePending> = {}): GatePending {
   return {
@@ -202,13 +215,13 @@ describe('gate-enforcement', () => {
 
   describe('findWorkflowGateFailure', () => {
     it('returns null when workDir does not exist', () => {
-      const result = findWorkflowGateFailure('/nonexistent/path').failure;
+      const result = measured(findWorkflowGateFailure('/nonexistent/path'));
       expect(result).toBeNull();
     });
 
     it('returns null when no workflow files exist', () => {
       mkdirSync(join(tempDir, 'some-slug'), { recursive: true });
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result).toBeNull();
     });
 
@@ -223,7 +236,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'test', detail: 'fail' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result).toBeNull();
     });
 
@@ -238,7 +251,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'ac-count', detail: 'no ACs defined' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result).not.toBeNull();
       expect(result!.gate).toBe('scope');
       expect(result!.issue).toBe(42);
@@ -260,7 +273,7 @@ describe('gate-enforcement', () => {
           { type: 'OUTCOME', verdict: 'FAIL' },
         ],
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result).not.toBeNull();
       expect(result!.hasOutcomeAcFailure).toBe(true);
     });
@@ -279,7 +292,7 @@ describe('gate-enforcement', () => {
           { type: 'OUTCOME', verdict: 'PASS' },
         ],
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result).not.toBeNull();
       expect(result!.hasOutcomeAcFailure).toBe(false);
     });
@@ -295,7 +308,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'x', detail: 'y' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result!.slug).toBe('custom-slug');
     });
 
@@ -309,7 +322,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'x', detail: 'y' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result!.slug).toBe('fallback-dir');
     });
 
@@ -329,7 +342,7 @@ describe('gate-enforcement', () => {
           },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result!.failures[0].check).toBe('alt-id');
       expect(result!.failures[0].detail).toBe('alt-msg');
     });
@@ -344,7 +357,7 @@ describe('gate-enforcement', () => {
           scope: { result: 'FAIL', failures: [{ check: 'nested', detail: 'found' }] },
         },
       }));
-      const result = findWorkflowGateFailure(tempDir).failure;
+      const result = measured(findWorkflowGateFailure(tempDir));
       expect(result).not.toBeNull();
       expect(result!.issue).toBe(361);
     });
@@ -536,20 +549,20 @@ describe('#1155 findWorkflowGateFailure: UNMEASURED refuses, it does not pass', 
   it('control: an absent work directory is MEASURED and reports no failure', () => {
     const scan = findWorkflowGateFailure(join(base, 'never-created'));
     expect(scan.reading).toBe('MEASURED');
-    expect(scan.failure).toBeNull();
+    expect(measured(scan)).toBeNull();
     expect(scan.unmeasuredReasons).toEqual([]);
   });
 
   it('control: an empty work directory is MEASURED and reports no failure', () => {
     expect(findWorkflowGateFailure(base).reading).toBe('MEASURED');
-    expect(findWorkflowGateFailure(base).failure).toBeNull();
+    expect(measured(findWorkflowGateFailure(base))).toBeNull();
   });
 
   it('control: a clean state is MEASURED and reports no failure', () => {
     state('clean', CLEAN);
     const scan = findWorkflowGateFailure(base);
     expect(scan.reading).toBe('MEASURED');
-    expect(scan.failure).toBeNull();
+    expect(measured(scan)).toBeNull();
     expect(scan.unmeasuredReasons).toEqual([]);
   });
 
@@ -560,15 +573,15 @@ describe('#1155 findWorkflowGateFailure: UNMEASURED refuses, it does not pass', 
     }));
     const scan = findWorkflowGateFailure(base);
     expect(scan.reading).toBe('MEASURED');
-    expect(scan.failure).toBeNull();
+    expect(measured(scan)).toBeNull();
   });
 
   it('control: a real gate FAIL is still MEASURED and still reported', () => {
     state('real', FAILING);
     const scan = findWorkflowGateFailure(base);
     expect(scan.reading).toBe('MEASURED');
-    expect(scan.failure?.gate).toBe('scope');
-    expect(scan.failure?.issue).toBe(42);
+    expect(measured(scan)?.gate).toBe('scope');
+    expect(measured(scan)?.issue).toBe(42);
   });
 
   // ── witnesses: the catch in checkWorkflowFile ──────────────────────────
@@ -581,7 +594,7 @@ describe('#1155 findWorkflowGateFailure: UNMEASURED refuses, it does not pass', 
     state('corrupt', '{');
     const scan = findWorkflowGateFailure(base);
     expect(scan.reading).toBe('UNMEASURED');
-    expect(scan.failure).toBeNull();
+    expect(scan.reading === 'UNMEASURED' && scan.failureFromPartialScan).toBeNull();
     expect(scan.unmeasuredReasons.join('\n')).toContain('corrupt');
   });
 
@@ -626,7 +639,7 @@ describe('#1155 findWorkflowGateFailure: UNMEASURED refuses, it does not pass', 
     writeFileSync(notADir, 'x');
     const scan = findWorkflowGateFailure(notADir);
     expect(scan.reading).toBe('UNMEASURED');
-    expect(scan.failure).toBeNull();
+    expect(scan.reading === 'UNMEASURED' && scan.failureFromPartialScan).toBeNull();
   });
 
   // ── a refusal does not discard the readable run ────────────────────────
@@ -635,8 +648,8 @@ describe('#1155 findWorkflowGateFailure: UNMEASURED refuses, it does not pass', 
     state('aaa-corrupt', '{');
     state('zzz-real', FAILING);
     const scan = findWorkflowGateFailure(base);
-    expect(scan.failure?.issue).toBe(42);
     expect(scan.reading).toBe('UNMEASURED');
+    expect(scan.reading === 'UNMEASURED' && scan.failureFromPartialScan?.issue).toBe(42);
   });
 
   // The same two files the other way round. Both orderings must agree, or
@@ -645,8 +658,8 @@ describe('#1155 findWorkflowGateFailure: UNMEASURED refuses, it does not pass', 
     state('aaa-real', FAILING);
     state('zzz-corrupt', '{');
     const scan = findWorkflowGateFailure(base);
-    expect(scan.failure?.issue).toBe(42);
     expect(scan.reading).toBe('UNMEASURED');
+    expect(scan.reading === 'UNMEASURED' && scan.failureFromPartialScan?.issue).toBe(42);
     expect(scan.unmeasuredReasons.join('\n')).toContain('zzz-corrupt');
   });
 });
@@ -720,5 +733,177 @@ describe('#1155 runGateEnforcement: the refusal, and the repair path it leaves o
     const r = run('Bash');
     expect(r.action).toBe('pass');
     expect(existsSync(pendingFile)).toBe(false);
+  });
+});
+
+// ── #1155 round 2: the fail-open had routes the catch was not on ──────────
+//
+// A security review on the live branch found three more, and measurement
+// found a fourth. All of them reach the SAME wrong answer as the original
+// catch — "no gate failure" — by walking past a malformed value instead of
+// throwing on it. Live-data control for every refusal below: 164 state files
+// under the real work store, of which issue=number 164/164, acs=array
+// 164/164, slug=string 164/164, and 95 of 95 FAIL gates carry `failures` as a
+// non-empty array. So none of these refusals can fire on a sanctioned state.
+
+describe('#1155 a malformed value is UNMEASURED, not "no gate failure"', () => {
+  let base: string;
+  beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'gate-enf-shape-')); });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  function scan(body: Record<string, unknown>) {
+    mkdirSync(join(base, 's'), { recursive: true });
+    writeFileSync(join(base, 's', 'workflow-state.json'), JSON.stringify(body));
+    return findWorkflowGateFailure(base);
+  }
+  const FAILS = [{ check: 'c', detail: 'd' }];
+  const okGates = { scope: { result: 'FAIL', failures: FAILS } };
+
+  // ── gates, and the records under it ──────────────────────────────────
+
+  it.each([
+    ['a string', 'x'],
+    ['an array', []],
+    ['a number', 7],
+  ])('witness: gates present as %s is UNMEASURED', (_l, gates) => {
+    const s = scan({ phase: 'BUILD', issue: 1, acs: [], gates });
+    expect(s.reading).toBe('UNMEASURED');
+    expect(s.unmeasuredReasons.join('\n')).toContain('gates');
+  });
+
+  it('witness: a gate record that is not an object is UNMEASURED', () => {
+    expect(scan({ phase: 'BUILD', issue: 1, acs: [], gates: { scope: 'FAIL' } }).reading)
+      .toBe('UNMEASURED');
+  });
+
+  // The sharpest one, and not in the review: `result: "FAIL"` is unambiguous,
+  // and the old code DROPPED it because the failures list was the wrong type.
+  it('witness: a FAIL whose failures list is not an array is UNMEASURED', () => {
+    const s = scan({ phase: 'BUILD', issue: 1, acs: [], gates: { scope: { result: 'FAIL', failures: 'oops' } } });
+    expect(s.reading).toBe('UNMEASURED');
+    expect(s.unmeasuredReasons.join('\n')).toContain('failures');
+  });
+
+  it('witness: acs present as a non-array is UNMEASURED', () => {
+    // Not cosmetic: acs feeds hasOutcomeAcFailure, and an OUTCOME AC failure
+    // is the difference between an immediate block and a 3-strike nag.
+    const s = scan({ phase: 'BUILD', issue: 1, acs: 'nope', gates: okGates });
+    expect(s.reading).toBe('UNMEASURED');
+  });
+
+  // ── issue and slug: the strike counter's key ──────────────────────────
+
+  it.each([
+    ['a string', '42'],
+    ['null', null],
+    ['an object', {}],
+  ])('witness: issue present as %s is UNMEASURED', (_l, issue) => {
+    expect(scan({ phase: 'BUILD', issue, acs: [], gates: okGates }).reading).toBe('UNMEASURED');
+  });
+
+  it('witness: a state with no issue at all is UNMEASURED', () => {
+    expect(scan({ phase: 'BUILD', acs: [], gates: okGates }).reading).toBe('UNMEASURED');
+  });
+
+  it('witness: slug present as a non-string is UNMEASURED', () => {
+    expect(scan({ phase: 'BUILD', issue: 1, slug: 42, acs: [], gates: okGates }).reading)
+      .toBe('UNMEASURED');
+  });
+
+  // Why a non-number issue is not a cosmetic complaint. Measured: the strike
+  // counter is keyed on `issue` with `===`, so a string issue reads 0 strikes
+  // forever, never reaches max_strikes, and the agent is never blocked.
+  it('witness: a string issue silently defeats strike escalation', () => {
+    const pf = join(base, 'pending.json');
+    writeFileSync(pf, JSON.stringify({ issue: 42, gate: 'scope', strike_count: 2 }));
+    expect(loadStrikeCount(pf, 42, 'scope')).toBe(2);
+    expect(loadStrikeCount(pf, '42' as unknown as number, 'scope')).toBe(0);
+  });
+
+  // ── controls: the schema-legal shapes must still read clean ──────────
+
+  it('control: a state with no gates key at all is MEASURED', () => {
+    const s = scan({ phase: 'BUILD', issue: 1, acs: [] });
+    expect(s.reading).toBe('MEASURED');
+  });
+
+  it('control: no acs key is MEASURED — acs is absent, not malformed', () => {
+    expect(scan({ phase: 'BUILD', issue: 1, gates: okGates }).reading).toBe('MEASURED');
+  });
+
+  it('control: no slug key is MEASURED and still falls back to the dir name', () => {
+    const s = scan({ phase: 'BUILD', issue: 1, acs: [], gates: okGates });
+    expect(s.reading).toBe('MEASURED');
+    expect(s.reading === 'MEASURED' && s.failure?.slug).toBe('s');
+  });
+
+  // `failures` is `z.array(z.any()).optional()`, so ABSENT is schema-legal
+  // and must not refuse — only a present-but-wrong-typed one does. 0 of 95
+  // live FAIL gates omit it, so this arm is for the schema, not for a case
+  // anyone has hit.
+  it('control: a FAIL with no failures key is schema-legal and does not refuse', () => {
+    expect(scan({ phase: 'BUILD', issue: 1, acs: [], gates: { scope: { result: 'FAIL' } } }).reading)
+      .toBe('MEASURED');
+  });
+
+  it('control: a fully well-formed failing state is MEASURED and reported', () => {
+    const s = scan({ phase: 'BUILD', issue: 1, slug: 'x', acs: [], gates: okGates });
+    expect(s.reading).toBe('MEASURED');
+    expect(s.reading === 'MEASURED' && s.failure?.issue).toBe(1);
+  });
+});
+
+describe('#1155 an incomplete sweep is never reported as complete', () => {
+  let base: string, workDir: string, pendingFile: string;
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'gate-enf-partial-'));
+    workDir = join(base, 'work');
+    pendingFile = join(base, 'pending.json');
+    mkdirSync(join(workDir, 'aaa-real'), { recursive: true });
+    writeFileSync(join(workDir, 'aaa-real', 'workflow-state.json'), JSON.stringify({
+      phase: 'BUILD', issue: 42, slug: 'aaa-real', acs: [],
+      gates: { scope: { result: 'FAIL', failures: [{ check: 'ac', detail: 'none' }] } },
+    }));
+    mkdirSync(join(workDir, 'zzz-corrupt'), { recursive: true });
+    writeFileSync(join(workDir, 'zzz-corrupt', 'workflow-state.json'), '{');
+  });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  function run(toolName: string) {
+    return runGateEnforcement({
+      workDir, signalsDir: join(base, 'sig'), signalsFile: join(base, 'sig', 's.jsonl'),
+      pendingFile, projectRoot: join(base, 'root'), sessionId: 's', toolName,
+    });
+  }
+
+  // The union does the work the comment could not: on UNMEASURED there is no
+  // `failure` key to read past the reading, so the hazard is structural
+  // rather than a warning sitting next to the number.
+  it('witness: a readable failure does NOT make the scan report MEASURED', () => {
+    const s = findWorkflowGateFailure(workDir);
+    expect(s.reading).toBe('UNMEASURED');
+    expect((s as Record<string, unknown>).failure).toBeUndefined();
+    expect(s.reading === 'UNMEASURED' && s.failureFromPartialScan?.issue).toBe(42);
+  });
+
+  it('witness: a Skill call is blocked even though a failure was readable', () => {
+    const r = run('Skill');
+    expect(r.action).toBe('block');
+    const reason = JSON.parse(r.stdout!).reason as string;
+    expect(reason).toContain('UNMEASURED');
+    // and it still tells the agent about the failure it COULD read
+    expect(reason).toContain('42');
+  });
+
+  it('control: Bash stays open in the partial-scan case too', () => {
+    expect(run('Bash').action).not.toBe('block');
+  });
+
+  it('control: with the corrupt state removed, the real FAIL reports normally', () => {
+    rmSync(join(workDir, 'zzz-corrupt'), { recursive: true, force: true });
+    const s = findWorkflowGateFailure(workDir);
+    expect(s.reading).toBe('MEASURED');
+    expect(s.reading === 'MEASURED' && s.failure?.issue).toBe(42);
+    expect(run('Skill').action).toBe('nag');
   });
 });

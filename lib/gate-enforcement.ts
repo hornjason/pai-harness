@@ -68,6 +68,39 @@
  * the one the issue was filed about: `runGateEnforcement` deletes
  * `gate-pending.json` when it sees no failure, so a corrupt state file also
  * **erased the strike counter**. An unmeasured reading now leaves it alone.
+ *
+ * ## The catch was one route to the wrong answer, not the only one
+ *
+ * A review of the first fix found three more, and measuring them found a
+ * fourth. None of them throws: each walks past a malformed value and arrives
+ * at the same "no gate failure" the catch produced. All now refuse.
+ *
+ * | Shape | Why it is not cosmetic |
+ * |---|---|
+ * | `gates` present and not an object | reads as a state with no gates |
+ * | a record under a gate name not an object | reads as that gate not failing |
+ * | `result: "FAIL"` with non-array `failures` | drops an explicit FAIL |
+ * | `acs` present and not an array | `hasOutcomeAcFailure` false, so an immediate block degrades to a 3-strike nag |
+ * | `issue` absent or not a number | `loadStrikeCount` compares with `===`, so strikes read 0 forever and max_strikes is never reached — escalation silently off |
+ *
+ * `failures` ABSENT stays legal, because the schema has it optional; only a
+ * present-but-wrong-typed one refuses.
+ *
+ * ## Why refusing is safe here, which the issue asked to be shown and not assumed
+ *
+ * The issue's open question was transient corruption — a half-written state
+ * during a concurrent gate run turning into a block. It cannot happen:
+ * `writeState` in `gates/orchestrator.ts` writes a `.tmp`, RE-PARSES it to
+ * prove it is valid JSON, and only then `renameSync`s over the real path.
+ * rename(2) is atomic, so a concurrent reader sees the whole old file or the
+ * whole new one, never a prefix of either. An unparseable state on disk is
+ * therefore durable corruption from something other than the writer — which
+ * is exactly the case that must refuse.
+ *
+ * Measured against the live work store on 2026-10-22 as a control on
+ * over-refusal: 164 state files, `issue` a number in 164, `acs` an array in
+ * 164, `slug` a string in 164, and `failures` a non-empty array in all 95
+ * FAIL gates. This module reads that store as MEASURED with zero reasons.
  */
 
 import {
@@ -132,13 +165,38 @@ export function formatFailures(failures: GateFailure[]): string {
  */
 export type WorkflowReading = 'MEASURED' | 'UNMEASURED';
 
-export interface WorkflowScan {
-  reading: WorkflowReading;
-  /** The first blocking gate FAIL found, in scope > verify > ship priority. */
-  failure: WorkflowGateFailure | null;
-  /** One line per unreadable path. Non-empty exactly when UNMEASURED. */
-  unmeasuredReasons: string[];
-}
+/**
+ * A union rather than a record, so **`failure` exists only on the measured
+ * variant** — the shape `lib/intake-sources.ts` uses for the same hazard over
+ * these same files, and for the same stated reason: "a warning beside a
+ * number is read after the number, if at all."
+ *
+ * The hazard is not hypothetical here, it was live in this module's first
+ * draft: `runGateEnforcement` read `scan.failure` and consulted `reading`
+ * only when that was null, so a sweep that failed to parse one state and
+ * found a failure in another reported a COMPLETE result. `intake-sources`
+ * declines to convert `FailureIntakeReading` to a union on the grounds that
+ * its hazard is latent and the type is shipped; both halves of that argument
+ * point the other way for this type, which is new in #1155 and whose first
+ * consumer had already fallen into the trap.
+ *
+ * The partial result stays reachable — withholding it would make a partial
+ * scan and a clean one look alike — but under a name nobody reaches for by
+ * accident, because acting on it is a decision.
+ */
+export type WorkflowScan =
+  | {
+      reading: 'MEASURED';
+      unmeasuredReasons: string[];
+      /** The first blocking gate FAIL, in scope > verify > ship priority. */
+      failure: WorkflowGateFailure | null;
+    }
+  | {
+      reading: 'UNMEASURED';
+      unmeasuredReasons: string[];
+      /** What the states that COULD be read yielded. Deliberately not `failure`. */
+      failureFromPartialScan: WorkflowGateFailure | null;
+    };
 
 /** A plain JSON object — not an array, not null, not a scalar. */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -206,11 +264,11 @@ export function findWorkflowGateFailure(workDir: string): WorkflowScan {
     reasons.push(`${workDir}: work directory could not be listed (${err})`);
   }
 
-  return {
-    reading: reasons.length === 0 ? 'MEASURED' : 'UNMEASURED',
-    failure,
-    unmeasuredReasons: reasons,
-  };
+  // Same derivation as `lib/intake-sources.ts`: the reading is a function of
+  // whether anything went unread, and NOT of whether a failure turned up.
+  return reasons.length === 0
+    ? { reading: 'MEASURED', failure, unmeasuredReasons: reasons }
+    : { reading: 'UNMEASURED', failureFromPartialScan: failure, unmeasuredReasons: reasons };
 }
 
 /**
@@ -240,37 +298,85 @@ function checkWorkflowFile(wfPath: string, slug: string): FileReading {
     };
   }
 
+  const refuse = (what: string) => ({
+    failure: null,
+    unmeasured: `${wfPath}: ${what} — the state is malformed, so whether a gate FAILed is unknown`,
+  });
+
   try {
     if (wf.phase === 'DONE') return READABLE;
 
-    const gates = (isPlainObject(wf.gates) ? wf.gates : {}) as Record<string, {
-      result?: string;
-      failures?: { check?: string; id?: string; detail?: string; message?: string }[];
-    }>;
+    // Every shape check below mirrors `WorkflowStateSchema` in gates/schema.ts,
+    // which `writeWorkflowState` enforces on the way in. A value that violates
+    // it did not come from the sanctioned writer, and walking past it reaches
+    // the same wrong answer as the catch this issue was filed about.
+    //
+    // Mirrored by hand rather than imported: `package.json` `files[]` ships
+    // `lib/` and `hooks/` and NOT `gates/`, so importing the schema here
+    // would make the published package reference a file it does not ship.
+    // `lib/` imports nothing from `gates/` today and this is not the change
+    // that should be the first. The duplication is bounded to four field
+    // types, and over-refusal is controlled by measurement, not by hope:
+    // across the 164 state files in the live work store this reports
+    // MEASURED with zero reasons.
+    if (wf.gates !== undefined && !isPlainObject(wf.gates)) {
+      return refuse(`gates is ${Array.isArray(wf.gates) ? 'an array' : typeof wf.gates}, not an object`);
+    }
+    // `acs` feeds hasOutcomeAcFailure, which is the difference between an
+    // immediate block and a three-strike nag — so a malformed one downgrades
+    // enforcement rather than merely losing detail.
+    if (wf.acs !== undefined && !Array.isArray(wf.acs)) {
+      return refuse(`acs is ${typeof wf.acs}, not an array`);
+    }
+    // `issue` keys the strike counter, and `loadStrikeCount` compares it with
+    // `===`. A string issue reads 0 strikes on every call, so the agent never
+    // reaches max_strikes and is never blocked — escalation silently off.
+    if (typeof wf.issue !== 'number') {
+      return refuse(wf.issue === undefined ? 'issue is absent' : `issue is ${wf.issue === null ? 'null' : typeof wf.issue}, not a number`);
+    }
+    if (wf.slug !== undefined && typeof wf.slug !== 'string') {
+      return refuse(`slug is ${typeof wf.slug}, not a string`);
+    }
+
+    const gates = (wf.gates ?? {}) as Record<string, unknown>;
     // #1137: the registry, not a second copy of it. This list and
     // GateResultProtection's agreed on every input anyone had, so nothing
     // could go red when they diverged.
     for (const gateName of BLOCKING_GATES) {
-      const gate = gates[gateName];
-      if (gate?.result === 'FAIL' && Array.isArray(gate.failures) && gate.failures.length > 0) {
-        const acs = Array.isArray(wf.acs) ? wf.acs : [];
-        const hasOutcomeAcFailure = acs.some(
-          (ac: { type?: string; verdict?: string }) => ac.type === 'OUTCOME' && ac.verdict === 'FAIL',
-        );
-        return {
-          unmeasured: null,
-          failure: {
-            gate: gateName,
-            issue: wf.issue as number,
-            slug: (wf.slug as string) || slug,
-            failures: gate.failures.map(f => ({
-              check: f.check || f.id || 'unknown',
-              detail: f.detail || f.message || JSON.stringify(f),
-            })),
-            hasOutcomeAcFailure,
-          },
-        };
+      const raw = gates[gateName];
+      if (raw === undefined || raw === null) continue;
+      if (!isPlainObject(raw)) {
+        return refuse(`gates.${gateName} is ${Array.isArray(raw) ? 'an array' : typeof raw}, not an object`);
       }
+      const gate = raw as {
+        result?: unknown;
+        failures?: { check?: string; id?: string; detail?: string; message?: string }[];
+      };
+      if (gate.result !== 'FAIL') continue;
+
+      // `failures` is optional in the schema, so ABSENT is legal and reads as
+      // a FAIL with nothing to report (0 of 95 live FAIL gates omit it).
+      // Present-but-not-an-array is not legal, and dropping a FAIL because
+      // its detail is the wrong type is the fail-open in miniature.
+      if (gate.failures !== undefined && !Array.isArray(gate.failures)) {
+        return refuse(`gates.${gateName}.result is FAIL but failures is ${typeof gate.failures}, not an array`);
+      }
+      if (!Array.isArray(gate.failures) || gate.failures.length === 0) continue;
+
+      const acs = (wf.acs ?? []) as { type?: string; verdict?: string }[];
+      return {
+        unmeasured: null,
+        failure: {
+          gate: gateName,
+          issue: wf.issue,
+          slug: (wf.slug as string | undefined) || slug,
+          failures: gate.failures.map(f => ({
+            check: f.check || f.id || 'unknown',
+            detail: f.detail || f.message || JSON.stringify(f),
+          })),
+          hasOutcomeAcFailure: acs.some(ac => ac?.type === 'OUTCOME' && ac?.verdict === 'FAIL'),
+        },
+      };
     }
   } catch (err) {
     // Nothing above should throw now that the shape is checked first — so if
@@ -442,11 +548,22 @@ export function logEnforcementSignal(
  * artifact, the reason, and the one command that can repair it — a refusal
  * with no way out is a denial of service, not a guard.
  */
-export function unmeasuredStateReason(reasons: string[]): string {
+export function unmeasuredStateReason(
+  reasons: string[],
+  alsoFound: WorkflowGateFailure | null = null,
+): string {
   return [
     'UNMEASURED: the harness gate state could not be read, so whether a gate is ' +
       'currently FAILing is unknown — and an unknown is not a pass.',
     ...reasons.map(r => `  - ${r}`),
+    ...(alsoFound
+      ? [
+          '',
+          `The states that COULD be read also carry a ${alsoFound.gate} gate FAIL on ` +
+            `issue #${alsoFound.issue}:`,
+          formatFailures(alsoFound.failures),
+        ]
+      : []),
     '',
     'Repair the state, then retry. workflow-state.json is not directly writable ' +
       '(WorkflowStateGuard); go through the validating writer:',
@@ -460,14 +577,20 @@ export function unmeasuredStateReason(reasons: string[]): string {
 
 export function runGateEnforcement(input: GateEnforcementInput): GateEnforcementResult {
   const scan = findWorkflowGateFailure(input.workDir);
-  const wfFailure = scan.failure;
 
-  // #1155: no readable failure, but the sweep was incomplete. Refuse rather
-  // than report the clean run we did not actually observe. Skill-scoped, and
-  // the strike counter is left alone — an unmeasured reading is not evidence
-  // that the gate it was counting against has been fixed.
-  if (!wfFailure && scan.reading === 'UNMEASURED') {
-    const reason = unmeasuredStateReason(scan.unmeasuredReasons);
+  // #1155: the sweep was incomplete. Refuse rather than report a clean run we
+  // did not observe — and refuse WHETHER OR NOT a failure was also readable.
+  // Gating this on "found nothing" was the first draft's own instance of the
+  // bug: a scan that missed a state and found a failure elsewhere reported a
+  // complete result, and the unread state may hold the OUTCOME AC failure
+  // that would have blocked on sight rather than nagged for three strikes.
+  //
+  // Skill-scoped, so the repair path stays open; and the strike counter is
+  // left alone, because an unmeasured reading is not evidence that the gate
+  // it was counting against has been fixed.
+  if (scan.reading === 'UNMEASURED') {
+    const alsoFound = scan.failureFromPartialScan;
+    const reason = unmeasuredStateReason(scan.unmeasuredReasons, alsoFound);
     logSignal(input.signalsDir, input.signalsFile, {
       ts: new Date().toISOString(),
       type: 'gate_enforcement',
@@ -475,6 +598,7 @@ export function runGateEnforcement(input: GateEnforcementInput): GateEnforcement
       tool: input.toolName,
       action: input.toolName === 'Skill' ? 'block' : 'nag',
       reasons: scan.unmeasuredReasons,
+      ...(alsoFound ? { partial_gate: alsoFound.gate, partial_issue: alsoFound.issue } : {}),
     });
 
     if (input.toolName === 'Skill') {
@@ -485,6 +609,10 @@ export function runGateEnforcement(input: GateEnforcementInput): GateEnforcement
       action: 'nag',
     };
   }
+
+  // Narrowed to the MEASURED variant by the return above, so `failure` is
+  // reachable here and only here.
+  const wfFailure = scan.failure;
 
   if (!wfFailure) {
     if (existsSync(input.pendingFile)) {
