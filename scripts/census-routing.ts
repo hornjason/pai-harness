@@ -159,10 +159,16 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     // per-spec ratchet's `<=` stays green.
     id: "spec-tick",
     event: "ticked or unticked an SC (ran sync-sc-status)",
+    //
+    // `ticked-sc-absent-symbol` joined in #1161, and it is the row's most
+    // literal member: it refuses a tick naming a symbol the tree does not
+    // contain, which is an event only a spec edit can cause, in a file the
+    // spec edit does not touch.
     tests: [
       "test/sc-binding-split.test.ts",
       "test/ticked-sc-cover.test.ts",
       "test/behavioral-sc-ratchet.test.ts",
+      "test/ticked-sc-absent-symbol.test.ts",
     ],
     fires: c =>
       inDir(c.path, "specs") &&

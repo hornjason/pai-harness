@@ -265,7 +265,137 @@ function revokedSubKeys(
   const emitted = new Set(parseSubKeys(generated.lines).blocks.map(s => s.key));
   return parseSubKeys(before.lines)
     .blocks.filter(s => owned.has(s.key) && !emitted.has(s.key))
-    .map(s => ({ section, key: s.key, lines: s.lines }));
+    .map(s => ({ section, key: s.key, lines: s.lines, reason: "computed" as const }));
+}
+
+/**
+ * The sub-key PATHS the generators author outright, dotted (#1148).
+ *
+ * ## The gap this closes
+ *
+ * `mergeTopLevelSection` is additive: a sub-key both sides declare keeps the
+ * consumer's value. That is right for a local knob and it leaves the harness
+ * with no channel for a REMOVAL. #1136 took the `branches:` filter off
+ * `on.pull_request` — a filter that silently suppressed CI on every
+ * stacked pull request — and no consumer who already had the file could ever
+ * receive it, because `pull_request` is a sub-key both sides declare.
+ *
+ * ## Why this and not the `generated-sha` marker
+ *
+ * #1148 proposed regenerating a top-level `on:` block whose marker reads
+ * VERIFIED, on the reading that a verified marker proves the bytes are the
+ * harness's own output. It does not, and `restorableIntro` above already says
+ * so: the marker proves the harness WROTE the bytes, not that it AUTHORED
+ * them. The merge carries a consumer's value forward and re-stamps, so one
+ * re-scaffold launders a hand-edited `on:` into VERIFIED bytes — measured in
+ * `test/scaffold-on-trigger-authored.test.ts` AC-5. A fix gated on VERIFIED
+ * would delete the customisation #1148's own control demands be kept, and
+ * that control could not catch it: a freshly hand-edited fixture reads
+ * UNPROVEN, so it never reaches the branch that does the damage.
+ *
+ * So the discriminator is an explicit claim about the GENERATOR, which the
+ * harness can make, rather than an inference from a digest, which it cannot.
+ * `HARNESS_COMPUTED_SUBKEYS` is the same move one level up (#923).
+ *
+ * ## Why a module constant and not a per-file map
+ *
+ * #923 is keyed by FILE because an unscoped revoker would make
+ * `permissions.id-token` withdrawable in a workflow whose generator never
+ * emits it under any config — a consumer's own grant removed by a feature
+ * that was not reasoning about their file. That risk is handled structurally
+ * here instead: `withdrawAuthoredPaths` withdraws a leaf only where the
+ * generated file still emits the PARENT sub-key, so a generator silent about
+ * `pull_request` makes no claim on the consumer's copy of it. The emission
+ * gate is the scope, and it is tighter than a filename would be because it
+ * tracks what the generator actually did rather than which file it wrote.
+ *
+ * Narrow on purpose. `on.push.branches` is deliberately absent: a `push`
+ * filter asks which branches earn a run on their own, which is a different
+ * question, and #1136 left it alone for that reason.
+ */
+export const HARNESS_AUTHORED_PATHS: ReadonlySet<string> = new Set(["on.pull_request.branches"]);
+
+/**
+ * A sub-block split into the comments introducing it and the key line onward.
+ *
+ * `parseSubKeys` emits a block as `[...pending comments, keyLine, ...body]` —
+ * the comments it was holding back come FIRST and the key line is not
+ * `lines[0]`. Re-applying the parser to such a block without this split reads
+ * the first comment as the key line, slices it off, and then finds the key
+ * itself at the body's base indent: the leaves come back as the block's own
+ * name and the real leaves are invisible.
+ *
+ * That is not hypothetical. The first draft of `withdrawAuthoredPaths` did
+ * exactly this, passed eleven cases, and withdrew NOTHING from the three real
+ * generated workflows — every one of which introduces `pull_request:` with a
+ * comment block. The unit fixtures had no comment above the trigger, so they
+ * measured a shape the generator never emits.
+ */
+function splitBlockIntro(lines: string[]): [string[], string[]] {
+  const at = lines.findIndex(l => l.trim() !== "" && !l.trimStart().startsWith("#"));
+  return at <= 0 ? [[], lines] : [lines.slice(0, at), lines.slice(at)];
+}
+
+/**
+ * The consumer's section with every authored leaf the generator has stopped
+ * emitting taken out, and the record of what went (#1148).
+ *
+ * Reads both sides through the same `parseSubKeys` the rest of the merge uses
+ * — applied twice, because the binding takes a key line followed by its body
+ * and a sub-block is that shape once `splitBlockIntro` has taken the
+ * introducing comments off it. One parser, so the thing removed and the thing
+ * reported removed cannot be two different readings (#834).
+ */
+function withdrawAuthoredPaths(
+  section: string,
+  before: Section,
+  generated: Section,
+): { section: Section; withdrawn: RevokedSubKey[] } {
+  // The same scalar guard `mergeTopLevelSection` opens with: `on: [push]` has
+  // no sub-keys to withdraw and no way to express the removal if it did.
+  if (!/^[A-Za-z_][A-Za-z0-9_.\-]*:\s*(#.*)?$/.test(before.lines[0])) {
+    return { section: before, withdrawn: [] };
+  }
+  const parsed = parseSubKeys(before.lines);
+  const generatedByKey = new Map(parseSubKeys(generated.lines).blocks.map(s => [s.key, s] as const));
+  const withdrawn: RevokedSubKey[] = [];
+
+  const blocks = parsed.blocks.map(block => {
+    const gen = generatedByKey.get(block.key);
+    // THE EMISSION GATE. A generator that does not emit this trigger is making
+    // no statement about the consumer's copy of it.
+    if (gen === undefined) return block;
+    const [intro, fromKey] = splitBlockIntro(block.lines);
+    const consumerLeaves = parseSubKeys(fromKey);
+    const emitted = new Set(parseSubKeys(splitBlockIntro(gen.lines)[1]).blocks.map(s => s.key));
+    const gone = consumerLeaves.blocks.filter(
+      leaf => HARNESS_AUTHORED_PATHS.has(`${section}.${block.key}.${leaf.key}`) && !emitted.has(leaf.key),
+    );
+    if (gone.length === 0) return block;
+    for (const leaf of gone) {
+      withdrawn.push({
+        section: `${section}.${block.key}`,
+        key: leaf.key,
+        lines: leaf.lines,
+        reason: "authored",
+      });
+    }
+    const dropped = new Set(gone.map(l => l.key));
+    return {
+      ...block,
+      lines: [
+        ...intro,
+        ...consumerLeaves.head,
+        ...consumerLeaves.blocks.filter(l => !dropped.has(l.key)).flatMap(l => l.lines),
+      ],
+    };
+  });
+
+  if (withdrawn.length === 0) return { section: before, withdrawn: [] };
+  return {
+    section: { ...before, lines: [...parsed.head, ...blocks.flatMap(b => b.lines)] },
+    withdrawn,
+  };
 }
 
 /**
@@ -337,12 +467,28 @@ const NO_COMPUTED_SUBKEYS: ComputedSubKeys = new Map();
 
 /** A sub-key the merge withdrew because the generator stopped emitting it (#923). */
 export interface RevokedSubKey {
-  /** The top-level key it sat under. */
+  /**
+   * The key it sat under: a top-level key for a `computed` withdrawal, and a
+   * dotted path (`on.pull_request`) for an `authored` one, which reaches a
+   * level deeper.
+   */
   section: string;
   /** The sub-key itself. */
   key: string;
   /** Its lines as they stood in the consumer's file, comment block included. */
   lines: string[];
+  /**
+   * Which ownership claim took it away (#1148).
+   *
+   * Carried rather than inferred at the reporting layer, because the two
+   * withdrawals have different causes and therefore different advice.
+   * `computed` means the project's `ci` config stopped producing a derived
+   * grant; `authored` means the GENERATOR stopped emitting a path the harness
+   * names as its own. Reporting the second with the first's sentence sends a
+   * consumer to a config key that has nothing to do with what was removed —
+   * correct-but-misdescribed, which is the expensive kind of accurate.
+   */
+  reason: "computed" | "authored";
 }
 
 /**
@@ -773,9 +919,22 @@ export function mergeManagedWorkflowRecording(
     // to make impossible.
     let merged: string[];
     if (gen !== undefined && !declined.has(section.key)) {
-      const withdrawn = revokedSubKeys(section.key, consumer, gen, computed);
+      // An authored path the generator has stopped emitting goes FIRST, for
+      // the reason #923 gives for ordering its own withdrawal before the
+      // merge: the sub-key merge's job is to carry what the generator newly
+      // emits into the consumer's section, and running it over a section that
+      // still holds a withdrawn leaf would have it decide ownership of a line
+      // that is on its way out.
+      //
+      // Inside the `!declined` arm for the reason #923 is: a consumer who has
+      // named this top-level key in `ci.workflowOverrides` has taken the whole
+      // block back, and reaching into it is the deletion-without-a-route that
+      // #839's hatch exists to make impossible.
+      const authored = withdrawAuthoredPaths(section.key, consumer, gen);
+      revoked.push(...authored.withdrawn);
+      const withdrawn = revokedSubKeys(section.key, authored.section, gen, computed);
       revoked.push(...withdrawn);
-      merged = mergeTopLevelSection(withoutRevoked(consumer, withdrawn), gen);
+      merged = mergeTopLevelSection(withoutRevoked(authored.section, withdrawn), gen);
     } else {
       merged = consumer.lines;
     }
