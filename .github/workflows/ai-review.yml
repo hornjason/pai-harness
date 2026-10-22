@@ -1,4 +1,4 @@
-# generated-sha: b838087dc7818408
+# generated-sha: 9da95fd06208f52c
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1012,7 +1012,7 @@ jobs:
           use_vertex: ${{ steps.ai-review-auth.outputs.mode == 'vertex' }}
           claude_code_oauth_token: ${{ steps.ai-review-auth.outputs.mode == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           anthropic_api_key: ${{ steps.ai-review-auth.outputs.mode == 'api-key' && secrets.ANTHROPIC_API_KEY || '' }}
-          claude_args: --model claude-sonnet-5 --max-turns 50 --allowedTools Read,Grep,Glob,Write --setting-sources user --add-dir ${{ steps.ai-review-prepare.outputs.dir }} --disallowedTools Bash,BashOutput,KillShell,Task,SlashCommand,ExitPlanMode,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Edit(./**)${{ steps.ai-review-creds-relocate.outputs.denyread }}
+          claude_args: --model claude-sonnet-5 --max-turns 80 --allowedTools Read,Grep,Glob,Write --setting-sources user --add-dir ${{ steps.ai-review-prepare.outputs.dir }} --disallowedTools Bash,BashOutput,KillShell,Task,SlashCommand,ExitPlanMode,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Edit(./**)${{ steps.ai-review-creds-relocate.outputs.denyread }}
           prompt: |
             Review the changes on this branch for correctness defects: bugs that
             produce a wrong result, a crash, or data loss on some input you can name.
@@ -1464,7 +1464,7 @@ jobs:
             # rejecting a review the CLI completed, which at the pinned SHA is the turn
             # accounting in base-action/src/run-claude-sdk.ts:244-250.
             if grep -qE '"subtype"[[:space:]]*:[[:space:]]*"success"' "${AI_REVIEW_EXECUTION_FILE}"; then
-              route="The review action (#631) did not complete, and its execution file reports the reviewer reported a SUCCESSFUL result. So the CLI finished and the ACTION rejected the run afterwards — at the pinned SHA the one thing that does this is the action's own turn accounting, which throws when the completed run's turn count exceeds --max-turns. Read the execution file's num_turns against the configured maximum, which this job sets to 50; raising it is the lever if they are close. The Claude Code GitHub App is NOT the cause here — the reviewer could not have run at all without it. This check is UNMEASURED, not a passing review."
+              route="The review action (#631) did not complete, and its execution file reports the reviewer reported a SUCCESSFUL result. So the CLI finished and the ACTION rejected the run afterwards — at the pinned SHA the one thing that does this is the action's own turn accounting, which throws when the completed run's turn count exceeds --max-turns. Read the execution file's num_turns against the configured maximum, which this job sets to 80; raising it is the lever if they are close. The Claude Code GitHub App is NOT the cause here — the reviewer could not have run at all without it. This check is UNMEASURED, not a passing review."
             else
               route="The review action (#631) did not complete, and it DID write an execution file, so the reviewer executed and this is not the case where the action declined before running. The Claude Code GitHub App is installed — the agent could not have started otherwise — so that is not worth checking. Read the execution file for the result subtype, the turn count and the permission denials, and the action's own log for the error it exited on. This check is UNMEASURED, not a passing review."
             fi
