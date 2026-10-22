@@ -51,6 +51,81 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | ProjectStateSync | ProjectStateSync.hook.ts | 43 | SC-370, SC-371 | Thin trigger — delegates to update-project-state.ts. **Registered nowhere (#910)** |
 | TopLevelCdGuard | TopLevelCdGuard.hook.ts | 108 | SC-370, SC-371 | Thin trigger — the parse and the rung both live in lib/top-level-cd.ts. **Registered as a HARD REFUSAL at project scope (#992)**, Jason's decision, taken with the measurement in hand rather than against it: 32.7% of 31,577 recorded commands carry a top-level `cd`, every one of them real, so it fires often by design. `#1040` built the WARN→FAIL ladder and took no rung; this takes `block` by moving `CD_GUARD_DEFAULT_MODE`, so `RUNGATE_CD_GUARD=warn\|off` still reverses it without code. Scoped to harnessed projects via lib/harness-project.ts. `.claude/settings.json` holds the `Bash` matcher; machine-wide registration would be `~/.claude/settings.json`, which no PR carries. The refusal exits through `CD_GUARD_DECISION`, the single mutable site |
 
+## Which hooks a consumer receives (#1047)
+
+Before #1047 the answer was **none**, in two independent ways and by nobody's
+decision: `hooks/` was absent from `package.json`'s `files` array, so the
+tarball carried no hook files; and **0 of 20** entries in
+`.claude/rungate/hooks.json` set `deployToConsumers`, so SC-472's deployment
+path — built, and wired into `lib/scaffold/defaults.ts`,
+`lib/scaffold/rehearsal.ts` and `lib/scaffold/steps.ts` — reached zero hooks
+on every run it has ever had. It reported success each time, because a
+scaffold that installs no hooks is indistinguishable from a correct run on a
+project that wanted none.
+
+Both halves are fixed, and the second is the one that lasts. **Adding
+`hooks/` to `files[]` alone would have closed the gap on paper and changed
+nothing a consumer could observe** — `CLOSURE-1` asks whether a published
+file's imports resolve, never whether anything runs, so it would have gone
+green over a directory no consumer ever registers.
+
+### The field is required
+
+`HookRegistration.deployToConsumers` is a required `boolean`, for the reason
+`scope` is (#479): optional makes *decided no* and *nobody looked* the same
+value. `deployHooksToConsumers` reads it with `!== true`, so an omission
+silently means no.
+
+A `false` entry carries `notDeployedReason`, mirroring `disabledReason`. The
+reason is also the only place the two kinds of *no* are told apart:
+
+- **HARNESS-ONLY** — about this repository's own shared checkout, its
+  worktree pool, or its swarm. A consumer should never receive it.
+- **OPT-IN** — ships inside the tarball, registered by the project once it
+  has the thing the hook guards (specs, an issue tracker, a gate salt).
+  Deploying it by default would install a guard that declines on every call,
+  which reads exactly like a guard that is not installed.
+
+`test/hook-traceability.test.ts` AC-11 refuses an entry that omits the field,
+AC-12 one that is `false` without a reason, AC-13 one marked to ship whose
+file `files[]` does not publish, and AC-14 drives the classifier over all
+three verdicts so a clean census cannot be a census of nothing.
+
+### The deployment step can no longer report success over an empty set
+
+`deployHooksToConsumers` had four silent `return`s and an `else` branch that
+printed `SKIP: All hooks already deployed` when **nothing had been eligible**.
+Each exit now leaves a reading, and an empty eligible set is `UNMEASURED`
+naming how many entries were read and how many opted in — `0 deployed because
+the project wanted none` and `0 deployed because nobody set the flag` are
+different facts and only one of them is fine. A `DEPLOYED` line names the
+hooks, because a count cannot be checked against a registry and a list can.
+
+### Verdicts
+
+| Hook | Consumer | Why |
+|---|---|---|
+| BashToolGuard | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| TopLevelCdGuard | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| TestSuiteGuard | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| TestSuiteRelease | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| AgentBriefGuard | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| AgentVerdictCapture | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| AutoVerifyGate | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| CommitEnforcement | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| GateEnforcement | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| PostCompact | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| HookCurrency | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| StaleTTLCleanup | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| WorkflowStateGuard | **SHIPS** | Registered in a scaffolded consumer's `.claude/settings.local.json` by `deployHooksToConsumers`. |
+| IssueCloseGuard | OPT-IN | Couples to two things a fresh consumer does not have: a GitHub issue tracker wired to ship-gate, and the HMAC `.gate-salt` it validates PASS provenance against. With neither present it declines on every call, and a guard that declines on every call is indistinguishable from one that is not installed. It ships in the tarball; a project registers it once ship-gate runs against its tracker. |
+| MergeGuard | OPT-IN | Reads `.ship-active` markers under WORK_DIR and a verify-gate PASS out of workflow-state.json; a project that has not run the ship loop has neither, so it warns about nothing. Ships in the tarball; register it once the ship loop runs. |
+| SpecConformityTrigger | HARNESS-ONLY | A disabled entry that also claimed consumer deployment would be two answers to one question. Re-classify if and when it is re-enabled. |
+| SpecSCGuard | OPT-IN | Validates new SC lines against `config/matcher-registry.json`, which means it has nothing to say until the project has specs carrying SCs. Ships in the tarball; register it once `specs/` exists. |
+| TaskCompleted | HARNESS-ONLY | It spawns a CONCURRENT full suite, which is the thing lib/test-suite-lock.ts exists to prevent, so deploying it to a consumer would export the defect that disabled it here. Re-classify if and when it is re-enabled. |
+| VerifyPhaseLock | OPT-IN | Blocks `gh issue create` during the VERIFY phase, so it presumes both a GitHub tracker and an active rungate workflow. Ships in the tarball; register it once the project ships through phases against a tracker. |
+| ProjectStateSync | HARNESS-ONLY | It execs `<projectRoot>/scripts/update-project-state.ts`, which `package.json` `files[]` does not publish, so on a consumer `projectStateTarget` returns `declined-no-generator` on every write — zero reading as success, the shape #1047 is about. And #910's #296 blast-radius question is open: it is registered on BOTH Write and Edit at user scope, so it would fire on every agent edit in a consumer's worktree, and PROJECT-STATE.md is DA-owned. Deploying it is blocked on publishing the generator AND closing #910; revisit on either, not on neither. |
+
 ## The full-suite budget is keyed on a worker, not a session (#239)
 
 SC-517 fixed the unit for CONCURRENCY — one slot is one running suite — and

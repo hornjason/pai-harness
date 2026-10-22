@@ -43,7 +43,36 @@ export interface HookRegistration {
   scope: "project" | "user";
   matcher?: string;
   description: string;
-  deployToConsumers?: boolean;
+  /**
+   * Whether a scaffolded consumer project receives this hook (#1047).
+   *
+   * Required, and for the same reason `scope` is. Before #1047 this was
+   * optional and `deployHooksToConsumers` tested it with `!== true`, so
+   * "decided no" and "nobody looked" were one value — `undefined` — and all
+   * twenty entries held it. The deployment path built for SC-472 was wired
+   * into three scaffold modules and reached zero hooks on every run that has
+   * ever happened, and the run reported success, because zero deployed is
+   * what a project wanting no hooks also looks like.
+   *
+   * An optional field cannot carry that decision: the next hook added would
+   * default to `false` silently, which is the state this issue was filed
+   * about. `test/hook-traceability.test.ts` AC-10 refuses an entry that omits
+   * it, so the fourth position a new hook has to touch now has an answer that
+   * someone wrote down.
+   */
+  deployToConsumers: boolean;
+  /**
+   * Why a `deployToConsumers: false` entry does not travel. Required when it
+   * is false (#1047 AC-11), mirroring `disabledReason` below.
+   *
+   * Two different facts hide under `false`, and the reason is the only place
+   * they are told apart: a hook about THIS repository's shared checkout,
+   * worktree pool or swarm, which no consumer should ever receive; and a hook
+   * coupled to something a consumer does not have yet — specs, an issue
+   * tracker, a gate salt — which ships in the tarball and is registered once
+   * the project has the thing it guards.
+   */
+  notDeployedReason?: string;
   /**
    * Why an `enabled: false` entry is off. Required when it is (#479 SC-1662).
    *
@@ -128,6 +157,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/BashToolGuard.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       matcher: "Bash",
       description: "Blocks cat/head/tail file reading — agents must use the Read tool",
@@ -137,15 +167,34 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       matcher: "Bash",
       description: "Blocks a third full test suite run in one session — forces targeted tests",
+    },
+    {
+      // Paired with TestSuiteGuard above, and added here by #1047 because the
+      // pair is one mechanism. The guard takes a concurrency slot; this hands
+      // it back when the suite exits. A greenfield project given the guard
+      // alone gets every slot held for the full 420s TTL after a run that
+      // finished in 190 — strictly worse than receiving neither, and the
+      // classification pass that set `deployToConsumers` on the guard is what
+      // made the one-sidedness visible.
+      name: "TestSuiteRelease",
+      hookFor: "PostToolUse",
+      command: "bun ${RUNGATE_HOOKS_DIR}/TestSuiteRelease.hook.ts",
+      enabled: true,
+      deployToConsumers: true,
+      scope: "user",
+      matcher: "Bash",
+      description: "Hands a full suite its concurrency slot back when it finishes (#67)",
     },
     {
       name: "AgentBriefGuard",
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/AgentBriefGuard.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "project",
       matcher: "Agent",
       description: "Validates agent brief templates and enforces the ship-active marker",
@@ -155,6 +204,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "SubagentStop",
       command: "bun ${RUNGATE_HOOKS_DIR}/AgentVerdictCapture.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       description: "Captures agent verdicts and writes them to workflow-state.json",
     },
@@ -163,6 +213,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PostToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/AutoVerifyGate.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       matcher: "Agent",
       description: "Nudges the DA to run the verify gate after an agent completes",
@@ -172,6 +223,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PostToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/CommitEnforcement.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       matcher: "Agent",
       description: "Detects uncommitted changes left behind in agent worktrees",
@@ -181,6 +233,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/GateEnforcement.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       matcher: ".*",
       description: "Nags on gate failures and blocks Skill calls after max strikes",
@@ -190,6 +243,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PostCompact",
       command: "bun ${RUNGATE_HOOKS_DIR}/PostCompact.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       description: "Re-injects critical rules after context window compaction",
     },
@@ -198,6 +252,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "SessionStart",
       command: "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
       enabled: true,
+      deployToConsumers: true,
       scope: "user",
       description: "Cleans up stale workflow-state.json and ship-active files",
     },
