@@ -596,7 +596,7 @@ function loadCollectBoundary(source = shipSource) {
   // declaration the assignment would create a sloppy-mode global and the
   // control tests below would pass over a block that recorded nothing.
   const run = new Function(
-    "implementResult", "REPO", "log", "terminalFailure", "shipFailed",
+    "implementResult", "REPO", "log", "terminalFailure", "shipFailed", "symlinkHint",
     "worktreeIdentityViolations", "redactRemote", "worktreeRecords", "collectDestination",
     `let runWorktrees = []\nreturn (async () => {\n${body}\nreturn { shipped: true, runWorktrees }\n})()`,
   );
@@ -612,6 +612,9 @@ function loadCollectBoundary(source = shipSource) {
         // one. It leaves through #1056's own exit, so the two are told apart
         // by the cases below rather than sharing a name (#524, #1098).
         async (phase: string, reason: string) => ({ status: "SHIP_FAILED", phase, reason }),
+        // ship.js's real hint, built from its own block for the same reason
+        // the allowlist is: a reimplementation would survive its removal.
+        shipSymlinkHint,
         worktreeIdentityViolations,
         redactRemote,
         worktreeRecords,
@@ -623,6 +626,11 @@ function loadCollectBoundary(source = shipSource) {
       ) as Promise<Record<string, unknown>>,
   };
 }
+
+/** ship.js's real symlink hint, for the boundary harness above. */
+const shipSymlinkHint = new Function(
+  `${markedBlock("SYMLINK-HINT")}\nreturn symlinkHint`,
+)() as (path: unknown) => string;
 
 /** ship.js's real allowlist, for the boundary harness above. */
 const shipCollectDestination = new Function(

@@ -6367,13 +6367,53 @@ if (strayDestinations.length > 0) {
   return await shipFailed('Implement',
     'the implement step reported a worktree this run will not commit from: ' +
     `${strayDestinations.join('; ').slice(0, 400)} — refused before the Validate and Fix ` +
-    'prompts name the path to an agent, not after (#1098, #1056, #155)')
+    'prompts name the path to an agent, not after (#1098, #1056, #155). ' +
+    symlinkHint(''))
 }
 
 // The reply passed. Record where it came from so the gates can ask the same
 // question of the disk, which is the half a reply cannot answer (#414).
 runWorktrees = worktreeRecords(implementResult.buildResult?.agentResults)
 // ──── COLLECT-IDENTITY-END ────
+
+// ──── SYMLINK-HINT-START ────
+/**
+ * The sentence a containment refusal needs when the roots may be unresolved.
+ *
+ * `collectDestination` compares STRINGS. It has to: `workflows/*.js` runs in
+ * a sandbox with no module loading and no `process` or `Bun` (#69), so
+ * `realpathSync` — which `scripts/collect-worktree-files.ts` uses for the
+ * authoritative source-containment check — is not reachable from this file at
+ * all. A string compare and a realpath compare agree on every path that is
+ * already canonical and disagree the moment one side is reached through a
+ * symlink.
+ *
+ * That is not hypothetical here: this repository is reachable as BOTH
+ * `…/Projects/rungate` and a symlink named after the repo, and the symlinked
+ * name is the one a person types. A run launched with it would compare an
+ * unresolved root against a resolved worktree path and refuse, and the
+ * refusal would read as "this directory is not yours" when the real answer is
+ * "nobody canonicalised the roots".
+ *
+ * So the refusal says so. This does NOT fix the containment reading and is
+ * not pretending to: the fix is to resolve `projectRoot` and `harnessRoot`
+ * where they are produced, before they reach this file, which is outside this
+ * workflow and is filed separately. What it fixes is an operator reading a
+ * containment error and going to look at the wrong thing.
+ *
+ * Deliberately NOT a guess about whether a symlink is involved — nothing here
+ * can know that. It names the possibility and what to check, which is what a
+ * reading that cannot be taken is allowed to say.
+ */
+function symlinkHint(path) {
+  const named = String(path == null ? '' : path).slice(0, 120)
+  return 'If the path above and this run\'s roots differ only by a symlink — one side canonical ' +
+    'and the other reached through a linked name — then the roots were passed unresolved and ' +
+    'the containment reading is an artefact of that rather than a judgement about ' +
+    `${named || 'the directory'}. Compare \`realpath\` of both before concluding the directory ` +
+    'is foreign; this check compares strings because the sandbox has no filesystem (#69).'
+}
+// ──── SYMLINK-HINT-END ────
 
 // ──── MARCUS-WORKTREE-START ────
 // Capture Marcus's worktree path so Quinn and fix iterations validate the same code
@@ -6412,7 +6452,8 @@ if (!collectDestination(marcusWorktreePath)) {
     'the implement step reported a worktree this run will not commit from: ' +
     `${String(marcusWorktreePath).slice(0, 200)} is neither this run's project root nor one of ` +
     'its agent worktrees, and the Validate and Fix prompts address an agent to it, so the run ' +
-    'stops before either prompt is built rather than after (#1098, #1056, #155)')
+    'stops before either prompt is built rather than after (#1098, #1056, #155). ' +
+    symlinkHint(marcusWorktreePath))
 }
 // ──── MARCUS-WORKTREE-END ────
 

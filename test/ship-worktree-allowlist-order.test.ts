@@ -56,6 +56,14 @@ const collectDestination = new Function(
   `${markedBlock("COLLECT-DESTINATION")}\nreturn collectDestination`,
 )() as (dir: unknown, projectRoot?: string, harnessRoot?: string) => string | null;
 
+/**
+ * ship.js's real symlink hint, for the same reason: a reimplementation here
+ * would keep passing after the shipped sentence changed or went away.
+ */
+const symlinkHint = new Function(
+  `${markedBlock("SYMLINK-HINT")}\nreturn symlinkHint`,
+)() as (path: unknown) => string;
+
 interface GuardRun {
   refusal: { phase: string; reason: string } | null;
   marcusWorktreePath: string | null;
@@ -81,6 +89,7 @@ function runGuard(worktreePath: unknown, source = shipSource): Promise<GuardRun>
     "implementResult",
     "PROJECT_ROOT",
     "collectDestination",
+    "symlinkHint",
     "log",
     // `shipFailed`, not `terminalFailure`: this refusal is #1056's, emitted
     // earlier. One decision gets one exit and one sentence wherever it is
@@ -92,6 +101,7 @@ function runGuard(worktreePath: unknown, source = shipSource): Promise<GuardRun>
     { buildResult: { worktreePath } },
     PROJECT_ROOT,
     (d: unknown) => collectDestination(d, PROJECT_ROOT, HARNESS_ROOT),
+    symlinkHint,
     (m: string) => logs.push(String(m)),
     async (phase: string, reason: string) => ({
       refusal: { phase, reason },
@@ -196,6 +206,35 @@ describe("#1098: the reported worktree is allowlisted at the assignment", () => 
     expect(got.logs.join("\n")).toContain("IMPLEMENT REFUSED");
     expect(got.logs.join("\n"), "the operator cannot see which path was refused")
       .toContain(FOREIGN);
+  });
+
+  test("the refusal says a symlinked root could explain it (#1098 review)", async () => {
+    // `collectDestination` compares strings, and it has to: the sandbox has
+    // no module loading, no `process` and no `Bun` (#69), so `realpathSync`
+    // — what `scripts/collect-worktree-files.ts` uses for the authoritative
+    // source-containment check — is not reachable from `workflows/*.js` at
+    // all. Measured against this machine: `collectDestination` returns null
+    // for a canonical worktree under a root passed as a symlinked name.
+    //
+    // This case does NOT claim the reading is fixed. It holds the one thing
+    // this file can do about it — the refusal names the possibility, so an
+    // operator reads "check whether the roots are resolved" instead of
+    // "this directory is foreign". The reading itself is canonicalised where
+    // the roots are produced, which is outside this workflow.
+    const got = await runGuard(FOREIGN);
+    const reason = String(got.refusal?.reason);
+    expect(reason, "the refusal no longer mentions a symlink at all").toContain("symlink");
+    expect(reason, "it does not say what to compare").toContain("realpath");
+    // …and it is a HINT, not a claim: nothing here can know whether a
+    // symlink is involved, and a refusal that asserted one would be guessing.
+    expect(reason, "the hint asserts a symlink rather than naming the possibility")
+      .toContain("If the path above");
+
+    // The control, and it is what stops the hint becoming boilerplate on
+    // every message: a legitimate worktree produces no refusal at all, so
+    // there is nothing for the sentence to be appended to.
+    const ok = await runGuard(GOOD_WORKTREE);
+    expect(ok.refusal, "a legitimate worktree was refused").toBeNull();
   });
 
   test("an ordinary agent worktree is not refused", async () => {
