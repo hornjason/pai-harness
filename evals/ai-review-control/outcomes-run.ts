@@ -110,8 +110,18 @@ function epoch(iso: string): number {
   return Math.floor(Date.parse(iso) / 1000);
 }
 
-function refs(text: string, pattern: RegExp): number[] {
-  return [...text.matchAll(new RegExp(pattern.source, pattern.flags))].map(m => Number(m[1]));
+/**
+ * Issue references in a blob of text, as STRINGS.
+ *
+ * `ReviewFinding.id` is a string since #1253 — an unfiled candidate has no
+ * issue number — so the whole corpus is keyed on strings and this never
+ * parses to a number on the way through. `String(Number(x))` would also
+ * normalise `#007` to `7`; here `007` and `7` stay distinct, which is right,
+ * because two spellings of a reference are two references until something
+ * resolves them.
+ */
+function refs(text: string, pattern: RegExp): string[] {
+  return [...text.matchAll(new RegExp(pattern.source, pattern.flags))].map(m => m[1]);
 }
 
 /** No `body`: it is not read, and a field nobody consumes reads as evidence. */
@@ -210,19 +220,19 @@ export function buildCorpus(
   issues: GhIssue[],
   lastComment: Map<number, string>,
   commits: Commit[],
-): { findings: ReviewFinding[]; shipped: Set<number> } {
-  const citations = new Map<number, FindingCitation[]>();
-  const shipped = new Set<number>();
+): { findings: ReviewFinding[]; shipped: Set<string> } {
+  const citations = new Map<string, FindingCitation[]>();
+  const shipped = new Set<string>();
 
   for (const c of commits) {
-    const cited = new Set<number>();
+    const cited = new Set<string>();
     const scope = SUBJECT_SCOPE.exec(c.subject);
     if (scope?.[1] !== undefined) for (const n of refs(scope[1], ISSUE_REF)) cited.add(n);
 
     const pr = SUBJECT_PR.exec(c.subject);
     if (pr !== null) {
-      shipped.add(Number(pr[1]));
-      cited.delete(Number(pr[1]));
+      shipped.add(pr[1]);
+      cited.delete(pr[1]);
     }
 
     const entry: FindingCitation = { sha: c.sha, at: c.at, filesChanged: c.filesChanged };
@@ -233,16 +243,29 @@ export function buildCorpus(
     const closed = i.state === "closed";
     const comment = closed ? (lastComment.get(i.number) ?? "") : "";
     return {
-      id: i.number,
+      id: String(i.number),
       filedAt: epoch(i.created_at),
       closed,
-      citations: citations.get(i.number) ?? [],
-      closedInFavourOf: [...new Set(refs(comment, ISSUE_REF))].filter(n => n !== i.number),
+      citations: citations.get(String(i.number)) ?? [],
+      closedInFavourOf: [...new Set(refs(comment, ISSUE_REF))].filter(n => n !== String(i.number)),
       declared: null,
     };
   });
 
   return { findings, shipped };
+}
+
+/**
+ * `, #23..#1229` when every id is an issue number, and nothing when they are
+ * not. A candidate-ledger corpus keys unfiled rows on a symptom hash, and
+ * `Math.min` over those coerces to `NaN` and prints `#NaN..#NaN` — a range
+ * that looks like a reading and is not one. Omitting it says less and lies
+ * less; the count beside it is the number that matters.
+ */
+function idRange(findings: readonly ReviewFinding[]): string {
+  const numeric = findings.map(f => Number(f.id));
+  if (findings.length === 0 || numeric.some(n => !Number.isFinite(n))) return "";
+  return `, #${Math.min(...numeric)}..#${Math.max(...numeric)}`;
 }
 
 export function main(argv: string[]): number {
@@ -273,8 +296,8 @@ export function main(argv: string[]): number {
   const planted = !argv.includes("--no-plants");
   const run_ = summariseFindingOutcomes(
     readings,
-    `every issue in ${repo} (${findings.length} findings, #${Math.min(...findings.map(f => f.id))}` +
-      `..#${Math.max(...findings.map(f => f.id))}), scored against ${commits.length} commits on ` +
+    `every issue in ${repo} (${findings.length} findings${idRange(findings)}), scored against ` +
+      `${commits.length} commits on ` +
       `origin/main. Pull requests are excluded: the tracker is the finding surface here. ` +
       (planted ? `Plants: ${REVIEW_OUTCOME_PLANTS.map(p => `#${p.id}`).join(", ")}.` : "UNPLANTED."),
   );

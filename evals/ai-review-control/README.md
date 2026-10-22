@@ -140,6 +140,24 @@ disposition: "no noise" and "nobody recorded whether there was noise" are
 different facts. `declared` exists so that the day a close records its reason,
 the split becomes real without a code change.
 
+### An id is a string, and a repeated one is a refusal (#1253)
+
+`ReviewFinding.id` is a **string**, because the corpus this module was written
+against is not the only one it will see: rg-1187's finding arbiter holds
+candidates that were never filed, and an unfiled candidate has no issue number
+to be keyed on. A symptom hash is a legal id; `outcomes-run.ts` emits
+`String(issue.number)` and the backfill is unchanged by the widening.
+
+Ids must be **unique**, and a corpus that repeats one is `usable: false` rather
+than a number. This was a live defect in the merged module, measured on the
+three-row corpus in `test/review-outcome-taxonomy.test.ts`: two rows sharing an
+id meant the second overwrote the first in the citation map, so a finding with
+a real fixing commit read `NO_ACTION`, landed in `cost`, and the run reported
+`usable: true` with nothing saying why the number was wrong. That is the one
+direction this instrument must never fail in — it manufactures noise out of a
+finding that was fixed, and `compareReviewOutcomes` would score the
+manufactured version as a regression that did not happen.
+
 ### Backfill over this repo, 2026-10-22
 
 ```bash
