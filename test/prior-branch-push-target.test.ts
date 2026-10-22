@@ -247,6 +247,96 @@ describe("ship.js: a stale prior branch is not a push target (#185)", () => {
     expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "refs/heads/254-fix" }).pushTarget).toBe("HEAD");
   });
 
+  test("the value that cleared the refusals is the value that is returned", () => {
+    // Every refusal reads `nominated`, the TRIMMED copy. Returning
+    // `prior.branch` would validate one representation and emit a different
+    // one, and `.trim()` is what makes that exploitable rather than cosmetic:
+    // `"feature\n"` trims to `feature`, clears every refusal, and the raw
+    // value reaches
+    //   git -C ${shellQuote(commitDir)} push -u origin ${pushTarget}
+    // where the refspec is the UNQUOTED half. A newline there ends the
+    // command and whatever follows on the line becomes a new one. Quoting
+    // `commitDir` does nothing about it.
+    const real = runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "feature\n" });
+    expect(real.pushTarget).toBe("HEAD:feature");
+    expect(real.pushTarget).not.toContain("\n");
+
+    // Leading whitespace is the same defect wearing a different hat: a raw
+    // `" feature"` splits into two arguments at the git call.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: " feature" }).pushTarget).toBe(
+      "HEAD:feature",
+    );
+
+    // The mutant: return the raw nomination, which is what this file looked
+    // like before. Without it the row passes against a block that never
+    // trimmed at all.
+    const RAW_RETURN = "if (refusals.length === 0) return nominated";
+    expect(PUSH_TARGET_BLOCK.split(RAW_RETURN).length - 1).toBe(1);
+    const mutant = runBlock(
+      PUSH_TARGET_BLOCK.replace(RAW_RETURN, "if (refusals.length === 0) return prior.branch"),
+      { ...CURRENT, branch: "feature\n" },
+    );
+    expect(mutant.pushTarget).toBe("HEAD:feature\n");
+
+    // Interior whitespace is refused outright rather than trimmed — the shape
+    // check sees it, because `.trim()` only touches the ends.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "feature\nrm -r x" }).pushTarget).toBe(
+      "HEAD",
+    );
+  });
+
+  test("a qualified ref is refused by its first segment, not by a substring", () => {
+    // `/^refs\//` plus `'/heads/'` plus `'/remotes/'` needs a leading slash,
+    // so these two reached `main` through git's DWIM while the suite was
+    // green. `origin/main` refused before this change, but via the
+    // `bareBranchName` arm — meaning `origin/some-branch` did NOT refuse, and
+    // the row was passing for a reason that did not generalise.
+    for (const branch of [
+      "heads/main",
+      "remotes/origin/main",
+      "tags/v1",
+      "origin/some-branch",
+      "ORIGIN/main",
+      "Refs/heads/main",
+    ]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" reached the push target`,
+      ).toBe("HEAD");
+    }
+
+    // The controls, or this row is satisfied by refusing every name that
+    // contains one of those words anywhere.
+    for (const branch of ["fix/origin-parsing", "feature/tags/v1"]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" is a legitimate branch name and it was refused`,
+      ).toBe(`HEAD:${branch}`);
+    }
+  });
+
+  test("the default-branch comparison is case-folded", () => {
+    // `DEFAULT_BRANCHES.has` is exact, so `Main` is not `main` to a Set while
+    // it is to a case-insensitive checkout.
+    for (const branch of ["Main", "MASTER", "Origin/Main"]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" reached the push target`,
+      ).toBe("HEAD");
+    }
+    // …and the same fold on the launch branch, which is the arm that covers a
+    // consumer whose default is neither name.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "Develop" }, "develop").pushTarget).toBe(
+      "HEAD",
+    );
+
+    // The control: folding case must not swallow names that merely start the
+    // same way.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "Mainline" }).pushTarget).toBe(
+      "HEAD:Mainline",
+    );
+  });
+
   test("a consumer whose default branch is neither main nor master is covered", () => {
     // `DEFAULT_BRANCHES` cannot know a downstream project's default. The
     // branch the checkout was on when this run launched can, and it is the

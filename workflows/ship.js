@@ -7318,7 +7318,13 @@ function reusablePriorBranch(prior) {
   // backstop rather than as the guard.
   const nominated = String(prior.branch).trim()
   if (!isSafeBranchName(nominated)) refusals.push('it is not a usable branch name')
-  if (/^refs\//.test(nominated) || nominated.includes('/heads/') || nominated.includes('/remotes/')) {
+  // First SEGMENT, not a substring. The first version tested `/^refs\//`,
+  // `'/heads/'` and `'/remotes/'`, which needs a leading slash — so
+  // `remotes/origin/main` and `heads/main` both passed, and both reach `main`
+  // through git's DWIM. Matching the segment catches every spelling of the
+  // same reach, and the fallback when it refuses is pushing HEAD, which is
+  // what a run with no usable prior branch does anyway.
+  if (/^(?:refs|heads|remotes|tags|origin)\//i.test(nominated)) {
     refusals.push('it is a fully-qualified ref rather than a branch name, and `HEAD:refs/heads/x` ' +
       'reaches the same place by a different spelling')
   }
@@ -7329,8 +7335,11 @@ function reusablePriorBranch(prior) {
   // could drift from it. `primaryBranchBefore` covers the consumer whose
   // default is neither: it is the branch the project checkout was on when this
   // run launched, which is the #136 fact in the first place.
-  const bare = bareBranchName(nominated)
-  if (DEFAULT_BRANCHES.has(bare) || (primaryBranchBefore && bare === bareBranchName(primaryBranchBefore))) {
+  // Case-folded, because `DEFAULT_BRANCHES.has` is exact and `Main` is not
+  // `main` to a Set while it is to a case-insensitive checkout.
+  const bare = bareBranchName(nominated).toLowerCase()
+  const before = primaryBranchBefore ? bareBranchName(primaryBranchBefore).toLowerCase() : ''
+  if (DEFAULT_BRANCHES.has(bare) || (before && bare === before)) {
     refusals.push(`it is the default branch (${bare}), and ship does not push a run's work onto it (#136)`)
   }
   if (prior.isMerged === true) refusals.push('its work is already in the base branch')
@@ -7341,10 +7350,19 @@ function reusablePriorBranch(prior) {
     refusals.push('how far behind the base branch it sits was never measured')
   }
 
-  if (refusals.length === 0) return prior.branch
+  // `nominated`, NEVER `prior.branch`. Every refusal above reads `nominated`,
+  // so returning the raw value would validate one representation and emit a
+  // different one. The `.trim()` is what makes that exploitable rather than
+  // cosmetic: `'feature\n'` trims to `feature`, clears every refusal, and the
+  // raw value would become `HEAD:feature\n` in
+  // `git -C ${shellQuote(commitDir)} push -u origin ${pushTarget}` — where the
+  // refspec is the UNQUOTED half, so a newline ends the command and the next
+  // line is a new one. Quoting `commitDir` does nothing about it.
+  // If you add a normalisation step here, validate and return the same string.
+  if (refusals.length === 0) return nominated
   // Sliced because this line now reports names that failed a SHAPE check, so
   // the first value it will ever print in anger is the hostile one.
-  log(`Not pushing onto prior branch ${String(prior.branch).slice(0, 80)}: ${refusals.join('; ')}. Pushing HEAD instead.`)
+  log(`Not pushing onto prior branch ${nominated.slice(0, 80)}: ${refusals.join('; ')}. Pushing HEAD instead.`)
   return null
 }
 

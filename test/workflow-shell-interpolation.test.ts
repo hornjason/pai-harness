@@ -87,19 +87,19 @@ const CLASSIFIED: Record<string, string> = {
   "workflows/ship.js:SELECTED_TESTS_COMMAND":
     "a command, not a value: `selectedTestsCommand` builds it and is given `shellQuote` to quote " +
     "its own arguments with",
-  "workflows/ship.js:testCommand":
+  "workflows/ship.js:testCommand×3":
     "a command, not a value: the project's test command out of `rungate.json`, run as written. " +
     "`suiteCaptureCommand` takes the quoter as an argument and applies it to the PATHS around it",
   "workflows/ship.js:prodQuinn":
     "a command, not a value: `prodQuinnAssignment` returns a JavaScript statement that the " +
     "surrounding `bun -e` executes. Quoting it would make it a string literal that does nothing",
-  "workflows/ship.js:testTimeout":
+  "workflows/ship.js:testTimeout×3":
     "structured, not text: `projectConfig.test?.timeout || 120000`, a number, read by the agent " +
     "as the Bash tool's timeout parameter",
   "workflows/ship.js:prState":
     "structured, not text: `prState.number` is a PR number from `prReadiness`, which reads it " +
     "from the GitHub API's JSON, not from a reply",
-  "workflows/ship.js:prStep":
+  "workflows/ship.js:prStep×3":
     "structured, not text: `prStep.prNumber` and `prStep.detail` are reported into prompt prose " +
     "about what the PR step did; neither is a word in a command",
   "workflows/ship.js:acCoverage":
@@ -141,21 +141,21 @@ const CLASSIFIED: Record<string, string> = {
   "workflows/ship.js:verifyResult":
     "prose into a prompt: the verify gate's failure lines, joined into a sentence. Reached by " +
     "`'…' + …`, not by a template — the concatenation shape the scanner could not see (#1113)",
-  "workflows/ship.js:result":
+  "workflows/ship.js:result×4":
     "prose into a prompt: `result.result` or the sentence 'did not report a result'",
   "workflows/ship.js:evidenceQuality":
     "prose into a prompt: `.reason`, a sentence this file composed in `dryRunEvidenceQuality`",
   "workflows/ship.js:established":
     "prose into a prompt: `.refusal`, composed by this file when the run ref could not be made",
-  "workflows/ship.js:reread":
+  "workflows/ship.js:reread×1":
     "prose into a prompt: `.refusal`, composed by this file",
   "workflows/ship.js:waveBase":
     "prose into a prompt: `.refusal`, composed by this file",
   "workflows/ship.js:integrated":
     "prose into a prompt: `.detail`, composed by this file when a wave did not integrate",
-  "workflows/ship.js:kept":
+  "workflows/ship.js:kept×1":
     "prose into a prompt: `.detail`, composed by this file about preserved work",
-  "workflows/ship.js:ciStep":
+  "workflows/ship.js:ciStep×1":
     "prose into a prompt: `.reason`, composed by this file from CI's own verdict",
   "workflows/ship.js:persistResult":
     "prose into a prompt: `.error`, or the sentence 'no receipt returned'",
@@ -163,7 +163,7 @@ const CLASSIFIED: Record<string, string> = {
     "structured, not text: the suite verdict word, or the literal 'unset'",
   "workflows/ship.js:reReviewed":
     "prose into a prompt: wrapped in `describeShaValue`, in a sentence about the re-review",
-  "workflows/ship.js:ready":
+  "workflows/ship.js:ready×1":
     "prose into a prompt: sub-issue titles, joined into a sentence. Nested one level inside a " +
     "`log()` message, which the direct-argument exemption deliberately does not reach",
   "workflows/ship.js:envCheck":
@@ -175,55 +175,55 @@ const CLASSIFIED: Record<string, string> = {
   // the analysis follows one hop because a value crossing a function boundary
   // changes its name and that is what function boundaries are for. These
   // fifteen are what that hop added on this tree.
-  "workflows/ship.js:o":
+  "workflows/ship.js:o×5":
     "a command, not a value: `o.suiteCapture` and `o.recorder` are the suite and recorder command " +
     "lines, composed by `suiteCaptureCommand` and `recorderCommand` with the quoter passed in",
-  "workflows/ship.js:prompt":
+  "workflows/ship.js:prompt×1":
     "prose into a prompt: `timedAgent`'s own prompt argument, concatenated with the timing " +
     "instruction before being handed to `agent`. It IS the prompt",
   "workflows/ship.js:healContext":
     "prose into a prompt: a paragraph about what the previous attempt got wrong",
   "workflows/ship.js:context":
     "prose into a prompt: the regression context sentence, or nothing",
-  "workflows/ship.js:prior":
+  "workflows/ship.js:prior×1":
     "prose into a prompt: `prior.behindCount` in the refusal sentence `reusablePriorBranch` " +
     "composes. `prior.branch` itself now passes `isSafeBranchName` before it is used at all",
-  "workflows/ship.js:record":
+  "workflows/ship.js:record×2":
     "a command, not a value: `prodQuinnAssignment` composes a JavaScript statement for `bun -e`",
   "workflows/ship.js:currency":
     "prose into a prompt: wrapped in `describeShaValue`, in a `reason:` sentence",
   "workflows/ship.js:measuredSha":
     "prose into a prompt: wrapped in `describeSuiteShaValue`, in a `reason:` sentence",
-  "workflows/ship.js:v":
+  "workflows/ship.js:v×2":
     "structured, not text: `describeShaValue`'s own argument — `v.length` for an array, and " +
     "`JSON.stringify(v)` for everything that reaches the final line",
-  "workflows/ship.js:r":
+  "workflows/ship.js:r×3":
     "prose into a prompt: evidence-quality reasons, joined into a sentence about what was not " +
     "measured",
   "workflows/ship.js:reading":
     "structured, not text: `JSON.stringify(reading.verdict)` inside a refusal sentence",
-  "workflows/ship.js:reply":
+  "workflows/ship.js:reply×2":
     "structured, not text: `JSON.stringify(reply.outcome)` inside a refusal sentence",
   "workflows/ship.js:existingPR":
     "structured, not text: `JSON.stringify(existingPR)` inside a refusal sentence",
   "workflows/ship.js:results":
     "structured, not text: `typeof results`, which is one of eight words",
-  "workflows/ship.js:status":
+  "workflows/ship.js:status×2":
     "structured, not text: `String(status)` in a readiness sentence",
 
   // ── workflows/ship-and-heal.js ─────────────────────────────────────
   "workflows/ship-and-heal.js:workDir":
     "refused at the source: anything that is not a plain absolute path is dropped to '' at the " +
     "assignment, and the existing `if (workDir)` branch then skips grading (#1103)",
-  "workflows/ship-and-heal.js:testCommand":
+  "workflows/ship-and-heal.js:testCommand×2":
     "a command, not a value: the project's test command, run as written inside `( cd … && … )`",
-  "workflows/ship-and-heal.js:testTimeout":
+  "workflows/ship-and-heal.js:testTimeout×3":
     "structured, not text: a number, read by the agent as the Bash tool's timeout parameter",
-  "workflows/ship-and-heal.js:status":
+  "workflows/ship-and-heal.js:status×1":
     "prose into a prompt: the ship workflow's terminal status word, reported in a summary block",
   "workflows/ship-and-heal.js:failureText":
     "prose into a prompt: the failure lines the root-cause agent is asked to explain",
-  "workflows/ship-and-heal.js:rca":
+  "workflows/ship-and-heal.js:rca×4":
     "prose into a prompt: the root-cause agent's own analysis, quoted back to the fixer",
 
   // ── workflows/prove.js ─────────────────────────────────────────────
@@ -287,17 +287,93 @@ const WORKFLOW_FILES = readdirSync(WORKFLOW_DIR)
   .sort();
 const sourceOf = (f: string) => readFileSync(join(WORKFLOW_DIR, f), "utf-8");
 
-/** `workflows/<file>:<binding>` for every bare interpolation in the tree. */
+/**
+ * The exemption covering one site, in the two key forms, or `null`.
+ *
+ * `workflows/<file>:<binding>` exempts every interpolation of that name in
+ * that file. `workflows/<file>:<binding>:<line>` exempts exactly one line.
+ * The narrow form exists because a name-scoped exemption on a generic
+ * identifier pre-approves the NEXT binding to take the name: the derivation
+ * keys by name, so two different bindings called `result` are one entry to
+ * this whole census, and a sentence written about the safe one would silently
+ * cover the other. `genericNameRule` below makes the narrow form compulsory
+ * where that risk is real rather than leaving it to taste.
+ */
+function exemptionFor(
+  rel: string,
+  site: { name: string; where: string },
+  siteCount: (name: string) => number,
+): string | null {
+  const line = site.where.slice(site.where.lastIndexOf(":") + 1);
+  const counted = CLASSIFIED[`${rel}:${site.name}×${siteCount(site.name)}`];
+  return (
+    CLASSIFIED[`${rel}:${site.name}:${line}`] ??
+    counted ??
+    CLASSIFIED[`${rel}:${site.name}`] ??
+    null
+  );
+}
+
+/** Distinct lines on which `name` is interpolated bare in `file`. */
+function siteCounter(file: string): (name: string) => number {
+  const byName = new Map<string, Set<string>>();
+  for (const s of bareAgentInterpolations(`workflows/${file}`, sourceOf(file))) {
+    if (!byName.has(s.name)) byName.set(s.name, new Set());
+    byName.get(s.name)!.add(s.where.slice(s.where.lastIndexOf(":") + 1));
+  }
+  return (name: string) => byName.get(name)?.size ?? 0;
+}
+
+/**
+ * Every key form a live site could legitimately be exempted by.
+ *
+ * All three: the file-wide `…:<binding>`, the line-pinned
+ * `…:<binding>:<line>` and the count-pinned `…:<binding>×<n>`, so the
+ * staleness check below reads a CLASSIFIED entry as live when the site it
+ * names still exists at whichever granularity it was written in.
+ */
 function liveKeys(): Map<string, string[]> {
   const keys = new Map<string, string[]>();
   for (const file of WORKFLOW_FILES) {
+    const count = siteCounter(file);
     for (const site of bareAgentInterpolations(`workflows/${file}`, sourceOf(file))) {
-      const key = `workflows/${file}:${site.name}`;
-      if (!keys.has(key)) keys.set(key, []);
-      keys.get(key)!.push(site.where);
+      const line = site.where.slice(site.where.lastIndexOf(":") + 1);
+      for (const key of [
+        `workflows/${file}:${site.name}`,
+        `workflows/${file}:${site.name}:${line}`,
+        `workflows/${file}:${site.name}×${count(site.name)}`,
+      ]) {
+        if (!keys.has(key)) keys.set(key, []);
+        keys.get(key)!.push(site.where);
+      }
     }
   }
   return keys;
+}
+
+/**
+ * Which names may NOT take a file-wide exemption, derived rather than listed.
+ *
+ * Two signals, both properties of the tree: a short name (`o`, `r`, `result`)
+ * is one the next author will reach for without checking, and a name bound in
+ * more than one workflow file is demonstrably not unique to one binding. A
+ * hand-written list of "generic" names would be the same enumeration problem
+ * this check exists to stop.
+ */
+const GENERIC_MAX_LENGTH = 6;
+function genericNames(): Set<string> {
+  const filesByName = new Map<string, Set<string>>();
+  for (const file of WORKFLOW_FILES) {
+    for (const site of bareAgentInterpolations(`workflows/${file}`, sourceOf(file))) {
+      if (!filesByName.has(site.name)) filesByName.set(site.name, new Set());
+      filesByName.get(site.name)!.add(file);
+    }
+  }
+  return new Set(
+    [...filesByName]
+      .filter(([name, files]) => name.length <= GENERIC_MAX_LENGTH || files.size > 1)
+      .map(([name]) => name),
+  );
 }
 
 describe("#1103: every agent-derived interpolation in a workflow prompt is classified", () => {
@@ -316,9 +392,12 @@ describe("#1103: every agent-derived interpolation in a workflow prompt is class
   for (const file of WORKFLOW_FILES) {
     test(`workflows/${file}`, () => {
       const rel = `workflows/${file}`;
+      // Hoisted: building it per site re-parses the file once per
+      // interpolation, which took ship.js past the 5s case budget.
+      const count = siteCounter(file);
       const unclassified = [...new Set(
         bareAgentInterpolations(rel, sourceOf(file))
-          .filter(s => !(`${rel}:${s.name}` in CLASSIFIED))
+          .filter(s => !exemptionFor(rel, s, count))
           .map(s => `${s.where} — \${${s.name}}  (${s.expression})`),
       )];
 
@@ -342,6 +421,37 @@ describe("#1103: every agent-derived interpolation in a workflow prompt is class
       ).toEqual([]);
     });
   }
+
+  test("a generic name is exempted by site count, not file-wide", () => {
+    const generic = genericNames();
+    const tooBroad = Object.keys(CLASSIFIED)
+      .filter(k => {
+        // `workflows/<file>:<name>`, `…:<name>:<line>`, `…:<name>×<n>`. Decode
+        // rather than taking the last `:` segment: `result×4` is not a name,
+        // and reading it as one made this row pass by accident.
+        const after = k.slice(k.indexOf(":") + 1);
+        const pinned = /:\d+$/.test(after) || /×\d+$/.test(after);
+        if (pinned) return false;
+        return generic.has(after);
+      })
+      .sort();
+    expect(
+      tooBroad,
+      remedyMessage({
+        root: REPO_ROOT,
+        check: "SHELL-QUOTE-1",
+        violations: tooBroad,
+        fix:
+          "this exemption is file-wide on a name that is short or bound in more than one " +
+          "workflow file. The derivation keys by NAME, so a second binding that takes this name " +
+          "inherits a sentence written about the first one and the census stays quiet about it. " +
+          "Pin it: `workflows/<file>:<binding>×<n>` states how many sites the sentence was " +
+          "written about and reds when a site is added, which is the cheap form — a line shift " +
+          "does not change a count. `workflows/<file>:<binding>:<line>` pins one site exactly, " +
+          "for when the sites genuinely differ in kind.",
+      }),
+    ).toEqual([]);
+  });
 
   test("no classification outlives the site it describes", () => {
     // Both directions, deliberately. An exemption left behind after its line
