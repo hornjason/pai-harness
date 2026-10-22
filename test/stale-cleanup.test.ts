@@ -9,6 +9,15 @@ import { join } from 'path';
 import { archiveAndPurge, cleanStaleFiles } from '../lib/stale-cleanup';
 import { tmpdir } from 'os';
 
+/**
+ * These cases are about TTL behaviour over a directory the test owns, not
+ * about which runner owns the work root (#904). They say so explicitly,
+ * because the ownership guard reads `process.env.RUNNER_NAME` by default and
+ * CI sets it on every job — leaving it implicit made 9 of these 12 pass
+ * locally and fail in CI, which is the divergence rather than the defect.
+ */
+const OFF_RUNNER: NodeJS.ProcessEnv = {};
+
 let testDir: string;
 
 beforeEach(() => {
@@ -68,7 +77,7 @@ describe('archiveAndPurge', () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'PRD.md'), '# a run in progress');
 
-    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.archived, 'a live run directory was archived underneath it').toBe(0);
     expect(existsSync(join(dir, 'PRD.md'))).toBe(true);
@@ -87,7 +96,7 @@ describe('archiveAndPurge', () => {
     utimesSync(stale, fiveHoursAgo, fiveHoursAgo);
     utimesSync(dir, fiveHoursAgo, fiveHoursAgo);
 
-    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.archived).toBe(1);
     expect(existsSync(dir)).toBe(false);
@@ -102,7 +111,7 @@ describe('archiveAndPurge', () => {
 
     createWorkDir(slug, 'DONE', fiveHoursMs);
 
-    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.archived).toBe(1);
     expect(existsSync(join(testDir, slug))).toBe(false);
@@ -116,7 +125,7 @@ describe('archiveAndPurge', () => {
 
     createWorkDir(slug, 'BUILD', fiveHoursMs);
 
-    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.skipped).toBe(1);
     expect(existsSync(join(testDir, slug))).toBe(true);
@@ -130,7 +139,7 @@ describe('archiveAndPurge', () => {
 
     createWorkDir(slug, 'BUILD', eightDaysMs);
 
-    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.archived).toBe(1);
     expect(existsSync(join(testDir, slug))).toBe(false);
@@ -148,7 +157,7 @@ describe('archiveAndPurge', () => {
     const time = (Date.now() - thirtyOneDaysMs) / 1000;
     utimesSync(archiveDir, time, time);
 
-    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.purged).toBe(1);
     expect(existsSync(archiveDir)).toBe(false);
@@ -165,7 +174,7 @@ describe('archiveAndPurge', () => {
     const time = (Date.now() - twentyDaysMs) / 1000;
     utimesSync(archiveDir, time, time);
 
-    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.purged).toBe(0);
     expect(existsSync(archiveDir)).toBe(true);
@@ -180,7 +189,7 @@ describe('archiveAndPurge', () => {
     writeFileSync(join(oldArchive1, 'data.json'), '{}');
     writeFileSync(join(oldArchive2, 'data.json'), '{}');
 
-    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(existsSync(oldArchive1)).toBe(false);
     expect(existsSync(oldArchive2)).toBe(false);
@@ -194,7 +203,7 @@ describe('archiveAndPurge', () => {
     mkdirSync(hiddenDir, { recursive: true });
     writeFileSync(join(hiddenDir, 'data.json'), '{}');
 
-    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.archived).toBe(0);
     expect(existsSync(hiddenDir)).toBe(true);
@@ -209,7 +218,7 @@ describe('archiveAndPurge', () => {
     createWorkDir(verifySlug, 'VERIFY', fiveHoursMs);
     createWorkDir(scopeSlug, 'SCOPE', fiveHoursMs);
 
-    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000);
+    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.skipped).toBe(2);
     expect(existsSync(join(testDir, verifySlug))).toBe(true);
@@ -226,7 +235,7 @@ describe('cleanStaleFiles integration', () => {
 
     createWorkDir(slug, 'DONE', fiveHoursMs);
 
-    const result = cleanStaleFiles(testDir, fourHoursMs, sevenDaysMs);
+    const result = cleanStaleFiles(testDir, fourHoursMs, sevenDaysMs, OFF_RUNNER);
 
     // Should have archived the DONE dir
     expect(existsSync(join(testDir, slug))).toBe(false);
@@ -246,7 +255,7 @@ describe('cleanStaleFiles integration', () => {
     const time = (Date.now() - fiveHoursMs) / 1000;
     utimesSync(shipActiveFile, time, time);
 
-    const result = cleanStaleFiles(testDir, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+    const result = cleanStaleFiles(testDir, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000, OFF_RUNNER);
 
     expect(result.deleted).toBeGreaterThan(0);
     expect(existsSync(shipActiveFile)).toBe(false);
