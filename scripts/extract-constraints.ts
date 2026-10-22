@@ -17,6 +17,7 @@ import {
 } from "../lib/rule-promotion";
 import {
   retireUnresolvable,
+  survivingSubset,
   type RetirementReading,
 } from "../lib/rule-retirement";
 
@@ -350,12 +351,31 @@ export async function extractConstraints(
     },
   );
 
-  if (options?.apply && allCandidates.length > 0) {
-    applyToAgentsMd(projectPath, allCandidates);
+  // #544. The gate has to reach the WRITE, or it is a control with no sink.
+  //
+  // Until this line, `--apply` wrote `allCandidates` — the unfiltered list —
+  // so a candidate the retirement pass had just dropped was written into
+  // `AGENTS.md` anyway and `retirement` was a field on the result that
+  // nothing downstream consulted. A gate whose verdict changes no output is
+  // not a fail-open; it is decoration.
+  //
+  // Filtered by object identity, not by hash: the same candidate objects
+  // flow through `retireUnresolvable`, and a hash is a judgement about a
+  // SENTENCE — two candidates mined from different positions can share one
+  // (`lib/failure-intake.ts` relies on exactly that for a revert and the fix
+  // it reverts), so matching on it would drop a survivor alongside a retired
+  // twin.
+  const keptDocCandidates = survivingSubset(allCandidates, retirement);
+
+  if (options?.apply && keptDocCandidates.length > 0) {
+    applyToAgentsMd(projectPath, keptDocCandidates);
   }
 
   return {
-    candidates: allCandidates,
+    // The backlog HYGIENE-6 counts is the surviving population, for the same
+    // reason: re-reporting a candidate the generator has already retired
+    // asks somebody to triage a position that is not there any more.
+    candidates: keptDocCandidates,
     deduped: {
       existingConstraints: existingRemoved,
       rejectedPrior: rejectedRemoved,

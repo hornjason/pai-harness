@@ -433,6 +433,96 @@ the input the two folds differ on (a MEASURED upstream followed by an
 UNMEASURED one carrying a named reason) and asserting the reason list took it
 to 1 red.
 
+### The correction battery (#544, SC-1941, 2026-10-21)
+
+Review of the above found the central rule of this repository turned against
+its own implementation: **`GONE` was being returned for "I could not look".**
+
+The first implementation asked `git cat-file -e <sha>^{commit}` and read any
+non-zero exit as absence. Measured on this machine:
+
+```
+missing object            exit=128
+not a repository          exit=128
+malformed ref syntax      exit=128
+unreadable object store   exit=128
+present object            exit=0
+```
+
+So one destructive verdict covered four different events, and a timeout —
+`spawnSync` reports it through `error` or `signal`, not `status` — joined
+them. The failure mode is deletion, not a quiet pass.
+
+**The narrower repair is also wrong, and the measurement is what says so.**
+"Treat only 0 and 1 as answers" was the suggested fix; with the `^{commit}`
+peel a missing object exits 128, so that reads all five rows as "cannot tell"
+and retires nothing, ever. A check that can never fire and a check that fires
+on everything are the same defect at opposite signs.
+
+The fix is not a better threshold on that exit code. `git cat-file
+--batch-check` reports the outcome in its OUTPUT and reserves a non-zero exit
+for not having run:
+
+```
+<full oid> commit <size>   RESOLVES
+<input> missing            GONE        — the only arm that retires
+<input> ambiguous          UNMEASURED  — names no commit in particular
+<full oid> tree <size>     UNMEASURED  — resolves, and not to a commit
+```
+
+Absence and failure-to-look become different observations rather than two
+values of one number. It also answers the whole population in **one**
+subprocess, so `GIT_TIMEOUT_MS` is a total deadline rather than a
+per-candidate one that multiplies — and results are zipped by INDEX, because
+git echoes the resolved oid for an input it resolved and the raw input for one
+it did not, so a map keyed by the input silently loses every short sha that
+worked.
+
+`ambiguous` is not hypothetical: `lib/failure-intake.ts` writes
+eight-character prefixes.
+
+**The gate also had no sink.** `scripts/extract-constraints.ts` computed
+`retirement.kept`, promoted from it, and then wrote the unfiltered
+`allCandidates` into `AGENTS.md`. It now writes `survivingSubset(...)` — an
+exported function rather than an inline expression, so a test drives the
+filter itself instead of a second copy of it.
+
+Nine mutations, baseline **62 pass / 0 fail**.
+
+| Mutation | Red | What it reddened |
+|---|---|---|
+| `missing` never returns GONE | 6 | the sha pair, the unrunnable-batch control, both retirement cases, the summary, the converted escape |
+| a failed `git` treated as a usable answer | 3 | the unrunnable batch, the failure detail, the kill case |
+| `ambiguous` read as GONE | 1 | the ambiguous-prefix case |
+| any non-`missing` verdict read as RESOLVES | 1 | the tree-sha case |
+| the line-count guard removed | 1 | the count-mismatch case |
+| `survivingSubset` returns the subset unfiltered | 2 | both sink cases |
+| `survivingSubset` matches on hash instead of identity | 1 | two candidates sharing a sentence |
+| the `r.signal` branch removed | **0** | — |
+| the `r.error` branch removed | **0** | — |
+| **both kill branches removed together** | **1** | the kill case |
+
+The last three are one finding. `r.error` and `r.signal` are platform
+alternatives for the same event, so each individually survives — the other
+reports it — and only removing both changes what a reader is told. The
+verdict is unaffected either way (`status` is `null` on a kill and `null !== 0`),
+so the case asserts the DETAIL: a timeout has to read as a timeout and not as
+`exited null`. Witnessed with a real 1 ms deadline against a real repository,
+which is why `batchCheckShas` takes the deadline as a parameter: with no way
+to make git hang on demand those branches are otherwise unreachable, and an
+unreachable guard is the shape this file is about.
+
+**Two things are recorded as unwitnessed rather than covered.** The sha
+`new Set` is an efficiency measure with no behavioural difference — a
+duplicated sha gets the same answer twice. And finding 3's harm is not
+currently reachable end to end: every doc candidate's `path:line` is derived
+from a file the same run has just read, and `lib/doc-scan-targets.ts` already
+refuses a symlink whose target leaves the project, so the citation resolves by
+construction. A fixture planting an out-of-tree doc yields zero candidates
+from it, because the scanner declines to read it at all. The fix is
+structurally right and its witness is at the function boundary, not at the
+pipeline's.
+
 ## SUCCESS.md
 
 This spec moves no existing numbered claim. Claim 5 is closest, but its named

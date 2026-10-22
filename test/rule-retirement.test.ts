@@ -40,13 +40,18 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 
 import {
+  AMBIGUOUS_SHA,
+  GIT_UNREADABLE,
+  NOT_A_COMMIT,
   NOT_A_GIT_REPOSITORY,
   SHALLOW_HISTORY,
   UNRECOGNISED_CITATION,
+  batchCheckShas,
   readHistoryState,
   resolveCitation,
   retireUnresolvable,
   retirementSummary,
+  survivingSubset,
 } from "../lib/rule-retirement";
 import { repoFileIndex } from "../lib/line-citation";
 import { promoteCandidates, PROMOTION_BUDGET_RULES } from "../lib/rule-promotion";
@@ -124,6 +129,20 @@ const candidate = (source: string, hash = source) => ({ source, hash });
 /** A sha of the right shape that is in no repository anywhere. */
 const ABSENT_SHA = "0".repeat(40);
 
+/**
+ * `resolveCitation` reads the sha arm out of a batch taken once for the
+ * whole population, so a case about one citation has to build the batch its
+ * reading would have come from. Built with the REAL `batchCheckShas` rather
+ * than a hand-written map: a map written here would be a fixture asserting
+ * what the test already believes, and the git call is the thing under test.
+ */
+function resolve(root: string, source: string) {
+  const history = readHistoryState(root);
+  const sha = /^git:([0-9a-f]{7,40})$/.exec(source)?.[1];
+  const batch = batchCheckShas(root, sha ? [sha] : [], history);
+  return resolveCitation(root, source, repoFileIndex(root), batch);
+}
+
 // ── The resolver ─────────────────────────────────────────────────
 
 describe("SC-1941: resolveCitation — three readings, and only one retires", () => {
@@ -131,12 +150,8 @@ describe("SC-1941: resolveCitation — three readings, and only one retires", ()
     // The pair. Without the second half the resolver could answer RESOLVES
     // unconditionally and the first half would still pass.
     const { dir, shas } = repoWithCommits("sha-pair", 2);
-    const history = readHistoryState(dir);
-    const index = repoFileIndex(dir);
-    expect(resolveCitation(dir, `git:${shas[1]!.slice(0, 8)}`, history, index).reading).toBe(
-      "RESOLVES",
-    );
-    expect(resolveCitation(dir, `git:${ABSENT_SHA}`, history, index).reading).toBe("GONE");
+    expect(resolve(dir, `git:${shas[1]!.slice(0, 8)}`).reading).toBe("RESOLVES");
+    expect(resolve(dir, `git:${ABSENT_SHA}`).reading).toBe("GONE");
   });
 
   test("a sha question asked of a SHALLOW clone is UNMEASURED, never GONE", () => {
@@ -148,33 +163,27 @@ describe("SC-1941: resolveCitation — three readings, and only one retires", ()
     const history = readHistoryState(shallow);
     expect(history.shallow, "the fixture did not actually produce a shallow clone").toBe(true);
 
-    const read = resolveCitation(shallow, `git:${shas[0]!.slice(0, 8)}`, history, repoFileIndex(shallow));
+    const read = resolve(shallow, `git:${shas[0]!.slice(0, 8)}`);
     expect(read.reading).toBe("UNMEASURED");
     expect(read.detail).toContain("shallow");
 
     // And the SAME sha against the full history resolves — so the UNMEASURED
     // above is the clone's doing, not the sha's.
-    expect(
-      resolveCitation(dir, `git:${shas[0]!.slice(0, 8)}`, readHistoryState(dir), repoFileIndex(dir))
-        .reading,
-    ).toBe("RESOLVES");
+    expect(resolve(dir, `git:${shas[0]!.slice(0, 8)}`).reading).toBe("RESOLVES");
   });
 
   test("a sha question asked of a directory that is not a repository is UNMEASURED", () => {
     const dir = scratchDir("norepo");
-    const history = readHistoryState(dir);
-    expect(history.readable).toBe(false);
-    expect(resolveCitation(dir, `git:${ABSENT_SHA}`, history, []).reading).toBe("UNMEASURED");
+    expect(readHistoryState(dir).readable).toBe(false);
+    expect(resolve(dir, `git:${ABSENT_SHA}`).reading).toBe("UNMEASURED");
   });
 
   test("a `path:line` that exists RESOLVES; one past the end of the file is GONE", () => {
     const { dir } = repoWithCommits("lines", 1);
     plantFile(dir, "docs/x.md", 10);
-    const history = readHistoryState(dir);
-    const index = repoFileIndex(dir);
-    expect(resolveCitation(dir, "docs/x.md:3", history, index).reading).toBe("RESOLVES");
-    expect(resolveCitation(dir, "docs/x.md:99", history, index).reading).toBe("GONE");
-    expect(resolveCitation(dir, "docs/gone.md:1", history, index).reading).toBe("GONE");
+    expect(resolve(dir, "docs/x.md:3").reading).toBe("RESOLVES");
+    expect(resolve(dir, "docs/x.md:99").reading).toBe("GONE");
+    expect(resolve(dir, "docs/gone.md:1").reading).toBe("GONE");
   });
 
   test("a resolving citation is not a correct one — the reading says so", () => {
@@ -184,7 +193,7 @@ describe("SC-1941: resolveCitation — three readings, and only one retires", ()
     // 75%-stale mistake #514 measured.
     const { dir } = repoWithCommits("notvalid", 1);
     plantFile(dir, "docs/x.md", 10);
-    const read = resolveCitation(dir, "docs/x.md:3", readHistoryState(dir), repoFileIndex(dir));
+    const read = resolve(dir, "docs/x.md:3");
     expect(read.reading).toBe("RESOLVES");
     expect(read.detail).toContain("cannot be decided mechanically");
   });
@@ -195,9 +204,166 @@ describe("SC-1941: resolveCitation — three readings, and only one retires", ()
     // a JavaScript regex that made a whole parser return nothing, so this is
     // not hypothetical.
     const { dir } = repoWithCommits("unknown", 1);
-    const read = resolveCitation(dir, "some-opaque-provenance", readHistoryState(dir), []);
+    const read = resolve(dir, "some-opaque-provenance");
     expect(read.reading).toBe("UNMEASURED");
     expect(read.detail).toContain(UNRECOGNISED_CITATION);
+  });
+});
+
+describe("SC-1941: a non-zero git is NOT an absent commit", () => {
+  test("the exit code cannot tell absence from failure, which is why it is not read", () => {
+    /**
+     * The measurement behind this whole section, taken on this machine.
+     * `git cat-file -e <sha>^{commit}` — the first implementation — exits
+     * **128** for a missing object, and 128 for a broken repository, and
+     * 128 for an unreadable object store, and 128 for bad ref syntax. So
+     * `status !== 0 -> GONE` read four different events as "retire this
+     * rule", and the narrower repair of accepting only 0 and 1 as answers
+     * reads ALL FIVE as "cannot tell" and retires nothing ever.
+     *
+     * Asserted rather than described, because the number is the reason the
+     * implementation changed and a comment would go stale the first time
+     * git changed it.
+     */
+    const { dir, shas } = repoWithCommits("exitcodes", 1);
+    const code = (cwd: string, rev: string) =>
+      spawnSync("git", ["-C", cwd, "cat-file", "-e", rev], { encoding: "utf-8" }).status;
+    expect(code(dir, `${shas[0]}^{commit}`)).toBe(0);
+    expect(code(dir, `${ABSENT_SHA}^{commit}`)).toBe(128);
+    expect(code(scratchDir("exitcodes-norepo"), `${shas[0]}^{commit}`)).toBe(128);
+    expect(code(dir, "deadbeef^{commit")).toBe(128);
+  });
+
+  test("a batch that could not run leaves every sha UNMEASURED, not GONE", () => {
+    // The destructive direction. A timeout under load, or an unreadable
+    // object store, must not retire a rule that resolves perfectly well.
+    // Driven through `batchCheckShas` with a history state that claims the
+    // repository is readable when it is not — which is exactly the state a
+    // `.git` that disappeared mid-pass leaves behind.
+    const empty = scratchDir("unrunnable");
+    const readings = batchCheckShas(empty, [ABSENT_SHA], { readable: true, shallow: false });
+    const read = readings.get(ABSENT_SHA)!;
+    expect(read.reading).toBe("UNMEASURED");
+    expect(read.detail).toContain(GIT_UNREADABLE);
+
+    // The input on which this differs from a real absence: the same sha,
+    // the same shape, in a repository git CAN read.
+    const { dir } = repoWithCommits("runnable", 1);
+    expect(batchCheckShas(dir, [ABSENT_SHA], readHistoryState(dir)).get(ABSENT_SHA)!.reading).toBe(
+      "GONE",
+    );
+  });
+
+  test("the failure detail names what failed, so a timeout is visible as one", () => {
+    const empty = scratchDir("detail");
+    const read = batchCheckShas(empty, [ABSENT_SHA], { readable: true, shallow: false }).get(
+      ABSENT_SHA,
+    )!;
+    // git's own stderr, not a verdict this module invented.
+    expect(read.detail).toContain("not a git repository");
+  });
+
+  test("an AMBIGUOUS prefix is UNMEASURED — it names no commit in particular", () => {
+    // `lib/failure-intake.ts` writes eight-character prefixes, so this is a
+    // real state in a repository this size. `--batch-check` reports
+    // `ambiguous` distinctly from `missing`, which is the second reason the
+    // exit code was the wrong instrument: it collapses them.
+    const { dir } = repoWithCommits("ambiguous", 1);
+    // 2,000 blobs over 65,536 four-character buckets makes a collision a
+    // certainty rather than a hope — about thirty of them, by the birthday
+    // bound. Written as blobs in ONE `hash-object` call rather than as
+    // commits, so the fixture costs one subprocess instead of 2,000 and the
+    // case does not depend on how many objects a commit happens to create.
+    mkdirSync(join(dir, "blobs"), { recursive: true });
+    const paths: string[] = [];
+    for (let i = 0; i < 2_000; i++) {
+      const f = join(dir, "blobs", `b${i}`);
+      writeFileSync(f, `${i}\n`);
+      paths.push(f);
+    }
+    const oids = spawnSync("git", ["-C", dir, "hash-object", "-w", "--stdin-paths"], {
+      encoding: "utf-8",
+      input: paths.join("\n") + "\n",
+      maxBuffer: 16 * 1024 * 1024,
+    }).stdout!.split("\n").filter(l => l.length === 40);
+    expect(oids.length, "the blob fixture did not write").toBe(2_000);
+    const prefixes = oids.map(o => o.slice(0, 4));
+    const amb = prefixes.find((s, i) => prefixes.indexOf(s) !== i);
+    expect(amb, "2,000 blobs produced no ambiguous 4-character prefix").toBeTruthy();
+    const read = batchCheckShas(dir, [amb!], readHistoryState(dir)).get(amb!)!;
+    expect(read.reading).toBe("UNMEASURED");
+    expect(read.detail).toContain(AMBIGUOUS_SHA);
+  });
+
+  test("a sha that resolves to a TREE is UNMEASURED, not a resolved commit", () => {
+    // It is in the tree, so `missing` is wrong; it is not the thing the
+    // candidate claims, so RESOLVES is wrong too.
+    const { dir } = repoWithCommits("treesha", 1);
+    const tree = spawnSync("git", ["-C", dir, "rev-parse", "HEAD^{tree}"], {
+      encoding: "utf-8",
+    }).stdout!.trim();
+    const read = batchCheckShas(dir, [tree], readHistoryState(dir)).get(tree)!;
+    expect(read.reading).toBe("UNMEASURED");
+    expect(read.detail).toContain(NOT_A_COMMIT);
+  });
+
+  test("a batch whose line count does not match the input count is UNMEASURED for all", () => {
+    // Zipping is by INDEX, because git echoes the resolved oid for an input
+    // it resolved and the raw input for one it did not — so a map keyed by
+    // the input silently loses every short sha that worked. A count mismatch
+    // makes every attribution a guess, so none is made.
+    //
+    // Driven, not asserted in a comment: one input carrying a newline is two
+    // input lines to git and one entry here, so the counts disagree for
+    // real. `retireUnresolvable` cannot produce that — `GIT_SOURCE` forbids
+    // a newline — but `batchCheckShas` is exported and this is its contract.
+    const { dir, shas } = repoWithCommits("shortbatch", 2);
+    const matched = batchCheckShas(dir, [shas[0]!, shas[1]!], readHistoryState(dir));
+    expect([...matched.values()].map(v => v.reading)).toEqual(["RESOLVES", "RESOLVES"]);
+
+    const split = `${shas[0]}\n${shas[1]}`;
+    const mismatched = batchCheckShas(dir, [split], readHistoryState(dir));
+    const read = mismatched.get(split)!;
+    expect(read.reading).toBe("UNMEASURED");
+    expect(read.detail).toContain("answered 2 of 1 inputs");
+  });
+
+  test("the whole population costs ONE git subprocess, so the timeout is a total", () => {
+    // Finding 2: a per-candidate spawn with a per-call timeout gives N x 60s,
+    // which is not a bound. Measured by counting what the pass actually
+    // spawns rather than by reading the code.
+    const { dir, shas } = repoWithCommits("onecall", 3);
+    const many = Array.from({ length: 50 }, (_, i) =>
+      candidate(`git:${shas[i % 3]!.slice(0, 8)}`, `h${i}`),
+    );
+    const before = Date.now();
+    const reading = retireUnresolvable(many, dir);
+    expect(reading.kept).toHaveLength(50);
+    // 50 subprocesses would not finish in this budget on a loaded machine;
+    // two do. The assertion is coarse on purpose — it is a bound, not a
+    // benchmark.
+    expect(Date.now() - before).toBeLessThan(5_000);
+  });
+
+  test("a git that is KILLED reads UNMEASURED, and the detail says it was killed", () => {
+    // The destructive direction again, and the one the exit code cannot
+    // express: a timeout under load must not retire rules that resolve.
+    // Driven with a real 1 ms deadline against a real repository, so the
+    // kill is git's, not a flag this test set.
+    const { dir, shas } = repoWithCommits("killed", 2);
+    const read = batchCheckShas(dir, [shas[0]!], readHistoryState(dir), 1).get(shas[0]!)!;
+    expect(read.reading).toBe("UNMEASURED");
+    expect(read.detail).toContain(GIT_UNREADABLE);
+    // Not "exited null". The verdict alone would be the same if the
+    // error and signal branches were deleted — `status` is null on a kill
+    // and `null !== 0` — so the DETAIL is what distinguishes them, and it
+    // is what a reader needs to tell a timeout from a broken repository.
+    expect(read.detail).toMatch(/ETIMEDOUT|killed by SIG/);
+
+    // The same sha, the same repository, a workable deadline: RESOLVES.
+    expect(
+      batchCheckShas(dir, [shas[0]!], readHistoryState(dir)).get(shas[0]!)!.reading,
+    ).toBe("RESOLVES");
   });
 });
 
@@ -212,7 +378,7 @@ describe("SC-1941: retireUnresolvable drops what is gone and says what it could 
     expect(reading.reading).toBe("MEASURED");
     expect(reading.kept).toEqual([live]);
     expect(reading.retired.map(r => r.candidate)).toEqual([dead]);
-    expect(reading.retired[0]!.detail).toContain("names no commit in this history");
+    expect(reading.retired[0]!.detail).toContain("names no object in this history");
   });
 
   test("it RETIRES rather than warns — the retired candidate is not in `kept`", () => {
@@ -389,5 +555,78 @@ describe("SC-1941: the retired candidate never reaches the promoter", () => {
     const reading = promoteCandidates([], { budget: 1, upstream: [silent] });
     expect(reading.reading).toBe("UNMEASURED");
     expect(reading.unmeasuredReasons).toEqual(["UPSTREAM_UNMEASURED"]);
+  });
+});
+
+// ── The gate reaches the write ───────────────────────────────────
+
+describe("SC-1941: the retirement gate has a sink", () => {
+  /**
+   * Until this change `scripts/extract-constraints.ts` computed
+   * `retirement.kept`, promoted from it, and then wrote the UNFILTERED
+   * `allCandidates` into `AGENTS.md`. The gate ran and nothing downstream
+   * of it was affected by the result — not a fail-open, a control with no
+   * sink.
+   *
+   * ## The witness this file does NOT have, and why
+   *
+   * A non-vacuous end-to-end witness needs a doc candidate that the
+   * retirement pass retires, and in one run there is no such candidate.
+   * Measured, not assumed: every doc candidate's `path:line` is derived
+   * from a file the same run has just read, and `lib/doc-scan-targets.ts`
+   * already refuses a symlink whose target leaves the project — so the
+   * citation resolves by construction. A test that planted an out-of-tree
+   * doc gets zero candidates from it, because the scanner declines to read
+   * it at all.
+   *
+   * So the finding is structurally right and its harm is not currently
+   * reachable through the doc path. Saying that is the honest report;
+   * writing a case that asserts `applyToAgentsMd` received a non-empty
+   * list would pass identically before and after the fix, which is the
+   * vacuous version.
+   *
+   * What IS driven below is the filter itself, at the boundary where a
+   * retired member can exist, and the positive control that an unretired
+   * population is written whole.
+   */
+  test("the identity filter drops a retired member and keeps the rest", () => {
+    const { dir } = repoWithCommits("sink", 1);
+    plantFile(dir, "docs/here.md", 10);
+    const live = { rule: "a", source: "docs/here.md:3", hash: "h1" };
+    const dead = { rule: "b", source: "docs/vanished.md:3", hash: "h2" };
+    const alsoLive = { rule: "c", source: "docs/here.md:7", hash: "h3" };
+
+    const retirement = retireUnresolvable([live, dead, alsoLive], dir);
+    expect(retirement.retired.map(r => r.candidate)).toEqual([dead]);
+
+    // THE function `extractConstraints` applies to the list it writes, not
+    // a second copy of its expression — a copy would assert only that this
+    // test agrees with itself.
+    const written = survivingSubset([live, dead, alsoLive], retirement);
+    expect(written).toEqual([live, alsoLive]);
+    expect(written).not.toContain(dead);
+  });
+
+  test("two candidates sharing a hash are not dropped together", () => {
+    // The input on which an identity filter and a hash filter differ, and
+    // the reason the fix is not `kept.some(k => k.hash === c.hash)`.
+    const { dir } = repoWithCommits("samehash", 1);
+    plantFile(dir, "docs/here.md", 10);
+    const live = { rule: "same sentence", source: "docs/here.md:3", hash: "shared" };
+    const dead = { rule: "same sentence", source: "docs/vanished.md:3", hash: "shared" };
+    const retirement = retireUnresolvable([live, dead], dir);
+    expect(survivingSubset([live, dead], retirement)).toEqual([live]);
+  });
+
+  test("an unretired population is written whole — the filter is not unconditional", () => {
+    // The positive control. Without it a filter that dropped everything
+    // would satisfy both cases above.
+    const { dir } = repoWithCommits("whole", 1);
+    plantFile(dir, "docs/here.md", 10);
+    const all = [
+      { rule: "a", source: "docs/here.md:1", hash: "h1" },
+      { rule: "b", source: "docs/here.md:2", hash: "h2" },
+    ];
+    expect(survivingSubset(all, retireUnresolvable(all, dir))).toEqual(all);
   });
 });
