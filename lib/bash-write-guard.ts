@@ -87,12 +87,44 @@ export function segments(cmd: string): string[] {
     const c = cmd[i];
     if (quote) {
       cur += c;
-      if (c === quote && cmd[i - 1] !== '\\') quote = null;
+      // #1203: inside SINGLE quotes nothing is escaped, not even a backslash,
+      // so the first `'` always closes. Treating `\'` as an escape there kept
+      // the span open past its real end, and everything after it — the
+      // separator AND the write verb — was swallowed into one segment where
+      // `commandWord` could never reach the verb. Inside DOUBLE quotes `\"`
+      // IS an escape, which is why the two cases are told apart rather than
+      // handled by one rule.
+      if (c === quote && (quote === "'" || cmd[i - 1] !== '\\')) quote = null;
       continue;
     }
     if (c === '"' || c === "'") {
       quote = c;
       cur += c;
+      continue;
+    }
+    // #1203: a backslash-newline is a LINE CONTINUATION. The shell joins the
+    // two lines into one command before it looks for anything else, so
+    // splitting on that newline put the verb in one segment and its target in
+    // the next, and `cp x \<nl> /r/workflow-state.json` reached the `cp` arm
+    // with a single operand. Same class as #1176 and #1184 — a check reading a
+    // transformed view whose transformation relocated the token — except this
+    // one relocates it across a SEGMENT boundary rather than into a quote.
+    //
+    // Joining with NOTHING, not with a space, because that is what the shell
+    // does: `ch\<nl>mod 777 x.hook.ts` runs chmod, so `commandWord` has to
+    // resolve `chmod` too. Inserting a space would read the verb as `ch`.
+    //
+    // Only outside a quote. Inside single quotes the backslash is literal and
+    // the newline is data, which is the negative control this must not break.
+    if (c === '\\') {
+      if (cmd[i + 1] === '\n') {
+        i++;
+        continue;
+      }
+      // An ESCAPED backslash. Consume the pair, so `\\` at end of line leaves
+      // no dangling `\` to swallow the newline that genuinely separates.
+      cur += c;
+      if (i + 1 < cmd.length) cur += cmd[++i];
       continue;
     }
     if (c === ';' || c === '\n' || c === '|' || c === '&') {
@@ -349,6 +381,58 @@ function readWord(s: string, i: number): [string, number] {
       i = end + 1;
       continue;
     }
+    // #1205: a command substitution is part of the word it sits in, however
+    // much whitespace is inside it. Ending the word at the first space split
+    // `> /tmp/`id -un`/workflow-state.json` into the target `/tmp/`id` — which
+    // names no protected artifact, so arm 1 never fired at all and a write to
+    // a live run-store path was allowed. The space-free spelling was caught,
+    // which is why this survived: the bug is the SPACE, not the substitution.
+    //
+    // The text is kept verbatim rather than expanded. This module does not
+    // expand anything, and keeping the `$`/backtick is what lets #1175's
+    // `isScratchPath` go on reading an unexpanded path as unprovable.
+    if (c === '`') {
+      const close = s.indexOf('`', i + 1);
+      // Unterminated: consume to the end. A substitution this module cannot
+      // see the end of is not one it can read a word boundary out of, so it
+      // takes the rest — the fail-closed direction.
+      const end = close === -1 ? s.length : close + 1;
+      w += s.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (c === '$' && s[i + 1] === '(') {
+      let depth = 0;
+      let j = i;
+      for (; j < s.length; j++) {
+        // A parenthesis inside a STRING LITERAL is data, not grammar.
+        // Counting it dropped the depth to zero early, ended the word in the
+        // middle of the substitution, and left a `"` whose partner had
+        // already been consumed — so the quote branch above then took
+        // `close === -1` and swallowed the rest of the line INCLUDING the
+        // `>` operator. No operator, no target, allow:
+        //
+        //     echo $(echo "x)") > <protected>     ran, and wrote
+        //
+        // This is #1205's own sentence a second time — the bug is what the
+        // scanner cannot see, not the substitution — so it is fixed the same
+        // way rather than by special-casing the literal that exposed it.
+        const q = s[j];
+        if (q === "'" || q === '"') {
+          const close = s.indexOf(q, j + 1);
+          j = close === -1 ? s.length : close; // the loop's j++ steps past it
+          continue;
+        }
+        if (s[j] === '(') depth++;
+        else if (s[j] === ')' && --depth === 0) {
+          j++;
+          break;
+        }
+      }
+      w += s.slice(i, j); // unterminated falls out here with j === s.length
+      i = j;
+      continue;
+    }
     w += c;
     i++;
   }
@@ -569,6 +653,29 @@ const IN_PLACE = [
   /\brm\b/,
   /\bln\b/,
   /\bgit\s+(?:checkout|restore)\b/,
+  // #1146: extended attributes are file metadata, and `com.apple.provenance`
+  // is what was blocking writes to the hooks on this machine — so removing it
+  // is a mutation of hook integrity by any reading.
+  //
+  // The mutating forms are read off `xattr --help`, not guessed:
+  //
+  //   xattr [-lrsvx] file …             list      READ
+  //   xattr -p [-lrsvx] attr file …     print     READ
+  //   xattr -w [-rsx] attr value file   set       MUTATES
+  //   xattr -d [-rsv] attr file …       delete    MUTATES
+  //   xattr -c [-rsv] file …            clear ALL MUTATES
+  //
+  // So the letters are `c`, `d`, `w` — and they may sit ANYWHERE in a flag
+  // cluster, which is why this does not read a single letter. The first
+  // revision of this PR shipped `-[dws]`, wrong in both directions against
+  // that table: it missed `-c`, which deletes every attribute on the file,
+  // and it refused `-s`, which only says "act on the symbolic link itself".
+  // Seven of fifteen spellings were decided wrongly.
+  //
+  // A bare invocation carries no leading dash, so the READ that this arm
+  // must not refuse — two real corpus commands run `xattr <hook>` to inspect
+  // the attribute list — is excluded by construction rather than by a list.
+  /\bxattr\b[^\n]*\s-[A-Za-z]*[cdw][A-Za-z]*\b/,
 ];
 
 /** Interpreters whose argument is a program this module cannot read. */
@@ -741,12 +848,26 @@ export function decideBashWrite(cmd: string, depth = 0): BashWriteDecision {
       }
     }
 
-    // 4. Permission changes on a hook file. The COMMAND WORD must be the
-    //    verb — not merely a `chmod` somewhere in the string, which is what
-    //    refused four read-only commands. The target is read off `bare`, so
-    //    quoting the path does not hide it.
-    if ((word === 'chmod' || word === 'chflags') && names(bare, PROTECTED_HOOKS)) {
-      return { blocked: true, reason: 'Permission change on hook file blocked. Hook integrity is protected.' };
+    // 4. Permission changes on a protected artifact. The COMMAND WORD must be
+    //    the verb — not merely a `chmod` somewhere in the string, which is
+    //    what refused four read-only commands. The target is read off `bare`,
+    //    so quoting the path does not hide it.
+    //
+    //    #1146: the TARGET list widened from PROTECTED_HOOKS to every
+    //    protected artifact; the VERB test is untouched, and that asymmetry is
+    //    the point. There was no reason for a `chmod` on `.gate-salt` to be
+    //    allowed while a `chmod` on a `.hook.ts` was refused — mode bits are
+    //    how a file stops being writable, so a permission change on the gate
+    //    salt is a step toward writing it. Measured on the 5,059 allowed
+    //    commands naming a protected artifact, the widening newly blocks
+    //    exactly one, and that one is real:
+    //      `chmod 600 …/worktrees/agent-abbce…/hooks/lib/.gate-salt`
+    const permTarget = (word === 'chmod' || word === 'chflags') && names(bare, ALL_PROTECTED);
+    if (permTarget) {
+      return {
+        blocked: true,
+        reason: `Permission change on protected artifact "${permTarget}" blocked. Integrity is protected.`,
+      };
     }
 
     // 5. The gate salt in the Keychain. Exempted by nothing — unlike `chmod`,

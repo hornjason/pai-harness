@@ -125,6 +125,16 @@ export interface Finding {
   outOfScope?: { reason: string };
 }
 
+/**
+ * The id an unfiled finding carries, and the one id that does not identify.
+ *
+ * Exported so the CLI and the dedupe share one binding. Two findings both
+ * labelled `"new"` are two different findings, not one — and treating the
+ * label as an identity is what made the in-batch dedupe a no-op in exactly
+ * the configuration it was written for.
+ */
+export const UNFILED_ID = "new";
+
 export type SymptomKeyKind = "sym" | "file" | "qty";
 
 /** How many cited symbols the branch-scope reading will pay a `git grep` for. */
@@ -513,7 +523,18 @@ export function arbitrate(finding: Finding, options: ArbitrateOptions): Verdict 
   // ── 1. is this new? ──
   const collisions: Array<{ id: string; keys: string[] }> = [];
   for (const other of options.existing) {
-    if (other.id === finding.id) continue;
+    // Identity is REFERENCE identity, and the id clause is secondary.
+    //
+    // Keying self-skip on the id string alone made the in-batch dedupe a
+    // no-op in the one configuration it was written for: the CLI labels
+    // every unfiled finding `UNFILED_ID`, so two findings in one batch both
+    // carried `"new"`, each skipped the other as itself, and both survived.
+    // Measured on the merged code with the real #1195/#1196 bodies — 2
+    // survivors under `"new"`/`"new"`, 1 under their real ids. The
+    // acceptance case was green for a true reason about an input the CLI
+    // never produces.
+    if (other === finding) continue;
+    if (other.id === finding.id && finding.id !== UNFILED_ID) continue;
     const overlap = duplicateOverlap(finding, other);
     if (overlap.duplicate) collisions.push({ id: other.id, keys: overlap.keys });
   }

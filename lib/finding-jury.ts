@@ -90,7 +90,7 @@ export const VERIFIER_GROUP_SIZE = 3;
  */
 export const VERIFIER_QUORUM = 2;
 
-export const INCOMPLETE_GROUP = "fewer votes than the group size: an absent vote is neither agreement nor dissent";
+export const INCOMPLETE_GROUP = "the ballot's size does not match the declared group size: an absent vote is neither agreement nor dissent, and an extra one is not a larger group";
 export const REPEATED_VERIFIER = "one verifier voted more than once, so the votes are not independent";
 export const NON_MAJORITY_QUORUM = "the configured quorum is not a strict majority of the group";
 
@@ -262,8 +262,14 @@ export interface JuryReading {
  * - **A quorum that is not a strict majority.** A configuration error that is
  *   undetectable from any single outcome.
  *
- * Extra votes beyond the group size are counted, not refused: a caller that
- * convened more verifiers than the default has more agreement, not less.
+ * **The ballot size must EQUAL the declared group size, not merely reach it.**
+ * Accepting an over-size ballot was wrong in the same direction as everything
+ * else this module guards: with the 3/2 defaults, five votes of which two
+ * agree returned `passed: true` — 2 of 5, which is not a majority of anything,
+ * because the quorum was being compared against the *declaration* rather than
+ * against the ballot actually counted. A ballot whose cardinality disagrees
+ * with its declaration is UNMEASURED, not a smaller or a larger reading. A
+ * caller who genuinely convened five verifiers says `groupSize: 5`.
  */
 export function juryReading(votes: readonly VerifierVote[], config: JuryConfig = {}): JuryReading {
   const groupSize = config.groupSize ?? VERIFIER_GROUP_SIZE;
@@ -275,7 +281,7 @@ export function juryReading(votes: readonly VerifierVote[], config: JuryConfig =
   if (quorum * 2 <= groupSize || quorum < 1) {
     unmeasuredReasons.push(`${NON_MAJORITY_QUORUM}: ${quorum} of ${groupSize}`);
   }
-  if (votes.length < groupSize) {
+  if (votes.length !== groupSize) {
     unmeasuredReasons.push(`${INCOMPLETE_GROUP}: ${votes.length} of ${groupSize}`);
   }
   if (new Set(votes.map(v => v.verifier)).size !== votes.length) {
@@ -288,17 +294,44 @@ export function juryReading(votes: readonly VerifierVote[], config: JuryConfig =
   return { ...base, reading: "MEASURED", passed: agree >= quorum, unmeasuredReasons };
 }
 
-/** The category the jury reports: the verifiers' majority, else the keywords. */
+/**
+ * The category the jury reports.
+ *
+ * **A DROP category requires an outright majority of the real votes; a keep
+ * category needs only a plurality.** The asymmetry is the whole function, and
+ * it was measured rather than reasoned: under a plain plurality, a group of
+ * three that unanimously called a finding real, with **one** member tagging
+ * it `cleanup` and two tagging nothing, returned `cleanup` — one voice
+ * suppressing a finding the group passed.
+ *
+ * The source design drops style, diagnostics and cleanup because *the group*
+ * said so. A plurality of one is not the group, and the cost of the two error
+ * directions is not symmetric: wrongly keeping costs one comment thread,
+ * wrongly dropping withholds a real bug and leaves no artefact behind to find
+ * it by. So ties resolve toward keep, and a drop that cannot command a
+ * majority falls back to the best keep category the verifiers named, and only
+ * then to the keyword classifier.
+ */
 export function juryCategory(
   finding: Pick<Finding, "title" | "body">,
   votes: readonly VerifierVote[],
 ): FindingCategory {
+  const real = votes.filter(v => v.real);
   const tally = new Map<FindingCategory, number>();
-  for (const v of votes) {
-    if (v.real && v.category) tally.set(v.category, (tally.get(v.category) ?? 0) + 1);
+  for (const v of real) {
+    if (v.category) tally.set(v.category, (tally.get(v.category) ?? 0) + 1);
   }
   const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  return ranked.length > 0 ? ranked[0][0] : classifyCategory(finding);
+  const keep = ranked.find(([category]) => !DROPPED_CATEGORIES.has(category));
+
+  for (const [category, count] of ranked) {
+    if (!DROPPED_CATEGORIES.has(category)) return category;
+    // A drop needs a strict majority of the real votes, and must not merely
+    // tie with a keep category.
+    if (count * 2 > real.length && count > (keep?.[1] ?? 0)) return category;
+    break;
+  }
+  return keep?.[0] ?? classifyCategory(finding);
 }
 
 /**
