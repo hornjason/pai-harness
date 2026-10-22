@@ -285,13 +285,53 @@ const BOOLEAN_FLAGS = new Set(["-w", "--web", "-h", "--help", "--recover-only"])
  * allowed to be wrong in.
  */
 export function labelValues(tokens: string[]): string[] {
+  return flagValues(tokens, { long: "--label", short: "-l", split: true });
+}
+
+/** Which flag to read out of a clause, and how `gh` spells its value. */
+export interface FlagSpec {
+  /** The `--long` form. */
+  long: string;
+  /** The `-s` form, when the flag has one. */
+  short?: string;
+  /** `gh` accepts a comma-separated list in one flag (`--label a,b`). */
+  split?: boolean;
+}
+
+/**
+ * The values passed to one flag, by the arity walk described above.
+ *
+ * **Extracted from `labelValues` rather than copied beside it (#1261.)**
+ * `lib/finding-gate.ts` needs `--title` and `--body` out of the same clause
+ * `labelValues` reads `--label` out of, and a second walk over the same
+ * tokens would be two parsers disagreeing about where a value ends — the
+ * fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`, except
+ * worse, because the two would not even be answering the same question. The
+ * bypasses this walk closed (`--title "--label=follow-up"` the loudest of
+ * them) were each bought with a round of security review, and a copy would
+ * have inherited none of them.
+ *
+ * `labelValues` is unchanged in behaviour: it is this function with the
+ * `--label` spec, and `test/verify-phase-lock.test.ts` is the population that
+ * says so.
+ */
+export function flagValues(tokens: string[], spec: FlagSpec): string[] {
   const out: string[] = [];
   const add = (v: string) => {
+    if (!spec.split) {
+      out.push(v);
+      return;
+    }
     for (const part of v.split(",")) {
       const t = part.trim();
       if (t) out.push(t);
     }
   };
+  // `-lfollow-up` — pflag lets a short flag carry its value attached. Built
+  // from the spec so the escape cannot drift from the flag it is escaping.
+  const attached = spec.short
+    ? new RegExp(`^${spec.short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^-=]`)
+    : null;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (!t.startsWith("-") || t === "-" || t === "--") continue;
@@ -299,16 +339,15 @@ export function labelValues(tokens: string[]): string[] {
     const eq = t.indexOf("=");
     if (eq !== -1) {
       const name = t.slice(0, eq);
-      if (name === "--label" || name === "-l") add(t.slice(eq + 1));
+      if (name === spec.long || name === spec.short) add(t.slice(eq + 1));
       continue; // `--flag=value` carries its own value; it consumes nothing
     }
-    if (t === "--label" || t === "-l") {
+    if (t === spec.long || t === spec.short) {
       if (i + 1 < tokens.length) add(tokens[++i]);
       continue;
     }
-    // `-lfollow-up` — pflag lets a short flag carry its value attached.
-    if (/^-l[^-=]/.test(t)) {
-      add(t.slice(2));
+    if (attached !== null && attached.test(t)) {
+      add(t.slice(spec.short!.length));
       continue;
     }
     if (!BOOLEAN_FLAGS.has(t)) i++; // this flag eats the next token

@@ -184,6 +184,17 @@
     "description": "Blocks gh issue create during VERIFY phase"
   },
   {
+    "name": "FindingArbiterGate",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/FindingArbiterGate.hook.ts",
+    "enabled": true,
+    "deployToConsumers": false,
+    "notDeployedReason": "OPT-IN. It reads the project's open issues to adjudicate a `gh issue create`, so it presumes a GitHub tracker and an authenticated `gh`. On a project with neither, every call is UNMEASURED-and-ALLOWED — correct behaviour for this gate, and also indistinguishable from the hook not being installed, which is the shape #1047 is about and the reason it is not defaulted on. Ships in the tarball; register it once the project files findings against a tracker.",
+    "scope": "project",
+    "matcher": "Bash",
+    "description": "Refuses a `gh issue create` whose symptom is already filed, via lib/finding-gate.ts over lib/finding-arbiter.ts — the arbiter's first production caller (#1261). Before this the whole mechanism terminated in scripts/arbitrate-finding.ts, whose only reference in the tree was package.json files[], i.e. published rather than called. SEPARATE from VerifyPhaseLock on purpose: that hook exits 0 unless the newest workflow-state.json reads phase VERIFY, and the direct-ship lane runs no phases, so a branch added there would never be reached by the sessions that file the issues. **This is the one hook here that fails OPEN** — anything it cannot adjudicate is allowed and annotated, because a false filing costs one duplicate and a false silence deletes a real finding (#1162). It gates on DUPLICATE and nothing else by construction: no verifier votes are passed, so every non-duplicate short-circuits at the quorum check. Project scope: the tracker is resolved from the worktree's own origin remote, and every worktree carries the committed .claude/settings.json. Per #1216 the live ~/.pai/hooks copy is stale, so this changes nothing on that machine until hooks are redeployed."
+  },
+  {
     "name": "WorkflowStateGuard",
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/WorkflowStateGuard.hook.ts",
