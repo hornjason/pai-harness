@@ -170,7 +170,27 @@ const isSuccess = !FAILURE_STATUSES.includes(status) && shipResult?.success !== 
 // GRADE — always run, regardless of ship success/failure (D-11)
 // ════════════════════════════════════════════════════════════
 
+// ──── WORK-DIR-SHAPE-START ────
 let workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
+
+// `shipResult` is the ship workflow's own reply, which is assembled from
+// agent replies, and `workDir` from it reaches a shell as a bare path five
+// times below — `find … -newer ${workDir}/workflow-state.json`,
+// `TEST_WORK_DIR="${workDir}"`, and three more. This file has no `shellQuote`
+// (#69: a workflow cannot import, and ship.js's copy is ship.js's), so the
+// value is checked for SHAPE at its source instead of quoted at five sites.
+// One decider, which is the better half of the trade anyway — a quoted path
+// into another project still grades another project's run.
+//
+// Refusing to the empty string is not a silent fallback: `if (workDir)`
+// immediately below is the existing branch for "this run reported no work
+// directory", and it skips grading rather than grading the wrong thing.
+if (workDir && !/^\/[A-Za-z0-9._\/-]+$/.test(workDir)) {
+  log(`Ignoring reported work directory ${String(workDir).slice(0, 120)}: it is not a plain absolute path, and it reaches a shell as one (#1103)`)
+  workDir = ''
+}
+// ──── WORK-DIR-SHAPE-END ────
+
 let gradeResult = null
 let qualityViolations = []
 let processViolations = []

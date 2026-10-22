@@ -7276,6 +7276,19 @@ function reusablePriorBranch(prior) {
   if (!prior || !prior.branch) return null
 
   const refusals = []
+  // Shape before currency (#1103). `prior.branch` is `priorResult.priorBranch`
+  // out of the prior-branch AGENT's reply — unconstrained text, not a ref git
+  // ever resolved — and the value is interpolated into `HEAD:${branchToReuse}`
+  // one line after this returns. `isSafeBranchName` already guarded the OTHER
+  // consumer of the same value, 116 lines downstream of that interpolation,
+  // which is a validator reading a value a shell had already run.
+  //
+  // Refusing here rather than quoting at the two use sites is the point: a
+  // quoted bad branch name is inert, not correct — it still pushes this run's
+  // work to a ref nobody chose. Refusing falls back to the plain `HEAD` this
+  // function already returns for every other reason, which is the behaviour a
+  // run with no usable prior branch gets anyway.
+  if (!isSafeBranchName(prior.branch)) refusals.push('it is not a usable branch name')
   if (prior.isMerged === true) refusals.push('its work is already in the base branch')
   else if (prior.isMerged !== false) refusals.push('whether it is already merged was never measured')
   if (prior.isBehind === true) {
@@ -7285,7 +7298,9 @@ function reusablePriorBranch(prior) {
   }
 
   if (refusals.length === 0) return prior.branch
-  log(`Not pushing onto prior branch ${prior.branch}: ${refusals.join('; ')}. Pushing HEAD instead.`)
+  // Sliced because this line now reports names that failed a SHAPE check, so
+  // the first value it will ever print in anger is the hostile one.
+  log(`Not pushing onto prior branch ${String(prior.branch).slice(0, 80)}: ${refusals.join('; ')}. Pushing HEAD instead.`)
   return null
 }
 
