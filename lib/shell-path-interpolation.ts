@@ -559,9 +559,10 @@ export function barePathInterpolationsIn(source: string): LocatedBarePath[] {
   const found: LocatedBarePath[] = [];
   let lineStart = 0;
   for (const [i, line] of code.split("\n").entries()) {
-    // The offsets in `laundered` are into `code`, which `stripJsComments`
-    // keeps byte-identical in length to `source`, so this arithmetic is the
-    // parser's own numbering and not a reconstruction of it.
+    // Both the parse and this split are over `code`, so the offsets are one
+    // numbering rather than two that have to be kept in step. The reported
+    // `line` is the source's own for the separate reason that
+    // `stripJsComments` blanks comment text without moving a newline.
     const at = lineStart;
     for (const b of barePathInterpolations(line, (_n, off) => laundered.has(at + off))) {
       found.push({ ...b, line: i + 1 });
