@@ -1,4 +1,4 @@
-# generated-sha: 41382c90125aa2cd
+# generated-sha: f24209362ed0a63f
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -605,11 +605,6 @@ jobs:
               fi
               case "${p}" in
                 '"'*) h=unquotable ;;
-                # A wholly-ignored directory, reported COLLAPSED with git's own
-                # trailing slash. It is PRESENT, so `absent` would be false — and
-                # `absent` is a value the drift step branches on, so the lie does not
-                # stay cosmetic. See AI_REVIEW_IGNORED_DIR_HASH.
-                */) h=ignored-dir ;;
                 *)
                   if [ -f "${p}" ]; then
                     # --no-filters, or the repository's own text/eol conversion is
@@ -623,6 +618,12 @@ jobs:
                     # defeats a text/eol conversion, but a hash taken under the
                     # reviewer's config is still a reading the reviewer chose.
                     h=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' hash-object --no-filters -- "${p}" 2>/dev/null) || h=unreadable
+                  # PRESENT but not a regular file, which is not a deletion. `-e`
+                  # FOLLOWS symlinks, so it is false for a dangling one — `-L` is the
+                  # half that catches it, and leaving it out is how #1061 came up
+                  # short. See AI_REVIEW_PRESENT_UNHASHABLE.
+                  elif [ -e "${p}" ] || [ -L "${p}" ]; then
+                    h=not-a-regular-file
                   else
                     h=absent
                   fi
@@ -978,11 +979,6 @@ jobs:
               fi
               case "${p}" in
                 '"'*) h=unquotable ;;
-                # A wholly-ignored directory, reported COLLAPSED with git's own
-                # trailing slash. It is PRESENT, so `absent` would be false — and
-                # `absent` is a value the drift step branches on, so the lie does not
-                # stay cosmetic. See AI_REVIEW_IGNORED_DIR_HASH.
-                */) h=ignored-dir ;;
                 *)
                   if [ -f "${p}" ]; then
                     # --no-filters, or the repository's own text/eol conversion is
@@ -996,6 +992,12 @@ jobs:
                     # defeats a text/eol conversion, but a hash taken under the
                     # reviewer's config is still a reading the reviewer chose.
                     h=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' hash-object --no-filters -- "${p}" 2>/dev/null) || h=unreadable
+                  # PRESENT but not a regular file, which is not a deletion. `-e`
+                  # FOLLOWS symlinks, so it is false for a dangling one — `-L` is the
+                  # half that catches it, and leaving it out is how #1061 came up
+                  # short. See AI_REVIEW_PRESENT_UNHASHABLE.
+                  elif [ -e "${p}" ] || [ -L "${p}" ]; then
+                    h=not-a-regular-file
                   else
                     h=absent
                   fi

@@ -3815,44 +3815,58 @@ export const AI_REVIEW_IGNORED_READING = "--ignored=matching";
 export const AI_REVIEW_ACTION_SCRATCH = ".claude-pr/";
 
 /**
- * What a collapsed ignored DIRECTORY hashes to (#1061).
+ * What a path that is PRESENT but not a regular file hashes to (#1061,
+ * #1070).
  *
  * ## `absent` was true of every input the reader could be handed, until #969
  *
- * `--untracked-files=all` alone never yields a directory entry — that is
- * what `all` means — so `[ -f "${p}" ]` was a total question and its `else`
- * branch was always right. `AI_REVIEW_IGNORED_READING` introduces the one
- * input it is wrong about: a wholly-ignored directory, reported collapsed
- * with a trailing slash, present on disk, and stamped `absent`.
+ * `--untracked-files=all` alone yields nothing but file paths, so
+ * `[ -f "${p}" ]` was a total question and its `else` branch was always
+ * right: not a regular file meant gone. `AI_REVIEW_IGNORED_READING` broke
+ * that, and the reader then had two states sharing one token —
+ * *the path was removed* and *the path is here and is not a file*.
  *
- * ## Why that is not a cosmetic lie
+ * ## Why conflating them is not a cosmetic lie
  *
  * `absent` is a VALUE the drift step branches on. #989's twice-restored
  * classifier reads it as *the action deleted a restored path*, asks the base
  * whether it carries the file, and on `no` files the line under `restored` —
  * acquitted, and reported as the action's work rather than the reviewer's.
- * A directory can reach that branch, and the question it is then asked is a
- * question about a file.
+ * So a path that exists reaches a branch that assumes it does not, and the
+ * run says the opposite of what happened.
  *
- * Measured against `origin/main` at `d8f76417`, git 2.50.1, driving the real
- * `buildBaselineScript()` and `buildDriftScript()`. The reviewer does exactly
- * two things between the two readings — appends `/.claude/evil/` to
- * `.git/info/exclude`, and writes `.claude/evil/payload.md`:
+ * ## Both shapes, measured end to end
  *
- * | reader | `git status` | drift |
+ * Real `buildBaselineScript()` and `buildDriftScript()`, git 2.50.1. In each
+ * row the reviewer acts once between the two readings, under an untrusted
+ * path so the line reaches #989's classifier:
+ *
+ * | the reviewer writes | token | drift |
  * |---|---|---|
- * | before this change | `!! .claude/evil/` | **exit 0**, warning: *"NOT counted as a reviewer write (#989). Paths: `absent .claude/evil/`"* |
- * | with this token | `!! .claude/evil/` | **exit 1**: *"The reviewer modified the tree it was reviewing: `ignored-dir .claude/evil/`"* |
+ * | `/.claude/evil/` into `.git/info/exclude`, then `.claude/evil/payload.md` | was `absent` | **exit 0**, credited to the action (`d8f76417`) |
+ * | a dangling symlink `.claude/evil-link` | was `absent` | **exit 0**, credited to the action (`c514b585`) |
+ * | either, with this token | `not-a-regular-file` | **exit 1**, named as a reviewer write |
  *
- * The refusal is not a new rule. The line simply stops entering the `absent`
- * branch, falls through to the blob comparison, resolves nothing on the base,
- * and stays in `added` — which is the tight direction that comparison already
- * documents.
+ * **Row two is why this constant is not called `ignored-dir`.** #1061 shipped
+ * a trailing-slash case arm keyed on git's own slash, which is the shape of the first
+ * row and not the property either row has. `[ -f ]` is false for a dangling
+ * symlink, a fifo and a socket too, and none of those carries a slash. The
+ * arm is gone: `[ -e ]` is true of a collapsed directory, so keeping both
+ * would be two deciders for one question and a mutation of either would
+ * leave the other holding the case up.
  *
- * `.claude/evil/` is deliberately NOT `AI_REVIEW_ACTION_SCRATCH`: that
- * exemption is exact and correctly does not match, and this change does not
- * touch it. PR #1002's outage stays closed, which `AC-7/green` is the control
- * for.
+ * `[ -e ]` FOLLOWS symlinks, so it is false for a dangling one. `[ -L ]` is
+ * the half that catches it, and omitting it is exactly how #1061 came up
+ * short.
+ *
+ * The refusal is not a new rule. The line stops entering the `absent` branch,
+ * falls through to the blob comparison, resolves nothing on the base, and
+ * stays in `added` — the tight direction that comparison already documents.
+ *
+ * `absent` keeps its meaning and its branch: a tracked file the reviewer
+ * DELETES still reads `absent` and is still classified exactly as before.
+ * `AC-11/deletion` is the control that says this is a repair and not a
+ * widening that retires a working branch.
  *
  * ## Not folded into the UNMEASURED warning, deliberately
  *
@@ -3862,13 +3876,14 @@ export const AI_REVIEW_ACTION_SCRATCH = ".claude-pr/";
  *
  * ## WHAT THIS DOES NOT FIX
  *
- * The collapsed entry carries no content hash, so a write INSIDE a directory
- * that was already ignored at baseline is still invisible and a modification
- * inside one still produces a byte-identical line. Unchanged, UNMEASURED,
- * and already asserted by `AC-8/inside`. `--ignored=traditional` is the only
- * setting that sees it, at 1508 lines on this checkout.
+ * The line carries no content, so a write INSIDE a directory already ignored
+ * at baseline is still invisible and a modification inside one still produces
+ * a byte-identical line. Unchanged, UNMEASURED, asserted by `AC-8/inside`.
+ * `--ignored=traditional` is the only setting that sees it, at 1508 lines on
+ * this checkout. The blindness under `AI_REVIEW_ACTION_SCRATCH` specifically
+ * is #1071.
  */
-export const AI_REVIEW_IGNORED_DIR_HASH = "ignored-dir";
+export const AI_REVIEW_PRESENT_UNHASHABLE = "not-a-regular-file";
 
 /**
  * The one reading of the tree, shared by the baseline step and the drift step
@@ -3974,11 +3989,6 @@ export const AI_REVIEW_TREE_READER = `read_tree() {
     fi
     case "\${p}" in
       '"'*) h=unquotable ;;
-      # A wholly-ignored directory, reported COLLAPSED with git's own
-      # trailing slash. It is PRESENT, so \`absent\` would be false — and
-      # \`absent\` is a value the drift step branches on, so the lie does not
-      # stay cosmetic. See AI_REVIEW_IGNORED_DIR_HASH.
-      */) h=${AI_REVIEW_IGNORED_DIR_HASH} ;;
       *)
         if [ -f "\${p}" ]; then
           # --no-filters, or the repository's own text/eol conversion is
@@ -3992,6 +4002,12 @@ export const AI_REVIEW_TREE_READER = `read_tree() {
           # defeats a text/eol conversion, but a hash taken under the
           # reviewer's config is still a reading the reviewer chose.
           h=$(${AI_REVIEW_GIT_ISOLATED} hash-object --no-filters -- "\${p}" 2>/dev/null) || h=unreadable
+        # PRESENT but not a regular file, which is not a deletion. \`-e\`
+        # FOLLOWS symlinks, so it is false for a dangling one — \`-L\` is the
+        # half that catches it, and leaving it out is how #1061 came up
+        # short. See AI_REVIEW_PRESENT_UNHASHABLE.
+        elif [ -e "\${p}" ] || [ -L "\${p}" ]; then
+          h=${AI_REVIEW_PRESENT_UNHASHABLE}
         else
           h=absent
         fi
