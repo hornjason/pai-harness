@@ -140,6 +140,7 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { remedyMessage } from "../lib/check-remedy";
 import {
+  instructionPaths,
   packageClosureViolations,
   publishedFiles,
   readPackageFiles,
@@ -621,5 +622,141 @@ describe("#484 CLOSURE-9: the runtime scanner is load-bearing", () => {
     // is attributable to the reads scanner and nothing else.
     const mutant = await import(mutantPath);
     expect(mutant.packageClosureViolations(broken, published)).toEqual([]);
+  });
+});
+
+/**
+ * #1174. Covers CLOSURE-14, CLOSURE-15.
+ *
+ * The two scanners above ask what published CODE reaches. An instruction
+ * string reaches nothing — it is read by a person, who then runs it — so both
+ * were structurally incapable of seeing the defect this describes, and both
+ * reported the package closed while it shipped an unrunnable repair command.
+ *
+ * The negative control is the live tree at the parent commit: with `gates/`
+ * absent from `files[]`, `instructionPaths` finds six violations — four in
+ * `hooks/`, two in `lib/`. Adding `gates/` takes it to zero. That is a check
+ * observed failing against the real defect rather than only against a
+ * fixture, which is what `.claude/rules/checks-must-be-able-to-fail.md` asks
+ * for before the check is believed.
+ */
+describe("#1174 CLOSURE-14: an instruction naming a path the tarball lacks", () => {
+  test("a $HARNESS_ROOT-anchored path in a quoted string is detected", () => {
+    const found = instructionPaths('const m = "run $HARNESS_ROOT/gates/run-gate.ts now";\n');
+    expect(found).toEqual([{ anchor: "$HARNESS_ROOT", path: "gates/run-gate.ts" }]);
+  });
+
+  test("a <harness>-anchored path is detected", () => {
+    const found = instructionPaths('const m = "see <harness>/gates/orchestrator.ts";\n');
+    expect(found).toEqual([{ anchor: "<harness>", path: "gates/orchestrator.ts" }]);
+  });
+
+  test("the same path inside a TEMPLATE is detected", () => {
+    // The case that separates `keepTemplateText` from its absence. Three of
+    // the six live instructions are template literals built around
+    // `${HARNESS_ROOT}`, and under `keepStringContents` alone the tokenizer
+    // blanks template text — so this scanner read a clean tree over a tree
+    // with three defects in it. A detector narrower than what it detects.
+    const src = "console.log(`run bun ${HARNESS_ROOT}/gates/run-gate.ts --gate ship`);\n";
+    expect(instructionPaths(src)).toEqual([
+      { anchor: "${HARNESS_ROOT}", path: "gates/run-gate.ts" },
+    ]);
+  });
+
+  test("a bun -e one-liner's ./ specifier is detected", () => {
+    const src = 'const hint = \'bun -e "import {w} from \\\'./gates/orchestrator.ts\\\'"\';\n';
+    expect(instructionPaths(src)).toEqual([
+      { anchor: "bun -e .", path: "gates/orchestrator.ts" },
+    ]);
+  });
+
+  test("the identical instruction in a COMMENT is not an instruction", () => {
+    // The other half, and not hypothetical: `lib/shell-path-interpolation.ts`
+    // explains shell quoting with a `${HARNESS_ROOT}/scripts/x.ts` example in
+    // a docstring, and the first draft of this scanner reported that sentence
+    // as a shipped instruction. #454 and #484 are the same mistake.
+    expect(instructionPaths('// run $HARNESS_ROOT/gates/run-gate.ts\n')).toEqual([]);
+    expect(instructionPaths('/** see <harness>/gates/orchestrator.ts */\n')).toEqual([]);
+  });
+
+  test("a path with no harness anchor belongs to the CONSUMER and is not flagged", () => {
+    // `lib/typescript-project.ts` emits exactly this. The `scripts/` it names
+    // is the consumer's, where the scaffold writes one — resolving it against
+    // this package would invent a defect in the commonest hint we emit.
+    expect(instructionPaths('const c = { command: "bun scripts/typecheck.ts" };\n')).toEqual([]);
+  });
+
+  test("every instruction in a published file names a path the tarball carries", () => {
+    const published = publishedFiles(ROOT, readPackageFiles(ROOT));
+    const instructions = packageClosureViolations(ROOT, published).filter(v =>
+      v.includes("instructs the user"),
+    );
+    expect(
+      instructions,
+      remedyMessage({
+        root: ROOT,
+        check: "CLOSURE-14",
+        violations: instructions,
+        fix:
+          "add the named path to `files[]` in package.json, or reword the instruction. A " +
+          "command a refusal tells the user to run is only a way out if the package ships " +
+          "the thing it names — and `lib/gate-result-protection.ts`'s is unbypassable by " +
+          "design (#1137), so there is no second route.",
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("#1174 CLOSURE-15: the instruction scanner is load-bearing", () => {
+  test("short-circuiting instructionPaths lets an unshipped instruction through", async () => {
+    const src = readFileSync(SOURCE, "utf-8");
+    const binding = "export function instructionPaths(raw: string): InstructionPath[] {";
+    expect(src.split(binding).length - 1, "the binding signature appears other than once").toBe(1);
+
+    const dir = scratch();
+    const mutantPath = join(dir, "mutant-instructions.ts");
+    writeFileSync(mutantPath, buildMutant(src.replace(binding, `${binding}\n  return [];`)));
+
+    // The shape of the live defect: a published file telling the user to run
+    // something in an unpublished directory that exists on disk.
+    const broken = scratch();
+    mkdirSync(join(broken, "hooks"), { recursive: true });
+    mkdirSync(join(broken, "gates"), { recursive: true });
+    writeFileSync(join(broken, "gates", "run-gate.ts"), "export const x = 1;\n");
+    writeFileSync(
+      join(broken, "hooks", "Guard.hook.ts"),
+      "console.log(`blocked — run bun ${HARNESS_ROOT}/gates/run-gate.ts`);\n",
+    );
+    writeFileSync(
+      join(broken, "package.json"),
+      JSON.stringify({ name: "f", version: "0.0.0", files: ["hooks/"] }),
+    );
+    const published = publishedFiles(broken, readPackageFiles(broken));
+
+    // Real check refuses. No import and no runtime read in that file, so the
+    // one violation is attributable to this scanner and to nothing else.
+    const real = packageClosureViolations(broken, published);
+    expect(real).toHaveLength(1);
+    expect(real[0]).toContain("instructs the user");
+
+    // ...and the mutant waves the same package through.
+    const mutant = await import(mutantPath);
+    expect(mutant.packageClosureViolations(broken, published)).toEqual([]);
+  });
+
+  test("publishing the named directory is what clears it", () => {
+    const dir = scratch();
+    mkdirSync(join(dir, "hooks"), { recursive: true });
+    mkdirSync(join(dir, "gates"), { recursive: true });
+    writeFileSync(join(dir, "gates", "run-gate.ts"), "export const x = 1;\n");
+    writeFileSync(
+      join(dir, "hooks", "Guard.hook.ts"),
+      "console.log(`run bun ${HARNESS_ROOT}/gates/run-gate.ts`);\n",
+    );
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "f", version: "0.0.0", files: ["hooks/", "gates/"] }),
+    );
+    expect(packageClosureViolations(dir, publishedFiles(dir, readPackageFiles(dir)))).toEqual([]);
   });
 });

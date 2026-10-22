@@ -70,7 +70,12 @@ function setupProjectRoot(): void {
   );
 }
 
-import { assembleBrief, type AssembleResult } from "./brief-assembler";
+import {
+  assembleBrief,
+  loadBriefPolicies,
+  validateBriefAgainst,
+  type AssembleResult,
+} from "./brief-assembler";
 
 describe("brief-assembler", () => {
   beforeEach(() => {
@@ -425,5 +430,58 @@ describe("brief-assembler", () => {
       expect(sectionHeaders.length).toBeGreaterThanOrEqual(5);
       expect(result.validated).toBe(true);
     });
+  });
+});
+
+/**
+ * #1174: the policies the package SHIPS are the ones that get read.
+ *
+ * `BRIEF_POLICIES_PATH` was `$HOME/.claude/skills/ship/brief-policies.json`
+ * and nothing else, while `config/brief-policies.json` — which the tarball
+ * does carry — was never opened. Measured on the author's own machine on
+ * 2026-10-22, the `$HOME` copy does not exist either, so validation had been
+ * running through a hardcoded second copy of the patterns on every machine,
+ * reporting `validated: true` from a policy file it had never read.
+ */
+describe("#1174: brief policies resolve to the packaged config", () => {
+  const PACKAGED = join(import.meta.dir, "..", "config", "brief-policies.json");
+
+  test("the packaged policy file exists where the module resolves it", () => {
+    // Also the input CLOSURE-8 reads statically: this is a module-relative
+    // runtime read, so `config/` leaving `files[]` fails that check too.
+    expect(existsSync(PACKAGED)).toBe(true);
+  });
+
+  test("every agent type the package ships is present in the loaded policies", () => {
+    // Asserted as containment rather than equality because the `$HOME` copy
+    // is an OVERRIDE: it may add or replace an agent type, and it must never
+    // be able to delete one the package ships.
+    const shipped = JSON.parse(readFileSync(PACKAGED, "utf-8"));
+    const loaded = loadBriefPolicies();
+    for (const agentType of Object.keys(shipped.policies)) {
+      expect(Object.keys(loaded.policies)).toContain(agentType);
+    }
+    expect(Object.keys(shipped.policies).length).toBeGreaterThan(0);
+  });
+
+  test("the loaded marcus patterns are the shipped ones, not a copy in the code", () => {
+    const shipped = JSON.parse(readFileSync(PACKAGED, "utf-8"));
+    const names = loadBriefPolicies().policies.marcus.requiredPatterns.map((p: any) => p.name);
+    expect(names).toEqual(shipped.policies.marcus.requiredPatterns.map((p: any) => p.name));
+  });
+
+  test("an empty policy set REFUSES rather than validating every brief", () => {
+    // The UNMEASURED half. An empty `requiredPatterns` passes everything and
+    // cannot be told apart from no validation at all, which is the state the
+    // old `catch {}` fell into on a malformed file.
+    expect(() => validateBriefAgainst("anything at all", { policies: { marcus: { requiredPatterns: [] } } }))
+      .toThrow(/no requiredPatterns/);
+    expect(() => validateBriefAgainst("anything at all", {})).toThrow(/no requiredPatterns/);
+  });
+
+  test("a brief missing a required section still fails, with the real patterns", () => {
+    // The other direction: the refusal above must not be the only outcome
+    // the loaded policies can produce, or the check would be vacuous.
+    expect(validateBriefAgainst("nothing useful here", loadBriefPolicies())).toBe(false);
   });
 });

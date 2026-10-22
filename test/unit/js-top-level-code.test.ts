@@ -488,3 +488,61 @@ describe("#905: a regex literal after a keyword is not division", () => {
     }
   });
 });
+
+/**
+ * #1174 — `keepTemplateText`, added so `lib/package-closure.ts` can scan the
+ * instructions this package prints.
+ *
+ * `keepStringContents` keeps quoted bodies and still blanks template text,
+ * which is correct for #484's caller and wrong for #1174's: three of the six
+ * live instructions naming an unpublished path are built around
+ * `${HARNESS_ROOT}` inside a template, so the scanner read a clean tree over
+ * three real defects. It is a flag on this one tokenizer rather than a
+ * stripper in the calling module, for the reason that module's own docstring
+ * gives: two functions deciding what a comment is are two deciders, and the
+ * wrong one is invisible.
+ */
+describe("#1174: keepTemplateText", () => {
+  const SRC = "const m = `run ${ROOT}/gates/x.ts now`;\n";
+
+  test("template text is dropped without the flag", () => {
+    const out = stripStringsAndComments(SRC, { keepStringContents: true });
+    expect(out).not.toContain("gates/x.ts");
+    // The interpolation and the backticks survive either way — only the
+    // literal TEXT between them is at issue.
+    expect(out).toContain("${");
+  });
+
+  test("template text survives with the flag", () => {
+    const out = stripStringsAndComments(SRC, { keepTemplateText: true });
+    expect(out).toContain("run ");
+    expect(out).toContain("/gates/x.ts now");
+  });
+
+  test("a comment is still blanked when template text is kept", () => {
+    // The half that makes the flag safe to use. Keeping template text must
+    // not quietly become "scan raw source", which is the mistake #454 and
+    // #484 each made once.
+    const out = stripStringsAndComments("// `run ${ROOT}/gates/x.ts`\nconst a = 1;\n", {
+      keepTemplateText: true,
+    });
+    expect(out).not.toContain("gates/x.ts");
+    expect(out).toContain("const a = 1;");
+  });
+
+  test("an escaped character keeps its backslash rather than losing it", () => {
+    // Under `keepStringContents` the tokenizer once dropped `\` and the
+    // character after it, so `a\"b` came back as `ab` — not a truncated
+    // answer but a DIFFERENT path, which a caller would then name in a
+    // violation. Asserted here so the template branch cannot reintroduce it.
+    const out = stripStringsAndComments("const m = `a\\`b`;\n", { keepTemplateText: true });
+    expect(out).toContain("a\\`b");
+  });
+
+  test("line numbers survive a multi-line template either way", () => {
+    const src = "const m = `one\ntwo\nthree`;\nconst after = 1;\n";
+    for (const opts of [{ keepStringContents: true }, { keepTemplateText: true }]) {
+      expect(stripStringsAndComments(src, opts).split("\n")).toHaveLength(src.split("\n").length);
+    }
+  });
+});

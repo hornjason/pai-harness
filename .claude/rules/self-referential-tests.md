@@ -45,7 +45,7 @@ every one fails with a bare `expect(...).toEqual([])` and no guidance.
 | `HYGIENE-4` spec routing | a new `specs/*.md` | add a row to `.claude/rules/specs-routing.md` |
 | `SC-1891` | same population, second binding over `AGENTS.md` + `.claude/rules/*` | same row |
 | `DRIFT-2` untested specs | a new `testable: true` spec no test names | name the spec in a test |
-| `CLOSURE-1` / `CLOSURE-8` | a published file imports **or `readFileSync`s** something outside `files[]` | add it to `package.json` `files[]` |
+| `CLOSURE-1` / `CLOSURE-8` / `CLOSURE-14` | a published file imports, **`readFileSync`s**, or **tells the user to run** something outside `files[]` | add it to `package.json` `files[]` |
 | `Cannot find module` from a `/tmp/…mutant…` path | a new **`import`** in a file some mutation battery copies into an `mkdtemp` | teach the copier to carry the dependency — or keep the file import-free and bind the value with an agreement assertion |
 
 `CLOSURE-8` is the one people miss: a `join(import.meta.dir, "..")` read is the

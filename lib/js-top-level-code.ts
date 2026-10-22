@@ -104,10 +104,24 @@ export function regexCanFollowToken(token: string): boolean {
  * module on purpose. Two functions that each decide what a comment is are two
  * deciders, and the one that is wrong is invisible — see
  * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * `keepTemplateText` additionally keeps the literal text of a template, which
+ * `keepStringContents` alone still blanks.
+ *
+ * Added for #1174, which scans published source for INSTRUCTIONS naming a
+ * path — and three of the six in the tree are built with `${HARNESS_ROOT}`
+ * inside a template, so under `keepStringContents` alone the scanner read a
+ * clean tree and the detector would have been narrower than what it detects.
+ * It is a flag here for the same reason `keepStringContents` is: the
+ * alternative was a comment-stripper in `lib/package-closure.ts`, which is the
+ * second decider this docstring already argues against.
  */
 export function stripStringsAndComments(
   src: string,
-  { keepStringContents = false }: { keepStringContents?: boolean } = {},
+  {
+    keepStringContents = false,
+    keepTemplateText = false,
+  }: { keepStringContents?: boolean; keepTemplateText?: boolean } = {},
 ): string {
   let out = "";
   let i = 0;
@@ -126,6 +140,10 @@ export function stripStringsAndComments(
     // Inside a template, but NOT inside one of its interpolations.
     if (templates.length > 0 && templates[templates.length - 1] === 0) {
       if (c === "\\") {
+        // Both characters, or neither. Emitting the escaped character without
+        // its backslash would hand the caller a string that differs from the
+        // source it is about to match paths against.
+        if (keepTemplateText) out += src.slice(i, i + 2);
         i += 2;
         continue;
       }
@@ -144,7 +162,7 @@ export function stripStringsAndComments(
         continue;
       }
       // Template text: drop it, but keep newlines so line numbers survive.
-      out += c === "\n" ? "\n" : "";
+      out += keepTemplateText || c === "\n" ? c : "";
       i++;
       continue;
     }
