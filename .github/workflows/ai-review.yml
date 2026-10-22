@@ -1,4 +1,4 @@
-# generated-sha: 4d46497870ae4ce3
+# generated-sha: 41382c90125aa2cd
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -605,6 +605,11 @@ jobs:
               fi
               case "${p}" in
                 '"'*) h=unquotable ;;
+                # A wholly-ignored directory, reported COLLAPSED with git's own
+                # trailing slash. It is PRESENT, so `absent` would be false — and
+                # `absent` is a value the drift step branches on, so the lie does not
+                # stay cosmetic. See AI_REVIEW_IGNORED_DIR_HASH.
+                */) h=ignored-dir ;;
                 *)
                   if [ -f "${p}" ]; then
                     # --no-filters, or the repository's own text/eol conversion is
@@ -973,6 +978,11 @@ jobs:
               fi
               case "${p}" in
                 '"'*) h=unquotable ;;
+                # A wholly-ignored directory, reported COLLAPSED with git's own
+                # trailing slash. It is PRESENT, so `absent` would be false — and
+                # `absent` is a value the drift step branches on, so the lie does not
+                # stay cosmetic. See AI_REVIEW_IGNORED_DIR_HASH.
+                */) h=ignored-dir ;;
                 *)
                   if [ -f "${p}" ]; then
                     # --no-filters, or the repository's own text/eol conversion is
