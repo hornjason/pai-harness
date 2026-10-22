@@ -193,21 +193,94 @@ export async function readPackument(
 }
 
 /**
- * When `v<version>` was tagged in this checkout, or `null` when it is absent.
+ * A version, and nothing that is also a git option, a pathspec or a revision.
  *
- * `null` is not an error here and must not be: a tree whose version was never
- * tagged is precisely the NEVER_PUBLISHED case, and the whole point of the
- * reading is to tell that apart from a release in flight. A checkout with no
- * tags fetched reports the same `null`, which errs toward the red state
- * rather than toward the tolerance.
+ * Checked before any git runs, and `null` on a miss. A string that is not a
+ * version can never be a release tag, so refusing it costs nothing and closes
+ * the door on `--all`, `HEAD`, `""` and anything else that would be read as
+ * something other than a name.
+ */
+const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/;
+
+/**
+ * When `v<version>` was tagged **on the remote**, or `null`.
+ *
+ * ## Why the remote, and not this checkout
+ *
+ * This reading is the entire separator between *the registry does not have it
+ * YET* and *somebody bumped the version and never published*. Those states are
+ * observationally identical at the instant you look, so whatever tells them
+ * apart decides whether the tolerance is honest.
+ *
+ * As first shipped it was `git log -1 --format=%cI v<version>` against the
+ * local checkout, and that is **evidence produced by the party being
+ * measured**. `release.yml` fires on tag PUSH. An unpushed local tag proves
+ * nothing was ever triggered, and it bought a full `PUBLISH_WINDOW_MS` of
+ * tolerance for exactly the state that has to stay red — so the exemption was
+ * mintable by anyone who could run `git tag`.
+ *
+ * Three things changed, and they are separate defects:
+ *
+ * - `v${version}` was an unqualified **revision-or-pathspec**: a local BRANCH
+ *   named `v1.2.3` resolved it as readily as a tag, and so could a path. It is
+ *   now `refs/tags/v<version>` read through `for-each-ref`, which cannot match
+ *   a branch or a path.
+ * - `%cI` is the **committer date of the commit the tag points at** — when the
+ *   code was written, not when the release was cut. It is now
+ *   `%(creatordate:iso-strict)` off the ref itself.
+ * - existence is confirmed with `ls-remote` against `origin`, so the evidence
+ *   comes from the remote rather than from the working copy.
+ *
+ * The local date is pinned to the remote's object id. A local tag shadowing a
+ * pushed one with a fresher date would otherwise extend its own window.
+ *
+ * ## This is the weaker of the two available designs, deliberately
+ *
+ * The stronger one asks the Actions API whether a release run exists for the
+ * tag, so the separator is produced by a party other than the thing being
+ * gated. That is the right principle and it is filed rather than built: it
+ * puts a networked call to a rate-limited API on a path a unit test takes, and
+ * this repository already carries one open flake of exactly that shape. The
+ * remote ref is weaker evidence — a pushed tag is not proof a run started —
+ * but it is produced outside the checkout, which is the property that was
+ * missing.
+ *
+ * ## The bare catch falls CLOSED, and that is the point
+ *
+ * `.claude/rules/config-access.md` bans the fail-OPEN version of this pattern,
+ * where a catch turns a failed read into "no problems found". This one falls
+ * the other way: every failure path returns `null`, `null` means no release is
+ * in flight, and no release in flight means `NEVER_PUBLISHED` — the red state.
+ * An unreachable remote, a checkout with no tags fetched and a version nobody
+ * released all land on the refusal. Do not "fix" this into a throw or a
+ * fallback without reading which direction it falls in.
  */
 export function releaseTagTime(root: string, version: string): string | null {
-  try {
-    const out = execFileSync("git", ["-C", root, "log", "-1", "--format=%cI", `v${version}`], {
+  if (!SEMVER.test(version)) return null;
+  const ref = `refs/tags/v${version}`;
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", root, ...args], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return out === "" ? null : out;
+    });
+  try {
+    // Existence, from the remote. `--exit-code` makes "no such tag" a non-zero
+    // exit rather than empty output, so an absent ref and a failed command do
+    // not have to be told apart here — both are the refusal.
+    const remote = git("ls-remote", "--tags", "--exit-code", "origin", ref);
+    const line = remote.split("\n").find(l => l.endsWith(`\t${ref}`));
+    if (line === undefined) return null;
+    const remoteOid = line.split("\t")[0]!.trim();
+    if (remoteOid === "") return null;
+
+    // The date, from the ref itself rather than from the commit under it, and
+    // only if the local ref is the object the remote is serving.
+    const local = git("for-each-ref", "--format=%(objectname) %(creatordate:iso-strict)", ref).trim();
+    if (local === "") return null;
+    const [localOid, ...rest] = local.split(" ");
+    if (localOid !== remoteOid) return null;
+    const when = rest.join(" ").trim();
+    return when === "" ? null : when;
   } catch {
     return null;
   }
