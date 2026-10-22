@@ -172,19 +172,37 @@ describe("#713 BashWriteGuard: protects gate artifacts and hook files", () => {
   // without a shell redirect, so write-target extraction cannot see it at all
   // and deleting the allowlist does not help — measured, see the PR.
 
+  // #1175 moved both of these off `/tmp`. They were written there because the
+  // guard matched a NAME in any tree; `/tmp` is now the one tree where a
+  // protected name is a fixture, so leaving them there would have asserted
+  // the false positive #1175 removed.
+
   test("#1120 WITNESS: an allowlisted prefix in front of a protected redirect is blocked", () => {
     // The bypassing prefix does nothing whatsoever and the blocked redirect is
     // still there, verbatim, one semicolon later.
-    const r = runHook("BashWriteGuard.hook.ts", cmd("gh --version; echo x > /tmp/probe/.gate-salt"));
+    const r = runHook("BashWriteGuard.hook.ts", cmd("gh --version; echo x > /opt/probe/.gate-salt"));
     expect(JSON.parse(r.stdout).decision).toBe("block");
   });
 
   test("#1120 WITNESS: an interpreter one-liner writing a protected file is blocked", () => {
     const r = runHook(
       "BashWriteGuard.hook.ts",
-      cmd(`python3 -c "open('/tmp/probe/.gate-salt','w').write('x')"`),
+      cmd(`python3 -c "open('/opt/probe/.gate-salt','w').write('x')"`),
     );
     expect(JSON.parse(r.stdout).decision).toBe("block");
+  });
+
+  test("#1175 CONTROL: the same write under /tmp is a fixture and passes, end to end", () => {
+    // The pair the unit tests hold is held here too, through the real hook in
+    // a real subprocess — because the hook has its own refuse-on-throw
+    // fallback keyed on the protected names, and a module that allows while
+    // its hook refuses would be invisible to `bash-write-guard.test.ts`.
+    expect(
+      runHook(
+        "BashWriteGuard.hook.ts",
+        cmd(`python3 -c "open('/tmp/probe/.gate-salt','w').write('x')"`),
+      ).stdout.trim(),
+    ).toBe("");
   });
 
   test("#1120 NEG CTRL: the RECORDED false positive still passes", () => {

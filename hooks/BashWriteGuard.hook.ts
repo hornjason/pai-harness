@@ -10,6 +10,25 @@
  * `.gate-salt`, `witnesses/` — and to hook sources, plus `chmod`/`chflags`
  * on a hook file and `security` access to the gate-salt Keychain entry.
  *
+ * Since #1175 a protected NAME under an OS scratch root is a fixture and is
+ * allowed; everything else, including a destination this module cannot place
+ * in a tree, keeps the refusal. The scratch roots are FIXED — `TMPDIR` can
+ * select among them and cannot name a new one, because the writer sets it —
+ * and a command that creates a symlink voids the exemption outright. The run
+ * store and the directories hook registrations actually resolve to are
+ * SUBTRACTED from the exemption wherever they are, including under `/tmp`:
+ * a checkout is the live hook exactly when a variable says it is, which
+ * `lib/hook-target-tree.ts` measured happening. The scoping is to the scratch tree and not to
+ * the project root because a live `workflow-state.json` is not in the project
+ * root — see `lib/bash-write-guard.ts` for the measurement.
+ *
+ * #1240: a heredoc or herestring handed to an INTERPRETER is a program and
+ * is decided as one. Before that the body was stripped before every arm and
+ * only a `-c`/`-e` body was read back, so `bash <<'EOF'` and `python3 <<'PY'`
+ * reached a live gate artifact with the guard deciding on the single word
+ * `bash`. A body fed to anything else — `cat > doc.md <<'EOF'`,
+ * `gh --body-file - <<'EOF'` — is still a DOCUMENT and still stripped.
+ *
  * THE DECISION LIVES IN `lib/bash-write-guard.ts` (#1120), which is where
  * the reasoning and the measurements are. It was extracted for the same
  * reason #1137 extracted `lib/gate-result-protection.ts`: a decision that

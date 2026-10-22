@@ -19,6 +19,8 @@
  */
 
 /** Commands that read files when given an operand. */
+import { isInterpreterWord } from './interpreters';
+
 const FILE_READERS = new Set(['cat', 'head', 'tail']);
 
 /** Flags that consume the following token as their value (`head -n 20 f`). */
@@ -131,8 +133,20 @@ function splitSegments(command: string): string[] {
   return segments;
 }
 
-/** Shell interpreters that execute a heredoc body as commands. */
-const INTERPRETERS = /(^|[\s;&|])(ba|z|k|da)?sh\s*$/;
+/**
+ * Does the text before a `<<` end in an interpreter, which will EXECUTE the
+ * body rather than read it as a document?
+ *
+ * #1240: this used to be a local regex matching shells only, so a
+ * `python3 <<'PY'` body read as a document here while the write guard could
+ * not see it at all. The name list now comes from `lib/interpreters.ts`,
+ * which is the one binding both modules read — the write guard's list was
+ * the wider and more correct of the two.
+ */
+function feedsInterpreter(prefix: string): boolean {
+  const last = prefix.trim().split(/[\s;&|]+/).pop() ?? '';
+  return isInterpreterWord(last);
+}
 
 /**
  * Remove heredoc bodies before scanning.
@@ -159,7 +173,7 @@ function stripHeredocBodies(command: string): string {
     }
 
     const m = line.match(/<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
-    if (m && !INTERPRETERS.test(line.slice(0, m.index))) {
+    if (m && !feedsInterpreter(line.slice(0, m.index))) {
       allowIndent = m[1] === '-';
       delim = m[3];
       out.push(line.slice(0, m.index) + line.slice(m.index! + m[0].length));
