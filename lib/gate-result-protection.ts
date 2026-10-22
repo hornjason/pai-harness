@@ -103,7 +103,7 @@
  * escalation. Either alone breaks the chain; both is right.
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 
 export interface GateWriteDecision {
   blocked: boolean;
@@ -146,6 +146,12 @@ const REPAIR_HINT =
 const PRIOR_UNPARSEABLE_REASON =
   'Refused: the workflow-state.json already at this path could not be parsed, so whether this ' +
   'change erases a gate result is UNMEASURED — and UNMEASURED refuses rather than passes.' +
+  REPAIR_HINT;
+
+const UNMODELLABLE_EDIT_REASON =
+  'Refused: the guard could not model this edit — `old_string` does not appear in ' +
+  'workflow-state.json, so whether the result would erase a gate result is UNMEASURED. ' +
+  'Rewrite old_string to match the file byte-for-byte and retry.' +
   REPAIR_HINT;
 
 const EDIT_CORRUPTS_REASON =
@@ -201,19 +207,34 @@ export function collectGateResults(parsed: unknown): Map<string, string> {
 type PriorState =
   | { kind: 'missing' }
   | { kind: 'unreadable' }
-  | { kind: 'ok'; state: unknown };
+  | { kind: 'ok'; raw: string; state: unknown };
 
-/** What is already at `filePath`, as a reading that can say it failed. */
+/**
+ * What is already at `filePath`, as a reading that can say it failed.
+ *
+ * ONE implementation, called by both branches. The Edit branch used to do
+ * its own `existsSync` + `try/catch { return ALLOW }`, which made a
+ * present-but-unreadable file ALLOW there and refuse on the Write path —
+ * the same divergence, in the same file, that this issue is about.
+ *
+ * `ENOENT` is separated from every other errno rather than catching
+ * everything: "there is no file here" is a fact the guard can act on, and
+ * "I could not read the file that is here" is one it cannot. Collapsing
+ * them is how an unreadable file comes to look like a new run. No
+ * `existsSync` first — one syscall, and no window between the check and
+ * the read.
+ */
 function readPriorState(filePath: string): PriorState {
   let raw: string;
   try {
-    if (!existsSync(filePath)) return { kind: 'missing' };
     raw = readFileSync(filePath, 'utf-8');
-  } catch {
-    return { kind: 'unreadable' };
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'missing' }
+      : { kind: 'unreadable' };
   }
   try {
-    return { kind: 'ok', state: JSON.parse(raw) };
+    return { kind: 'ok', raw, state: JSON.parse(raw) };
   } catch {
     return { kind: 'unreadable' };
   }
@@ -297,48 +318,56 @@ function decideEdit(
   filePath: string,
   oldString: string,
   newString: string,
-  replaceAll: boolean,
 ): GateWriteDecision {
   // Fast pre-filter — a replacement that spells a result or DONE outright.
   const text = decodeUnicodeEscapes(newString);
   if (RESULT_PATTERN.test(text)) return { blocked: true, reason: GATE_RESULT_REASON };
   if (DONE_PHASE_PATTERN.test(text)) return { blocked: true, reason: DONE_PHASE_REASON };
 
-  let raw: string;
-  try {
-    // No file yet: the Edit tool refuses this itself, so there is no outcome
-    // to model and nothing for the guard to protect.
-    if (!existsSync(filePath)) return ALLOW;
-    raw = readFileSync(filePath, 'utf-8');
-  } catch {
-    return ALLOW;
-  }
-
-  let priorState: unknown;
-  try {
-    priorState = JSON.parse(raw);
-  } catch {
+  const prior = readPriorState(filePath);
+  // No file yet: the Edit tool refuses this itself, so there is no outcome
+  // to model and nothing to protect. This is the ONLY bare allow left on
+  // this path, and it is a reading, not a swallowed error.
+  if (prior.kind === 'missing') return ALLOW;
+  if (prior.kind === 'unreadable') {
     return { blocked: true, reason: PRIOR_UNPARSEABLE_REASON };
   }
-  const prior: PriorState = { kind: 'ok', state: priorState };
 
-  // An `old_string` the file does not contain, or an empty one, is an edit
-  // the tool itself refuses. Modelling it would mean inventing an outcome.
-  if (oldString === '' || !raw.includes(oldString)) return ALLOW;
-
-  let after: unknown;
-  try {
-    after = JSON.parse(applySplice(raw, oldString, newString, replaceAll));
-  } catch {
-    return { blocked: true, reason: EDIT_CORRUPTS_REASON };
+  // An `old_string` the file does not contain is an edit this guard cannot
+  // model. The earlier draft allowed it, reasoning that the Edit tool
+  // refuses such an edit anyway — sound about the TOOL, and the wrong party
+  // to reason about. The guard models the tool, and where the model and the
+  // tool differ it is the model that is wrong; line endings, a BOM and
+  // `replace_all` are three places they can. The cost settles it:
+  // over-blocking costs an agent one retry, under-blocking costs the control.
+  if (oldString === '' || !prior.raw.includes(oldString)) {
+    return { blocked: true, reason: UNMODELLABLE_EDIT_REASON };
   }
-  if (!isPlainObject(after)) return { blocked: true, reason: NON_OBJECT_REASON };
 
-  const delta = gateResultDelta(collectGateResults(priorState), collectGateResults(after));
-  if (delta.length > 0) return { blocked: true, reason: erasureReason(delta) };
+  const before = collectGateResults(prior.state);
 
-  if (advancesToDone(prior, after)) {
-    return { blocked: true, reason: DONE_PHASE_REASON };
+  // BOTH outcomes, because `replace_all`'s coercion belongs to the tool and
+  // not to us. Reading it as `=== true` made every truthy non-boolean —
+  // `1`, `"true"` — model a single replacement while the tool may replace
+  // all, which was a live bypass: measured ALLOWED where `true` refused.
+  // Guessing the coercion is a second implementation of someone else's
+  // rule; evaluating both needs no guess. When `old_string` occurs once the
+  // two splices are identical, which is the overwhelmingly common case.
+  for (const all of [false, true]) {
+    let after: unknown;
+    try {
+      after = JSON.parse(applySplice(prior.raw, oldString, newString, all));
+    } catch {
+      return { blocked: true, reason: EDIT_CORRUPTS_REASON };
+    }
+    if (!isPlainObject(after)) return { blocked: true, reason: NON_OBJECT_REASON };
+
+    const delta = gateResultDelta(before, collectGateResults(after));
+    if (delta.length > 0) return { blocked: true, reason: erasureReason(delta) };
+
+    if (advancesToDone(prior, after)) {
+      return { blocked: true, reason: DONE_PHASE_REASON };
+    }
   }
 
   return ALLOW;
@@ -391,7 +420,7 @@ export function decideGateResultWrite(
   if (toolName === 'Edit') {
     const newString = typeof toolInput.new_string === 'string' ? toolInput.new_string : '';
     const oldString = typeof toolInput.old_string === 'string' ? toolInput.old_string : '';
-    return decideEdit(filePath, oldString, newString, toolInput.replace_all === true);
+    return decideEdit(filePath, oldString, newString);
   }
 
   return ALLOW;
