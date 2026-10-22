@@ -283,6 +283,37 @@ const EXECUTED = JSON.stringify(
   2,
 );
 
+/**
+ * Run 39707821002's, which is the shape #1087 is about: the reviewer ran for
+ * 22 turns, was refused nothing, and wrote no payload. Four more runs on this
+ * repository reported the same zero — 39708155573 (40 turns), 39707657746
+ * (43), 39707621271 (47), 39708162846 (51).
+ */
+const EXECUTED_NO_DENIALS = JSON.stringify(
+  [
+    { type: "system", subtype: "init", message: "Claude Code initialized" },
+    {
+      type: "result",
+      subtype: "success",
+      num_turns: 22,
+      total_cost_usd: 0.3704491,
+      permission_denials_count: 0,
+    },
+  ],
+  null,
+  2,
+);
+
+/** The same run with the counter absent, which is not the same as zero. */
+const EXECUTED_NO_COUNTER = JSON.stringify(
+  [
+    { type: "system", subtype: "init", message: "Claude Code initialized" },
+    { type: "result", subtype: "success", num_turns: 22, total_cost_usd: 0.3704491 },
+  ],
+  null,
+  2,
+);
+
 /** Run 39461944884's, which exhausted the turn budget instead. */
 const EXHAUSTED = JSON.stringify(
   [
@@ -456,5 +487,97 @@ describe("AC-B (#826): the annotation names the route it measured", () => {
     expect(line === executedLine, "the unreadable route and the executed route say the same thing").toBe(
       false,
     );
+  });
+});
+
+// ── AC-C: the denial count, read rather than guessed (#1087) ─────────────
+
+/**
+ * The sentence this block replaces asserted a cause: *"a reviewer that ran
+ * and wrote nothing is usually one that could not write to the findings
+ * path"*. The execution files refute it at `permission_denials_count: 0` on
+ * every run sampled, and the guess cost two readers of #1087 a dead end each
+ * before anyone read the number it was guessing about.
+ *
+ * Three states, because a file with no counter is not a file reporting zero.
+ * The pair case is what makes that a split rather than three spellings of one
+ * sentence; AC-C5 is the separation this file's AC-B5 asserts for the route
+ * as a whole, re-asserted for the branch added inside it.
+ */
+describe("AC-C (#1087): the annotation reads the denial count", () => {
+  const line = (out: string) => out.split("\n").find(l => l.includes("::warning")) ?? "";
+
+  test("AC-C1: zero denials — the findings path is named as NOT the cause", () => {
+    const r = runReport({ payload: null, execution: EXECUTED_NO_DENIALS });
+    expect(r.out, `stderr:\n${r.err}`).toContain("permission_denials_count 0");
+    expect(
+      r.out,
+      "a run that was refused nothing is still being sent at the findings path",
+    ).toContain("dead end");
+  });
+
+  test("AC-C2: a non-zero count sends the reader at the denials", () => {
+    const r = runReport({ payload: null, execution: EXECUTED });
+    expect(r.out, `stderr:\n${r.err}`).toContain("NON-ZERO");
+    expect(r.out, "the denied route does not say the path is worth checking").toContain(
+      "worth checking",
+    );
+  });
+
+  test("AC-C3: no counter at all is UNMEASURED about the denials, not zero", () => {
+    const r = runReport({ payload: null, execution: EXECUTED_NO_COUNTER });
+    expect(r.out, `stderr:\n${r.err}`).toContain("carries no permission_denials_count");
+    expect(
+      r.out,
+      "an absent counter is being reported as a measured zero",
+    ).not.toContain("permission_denials_count 0");
+  });
+
+  test("AC-C4: the THREE sentences are three — one input varies and none repeats", () => {
+    // #585's discipline. Payload state, outcome, mode and require switch are
+    // all held; the only thing that moves is the denial field in the
+    // execution file. Three readings that collapsed to one sentence would
+    // leave AC-C1..C3 green on substrings while measuring nothing.
+    const zero = line(runReport({ payload: null, execution: EXECUTED_NO_DENIALS }).out);
+    const denied = line(runReport({ payload: null, execution: EXECUTED }).out);
+    const absent = line(runReport({ payload: null, execution: EXECUTED_NO_COUNTER }).out);
+    for (const [a, b] of [
+      [zero, denied],
+      [zero, absent],
+      [denied, absent],
+    ]) {
+      expect(a, "a route printed no annotation at all").not.toBe("");
+      expect(a === b, `two denial routes printed the same sentence:\n${a}`).toBe(false);
+    }
+  });
+
+  test("AC-C5: the denial reading decides the SENTENCE and never the exit code", () => {
+    for (const require of [false, true]) {
+      const codes = [EXECUTED_NO_DENIALS, EXECUTED, EXECUTED_NO_COUNTER].map(
+        execution => runReport({ payload: null, execution, require }).code,
+      );
+      expect(
+        codes,
+        `the denial count moved the exit code with require=${require}`,
+      ).toEqual([codes[0], codes[0], codes[0]]);
+    }
+    // And the switch is doing something, or the equality above is vacuous —
+    // the same trap AC-B5 names.
+    expect(
+      runReport({ payload: null, execution: EXECUTED_NO_DENIALS, require: true }).code,
+      "the require switch stopped refusing, so AC-C5's equality means nothing",
+    ).not.toBe(0);
+  });
+
+  test("AC-C6: a count that merely STARTS with the matched digits is not read as zero", () => {
+    // The other direction of the end-anchor, and the cheap half: `30` was
+    // never going to match a pattern whose first value character is `0`. The
+    // anchor's real work is the `$`, which AC-C4 above measured — see the
+    // generator's comment for the draft it caught.
+    const thirty = EXECUTED.replace('"permission_denials_count": 3', '"permission_denials_count": 30');
+    expect(thirty, "the fixture rewrite did not take").toContain('"permission_denials_count": 30');
+    const r = runReport({ payload: null, execution: thirty });
+    expect(r.out, "a count of 30 was read as a zero").not.toContain("permission_denials_count 0");
+    expect(r.out).toContain("NON-ZERO");
   });
 });

@@ -290,6 +290,7 @@ import {
   AI_REVIEW_RUNNER_DIAGNOSTIC_PATHS,
   AI_REVIEW_FILE_SHAPED_PATHS,
   AI_REVIEW_RUNTIME_CONFIG_PATHS,
+  AI_REVIEW_RUNTIME_CONFIG_TITLE,
   AI_REVIEW_RUNTIME_CONFIG_UNMEASURED,
   AI_REVIEW_RUNTIME_INERT_PATHS,
   AI_REVIEW_TREE_BEFORE_SHA_VAR,
@@ -661,13 +662,81 @@ describe("AC-8 (#866/#871): the runtime's own directories are subtracted", () =>
       expect(r.code, `${entry} is written by the runtime every run and refused:\n${r.stderr}`).toBe(0);
       expect(text).not.toContain(`::error title=${AI_REVIEW_OUTSIDE_TITLE}`);
       expect(text, `${entry} was subtracted in silence — #866's blind spot`).toContain(
-        `::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${CONFIG_UNMEASURED_TEXT}`,
+        `::warning title=${AI_REVIEW_RUNTIME_CONFIG_TITLE}::${CONFIG_UNMEASURED_TEXT}`,
       );
+      // #1087. And NOT under the report step's title. A reader counting
+      // `AI review UNMEASURED` across runs is asking "did a review happen",
+      // and this reading is emitted on runs where one did — 17 of the 40
+      // sampled on this repository had written a payload while carrying it.
+      expect(
+        text,
+        `${entry} is annotated under the title that means "no review happened" (#1087)`,
+      ).not.toContain(`::warning title=${AI_REVIEW_UNMEASURED_TITLE}::`);
       // The absolute path, not the entry name: the refusal's prose enumerates
       // both lists, so a relative spelling is satisfied by a sentence.
       expect(text, "the annotation does not name the path it found").toContain(target);
     });
   }
+
+  test("AC-15 (#1087): the two titles are distinct, and neither contains the other", () => {
+    // An exact-match reader is separated by `!==` alone. A reader who greps
+    // is not, and the fleet query in #1087 is the kind that greps. A title
+    // that merely EXTENDS the other — "AI review UNMEASURED (runtime
+    // config)" — is the cheapest wrong fix here: it passes every other case
+    // in this file and leaves every `grep -c` reporting exactly what it
+    // reported before.
+    expect(AI_REVIEW_RUNTIME_CONFIG_TITLE).not.toBe(AI_REVIEW_UNMEASURED_TITLE);
+    expect(
+      AI_REVIEW_RUNTIME_CONFIG_TITLE,
+      "the runtime-config title contains the report step's title, so a substring reader still conflates them",
+    ).not.toContain(AI_REVIEW_UNMEASURED_TITLE);
+    expect(
+      AI_REVIEW_UNMEASURED_TITLE,
+      "the report step's title contains the runtime-config one",
+    ).not.toContain(AI_REVIEW_RUNTIME_CONFIG_TITLE);
+  });
+
+  test("AC-16 (#1087): the PAIR — this step still emits the original title for a reading it could not take", () => {
+    // The negative control, and the reason AC-13 alone is not enough. The
+    // cheapest wrong fix for AC-13 is to rename `AI_REVIEW_UNMEASURED_TITLE`
+    // itself, which would pass every case above while splitting nothing —
+    // both readings would simply move together. So one input varies, within
+    // this one step, and the two titles must come back different.
+    //
+    // The sides are chosen rather than convenient. A runtime-config write is
+    // "the review happened and one NAMED path list could not be read"; no
+    // usable $HOME is "this step could not look at all", which is unmeasured
+    // about the reviewer and keeps the original title for that reason.
+    const f = fixture();
+    const { path, sha } = runBaseline(f);
+    mkdirSync(join(f.home, ".claude"), { recursive: true });
+    writeFileSync(join(f.home, ".claude", "settings.json"), RUNTIME_WRITE);
+    const config = runDrift(f, path, sha);
+
+    const g = fixture();
+    const second = runBaseline(g);
+    const noHome = sh(buildDriftScript(), g.work, {
+      AI_REVIEW_MODE: "vertex",
+      HOME: "",
+      RUNNER_TEMP: g.runnerTemp,
+      GITHUB_WORKSPACE: g.work,
+      [AI_REVIEW_TREE_BEFORE_VAR]: second.path,
+      [AI_REVIEW_TREE_BEFORE_SHA_VAR]: second.sha,
+    });
+
+    const titleOf = (text: string) =>
+      (text.split("\n").find(l => l.startsWith("::warning title=")) ?? "").split("::")[1] ?? "";
+
+    const configTitle = titleOf(config.stdout + config.stderr);
+    const noHomeTitle = titleOf(noHome.stdout + noHome.stderr);
+
+    expect(configTitle, `no warning on the config run:\n${config.stdout}${config.stderr}`).not.toBe("");
+    expect(noHomeTitle, `no warning on the no-HOME run:\n${noHome.stdout}${noHome.stderr}`).not.toBe("");
+    expect(
+      configTitle === noHomeTitle,
+      `both readings came back under one title (${configTitle}) — the split renamed, it did not separate`,
+    ).toBe(false);
+  });
 
   test("AC-14 (#871): a config write beside an unlisted one refuses, and both are named", () => {
     // The config reading must not swallow the refusal. It is a warning and

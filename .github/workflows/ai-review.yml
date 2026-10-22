@@ -1,4 +1,4 @@
-# generated-sha: 4472b9775440d0df
+# generated-sha: a17006e047c9ecd7
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1038,8 +1038,28 @@ jobs:
               # different explanatory sentence rather than a different verdict.
               if grep -qE '"subtype"[[:space:]]*:[[:space:]]*"error_max_turns"' "${AI_REVIEW_EXECUTION_FILE}"; then
                 route="The review action exited successfully WITHOUT writing a findings payload, and its execution file reports the turn budget was exhausted (error_max_turns), so the reviewer ran out of turns before it wrote anything. Raising AI_REVIEW_MAX_TURNS is the lever; making the prompt write a payload early is NOT, because a partial review that leaves a file behind reports as a pass. This check is UNMEASURED, not a passing review."
+              elif ! grep -qE '"permission_denials_count"[[:space:]]*:' "${AI_REVIEW_EXECUTION_FILE}"; then
+                # Asked FIRST, because the two readings below are both about a number
+                # that may not be there, and "absent" answered last is "absent" reported
+                # as whichever branch fell through to it.
+                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file. That file carries no permission_denials_count, so whether the reviewer was refused anything is UNMEASURED too and this job will not guess at it (#1087). Read the execution file and the action's own log. This check is UNMEASURED, not a passing review."
+              elif grep -qE '"permission_denials_count"[[:space:]]*:[[:space:]]*0[[:space:]]*(,|}|$)' "${AI_REVIEW_EXECUTION_FILE}"; then
+                # The end-anchor is `(,|}|$)` and the `$` is the whole of it. grep is
+                # LINE-based: it strips the newline before matching, so in the
+                # pretty-printed file the action actually writes — where this field is
+                # the last member of the result object — the character after `0` is the
+                # end of the line and nothing else. A `[,}]` class alone therefore
+                # fails to match a genuine zero, which is the failing direction: the
+                # zero route would be unreachable and every executed run would report
+                # denials it did not have.
+                #
+                # That is not a hypothetical. The first draft of this branch was
+                # `[,}]`, and `test/ai-review-route-reading.test.ts` AC-C4 caught it by
+                # pairing the three routes and finding two of them printing one
+                # sentence. The trailing `,` and `}` are kept for a compact file.
+                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file, so this is NOT the case where it declined before running, and nothing about the workflow file is worth checking. Its execution file reports permission_denials_count 0, so the reviewer was never refused a call: access to the findings path is NOT the cause and reading it as one is a dead end (#1087). Read the execution file for the turn count and what the reviewer spent its turns on instead. This check is UNMEASURED, not a passing review."
               else
-                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file, so this is NOT the case where it declined before running, and nothing about the workflow file is worth checking. Read that execution file for the turn count and the permission denials; a reviewer that ran and wrote nothing is usually one that could not write to the findings path, which is outside the checkout. This check is UNMEASURED, not a passing review."
+                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file, and that file reports a NON-ZERO permission_denials_count, so the reviewer was refused at least one call. Read the denials in the execution file: a reviewer refused its own output file is the one case where the findings path, which is outside the checkout, is worth checking. This check is UNMEASURED, not a passing review."
               fi
             elif [ -n "${AI_REVIEW_EXECUTION_FILE:-}" ]; then
               # Named but unreadable. Reporting that as the declined route would be a
@@ -1457,7 +1477,7 @@ jobs:
               \) \
               2>/dev/null | head -50 || true)
             if [ -n "${runtime_config}" ]; then
-              echo "::warning title=AI review UNMEASURED::the reviewer's job wrote to the runtime's own CONFIGURATION under \$HOME, and this step cannot tell that write from the one the CLI makes on every start — the paths below are rewritten by the runtime on every run, so neither their presence nor their content distinguishes the two (#871). These are not inert state: they declare MCP servers, hooks, the plugin directory and what the next npx resolves, or they carry session state and keys a runtime reads back as trusted context (#907, #913), so a write here reaches what the CLI does on its next start, and on a shared self-hosted runner that is another repository's build (#843 finding 1). This run is UNMEASURED at these paths, which is not the same as a run in which the reviewer did not write to them. Paths: $(escape_annotation "${runtime_config}")"
+              echo "::warning title=AI review runtime config UNMEASURED::the reviewer's job wrote to the runtime's own CONFIGURATION under \$HOME, and this step cannot tell that write from the one the CLI makes on every start — the paths below are rewritten by the runtime on every run, so neither their presence nor their content distinguishes the two (#871). These are not inert state: they declare MCP servers, hooks, the plugin directory and what the next npx resolves, or they carry session state and keys a runtime reads back as trusted context (#907, #913), so a write here reaches what the CLI does on its next start, and on a shared self-hosted runner that is another repository's build (#843 finding 1). This run is UNMEASURED at these paths, which is not the same as a run in which the reviewer did not write to them. Paths: $(escape_annotation "${runtime_config}")"
             fi
 
             if [ -n "${outside}" ]; then
