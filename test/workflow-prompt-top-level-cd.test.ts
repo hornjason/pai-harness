@@ -333,6 +333,104 @@ describe("#1086: the scan can fail, and fails on the right input", () => {
     expect(barePathInterpolationsIn(source.replace("shellQuote(dir)", "String(dir)"))).toHaveLength(1);
   });
 
+  // ── #1106: the exemption is a binding in scope, not a name ──────────────
+
+  test("#1106: a second binding of the same name does NOT inherit the quoter's exemption", () => {
+    // THE case. A security review measured this against `workflows/ship.js`,
+    // which binds `d` four times and quotes only one of them: injecting
+    // `git -C ${d}` beside any of the other three produced 0 refusals, while
+    // the same line with `${zz}` produced 1. The decider laundered an
+    // unquoted interpolation because the name matched a quoter elsewhere.
+    const source = [
+      "function quoted(dir) {",
+      "  const d = shellQuote(dir)",
+      "  return `git -C ${d} add -A`",
+      "}",
+      "function notQuoted(dir) {",
+      "  const d = String(dir == null ? '' : dir)",
+      "  return `git -C ${d} status`",
+      "}",
+    ].join("\n");
+
+    const found = barePathInterpolationsIn(source);
+    expect(
+      found.map(f => `${f.line}: ${f.form} ${f.expression}`),
+      "the `${d}` under `const d = String(...)` was accepted because another function " +
+        "in the same file binds `d` to a quoter — lib/shell-path-interpolation.ts, " +
+        "quoterBindingsByLine.",
+    ).toEqual(["7: -C ${d}"]);
+  });
+
+  test("#1106: and the quoter's OWN uses are still laundered — the exemplar is not collateral", () => {
+    // The control for the case above. Without it, a decider that simply
+    // stopped laundering anything would satisfy it perfectly while breaking
+    // `gitDerivedStaging`, which is the shape this check was built around.
+    const source = [
+      "function quoted(dir) {",
+      "  const d = shellQuote(dir)",
+      "  return [`git -C ${d} add -A`, `git -C ${d} status`].join('')",
+      "}",
+      "function notQuoted(dir) {",
+      "  const d = String(dir)",
+      "  return `echo ${d}`",
+      "}",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toEqual([]);
+  });
+
+  test("#1106: 'bound exactly once in the file' is NOT the fix, and this is the case that says so", () => {
+    // The cheapest repair for the hole above is to launder only names with a
+    // single declaration. It is two lines, it closes the measured injection,
+    // and it is wrong: `ship.js` declares `d` four times, so under it the two
+    // REAL `git -C ${d}` uses inside `gitDerivedStaging` — correctly quoted —
+    // become refusals. Measured on the live tree: 0 refusals becomes 2 false
+    // ones.
+    //
+    // This case is that shape in miniature. It goes green under the correct
+    // fix and red under the cheap one, which is the only way the two can be
+    // told apart by a test rather than by a paragraph.
+    const source = [
+      "function a(dir) { const d = shellQuote(dir); return `git -C ${d} x` }",
+      "function b(p) { const d = collect(p); return d.length }",
+      "function c(w) { const d = ok(w); return d }",
+      "function e(v) { const d = String(v); return d }",
+    ].join("\n");
+    expect(
+      barePathInterpolationsIn(source),
+      "a correctly-quoted use was refused because its name is declared more than once " +
+        "elsewhere in the file — that is the 'bound exactly once' fix, which this case exists " +
+        "to refuse.",
+    ).toEqual([]);
+  });
+
+  test("#1106: a parameter shadows an outer quoter, which no declaration count can see", () => {
+    // `const NAME =` is the only form a name scan recognises. A parameter
+    // introduces a binding and is spelled nothing like that, so under any
+    // count-the-declarations rule this file has exactly ONE `d` and the
+    // parameter's `${d}` is laundered. Scope resolution is what refuses it.
+    const source = [
+      "const d = shellQuote(root)",
+      "function inner(d) {",
+      "  return `git -C ${d} status`",
+      "}",
+    ].join("\n");
+    expect(barePathInterpolationsIn(source)).toHaveLength(1);
+  });
+
+  test("#1106: a source that will not parse launders nothing, rather than everything", () => {
+    // Fail CLOSED. The opposite default would make a syntax error the most
+    // effective way to switch this check off, and an unparseable file is
+    // exactly where a reader is least able to notice.
+    const broken = [
+      "function quoted(dir) {",
+      "  const d = shellQuote(dir)",
+      "  return `git -C ${d} add -A`",
+      // no closing brace, and a stray token the parser cannot place
+      "  ) ) )",
+    ].join("\n");
+    expect(barePathInterpolationsIn(broken)).toHaveLength(1);
+  });
+
   test("the cheapest wrong fix IS found: double quotes are not accepted", () => {
     const found = barePathInterpolations('git -C "${PROJECT_ROOT}" status');
     expect(found).toHaveLength(1);
