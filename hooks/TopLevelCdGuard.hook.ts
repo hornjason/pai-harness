@@ -26,6 +26,25 @@
  * file and in no hooks registry. The registration step is the remaining
  * action, recorded on the PR.
  *
+ * ## What changed while it stayed inert
+ *
+ * It can now WARN. Before, it emitted `{decision:'block'}` unconditionally,
+ * so "register it as a warning" — the option endorsed on the issue, and the
+ * first rung of the WARN→data→FAIL ladder in
+ * `specs/harness-automation-matrix.md` — was not a thing anyone could
+ * choose without rewriting the hook on the day of the decision. `warn` is
+ * the default; `RUNGATE_CD_GUARD=block` opts into refusal and `=off`
+ * silences it. See `cdGuardMode` for the 32.7%-of-31,577 measurement that
+ * makes a hard refusal the wrong first rung.
+ *
+ * It is also SCOPED to harnessed projects via `lib/harness-project.ts`, the
+ * same decider `BashToolGuard` uses. A top-level `cd` costs something only
+ * in a session with concurrent agents holding worktrees; firing everywhere
+ * to protect the minority of sessions where it matters is mis-scoped.
+ *
+ * Neither change registers anything. Both exist so the decision is a
+ * configuration choice rather than a code change made under time pressure.
+ *
  * The parse, and what it cannot see, is `lib/top-level-cd.ts`. Read its
  * WHAT THIS DOES NOT COVER block before trusting this to stop anything.
  *
@@ -33,7 +52,8 @@
  */
 
 import { parseHookInput } from './lib/parseStdin';
-import { topLevelCdRefusal } from '../lib/top-level-cd';
+import { cdGuardMode, topLevelCdRefusal } from '../lib/top-level-cd';
+import { isHarnessProject } from '../lib/harness-project';
 
 async function main() {
   const payload = await parseHookInput();
@@ -41,10 +61,28 @@ async function main() {
 
   if (payload.tool_name !== 'Bash') process.exit(0);
 
+  // Scope before parse: outside a harnessed project there are no peer
+  // worktrees to kill, so there is nothing for this to protect.
+  if (!isHarnessProject(process.cwd())) process.exit(0);
+
+  const { mode, unrecognised } = cdGuardMode();
+  if (mode === 'off') process.exit(0);
+
   const refusal = topLevelCdRefusal(payload.tool_input?.command || '');
   if (refusal === null) process.exit(0);
 
-  console.log(JSON.stringify({ decision: 'block', reason: refusal.message }));
+  const note = unrecognised
+    ? `\n(${'RUNGATE_CD_GUARD'}=${JSON.stringify(unrecognised)} is not a mode I know; warning instead of refusing.)`
+    : '';
+
+  if (mode === 'block') {
+    console.log(JSON.stringify({ decision: 'block', reason: refusal.message + note }));
+    process.exit(0);
+  }
+
+  // WARN: the command RUNS. Written to stderr so it reaches the transcript
+  // without becoming a tool result the model might read as a refusal.
+  console.error(`[top-level-cd] ${refusal.message}${note}`);
   process.exit(0);
 }
 
