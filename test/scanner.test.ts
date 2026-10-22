@@ -21,6 +21,7 @@ import { tmpdir } from "os";
 // AC-1: scanner exports scanProject
 import { scanProject } from "../lib/scanner";
 import type { ProjectScan } from "../lib/generators/types";
+import { generationImports, parseImports } from "./helpers/import-specifiers";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -451,11 +452,35 @@ describe("#70: scanner resolves harnessConfig from the .claude/rungate directory
 });
 
 describe("AC-3: Scanner import isolation", () => {
+  /**
+   * The only decider of this property, as of #1219.
+   *
+   * It used to be two: this path grep, and a four-function-name grep over the
+   * whole file in `test/unit/scanner.test.ts`. Both read raw source, so a
+   * COMMENT naming a generator counted as an import (it reddened CI shard 4
+   * on #1200, and the repair was to reword the comment) while a dynamic
+   * `import("./generators/code-map")` did not count at all. Two guards
+   * answering one question are behaviourally one guard —
+   * `.claude/rules/checks-must-be-able-to-fail.md`, fourth shape — so the
+   * other one is gone rather than also rewritten.
+   *
+   * `generationImports` parses. The disagreement between it and the two text
+   * readings is executed row by row in `test/import-specifiers.test.ts`.
+   */
   test("scanner.ts imports no generation modules", () => {
-    const content = readFileSync(join(ROOT, "lib/scanner.ts"), "utf-8");
-    // Must not import from generators/agents-md, generators/agent-briefs, generators/code-map
-    expect(content).not.toMatch(/from.*generators\/(agents-md|agent-briefs|code-map)/);
-    // May import from generators/types (that's the typed interface, not generation logic)
-    expect(content).toMatch(/from.*generators\/types|from.*\.\/generators\/types/);
+    const file = "lib/scanner.ts";
+    const content = readFileSync(join(ROOT, file), "utf-8");
+    const imports = parseImports(content, file);
+
+    // An empty reading is UNMEASURED, not a pass: a parser that returned
+    // nothing and a module with no imports look identical downstream.
+    expect(imports.length).toBeGreaterThan(5);
+
+    expect(generationImports(content, file).map((i) => `${i.kind} ${i.specifier}`)).toEqual([]);
+
+    // May import from generators/types — that is the typed interface, not
+    // generation logic. Asserted on the parsed reading so it cannot be
+    // satisfied by the words appearing in a comment.
+    expect(imports.some((i) => i.resolved === "lib/generators/types")).toBe(true);
   });
 });
