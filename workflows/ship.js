@@ -379,6 +379,23 @@ function isSafeBranchName(name) {
   return true
 }
 
+/**
+ * `main`, `refs/heads/main` and `origin/main` as one name (#1113).
+ *
+ * Only for COMPARING a reported ref against a branch this run must not push
+ * to. It is not a sanitiser and it is not a validator: it strips a prefix, so
+ * feeding it hostile text returns hostile text with a prefix gone. The
+ * refusals that use it run `isSafeBranchName` on the unstripped value in the
+ * same breath, which is the half that decides whether the string is a branch
+ * name at all.
+ */
+function bareBranchName(ref) {
+  return String(ref ?? '')
+    .trim()
+    .replace(/^refs\/(?:heads|remotes)\//, '')
+    .replace(/^origin\//, '')
+}
+
 // Mirror of repoSlugRefusal / rootPathRefusal in lib/workflow-security.ts —
 // see the note at the top of this block. Change one, change the other; the
 // integration test runs both against the same inputs.
@@ -3828,7 +3845,10 @@ function localEnvClause(field, url, configKey) {
       `environments.local.${field} = "SKIP" with skipReason "no ${configKey} in the resolved config". ` +
       `Do not go looking for one.`
   }
-  return `curl ${url} and write environments.local.${field} = PASS or FAIL from what it answered. ` +
+  // Quoted because it is a word in a command the agent runs, and it arrives
+  // from the resolved config by way of an agent reading it back (#1103). The
+  // other two interpolations on this line are literals from the caller.
+  return `curl ${shellQuote(url)} and write environments.local.${field} = PASS or FAIL from what it answered. ` +
     `SKIP is NOT available for this project — the URL is resolved above, so a check you could not ` +
     `complete is a FAIL, not a skip.`
 }
@@ -7276,6 +7296,52 @@ function reusablePriorBranch(prior) {
   if (!prior || !prior.branch) return null
 
   const refusals = []
+  // Shape before currency (#1103). `prior.branch` is `priorResult.priorBranch`
+  // out of the prior-branch AGENT's reply — unconstrained text, not a ref git
+  // ever resolved — and the value is interpolated into `HEAD:${branchToReuse}`
+  // one line after this returns. `isSafeBranchName` already guarded the OTHER
+  // consumer of the same value, 116 lines downstream of that interpolation,
+  // which is a validator reading a value a shell had already run.
+  //
+  // Refusing here rather than quoting at the two use sites is the point: a
+  // quoted bad branch name is inert, not correct — it still pushes this run's
+  // work to a ref nobody chose. Refusing falls back to the plain `HEAD` this
+  // function already returns for every other reason, which is the behaviour a
+  // run with no usable prior branch gets anyway.
+  //
+  // Shape is not identity, and the first version of this check confused them
+  // (#1113). `isSafeBranchName('main')` is TRUE — right length, matches
+  // SAFE_BRANCH, no `..`, no `//`, no trailing `/` or `.lock` — so a reply of
+  // `{branch: 'main', isMerged: false, isBehind: false}` passed every refusal
+  // here and became `HEAD:main`. The `#136` abort that catches it is 120
+  // lines further down, accurate and too late, and it stays there as the
+  // backstop rather than as the guard.
+  const nominated = String(prior.branch).trim()
+  if (!isSafeBranchName(nominated)) refusals.push('it is not a usable branch name')
+  // First SEGMENT, not a substring. The first version tested `/^refs\//`,
+  // `'/heads/'` and `'/remotes/'`, which needs a leading slash — so
+  // `remotes/origin/main` and `heads/main` both passed, and both reach `main`
+  // through git's DWIM. Matching the segment catches every spelling of the
+  // same reach, and the fallback when it refuses is pushing HEAD, which is
+  // what a run with no usable prior branch does anyway.
+  if (/^(?:refs|heads|remotes|tags|origin)\//i.test(nominated)) {
+    refusals.push('it is a fully-qualified ref rather than a branch name, and `HEAD:refs/heads/x` ' +
+      'reaches the same place by a different spelling')
+  }
+  // Normalised first, so `main`, `refs/heads/main` and `origin/main` are one
+  // case and not three. `DEFAULT_BRANCHES` is this file's existing answer to
+  // "which branch is the one nobody may push unreviewed work onto" — the same
+  // binding `runRefRefusal` uses — rather than a second pair written here that
+  // could drift from it. `primaryBranchBefore` covers the consumer whose
+  // default is neither: it is the branch the project checkout was on when this
+  // run launched, which is the #136 fact in the first place.
+  // Case-folded, because `DEFAULT_BRANCHES.has` is exact and `Main` is not
+  // `main` to a Set while it is to a case-insensitive checkout.
+  const bare = bareBranchName(nominated).toLowerCase()
+  const before = primaryBranchBefore ? bareBranchName(primaryBranchBefore).toLowerCase() : ''
+  if (DEFAULT_BRANCHES.has(bare) || (before && bare === before)) {
+    refusals.push(`it is the default branch (${bare}), and ship does not push a run's work onto it (#136)`)
+  }
   if (prior.isMerged === true) refusals.push('its work is already in the base branch')
   else if (prior.isMerged !== false) refusals.push('whether it is already merged was never measured')
   if (prior.isBehind === true) {
@@ -7284,8 +7350,19 @@ function reusablePriorBranch(prior) {
     refusals.push('how far behind the base branch it sits was never measured')
   }
 
-  if (refusals.length === 0) return prior.branch
-  log(`Not pushing onto prior branch ${prior.branch}: ${refusals.join('; ')}. Pushing HEAD instead.`)
+  // `nominated`, NEVER `prior.branch`. Every refusal above reads `nominated`,
+  // so returning the raw value would validate one representation and emit a
+  // different one. The `.trim()` is what makes that exploitable rather than
+  // cosmetic: `'feature\n'` trims to `feature`, clears every refusal, and the
+  // raw value would become `HEAD:feature\n` in
+  // `git -C ${shellQuote(commitDir)} push -u origin ${pushTarget}` — where the
+  // refspec is the UNQUOTED half, so a newline ends the command and the next
+  // line is a new one. Quoting `commitDir` does nothing about it.
+  // If you add a normalisation step here, validate and return the same string.
+  if (refusals.length === 0) return nominated
+  // Sliced because this line now reports names that failed a SHAPE check, so
+  // the first value it will ever print in anger is the hostile one.
+  log(`Not pushing onto prior branch ${nominated.slice(0, 80)}: ${refusals.join('; ')}. Pushing HEAD instead.`)
   return null
 }
 

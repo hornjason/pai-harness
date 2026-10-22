@@ -45,10 +45,26 @@ function markedBlock(name: string): string {
   return SHIP.slice(start, end);
 }
 
+/**
+ * ship.js's own `shellQuote`, sliced rather than re-spelled here (#1103).
+ *
+ * The clause quotes the URL now — it is a word in a `curl` the agent runs —
+ * so the block needs the quoter to execute. A copy written in this file would
+ * be two deciders that agree, and the rows below would then be measuring a
+ * quoter this test invented.
+ */
+const SHELL_QUOTE_SOURCE = (() => {
+  const start = SHIP.indexOf("function shellQuote(word) {");
+  if (start < 0) throw new Error("ship.js no longer declares shellQuote");
+  const end = SHIP.indexOf("\n}", start);
+  if (end < 0) throw new Error("ship.js's shellQuote has no closing brace");
+  return SHIP.slice(start, end + 2);
+})();
+
 type Clause = (field: "api" | "ui", url: string | null, configKey: string) => string;
 
 const localEnvClause: Clause = new Function(
-  `${markedBlock("LOCAL-ENV-CLAUSE")}\nreturn localEnvClause`,
+  `${SHELL_QUOTE_SOURCE}\n${markedBlock("LOCAL-ENV-CLAUSE")}\nreturn localEnvClause`,
 )() as Clause;
 
 describe("#307: the heal prompt carries the URL, not a lookup", () => {
