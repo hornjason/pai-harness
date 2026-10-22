@@ -71,9 +71,13 @@ type Refusal = (setupResult: unknown) => string | null;
  * object and reading as a pass.
  */
 function loadRefusal(source: string = shipSource): Refusal {
-  const block = structuralCutAround(source, SIGNATURE, {
-    startAnchor: START,
-    end: { endAnchor: END },
+  // Anchors written out as literals, not as the constants above. #668's scan
+  // in `test/unit/ambiguous-anchor.test.ts` reads every `structuralCut*` call
+  // site in `test/` and reports one whose anchor it cannot resolve — a
+  // computed anchor is a cut nothing can check for ambiguity.
+  const block = structuralCutAround(source, "function configResolutionRefusal(setupResult) {", {
+    startAnchor: "// ──── CONFIG-RESOLUTION-REFUSAL-START ────",
+    end: { endAnchor: "// ──── CONFIG-RESOLUTION-REFUSAL-END ────" },
   });
   return new Function("PROJECT_ROOT", `${block}\nreturn configResolutionRefusal`)(
     FIXTURE_ROOT,
@@ -88,7 +92,7 @@ function loadRefusal(source: string = shipSource): Refusal {
  */
 function derivationRegion(source: string = shipSource): string {
   return structuralCutAround(source, "const projectConfig = setupResult.config", {
-    startAnchor: START,
+    startAnchor: "// ──── CONFIG-RESOLUTION-REFUSAL-START ────",
     end: { endAnchor: "const hasContainer = " },
   });
 }
