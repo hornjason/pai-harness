@@ -21,7 +21,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -49,7 +49,6 @@ import {
   AI_REVIEW_ROUND_OUTPUT,
   AI_REVIEW_ROUND_PATH_VAR,
   AI_REVIEW_RUN_STEP_ID,
-  AI_REVIEW_SCOPE_OUTPUT,
   buildReviewPrompt,
   buildRoundsScript,
 } from "../lib/scaffold/ai-review-step.ts";
@@ -93,29 +92,52 @@ describe("AC-S1: the literals are bound to the library", () => {
  * under `bash -e`, and spawning a plain shell runs a different program
  * (`.claude/rules/…`, and #1191 in this file's own history).
  */
-function runRounds(env: Record<string, string>, totalCount: string | null) {
+function runRounds(
+  env: Record<string, string>,
+  totalCount: string | null,
+  // The script under test. Defaulted, so every existing case runs the real
+  // one; passed explicitly only to run a mutant through the identical rig
+  // (#1255), because a mutant executed by different plumbing is a second
+  // experiment rather than a control.
+  script_ = buildRoundsScript(),
+) {
   const dir = mkdtempSync(join(tmpdir(), "ai-review-rounds-"));
   try {
     const out = join(dir, "out.txt");
     writeFileSync(out, "");
+    // The reviewer's copy of the round state. This is the file #1241's scope
+    // actually travelled on — not the step output, which nothing reads — so
+    // a case about what the reviewer is told has to assert on THIS.
+    const roundPath = join(dir, "round.txt");
     const bin = join(dir, "bin");
     require("node:fs").mkdirSync(bin);
+    // The REQUEST, not just the response. #1281 was a defect in what the step
+    // ASKED FOR — a branch name with no pull-request scope — and a fake curl
+    // that only answers cannot see that. It records its own argv first.
+    const argvPath = join(dir, "curl-argv.txt");
+    const record = `#!/usr/bin/env bash\nprintf '%s\\n' "$@" >> ${JSON.stringify(argvPath)}\n`;
     // A curl that answers from the fixture. `--fail-with-body` semantics are
     // reproduced by exiting non-zero when the fixture is null.
     writeFileSync(
       join(bin, "curl"),
       totalCount === null
-        ? "#!/usr/bin/env bash\nexit 22\n"
-        : `#!/usr/bin/env bash\nprintf '%s' '{"total_count":${totalCount},"workflow_runs":[]}'\n`,
+        ? `${record}exit 22\n`
+        : `${record}printf '%s' '{"total_count":${totalCount},"workflow_runs":[]}'\n`,
       { mode: 0o755 },
     );
     const script = join(dir, "step.sh");
-    writeFileSync(script, buildRoundsScript());
+    writeFileSync(script, script_);
     const r = spawnSync("bash", ["-e", script], {
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         GITHUB_OUTPUT: out,
+        [AI_REVIEW_ROUND_PATH_VAR]: roundPath,
         AI_REVIEW_ROUNDS_BRANCH: "rg/1168",
+        // Required since #1281 — the step refuses without it rather than
+        // widening the query to the branch name. Defaulted here so every
+        // case that is not ABOUT the scope term keeps its own subject;
+        // the cases that are about it pass their own value, including "".
+        AI_REVIEW_ROUNDS_SINCE: "2026-01-01T00:00:00Z",
         AI_REVIEW_ROUNDS_REPO: "o/r",
         AI_REVIEW_ROUNDS_API: "https://api.github.test",
         AI_REVIEW_ROUNDS_TOKEN: "t",
@@ -129,7 +151,9 @@ function runRounds(env: Record<string, string>, totalCount: string | null) {
       const i = line.indexOf("=");
       if (i > 0) outputs[line.slice(0, i)] = line.slice(i + 1);
     }
-    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", outputs };
+    const roundFile = existsSync(roundPath) ? readFileSync(roundPath, "utf8") : null;
+    const argv = existsSync(argvPath) ? readFileSync(argvPath, "utf8").split("\n").filter(Boolean) : [];
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", outputs, roundFile, argv };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -153,22 +177,121 @@ describe("AC-S2: the bash and the library agree", () => {
     }
   }, 30_000);
 
-  test("AC-S2: the bash reports full on EVERY round, including past the floor", () => {
-    // It used to restate the library's floor and emit `diff` from round 3 on
-    // a round number alone, which is #1241: `reviewScopeForRound` makes that
-    // decision from the HELD VERDICT, and the bash has no held verdict to
-    // make it from. Rather than two deciders that disagree, the bash makes no
-    // decision — it pins `full` until the adjudicator re-emits unresolved
-    // findings. The floor constant is still exercised, by the case below and
-    // by AC-S6, so removing it is still red.
+  test("AC-S2: the step decides NO scope, on any round, in the file or the outputs", () => {
+    // #1241 pinned the value to `full` and kept the variable, the output and
+    // the round-file field. #1255 removes them: a second site that decides a
+    // scope is a second decider `reviewScopeForRound` cannot see, and a
+    // hardcoded safe value one line from the edit that reopens #244 is the
+    // fifth shape — green today, green under the cheapest wrong fix.
     for (const round of MATRIX) {
       const sh = runRounds({ AI_REVIEW_EVENT: "pull_request" }, round);
-      expect(sh.outputs[AI_REVIEW_SCOPE_OUTPUT], `round ${round}`).toBe(REVIEW_SCOPE_FULL);
+      expect(sh.roundFile, `round ${round}: no round file written`).not.toBeNull();
+      expect(sh.roundFile, `round ${round}: the reviewer is told a scope`).not.toContain(
+        "review_scope",
+      );
+      expect(Object.keys(sh.outputs), `round ${round}`).not.toContain("scope");
+      // The control for the two negatives above: the file was written and
+      // carries the state it is supposed to, so "no scope" is a reading of a
+      // real file and not of an empty one.
+      expect(sh.roundFile, `round ${round}`).toContain(`review_round=${round}`);
     }
-    // The control: a round at or past the floor is in the matrix, so the row
-    // above is not green because it never reached one.
+    // The second control: a round at or past the old floor is in the matrix,
+    // so the rows above are not green for never having reached one.
     expect(MATRIX.some(r => Number(r) >= AI_REVIEW_DIFF_SCOPE_FROM_ROUND)).toBe(true);
   }, 30_000);
+
+  test("AC-S2: the MUTANT — the #1241 scope block restored — reaches the reviewer", () => {
+    // The removal, performed and observed. Without this the case above is a
+    // pair of `not.toContain`s that would also be green if the round file had
+    // stopped mentioning anything at all, or if `runRounds` had quietly
+    // stopped planting the path.
+    //
+    // The mutant is the code #1255 deleted, re-inserted verbatim in shape: a
+    // round-number floor and the field it used to write. Nothing else differs
+    // and it runs through the same rig.
+    const real = buildRoundsScript();
+    const mutant = real
+      .replace(
+        'round="${total}"',
+        `round="\${total}"\nscope=full\nif [ "\${round}" -ge ${AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL} ]; then\n  scope=diff\nfi`,
+      )
+      .replace(
+        "printf 'round_budget_spent=%s\\n'",
+        "printf 'review_scope=%s\\n' \"${scope}\"\n    printf 'round_budget_spent=%s\\n'",
+      );
+    expect(mutant, "the mutation did not apply — this measures nothing").not.toBe(real);
+
+    const past = String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL);
+    const mut = runRounds({ AI_REVIEW_EVENT: "pull_request" }, past, mutant);
+    const realRun = runRounds({ AI_REVIEW_EVENT: "pull_request" }, past);
+    // One input, one rig, two scripts. The reviewer is handed a narrowed
+    // scope by the mutant and nothing by the real step — which is the whole
+    // of #1241 reproduced on the path it actually travelled.
+    expect(mut.roundFile, `round ${past}: mutant`).toContain(`review_scope=${REVIEW_SCOPE_DIFF}`);
+    expect(realRun.roundFile, `round ${past}: real`).not.toContain("review_scope");
+  }, 30_000);
+});
+
+describe("AC-S7 (#1281): the count is scoped to THIS pull request", () => {
+  const SINCE = "2026-10-22T21:40:11Z";
+
+  test("AC-S7: the request carries the PR's creation time, not a branch name alone", () => {
+    // A branch NAME is not a pull request. The runs API has no
+    // `pull_request=` filter, so the scope has to come from somewhere else:
+    // this asks for runs at or after the PR opened, and an earlier PR on the
+    // same branch name is strictly before that (GitHub permits only one open
+    // PR per head). Measured against the real API while writing this:
+    // `created=>=2020-01-01` returns 2 for rg/1241 and `>=2030-01-01`
+    // returns 0, so the filter is honoured and is not a no-op.
+    const sh = runRounds({ AI_REVIEW_EVENT: "pull_request", AI_REVIEW_ROUNDS_SINCE: SINCE }, "2");
+    expect(sh.status, sh.stderr).toBe(0);
+    expect(sh.argv, "the step never called curl").not.toEqual([]);
+    expect(sh.argv).toContain(`created=>=${SINCE}`);
+    // The control: the branch filter is still sent, so the row above is not
+    // green because the query lost its other terms.
+    expect(sh.argv).toContain("branch=rg/1168");
+  }, 30_000);
+
+  test("AC-S7: the MUTANT — the scope term removed — asks the branch-name question", () => {
+    // The removal, performed and observed. This is the query #1281 reported,
+    // reproduced exactly, so the case above is red for the defect and not
+    // for some other difference between two requests.
+    const real = buildRoundsScript();
+    const mutant = real.replace(/\n\s*--data-urlencode "created=>=\$\{AI_REVIEW_ROUNDS_SINCE\}" \\/, "");
+    expect(mutant, "the mutation did not apply — this measures nothing").not.toBe(real);
+
+    const env = { AI_REVIEW_EVENT: "pull_request", AI_REVIEW_ROUNDS_SINCE: SINCE };
+    const mut = runRounds(env, "2", mutant);
+    const realRun = runRounds(env, "2");
+    expect(mut.argv.some(a => a.startsWith("created=")), "mutant still scopes").toBe(false);
+    expect(realRun.argv.some(a => a.startsWith("created="))).toBe(true);
+    // Both still ask the branch question, so the pair differs in one term.
+    expect(mut.argv).toContain("branch=rg/1168");
+  }, 30_000);
+
+  test("AC-S7: an absent creation time is UNMEASURED, never a wider query", () => {
+    // The fail-open this is built against: defaulting the term away leaves a
+    // well-formed request, a plausible integer, and the #1281 defect back —
+    // silently. So its absence refuses, with the annotation and not merely
+    // the status (the sixth shape).
+    const sh = runRounds({ AI_REVIEW_EVENT: "pull_request", AI_REVIEW_ROUNDS_SINCE: "" }, "2");
+    expect(sh.status).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(sh.stderr).toContain(AI_REVIEW_ROUNDS_TITLE);
+    // It refuses BEFORE asking, so no branch-name count is ever taken.
+    expect(sh.argv, "it queried anyway, with no pull-request scope").toEqual([]);
+    expect(sh.outputs[AI_REVIEW_ROUND_OUTPUT]).toBeUndefined();
+  }, 30_000);
+
+  test("AC-S7: the committed workflow feeds it from the event payload", () => {
+    const doc = Bun.YAML.parse(readFileSync(WORKFLOW, "utf8")) as any;
+    const step = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []).find(
+      (s: any) => s?.id === AI_REVIEW_ROUNDS_STEP_ID,
+    );
+    // No extra API call: the PR's creation time is already in the payload.
+    expect(step?.env?.AI_REVIEW_ROUNDS_SINCE).toBe(
+      "${{ github.event.pull_request.created_at }}",
+    );
+  });
 });
 
 describe("AC-S3: UNMEASURED is red, and the refusal can fail", () => {
@@ -252,7 +375,9 @@ describe("AC-S3: UNMEASURED is red, and the refusal can fail", () => {
     const sh = runRounds({ AI_REVIEW_EVENT: "merge_group" }, null);
     expect(sh.status).toBe(0);
     expect(sh.outputs[AI_REVIEW_ROUND_OUTPUT]).toBe("");
-    expect(sh.outputs[AI_REVIEW_SCOPE_OUTPUT]).toBe("full");
+    // No scope here either (#1255). The early-exit branch used to emit one,
+    // which made the merge_group path a THIRD place deciding a scope.
+    expect(Object.keys(sh.outputs)).not.toContain("scope");
   });
 });
 
@@ -307,13 +432,8 @@ describe("AC-S5: nothing from the branch under review reaches the prompt", () =>
     expect(prompt).toContain(AI_REVIEW_ROUND_PATH_VAR);
   });
 
-  test("AC-S5: the prompt names the four fields the state file carries", () => {
-    for (const field of [
-      "review_round",
-      "round_budget",
-      "review_scope",
-      "round_budget_spent",
-    ]) {
+  test("AC-S5: the prompt names the three fields the state file carries", () => {
+    for (const field of ["review_round", "round_budget", "round_budget_spent"]) {
       expect(prompt, `the prompt never tells the reviewer to read ${field}`).toContain(field);
       expect(
         buildRoundsScript(),
@@ -329,12 +449,18 @@ describe("AC-S5: nothing from the branch under review reaches the prompt", () =>
     expect(flat).toContain("Do not stay silent");
   });
 
-  test("AC-S5: the prompt tells the reviewer the scope is full, and why", () => {
-    // Replaces the narrowed-scope arm, withdrawn in #1241. The field is still
-    // written, so the prompt must still say something true about it rather
-    // than naming a field it never explains.
-    expect(flat).toContain("`review_scope` reads `full` on every round today");
-    expect(flat).toContain("read the whole branch, every round");
+  test("AC-S5: the prompt names no scope at all, and says to read everything", () => {
+    // The field is gone from the file (#1255), so the prompt may not name it:
+    // a prompt describing a field nobody writes is an instruction the
+    // reviewer cannot follow, and the previous wording explained a narrowing
+    // that no longer has a mechanism behind it.
+    expect(flat, "the prompt names a field the step no longer writes").not.toContain(
+      "review_scope",
+    );
+    // Said positively too, so the absence above is not the only thing
+    // standing between here and a reviewer inventing its own scope.
+    expect(flat).toContain("READ THE WHOLE BRANCH, ON EVERY ROUND");
+    expect(flat).toContain("nothing carries its findings forward for you");
   });
 
   test("AC-S5: an absent state file is a stated case, not an undefined one", () => {
@@ -562,7 +688,7 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
     }
   }, 30_000);
 
-  test("AC-S6: the committed workflow emits no diff scope while that is true", () => {
+  test("AC-S6: the committed workflow's rounds step names no scope at all", () => {
     const doc = Bun.YAML.parse(yml) as any;
     const step = (doc?.jobs?.[AI_REVIEW_JOB]?.steps ?? []).find(
       (s: any) => s?.id === AI_REVIEW_ROUNDS_STEP_ID,
@@ -571,15 +697,26 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
       .split("\n")
       .filter(l => !l.trim().startsWith("#"))
       .join("\n");
+    // #1241 asserted the absence of `scope=diff` and the PRESENCE of
+    // `scope=full`. That pair cannot refuse the thing it was written to
+    // refuse: a hardcoded safe value is one edit from the unsafe one, and the
+    // control demanded the very line that makes the edit available. #1255
+    // deletes the decision instead, so the assertion is the absence of ANY
+    // scope — which the cheapest wrong fix cannot satisfy.
+    // `scope=` and not the bare word: every form that EMITS a scope carries
+    // it — `scope=full`, `scope=diff`, `review_scope=%s` — while prose about
+    // scoping does not. A bare `scope` was the second shape, a detector
+    // wider than what it detects: #1281's refusal annotation says "scopes
+    // the count" and reddened this for a sentence.
     expect(
-      code.includes(`${AI_REVIEW_SCOPE_OUTPUT}=diff`),
-      "the generated bash narrows the review scope without the held verdict reReviewScope " +
-        "requires — a branch whose last round BLOCKED would be diff-scoped, which is #244 " +
-        "and the fail-open 46034035 was reverted for (#1241)",
-    ).toBe(false);
-    // The control: the step must still SET a scope, or the assertion above
-    // holds because the whole mechanism vanished.
-    expect(code).toContain(`${AI_REVIEW_SCOPE_OUTPUT}=full`);
+      code,
+      "the rounds step decides a review scope again. Only `reviewScopeForRound` may, and " +
+        "only from a held verdict: a round-number scope is #244, and the fail-open " +
+        "46034035 was reverted for it (#1241, #1255)",
+    ).not.toContain("scope=");
+    // The control: the step is non-empty and still does its actual job, so
+    // the negative above is a reading of real code.
+    expect(code).toContain(`${AI_REVIEW_ROUND_OUTPUT}=`);
   });
 
   test("AC-S6: the library still refuses to diff-scope a held FAIL at the floor", () => {

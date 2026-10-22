@@ -536,7 +536,20 @@ export function segments(cmd: string): string[] {
       // `commandWord` could never reach the verb. Inside DOUBLE quotes `\"`
       // IS an escape, which is why the two cases are told apart rather than
       // handled by one rule.
-      if (c === quote && (quote === "'" || cmd[i - 1] !== '\\')) quote = null;
+      //
+      // #1249: inside DOUBLE quotes, consume the escape PAIR rather than
+      // looking one character back. `\\` is an escaped BACKSLASH — a
+      // complete pair — and the `"` after it closes the span. A lookbehind
+      // cannot tell that `"` from the escaped one in `\"`, so `"x\\"` was
+      // read as still open and the rest of the command, separator and write
+      // verb together, became one segment whose command word is `echo`. The
+      // outside-quote branch below already consumes the pair, for this same
+      // reason; this is that rule applied inside the span.
+      if (quote === '"' && c === '\\' && i + 1 < cmd.length) {
+        cur += cmd[++i];
+        continue;
+      }
+      if (c === quote) quote = null;
       continue;
     }
     if (c === '"' || c === "'") {

@@ -416,6 +416,13 @@ the prediction filed it under a single row and forgot that.
 "the guard behaved differently" from "the mutation did not apply."** Predict
 the case list, and write down which spelling you ran.
 
+**Not the sixth shape, though they arrive together.** *Green on the exit
+code, witnessing the wrong mechanism* is a single case whose **signal** two
+mechanisms can both produce. This is a battery whose rows never vary the
+**input**. The remedies are different and neither substitutes: assert on a
+channel only the intended mechanism can write, versus vary the input in at
+least one row.
+
 ### On the fifth shape: a case that goes green under the wrong fix (#492, #518)
 
 The other four are properties of a check as it stands. This one is a property
@@ -1994,3 +2001,10 @@ channel the wrong mechanism cannot write".
 
 The mutation was run from a scratch file and deleted; nothing in the tree
 carries it.
+
+**Not the seventh shape, though they arrive together.** *The same blindness
+with the axes swapped* is a battery whose rows never vary the **input**, so
+it cannot be wrong about a population. This is a single case whose **signal**
+two mechanisms can both produce, so it cannot be wrong about a mechanism. The
+remedies are different and neither substitutes: assert on a channel only the
+intended mechanism can write, versus vary the input in at least one row.
