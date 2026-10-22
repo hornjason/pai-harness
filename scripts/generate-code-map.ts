@@ -12,6 +12,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, statSync } from "
 import { join, basename } from "path";
 import { localCalendarDay } from "../lib/local-calendar-day";
 import { FRESHNESS_NOTICE, directoryTable } from "../lib/generators/code-map";
+import { fileExtensions } from "../lib/file-extensions";
 import {
   fallowAvailable,
   fallowUnmeasuredNotice,
@@ -127,9 +128,11 @@ function scanDirectories(): DirSummary[] {
     const full = join(projectPath, entry);
     try {
       if (!statSync(full).isDirectory()) continue;
-      const files = readdirSync(full, { recursive: true }).map(String);
-      const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-      dirs.push({ name: entry, types: [...exts].slice(0, 5) });
+      // One binding for what a "type" is, shared with `lib/scanner.ts` and
+      // `generateCodeMapInline` (#1200). The copy that used to be here
+      // reported directory names — this script produced the shipped
+      // `| evals/ | marcus-tdd-order, … |` row.
+      dirs.push({ name: entry, types: fileExtensions(full) });
     } catch {}
   }
   // Unsorted. Row order is `directoryTable`'s single decision (#1163) —

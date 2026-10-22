@@ -1,0 +1,379 @@
+/**
+ * The verifier jury: who agrees a finding is real, what kind it is, and where
+ * it goes (#1187).
+ *
+ * ## The topology this implements, and the one it replaces
+ *
+ * #1187 was filed asking which findings are worth **filing**. That framing is
+ * wrong, and the correction is the point of this module. The published design
+ * it was inspired by files nothing at all:
+ *
+ * > Several agents look for bugs at the same time. Then a separate group votes
+ * > on each finding, and it only gets posted if enough of them agree it's
+ * > real. Findings that are only about style, diagnostics, or cleanup get
+ * > dropped. We A/B tested those filters on our own PRs before keeping them.
+ * > What's left shows up as inline comments sorted by severity. Each is tagged
+ * > Important, Nit, or Pre-existing.
+ *
+ * So the pipeline is **hunters → a separate verifier group votes → quorum →
+ * category filter → severity sort → inline PR comments that block merge until
+ * answered.** A finding is resolved by being fixed or by the thread being
+ * closed with a reason. Nothing becomes a tracker issue, which is why that
+ * pipeline has no backlog and ours regenerates: we added a filing step it does
+ * not have. Measured on this tracker on 2026-10-22, **23 of 27 open issues
+ * were created the same day and 10 of them name one subsystem.**
+ *
+ * `DEFAULT_DISPOSITION` is therefore `COMMENT`, and `ISSUE` is reachable only
+ * by an explicit, reasoned declaration from the caller — see `adjudicate`.
+ *
+ * ## What this module owns, and what it does not
+ *
+ * It owns the **gate**, not the agents. Spawning hunters and verifiers is the
+ * orchestrator's job; a library that spawned them could not be tested without
+ * a model in the loop, and `lib/rule-promotion.ts` already set the precedent —
+ * it owns the ranking and the budget and nothing that produces candidates.
+ *
+ * So a caller hands in `VerifierVote[]` and this counts them.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * - **Whether the verifiers are independent.** Three votes from one agent run
+ *   three times is not a group, and the only shape of that this can see is a
+ *   repeated `verifier` id, which it refuses. Three genuinely separate agents
+ *   given the same prompt and the same context are correlated in a way nothing
+ *   here can read.
+ * - **Whether the category a verifier reports is the right one.**
+ *   `classifyCategory` is a keyword fallback and a measuring instrument, not
+ *   an adjudicator. Its error direction is deliberately toward KEEP.
+ * - **Whether a dropped finding was real.** A dropped finding leaves a reason
+ *   and a category on the reading; nothing re-examines it later.
+ */
+
+import type { Finding } from "./finding-arbiter";
+
+// ── Cardinalities ────────────────────────────────────────────────────────
+
+/**
+ * How many verifiers vote on each finding.
+ *
+ * **Three, and this is a default rather than a derivation.** The published
+ * design gives the topology and publishes no cardinality — not the number of
+ * hunters, not the number of verifiers, not the quorum. Writing a number into
+ * the code as though it had been measured would be the worst of both.
+ *
+ * What can be argued for three:
+ *
+ * - It is the smallest group in which **one voter does not decide the
+ *   outcome**. At two, a single dissent either deadlocks or wins.
+ * - It is odd, so a majority always exists and no tie-break rule is needed —
+ *   and a tie-break rule is a second decider over the same input
+ *   (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ * - Each verifier is a full agent context. Five-of-three costs 67% more per
+ *   finding and buys tolerance of **two** dissenters, which is only worth
+ *   paying once a measured single-dissent rate shows it is common.
+ *
+ * What would derive it: the disagreement rate between independent verifiers on
+ * one finding. **That cannot be measured in this repository today**, because
+ * nothing records a finding before it is filed — every artefact on this
+ * tracker and in `.claude/` is already post-filter. Recording the pre-filter
+ * population is the prerequisite, not a tuning pass.
+ */
+export const VERIFIER_GROUP_SIZE = 3;
+
+/**
+ * How many of them must agree a finding is real for it to be posted.
+ *
+ * Two of three: the weakest threshold that still means *agreement* rather than
+ * *anyone*. `juryReading` refuses a configured quorum that is not a strict
+ * majority — see `NON_MAJORITY_QUORUM` — because a "quorum" of one is a group
+ * with no gate in it, and that failure is invisible from the outcome.
+ */
+export const VERIFIER_QUORUM = 2;
+
+export const INCOMPLETE_GROUP = "fewer votes than the group size: an absent vote is neither agreement nor dissent";
+export const REPEATED_VERIFIER = "one verifier voted more than once, so the votes are not independent";
+export const NON_MAJORITY_QUORUM = "the configured quorum is not a strict majority of the group";
+
+// ── Categories ───────────────────────────────────────────────────────────
+
+export type FindingCategory =
+  | "correctness"
+  | "security"
+  | "performance"
+  | "style"
+  | "diagnostics"
+  | "cleanup"
+  /** No signal either way. Kept, never dropped. */
+  | "unclassified";
+
+/** Dropped outright. The three the source design names, and no others. */
+export const DROPPED_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>([
+  "style",
+  "diagnostics",
+  "cleanup",
+]);
+
+const KEEP_SIGNALS: Array<[Exclude<FindingCategory, "style" | "diagnostics" | "cleanup" | "unclassified">, RegExp]> = [
+  [
+    "security",
+    /\b(secret|credential|token|api key|injection|traversal|privilege|sandbox escape|arbitrary (read|write|code)|unauthenticated|spoof)\b/i,
+  ],
+  [
+    "correctness",
+    /\b(bug|defect|regression|incorrect|wrong|broken|crash|throws|race|deadlock|off.by.one|silently|never fires|cannot fail|false (positive|negative)|fails? (open|closed|to)|returns the wrong|mismatch|data loss|corrupt|does not (match|fire|run|refuse|catch))\b/i,
+  ],
+  ["performance", /\b(timeout|unbounded|memory leak|leaks? (memory|descriptors)|hangs?|exhaust)\b/i],
+];
+
+const DROP_SIGNALS: Array<[Extract<FindingCategory, "style" | "diagnostics" | "cleanup">, RegExp]> = [
+  ["style", /\b(nit|typo|formatting|indentation|naming convention|rename (it|this|the variable)|readability|capitalisation|capitalization|whitespace)\b/i],
+  ["diagnostics", /\b(error message|log(ging| line| statement)|warning text|annotation text|stack trace|observability|console\.log|more helpful message)\b/i],
+  ["cleanup", /\b(unused (import|variable|export|function)|commented.out|refactor|tidy|house ?keeping|nitpick|cosmetic|delete the comment|redundant comment)\b/i],
+];
+
+/**
+ * A keyword reading of what kind of finding this is.
+ *
+ * **This is a fallback and a measuring instrument, not an adjudicator.** In
+ * production the category comes from the verifier vote, which is a model
+ * reading the finding; this runs only when no verifier supplied one, and it is
+ * what `adjudicate` reports so the category is never silently absent.
+ *
+ * ## The error direction, chosen deliberately
+ *
+ * A drop category is returned **only when a drop signal matched and no keep
+ * signal did.** So the cheap way for this to be wrong is to keep a nit, which
+ * costs one comment thread; the expensive way — dropping a real bug — requires
+ * a finding that uses none of the correctness, security or performance
+ * vocabulary while using the style, diagnostics or cleanup vocabulary.
+ *
+ * ## THE SCOPE IS THE TITLE, AND THAT IS THE WHOLE RULE
+ *
+ * **A finding's title states what it is about; its body argues, and an
+ * argument quotes the vocabulary of the thing it is not.**
+ *
+ * Measured, not asserted. Over the 385 issues on this tracker closed as
+ * COMPLETED, reading the whole text drops **8**, and all eight are that
+ * failure: `prose` inside `refs(c.branch) || prose(c.subject)` (#900), inside
+ * "template prose" (#515), inside "entries carried prose" (#611) — and #781,
+ * whose body contains the sentence *"the reason this is not just a wording
+ * fix"*. Scoping to the title drops **0** of the same 385.
+ *
+ * Three terms were then removed from the signal lists, and this is a fit to
+ * this corpus rather than a forecast, so it is stated as one: `prose` and
+ * `wording` are **domain vocabulary here** — this project argues about prose
+ * versus mechanism constantly — and `dead code` is how a reachability defect
+ * is *described* (#1110's title calls an unreachable blocking branch "dead
+ * code"), not a request to tidy. They would be reasonable signals in a
+ * codebase that did not talk this way.
+ *
+ * ## Measured backwards, before the filter shipped
+ *
+ * The source design A/B tested its filters before keeping them. The
+ * backwards-equivalent available here is to run the filter over findings whose
+ * outcome is already known: closed as COMPLETED means a merged PR fixed it, so
+ * it was real.
+ *
+ * | population | n | dropped |
+ * |---|---|---|
+ * | closed COMPLETED — real, somebody wrote the fix | 385 | **0** |
+ * | closed NOT_PLANNED | 15 | **0** |
+ * | open on 2026-10-22 | 27 | **0** |
+ * | planted: one style, one diagnostics, one cleanup, one correctness control | 4 | **3** |
+ *
+ * **Read the fourth row before the first three.** Zero drops over 427 real
+ * issues would otherwise be indistinguishable from a filter that cannot fire
+ * — the inert-knob shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+ * The planted row is in `test/finding-jury.test.ts` under `JURY-4` and it is
+ * what separates those two readings.
+ *
+ * **And read the first three as safety, not as usefulness.** The filter is
+ * inert on this corpus because what this tracker carries is already almost
+ * entirely correctness-shaped (278 of 385 by this same classifier). Its real
+ * population is raw hunter output *before* anybody decided to file, and
+ * **this repository does not record that population anywhere** — which is the
+ * same gap that makes the quorum cardinality above a default rather than a
+ * derivation. So: safe to ship, not yet shown to earn its place.
+ */
+export function classifyCategory(finding: Pick<Finding, "title" | "body">): FindingCategory {
+  const scope = finding.title;
+  for (const [category, signal] of KEEP_SIGNALS) {
+    if (signal.test(scope)) return category;
+  }
+  for (const [category, signal] of DROP_SIGNALS) {
+    if (signal.test(scope)) return category;
+  }
+  return "unclassified";
+}
+
+// ── Severity ─────────────────────────────────────────────────────────────
+
+/**
+ * The three tags the source design posts, and no fourth.
+ *
+ * `Pre-existing` is the one that matters most here and the one we had no way
+ * to say: a finding about code the change never touched is not the author's
+ * defect and should not be priced like one.
+ */
+export type Severity = "Important" | "Nit" | "Pre-existing";
+
+/** Sort order for the posted comments. A pre-existing bug is still a bug. */
+export const SEVERITY_RANK: Record<Severity, number> = { Important: 0, "Pre-existing": 1, Nit: 2 };
+
+// ── The vote ─────────────────────────────────────────────────────────────
+
+export interface VerifierVote {
+  /** Which verifier cast it. Two votes under one id is not a group. */
+  verifier: string;
+  /** The one question a vote answers: is this real? */
+  real: boolean;
+  reason: string;
+  category?: FindingCategory;
+  severity?: Severity;
+}
+
+export interface JuryConfig {
+  groupSize?: number;
+  quorum?: number;
+}
+
+export interface JuryReading {
+  reading: "MEASURED" | "UNMEASURED";
+  /** `true` only under a MEASURED reading that cleared the quorum. */
+  passed: boolean;
+  votes: number;
+  agree: number;
+  quorum: number;
+  groupSize: number;
+  unmeasuredReasons: string[];
+}
+
+/**
+ * Count the votes.
+ *
+ * Three ways this refuses rather than deciding, all of them the same doctrine
+ * #1187 states for the arbiter — **UNMEASURED fails, it never skips:**
+ *
+ * - **Fewer votes than the group size.** A verifier that did not report is not
+ *   a "no" and not a "yes". Treating a short group as a complete one is how a
+ *   quorum of three becomes a quorum of however many happened to answer, and
+ *   the outcome looks identical either way.
+ * - **A repeated verifier id.** One agent run three times is one opinion.
+ * - **A quorum that is not a strict majority.** A configuration error that is
+ *   undetectable from any single outcome.
+ *
+ * Extra votes beyond the group size are counted, not refused: a caller that
+ * convened more verifiers than the default has more agreement, not less.
+ */
+export function juryReading(votes: readonly VerifierVote[], config: JuryConfig = {}): JuryReading {
+  const groupSize = config.groupSize ?? VERIFIER_GROUP_SIZE;
+  const quorum = config.quorum ?? VERIFIER_QUORUM;
+  const agree = votes.filter(v => v.real).length;
+  const base = { votes: votes.length, agree, quorum, groupSize };
+  const unmeasuredReasons: string[] = [];
+
+  if (quorum * 2 <= groupSize || quorum < 1) {
+    unmeasuredReasons.push(`${NON_MAJORITY_QUORUM}: ${quorum} of ${groupSize}`);
+  }
+  if (votes.length < groupSize) {
+    unmeasuredReasons.push(`${INCOMPLETE_GROUP}: ${votes.length} of ${groupSize}`);
+  }
+  if (new Set(votes.map(v => v.verifier)).size !== votes.length) {
+    unmeasuredReasons.push(REPEATED_VERIFIER);
+  }
+
+  if (unmeasuredReasons.length > 0) {
+    return { ...base, reading: "UNMEASURED", passed: false, unmeasuredReasons };
+  }
+  return { ...base, reading: "MEASURED", passed: agree >= quorum, unmeasuredReasons };
+}
+
+/** The category the jury reports: the verifiers' majority, else the keywords. */
+export function juryCategory(
+  finding: Pick<Finding, "title" | "body">,
+  votes: readonly VerifierVote[],
+): FindingCategory {
+  const tally = new Map<FindingCategory, number>();
+  for (const v of votes) {
+    if (v.real && v.category) tally.set(v.category, (tally.get(v.category) ?? 0) + 1);
+  }
+  const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return ranked.length > 0 ? ranked[0][0] : classifyCategory(finding);
+}
+
+/**
+ * The severity tag.
+ *
+ * **`Pre-existing` is decided mechanically and beats any vote**, because it is
+ * the one tag of the three that is a fact about the diff rather than a
+ * judgement about the defect: a finding whose cited files are all absent from
+ * the change is about code the change never touched. Letting a verifier
+ * override that would put a judgement in front of a measurement.
+ *
+ * `changedFiles` absent means the diff was not read, so the pre-existing axis
+ * is simply not available — the votes decide, and with no votes carrying a
+ * tag the answer is `null` rather than a guessed `Important`.
+ */
+export function severityOf(
+  finding: Pick<Finding, "title" | "body">,
+  votes: readonly VerifierVote[],
+  changedFiles?: readonly string[],
+): Severity | null {
+  if (changedFiles !== undefined) {
+    const changed = new Set(changedFiles.map(f => f.toLowerCase()));
+    const cited = citedPaths(finding);
+    if (cited.length > 0 && !cited.some(p => changed.has(p))) return "Pre-existing";
+  }
+  const tally = new Map<Severity, number>();
+  for (const v of votes) {
+    if (v.real && v.severity) tally.set(v.severity, (tally.get(v.severity) ?? 0) + 1);
+  }
+  const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1] || SEVERITY_RANK[a[0]] - SEVERITY_RANK[b[0]]);
+  return ranked.length > 0 ? ranked[0][0] : null;
+}
+
+/** Repository-shaped paths a finding names, lowercased. Shared with the arbiter's key. */
+function citedPaths(finding: Pick<Finding, "title" | "body">): string[] {
+  const out = new Set<string>();
+  for (const m of `${finding.title}\n${finding.body}`.matchAll(
+    /(?:[\w.@-]+\/)+[\w.-]+\.(?:ts|tsx|js|mjs|cjs|md|json|ya?ml|sh)\b/g,
+  )) {
+    out.add(m[0].toLowerCase());
+  }
+  return [...out];
+}
+
+// ── Where it goes ────────────────────────────────────────────────────────
+
+/**
+ * What to do with a finding.
+ *
+ * `COMMENT` is the default and `ISSUE` is the exception. That is the inversion
+ * of what #1187 asked for, and it is the whole correction: a tracker issue is
+ * a thing nobody has to answer, so it accumulates; an inline comment blocks
+ * the merge until it is fixed or closed with a reason, so it does not.
+ */
+export type Disposition = "COMMENT" | "ISSUE" | "DROP";
+
+export const DEFAULT_DISPOSITION: Disposition = "COMMENT";
+
+/**
+ * The line that makes a comment a gate rather than a remark.
+ *
+ * The source design's whole mechanism for having no backlog is that **every
+ * finding has to be answered** — fixed, or the thread closed with a reason —
+ * and the PR cannot merge while one is open. A comment that carries no such
+ * obligation is a tracker issue with extra steps.
+ */
+export const MUST_BE_ANSWERED =
+  "Answer this before merge: fix it, or resolve this thread with a reason. " +
+  "A reason closes a finding; silence does not.";
+
+/** The inline comment a surviving finding becomes. */
+export function renderComment(
+  finding: Pick<Finding, "title" | "body">,
+  severity: Severity,
+  category: FindingCategory,
+): string {
+  return `**${severity}** · _${category}_ — ${finding.title}\n\n${finding.body}\n\n${MUST_BE_ANSWERED}`;
+}

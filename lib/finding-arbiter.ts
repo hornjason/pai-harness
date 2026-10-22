@@ -1,0 +1,784 @@
+/**
+ * Whether a finding is worth filing as an issue — stage 1, mechanical (#1187).
+ *
+ * ## What this answers, and what it deliberately does not
+ *
+ * Measured at 15:24 on 2026-10-22: **14 issues filed per hour against 6
+ * closed**, 27 open. Nothing between an agent producing a finding and the
+ * finding becoming an issue asks whether it is worth filing. #1187 names four
+ * filing failures from one session and records that a correctness vote —
+ * "several agents hunt, a separate group votes" — catches **none** of them.
+ * Every one of the four was a real observation about the tree its reader was
+ * looking at. The questions that would have stopped them are *is this new*,
+ * *is this here* and *is this current*, and all three are decidable by one
+ * process with no model in it.
+ *
+ * So the checks run in cost order, each on what survived the one before:
+ *
+ * | stage | question | instrument | on failure |
+ * |---|---|---|---|
+ * | 1 | is this new? | string sets over the finding bodies | `DUPLICATE` |
+ * | 2 | do enough verifiers call it real? | `lib/finding-jury.ts` counts votes the caller cast | `NO_QUORUM` |
+ * | 3 | is it the kind we post at all? | the category, verifier-supplied or keyed | `DROPPED_CATEGORY` |
+ * | 4 | which tree is it about? | `git grep` against `origin/main` | sets `scope`, never refuses |
+ * | 5 | is this current? | the file's line count | `STALE_CITATION` |
+ *
+ * Stage 1 first and the vote second is the one ordering choice worth
+ * defending: a vote is the most expensive instrument the harness has, and
+ * spending three agent contexts to confirm a finding that a string-set
+ * comparison already knows is a duplicate is the failure #1187 measured.
+ *
+ * ## THE DEFAULT IS A COMMENT, NOT AN ISSUE
+ *
+ * #1187 asked which findings are worth **filing**, and that framing is wrong.
+ * The design it was drawn from files nothing: a surviving finding becomes an
+ * inline comment that **blocks the merge until it is answered** — fixed, or
+ * the thread closed with a reason. There is no backlog because findings never
+ * become backlog. We added the filing step, and it is why the tracker
+ * regenerates: measured 2026-10-22, 23 of 27 open issues were created the
+ * same day and 10 named one subsystem.
+ *
+ * So `Disposition` defaults to `COMMENT`, `ISSUE` requires an explicit
+ * declared reason from the caller (`Finding.outOfScope`), and what used to be
+ * the `OFF_MAIN` **refusal** is now the `scope` **reading** — a finding about
+ * an unmerged branch was never a bad finding, it was a comment on that branch
+ * all along. See `FindingScope`.
+ *
+ * ## Why the key is the measured symptom and not the title
+ *
+ * The two duplicate pairs this was built against both merged today:
+ *
+ * - **#1175 / #1177** — two agents, the same 5,060-command corpus sweep, the
+ *   same 144-of-234 reading, filed five minutes apart under **completely
+ *   different titles**. A title-keyed deduper misses this, and
+ *   `test/finding-arbiter.test.ts` runs a title-similarity deduper over the
+ *   pair to show that it does.
+ * - **#1195 / #1196** — an agent and a human filed the same two regressions
+ *   from the same merge, one minute apart. Different titles again; the same
+ *   `commandWord` / `isDirDestination` / `statSync` symptom underneath.
+ *
+ * What survives a rewrite of the prose is what the finding **measured**: the
+ * symbols it names, the files it names, and the integers it reports. So a
+ * finding emits a set of keys of those three kinds and two findings are
+ * duplicates when they share at least `DUPLICATE_MIN_SHARED_KEYS` of them.
+ *
+ * A set-overlap test and not a hash of the set, because the sets are never
+ * equal — #1177 carries a measurement table #1175 renders as prose. An exact
+ * key over the symptom catches neither pair, which is the same failure as the
+ * title key one level in.
+ *
+ * ## WHAT THIS DOES NOT COVER
+ *
+ * - **Two findings about one symbol that are genuinely different defects.**
+ *   A hot file collects findings, and shared symbols are what a hot file
+ *   produces. The threshold is tuned on a 40-issue corpus in
+ *   `test/finding-arbiter.test.ts` and the false positives it produces there
+ *   are listed in that file by number rather than tuned away. **The direction
+ *   of the error matters:** a false DUPLICATE withholds a real finding, so
+ *   `arbitrate` returns the colliding issue numbers and the shared keys —
+ *   the refusal is reviewable, never silent.
+ * - **A finding whose symbol exists on `origin/main` under a different
+ *   name.** A rename between the reviewed branch and `main` reads here as
+ *   `OFF_MAIN`.
+ * - **Prose-only findings.** A finding that names no symbol and no file is
+ *   `UNMEASURED`, which FAILS — it does not skip. That is #1187's own
+ *   doctrine and the one line in here that must not be softened: a finding
+ *   nobody can evaluate is not a finding that passes.
+ */
+
+import { existsSync, readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { resolve, sep } from "path";
+
+import { contentHash } from "./content-hash";
+import { promoteCandidates, type PromotableCandidate, type PromotionReading } from "./rule-promotion";
+import {
+  classifyCategory,
+  DROPPED_CATEGORIES,
+  juryCategory,
+  juryReading,
+  severityOf,
+  SEVERITY_RANK,
+  type Disposition,
+  type FindingCategory,
+  type JuryConfig,
+  type JuryReading,
+  type Severity,
+  type VerifierVote,
+} from "./finding-jury";
+
+/** A finding, as little of one as the checks need. */
+export interface Finding {
+  /** How the caller names it — an issue number, or `new` for an unfiled one. */
+  id: string;
+  title: string;
+  body: string;
+  /**
+   * The ONE route to `ISSUE`, and it must be declared, never inferred.
+   *
+   * Filing is the exception: the work genuinely cannot ride along on this PR
+   * — a different subsystem, or a design decision somebody else owns. An
+   * *inferred* exception is exactly how a filing default comes back, so there
+   * is no heuristic here and there is no default: a caller that wants an
+   * issue says so and says why, in a sentence that ends up in the issue body.
+   */
+  outOfScope?: { reason: string };
+}
+
+export type SymptomKeyKind = "sym" | "file" | "qty";
+
+/** How many cited symbols the branch-scope reading will pay a `git grep` for. */
+const MAX_SYMBOLS_PROBED = 8;
+
+/**
+ * How many `path:line` citations the currency reading will pay a file read for.
+ *
+ * The asymmetry this fixes ran the wrong way: `MAX_SYMBOLS_PROBED` bounded the
+ * *cheap* probe while the expensive one — a `readFileSync`, or a
+ * `git show origin/main:<path>` per citation — was unbounded. An AI reviewer's
+ * output is the one input on this path nobody audits, so a body naming four
+ * hundred `file.ts:N` pairs was a free way to wedge the arbiter.
+ */
+const MAX_LINES_PROBED = 8;
+
+/**
+ * Identifiers that are code-shaped and carry no information about which
+ * defect is being described. Excluded from the key rather than down-weighted,
+ * because a weight is a second threshold to justify.
+ */
+const UNINFORMATIVE_SYMBOLS = new Set([
+  "true", "false", "null", "undefined", "string", "number", "boolean",
+  "console", "process", "export", "import", "return", "const", "function",
+  "origin/main", "main", "HEAD",
+]);
+
+// ── Symptom keys ─────────────────────────────────────────────────────────
+
+/** Spans between backticks, where a body puts the things it measured. */
+function codeSpans(body: string): string[] {
+  const out: string[] = [];
+  for (const m of body.matchAll(/`{1,3}([^`]+)`{1,3}/g)) out.push(m[1]);
+  return out;
+}
+
+/**
+ * Identifiers worth keying on: `camelCase`, `UPPER_SNAKE`, `snake_case`.
+ *
+ * Two exclusions, both measured on the 40-issue corpus rather than guessed:
+ *
+ * - **A bare lowercase word is not a symbol.** That costs `dequote` and
+ *   `mkdtemp` on the two pairs above and buys exclusion of every English word
+ *   that ever appears inside backticks. Both pairs clear the threshold
+ *   without them.
+ * - **An all-caps token must contain `_`.** Without this, the hyphenated
+ *   filename `specs/HOOK-ARCHITECTURE-SPEC.md` yields the three "symbols"
+ *   `HOOK`, `ARCHITECTURE` and `SPEC`, and `CODE-MAP.md` yields two more —
+ *   so two findings citing one document agree on five keys while sharing no
+ *   symptom. It also drops the status vocabulary (`CLEAN`, `BLOCK`, `PASS`,
+ *   `FAIL`, `EOF`, `JSON`), which every finding in a review pipeline uses.
+ *   The path itself is still keyed, once, as a `file:` key.
+ *
+ *   The cost is real and is the direction to watch: a genuine unsnaked
+ *   constant such as `OPERATORS` is no longer a key. It is paid because the
+ *   measured error was 44 false pairs out of 49.
+ */
+function identifiersIn(span: string): string[] {
+  const out: string[] = [];
+  for (const m of span.matchAll(/\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b/g)) {
+    const t = m[0];
+    if (UNINFORMATIVE_SYMBOLS.has(t)) continue;
+    const shaped = /[a-z][A-Z]/.test(t) || /_/.test(t);
+    if (shaped) out.push(t);
+  }
+  return out;
+}
+
+/** Repository-shaped paths, anywhere in the body. */
+function pathsIn(body: string): string[] {
+  const out: string[] = [];
+  for (const m of body.matchAll(/(?:[\w.@-]+\/)+[\w.-]+\.(?:ts|tsx|js|mjs|cjs|md|json|ya?ml|sh)\b/g)) {
+    out.push(m[0].toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * Integers a finding reports as a reading.
+ *
+ * The exclusions are what make this a measurement and not a number: an issue
+ * reference (`#1188`), an SC or AC id, a date component, and anything under
+ * ten. Without the first of those, every finding that cites the same prior
+ * issue collides with every other — which is a reading of the cross-reference
+ * graph, not of the defect.
+ */
+function quantitiesIn(body: string): number[] {
+  const out: number[] = [];
+  // Blank out the shapes whose digits are identifiers rather than readings,
+  // keeping the length so no two tokens are glued together by the removal.
+  const masked = body
+    .replace(/#\d+/g, m => " ".repeat(m.length))
+    .replace(/\b(?:SC|AC|PR|H|R)-?\d+/gi, m => " ".repeat(m.length))
+    .replace(/\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?/g, m => " ".repeat(m.length))
+    .replace(/:\d+/g, m => " ".repeat(m.length))
+    .replace(/\bv?\d+\.\d+(?:\.\d+)?/g, m => " ".repeat(m.length));
+  for (const m of masked.matchAll(/\b\d[\d,]*\b/g)) {
+    const n = Number.parseInt(m[0].replace(/,/g, ""), 10);
+    if (Number.isFinite(n) && n >= 10) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * The keys a finding is deduplicated on.
+ *
+ * Sorted and de-duplicated, so two runs over one finding agree byte for byte
+ * and a caller can print the intersection without re-deriving it.
+ */
+export function symptomKeys(finding: Finding): string[] {
+  const keys = new Set<string>();
+  // The title contributes symbols and paths but NOT quantities: a title
+  // states a headline number the body also states, and counting it twice
+  // would let two findings agree on one reading reported in two places.
+  for (const span of [...codeSpans(finding.body), finding.title]) {
+    for (const id of identifiersIn(span)) keys.add(`sym:${id}`);
+  }
+  for (const p of [...pathsIn(finding.body), ...pathsIn(finding.title)]) keys.add(`file:${p}`);
+  for (const q of quantitiesIn(finding.body)) keys.add(`qty:${q}`);
+  return [...keys].sort();
+}
+
+/** A stable identity for the symptom as a whole — the one hashing binding. */
+export function symptomHash(finding: Finding): string {
+  return contentHash(symptomKeys(finding).join("\n"));
+}
+
+/** Keys two findings have in common, sorted. */
+export function sharedKeys(a: Finding, b: Finding): string[] {
+  const left = new Set(symptomKeys(a));
+  return symptomKeys(b).filter(k => left.has(k));
+}
+
+/**
+ * Do two findings describe the same measured symptom?
+ *
+ * **The two key kinds answer different questions and the rule needs both.**
+ * A shared `sym:` or `file:` key says the findings are about the same area
+ * of code. A shared `qty:` key says they report the same *reading*. Only the
+ * second is a measurement, and #1187 asks for a key derived from the
+ * measured symptom.
+ *
+ * The corpus says why that distinction is the whole rule. Over the 40 most
+ * recent issues, a plain "share at least three keys of any kind" test flags
+ * **19 pairs, of which 2 are real**. Six of the seventeen are one cluster —
+ * #1175, #1176, #1177, #1184, #1195, #1196 all landed on
+ * `lib/bash-write-guard.ts` in a single afternoon and name the same
+ * functions while describing genuinely different defects. Every one of those
+ * six shares **zero or one** quantity. Requiring two drops the cluster
+ * whole, and both real pairs clear it: #1175/#1177 agree on 144, 234 and
+ * 5,060, and #1195/#1196 on two more.
+ *
+ * ## The honest caveat
+ *
+ * The two target pairs were fixed as the requirement before any of this was
+ * written. **The kind-split was not** — it was chosen after reading the
+ * corpus it is measured on, so the 5-pair reading below is a fit, not a
+ * forecast. What makes it worth shipping anyway is that the surviving false
+ * positives are one explainable class rather than a residue: all three
+ * involve #1187, which quotes other findings' numbers verbatim because it is
+ * *about* them. A finding that re-reports another's readings is the shape
+ * this rule cannot tell from a duplicate, and nothing here claims otherwise.
+ */
+export const DUPLICATE_MIN_SHARED_QUANTITIES = 2;
+export const DUPLICATE_MIN_SHARED_LOCATIONS = 1;
+
+/** Does `text` reference `id` as an issue number? */
+function references(text: string, id: string): boolean {
+  if (!/^\d+$/.test(id)) return false;
+  return new RegExp(`#${id}\\b`).test(text);
+}
+
+/**
+ * Two findings that cite each other are not duplicates.
+ *
+ * An author who writes `#1177` knows #1177 exists; what they are filing is a
+ * comment on it, a follow-on from it, or — in the case that made this rule
+ * necessary — an issue *about* a set of other findings, quoting their
+ * readings in order to argue from them. #1187 is that shape: it reproduces
+ * #1175's 234 and 5,060 and #1176's 60 verbatim, and under measurement alone
+ * it is indistinguishable from a duplicate of each.
+ *
+ * Measured: removes 2 false positives of 7 and neither target pair, which is
+ * the asymmetry worth having — it can only ever *allow* a filing, so the
+ * worst case is a duplicate that gets through, never a real finding
+ * withheld.
+ */
+export function duplicateOverlap(a: Finding, b: Finding): { duplicate: boolean; keys: string[] } {
+  const keys = sharedKeys(a, b);
+  if (references(a.body, b.id) || references(b.body, a.id)) return { duplicate: false, keys };
+  const quantities = keys.filter(k => k.startsWith("qty:")).length;
+  const locations = keys.length - quantities;
+  return {
+    duplicate:
+      quantities >= DUPLICATE_MIN_SHARED_QUANTITIES &&
+      locations >= DUPLICATE_MIN_SHARED_LOCATIONS,
+    keys,
+  };
+}
+
+// ── Stage 1b: branch scope ───────────────────────────────────────────────
+
+function git(root: string, args: string[]): { ok: boolean; out: string } {
+  const r = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", timeout: 20_000 });
+  return { ok: r.status === 0, out: r.stdout ?? "" };
+}
+
+/** Symbols cited by a finding, in body order, capped. */
+export function citedSymbols(finding: Finding): string[] {
+  return symptomKeys(finding)
+    .filter(k => k.startsWith("sym:"))
+    .map(k => k.slice(4))
+    .slice(0, MAX_SYMBOLS_PROBED);
+}
+
+/** `path:line` citations a finding makes, capped at `MAX_LINES_PROBED`. */
+export function citedLines(finding: Finding): Array<{ path: string; line: number }> {
+  const out: Array<{ path: string; line: number }> = [];
+  const seen = new Set<string>();
+  for (const m of finding.body.matchAll(
+    /((?:[\w.@-]+\/)*[\w.-]+\.(?:ts|tsx|js|mjs|cjs|md|json|ya?ml|sh)):(\d+)/g,
+  )) {
+    const key = `${m[1].toLowerCase()}:${m[2]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ path: m[1], line: Number.parseInt(m[2], 10) });
+    if (out.length >= MAX_LINES_PROBED) break;
+  }
+  return out;
+}
+
+/**
+ * The absolute path a citation resolves to, or `null` if it escapes the root.
+ *
+ * The citation text comes from an AI reviewer's output and reaches
+ * `readFileSync`. The regex above cannot emit a leading `/`, so an absolute
+ * path never arrives — but `../` does, and `../../../../Users/…/settings.json`
+ * carries an allowlisted extension and matches cleanly. The payoff is only a
+ * line count and an existence oracle rather than content, which is why this is
+ * two lines and not a subsystem; it is here because an unaudited input should
+ * not be choosing which file the arbiter opens.
+ *
+ * **There is deliberately no separate `isAbsolute` rejection**, and this was
+ * measured rather than reasoned: one was written, and removing it changed
+ * **0 of 63** cases. `resolve(root, "/etc/hosts.json")` is `/etc/hosts.json`,
+ * which fails containment on its own — so the two guards answered one
+ * question, no behavioural test could tell them apart, and a mutation of
+ * either left the other holding the case up. That is the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, and the remedy for it is
+ * deletion, not a second assertion.
+ */
+export function containedCitationPath(projectRoot: string, cited: string): string | null {
+  const root = resolve(projectRoot);
+  const abs = resolve(root, cited);
+  return abs === root || abs.startsWith(root + sep) ? abs : null;
+}
+
+// ── The verdict ──────────────────────────────────────────────────────────
+
+export type ArbiterRefusal =
+  /** The symptom is already filed. `duplicateOf` names where. */
+  | "DUPLICATE"
+  /** The verifier group did not reach quorum on "is this real?". */
+  | "NO_QUORUM"
+  /** Style, diagnostics or cleanup. Dropped outright, never posted. */
+  | "DROPPED_CATEGORY"
+  /** A cited line is past the end of the file it cites. */
+  | "STALE_CITATION"
+  /** Something could not be evaluated. Fails; never skips. */
+  | "UNMEASURED";
+
+/**
+ * Which tree the finding describes.
+ *
+ * `OFF_MAIN` used to be a **refusal**, and the inversion of that is the
+ * central correction in this change. A finding whose symbols exist only on an
+ * unmerged branch is not a bad finding — it is a finding about the branch,
+ * which is precisely what an inline PR comment is for. Refusing it was the
+ * old shape, where the only two outcomes were "file an issue" and "nothing".
+ *
+ * It survives as a reading because it still decides one thing: a finding
+ * about code that exists only on this branch **cannot** be out-of-scope work
+ * for this PR, so it can never be routed to `ISSUE` however the caller marks
+ * it.
+ */
+export type FindingScope = "main" | "branch";
+
+export interface Verdict {
+  id: string;
+  /**
+   * What to do with it. **One field, because this is one decision** — a
+   * separate `file: boolean` alongside it would be a second decider over the
+   * same input, and a mutation of either would leave the other holding the
+   * case up (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+   */
+  disposition: Disposition;
+  refusal: ArbiterRefusal | null;
+  /** Why, in words a reader can act on without re-running anything. */
+  reason: string;
+  /** `null` when the branch-scope reading was not reached. */
+  scope: FindingScope | null;
+  category: FindingCategory;
+  /** `null` when nothing could tag it; a dropped finding has no severity. */
+  severity: Severity | null;
+  /** The vote count, or `null` when no group was convened. */
+  jury: JuryReading | null;
+  /** Issue ids whose symptom this one collides with. */
+  duplicateOf: string[];
+  /** The keys that produced the collision. Empty when there was none. */
+  collidingKeys: string[];
+  /**
+   * How many findings carry this symptom, this one included. #1187's
+   * acceptance: a duplicate increments a count rather than opening an issue.
+   */
+  occurrences: number;
+  symptomHash: string;
+}
+
+export interface ArbitrateOptions {
+  /** Repository root. `origin/main` is read from here; never checked out. */
+  projectRoot: string;
+  /** Findings already posted or filed. The dedupe compares against these. */
+  existing: readonly Finding[];
+  /**
+   * The separate verifier group's votes on "is this real?".
+   *
+   * **Absent is UNMEASURED, not a pass.** A finding nobody voted on has not
+   * cleared a quorum; it has not had one. Those are different states and only
+   * one of them is reportable. There is deliberately no `skipJury` escape —
+   * `skipRepoChecks` below exists because a caller may genuinely have no
+   * repository, and no caller genuinely has no verifiers.
+   */
+  votes?: readonly VerifierVote[];
+  /** Group size and quorum. Both default; see `lib/finding-jury.ts`. */
+  jury?: JuryConfig;
+  /**
+   * The PR's changed files. Supplying them is what makes `Pre-existing`
+   * decidable: a finding citing none of them is about code the change never
+   * touched. Absent, the pre-existing axis is simply not read.
+   */
+  changedFiles?: readonly string[];
+  /**
+   * Skip the two `git`-backed checks. For a caller with no repository, and
+   * for the corpus measurement, which is about the key and nothing else.
+   * The skipped checks report `UNMEASURED`, they do not report a pass.
+   */
+  skipRepoChecks?: boolean;
+}
+
+/**
+ * The single place that decides. One exported function, one binding.
+ *
+ * Checks run in cost order and short-circuit, so a duplicate is never paid a
+ * `git grep` for. That ordering is the whole design: #1187's measurement is
+ * that the cheap questions catch the failures, and the expensive instrument
+ * was being spent first.
+ */
+export function arbitrate(finding: Finding, options: ArbitrateOptions): Verdict {
+  const hash = symptomHash(finding);
+  const votes = options.votes;
+  const category = votes ? juryCategory(finding, votes) : classifyCategory(finding);
+  const base = {
+    id: finding.id,
+    duplicateOf: [] as string[],
+    collidingKeys: [] as string[],
+    occurrences: 1,
+    symptomHash: hash,
+    scope: null as FindingScope | null,
+    category,
+    severity: null as Severity | null,
+    jury: null as JuryReading | null,
+  };
+  const drop = (refusal: ArbiterRefusal, reason: string, extra: Partial<Verdict> = {}): Verdict => ({
+    ...base,
+    ...extra,
+    disposition: "DROP",
+    refusal,
+    reason,
+  });
+
+  const keys = symptomKeys(finding);
+  if (keys.length === 0) {
+    return drop("UNMEASURED", "the finding names no symbol, no file and no reading — nothing here can be evaluated");
+  }
+
+  // ── 1. is this new? ──
+  const collisions: Array<{ id: string; keys: string[] }> = [];
+  for (const other of options.existing) {
+    if (other.id === finding.id) continue;
+    const overlap = duplicateOverlap(finding, other);
+    if (overlap.duplicate) collisions.push({ id: other.id, keys: overlap.keys });
+  }
+  if (collisions.length > 0) {
+    // Strongest overlap first, so the reader lands on the best match.
+    collisions.sort((a, b) => b.keys.length - a.keys.length || a.id.localeCompare(b.id));
+    return drop(
+      "DUPLICATE",
+      `the symptom is already reported as ${collisions.map(c => c.id).join(", ")} — ` +
+        `shared ${collisions[0].keys.length} key(s): ${collisions[0].keys.slice(0, 6).join(", ")}`,
+      {
+        duplicateOf: collisions.map(c => c.id),
+        collidingKeys: collisions[0].keys,
+        occurrences: collisions.length + 1,
+      },
+    );
+  }
+
+  // ── 2. do enough of the verifiers agree it is real? ──
+  if (votes === undefined) {
+    return drop("UNMEASURED", "no verifier group was convened, so no quorum was reached — not reaching one and not having one are different states");
+  }
+  const jury = juryReading(votes, options.jury);
+  if (jury.reading === "UNMEASURED") {
+    return drop("UNMEASURED", `the vote could not be read: ${jury.unmeasuredReasons.join("; ")}`, { jury });
+  }
+  if (!jury.passed) {
+    return drop(
+      "NO_QUORUM",
+      `${jury.agree} of ${jury.votes} verifiers called it real, quorum is ${jury.quorum}`,
+      { jury },
+    );
+  }
+  const withJury = { ...base, jury };
+
+  // ── 3. is it the kind of finding that gets posted at all? ──
+  if (DROPPED_CATEGORIES.has(category)) {
+    return drop(
+      "DROPPED_CATEGORY",
+      `${category} findings are dropped outright: they cost a review round and change no behaviour`,
+      { jury },
+    );
+  }
+
+  if (options.skipRepoChecks === true) {
+    return drop("UNMEASURED", "branch scope and citation currency were not read: skipRepoChecks", { jury });
+  }
+
+  // ── 4. which tree is it about? ──
+  const symbols = citedSymbols(finding);
+  if (symbols.length === 0) {
+    return drop("UNMEASURED", "the finding cites no symbol, so whether it describes `origin/main` cannot be read", { jury });
+  }
+  const probe = git(options.projectRoot, ["rev-parse", "--verify", "--quiet", "origin/main"]);
+  if (!probe.ok) {
+    return drop(
+      "UNMEASURED",
+      `no origin/main at ${options.projectRoot} — branch scope is unreadable, which fails rather than passes`,
+      { jury },
+    );
+  }
+  const present = symbols.filter(
+    s => git(options.projectRoot, ["grep", "--quiet", "--fixed-strings", "-e", s, "origin/main"]).ok,
+  );
+  const scope: FindingScope = present.length > 0 ? "main" : "branch";
+
+  // ── 5. is this current? ──
+  const stale: string[] = [];
+  for (const c of citedLines(finding)) {
+    const abs = containedCitationPath(options.projectRoot, c.path);
+    if (abs === null) continue;
+    let text: string | null = null;
+    if (existsSync(abs)) {
+      text = readFileSync(abs, "utf-8");
+    } else {
+      const shown = git(options.projectRoot, ["show", `origin/main:${c.path}`]);
+      if (shown.ok) text = shown.out;
+    }
+    // A path that resolves nowhere is not a stale citation — the evidence
+    // gate is where an unresolvable citation is adjudicated, and guessing
+    // here would put a second decider in front of it.
+    if (text === null) continue;
+    const lines = text.split("\n").length;
+    if (c.line > lines) stale.push(`${c.path}:${c.line} (file is ${lines} lines)`);
+  }
+  if (stale.length > 0) {
+    return drop(
+      "STALE_CITATION",
+      `cited line(s) past the end of the file: ${stale.join("; ")} — re-read before posting`,
+      { jury, scope },
+    );
+  }
+
+  // ── 6. where does it go? COMMENT unless somebody declared otherwise. ──
+  const severity = severityOf(finding, votes, options.changedFiles) ?? "Important";
+  const outOfScope = finding.outOfScope;
+  if (outOfScope !== undefined && outOfScope.reason.trim() !== "" && scope === "main") {
+    return {
+      ...withJury,
+      scope,
+      severity,
+      disposition: "ISSUE",
+      refusal: null,
+      reason: `out of scope for this change, declared: ${outOfScope.reason}`,
+    };
+  }
+  return {
+    ...withJury,
+    scope,
+    severity,
+    disposition: "COMMENT",
+    refusal: null,
+    reason:
+      scope === "main"
+        ? `${jury.agree} of ${jury.votes} verifiers agree; cites ${present.join(", ")} on origin/main`
+        : `${jury.agree} of ${jury.votes} verifiers agree; cites only branch symbols (${symbols.join(", ")}), so it is about this change`,
+  };
+}
+
+/** One line a caller can print without re-deriving any of the above. */
+export function verdictSummary(v: Verdict): string {
+  const tag = v.severity ? `${v.severity}/${v.category}` : v.category;
+  return v.refusal === null
+    ? `${v.disposition} ${v.id} [${tag}]: ${v.reason}`
+    : `DROP ${v.id} (${v.refusal}): ${v.reason}`;
+}
+
+// ── The batch, and the cap that is not written here ──────────────────────
+
+/**
+ * How many findings one batch may file.
+ *
+ * Six, which is the measured hourly CLOSE rate at the time #1187 was filed —
+ * 14 filed against 6 closed. A filing budget above the closing rate is not a
+ * budget, it is a slower queue growth, and the queue was the constraint.
+ *
+ * Deliberately NOT `PROMOTION_BUDGET_RULES`. That sixteen is a context-window
+ * reading about how many rules an agent can hold at once
+ * (`docs/research/context-management.md`); it answers a different question
+ * and reusing the literal would make one number the decider for two
+ * unrelated decisions. The *mechanism* is shared; the number is not.
+ */
+export const FILING_BUDGET_FINDINGS = 6;
+
+export interface BatchReading {
+  /** Per-finding verdicts, in input order. */
+  verdicts: Verdict[];
+  /**
+   * Ids to post as inline comments, **ranked by severity** — Important, then
+   * Pre-existing, then Nit. This is the default output and it is deliberately
+   * NOT budgeted: a comment blocks the merge until it is answered, so it
+   * leaves the system the same day. `FILING_BUDGET_FINDINGS` caps the other
+   * list, which is the one that accumulates.
+   */
+  toComment: string[];
+  /** `lib/rule-promotion.ts`'s reading over the declared-out-of-scope ones. */
+  promotion: PromotionReading;
+  /** Ids cleared to file as issues, after the checks and the budget. */
+  toFile: string[];
+}
+
+/**
+ * The order the batch is walked in.
+ *
+ * **Order is load-bearing and therefore pinned here**: with an
+ * accumulate-as-you-walk dedupe, whichever of a duplicate pair is seen first
+ * is the one that survives, so leaving it to array position would let the
+ * caller's iteration order silently decide which finding exists. Numeric ids
+ * compare numerically so `9` precedes `10`; everything else falls back to
+ * lexical, and the original index breaks remaining ties so the sort is total.
+ */
+function walkOrder(findings: readonly Finding[]): Array<{ finding: Finding; index: number }> {
+  return findings
+    .map((finding, index) => ({ finding, index }))
+    .sort((a, b) => {
+      const [x, y] = [Number(a.finding.id), Number(b.finding.id)];
+      const numeric = Number.isInteger(x) && Number.isInteger(y);
+      return (numeric ? x - y : a.finding.id.localeCompare(b.finding.id)) || a.index - b.index;
+    });
+}
+
+/**
+ * Arbitrate a batch, then hand the survivors to the promoter that already
+ * exists.
+ *
+ * **The ranking, the eviction and the UNMEASURED folding are not implemented
+ * here.** `promoteCandidates` does all three, has them under test, and
+ * already gets the hard part right — an upstream that read UNMEASURED makes
+ * the whole promotion UNMEASURED rather than a smaller one. #1187 and #1162
+ * both say the same thing about this machinery: wire it, do not rewrite it.
+ * What stage 1 adds is the three checks in front and a budget whose number
+ * is its own.
+ *
+ * A finding refused by any check is withheld before it reaches the promoter,
+ * so it cannot be ranked above one that passed them.
+ *
+ * ## The dedupe accumulates as it walks, and that is the whole point
+ *
+ * The first cut of this compared every finding against `options.existing` and
+ * nothing else. `existing` is a **fixed snapshot**, so two identical findings
+ * in one batch both read as new — which is exactly the incident that
+ * motivated #1187: #1195 and #1196, the same symptom, filed **one minute
+ * apart**, close enough that neither was in the tracker when the other was
+ * arbitrated. A tracker-only dedupe would not have stopped it, and
+ * `test/finding-arbiter.test.ts`'s `AR-9` drives the real pair through this
+ * function to prove the fix does.
+ *
+ * So each survivor joins the comparison set for everything walked after it.
+ * See `walkOrder` for why the order is pinned rather than inherited.
+ */
+export function arbitrateBatch(
+  findings: readonly Finding[],
+  options: ArbitrateOptions & { budget?: number; now?: string },
+): BatchReading {
+  const date = options.now ?? new Date().toISOString();
+  const seen: Finding[] = [...options.existing];
+  const verdicts: Verdict[] = new Array(findings.length);
+
+  for (const { finding, index } of walkOrder(findings)) {
+    const verdict = arbitrate(finding, { ...options, existing: seen });
+    verdicts[index] = verdict;
+    // Only something that will actually be posted or filed occupies the
+    // space. A dropped finding leaves no artefact for a later one to
+    // duplicate, so it must not shadow one.
+    if (verdict.disposition !== "DROP") seen.push(finding);
+  }
+
+  const bySeverity = (a: Verdict, b: Verdict) =>
+    SEVERITY_RANK[a.severity ?? "Important"] - SEVERITY_RANK[b.severity ?? "Important"];
+  const toComment = verdicts.filter(v => v.disposition === "COMMENT").sort(bySeverity).map(v => v.id);
+
+  const declared: PromotableCandidate[] = verdicts
+    .filter(v => v.disposition === "ISSUE")
+    .map(v => ({
+      rule: findings.find(f => f.id === v.id)!.title,
+      source: `finding:${v.id}`,
+      hash: v.symptomHash,
+      evidence: { kind: "finding" as const, date, citation: v.reason, issues: [] },
+    }));
+
+  // The arbiter's own reading is an upstream, so a batch in which nothing
+  // could be evaluated does not report a measured zero.
+  const unmeasured = verdicts.filter(v => v.refusal === "UNMEASURED");
+  const promotion = promoteCandidates(declared, {
+    budget: options.budget ?? FILING_BUDGET_FINDINGS,
+    upstream: {
+      reading: unmeasured.length > 0 ? "UNMEASURED" : "MEASURED",
+      unmeasuredReasons: unmeasured.map(v => `${v.id}: ${v.reason}`),
+    },
+  });
+
+  // `promoteCandidates` returns a POPULATED `promoted` under an UNMEASURED
+  // reading — only its `budget < 1` branch empties it. So the discriminator
+  // has to be consulted here or it is computed and then ignored, and this
+  // function's own header would be claiming that a batch which could not be
+  // evaluated "does not report a measured zero" while it reported a measured
+  // LIST. Gated here rather than in `promoteCandidates`, which has other
+  // callers whose semantics are not ours to change.
+  return {
+    verdicts,
+    toComment,
+    promotion,
+    toFile:
+      promotion.reading === "MEASURED"
+        ? promotion.promoted.map(c => c.source.replace(/^finding:/, ""))
+        : [],
+  };
+}

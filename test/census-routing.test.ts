@@ -82,10 +82,16 @@ import {
 const REPO = join(import.meta.dir, "..");
 const RULE = join(REPO, ".claude/rules/self-referential-tests.md");
 
+// Four since #1161 added `ticked-sc-absent-symbol`, which refuses a tick
+// naming a symbol the tree does not contain — an event only a spec edit can
+// cause, in a file the spec edit does not touch. Written out rather than
+// read from `CENSUS_TRIGGERS`, because a list derived from the thing it
+// checks agrees with it by construction.
 const SC_CENSUS = [
   "test/sc-binding-split.test.ts",
   "test/ticked-sc-cover.test.ts",
   "test/behavioral-sc-ratchet.test.ts",
+  "test/ticked-sc-absent-symbol.test.ts",
 ];
 
 const change = (p: Partial<Change> & { path: string }): Change => ({

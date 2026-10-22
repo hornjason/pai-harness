@@ -49,7 +49,13 @@ const SPECS = join(REPO, "specs");
  * which is what makes this number safe to carry: it cannot drift away from
  * the ratchet that does the refusing.
  */
-const UNCLAIMED_RATCHET = 153;
+// 153 -> 152 on 2026-10-22 (#1161). SC-453 of INSTRUCTION-COMPLIANCE-SPEC.md
+// left the unclaimed half by withdrawal: it named `runBehavioralCompliance`,
+// which has no declaration, export, caller or test anywhere in the tree, and
+// is now a SUPERSEDED pointer to SC-242, the unticked criterion tracking the
+// same thing. The subset relation asserted below carried the edit — the
+// per-spec census in `test/ticked-sc-cover.test.ts` moved by the same one.
+const UNCLAIMED_RATCHET = 152;
 
 /**
  * Checked, unmatchable, and a test file DOES declare it.

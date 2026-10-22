@@ -64,9 +64,12 @@ import {
   AI_REVIEW_ADJUDICATOR_PACKAGE,
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
+  AI_REVIEW_CONVENTIONS_FILE,
+  AI_REVIEW_EXECUTION_FILE_VAR,
   AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
+  AI_REVIEW_PULL_REQUEST_TYPES,
   AI_REVIEW_REQUIRED_EXIT,
   AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
@@ -162,6 +165,9 @@ function scratchDir(prefix: string): string {
 }
 
 // ── The generated file ───────────────────────────────────────────────────
+
+/** This repository, for the cases that read the COMMITTED workflow. */
+const REPO_ROOT = join(import.meta.dir, "..");
 
 let PROJECT = "";
 const workflowsDir = () => join(PROJECT, ".github", "workflows");
@@ -321,7 +327,92 @@ describe("AC-3: no base filter on on.pull_request, and the branch globs stay quo
     const aiDoc = Bun.YAML.parse(
       readFileSync(join(bare, ".github", "workflows", AI_REVIEW_WORKFLOW_FILE), "utf-8"),
     ) as any;
-    expect(triggersOf(aiDoc).pull_request).toBeNull();
+    // #1207 put a `types:` key under this trigger, so the parse is a mapping
+    // rather than the bare `null` it used to be. The property this case is
+    // about is `branches`, and that is what is asserted — reading it as
+    // "the mapping must be empty" would have made the case about a key it
+    // was never written to hold an opinion on.
+    const bareAiPr = triggersOf(aiDoc).pull_request;
+    expect(
+      bareAiPr === null ? [] : Object.keys(bareAiPr),
+      "a project that configures no branches got a base filter on ai-review",
+    ).not.toContain("branches");
+  });
+});
+
+/**
+ * AC-3b (#1207): the waiver label can reach a pull request that already exists.
+ *
+ * `AI_REVIEW_OVERRIDE_VAR` reads the EVENT PAYLOAD. With no `types:` the
+ * trigger took GitHub's defaults — `opened`, `synchronize`, `reopened` — so
+ * applying `AI_REVIEW_OVERRIDE_LABEL` fired no run at all, and a re-run
+ * replays the payload that predates the label. Measured on #1198: `gh run
+ * rerun --failed` returned `failure` unchanged; close + reopen flipped the
+ * same commit to pass. The documented escape hatch could not be exercised by
+ * the action it documents.
+ *
+ * **The cheapest wrong fix is `types: [labeled]`, and AC-3b is the case that
+ * refuses it.** `types:` replaces the default set rather than extending it, so
+ * the one-word repair fixes the waiver and silently stops a REQUIRED check
+ * running on ordinary pushes. That is why the assertion is over all five
+ * members and not over `labeled` alone.
+ */
+describe("AC-3b (#1207): on.pull_request subscribes to the label events the waiver needs", () => {
+  test("AC-3b: all five activity types reach ai-review.yml, defaults included", () => {
+    const pr = triggersOf(Bun.YAML.parse(generated()) as any).pull_request;
+    expect(pr, "the pull_request trigger is gone entirely").not.toBeNull();
+    expect(
+      pr.types,
+      "ai-review.yml declares no types:, so `labeled` cannot reach it (#1207)",
+    ).toBeDefined();
+    // Set comparison, not array equality: the ORDER of activity types is not
+    // a property GitHub reads, and pinning it would make a reorder red for no
+    // reason. Membership in both directions is the claim.
+    expect([...pr.types].sort()).toEqual([...AI_REVIEW_PULL_REQUEST_TYPES].sort());
+    for (const def of ["opened", "synchronize", "reopened"]) {
+      expect(
+        pr.types,
+        `${def} is a GitHub default and \`types:\` REPLACES the defaults — ` +
+          `dropping it stops ai-review running on an ordinary push`,
+      ).toContain(def);
+    }
+    expect(pr.types, "the waiver label still cannot fire on an existing PR").toContain("labeled");
+    expect(
+      pr.types,
+      "removing the label cannot put the refusal back, which the annotation promises",
+    ).toContain("unlabeled");
+  });
+
+  test("AC-3b: the committed workflow carries them too — the generator is not enough", () => {
+    // `.github/workflows/ai-review.yml` is the file GitHub reads on THIS
+    // repository. A generator fix that nobody regenerated is a fix that is
+    // live for consumers at the next release and live here never.
+    const pr = triggersOf(
+      Bun.YAML.parse(
+        readFileSync(join(REPO_ROOT, ".github", "workflows", AI_REVIEW_WORKFLOW_FILE), "utf-8"),
+      ) as any,
+    ).pull_request;
+    expect(
+      pr?.types,
+      `.github/workflows/${AI_REVIEW_WORKFLOW_FILE} on disk declares no types: — regenerate it`,
+    ).toBeDefined();
+    expect([...pr.types].sort()).toEqual([...AI_REVIEW_PULL_REQUEST_TYPES].sort());
+  });
+
+  test("AC-3b: the control — ci.yml and gates.yml are NOT subscribed to label events", () => {
+    // Without this the fix is satisfied by putting the types on the shared
+    // `CI_PULL_REQUEST_TRIGGER`, which spends a full suite run on every
+    // triage label anybody applies to any pull request. Only the workflow
+    // that READS a label subscribes to label events.
+    for (const file of ["ci.yml", "gates.yml"]) {
+      const other = triggersOf(
+        Bun.YAML.parse(readFileSync(join(workflowsDir(), file), "utf-8")) as any,
+      ).pull_request;
+      const types: string[] = other === null ? [] : (other.types ?? []);
+      expect(types, `${file} now runs on every label change, which buys no coverage`).not.toContain(
+        "labeled",
+      );
+    }
   });
 });
 
@@ -584,6 +675,51 @@ describe("AC-7: every mode the job can resolve says what it measured", () => {
 
 /** A findings payload, so these cases are about #1013 and not about #816's skip. */
 const PAYLOAD = '{"findings": [], "verdict": "PASS"}';
+
+/**
+ * An execution transcript carrying a read of the conventions file (#1167).
+ *
+ * This harness runs the step with the SUITE's working directory, which is
+ * this repository — so `REVIEW.md` is in the "checkout" these cases present,
+ * and since #1167 the payload branch refuses a payload whose transcript does
+ * not show the reviewer reading it.
+ *
+ * Supplied to the two cases below that assert something about the branch
+ * BEYOND the conventions reading. It is an input they were missing, not an
+ * assertion being relaxed: a real run that wrote a payload always has a
+ * transcript beside it — measured across this repository's last 40 review
+ * runs, and run `39835040833` is one with both — so a fixture with a payload
+ * and no transcript modelled a state the runner does not produce. Neither
+ * case's subject, varied input or assertion direction moves.
+ *
+ * `ai-review-conventions.test.ts` is where the conventions reading itself is
+ * asserted, in both directions.
+ */
+const CONVENTIONS_TRANSCRIPT = (() => {
+  const dir = scratchDir("ai-review-transcript-");
+  const path = join(dir, "claude-execution-output.json");
+  writeFileSync(
+    path,
+    JSON.stringify([
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Read",
+              input: {
+                file_path: `/home/runner/work/pai-harness/pai-harness/${AI_REVIEW_CONVENTIONS_FILE}`,
+              },
+            },
+          ],
+        },
+      },
+      { type: "result", subtype: "success", is_error: false, num_turns: 9 },
+    ]),
+  );
+  return { [AI_REVIEW_EXECUTION_FILE_VAR]: path };
+})();
 
 /**
  * The adjudicator's answers, planted (#1013).
@@ -1655,6 +1791,20 @@ function runAuthScript(
     const findings = join(dir, "ai-review-findings.json");
     writeFileSync(findings, payload);
     planted.AI_REVIEW_FINDINGS_PATH = findings;
+    // #1167, and attached to the PAYLOAD rather than offered separately:
+    // the two travel together on a runner. A payload exists only if the
+    // reviewer executed, and a reviewer that executed leaves a transcript —
+    // measured across this repository's last 40 review runs, where
+    // `AI_REVIEW_EXECUTION_FILE` is set on all five that ran the agent and
+    // empty only on the skips, which write no payload. A fixture with one
+    // and not the other modelled a state the runner does not produce, and
+    // since #1167 the payload branch reads the transcript for the
+    // conventions load.
+    //
+    // `...env` still wins, so a case about a different transcript sets its
+    // own; `ai-review-conventions.test.ts` is where that reading is the
+    // subject, with its own workspace.
+    Object.assign(planted, CONVENTIONS_TRANSCRIPT);
   }
   const r = Bun.spawnSync(["bash", "-e", sh], {
     env: {
