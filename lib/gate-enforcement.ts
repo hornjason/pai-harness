@@ -5,7 +5,69 @@
  * scanning, and signal logging. The hook file is a thin trigger that
  * delegates all logic here.
  *
- * Issue: #544
+ * Issue: #544. Fail-open closed by #1155.
+ *
+ * ## A state that could not be read is not a state with no failures (#1155)
+ *
+ * This module decides whether an agent is walking away from a gate FAIL. It
+ * used to answer that question from a bare `catch` commented "skip malformed",
+ * so a `workflow-state.json` that would not parse read as **no gate failure** —
+ * the condition that should refuse most loudly producing the most permissive
+ * result. That is *Silent Default Substitution* (`.claude/rules/config-access.md`)
+ * and the same fail-open class `lib/gate-result-protection.ts` closed.
+ *
+ * Measured 2026-10-22, because "malformed" was covering more than one thing:
+ *
+ *  - **Three** distinct throw sources reached that one catch — a `JSON.parse`
+ *    SyntaxError, a TypeError from reading `.phase` off a parsed `null`, and
+ *    an fs error when the path exists but cannot be read (EISDIR, EACCES, or
+ *    a delete racing the `existsSync` above it).
+ *  - **The catch was not the only fail-open.** A state parsing to `42`, `"x"`
+ *    or `[]` throws nothing at all: `.phase` is `undefined`, `gates || {}` is
+ *    empty, and the old code returned `null` down the *normal* path. So six
+ *    inputs read as a clean run, not three. `gate-result-protection` already
+ *    refuses the non-object parses by name; this module now agrees with it.
+ *
+ * Three states that the old `null` conflated are now distinct, and only the
+ * middle one refuses:
+ *
+ * | On disk | Reading |
+ * |---|---|
+ * | no work dir, or no state file — a first run | `MEASURED`, no failure |
+ * | present, parses, no blocking gate FAIL | `MEASURED`, no failure |
+ * | present and unreadable, unparseable, or not an object | `UNMEASURED` |
+ *
+ * ## Why the refusal is scoped to Skill calls, and is not a wider block
+ *
+ * A bare refusal here would be worse than the bug: `GateEnforcement` is a
+ * PreToolUse hook on `.*`, so refusing every tool call would make a single
+ * corrupt state file a denial of service on the session — and a guard nobody
+ * can get out from under gets switched off, after which it guards nothing.
+ * So the recovery path was measured before the failure mode was chosen:
+ *
+ *  - `makeEnforcementDecision` already blocks **only** `Skill` calls. Bash,
+ *    Read, Edit and Agent are nagged, never blocked — that is the existing
+ *    design's own escape hatch and it predates this change.
+ *  - `WorkflowStateGuard` refuses direct `Write`/`Edit` of the artifact and
+ *    names the repair: `bun -e "… writeWorkflowState(…)"`.
+ *  - `BashWriteGuard` inspects only `>`/`>>`, `tee`, `cp` and `mv` targets,
+ *    so that `bun -e` command carries no write target it can see and is
+ *    allowed through.
+ *
+ * The repair therefore runs over Bash, which this refusal leaves open. There
+ * is no deadlock, and `test/gate-enforcement.test.ts` holds that as a control
+ * rather than as a comment: if a later change starts blocking Bash here, the
+ * control goes red.
+ *
+ * The refusal is **immediate** rather than strike-counted. Strikes are keyed
+ * on `issue` + `gate` by `loadStrikeCount`, and an unreadable state supplies
+ * neither — there is nothing to count against. Same reasoning as an OUTCOME
+ * AC failure, which also blocks on sight.
+ *
+ * One more consequence of the old `catch` is worth naming, because it is not
+ * the one the issue was filed about: `runGateEnforcement` deletes
+ * `gate-pending.json` when it sees no failure, so a corrupt state file also
+ * **erased the strike counter**. An unmeasured reading now leaves it alone.
  */
 
 import {
@@ -64,12 +126,59 @@ export function formatFailures(failures: GateFailure[]): string {
 }
 
 /**
+ * Whether every state file under the work directory could actually be read.
+ * `UNMEASURED` means at least one could not — which is not the same answer as
+ * "no gate failed", and must never be collapsed into it.
+ */
+export type WorkflowReading = 'MEASURED' | 'UNMEASURED';
+
+export interface WorkflowScan {
+  reading: WorkflowReading;
+  /** The first blocking gate FAIL found, in scope > verify > ship priority. */
+  failure: WorkflowGateFailure | null;
+  /** One line per unreadable path. Non-empty exactly when UNMEASURED. */
+  unmeasuredReasons: string[];
+}
+
+/** A plain JSON object — not an array, not null, not a scalar. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** What one state file yielded: a failure, or a reason it could not be read. */
+interface FileReading {
+  failure: WorkflowGateFailure | null;
+  unmeasured: string | null;
+}
+
+const READABLE: FileReading = { failure: null, unmeasured: null };
+
+/**
  * Scan workflow-state.json files under workDir for active gate failures.
  * Returns the first failure found (scope > verify > ship priority).
  * Checks both direct children and nested subdirectories.
+ *
+ * An unreadable state does not abort the scan: a readable sibling can still
+ * carry a real FAIL, and discarding it would trade one fail-open for another.
+ * Both answers are carried — `failure` for the actionable one, `reading` for
+ * whether the sweep was complete.
  */
-export function findWorkflowGateFailure(workDir: string): WorkflowGateFailure | null {
-  if (!existsSync(workDir)) return null;
+export function findWorkflowGateFailure(workDir: string): WorkflowScan {
+  const reasons: string[] = [];
+  // An absent work directory is a first run, not a corrupt one. MEASURED.
+  if (!existsSync(workDir)) return { reading: 'MEASURED', failure: null, unmeasuredReasons: [] };
+
+  let failure: WorkflowGateFailure | null = null;
+
+  // First failure wins, as before — but the sweep RUNS TO COMPLETION rather
+  // than returning on it. Stopping early would make `reading` depend on
+  // readdir order: a corrupt state sorting after a failing one would go
+  // unreported, and the same two files would answer differently on a
+  // filesystem that enumerated them the other way round.
+  const take = (r: FileReading): void => {
+    if (r.unmeasured) reasons.push(r.unmeasured);
+    if (r.failure && !failure) failure = r.failure;
+  };
 
   try {
     const dirs = readdirSync(workDir, { withFileTypes: true })
@@ -77,38 +186,67 @@ export function findWorkflowGateFailure(workDir: string): WorkflowGateFailure | 
 
     for (const d of dirs) {
       // Level 1: direct children
-      const result = checkWorkflowFile(`${workDir}/${d.name}/workflow-state.json`, d.name);
-      if (result) return result;
+      take(checkWorkflowFile(`${workDir}/${d.name}/workflow-state.json`, d.name));
 
       // Level 2: nested subdirectories
       try {
         const subDirs = readdirSync(`${workDir}/${d.name}`, { withFileTypes: true })
           .filter(sd => sd.isDirectory());
         for (const sd of subDirs) {
-          const nestedResult = checkWorkflowFile(
+          take(checkWorkflowFile(
             `${workDir}/${d.name}/${sd.name}/workflow-state.json`,
             `${d.name}/${sd.name}`,
-          );
-          if (nestedResult) return nestedResult;
+          ));
         }
-      } catch { /* skip */ }
+      } catch (err) {
+        reasons.push(`${workDir}/${d.name}: directory could not be listed (${err})`);
+      }
     }
-  } catch { /* skip */ }
+  } catch (err) {
+    reasons.push(`${workDir}: work directory could not be listed (${err})`);
+  }
 
-  return null;
+  return {
+    reading: reasons.length === 0 ? 'MEASURED' : 'UNMEASURED',
+    failure,
+    unmeasuredReasons: reasons,
+  };
 }
 
 /**
  * Check a single workflow-state.json file for gate failures.
+ *
+ * Returns a reason rather than `null` whenever the file is present but could
+ * not be read as a workflow state — see the module docstring for the six
+ * inputs that used to come back as a clean run.
  */
-function checkWorkflowFile(wfPath: string, slug: string): WorkflowGateFailure | null {
-  if (!existsSync(wfPath)) return null;
+function checkWorkflowFile(wfPath: string, slug: string): FileReading {
+  // Genuinely absent: this issue simply has no state yet.
+  if (!existsSync(wfPath)) return READABLE;
+
+  let wf: unknown;
+  try {
+    wf = JSON.parse(readFileSync(wfPath, 'utf-8'));
+  } catch (err) {
+    return { failure: null, unmeasured: `${wfPath}: could not be read as JSON (${err})` };
+  }
+
+  // A workflow state is always an object. An array, a null or a scalar is a
+  // reading that could not be taken, and throws nothing on the way past.
+  if (!isPlainObject(wf)) {
+    return {
+      failure: null,
+      unmeasured: `${wfPath}: parsed to ${Array.isArray(wf) ? 'an array' : typeof wf}, not a workflow state object`,
+    };
+  }
 
   try {
-    const wf = JSON.parse(readFileSync(wfPath, 'utf-8'));
-    if (wf.phase === 'DONE') return null;
+    if (wf.phase === 'DONE') return READABLE;
 
-    const gates = wf.gates || {};
+    const gates = (isPlainObject(wf.gates) ? wf.gates : {}) as Record<string, {
+      result?: string;
+      failures?: { check?: string; id?: string; detail?: string; message?: string }[];
+    }>;
     // #1137: the registry, not a second copy of it. This list and
     // GateResultProtection's agreed on every input anyone had, so nothing
     // could go red when they diverged.
@@ -120,22 +258,27 @@ function checkWorkflowFile(wfPath: string, slug: string): WorkflowGateFailure | 
           (ac: { type?: string; verdict?: string }) => ac.type === 'OUTCOME' && ac.verdict === 'FAIL',
         );
         return {
-          gate: gateName,
-          issue: wf.issue,
-          slug: wf.slug || slug,
-          failures: gate.failures.map(
-            (f: { check?: string; id?: string; detail?: string; message?: string }) => ({
+          unmeasured: null,
+          failure: {
+            gate: gateName,
+            issue: wf.issue as number,
+            slug: (wf.slug as string) || slug,
+            failures: gate.failures.map(f => ({
               check: f.check || f.id || 'unknown',
               detail: f.detail || f.message || JSON.stringify(f),
-            }),
-          ),
-          hasOutcomeAcFailure,
+            })),
+            hasOutcomeAcFailure,
+          },
         };
       }
     }
-  } catch { /* skip malformed */ }
+  } catch (err) {
+    // Nothing above should throw now that the shape is checked first — so if
+    // one does, that is an unread state, not a clean one. Refuse, don't skip.
+    return { failure: null, unmeasured: `${wfPath}: could not be interpreted (${err})` };
+  }
 
-  return null;
+  return READABLE;
 }
 
 /**
@@ -294,8 +437,55 @@ export function logEnforcementSignal(
   });
 }
 
+/**
+ * What an agent is told when the gate state cannot be read. It names the
+ * artifact, the reason, and the one command that can repair it — a refusal
+ * with no way out is a denial of service, not a guard.
+ */
+export function unmeasuredStateReason(reasons: string[]): string {
+  return [
+    'UNMEASURED: the harness gate state could not be read, so whether a gate is ' +
+      'currently FAILing is unknown — and an unknown is not a pass.',
+    ...reasons.map(r => `  - ${r}`),
+    '',
+    'Repair the state, then retry. workflow-state.json is not directly writable ' +
+      '(WorkflowStateGuard); go through the validating writer:',
+    '  bun -e "import {writeWorkflowState} from \'./gates/orchestrator.ts\'; ' +
+      'writeWorkflowState(\'WORK_DIR/workflow-state.json\', STATE);"',
+    '',
+    'Bash, Read and Edit are not blocked — only Skill calls are, so the repair ' +
+      'above is reachable right now.',
+  ].join('\n');
+}
+
 export function runGateEnforcement(input: GateEnforcementInput): GateEnforcementResult {
-  const wfFailure = findWorkflowGateFailure(input.workDir);
+  const scan = findWorkflowGateFailure(input.workDir);
+  const wfFailure = scan.failure;
+
+  // #1155: no readable failure, but the sweep was incomplete. Refuse rather
+  // than report the clean run we did not actually observe. Skill-scoped, and
+  // the strike counter is left alone — an unmeasured reading is not evidence
+  // that the gate it was counting against has been fixed.
+  if (!wfFailure && scan.reading === 'UNMEASURED') {
+    const reason = unmeasuredStateReason(scan.unmeasuredReasons);
+    logSignal(input.signalsDir, input.signalsFile, {
+      ts: new Date().toISOString(),
+      type: 'gate_enforcement',
+      reading: 'UNMEASURED',
+      tool: input.toolName,
+      action: input.toolName === 'Skill' ? 'block' : 'nag',
+      reasons: scan.unmeasuredReasons,
+    });
+
+    if (input.toolName === 'Skill') {
+      return { stdout: JSON.stringify({ decision: 'block', reason }), action: 'block' };
+    }
+    return {
+      stdout: ['<system-reminder>', `⚠️ ${reason}`, '</system-reminder>'].join('\n'),
+      action: 'nag',
+    };
+  }
+
   if (!wfFailure) {
     if (existsSync(input.pendingFile)) {
       try {
