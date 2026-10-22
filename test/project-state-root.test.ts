@@ -34,7 +34,7 @@
 
 import { afterAll, describe, test, expect } from "bun:test";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { realpathSync } from "fs";
@@ -51,14 +51,27 @@ afterAll(() => {
   for (const d of scratch) rmSync(d, { recursive: true, force: true });
 });
 
-/** A directory holding the two files the hook keys on. `git` optional. */
-function plant(dir: string, opts: { git?: boolean; generator?: "file" | "symlink" | "dir" | "none" } = {}) {
+/**
+ * A directory holding the two files the hook keys on. `git` optional.
+ *
+ * `track` defaults to true whenever there is a repo, because since the
+ * tracked-generator anchor an untracked generator is refused — a fixture
+ * that only `git init`s now exercises the anchor rather than the case the
+ * arm is about. `track: false` is how the anchor's own arms are built.
+ */
+function plant(
+  dir: string,
+  opts: { git?: boolean; track?: boolean; generator?: "file" | "symlink" | "dir" | "none" } = {},
+) {
   mkdirSync(join(dir, "scripts"), { recursive: true });
   writeFileSync(join(dir, "project-state.json"), "{}");
   const script = join(dir, GENERATOR_RELPATH);
   const gen = opts.generator ?? "file";
   if (gen === "file") writeFileSync(script, "// generator\n");
-  if (gen === "dir") mkdirSync(script);
+  // A file INSIDE it, so `ls-files --error-unmatch` on the directory
+  // pathspec succeeds and the arm reaches the `isFile` test it is about
+  // rather than stopping at the anchor.
+  if (gen === "dir") { mkdirSync(script); writeFileSync(join(script, "inner.ts"), "// x\n"); }
   if (gen === "symlink") {
     const outside = join(tmp(), "payload.ts");
     writeFileSync(outside, "// payload outside the repo\n");
@@ -66,6 +79,7 @@ function plant(dir: string, opts: { git?: boolean; generator?: "file" | "symlink
   }
   if (opts.git) {
     execFileSync("git", ["-C", dir, "init", "-q"], { stdio: "ignore" });
+    if (opts.track ?? true) execFileSync("git", ["-C", dir, "add", "-A"], { stdio: "ignore" });
   }
   return join(dir, "project-state.json");
 }
@@ -162,13 +176,21 @@ describe("#1001 — the generator runs only at the root of a real repository", (
     expect((r as { outcome: string }).outcome).toBe("declined-symlinked-generator");
   });
 
-  test("AC-8: a generator that is a DIRECTORY, or absent, is refused as no-generator", () => {
+  test("AC-8: a generator that is a DIRECTORY is refused as no-generator", () => {
     const a = tmp();
     expect((projectStateTarget(plant(a, { git: true, generator: "dir" })) as { outcome: string }).outcome)
       .toBe("declined-no-generator");
+    // An ABSENT generator is still `no-generator` and not `untracked`,
+    // because the anchor runs LAST: resolution fails first and reports what
+    // is actually wrong. A refusal that names the wrong cause is how the
+    // evidence file stops being readable.
     const b = tmp();
     expect((projectStateTarget(plant(b, { git: true, generator: "none" })) as { outcome: string }).outcome)
       .toBe("declined-no-generator");
+    // And with no repo at all it stops earlier still.
+    const c = tmp();
+    expect((projectStateTarget(plant(c, { generator: "none" })) as { outcome: string }).outcome)
+      .toBe("declined-outside-repo");
   });
 
   test("AC-9: a root that does not exist is refused, and does not throw", () => {
@@ -196,6 +218,97 @@ describe("#1001 — the generator runs only at the root of a real repository", (
     const script = (r as { script: string }).script;
     expect(script.startsWith("-"), "the generator path would be read by bun as a flag").toBe(false);
     expect(script.startsWith("/")).toBe(true);
+  });
+
+  test("AC-14: a repository FORGED with Write alone is refused", () => {
+    // THE FINDING THAT REOPENED #1001. The first fix's limits note said an
+    // attacker needed "to create a directory AND run `git init`". That is
+    // not a narrowing: three `mkdir`s and a 24-byte `HEAD` are all `rev-parse`
+    // needs, and every one of them is a `Write` — the exact primitive this
+    // issue exists to contain.
+    const dir = join(tmp(), "forged");
+    mkdirSync(join(dir, ".git", "objects"), { recursive: true });
+    mkdirSync(join(dir, ".git", "refs", "heads"), { recursive: true });
+    writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const filePath = plant(dir); // generator + project-state.json, no git commands
+
+    // The input REACHES the defect: git agrees this is a repository root, so
+    // the previous anchor (`repoRootFrom(root) === root`) holds here.
+    const toplevel = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf-8" }).trim();
+    expect(realpathSync(toplevel), "the forgery is not a repo root — the arm proves nothing")
+      .toBe(realpathSync(dir));
+
+    const r = projectStateTarget(filePath);
+    expect(r.ok, "a repository forged out of Write calls executed the generator").toBe(false);
+    expect((r as { outcome: string }).outcome).toBe("declined-untracked-generator");
+  });
+
+  test("AC-15: an UNTRACKED generator in a REAL repository is refused", () => {
+    // The anchor stated positively, and the arm that separates "is there a
+    // .git here" from "is this file part of a project". A real repo, a real
+    // generator, never added — which is what an attacker gets by writing
+    // into any checkout on the machine.
+    const dir = tmp();
+    const r = projectStateTarget(plant(dir, { git: true, track: false }));
+    expect(r.ok, "an untracked file dropped into a real repository was executed").toBe(false);
+    expect((r as { outcome: string }).outcome).toBe("declined-untracked-generator");
+    // CONTROL on the same directory: tracking it is the only change, and it
+    // is then allowed. Without this the arm is consistent with a refusal of
+    // everything in a fresh repo.
+    execFileSync("git", ["-C", dir, "add", "-A"], { stdio: "ignore" });
+    expect(projectStateTarget(join(dir, "project-state.json")).ok, "tracking it changed nothing").toBe(true);
+  });
+
+  test("AC-16: a symlinked INTERMEDIATE directory is refused", () => {
+    // The second finding. `projectRoot` is resolved and the leaf was
+    // `lstat`ed, so a link at the leaf was seen — and a link one level up
+    // was not. `scripts` points elsewhere and the generator at the end of it
+    // is an ordinary file.
+    const dir = tmp();
+    writeFileSync(join(dir, "project-state.json"), "{}");
+    const elsewhere = tmp();
+    writeFileSync(join(elsewhere, "update-project-state.ts"), "// payload outside the repo\n");
+    symlinkSync(elsewhere, join(dir, "scripts"));
+    execFileSync("git", ["-C", dir, "init", "-q"], { stdio: "ignore" });
+    execFileSync("git", ["-C", dir, "add", "-A"], { stdio: "ignore" });
+
+    // The input REACHES the defect: a leaf-only `lstat` reports no link.
+    const script = join(realpathSync(dir), GENERATOR_RELPATH);
+    expect(lstatSync(script).isSymbolicLink(), "the leaf IS a link — this is AC-7's input, not AC-16's")
+      .toBe(false);
+    expect(realpathSync(script).startsWith(realpathSync(elsewhere)), "the link does not leave the repo").toBe(true);
+
+    const r = projectStateTarget(join(dir, "project-state.json"));
+    expect(r.ok, "a generator behind a symlinked directory was executed").toBe(false);
+    expect((r as { outcome: string }).outcome).toBe("declined-symlinked-generator");
+  });
+
+  test("AC-17 WITNESS: the anchor's own `git` does not execute the candidate's config", () => {
+    // The anchor asks git a question IN A DIRECTORY THE ATTACKER CHOSE, so
+    // the question itself is an execution primitive unless it is isolated.
+    // Measured: `ls-files` refreshes the index and DOES run
+    // `core.fsmonitor`. Poisoned in the checkout's own `.git/config`, which
+    // the scope env vars cannot reach and the `-c` flags exist for.
+    const dir = tmp();
+    const filePath = plant(dir, { git: true });
+    const marker = join(tmp(), "FSMONITOR-RAN");
+    const fsm = join(tmp(), "fsmonitor.sh");
+    writeFileSync(fsm, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 1\n`);
+    chmodSync(fsm, 0o755);
+    execFileSync("git", ["-C", dir, "config", "core.fsmonitor", fsm], { stdio: "ignore" });
+
+    // NEGATIVE CONTROL. Without it, a clean marker below is equally
+    // consistent with git never consulting fsmonitor for this subcommand.
+    try {
+      execFileSync("git", ["-C", dir, "ls-files", "--error-unmatch", "--", GENERATOR_RELPATH], { stdio: "ignore" });
+    } catch { /* fsmonitor exits 1; the question's answer is irrelevant here */ }
+    expect(existsSync(marker), "unisolated git never ran fsmonitor — this arm witnesses nothing").toBe(true);
+    rmSync(marker, { force: true });
+
+    const r = projectStateTarget(filePath);
+    expect(existsSync(marker), "the anchor's own git executed the candidate repository's core.fsmonitor").toBe(false);
+    // And the poisoned config did not change the answer.
+    expect(r.ok, `a legitimate tracked generator was refused: ${JSON.stringify(r)}`).toBe(true);
   });
 
   test("AC-11: every refusal carries an outcome and the path it refused", () => {
@@ -249,7 +362,12 @@ describe("#1001 — the hook itself refuses, and leaves evidence when it does", 
       join(dir, GENERATOR_RELPATH),
       'import {writeFileSync} from "fs";\nwriteFileSync(process.env.PST_MARKER!, "arbitrary code ran as the user");\n',
     );
-    if (git) execFileSync("git", ["-C", dir, "init", "-q"], { stdio: "ignore" });
+    if (git) {
+      execFileSync("git", ["-C", dir, "init", "-q"], { stdio: "ignore" });
+      // TRACKED: the anchor refuses an untracked generator, so an arm that
+      // only `git init`s would measure the anchor and not execution.
+      execFileSync("git", ["-C", dir, "add", "-A"], { stdio: "ignore" });
+    }
     return join(dir, "project-state.json");
   }
 

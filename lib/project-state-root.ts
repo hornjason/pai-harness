@@ -33,13 +33,44 @@
  * does not work: a planted root inside the prefix passes it. `AC-4` is that
  * input, and it is red against that fix.
  *
+ * The cheapest wrong fix for the SECOND round is different and more
+ * tempting: *"also `realpath` the leaf."* It closes the symlinked-directory
+ * hole completely, reads like a security fix in a diff, and leaves the
+ * forged repository exactly as open as it was — a forgery's generator is a
+ * perfectly ordinary file. `AC-14` is the input it does not survive.
+ *
  * ## What is checked instead, and why it delegates
  *
- * **The generator may only run at the root of a real git repository.** That
- * is not a list, it is a question `lib/paths.ts:repoRootFrom` already
- * answers — it resolves `--git-common-dir` and `realpathSync`es the result
- * precisely so callers can compare stable strings. No second definition of
- * "trusted root" is declared here; this module composes that one.
+ * **The generator may only run at the root of a real git repository, and it
+ * must be a TRACKED file of that repository.** Neither is a list; both are
+ * questions something else already answers — `lib/paths.ts:repoRootFrom`
+ * resolves `--git-common-dir` and `realpathSync`es the result so callers can
+ * compare stable strings, and `git ls-files --error-unmatch` decides
+ * membership. No second definition of "trusted root" is declared here.
+ *
+ * ### Why the repo-root test alone was not enough
+ *
+ * The first version of this module shipped with only the root test, and its
+ * limits note claimed an attacker needed "to create a directory AND run
+ * `git init`". That is false, and measured false on this machine:
+ *
+ *     mkdir -p $D/.git/objects $D/.git/refs/heads $D/scripts
+ *     printf 'ref: refs/heads/main\n' > $D/.git/HEAD
+ *     git -C $D rev-parse --show-toplevel   →  $D
+ *     git -C $D rev-parse --git-common-dir  →  .git
+ *
+ * Three `mkdir`s and a 24-byte file, every one of them reachable with
+ * `Write` — the exact primitive this issue exists to contain. "Any writable
+ * directory" became "any writable directory plus three mkdirs", which is not
+ * a narrowing, and saying it was is worse than the gap: a reader checking
+ * the limits would have stopped there.
+ *
+ * The tracked test refuses it, because **the barrier is `.git/index`** — a
+ * binary file with a trailing checksum, not something a text write produces.
+ * It also asks the better question: *is this generator part of a project*
+ * rather than *is there a `.git` directory here*. `AC-14` is the forgery and
+ * `AC-15` is an untracked file dropped into a REAL repository, which is what
+ * an attacker gets from any checkout on the machine.
  *
  * ### Both sides must be resolved, and this machine is why
  *
@@ -54,6 +85,16 @@
  * written through the former. That spelling **refuses the only real caller
  * there is**, silently, as a security improvement. `AC-3` is that input.
  *
+ * ### The whole path is resolved, not the leaf
+ *
+ * `lstat` on the last component sees a link AT the leaf and is blind to one
+ * above it: a `scripts` directory symlinked anywhere, with an ordinary file
+ * at the end of it, reports no link at all. `projectRoot` is already
+ * resolved, so comparing `realpathSync(script)` against the expected path
+ * catches a link at ANY depth. `AC-16` is that input, and it asserts the
+ * leaf-level `lstat` reads false on it so the arm cannot quietly become a
+ * duplicate of `AC-7`.
+ *
  * ### A linked worktree is NOT the root of its repository
  *
  * `repoRootFrom` resolves `--git-common-dir`, so from a linked worktree it
@@ -67,27 +108,32 @@
  *
  * ## WHAT THIS DOES NOT COVER
  *
- * - **A hostile repository.** `git init` in a writable directory makes a real
- *   repo root, so an attacker who can create a directory AND run `git init`
- *   still reaches the generator. This narrows the population from "any
- *   writable directory" to "any directory someone made a repo"; it does not
- *   empty it. Closing it needs an allowlist of known project roots, which is
- *   the new declaring position this issue exists to refuse — so it is named
- *   here rather than half-built.
+ * - **A repository whose CONFIG is hostile.** `repoRootFrom` shells out to
+ *   `git` in the candidate directory before the tracked-file test can run,
+ *   and that call is not isolated. `rev-parse --git-common-dir` neither
+ *   refreshes the index nor fires a hook, so `core.fsmonitor` and
+ *   `core.hooksPath` do not execute on it — but that is a property of the
+ *   subcommand, not a boundary. Isolating `repoRootFrom` itself is the right
+ *   fix and is not done here: `test/harness-root.test.ts` stages
+ *   `lib/paths.ts` into a scratch directory, so an import added to it fails
+ *   to load there (`.claude/rules/self-referential-tests.md`, Tier 1).
+ * - **A real project someone else controls.** Tracked means part of a
+ *   project, not part of YOUR project. An attacker who can commit to a
+ *   repository on this machine can change what the generator does, which is
+ *   the next item and not a smaller problem.
  * - **A generator that is a regular file with hostile contents.** Confining
  *   WHERE is not reviewing WHAT.
- * - **`git` config in the resolved repo.** `repoRootFrom` shells out to `git`
- *   in the candidate directory, so `core.fsmonitor`/`core.hooksPath`/
- *   `core.pager` there execute. That is the same exposure as
- *   `CommitEnforcement`'s and is tracked with it — one isolation set,
- *   declared once, is the fix for both.
+ * - **A race between the checks and the spawn.** Everything here resolves
+ *   paths once; a component swapped for a symlink afterwards is not seen.
  *
  * Issue: #1001. Refs #971, #999, #910, #296.
  */
 
-import { lstatSync, realpathSync } from "fs";
+import { spawnSync } from "child_process";
+import { realpathSync, statSync } from "fs";
 import { isAbsolute, join } from "path";
 import { repoRootFrom } from "./paths";
+import { gitIsolatedArgs, gitIsolatedEnv } from "./git-isolation";
 
 /** The generator this hook runs, relative to a project root. */
 export const GENERATOR_RELPATH = join("scripts", "update-project-state.ts");
@@ -148,20 +194,65 @@ export function projectStateTarget(filePath: string): ProjectStateTarget {
     throw new Error(`projectStateTarget produced a relative generator path: ${script}`);
   }
 
-  let st;
+  // Resolve the WHOLE path, not the leaf. `lstat` on the last component is
+  // blind to a symlinked INTERMEDIATE: `scripts` may be a link to anywhere
+  // with a perfectly ordinary file at the end of it, and `lstat` reports no
+  // link. `projectRoot` is already resolved, so any disagreement here is a
+  // link at some depth below it.
+  let realScript: string;
   try {
-    // `lstat`, not `stat`: a symlink must be SEEN, not followed.
-    st = lstatSync(script);
+    realScript = realpathSync(script);
   } catch {
     return { ok: false, outcome: "declined-no-generator", detail: { ...detail, script } };
   }
-  if (st.isSymbolicLink()) {
-    // Confining the directory does nothing if a link inside it reaches out.
-    return { ok: false, outcome: "declined-symlinked-generator", detail: { ...detail, script } };
+  if (realScript !== script) {
+    return {
+      ok: false,
+      outcome: "declined-symlinked-generator",
+      detail: { ...detail, script, resolved: realScript },
+    };
   }
-  if (!st.isFile()) {
+  if (!statSync(realScript).isFile()) {
     return { ok: false, outcome: "declined-no-generator", detail: { ...detail, script } };
   }
 
+  if (!trackedInRepo(projectRoot, GENERATOR_RELPATH)) {
+    // THE ANCHOR. A `.git` directory is three `mkdir`s and a 24-byte `HEAD`
+    // away from any `Write`; a TRACKED file is not.
+    //
+    // LAST, so that every check above it stays reachable. Tracking is the
+    // strongest test here, and putting it first would make the symlink
+    // branches unreachable — git does not descend a symlinked directory, so
+    // a link would be refused as untracked and the branch that exists to
+    // name it could never be taken (`.claude/rules/checks-must-be-able-to-fail.md`).
+    // Order changes which refusal is RECORDED, never whether one happens:
+    // nothing is spawned until all of them pass.
+    return { ok: false, outcome: "declined-untracked-generator", detail: { ...detail, script } };
+  }
+
   return { ok: true, projectRoot, script };
+}
+
+/**
+ * Is `relPath` a tracked file of the repository at `root`?
+ *
+ * `ls-files --error-unmatch` rather than a filesystem test, because the
+ * question is *is this part of a project* and only git can answer it. The
+ * barrier is the INDEX: `.git/index` is a binary file carrying a trailing
+ * checksum, so the three-`mkdir`s forgery that satisfies `rev-parse` has no
+ * index at all and this refuses it. Committed content raises the bar again,
+ * but the index alone is already past what writing text files can reach.
+ *
+ * ISOLATED, because this runs `git` in a directory the caller chose and git
+ * executes that repository's config — `lib/git-isolation.ts`. `--` so a
+ * relative path can never be read as a revision or a flag.
+ */
+function trackedInRepo(root: string, relPath: string): boolean {
+  const r = spawnSync("git", gitIsolatedArgs(["-C", root, "ls-files", "--error-unmatch", "--", relPath]), {
+    encoding: "utf-8",
+    timeout: 5000,
+    stdio: ["ignore", "ignore", "ignore"],
+    env: gitIsolatedEnv(),
+  });
+  return r.status === 0;
 }
