@@ -10,7 +10,9 @@ import { existsSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 
 // AC-1: lib/scanner.ts exports ProjectScan interface and scanProject function
-// AC-3: Scanner importable without pulling in generation functions
+// AC-3: Scanner importable without pulling in generation functions — this
+// import is the behavioural half of that; the static half is measured in
+// test/scanner.test.ts (see the note at the foot of this file, #1219).
 import { scanProject } from "../../lib/scanner";
 import type { ProjectScan, ProjectType } from "../../lib/generators/types";
 
@@ -271,14 +273,16 @@ describe("scanner: project type detection", () => {
   });
 });
 
-// ── AC-3: Import isolation ─────────────────────────────────────
-
-describe("scanner: import isolation", () => {
-  test("scanner.ts has zero generation function imports", async () => {
-    const scannerPath = join(import.meta.dir, "..", "..", "lib", "scanner.ts");
-    expect(existsSync(scannerPath)).toBe(true);
-    const content = await Bun.file(scannerPath).text();
-    const generationImports = content.match(/generateAgentsMd|generateCodeMap|generateConformityTest|safeWrite/g);
-    expect(generationImports).toBeNull();
-  });
-});
+// ── AC-3: Import isolation — measured in test/scanner.test.ts ──
+//
+// A four-function-name grep over the whole file lived here. It answered the
+// same question as the path grep in `test/scanner.test.ts`, which made the
+// two of them behaviourally one guard, and it answered it by reading raw
+// source: a comment naming `generateCodeMapInline` counted as an import
+// (#1200, CI shard 4) and `await import("./generators/code-map")` for any
+// symbol outside the four names did not count at all.
+//
+// Removed in #1219 rather than rewritten. `test/scanner.test.ts` AC-3 is now
+// the single decider and parses the imports; the disagreement between that
+// reading and this one is executed row by row in
+// `test/import-specifiers.test.ts`.
