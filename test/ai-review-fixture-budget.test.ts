@@ -70,20 +70,34 @@
  */
 
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
+import {
+  budgetMembershipViolations,
+  budgetSurfaceCoverage,
+  durationCoverageViolations,
+  parseJunitDurations,
+  readJunitDurations,
+  type BudgetSurface,
+  type JunitDurationReading,
+} from "../lib/junit-checks";
 import { perTestTimeoutDeclarations } from "../lib/per-test-timeouts";
 import {
   BUDGET_FLOOR_MS,
   CALIBRATION_RUNS,
   GIT_FIXTURE_SUITES,
   HEADROOM_MULTIPLE,
+  INHERITED_DEFAULT_MS,
   PATHOLOGICAL_CASE_MS,
   SLOWEST_CASE_IN_FIXTURES,
   SLOWEST_CASE_MS,
   calibrateGitFixture,
+  declaresFileBudget,
   gitFixtureBudget,
+  gitFixtureSurface,
   gitFixtureTestTimeout,
   type GitFixtureCalibration,
 } from "./helpers/git-fixture-budget";
@@ -270,4 +284,359 @@ describe("AC-4 (#1140): the live calibration is a reading, and says so when it i
       "the budget was re-calibrated, so a full ai-review run pays for six readings of one machine",
     ).toBe(gitFixtureTestTimeout());
   });
+});
+
+// ── AC-5: the list can see a file that is NOT on it (#1172) ──────────────
+
+/**
+ * The growth direction, which `AC-3` above cannot reach.
+ *
+ * `AC-3` iterates `GIT_FIXTURE_SUITES` and asserts each named file declares
+ * a budget. That is one direction: a file ON the list must declare. A file
+ * that *should* be on the list and is not is invisible to it, so the list
+ * can go stale in silence — someone adds an eighth `ai-review-*` suite built
+ * on `checkout()`, it inherits 5000ms, nothing reddens, and the first anyone
+ * hears is the "is this red mine?" rebase tax #1140 was filed about.
+ *
+ * ## What is planted, and what it is planted against
+ *
+ * A real `bun test --reporter=junit` run over four scratch files — bun's
+ * actual output, not hand-written XML, because the `file=` attribution is
+ * half of what is being tested and a hand-written string would make every
+ * assertion below a fact about that string. MEASURED on bun 1.3.14, the
+ * attribute is repo-relative (`file="test/ai-review-wif.test.ts"`) while the
+ * member list holds bare basenames, and comparing the two spellings directly
+ * is a check that matches nothing and reports clean.
+ *
+ * | scratch file | sleeps | on surface | on list | expected |
+ * |---|---|---|---|---|
+ * | `ai-review-planted-growth.test.ts` | 300ms | yes | **no** | **reported** |
+ * | `ai-review-wif.test.ts` | 100ms | yes | no | not reported — the real near-miss, by name |
+ * | `ai-review-restore-index.test.ts` | 700ms | yes | yes | not reported — already budgeted |
+ * | `scaffold-not-ai-review.test.ts` | 400ms | **no** | no | not reported |
+ *
+ * Driven against a 500ms inherited budget rather than the real 5000ms, so
+ * the fixture costs ~1.5s instead of ~15s. The arithmetic is identical and
+ * the band is the same fraction; `AC-5a` is what pins the real number.
+ */
+
+/** The fixture's stand-in for the inherited default. See the block above. */
+const FIXTURE_INHERITED_MS = 500;
+
+/**
+ * `gitFixtureSurface` re-priced and re-pointed at a scratch tree.
+ *
+ * `members` is the planted roster, because it is what `budgetSurfaceCoverage`
+ * compares the reading against — a scratch run obviously does not contain the
+ * repo's seven. It does NOT gate the membership verdict; `declaresOwnBudget`
+ * does, and it reads the scratch sources.
+ */
+const fixtureSurface = (dir: string): BudgetSurface => ({
+  ...gitFixtureSurface(b => declaresFileBudget(b, dir)),
+  members: PLANTED_MEMBERS,
+  inheritedMs: FIXTURE_INHERITED_MS,
+});
+
+/**
+ * The scratch files and their sleeps.
+ *
+ * `declares` mirrors reality rather than decorating the fixture: the member
+ * is the only one carrying `setDefaultTimeout`, because that is what being
+ * on the list means and it is what `AC-3`'s mechanism reads. Without it the
+ * baseline row of the wrong-fix case is red before any repair is applied,
+ * and the repair's silence would prove nothing — MEASURED, that is exactly
+ * how the first draft of that case failed.
+ */
+const PLANTED: Array<{ file: string; sleepMs: number; declares: boolean }> = [
+  { file: "ai-review-planted-growth.test.ts", sleepMs: 300, declares: false },
+  { file: "ai-review-wif.test.ts", sleepMs: 100, declares: false },
+  { file: "ai-review-restore-index.test.ts", sleepMs: 700, declares: true },
+  { file: "scaffold-not-ai-review.test.ts", sleepMs: 400, declares: false },
+];
+
+/** The one file the fixture pretends is already on the list. */
+const PLANTED_MEMBERS = ["ai-review-restore-index.test.ts"] as const;
+
+/** `N pass` / `N fail` off a bun run's summary. */
+function summaryCount(output: string, label: string): number {
+  const m = new RegExp(`^\\s*(\\d+)\\s+${label}\\b`, "m").exec(output);
+  return m ? Number(m[1]) : 0;
+}
+
+/** Run the planted surface and read bun's own JUnit report of it. */
+function plantedReading(dir: string): { reading: JunitDurationReading; report: string } {
+  for (const { file, sleepMs, declares } of PLANTED) {
+    writeFileSync(
+      join(dir, file),
+      `import { setDefaultTimeout, test } from "bun:test";\n` +
+        (declares ? `setDefaultTimeout(120000);\n` : "") +
+        `test("the only case in ${file}", async () => {\n` +
+        `  await new Promise(r => setTimeout(r, ${sleepMs}));\n` +
+        `});\n`,
+    );
+  }
+  const report = join(dir, "planted.xml");
+  const r = spawnSync("bun", ["test", ".", "--reporter=junit", `--reporter-outfile=${report}`], {
+    cwd: dir,
+    encoding: "utf-8",
+    timeout: 120000,
+  });
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  // The instrument first: a run that produced no verdict reports no
+  // violations either, and that is indistinguishable from a clean surface.
+  expect(summaryCount(out, "pass"), `the planted surface did not run as intended:\n${out}`).toBe(
+    PLANTED.length,
+  );
+  expect(summaryCount(out, "fail"), `a planted case failed, so its duration is not a reading:\n${out}`).toBe(0);
+  return { reading: readJunitDurations(report), report };
+}
+
+/**
+ * `AC-3`'s mechanism, applied to the planted tree.
+ *
+ * This is the cheapest wrong fix, performed rather than described: it is
+ * what "add the near-misses to `GIT_FIXTURE_SUITES`" actually buys. It
+ * iterates the ROSTER, so its answer is bounded by the roster's contents no
+ * matter how large the roster gets.
+ */
+function ac3StyleViolations(dir: string, members: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const file of members) {
+    const path = join(dir, file);
+    if (!existsSync(path)) continue;
+    const found = perTestTimeoutDeclarations(readFileSync(path, "utf-8"));
+    if (found === null || found.filter(d => d.kind === "file-default").length !== 1) {
+      out.push(`${file} is on the list and declares no file-level budget`);
+    }
+  }
+  return out;
+}
+
+describe("AC-5 (#1172): the budget can see an ai-review suite that is NOT on its list", () => {
+  test("the inherited default is the number the runner actually enforces", () => {
+    // Without this, the qualifying band is a fraction of a constant nobody
+    // checked. #621 MEASURED that `[test] timeout` in bunfig.toml is not read
+    // by the runner at all, so there is nowhere in the repo to read this
+    // from and a literal is the only option — which makes probing it the
+    // only thing that stops it being decorative.
+    const dir = mkdtempSync(join(tmpdir(), "inherited-default-probe-"));
+    try {
+      const sleepFor = INHERITED_DEFAULT_MS + 1500;
+      writeFileSync(
+        join(dir, "probe.test.ts"),
+        `import { test } from "bun:test";\n` +
+          `test("sleeps past the inherited default", async () => {\n` +
+          `  await new Promise(r => setTimeout(r, ${sleepFor}));\n` +
+          `});\n`,
+      );
+      // No bunfig and no --timeout: exactly what an undeclared file inherits.
+      const r = spawnSync("bun", ["test", "probe.test.ts"], {
+        cwd: dir,
+        encoding: "utf-8",
+        timeout: sleepFor + 60000,
+      });
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+      expect(
+        summaryCount(out, "pass") + summaryCount(out, "fail"),
+        `the probe run produced no summary at all:\n${out}`,
+      ).toBe(1);
+      const killed = /timed out after (\d+)ms/.exec(out);
+      expect(
+        killed,
+        `the runner let a ${sleepFor}ms undeclared case finish, so nothing is inherited and the ` +
+          `qualifying band below is a fraction of a number that bounds nothing:\n${out}`,
+      ).not.toBeNull();
+      expect(
+        Number(killed![1]),
+        `an undeclared case inherits ${killed![1]}ms, not the ${INHERITED_DEFAULT_MS}ms this file bands against`,
+      ).toBe(INHERITED_DEFAULT_MS);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180000);
+
+  test("a planted unbudgeted slow suite is named, and the three near-miss classes are not", () => {
+    const dir = mkdtempSync(join(tmpdir(), "budget-growth-planted-"));
+    try {
+      const { reading, report } = plantedReading(dir);
+      expect(reading.durations, `the planted report could not be read: ${reading.reason}`).not.toBeNull();
+      expect(reading.count, "the planted report lists fewer cases than were planted").toBe(PLANTED.length);
+      // The `file` attribution is half of what is under test, so assert the
+      // reader got it rather than inferring it from the verdict.
+      expect(new Set(reading.durations!.map(d => d.file.split("/").pop()))).toEqual(
+        new Set(PLANTED.map(p => p.file)),
+      );
+
+      const surface = fixtureSurface(dir);
+      expect(
+        budgetSurfaceCoverage(reading, surface, report),
+        "the planted reading does not cover its own surface, so the verdict below is vacuous",
+      ).toEqual([]);
+
+      const violations = budgetMembershipViolations(reading, surface);
+      const named = (fragment: string) => violations.filter(v => v.includes(fragment));
+      expect(
+        named("ai-review-planted-growth.test.ts"),
+        `the new unbudgeted suite was not reported — this is the whole gap #1172 is about:\n${violations.join("\n")}`,
+      ).toHaveLength(1);
+      expect(
+        named("ai-review-wif.test.ts"),
+        "a fast suite was reported, so the fix hands 120s ceilings to files that cost nothing",
+      ).toHaveLength(0);
+      expect(
+        named("ai-review-restore-index.test.ts"),
+        "a file already on the list was reported — its duration is taken UNDER the raised budget, so " +
+          "reporting it makes the check red forever",
+      ).toHaveLength(0);
+      expect(
+        named("scaffold-not-ai-review.test.ts"),
+        "a slow file outside the surface was reported — the pattern is not scoping anything",
+      ).toHaveLength(0);
+      expect(violations, `exactly one file qualifies:\n${violations.join("\n")}`).toHaveLength(1);
+      // Named WITH its duration: a count alone tells nobody which file to go
+      // and look at, which is the only use this check has.
+      expect(violations[0]).toMatch(/300(\.\d+)?ms|3\d\d\.\d\dms/);
+
+      // The band is arithmetic, not "it was slow". Against an inherited
+      // budget four times the size nothing qualifies, and against one small
+      // enough that every planted sleep clears it, the two non-members on
+      // the surface qualify and the member still does not.
+      expect(
+        budgetMembershipViolations(reading, { ...surface, inheritedMs: FIXTURE_INHERITED_MS * 4 }),
+        "a 4x inherited budget still qualifies something — the comparison is not doing arithmetic",
+      ).toHaveLength(0);
+      const wide = budgetMembershipViolations(reading, { ...surface, inheritedMs: 50 });
+      expect(wide.map(v => v.split(" ")[0]).sort(), `a tiny budget qualifies every non-member ON the surface`).toEqual(
+        ["ai-review-planted-growth.test.ts", "ai-review-wif.test.ts"],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180000);
+
+  test("widening the roster — the cheapest wrong fix — reports nothing about the new arrival", () => {
+    // NAMED AND MEASURED, not dismissed in prose. "Add the near-misses to
+    // GIT_FIXTURE_SUITES" changes who is on the roster without changing how
+    // membership is DETERMINED, so the next arrival is exactly as invisible
+    // as this one was.
+    const dir = mkdtempSync(join(tmpdir(), "budget-growth-wrongfix-"));
+    try {
+      const { reading } = plantedReading(dir);
+
+      const asShipped = ac3StyleViolations(dir, PLANTED_MEMBERS);
+      const widened = ac3StyleViolations(dir, [...PLANTED_MEMBERS, "ai-review-wif.test.ts"]);
+      const measured = budgetMembershipViolations(reading, fixtureSurface(dir));
+
+      // The baseline row first: the roster mechanism is clean today, which
+      // is why nobody has noticed it cannot grow.
+      expect(asShipped, `the roster mechanism is already red, so its silence below proves nothing`).toEqual([]);
+      // Widening it produces findings — about the file that was already fine.
+      expect(widened, "widening the roster produced no finding at all").toHaveLength(1);
+      expect(widened.join("\n")).toContain("ai-review-wif.test.ts");
+      // …and NOT ONE of them is about the suite that is actually at risk.
+      expect(
+        widened.filter(v => v.includes("ai-review-planted-growth.test.ts")),
+        "the roster mechanism saw the new arrival, so this is not the wrong fix after all",
+      ).toHaveLength(0);
+      // One input, two mechanisms, different answers. That difference is the
+      // issue.
+      expect(
+        measured.filter(v => v.includes("ai-review-planted-growth.test.ts")),
+        "the duration mechanism did not see it either, so nothing here is an improvement",
+      ).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180000);
+
+  test("coverage and membership are two questions: one input moves one of them", () => {
+    const dir = mkdtempSync(join(tmpdir(), "budget-growth-split-"));
+    for (const { file, sleepMs, declares } of PLANTED) {
+      writeFileSync(
+        join(dir, file),
+        `import { setDefaultTimeout, test } from "bun:test";\n` +
+          (declares ? `setDefaultTimeout(120000);\n` : "") +
+          `test("c", async () => { await new Promise(r => setTimeout(r, ${sleepMs})); });\n`,
+      );
+    }
+    // An empty reading, and a reading that saw everything EXCEPT the
+    // surface, both satisfy the membership check perfectly by having nothing
+    // on the surface in them. If coverage did not exist, "0 violations"
+    // would mean both "clean" and "never looked", and no reader could tell.
+    const surface = fixtureSurface(dir);
+
+    const empty = parseJunitDurations(
+      '<?xml version="1.0"?>\n<testsuites name="bun test" tests="0"></testsuites>\n',
+    );
+    expect(empty.durations, "an empty report is a measurement, not a refusal").toEqual([]);
+    expect(budgetSurfaceCoverage(empty, surface, "an empty report")).not.toEqual([]);
+    expect(
+      budgetMembershipViolations(empty, surface),
+      "membership also refused an empty reading, so the two are one question with two names",
+    ).toEqual([]);
+
+    // A full report of some OTHER surface. This is the dangerous one: it has
+    // thousands of durations, so `durationCoverageViolations` calls it
+    // complete, and it contains none of the files this check is about.
+    const offSurface = parseJunitDurations(
+      '<?xml version="1.0"?>\n<testsuites name="bun test" tests="1">\n' +
+        '<testsuite name="test/scaffold-not-ai-review.test.ts" file="test/scaffold-not-ai-review.test.ts">\n' +
+        '<testcase name="slow" classname="" time="4.0" file="test/scaffold-not-ai-review.test.ts" />\n' +
+        "</testsuite>\n</testsuites>\n",
+    );
+    expect(durationCoverageViolations(offSurface, "an off-surface report")).toEqual([]);
+    expect(
+      budgetSurfaceCoverage(offSurface, surface, "an off-surface report").join("\n"),
+      "a report that never saw the surface was accepted as coverage of it",
+    ).toContain("UNMEASURED");
+
+    // A PARTIAL reading of the surface is also not coverage: a qualifying
+    // file outside the part that was run is invisible to it.
+    const partial = parseJunitDurations(
+      '<?xml version="1.0"?>\n<testsuites name="bun test" tests="1">\n' +
+        '<testsuite name="test/ai-review-wif.test.ts" file="test/ai-review-wif.test.ts">\n' +
+        '<testcase name="fast" classname="" time="0.1" file="test/ai-review-wif.test.ts" />\n' +
+        "</testsuite>\n</testsuites>\n",
+    );
+    expect(
+      budgetSurfaceCoverage(partial, surface, "a partial report").join("\n"),
+      "a reading missing a file already on the list was accepted as complete",
+    ).toContain("UNMEASURED");
+
+    // An unreadable report refuses for a DIFFERENT reason, and says which.
+    const missing = readJunitDurations(join(tmpdir(), "no-such-junit-report-1172.xml"));
+    expect(missing.durations).toBeNull();
+    expect(budgetSurfaceCoverage(missing, surface, "a missing report").join("\n")).toContain("could not be read");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("the live ai-review surface, when a run supplies a reading of it", () => {
+    // A `bun test` run cannot read its own JUnit report — it is written when
+    // the run ends — so the real population arrives from outside, exactly as
+    // in #621. Unset is UNMEASURED and says so; it is not a pass.
+    const path = process.env.SUITE_JUNIT_REPORT;
+    if (!path) {
+      console.error(
+        `[#1172] UNMEASURED: no suite JUnit report was provided. Set SUITE_JUNIT_REPORT to one written by ` +
+          `\`bun test test/ai-review-*.test.ts --reporter=junit --reporter-outfile=<path>\` to hold ` +
+          `${GIT_FIXTURE_SUITES.length} members against the whole ai-review surface.`,
+      );
+      return;
+    }
+    const reading = readJunitDurations(path);
+    const surface = gitFixtureSurface();
+    const coverage = budgetSurfaceCoverage(reading, surface, path);
+    if (coverage.length > 0) {
+      // Still UNMEASURED rather than red: a reading that did not cover the
+      // surface says nothing about membership, in either direction.
+      console.error(`[#1172] UNMEASURED: ${coverage.join("\n")}`);
+      return;
+    }
+    const violations = budgetMembershipViolations(reading, surface);
+    console.error(
+      `[#1172] read ${reading.count} testcase durations from ${path}; ` +
+        `${violations.length} ai-review-* files qualify for GIT_FIXTURE_SUITES and are not on it`,
+    );
+    expect(violations.join("\n"), `GIT_FIXTURE_SUITES has gone stale in the growth direction`).toBe("");
+  }, 180000);
 });

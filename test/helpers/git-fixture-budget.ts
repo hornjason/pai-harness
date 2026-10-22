@@ -104,9 +104,15 @@
  * for the last three rebases in this area it did not.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
+
+import type { BudgetSurface } from "../../lib/junit-checks";
+import { perTestTimeoutDeclarations } from "../../lib/per-test-timeouts";
+
+/** `test/`, so the surface can be read off the tree it is about. */
+const TEST_DIR = dirname(import.meta.dir);
 
 /** How many fixture calibrations are timed. The max of these is the reading. */
 export const CALIBRATION_RUNS = 6;
@@ -174,10 +180,16 @@ export const BUDGET_FLOOR_MS = 120_000;
  *
  * So the criterion is NOT "measured above 2500ms" — that is a property of the
  * load the sample was taken at. It is "the fixtures spawn real subprocesses,
- * so the case inflates superlinearly under contention". The census in
- * `ai-review-fixture-budget.test.ts` holds the list to its claim in the
- * membership direction only; see the follow-up filed against the growth
- * direction.
+ * so the case inflates superlinearly under contention".
+ *
+ * **This list no longer governs only itself (#1172).** The census in
+ * `ai-review-fixture-budget.test.ts` used to hold it to its claim in the
+ * membership direction only — a file ON the list must declare — which meant
+ * an eighth suite built on `checkout()` could inherit 5000ms with nothing
+ * going red. `AC-5` closes the growth direction with `gitFixtureSurface()`
+ * below: given a JUnit reading, any `ai-review-*` file carrying a case at or
+ * above half the inherited default and NOT on this list is a finding, and a
+ * run that supplies no reading reports UNMEASURED rather than passing.
  */
 export const GIT_FIXTURE_SUITES = [
   "ai-review-ignored-reading.test.ts",
@@ -188,6 +200,88 @@ export const GIT_FIXTURE_SUITES = [
   "ai-review-untrusted-restore.test.ts",
   "ai-review-workflow.test.ts",
 ] as const;
+
+/**
+ * The per-test budget a file on this surface inherits when it declares none.
+ *
+ * bun's BUILT-IN default, not `bunfig.toml`'s. #621 measured on bun 1.3.14
+ * that `[test] timeout` in `bunfig.toml` is **not read by the test runner**:
+ * a scratch project declaring `timeout = 1000` runs a 2000ms test to
+ * completion, and this repo's bunfig declared 30000 while every one of
+ * #621's 122 timeouts died at 5000.
+ *
+ * So this number cannot be read out of the repo — there is nowhere correct
+ * to read it from. `AC-5` therefore PROBES it: a scratch `bun test` with no
+ * `--timeout` and no bunfig runs a case that sleeps past this, and asserts
+ * the runner kills it at exactly this number. Without that probe the
+ * qualifying band below is arithmetic over a number nobody checked, and the
+ * whole check could be comparing durations against a line nothing reaches.
+ */
+export const INHERITED_DEFAULT_MS = 5_000;
+
+/**
+ * The fraction of `INHERITED_DEFAULT_MS` at which an unbudgeted file
+ * qualifies for `GIT_FIXTURE_SUITES`.
+ *
+ * Half. Not 1.0: a file admitted only after a case crosses the line is
+ * admitted after it has already gone red, which is the rebase tax #1140 is
+ * about rather than a guard against it. The #1140 census put the population
+ * at 2500–7500ms against a 5000ms line — 3 cases over and **37 more between
+ * 2500ms and 5000ms** — so this is the band where a file is one busy
+ * afternoon from red, measured rather than chosen.
+ */
+export const GROWTH_FRACTION = 0.5;
+
+/** The surface the budget governs: every `ai-review-*` suite. */
+export const AI_REVIEW_SURFACE = /^ai-review-.*\.test\.ts$/;
+
+/**
+ * Does `test/<basename>` open with a `setDefaultTimeout(…)`?
+ *
+ * Read off the TREE through the same AST reader `AC-3` uses, so "declares a
+ * budget" means one thing in both directions of the check and a file cannot
+ * satisfy one spelling and fail the other. A file that does not parse, or
+ * that cannot be read, counts as NOT declaring — a reader that fails open
+ * here would exempt exactly the files it could not understand.
+ */
+export function declaresFileBudget(basename: string, testDir: string): boolean {
+  let src: string;
+  try {
+    src = readFileSync(join(testDir, basename), "utf-8");
+  } catch {
+    return false;
+  }
+  const found = perTestTimeoutDeclarations(src);
+  return found !== null && found.some(d => d.kind === "file-default");
+}
+
+/**
+ * The growth rule, as `lib/junit-checks.ts` consumes it.
+ *
+ * `declaresOwnBudget` — not the roster — is the criterion, and the two are
+ * NOT the same reading. MEASURED over 562 cases of the live surface:
+ * `ai-review-fixture-budget.test.ts` carries a 5083.13ms case and is not on
+ * `GIT_FIXTURE_SUITES`, yet it is in no danger at all, because its first
+ * statement is `setDefaultTimeout(gitFixtureTestTimeout())`. Keying on the
+ * roster reports that file forever; keying on the declaration reports
+ * nothing, truthfully, and still catches an eighth suite that declares
+ * nothing.
+ *
+ * `declaresOwnBudget` is injectable so `AC-5` can plant a scratch surface
+ * and MEASURE the cheapest wrong fix instead of dismissing it in prose.
+ */
+export function gitFixtureSurface(
+  declaresOwnBudget: (basename: string) => boolean = b => declaresFileBudget(b, TEST_DIR),
+): BudgetSurface {
+  return {
+    label: "the ai-review-* suites",
+    pattern: AI_REVIEW_SURFACE,
+    declaresOwnBudget,
+    members: GIT_FIXTURE_SUITES,
+    inheritedMs: INHERITED_DEFAULT_MS,
+    qualifyingFraction: GROWTH_FRACTION,
+  };
+}
 
 export interface GitFixtureCalibration {
   /** The SLOWEST of `CALIBRATION_RUNS` fixtures on this machine, in milliseconds. */
