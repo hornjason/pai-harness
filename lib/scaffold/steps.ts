@@ -2790,6 +2790,181 @@ export function shardCount(ci: unknown): number {
 }
 
 /**
+ * The one non-zero exit the shard aggregate ever takes (#1181).
+ *
+ * Declared once, and spelled nowhere else in the script, so
+ * `test/ci-shard-aggregate-measured.test.ts` can build a mutant copy with it
+ * set to `0` and prove each refusal is the thing the case observed rather
+ * than something that happened to be red —
+ * `.claude/rules/checks-must-be-able-to-fail.md`, "For a script whose job is
+ * to exit non-zero".
+ */
+export const SHARD_AGGREGATE_REFUSAL_EXIT = 1;
+
+/**
+ * Environment variable names the shard aggregate's script reads (#1181).
+ *
+ * The script contains **no `${{ }}` expression at all**. Every GitHub-side
+ * value arrives through the step's `env:`, which is what makes the shipped
+ * script text executable by a test with a stubbed `gh` on PATH. A script that
+ * can only run inside Actions is a script no negative control can reach, and
+ * the negative control is the whole of #1181.
+ */
+export const SHARD_AGGREGATE_ENV = {
+  rollup: "SHARD_ROLLUP",
+  expected: "SHARD_EXPECTED",
+  jobName: "SHARD_JOB_NAME",
+  repo: "SHARD_REPO",
+  runId: "SHARD_RUN_ID",
+  runAttempt: "SHARD_RUN_ATTEMPT",
+  pollAttempts: "SHARD_POLL_ATTEMPTS",
+  pollSeconds: "SHARD_POLL_SECONDS",
+} as const;
+
+/**
+ * The shard aggregate's verdict script — it asserts that it MEASURED (#1181).
+ *
+ * ## What went wrong
+ *
+ * PR #1154 merged on run `39799846607`. `test-shard (1)`, `(2)` and `(3)` were
+ * `queued` with `completed_at: null` and **no conclusion**; only shard 4 ran.
+ * The aggregate read `needs.test-shard.result` as `success`, printed "All 4
+ * shards passed", and went green in three seconds. `test` is a required check
+ * and auto-merge is armed repo-wide, so a quarter of the suite authorised the
+ * merge. The three preceding `main` runs were 4/4 — this was an anomaly, not
+ * the pattern, and **the cause of the non-conclusion is unknown**. A fix that
+ * depended on knowing it would not be a fix.
+ *
+ * `if: always()` was added so a **failed or cancelled** shard still reaches
+ * this job. It does nothing about a shard that never concludes, because
+ * `needs.<job>.result` collapses a whole matrix into one word and that word
+ * was `success`.
+ *
+ * ## What this does instead
+ *
+ * The rollup is still read first, so a failed or a cancelled shard produces
+ * exactly the diagnostic it produces today. Then the job asks the Actions API
+ * how many `test-shard (N)` jobs this run **actually concluded**, and refuses
+ * unless that count equals the matrix width. The printed count is the measured
+ * one, never the generated one: a sentence that says "4" because the generator
+ * wrote "4" is the thing that lied on `39799846607`.
+ *
+ * Every reading that cannot be taken is a refusal. No `gh`, no token, an API
+ * error, a malformed count — all exit non-zero, because UNMEASURED is not a
+ * pass. A consumer whose runner has no `gh` gets a red required check rather
+ * than a green one that measured nothing.
+ *
+ * The poll exists for propagation lag, not for the defect: `needs` already
+ * gates on the legs being terminal, so on an ordinary run the first reading
+ * is complete and the loop costs nothing. It bounds how long a genuinely
+ * stalled shard delays the refusal.
+ */
+export function buildShardAggregateScript(): string {
+  const E = SHARD_AGGREGATE_ENV;
+  return `set -uo pipefail
+
+# 1. The rollup, read exactly as it is read today. A failed or a cancelled
+#    shard reaches this job through \`if: always()\` and refuses here, with
+#    the same sentence it has always printed.
+rollup="\${${E.rollup}:-}"
+if [ "$rollup" != "success" ]; then
+  echo "::error::test-shard concluded '$rollup' — the suite is not green."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
+# 2. A success rollup is not a measurement. Everything below establishes how
+#    many shards this run actually concluded (#1181).
+expected="\${${E.expected}:-}"
+case "$expected" in
+  "" | *[!0-9]*)
+    echo "::error::${E.expected} is '$expected', which is not a shard count. UNMEASURED, so refusing."
+    exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+    ;;
+esac
+if [ "$expected" -lt 1 ]; then
+  echo "::error::${E.expected} is $expected, so this job would assert nothing. UNMEASURED, so refusing."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
+job_name="\${${E.jobName}:-test-shard}"
+attempts="\${${E.pollAttempts}:-3}"
+pause="\${${E.pollSeconds}:-5}"
+attempt=1
+
+while : ; do
+  rows="$(gh api --paginate \\
+    "repos/\${${E.repo}}/actions/runs/\${${E.runId}}/attempts/\${${E.runAttempt}}/jobs?per_page=100" \\
+    --jq '.jobs[] | [.name, (.conclusion // "none")] | @tsv' 2>&1)"
+  api_status=$?
+  if [ "$api_status" -ne 0 ]; then
+    # No reading at all. This is the one branch most likely to be written
+    # fail-open, and fail-open here reproduces the defect exactly.
+    echo "::error::could not read this run's jobs from the Actions API (gh exit $api_status): $rows"
+    echo "::error::the shard count is UNMEASURED, which is not a pass. Refusing."
+    exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+  fi
+
+  seen=0
+  passed=0
+  pending=0
+  detail=""
+  while IFS="$(printf '\\t')" read -r name conclusion; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      "$job_name ("*")") ;;
+      *) continue ;;
+    esac
+    seen=$((seen + 1))
+    case "$conclusion" in
+      success) passed=$((passed + 1)) ;;
+      none | "")
+        pending=$((pending + 1))
+        detail="$detail \\"$name\\"=no-conclusion"
+        ;;
+      *) detail="$detail \\"$name\\"=$conclusion" ;;
+    esac
+  done <<< "$rows"
+
+  # Complete reading, or out of attempts. The loop is for API propagation
+  # lag on an ordinary run, not for the defect.
+  if [ "$pending" -eq 0 ] && [ "$seen" -ge "$expected" ]; then break; fi
+  if [ "$attempt" -ge "$attempts" ]; then break; fi
+  attempt=$((attempt + 1))
+  sleep "$pause"
+done
+
+if [ "$seen" -ne "$expected" ]; then
+  echo "::error::this run reports $seen \\"$job_name\\" jobs, and the matrix declares $expected. The aggregate cannot speak for a suite it did not measure."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
+if [ "$pending" -ne 0 ]; then
+  echo "::error::$pending of $expected shards produced NO conclusion:$detail"
+  echo "::error::a shard that never concluded is UNMEASURED, not a pass — this is #1181, where three of four were queued and the aggregate went green."
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
+if [ "$passed" -ne "$expected" ]; then
+  echo "::error::$passed of $expected shards concluded success:$detail"
+  exit ${SHARD_AGGREGATE_REFUSAL_EXIT}
+fi
+
+# $passed is the measured count, never the generated one. The sentence on
+# run 39799846607 said "All 4 shards passed" because the generator wrote 4.
+echo "All $passed shards concluded, and all $passed passed."
+`;
+}
+
+/** Indent a script for a YAML block scalar, leaving blank lines blank. */
+function indentedScript(script: string, indent: string): string {
+  return script
+    .trimEnd()
+    .split("\n")
+    .map(line => (line ? `${indent}${line}` : ""))
+    .join("\n");
+}
+
+/**
  * Top-level workflow keys this consumer has taken back from the generator
  * (#839). Declared in `lib/scaffold/managed-workflow.ts`, beside the merge
  * that consumes it and the notice it makes the merge write.
@@ -3217,15 +3392,27 @@ ${bunStep}
     # protection configurations read a skip as satisfied — which would make
     # this aggregate a gate that cannot refuse.
     if: always()
+    permissions:
+      contents: read
+      # #1181. The aggregate asks the Actions API how many shards actually
+      # concluded, because \`needs.test-shard.result\` collapses a matrix into
+      # one word and reported \`success\` for three legs that never ran.
+      actions: read
     steps:
-      - name: Every shard passed
+      - name: Every shard concluded, and every shard passed
+        env:
+          # Every GitHub-side value arrives here, and the script below holds
+          # no GitHub expression at all — that is what lets a test execute
+          # the shipped text with a stubbed gh and watch it refuse (#1181).
+          ${SHARD_AGGREGATE_ENV.rollup}: \${{ needs.test-shard.result }}
+          ${SHARD_AGGREGATE_ENV.expected}: "${shards}"
+          ${SHARD_AGGREGATE_ENV.jobName}: test-shard
+          ${SHARD_AGGREGATE_ENV.repo}: \${{ github.repository }}
+          ${SHARD_AGGREGATE_ENV.runId}: \${{ github.run_id }}
+          ${SHARD_AGGREGATE_ENV.runAttempt}: \${{ github.run_attempt }}
+          GH_TOKEN: \${{ github.token }}
         run: |
-          result='\${{ needs.test-shard.result }}'
-          if [ "$result" != "success" ]; then
-            echo "::error::test-shard concluded '$result' — the suite is not green."
-            exit 1
-          fi
-          echo "All ${shards} shards passed."
+${indentedScript(buildShardAggregateScript(), "          ")}
 `
     : `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
