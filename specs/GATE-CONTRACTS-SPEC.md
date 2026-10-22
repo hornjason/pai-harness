@@ -1812,9 +1812,16 @@ list `gates/brief-assembler.ts` writes into an agent's brief. A consumer can
 configure `prod.rebuild: "<cmd>"` and `forbiddenCommands: ["<cmd>"]` at the
 same time and nothing notices the contradiction — the brief tells the agent
 never to run it while the config declares it as this project's rebuild.
-`container.rebuildCommand` is interpolated directly into an agent prompt at
-`workflows/ship.js@"${rebuildCmd} 2>&1 | tail -20"`, so a consumer that puts its production command behind that key
+`container.rebuildCommand` reaches an agent-run rebuild step at
+`workflows/ship.js@"const rebuildCmd = containerConfig.rebuildCommand"`, so a consumer that puts its production command behind that key
 has armed exactly the thing its own rules forbid, and no check looks.
+
+That citation used to name an interpolation of the value into the prompt
+text. #1031 removed the interpolation — the step now reads the command out of
+`resolved-config.json` and runs it, because the string ship.js holds is the
+setup agent's restatement of a file it cannot read (#69) and not the file.
+The contradiction above is untouched by that, and is arguably sharper: what
+the operator configured is now exactly what runs.
 
 ### The record-env site, which is not where #274 said
 

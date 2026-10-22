@@ -63,6 +63,13 @@ type Probe =
   | { kind: "unmeasured"; detail: string }
   | { kind: "probe"; host: string; port: number; healthPath: string; url: string; safeUrl: string };
 
+/** ship.js's own `shellQuote`, by name, for the harnesses below (#1031). */
+const shipShellQuote: (word: unknown) => string = (() => {
+  const m = shipSource.match(/function shellQuote\(word\) \{[\s\S]*?\n\}/);
+  if (!m) throw new Error("ship.js no longer defines shellQuote(word) — this harness extracts it by name");
+  return new Function(`${m[0]}\nreturn shellQuote`)();
+})();
+
 const inlined = new Function(
   `${sliceBlock("CONTAINER-PROBE")}
    return { containerProbeTarget, CONTAINER_HOST };`,
@@ -112,6 +119,23 @@ const CASES: unknown[] = [
   { hosts: ["bad host", "mini.local"], port: 7776 },
   { hosts: ["127.0.0.1"], port: 7776 },
   { hosts: "localhost", port: 7776 },
+  // #1031 — the payloads by the one door the rows above leave open. `host`
+  // is charset-filtered and `port` is a number, so `healthPath` is the only
+  // free-form component of the URL, and every one of these is an absolute
+  // path that is not `//`, which is all the rule above it asks.
+  { hosts: ["localhost"], port: 7776, healthPath: "/h;id" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/$(id)" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h`id`" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h'" },
+  { hosts: ["localhost"], port: 7776, healthPath: '/h"' },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h|sh" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h&id" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h id" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h\nid" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h\\id" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/h>out" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/${IFS}" },
+  { hosts: ["localhost"], port: 7776, healthPath: "/" + "a".repeat(200) },
 ];
 
 describe("#312 — the container is the third probe tier", () => {
@@ -187,6 +211,90 @@ describe("#312 — the container is the third probe tier", () => {
       .toBe("unmeasured");
   });
 
+  /**
+   * #1031 — a healthPath that reaches a shell is UNMEASURED, not a probe.
+   *
+   * The trust question this answers is in the library docblock and is not
+   * "is the config file hostile": it is not, and `rebuildCommand` is a
+   * command by design. It is that ship.js cannot read the file (#69), so the
+   * block handed to this function is the setup agent's restatement of it.
+   *
+   * Three properties, because a case that only asserted `kind` would also be
+   * satisfied by a function that refused everything:
+   *
+   *   - each payload is refused,
+   *   - the legal paths beside them are NOT, including the query-string
+   *     shape `safeForRecord` exists for, and
+   *   - the refused value never appears in the detail, which is interpolated
+   *     into a `bun -e` program and written to a durable artefact.
+   */
+  test("#1031: a healthPath carrying shell syntax is refused, and a legal one is not", () => {
+    const at = (healthPath: unknown) =>
+      containerProbeTarget({ hosts: ["mini.local"], port: 7776, healthPath });
+
+    const PAYLOADS = [
+      "/h;id", "/$(id)", "/h`id`", "/h'", '/h"', "/h|sh", "/h&id",
+      "/h id", "/h\nid", "/h\\id", "/h>out", "/h<in", "/${IFS}", "/h{a,b}",
+      "/h\u0000", "/" + "a".repeat(200),
+    ];
+    for (const p of PAYLOADS) {
+      const r = at(p);
+      expect(r.kind, `a shell payload reached the URL: ${JSON.stringify(p)}`).toBe("unmeasured");
+      expect(r.kind === "unmeasured" && r.detail).toContain("container.healthPath");
+      // The thing we refused must not ride out in the refusal.
+      expect(
+        r.kind === "unmeasured" && r.detail.includes(p.trim()),
+        "the refusal echoes the value it refused",
+      ).toBe(false);
+    }
+
+    // The negative control, and the reason this rule is narrower than
+    // `SHELL_METACHARACTERS`: these are paths a consumer legitimately writes.
+    for (const legal of ["/", "/health", "/api/admin/health", "/h?token=x", "/h#frag", "/a~b", "/v1/[id]"]) {
+      expect(at(legal).kind, `a legal path was refused: ${legal}`).toBe("probe");
+    }
+
+    // And the length rule has a boundary, not just a direction.
+    expect(at("/" + "a".repeat(199)).kind).toBe("probe");
+  });
+
+  test("#1031: both curl sites quote the URL they interpolate", () => {
+    // The charset rules are what make the URL safe; the quoting is what
+    // keeps a later relaxation of either one a bug rather than an exploit.
+    // Asserted on the SOURCE because one site is in the Verify fan-out and
+    // the other in the Ship record-env step, and no single run reaches both.
+    const ship = shipSource;
+    expect(ship).toContain("${shellQuote(containerProbe.url)}");
+    expect(ship).toContain("${shellQuote(`http://${h}:${containerPort}${containerHealthPath}`)}");
+    expect(
+      ship.includes('"%{http_code}" http://${h}'),
+      "the env-check curl interpolates the URL unquoted again (#1031)",
+    ).toBe(false);
+    expect(
+      ship.includes('"%{http_code}" ${containerProbe.url}'),
+      "the record-env curl interpolates the URL unquoted again (#1031)",
+    ).toBe(false);
+  });
+
+  test("#1031: the rebuild command's text reaches no prompt — it is read from the resolved config", () => {
+    // `container.rebuildCommand` has no honest charset gate: `make build &&
+    // make test-down && make test-up` is a real consumer value. So it is
+    // taken off the restatement channel instead — the step reads it out of
+    // `resolved-config.json`, the artefact resolve-config.ts wrote.
+    const ship = shipSource;
+    expect(
+      [...ship.matchAll(/\$\{rebuildCmd\}/g)].length,
+      "ship.js interpolates the restated rebuild command into a prompt again (#1031)",
+    ).toBe(0);
+    expect(ship).toContain("c.container.rebuildCommand");
+    const prompt = ship.indexOf("ONE task: rebuild the test container");
+    expect(prompt).toBeGreaterThan(-1);
+    expect(
+      ship.indexOf("resolved-config.json", prompt),
+      "the rebuild prompt no longer names resolved-config.json, so where the command comes from is unstated",
+    ).toBeGreaterThan(prompt);
+  });
+
   test("SC-2485: safeUrl is what may be recorded, and url is what is probed", () => {
     const r = containerProbeTarget({
       hosts: ["mini.local"], port: 7776, healthPath: "/h?token=ghp_abcdefghij1234567890",
@@ -226,6 +334,7 @@ async function runRecordEnv(probe: Probe, prodQuinn: string): Promise<string> {
     "HARNESS_ROOT",
     "WORK_DIR",
     "prodQuinn",
+    "shellQuote",
     `return (async () => {${sliceBlock("RECORD-ENV-ARMS")}})()`,
   );
   await factory(
@@ -234,6 +343,10 @@ async function runRecordEnv(probe: Probe, prodQuinn: string): Promise<string> {
     "/harness",
     "/work",
     prodQuinn,
+    // ship.js's own, extracted rather than reimplemented (#1031): this
+    // harness asserts the quoting, and a stub that quoted differently would
+    // make the assertion agree with something that does not run.
+    shipShellQuote,
   );
   expect(prompts.length, "record-env ran on no arm, or on more than one").toBe(1);
   expect(prompts[0].startsWith("record-env\u0000")).toBe(true);

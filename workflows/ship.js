@@ -6232,6 +6232,19 @@ let quinnLocalRan = false
 // library docblock for why `unmeasured` and `unconfigured` are two outcomes.
 const CONTAINER_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/
 
+// A character in `healthPath` that means something to a shell (#1031). The
+// library docblock carries the argument; the short version is that the config
+// FILE is trusted and `rebuildCommand` is a command by design, but the block
+// this function is handed is the setup agent's RESTATEMENT of a file this
+// sandbox cannot read (#69) — the #530 shape — so the trusted object and the
+// interpolated object are not the same object. `host` is charset-filtered and
+// `port` is a number; `healthPath` is the one free-form component left.
+//
+// Narrower than SHELL_METACHARACTERS on purpose: `?` stays legal because
+// `/h?token=…` is a supported shape with redaction built for it, and the
+// quoting at both curl sites makes a glob inert. See the library docblock.
+const CONTAINER_HEALTH_PATH_UNSAFE = /[;&|$`"'\\<>{}\s\u0000-\u001f]/
+
 function containerSafeForRecord(text) {
   return text
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, '$1<redacted>@')
@@ -6271,6 +6284,18 @@ function containerProbeTarget(container) {
       detail:
         `a container is configured at ${host} port ${port} and container.healthPath is not ` +
         'an absolute path, so nothing was probed. This is UNMEASURED, not DOWN',
+    }
+  }
+  // #1031. The refused value is NOT echoed into the detail: this string is
+  // interpolated into a `bun -e` program in an agent prompt and written to a
+  // durable artefact.
+  if (healthPath.length > 200 || CONTAINER_HEALTH_PATH_UNSAFE.test(healthPath)) {
+    return {
+      kind: 'unmeasured',
+      detail:
+        `a container is configured at ${host} port ${port} and container.healthPath carries ` +
+        'whitespace, a shell metacharacter or over 200 characters, so nothing was probed. ' +
+        'It reaches a curl command an agent runs. This is UNMEASURED, not DOWN',
     }
   }
   const url = `http://${host}:${port}${healthPath}`
@@ -8139,17 +8164,47 @@ if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
   const containerHealthPath = containerProbe.kind === 'probe' ? containerProbe.healthPath : '/'
 
   if (rebuildCmd) {
+    // The command is READ FROM THE RESOLVED CONFIG, not interpolated (#1031).
+    // `rebuildCmd` above decides only WHETHER a rebuild is configured; its
+    // text never reaches the shell.
+    //
+    // There is no honest charset gate for this field — `make build && make
+    // test-down && make test-up` is a real consumer value and carries two
+    // characters any such gate would refuse — so the control is to take it
+    // off the restatement channel instead. The string ship.js holds is the
+    // setup agent's restatement of a file it cannot read (#69);
+    // `resolved-config.json` is the authentic artefact
+    // `scripts/resolve-config.ts` wrote at setup, and it is the file
+    // `.claude/rules/config-access.md` already tells prompts to read.
+    //
+    // `execSync` runs it through a shell on purpose: the value IS a shell
+    // command the operator chose, and an argv array would break every
+    // multi-command one.
+    const rebuildRunner =
+      'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));' +
+      'const cmd=c&&c.container&&c.container.rebuildCommand;' +
+      'if(typeof cmd!=="string"||cmd.length===0){' +
+      'console.error("UNMEASURED: resolved-config.json has no container.rebuildCommand");process.exit(1)}' +
+      'require("child_process").execSync(cmd,{stdio:"inherit"})'
     await timedAgent(`
 You have ONE task: rebuild the test container. Run this EXACT command and report the output:
 
-cd ${PROJECT_ROOT} && ${rebuildCmd} 2>&1 | tail -20
+cd ${shellQuote(PROJECT_ROOT)} && bun -e ${shellQuote(rebuildRunner)} ${shellQuote(`${WORK_DIR}/resolved-config.json`)} 2>&1 | tail -20
+
+It reads container.rebuildCommand out of this run's resolved config and runs
+it. Do NOT substitute a command of your own and do NOT retype a rebuild
+command you have seen elsewhere — the point of the indirection is that the
+command comes from the config file and not from a prompt.
 
 Report the full output.
     `, { label: 'container-rebuild', phase: 'Verify' })
   }
 
   if (containerProbe.kind === 'probe') {
-    const hostChecks = containerHosts.map((h, i) => `${i + 1}. curl -s -o /dev/null -w "%{http_code}" http://${h}:${containerPort}${containerHealthPath} 2>/dev/null\n   - host${i} = true if 200, false otherwise`).join('\n')
+    // Quoted (#1031). The host charset and the healthPath rule are what make
+    // the URL safe; the quoting is what makes a later relaxation of either
+    // one a bug and not an exploit.
+    const hostChecks = containerHosts.map((h, i) => `${i + 1}. curl -s -o /dev/null -w "%{http_code}" ${shellQuote(`http://${h}:${containerPort}${containerHealthPath}`)} 2>/dev/null\n   - host${i} = true if 200, false otherwise`).join('\n')
     const hostSchema = {}
     containerHosts.forEach((h, i) => { hostSchema['host' + i] = { type: 'boolean' } })
 
@@ -9436,7 +9491,7 @@ Run the command and report the output.
   await timedAgent(`
 Check test container status, then update workflow-state.json via writeWorkflowState():
 
-1. Check test container: curl -s -o /dev/null -w "%{http_code}" ${containerProbe.url} 2>/dev/null
+1. Check test container: curl -s -o /dev/null -w "%{http_code}" ${shellQuote(containerProbe.url)} 2>/dev/null
 2. Based on result, run this bun -e command (pick the version matching your result):
 
 If container is up (200):

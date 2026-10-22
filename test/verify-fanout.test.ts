@@ -598,3 +598,113 @@ describe("#127: the security review is not a function of having a UI", () => {
     expect(logs.some(l => /no commit SHA/i.test(l))).toBe(true);
   });
 });
+
+/**
+ * #1031 — the container values reach agent-executed shell, and what reaches
+ * it is the setup agent's restatement of a config file ship.js cannot read
+ * (#69), not the file.
+ *
+ * `test/container-probe-target.test.ts` holds the seam's own matrix and the
+ * source assertions. What this adds is the CALL SITE, executed: that a
+ * payload the seam refuses stops the probe chain here, and that the rebuild
+ * prompt carries no command text at all.
+ */
+describe("Verify fan-out: a container value that reaches a shell is not probed (#1031)", () => {
+  /** Run the fan-out and keep every prompt, so the text can be asserted. */
+  function runWithContainer(container: Record<string, unknown> | null) {
+    const labels: string[] = [];
+    const logs: string[] = [];
+    const prompts: string[] = [];
+    const done = invokeFanout({
+      log: (m) => logs.push(String(m)),
+      agent: async (p, o) => {
+        labels.push(o.label);
+        prompts.push(p);
+        return o.label === "env-check"
+          ? { host0: true }
+          : o.label === "rook-scope"
+            ? GOOD_SCOPE
+            : {};
+      },
+      briefedAgent: async (p, o) => {
+        labels.push(o.label);
+        prompts.push(p);
+        return { result: "PASS" };
+      },
+      discovery: {
+        ceremonyTier: "THOROUGH",
+        acs: [{ id: "AC-1", statement: "works" }],
+        filesToModify: ["lib/a.ts"],
+      },
+      projectConfig: { container },
+    });
+    return { done, labels, logs, prompts };
+  }
+
+  const MARKER = "pwned1031";
+  const HOSTILE: Array<[string, Record<string, unknown>]> = [
+    ["a separator in healthPath", { ...CONTAINER, healthPath: `/h;${MARKER}` }],
+    ["a command substitution in healthPath", { ...CONTAINER, healthPath: `/$(${MARKER})` }],
+    ["a backtick in healthPath", { ...CONTAINER, healthPath: `/h\`${MARKER}\`` }],
+    ["a quote in healthPath", { ...CONTAINER, healthPath: `/h'${MARKER}` }],
+    ["whitespace in healthPath", { ...CONTAINER, healthPath: `/h ${MARKER}` }],
+    ["a separator in the only host", { ...CONTAINER, hosts: [`localhost;${MARKER}`] }],
+    ["a port carrying a command", { ...CONTAINER, port: `8080; ${MARKER}` }],
+  ];
+
+  test.each(HOSTILE)("%s is never probed, and never reaches a prompt", async (_label, container) => {
+    const { done, labels, logs, prompts } = runWithContainer(container);
+    await done;
+
+    expect(labels).not.toContain("env-check");
+    expect(labels).not.toContain("quinn-container");
+    // Not silently: UNMEASURED has to be sayable, and this is where it is said.
+    expect(logs.some((l) => /did not probe/i.test(l))).toBe(true);
+    // By any route, including the WARN line — the refusal must not carry the
+    // thing it refused into the run's own output.
+    expect(prompts.concat(logs).join("\n")).not.toContain(MARKER);
+
+    // The run continues. A container we would not probe is not a dead run.
+    expect(labels).toContain("rook");
+  });
+
+  test("a legal block still runs the whole container chain", async () => {
+    // The negative control. Without it every row above would be satisfied by
+    // a seam that refused everything.
+    const { done, labels } = runWithContainer(CONTAINER);
+    await done;
+    expect(labels).toContain("container-rebuild");
+    expect(labels).toContain("env-check");
+    expect(labels).toContain("quinn-container");
+  });
+
+  test("the env-check curl quotes the URL it probes", async () => {
+    const { done, prompts } = runWithContainer(CONTAINER);
+    await done;
+    const envCheck = prompts.find((p) => p.includes("curl -s -o /dev/null"));
+    expect(envCheck).toBeDefined();
+    expect(envCheck).toContain("'http://localhost:8080/health'");
+    expect(
+      envCheck!.includes(' http://localhost:8080/health '),
+      "the URL is interpolated unquoted again (#1031)",
+    ).toBe(false);
+  });
+
+  test("the rebuild prompt carries no command text, whatever the restatement held", async () => {
+    // CONTAINER.rebuildCommand is "echo rebuild". The step reads the command
+    // out of resolved-config.json, so neither that value nor a hostile one
+    // can appear in what the agent is handed.
+    const legal = runWithContainer(CONTAINER);
+    await legal.done;
+    const rebuild = legal.prompts.find((p) => p.includes("rebuild the test container"));
+    expect(rebuild).toBeDefined();
+    expect(rebuild).toContain("resolved-config.json");
+    expect(rebuild).toContain("container.rebuildCommand");
+    expect(rebuild).not.toContain("echo rebuild");
+
+    const hostile = runWithContainer({ ...CONTAINER, rebuildCommand: `make rebuild; touch /tmp/${MARKER}` });
+    await hostile.done;
+    expect(hostile.labels).toContain("container-rebuild");
+    expect(hostile.prompts.join("\n")).not.toContain(MARKER);
+  });
+});
