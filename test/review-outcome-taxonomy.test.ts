@@ -19,7 +19,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -37,7 +37,6 @@ import {
 /** 2026-10-01T00:00:00Z, so every relative time below reads at a glance. */
 const T = 1759276800;
 const DAY = 86400;
-const REPO_ROOT = join(import.meta.dir, "..");
 
 function finding(over: Partial<ReviewFinding> & { id: number }): ReviewFinding {
   return {
@@ -379,41 +378,84 @@ describe("#1225: what counts as a citation, which is where the first defect was"
 });
 
 describe("#1225: the truncated-history refusal, proved against a real shallow clone", () => {
-  test("a full checkout has no grafted root on main", () => {
-    expect(graftedRoots(REPO_ROOT)).toEqual([]);
-  });
+  /**
+   * A two-commit origin built from nothing, and the two clones of it.
+   *
+   * It does NOT clone this repository, which the first two drafts did and
+   * which was wrong twice for the same reason: the ambient checkout's shape
+   * is not a property of the guard. Asserting the graft COUNT passed locally
+   * against a squash tip and failed on CI against a merge tip, because
+   * `--depth 1` writes one boundary entry per parent. Cloning `--branch main`
+   * then exited 128 on CI, because the Actions checkout has no local `main`.
+   * Both reds were the fixture describing the runner rather than the code.
+   *
+   * Built here, the fixture states its own premise: a linear two-commit
+   * history, so the full clone has exactly one real root and the depth-1
+   * clone has exactly one graft, on every runner.
+   */
+  function fixtureOrigin(): string {
+    const src = mkdtempSync(join(tmpdir(), "outcome-origin-"));
+    const git = (...args: string[]) => {
+      const r = spawnSync("git", ["-C", src, ...args], { encoding: "utf-8" });
+      if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr}`);
+    };
+    git("init", "--quiet", "--initial-branch", "main");
+    git("config", "user.email", "control@test");
+    git("config", "user.name", "Outcome control");
+    for (const n of [1, 2]) {
+      writeFileSync(join(src, `f${n}.txt`), `${n}\n`);
+      git("add", "-A");
+      git("commit", "--quiet", "-m", `commit ${n}`);
+    }
+    return src;
+  }
 
-  test("a depth-1 clone of it does, and names the graft", () => {
-    // The guard that would have silently ruined this instrument: a shallow
-    // `git log origin/main` returns a well-formed history starting at the cut,
-    // and every finding older than it lands in NO_ACTION. Cloning the repo at
-    // depth 1 is the input that separates pass from fail, and it is run here
-    // rather than asserted.
-    const dir = mkdtempSync(join(tmpdir(), "outcome-shallow-"));
+  function cloneOf(src: string, depth: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "outcome-clone-"));
+    rmSync(dir, { recursive: true, force: true });
+    const clone = spawnSync(
+      "git",
+      ["clone", ...depth, "--no-local", "--branch", "main", `file://${src}`, dir, "--quiet"],
+      { encoding: "utf-8" },
+    );
+    expect(clone.status).toBe(0);
+    return dir;
+  }
+
+  test("a full clone has no grafted root on main", () => {
+    const src = fixtureOrigin();
+    const full = cloneOf(src, []);
     try {
-      // `--branch main` and not the worktree's own HEAD: `graftedRoots` asks
-      // about `origin/main` by name, so a clone whose default head is this
-      // branch would fail on an unknown revision and read as a refusal for
-      // the wrong reason. `--no-local` forces the real transport, which is
-      // what honours `--depth`.
-      const clone = spawnSync(
-        "git",
-        ["clone", "--depth", "1", "--no-local", "--branch", "main", `file://${REPO_ROOT}`, dir, "--quiet"],
-        { encoding: "utf-8" },
-      );
-      expect(clone.status).toBe(0);
-      const roots = graftedRoots(dir);
-
-      // NOT a count. `--depth 1` writes one shallow boundary entry per parent
-      // of the tip, so a squash tip grafts one root and a merge tip grafts
-      // two — and which one CI is sitting on is an incidental fact about the
-      // last thing merged, not a property of this guard. Asserting 1 passed
-      // locally against a squash tip and went red on CI against a merge tip.
-      // The property is that the truncation is visible at all.
-      expect(roots.length).toBeGreaterThanOrEqual(1);
-      for (const root of roots) expect(root).toMatch(/^[0-9a-f]{40}$/);
+      expect(graftedRoots(full)).toEqual([]);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(src, { recursive: true, force: true });
+      rmSync(full, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test("a depth-1 clone does, and names the graft", () => {
+    // The guard that would have silently ruined this instrument: a shallow
+    // `git log origin/main` returns a well-formed history starting at the
+    // cut, and every finding older than it lands in NO_ACTION. The depth-1
+    // clone is the input that separates pass from fail, and it is run here
+    // rather than asserted. Its tip has one parent by construction, so the
+    // count IS a property of the fixture now and can be asserted.
+    const src = fixtureOrigin();
+    const shallow = cloneOf(src, ["--depth", "1"]);
+    try {
+      const roots = graftedRoots(shallow);
+      expect(roots).toHaveLength(1);
+      expect(roots[0]).toMatch(/^[0-9a-f]{40}$/);
+      // And it really is the truncation, not the real root: the full clone
+      // of the same origin reports none, two assertions up.
+      expect(roots[0]).not.toBe(
+        spawnSync("git", ["-C", src, "rev-list", "--max-parents=0", "main"], {
+          encoding: "utf-8",
+        }).stdout.trim(),
+      );
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(shallow, { recursive: true, force: true });
     }
   }, 120_000);
 });
