@@ -181,7 +181,7 @@
     "notDeployedReason": "OPT-IN, not harness-only. Blocks `gh issue create` during the VERIFY phase, so it presumes both a GitHub tracker and an active rungate workflow. Ships in the tarball; register it once the project ships through phases against a tracker.",
     "scope": "user",
     "matcher": "Bash",
-    "description": "Blocks gh issue create during VERIFY phase"
+    "description": "Gates gh issue create: the VERIFY-phase lock, and the finding adjudication (#1261)"
   },
   {
     "name": "WorkflowStateGuard",

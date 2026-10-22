@@ -284,11 +284,50 @@ const BOOLEAN_FLAGS = new Set(["-w", "--web", "-h", "--help", "--recover-only"])
  * MISSED — and a missed label is a refusal, the direction this guard is
  * allowed to be wrong in.
  */
-export function labelValues(tokens: string[]): string[] {
+export interface FlagQuery {
+  /** The long form, with its dashes: `--label`. */
+  long: string;
+  /** The short form, with its dash: `-l`. Omit when there is none to read. */
+  short?: string;
+  /** `gh` reads `--label a,b` as two labels. A title is one value. */
+  commaSeparated?: boolean;
+  /**
+   * The short letter that may carry its value ATTACHED — `-lfollow-up`.
+   *
+   * **Declared per query rather than derived from `short`, and that is
+   * deliberate.** Widening the attached form to every short flag is a
+   * LOOSENING of this lock, not a tidy-up: under the generic arity rule
+   * `gh issue create -aalice --label bug` consumes `--label` as `-a`'s value,
+   * so `labelValues` returns `[]` and the command is refused. Teach the walk
+   * that `-a` is attachable and `bug` becomes visible — the same command is
+   * now allowed, and nothing about the command changed. So the only letter
+   * this is ever passed is `l`, which is the behaviour this file already had,
+   * and a query that wants `--title` reads the spaced and `=` forms only.
+   */
+  attachedShort?: string;
+}
+
+/** `--label` / `-l`, the one query this file's own decision needs. */
+export const LABEL_FLAG: FlagQuery = {
+  long: "--label",
+  short: "-l",
+  commaSeparated: true,
+  attachedShort: "l",
+};
+
+/**
+ * The values passed to one flag of a `gh issue create` clause.
+ *
+ * One arity walk, parameterised, so a second reader of the same clause — see
+ * `lib/issue-filing-gate.ts`, which needs `--title` and `--body` — agrees with
+ * this one about where a flag's value is. Two walks would disagree the first
+ * time either learned a flag the other did not have.
+ */
+export function flagValues(tokens: string[], q: FlagQuery): string[] {
   const out: string[] = [];
   const add = (v: string) => {
-    for (const part of v.split(",")) {
-      const t = part.trim();
+    for (const part of q.commaSeparated === true ? v.split(",") : [v]) {
+      const t = q.commaSeparated === true ? part.trim() : part;
       if (t) out.push(t);
     }
   };
@@ -299,21 +338,25 @@ export function labelValues(tokens: string[]): string[] {
     const eq = t.indexOf("=");
     if (eq !== -1) {
       const name = t.slice(0, eq);
-      if (name === "--label" || name === "-l") add(t.slice(eq + 1));
+      if (name === q.long || name === q.short) add(t.slice(eq + 1));
       continue; // `--flag=value` carries its own value; it consumes nothing
     }
-    if (t === "--label" || t === "-l") {
+    if (t === q.long || t === q.short) {
       if (i + 1 < tokens.length) add(tokens[++i]);
       continue;
     }
     // `-lfollow-up` — pflag lets a short flag carry its value attached.
-    if (/^-l[^-=]/.test(t)) {
+    if (q.attachedShort !== undefined && new RegExp(`^-${q.attachedShort}[^-=]`).test(t)) {
       add(t.slice(2));
       continue;
     }
     if (!BOOLEAN_FLAGS.has(t)) i++; // this flag eats the next token
   }
   return out;
+}
+
+export function labelValues(tokens: string[]): string[] {
+  return flagValues(tokens, LABEL_FLAG);
 }
 
 /**

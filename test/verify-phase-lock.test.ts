@@ -299,13 +299,44 @@ describe("#365 SC-827: the hook reaches the decision", () => {
     scratch.push(work);
     mkdirSync(join(work, "run"), { recursive: true });
     writeFileSync(join(work, "run", "workflow-state.json"), JSON.stringify({ phase }));
+    writeFileSync(join(work, "open-issues.json"), "[]");
     const r = spawnSync("bun", [HOOK], {
       input: JSON.stringify({ tool_name: "Bash", tool_input: { command: cmd } }),
       encoding: "utf-8",
       timeout: 60_000,
-      env: { ...process.env, RUNGATE_WORK_DIR: work },
+      env: {
+        ...process.env,
+        RUNGATE_WORK_DIR: work,
+        // #1261 added a SECOND gate at this chokepoint, and it reads the open
+        // tracker. Pinned to an empty fixture so this file keeps measuring the
+        // phase lock and never shells out to `gh` — a case whose reading
+        // depends on the live tracker is a case that changes answer on its own.
+        RUNGATE_OPEN_FINDINGS: join(work, "open-issues.json"),
+        RUNGATE_FINDING_LEDGER: join(work, "finding-ledger.jsonl"),
+      },
     });
     return r.stdout;
+  }
+
+  /**
+   * Whether the hook REFUSED, as distinct from whether it printed.
+   *
+   * These cases asserted `stdout === ""` until #1261, and that equality was
+   * reading two properties at once: no refusal, and no output of any kind.
+   * The adjudication added beside the lock emits a non-blocking
+   * `systemMessage` when a filing could not be adjudicated, so the equality
+   * now fails for a reason that has nothing to do with the phase lock.
+   *
+   * Relaxing it to `not.toContain("block")` would be the cheapest wrong fix —
+   * it is also satisfied by a hook that crashed, or printed something
+   * unparseable. So this parses instead: empty output, or one JSON object
+   * carrying no `decision`. That is strictly more specific about the thing
+   * these cases test than the equality it replaces.
+   */
+  function refused(out: string): boolean {
+    if (out.trim() === "") return false;
+    const payload = JSON.parse(out) as { decision?: string };
+    return payload.decision === "block";
   }
 
   test("the title bypass is blocked by the hook, not just by the library", () => {
@@ -314,13 +345,13 @@ describe("#365 SC-827: the hook reaches the decision", () => {
   }, 120_000);
 
   test("an override label passes the hook", () => {
-    expect(runHook("gh issue create --label external-audit --title 'x'", "VERIFY")).toBe("");
+    expect(refused(runHook("gh issue create --label external-audit --title 'x'", "VERIFY"))).toBe(false);
   }, 120_000);
 
   test("outside VERIFY the hook does not block", () => {
     // The control. A hook that blocked everything would satisfy the first
     // case, and this is the phase gate it must still respect.
     const out = runHook(`gh issue create --label bug --title "Fix the follow-up handler"`, "EXECUTION");
-    expect(out, "the lock fired outside the phase it locks").toBe("");
+    expect(refused(out), "the lock fired outside the phase it locks").toBe(false);
   }, 120_000);
 });
