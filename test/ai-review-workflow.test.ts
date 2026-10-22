@@ -55,7 +55,7 @@
  * literal in the tuple `test/release-guard.test.ts` pins.
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
@@ -709,7 +709,14 @@ const CONVENTIONS_TRANSCRIPT = (() => {
               type: "tool_use",
               name: "Read",
               input: {
-                file_path: `/home/runner/work/pai-harness/pai-harness/${AI_REVIEW_CONVENTIONS_FILE}`,
+                // The WORKSPACE's copy, and the workspace for this harness
+                // is the suite's own working directory — `runAuthScript`
+                // spawns without a `cwd`, so the step inherits it, and the
+                // conventions check anchors on `${PWD}`. A literal runner
+                // path here would name a directory the step never sees and
+                // every case in this block would red on a fixture defect.
+                // Resolved, because the anchor is the physical path.
+                file_path: join(realpathSync(process.cwd()), AI_REVIEW_CONVENTIONS_FILE),
               },
             },
           ],
