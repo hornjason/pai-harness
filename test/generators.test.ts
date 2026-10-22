@@ -219,7 +219,7 @@ describe("AC-3: lib/generators/code-map.ts", () => {
     const { mockProjectScan } = await import("../lib/generators/types");
     const scan = mockProjectScan({
       name: "test-project",
-      dirs: [{ name: "src", fileCount: 10, types: ["ts", "tsx"] }],
+      dirs: [{ name: "src", types: ["ts", "tsx"] }],
       deps: 5,
       devDeps: 3,
     });
@@ -235,14 +235,17 @@ describe("AC-3: lib/generators/code-map.ts", () => {
     const scan = mockProjectScan({
       name: "my-app",
       dirs: [
-        { name: "src", fileCount: 15, types: ["ts", "tsx"] },
-        { name: "lib", fileCount: 8, types: ["ts"] },
+        { name: "src", types: ["ts", "tsx"] },
+        { name: "lib", types: ["ts"] },
       ],
     });
     const result = generateCodeMap(scan);
     expect(result).toContain("## Directory Structure");
-    expect(result).toContain("| src/ | 15 | ts, tsx |");
-    expect(result).toContain("| lib/ | 8 | ts |");
+    // Two columns. The `Files` census is gone (#1163) and the rows are
+    // ordered by NAME, so `lib` precedes `src` whatever order it came in.
+    expect(result).toContain("| lib/ | ts |");
+    expect(result).toContain("| src/ | ts, tsx |");
+    expect(result.indexOf("| lib/ |")).toBeLessThan(result.indexOf("| src/ |"));
   });
 
   test("output contains dependency counts", async () => {

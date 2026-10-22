@@ -49,9 +49,35 @@ export interface Category {
   notes: string;
 }
 
+/**
+ * One top-level directory, as CODE-MAP.md lists it.
+ *
+ * **No file count, deliberately (#1163).** This interface carried a
+ * `fileCount` that every CODE-MAP renderer printed, and it was the one field
+ * in the file that could not be kept true. MEASURED over the 50 commit
+ * transitions ending at `b7281397`:
+ *
+ * | what moved | transitions out of 50 |
+ * |---|---|
+ * | a per-directory file count | **22** |
+ * | the row ORDER (it was sorted by that count) | 1 |
+ * | the directory list itself | **0** |
+ * | the `types` column | **0** |
+ *
+ * So the list is stable and the census is not — it is wrong roughly every
+ * second merge, and #1163 measured why no gate can hold it: `scanned-at-sha`
+ * is `git rev-parse HEAD` at generation time, which can never equal the sha
+ * of the squash commit that ships the file, so a regenerate-and-diff job
+ * fails 50 of the last 50 commits on the frontmatter alone.
+ *
+ * The count is therefore not rendered, not stored, and not scanned for. It
+ * is deleted rather than left computed-but-hidden, because a field nothing
+ * prints is a field nobody notices going stale — and because the row order
+ * was derived from it, the renderers sort by NAME now rather than by a
+ * number that is no longer there.
+ */
 export interface DirEntry {
   name: string;
-  fileCount: number;
   types: string[];
 }
 

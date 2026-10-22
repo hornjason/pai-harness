@@ -478,12 +478,14 @@ function scanDirs(root: string): DirEntry[] {
         if (!statSync(full).isDirectory()) continue;
         const files = readdirSorted(full, { recursive: true });
         const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
-        dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
+        dirs.push({ name: entry, types: [...exts].slice(0, 5) });
       } catch {}
     }
   } catch {}
 
-  dirs.sort((a, b) => b.fileCount - a.fileCount);
+  // Unsorted. Row order is `directoryTable`'s single decision (#1163) — this
+  // used to sort by `fileCount`, which is how the census survived one
+  // indirection past being printed. See `DirEntry` for the measurement.
   return dirs;
 }
 
