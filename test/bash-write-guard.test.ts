@@ -1501,6 +1501,154 @@ describe("#1203: an escaped quote outside a quote does not OPEN one", () => {
   });
 });
 
+describe("#1249 WITNESS: an escaped BACKSLASH inside double quotes is a pair", () => {
+  // F14's twin in the other quote. Inside double quotes `\\` is an escaped
+  // backslash — a complete pair — and the `"` after it is the CLOSING quote.
+  // A one-character lookbehind cannot tell that `"` from the escaped `\"` of
+  // the control above, so it read the span as still open, swallowed the
+  // separator and the verb, and left one segment whose command word is
+  // `echo`.
+  //
+  // The outside-quote branch of the same scanner already consumed the pair,
+  // for this exact reason, and says so in its comment. This applies the same
+  // rule inside the span.
+  //
+  // WHY THIS LOOKED UNREAL: the issue's example used `rm`, and `rm` is the
+  // one shape that does NOT escape. The in-place arm matches over the
+  // segment TEXT, so a merged segment still carries its target; the same is
+  // true of the redirect and `tee` arms. Only the arms gated on the COMMAND
+  // WORD are bypassable. A battery built from the issue's own example
+  // therefore reports BLOCK on every row and the hole stays invisible. The
+  // three rows below are the ones that do escape, each measured ALLOW
+  // against `origin/main` at 52750f04 before the fix.
+
+  test("MECHANISM: the quote after `\\\\` closes the span", () => {
+    // ONE segment on origin/main, where the separator is quoted text.
+    expect(segments('echo "x\\\\" ; rm /r/x')).toEqual(['echo "x\\\\"', "rm /r/x"]);
+  });
+
+  test("WITNESS: `cp` overwrites the artifact — ALLOW on origin/main", () => {
+    // Arm 1 resolves the COPY verb from the command word, so a merged
+    // segment beginning `echo` never reaches it.
+    expect(
+      decideBashWrite(`echo "x\\\\" ; cp /etc/hosts ${LIVE_TREE}/run/${STATE}`).blocked,
+    ).toBe(true);
+  });
+
+  test("WITNESS: `chmod` on the artifact — ALLOW on origin/main", () => {
+    // Arm 4, the same arm F14 used to show the single-quote hole.
+    expect(decideBashWrite(`echo "x\\\\" ; chmod 777 ${LIVE_TREE}/run/${STATE}`).blocked).toBe(
+      true,
+    );
+  });
+
+  test("WITNESS: an interpreter writing the artifact — ALLOW on origin/main", () => {
+    // Arm 3 fires on an interpreter COMMAND WORD. Hidden by the merge, the
+    // program text is never read at all.
+    const body = `bun -e 'require("fs").writeFileSync("${LIVE_TREE}/run/${STATE}","{}")'`;
+    // The unmerged spelling FIRST. Without it this row cannot tell #1249
+    // from arm 3 simply not recognising the write — which is how the first
+    // draft of it went red: `open(p,"w")` on its own is ALLOWed on main
+    // whether merged or not, because arm 3 reads a list of write verbs and
+    // `open` is not on it. That is a pre-existing gap of the same
+    // enumeration class as #1269's finding 3, and not what this row is for.
+    expect(decideBashWrite(`echo x ; ${body}`).blocked).toBe(true);
+    expect(decideBashWrite(`echo "x\\\\" ; ${body}`).blocked).toBe(true);
+  });
+
+  test("the shell really runs both commands — the premise, not an assumption", () => {
+    // Without this row the three above only assert that two readers of a
+    // string disagree. `bash -n` says the spelling parses; this says the
+    // second command is reached and has its effect.
+    const dir = mkdtempSync(join(tmpdir(), "bw1249-"));
+    try {
+      const victim = join(dir, "victim.txt");
+      spawnSync("/bin/bash", ["-c", `echo "x\\\\" ; cp /etc/hosts ${victim}`]);
+      expect(existsSync(victim)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("END TO END through the hook — the payload, not the exit code", () => {
+    // Every row above reads the library. This one runs the hook the way the
+    // tool runner does, because that is where the refusal has to happen.
+    const hook = join(import.meta.dir, "..", "hooks", "BashWriteGuard.hook.ts");
+    const run = (command: string) => {
+      const r = spawnSync("bun", ["run", hook], {
+        input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }),
+        encoding: "utf8",
+      });
+      return { status: r.status, stdout: (r.stdout || "").trim() };
+    };
+    const refused = run(`echo "x\\\\" ; chmod 777 ${LIVE_TREE}/run/${STATE}`);
+    expect(JSON.parse(refused.stdout).decision).toBe("block");
+    // The control that makes this row readable rather than decorative: the
+    // hook ALWAYS exits 0 and signals a refusal on stdout. A permitted
+    // command exits 0 and prints nothing, so the two directions are
+    // indistinguishable by status and a test asserting on it cannot fail.
+    const permitted = run("echo hello");
+    expect(permitted.stdout).toBe("");
+    expect(refused.status).toBe(0);
+    expect(permitted.status).toBe(0);
+  });
+
+  test("CONTROL: a separator INSIDE the double-quoted span still does not split", () => {
+    // The fix must close the span at its real end, not widen the splitter.
+    expect(segments('echo "a\\\\;b"')).toHaveLength(1);
+    expect(segments('echo "a\\"b ; c" ; rm /r/x')).toHaveLength(2);
+  });
+
+  test("CONTROL: the single-quote rule is untouched by the pair rule", () => {
+    // Inside single quotes nothing is escaped, so the first `'` closes and
+    // the pair branch must not run there. Two backslashes, the #1249 shape,
+    // in the #1203 quote.
+    expect(decideBashWrite(`echo 'x\\\\' ; chmod 777 ${LIVE_TREE}/run/${STATE}`).blocked).toBe(
+      true,
+    );
+  });
+
+  test("CONTROL: a dangling backslash at the end of the string is not an index past it", () => {
+    expect(() => segments('echo "x\\')).not.toThrow();
+  });
+});
+
+describe("#1249: the cheapest wrong fix, run rather than described", () => {
+  // Three rules for "where does this double-quoted span close", run against
+  // the two inputs that tell them apart rather than argued about. The
+  // cheapest fix — delete the escape handling, a quote always closes — gets
+  // the new row right and gets the row already in the suite above wrong.
+  const closesAt = (s: string, rule: "naive" | "lookbehind" | "pair"): number => {
+    for (let i = 1; i < s.length; i++) {
+      if (rule === "pair" && s[i] === "\\" && i + 1 < s.length) {
+        i++;
+        continue;
+      }
+      if (s[i] !== '"') continue;
+      if (rule === "lookbehind" && s[i - 1] === "\\") continue;
+      return i;
+    }
+    return -1; // the span never closed
+  };
+  const ESCAPED_BACKSLASH = '"x\\\\"'; // bytes: "x\\"  — a pair, closes at 4
+  const ESCAPED_QUOTE = '"x\\""'; // bytes: "x\""  — an escape, closes at 4
+
+  test("the lookbehind that shipped never closes the escaped-backslash span", () => {
+    expect(closesAt(ESCAPED_BACKSLASH, "lookbehind")).toBe(-1);
+    expect(closesAt(ESCAPED_QUOTE, "lookbehind")).toBe(4);
+  });
+
+  test("`a quote always closes` fixes this row and breaks the escaped quote", () => {
+    expect(closesAt(ESCAPED_BACKSLASH, "naive")).toBe(4);
+    expect(closesAt(ESCAPED_QUOTE, "naive")).toBe(3); // ends the span early
+  });
+
+  test("consuming the PAIR is the only one of the three that gets both", () => {
+    expect(closesAt(ESCAPED_BACKSLASH, "pair")).toBe(4);
+    expect(closesAt(ESCAPED_QUOTE, "pair")).toBe(4);
+  });
+});
+
 /**
  * `bash -n` — does this spelling even parse? A guard that lets through a
  * string the shell refuses to run has let through nothing, and this is the
