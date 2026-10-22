@@ -30,6 +30,24 @@
  *   comments cite freely and reading them all turns every discussion into a
  *   supersede edge.
  *
+ *   Be precise about how strong that edge is, because `outcomes.ts` walks it
+ *   transitively and transitivity is only sound over a relation that is
+ *   actually transitive. It is a **reference inside a human-authored close**,
+ *   not a parsed declaration and not an inferred similarity. Measured over
+ *   the 101 SUPERSEDED rows on 2026-10-22: 71 carry an explicit supersession
+ *   phrase (`duplicate of`, `superseded by`, `shipped in`, `closed by`), and
+ *   the remaining 30 carry only a bare `#N`. Six of those 30 were read by
+ *   hand and all six were genuine — "Delivered in the same commit as Phase 1
+ *   … (PR #667)", "Merged with its parent #621 in #628" — so the shortfall is
+ *   in the phrase list, not in the edges. The claim this supports is "a human
+ *   closing this finding pointed at that one", and no more.
+ *
+ *   The distinction matters to anyone reusing the walk: rg-1187's finding
+ *   arbiter builds edges by shared symptom keys, and transitivity over a
+ *   *similarity* relation is unsound — measured there, it merges 12 unrelated
+ *   issues into one component through a single articulation point. Transitive
+ *   here, one-hop there, and the difference is who authored the edge.
+ *
  * ## The shallow-clone refusal
  *
  * A shallow checkout is the failure this script is most likely to suffer and
@@ -295,7 +313,12 @@ export function main(argv: string[]): number {
     const plants = verifyOutcomePlants(readings);
     for (const line of plants.detail) process.stderr.write(`plant: ${line}\n`);
     if (!plants.verified) return REFUSED;
-    process.stdout.write(`plants: ${REVIEW_OUTCOME_PLANTS.length}/${REVIEW_OUTCOME_PLANTS.length} agree\n`);
+    // stderr under --json, and not stdout: a --json mode whose stdout carries
+    // a trailing human line is not JSON, and every consumer of the flag dies
+    // on `Extra data: line N`. The confirmation is diagnostic either way.
+    const agreed = `plants: ${REVIEW_OUTCOME_PLANTS.length}/${REVIEW_OUTCOME_PLANTS.length} agree\n`;
+    if (argv.includes("--json")) process.stderr.write(agreed);
+    else process.stdout.write(agreed);
   }
 
   return 0;

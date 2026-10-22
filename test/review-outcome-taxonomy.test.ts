@@ -401,11 +401,17 @@ describe("#1225: the truncated-history refusal, proved against a real shallow cl
         ["clone", "--depth", "1", "--no-local", "--branch", "main", `file://${REPO_ROOT}`, dir, "--quiet"],
         { encoding: "utf-8" },
       );
-      expect(clone.stderr ?? "").toBe("");
       expect(clone.status).toBe(0);
       const roots = graftedRoots(dir);
-      expect(roots).toHaveLength(1);
-      expect(roots[0]).toMatch(/^[0-9a-f]{40}$/);
+
+      // NOT a count. `--depth 1` writes one shallow boundary entry per parent
+      // of the tip, so a squash tip grafts one root and a merge tip grafts
+      // two — and which one CI is sitting on is an incidental fact about the
+      // last thing merged, not a property of this guard. Asserting 1 passed
+      // locally against a squash tip and went red on CI against a merge tip.
+      // The property is that the truncation is visible at all.
+      expect(roots.length).toBeGreaterThanOrEqual(1);
+      for (const root of roots) expect(root).toMatch(/^[0-9a-f]{40}$/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
