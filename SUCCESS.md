@@ -168,16 +168,24 @@ registry, and goes red when either drifts. Bumping `package.json` without
 updating this line turns it red, which is what makes a release a two-commit
 operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-21)** — tree `0.7.0`, published `rungate@0.6.0`.
+- **Distribution standing (2026-10-22)** — tree `0.7.0`, published `rungate@0.7.0`.
 
-**The two numbers differ on purpose, and this is the publish-pending state.**
-`distributionViolations` compares the first to `package.json` and the second to
-the registry **independently** — nothing requires them to be equal — so the
-line above is the supported way to say "bumped, not yet shipped". It is the
-same state the `v0.6.0` tag carried (*tree `0.6.0`, published `rungate@0.5.0`*)
-while its pipeline ran. The second number moves in a follow-up commit once the
-registry serves `0.7.0`, and that is the "two-commit operation" the paragraph
-above refers to.
+**This is the follow-up commit the two-commit operation refers to, and the
+numbers now agree.** `distributionViolations` compares the first to
+`package.json` and the second to the registry **independently** — nothing
+requires them to be equal — so a line in which they differ is the supported
+way to say "bumped, not yet shipped", which is what this one said while
+`v0.7.0`'s pipeline ran, and what the `v0.6.0` tag carried before it
+(*tree `0.6.0`, published `rungate@0.5.0`*).
+
+Verified against the registry rather than the publish receipt: `dist-tags.latest`
+is `0.7.0`, `GET /rungate/0.7.0` returns 200, and the tarball shasum
+`d4eca5f1` equals the one the release job's `npm publish` printed, so the
+artifact served is the artifact that was built. The packument lagged the
+receipt by about fifteen minutes — the postflight guard reported
+`PROPAGATION PENDING` and said in as many words that it was reading the
+receipt and not the registry, which is why this line waits for a read of the
+registry and is not written from a green pipeline.
 
 **Why `0.7.0` and not `0.6.1`.** Two hundred and fourteen commits past
 `v0.6.0`, carrying features and not only fixes — the `ai-review-findings`
