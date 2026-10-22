@@ -37,21 +37,45 @@
  * | an `init`+`add`+`commit` fixture (373 → 571ms) | **1.53x** |
  * | the case the budget had to cover (6200 → ≥38582ms) | **≥6.2x** |
  *
- * A case is a sum over ~30 subprocesses, and under contention its duration is
- * driven by the **tail** of the spawn distribution while a median calibration
- * measures the **body**. So a cheap calibration cannot, on its own, bridge
- * that gap — and a design that claimed it could would be the same overclaim
- * this issue is about, one layer up.
+ * **The first explanation offered for that gap was wrong, and the probe that
+ * killed it is worth keeping.** The claim was that a case is a sum over ~30
+ * subprocesses and rides the *tail* of the spawn distribution while a median
+ * calibration measures the *body*. Measured at load 121 over **300** bare
+ * `git` spawns — the earlier samples were N=5..12, too few to see a tail at
+ * all:
  *
- * Two consequences, both deliberate:
+ * | statistic | value | ratio to median |
+ * |---|---|---|
+ * | median | 32.1ms | — |
+ * | p95 | 40.0ms | 1.24x |
+ * | p99 | 52.6ms | 1.64x |
+ * | max | 63.0ms | 1.96x |
+ * | mean | 32.4ms | **1.01x** |
+ *
+ * A mean sitting on the median is not a heavy tail, and ten 30-spawn blocks
+ * summed varied by **1.09x** max-to-median — summing concentrates, exactly as
+ * it should. So the tail story is falsified: it cannot produce 6.2x.
+ *
+ * What survives is simpler. `rev-parse --git-dir` against an empty directory
+ * does essentially **no disk work** — it measures process creation and a
+ * stat. The cases do object writes, index writes, an fsync-ing `commit` and a
+ * `push` over `file://`, so they are I/O- and memory-pressure-bound where the
+ * probe is not. The two do not move together because they are not measuring
+ * the same resource.
+ *
+ * That makes the calibration below MORE justified rather than less, and it is
+ * why the shape of the calibration matters more than its statistic:
  *
  *  - The calibration is the **bash-nested** fixture, not a bare spawn: the
  *    cases run `bun → bash → git`, and #478's own docstring is explicit that
  *    "a calibration that skipped it would time something the cases do not
  *    do". Measured at load 219: median 897ms, max 1271ms.
- *  - It takes the **max** of its samples rather than the median, because the
- *    tail is the thing that has to be covered and the median provably
- *    under-tracked it.
+ *  - It takes the **max** of its samples rather than the median. Note what
+ *    this is and is not worth now: with the tail story gone, the max of six
+ *    buys little over the median (1.96x max-to-median over 300 samples, and
+ *    far less over six). It is kept because it errs toward a larger budget,
+ *    not because it is tracking something the median misses. The **floor** is
+ *    what covers the gap, and that is the honest division of labour.
  *
  * ## The floor is what carries this machine
  *
