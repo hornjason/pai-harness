@@ -22,7 +22,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import {
@@ -1719,5 +1719,74 @@ describe("#1240 WITNESS: a program handed to an interpreter on stdin", () => {
     // An UNTERMINATED heredoc is already visible to every arm (#1184 emits
     // it unchanged), so returning it here would decide the same bytes twice.
     expect(interpreterPrograms(`bash <<'EOF'\nx`)).toEqual([]);
+  });
+});
+
+/**
+ * #1269: a protected tree is subtracted under BOTH of its spellings.
+ *
+ * #1175 realpathed the scratch roots and not the protected trees, so a tree
+ * named through a symlink — which `/tmp` is, on every macOS install — was
+ * subtracted under one spelling and exempted under the other. The run store
+ * was reachable by typing `realpath` once.
+ *
+ * Built against the real filesystem rather than asserted about strings: the
+ * directory is created, so `realpathSync` has something to resolve, and the
+ * two spellings are the two names of one inode rather than two literals
+ * that happen to differ.
+ */
+describe("#1269 WITNESS: a protected tree is subtracted under both spellings", () => {
+  const vars: string[] = ["RUNGATE_WORK_DIR", "RUNGATE_HOOKS_DIR"];
+  test.each(vars)("%s named through a symlink is protected by its realpath too", (v: string) => {
+    const dir = mkdtempSync(join("/tmp", "bw1269-"));
+    const before = process.env[v];
+    try {
+      mkdirSync(join(dir, "p"), { recursive: true });
+      process.env[v] = dir; // the /tmp spelling, which is how anyone types it
+      const real = realpathSync(dir); // /private/tmp/... on macOS
+      const artifact = v === "RUNGATE_HOOKS_DIR" ? "X.hook.ts" : STATE;
+
+      // The premise: the two spellings really are different names. Without
+      // this the case is vacuous on a filesystem where /tmp is not a link.
+      if (real === dir) return;
+
+      expect(isScratchPath(`${dir}/p/${artifact}`)).toBe(false);
+      expect(isScratchPath(`${real}/p/${artifact}`)).toBe(false);
+      expect(decideBashWrite(`echo '{}' > ${real}/p/${artifact}`).blocked).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env[v];
+      else process.env[v] = before;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: a sibling scratch tree nothing points at is still a fixture", () => {
+    const dir = mkdtempSync(join("/tmp", "bw1269-live-"));
+    const other = mkdtempSync(join("/tmp", "bw1269-fix-"));
+    const before = process.env.RUNGATE_WORK_DIR;
+    try {
+      process.env.RUNGATE_WORK_DIR = dir;
+      // Both spellings of the UNRELATED tree stay exempt — the fix subtracts
+      // one tree's two names, not every path that realpaths to /private/tmp.
+      expect(isScratchPath(`${other}/${STATE}`)).toBe(true);
+      expect(isScratchPath(`${realpathSync(other)}/${STATE}`)).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.RUNGATE_WORK_DIR;
+      else process.env.RUNGATE_WORK_DIR = before;
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: a tree that does not exist keeps its resolved spelling", () => {
+    const before = process.env.RUNGATE_WORK_DIR;
+    try {
+      // `realpathSync` throws here. The resolved name must still protect.
+      process.env.RUNGATE_WORK_DIR = "/tmp/bw1269-never-created";
+      expect(isScratchPath(`/tmp/bw1269-never-created/${STATE}`)).toBe(false);
+    } finally {
+      if (before === undefined) delete process.env.RUNGATE_WORK_DIR;
+      else process.env.RUNGATE_WORK_DIR = before;
+    }
   });
 });

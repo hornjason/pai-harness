@@ -197,10 +197,33 @@ const FIXED_SCRATCH_ROOTS = ['/tmp', '/private/tmp', '/var/folders'];
  * directory as protected drops `/private/tmp` from the roots, and because
  * `/tmp` realpaths to it the walk then refuses every `/tmp` path as well.
  * 12 of 145 tests red, measured.
+ *
+ * ## BOTH spellings, which #1175 got wrong
+ *
+ * `resolve()` normalises `.` and `..`; it does not follow a symlink. So a
+ * tree named `/tmp/e2e` stayed in this list as `/tmp/e2e` while a path
+ * through the same inode reads `/private/tmp/e2e/…`, and `inAnyTree`
+ * matches neither spelling against the other. Executed against the module
+ * as merged, with `RUNGATE_WORK_DIR=/tmp/e2e`:
+ *
+ *     /tmp/e2e/s/workflow-state.json           blocked
+ *     /private/tmp/e2e/s/workflow-state.json   ALLOWED   ← the run store
+ *
+ * The same for `RUNGATE_HOOKS_DIR`, and `/tmp` is a symlink to
+ * `/private/tmp` on every macOS install, so the second spelling is not
+ * exotic — it is what `realpath` prints.
+ *
+ * `scratchRoots()` below already recorded both spellings for the fixed
+ * roots, so the asymmetry was inside one file: the roots a write may land
+ * in were realpathed and the trees it may not were not. A `catch` here
+ * means the tree is not on disk, which is ordinary for a variable pointing
+ * at a directory the command is about to create, and the resolved spelling
+ * stands on its own.
  */
 function protectedTrees(): string[] {
   const home = process.env.HOME || '';
-  return [
+  const spellings: string[] = [];
+  for (const p of [
     // The run store — where 2,620 of 3,240 absolute artifact references live.
     process.env.RUNGATE_WORK_DIR || '',
     home ? join(home, '.rungate') : '',
@@ -210,9 +233,17 @@ function protectedTrees(): string[] {
     process.env.PAI_HOOKS_DIR || '',
     process.env.RUNGATE_HOOKS_DIR || '',
     home ? join(home, '.pai', 'hooks') : '',
-  ]
-    .filter(Boolean)
-    .map(p => resolve(p));
+  ].filter(Boolean)) {
+    const normalised = resolve(p);
+    spellings.push(normalised);
+    try {
+      const real = realpathSync(normalised);
+      if (real !== normalised) spellings.push(real);
+    } catch {
+      // Not on disk. The resolved spelling above still stands.
+    }
+  }
+  return spellings;
 }
 
 /** Is `p` inside, or equal to, any of `trees`? */
