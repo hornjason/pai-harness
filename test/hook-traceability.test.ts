@@ -13,6 +13,7 @@ import {
   type ScopeReading,
 } from "../lib/hook-scopes";
 import { commandNamesHook, executedHookFile } from "../lib/hook-trees";
+import { remedyMessage } from "../lib/check-remedy";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
 
@@ -454,6 +455,145 @@ describe("Hook config in the resolved registry (SC-391, SC-392)", () => {
   test("EVERY hook entry has an enabled field (SC-392)", () => {
     const bad = entries.filter(h => !(h && "enabled" in h)).map(h => h?.name ?? JSON.stringify(h));
     expect(bad, "hook entries missing enabled").toEqual([]);
+  });
+});
+
+/**
+ * #1047 — the package shipped no hooks at all, and the thing that let it was
+ * not the missing `files[]` entry.
+ *
+ * Measured on `origin/main` before this change: `hooks/` absent from
+ * `package.json` `files[]`, and **0 of 20** registry entries setting
+ * `deployToConsumers`. SC-472's deployment path was built, wired into three
+ * scaffold modules, and reached zero hooks on every run — reporting success,
+ * because a scaffold that deploys no hooks is byte-identical to a correct run
+ * on a project that wanted none.
+ *
+ * **The cheapest wrong fix is adding `hooks/` to `files[]` and stopping.**
+ * The tarball grows, `CLOSURE-1` stays green — it asks whether imports
+ * resolve, never whether anything runs — and every consumer still installs
+ * zero hooks, now with the manifest saying otherwise. AC-10 below is the case
+ * that fix does not pass: it reds on all twenty entries under it, because
+ * packaging a directory is not deciding what travels out of it.
+ *
+ * The field is required rather than optional for the reason `scope` is
+ * (#479): an optional field makes "decided no" and "nobody looked" one value.
+ */
+describe("#1047: every hook declares whether a consumer receives it", () => {
+  const entries = (loadRungateConfig(HARNESS_ROOT) as { hooks: any[] }).hooks;
+  const packaged: string[] = JSON.parse(
+    readFileSync(join(HARNESS_ROOT, "package.json"), "utf-8"),
+  ).files;
+
+  test("AC-10: the population is non-empty", () => {
+    // The anchor, for the same reason AC-1 has one. Three equalities against
+    // an empty list all pass, and a registry read that silently returned
+    // nothing would take every case below with it (#621).
+    expect(entries.length, "no registry entries were read at all").toBeGreaterThan(0);
+  });
+
+  test("AC-11: no entry leaves deployToConsumers unset", () => {
+    const silent = entries
+      .filter(h => typeof h?.deployToConsumers !== "boolean")
+      .map(h => h?.name ?? JSON.stringify(h));
+    expect(
+      silent,
+      remedyMessage({
+        root: HARNESS_ROOT,
+        check: "#1047 AC-11",
+        violations: silent,
+        fix:
+          "set `deployToConsumers: true` in .claude/rungate/hooks.json if a scaffolded " +
+          "consumer should receive this hook, or `false` with a `notDeployedReason` " +
+          "saying whether it is harness-only or opt-in. Absent is not an answer: " +
+          "deployHooksToConsumers reads it with `!== true`, so an omission deploys " +
+          "nothing and says nothing.",
+      }),
+    ).toEqual([]);
+  });
+
+  test("AC-12: a hook that does not travel says why", () => {
+    // Mirrors `disabledReason` (#479 SC-1662), and for the identical reason:
+    // false-because-decided and false-because-nobody-looked are the same
+    // byte. The reason is also where harness-only and opt-in are told apart,
+    // which `deployToConsumers` alone cannot carry.
+    const bare = entries
+      .filter(h => h?.deployToConsumers === false)
+      .filter(h => typeof h?.notDeployedReason !== "string" || h.notDeployedReason.trim().length < 40)
+      .map(h => h?.name ?? JSON.stringify(h));
+    expect(
+      bare,
+      remedyMessage({
+        root: HARNESS_ROOT,
+        check: "#1047 AC-12",
+        violations: bare,
+        fix:
+          "add a `notDeployedReason` of at least 40 characters saying whether this hook " +
+          "is HARNESS-ONLY (about this repository's own checkout, worktree pool or " +
+          "swarm) or OPT-IN (ships in the tarball, registered once the consumer has the " +
+          "thing it guards).",
+      }),
+    ).toEqual([]);
+  });
+
+  test("AC-13: a hook marked for consumers is actually in the tarball", () => {
+    // The half that makes AC-11 more than bookkeeping. A registry entry can
+    // claim `deployToConsumers: true` while `files[]` publishes neither the
+    // hook nor the directory holding it, and the deployment would then write
+    // a settings.local.json command pointing at a path the consumer does not
+    // have — a hook that fails at hook time rather than one that is absent.
+    //
+    // Checked against `files[]` rather than against disk: the hook file is on
+    // disk in this checkout whatever the manifest says, so disk is the
+    // artifact that always agrees (#530) and the manifest is the statement.
+    const unpublished = entries
+      .filter(h => h?.deployToConsumers === true)
+      .map(h => ({ name: h.name, file: `hooks/${h.name}.hook.ts` }))
+      .filter(({ file }) => !packaged.some(f => f === file || (f.endsWith("/") && file.startsWith(f))))
+      .map(({ name, file }) => `${name} (${file})`);
+    expect(
+      unpublished,
+      remedyMessage({
+        root: HARNESS_ROOT,
+        check: "#1047 AC-13",
+        violations: unpublished,
+        fix:
+          "add `hooks/` to `files[]` in package.json, or clear `deployToConsumers` on " +
+          "the entry. Deploying a hook the tarball omits writes a consumer a command " +
+          "that ENOENTs on every invocation.",
+      }),
+    ).toEqual([]);
+  });
+
+  test("AC-14: the three verdicts are each reachable, and the predicate separates them", () => {
+    // AC-11 through AC-13 are equalities against `[]` over a tree that is
+    // currently clean, so each runs its filter and finds nothing — the third
+    // shape in `.claude/rules/checks-must-be-able-to-fail.md`. The classifier
+    // is therefore driven over inputs of all three kinds directly, so a
+    // predicate that collapsed to `false` would be caught here rather than
+    // reported as a clean census.
+    const probe = (h: any) => ({
+      unset: typeof h?.deployToConsumers !== "boolean",
+      bare:
+        h?.deployToConsumers === false &&
+        (typeof h?.notDeployedReason !== "string" || h.notDeployedReason.trim().length < 40),
+    });
+    const reason = "x".repeat(40);
+    expect(probe({ name: "A" })).toEqual({ unset: true, bare: false });
+    expect(probe({ name: "B", deployToConsumers: false })).toEqual({ unset: false, bare: true });
+    expect(probe({ name: "C", deployToConsumers: false, notDeployedReason: "too short" }))
+      .toEqual({ unset: false, bare: true });
+    expect(probe({ name: "D", deployToConsumers: false, notDeployedReason: reason }))
+      .toEqual({ unset: false, bare: false });
+    expect(probe({ name: "E", deployToConsumers: true })).toEqual({ unset: false, bare: false });
+
+    // And that the live tree holds both answers rather than one. A registry
+    // where every entry deploys would pass AC-12 having classified nothing.
+    const deploys = entries.filter(h => h?.deployToConsumers === true).length;
+    const held = entries.filter(h => h?.deployToConsumers === false).length;
+    expect(deploys, "no hook ships to a consumer — the classification is one-sided").toBeGreaterThan(0);
+    expect(held, "no hook is held back — the classification is one-sided").toBeGreaterThan(0);
+    expect(deploys + held).toBe(entries.length);
   });
 });
 
