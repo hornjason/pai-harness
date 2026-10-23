@@ -1396,6 +1396,14 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
  *    tell from a total.
  */
 describe("AC-L15 (#1405): the window count is written, and unknown is not zero", () => {
+  // How far past the cap the sequence row drives the real step. Shared with
+  // the mutant row below rather than written twice, because that row's job
+  // is to prove THIS NUMBER is big enough: it measures the depth at which a
+  // saturating total first diverges and asserts this constant reaches it.
+  // Lower it to `+ 5` and the mutant row goes red naming the shortfall
+  // (#1451).
+  const SEQUENCE_ROUNDS = AI_REVIEW_LEDGER_MAX_ROUNDS + 8;
+
   const entry = (over: Record<string, unknown> = {}) => ({
     at: "t",
     sha: "cafe",
@@ -1563,13 +1571,29 @@ describe("AC-L15 (#1405): the window count is written, and unknown is not zero",
   // #1394's "one computation, not two" extended across time — the two
   // sites now being this round's annotation and the running total.
   test("AC-L15/AC-4: across a sequence past the cap, truncated + retained is every round written", () => {
-    // Eight past the cap, and the eight is load-bearing. The deepest count
+    // Eight past the cap, and the eight is load-bearing. The deepest total
     // any row above asserts is 5, so a writer that is correct up to 5 and
     // drifts after it is green on every one of them. Running past the
-    // deepest typed number is the only part of this that the other rows
-    // cannot reach — measured: the drift mutant below is red here and
-    // nowhere else.
-    const ROUNDS = AI_REVIEW_LEDGER_MAX_ROUNDS + 8;
+    // deepest typed number is the part of this the other rows cannot reach.
+    //
+    // That used to be asserted here as "measured: the drift mutant below is
+    // red here and nowhere else", with no mutant below it and no measurement
+    // anyone could re-run. Both halves were wrong, and #1451 measured them:
+    //
+    //  - the OBVIOUS drift — `$d`, this round's eviction, written where the
+    //    running total belongs — is caught by three rows, not one. The two
+    //    shallow ones are "an existing count under the cap is carried
+    //    forward unchanged" and "an eviction ADDS to the existing count",
+    //    and the first needs no eviction at all. Nothing about depth is
+    //    required to see it.
+    //  - a total that goes on being RIGHT and then saturates past the
+    //    deepest typed number is the one only this row can see: 1 of 100.
+    //
+    // So the depth claim is true and the mutant that was named for it was
+    // not. The real one is the row directly below this test, which also
+    // binds `SEQUENCE_ROUNDS` — measured there, the first divergence is at
+    // the cap + 6, so this constant carries two rounds of headroom.
+    const ROUNDS = SEQUENCE_ROUNDS;
     let body: string | null = null;
     let announced = 0;
 
@@ -1605,7 +1629,11 @@ describe("AC-L15 (#1405): the window count is written, and unknown is not zero",
     }
 
     // Stated as an absolute so a loop that silently ran zero times cannot
-    // pass this: five rounds are gone and the cap's worth remain.
+    // pass this: eight rounds are gone and the cap's worth remain. (Eight,
+    // not five — the depth moved to `+ 8` and this sentence kept the old
+    // number until #1451. The assertions never said five; they are written
+    // against the constant, which is the only reason the drift was in the
+    // prose and not in the result.)
     const last = readLedger(body!);
     if (last.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(last));
     if (last.truncation.status !== AI_REVIEW_TRUNCATION_STATED) {
@@ -1615,13 +1643,158 @@ describe("AC-L15 (#1405): the window count is written, and unknown is not zero",
     expect(last.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
     expect(announced).toBe(ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS);
     // The window really is a window, and it is the OLDEST that went: the
-    // five that the count claims are gone are the five it names.
+    // rounds the count claims are gone are the ones it names.
     expect(last.rounds.map((entry: { round?: unknown }) => entry.round)).toEqual(
       Array.from(
         { length: AI_REVIEW_LEDGER_MAX_ROUNDS },
         (_, i) => ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS + 1 + i,
       ),
     );
+  });
+
+  // AC-1/AC-2/AC-3 (#1451): the mutant the row above used to CITE.
+  //
+  // Its comment read "measured: the drift mutant below is red here and
+  // nowhere else" and there was no mutant below it — the sentence answered,
+  // in the right file, the question that would otherwise have prompted
+  // somebody to write one. That is `checks-must-be-able-to-fail.md`'s #1322
+  // shape, and SUCCESS.md's "what is not success" list names the weaker
+  // version of it directly ("a guard with a passing mutant test").
+  //
+  // Writing it falsified the claim it was supposed to support. The obvious
+  // drift — `$d`, this round's eviction count, written where the running
+  // total belongs — moves THREE rows, measured over the whole file:
+  //
+  //     ($pt + $d) -> ($d + 0)      97 pass / 3 fail
+  //       · an existing count under the cap is carried forward unchanged
+  //       · an eviction ADDS to the existing count
+  //       · across a sequence past the cap  (the row above)
+  //
+  // The first of those evicts nothing, so depth is not what catches it. A
+  // mutation is a thing you spell, and the first spelling of this one —
+  // `($d | tostring)` — moved a FOURTH row by colliding with the string
+  // `AC-L11`'s count mutant rewrites, tripping its uniqueness guard. That
+  // row was reporting a vanished mutation target, not a caught defect.
+  //
+  // The mutant below is the one the depth actually buys, and it is the
+  // comment's own theory made real: a total that is RIGHT up to the deepest
+  // number anybody typed and wrong after it. 1 of 100.
+  test("AC-L15/AC-4: the MUTANT — a total saturating past the deepest typed number — is caught HERE and not by the shallow rows", () => {
+    const real = buildPersistScript();
+    const TOTAL_EXPR = "(($pt + $d) | tostring)";
+    expect(
+      real.split(TOTAL_EXPR).length - 1,
+      "the running-total expression moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    // Saturate at 5, the deepest total any other row in this file asserts.
+    const mutant = real.replace(TOTAL_EXPR, "(([($pt + $d), 5] | min) | tostring)");
+    expect(mutant, "the mutation did not apply").not.toBe(real);
+
+    // Half one — "not by the shallow rows", run rather than asserted in
+    // prose. These are the two fixtures that DO catch the obvious drift,
+    // and they are blind to this one: both land on totals at or under the
+    // saturation point, which is the whole reason depth is needed.
+    const carried = runPersist({
+      list: [botComment(5, windowBody(nRounds(2), { [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4 }))],
+      payload: ONE_FINDING,
+      script: mutant,
+    });
+    expect(
+      carried.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD],
+      "the carry-forward fixture saw the saturation, so it is not a shallow-blind case",
+    ).toBe(4);
+
+    const added = runPersist({
+      list: [
+        botComment(
+          5,
+          windowBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS), {
+            [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4,
+          }),
+        ),
+      ],
+      payload: ONE_FINDING,
+      script: mutant,
+    });
+    expect(
+      added.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD],
+      "the accumulate fixture saw the saturation, so it is not a shallow-blind case",
+    ).toBe(5);
+
+    // Half two — the sequence DOES see it, and the round it first sees it
+    // on is the measurement that justifies `SEQUENCE_ROUNDS`. Driven only
+    // as far as it needs to go: one past the predicted divergence, so a
+    // divergence that arrives LATE is a failure rather than something this
+    // loop runs past.
+    const probeTo = AI_REVIEW_LEDGER_MAX_ROUNDS + 6;
+    let body: string | null = null;
+    let firstDivergence: number | null = null;
+    let observed = 0;
+
+    for (let i = 1; i <= probeTo; i++) {
+      const runId = `sat-${i}`;
+      const r = runPersist({
+        list: body === null ? [] : [botComment(5, body)],
+        payload: ONE_FINDING,
+        round: String(i),
+        env: {
+          GITHUB_RUN_ID: runId,
+          STUB_WRITE_RESPONSE: JSON.stringify({ id: 5, body: `${runId} ok` }),
+        },
+        script: mutant,
+      });
+      expect(r.status, `round ${i}: ${r.stderr}`).toBe(0);
+      expect(r.sentRaw, `round ${i} wrote nothing`).not.toBeNull();
+      observed += 1;
+
+      const recorded = r.doc?.[AI_REVIEW_LEDGER_TRUNCATED_FIELD];
+      expect(typeof recorded, `round ${i} recorded no count`).toBe("number");
+      if (
+        firstDivergence === null &&
+        (recorded as number) + (r.rounds?.length ?? 0) !== i
+      ) {
+        firstDivergence = i;
+      }
+
+      body = JSON.parse(r.sentRaw!).body as string;
+    }
+
+    // The loop ran. A `firstDivergence` of null and a loop that never
+    // executed are the same reading otherwise, and only one of them is a
+    // finding.
+    expect(observed, "the probe loop ran zero rounds").toBe(probeTo);
+    expect(
+      firstDivergence,
+      "the saturating total was never caught — this row's mutant no longer reaches the defect it names",
+    ).toBe(AI_REVIEW_LEDGER_MAX_ROUNDS + 6);
+
+    // And the constant the row above runs on is deep enough to get there.
+    // This is the "eight is load-bearing" claim, executable: measured at
+    // `+ 5` the row above is GREEN under this mutant and at `+ 6` it is
+    // red, so the shipped `+ 8` carries two rounds of headroom. Shorten it
+    // and this fails naming the shortfall.
+    expect(
+      SEQUENCE_ROUNDS,
+      `the sequence row runs to the cap + ${SEQUENCE_ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS}, which never reaches the cap + 6 where this mutant first diverges`,
+    ).toBeGreaterThanOrEqual(firstDivergence!);
+
+    // The control, same rig and the real script: the divergence is the
+    // mutation's doing and not something this fixture provokes on its own.
+    const control = runPersist({
+      list: [
+        botComment(
+          5,
+          windowBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS), {
+            [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4,
+          }),
+        ),
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(
+      control.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD],
+      "the unmutated script did not accumulate either",
+    ).toBe(5);
   });
 });
 
