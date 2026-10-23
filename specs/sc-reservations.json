@@ -52,6 +52,13 @@
       "from": 2500,
       "to": 2519,
       "note": "#1348 - a provenance reading states the directory it was taken in. Above every declared block, which is what the allocator hands an owner who has none; 2460-2479 looked free by eyeballing headroom and collided with PARALLEL-AGENT-COORDINATION-SPEC.md, caught by test/spec-sc-ids-unique.test.ts. Delete when the PR merges."
+    },
+    {
+      "owner": "rg/crc-b4-jury-ledger",
+      "from": 21,
+      "to": 35,
+      "namespace": "AR",
+      "note": "CRC-B4 phase 2. test/finding-arbiter.test.ts holds AR-1..AR-20 on main; AR has no allocator, so this is the eyeballed-headroom method the rule names, declared before any id is consumed. Delete when the PR merges."
     }
   ]
 }

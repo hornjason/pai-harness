@@ -371,7 +371,12 @@ describe("#1343: the CLI routes, and exit 4 says where", () => {
        "--votes", join(scratch, "votes.json"),
        "--project-root", join(import.meta.dir, ".."),
        ...extra],
-      { stdout: "pipe", stderr: "pipe" },
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        // #1467: see the note on `runTwo` below.
+        env: { ...process.env, RUNGATE_FINDING_LEDGER: join(scratch, "finding-ledger.jsonl") },
+      },
     );
     return { code: r.exitCode, out: new TextDecoder().decode(r.stdout) };
   };
@@ -505,7 +510,13 @@ describe("#1343: the CLI routes, and exit 4 says where", () => {
          "--project-root", join(import.meta.dir, ".."),
          "--open-prs", join(scratch, "prs.json"),
          ...extra],
-        { stdout: "pipe", stderr: "pipe" },
+        {
+          stdout: "pipe",
+          stderr: "pipe",
+          // #1467: the script now appends to `ledgerPath()`. Keep the real
+          // `~/.rungate/finding-ledger.jsonl` out of a test's reach.
+          env: { ...process.env, RUNGATE_FINDING_LEDGER: join(scratch, "finding-ledger.jsonl") },
+        },
       );
       return { code: r.exitCode, out: new TextDecoder().decode(r.stdout) };
     };

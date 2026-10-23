@@ -52,6 +52,27 @@
  * `--votes` is a JSON array of `{ verifier, real, reason, category?,
  * severity? }`. **It is not optional**: a finding nobody voted on has not
  * cleared a quorum, it has not had one, and those are different states.
+ *
+ * ## Every adjudication is appended to the ledger (#1467, CRC-B4)
+ *
+ * One row per run, to `ledgerPath()` — the same
+ * `~/.rungate/finding-ledger.jsonl` the `gh issue create` chokepoint writes,
+ * because the value of the two populations is the corpus they form together.
+ * Redirect it with `RUNGATE_FINDING_LEDGER`.
+ *
+ * This is the only writer in the tree that can fill the row's `jury`: the
+ * chokepoint convenes no verifier group, so every row it has ever written
+ * carries `null` there. The row records **every verifier's individual vote**
+ * and **whether they disagreed**, which is what CRC-B4 asks for and what no
+ * count of agreement can reconstruct — the verifiers are a sampled
+ * instrument, so a second ballot is a second draw and not a recovery of the
+ * first. See `ledgerRow` for why a DROP is recorded too.
+ *
+ * **What it still cannot record: a group of any size but three.** There is no
+ * `--group-size`/`--quorum` flag, so a hand-run two-verifier quorum — the
+ * shape of the first real split this path has seen — arrives here as a short
+ * ballot and is refused `INCOMPLETE_GROUP`. A flag for it is a separate
+ * change, and worth one.
  */
 
 import { execFileSync } from "child_process";
@@ -66,6 +87,7 @@ import {
   type Verdict,
 } from "../lib/finding-arbiter";
 import { parseVotes, renderComment, type VerifierVote } from "../lib/finding-jury";
+import { filingBatch, ledgerPath, recordAdjudication, type FilingLedgerRow } from "../lib/issue-filing-gate";
 import {
   citedPathsFromKeys,
   normalisePath,
@@ -324,6 +346,58 @@ function readVotes(path: string): readonly VerifierVote[] {
   }
 }
 
+/**
+ * The adjudication, as a ledger row (#1467, CRC-B4).
+ *
+ * **One site, and it is the whole of the recording**, so a mutant copy with
+ * `jury: verdict.jury` set to `null` neutralises the thing under test and
+ * nothing else — `test/finding-arbiter.test.ts`'s `AR-25` runs that mutant
+ * beside the real script and `AR-26` asserts the string appears exactly once,
+ * because a second assignment somewhere else would survive the mutation and
+ * the case would go green having witnessed nothing
+ * (`.claude/rules/checks-must-be-able-to-fail.md`).
+ *
+ * `FilingLedgerRow` and not a new shape: the value of the two row populations
+ * — the chokepoint's and this one's — is the corpus they form together, and a
+ * second vocabulary for `category` / `refusal` / `withheldBy` would make that
+ * union a join nobody can write. The chokepoint cannot fill `jury`; this is
+ * the only writer that can, which is the point.
+ *
+ * **Written for a DROP as well as for a COMMENT, and that is the criterion
+ * rather than a detail.** The cheapest wrong version of this records what it
+ * surfaces, which satisfies every row a reader goes looking for and leaves the
+ * withheld population exactly as unrecoverable as it was. A candidate the
+ * quorum voted down is the one row that cannot be reconstructed from anywhere
+ * else: it is never filed, never commented on, never fixed, so it enters no
+ * downstream graph at all. `CandidateRecord`'s own header says it — *"written
+ * down at the moment the candidate is withheld, or never."*
+ */
+export function ledgerRow(finding: Finding, verdict: Verdict, at: string): FilingLedgerRow {
+  const batch = filingBatch(at);
+  const emitted = verdict.disposition !== "DROP";
+  return {
+    at,
+    // `${batch}/0`: one adjudication per process here, where the hook writes
+    // one row per `gh issue create` clause. Same composition, so a row from
+    // either writer is told apart from every other on the shared ledger.
+    key: batch === null ? null : `${batch}/0`,
+    id: verdict.id,
+    title: finding.title,
+    symptomHash: verdict.symptomHash,
+    category: verdict.category,
+    severity: verdict.severity,
+    disposition: verdict.disposition,
+    refusal: verdict.refusal,
+    emitted,
+    withheldBy: emitted ? null : (verdict.refusal ?? "UNACCOUNTED"),
+    jury: verdict.jury,
+    duplicateOf: verdict.duplicateOf,
+    // No override exists on this path. The `arbiter-override` label is a
+    // `gh issue create` flag the chokepoint reads, and nothing here has one.
+    overridden: false,
+  };
+}
+
 function emit(args: Args, verdict: Verdict, finding: Finding, routing: Routing | null): void {
   if (args.json) {
     console.log(JSON.stringify({ ...verdict, routing }, null, 2));
@@ -391,8 +465,30 @@ function main(): number {
       ...(changedFiles !== null ? { changedFiles } : {}),
     });
   } catch (error) {
+    // No verdict, so no row. The ballot is not lost with the process the way
+    // an in-memory one would be — it is the caller's own `--votes` file and
+    // is still on disk — but nothing here records that it was refused.
     console.log(`DROP new (UNMEASURED): ${message(error)}`);
     return EXIT_DROP;
+  }
+
+  // ── Record the decision, at decision time ────────────────────────────────
+  //
+  // Before the routing below, which costs a `gh pr list`: a decision recorded
+  // only once the network answered is a decision the ledger loses whenever the
+  // network does. And before the exit, for every disposition — see
+  // `ledgerRow`.
+  //
+  // A write that fails does NOT change the exit. `recordAdjudication`'s
+  // standing doctrine is that a measurement apparatus must not block the thing
+  // it measures, and the policy over that failure is to proceed LOUDLY: the
+  // line below is the difference between an unrecorded decision and a silent
+  // one.
+  if (!recordAdjudication(ledgerRow(finding, verdict, new Date().toISOString()))) {
+    console.log(
+      `UNMEASURED: the adjudication could not be appended to ${ledgerPath()}, so this ballot is ` +
+      "not on the record — re-running would re-sample the verifiers rather than recover their votes",
+    );
   }
 
   // Cost order, the same doctrine `arbitrate` applies to its own stages: a
