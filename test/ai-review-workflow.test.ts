@@ -55,7 +55,7 @@
  * literal in the tuple `test/release-guard.test.ts` pins.
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
@@ -65,7 +65,12 @@ import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
   AI_REVIEW_CONVENTIONS_FILE,
+  AI_REVIEW_ACTION_STEP_ID,
+  AI_REVIEW_EXECUTION_ARTIFACT_NAME,
+  AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID,
   AI_REVIEW_EXECUTION_FILE_VAR,
+  AI_REVIEW_EXECUTION_STAGE_STEP_ID,
+  AI_REVIEW_EXECUTION_STAGE_VAR,
   AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
@@ -77,6 +82,7 @@ import {
   buildAuthDetectStep,
   buildBaselineScript,
   buildDriftScript,
+  buildExecutionStageScript,
   AI_REVIEW_OVERRIDE_VALUE,
   AI_REVIEW_OVERRIDE_VAR,
   AI_REVIEW_APP_INSTALL_401,
@@ -136,6 +142,7 @@ function REFS(root: string) {
     auth: actionRef(GOOGLE_AUTH_ACTION),
     review: actionRef(CLAUDE_CODE_ACTION),
     setupBun: actionRef("oven-sh/setup-bun"),
+    uploadArtifact: actionRef("actions/upload-artifact"),
     setupBunWith: setupBunWith(declaredBunVersion(root), "    "),
   };
 }
@@ -1403,6 +1410,190 @@ describe("#803: a non-zero exit with no payload names the app install", () => {
       AI_REVIEW_APP_INSTALL_CAUSE,
       "the cause sentence carries its own copy of the URL rather than the constant",
     ).toContain(AI_REVIEW_APP_INSTALL_URL);
+  });
+});
+
+/**
+ * ## #1307: the witness on the UNMEASURED route
+ *
+ * A run that writes no findings payload leaves no trace of the DECISION not
+ * to write one, and the two explanations — the prompt lets the reviewer
+ * finish without writing, or the write was attempted and lost — need
+ * opposite fixes. The execution file separates them and dies with the
+ * runner.
+ *
+ * **The premise the whole step rests on, asserted here rather than claimed
+ * in a docblock:** the execution file is strictly MORE than the job log.
+ * The pinned action pushes every SDK message into an array and writes all of
+ * them to the file, while `sanitizeSdkOutput` returns a constructed summary
+ * for `system/init` and `result` and `null` for every other type — so the
+ * log carries two bookends and nothing between. Measured on run
+ * `39977251682`: an `init`, a `result`, and 43 turns in between appearing
+ * nowhere. Had the file been the same `result` object the log already
+ * prints, this step would record the same silence in a new place.
+ */
+describe("#1307: the execution file is preserved when no payload was written", () => {
+  /** Run the real staging script against a planted runner state. */
+  const stage = (opts: { payload?: string; execution?: string | "unset" }) => {
+    const dir = scratchDir("ai-review-stage-");
+    const sh = join(dir, "stage.sh");
+    writeFileSync(sh, buildExecutionStageScript());
+    const staged = join(dir, "staged.d");
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? "",
+      [AI_REVIEW_EXECUTION_STAGE_VAR]: staged,
+      AI_REVIEW_FINDINGS_PATH: "",
+      AI_REVIEW_EXECUTION_FILE: "",
+    };
+    if (opts.payload !== undefined) {
+      const p = join(dir, "findings.json");
+      writeFileSync(p, opts.payload);
+      env.AI_REVIEW_FINDINGS_PATH = p;
+    }
+    if (opts.execution !== undefined && opts.execution !== "unset") {
+      const e = join(dir, "claude-execution-output.json");
+      writeFileSync(e, opts.execution);
+      env.AI_REVIEW_EXECUTION_FILE = e;
+    }
+    // `bash -e`, because that is what Actions runs a `run:` block with and a
+    // test spawning a plain shell would be exercising different code.
+    const r = Bun.spawnSync(["bash", "-e", sh], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
+    const kept = existsSync(staged) ? readdirSync(staged) : [];
+    return {
+      code: r.exitCode,
+      stdout: r.stdout.toString(),
+      stderr: r.stderr.toString(),
+      kept,
+    };
+  };
+
+  test("#1307: no payload and a transcript present — the transcript is kept", () => {
+    const run = stage({ execution: '[{"type":"system","subtype":"init"}]' });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept, "the one run this step exists for staged nothing").toEqual([
+      "claude-execution-output.json",
+    ]);
+  });
+
+  test("#1307: a payload was written — nothing is staged, because the run is adjudicable", () => {
+    // The control for the row above. Without it, a script that copied
+    // unconditionally would pass that case and cost retention on every run.
+    const run = stage({ payload: "[]", execution: '[{"type":"result"}]' });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept).toEqual([]);
+  });
+
+  test("#1307: an EMPTY payload file is not a payload, and the transcript is still kept", () => {
+    // `-s`, not `-e`. A zero-byte file at the findings path is the action
+    // having touched it and written nothing, which is not an adjudicable
+    // round — reading it as one would lose exactly the evidence wanted.
+    const run = stage({ payload: "", execution: '[{"type":"result"}]' });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept).toEqual(["claude-execution-output.json"]);
+  });
+
+  test("#1307: neither file — nothing staged, and still exit 0", () => {
+    const run = stage({});
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept).toEqual([]);
+  });
+
+  test("#1307: it is a recorder — an unwritable staging target warns and does not fail", () => {
+    // The copy is performed and observed failing, not described. A recorder
+    // that can refuse the thing it records is worse than no recorder, and
+    // this is the one failure the script can actually have.
+    const dir = scratchDir("ai-review-stage-ro-");
+    const sh = join(dir, "stage.sh");
+    writeFileSync(sh, buildExecutionStageScript());
+    const e = join(dir, "claude-execution-output.json");
+    writeFileSync(e, '[{"type":"result"}]');
+    // A FILE where the script wants a directory: `mkdir -p` and `cp` both
+    // fail against it, which is a real runner failure rather than a mocked
+    // one.
+    const blocked = join(dir, "blocked");
+    writeFileSync(blocked, "not a directory");
+    const r = Bun.spawnSync(["bash", "-e", sh], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "",
+        [AI_REVIEW_EXECUTION_STAGE_VAR]: blocked,
+        AI_REVIEW_FINDINGS_PATH: "",
+        AI_REVIEW_EXECUTION_FILE: e,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(
+      r.exitCode,
+      `a failed copy must not turn the UNMEASURED refusal into a different red\n${r.stderr.toString()}`,
+    ).toBe(0);
+  });
+
+  const stepOf = (id: string) => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    return (doc.jobs[AI_REVIEW_JOB].steps as any[]).find(s => s.id === id);
+  };
+
+  test("#1307: both steps exist — asserted before the rows that describe them", () => {
+    expect(stepOf(AI_REVIEW_EXECUTION_STAGE_STEP_ID)).toBeDefined();
+    expect(stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID)).toBeDefined();
+  });
+
+  test("#1307: neither step carries an `if:` — the condition lives in the shell", () => {
+    // AC-2 above asserts this for the whole job. Repeated here pointed at
+    // these two steps specifically, because they are the ones that wanted an
+    // `if:` and the reason they do not have one is not obvious from reading
+    // them.
+    expect("if" in stepOf(AI_REVIEW_EXECUTION_STAGE_STEP_ID)).toBe(false);
+    expect("if" in stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID)).toBe(false);
+  });
+
+  test("#1307: the upload cannot fail the job, and an empty directory is not an error", () => {
+    const art = stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID);
+    expect(art["continue-on-error"]).toBe(true);
+    // Without `ignore`, the no-payload-no-transcript case — the commonest
+    // shape on this very route — would turn an empty directory into a red.
+    expect(art.with["if-no-files-found"]).toBe("ignore");
+  });
+
+  test("#1307: the artefact name is unique per run AND per attempt", () => {
+    // A re-run is the commonest way to get a second upload, and #1307's own
+    // evidence is a branch that failed and then passed. Two uploads under
+    // one name collide.
+    const name = stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with.name as string;
+    expect(name.startsWith(AI_REVIEW_EXECUTION_ARTIFACT_NAME)).toBe(true);
+    expect(name).toContain("github.run_id");
+    expect(name).toContain("github.run_attempt");
+  });
+
+  test("#1307: it is pinned the way every other action in this file is", () => {
+    expect(stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).uses).toBe(
+      actionRef("actions/upload-artifact"),
+    );
+  });
+
+  test("#1307: the staging target is under runner.temp, never the checkout", () => {
+    // The drift step refuses a reviewer that modified the tree, against a
+    // baseline taken before the review. A staging directory in the workspace
+    // would be read as the reviewer's write and fail every UNMEASURED run
+    // for the wrong reason.
+    const env = stepOf(AI_REVIEW_EXECUTION_STAGE_STEP_ID).env;
+    expect(env[AI_REVIEW_EXECUTION_STAGE_VAR]).toContain("runner.temp");
+    expect(stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with.path).toContain("runner.temp");
+  });
+
+  test("#1307: staging runs before the upload, and both before the report step", () => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    const ids = (doc.jobs[AI_REVIEW_JOB].steps as any[]).map(s => s.id);
+    const stageAt = ids.indexOf(AI_REVIEW_EXECUTION_STAGE_STEP_ID);
+    const uploadAt = ids.indexOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID);
+    const reportAt = ids.indexOf(AI_REVIEW_RUN_STEP_ID);
+    expect(stageAt).toBeLessThan(uploadAt);
+    // The load-bearing half: the report step exits non-zero on exactly the
+    // runs this evidence is for, and nothing after a failed step runs
+    // without the `if:` this job may not use.
+    expect(uploadAt, "an upload after the report step never runs on a refusal")
+      .toBeLessThan(reportAt);
   });
 });
 

@@ -1028,6 +1028,14 @@ export interface AiReviewActionRefs {
   /** `actionRef("anthropics/claude-code-action")`, declared by `lib/claude-code-action.ts`. */
   review: string;
   /**
+   * `actionRef("actions/upload-artifact")` from `lib/workflow-actions.ts`.
+   *
+   * Carries the reviewer's execution file off the runner on the UNMEASURED
+   * route — see `AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID` for why the job log
+   * is not already that witness (#1307).
+   */
+  uploadArtifact: string;
+  /**
    * `actionRef("oven-sh/setup-bun")` from `lib/workflow-actions.ts` (#1013).
    *
    * The adjudicator is `bunx`, and a GitHub-hosted runner has no bun. The
@@ -2575,6 +2583,93 @@ export const AI_REVIEW_DRIFT_TITLE = "AI review modified the tree";
 export const AI_REVIEW_PERSIST_STEP_ID = "ai-review-persist";
 
 export const AI_REVIEW_PERSIST_STEP_NAME = "Persist this round's findings to the pull request";
+
+/**
+ * ## The witness on the UNMEASURED route (#1307)
+ *
+ * A run that writes no findings payload leaves no trace of the DECISION not
+ * to write one. `#1307` has collected these for weeks and cannot say whether
+ * the prompt lets the reviewer finish without writing, or whether the write
+ * was attempted and lost — and those need opposite fixes. Nothing in the job
+ * distinguishes them, because the one artefact that could is deleted with
+ * the runner.
+ *
+ * ## Why the job log is not already that witness
+ *
+ * The pinned action streams the SDK's messages into a `messages` array and
+ * writes **all of them** to the execution file, while printing only a
+ * SANITIZED summary to the log — `sanitizeSdkOutput` in
+ * `base-action/src/run-claude-sdk.ts` returns a constructed object for
+ * `system/init` and for `result`, and `null` for every other message type.
+ * So the log carries the two bookends and nothing between them. Measured on
+ * run `39977251682`: an `init` at 15:19:44, a `result` at 15:24:25, **43
+ * turns in between and not one of them in the log**.
+ *
+ * The execution file is therefore strictly more than the log, and that is
+ * the whole justification for this step. Had the file been the same `result`
+ * object the log already prints, uploading it would have recorded the same
+ * silence in a new place and this step should not exist.
+ *
+ * ## The condition is ABSENCE OF A PAYLOAD, resolved in `run:`
+ *
+ * Not `steps.<report>.outcome`, which would have been the direct spelling
+ * and cannot be written: an `if:` on any step in this job is refused by
+ * `aiReviewAuthScript` in `lib/conformity.ts`, for every consumer, and that
+ * refusal's own text says to resolve the condition inside `run:` instead.
+ * A step after a failed one does not run without `if:`, so the staging step
+ * goes BEFORE the report step and decides for itself.
+ *
+ * **A payload is the right question, not a proxy for one.** It is the first
+ * thing the report step branches on, and it is what "adjudicated" means: the
+ * adjudicator reads the payload, so a run that produced one has its evidence
+ * already and needs no second copy. Every payload-less route is captured,
+ * including the WAIVED one, which exits 0 — an outcome-based condition would
+ * have missed that, and a waived run measured exactly as little as a refused
+ * one.
+ *
+ * What it does NOT capture is the two routes that refuse WITH a payload
+ * present — the override label over an unread payload, and an action that
+ * died around a payload the reviewer had already written. In both the
+ * payload is the evidence and it is already persisted to the pull request.
+ *
+ * ## It is a recorder, so it cannot refuse
+ *
+ * `if-no-files-found: ignore` and `continue-on-error: true`. The same
+ * doctrine `AI_REVIEW_PERSIST_STEP_ID` states above: a recorder that can
+ * fail the thing it records is worse than no recorder. This step must never
+ * be the reason a pull request goes red, and in particular must never
+ * convert an UNMEASURED refusal into a *different* red that hides it.
+ */
+export const AI_REVIEW_EXECUTION_STAGE_STEP_ID = "ai-review-execution-stage";
+
+export const AI_REVIEW_EXECUTION_STAGE_STEP_NAME =
+  "Stage the reviewer's execution file when no findings payload was written";
+
+/** Under `runner.temp`, never the checkout — the drift step reads the tree. */
+export const AI_REVIEW_EXECUTION_STAGE_DIR = "ai-review-unmeasured.d";
+
+export const AI_REVIEW_EXECUTION_STAGE_VAR = "AI_REVIEW_EXECUTION_STAGE";
+
+export const AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID = "ai-review-execution-artifact";
+
+export const AI_REVIEW_EXECUTION_ARTIFACT_STEP_NAME =
+  "Keep the reviewer's execution file when the review was UNMEASURED";
+
+/**
+ * The artefact name, suffixed per run and attempt.
+ *
+ * Two uploads under one name collide, and a re-run is the commonest way to
+ * get a second one — `#1307`'s own evidence includes a branch that failed
+ * and then passed, so the pair is exactly what a reader wants side by side.
+ */
+export const AI_REVIEW_EXECUTION_ARTIFACT_NAME = "ai-review-execution";
+
+/**
+ * Short, because this is a diagnostic for an open investigation and not a
+ * record. Long enough to survive a weekend; short enough that turning it on
+ * costs nothing anyone has to argue about.
+ */
+export const AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS = 14;
 
 export const AI_REVIEW_PERSIST_TITLE = "AI review ledger";
 
@@ -6175,6 +6270,67 @@ read_tree() {
  * An absent or unreadable baseline is UNMEASURED and refuses. "The tree did
  * not change" and "nobody looked before" must not be the same answer.
  */
+/**
+ * Copy the reviewer's execution file aside when no findings payload exists.
+ *
+ * Every path exits 0. This is a recorder, and
+ * `AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID` states the doctrine: a recorder
+ * that can refuse the thing it records is worse than no recorder. The one
+ * failure it CAN have — the copy not landing — is said out loud as a
+ * warning, because the one thing worse than losing the evidence is losing
+ * it silently.
+ *
+ * `set -uo pipefail` and deliberately **not** `-e`: an unset variable is a
+ * real defect and should abort, but a failing `cp` must reach the warning
+ * below rather than killing the step before it can explain itself.
+ */
+export function buildExecutionStageScript(): string {
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+set -uo pipefail
+
+staged="\${${AI_REVIEW_EXECUTION_STAGE_VAR}}"
+
+# IN A CONDITION, and that is the whole of it. Actions runs a \`run:\` block
+# as \`bash -e\`, so a bare \`mkdir -p\` that fails ABORTS THE STEP — exit 1,
+# before any line below can explain itself. That turns this recorder into a
+# second red sitting on top of the UNMEASURED one it exists to document,
+# which is precisely what it must never do. \`-e\` is suppressed for a
+# command in a condition, so the failure is reportable here and nowhere
+# else. The case that catches a regression of this is in
+# \`test/ai-review-workflow.test.ts\`, and it caught this exact defect on its
+# first run.
+if ! mkdir -p "\${staged}" 2>/dev/null; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::This run wrote no findings payload and the staging directory for the reviewer's execution file could not be created, so no transcript is uploaded. The review's own verdict is unaffected; #1307 gets no evidence from this run."
+  exit 0
+fi
+
+# The adjudicated case, and the common one. A payload is what the
+# adjudicator reads, so a run that wrote one already has its evidence on the
+# pull request and the execution file is not the interesting artefact.
+if [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
+  echo "A findings payload was written, so this run is adjudicable and the execution file is not staged."
+  exit 0
+fi
+
+# No payload AND no execution file: the action never got as far as writing
+# one. Nothing to keep, and that absence is itself reported by the report
+# step's route — this step does not duplicate the finding.
+if [ ! -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
+  echo "No findings payload and no execution file: nothing to stage."
+  exit 0
+fi
+
+if cp "\${${AI_REVIEW_EXECUTION_FILE_VAR}}" "\${staged}/" 2>/dev/null; then
+  echo "No findings payload was written. Staged the reviewer's execution file for upload (#1307)."
+else
+  # A warning, not a failure: see this function's docstring.
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::This run wrote no findings payload and the reviewer's execution file could not be copied aside, so the only record of what the reviewer did in its turns dies with this runner. The review's own verdict is unaffected — the report step still refuses — but #1307 gets no evidence from this run."
+fi
+
+exit 0
+`;
+}
+
 export function buildBaselineScript(): string {
   const noTemp =
     `RUNNER_TEMP is not set, so there is nowhere outside the checkout to record ` +
@@ -7540,6 +7696,56 @@ export function buildReviewRunStep(
     ...buildReviewRunScript(version).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
+  // #1307. BEFORE the report step, and the position is the whole design.
+  //
+  // The obvious shape — one upload step after the report step, conditioned
+  // on `steps.<report>.outcome == 'failure'` — cannot be written here. A
+  // step following one that exited non-zero does not run without `if:`, and
+  // an `if:` on any step in this job is refused by `aiReviewAuthScript` in
+  // `lib/conformity.ts`, for every consumer and not just this repository:
+  // *"a job skipped by a condition reports `skipped`, and a skipped required
+  // check can be treated as satisfied. Resolve the condition inside `run:`
+  // instead."* That is the instruction followed here.
+  //
+  // So the condition moves into the shell, the staging step runs
+  // unconditionally BEFORE anything has failed, and the upload is handed a
+  // directory that is empty on every run worth nothing.
+  const stageExecution = [
+    `- name: ${AI_REVIEW_EXECUTION_STAGE_STEP_NAME}`,
+    `  id: ${AI_REVIEW_EXECUTION_STAGE_STEP_ID}`,
+    `  env:`,
+    `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
+    `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
+    // Under RUNNER_TEMP and never in the checkout: the drift step refuses a
+    // reviewer that modified the tree, and the baseline it compares against
+    // was taken before the review ran. A staging directory in the workspace
+    // would be read as the reviewer's write.
+    `    ${AI_REVIEW_EXECUTION_STAGE_VAR}: \${{ runner.temp }}/${AI_REVIEW_EXECUTION_STAGE_DIR}`,
+    `  run: |`,
+    ...buildExecutionStageScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
+  // No `if:`, for the reason above. The directory is empty unless the step
+  // before it staged something, and `if-no-files-found: ignore` turns that
+  // into no artefact rather than an error — so a green adjudicated run pays
+  // no retention cost.
+  //
+  // `continue-on-error` is what keeps a recorder from refusing: the
+  // UNMEASURED annotation is this job's output, and a failed upload must not
+  // replace it with a different red. See
+  // `AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID`.
+  const executionArtifact = [
+    `- name: ${AI_REVIEW_EXECUTION_ARTIFACT_STEP_NAME}`,
+    `  id: ${AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID}`,
+    `  continue-on-error: true`,
+    `  uses: ${refs.uploadArtifact}`,
+    `  with:`,
+    `    path: \${{ runner.temp }}/${AI_REVIEW_EXECUTION_STAGE_DIR}/`,
+    `    name: ${AI_REVIEW_EXECUTION_ARTIFACT_NAME}-\${{ github.run_id }}-\${{ github.run_attempt }}`,
+    `    if-no-files-found: ignore`,
+    `    retention-days: ${AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS}`,
+  ];
+
   // #1168. BETWEEN the reviewer and the adjudicator, and the position is the
   // whole reason this step needs no `if:` — see `buildPersistScript`. The
   // reviewer has written its payload by here, and the adjudicator, which
@@ -7583,6 +7789,10 @@ export function buildReviewRunStep(
     indented(baseline, indent) +
     indented(review, indent) +
     indented(persist, indent) +
+    // #1307. Both BEFORE the report step — see `stageExecution` for why the
+    // obvious ordering is not available.
+    indented(stageExecution, indent) +
+    indented(executionArtifact, indent) +
     indented(report, indent) +
     indented(drift, indent)
   );
