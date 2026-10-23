@@ -94,10 +94,10 @@ implementation.
 
 ### Layer 5 — human approval scaled by risk
 
-- [ ] CRC-E1: Risk tiers are written down: low needs no human, medium one, high two.
-- [ ] CRC-E2: **The change sets the tier, not the author** — a classifier reads the change.
+- [x] CRC-E1: Risk tiers are written down: low needs no human, medium one, high two. (shipped, #1437)
+- [x] CRC-E2: **The change sets the tier, not the author** — a classifier reads the change. (shipped, #1437)
 - [ ] CRC-E3: A **second classifier** asks whether this change needs another person even when its tier says no.
-- [ ] CRC-E4: Owner-listed sensitive paths and **any CI workflow file** always require a human.
+- [x] CRC-E4: Owner-listed sensitive paths and **any CI workflow file** always require a human. (shipped, #1437)
 - [ ] CRC-E5: Only trusted authors get the lighter paths.
 - [ ] CRC-E6: **An agent's approval never counts as a person's.**
 - [ ] CRC-E7: Whoever prompted the change counts as one of the required reviewers.
@@ -154,9 +154,14 @@ Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
 0 carried a claiming test**. A spec nothing is bound to cannot drift, because
 there is nothing for it to drift from; the number below is what replaces that.
 
-Of the 56: **5 bound**, **8 where a mechanism exists that nothing in this
+Of the 56: **8 bound**, **8 where a mechanism exists that nothing in this
 repository can observe**, **4 that cannot be meaningful in this deployment**,
-**3 blocked on an owner decision**, **2 declared deviations**, **34 not done**.
+**3 blocked on an owner decision**, **2 declared deviations**, **31 not done**.
+
+Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4. The
+audit above was taken the same day, at 0 bound; the three moved by
+engineering, and none of the other four categories changed, which is the
+point of keeping them separate.
 
 An unticked box is one of the last five, and they are five different facts.
 Four of them are recorded here because an unticked box nobody can ever tick,
@@ -240,8 +245,8 @@ something in the tree that resembles it and is not it.
 - **CRC-B7** Three clauses, and they have three different costs — reading it as one item is what made it look cheap. **Sorting** is now possible and was not before #1337: there is a rendered tail to put in an order, and `advisoryNotice` and `renderCountedFindings` both emit in payload order, which is whatever order the model wrote. **The vocabulary** does not exist in the deployed path: `SEVERITY_RANK` tags Important / Nit / Pre-existing in `lib/finding-jury.ts`, which the CI path never calls — its callers are `scripts/arbitrate-finding.ts`, `lib/issue-filing-gate.ts`, `lib/failure-intake.ts` and `hooks/VerifyPhaseLock.hook.ts` — while the deployed table, `AI_REVIEW_SEVERITIES`, declares `critical`, `high`, `medium`, `low` and `info`. **Pre-existing** is not decidable there at all: `severityOf` decides it from the pull request's changed files and the findings step has no changed-path list to scope against. **The prerequisite is #1204/#1354, not #1337**, because that is the change carrying the changed-path list into this module; until it lands the criterion cannot be ticked on the first two clauses alone. A weaker route to the third exists and is worth knowing before anyone plumbs the diff: `advisoryKey` (named `findingKey` before #1398) identifies a finding by file and summary rather than by line, so the same observation has one identity across rounds and *first seen on round 1* becomes decidable from the accumulated ledger with no diff at all. That is a different and smaller claim than `severityOf`'s — first-seen-round, not present-before-the-pull-request — and it should be labelled as the one it is rather than sold as `Pre-existing`. **One trap for whoever sorts**: `renderFinding` prints `finding <index>`, and the blocking annotation and the advisory notice now share that numbering, so a sort must reorder the display and keep the payload index in the label. A case in `test/ai-review-advisory-findings.test.ts` asserts the tail is indexed against the whole payload and reds on renumbering.
 - **CRC-B8** Half, and a different half since #1337. The advisory tail is no longer discarded — `advisoryNotice` names every counted non-blocking finding, with a key, in an annotation that says each is UNANSWERED. What is still missing is the requirement: nothing obliges anyone to answer one, so "fixed, or resolved with a stated reason" remains a request. A duplicate or a dropped-category filing is refused at the chokepoint; ALLOW is still the default for a novel finding.
 - **CRC-B9** No per-repo review depth. `ceremonyTier` LIGHT / STANDARD / THOROUGH is the harness gate ceremony, a different axis.
-- **CRC-E1, CRC-E2, CRC-E3, CRC-E9** No risk tiers exist anywhere in the tree. `E1` and `E2` gate the rest: without a written tier set and a classifier that reads the change, `E3` and `E9` have nothing to second-guess or loosen.
-- **CRC-E4** The thing that looks like this is its inverse. The action refuses to review a pull request whose `.github/workflows/ai-review.yml` differs from the default branch's — one file, not any CI workflow file — and the documented escape, the `ai-review-override` label, **waives the check** rather than routing to a person. Branch protection requires zero approvals, so there is no human state to route to.
+- **CRC-E3, CRC-E9** `lib/risk-tier.ts` now exists, so these two have something to second-guess and something to loosen — which is why they were sequenced after #1437 rather than built with it. `E3` needs a second classifier that can raise a LOW the first one is content with; `E9` needs a recorded outcome per tier to loosen against, and the ledger does not carry a tier yet. `LOW_MAX_FILES` and `LOW_MAX_LINES` are therefore declared strict and not evidence-based, and that is stated at the constants rather than left to be discovered.
+- **CRC-E4** Satisfied by `lib/risk-tier.ts` as of #1437, and worth recording what it replaced, because the prior state was this criterion's *inverse* and looked like compliance. The action refuses to review a pull request whose `.github/workflows/ai-review.yml` differs from the default branch's — one file, not any CI workflow file — and the documented escape, the `ai-review-override` label, **waives the check** rather than routing to a person. Measured on 2026-10-23: five of fifteen open pull requests edited that file and so could never go green, and a sixth group of five was red only because `main` had moved it underneath them. A check that cannot pass plus a label that waives it records nothing about whether anybody read the diff. `ALWAYS_HIGH_PREFIXES` is a floor no configuration can lower; branch protection still requires zero approvals, so what the tier produces today is a *reading* rather than an enforced gate, and CRC-E6/E8 remain blocked on that setting.
 - **CRC-E6** Branch protection declares no required reviews, so no approval counts toward anything and the criterion is vacuous rather than satisfied.
 - **CRC-F3** No one-step rollback, and none exercised.
 - **CRC-F4** No incident review asks which layer should have caught it.

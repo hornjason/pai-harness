@@ -129,7 +129,18 @@ export type RiskRefusal =
   /** The list was read and is empty. A change touching nothing is not small. */
   | "CHANGED_FILES_EMPTY"
   /** At least one entry is not a repository path. */
-  | "CHANGED_FILE_UNREADABLE";
+  | "CHANGED_FILE_UNREADABLE"
+  /**
+   * An owner CONFIGURED a sensitive path the classifier cannot read.
+   *
+   * This is the refusal it is most tempting to skip, and the most dangerous
+   * to. `underPrefix` returns false on a prefix it cannot read, so a
+   * configured `billing/**` or `src/auth/*` would match nothing, every path
+   * under it would read as not-sensitive, and the owner would see LOW on
+   * exactly the changes they wrote the setting to catch. The classifier
+   * being silent is what makes it worse than having no setting at all.
+   */
+  | "SENSITIVE_PATH_UNREADABLE";
 
 export interface ChangeUnderReview {
   /**
@@ -203,6 +214,25 @@ export function classifyChange(change: ChangeUnderReview): RiskReading {
       "The changed-file list was read and is empty. Either the change " +
         "touches nothing, or the list was produced wrongly; those are " +
         "different facts and neither is low risk.",
+    ]);
+  }
+
+  // The CONFIGURED side is read before the change is. `underPrefix` refuses a
+  // prefix it cannot read by returning false, which at this call site would
+  // mean "not sensitive" — so the decision it defers to the caller is taken
+  // here, explicitly, and taken toward refusing.
+  const badPrefixes = sensitivePaths.filter(
+    s => normaliseRepoPath(typeof s === "string" ? s.replace(/\/+$/, "") : s) === null,
+  );
+  if (badPrefixes.length > 0) {
+    return unmeasured(["SENSITIVE_PATH_UNREADABLE"], [
+      `${badPrefixes.length} configured sensitive path(s) could not be read ` +
+        `as a repository path: ` +
+        `${badPrefixes.slice(0, 3).map(p => JSON.stringify(p)).join(", ")}. ` +
+        `Globs are not supported — write the directory. A prefix the ` +
+        `classifier cannot read is a prefix it cannot enforce, and matching ` +
+        `nothing would report LOW on exactly the paths the setting exists ` +
+        `to catch.`,
     ]);
   }
 

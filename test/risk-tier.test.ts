@@ -170,6 +170,37 @@ describe("CRC-E4: any CI workflow file, and any owner path, always needs a human
     ]);
   });
 
+  test("E4-8b: a CONFIGURED prefix that cannot be read is UNMEASURED, not 'not sensitive'", () => {
+    // The fail-open the push review found in this branch's own code: an owner
+    // writes a glob, `underPrefix` cannot read it, every path reads as
+    // not-sensitive, and the owner sees LOW on exactly what the setting was
+    // written to catch. Silence is what makes it worse than no setting.
+    for (const bad of ["billing/**", "src/auth/*", "", "a b", 42, null, "../escape"]) {
+      const r = classifyChange({
+        changedFiles: ["lib/a.ts"],
+        linesChanged: 1,
+        sensitivePaths: [bad] as never,
+      });
+      expect(r.tier, JSON.stringify(bad)).toBeNull();
+      expect(r.refusals, JSON.stringify(bad)).toContain("SENSITIVE_PATH_UNREADABLE");
+    }
+  });
+
+  test("E4-8c: a readable prefix still works, with or without a trailing slash", () => {
+    // The control. Without it, "refuse every configured prefix" passes E4-8b.
+    for (const good of ["billing", "billing/", "billing//"]) {
+      const r = classifyChange({
+        changedFiles: ["billing/charge.ts"],
+        linesChanged: 1,
+        sensitivePaths: [good],
+      });
+      expect(r.tier, good).toBe("high");
+      expect(r.reasons, good).toContain("OWNER_SENSITIVE_PATH");
+    }
+    // And an empty list is not a bad list.
+    expect(classifyChange({ ...SMALL, sensitivePaths: [] }).tier).toBe("low");
+  });
+
   test("E4-9: alwaysHighReason is the ONLY place a prefix is compared", () => {
     const source = readFileSync(RISK_TIER_SOURCE, "utf-8");
     const code = source.replace(/\/\*\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
