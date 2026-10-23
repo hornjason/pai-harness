@@ -214,7 +214,7 @@ const CASES: readonly Case[] = [
   {
     id: "RT-11",
     what: "neither --this-pr nor changed files: the router does not know which PR it is on, so it refuses",
-    // RED before #1427. `ownFiles` was undefined so step 2 never ran, and
+    // RED before #1427. `ownFiles` was undefined so step 3 never ran, and
     // `filter(p => p.number !== undefined)` excluded nothing — so the PR being
     // arbitrated stayed in its own candidate corpus and was returned as the
     // OTHER pull request to route to. `scripts/arbitrate-finding.ts` turns

@@ -206,8 +206,8 @@ export function routePaths(citedPaths: readonly string[], options: RouteOptions)
   //
   // #1427: with BOTH `thisPr` and `changedFiles` absent, this function used
   // to carry on. Two things then went wrong together and in the same
-  // direction. Step 2 could not run, so "the diff at hand already owns this"
-  // was never asked; and step 5's `filter(p => p.number !== options.thisPr)`
+  // direction. Step 3 could not run, so "the diff at hand already owns this"
+  // was never asked; and step 6's `filter(p => p.number !== options.thisPr)`
   // excluded nothing against `undefined`, so the pull request being
   // arbitrated stayed in its OWN candidate corpus and could be returned as
   // the other pull request to route to. `scripts/arbitrate-finding.ts` turns
