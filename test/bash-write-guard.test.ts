@@ -2054,3 +2054,255 @@ describe("#1269 WITNESS: a computed destination in an interpreter body", () => {
     expect(decideBashWrite(cmd).blocked).toBe(false);
   });
 });
+
+/**
+ * Covers #1214 — arm 3 allows an interpreter that writes a live gate
+ * artifact through an imported project function.
+ *
+ * ## The result is that the predicate was REJECTED, and this pins it
+ *
+ * #1214 offered two framings and asked for the measurement to choose. The
+ * narrower one — derive the suspicious-call set from the body's own `import`
+ * statement, enumerating nothing — was implemented and swept over 130,247
+ * real commands: 616 newly blocked, 0 newly allowed, 600 of them calling a
+ * writing orchestrator symbol against the live run store. 97% precision, and
+ * still wrong, because `workflows/ship.js` EMITS those commands itself.
+ *
+ * The filed "bypass" is the harness's own GOAL-phase step 1. Blocking it
+ * refuses every run. `WRITE_INTENT`'s docstring carries the full numbers and
+ * the three places that prescribe the shape.
+ *
+ * So these rows are not decoration. They are the cost of the obvious fix,
+ * made executable: this block went RED — 600 corpus commands and every row
+ * below — against the predicate while it existed, which is the evidence that
+ * it can fail. Reach for that fix again and the suite says what it breaks.
+ */
+describe("#1214 WITNESS: the harness's own prescribed commands stay allowed", () => {
+  const HARNESS = "/opt/bwprobe/harness";
+  const WORK = "/opt/bwprobe/runstore";
+
+  /**
+   * The premise, checked rather than asserted. If `ship.js` ever stops
+   * prescribing this shape, the reason these rows are allowed has gone away
+   * and the question deserves re-opening — so this goes red instead of
+   * quietly becoming a permission nobody can justify.
+   */
+  test("PREMISE: ship.js really does emit the shape #1214 filed", () => {
+    const ship = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf8");
+    expect(ship).toContain("import {initWorkflow, writeACs} from");
+    expect(ship).toContain("gates/orchestrator.ts");
+    expect(ship).toContain("Run this EXACTLY as written");
+    // The payload spelling is generated, not hand-written, and it is the
+    // fingerprint that identifies the filed command as the harness's own.
+    const transport = readFileSync(join(import.meta.dir, "..", "lib", "evidence-command-transport.ts"), "utf8");
+    expect(transport).toContain("JSON.parse(process.argv[");
+  });
+
+  test("the filed command — GOAL phase step 1 — is allowed", () => {
+    const cmd = `mkdir -p ${WORK} && bun -e "
+import {initWorkflow, writeACs} from '${HARNESS}/gates/orchestrator.ts';
+const sf = '${WORK}/${STATE}';
+initWorkflow(sf, { issue: 624, slug: 'pai-harness-624' });
+writeACs(sf, JSON.parse(process.argv[1]));
+const s=JSON.parse(require('fs').readFileSync(sf,'utf-8'));
+console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
+" '[]' 2>&1`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("the sanctioned gate-state repair is allowed", () => {
+    // Printed to the agent verbatim by `lib/gate-result-protection.ts` and
+    // `lib/gate-enforcement.ts`, and documented in `gates/SCHEMA-GUIDE.md`
+    // as the replacement for the Write tool and `cat >`.
+    const cmd = `bun -e "import {writeWorkflowState} from '${HARNESS}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK}/${STATE}','utf8')); writeWorkflowState('${WORK}/${STATE}', s);"`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("#1176's reading witnesses are untouched", () => {
+    // The issue names these explicitly: a guard that refuses the normal way
+    // of looking at gate state gets switched off.
+    for (const cmd of [
+      `bun -e "const s = readFileSync('${WORK}/${STATE}','utf8'); console.log(s)"`,
+      `python3 -I -c "import json; print(json.load(open('${WORK}/${STATE}')))"`,
+      `bun -e "import {readWorkflow} from '${HARNESS}/gates/orchestrator.ts'; console.log(readWorkflow('${WORK}/${STATE}').phase)"`,
+    ]) {
+      expect(decideBashWrite(cmd).blocked, cmd).toBe(false);
+    }
+  });
+
+  test("CONTROL: arm 3 still refuses a DECLARED write verb on the same path", () => {
+    // Without this the block above would pass against a guard whose arm 3
+    // had been deleted outright, which is the vacuous reading of "allowed".
+    for (const cmd of [
+      `bun -e "writeFileSync('${WORK}/${STATE}', '{}')"`,
+      `python3 -I -c "open('${WORK}/${STATE}','w').write('{}')"`,
+      `bun -e "import {x} from '${HARNESS}/gates/orchestrator.ts'; writeFileSync('${WORK}/${STATE}', '{}')"`,
+    ]) {
+      expect(decideBashWrite(cmd).blocked, cmd).toBe(true);
+    }
+  });
+
+  test("CONTROL: no consumer-specific symbol was added to the guard", () => {
+    // #1214's explicit constraint. `initWorkflow`/`writeACs` are this
+    // project's API; a harness module naming them is wrong in every other
+    // tree. The docstring DISCUSSES them, so the check is scoped to the
+    // executable constant rather than the file.
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const m = /const WRITE_INTENT =\s*([\s\S]*?);\n/.exec(src);
+    expect(m, "WRITE_INTENT must remain a single declared constant").not.toBeNull();
+    for (const sym of ["initWorkflow", "writeACs", "writeWorkflowState", "updateAC", "writeEvidence"]) {
+      expect(m![1]).not.toContain(sym);
+    }
+  });
+});
+
+/**
+ * Covers #1239 — an escaped quote desynchronises the word scanner, the
+ * redirect operator is swallowed with the rest of the word, and the write is
+ * ALLOWed.
+ *
+ * ## Why this is a battery and not two witnesses
+ *
+ * The issue filed two spellings, both inside `$( )`. Enumerating the space
+ * instead of asserting the filed shapes found **seven** executable bypasses
+ * across **two** scanners, from one root cause: `indexOf` cannot tell `"`
+ * from `\"`, so inside a double-quoted span the escaped quote is read as the
+ * closing one. Three of the seven need no `$( )` at all —
+ * `echo "x\"" > <protected>` is the shortest of them and nobody had written
+ * it down.
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md`, seventh shape: a battery
+ * that varies the guard while holding the input shape fixed cannot be wrong
+ * about an input nobody wrote. So the redirect is held fixed at `> <target>`
+ * — that is the thing under test — and the axis that varies is the QUOTING
+ * of the word in front of it, which is where the defect lives.
+ *
+ * ## Why every row is executed
+ *
+ * The whole defence of the unterminated spellings is that they are not valid
+ * bash. That is a claim about bash, so it is measured by bash rather than
+ * asserted: each row is written to a file and run against a seeded victim,
+ * and the row's `runs` column is the reading. A row that RUNS and is ALLOWed
+ * is a bypass; a row that is inert is not, and this file deliberately
+ * constrains the guard's answer for none of them.
+ *
+ * The payloads are JS string literals written to a file with `writeFileSync`
+ * and handed to `bash <file>`. They are never interpolated through another
+ * shell, which would eat the backslashes before either bash or the guard saw
+ * them and leave the battery proving something about the fixture. `stderr` is
+ * asserted empty on every row expected to run, so a fixture that arrived
+ * mangled is visible rather than silently scored as inert.
+ */
+describe("#1239 BATTERY: an escaped quote must not swallow the redirect", () => {
+  /**
+   * Each row is `<prefix> > <target>`. `scanner` records which of the two
+   * `indexOf` sites the row exercises — the word-level quote branch, or the
+   * `$( )` substitution branch — so a fix applied to only one of them leaves
+   * the other half of the table red.
+   */
+  const SPELLINGS: { id: string; scanner: "word" | "subst"; prefix: string; runs: boolean }[] = [
+    // --- word-level quote scanner ---
+    { id: "bare word", scanner: "word", prefix: `echo x`, runs: true },
+    { id: "dq word", scanner: "word", prefix: `echo "x"`, runs: true },
+    { id: "sq word", scanner: "word", prefix: `echo 'x'`, runs: true },
+    { id: "dq inside sq word", scanner: "word", prefix: `echo '"'`, runs: true },
+    { id: "sq inside dq word", scanner: "word", prefix: `echo "'"`, runs: true },
+    { id: "escaped backslash in dq word", scanner: "word", prefix: `echo "x\\\\"`, runs: true },
+    { id: "backslash in sq word (no escapes)", scanner: "word", prefix: `echo 'x\\'`, runs: true },
+    { id: "backtick sub in word", scanner: "word", prefix: "echo `echo y`", runs: true },
+    // the three the issue did not name
+    { id: "escaped dq in dq word", scanner: "word", prefix: `echo "x\\""`, runs: true },
+    { id: "escaped dq, two dq words", scanner: "word", prefix: `echo "a\\"" "b"`, runs: true },
+    { id: "escaped dq outside quotes", scanner: "word", prefix: `echo \\"`, runs: true },
+    { id: "unterminated dq word", scanner: "word", prefix: `echo "x`, runs: false },
+
+    // --- $( ) substitution scanner ---
+    { id: "plain sub", scanner: "subst", prefix: `echo $(echo x)`, runs: true },
+    { id: "dq in sub", scanner: "subst", prefix: `echo $(echo "x")`, runs: true },
+    { id: "sq in sub", scanner: "subst", prefix: `echo $(echo 'x')`, runs: true },
+    { id: "paren in dq", scanner: "subst", prefix: `echo $(echo "x)")`, runs: true },
+    { id: "paren in sq", scanner: "subst", prefix: `echo $(echo 'x)')`, runs: true },
+    { id: "dq inside sq", scanner: "subst", prefix: `echo $(echo '"')`, runs: true },
+    { id: "sq inside dq", scanner: "subst", prefix: `echo $(echo "'")`, runs: true },
+    { id: "escaped backslash in dq", scanner: "subst", prefix: `echo $(echo "x\\\\")`, runs: true },
+    { id: "backslash in sq (no escapes)", scanner: "subst", prefix: `echo $(echo 'x\\')`, runs: true },
+    { id: "escaped paren outside quotes", scanner: "subst", prefix: `echo $(echo \\))`, runs: true },
+    { id: "nested substitution", scanner: "subst", prefix: `echo $(echo $(echo y))`, runs: true },
+    { id: "backtick inside dq", scanner: "subst", prefix: 'echo $(echo "`echo y`")', runs: true },
+    // the issue's two, plus the nested spelling of the same defect
+    { id: "escaped dq in dq", scanner: "subst", prefix: `echo $(echo "x\\"")`, runs: true },
+    { id: "escaped dq then paren in dq", scanner: "subst", prefix: `echo $(echo "a\\")b")`, runs: true },
+    { id: "escaped dq outside quotes, in sub", scanner: "subst", prefix: `echo $(echo \\")`, runs: true },
+    { id: "nested sub with escaped dq", scanner: "subst", prefix: `echo $(echo $(echo "y\\""))`, runs: true },
+    // inert: syntax errors. The guard's answer is NOT asserted for these —
+    // the issue explicitly does not ask for them, and fail-closing on an
+    // unterminated span would make every row above green for two reasons.
+    { id: "escaped dq then paren, outside quotes", scanner: "subst", prefix: `echo $(echo \\")b\\")`, runs: false },
+    { id: "unterminated dq in sub", scanner: "subst", prefix: `echo $(echo "x)`, runs: false },
+    { id: "unterminated sq in sub", scanner: "subst", prefix: `echo $(echo 'x)`, runs: false },
+  ];
+
+  /** Does bash run this row, and does it reach the redirect? */
+  function execute(prefix: string): { runs: boolean; stderr: string } {
+    const dir = mkdtempSync(join(tmpdir(), "bwg-1239-"));
+    try {
+      const victim = join(dir, STATE);
+      const script = join(dir, "payload.sh");
+      writeFileSync(victim, "ORIGINAL\n");
+      writeFileSync(script, `${prefix} > ${victim}\n`);
+      const r = spawnSync("bash", [script], { encoding: "utf8" });
+      return { runs: readFileSync(victim, "utf8").trim() !== "ORIGINAL", stderr: r.stderr ?? "" };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("POPULATION: the table is the one this issue measured", () => {
+    // The count that failed is not the finding; the population is. If a row
+    // is dropped to make the suite green, this goes red naming the shortfall.
+    expect(SPELLINGS.length).toBe(31);
+    expect(SPELLINGS.filter(s => s.scanner === "word").length).toBe(12);
+    expect(SPELLINGS.filter(s => s.scanner === "subst").length).toBe(19);
+    expect(SPELLINGS.filter(s => s.runs).length).toBe(27);
+    expect(new Set(SPELLINGS.map(s => s.id)).size).toBe(SPELLINGS.length);
+  });
+
+  test("FIXTURE: bash agrees with the `runs` column, and the payloads arrived intact", () => {
+    const disagree: string[] = [];
+    const noisy: string[] = [];
+    for (const s of SPELLINGS) {
+      const { runs, stderr } = execute(s.prefix);
+      if (runs !== s.runs) disagree.push(`${s.id}: bash says runs=${runs}, table says ${s.runs}`);
+      // A row that should run and emitted anything on stderr did not arrive
+      // the way it was written. That is a broken fixture, not a finding.
+      if (s.runs && stderr.trim()) noisy.push(`${s.id}: ${stderr.trim().split("\n")[0]}`);
+    }
+    expect(disagree).toEqual([]);
+    expect(noisy).toEqual([]);
+  });
+
+  test("every spelling that bash actually RUNS is refused", () => {
+    const bypasses: string[] = [];
+    for (const s of SPELLINGS.filter(r => r.runs)) {
+      const cmd = `${s.prefix} > ${LIVE}/${STATE}`;
+      if (!decideBashWrite(cmd).blocked) bypasses.push(`${s.scanner}/${s.id}: ${cmd}`);
+    }
+    expect(bypasses).toEqual([]);
+  });
+
+  test("CONTROL: the guard still refuses nothing it did not refuse before", () => {
+    // A scanner change that simply blocked everything would pass the battery
+    // above. These are ordinary reads that name a protected artifact and must
+    // stay allowed — including the escaped-quote spellings, so the fix cannot
+    // be "treat a backslash as suspicious".
+    for (const cmd of [
+      `grep -n "chmod" ${LIVE}/${STATE}`,
+      `cat ${LIVE}/${STATE}`,
+      `echo "x\\"" > /tmp/scratch/${STATE}`,
+      `git show HEAD:${STATE} | grep -nE "a\\"b"`,
+      `jq . ${LIVE}/${STATE}`,
+    ]) {
+      expect(decideBashWrite(cmd).blocked, cmd).toBe(false);
+    }
+  });
+});
