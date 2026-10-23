@@ -45,6 +45,8 @@ import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { TRACKED_ID_PREFIX_SOURCE } from "../lib/sc-ids";
+
 /**
  * One changed file, with enough of the diff to tell an edit from an event.
  *
@@ -90,9 +92,25 @@ const inDir = (p: string, dir: string) => p.startsWith(`${dir}/`);
  */
 const LINE_CITATION = /[\w./-]+\.tsx?:\d+/;
 
-/** A criterion checkbox, ticked. The space inside `[ ]` is the discriminator. */
-const TICKED_CRITERION = /^\s*[-*]\s*\[[xX]\]\s*SC-/;
-const UNTICKED_CRITERION = /^\s*[-*]\s*\[ \]\s*SC-/;
+/**
+ * A criterion checkbox, ticked. The space inside `[ ]` is the discriminator.
+ *
+ * The PREFIX comes from `TRACKED_ID_PREFIX_SOURCE` and is not respelled here.
+ * It used to be a hand-written `SC-`, and #1298 added a second tracked
+ * namespace — `CRC-A1`..`CRC-N5` in `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` —
+ * which this row could not see. Ticking one of those routed the spec-edit
+ * pair and nothing else, while moving `UNCLAIMED_RATCHET` and
+ * `CLAIMED_UNBINDABLE` in `test/sc-binding-split.test.ts` and the per-spec
+ * census in `test/ticked-sc-cover.test.ts`, all three of which this row
+ * exists to route. That is #990 exactly — the same event, in the same file,
+ * invisible to the same router — one namespace later, and it was found by
+ * running this script on the first diff that ticked a `CRC-` id.
+ *
+ * `lib/sc-ids.ts` says the list is the only thing that decides what a tracked
+ * criterion id is. A reader that respells it is a reader that decides again.
+ */
+const TICKED_CRITERION = new RegExp(`^\\s*[-*]\\s*\\[[xX]\\]\\s*${TRACKED_ID_PREFIX_SOURCE}-`);
+const UNTICKED_CRITERION = new RegExp(`^\\s*[-*]\\s*\\[ \\]\\s*${TRACKED_ID_PREFIX_SOURCE}-`);
 
 /**
  * The routing table.
