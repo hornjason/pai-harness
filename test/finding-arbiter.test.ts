@@ -29,6 +29,7 @@ import {
   citedLines,
   citedSymbols,
   duplicateOverlap,
+  DUPLICATE_CONTAINMENT_MIN_KEYS,
   sharedKeys,
   symptomHash,
   symptomKeys,
@@ -1783,5 +1784,133 @@ describe("AR-19: a byte-identical re-filing is a duplicate, whatever it counts",
     );
     expect(ratio, "the fixture must sit below the containment cut").toBeLessThan(0.8);
     expect(duplicateOverlap(a, b).duplicate).toBe(true);
+  });
+});
+
+/**
+ * AR-20: the containment arm's floor, measured in the direction it can be
+ * wrong in rather than in the direction it was tuned in.
+ *
+ * ## What every row in AR-19 holds fixed
+ *
+ * Every case above asks *does the arm CATCH the thing* — a re-filing, a
+ * tuned pair, a cluster sibling it must leave apart. Not one of them hands
+ * the arm a **small finding beside a large unrelated issue**, which is the
+ * input on which a containment ratio is cheapest to satisfy: an `n`-key
+ * finding whose `n` keys all appear in a 20-key issue scores `n/n = 1.00`
+ * and is refused, whatever the two are actually about. That is the seventh
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md` — the battery
+ * varies the guard and holds the input shape fixed, so no count in it can
+ * come back wrong about an input nobody wrote.
+ *
+ * ## Why the floor moved from 2 to 4
+ *
+ * The floor at 2 was argued from a measurement: *"a floor of 4 costs three
+ * of the 38 and flags not one pair fewer."* **Re-measured 2026-10-23
+ * against the live tracker** — 35 open issues, pull requests excluded,
+ * 595 pairs — that reading reproduces, and it reads the other way round:
+ *
+ *     floor   self-refile refused   cross-issue pairs flagged
+ *     2       35/35                 2 — 1286/1269, 1226/1162
+ *     3       34/35                 2 — the same two
+ *     4       32/35                 2 — the same two
+ *     5       30/35                 2 — the same two
+ *
+ * Both of those pairs are the QUANTITY arm's; the containment arm flags
+ * **zero cross-issue pairs at every floor**. So the floor buys nothing in
+ * the catching direction and the only thing it trades is self-refile
+ * coverage — and the two sides of that trade are not symmetric, which is
+ * the whole argument:
+ *
+ * - a self-refile that gets through is **a duplicate on the tracker**, the
+ *   direction this file says everywhere it is allowed to be wrong in;
+ * - a small finding swallowed by a large unrelated issue is **a real
+ *   finding withheld**, the direction it says nothing here may fail in.
+ *
+ * A floor of 2 pays three refusals' worth of the forbidden direction to buy
+ * three self-refiles of the allowed one. That is the trade inverted, and it
+ * is the only reason this constant moves.
+ *
+ * ## The alternative, and why it is not what shipped
+ *
+ * The other candidate was an absolute shared-key minimum beside the ratio —
+ * `keys.length >= N` AND `ratio >= 0.8`. On the contained side those are the
+ * same question: a floor of 4 with a 0.8 ratio already requires 4 shared
+ * keys of the smaller set, so the two always agree and a mutation of either
+ * leaves the other holding every case up. Two deciders, one question, the
+ * fourth shape. One constant moved instead.
+ */
+describe("AR-20: a small finding is not contained in a large unrelated one", () => {
+  /**
+   * A real-shaped broad issue: one file, many symbols, no measured numbers.
+   * Its subject is which checkout a registration resolves to.
+   */
+  const BROAD: Finding = {
+    id: "1216",
+    title: "A hook registration resolves to a working tree behind main",
+    body:
+      "`resolveHookTree` and `hookRegistrations` in lib/hook-registry.ts disagree with " +
+      "`registeredHooks` in lib/hook-traceability.ts. `BashWriteGuard` in " +
+      "hooks/BashWriteGuard.hook.ts imports `decideBashWrite` from lib/bash-write-guard.ts, " +
+      "and `VerifyPhaseLock` in hooks/VerifyPhaseLock.hook.ts imports `filingGate` from " +
+      "lib/issue-filing-gate.ts. `hookPath`, `settingsPath`, `registryPath` and " +
+      "`traceabilityTable` all resolve against scripts/sync-hooks.ts.",
+  };
+
+  /** A different defect in a symbol the broad issue happens to name. */
+  const TWO_KEY: Finding = {
+    id: UNFILED_ID,
+    title: "settingsPath throws on a relative project root",
+    body: "`settingsPath` in lib/hook-registry.ts throws rather than resolving.",
+  };
+
+  const THREE_KEY: Finding = {
+    id: UNFILED_ID,
+    title: "hookPath and settingsPath disagree about the trailing separator",
+    body: "`hookPath` and `settingsPath` in lib/hook-registry.ts normalise differently.",
+  };
+
+  test("AR-20 PREMISE: both fixtures are wholly contained, so the ratio is not what separates them", () => {
+    // Without this the two rows below could be green because the ratio fell
+    // short, which would say nothing about the floor. Both must score 1.00.
+    for (const [name, f] of [["two-key", TWO_KEY], ["three-key", THREE_KEY]] as const) {
+      const keys = symptomKeys(f);
+      const shared = sharedKeys(f, BROAD);
+      expect(shared.length / keys.length, `${name} must be wholly contained`).toBe(1);
+    }
+    expect(symptomKeys(TWO_KEY)).toHaveLength(2);
+    expect(symptomKeys(THREE_KEY)).toHaveLength(3);
+    expect(symptomKeys(BROAD).length, "and the other side must be large").toBeGreaterThan(10);
+  });
+
+  test("AR-20: a two-key finding is NOT refused as a duplicate of a large unrelated issue", () => {
+    // Red at `DUPLICATE_CONTAINMENT_MIN_KEYS = 2`, which is the value this
+    // row moved. Nothing else in the suite hands the arm this input.
+    expect(duplicateOverlap(TWO_KEY, BROAD).duplicate).toBe(false);
+  });
+
+  test("AR-20: a three-key finding is NOT refused either", () => {
+    expect(duplicateOverlap(THREE_KEY, BROAD).duplicate).toBe(false);
+  });
+
+  test("AR-20 CONTROL: the arm still refuses a re-filing at or above the floor", () => {
+    // The control against the cheapest wrong fix for the two rows above —
+    // delete the containment arm, or raise the floor until it cannot fire.
+    // AR-19's fixture carries five keys, so a floor at or below five keeps
+    // it; a floor raised past it turns this red rather than leaving the two
+    // rows above green over an arm that does nothing.
+    const QUANTITY_POOR: Finding = {
+      id: "1297",
+      title: "The scaffold rewrites a hand-edited brief without saying so",
+      body:
+        "`scaffoldProject` in lib/scaffold-project.ts calls `writeBrief` through " +
+        "`renderAgentBrief`, and lib/agents-md-sections.ts never reports the overwrite.",
+    };
+    expect(
+      symptomKeys(QUANTITY_POOR).length,
+      "the control's own premise: it must sit at or above the floor",
+    ).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_MIN_KEYS);
+    const refile: Finding = { id: UNFILED_ID, title: QUANTITY_POOR.title, body: QUANTITY_POOR.body };
+    expect(duplicateOverlap(refile, QUANTITY_POOR).duplicate).toBe(true);
   });
 });

@@ -348,11 +348,50 @@ export const DUPLICATE_MIN_SHARED_LOCATIONS = 1;
  *
  * The floor exists because containment is meaningless on a tiny key set — a
  * one-key finding is wholly contained in anything mentioning that key, which
- * would manufacture a duplicate out of one word. Two rather than four: a
- * floor of 4 costs three of the 38 and flags not one pair fewer.
+ * would manufacture a duplicate out of one word.
+ *
+ * ## The floor is 4, and it used to be 2
+ *
+ * This line read `2`, argued from one sentence: *"a floor of 4 costs three of
+ * the 38 and flags not one pair fewer."* **Re-measured against the live
+ * tracker on 2026-10-23** — 35 open issues, pull requests excluded, 595
+ * cross-issue pairs — that sentence reproduces exactly, and it reads the
+ * other way round from how it was used:
+ *
+ * | floor | self-refile refused | cross-issue pairs flagged |
+ * |---|---|---|
+ * | 2 | 35/35 | 2 — 1286/1269, 1226/1162 |
+ * | 3 | 34/35 | 2 — the same two |
+ * | 4 | 32/35 | 2 — the same two |
+ * | 5 | 30/35 | 2 — the same two |
+ *
+ * Both pairs are the QUANTITY arm's. **The containment arm flags zero
+ * cross-issue pairs at every floor**, so the floor buys nothing in the
+ * catching direction; the only thing it trades is self-refile coverage. The
+ * two sides of that trade are not symmetric:
+ *
+ * - a self-refile that gets through is **a duplicate on the tracker** — the
+ *   direction this file says everywhere it is allowed to be wrong in;
+ * - a small finding swallowed by a large unrelated issue is **a real finding
+ *   withheld** — the direction it says nothing here may fail in.
+ *
+ * At 2, an `n`-key finding whose `n` keys all appear in a 20-key issue scores
+ * `n/n = 1.00` and is refused whatever the two are about, which is three
+ * refusals' worth of the forbidden direction bought with three self-refiles
+ * of the allowed one. `test/finding-arbiter.test.ts` AR-20 plants a two-key
+ * and a three-key finding against a broad issue that merely names their
+ * symbols; both were DUPLICATE at 2.
+ *
+ * **The alternative, and why it is not what shipped.** An absolute shared-key
+ * minimum beside the ratio — `keys.length >= N` AND `ratio >= 0.8` — asks the
+ * same question on the contained side, because a floor of 4 with a 0.8 ratio
+ * already requires 4 shared keys of the smaller set. The two would always
+ * agree and a mutation of either would leave the other holding every case up:
+ * two deciders, one question, the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`. One constant moved instead.
  */
 export const DUPLICATE_CONTAINMENT_RATIO = 0.8;
-export const DUPLICATE_CONTAINMENT_MIN_KEYS = 2;
+export const DUPLICATE_CONTAINMENT_MIN_KEYS = 4;
 
 /** Does `text` reference `id` as an issue number? */
 function references(text: string, id: string): boolean {
