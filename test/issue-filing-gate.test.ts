@@ -691,9 +691,11 @@ describe("#1261 removing the wiring is the defect, and these rows see it", () =>
  * decider on one question is the fourth shape in
  * `.claude/rules/checks-must-be-able-to-fail.md`.
  *
- * The ids start at FG-39 rather than FG-28: #1304 is open against this file
- * and holds FG-28..FG-38. Neither diff contains the other's ids, which is the
- * collision the swarm brief describes for SC ids, in the test-block namespace.
+ * The ids start at FG-39 rather than FG-28 because #1304 held FG-28..FG-38
+ * against this file while this branch was open. Neither diff contained the
+ * other's ids — the collision the swarm brief describes for SC ids, in the
+ * test-block namespace. #1304 has since merged, so FG-1..FG-44 are now
+ * contiguous here and the gap this paragraph explains no longer exists.
  *
  * **The words are never written adjacent in a literal here.** They are joined
  * at run time, because a fixture spelling them out inside a document heredoc
