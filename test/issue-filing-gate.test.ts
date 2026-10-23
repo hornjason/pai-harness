@@ -35,11 +35,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
-import { listOpenIssues, type OpenIssue } from "../lib/github";
+import { listOpenIssues, parseOwnerRepo, type OpenIssue } from "../lib/github";
 import {
   adjudicateFiling,
+  corpusSlug,
   filingAttempts,
+  filingBatch,
   filingGate,
+  ghRepoTarget,
   measuredCorpus,
   openFindings,
   readBodyFile,
@@ -47,9 +50,15 @@ import {
   unmeasuredCorpus,
   withTimeout,
   FILING_OVERRIDE_LABEL,
+  LEDGER_SESSION_ENV,
   MAX_KEYS_PER_EXISTING_ISSUE,
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
+import {
+  readFindingOutcomes,
+  summariseFindingOutcomes,
+  type ReviewFinding,
+} from "../evals/ai-review-control/outcomes";
 
 const REPO = resolve(import.meta.dir, "..");
 const HOOK = join(REPO, "hooks", "VerifyPhaseLock.hook.ts");
@@ -137,6 +146,14 @@ function runHook(hook: string, command: string, extraEnv: Record<string, string>
       RUNGATE_WORK_DIR: join(scratch, "work"),
       RUNGATE_OPEN_FINDINGS: issuesFile,
       RUNGATE_FINDING_LEDGER: ledger,
+      // Pinned, not inherited. The ledger key is minted from this (#1318) and
+      // an absent one is a LOUD reading — so without this line the rows below
+      // that assert `systemMessage === null` pass on a developer's machine,
+      // where Claude Code exports it, and go red in CI, where nothing does.
+      // Measured: `env -u CLAUDE_CODE_SESSION_ID bun test <this file>` reddened
+      // FG-48 and nothing else. The absent case is exercised deliberately, in
+      // FG-70, rather than left to whatever the runner happens to have set.
+      CLAUDE_CODE_SESSION_ID: "f9a1c0de-0000-4000-8000-000000000000",
       ...extraEnv,
     },
   });
@@ -1088,5 +1105,278 @@ describe("#1302 a document heredoc is not a filing", () => {
     ]) {
       expect(filingAttempts(cmd), `the body reaches a shell: ${cmd.slice(0, 24)}`).toHaveLength(1);
     }
+  });
+});
+
+/**
+ * FG-60..FG-65: `--repo`, read the way `gh` reads it.
+ *
+ * No issue covers this one — it was found while shipping #1318 and the PR
+ * body carries it, per the swarm procedure.
+ *
+ * **The differential.** `gh` resolves `--repo` through `ghrepo.FromFullName`,
+ * which accepts a bare `OWNER/REPO`, a `HOST/OWNER/REPO`, a full URL and an
+ * scp-style remote. `parseOwnerRepo` accepts the first and throws on the
+ * rest. The throw landed in `openFindings`'s `catch`, which returns `null`,
+ * which is UNMEASURED, which ALLOWS — so writing `--repo
+ * https://github.com/owner/repo` filed perfectly well while skipping the
+ * dedupe entirely. Measured against this tracker before the fix:
+ * `gh issue list --repo <X> --limit 1` returned the same issue for all three
+ * spellings.
+ *
+ * **The class, which is the finding.** `catch { return null }` in
+ * `openFindings` is not a fifth instance beside the others — it is the
+ * mechanism by which they become ALLOW. Three separate defects reached the
+ * same observable through it, and a review reading the three could not see
+ * that the converter was one line. The repair narrows what enters it: a slug
+ * decision is made before the `try`, by `corpusSlug`, and the `catch` is left
+ * holding only what it was written for, which is the network.
+ *
+ * **The remaining residue fails CLOSED.** A `--repo` this process cannot
+ * resolve now refuses, and that is a deliberate exception to the file's
+ * UNMEASURED-allows policy: it is the only unreadable input here that is a
+ * fact about the COMMAND rather than about the environment, so the agent can
+ * fix it in the same turn. A refusal somebody can act on is not a gag.
+ */
+describe("FG-60..FG-65: the --repo parser differential", () => {
+  const SLUG = "hornjason/pai-harness";
+
+  /** Spellings `gh` accepts and the API client's own validator throws on. */
+  const HOST_BEARING = [
+    `https://github.com/${SLUG}`,
+    `github.com/${SLUG}`,
+    `git@github.com:${SLUG}.git`,
+  ];
+
+  const withRepo = (spelling: string): string =>
+    NOVEL_FILING.replace("gh issue create", `gh issue create --repo '${spelling}'`);
+
+  const allow = async () => measuredCorpus([]);
+
+  test("FG-60: the spellings gh accepts and parseOwnerRepo throws on resolve to one slug", () => {
+    for (const spelling of HOST_BEARING) {
+      // The differential itself, spelled as an assertion. This half stays
+      // true after the fix and is meant to: it is WHY a normaliser exists,
+      // and a case asserting only the new behaviour could not say so. If
+      // `parseOwnerRepo` ever widens, this row goes red and the normaliser
+      // becomes dead code that somebody can then delete on evidence.
+      expect(
+        () => parseOwnerRepo(spelling),
+        `${spelling} must still be what the API client rejects`,
+      ).toThrow();
+      expect(ghRepoTarget(spelling), spelling).toBe(SLUG);
+    }
+  });
+
+  test("FG-61 CONTROL: a bare owner/repo is unchanged, and what gh rejects stays null", () => {
+    // Without this row the cheapest fix for FG-60 is `() => "hornjason/pai-harness"`,
+    // which passes it and resolves every tracker on earth to this one — the
+    // fifth shape, green under the wrong repair.
+    expect(ghRepoTarget(SLUG)).toBe(SLUG);
+    expect(ghRepoTarget(`  ${SLUG}  `), "gh trims, so this is not a different repo").toBe(SLUG);
+    for (const bad of [
+      "",
+      "nota-repo",
+      "a/b/c",
+      "../../../etc/passwd",
+      "https://gitlab.com/o/r",
+      "ghe.example.com/o/r",
+    ]) {
+      // The last two are the ones worth naming: a host this process cannot
+      // reach must not resolve to a slug, because a slug would be queried
+      // against github.com and answer about a different repository.
+      expect(ghRepoTarget(bad), bad).toBeNull();
+    }
+  });
+
+  test("FG-62: an unresolvable explicit --repo never falls back to this tracker", () => {
+    // The tempting repair, refused. Both readings are taken in one case so
+    // neither is vacuous: the project's own slug IS resolvable here, so the
+    // `null` below is the explicit-target rule firing and not an absent
+    // origin.
+    expect(
+      corpusSlug(REPO, null),
+      "the control: with no --repo the project's own tracker is read",
+    ).toBe(SLUG);
+    expect(corpusSlug(REPO, "nota-repo"), "and an unresolvable one reads NOTHING").toBeNull();
+    expect(corpusSlug(REPO, HOST_BEARING[0]), "a resolvable one reads the target").toBe(SLUG);
+  });
+
+  test("FG-63: a filing with an unparseable --repo is REFUSED, not allowed as UNMEASURED", async () => {
+    const r = await filingGate(withRepo("nota-repo"), {
+      projectRoot: scratch,
+      readExisting: allow,
+    });
+    expect(r.rows, "one clause, or this row is about a command the parser never split").toHaveLength(1);
+    expect(r.refusal, "an unreadable target the agent CAN fix is fail-closed").not.toBeNull();
+    // Text only this stage can emit — the sixth shape. A DUPLICATE refusal
+    // names an issue number, a DROPPED_CATEGORY refusal names a category;
+    // this one names the value that would not resolve.
+    expect(r.refusal ?? "").toContain("nota-repo");
+    expect(r.rows[0].emitted).toBe(false);
+    expect(r.rows[0].withheldBy).toBe("UNMEASURED");
+  });
+
+  test("FG-64 CONTROL: the same filing with a resolvable --repo is allowed", async () => {
+    // Against "refuse any --repo", which passes FG-63 and switches the
+    // cross-tracker path off entirely.
+    for (const spelling of [SLUG, ...HOST_BEARING]) {
+      const r = await filingGate(withRepo(spelling), { projectRoot: scratch, readExisting: allow });
+      expect(r.rows, spelling).toHaveLength(1);
+      expect(r.refusal, spelling).toBeNull();
+    }
+  });
+
+  test("FG-65 CONTROL: a filing with no --repo at all does not reach this stage", async () => {
+    // Against "refuse whenever the slug is null", which passes FG-63 and
+    // refuses every filing on a box whose `origin` cannot be read — the
+    // gate's own machine, during the five minutes a remote is being renamed.
+    const r = await filingGate(NOVEL_FILING, { projectRoot: scratch, readExisting: allow });
+    expect(filingAttempts(NOVEL_FILING)[0].repo, "the premise: this clause names no target").toBeNull();
+    expect(r.refusal).toBeNull();
+  });
+});
+
+/**
+ * FG-66..FG-71: a ledger row that can be told apart (#1318).
+ *
+ * Every row this gate wrote carried `id: UNFILED_ID` and no key, so nothing
+ * in the live ledger distinguished one row from another — two of its eight
+ * rows were identical in every field. The only consumer designed to read it,
+ * `summariseFindingOutcomes`, refuses a corpus of repeated ids outright, and
+ * its refusal already names the field this writer did not emit.
+ *
+ * **`${at}/${index}` is the cheapest wrong fix**, and FG-68 applies it to
+ * FG-67's own inputs and measures the collision. `ledgerPath()` defaults to
+ * one shared file for every agent on the machine and `at` is hoisted outside
+ * the row loop, so that scheme is unique within one command and a coin toss
+ * across concurrent writers. FG-66 is a BASELINE and is deliberately green
+ * under it; FG-67 is the row that is not.
+ *
+ * **Both axes are varied.** FG-67 moves the session with the pid, the
+ * millisecond, the title and the symptom all held fixed; FG-69 moves the pid
+ * with the session held fixed. A battery that varied only the first would
+ * report a count that cannot come back wrong about the writers it never
+ * wrote — the seventh shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+describe("FG-66..FG-71: a ledger row that can be told apart", () => {
+  /** One millisecond, held fixed across every session below. */
+  const AT = "2026-10-23T13:19:08.819Z";
+  const SESSION_A = "aaaaaaaa-1111-2222-3333-444444444444";
+  const SESSION_B = "bbbbbbbb-1111-2222-3333-444444444444";
+
+  const allow = async () => measuredCorpus([]);
+
+  async function withSession<T>(id: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const prior = process.env[LEDGER_SESSION_ENV];
+    if (id === undefined) delete process.env[LEDGER_SESSION_ENV];
+    else process.env[LEDGER_SESSION_ENV] = id;
+    try {
+      return await fn();
+    } finally {
+      if (prior === undefined) delete process.env[LEDGER_SESSION_ENV];
+      else process.env[LEDGER_SESSION_ENV] = prior;
+    }
+  }
+
+  const gate = (session: string | undefined, cmd: string) =>
+    withSession(session, () =>
+      filingGate(cmd, { projectRoot: scratch, now: AT, readExisting: allow }),
+    );
+
+  /**
+   * The ledger rows as the consumer sees them, keyed on `key` exactly as
+   * `evals/ai-review-control/outcomes.ts` says to key them.
+   *
+   * `key as string` is deliberate for the unkeyed half: a backfill reading
+   * these rows would hand the consumer whatever the field holds, and what it
+   * holds is what FG-71 is about.
+   */
+  const asCorpus = (rows: readonly FilingLedgerRow[]): ReviewFinding[] =>
+    rows.map(r => ({
+      id: r.key as string,
+      filedAt: 1_000,
+      closed: true,
+      citations: [],
+      closedInFavourOf: [],
+      declared: null,
+    }));
+
+  const score = (rows: readonly FilingLedgerRow[]) =>
+    summariseFindingOutcomes(readFindingOutcomes(asCorpus(rows), new Set<string>()), "FG-71");
+
+  test("FG-66 BASELINE: every row carries a key, and two clauses of one command differ", async () => {
+    // Green under `${at}/${index}` too. Here to prove the field is populated
+    // at all, and labelled BASELINE so it is never read as the uniqueness
+    // claim — that is FG-67.
+    const r = await gate(SESSION_A, `${NOVEL_FILING} && ${NOVEL_FILING}`);
+    expect(r.rows).toHaveLength(2);
+    expect(r.rows.map(x => x.key).filter(k => k === null)).toEqual([]);
+    expect(r.rows[0].key).not.toBe(r.rows[1].key);
+  });
+
+  test("FG-67: two sessions, one millisecond, same title and symptom — different keys", async () => {
+    const a = (await gate(SESSION_A, NOVEL_FILING)).rows[0];
+    const b = (await gate(SESSION_B, NOVEL_FILING)).rows[0];
+    // The premise, asserted rather than assumed: every field the cheapest
+    // wrong fix could key on really is identical across the two rows. Without
+    // this the case could pass on two rows that differed somewhere else.
+    expect(b.at, "same millisecond").toBe(a.at);
+    expect(b.title, "same title").toBe(a.title);
+    expect(b.symptomHash, "same symptom").toBe(a.symptomHash);
+    expect(b.id, "and the same UNFILED_ID, which is why neither can be the key").toBe(a.id);
+    expect(a.key).not.toBe(b.key);
+  });
+
+  test("FG-68: the cheapest wrong fix, applied to FG-67's inputs, collides", async () => {
+    // Applied and measured rather than named. The mutation cannot be built
+    // the usual way — a mutant copy of `lib/issue-filing-gate.ts` in a
+    // scratch directory cannot resolve its own relative imports and would
+    // fail to LOAD, which on a count reads exactly like a guard that held.
+    // So the wrong scheme is spelled here and run against the real rows.
+    const cheapest = (row: FilingLedgerRow, index: number) => `${row.at}/${index}`;
+    const a = (await gate(SESSION_A, NOVEL_FILING)).rows[0];
+    const b = (await gate(SESSION_B, NOVEL_FILING)).rows[0];
+    expect(
+      cheapest(a, 0),
+      "`${at}/${index}` is green on FG-66 and hands two concurrent writers one key",
+    ).toBe(cheapest(b, 0));
+    expect(a.key, "the shipped scheme does not").not.toBe(b.key);
+  });
+
+  test("FG-69 CONTROL on the axis FG-67 holds fixed: one session, two processes", async () => {
+    // A session runs parallel subagents and every Bash call spawns its own
+    // hook PROCESS, so "two concurrent writers" is not only two sessions.
+    // Without this row the battery varies one axis while half the defect
+    // sits on the other.
+    await withSession(SESSION_A, async () => {
+      expect(filingBatch(AT, 101)).not.toBe(filingBatch(AT, 102));
+      expect(filingBatch(AT), "and the default is this process").toContain(String(process.pid));
+      expect(filingBatch(AT), "with the session identity in it").toContain(SESSION_A.slice(0, 8));
+    });
+  });
+
+  test("FG-70: an absent session identity is a loud null, not a plausible key", async () => {
+    const r = await gate(undefined, NOVEL_FILING);
+    expect(r.rows[0].key, "no key was invented to cover the gap").toBeNull();
+    expect(r.note ?? "", "and the note names the variable that was missing").toContain(
+      LEDGER_SESSION_ENV,
+    );
+    expect(r.refusal, "loud, and still not a gag on the tracker").toBeNull();
+  });
+
+  test("FG-71: rows this writer appends score as a usable corpus; unkeyed ones do not", async () => {
+    // The end-to-end reading, and the one that was false when #1318 was
+    // filed. Not a new assertion written beside the fix: `usable` is the
+    // consumer's own verdict, reached through its own reader.
+    const keyed = await gate(SESSION_A, `${NOVEL_FILING} && ${NOVEL_FILING}`);
+    expect(score(keyed.rows).usable, "two keyed rows are a corpus that can be scored").toBe(true);
+
+    const unkeyed = await gate(undefined, `${NOVEL_FILING} && ${NOVEL_FILING}`);
+    expect(
+      score(unkeyed.rows).usable,
+      "and two unkeyed rows are refused by name rather than scored as one",
+    ).toBe(false);
   });
 });

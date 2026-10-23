@@ -99,8 +99,14 @@ import { appendFileSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
-import { resolveRepoSlug } from "./branch-cleanup";
-import { createGitHubClient, listOpenIssues, TRUSTED_ASSOCIATIONS, type OpenIssue } from "./github";
+import { githubSlugFromRemoteUrl, resolveRepoSlug } from "./branch-cleanup";
+import {
+  createGitHubClient,
+  listOpenIssues,
+  parseOwnerRepo,
+  TRUSTED_ASSOCIATIONS,
+  type OpenIssue,
+} from "./github";
 import {
   duplicateCollisions,
   symptomHash,
@@ -264,6 +270,26 @@ export interface FilingAdjudication {
  */
 export interface FilingLedgerRow {
   at: string;
+  /**
+   * This row, told apart from every other row on a shared ledger (#1318).
+   *
+   * **The same field, the same composition and the same `null` as
+   * `CandidateRecord.key`** — `${batch}/${index}` — because the value of the
+   * two row shapes is the population they form together, and two schemes
+   * answering "which row is this" is one decider with a spare
+   * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+   * Neither of the fields that look as though they could do this job can:
+   * `id` is `UNFILED_ID` for every row this writer emits, and `symptomHash`
+   * is a similarity identity, not a row identity — 6 of the 8 rows on the
+   * live ledger share one value.
+   *
+   * `null` when the session identity is absent, and that is a reading rather
+   * than a gap: `summariseFindingOutcomes` already refuses a corpus of
+   * repeated ids and names this field in the refusal. A plausible-looking key
+   * would be the Silent Default Substitution `.claude/rules/config-access.md`
+   * forbids, and the one failure mode that silently shrinks a corpus.
+   */
+  key: string | null;
   id: string;
   title: string;
   symptomHash: string;
@@ -301,6 +327,50 @@ const REPO_FLAG = { long: "--repo", short: "-R" };
  * about every repeated flag; `at(-1)` is what the consumer does.
  */
 const asGhWould = (values: string[]): string => values.at(-1) ?? "";
+
+/**
+ * The repository `gh` will file against, as `owner/repo` — or `null` because
+ * this gate cannot read that tracker (#1318 PR, the `--repo` differential).
+ *
+ * **`asGhWould` above is last-wins; this is the other half of the same
+ * class.** `gh` resolves `--repo` through `ghrepo.FromFullName`, which accepts
+ * a bare `OWNER/REPO`, a `HOST/OWNER/REPO`, a full `https://` URL and an
+ * scp-style `git@github.com:owner/repo.git`. `parseOwnerRepo` accepts only
+ * the first of those and **throws** on the rest, inside the `catch` in
+ * `openFindings` — so for three spellings `gh` files perfectly well against,
+ * the corpus read came back `null`, the dedupe never ran, and the filing was
+ * ALLOWED as UNMEASURED. Measured against this tracker: `gh issue list --repo`
+ * returned the same first issue for `hornjason/pai-harness`,
+ * `https://github.com/hornjason/pai-harness` and `github.com/hornjason/pai-harness`,
+ * while `parseOwnerRepo` threw `Invalid repo format` for the last two.
+ *
+ * `githubSlugFromRemoteUrl` already parses every host-bearing form — it is
+ * what `resolveRepoSlug` runs the `origin` remote through — so this is a
+ * composition and not a second parser. **`parseOwnerRepo` remains the only
+ * validator**: whatever this returns, it returned because that function
+ * accepted it, so no second opinion about what a slug is can drift from the
+ * one the API client holds (the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`).
+ *
+ * The `catch` is fail-CLOSED and that is the difference from the one it
+ * replaces: `null` here routes to a refusal, not to an allow.
+ *
+ * **A non-github.com host is `null` on purpose.** `gh` accepts
+ * `HOST/OWNER/REPO` for an enterprise instance; `createGitHubClient` talks to
+ * github.com and nothing else. A tracker this process genuinely cannot read
+ * must not resolve to a slug that names a different one.
+ */
+export function ghRepoTarget(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const candidate = githubSlugFromRemoteUrl(trimmed) ?? trimmed.replace(/\.git$/i, "");
+  try {
+    const { owner, repo } = parseOwnerRepo(candidate);
+    return `${owner}/${repo}`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * One clause, resolved to what `gh` would resolve it to.
@@ -464,6 +534,36 @@ export async function adjudicateFiling(
     };
   }
 
+  // ── which tracker is this going to? ──
+  //
+  // **The one UNMEASURED in this file that REFUSES, and the reason it is not
+  // an exception to the policy above.** Every other unreadable input here is
+  // a fact about the environment — no token, a 403, a rate limit, an
+  // unreachable API — which the agent cannot fix and must not be gagged by.
+  // This one is a fact about the COMMAND: the agent wrote a `--repo` value,
+  // it is in the clause, and re-spelling it as `owner/repo` is a one-token
+  // edit. A refusal somebody can act on in the same turn is not a gag.
+  //
+  // `outcome` and `refusal` are separate fields precisely so the policy can
+  // differ from the reading. Every other site sets them in lockstep, which is
+  // what makes the lockstep look like an invariant; it never was one.
+  //
+  // Fail-closed here because the alternative is the fail-open that made the
+  // differential exploitable in the first place: `gh` accepts more spellings
+  // of `--repo` than this process can read, and a spelling we cannot read
+  // must not be the cheapest way past the dedupe.
+  if (attempt.repo !== null && ghRepoTarget(attempt.repo) === null) {
+    return {
+      ...base,
+      outcome: "REFUSE",
+      refusal: "UNMEASURED",
+      reason:
+        `\`--repo ${attempt.repo}\` does not resolve to a github.com \`owner/repo\`, so the ` +
+        `open issues of the tracker this would file against were never read. Re-run with ` +
+        `\`--repo owner/repo\`; an enterprise host is not readable from here at all`,
+    };
+  }
+
   // ── is this new? ──
   const existing = await readExisting();
   if (existing.reading === "UNMEASURED") {
@@ -569,6 +669,28 @@ export function unmeasuredCorpus(why: string, dropped: readonly CorpusDrop[] = [
  * allowed to be wrong in: the result is a duplicate reaching the tracker,
  * never a real finding silenced.
  */
+/**
+ * Which tracker the dedupe asks about. One binding, so there is one answer.
+ *
+ * **An explicit `--repo` that does not resolve is `null`, never the working
+ * directory's slug.** Falling back is the tempting repair and it is the worse
+ * one: this gate would then adjudicate a filing bound for one tracker against
+ * another tracker's issues, which is not a weaker reading — it is the wrong
+ * one, and it is wrong in both directions at once (a real duplicate on the
+ * target is invisible, an unrelated issue here can refuse it). The same
+ * argument `filingGate` makes for caching per target rather than per command.
+ *
+ * `null` from here is UNMEASURED to `openFindings`, and the POLICY over an
+ * unparseable explicit target is decided in `adjudicateFiling`, from
+ * `attempt.repo`, before this is ever called. Both read `ghRepoTarget`; one
+ * decides what to query, the other decides what to do about not being able
+ * to — two questions, one predicate.
+ */
+export function corpusSlug(projectRoot: string, repo: string | null): string | null {
+  if (repo !== null) return ghRepoTarget(repo);
+  return resolveRepoSlug({ projectRoot }).slug;
+}
+
 export async function openFindings(
   projectRoot: string,
   repo: string | null = null,
@@ -585,12 +707,13 @@ export async function openFindings(
     }
   }
   try {
-    // `--repo` wins, because it is what `gh` will file against. A slug that
-    // came off the command line is still a slug `parseOwnerRepo` validates.
-    const { slug } = resolveRepoSlug({ projectRoot, repo: repo ?? undefined });
+    const slug = corpusSlug(projectRoot, repo);
     if (slug === null) {
       return unmeasuredCorpus(
-        "no repository slug could be resolved, so there was no tracker to compare against",
+        repo === null
+          ? "no repository slug could be resolved, so there was no tracker to compare against"
+          : `\`--repo ${repo}\` does not resolve to a github.com \`owner/repo\`, so there ` +
+            "was no tracker to compare against",
       );
     }
     const issues = await withTimeout(
@@ -743,6 +866,51 @@ function asFindings(parsed: unknown): CorpusReading {
   return corpusReading(parsed.length, out, dropped, "supplied comparison set");
 }
 
+/**
+ * The environment variable the session identity comes from.
+ *
+ * One exported constant because it is named in the UNMEASURED note an agent
+ * reads, and a variable named in prose and read in code from two places is
+ * two spellings of one fact.
+ */
+export const LEDGER_SESSION_ENV = "CLAUDE_CODE_SESSION_ID";
+
+/**
+ * The batch every row of one command shares, or `null` when there is no
+ * session identity to build one from (#1318).
+ *
+ * **`${at}/${index}` is the cheapest wrong fix and it does not hold.**
+ * `ledgerPath()` defaults to `~/.rungate/finding-ledger.jsonl` — one file for
+ * every agent on the machine, not one per worktree — and `at` is a single
+ * `new Date().toISOString()` hoisted outside the row loop. So `${at}/${index}`
+ * is unique *within* one command and only probabilistically across concurrent
+ * writers, and the live ledger already carries two rows identical in every
+ * field including `at`. #1263 asks for unique **by construction**, and a
+ * coin-toss you only have to lose once silently reintroduces the defect.
+ *
+ * Three components, and each closes a case the others leave open:
+ *
+ * - **the session**, first 8 chars of `CLAUDE_CODE_SESSION_ID` — the same cut
+ *   `hooks/TeamInit.hook.ts` takes, so a ledger row joins to that session's
+ *   `teams/session-<8>` directory rather than needing a second identity;
+ * - **the pid**, because one session runs parallel subagents and each Bash
+ *   call spawns its own hook PROCESS. Two of them can append in the same
+ *   millisecond with the same session and the same clause index, which is
+ *   every other component held fixed. A pid is unique among live processes,
+ *   and a process that is appending is live;
+ * - **`at` and the clause index**, which separate one process's own rows.
+ *
+ * `null`, loudly, when the variable is absent — never a fallback that merely
+ * looks unique. `.claude/rules/config-access.md`, *Silent Default
+ * Substitution*: `0`, `{}` and a plausible key are indistinguishable from
+ * success; UNMEASURED is not.
+ */
+export function filingBatch(at: string, pid: number = process.pid): string | null {
+  const session = (process.env[LEDGER_SESSION_ENV] ?? "").trim();
+  if (session === "") return null;
+  return `${session.slice(0, 8)}.${pid}/${at}`;
+}
+
 /** Where the adjudications land. One line of JSON per decision. */
 export function ledgerPath(): string {
   const explicit = process.env.RUNGATE_FINDING_LEDGER;
@@ -823,13 +991,19 @@ export async function filingGate(
   const refusals: string[] = [];
   const notes: string[] = [];
 
-  for (const attempt of attempts) {
+  // One batch per command, so every row of one adjudication shares it and the
+  // clause index separates them — `CandidateRecord.key`'s scheme exactly.
+  const batch = filingBatch(at);
+  if (batch === null) notes.push(unkeyedLedgerNote());
+
+  for (const [index, attempt] of attempts.entries()) {
     const verdict = await adjudicateFiling(attempt, () => readFor(attempt.repo));
     const overridden = verdict.outcome === "REFUSE" && attempt.labels.includes(FILING_OVERRIDE_LABEL);
     const emitted = verdict.outcome !== "REFUSE" || overridden;
 
     rows.push({
       at,
+      key: batch === null ? null : `${batch}/${index}`,
       id: UNFILED_ID,
       title: attempt.title,
       symptomHash: verdict.symptomHash,
@@ -970,6 +1144,26 @@ export function unmeasuredNote(v: FilingAdjudication): string {
     "It is allowed through, because a broken adjudicator must not become a gag on " +
     `the tracker, and the row is recorded in ${ledgerPath()} as UNMEASURED rather ` +
     "than as a finding that passed. Those are different states."
+  );
+}
+
+/**
+ * Said out loud for the same reason `unmeasuredNote` is: a row that cannot be
+ * joined to anything is not a row that recorded something.
+ *
+ * The filing still proceeds — the ledger measures this gate and a measurement
+ * apparatus must not block the thing it measures, which is the policy
+ * `recordAdjudication` states for a ledger that cannot be written at all.
+ * What must not happen is the quiet version: a key that looks fine.
+ */
+export function unkeyedLedgerNote(): string {
+  return (
+    `[FindingArbiter] UNMEASURED row identity — \`${LEDGER_SESSION_ENV}\` is not set, so the ` +
+    `rows this command appends to ${ledgerPath()} carry \`key: null\` and cannot be told apart ` +
+    "from any other unkeyed row on that shared ledger. The filing is allowed and recorded; " +
+    "what is lost is the join to its outcome, and it is lost permanently, because the " +
+    "identity exists only at the moment of writing. No key was invented to cover the gap: " +
+    "a plausible one reads as a measurement that was taken."
   );
 }
 
