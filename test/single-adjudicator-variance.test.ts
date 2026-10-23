@@ -339,7 +339,12 @@ describe("the stored artefact", () => {
     const c = loadVarianceCapture("single-adjudicator-variance");
     expect(c.caveat).toContain("BY CONSTRUCTION");
     expect(c.permanentlyUnmeasured.length).toBeGreaterThanOrEqual(3);
-    expect(c.permanentlyUnmeasured.join(" ")).toContain("no deployed agent verifier");
+    const residue = c.permanentlyUnmeasured.join(" ");
+    // Both halves, because "no agent verifier exists" would be false and
+    // "one exists" alone would not say why its variance is still unread.
+    expect(residue).toContain("No agent verifier feeds THIS gate");
+    expect(residue).toContain("A deployed agent verifier does exist elsewhere");
+    expect(residue).toContain("gh run rerun");
   });
 
   test("records the span, which is what bounds the live arm's claim", () => {
