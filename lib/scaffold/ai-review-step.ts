@@ -3373,8 +3373,13 @@ fi
 # write what its own reviewer reads.
 #
 # Both values arrive through \`env:\`. Neither is interpolated into this
-# script — a body is author-controlled text and \`\${{ }}\` here would paste
-# it into the shell. Read as "\$VAR", quoted, and written with \`printf '%s'\`
+# script — a body is author-controlled text, and an expression interpolation
+# here would paste it into the shell before bash ever sees it. (This comment
+# cannot SPELL that construct: a shell \`#\` does not hide it from the runner,
+# which substitutes expressions over the whole \`run:\` body, comments
+# included. The generated-job check that forbids it is right to read comment
+# text, and it caught this sentence's first draft.)
+# Read as "\$VAR", quoted, and written with \`printf '%s'\`
 # so a body beginning with \`-\` is not taken for an option and a backslash
 # is not interpreted.
 #

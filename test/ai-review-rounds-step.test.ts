@@ -1120,10 +1120,18 @@ describe("AC-S8 (CRC-B1): the intent reaches the reviewer, and the body never re
     //
     // Asserted so that promoting it is a deliberate edit to a case that
     // states why, rather than a quiet tightening nobody reviewed.
-    const at = yml.indexOf(AI_REVIEW_INTENT_UNREAD_TITLE);
-    expect(at, "the intent read-check is gone from the generated workflow").toBeGreaterThan(-1);
-    const region = yml.slice(at - 400, at + 400);
-    expect(region).toContain("::warning");
+    // Scoped to the lines that carry the title, not to a window of N
+    // characters around the first one (#664). The window was the weaker
+    // instrument in both directions: it could run off the end of the
+    // construct into a neighbouring step, and it read only the FIRST
+    // occurrence while the generator emits three. The population is stated
+    // and asserted, so a fourth emission added as an `::error` is caught.
+    const carrying = yml.split("\n").filter(l => l.includes(AI_REVIEW_INTENT_UNREAD_TITLE));
+    expect(
+      carrying.length,
+      "the intent read-check is gone from the generated workflow",
+    ).toBeGreaterThan(0);
+    for (const line of carrying) expect(line).toContain("::warning");
     expect(
       /::error[^\n]*AI review intent unread/.test(yml),
       "the intent read-check now refuses. That may be correct — the " +
