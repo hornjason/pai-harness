@@ -1042,4 +1042,41 @@ describe("#1302 a document heredoc is not a filing", () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0].labels).toEqual(["follow-up"]);
   });
+
+  /**
+   * FG-59: the three spellings that were reported as a live bypass, and are
+   * not one.
+   *
+   * The report was that `heredocView` decides document-versus-program by the
+   * WRITER WORD alone, so a clause whose stdout still reaches a shell has its
+   * body dropped from the view while the shell executes it. Three spellings
+   * were named. **All three already yield one filing attempt**, measured
+   * before anything was changed, and the mechanisms differ:
+   *
+   * | spelling | attempts | why it is caught |
+   * |---|---|---|
+   * | `cat <<'EOF' \| bash` | 1 | `heredocInterpreter`'s pipe arm — the operator's segment is piped into an interpreter |
+   * | `bash -c "$(cat <<'EOF' … )"` | 1 | the opener LINE's command word is `bash`, so the owner arm fires |
+   * | `bash <(cat <<'EOF' … )` | 1 | the same: the line's command word is `bash` |
+   *
+   * They are kept as rows because nothing covered them and the second and
+   * third are caught by a reason their own shape does not suggest — they
+   * would go red under a narrowing of `heredocInterpreter` to the heredoc's
+   * owning SEGMENT, which reads like a tightening.
+   *
+   * **Four other spellings are a live bypass, and are reported rather than
+   * fixed here.** They are in the pull request body with the shell output
+   * proving each executes. The fix is in `lib/bash-write-guard.ts`, which is
+   * the other guard's decider and was tuned against a 5,060-command corpus
+   * this change cannot re-measure.
+   */
+  test("FG-59 CONTROL: the three reported heredoc-to-shell spellings all yield a filing", () => {
+    for (const cmd of [
+      `cat <<'EOF' | bash\n${FILING}\nEOF`,
+      `bash -c "$(cat <<'EOF'\n${FILING}\nEOF\n)"`,
+      `bash <(cat <<'EOF'\n${FILING}\nEOF\n)`,
+    ]) {
+      expect(filingAttempts(cmd), `the body reaches a shell: ${cmd.slice(0, 24)}`).toHaveLength(1);
+    }
+  });
 });
