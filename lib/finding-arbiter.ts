@@ -234,6 +234,14 @@ function quantitiesIn(body: string): number[] {
     .replace(/#\d+/g, m => " ".repeat(m.length))
     .replace(/\b(?:SC|AC|PR|H|R)-?\d+/gi, m => " ".repeat(m.length))
     .replace(/\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?/g, m => " ".repeat(m.length))
+    // Before the `:\d+` rule, not after (#1333). That rule takes the minutes
+    // and leaves the hour, so by the time a later rule ran there would be no
+    // clock time left to see — `15:24` scored `qty:15`, the same key a
+    // genuine reading of 15 produces. Colon-joined numbers are a time or a
+    // ratio far more often than two independent readings, and masking both
+    // is the direction this function is allowed to be wrong in: a key it
+    // declines to emit cannot make two unrelated findings agree.
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, m => " ".repeat(m.length))
     .replace(/:\d+/g, m => " ".repeat(m.length))
     .replace(/\bv?\d+\.\d+(?:\.\d+)?/g, m => " ".repeat(m.length));
   for (const m of masked.matchAll(/\b\d[\d,]*\b/g)) {
