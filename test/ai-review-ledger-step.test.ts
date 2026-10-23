@@ -29,11 +29,12 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   AI_REVIEW_FINDINGS_PATH_VAR,
   AI_REVIEW_LEDGER_API_VAR,
+  AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_MARKER,
   AI_REVIEW_LEDGER_PR_VAR,
   AI_REVIEW_LEDGER_REPO_VAR,
@@ -76,6 +77,11 @@ interface Rig {
   round?: string;
   /** The round file verbatim, for cases about the format itself. */
   rawRound?: string;
+  /**
+   * Source files to plant in the step's working directory, relative path to
+   * contents. This is the "checkout" the step records cited line text out of.
+   */
+  files?: Record<string, string>;
   /** Overrides for the step's environment. */
   env?: Record<string, string>;
   /** Make the write (POST/PATCH) fail. */
@@ -145,10 +151,23 @@ function runPersist(rig: Rig = {}) {
         `review_round=${rig.round ?? "2"}\nround_budget=3\nround_budget_spent=no\n`,
     );
 
+    // The "checkout". `cwd` is pinned to it for every case, not only the ones
+    // that plant files: the step resolves a finding's `file` relatively, so
+    // an unpinned cwd would have it reading this repository's real sources
+    // out of whatever directory the suite happened to start in.
+    const work = join(dir, "work");
+    mkdirSync(work);
+    for (const [rel, contents] of Object.entries(rig.files ?? {})) {
+      const abs = join(work, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, contents);
+    }
+
     const script = join(dir, "persist.sh");
     writeFileSync(script, rig.script ?? buildPersistScript());
 
     const r = spawnSync("bash", ["-e", script], {
+      cwd: work,
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         // The write stub echoes a body carrying the run id, so the script's
@@ -214,9 +233,14 @@ describe("AC-L1 (#1168): a round is written, and the ledger is cumulative", () =
     expect(r.sentRaw).toContain(AI_REVIEW_LEDGER_MARKER);
     expect(r.rounds).toHaveLength(1);
     expect(r.rounds![0].findings).toEqual([
-      { severity: "high", file: "lib/a.ts", line: 4, summary: "s" },
+      // `lib/a.ts` is not in this case's checkout, so there was no line to
+      // read and the recorded text is empty. AC-L9 is where it is planted.
+      { severity: "high", file: "lib/a.ts", line: 4, summary: "s", text: "" },
     ]);
     expect(r.rounds![0].round).toBe(2);
+    // The identity rule is stamped on the entry, so a later round reads which
+    // rule the anchors were recorded under instead of assuming its own.
+    expect(r.rounds![0].identity).toBe(AI_REVIEW_LEDGER_IDENTITY_V1);
   });
 
   /**
@@ -520,5 +544,135 @@ describe("AC-L5 (#1168): the committed workflow carries the step, in position", 
     const block = yml.slice(start, yml.indexOf("\n      - name:", start));
     expect(block.length, "the step block could not be isolated").toBeGreaterThan(200);
     expect(block).not.toContain("\n        if:");
+  });
+});
+
+/**
+ * AC-L9 (#1168): the anchor a later round resolves against.
+ *
+ * The reading half keys a finding on the TEXT at its cited line, because the
+ * one repeat this repository can demonstrate moved `:318` → `:375` between
+ * rounds while staying byte-identical. The next round cannot read that text
+ * for itself — `actions/checkout` runs at `fetch-depth: 1`, so the commit the
+ * finding was raised against is not in its checkout — so this step records it
+ * at the moment it is still true.
+ *
+ * Every row here EXECUTES the generated script against a planted checkout.
+ * The step asserting the script merely *contains* `sed` would go green on a
+ * `sed` that reads the wrong line, which is the failure that matters: a wrong
+ * text does not look wrong, it resolves a live finding away.
+ */
+describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout", () => {
+  const SRC = "line one\nline two\n  await symlink(target, path);\nline four\n";
+
+  test("AC-L9: the text recorded is the content AT the cited line", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": SRC },
+      payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 3, summary: "unsafe" }] },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings[0].text).toBe("  await symlink(target, path);");
+  });
+
+  test("AC-L9: an off-by-one would be invisible without naming the line, so name it", () => {
+    // Line 1 and line 3 of the same file. A reader that always took the first
+    // line, or always the last, passes the row above and fails this one.
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": SRC },
+      payload: {
+        findings: [
+          { severity: "high", file: "lib/a.ts", line: 1, summary: "a" },
+          { severity: "low", file: "lib/a.ts", line: 4, summary: "b" },
+        ],
+      },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["line one", "line four"]);
+  });
+
+  test("AC-L9: the join is positional — each finding keeps its OWN text", () => {
+    // Two files, so a join that pairs the wrong text with the wrong finding
+    // produces a visible swap rather than two identical strings.
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "alpha\n", "lib/b.ts": "beta\n" },
+      payload: {
+        findings: [
+          { severity: "high", file: "lib/a.ts", line: 1, summary: "a" },
+          { severity: "high", file: "lib/b.ts", line: 1, summary: "b" },
+        ],
+      },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings.map((f: any) => [f.file, f.text])).toEqual([
+      ["lib/a.ts", "alpha"],
+      ["lib/b.ts", "beta"],
+    ]);
+  });
+
+  test("AC-L9: a path outside the checkout is REFUSED, not read", () => {
+    // The reviewer chooses `file`, and this step copies a line of it into a
+    // public comment. Each of these resolves to a real, readable file with
+    // distinctive contents; an empty text is the refusal, and the contents
+    // are what a leak would look like.
+    const secret = join(tmpdir(), `ledger-secret-${process.pid}.txt`);
+    writeFileSync(secret, "THE-SECRET-LINE\n");
+    try {
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": "alpha\n" },
+        payload: {
+          findings: [
+            { severity: "high", file: secret, line: 1, summary: "absolute" },
+            { severity: "high", file: "../../etc/hosts", line: 1, summary: "climbing" },
+            { severity: "high", file: "lib/a.ts", line: 1, summary: "control" },
+          ],
+        },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const texts = r.rounds![0].findings.map((f: any) => f.text);
+      expect(r.sentRaw, "an absolute path was read into a public comment").not.toContain(
+        "THE-SECRET-LINE",
+      );
+      // The control is what makes the two empties above a refusal rather than
+      // a step that records nothing at all.
+      expect(texts).toEqual(["", "", "alpha"]);
+    } finally {
+      rmSync(secret, { force: true });
+    }
+  });
+
+  test("AC-L9: an unreadable or absent anchor records the empty string, and never fails", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "alpha\n" },
+      payload: {
+        findings: [
+          { severity: "high", file: "lib/missing.ts", line: 1, summary: "no such file" },
+          { severity: "high", file: "lib/a.ts", line: 999, summary: "past the end" },
+          { severity: "high", file: "lib/a.ts", summary: "no line at all" },
+          { severity: "high", summary: "no file at all" },
+        ],
+      },
+    });
+    // The recorder observes; it never fails the job it is observing (#1110).
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "", ""]);
+  });
+
+  test("AC-L9: a round with no findings still writes a well-formed entry", () => {
+    const r = runPersist({ list: [], files: { "lib/a.ts": "alpha\n" }, payload: { findings: [] } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings).toEqual([]);
+    expect(r.rounds![0].identity).toBe(AI_REVIEW_LEDGER_IDENTITY_V1);
+  });
+
+  test("AC-L9: an UNMEASURED round records findings null and stamps no false anchor", () => {
+    // `null` and `[]` stay different all the way through the new annotation.
+    const r = runPersist({ list: [], payload: "{ not json" });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings).toBeNull();
   });
 });

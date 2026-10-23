@@ -1,4 +1,4 @@
-# generated-sha: d863eac3d4fa43b8
+# generated-sha: 8eb0a2549b6b73b4
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1206,6 +1206,45 @@ jobs:
           findings="null"
           if [ -n "${AI_REVIEW_FINDINGS_PATH:-}" ] && [ -s "${AI_REVIEW_FINDINGS_PATH}" ]; then
             if parsed=$(jq -c '[ .findings[]? | {severity, file, line, summary} ]' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
+              # Record the TEXT at each cited line, out of the checkout this round
+              # reviewed. A later round cannot obtain it: `actions/checkout` above runs
+              # at `fetch-depth: 1`, so the commit a finding was raised against is not
+              # present in the next round's checkout and there is nothing to read it
+              # from. Without the text, `carryForward` cannot tell a resolved finding
+              # from an unresolved one and reads EVERY finding as resolved — one in,
+              # zero out, silently (#1168).
+              #
+              # An `if` around the assignment, never a bare `texts=$(mktemp)`: under
+              # `bash -e` a bare one aborts the whole step when it fails (#1110), and
+              # this recorder may not fail the job it only observes.
+              if texts=$(mktemp); then
+                printf '%s' "${parsed}" | jq -c '.[]' | while IFS= read -r row; do
+                  # `|| true` on both, and it is not decoration: under `bash -e` an
+                  # assignment whose only word is a failing $(...) aborts the loop
+                  # before anything reads $? (#1110), and this recorder may not fail
+                  # the job it observes. An unreadable row records an empty anchor.
+                  rf=$(printf '%s' "${row}" | jq -r '.file // ""') || true
+                  rl=$(printf '%s' "${row}" | jq -r 'if (.line|type) == "number" then (.line|floor|tostring) else "" end') || true
+                  # The REVIEWER chooses `file`, and this step copies a line of it into
+                  # a public comment. An absolute path, or one climbing out of the
+                  # checkout, is refused rather than read.
+                  case "${rf}" in ""|/*|*..*) rf="" ;; esac
+                  rt=""
+                  case "${rl}" in
+                    ""|0|*[!0-9]*) ;;
+                    *) if [ -n "${rf}" ] && [ -f "${rf}" ]; then rt=$(sed -n "${rl}p" "${rf}" 2>/dev/null || true); fi ;;
+                  esac
+                  jq -nc --arg t "${rt}" '{text: $t}'
+                done > "${texts}"
+                # Positional join, one text per finding in order. A texts file that is
+                # short or unreadable leaves the field OFF that finding rather than
+                # guessing — and an absent text is undecidable to the reader, which
+                # carries the finding, where a wrong text would resolve it away.
+                if annotated=$(jq -sc --argjson base "${parsed}" '[range(0; ($base|length)) as $i | $base[$i] + (.[$i] // {})]' "${texts}" 2>/dev/null); then
+                  parsed="${annotated}"
+                fi
+                rm -f "${texts}"
+              fi
               findings="${parsed}"
             else
               ledger_note "the findings payload exists and could not be parsed as JSON, so this round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
@@ -1217,9 +1256,10 @@ jobs:
             --arg sha "${AI_REVIEW_LEDGER_SHA:-}" \
             --arg run "${GITHUB_RUN_ID:-}" \
             --arg attempt "${GITHUB_RUN_ATTEMPT:-}" \
+            --arg identity 'file+text+summary@v1' \
             --argjson round "${round}" \
             --argjson findings "${findings}" \
-            '{at:$at, sha:$sha, run:$run, attempt:$attempt, round:$round, findings:$findings}'); then
+            '{at:$at, sha:$sha, run:$run, attempt:$attempt, identity:$identity, round:$round, findings:$findings}'); then
             ledger_note "this round's entry could not be assembled, so nothing was recorded."
             exit 0
           fi
@@ -1294,8 +1334,9 @@ jobs:
           {
             printf '%s\n' '<!-- rungate:ai-review-ledger:v1 -->'
             printf '%s\n\n' '### AI review findings ledger'
-            printf '%s\n\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168). Nothing reads this to decide anything yet.'
+            printf '%s\n\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168).'
             printf '%s\n\n' 'A `findings` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
+            printf '%s\n\n' '`identity` names the rule the per-finding anchors were recorded under. A reader that does not recognise it carries those findings without keying them, rather than keying them under a rule they were not recorded with. `text` is the content of the cited line at the time, which is the anchor that rule uses; a finding with no `text` cannot be shown resolved and is carried.'
             printf '%s\n' '```json'
             printf '%s\n' "${all}"
             printf '%s\n' '```'

@@ -2467,6 +2467,34 @@ export const AI_REVIEW_LEDGER_MARKER = "<!-- rungate:ai-review-ledger:v1 -->";
 /** The fence the ledger's machine-readable half sits inside. */
 export const AI_REVIEW_LEDGER_FENCE = "```json";
 
+/**
+ * The identity rule this step records its finding anchors under.
+ *
+ * Stamped on every entry so a later round reads which rule produced the
+ * anchors instead of assuming its own. `lib/ai-review-rounds.ts` declares the
+ * same string as `AI_REVIEW_LEDGER_IDENTITY` and refuses to key an entry
+ * stamped with anything else; the two are bound by `AC-R6` in
+ * `test/ai-review-ledger-read.test.ts`, not by an import, because this module
+ * must stay free of relative imports (the mutant copies run from a temp
+ * directory).
+ */
+export const AI_REVIEW_LEDGER_IDENTITY_V1 = "file+text+summary@v1";
+
+/**
+ * The per-finding key holding the TEXT at the cited line.
+ *
+ * Recorded because a later round cannot obtain it: `actions/checkout` runs at
+ * `fetch-depth: 1`, so the commit the finding was raised against is not in
+ * the next round's checkout and `git show <sha>:<file>` has nothing to read.
+ *
+ * Without it `carryForward` has no way to tell a resolved finding from an
+ * unresolved one. Measured against the ledger this step wrote before the
+ * field existed: one finding in, **zero** carried out — a silent total drop,
+ * because an absent recorded text compared equal to the empty string and so
+ * differed from every real line.
+ */
+export const AI_REVIEW_LEDGER_TEXT_FIELD = "text";
+
 /** Environment variables the persist step reads. Spelled once, used twice. */
 export const AI_REVIEW_LEDGER_PR_VAR = "AI_REVIEW_LEDGER_PR";
 export const AI_REVIEW_LEDGER_TOKEN_VAR = "AI_REVIEW_LEDGER_TOKEN";
@@ -6455,6 +6483,45 @@ fi
 findings="null"
 if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" ]; then
   if parsed=\$(jq -c '[ .${AI_REVIEW_FINDINGS_KEY}[]? | {${AI_REVIEW_FINDING_FIELDS.severity}, ${AI_REVIEW_FINDING_FIELDS.file}, ${AI_REVIEW_FINDING_FIELDS.line}, ${AI_REVIEW_FINDING_FIELDS.summary}} ]' "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>/dev/null); then
+    # Record the TEXT at each cited line, out of the checkout this round
+    # reviewed. A later round cannot obtain it: \`actions/checkout\` above runs
+    # at \`fetch-depth: 1\`, so the commit a finding was raised against is not
+    # present in the next round's checkout and there is nothing to read it
+    # from. Without the text, \`carryForward\` cannot tell a resolved finding
+    # from an unresolved one and reads EVERY finding as resolved — one in,
+    # zero out, silently (#1168).
+    #
+    # An \`if\` around the assignment, never a bare \`texts=\$(mktemp)\`: under
+    # \`bash -e\` a bare one aborts the whole step when it fails (#1110), and
+    # this recorder may not fail the job it only observes.
+    if texts=\$(mktemp); then
+      printf '%s' "\${parsed}" | jq -c '.[]' | while IFS= read -r row; do
+        # \`|| true\` on both, and it is not decoration: under \`bash -e\` an
+        # assignment whose only word is a failing \$(...) aborts the loop
+        # before anything reads \$? (#1110), and this recorder may not fail
+        # the job it observes. An unreadable row records an empty anchor.
+        rf=\$(printf '%s' "\${row}" | jq -r '.${AI_REVIEW_FINDING_FIELDS.file} // ""') || true
+        rl=\$(printf '%s' "\${row}" | jq -r 'if (.${AI_REVIEW_FINDING_FIELDS.line}|type) == "number" then (.${AI_REVIEW_FINDING_FIELDS.line}|floor|tostring) else "" end') || true
+        # The REVIEWER chooses \`file\`, and this step copies a line of it into
+        # a public comment. An absolute path, or one climbing out of the
+        # checkout, is refused rather than read.
+        case "\${rf}" in ""|/*|*..*) rf="" ;; esac
+        rt=""
+        case "\${rl}" in
+          ""|0|*[!0-9]*) ;;
+          *) if [ -n "\${rf}" ] && [ -f "\${rf}" ]; then rt=\$(sed -n "\${rl}p" "\${rf}" 2>/dev/null || true); fi ;;
+        esac
+        jq -nc --arg t "\${rt}" '{${AI_REVIEW_LEDGER_TEXT_FIELD}: \$t}'
+      done > "\${texts}"
+      # Positional join, one text per finding in order. A texts file that is
+      # short or unreadable leaves the field OFF that finding rather than
+      # guessing — and an absent text is undecidable to the reader, which
+      # carries the finding, where a wrong text would resolve it away.
+      if annotated=\$(jq -sc --argjson base "\${parsed}" '[range(0; (\$base|length)) as \$i | \$base[\$i] + (.[\$i] // {})]' "\${texts}" 2>/dev/null); then
+        parsed="\${annotated}"
+      fi
+      rm -f "\${texts}"
+    fi
     findings="\${parsed}"
   else
     ledger_note "the findings payload exists and could not be parsed as JSON, so this round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
@@ -6466,9 +6533,10 @@ if ! entry=\$(jq -nc \\
   --arg sha "\${${AI_REVIEW_LEDGER_SHA_VAR}:-}" \\
   --arg run "\${GITHUB_RUN_ID:-}" \\
   --arg attempt "\${GITHUB_RUN_ATTEMPT:-}" \\
+  --arg identity '${AI_REVIEW_LEDGER_IDENTITY_V1}' \\
   --argjson round "\${round}" \\
   --argjson findings "\${findings}" \\
-  '{at:\$at, sha:\$sha, run:\$run, attempt:\$attempt, round:\$round, ${AI_REVIEW_FINDINGS_KEY}:\$findings}'); then
+  '{at:\$at, sha:\$sha, run:\$run, attempt:\$attempt, identity:\$identity, round:\$round, ${AI_REVIEW_FINDINGS_KEY}:\$findings}'); then
   ledger_note "this round's entry could not be assembled, so nothing was recorded."
   exit 0
 fi
@@ -6543,8 +6611,9 @@ fi
 {
   printf '%s\\n' '${AI_REVIEW_LEDGER_MARKER}'
   printf '%s\\n\\n' '### AI review findings ledger'
-  printf '%s\\n\\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168). Nothing reads this to decide anything yet.'
+  printf '%s\\n\\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168).'
   printf '%s\\n\\n' 'A \`${AI_REVIEW_FINDINGS_KEY}\` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
+  printf '%s\\n\\n' '\`identity\` names the rule the per-finding anchors were recorded under. A reader that does not recognise it carries those findings without keying them, rather than keying them under a rule they were not recorded with. \`${AI_REVIEW_LEDGER_TEXT_FIELD}\` is the content of the cited line at the time, which is the anchor that rule uses; a finding with no \`${AI_REVIEW_LEDGER_TEXT_FIELD}\` cannot be shown resolved and is carried.'
   printf '%s\\n' '${fence}json'
   printf '%s\\n' "\${all}"
   printf '%s\\n' '${fence}'
