@@ -36,14 +36,15 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 
 import { listOpenIssues, type OpenIssue } from "../lib/github";
-import { symptomKeys, type Finding } from "../lib/finding-arbiter";
 import {
   adjudicateFiling,
   filingAttempts,
   filingGate,
+  measuredCorpus,
   openFindings,
   readBodyFile,
   trustedCorpus,
+  unmeasuredCorpus,
   withTimeout,
   FILING_OVERRIDE_LABEL,
   MAX_KEYS_PER_EXISTING_ISSUE,
@@ -261,13 +262,15 @@ describe("#1261 the parts the decision is built from", () => {
   });
 
   test("FG-4: an unreadable tracker is UNMEASURED, never ALLOW", async () => {
-    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => null);
+    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () =>
+      unmeasuredCorpus("the open-issue set could not be read"),
+    );
     expect(v.outcome).toBe("UNMEASURED");
     expect(v.refusal).toBe("UNMEASURED");
   });
 
   test("FG-5: an EMPTY tracker is a reading, and allows", async () => {
-    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => []);
+    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => measuredCorpus([]));
     expect(v.outcome).toBe("ALLOW");
     expect(v.refusal).toBeNull();
   });
@@ -276,7 +279,7 @@ describe("#1261 the parts the decision is built from", () => {
     let asked = 0;
     const v = await adjudicateFiling(filingAttempts(DROPPED_FILING)[0], async () => {
       asked += 1;
-      return [];
+      return measuredCorpus([]);
     });
     expect(v.refusal).toBe("DROPPED_CATEGORY");
     // The cost order is the claim, so it is measured and not asserted in prose.
@@ -302,7 +305,7 @@ describe("#1261 the parts the decision is built from", () => {
       repeatedValueFlag: false,
     };
     const v = await adjudicateFiling(attempt, async () =>
-      OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })),
+      measuredCorpus(OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body }))),
     );
     expect(v.outcome).toBe("REFUSE");
     expect(v.refusal).toBe("DUPLICATE");
@@ -318,7 +321,7 @@ describe("#1261 the parts the decision is built from", () => {
     repeatedValueFlag: false,
   });
   const tracker = async () =>
-    OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body }));
+    measuredCorpus(OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })));
 
   test("FG-18: a body-file that cannot be read is UNMEASURED, and says which file", async () => {
     // The arm #1300 narrowed, not removed. A reader returning `null` is the
@@ -546,11 +549,11 @@ describe("#1261 the four suppression classes", () => {
   test("FG-30: the two orderings reach OPPOSITE outcomes, so the case is not vacuous", async () => {
     const trailingStyle = await adjudicateFiling(
       filingAttempts(`gh issue create --title "${REAL_TITLE}" --title "${STYLE_TITLE}" ${BODY}`)[0],
-      async () => [],
+      async () => measuredCorpus([]),
     );
     const trailingReal = await adjudicateFiling(
       filingAttempts(`gh issue create --title "${STYLE_TITLE}" --title "${REAL_TITLE}" ${BODY}`)[0],
-      async () => [],
+      async () => measuredCorpus([]),
     );
     expect(trailingStyle.outcome).toBe("REFUSE");
     expect(trailingReal.outcome).toBe("ALLOW");
@@ -567,7 +570,7 @@ describe("#1261 the four suppression classes", () => {
         projectRoot: scratch,
         readExisting: async (_root, repo) => {
           asked.push(repo);
-          return [];
+          return measuredCorpus([]);
         },
       },
     );
@@ -590,22 +593,26 @@ describe("#1261 the four suppression classes", () => {
     ...over,
   });
 
+  /** The findings an arm yields, or `[]` when it took no reading at all. */
+  const kept = (r: ReturnType<typeof trustedCorpus>) => (r.reading === "MEASURED" ? r.findings : []);
+
   test("FG-33 BASELINE: an untrusted author cannot put a suppressor in the corpus", () => {
-    expect(trustedCorpus([trusted({ authorAssociation: "NONE" })])).toEqual([]);
-    expect(trustedCorpus([trusted({ authorAssociation: "CONTRIBUTOR" })])).toEqual([]);
-    expect(trustedCorpus([trusted({ authorAssociation: "" })]), "absent is not trusted").toEqual([]);
+    for (const association of ["NONE", "CONTRIBUTOR", ""]) {
+      const r = trustedCorpus([trusted({ authorAssociation: association })]);
+      expect(kept(r), `${association || "(absent)"} is not trusted`).toEqual([]);
+    }
   });
 
   test("FG-34 CONTROL: a trusted author's issue is still in the corpus", () => {
     for (const association of ["OWNER", "MEMBER", "COLLABORATOR"]) {
-      expect(trustedCorpus([trusted({ authorAssociation: association })])).toHaveLength(1);
+      expect(kept(trustedCorpus([trusted({ authorAssociation: association })]))).toHaveLength(1);
     }
   });
 
   test("FG-35: one issue cannot name enough to match everything", () => {
     const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`symbolNumber${i}\``).join(" ");
-    expect(trustedCorpus([trusted({ body: stuffed })]), "over the cap, so dropped whole").toEqual([]);
-    expect(trustedCorpus([trusted()]), "an ordinary issue is unaffected").toHaveLength(1);
+    expect(kept(trustedCorpus([trusted({ body: stuffed })])), "over the cap, so dropped whole").toEqual([]);
+    expect(kept(trustedCorpus([trusted()])), "an ordinary issue is unaffected").toHaveLength(1);
   });
 
   test("FG-38: the cap applies to the FIXTURE corpus too, which FG-35 cannot see", async () => {
@@ -627,13 +634,12 @@ describe("#1261 the four suppression classes", () => {
         else process.env.RUNGATE_OPEN_FINDINGS = prior;
       }
     };
-    // `null`, not `[]`, since #1318. The row is still dropped whole — what
-    // changed is what a corpus with nothing left in it REPORTS. `[]` said
-    // "the tracker is clean" about a tracker nobody managed to read, and the
-    // gate allowed on it. FG-48 is the case that names that directly.
-    expect(await read(stuffed), "over the cap, so dropped whole — and that is UNMEASURED").toBeNull();
+    const over = await read(stuffed);
+    expect(over.reading, "the one row was dropped, so the set was never compared").toBe("UNMEASURED");
+    expect(over.dropped.map(d => d.reason)).toEqual(["over-key-cap"]);
+    const ordinary = await read("`retryBudget` in lib/command-retry.ts: 144 of 234.");
     expect(
-      await read("`retryBudget` in lib/command-retry.ts: 144 of 234."),
+      ordinary.reading === "MEASURED" ? ordinary.findings : [],
       "an ordinary fixture row is unaffected — this is the control that fails if the reader broke",
     ).toHaveLength(1);
   });
@@ -645,20 +651,281 @@ describe("#1261 the four suppression classes", () => {
     expect(r.reason).toContain("DUPLICATE");
   });
 
-  test("FG-37: one duplicate beside a novel finding refuses the whole command", async () => {
-    // INVERTED by #1318, and the fixture is unchanged — only the expected
-    // direction moved. This case shipped asserting `blocked === false`, which
-    // made batching a clean filing beside a refused one the cheapest way past
-    // this gate. The reasoning was that a block loses the novel finding; it
-    // does not, because nothing has executed when a PreToolUse hook decides.
-    // See the `blocking` docblock in `lib/issue-filing-gate.ts`.
+  test("FG-37: one duplicate beside a novel finding blocks, and the novel one is NAMED", async () => {
+    // **This row asserted the opposite until FG-45 below.** It read "one
+    // duplicate beside a novel finding does NOT take it down", which made
+    // batching a refused filing with a clean one the cheapest way past the
+    // arbiter. The concern behind it was right and is answered by naming the
+    // clean clause in the refusal rather than by letting the command run —
+    // see the FG-45 block for the argument and the measurement.
     const start = ledgerRows().length;
     const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
-    expect(r.blocked, "a refused clause refuses the command").toBe(true);
-    // Still not silent, and still specific: the agent is told which one.
-    expect(r.payload?.reason ?? "").toContain("already reported");
+    expect(r.blocked).toBe(true);
+    expect(r.reason, "the refusal still names the duplicate").toContain("DUPLICATE");
+    // Both rows still reach the ledger, so the clean one is recorded as clean.
     const added = ledgerRows().slice(start);
     expect(added.map(x => x.withheldBy)).toEqual(["DUPLICATE", null]);
+  });
+});
+
+/**
+ * The `blocking` predicate: a refused filing must not ride through on a clean
+ * sibling.
+ *
+ * ## The defect
+ *
+ * `filingGate` blocked only when `rows.every(r => !r.emitted)` — when NOTHING
+ * in the command was clean. So one duplicate batched with one novel finding
+ * was **ALLOWED**, and the refusal was downgraded to a note. The cheapest way
+ * past the arbiter was to put a refused filing in the same `&&` chain as a
+ * clean one, and a gate with a one-clause bypass is worse than no gate
+ * because it reads as working.
+ *
+ * `emitted` is `verdict.outcome !== "REFUSE" || overridden`, so it is also
+ * true for an **UNMEASURED** row. A single unreadable `--body-file` beside any
+ * number of duplicates therefore allowed the whole command: a broken
+ * adjudicator was a bypass as well as a note, which is the one thing the
+ * UNMEASURED policy in this file's header exists to prevent.
+ *
+ * ## Why blocking is affordable now, when the comment said it was not
+ *
+ * The argument for `every` was real: a hook's one lever is the whole Bash
+ * command, so blocking a mixed command takes novel findings down with a
+ * duplicate, and that is the direction this gate must never fail in. What it
+ * did not price is that nothing is lost by blocking if the refusal **names
+ * the clauses that were clean**. The agent withdraws the refused one and
+ * re-runs the rest in one step; the ledger has held every row, clean and
+ * refused, since #1261. A finding deferred by one command is not a finding
+ * silenced — a finding filed alongside a duplicate was never adjudicated at
+ * all, which is the state the old predicate produced.
+ *
+ * ## What every row in FG-36/FG-37 held fixed
+ *
+ * Both pre-existing rows drove a command whose clauses were all REFUSE or a
+ * mix of REFUSE and ALLOW. Neither drove a mix of REFUSE and **UNMEASURED**,
+ * which is the input the `emitted` spelling and the `refusals` spelling
+ * disagree on and the only one that separates "block when nothing was clean"
+ * from "block when anything refused" at the boundary. FG-47 is that row —
+ * the seventh shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+describe("a refused filing does not ride through on a clean sibling", () => {
+  /** An UNMEASURED filing: the body file does not exist, so nothing was read. */
+  const UNMEASURED_FILING =
+    'gh issue create --title "pullRequestCache is never invalidated" ' +
+    `--body-file ${join(tmpdir(), "rg-filing-gate-absent-body-file.md")}`;
+
+  test("FG-45 BASELINE: a duplicate batched with a novel finding BLOCKS the command", () => {
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
+    expect(r.blocked, "the duplicate rode through on the clean sibling").toBe(true);
+  });
+
+  test("FG-46: the refusal NAMES the clean clause, so re-running it costs one step", () => {
+    // The half that makes blocking affordable. Without it this is the fix the
+    // original comment argued against, and the novel finding is lost.
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
+    expect(r.blocked).toBe(true);
+    expect(r.reason, "the clean clause must be named verbatim").toContain(
+      "pullRequestCache is never invalidated",
+    );
+    expect(r.reason, "and counted, so the agent knows how many to re-run").toContain("1 of 2");
+  });
+
+  test("FG-47: a duplicate beside an UNMEASURED filing blocks — `emitted` said allow", () => {
+    // The input FG-36 and FG-37 both held fixed. `emitted` is true for an
+    // UNMEASURED row, so under `rows.every(r => !r.emitted)` ONE unreadable
+    // body file allowed any number of duplicates beside it.
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${UNMEASURED_FILING}`);
+    expect(r.blocked).toBe(true);
+    expect(r.reason).toContain("DUPLICATE");
+  });
+
+  test("FG-48 CONTROL: a command whose filings are ALL clean is still allowed", () => {
+    // The control against the cheapest wrong fix for the three rows above —
+    // block whenever there is more than one clause, or block unconditionally.
+    const r = runHook(HOOK, `${NOVEL_FILING} && ${SAME_SYMBOL_NEW_READING}`);
+    expect(r.blocked, "two novel findings in one command must still run").toBe(false);
+    expect(r.payload?.systemMessage ?? null, "and with nothing to say about them").toBe(null);
+  });
+
+  test("FG-49 CONTROL: an UNMEASURED filing ALONE is allowed, loudly", () => {
+    // Separates "UNMEASURED no longer excuses a sibling" from "UNMEASURED now
+    // refuses", which would make a broken adjudicator a gag on the tracker.
+    const r = runHook(HOOK, UNMEASURED_FILING);
+    expect(r.blocked).toBe(false);
+    expect(r.payload?.systemMessage ?? "").toContain("UNMEASURED");
+  });
+
+  test("FG-50 CONTROL: an overridden duplicate beside a novel finding still allows", () => {
+    // An override is a decision somebody made and recorded. It must survive
+    // the stricter predicate, or the label stops meaning anything.
+    const r = runHook(
+      HOOK,
+      `${DUPLICATE_FILING} --label ${FILING_OVERRIDE_LABEL} && ${NOVEL_FILING}`,
+    );
+    expect(r.blocked).toBe(false);
+    expect(r.payload?.systemMessage ?? "").toContain(FILING_OVERRIDE_LABEL);
+  });
+
+});
+
+/**
+ * A corpus that filtered to nothing is UNMEASURED, not a clean tracker.
+ *
+ * ## The defect
+ *
+ * `openFindings` read the tracker, dropped every issue whose
+ * `authorAssociation` is untrusted and every issue over the key cap, and
+ * returned the remainder as a list. **A non-empty issue list that filters
+ * down to empty was byte-indistinguishable from a tracker with nothing on
+ * it**, and the gate ALLOWed on the strength of a comparison it never made.
+ *
+ * Each filter is individually argued to fail in the safe direction — a
+ * duplicate reaches the tracker, never a real finding silenced — and that
+ * argument is about ONE issue being dropped. It does not survive
+ * composition: when the filters take everything, the gate is not erring
+ * toward letting a duplicate through, it is reporting a reading it did not
+ * take. A filter with a bug in it reads exactly the same.
+ *
+ * ## What `null` cost, and why it is gone
+ *
+ * Carrying the reason required a channel, and `null` had none. A second
+ * channel beside `null` would have been two spellings of UNMEASURED — two
+ * deciders for one question, the fourth shape — so `null` was collapsed into
+ * the `UNMEASURED` arm of `CorpusReading`, which carries its own `why`. That
+ * matters beyond tidiness: `adjudicateFiling` used to COMPOSE the sentence
+ * *"the open-issue set could not be read"* for every `null`, and that
+ * sentence is false for a corpus that was read perfectly well and then
+ * emptied by our own filters. This file already paid for a reason that was
+ * false for the input it was emitted on, in the `--body-file` arm FG-17
+ * covers.
+ *
+ * ## What every pre-existing row held fixed
+ *
+ * FG-33, FG-34, FG-35 and FG-38 each hand the corpus readers **one issue**.
+ * With one issue, "the filters dropped it" and "the tracker was empty" have
+ * the same consequence for the caller, so none of them can see the
+ * composition — the seventh shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`. The rows below vary that
+ * axis: two issues both dropped, and two issues of which one survives.
+ *
+ * ## Measured, not inferred: the harness's own filing identity
+ *
+ * The allowlist eating its own corpus was the worst case, and it does not
+ * happen. Read from the live tracker on 2026-10-23,
+ * `repos/hornjason/pai-harness/issues?state=open`, pull requests excluded:
+ * **35 of 35 open issues report `author_association: OWNER`**, which is in
+ * `TRUSTED_ASSOCIATIONS`. The author filter currently drops nothing. It is
+ * not asserted here, because a case that calls the GitHub API measures a
+ * network rather than this code.
+ */
+describe("a corpus every filter emptied is UNMEASURED, not a clean tracker", () => {
+  const issue = (over: Partial<OpenIssue> = {}): OpenIssue => ({
+    number: 1,
+    title: "retryBudget gives up early",
+    body: "`retryBudget` in lib/command-retry.ts: 144 of 234 over 5060.",
+    authorAssociation: "OWNER",
+    ...over,
+  });
+  const stuffed = Array.from(
+    { length: MAX_KEYS_PER_EXISTING_ISSUE + 10 },
+    (_, i) => `\`stuffedSymbol${i}\``,
+  ).join(" ");
+
+  test("FG-52 BASELINE: two issues, both filtered out, is UNMEASURED and not an empty corpus", () => {
+    const r = trustedCorpus([
+      issue({ number: 10, authorAssociation: "NONE" }),
+      issue({ number: 11, body: stuffed }),
+    ]);
+    expect(r.reading).toBe("UNMEASURED");
+  });
+
+  test("FG-53: the reading names every dropped issue and the filter that took it", () => {
+    // A reason that does not say what was dropped is a reason nobody can act
+    // on, and the two filters need different repairs — one is a trust
+    // decision, the other is an issue to split up.
+    const r = trustedCorpus([
+      issue({ number: 10, authorAssociation: "NONE" }),
+      issue({ number: 11, body: stuffed }),
+    ]);
+    expect(r.dropped.map(d => [d.id, d.reason])).toEqual([
+      ["10", "untrusted-author"],
+      ["11", "over-key-cap"],
+    ]);
+    const why = r.reading === "UNMEASURED" ? r.why : "";
+    expect(why).toContain("#10");
+    expect(why).toContain("#11");
+    expect(why, "the association that failed, so the reader can check it").toContain("NONE");
+    expect(why, "and the cap, which is the other repair").toContain(
+      String(MAX_KEYS_PER_EXISTING_ISSUE),
+    );
+  });
+
+  test("FG-54 CONTROL: a GENUINELY empty tracker is MEASURED, and allows", () => {
+    // The row that stops the fix becoming "an empty corpus always refuses",
+    // which would make a project with no open issues unable to file anything.
+    const r = trustedCorpus([]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.reading === "MEASURED" ? r.findings : null).toEqual([]);
+    expect(r.dropped).toEqual([]);
+  });
+
+  test("FG-55 CONTROL: one survivor among two is MEASURED, and the drop is still reported", () => {
+    // The other side of the axis. A partial filter is a reading, and the
+    // caller is told it read a smaller tracker than the one that exists.
+    const r = trustedCorpus([issue({ number: 10, authorAssociation: "NONE" }), issue({ number: 11 })]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.reading === "MEASURED" ? r.findings.map(f => f.id) : null).toEqual(["11"]);
+    expect(r.dropped.map(d => d.id), "the drop survives a successful read").toEqual(["10"]);
+  });
+
+  test("FG-56: end to end, a filing against an emptied corpus is UNMEASURED at the hook", () => {
+    // The production path, not the unit. Under the defect the hook ALLOWed
+    // and said nothing; the filing was adjudicated against a comparison that
+    // never happened.
+    const file = join(scratch, "emptied-corpus.json");
+    writeFileSync(
+      file,
+      JSON.stringify([{ number: 77, title: "a stuffed fixture issue", body: stuffed }]),
+      "utf-8",
+    );
+    const r = runHook(HOOK, NOVEL_FILING, { RUNGATE_OPEN_FINDINGS: file });
+    expect(r.blocked, "UNMEASURED allows — a broken adjudicator is not a gag").toBe(false);
+    const said = r.payload?.systemMessage ?? "";
+    expect(said, "but it says so").toContain("UNMEASURED");
+    expect(said, "and names what emptied it").toContain("#77");
+  });
+
+  test("FG-57 CONTROL: a partial drop is reported even when the filing is ALLOWED", () => {
+    // Separates "the gate noticed the drop" from "the gate refused". Two
+    // rows, one kept, one over the cap: the filing runs and the note still
+    // says the dedupe read a smaller tracker than exists.
+    const file = join(scratch, "partial-corpus.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        { number: 77, title: "a stuffed fixture issue", body: stuffed },
+        { number: 78, title: "an ordinary fixture issue", body: "`someOtherSymbol` in lib/x.ts." },
+      ]),
+      "utf-8",
+    );
+    const r = runHook(HOOK, NOVEL_FILING, { RUNGATE_OPEN_FINDINGS: file });
+    expect(r.blocked).toBe(false);
+    const said = r.payload?.systemMessage ?? "";
+    expect(said).toContain("filtered out of the comparison set");
+    expect(said).toContain("#77");
+    expect(said, "the surviving row is not reported as a drop").not.toContain("#78");
+  });
+});
+
+describe("the ledger carries every row of a blocked command", () => {
+  test("FG-58: a blocked command still records every row, clean ones included", () => {
+    // The ledger is what makes the block affordable: nothing is withheld with
+    // no artefact anywhere, which is the failure the old predicate avoided.
+    const start = ledgerRows().length;
+    runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
+    const added = ledgerRows().slice(start);
+    expect(added).toHaveLength(2);
+    expect(added.map(x => x.emitted), "the clean row is recorded as clean").toEqual([false, true]);
   });
 });
 
@@ -785,131 +1052,41 @@ describe("#1302 a document heredoc is not a filing", () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0].labels).toEqual(["follow-up"]);
   });
-});
 
-/**
- * FG-45..FG-49: a refusal must refuse, and a corpus nobody could read is not
- * an empty one (#1318).
- *
- * Both findings here are the same mistake in two places: **a state that could
- * not be measured, reported as a state that passed.** The first shape in
- * `.claude/rules/checks-must-be-able-to-fail.md`, twice, in the gate written
- * to catch it.
- *
- * **The `blocking` predicate.** `rows.every(r => !r.emitted)` allowed any
- * command in which at least one clause was clean, so batching a refused
- * filing beside a novel one was a complete bypass — and the cheapest one,
- * because an agent filing several findings at once hits it by accident. The
- * argument for it was that blocking "takes the novel findings down with a
- * duplicate". That step does not hold: this is a **PreToolUse** hook, so
- * nothing has executed. A block costs one re-run with the duplicate clause
- * removed; the findings are in the agent's context, not destroyed. An allow
- * costs a tracker row somebody has to triage. The note the allow emitted said
- * *"Please withdraw them and re-run"* — asking for an action the allow had
- * just made impossible, since a filing that already happened cannot be
- * withdrawn by the agent that made it.
- *
- * **The ledger was lying in the flattering direction.** Rows are written with
- * `disposition: "DROP"` and `withheldBy` set BEFORE `blocking` is computed,
- * so every allowed-anyway refusal was recorded as a successful withhold. Any
- * rate derived from the ledger counted those as saves. FG-47 is the row that
- * fails if the two ever disagree again.
- *
- * **`trustedCorpus` was fail-open.** A non-empty issue list that filters down
- * to empty — every author untrusted, or every issue over the key cap — was
- * returned as `[]`, which is byte-identical to a clean tracker, and the gate
- * ALLOWed. `null` already means UNMEASURED here and already routes to the
- * right refusal, so the fix is to return it.
- */
-describe("FG-45..FG-49: a bypass by batching, and a corpus nobody could read", () => {
-  const MIXED = `${DUPLICATE_FILING} && ${NOVEL_FILING}`;
-
-  /** The fixture corpus path, which `openFindings` shares with the live one. */
-  const fixtureCorpus = async (rows: unknown[]): Promise<readonly Finding[] | null> => {
-    const file = join(scratch, "unmeasured-corpus.json");
-    writeFileSync(file, JSON.stringify(rows));
-    const prior = process.env.RUNGATE_OPEN_FINDINGS;
-    process.env.RUNGATE_OPEN_FINDINGS = file;
-    try {
-      return await openFindings(scratch);
-    } finally {
-      if (prior === undefined) delete process.env.RUNGATE_OPEN_FINDINGS;
-      else process.env.RUNGATE_OPEN_FINDINGS = prior;
+  /**
+   * FG-59: the three spellings that were reported as a live bypass, and are
+   * not one.
+   *
+   * The report was that `heredocView` decides document-versus-program by the
+   * WRITER WORD alone, so a clause whose stdout still reaches a shell has its
+   * body dropped from the view while the shell executes it. Three spellings
+   * were named. **All three already yield one filing attempt**, measured
+   * before anything was changed, and the mechanisms differ:
+   *
+   * | spelling | attempts | why it is caught |
+   * |---|---|---|
+   * | `cat <<'EOF' \| bash` | 1 | `heredocInterpreter`'s pipe arm — the operator's segment is piped into an interpreter |
+   * | `bash -c "$(cat <<'EOF' … )"` | 1 | the opener LINE's command word is `bash`, so the owner arm fires |
+   * | `bash <(cat <<'EOF' … )` | 1 | the same: the line's command word is `bash` |
+   *
+   * They are kept as rows because nothing covered them and the second and
+   * third are caught by a reason their own shape does not suggest — they
+   * would go red under a narrowing of `heredocInterpreter` to the heredoc's
+   * owning SEGMENT, which reads like a tightening.
+   *
+   * **Four other spellings are a live bypass, and are reported rather than
+   * fixed here.** They are in the pull request body with the shell output
+   * proving each executes. The fix is in `lib/bash-write-guard.ts`, which is
+   * the other guard's decider and was tuned against a 5,060-command corpus
+   * this change cannot re-measure.
+   */
+  test("FG-59 CONTROL: the three reported heredoc-to-shell spellings all yield a filing", () => {
+    for (const cmd of [
+      `cat <<'EOF' | bash\n${FILING}\nEOF`,
+      `bash -c "$(cat <<'EOF'\n${FILING}\nEOF\n)"`,
+      `bash <(cat <<'EOF'\n${FILING}\nEOF\n)`,
+    ]) {
+      expect(filingAttempts(cmd), `the body reaches a shell: ${cmd.slice(0, 24)}`).toHaveLength(1);
     }
-  };
-  const existing = async (): Promise<readonly Finding[]> => [
-    { id: "900", title: "retryBudget gives up early", body: DUPLICATE_BODY },
-  ];
-
-  test("FG-45 BASELINE: a duplicate batched beside a novel filing still refuses", async () => {
-    const r = await filingGate(MIXED, { projectRoot: scratch, readExisting: existing });
-    // The premise, asserted rather than assumed: this command really does
-    // carry one of each. Without it the row could pass on a command the
-    // parser never split, which is green for the wrong reason.
-    expect(r.rows, "the fixture must carry two clauses").toHaveLength(2);
-    expect(r.rows.filter(x => x.emitted), "exactly one of them is clean").toHaveLength(1);
-    expect(r.refusal, "one refused clause refuses the command").not.toBeNull();
-  });
-
-  test("FG-46 CONTROL: a command whose clauses are ALL novel is still allowed", async () => {
-    // The control against "refuse everything", which would make FG-45 green
-    // and the gate useless. Same call, same corpus, no duplicate clause.
-    const r = await filingGate(`${NOVEL_FILING} && ${NOVEL_FILING}`, {
-      projectRoot: scratch,
-      readExisting: existing,
-    });
-    expect(r.rows).toHaveLength(2);
-    expect(r.refusal).toBeNull();
-  });
-
-  test("FG-47: the ledger cannot record a DROP for a filing the gate let through", async () => {
-    // The instrument check. A row saying `emitted: false` is a claim that the
-    // filing did not happen, and that claim is only true when the command was
-    // blocked. Asserting the agreement rather than either side alone is what
-    // makes this fail if a later change reintroduces partial admission
-    // without also fixing the rows.
-    for (const cmd of [MIXED, NOVEL_FILING, DUPLICATE_FILING]) {
-      const r = await filingGate(cmd, { projectRoot: scratch, readExisting: existing });
-      const withheld = r.rows.filter(x => !x.emitted);
-      expect(
-        withheld.length > 0 ? r.refusal !== null : true,
-        `${cmd.slice(0, 40)}: rows claim ${withheld.length} withheld, refusal=${r.refusal === null ? "null" : "set"}`,
-      ).toBe(true);
-    }
-  });
-
-  test("FG-48 BASELINE: a corpus that filters down to empty is UNMEASURED, not clean", async () => {
-    // Driven through `openFindings`, the production reader, not through a
-    // helper written alongside the fix — a new binding asserted by a new
-    // case is green on arrival and proves nothing. One issue IS present and
-    // the key cap drops it, so the reading is "could not be taken", and
-    // before this it came back `[]` and allowed.
-    const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`stuffedSymbol${i}\``).join(" ");
-    const row = { number: 77, title: "a stuffed issue", body: stuffed };
-    // The premise, asserted rather than assumed. My first fixture spelled
-    // these `stuffed0`, which the key reader does not treat as a symbol at
-    // all — so nothing was over the cap, nothing was dropped, and the case
-    // was measuring a corpus that passed straight through while claiming to
-    // measure one that had been emptied.
-    expect(
-      symptomKeys({ id: "77", title: row.title, body: row.body }).length,
-      "the fixture must exceed the cap, or this row is about nothing",
-    ).toBeGreaterThan(MAX_KEYS_PER_EXISTING_ISSUE);
-    expect(
-      await fixtureCorpus([row]),
-      "every issue dropped is not the same fact as no issues",
-    ).toBeNull();
-  });
-
-  test("FG-49 CONTROL: a genuinely empty tracker is MEASURED and still allows", async () => {
-    // The row that separates "nothing was there" from "nothing survived the
-    // filter". Without it the cheapest fix for FG-48 is `always null`, which
-    // switches the dedupe off entirely and passes FG-48 while making the
-    // gate useless — the fifth shape, green under the wrong repair.
-    expect(await fixtureCorpus([]), "an empty tracker is a reading that WAS taken").toEqual([]);
-    expect(
-      await fixtureCorpus([{ number: 78, title: "retryBudget gives up early", body: DUPLICATE_BODY }]),
-      "and an ordinary issue still reaches the corpus",
-    ).toHaveLength(1);
   });
 });
