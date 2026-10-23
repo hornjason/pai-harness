@@ -96,14 +96,35 @@ async function main(): Promise<void> {
 
   const prNumber = typeof pr.number === "number" ? pr.number : 0;
   const linked = pr.closingIssuesReferences as unknown[];
-  if (linked.length > 0) {
-    console.log(`closing references OK: PR #${prNumber} links ${linked.length} issue(s).`);
-    return;
-  }
+  // The linked set is read for its ISSUE NUMBERS, not for its length.
+  //
+  // This used to return early whenever `linked.length > 0`, and that let the
+  // defect through one issue over: a pull request that correctly links #A and
+  // also carries a backticked `Fixes #B` passed clean, #B never closed, and
+  // #B is then an open issue with a merged pull request — the exact symptom
+  // this script exists to find. The contradiction the docblock describes is
+  // not "GitHub recorded nothing", it is "the author wrote a closing
+  // reference GitHub did not record", and a non-empty linked set does not
+  // make that false for a DIFFERENT issue.
+  //
+  // An entry whose number is unreadable contributes nothing to this set,
+  // which is the safe direction: it can only cause an inert reference to be
+  // reported, never suppressed.
+  const linkedIssues = new Set(
+    linked
+      .map(e => (e !== null && typeof e === "object" ? (e as { number?: unknown }).number : null))
+      .filter((n): n is number => typeof n === "number"),
+  );
 
-  const inert = inertClosingReferences(pr.body);
+  // An inert keyword naming an issue that IS linked is harmless — the issue
+  // closes on the live reference regardless, so firing on it would be the
+  // false positive the docblock refuses to ship. Only the unlinked ones are
+  // the contradiction.
+  const inert = inertClosingReferences(pr.body).filter(r => !linkedIssues.has(r.issue));
   if (inert.length === 0) {
-    console.log(`closing references OK: PR #${prNumber} links none and claims none.`);
+    const links =
+      linked.length > 0 ? `links ${linked.length} issue(s)` : "links none and claims none";
+    console.log(`closing references OK: PR #${prNumber} ${links}.`);
     return;
   }
   refuse(inertClosingMessage(inert, prNumber));

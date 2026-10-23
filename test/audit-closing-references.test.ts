@@ -78,6 +78,17 @@ function run(script: string, payload: string): { code: number; err: string; out:
 const BACKTICKED = "Fixes #1157".replace(/^/, "`").replace(/$/, "`");
 const DEFECTIVE = JSON.stringify({ number: 1208, body: `${BACKTICKED}\n`, closingIssuesReferences: [] });
 
+// The same contradiction one issue over, and the state the script used to
+// pass clean: a live link to #1362 AND a suppressed closing keyword for a
+// DIFFERENT issue. #777 never closes, so it becomes an open issue carrying a
+// merged pull request — the exact population this script was written to find.
+// The early return on `linked.length > 0` meant the body was never read.
+const LINKED_PLUS_INERT = JSON.stringify({
+  number: 1376,
+  body: `Fixes #1362\n\n${"Fixes #777".replace(/^/, "`").replace(/$/, "`")}\n`,
+  closingIssuesReferences: [{ number: 1362 }],
+});
+
 describe("the refusal is observed, against a mutant that cannot refuse", () => {
   test("the exit constant is declared exactly once, or no mutation is trustworthy", () => {
     expect(SRC.split(`export const REFUSE_EXIT = ${REFUSE_EXIT};`).length - 1).toBe(1);
@@ -87,6 +98,7 @@ describe("the refusal is observed, against a mutant that cannot refuse", () => {
 
   for (const [name, payload] of [
     ["an inert closing reference", DEFECTIVE],
+    ["a linked pull request carrying an inert reference to ANOTHER issue", LINKED_PLUS_INERT],
     ["a payload with no closingIssuesReferences key", JSON.stringify({ number: 1, body: "x" })],
     ["a payload that is not JSON", "not json at all"],
     ["an empty payload", ""],
@@ -115,6 +127,18 @@ describe("what it deliberately lets through", () => {
     const r = run(SCRIPT, JSON.stringify({ number: 3, body, closingIssuesReferences: [] }));
     expect(r.code).toBe(0);
     expect(r.out).toContain("claims none");
+  });
+
+  test("an inert reference to an issue that IS linked passes", () => {
+    // The row that keeps the widened check narrow. #9 closes on the live
+    // reference whatever the code span says, so firing here would be a
+    // false positive — and it is the one the cheapest version of this fix
+    // produces, because "scan the body whenever there are inert refs" and
+    // "scan the body for inert refs NOT already linked" differ only here.
+    const body = "Fixes #9\n\nsee also `Fixes #9` in the old description.\n";
+    const r = run(SCRIPT, JSON.stringify({ number: 5, body, closingIssuesReferences: [{ number: 9 }] }));
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain("links 1 issue");
   });
 
   test("a negation passes", () => {
