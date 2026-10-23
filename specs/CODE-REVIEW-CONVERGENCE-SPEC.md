@@ -124,7 +124,7 @@ implementation.
 - [ ] CRC-M8: Priority order is stated and enforced: **catching real bugs first, cutting review rounds second.**
 - [ ] CRC-M9: Human-time metrics tracked — approvals per PR (median and p95), human comments, time waiting on a person.
 - [ ] CRC-M10: **Revert and incident rates are the guardrail.** If they rise, human time was moved, not saved.
-- [ ] CRC-M11: Rounds-to-pass is tracked alongside recall.
+- [x] CRC-M11: Rounds-to-pass is tracked alongside recall. (shipped, #1441/#1448)
 
 ### Convergence — the non-convergent review failure
 
@@ -140,6 +140,35 @@ showed **~59%** of what the reviewer kept flagging was code present at its first
 Their result, which is our target: pass-after-one-round 65% → 78%; five-or-more rounds
 8.9% → 1.5%; mean reviews to pass 2.08 → 1.32.
 
+### Where we actually stand, measured
+
+The first reading CRC-M11 was able to take, over the 45 most recent pull
+requests on 2026-10-23 — 44 measured, 1 refused for carrying no ledger:
+
+| | their before | their after | **us** |
+|---|---|---|---|
+| passed after one round | 65% | 78% | **39.4%** |
+| five or more rounds | 8.9% | 1.5% | **20.5%** |
+| mean rounds to pass | 2.08 | 1.32 | **2.64** |
+
+**We are worse than the state they were improving from, on all three.** That
+is the number this spec exists to move, and it is the argument for ranking
+criteria by rounds-to-pass rather than by how interesting they are to build.
+
+Two things the shape of it says, beyond the headline. The tail is the problem
+rather than the median: 20.5% at five rounds or more is over twice their
+starting figure while the mean is only a quarter above it, so a minority of
+pull requests is absorbing the loop. And eleven of the 44 have not passed at
+all, at up to ten rounds spent — excluded from the mean by definition, which
+is why this table is reported beside them rather than alone.
+
+The mean is `2.64` and not `1.32` partly for reasons nothing in the review
+model controls: #1449 is a harness defect that raises a blocking finding on
+**every** pull request editing `.claude/` or `CLAUDE.md`, which in this
+repository is how conventions ship. A false finding is a whole round. Re-take
+this reading after it lands; a baseline measured across a known artefact is a
+baseline that will appear to improve for the wrong reason.
+
 ### What stays human
 
 - [ ] CRC-H1: Direction, taste and scope — whether to build it at all.
@@ -154,14 +183,14 @@ Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
 0 carried a claiming test**. A spec nothing is bound to cannot drift, because
 there is nothing for it to drift from; the number below is what replaces that.
 
-Of the 56: **8 bound**, **8 where a mechanism exists that nothing in this
+Of the 56: **9 bound**, **8 where a mechanism exists that nothing in this
 repository can observe**, **4 that cannot be meaningful in this deployment**,
-**3 blocked on an owner decision**, **2 declared deviations**, **31 not done**.
+**3 blocked on an owner decision**, **2 declared deviations**, **30 not done**.
 
-Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4. The
-audit above was taken the same day, at 0 bound; the three moved by
-engineering, and none of the other four categories changed, which is the
-point of keeping them separate.
+Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
+again after #1448 bound CRC-M11. The audit above was taken the same day, at 0
+bound; the four moved by engineering, and none of the other four categories
+changed, which is the point of keeping them separate.
 
 An unticked box is one of the last five, and they are five different facts.
 Four of them are recorded here because an unticked box nobody can ever tick,
@@ -257,7 +286,6 @@ something in the tree that resembles it and is not it.
 - **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
 - **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
 - **CRC-M10** Nothing tracks revert or incident rates.
-- **CRC-M11** The round number is computed per run and retained nowhere. Nothing tracks rounds-to-pass beside recall.
 - **CRC-N4** Seven exports of `lib/ai-review-rounds.ts` — `readLedger`, `priorFindings`, `carryForward`, `suppressRepeats`, `noRepeatsInstruction`, `atCapInstruction`, `reviewScopeForRound` — have **zero production callers between them**; every caller is a test. The prompt states the opposite in so many words: nothing carries its findings forward. **This is structural, not an oversight, and that changes what the work is.** The only non-test file naming the module is `lib/scaffold/ai-review-step.ts`, where every mention is prose in a comment — it cannot import, because the step is deliberately import-free so that the suites copying it into a temp directory can build mutants that load. So the first production caller cannot arrive as an import; it has to arrive the way the adjudicator did, as a CLI command the generated bash invokes under a pinned version. **The data path is already complete** — #1319 shipped the ledger writer and #1351 the reader and the per-finding text anchor — so what is missing is the invocation and nothing else.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
 - **CRC-H2** Risky code requires a human. There is no `CODEOWNERS` and no required approval, so nothing does.
@@ -276,6 +304,8 @@ A deviation is legitimate when it is written here with its reason. An undeclared
 ## Measured non-obvious facts about our own instruments
 
 Recorded because each one invalidates a naive reading of the criteria above.
+
+- **A metric that exists is not a metric that reports, and CRC-M11 sat in that gap for two days.** `lib/rounds-to-pass.ts` shipped in #1441 and printed `measured 1, unmeasured 39` against the live tracker: every refusal was `ROUNDS_TRUNCATION_UNKNOWN`, because `readLedger` called every legacy bare-array ledger unknowable while the #1405 WRITER already derived the opposite for the same input — a list that grows by one per round and is only cut at the cap was never cut if it is shorter than the cap. Same fact, two modules, two answers, and the metric consumed the readers. #1448 taught the reader the derivation and the reading became `measured 44, unmeasured 1`. **The lesson is the shape, not the bug:** a criterion asking for a number must be checked by running it, because a file-exists matcher would have ticked this while the command refused 39 of 40 rows. It is why CRC-M11 is banked in `CLAIMED_UNBINDABLE` rather than given a pattern.
 
 - **`ai-review` is a sampled instrument, not an enumerated one.** `lib/scaffold/ai-review-step.ts` reviewed CLEAN on #1262 and BLOCKED on #1274 about an hour later, both at `scope=full`, with the flagged construct byte-identical across the two heads (content hash equal; whole-file hash differing as the control). **A green review means this run did not find this thing.** Any criterion scored by comparing reviewer verdicts across runs is reading a sample.
 - **A second mechanism produces the same error direction, and it is a different axis from a same-tree repeat.** The #1262/#1274 pair above and the #1334 pair in `CRC-B3` both hold the tree fixed. This one does not: on #1337, run `39972693180` (head `fb295a47`, created 14:47:51Z) returned `findings: []` and run `39973400503` (head `3d3c5b62`, created 14:52:46Z) returned one `high` naming `lib/scaffold/steps.ts`. **`git diff` between the two heads is 18 insertions in one test file and nothing else**, and the subject the finding names is the identical blob `57cb319f` at both — the whole-file object hash, which is the stronger form of the content-hash control used above. Both runs were created before #1340 merged at 15:00:18Z, so the base is held too. So the instrument flipped on a change that cannot have caused the flip, and the direction was the costly one again: four observations now, all false positives. **The third draw is not a fourth instance and must not be counted as one** — run `39975917885` (head `0bf21bcc`, created 15:10:01Z) returned `[]`, but it was created after #1340 merged, so its merge ref carries a base the first two never reviewed. It is an uncontrolled sample, not a reversal.
