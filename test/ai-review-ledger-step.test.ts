@@ -54,6 +54,7 @@ import {
   AI_REVIEW_ROUND_PATH_VAR,
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step";
+import { readAiReviewFindings } from "../lib/scaffold/ai-review-findings";
 
 const REPO = join(import.meta.dir, "..");
 const WORKFLOW = join(REPO, ".github", "workflows", "ai-review.yml");
@@ -463,6 +464,168 @@ describe("AC-L2 (#1168): `null` findings and `[]` findings stay different facts"
     const r = runPersist({ payload: "{not json" });
     expect(r.rounds![0].findings).toBeNull();
     expect(r.stdout).toContain("UNMEASURED");
+  });
+});
+
+/**
+ * #1352 — AC-L2 above varies ONE axis: whether the payload parses. Every one
+ * of its three rows is a different answer to that question, and all three are
+ * handled correctly. The defect sat on the axis it holds fixed — **the shape
+ * of the value once it HAS parsed** — which is the seventh shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`: a battery whose rows all
+ * meet the same precondition cannot come back wrong about an input nobody
+ * wrote.
+ *
+ * `jq '[ .findings[]? | … ]'` exits 0 on a document that parses but carries
+ * no array under `findings`, because `?` suppresses the iteration error. The
+ * comprehension yields `[]`, and `[]` is this ledger's spelling of *a round
+ * that was read and was clean* — three lines above the jq, in its own words.
+ *
+ * Measured against jq before this battery was written, so the rows below are
+ * a reading rather than a guess: of ten shapes, **six recorded `[]`** and
+ * three already refused. `{"findings":{"a":1}}` is one of the three and is
+ * right for the wrong reason — it fails when the projection hits a number,
+ * not because anything checked the shape.
+ */
+const SHAPE_CORPUS: {
+  name: string;
+  /** `undefined` plants no file. Otherwise the payload's exact bytes. */
+  raw: string | undefined;
+  /** What the ledger must record. `[]` only for a real, readable list. */
+  records: "null" | "list";
+  /**
+   * Whether the step must also SAY so on stdout.
+   *
+   * True exactly when a file is present and could not be read: that is a
+   * surprise, and the note is the only place it appears. False for the
+   * absent-file row, and this is a correction to the first draft of this
+   * battery rather than a concession — I predicted that row green, it came
+   * back red, and the cause was the assertion and not the code. A payload
+   * that was never written is already the adjudicator's own loud refusal
+   * (`FINDINGS_FILE_ABSENT`), and the ledger's `null` records it durably. A
+   * second announcement of a state another step already fails on is noise,
+   * and demanding one here would have been this battery inventing a defect.
+   */
+  notes?: true;
+}[] = [
+  { name: "no payload at all", raw: undefined, records: "null" },
+  { name: "not JSON", raw: "{not json", records: "null", notes: true },
+  { name: "an object with no findings key", raw: "{}", records: "null", notes: true },
+  { name: "findings is null", raw: '{"findings":null}', records: "null", notes: true },
+  { name: "findings is a string", raw: '{"findings":"oops"}', records: "null", notes: true },
+  { name: "findings is a number", raw: '{"findings":3}', records: "null", notes: true },
+  { name: "findings is an empty object", raw: '{"findings":{}}', records: "null", notes: true },
+  { name: "findings is a populated object", raw: '{"findings":{"a":1}}', records: "null", notes: true },
+  { name: "the document is an array", raw: "[]", records: "null", notes: true },
+  { name: "the document is a string", raw: '"str"', records: "null", notes: true },
+  { name: "the document is null", raw: "null", records: "null", notes: true },
+  // The two controls. Without them a mutant that recorded `null` for
+  // EVERYTHING would pass every row above, which is the cheapest wrong fix
+  // available here and the one a reader reaches for first.
+  //
+  // Both are COMPLETE payloads — `verdict`, and `failure_scenario` on the
+  // blocking finding. The first draft omitted them and AC-L10 caught it: the
+  // adjudicator refused both controls with `VERDICT_ABSENT` and
+  // `BLOCKING_FINDING_INCOMPLETE`, which are adjudication requirements and
+  // not shape ones, so the disagreement was my fixture being unlike anything
+  // a reviewer writes rather than the two readers differing. A control that
+  // is not a realistic input cannot control anything.
+  { name: "CONTROL: a readable empty list", raw: '{"findings":[],"verdict":"PASS"}', records: "list" },
+  {
+    name: "CONTROL: a readable list with one finding",
+    raw:
+      '{"findings":[{"severity":"high","file":"a.ts","line":1,"summary":"s",' +
+      '"failure_scenario":"given x, returns y"}],"verdict":"BLOCK"}',
+    records: "list",
+  },
+];
+
+describe("AC-L9 (#1352): a payload that PARSES but is not a list is UNMEASURED, not a clean round", () => {
+  for (const shape of SHAPE_CORPUS) {
+    test(`AC-L9: ${shape.name} records ${shape.records === "null" ? "null" : "a list"}`, () => {
+      const r = runPersist({ payload: shape.raw });
+      const recorded = r.rounds![0].findings;
+
+      if (shape.records === "null") {
+        expect(
+          recorded,
+          `recorded ${JSON.stringify(recorded)}. An empty list is this ledger's spelling of "a ` +
+            `round that was read and was clean", so recording one here converts a payload ` +
+            `nobody could read into a clean review — and the round cap counts it as converged`,
+        ).toBeNull();
+        if (shape.notes) {
+          expect(
+            r.stdout,
+            "a payload was on disk and could not be read, and the step said nothing about it — " +
+              "the note is the only place that surprise appears",
+          ).toContain("UNMEASURED");
+        }
+      } else {
+        expect(recorded, "a readable list was discarded as unmeasured").not.toBeNull();
+        expect(Array.isArray(recorded)).toBe(true);
+      }
+    });
+  }
+});
+
+describe("AC-L10 (#1352): the ledger and the adjudicator agree about what is unreadable", () => {
+  /**
+   * The defect was never one wrong branch — it was **two readers of the same
+   * payload disagreeing about what it means**, which is the thing that will
+   * drift again. So this binds them.
+   *
+   * It is a CHECK and not an import, and that is deliberate rather than
+   * unfinished: `lib/scaffold/ai-review-step.ts` is import-free because many
+   * suites copy it into a tmpdir to build mutants, where no relative
+   * specifier resolves — the same reason, and the same remedy, as the
+   * `lib/git-isolation.ts` binding that module already documents. The test
+   * imports both; neither production file imports the other.
+   *
+   * SCOPE, stated because a binding that does not state one gets read as
+   * wider than it is: this agrees about **payload shape** — is there a list
+   * of findings here at all. It deliberately does NOT agree about per-item
+   * severity, and the row below asserts that divergence rather than
+   * excluding it, so nobody later "fixes" the ledger into adjudicating.
+   */
+  test("AC-L10: every shape the adjudicator refuses, the ledger records as null", () => {
+    const disagreements: string[] = [];
+
+    for (const shape of SHAPE_CORPUS) {
+      const reader = readAiReviewFindings(shape.raw === undefined ? null : shape.raw);
+      const readerUnmeasured = reader.outcome === "UNMEASURED";
+      const ledgerNull = runPersist({ payload: shape.raw }).rounds![0].findings === null;
+
+      if (readerUnmeasured !== ledgerNull) {
+        disagreements.push(
+          `${shape.name}: adjudicator says ${reader.outcome} ` +
+            `(${reader.unmeasuredReasons.join(", ") || "no refusal"}), ledger records ` +
+            `${ledgerNull ? "null" : "a list"}`,
+        );
+      }
+    }
+
+    expect(
+      disagreements,
+      "two readers of the same payload disagree about whether it is readable. That is #1352 " +
+        "itself: the ledger's `[]` and the adjudicator's UNMEASURED describe the same bytes and " +
+        "mean opposite things. Make them agree, or state the divergence here deliberately the " +
+        "way the severity row below does",
+    ).toEqual([]);
+  });
+
+  test("AC-L10: severity adjudication is the ONE deliberate divergence, and it is asserted", () => {
+    // The ledger stores what was FOUND; what it means stays with the
+    // adjudicator — the step's own docblock says so. An unrecognised severity
+    // is therefore a round the ledger records and the adjudicator refuses,
+    // and that is correct. Asserted rather than filtered out of the corpus,
+    // so a later change that collapses it has to come through here.
+    const raw = '{"findings":[{"severity":"nonsense","file":"a.ts","line":1,"summary":"s"}]}';
+
+    expect(readAiReviewFindings(raw).outcome).toBe("UNMEASURED");
+    expect(
+      runPersist({ payload: raw }).rounds![0].findings,
+      "the ledger stopped recording a finding whose severity it is not the judge of",
+    ).toHaveLength(1);
   });
 });
 

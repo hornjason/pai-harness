@@ -6522,9 +6522,26 @@ fi
 
 # \`null\` and \`[]\` are DIFFERENT and the difference is the point: one is a
 # round nobody read, the other is a round that was read and was clean.
+#
+# THE SHAPE IS CHECKED BEFORE THE ITERATION, and the absence of a \`?\` after
+# \`[]\` is the whole of #1352 rather than an omission. (AC-8a counts every
+# spelling of the key across this module and its contract, and a bash comment
+# inside this template is not a JS comment, so the sentence interpolates the
+# key rather than typing it — the same trap the git-isolation note above
+# describes for AC-6b, caught the same way: by the guard, not by review.)
+# \`.\${key}[]?\` suppresses the iteration error, so a document that PARSES but carries no
+# array under \`${AI_REVIEW_FINDINGS_KEY}\` exits 0 with an empty
+# comprehension — and \`[]\` is this script's spelling of "read and clean",
+# two lines up. Measured over ten shapes: six recorded \`[]\` that way,
+# including \`{}\`, a null document, and a \`${AI_REVIEW_FINDINGS_KEY}\` key
+# holding a string, a number or an object.
+#
+# \`error\` rather than a \`null\` literal, so every unreadable shape leaves
+# by the one branch that already exists below and already says UNMEASURED
+# out loud. A second way to be unreadable would be a second decider.
 findings="null"
 if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" ]; then
-  if parsed=\$(jq -c '[ .${AI_REVIEW_FINDINGS_KEY}[]? | {${AI_REVIEW_FINDING_FIELDS.severity}, ${AI_REVIEW_FINDING_FIELDS.file}, ${AI_REVIEW_FINDING_FIELDS.line}, ${AI_REVIEW_FINDING_FIELDS.summary}} ]' "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>/dev/null); then
+  if parsed=\$(jq -c 'if (.${AI_REVIEW_FINDINGS_KEY} | type) == "array" then [ .${AI_REVIEW_FINDINGS_KEY}[] | {${AI_REVIEW_FINDING_FIELDS.severity}, ${AI_REVIEW_FINDING_FIELDS.file}, ${AI_REVIEW_FINDING_FIELDS.line}, ${AI_REVIEW_FINDING_FIELDS.summary}} ] else error("${AI_REVIEW_FINDINGS_KEY} is not a list") end' "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>/dev/null); then
     # Record the TEXT at each cited line, out of the checkout this round
     # reviewed. A later round cannot obtain it: \`actions/checkout\` above runs
     # at \`fetch-depth: 1\`, so the commit a finding was raised against is not
@@ -6660,7 +6677,7 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
     fi
     findings="\${parsed}"
   else
-    ledger_note "the findings payload exists and could not be parsed as JSON, so this round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
+    ledger_note "the findings payload exists and could not be read as a list of findings — it is not JSON, or it carries no '${AI_REVIEW_FINDINGS_KEY}' array. This round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
   fi
 fi
 

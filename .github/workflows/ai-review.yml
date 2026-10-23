@@ -1,4 +1,4 @@
-# generated-sha: 53d2e7c2314e5d53
+# generated-sha: 5bfb069c2e92192b
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1203,9 +1203,26 @@ jobs:
 
           # `null` and `[]` are DIFFERENT and the difference is the point: one is a
           # round nobody read, the other is a round that was read and was clean.
+          #
+          # THE SHAPE IS CHECKED BEFORE THE ITERATION, and the absence of a `?` after
+          # `[]` is the whole of #1352 rather than an omission. (AC-8a counts every
+          # spelling of the key across this module and its contract, and a bash comment
+          # inside this template is not a JS comment, so the sentence interpolates the
+          # key rather than typing it — the same trap the git-isolation note above
+          # describes for AC-6b, caught the same way: by the guard, not by review.)
+          # `.${key}[]?` suppresses the iteration error, so a document that PARSES but carries no
+          # array under `findings` exits 0 with an empty
+          # comprehension — and `[]` is this script's spelling of "read and clean",
+          # two lines up. Measured over ten shapes: six recorded `[]` that way,
+          # including `{}`, a null document, and a `findings` key
+          # holding a string, a number or an object.
+          #
+          # `error` rather than a `null` literal, so every unreadable shape leaves
+          # by the one branch that already exists below and already says UNMEASURED
+          # out loud. A second way to be unreadable would be a second decider.
           findings="null"
           if [ -n "${AI_REVIEW_FINDINGS_PATH:-}" ] && [ -s "${AI_REVIEW_FINDINGS_PATH}" ]; then
-            if parsed=$(jq -c '[ .findings[]? | {severity, file, line, summary} ]' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
+            if parsed=$(jq -c 'if (.findings | type) == "array" then [ .findings[] | {severity, file, line, summary} ] else error("findings is not a list") end' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
               # Record the TEXT at each cited line, out of the checkout this round
               # reviewed. A later round cannot obtain it: `actions/checkout` above runs
               # at `fetch-depth: 1`, so the commit a finding was raised against is not
@@ -1341,7 +1358,7 @@ jobs:
               fi
               findings="${parsed}"
             else
-              ledger_note "the findings payload exists and could not be parsed as JSON, so this round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
+              ledger_note "the findings payload exists and could not be read as a list of findings — it is not JSON, or it carries no 'findings' array. This round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
             fi
           fi
 
