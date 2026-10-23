@@ -114,8 +114,19 @@ async function main() {
         "a decision was recorded does not hold for them."
       : null;
 
+  // `gate.note` rides on the refusal for the same reason `unrecordedNote`
+  // does, and it was missed when that one was fixed: a `decision: "block"`
+  // payload has ONE text field, so anything not folded into `reason` here is
+  // discarded by the early exit and never reaches the agent.
+  //
+  // The note that mattered is the corpus-drop one. A refusal computed against
+  // a tracker three issues short is exactly where the shortfall needs saying
+  // — the agent is being told its finding is already filed, by a comparison
+  // that did not read the whole tracker — and that was the one path on which
+  // it was silently dropped. `FG-60` is the case; it went red here first.
   if (gate.refusal !== null) {
-    const reason = unrecordedNote === null ? gate.refusal : `${gate.refusal}\n\n${unrecordedNote}`;
+    const riders = [gate.note, unrecordedNote].filter((n): n is string => n !== null);
+    const reason = [gate.refusal, ...riders].join("\n\n");
     console.log(JSON.stringify({ decision: "block", reason }));
     process.exit(0);
   }
