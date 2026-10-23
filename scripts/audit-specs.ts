@@ -17,12 +17,34 @@ import {
   isBehavioralSC,
   type ParsedSC,
 } from "../lib/conformity";
+import { parseScDeclarations } from "../lib/sc-ids";
 
 // ── Types ─────────────────────────────────────────────────────
 
+/** A criterion as audited: a `ParsedSC` plus whether its box is ticked. */
+export interface AuditedSC extends ParsedSC {
+  checked: boolean;
+}
+
+/**
+ * `total` is EVERY criterion the spec declares; `ticked` is how many of those
+ * are already done.
+ *
+ * `matched`, `unmatched` and `behavioral` partition the UNTICKED ones only,
+ * and that split is deliberate rather than incidental. Those three answer
+ * "what open work can the conformity engine bind?", which is a question about
+ * criteria nobody has satisfied yet. A ticked criterion's cover is a
+ * different question with a different owner — `uncoveredTickedScs` in
+ * `lib/sc-cover.ts` — and folding the two would make `unmatched` a number
+ * that no longer means what `strictUnmatched` and the exit code treat it as.
+ *
+ * So: `total === ticked + matched + unmatched + behavioral`.
+ */
 export interface SpecAuditResult {
   specFile: string;
   total: number;
+  /** Declared with `- [x]`. Reported, never a rewrite candidate. */
+  ticked: number;
   matched: number;
   unmatched: number;
   behavioral: number;
@@ -57,6 +79,7 @@ export interface RewriteEntry {
 export interface AuditResult {
   specs: SpecAuditResult[];
   totalSCs: number;
+  totalTicked: number;
   totalMatched: number;
   totalUnmatched: number;
   totalBehavioral: number;
@@ -90,14 +113,36 @@ function loadRegistry(): RegistryEntry[] {
 
 // ── SC extraction ─────────────────────────────────────────────
 
-function extractSCs(content: string, specFile: string): ParsedSC[] {
-  const scs: ParsedSC[] = [];
-  const pattern = /^- \[ \] (SC-\w+):\s*(.+)$/gm;
-  let match;
-  while ((match = pattern.exec(content)) !== null) {
-    scs.push({ id: match[1], statement: match[2].trim(), specFile });
-  }
-  return scs;
+/**
+ * Every criterion a spec declares, from the SHARED binding (#1313 follow-up).
+ *
+ * This was `/^- \[ \] (SC-\w+):\s*(.+)$/gm` — a reporter with its own,
+ * narrower spelling of a thing `lib/sc-ids.ts` already decides. Two deciders
+ * that disagree, and the reporter is the one people read.
+ *
+ * It was wrong in two directions at once, and the measurement is the point:
+ *
+ * - **`SC-\w+` cannot see a `CRC-` id.** `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`
+ *   declares 56 criteria and this reported `total 0` for it, on a spec marked
+ *   `compliance: strict`, exiting clean. That is worse than printing nothing:
+ *   silence is visibly broken, `0` reads as "nothing to do".
+ * - **The `- [ ] ` literal cannot see a TICKED criterion**, in any namespace.
+ *   So the SC side has been under-reporting for its whole life and nobody
+ *   noticed, because the number it printed was plausible. Measured over the
+ *   21 testable top-level specs: **66 reported, 1409 declared** — 1287 ticked
+ *   and 56 `CRC-`. It was reporting 4.7% of the corpus.
+ *
+ * `parseScDeclarations` is the one owner, so `audit-specs`, the status
+ * flipper, the drift gate and the collision detectors now agree about what a
+ * criterion is by construction rather than by four regexes matching.
+ */
+function extractSCs(content: string, specFile: string): AuditedSC[] {
+  return parseScDeclarations(content, specFile).map(d => ({
+    id: d.id,
+    statement: d.statement,
+    specFile,
+    checked: d.checked,
+  }));
 }
 
 // ── Closest pattern matching for rewrites ─────────────────────
@@ -598,7 +643,16 @@ export function auditSpecs(
   const rewrites: RewriteEntry[] = [];
 
   if (!existsSync(specsDir)) {
-    return { specs, totalSCs: 0, totalMatched: 0, totalUnmatched: 0, totalBehavioral: 0, strictUnmatched: 0, rewrites };
+    return {
+      specs,
+      totalSCs: 0,
+      totalTicked: 0,
+      totalMatched: 0,
+      totalUnmatched: 0,
+      totalBehavioral: 0,
+      strictUnmatched: 0,
+      rewrites,
+    };
   }
 
   const specFiles = readdirSync(specsDir).filter((f) => f.endsWith(".md"));
@@ -619,7 +673,14 @@ export function auditSpecs(
     const unmatchedSCs: SCClassification[] = [];
     const behavioralSCs: SCClassification[] = [];
 
-    for (const sc of scs) {
+    // The three-way split is over UNTICKED criteria only. Widening `total`
+    // to the whole corpus must not widen `unmatched`, because `unmatched`
+    // feeds `strictUnmatched`, the exit code, and the `--fix` candidate set:
+    // 1287 ticked criteria landing in it would turn a number that means
+    // "open work the engine cannot bind" into one that means nothing, and
+    // point `--fix` at finished specs.
+    const open = scs.filter(sc => !sc.checked);
+    for (const sc of open) {
       if (isBehavioralSC(sc)) {
         behavioralSCs.push({ id: sc.id, statement: sc.statement, category: "behavioral" });
       } else if (matchPattern(sc) !== null) {
@@ -632,6 +693,7 @@ export function auditSpecs(
     specs.push({
       specFile,
       total: scs.length,
+      ticked: scs.length - open.length,
       matched: matchedSCs.length,
       unmatched: unmatchedSCs.length,
       behavioral: behavioralSCs.length,
@@ -642,11 +704,30 @@ export function auditSpecs(
     });
 
     // ── Fix mode: rewrite unmatched SCs in-place ──────────────
-    if (opts?.fix && unmatchedSCs.length > 0) {
+    //
+    // REPORTING widened to the shared binding; WRITING deliberately did not.
+    // `rewritable` holds the writer to exactly the population it had before
+    // — unticked, `SC-`-prefixed — and the reason is that they are different
+    // decisions with different risk. Reporting a criterion costs a row;
+    // rewriting one edits a spec, and #1286 is open about `--fix` damaging a
+    // file it should not have touched. Widening the reporter would otherwise
+    // have pointed it at 55 more lines in a spec that landed hours earlier,
+    // as a side effect of a change nobody asked to be a writer change.
+    //
+    // Measured: the pre-change `SC-\w+` and the shared binding select the
+    // SAME 66 unticked `SC-` criteria on this tree, so this is the previous
+    // behaviour exactly and not an approximation of it.
+    //
+    // This is a scope, not a second opinion about what a criterion is —
+    // `extractSCs` above remains the only thing that decides that. Deleting
+    // the prefix test here is a one-line, deliberate widening whenever
+    // somebody wants it.
+    const rewritable = unmatchedSCs.filter(sc => sc.id.startsWith("SC-"));
+    if (opts?.fix && rewritable.length > 0) {
       let modified = content;
       let hasChanges = false;
 
-      for (const usc of unmatchedSCs) {
+      for (const usc of rewritable) {
         const closest = findClosestPattern(usc.statement);
         const decision = decideRewrite(usc.statement, closest);
 
@@ -706,6 +787,7 @@ export function auditSpecs(
   }
 
   const totalSCs = specs.reduce((sum, s) => sum + s.total, 0);
+  const totalTicked = specs.reduce((sum, s) => sum + s.ticked, 0);
   const totalMatched = specs.reduce((sum, s) => sum + s.matched, 0);
   const totalUnmatched = specs.reduce((sum, s) => sum + s.unmatched, 0);
   const totalBehavioral = specs.reduce((sum, s) => sum + s.behavioral, 0);
@@ -713,7 +795,16 @@ export function auditSpecs(
     .filter((s) => s.compliance === "strict")
     .reduce((sum, s) => sum + s.unmatched, 0);
 
-  return { specs, totalSCs, totalMatched, totalUnmatched, totalBehavioral, strictUnmatched, rewrites };
+  return {
+    specs,
+    totalSCs,
+    totalTicked,
+    totalMatched,
+    totalUnmatched,
+    totalBehavioral,
+    strictUnmatched,
+    rewrites,
+  };
 }
 
 // ── Report formatting ─────────────────────────────────────────
@@ -724,21 +815,45 @@ export function formatReport(result: AuditResult): string {
   lines.push("=".repeat(60));
   lines.push("");
 
-  // Per-spec table
-  lines.push(
-    `${"Spec".padEnd(45)} ${"total".padEnd(6)} ${"matched".padEnd(8)} ${"unmatched".padEnd(10)} ${"behavioral".padEnd(10)}`
-  );
-  lines.push("-".repeat(80));
+  // `ticked` comes first after the total, because it is the column that
+  // changes how every other one reads: 12 unmatched out of 66 and 12 out of
+  // 1409 are the same three numbers describing different projects.
+  const row = (
+    name: string,
+    total: unknown,
+    ticked: unknown,
+    matched: unknown,
+    unmatched: unknown,
+    behavioral: unknown,
+  ) =>
+    `${String(name).padEnd(45)} ${String(total).padEnd(6)} ${String(ticked).padEnd(7)} ` +
+    `${String(matched).padEnd(8)} ${String(unmatched).padEnd(10)} ${String(behavioral).padEnd(10)}`;
 
-  for (const spec of result.specs) {
-    lines.push(
-      `${spec.specFile.padEnd(45)} ${String(spec.total).padEnd(6)} ${String(spec.matched).padEnd(8)} ${String(spec.unmatched).padEnd(10)} ${String(spec.behavioral).padEnd(10)}`
-    );
+  lines.push(row("Spec", "total", "ticked", "matched", "unmatched", "behavioral"));
+  lines.push("-".repeat(88));
+
+  for (const s of result.specs) {
+    lines.push(row(s.specFile, s.total, s.ticked, s.matched, s.unmatched, s.behavioral));
   }
 
-  lines.push("-".repeat(80));
+  lines.push("-".repeat(88));
   lines.push(
-    `${"TOTAL".padEnd(45)} ${String(result.totalSCs).padEnd(6)} ${String(result.totalMatched).padEnd(8)} ${String(result.totalUnmatched).padEnd(10)} ${String(result.totalBehavioral).padEnd(10)}`
+    row(
+      "TOTAL",
+      result.totalSCs,
+      result.totalTicked,
+      result.totalMatched,
+      result.totalUnmatched,
+      result.totalBehavioral,
+    ),
+  );
+  lines.push("");
+  // Say what the three-way split is OVER. Without this the reader has to
+  // infer that matched+unmatched+behavioral does not reach `total`, and the
+  // likeliest inference is that the difference is criteria that went missing.
+  lines.push(
+    `matched/unmatched/behavioral are over the ${result.totalSCs - result.totalTicked} UNTICKED ` +
+      `criteria; ${result.totalTicked} of ${result.totalSCs} are already ticked.`,
   );
   lines.push("");
 

@@ -633,6 +633,130 @@ governs: test
       ).toBeNull();
     });
   });
+
+  /**
+   * The reporter reads `lib/sc-ids.ts`, not a private regex of its own.
+   *
+   * `extractSCs` was `/^- \[ \] (SC-\w+):\s*(.+)$/gm`, which is wrong in two
+   * independent directions:
+   *
+   * - `SC-\w+` cannot match a `CRC-` id, so
+   *   `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` reported `total 0` for 56
+   *   criteria, on a `compliance: strict` spec, exiting clean.
+   * - the `- [ ] ` literal cannot match a TICKED criterion in any namespace,
+   *   so the `SC-` side had been under-reporting since the script was
+   *   written. Nobody noticed because 66 is a plausible number.
+   *
+   * Measured over the 21 testable top-level specs, before and after:
+   * **66 reported → 1409 declared**, the difference being 1287 ticked and 56
+   * `CRC-`. The reporter was seeing 4.7% of the corpus.
+   *
+   * Both halves need their own case, because each alone goes green under a
+   * fix for the other: widening the prefix without the checkbox still misses
+   * 1287, and widening the checkbox without the prefix still misses 56.
+   */
+  describe("the reporter and the flipper agree on what a criterion is", () => {
+    function writeTickedAndCrcSpec() {
+      writeSpec("BINDING-SPEC.md", `---
+doc-type: spec
+status: active
+testable: true
+compliance: strict
+updated: 2026-10-23
+governs: binding fixture
+---
+
+## Success Criteria
+
+- [ ] SC-9601: An unmatched open criterion nobody can bind to a pattern
+- [x] SC-9602: A ticked criterion that no registry pattern can bind either
+- [ ] CRC-9603: An unmatched open criterion in the second namespace
+- [x] CRC-9604: A ticked criterion in the second namespace
+`);
+    }
+
+    test("a CRC criterion is counted — the prefix half", async () => {
+      writeTickedAndCrcSpec();
+      const { auditSpecs } = await importAuditSpecs();
+      const spec = auditSpecs(FIXTURE_ROOT).specs.find(s => s.specFile === "BINDING-SPEC.md")!;
+      const seen = [...spec.matchedSCs, ...spec.unmatchedSCs, ...spec.behavioralSCs].map(c => c.id);
+      expect(seen, "a CRC- criterion was invisible to the reporter").toContain("CRC-9603");
+      // Control: the SC- criterion beside it was always visible, so a change
+      // that lost it would be caught here rather than read as success.
+      expect(seen).toContain("SC-9601");
+    });
+
+    test("a ticked criterion is counted — the checkbox half", async () => {
+      writeTickedAndCrcSpec();
+      const { auditSpecs } = await importAuditSpecs();
+      const spec = auditSpecs(FIXTURE_ROOT).specs.find(s => s.specFile === "BINDING-SPEC.md")!;
+      expect(spec.total, "ticked criteria are missing from the denominator").toBe(4);
+      expect(spec.ticked).toBe(2);
+    });
+
+    test("ticked criteria stay OUT of the three-way split", async () => {
+      // `unmatched` feeds `strictUnmatched`, the exit code and the `--fix`
+      // candidate set. Widening `total` to the whole corpus must not widen
+      // it, or the number stops meaning "open work the engine cannot bind"
+      // and `--fix` is pointed at finished specs.
+      writeTickedAndCrcSpec();
+      const { auditSpecs } = await importAuditSpecs();
+      const r = auditSpecs(FIXTURE_ROOT);
+      const spec = r.specs.find(s => s.specFile === "BINDING-SPEC.md")!;
+      const classified = [...spec.matchedSCs, ...spec.unmatchedSCs, ...spec.behavioralSCs].map(
+        c => c.id,
+      );
+      expect(classified.sort()).toEqual(["CRC-9603", "SC-9601"]);
+      expect(spec.unmatched, "a ticked criterion reached `unmatched`").toBe(2);
+      expect(r.strictUnmatched).toBe(2);
+    });
+
+    test("the columns account for every criterion", async () => {
+      // total = ticked + matched + unmatched + behavioral, over the REAL
+      // tree. A fixture cannot show this: the identity is what says no
+      // criterion was dropped between the parse and the report, and the
+      // tree is the only population big enough for a drop to hide in.
+      const { auditSpecs } = await importAuditSpecs();
+      const r = auditSpecs(join(import.meta.dir, ".."));
+      expect(r.totalSCs, "the real spec scan found nothing").toBeGreaterThan(500);
+      expect(r.totalTicked, "no ticked criteria — the checkbox half regressed").toBeGreaterThan(0);
+      expect(r.totalTicked + r.totalMatched + r.totalUnmatched + r.totalBehavioral).toBe(r.totalSCs);
+    });
+
+    test("--fix touches exactly what it touched before, and nothing new", async () => {
+      // The safety property, and the reason the reporter and the writer
+      // widened differently. Reporting a criterion costs a row; rewriting
+      // one edits a spec, and #1286 is open about `--fix` damaging a file it
+      // should not have touched. Widening the reporter alone would have
+      // handed the writer 1287 ticked lines and 55 CRC ones.
+      writeTickedAndCrcSpec();
+      const path = join(FIXTURE_ROOT, "specs", "BINDING-SPEC.md");
+      const before = readFileSync(path, "utf-8");
+      const { auditSpecs } = await importAuditSpecs();
+      auditSpecs(FIXTURE_ROOT, { fix: true });
+      const after = readFileSync(path, "utf-8");
+
+      const lineFor = (text: string, id: string) =>
+        text.split("\n").findIndex(l => l.includes(id));
+      // Nothing ticked moved, in either namespace.
+      for (const id of ["SC-9602", "CRC-9604"]) {
+        const line = (t: string) => t.split("\n").find(l => l.includes(id));
+        expect(line(after), `${id} was rewritten`).toBe(line(before));
+      }
+      // Nothing in the second namespace moved either, ticked or not: the
+      // writer's population is unchanged by this PR.
+      expect(
+        after.split("\n")[lineFor(after, "CRC-9603") + 1],
+        "--fix annotated a CRC- criterion; the writer widened",
+      ).not.toContain("REVIEW:");
+
+      // Control: --fix is NOT inert here. The open SC- criterion is the one
+      // it is allowed to touch, and without this the assertions above are
+      // green for a run that did nothing at all.
+      expect(before, "--fix changed nothing, so this proves nothing").not.toBe(after);
+      expect(after.split("\n")[lineFor(after, "SC-9601") + 1]).toContain("REVIEW:");
+    });
+  });
 });
 
 /**
