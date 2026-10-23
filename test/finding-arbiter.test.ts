@@ -1658,3 +1658,130 @@ describe("AR-18: one ballot per finding, and no way to spread one across a batch
     expect(r.verdicts[1]!.reason).toContain("ballot");
   });
 });
+
+/**
+ * AR-19: a re-filing of an existing finding is a different question from a
+ * paraphrase of one, and only the second was being asked (#1301).
+ *
+ * `duplicateOverlap` asks "do these two share enough to be the same
+ * symptom?" — two shared quantities and one shared location. Measured over
+ * the live tracker on 2026-10-23, **26 of 38 open findings re-filed
+ * BYTE-IDENTICALLY were refused and 12 were allowed**, and the twelve split
+ * on exactly one axis: every one of them carries fewer than two quantity
+ * keys. They are not key-poor — median 7.5 location keys, one with nineteen
+ * — they are quantity-poor, naming symbols and files while reporting no
+ * measured numbers.
+ *
+ * Lowering `DUPLICATE_MIN_SHARED_QUANTITIES` is the cheap fix and the wrong
+ * one: at 1 the self-refile rate reaches 82% and the six-issue
+ * `lib/bash-write-guard.ts` cluster the threshold exists to keep apart comes
+ * back, in the direction this file calls worse — a false DUPLICATE withholds
+ * a real finding.
+ *
+ * So CONTAINMENT is added as a second arm, OR-ed with the first and never
+ * replacing it. Measured over all 44 findings (38 open plus the six closed
+ * cluster issues, which a sweep of open issues alone cannot see), 946 pairs:
+ *
+ *     current rule            4 pairs   1175/1177, 1195/1196, 1269/1286, 1162/1226
+ *     containment >= 0.6      3 pairs   1175/1177, 1195/1196, 1195/1239
+ *     containment >= 0.8      1 pair    1175/1177
+ *
+ * The two pairs the quantity threshold was tuned to CATCH are the top two by
+ * containment (1.00 and 0.78). The four inside the cluster it was tuned to
+ * KEEP APART top out at 0.44. At 0.8 the arm adds **zero** cross-issue pairs
+ * over the whole corpus and takes the self-refile rate to 38/38.
+ *
+ * The honest caveat, in the same terms the original tuning states: 0.8 is
+ * tuned on 44 findings, and on this corpus the only thing separating it from
+ * 0.6 is one pair. It is chosen for the error direction, not for a margin the
+ * data supports.
+ */
+describe("AR-19: a byte-identical re-filing is a duplicate, whatever it counts", () => {
+  // Quantity-poor and location-rich: the shape of all twelve that got
+  // through. No digits anywhere, so `qty:` keys are empty by construction
+  // and the quantity arm cannot be what refuses it.
+  const QUANTITY_POOR: Finding = {
+    id: "1297",
+    title: "The scaffold rewrites a hand-edited brief without saying so",
+    body:
+      "`scaffoldProject` in lib/scaffold-project.ts calls `writeBrief` through " +
+      "`renderAgentBrief`, and lib/agents-md-sections.ts never reports the overwrite.",
+  };
+  const refile = (f: Finding): Finding => ({ id: UNFILED_ID, title: f.title, body: f.body });
+
+  test("AR-19 BASELINE: re-filing a quantity-poor finding against itself is a DUPLICATE", () => {
+    // The whole defect in one row. Before the containment arm this returned
+    // `duplicate: false` while sharing every key the candidate has.
+    const overlap = duplicateOverlap(refile(QUANTITY_POOR), QUANTITY_POOR);
+    expect(symptomKeys(QUANTITY_POOR).filter(k => k.startsWith("qty:")), "the fixture must be quantity-poor, or this row proves nothing").toEqual([]);
+    expect(overlap.duplicate).toBe(true);
+  });
+
+  test("AR-19 CONTROL: a genuinely novel finding is still allowed", () => {
+    // The control against "refuse everything", which would make the row
+    // above green and the gate useless.
+    const novel: Finding = {
+      id: UNFILED_ID,
+      title: "The census router cannot see a tick inside a spec",
+      body: "`censusTestsFor` in scripts/census-routing.ts reads `git diff --name-only`.",
+    };
+    expect(duplicateOverlap(novel, QUANTITY_POOR).duplicate).toBe(false);
+  });
+
+  test("AR-19 CONTROL: partial overlap is NOT containment — the cluster stays apart", () => {
+    // Shares the file and one symbol with the fixture and nothing else. At
+    // 0.44 the worst real cluster pair sits below the cut; this sits lower
+    // still. A containment arm that fired here would be re-joining the six
+    // findings the quantity threshold was tuned to separate.
+    const sibling: Finding = {
+      id: "1298",
+      title: "A rename between branch and main reads as a different symbol",
+      body:
+        "`renderAgentBrief` in lib/scaffold-project.ts resolves the template path, " +
+        "and `templateFor` in lib/brief-templates.ts picks the wrong one for a role " +
+        "whose name was changed on the branch. `roleKey` and `briefPath` disagree.",
+    };
+    const overlap = duplicateOverlap(sibling, QUANTITY_POOR);
+    expect(overlap.duplicate, `shared ${overlap.keys.length} keys and that is not enough`).toBe(false);
+  });
+
+  test("AR-19: a finding with one key is not swallowed by anything that mentions it", () => {
+    // The floor. Without it, containment is 1.0 for any finding whose single
+    // key appears in a large issue — a false DUPLICATE manufactured out of
+    // one word. A one-key finding is already UNMEASURED upstream; this row
+    // asserts the arm does not reach it anyway.
+    const oneKey: Finding = { id: UNFILED_ID, title: "scaffoldProject misbehaves", body: "" };
+    expect(symptomKeys(oneKey).length).toBeLessThan(2);
+    expect(duplicateOverlap(oneKey, QUANTITY_POOR).duplicate).toBe(false);
+  });
+
+  test("AR-19: the two real pairs the quantity threshold was tuned on still refuse", () => {
+    // Not vacuous: the containment arm is ADDITIONAL, so the rows the
+    // original tuning earned must not move. If a later change makes
+    // containment a replacement rather than a second arm, this is what sees
+    // it — 1195/1196 is at 0.78, below the 0.8 cut, and is held by the
+    // quantity arm alone.
+    const a: Finding = {
+      id: "1175",
+      title: "The retry budget gives up early",
+      body:
+        "`retryBudget` in lib/command-retry.ts completed 144 of 234. " +
+        "`sweepPlan`, `attemptCursor` and `backoffTable` are the callers.",
+    };
+    const b: Finding = {
+      id: "1177",
+      title: "Long sweeps lose their last attempts",
+      body:
+        "144 of 234 reached the end, in lib/command-retry.ts. " +
+        "`drainQueue`, `resumeToken`, `frameBudget` and `lastAttempt` disagree.",
+    };
+    // The pair MUST be below the containment cut, or this row is green by the
+    // arm it is here to control for and proves nothing about the other.
+    const ratio = Math.max(
+      sharedKeys(a, b).length / symptomKeys(a).length,
+      sharedKeys(a, b).length / symptomKeys(b).length,
+    );
+    expect(ratio, "the fixture must sit below the containment cut").toBeLessThan(0.8);
+    expect(duplicateOverlap(a, b).duplicate).toBe(true);
+  });
+});

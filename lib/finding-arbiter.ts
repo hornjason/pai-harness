@@ -306,6 +306,54 @@ export function sharedKeys(a: Finding, b: Finding): string[] {
 export const DUPLICATE_MIN_SHARED_QUANTITIES = 2;
 export const DUPLICATE_MIN_SHARED_LOCATIONS = 1;
 
+/**
+ * The second arm: how much of one finding's key set must sit inside the
+ * other's before it is the same finding rather than a similar one (#1301).
+ *
+ * **A re-filing and a paraphrase are different questions and only the second
+ * was being asked.** The rule above asks "do these two share enough to be the
+ * same symptom?", which is right for #1175/#1177 and wrong for a finding
+ * being filed twice: measured over the live tracker on 2026-10-23, 26 of 38
+ * open findings re-filed BYTE-IDENTICALLY were refused and **12 were
+ * allowed**, every one of them because it carries fewer than two quantity
+ * keys. They are not key-poor — median 7.5 location keys, one with nineteen
+ * — they name symbols and files and report no measured numbers.
+ *
+ * Lowering `DUPLICATE_MIN_SHARED_QUANTITIES` is the cheap fix and the wrong
+ * one. At 1 the self-refile rate goes to 82% and the `lib/bash-write-guard.ts`
+ * cluster comes back, in the direction this file already calls worse.
+ *
+ * So this is an ADDITIONAL arm, OR-ed with the one above and never replacing
+ * it. Measured over all 44 findings — the 38 open plus the six closed cluster
+ * issues, which a sweep of open issues alone cannot see — across 946 pairs:
+ *
+ * | rule | cross-issue pairs |
+ * |---|---|
+ * | `qty>=2 AND loc>=1` | 4 — 1175/1177, 1195/1196, 1269/1286, 1162/1226 |
+ * | containment >= 0.6 | 3 — 1175/1177, 1195/1196, 1195/1239 |
+ * | containment >= 0.8 | **1** — 1175/1177 |
+ *
+ * The two pairs the quantity threshold was tuned to CATCH are the top two by
+ * containment, at 1.00 and 0.78. The four inside the cluster it was tuned to
+ * KEEP APART top out at 0.44. At 0.8 this arm adds **zero** cross-issue pairs
+ * over the whole corpus while taking the self-refile rate to 38 of 38.
+ *
+ * ## The caveat, in the same terms as the tuning above
+ *
+ * 0.8 is fitted on 44 findings, and on that corpus the only thing separating
+ * it from 0.6 is a single pair. It is chosen for the error direction rather
+ * than for a margin the data supports, and a false DUPLICATE here stays
+ * reviewable: the refusal names the colliding issue and the shared keys, and
+ * `arbiter-override` waives it.
+ *
+ * The floor exists because containment is meaningless on a tiny key set — a
+ * one-key finding is wholly contained in anything mentioning that key, which
+ * would manufacture a duplicate out of one word. Two rather than four: a
+ * floor of 4 costs three of the 38 and flags not one pair fewer.
+ */
+export const DUPLICATE_CONTAINMENT_RATIO = 0.8;
+export const DUPLICATE_CONTAINMENT_MIN_KEYS = 2;
+
 /** Does `text` reference `id` as an issue number? */
 function references(text: string, id: string): boolean {
   if (!/^\d+$/.test(id)) return false;
@@ -332,12 +380,22 @@ export function duplicateOverlap(a: Finding, b: Finding): { duplicate: boolean; 
   if (references(a.body, b.id) || references(b.body, a.id)) return { duplicate: false, keys };
   const quantities = keys.filter(k => k.startsWith("qty:")).length;
   const locations = keys.length - quantities;
-  return {
-    duplicate:
-      quantities >= DUPLICATE_MIN_SHARED_QUANTITIES &&
-      locations >= DUPLICATE_MIN_SHARED_LOCATIONS,
-    keys,
-  };
+  const sameSymptom =
+    quantities >= DUPLICATE_MIN_SHARED_QUANTITIES &&
+    locations >= DUPLICATE_MIN_SHARED_LOCATIONS;
+
+  // The second arm, OR-ed and never replacing the first: is one of these
+  // findings' key sets essentially INSIDE the other's? That is the question a
+  // re-filing answers yes to and a paraphrase does not, and the first arm
+  // cannot ask it — see DUPLICATE_CONTAINMENT_RATIO for the 946-pair reading
+  // that sets the cut and for what the floor is protecting against.
+  const sizeA = symptomKeys(a).length;
+  const sizeB = symptomKeys(b).length;
+  const contained =
+    Math.min(sizeA, sizeB) >= DUPLICATE_CONTAINMENT_MIN_KEYS &&
+    Math.max(keys.length / sizeA, keys.length / sizeB) >= DUPLICATE_CONTAINMENT_RATIO;
+
+  return { duplicate: sameSymptom || contained, keys };
 }
 
 /**
