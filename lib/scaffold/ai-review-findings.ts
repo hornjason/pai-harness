@@ -358,7 +358,15 @@ export type AiReviewUnmeasuredReason =
   | "SEVERITY_UNRECOGNISED"
   | "BLOCKING_FINDING_INCOMPLETE"
   | "VERDICT_ABSENT"
-  | "VERDICT_UNRECOGNISED";
+  | "VERDICT_UNRECOGNISED"
+  /**
+   * A changed-file list was supplied and was EMPTY. A pull request always
+   * touches something, so `[]` is a reading that failed rather than a pull
+   * request that changed nothing — and taken at face value it would tag every
+   * finding `Pre-existing` and block none of them, which is the fail-open this
+   * module exists to refuse.
+   */
+  | "CHANGED_FILES_EMPTY";
 
 /**
  * The fields a BLOCKING finding must carry, derived from the one contract map
@@ -458,11 +466,48 @@ function unmeasured(
  * `raw` is `null` for "there was no payload at all", which is a reading and
  * not an error: a job whose reviewer never wrote anything has not passed a
  * review, it has not had one.
+ *
+ * `changedFiles` is CRC-B7 (CODE-REVIEW-CONVERGENCE-SPEC): a finding naming
+ * no file this pull request touched is tagged `Pre-existing` and does not
+ * block, so a bug that was already on `main` does not read as the change's
+ * fault. `ai-review` reads the MERGE REF, so without this every defect on
+ * `main` is reported against whichever pull request is standing closest —
+ * nine of them at once on 2026-10-23.
+ *
+ * **`undefined` and `[]` are different facts.** `undefined` is "no list was
+ * supplied", under which nothing is demoted and the reading is exactly what
+ * it was before this parameter existed. `[]` is a list that was supplied and
+ * is empty, which no real pull request produces, so it is UNMEASURED rather
+ * than "every finding is pre-existing" — the direction this is allowed to be
+ * wrong in is toward blocking.
+ *
+ * The finding's DECLARED `file` is the input, not a path mined out of its
+ * prose. `blockingContractViolations` already refuses a blocking finding that
+ * carries none, and `lib/finding-jury.ts`'s `citedPaths` text-mines only
+ * because the arbiter's findings arrive as prose. Mining a field the payload
+ * declares would be a second decider for a question already answered.
  */
-export function readAiReviewFindings(raw: string | null): AiReviewFindingsReading {
+export function readAiReviewFindings(
+  raw: string | null,
+  changedFiles?: readonly string[],
+): AiReviewFindingsReading {
   if (raw === null) {
     return unmeasured(["FINDINGS_FILE_ABSENT"], ["no findings payload was produced"]);
   }
+
+  if (changedFiles !== undefined && changedFiles.length === 0) {
+    return unmeasured(
+      ["CHANGED_FILES_EMPTY"],
+      [
+        "a changed-file list was supplied and was empty. A pull request always touches " +
+          "something, so this is a reading that failed rather than a pull request that " +
+          "changed nothing — and taken at face value every finding would be tagged " +
+          "Pre-existing and none would block.",
+      ],
+    );
+  }
+  const touched =
+    changedFiles === undefined ? null : new Set(changedFiles.map(p => p.toLowerCase()));
 
   let doc: unknown;
   try {
@@ -506,6 +551,8 @@ export function readAiReviewFindings(raw: string | null): AiReviewFindingsReadin
   const reasons: AiReviewUnmeasuredReason[] = [];
   const detail: string[] = [];
   const blocking: unknown[] = [];
+  /** How many findings CRC-B7 demoted. See the `agreed` computation below. */
+  let demoted = 0;
 
   list.forEach((item, i) => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) {
@@ -547,6 +594,29 @@ export function readAiReviewFindings(raw: string | null): AiReviewFindingsReadin
         );
         return;
       }
+      // CRC-B7, and AFTER the contract check rather than before it. A finding
+      // with no declared `file` cannot be tagged either way, and it has
+      // already been refused as incomplete one branch up — so by here `file`
+      // is known present, and the tag is decidable rather than guessed.
+      //
+      // It DEMOTES, it does not drop (CRC-B8). The finding stays in
+      // `reported`, so `advisoryReported` carries it into the notice and a
+      // maintainer still sees it; it simply stops reddening a required check
+      // over a defect the diff did not introduce and cannot fix.
+      if (touched !== null) {
+        const named = String(finding[AI_REVIEW_FINDING_FIELDS.file]).toLowerCase();
+        if (!touched.has(named)) {
+          demoted += 1;
+          detail.push(
+            `finding ${i} is Pre-existing: it names ${JSON.stringify(
+              finding[AI_REVIEW_FINDING_FIELDS.file],
+            )}, which this pull request does not touch. It is reported and does not block — ` +
+              `ai-review reads the merge ref, so a defect already on the base branch is ` +
+              `adjudicated against whichever pull request is standing closest to it`,
+          );
+          return;
+        }
+      }
       blocking.push(item);
       detail.push(renderFinding(i, finding));
     }
@@ -574,7 +644,19 @@ export function readAiReviewFindings(raw: string | null): AiReviewFindingsReadin
   // The decision, and the only place it is made. `verdict` is compared to it
   // afterwards; it never contributes to it.
   const blocked = blocking.length > 0;
-  const agreed = verdict === (blocked ? AI_REVIEW_BLOCK_VERDICT : AI_REVIEW_PASS_VERDICT);
+  // The agreement is measured BEFORE CRC-B7's demotion, not after it.
+  //
+  // The reviewer is not given the pull request's file list, so it cannot know
+  // a finding is pre-existing and its `BLOCK` over one is honest. Comparing
+  // its word against the post-demotion count would turn every successful
+  // demotion into a CONTRADICTION — the arm would fire on the mechanism
+  // working, which is the loudest possible way to be wrong.
+  //
+  // The real contradiction #1178 exists for is untouched: a `BLOCK` over a
+  // payload whose findings are ALL advisory has `demoted === 0`, so it still
+  // fires. Measured at roughly 6 of 20 runs when that was written.
+  const wouldBlock = blocked || demoted > 0;
+  const agreed = verdict === (wouldBlock ? AI_REVIEW_BLOCK_VERDICT : AI_REVIEW_PASS_VERDICT);
   const outcome: AiReviewOutcome = !agreed ? "CONTRADICTION" : blocked ? "BLOCKED" : "CLEAN";
 
   return {
@@ -588,8 +670,33 @@ export function readAiReviewFindings(raw: string | null): AiReviewFindingsReadin
   };
 }
 
+/**
+ * The pull request's changed files, read from a newline-delimited file.
+ *
+ * `null` means the path was given and could not be read, which the caller
+ * must NOT collapse into "no list was supplied" — see `readAiReviewFindings`
+ * on why `undefined` and `[]` are different facts. This returns the third
+ * one, and it is the same distinction a third time.
+ *
+ * Blank lines are dropped before the emptiness test, so a file containing
+ * only whitespace reads as empty rather than as one unnamed file.
+ */
+export function readChangedFiles(path: string): string[] | null {
+  try {
+    return readFileSync(path, "utf-8")
+      .split("\n")
+      .map(l => l.trim())
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
 /** Read the payload from disk. An absent file and an unreadable one differ. */
-export function readAiReviewFindingsFile(path: string): AiReviewFindingsReading {
+export function readAiReviewFindingsFile(
+  path: string,
+  changedFiles?: readonly string[],
+): AiReviewFindingsReading {
   let raw: string;
   try {
     raw = readFileSync(path, "utf-8");
@@ -603,7 +710,7 @@ export function readAiReviewFindingsFile(path: string): AiReviewFindingsReading 
       [`the findings payload at ${path} could not be read: ${(e as Error).message}`],
     );
   }
-  return readAiReviewFindings(raw);
+  return readAiReviewFindings(raw, changedFiles);
 }
 
 /** The sentence a refusal prints, or `null` when there is nothing to refuse. */
@@ -674,13 +781,34 @@ export function aiReviewExitCode(reading: AiReviewFindingsReading): number {
  */
 export function main(argv: string[]): number {
   const path = argv[0];
+  // CRC-B7. The SECOND argument is a path to the pull request's changed
+  // files, and it is optional: a caller that does not pass one gets exactly
+  // the reading this module gave before the criterion was wired, which is
+  // what keeps every existing consumer working unchanged.
+  //
+  // An unreadable list is NOT silently treated as absent. "I was told to read
+  // a list and could not" is a reading that failed, and under it a finding
+  // would never be demoted — so the run blocks, loudly, rather than quietly
+  // behaving like a caller that never asked for the tag at all.
+  const changedPath = argv[1];
+  const changed =
+    changedPath === undefined || changedPath === "" ? undefined : readChangedFiles(changedPath);
   const reading =
     path === undefined || path === ""
       ? unmeasured(
           ["FINDINGS_FILE_ABSENT"],
           ["no findings payload path was given to the findings reader"],
         )
-      : readAiReviewFindingsFile(path);
+      : changed === null
+        ? unmeasured(
+            ["CHANGED_FILES_EMPTY"],
+            [
+              `a changed-file list was named at ${changedPath} and could not be read, so no ` +
+                `finding could be tagged Pre-existing. That is a reading that failed, not a ` +
+                `caller declining the tag`,
+            ],
+          )
+        : readAiReviewFindingsFile(path, changed);
 
   // FIRST, and before any branch below can return. The generated workflow step
   // greps its own output for this prefix and will not read the exit code as a

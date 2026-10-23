@@ -13,6 +13,7 @@ import {
   AI_REVIEW_FINDINGS_KEY,
   AI_REVIEW_SEVERITIES,
   AI_REVIEW_VERDICT_KEY,
+  advisoryNotice,
   aiReviewExitCode,
   aiReviewRefusal,
   escapeAnnotation,
@@ -934,5 +935,133 @@ describe("#1166: a blocking finding that breaks the payload contract is its own 
     ).toBe("BLOCKED");
     expect(mutant.readAiReviewFindings(payloadOf("BLOCK", [blockingFinding("critical")])).outcome)
       .toBe("BLOCKED");
+  });
+});
+
+/**
+ * Covers CRC-B7 (CODE-REVIEW-CONVERGENCE-SPEC.md).
+ *
+ * > Surviving findings are sorted by severity and tagged Important / Nit /
+ * > Pre-existing, so a pre-existing bug does not read as the change's fault.
+ *
+ * ## The mechanism existed and nothing called it
+ *
+ * `severityOf` in `lib/finding-jury.ts` has computed `Pre-existing` since
+ * #1187 — `cited.length > 0 && !cited.some(p => changed.has(p))`, which is
+ * exactly "this finding names no file the PR touched". Measured on `main`
+ * 2026-10-23: **zero production callers** outside its own module. Meanwhile
+ * this reader blocked on the reviewer's self-declared severity with no notion
+ * of pre-existing at all. Two deciders, one dead — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * The cost was not theoretical. Nine PRs sat BLOCKED on findings naming files
+ * their diffs did not contain, because `ai-review` reads the MERGE REF and so
+ * adjudicates `main`'s defects against whichever PR is standing closest.
+ *
+ * ## Why the finding's own `file`, and not `citedPaths`
+ *
+ * `citedPaths` text-mines a path out of prose because the arbiter's findings
+ * arrive as prose. This contract **declares** `file`, and
+ * `blockingContractViolations` already refuses a blocking finding without
+ * one. Mining a declared field would be a second decider for a question the
+ * payload answers.
+ *
+ * ## The direction this is allowed to be wrong in
+ *
+ * Toward BLOCKING. An absent changed-file list does not silently tag
+ * everything in-scope: it is said out loud, and everything blocks as before.
+ * A pre-existing tag computed from a reading nobody took would turn a real
+ * finding into an advisory line, which is the one outcome worse than the jam
+ * this fixes.
+ */
+describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not blocking", () => {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const at = (file: string, severity = "critical") => ({
+    [f.severity]: severity,
+    [f.file]: file,
+    [f.line]: 12,
+    [f.summary]: `a defect in ${file}`,
+    [f.failureScenario]: `calling it with 0 returns 1 in ${file}`,
+  });
+
+  test("B7-1: a critical naming an UNTOUCHED file does not block", () => {
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), [
+      "lib/cli-commands.ts",
+      "test/ai-review-finding-scope.test.ts",
+    ]);
+    expect(r.outcome).toBe("CLEAN");
+    expect(r.blocked).toBe(false);
+    expect(r.blockingReported).toEqual([]);
+  });
+
+  test("B7-2 CONTROL: the same critical naming a TOUCHED file still blocks", () => {
+    // The only axis that moves between B7-1 and this row is whether the
+    // declared file is in the list. Without it B7-1 would be witnessing "a
+    // changed-file list makes findings go away".
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), [
+      "lib/bash-write-guard.ts",
+    ]);
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blockingReported).toHaveLength(1);
+  });
+
+  test("B7-3: the pre-existing finding is still REPORTED, never dropped", () => {
+    // CRC-B8 — a finding is never silently dropped. Demoted is not deleted:
+    // it leaves `blockingReported` and stays in `reported`, so the advisory
+    // tail still carries it and a maintainer still sees it.
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), ["lib/mine.ts"]);
+    expect(r.reported).toHaveLength(1);
+    expect(r.blockingReported).toEqual([]);
+  });
+
+  test("B7-4: the demotion is said out loud, naming the file and the tag", () => {
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), ["lib/mine.ts"]);
+    const said = `${advisoryNotice(r) ?? ""}\n${r.detail.join("\n")}`;
+    expect(said).toContain("Pre-existing");
+    expect(said).toContain("lib/other.ts");
+  });
+
+  test("B7-5: a mixed payload blocks on the touched one and demotes the other", () => {
+    const r = readAiReviewFindings(
+      payloadOf("BLOCK", [at("lib/untouched.ts"), at("lib/touched.ts")]),
+      ["lib/touched.ts"],
+    );
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blockingReported).toHaveLength(1);
+    expect((r.blockingReported?.[0] as Record<string, unknown>)[f.file]).toBe("lib/touched.ts");
+  });
+
+  test("B7-6: NO changed-file list means everything blocks, exactly as before", () => {
+    // The whole existing suite is this case, so the regression surface is
+    // every other test in this file. Stated here as its own row anyway: an
+    // absent reading must not become a permissive one.
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/anything.ts")]));
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blockingReported).toHaveLength(1);
+  });
+
+  test("B7-7: an EMPTY changed-file list is UNMEASURED, not 'nothing was touched'", () => {
+    // `[]` and absent are different facts and neither is "no file in this PR
+    // matches". A PR always touches something, so an empty list is a reading
+    // that failed — and under it every finding would demote, which is the
+    // fail-open this module exists to refuse.
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/anything.ts")]), []);
+    expect(r.outcome).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons).toContain("CHANGED_FILES_EMPTY");
+  });
+
+  test("B7-8: the comparison is case-insensitive, as the jury's already is", () => {
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("Lib/Mixed.TS")]), ["lib/mixed.ts"]);
+    expect(r.outcome, "a case difference is not a different file on this platform").toBe("BLOCKED");
+  });
+
+  test("B7-9: a non-blocking severity is unaffected by the tag", () => {
+    // `info` never blocked, so demoting it changes nothing and must not be
+    // counted as this stage having done something.
+    const r = readAiReviewFindings(payloadOf("PASS", [at("lib/untouched.ts", "info")]), [
+      "lib/mine.ts",
+    ]);
+    expect(r.outcome).toBe("CLEAN");
+    expect(r.reported).toHaveLength(1);
   });
 });
