@@ -1534,10 +1534,18 @@ const CANNOT_PLACE: Placement = 'unplaceable';
  */
 function placeLiteral(value: string, live: string[]): Placement {
   const expanded = expandHome(value);
+  // UNPLACEABLE is asked FIRST, and the order is the fix for a hole the
+  // other way round left open (#1411 review): `"$RG"` carries no slash, so
+  // a slash test in front of this one answered `elsewhere` — "I placed it,
+  // and it is not protected" — for a value nothing had placed. Witnessed:
+  // `shutil.copy("/tmp/fix/workflow-state.json", os.path.expandvars("$RG"))`
+  // was ALLOWED before this swap and is refused after it. The slash-bearing
+  // spelling of the same command was already refused, which is what made
+  // the gap invisible.
+  if (UNPLACEABLE.test(expanded)) return CANNOT_PLACE;
   // Not path-shaped at all: a mode string, a JSON blob, a module name. The
   // exemption would never apply again if these ended it.
   if (!expanded.includes('/')) return 'elsewhere';
-  if (UNPLACEABLE.test(expanded)) return CANNOT_PLACE;
   // A RELATIVE path-shaped literal stays `elsewhere`, and that is measured
   // rather than comfortable. Treating one as unplaceable costs 7 real
   // commands and halves the exemption population (13 segments to 6),
@@ -1644,7 +1652,10 @@ export function bodyTargets(body: string): BodyTargets {
     if (where === 'protected') protectedLiterals.push(value);
     if (where === 'unplaceable') unplaceable.push(value);
     if (ALL_PROTECTED.some(p => value.toLowerCase().includes(p.toLowerCase()))) {
-      (standsAlone(body, i, j) && inWritePosition(body, i, spans) ? targets : fragments).push(value);
+      const pos = standsAlone(body, i, j) ? inWritePosition(body, i, spans) : UNPROVEN;
+      if (pos === 'destination') targets.push(value);
+      // `argument` is deliberately in neither list — see `inWritePosition`.
+      else if (pos === 'unproven') fragments.push(value);
     }
     i = j + 1;
   }
@@ -1711,6 +1722,43 @@ const QUALIFIED_WRITE_CALLEES = new Set([
   'json.dump',
 ]);
 
+/**
+ * WHICH argument of a recognised write call is the destination (#1411).
+ *
+ * Recognising the callee is not enough, because most of these take a SOURCE
+ * as well: `shutil.copy("/tmp/fix/workflow-state.json", dest)` put a scratch
+ * literal in `targets` while the destination was a name nothing tracks, and
+ * `targets.every(isScratchPath)` then exempted a copy whose destination was
+ * unknown. Witnessed allowed before this map and refused after it.
+ *
+ * `-1` means NO argument of that callee is ever a destination path:
+ * `json.dump(obj, fp)` writes to a file object, and `p.write_text(data)`
+ * writes to its RECEIVER. A literal argument of either is data, and reading
+ * it as a target is the same defect pointed the other way.
+ *
+ * The default is 0 rather than "unknown", because every remaining name in
+ * `WRITE_CALLEES` takes its path first and a name that reaches here has
+ * already passed the whitelist.
+ */
+const DEST_INDEX = new Map<string, number>([
+  ['copy', 1],
+  ['copyfile', 1],
+  ['copytree', 1],
+  ['copyFileSync', 1],
+  ['move', 1],
+  ['rename', 1],
+  ['renameSync', 1],
+  ['replace', 1],
+  ['dump', -1],
+  ['write_text', -1],
+]);
+
+function destIndexOf(name: string): number {
+  const last = name.slice(name.lastIndexOf('.') + 1);
+  const at = DEST_INDEX.get(last);
+  return at === undefined ? 0 : at;
+}
+
 function isWriteCallee(name: string): boolean {
   if (!name) return false;
   if (QUALIFIED_WRITE_CALLEES.has(name)) return true;
@@ -1737,10 +1785,32 @@ function isWriteCallee(name: string): boolean {
  * This is what makes the exemption a claim about the WRITE rather than
  * about a path that appears somewhere near one, and it is what the two
  * earlier rounds were each reaching for with a cheaper instrument.
+ *
+ * ## Three answers, because two of them conflated placed with unreadable
+ *
+ * `argument` is a literal that IS a direct argument of a recognised write
+ * call and is NOT at the destination index — `shutil.copy`'s source, or
+ * `json.dump`'s object. A boolean had to call that `unproven`, which is a
+ * fragment, which ends the exemption: with the index map added and two
+ * answers available, `shutil.copy('/tmp/a/x', '/tmp/b/x')` went from
+ * allowed to refused, and that command is the exact shape #1175 exists to
+ * unblock. It is three CONTROL rows across three describes and all three
+ * went red together, which is what a control is for.
+ *
+ * So: `destination` counts as a target, `unproven` ends the exemption, and
+ * `argument` does neither — the literal is placed, and placed somewhere
+ * that is not the write. A command whose ONLY literal is an `argument`
+ * still reaches `targets.length === 0` and is refused.
  */
-function inWritePosition(body: string, start: number, spans: [number, number][]): boolean {
+type Position = 'destination' | 'argument' | 'unproven';
+const IS_DESTINATION: Position = 'destination';
+const UNPROVEN: Position = 'unproven';
+
+function inWritePosition(body: string, start: number, spans: [number, number][]): Position {
   let i = start - 1;
   let depth = 0;
+  /** Depth-0 commas between the opener and the literal: its argument index. */
+  let index = 0;
   while (i >= 0) {
     const span = spans.find(([s, e]) => i >= s && i <= e);
     if (span) {
@@ -1751,15 +1821,33 @@ function inWritePosition(body: string, start: number, spans: [number, number][])
     if (c === ')' || c === ']' || c === '}') {
       depth++;
     } else if (c === '(') {
-      if (depth === 0) return isWriteCallee(calleeBefore(body, i));
+      if (depth === 0) {
+        const callee = calleeBefore(body, i);
+        if (!isWriteCallee(callee)) return UNPROVEN;
+        return index === destIndexOf(callee) ? IS_DESTINATION : 'argument';
+      }
       depth--;
     } else if (c === '[' || c === '{') {
-      if (depth === 0) return false;
+      if (depth === 0) return UNPROVEN;
       depth--;
+    } else if (c === ',') {
+      if (depth === 0) index++;
+    } else if (c === '?') {
+      // A ternary BRANCH is not a destination, it is one of two candidates,
+      // and the guard has no way to say which runs. `:` is an `ARG_OPEN`, so
+      // the false branch read as a complete argument and the walk continued
+      // past `?` to the write call's own paren — witnessed:
+      // `writeFileSync(x ? d : "/tmp/fix/workflow-state.json", "{}")` was
+      // ALLOWED, while the same command with the literal in the TRUE branch
+      // was already refused, because `?` is not an `ARG_OPEN` and the
+      // literal fell out as a fragment. That asymmetry is the whole finding:
+      // one spelling of one expression was fail-closed by accident and the
+      // other was not.
+      if (depth === 0) return UNPROVEN;
     }
     i--;
   }
-  return false;
+  return UNPROVEN;
 }
 
 /** The dotted name immediately in front of an opening parenthesis. */

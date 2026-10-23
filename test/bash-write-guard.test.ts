@@ -2505,30 +2505,52 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
    * because a case about path spelling that lets something normalise the path
    * first is asserting nothing.
    */
+  /**
+   * Every row below carries a REAL fixture write — `open('/tmp/fix/…','w')`
+   * — beside the interesting literal, and that is load-bearing rather than
+   * decorative (#1411).
+   *
+   * These were `shutil.copy('/tmp/fix/…', '<the interesting path>')` until
+   * the destination-index map landed. A copy's SOURCE is no longer a
+   * target, so every one of them became a body with NO proven destination
+   * and was refused by `targets.length === 0` — the same verdict, attributed
+   * to an arm that has nothing to do with live trees or unplaceable values.
+   * The mutation battery said so immediately: `noLive` and `noPlace` both
+   * moved nothing, which is the fourth shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md` arriving by interaction
+   * rather than by design.
+   *
+   * With a genuine scratch destination present the exemption is live again,
+   * so the live-tree and unplaceable readings are the only thing standing
+   * between the body and an exemption — and that is also the realistic
+   * shape of the attack: a legitimate fixture write with one extra copy
+   * tucked beside it.
+   */
+  const FIXTURE = `open('/tmp/fix/${STATE}','w').write('{}')`;
   const rows: { label: string; cmd: string; blocked: boolean }[] = [
     {
       label: "L1 a copy into the live run-store DIRECTORY, which spells no artifact",
-      cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${RUN4}')"`,
+      cmd: `python3 -I -c "import shutil; ${FIXTURE}; shutil.copy(src, '${RUN4}')"`,
       blocked: true,
     },
     {
       label: "L2 the same shape into another live tree",
-      cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${CLAUDE}')"`,
+      cmd: `python3 -I -c "import shutil; ${FIXTURE}; shutil.copy(src, '${CLAUDE}')"`,
       blocked: true,
     },
     {
       label: "L3 the same hole reached through a heredoc",
-      cmd: `python3 <<'PY'\nimport shutil\nshutil.copy("/tmp/fix/${STATE}", "${RUN4}")\nPY`,
+      cmd: `python3 <<'PY'\nimport shutil\nopen("/tmp/fix/${STATE}", "w").write("{}")\nshutil.copy(src, "${RUN4}")\nPY`,
       blocked: true,
     },
     {
       label: "L4 the tilde spelling, which the absolute-path precondition skipped",
-      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expanduser("~/.rungate/run"))'`,
+      cmd: `python3 -I -c 'import os, shutil; open("/tmp/fix/${STATE}","w").write("{}"); shutil.copy(src, os.path.expanduser("~/.rungate/run"))'`,
       blocked: true,
     },
     {
       label: "L5 the ${HOME} spelling, same skip",
-      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expandvars("${DOLLAR_HOME}/.rungate/run"))'`,
+      cmd: `python3 -I -c 'import os, shutil; open("/tmp/fix/${STATE}","w").write("{}"); shutil.copy(src, os.path.expandvars("${DOLLAR_HOME}/.rungate/run"))'`,
       blocked: true,
     },
     {
@@ -2539,17 +2561,17 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       // On a case-SENSITIVE volume this is a different path and allowing it
       // is the right answer — see CASE_FOLDS above.
       label: "L6 the same tree SHOUTED, decided by what the VOLUME calls one file",
-      cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${SHOUTED}')"`,
+      cmd: `python3 -I -c "import shutil; ${FIXTURE}; shutil.copy(src, '${SHOUTED}')"`,
       blocked: CASE_FOLDS,
     },
     {
       label: "P1 an expansion the reader cannot perform is UNPLACEABLE, not elsewhere",
-      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expandvars("$RG/live"))'`,
+      cmd: `python3 -I -c 'import os, shutil; open("/tmp/fix/${STATE}","w").write("{}"); shutil.copy(src, os.path.expandvars("$RG/live"))'`,
       blocked: true,
     },
     {
       label: "P2 the same with the variable INSIDE an otherwise absolute path",
-      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expandvars("/tmp/$RG/../live"))'`,
+      cmd: `python3 -I -c 'import os, shutil; open("/tmp/fix/${STATE}","w").write("{}"); shutil.copy(src, os.path.expandvars("/tmp/$RG/../live"))'`,
       blocked: true,
     },
     {
@@ -2580,6 +2602,61 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
     {
       label: "N2 the same line break in a python heredoc",
       cmd: `python3 <<'PY'\nimport os\nopen("/tmp/x/${STATE}"\n     .replace("/tmp/x", os.environ["RG"]), "w").write("{}")\nPY`,
+      blocked: true,
+    },
+
+    // ----- #1411's push review, each run as a witness before it was fixed.
+    // All three were real; the verdict each had before the fix is in the
+    // commit message and in the arm's own docblock.
+    {
+      // `:` is an ARG_OPEN, so the FALSE branch read as a complete argument
+      // and the walk ran past `?` to `writeFileSync`'s own paren.
+      label: "T1 a ternary FALSE branch, where the destination is a name",
+      cmd: `bun -e 'writeFileSync(x ? d : "/tmp/fix/${STATE}", "{}")'`,
+      blocked: true,
+    },
+    {
+      // The same expression with the branches swapped was ALREADY refused,
+      // because `?` is not an ARG_OPEN and the literal fell out as a
+      // fragment. One spelling fail-closed by accident, the other not —
+      // that asymmetry is what made the hole hard to see.
+      label: "T2 the same ternary with the branches swapped, refused before and after",
+      cmd: `bun -e 'writeFileSync(x ? "/tmp/fix/${STATE}" : d, "{}")'`,
+      blocked: true,
+    },
+    {
+      // P1 with ONE character removed. `"$RG"` carries no slash, so a slash
+      // test in front of UNPLACEABLE answered `elsewhere` — placed, and not
+      // protected — for a value nothing had placed. The pair is the whole
+      // argument for the swap: P1 moves under `noPlace`, this moves under
+      // `noPlace` AND `noOrder`, and nothing else separates them.
+      label: "U1 the same expansion with NO slash in the variable",
+      cmd: `python3 -I -c 'import os, shutil; open("/tmp/fix/${STATE}","w").write("{}"); shutil.copy(src, os.path.expandvars("$RG"))'`,
+      blocked: true,
+    },
+    {
+      // Recognising the callee was not enough: the scratch literal is the
+      // SOURCE and the destination is a name nothing tracks.
+      label: "D1 a scratch literal in shutil.copy's SOURCE slot, destination a name",
+      cmd: `python3 -I -c 'import shutil; shutil.copy("/tmp/fix/${STATE}", dest)'`,
+      blocked: true,
+    },
+    {
+      // `json.dump` writes to a file object. No argument of it is ever a
+      // destination path, so a literal there is data.
+      label: "D2 a literal as json.dump's object, which is never a destination",
+      cmd: `python3 -I -c 'import json; json.dump("/tmp/fix/${STATE}", f)'`,
+      blocked: true,
+    },
+    {
+      // Written as "the COST of T1" and the battery disagreed: it moves
+      // under neither `noTernary` nor `noPos`, because the TRUE branch
+      // literal is preceded by `?`, which is not an ARG_OPEN, so
+      // `standsAlone` refused this shape long before #1411 did. The cost of
+      // T1 is therefore ZERO on this row, and the label says what the
+      // measurement said rather than what the fix's author expected.
+      label: "T3 a ternary with two scratch branches, already refused by standsAlone",
+      cmd: `bun -e 'writeFileSync(cond ? "/tmp/a/${STATE}" : "/tmp/b/${STATE}", "{}")'`,
       blocked: true,
     },
 
@@ -2639,6 +2716,22 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       cmd: `bun -e 'const fs = require("fs"); fs.writeFileSync("/tmp/fix/${STATE}", "{}")'`,
       blocked: false,
     },
+    {
+      // The negative control for U1. Asking UNPLACEABLE first must not mean
+      // refusing every short literal: a mode string carries no slash and no
+      // `$`, and `open(path, "w")` is the commonest fixture write there is.
+      label: "C11 a mode string, which has no slash and is not unplaceable",
+      cmd: `python3 -I -c 'open("/tmp/fix/${STATE}", "w").write("{}")'`,
+      blocked: false,
+    },
+    {
+      // The negative control for D1 and D2. The index map must pin the
+      // destination, not refuse every call that has a source — this is the
+      // #1175 fixture shape and three describes assert it.
+      label: "C12 a copy whose DESTINATION slot is scratch is still a fixture",
+      cmd: `python3 -I -c 'import shutil; shutil.copy(src, "/tmp/b/${STATE}")'`,
+      blocked: false,
+    },
   ];
 
   test.each(rows.map(r => [r.label, r.cmd, r.blocked] as const))("%s", (_l, cmd, blocked) => {
@@ -2658,10 +2751,12 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
     const t = bodyTargets(programBody(`python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${RUN4}')"`));
     // The run-store literal is invisible to the name-list halves — which is
     // round 1's finding: `targets.every(isScratchPath)` was `every` over a
-    // set the command's author picks the membership of.
-    expect(t.targets).toEqual([`/tmp/fix/${STATE}`]);
+    // set the command's author picks the membership of. `${RUN4}` spells no
+    // protected basename, so neither list can hold it whatever position it
+    // is in, and the scratch SOURCE is now classified `argument` — placed,
+    // and placed somewhere that is not the write.
+    expect(t.targets).toEqual([]);
     expect(t.fragments).toEqual([]);
-    expect(t.targets.every(isScratchPath)).toBe(true);
     // And it is reported by the reading that goes through no name list.
     expect(t.protectedLiterals).toEqual([RUN4]);
     expect(t.unplaceable).toEqual([]);
@@ -2711,7 +2806,10 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
 
   test("MECHANISM: the raw spelling survives to the reader; nothing normalises it first", () => {
     const raw = `/tmp/../opt/bwprobe/${STATE}`;
-    const cmd = `python3 -I -c "import shutil; shutil.copy('${raw}', '/tmp/b/${STATE}')"`;
+    // The raw spelling is the DESTINATION, not the source: since #1411 a
+    // source literal is `argument` and reaches neither list, so putting it
+    // there would assert the normalisation claim against an empty array.
+    const cmd = `python3 -I -c "import shutil; shutil.copy('/tmp/b/${STATE}', '${raw}')"`;
     const t = bodyTargets(programBody(cmd));
     expect(t.targets).toContain(raw);
     expect(t.targets[0]).toContain("/../"); // said twice, because this is the premise
@@ -2728,10 +2826,26 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
    * author had enumerated the population, and how round 3's reached one
    * whose author had written a mutation battery.
    *
-   * One mutant per decider, and every row moves under EXACTLY ONE of them.
-   * That property is the point and it is not free: W1 was written multi-line
-   * and came back held up by the whitespace rule as well as by position, and
-   * the equality below is what said so.
+   * One mutant per decider, and the moved SET is asserted for each — an
+   * equality, so a row that stops moving reddens it as loudly as a row that
+   * starts. It is not free: W1 was written multi-line and came back held up
+   * by the whitespace rule as well as by position, and the equality is what
+   * said so.
+   *
+   * Rows are no longer one-to-one with mutants, and pretending otherwise
+   * would be the lie (#1411). Three readings of the table:
+   *
+   *   moves under TWO   `noPos` is the top of the same walk `noTernary` and
+   *                     `noIndex` sit inside, so T1/T3/D1/D2 move under it
+   *                     as well; `noOrder` is strictly inside `noPlace`.
+   *                     Each inner mutant is the one that ATTRIBUTES the
+   *                     row — the outer one would move it whatever the
+   *                     reason.
+   *   moves under NONE  T2 and the C rows. A row refused before and after
+   *                     by an arm nothing here mutates is a control, and
+   *                     saying so beats inventing a mutant for it.
+   *   moves under ONE   everything else, which is the set that carries the
+   *                     attribution claims in the docblocks.
    */
   test("MUTATION: removing each decider moves exactly the rows it is responsible for", async () => {
     const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
@@ -2742,8 +2856,29 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       noPlace: ["const CANNOT_PLACE: Placement = 'unplaceable';", "const CANNOT_PLACE: Placement = 'elsewhere';"],
       // The write-position whitelist: every position is a write position.
       noPos: [
-        "function inWritePosition(body: string, start: number, spans: [number, number][]): boolean {",
-        "function inWritePosition(body: string, start: number, spans: [number, number][]): boolean {\n  return true;",
+        "function inWritePosition(body: string, start: number, spans: [number, number][]): Position {",
+        "function inWritePosition(body: string, start: number, spans: [number, number][]): Position {\n  return IS_DESTINATION;",
+      ],
+      // The destination INDEX: any argument of a recognised write callee is
+      // the destination again, which is exactly the pre-#1411 reading.
+      noIndex: [
+        "return index === destIndexOf(callee) ? IS_DESTINATION : 'argument';",
+        "return IS_DESTINATION;",
+      ],
+      // The ternary stop: a branch of a conditional is a destination again.
+      noTernary: ["} else if (c === '?') {", "} else if (c === '\\0') {"],
+      // Not a mutation of a DECIDER but of the ORDER of two tests inside
+      // one, and deliberately WEAKER than `noPlace`: anything it moves,
+      // `noPlace` moves too. It is kept because it is the only mutation
+      // that witnesses the swap rather than the test — `noPlace` moves the
+      // slash-bearing spelling as well, which the old order already refused.
+      noOrder: [
+        `  if (UNPLACEABLE.test(expanded)) return CANNOT_PLACE;
+  // Not path-shaped at all: a mode string, a JSON blob, a module name. The
+  // exemption would never apply again if these ended it.
+  if (!expanded.includes('/')) return 'elsewhere';`,
+        `  if (!expanded.includes('/')) return 'elsewhere';
+  if (UNPLACEABLE.test(expanded)) return CANNOT_PLACE;`,
       ],
       // Not "drop `\n` from WHITESPACE" — that mutation is STRICTER than the
       // code, so every row would hold and the battery would report nothing.
@@ -2824,15 +2959,29 @@ function __standsAloneAfter(body: string, start: number, end: number): boolean {
         [
           "P1 an expansion the reader cannot perform is UNPLACEABLE, not elsewhere",
           "P2 the same with the variable INSIDE an otherwise absolute path",
+          "U1 the same expansion with NO slash in the variable",
         ].sort(),
       );
+      // Strictly inside `noPlace`'s set, and that is the point: the ONE row
+      // the order decides is the one whose value has no slash.
+      expect(moved(decide.noOrder)).toEqual(["U1 the same expansion with NO slash in the variable"]);
       expect(moved(decide.noPos)).toEqual(
         [
           "W1 a scratch literal bound to a name, then reassigned before the write",
           "W2 the same reassignment through a dict value",
           "W3 a literal that is an inner call's DEFAULT, not the destination",
+          "T1 a ternary FALSE branch, where the destination is a name",
+          "D1 a scratch literal in shutil.copy's SOURCE slot, destination a name",
+          "D2 a literal as json.dump's object, which is never a destination",
         ].sort(),
       );
+      expect(moved(decide.noIndex)).toEqual(
+        [
+          "D1 a scratch literal in shutil.copy's SOURCE slot, destination a name",
+          "D2 a literal as json.dump's object, which is never a destination",
+        ].sort(),
+      );
+      expect(moved(decide.noTernary)).toEqual(["T1 a ternary FALSE branch, where the destination is a name"]);
       expect(moved(decide.noNL)).toEqual(
         [
           "N1 the #1277 headline escape with one newline before the .replace",
