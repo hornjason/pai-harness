@@ -239,9 +239,13 @@ describe("#1306: adding a spec is a third event, with its own blast radius", () 
    * `specs/`, the 143 test files whose source names `specs` were run against
    * it, and the baseline was read first — 6802 pass, 0 fail, 143 files. With
    * the probe present, six files went red, of which `sc-fixture-namespace`
-   * was the probe's own fault (its id sat in the reserved SC-9000 fixture
-   * range; re-cut at SC-2501 it is green, and that is the input on which the
-   * two probes differ). The five that fire on an ordinary new spec:
+   * was the probe's own fault (its id sat in the reserved fixture range above
+   * nine thousand; re-cut below that floor, where a real allocation lands, it
+   * is green — and that is the input on which the two probes differ). The id
+   * is spelled in words here deliberately: writing the digits would plant a
+   * live-namespace fixture id in a test file, which `SC-1522` refuses, and
+   * this docstring did exactly that on its first push. The five that fire on
+   * an ordinary new spec:
    *
    *   test/scaffold-conformity.test.ts   DRIFT-2, HYGIENE-2/3/4   routed: new-file
    *   test/agents-md-spec-listing.test.ts SC-1891                 routed: spec-edit
