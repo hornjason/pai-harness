@@ -458,6 +458,20 @@ export const AI_REVIEW_LEDGER_COMMENT_MARKER = "<!-- rungate:ai-review-ledger:v1
 /** The key the per-round findings array is recorded under. */
 export const AI_REVIEW_LEDGER_FINDINGS_KEY = "findings";
 
+/**
+ * The key the round array hangs off in the windowed ledger shape.
+ *
+ * The ledger's JSON block was originally the array itself. That shape has no
+ * position to say anything ABOUT the array, which is #1405: a ledger holding
+ * twelve rounds because twelve is all there have been, and a ledger holding
+ * twelve because it evicted eight, are byte-identical. The eviction is
+ * announced in a warning annotation that lives in the job log and expires.
+ */
+export const AI_REVIEW_LEDGER_ROUNDS_KEY = "rounds";
+
+/** The key holding how many rounds the window has dropped off the front. */
+export const AI_REVIEW_LEDGER_TRUNCATED_KEY = "truncated";
+
 /** The key holding the text at the cited line when the finding was raised. */
 export const AI_REVIEW_LEDGER_FINDING_TEXT = "text";
 
@@ -502,10 +516,38 @@ export interface LedgerRound {
   findings: ReviewFinding[];
 }
 
+/** How many rounds fell off the front of the window could not be established. */
+export const AI_REVIEW_TRUNCATION_UNKNOWN = "AI_REVIEW_TRUNCATION_UNKNOWN";
+
+/** The ledger states how many rounds it has dropped. `0` is a statement. */
+export const AI_REVIEW_TRUNCATION_STATED = "AI_REVIEW_TRUNCATION_STATED";
+
+/**
+ * Whether the rounds in hand are the whole history.
+ *
+ * UNKNOWN carries **no count field at all**, the same construction
+ * `PriorState` uses: a caller cannot reach for a number without narrowing the
+ * status first, so "I could not tell" has no way to be read as zero. That is
+ * the defect this type exists to make unrepresentable — on #1396 an
+ * unreadable eviction count and "nothing was dropped" shared a `case` arm in
+ * the shell, and the ledger was written having evicted rounds it did not
+ * mention.
+ *
+ * A legacy ledger — the bare array, written before #1405 — is UNKNOWN and not
+ * zero. It may well be complete, and nothing in it says so.
+ */
+export type LedgerTruncation =
+  | { status: typeof AI_REVIEW_TRUNCATION_UNKNOWN; reason: string }
+  | { status: typeof AI_REVIEW_TRUNCATION_STATED; dropped: number };
+
 export type LedgerReading =
   | { status: typeof AI_REVIEW_LEDGER_ABSENT }
   | { status: typeof AI_REVIEW_LEDGER_UNREADABLE; reason: string }
-  | { status: typeof AI_REVIEW_LEDGER_READ; rounds: LedgerRound[] };
+  | {
+      status: typeof AI_REVIEW_LEDGER_READ;
+      rounds: LedgerRound[];
+      truncation: LedgerTruncation;
+    };
 
 /**
  * Say that the ledger could not be read, for a reason only the caller knows.
@@ -526,9 +568,16 @@ export function ledgerUnreadable(reason: string): LedgerReading {
  * `null`, `undefined` and a body without the marker are ABSENT: there is no
  * ledger, which is the correct and complete reading on round one. A body that
  * HAS the marker and whose JSON block is missing, truncated, unparseable or
- * not an array is UNREADABLE — never an empty ledger, because treating a
- * damaged ledger as empty discards every round it holds at exactly the moment
- * nothing can tell that it happened.
+ * neither of the two round shapes is UNREADABLE — never an empty ledger,
+ * because treating a damaged ledger as empty discards every round it holds at
+ * exactly the moment nothing can tell that it happened.
+ *
+ * Two round shapes are accepted and the reading says which was found through
+ * `truncation`: a bare array, which is every ledger written before #1405 and
+ * is still live on open pull requests, and `{rounds, truncated}`, which can
+ * say how much of the history fell off the front of the window. Rejecting the
+ * bare array would discard the history of every pull request mid-flight at
+ * the moment the new writer merged.
  */
 export function readLedger(body: unknown): LedgerReading {
   if (typeof body !== "string") return { status: AI_REVIEW_LEDGER_ABSENT };
@@ -561,13 +610,70 @@ export function readLedger(body: unknown): LedgerReading {
       }), so the rounds it recorded cannot be read`,
     );
   }
-  if (!Array.isArray(parsed)) {
+  // Two shapes, and the older one is still on every open pull request that
+  // has a ledger. A bare array is the pre-#1405 ledger: readable, and silent
+  // about whether it is the whole history.
+  if (Array.isArray(parsed)) {
+    return {
+      status: AI_REVIEW_LEDGER_READ,
+      rounds: parsed.map(toLedgerRound),
+      truncation: {
+        status: AI_REVIEW_TRUNCATION_UNKNOWN,
+        reason:
+          `the ledger's JSON block is a bare array, the shape written before the ` +
+          `\`${AI_REVIEW_LEDGER_TRUNCATED_KEY}\` count existed, so it states nothing about ` +
+          `rounds dropped off the front; it may hold the whole history and it does not say so`,
+      },
+    };
+  }
+  if (typeof parsed !== "object" || parsed === null) {
     return ledgerUnreadable(
       `the ledger comment's JSON block is ${describe(parsed)} rather than an array of ` +
         "rounds, so the rounds it recorded cannot be read",
     );
   }
-  return { status: AI_REVIEW_LEDGER_READ, rounds: parsed.map(toLedgerRound) };
+  const obj = parsed as Record<string, unknown>;
+  const rounds = obj[AI_REVIEW_LEDGER_ROUNDS_KEY];
+  if (!Array.isArray(rounds)) {
+    return ledgerUnreadable(
+      `the ledger comment's JSON block is an object whose \`${AI_REVIEW_LEDGER_ROUNDS_KEY}\` ` +
+        `is ${describe(rounds)} rather than an array, so the rounds it recorded cannot be read`,
+    );
+  }
+  return {
+    status: AI_REVIEW_LEDGER_READ,
+    rounds: rounds.map(toLedgerRound),
+    truncation: readTruncation(obj[AI_REVIEW_LEDGER_TRUNCATED_KEY]),
+  };
+}
+
+/**
+ * Read the dropped-round count off a windowed ledger.
+ *
+ * A malformed count is UNKNOWN, never zero, and never a reason to refuse the
+ * whole ledger: the rounds in hand are still real and still carryable. What
+ * the caller must not be able to do is report the history as complete on the
+ * strength of a field it could not read — which is exactly what a `?? 0`
+ * here would let it do.
+ */
+function readTruncation(raw: unknown): LedgerTruncation {
+  if (raw === undefined) {
+    return {
+      status: AI_REVIEW_TRUNCATION_UNKNOWN,
+      reason:
+        `the ledger is an object and carries no \`${AI_REVIEW_LEDGER_TRUNCATED_KEY}\` key, so ` +
+        "it states nothing about rounds dropped off the front",
+    };
+  }
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+    return {
+      status: AI_REVIEW_TRUNCATION_UNKNOWN,
+      reason:
+        `the ledger's \`${AI_REVIEW_LEDGER_TRUNCATED_KEY}\` is ${describe(raw)} rather than a ` +
+        "non-negative integer, so how many rounds it dropped cannot be established",
+    };
+  }
+  return { status: AI_REVIEW_TRUNCATION_STATED, dropped: raw };
 }
 
 function toLedgerRound(raw: unknown): LedgerRound {
