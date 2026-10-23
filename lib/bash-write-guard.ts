@@ -521,62 +521,63 @@ function isLinkFlag(token: string): boolean {
   // literal in `placeLiteral`: declining to clear is cheap and visible,
   // clearing something unread is neither.
   if (/[$`]/.test(token)) return true;
-  // A short cluster. Lower case only: `-L` follows links in the source and
-  // creates none, which is a CONTROL row.
-  return /^-[A-Za-z]+$/.test(token) && /[sl]/.test(token.slice(1));
+  // The LEADING LETTER RUN, not the whole token. `cp -st/tmp/esc` bundles
+  // `-s` with `-t`'s attached argument and `cp -sS.bak` bundles it with
+  // `-S`'s, and an anchored `^-[A-Za-z]+$` rejected both on the `/` and the
+  // `.` without ever reading the `s`. Both were measured ALLOWED. The
+  // controls are the same bundles without the link letter — `-t/tmp/p` and
+  // `-S.bak` — which must stay exempt, and do.
+  //
+  // Lower case only: `-L` follows links in the SOURCE and creates none.
+  const letters = /^-([A-Za-z]*)/.exec(token)?.[1] ?? '';
+  return /[sl]/.test(letters);
 }
 
 /**
- * The shell's own tokens, with quotes REMOVED rather than their contents
- * deleted (#1429 review, raised as a CRITICAL and confirmed by witness).
+ * The tokens come from `scanSegment`, the module's ONE quote-aware pass.
  *
- * `stripQuoted` deletes a quoted span's content, which is right for the
- * question it was written for — a quoted `sed` script must not read as a
- * path. It is wrong for this one. Seven spellings defeated the link check
- * through it, every one of them a command the shell runs identically to
- * the one that was refused:
+ * The first spelling of this used `stripQuoted`, which deletes a quoted
+ * span's content rather than removing the quotes, and the #1429 review was
+ * right that it defeated the whole check: `cp '-s'`, `cp "-s"`, `"cp" -s`,
+ * `c""p -s` and `cp --'s'ymbolic-link` were all measured ALLOWED, each one
+ * a command the shell runs identically to the one that was refused.
  *
- *     cp '-s' …     cp "-s" …     cp -'s' …     c""p -s …
- *     'cp' -s …     'cp' '-s' …   cp '--symbolic-link' …
- *
- * A quote is grouping, not content. Removing the quote characters and
- * splitting on UNQUOTED whitespace is what `sh` does, so the tokens this
- * returns are the tokens the command will actually run with.
+ * The second spelling was a tokeniser of my own, and that was the wrong
+ * repair even though it worked. `commandWord` already resolves `"cp"`
+ * correctly, through `scanSegment`, because #1184 and #1196 taught it to
+ * after `stripQuoted` deleted `"chmod"` outright. A second tokeniser beside
+ * it is two deciders answering one question — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either
+ * leaves the other holding every case up. One tokeniser.
  */
-function shellTokens(segment: string): string[] {
-  const out: string[] = [];
-  let cur = '';
-  let started = false;
-  let quote: string | null = null;
-  for (let i = 0; i < segment.length; i++) {
-    const c = segment[i];
-    if (quote) {
-      if (c === quote) quote = null;
-      else cur += c;
-      continue;
-    }
-    if (c === "'" || c === '"') {
-      quote = c;
-      started = true;
-      continue;
-    }
-    if (/\s/.test(c)) {
-      if (started) out.push(cur);
-      cur = '';
-      started = false;
-      continue;
-    }
-    cur += c;
-    started = true;
-  }
-  if (started) out.push(cur);
-  return out;
+function flagMakesLink(segment: string): boolean {
+  const words = scanSegment(segment).words;
+  if (!words.some(w => LINK_VERBS.has(verbToken(w)))) return false;
+  return words.some(isLinkFlag);
 }
 
-function flagMakesLink(segment: string): boolean {
-  const tokens = shellTokens(segment);
-  if (!tokens.some(t => LINK_VERBS.has(verbToken(t)))) return false;
-  return tokens.some(isLinkFlag);
+/**
+ * Text a segment will hand to ANOTHER shell: the contents of its quoted
+ * words and of its command substitutions (#1429).
+ *
+ * `ln` is caught inside `bash -c '…'`, `$( … )` and `eval '…'` today, but
+ * only because `LINK_CREATION` is a regex read off the raw text and a regex
+ * does not care about nesting. A reading built on segments and tokens does,
+ * and all four spellings of `cp -s` were measured ALLOWED while their `ln`
+ * twins were refused — so this is not a new hole, it is the old net's reach
+ * that the new one had to be given too.
+ *
+ * `interpreterPrograms` was the obvious place and is the wrong one: it
+ * reaches a heredoc body and returns NOTHING for `bash -c 'cp -s …'`,
+ * `sh -c "…"`, `$( … )` or `eval '…'` — measured, all four empty, against
+ * a heredoc control that returns the body. Widening it would change what
+ * every other arm reads. This is local to the void check.
+ */
+function nestedCommands(view: string): string[] {
+  const out: string[] = [];
+  for (const m of view.matchAll(/'([^']*)'|"([^"]*)"/g)) out.push(m[1] ?? m[2] ?? '');
+  for (const m of view.matchAll(/\$\(([^()]*)\)/g)) out.push(m[1]);
+  return out.filter(s => /\s/.test(s));
 }
 
 /**
@@ -590,7 +591,8 @@ function exemptionIsVoid(cmd: string): boolean {
   const programs = interpreterPrograms(cmd).map(p => p.program);
   const view = [stripHeredocs(cmd), ...programs].join('\n');
   if (LINK_CREATION.test(view)) return true;
-  return segments(view).some(seg => commandWord(seg) === 'ln' || flagMakesLink(seg));
+  const all = [...segments(view), ...nestedCommands(view).flatMap(inner => segments(inner))];
+  return all.some(seg => commandWord(seg) === 'ln' || flagMakesLink(seg));
 }
 
 /**

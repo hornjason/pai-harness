@@ -1197,6 +1197,26 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     // measured: 0 of 174 real `cp`/`install` commands in the corpus move.
     ["cp with the flag behind a variable", `cp "-$F" ${VICTIM} /tmp/esc`],
     ["cp with the flag behind a brace expansion", `cp -\${OPT} ${VICTIM} /tmp/esc`],
+    ["cp with the verb double-quoted", `"cp" -s ${VICTIM} /tmp/esc`],
+    ["cp with one letter of the long flag quoted", `cp --'s'ymbolic-link ${VICTIM} /tmp/esc`],
+    ["cp with the flag last, as getopt permits", `cp ${VICTIM} /tmp/esc -s`],
+
+    // The ATTACHED OPTION ARGUMENT, which neither the fix nor its first
+    // review caught. `-st/tmp/esc` bundles `-s` with `-t`'s argument and
+    // `-sS.bak` bundles it with `-S`'s; an anchored `^-[A-Za-z]+$` rejected
+    // the whole token on the `/` and the `.` and never read the `s`.
+    ["cp -st/tmp/esc, the link letter bundled with an attached argument", `cp -st/tmp/esc ${VICTIM}`],
+    ["cp -sS.bak, the same through a suffix argument", `cp -sS.bak ${VICTIM} /tmp/esc`],
+    ["cp -lt/tmp/esc, the hard-link letter bundled", `cp -lt/tmp/esc ${VICTIM}`],
+
+    // Text handed to ANOTHER shell. `ln` is caught in all four of these by
+    // `LINK_CREATION`, which is a raw-text regex and does not care about
+    // nesting; a reading built on segments and tokens does, so all four
+    // were measured allowed for `cp` while their `ln` twins were refused.
+    ["cp -s inside bash -c", `bash -c 'cp -s ${VICTIM} /tmp/esc'`],
+    ["cp -s inside sh -c with double quotes", `sh -c "cp -s ${VICTIM} /tmp/esc"`],
+    ["cp -s inside a command substitution", `$(cp -s ${VICTIM} /tmp/esc)`],
+    ["cp -s inside eval", `eval 'cp -s ${VICTIM} /tmp/esc'`],
   ];
   test.each(voids)("%s voids the exemption", (_l, mk) => {
     expect(decideBashWrite(esc(mk)).blocked, esc(mk)).toBe(true);
@@ -1228,6 +1248,12 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     // The control for the unreadable-flag rule: a variable somewhere else
     // in the segment is not a flag, and must not void anything.
     ["cp with a variable in the PATH rather than the flag", `cp -r "$SRC" /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The controls for the attached-argument widening: the same bundles
+    // WITHOUT the link letter. If these redden, reading the leading letter
+    // run has overshot into reading the argument.
+    ["cp -t/tmp/p, an attached argument and no link letter", `cp -t/tmp/p /tmp/a/${STATE} && echo '{}' > /tmp/fix/${STATE}`],
+    ["cp -S.bak, a suffix argument", `cp -S.bak /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp --sparse=always, a long option that is not a link", `cp --sparse=always /tmp/a/${STATE} /tmp/fix/${STATE}`],
   ];
   test.each(stay)("CONTROL: %s stays exempt", (_l, cmd) => {
     const d = decideBashWrite(cmd);
@@ -1301,6 +1327,54 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
       expect(moved).toEqual(voids.filter(([l]) => l !== "ln -s, the documented shape, unchanged").map(([l]) => l).sort());
       // Direction: every row that moved was ALLOWED without the reading,
       // so none of them is refused only because the mutation is absent.
+      for (const [label, cmd] of all) {
+        if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
+          expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * MUTATION: the nested reading removed.
+   *
+   * Separate from the one above because the two answer different
+   * questions — one is "is this token a link flag", the other is "does
+   * this segment hand text to another shell" — and a single mutant moving
+   * both sets could not tell them apart. This one must move EXACTLY the
+   * four nested rows: the quoted-flag rows look nested and are not, because
+   * `'-s'` carries no whitespace and never becomes a command.
+   */
+  test("MUTATION: removing the nested reading moves exactly the four nested rows", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "function nestedCommands(view: string): string[] {";
+    expect(src.split(site).length - 1, "nestedCommands must have ONE site to mutate").toBe(1);
+
+    const dir = mkdtempSync(join(tmpdir(), "bw1429-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noNest.ts"), src.replace(site, `${site}\n  return [];`));
+      const mutant = (await import(`file://${join(dir, "noNest.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+      const all: [string, string][] = [...voids.map(([l, mk]) => [l, esc(mk)] as [string, string]), ...stay];
+      const moved = all
+        .filter(([, cmd]) => mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked)
+        .map(([l]) => l)
+        .sort();
+      expect(moved).toEqual(
+        [
+          "cp -s inside bash -c",
+          "cp -s inside sh -c with double quotes",
+          "cp -s inside a command substitution",
+          "cp -s inside eval",
+        ].sort(),
+      );
       for (const [label, cmd] of all) {
         if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
           expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
