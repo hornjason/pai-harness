@@ -7186,14 +7186,37 @@ fi
 # before" into "the round that raised it is no longer in the file" — the one
 # distinction this whole mechanism exists to hold open. A reader cannot
 # recover a round that is gone; it can only be told that one is.
-if ! all=\$(printf '%s' "\${prior}" | jq -c --argjson e "\${entry}" --argjson keep ${AI_REVIEW_LEDGER_MAX_ROUNDS} '(. + [\$e]) | if length > \$keep then .[-\$keep:] else . end'); then
+# ONE invocation emits BOTH the kept list and the number evicted, and the
+# two are split with parameter expansion rather than a second \`jq\`.
+#
+# The first version computed \`dropped\` in a SECOND \`jq … 2>/dev/null ||
+# true\`, and the arm below read \`""|0) ;;\`. So a failed invocation produced
+# the empty string, matched the same arm as "nothing was dropped", and the
+# eviction happened in SILENCE — the announcement disappeared exactly when
+# the instrument measuring it broke. Two states, one signal, and the case
+# asserting "no note when nothing was dropped" was green under both
+# (\`.claude/rules/checks-must-be-able-to-fail.md\`, sixth shape).
+#
+# Shipped in #1386 and live on main before it was caught. Same mechanism as
+# #1377: a note computed correctly and discarded at the boundary, invisible
+# to every test of the thing that computes it.
+if ! combined=\$(printf '%s' "\${prior}" | jq -r --argjson e "\${entry}" --argjson keep ${AI_REVIEW_LEDGER_MAX_ROUNDS} '(. + [\$e]) as \$g | (([(\$g | length) - \$keep, 0] | max) | tostring) + " " + ((if (\$g | length) > \$keep then \$g[-\$keep:] else \$g end) | tojson)'); then
   ledger_note "this round could not be appended to the existing ledger, so nothing was written."
   exit 0
 fi
+dropped="\${combined%% *}"
+all="\${combined#* }"
 
-dropped=\$(printf '%s' "\${prior}" | jq -r --argjson keep ${AI_REVIEW_LEDGER_MAX_ROUNDS} '[(length + 1 - \$keep), 0] | max' 2>/dev/null || true)
+# An unreadable count is a REFUSAL, never a zero. Writing the ledger while
+# unable to say how much of it was evicted is the silent drop this whole
+# block exists to prevent — and a round that was not recorded is recoverable
+# on the next round, where a history quietly truncated is not.
 case "\${dropped}" in
-  ""|0) ;;
+  ""|*[!0-9]*)
+    ledger_note "the number of evicted rounds could not be read, so this round was NOT recorded. Refusing rather than writing a ledger that may have dropped rounds without saying so: an unannounced eviction is indistinguishable from a history that never held those rounds."
+    exit 0
+    ;;
+  0) ;;
   *) ledger_note "the ledger is at its ${AI_REVIEW_LEDGER_MAX_ROUNDS}-round cap, so \${dropped} of the OLDEST round(s) were dropped to keep the comment under GitHub's body limit. Those rounds are gone, not empty: a finding only they recorded can no longer be carried forward, and nothing downstream can tell that from a finding that was never raised." ;;
 esac
 
