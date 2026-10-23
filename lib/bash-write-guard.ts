@@ -458,6 +458,129 @@ function resolveThroughLinks(normalised: string): string | null {
 const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 
 /**
+ * `ln` is not the only verb that makes a link (#1411, raised as a CRITICAL
+ * by the review on #1354).
+ *
+ * GNU and BSD `cp` create links on request and spell none of
+ * `LINK_CREATION`'s four alternatives, so every one of these was ALLOWED —
+ * the bypass in the docblock above, reachable by a different verb:
+ *
+ *     cp -s ~/.rungate/victim /tmp/esc && echo '{}' > /tmp/esc/workflow-state.json
+ *
+ * Measured before the fix, all allowed: `cp -s`, `cp --symbolic-link`,
+ * `cp -l`, `cp --link`, `cp -rs`, `cp -as`, `cp -sv`, `/bin/cp -s`,
+ * `sudo cp -s`, `install -l s`. `-l` belongs with `-s`: a hard link to a
+ * file inside the run store aims a later write at the victim's inode just
+ * as a symlink aims it at the victim's path.
+ *
+ * ## The FAMILY, not the spelling
+ *
+ * A test for the literal `cp -s` is the cheapest wrong fix — seven of the
+ * ten rows above walk around it. So the reading is token-level: a short
+ * cluster is any `-…` containing a lower-case `s` or `l`, which is what
+ * makes `-rs`, `-as` and `-sv` fall out of one rule rather than three; a
+ * long option is matched by PREFIX, because GNU accepts any unambiguous
+ * abbreviation and `--sym` is as real as `--symbolic-link`.
+ *
+ * Case matters: `cp -L` dereferences links in the SOURCE and creates none,
+ * so only the lower-case letters count. `cp -r`, `cp -p`, `cp -a` and
+ * `mkdir -p` are CONTROL rows and must stay exempt.
+ *
+ * The scan is position-independent rather than keyed to the resolved verb,
+ * so `find . -exec cp -s …` is covered — the same position `LINK_CREATION`
+ * exists to reach for `ln`, where `commandWord` resolves to `find`.
+ *
+ * ## And the `ln` boundary, since it was asked
+ *
+ * `\bln\s` needs a following character, so it misses an `ln` that ends a
+ * segment. Measured over five spellings: the regex misses four, and the
+ * segment-verb net catches three of those four (`ln`, `echo x && ln`,
+ * `sudo ln`). The one neither catches is `find . -exec ln` with no
+ * terminator, which `find(1)` refuses — "the expression must be terminated
+ * by a semicolon" — so it is a syntax error, not a bypass. Count: ONE
+ * spelling missed by both nets, ZERO executable. No change made.
+ */
+const LINK_VERBS = new Set(['cp', 'install']);
+
+/** A token's verb name: `/bin/cp` and `\cp` are both `cp`. */
+function verbToken(token: string): string {
+  const bare = token.replace(/^[\\(]+/, '');
+  return bare.slice(bare.lastIndexOf('/') + 1);
+}
+
+function isLinkFlag(token: string): boolean {
+  if (token.startsWith('--')) {
+    const name = token.slice(2).split('=')[0];
+    if (!name) return false;
+    return 'symbolic-link'.startsWith(name) || 'link'.startsWith(name);
+  }
+  if (!token.startsWith('-') || token.length < 2) return false;
+  // A flag whose letters this module cannot read — `-$F`, `-${X}`, `-`+a
+  // substitution — is one it cannot rule OUT, and the verb is already known
+  // to make links on request. Same fail-closed shape as an unplaceable
+  // literal in `placeLiteral`: declining to clear is cheap and visible,
+  // clearing something unread is neither.
+  if (/[$`]/.test(token)) return true;
+  // The LEADING LETTER RUN, not the whole token. `cp -st/tmp/esc` bundles
+  // `-s` with `-t`'s attached argument and `cp -sS.bak` bundles it with
+  // `-S`'s, and an anchored `^-[A-Za-z]+$` rejected both on the `/` and the
+  // `.` without ever reading the `s`. Both were measured ALLOWED. The
+  // controls are the same bundles without the link letter — `-t/tmp/p` and
+  // `-S.bak` — which must stay exempt, and do.
+  //
+  // Lower case only: `-L` follows links in the SOURCE and creates none.
+  const letters = /^-([A-Za-z]*)/.exec(token)?.[1] ?? '';
+  return /[sl]/.test(letters);
+}
+
+/**
+ * The tokens come from `scanSegment`, the module's ONE quote-aware pass.
+ *
+ * The first spelling of this used `stripQuoted`, which deletes a quoted
+ * span's content rather than removing the quotes, and the #1429 review was
+ * right that it defeated the whole check: `cp '-s'`, `cp "-s"`, `"cp" -s`,
+ * `c""p -s` and `cp --'s'ymbolic-link` were all measured ALLOWED, each one
+ * a command the shell runs identically to the one that was refused.
+ *
+ * The second spelling was a tokeniser of my own, and that was the wrong
+ * repair even though it worked. `commandWord` already resolves `"cp"`
+ * correctly, through `scanSegment`, because #1184 and #1196 taught it to
+ * after `stripQuoted` deleted `"chmod"` outright. A second tokeniser beside
+ * it is two deciders answering one question — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either
+ * leaves the other holding every case up. One tokeniser.
+ */
+function flagMakesLink(segment: string): boolean {
+  const words = scanSegment(segment).words;
+  if (!words.some(w => LINK_VERBS.has(verbToken(w)))) return false;
+  return words.some(isLinkFlag);
+}
+
+/**
+ * Text a segment will hand to ANOTHER shell: the contents of its quoted
+ * words and of its command substitutions (#1429).
+ *
+ * `ln` is caught inside `bash -c '…'`, `$( … )` and `eval '…'` today, but
+ * only because `LINK_CREATION` is a regex read off the raw text and a regex
+ * does not care about nesting. A reading built on segments and tokens does,
+ * and all four spellings of `cp -s` were measured ALLOWED while their `ln`
+ * twins were refused — so this is not a new hole, it is the old net's reach
+ * that the new one had to be given too.
+ *
+ * `interpreterPrograms` was the obvious place and is the wrong one: it
+ * reaches a heredoc body and returns NOTHING for `bash -c 'cp -s …'`,
+ * `sh -c "…"`, `$( … )` or `eval '…'` — measured, all four empty, against
+ * a heredoc control that returns the body. Widening it would change what
+ * every other arm reads. This is local to the void check.
+ */
+function nestedCommands(view: string): string[] {
+  const out: string[] = [];
+  for (const m of view.matchAll(/'([^']*)'|"([^"]*)"/g)) out.push(m[1] ?? m[2] ?? '');
+  for (const m of view.matchAll(/\$\(([^()]*)\)/g)) out.push(m[1]);
+  return out.filter(s => /\s/.test(s));
+}
+
+/**
  * #1240: both tests read a view that KEEPS the text an interpreter is going
  * to run. `stripHeredocs` deletes a heredoc body, so an `ln` inside
  * `bash <<'EOF'` was invisible to the first test; `segments(cmd)` over the
@@ -468,7 +591,8 @@ function exemptionIsVoid(cmd: string): boolean {
   const programs = interpreterPrograms(cmd).map(p => p.program);
   const view = [stripHeredocs(cmd), ...programs].join('\n');
   if (LINK_CREATION.test(view)) return true;
-  return segments(view).some(seg => commandWord(seg) === 'ln');
+  const all = [...segments(view), ...nestedCommands(view).flatMap(inner => segments(inner))];
+  return all.some(seg => commandWord(seg) === 'ln' || flagMakesLink(seg));
 }
 
 /**

@@ -65,6 +65,9 @@ import {
   roundOutcome,
 } from "./ai-review-rounds.ts";
 import { duplicateOverlap, UNFILED_ID, type Finding } from "./finding-arbiter.ts";
+import { ghRepoTarget } from "./issue-filing-gate.ts";
+import { homedir } from "os";
+import { join } from "path";
 
 /** Another round is worth spending: this one raised something new. */
 export const LOCAL_REVIEW_CONTINUE = "LOCAL_REVIEW_CONTINUE";
@@ -154,14 +157,53 @@ function readFinding(raw: unknown, where: string): Finding | string {
     return `${where} is ${describe(raw)} rather than a finding object`;
   }
   const f = raw as Record<string, unknown>;
-  if (typeof f.title !== "string" || typeof f.body !== "string") {
-    return (
-      `${where} has no readable title and body (title is ${describe(f.title)}, body is ` +
-      `${describe(f.body)}) — a finding's class is read out of those two and nothing else, ` +
-      `so half of one is not a class that can be compared`
-    );
+  const id = typeof f.id === "string" ? f.id : UNFILED_ID;
+
+  // The arbiter's own shape, when a caller already has one.
+  if (typeof f.title === "string" && typeof f.body === "string") {
+    return { id, title: f.title, body: f.body };
   }
-  return { id: typeof f.id === "string" ? f.id : UNFILED_ID, title: f.title, body: f.body };
+
+  // THE SHAPE A REAL REVIEWER WRITES, and the one this module existed
+  // without reading for two pushes. `AI_REVIEW_FINDING_FIELDS` is
+  // `{severity, file, line, summary, failure_scenario}` — no `title` and no
+  // `body` — so a reader that accepts only the arbiter's shape refuses every
+  // genuine payload, on every round, and the mechanism is unreachable on
+  // real input while every test of it passes. A caller that exists and can
+  // never be fed is the same defect as no caller at all, one level in.
+  //
+  // `summary` is the title because it is the one sentence stating the
+  // defect, which is what `symptomKeys` reads a title for. The body is
+  // SYNTHESISED rather than taken from one field, and the two halves are
+  // load-bearing on different inputs — measured, because the first draft of
+  // this comment claimed both were load-bearing everywhere and half of that
+  // was false:
+  //
+  //   * dropping `failure_scenario` reddens the ordinary rows at once. It
+  //     carries the measured integers, and `sameSymptom` needs two shared
+  //     quantities before anything else matters.
+  //   * dropping the bare `file` path reddens NOTHING on findings whose
+  //     prose shares backticked symbols — those already supply the one
+  //     location key the rule asks for. It is load-bearing only for a pair
+  //     of plain-prose findings naming no symbols, where the `file:` key
+  //     `pathsIn` extracts is the only location key there is. `AC-LL12` is
+  //     that pair, and it exists because without it this half of the
+  //     synthesis was unfalsifiable.
+  //
+  // Either way the failure mode is the same and it looks like success: the
+  // loop still runs, it just stops settling, two rounds later.
+  if (typeof f.summary === "string") {
+    const file = typeof f.file === "string" ? f.file : "";
+    const scenario = typeof f.failure_scenario === "string" ? f.failure_scenario : "";
+    return { id, title: f.summary, body: `${f.summary}\n\n${scenario}\n\n${file}` };
+  }
+
+  return (
+    `${where} carries neither shape this reader knows: no \`summary\` (the reviewer ` +
+    `contract's) and no \`title\`/\`body\` pair (the arbiter's). A finding naming no defect ` +
+    `cannot be compared against anything, and recording it as a round that found nothing ` +
+    `would clear the loop on an unread finding`
+  );
 }
 
 /** Read the whole history, or say why it could not be read. */
@@ -314,6 +356,145 @@ export function localRoundReading(
       (repeats.length > 0 ? `, and ${repeats.length} restatement(s) of earlier ones` : "") +
       `, so another round is worth spending`,
   };
+}
+
+/* ───────────────────────── the history the loop keeps ─────────────────────
+ *
+ * #1342 shipped the decision above and no caller, which is the shape #1381 is
+ * open about one subsystem over: a decision function nobody calls is
+ * indistinguishable from one that works. This is the half that makes the
+ * rounds exist.
+ *
+ * ## Why this is a local file and not the ai-review ledger comment
+ *
+ * The CI ledger (`AI_REVIEW_LEDGER_COMMENT_MARKER`) was the obvious store and
+ * is the wrong one, for a reason that is about the budget rather than about
+ * convenience. **A CI round and a local round are not the same round.** They
+ * read the same tree with different instruments, and a shared counter means
+ * CI rounds spend the local reviewer's budget — silencing the local loop for
+ * rounds it did not cause. Separate stores is the statement that they are
+ * separate budgets, and it is a decision rather than an omission.
+ *
+ * Two consequences worth knowing. The local history never leaves the machine
+ * that drove the loop, which is correct for a loop a local plugin drives and
+ * useless to anyone else. And it does not survive a cleaned work directory,
+ * which reads as ABSENT — round 1 — rather than as a refusal, because a store
+ * that is genuinely not there is a measured absence.
+ */
+
+/** No history file. A MEASURED reading of nothing: this is round 1. */
+export const LOCAL_HISTORY_ABSENT = "LOCAL_HISTORY_ABSENT";
+
+/**
+ * A history is there and could not be read. NOT the same as absent.
+ *
+ * `lib/config-loader.ts` makes this distinction about an absent config versus
+ * a corrupt one, `readLedger` makes it about the CI ledger, and it matters
+ * most here: a corrupt history read as empty restarts the count at 1 on every
+ * turn, which is a cap that can never be reached. That is `roundOutcome`'s
+ * unreadable-budget fail-open arriving through a different door.
+ */
+export const LOCAL_HISTORY_UNREADABLE = "LOCAL_HISTORY_UNREADABLE";
+
+/** The history was read. */
+export const LOCAL_HISTORY_READ = "LOCAL_HISTORY_READ";
+
+export type HistoryReading =
+  | { status: typeof LOCAL_HISTORY_ABSENT }
+  | { status: typeof LOCAL_HISTORY_UNREADABLE; reason: string }
+  | { status: typeof LOCAL_HISTORY_READ; rounds: unknown[] };
+
+/**
+ * Parse a history file's contents. `null` means the file is not there.
+ *
+ * **An empty file is UNREADABLE, not absent.** It is the one case where the
+ * two genuinely look alike, and it is the signature of a write that was
+ * interrupted — a file that exists holding nothing is a file something was
+ * writing. Treating it as round 1 discards however many rounds it held.
+ */
+export function parseHistory(raw: string | null): HistoryReading {
+  if (raw === null) return { status: LOCAL_HISTORY_ABSENT };
+  if (raw.trim() === "") {
+    return {
+      status: LOCAL_HISTORY_UNREADABLE,
+      reason:
+        `the review history file exists and is empty, which is a write that did not finish ` +
+        `rather than a loop that has not started — it is not being read as round 1`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return {
+      status: LOCAL_HISTORY_UNREADABLE,
+      reason:
+        `the review history could not be parsed (${e instanceof Error ? e.message : String(e)}), ` +
+        `so how many rounds this loop has already spent is unknown`,
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return {
+      status: LOCAL_HISTORY_UNREADABLE,
+      reason:
+        `the review history is ${describe(parsed)} rather than an array of rounds, so how ` +
+        `many rounds this loop has already spent is unknown`,
+    };
+  }
+  return { status: LOCAL_HISTORY_READ, rounds: parsed };
+}
+
+/** One round, as the history records it. */
+export interface RecordedRound {
+  /** When the round happened. */
+  at: string;
+  findings: unknown[];
+}
+
+/**
+ * The history with this round appended, or the reason it may not be.
+ *
+ * **An UNREADABLE history refuses rather than being replaced.** Starting a
+ * fresh array over one is the cheapest repair and the worst: it destroys the
+ * only evidence of how many rounds had already happened, at exactly the
+ * moment nothing can tell that it did — and it does so silently, every turn,
+ * so the loop that most needs the bound is the one that loses it.
+ */
+export function appendRound(
+  reading: HistoryReading,
+  findings: unknown[],
+  at: string,
+): { rounds: unknown[] } | { refusal: string } {
+  if (reading.status === LOCAL_HISTORY_UNREADABLE) return { refusal: reading.reason };
+  const prior = reading.status === LOCAL_HISTORY_READ ? reading.rounds : [];
+  const round: RecordedRound = { at, findings };
+  return { rounds: [...prior, round] };
+}
+
+/**
+ * Where a pull request's local-round history lives.
+ *
+ * `RUNGATE_LOCAL_REVIEW_HISTORY` overrides the directory outright, and every
+ * test sets it. That is not only for isolation: anything sitting at the
+ * default path was put there by a real loop on this machine, so a test that
+ * wrote to it would become indistinguishable from data.
+ *
+ * Returns null for a repo that is not an `owner/name` — `ghRepoTarget` is the
+ * one binding for that question and is not restated here. Null is a refusal
+ * at the caller; it is never silently replaced with the working directory's
+ * slug, which would file one pull request's rounds under another's.
+ */
+export function localHistoryPath(repo: string, pr: unknown): string | null {
+  const slug = ghRepoTarget(repo);
+  if (slug === null) return null;
+  const n = typeof pr === "number" ? pr : typeof pr === "string" && /^[0-9]+$/.test(pr.trim()) ? Number.parseInt(pr.trim(), 10) : null;
+  if (n === null || !Number.isSafeInteger(n) || n < 1) return null;
+  const base =
+    process.env.RUNGATE_LOCAL_REVIEW_HISTORY ||
+    process.env.RUNGATE_WORK_DIR ||
+    process.env.PAI_WORK_DIR ||
+    join(homedir(), ".rungate");
+  return join(base, "local-review", slug.replace("/", "__"), `pr-${n}.json`);
 }
 
 /**
