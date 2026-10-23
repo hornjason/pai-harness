@@ -2645,10 +2645,46 @@ export const AI_REVIEW_EXECUTION_STAGE_STEP_ID = "ai-review-execution-stage";
 export const AI_REVIEW_EXECUTION_STAGE_STEP_NAME =
   "Stage the reviewer's execution file when no findings payload was written";
 
-/** Under `runner.temp`, never the checkout — the drift step reads the tree. */
-export const AI_REVIEW_EXECUTION_STAGE_DIR = "ai-review-unmeasured.d";
+/**
+ * The opt-in. **Default off, and off uploads nothing.**
+ *
+ * A workflow artifact on a PUBLIC repository is world-readable, and the
+ * execution file is the reviewer's full transcript — which is exactly why
+ * it answers #1307 and exactly why publishing it must be a deliberate act.
+ * `hornjason/pai-harness` is public, and so is every consumer who
+ * scaffolded from it without thinking about this.
+ *
+ * Read the way `AI_REVIEW_REQUIRE_VAR` is read: the literal string `true`
+ * and nothing else — not `TRUE`, not `1`, not a prefix.
+ * `.claude/rules/config-access.md` states that for the refusal flag; it
+ * matters more here, because a loose read of a switch that turns
+ * PUBLICATION on fails towards disclosure rather than towards a red check.
+ */
+export const AI_REVIEW_TRANSCRIPT_VAR = "RUNGATE_UPLOAD_AI_REVIEW_TRANSCRIPT";
 
-export const AI_REVIEW_EXECUTION_STAGE_VAR = "AI_REVIEW_EXECUTION_STAGE";
+/** The one accepted value, exact-compared. */
+export const AI_REVIEW_TRANSCRIPT_VALUE = "true";
+
+/**
+ * The file name the pinned action writes, used twice from one constant: the
+ * basename a source path must equal before it is read, and the name the
+ * staged copy is written under. The destination goes through a REDIRECT
+ * rather than `cp` into a directory, so the uploaded name is chosen here and
+ * never inherited from the source path.
+ */
+export const AI_REVIEW_EXECUTION_BASENAME = "claude-execution-output.json";
+
+/**
+ * Under `runner.temp`, never the checkout — the drift step reads the tree.
+ *
+ * **Nonced per run and attempt**, like `buildPrepareScript`'s findings
+ * directory and for the same reason: a fixed name on a reused self-hosted
+ * runner is a leftover this step would adopt, including a symlink pointing
+ * somewhere a transcript must never be written.
+ */
+export const AI_REVIEW_EXECUTION_STAGE_DIR = "ai-review-unmeasured";
+
+export const AI_REVIEW_EXECUTION_STAGE_SUFFIX = ".d";
 
 export const AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID = "ai-review-execution-artifact";
 
@@ -2665,11 +2701,16 @@ export const AI_REVIEW_EXECUTION_ARTIFACT_STEP_NAME =
 export const AI_REVIEW_EXECUTION_ARTIFACT_NAME = "ai-review-execution";
 
 /**
- * Short, because this is a diagnostic for an open investigation and not a
- * record. Long enough to survive a weekend; short enough that turning it on
- * costs nothing anyone has to argue about.
+ * ONE DAY, and the reason is disclosure rather than storage.
+ *
+ * A workflow artifact on a public repository is readable by anyone on the
+ * internet for exactly as long as it is retained, so retention is the
+ * exposure window. The artefact exists to be read by whoever is actively
+ * diagnosing an UNMEASURED run; a day covers that, and a fortnight covers
+ * nothing extra except the chance that an operator turned the variable on
+ * to look at one run and forgot it was on.
  */
-export const AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS = 14;
+export const AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS = 1;
 
 export const AI_REVIEW_PERSIST_TITLE = "AI review ledger";
 
@@ -6285,46 +6326,177 @@ read_tree() {
  * below rather than killing the step before it can explain itself.
  */
 export function buildExecutionStageScript(): string {
+  const optedOut =
+    `No findings payload was written, so this is one of the UNMEASURED ` +
+    `rounds #1307 is about — and the reviewer's transcript was NOT kept, ` +
+    `because ${AI_REVIEW_TRANSCRIPT_VAR} is not set to ` +
+    `'${AI_REVIEW_TRANSCRIPT_VALUE}'. That is the default and it is not a ` +
+    `failure. Turning it on uploads the reviewer's FULL TRANSCRIPT as a ` +
+    `workflow artifact, and on a PUBLIC REPOSITORY a workflow artifact is ` +
+    `readable by ANYONE ON THE INTERNET. Set it only while you are ` +
+    `diagnosing, and only on a repository whose transcripts you are willing ` +
+    `to publish`;
+
+  const published =
+    `No findings payload was written, and ${AI_REVIEW_TRANSCRIPT_VAR} is ` +
+    `on, so the reviewer's FULL TRANSCRIPT is being uploaded as a workflow ` +
+    `artifact for #1307. ON A PUBLIC REPOSITORY THAT ARTIFACT IS READABLE ` +
+    `BY ANYONE ON THE INTERNET. It contains every file the reviewer read ` +
+    `and everything it wrote during this run. Unset the variable to stop ` +
+    `publishing it`;
+
+  const symlink =
+    `the staging directory path under RUNNER_TEMP is a SYMLINK. Its name ` +
+    `carries this run id and attempt, so nothing this job did put it there, ` +
+    `and copying a transcript through a link an earlier job left would ` +
+    `write it wherever that link points. Not staging, and not following or ` +
+    `removing it`;
+
+  const preexisting =
+    `the staging directory under RUNNER_TEMP already exists. Its name ` +
+    `carries this run id and attempt, so a reused runner is holding a ` +
+    `leftover that may be another local user's. Not staging, and not ` +
+    `deleting it`;
+
+  const notOwned =
+    `the staging directory under RUNNER_TEMP is not owned by this job after ` +
+    `this step created it, so something else on this runner holds it and a ` +
+    `transcript written into it would be readable by whoever does. Not staging`;
+
+  const sourceRejected =
+    `the execution file path this job was handed is not the file it ` +
+    `expects, so nothing was staged. It must be a regular non-symlink file ` +
+    `named ${AI_REVIEW_EXECUTION_BASENAME} whose resolved path is under ` +
+    `RUNNER_TEMP. A path failing any of those is refused rather than ` +
+    `copied, because what this step copies it PUBLISHES`;
+
+  const mkdirFailed =
+    `the staging directory for the reviewer's transcript could not be ` +
+    `created, so nothing is uploaded and #1307 gets no evidence from this ` +
+    `run. The review's own verdict is unaffected`;
+
+  const copyFailed =
+    `this run wrote no findings payload and the reviewer's transcript could ` +
+    `not be copied aside, so the only record of what it did with its turns ` +
+    `dies with this runner. The review's own verdict is unaffected — the ` +
+    `report step still refuses — but #1307 gets no evidence from this run`;
+
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
 set -uo pipefail
 
-staged="\${${AI_REVIEW_EXECUTION_STAGE_VAR}}"
+${AI_REVIEW_ANNOTATION_ESCAPE}
 
-# IN A CONDITION, and that is the whole of it. Actions runs a \`run:\` block
-# as \`bash -e\`, so a bare \`mkdir -p\` that fails ABORTS THE STEP — exit 1,
-# before any line below can explain itself. That turns this recorder into a
-# second red sitting on top of the UNMEASURED one it exists to document,
-# which is precisely what it must never do. \`-e\` is suppressed for a
-# command in a condition, so the failure is reportable here and nowhere
-# else. The case that catches a regression of this is in
-# \`test/ai-review-workflow.test.ts\`, and it caught this exact defect on its
-# first run.
-if ! mkdir -p "\${staged}" 2>/dev/null; then
-  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::This run wrote no findings payload and the staging directory for the reviewer's execution file could not be created, so no transcript is uploaded. The review's own verdict is unaffected; #1307 gets no evidence from this run."
+# THE OPT-IN, FIRST, so nothing below runs on a tree that never asked for
+# it. Exact string compare, the spelling \`${AI_REVIEW_REQUIRE_VAR}\` uses:
+# a loose read of a variable that turns PUBLICATION on is a switch that
+# turns itself on by accident.
+if [ "\${${AI_REVIEW_TRANSCRIPT_VAR}:-}" != "${AI_REVIEW_TRANSCRIPT_VALUE}" ]; then
+  # Announced only on the runs where it would have mattered, so "never
+  # opted in" stays distinguishable from "opted in and there was nothing to
+  # keep". The upload step cannot tell those apart — it sees no directory
+  # either way — so the distinction has to be made here.
+  if [ ! -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
+    echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${optedOut}"
+  fi
   exit 0
 fi
 
-# The adjudicated case, and the common one. A payload is what the
-# adjudicator reads, so a run that wrote one already has its evidence on the
-# pull request and the execution file is not the interesting artefact.
+# The adjudicated case. A payload is what the adjudicator reads, so a run
+# that wrote one already has its evidence on the pull request.
 if [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
-  echo "A findings payload was written, so this run is adjudicable and the execution file is not staged."
+  echo "A findings payload was written, so this run is adjudicable and the transcript is not staged."
   exit 0
 fi
 
-# No payload AND no execution file: the action never got as far as writing
-# one. Nothing to keep, and that absence is itself reported by the report
-# step's route — this step does not duplicate the finding.
-if [ ! -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ]; then
+if [ -z "\${RUNNER_TEMP:-}" ]; then
+  echo "No RUNNER_TEMP, so there is nowhere outside the checkout to stage a transcript."
+  exit 0
+fi
+
+src="\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}"
+if [ -z "\${src}" ]; then
   echo "No findings payload and no execution file: nothing to stage."
   exit 0
 fi
 
-if cp "\${${AI_REVIEW_EXECUTION_FILE_VAR}}" "\${staged}/" 2>/dev/null; then
-  echo "No findings payload was written. Staged the reviewer's execution file for upload (#1307)."
+# ── The source is a path taken from a step OUTPUT, and this step publishes
+# what it copies, so a wrong path here is a disclosure rather than a broken
+# artefact. Three properties, all required.
+#
+# \`! -L\` FIRST: \`-f\` follows symlinks, so a \`-f\` placed before it reads
+# the TARGET and says nothing about the link.
+ok=1
+[ ! -L "\${src}" ] || ok=0
+if [ "\${ok}" = 1 ] && [ ! -f "\${src}" ]; then ok=0; fi
+
+if [ "\${ok}" = 1 ]; then
+  # Canonicalise, then require the RUNNER_TEMP prefix on the RESOLVED path.
+  # A prefix test against the unresolved string is defeated by \`..\`.
+  real=
+  if r=$(cd "$(dirname "\${src}")" 2>/dev/null && pwd -P); then
+    real="\${r}/$(basename "\${src}")"
+  fi
+  rt=
+  if r=$(cd "\${RUNNER_TEMP}" 2>/dev/null && pwd -P); then rt="\${r}"; fi
+  if [ -z "\${real}" ] || [ -z "\${rt}" ]; then
+    ok=0
+  else
+    case "\${real}" in
+      "\${rt}"/*) ;;
+      *) ok=0 ;;
+    esac
+    # The action's own file name, and nothing else.
+    if [ "$(basename "\${real}")" != "${AI_REVIEW_EXECUTION_BASENAME}" ]; then ok=0; fi
+  fi
+fi
+
+if [ "\${ok}" != 1 ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${sourceRejected}: $(escape_annotation "\${src}")"
+  exit 0
+fi
+
+nonce="\${GITHUB_RUN_ID:-0}-\${GITHUB_RUN_ATTEMPT:-0}"
+staged="\${RUNNER_TEMP}/${AI_REVIEW_EXECUTION_STAGE_DIR}-\${nonce}${AI_REVIEW_EXECUTION_STAGE_SUFFIX}"
+
+# Same order as \`buildPrepareScript\`, and the same reasons: \`-L\` before
+# anything that dereferences, then ANY pre-existing path refuses, because
+# the nonce means this step cannot legitimately meet its own directory.
+if [ -L "\${staged}" ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${symlink}: $(escape_annotation "\${staged}")"
+  exit 0
+fi
+
+if [ -e "\${staged}" ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${preexisting}: $(escape_annotation "\${staged}")"
+  exit 0
+fi
+
+# \`-m 700\` at creation and NO \`-p\`: the mode is set with no window in
+# which the directory is world-readable, and an existing path is an error
+# rather than something adopted in silence.
+#
+# IN A CONDITION, and that is load-bearing. Actions runs a \`run:\` block as
+# \`bash -e\`, so a bare failing \`mkdir\` ABORTS THE STEP at exit 1 before any
+# line below can explain itself — turning this recorder into a second red on
+# top of the UNMEASURED one it exists to document. \`-e\` is suppressed for a
+# command in a condition. The case covering this caught exactly that defect
+# here on its first run.
+if ! out=$(mkdir -m 700 "\${staged}" 2>&1); then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${mkdirFailed}: $(escape_annotation "\${out}")"
+  exit 0
+fi
+
+if [ ! -O "\${staged}" ]; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${notOwned}: $(escape_annotation "\${staged}")"
+  exit 0
+fi
+
+# A REDIRECT, not \`cp\` into a directory: the uploaded name is chosen HERE
+# rather than inherited from the source path's basename.
+if cat < "\${src}" > "\${staged}/${AI_REVIEW_EXECUTION_BASENAME}" 2>/dev/null; then
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${published}"
 else
-  # A warning, not a failure: see this function's docstring.
-  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::This run wrote no findings payload and the reviewer's execution file could not be copied aside, so the only record of what the reviewer did in its turns dies with this runner. The review's own verdict is unaffected — the report step still refuses — but #1307 gets no evidence from this run."
+  echo "::warning title=${AI_REVIEW_UNMEASURED_TITLE}::${copyFailed}"
 fi
 
 exit 0
@@ -7716,19 +7888,31 @@ export function buildReviewRunStep(
     `  env:`,
     `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
     `    ${AI_REVIEW_EXECUTION_FILE_VAR}: \${{ steps.${AI_REVIEW_ACTION_STEP_ID}.outputs.execution_file }}`,
+    // THE OPT-IN. `vars` is empty on a tree that never set it, and the
+    // script compares against the literal `true` — so the default is off and
+    // nothing is published by a consumer who never asked. The staging path
+    // itself is composed inside the script from `RUNNER_TEMP` plus the run
+    // nonce, rather than handed in here: a path this step could be handed is
+    // a path an earlier step's output could set, and what this step copies,
+    // it PUBLISHES.
+    //
     // Under RUNNER_TEMP and never in the checkout: the drift step refuses a
     // reviewer that modified the tree, and the baseline it compares against
     // was taken before the review ran. A staging directory in the workspace
     // would be read as the reviewer's write.
-    `    ${AI_REVIEW_EXECUTION_STAGE_VAR}: \${{ runner.temp }}/${AI_REVIEW_EXECUTION_STAGE_DIR}`,
+    `    ${AI_REVIEW_TRANSCRIPT_VAR}: \${{ vars.${AI_REVIEW_TRANSCRIPT_VAR} }}`,
     `  run: |`,
     ...buildExecutionStageScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
-  // No `if:`, for the reason above. The directory is empty unless the step
+  // No `if:`, for the reason above. The directory is absent unless the step
   // before it staged something, and `if-no-files-found: ignore` turns that
-  // into no artefact rather than an error — so a green adjudicated run pays
-  // no retention cost.
+  // into no artefact rather than an error — so a green adjudicated run, and
+  // every run on a tree that never opted in, pays no retention cost.
+  //
+  // THE PATH CARRIES THE RUN NONCE, matching the directory the staging step
+  // composes. A fixed path would be a path a previous job on a reused runner
+  // could have left behind, and this step uploads what it finds.
   //
   // `continue-on-error` is what keeps a recorder from refusing: the
   // UNMEASURED annotation is this job's output, and a failed upload must not
@@ -7740,7 +7924,7 @@ export function buildReviewRunStep(
     `  continue-on-error: true`,
     `  uses: ${refs.uploadArtifact}`,
     `  with:`,
-    `    path: \${{ runner.temp }}/${AI_REVIEW_EXECUTION_STAGE_DIR}/`,
+    `    path: \${{ runner.temp }}/${AI_REVIEW_EXECUTION_STAGE_DIR}-\${{ github.run_id }}-\${{ github.run_attempt }}${AI_REVIEW_EXECUTION_STAGE_SUFFIX}/`,
     `    name: ${AI_REVIEW_EXECUTION_ARTIFACT_NAME}-\${{ github.run_id }}-\${{ github.run_attempt }}`,
     `    if-no-files-found: ignore`,
     `    retention-days: ${AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS}`,

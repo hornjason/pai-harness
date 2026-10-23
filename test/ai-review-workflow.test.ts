@@ -55,7 +55,7 @@
  * literal in the tuple `test/release-guard.test.ts` pins.
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
@@ -67,10 +67,13 @@ import {
   AI_REVIEW_CONVENTIONS_FILE,
   AI_REVIEW_ACTION_STEP_ID,
   AI_REVIEW_EXECUTION_ARTIFACT_NAME,
+  AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS,
   AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID,
+  AI_REVIEW_EXECUTION_BASENAME,
   AI_REVIEW_EXECUTION_FILE_VAR,
   AI_REVIEW_EXECUTION_STAGE_STEP_ID,
-  AI_REVIEW_EXECUTION_STAGE_VAR,
+  AI_REVIEW_TRANSCRIPT_VALUE,
+  AI_REVIEW_TRANSCRIPT_VAR,
   AI_REVIEW_OUTCOME_LINE,
   AI_REVIEW_DRIFT_STEP_ID,
   AI_REVIEW_JOB,
@@ -1433,46 +1436,197 @@ describe("#803: a non-zero exit with no payload names the app install", () => {
  * prints, this step would record the same silence in a new place.
  */
 describe("#1307: the execution file is preserved when no payload was written", () => {
+  const stepOf = (id: string) => {
+    const doc = Bun.YAML.parse(generated()) as any;
+    return (doc.jobs[AI_REVIEW_JOB].steps as any[]).find(s => s.id === id);
+  };
+
+  const RUN_ID = "4242";
+  const RUN_ATTEMPT = "7";
+
+  /**
+   * The directory the UPLOAD step declares, with the Actions expressions
+   * resolved.
+   *
+   * Read out of the generated workflow rather than spelled here, and that is
+   * the point: the staging script composes its own destination from
+   * `RUNNER_TEMP` and the run nonce, the upload step declares a `path:`, and
+   * nothing in either file makes them agree. Every `kept` assertion below
+   * reads the directory the UPLOAD step named, so a script that stages
+   * somewhere else reddens them all. Spelling the path in the test instead
+   * would be a third author agreeing with one of the two.
+   */
+  const uploadDir = (runnerTemp: string) =>
+    (stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with.path as string)
+      .replaceAll("${{ runner.temp }}", runnerTemp)
+      .replaceAll("${{ github.run_id }}", RUN_ID)
+      .replaceAll("${{ github.run_attempt }}", RUN_ATTEMPT)
+      .replace(/\/+$/, "");
+
   /** Run the real staging script against a planted runner state. */
-  const stage = (opts: { payload?: string; execution?: string | "unset" }) => {
+  const stage = (opts: {
+    payload?: string;
+    execution?: string;
+    /** Where the handed-in execution path points. Default: the real thing. */
+    executionAt?: "outside-runner-temp" | "wrong-name" | "symlink" | "directory" | "dotdot";
+    /** The opt-in variable's value. `undefined` = on; `null` = never set. */
+    optIn?: string | null;
+    /** Something already sitting at the staging path on a reused runner. */
+    plant?: "symlink" | "file" | "dir";
+    /** Rewrite the script before running it — for the mutation rows. */
+    mutate?: (script: string) => string;
+  }) => {
     const dir = scratchDir("ai-review-stage-");
+    const temp = join(dir, "runner-temp");
+    mkdirSync(temp, { recursive: true });
+    const outside = join(dir, "outside");
+    mkdirSync(outside, { recursive: true });
     const sh = join(dir, "stage.sh");
-    writeFileSync(sh, buildExecutionStageScript());
-    const staged = join(dir, "staged.d");
+    const script = buildExecutionStageScript();
+    writeFileSync(sh, opts.mutate ? opts.mutate(script) : script);
+    const staged = uploadDir(temp);
+
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? "",
-      [AI_REVIEW_EXECUTION_STAGE_VAR]: staged,
+      RUNNER_TEMP: temp,
+      GITHUB_RUN_ID: RUN_ID,
+      GITHUB_RUN_ATTEMPT: RUN_ATTEMPT,
       AI_REVIEW_FINDINGS_PATH: "",
       AI_REVIEW_EXECUTION_FILE: "",
     };
+    const optIn = opts.optIn === undefined ? AI_REVIEW_TRANSCRIPT_VALUE : opts.optIn;
+    if (optIn !== null) env[AI_REVIEW_TRANSCRIPT_VAR] = optIn;
+
     if (opts.payload !== undefined) {
       const p = join(dir, "findings.json");
       writeFileSync(p, opts.payload);
       env.AI_REVIEW_FINDINGS_PATH = p;
     }
-    if (opts.execution !== undefined && opts.execution !== "unset") {
-      const e = join(dir, "claude-execution-output.json");
-      writeFileSync(e, opts.execution);
-      env.AI_REVIEW_EXECUTION_FILE = e;
+
+    if (opts.execution !== undefined) {
+      let src = join(temp, AI_REVIEW_EXECUTION_BASENAME);
+      switch (opts.executionAt) {
+        case "outside-runner-temp":
+          src = join(outside, AI_REVIEW_EXECUTION_BASENAME);
+          writeFileSync(src, opts.execution);
+          break;
+        case "dotdot":
+          // Spelled with a `..` that LEAVES RUNNER_TEMP while the string
+          // still begins with it. A prefix test on the unresolved path
+          // passes this; the canonicalised one must not.
+          writeFileSync(join(outside, AI_REVIEW_EXECUTION_BASENAME), opts.execution);
+          src = join(temp, "..", "outside", AI_REVIEW_EXECUTION_BASENAME);
+          break;
+        case "wrong-name":
+          src = join(temp, "secrets-elsewhere.json");
+          writeFileSync(src, opts.execution);
+          break;
+        case "symlink": {
+          const real = join(outside, "pointed-at.json");
+          writeFileSync(real, opts.execution);
+          symlinkSync(real, src);
+          break;
+        }
+        case "directory":
+          mkdirSync(src);
+          break;
+        default:
+          writeFileSync(src, opts.execution);
+      }
+      env.AI_REVIEW_EXECUTION_FILE = src;
     }
+
+    if (opts.plant === "symlink") symlinkSync(join(dir, "elsewhere"), staged);
+    if (opts.plant === "file") writeFileSync(staged, "");
+    if (opts.plant === "dir") mkdirSync(staged);
+
     // `bash -e`, because that is what Actions runs a `run:` block with and a
     // test spawning a plain shell would be exercising different code.
     const r = Bun.spawnSync(["bash", "-e", sh], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
-    const kept = existsSync(staged) ? readdirSync(staged) : [];
+    const kept =
+      existsSync(staged) && statSync(staged).isDirectory() ? readdirSync(staged) : [];
     return {
       code: r.exitCode,
       stdout: r.stdout.toString(),
       stderr: r.stderr.toString(),
       kept,
+      staged,
+      temp,
     };
   };
+
+  const warnings = (out: string) =>
+    out.split("\n").filter(l => l.startsWith("::warning"));
+
+  // ── The opt-in, and what off looks like ────────────────────────────────
+
+  test("#1307: DEFAULT OFF — a tree that never set the variable uploads nothing", () => {
+    // The whole security posture in one row. A workflow artifact on a public
+    // repository is world-readable, so a consumer who scaffolded this and
+    // never thought about it must publish no transcript at all.
+    const run = stage({ optIn: null, execution: '[{"type":"result"}]' });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept, "a tree that never opted in published a transcript").toEqual([]);
+  });
+
+  test("#1307: off is DISTINGUISHABLE from on-and-nothing-to-keep", () => {
+    // `if-no-files-found: ignore` gives the upload step one observable for
+    // both, so the distinction has to be made here or nowhere: an operator
+    // reading a run with no artefact cannot otherwise tell "never enabled"
+    // from "enabled and the reviewer wrote no transcript".
+    const off = stage({ optIn: null, execution: '[{"type":"result"}]' });
+    const onNothing = stage({});
+    expect(warnings(off.stdout).join("\n")).toContain(AI_REVIEW_TRANSCRIPT_VAR);
+    expect(warnings(onNothing.stdout).join("\n")).not.toContain(AI_REVIEW_TRANSCRIPT_VAR);
+  });
+
+  test("#1307: off says nothing on a run that had nothing to publish anyway", () => {
+    // The control for the row above: the opt-out notice is attached to the
+    // runs where it would have mattered. A notice on every adjudicated run
+    // is a notice nobody reads.
+    const run = stage({ optIn: null, payload: "[]", execution: '[{"type":"result"}]' });
+    expect(warnings(run.stdout)).toEqual([]);
+  });
+
+  test.each([["TRUE"], ["True"], ["1"], ["yes"], ["truex"], ["true "], [" true"], [""]])(
+    "#1307: %p does not turn publication on",
+    value => {
+      // Exact-compared, the way `RUNGATE_REQUIRE_AI_REVIEW` is read. A loose
+      // read of a switch that turns PUBLICATION on fails towards disclosure.
+      const run = stage({ optIn: value, execution: '[{"type":"result"}]' });
+      expect(run.code, run.stderr).toBe(0);
+      expect(run.kept, `${value} was read as consent to publish`).toEqual([]);
+    },
+  );
+
+  test("#1307: the accepted value is the one the step's env actually supplies", () => {
+    // The row above proves eight spellings are refused; without this one, a
+    // generator that stopped passing the variable through would satisfy all
+    // of them and publish nothing ever again.
+    const run = stage({ optIn: AI_REVIEW_TRANSCRIPT_VALUE, execution: '[{"type":"result"}]' });
+    expect(run.kept).toEqual([AI_REVIEW_EXECUTION_BASENAME]);
+    expect(stepOf(AI_REVIEW_EXECUTION_STAGE_STEP_ID).env[AI_REVIEW_TRANSCRIPT_VAR]).toBe(
+      `\${{ vars.${AI_REVIEW_TRANSCRIPT_VAR} }}`,
+    );
+  });
+
+  // ── The route, once publication is on ──────────────────────────────────
 
   test("#1307: no payload and a transcript present — the transcript is kept", () => {
     const run = stage({ execution: '[{"type":"system","subtype":"init"}]' });
     expect(run.code, run.stderr).toBe(0);
     expect(run.kept, "the one run this step exists for staged nothing").toEqual([
-      "claude-execution-output.json",
+      AI_REVIEW_EXECUTION_BASENAME,
     ]);
+  });
+
+  test("#1307: the operator is told the artefact is world-readable, at the moment it is made", () => {
+    // In the annotation an operator sees on the run, not in a comment in a
+    // file they will never open.
+    const run = stage({ execution: '[{"type":"result"}]' });
+    const text = warnings(run.stdout).join("\n").toLowerCase();
+    expect(text).toContain("public repository");
+    expect(text).toContain("anyone on the internet");
   });
 
   test("#1307: a payload was written — nothing is staged, because the run is adjudicable", () => {
@@ -1489,7 +1643,7 @@ describe("#1307: the execution file is preserved when no payload was written", (
     // round — reading it as one would lose exactly the evidence wanted.
     const run = stage({ payload: "", execution: '[{"type":"result"}]' });
     expect(run.code, run.stderr).toBe(0);
-    expect(run.kept).toEqual(["claude-execution-output.json"]);
+    expect(run.kept).toEqual([AI_REVIEW_EXECUTION_BASENAME]);
   });
 
   test("#1307: neither file — nothing staged, and still exit 0", () => {
@@ -1498,41 +1652,143 @@ describe("#1307: the execution file is preserved when no payload was written", (
     expect(run.kept).toEqual([]);
   });
 
-  test("#1307: it is a recorder — an unwritable staging target warns and does not fail", () => {
-    // The copy is performed and observed failing, not described. A recorder
-    // that can refuse the thing it records is worse than no recorder, and
-    // this is the one failure the script can actually have.
-    const dir = scratchDir("ai-review-stage-ro-");
-    const sh = join(dir, "stage.sh");
-    writeFileSync(sh, buildExecutionStageScript());
-    const e = join(dir, "claude-execution-output.json");
-    writeFileSync(e, '[{"type":"result"}]');
-    // A FILE where the script wants a directory: `mkdir -p` and `cp` both
-    // fail against it, which is a real runner failure rather than a mocked
-    // one.
-    const blocked = join(dir, "blocked");
-    writeFileSync(blocked, "not a directory");
-    const r = Bun.spawnSync(["bash", "-e", sh], {
-      cwd: dir,
-      env: {
-        PATH: process.env.PATH ?? "",
-        [AI_REVIEW_EXECUTION_STAGE_VAR]: blocked,
-        AI_REVIEW_FINDINGS_PATH: "",
-        AI_REVIEW_EXECUTION_FILE: e,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(
-      r.exitCode,
-      `a failed copy must not turn the UNMEASURED refusal into a different red\n${r.stderr.toString()}`,
-    ).toBe(0);
+  // ── The source path, which is a step OUTPUT and gets published ─────────
+
+  test.each([
+    ["outside-runner-temp" as const, "a path outside RUNNER_TEMP"],
+    ["dotdot" as const, "a path that leaves RUNNER_TEMP through `..`"],
+    ["wrong-name" as const, "a file that is not the action's own output"],
+    ["symlink" as const, "a symlink, whose target is read by `-f`"],
+    ["directory" as const, "a directory"],
+  ])("#1307: %s is refused rather than published — %s", executionAt => {
+    // What this step copies, it PUBLISHES. The path comes from another
+    // step's output, so each of these is a disclosure rather than a broken
+    // artefact, and a warning-and-exit-0 is the only acceptable refusal.
+    const run = stage({ executionAt, execution: "SENSITIVE" });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept, "a refused source path was published anyway").toEqual([]);
+    // Named, not counted. "Exactly one warning and nothing staged" is also
+    // what an opted-out run produces, and what a run with no execution file
+    // at all produces — three mechanisms, one observable. Sixth shape.
+    expect(warnings(run.stdout).length).toBe(1);
+    expect(warnings(run.stdout)[0]).toContain("is not the file it expects");
   });
 
-  const stepOf = (id: string) => {
-    const doc = Bun.YAML.parse(generated()) as any;
-    return (doc.jobs[AI_REVIEW_JOB].steps as any[]).find(s => s.id === id);
-  };
+  test("#1307: the symlink row is not vacuous — its target is a real, readable file", () => {
+    // Without this, "nothing was staged" would be satisfied by a symlink
+    // pointing at nothing, and the case would certify a check it never
+    // exercised. The target is written and read back here.
+    const dir = scratchDir("ai-review-stage-link-");
+    const real = join(dir, "pointed-at.json");
+    writeFileSync(real, "SENSITIVE");
+    const link = join(dir, AI_REVIEW_EXECUTION_BASENAME);
+    symlinkSync(real, link);
+    expect(readFileSync(link, "utf-8")).toBe("SENSITIVE");
+  });
+
+  // ── The staging directory, on a runner that may be reused ──────────────
+
+  test.each([
+    ["symlink" as const, "is a SYMLINK"],
+    ["file" as const, "already exists"],
+    ["dir" as const, "already exists"],
+  ])(
+    "#1307: a pre-existing %s at the staging path is refused, not adopted",
+    (plant, says) => {
+      // The path carries this run's id and attempt, so nothing this job did
+      // put it there. A symlink left by an earlier job would send the
+      // transcript wherever it points; a directory would have whatever
+      // permissions its creator chose.
+      const run = stage({ plant, execution: '[{"type":"result"}]' });
+      expect(run.code, run.stderr).toBe(0);
+      expect(run.kept).toEqual([]);
+      expect(warnings(run.stdout).length).toBe(1);
+      // NAMED PER ROW, and that is what makes the `-L` refusal observable at
+      // all. A dangling symlink is `-e`-false, so dropping `[ -L ]` still
+      // publishes nothing — `mkdir` fails on the link path and warns. Two
+      // deciders agreeing, fourth shape: the only thing that separates them
+      // is which sentence the operator is shown, so that is what is asserted.
+      expect(warnings(run.stdout)[0]).toContain(says);
+    },
+  );
+
+  test("#1307: the staging directory is created 0700, and by this job", () => {
+    const run = stage({ execution: '[{"type":"result"}]' });
+    expect(run.kept).toEqual([AI_REVIEW_EXECUTION_BASENAME]);
+    // `-m` at creation, so there is no window in which it is world-readable.
+    expect(statSync(run.staged).mode & 0o777).toBe(0o700);
+  });
+
+  test("#1307: the staging path carries the run nonce, so it cannot be a leftover", () => {
+    const run = stage({ execution: '[{"type":"result"}]' });
+    expect(run.staged).toContain(`-${RUN_ID}-${RUN_ATTEMPT}`);
+  });
+
+  test("#1307: it is a recorder — an unwritable staging target warns and does not fail", () => {
+    // The failure is performed and observed, not described. A recorder that
+    // can refuse the thing it records is worse than no recorder.
+    //
+    // A read-only RUNNER_TEMP, so the `mkdir` itself fails: under `bash -e`
+    // a bare `mkdir` aborts the step at exit 1 before any line below can
+    // explain itself, which this caught on the script's first run.
+    const dir = scratchDir("ai-review-stage-ro-");
+    const temp = join(dir, "runner-temp");
+    mkdirSync(temp, { recursive: true });
+    const e = join(temp, AI_REVIEW_EXECUTION_BASENAME);
+    writeFileSync(e, '[{"type":"result"}]');
+    const sh = join(dir, "stage.sh");
+    writeFileSync(sh, buildExecutionStageScript());
+    Bun.spawnSync(["chmod", "500", temp]);
+    try {
+      const r = Bun.spawnSync(["bash", "-e", sh], {
+        cwd: dir,
+        env: {
+          PATH: process.env.PATH ?? "",
+          RUNNER_TEMP: temp,
+          GITHUB_RUN_ID: RUN_ID,
+          GITHUB_RUN_ATTEMPT: RUN_ATTEMPT,
+          [AI_REVIEW_TRANSCRIPT_VAR]: AI_REVIEW_TRANSCRIPT_VALUE,
+          AI_REVIEW_FINDINGS_PATH: "",
+          AI_REVIEW_EXECUTION_FILE: e,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(
+        r.exitCode,
+        `a failed copy must not turn the UNMEASURED refusal into a different red\n${r.stderr.toString()}`,
+      ).toBe(0);
+      expect(warnings(r.stdout.toString()).length).toBe(1);
+    } finally {
+      Bun.spawnSync(["chmod", "700", temp]);
+    }
+  });
+
+  // ── The destination name ───────────────────────────────────────────────
+
+  test("#1307: the uploaded name is chosen by the workflow, not by the source path", () => {
+    // SAY WHAT THIS CANNOT SHOW on its own: with the basename constraint in
+    // force, source and destination names agree by construction, so no
+    // ordinary run can tell a redirect from a `cp` into a directory. The two
+    // deciders agree — fourth shape, `.claude/rules/checks-must-be-able-to-fail.md`.
+    //
+    // So the constraint is REMOVED and the run repeated. The redirect is
+    // defence for exactly the day somebody loosens that check, and this is
+    // the only input on which it is observable.
+    const guard = /\n.*basename "\$\{real\}".*\n/;
+    const matches = buildExecutionStageScript().match(new RegExp(guard, "g")) ?? [];
+    expect(matches.length, "the basename guard is not where the mutation expects it").toBe(1);
+    const run = stage({
+      executionAt: "wrong-name",
+      execution: "SENSITIVE",
+      mutate: s => s.replace(guard, "\n"),
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(
+      run.kept,
+      "without the basename guard the uploaded file took the source's name",
+    ).toEqual([AI_REVIEW_EXECUTION_BASENAME]);
+  });
 
   test("#1307: both steps exist — asserted before the rows that describe them", () => {
     expect(stepOf(AI_REVIEW_EXECUTION_STAGE_STEP_ID)).toBeDefined();
@@ -1577,9 +1833,18 @@ describe("#1307: the execution file is preserved when no payload was written", (
     // baseline taken before the review. A staging directory in the workspace
     // would be read as the reviewer's write and fail every UNMEASURED run
     // for the wrong reason.
-    const env = stepOf(AI_REVIEW_EXECUTION_STAGE_STEP_ID).env;
-    expect(env[AI_REVIEW_EXECUTION_STAGE_VAR]).toContain("runner.temp");
+    //
+    // The script's half of this is executed, not read: `stage()` plants a
+    // RUNNER_TEMP and the transcript lands under it or the rows above go
+    // red. This row is the upload step's half.
     expect(stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with.path).toContain("runner.temp");
+  });
+
+  test("#1307: retention is one day — the artefact's exposure window on a public repo", () => {
+    // Retention IS the exposure window: a workflow artifact on a public
+    // repository is readable by anyone for exactly as long as it is kept.
+    expect(AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS).toBe(1);
+    expect(stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with["retention-days"]).toBe(1);
   });
 
   test("#1307: staging runs before the upload, and both before the report step", () => {
