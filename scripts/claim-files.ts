@@ -39,6 +39,7 @@ import {
   FILE_CLAIMS_PATH,
   allClaims,
   contention,
+  isLandedBySubject,
   readFileClaims,
   type FileClaim,
 } from "../lib/file-claims.ts";
@@ -130,16 +131,47 @@ function defaultBranch(project: string): string {
  * someone deletes the ref or releases it, rather than being released while
  * the author is still pushing to it.
  */
-function liveOwners(project: string, ref: string): Set<string> {
-  const r = git(project, "branch", "-r", "--no-merged", ref, "--format=%(refname:short)");
-  const out = new Set<string>();
-  if (!r.ok) return out;
-  for (const line of r.out.split("\n")) {
-    const name = line.trim();
-    if (!name || !name.startsWith("origin/")) continue;
-    out.add(name.slice("origin/".length));
+/**
+ * Which of `owners` still have work that has not landed on `ref`.
+ *
+ * Asked per declared owner rather than by listing every remote branch,
+ * because the registry has a handful of entries and the remote has hundreds,
+ * and because the question is about the branches someone declared — not
+ * about the branch list.
+ *
+ * Three states, and the third is why this does not return a bare boolean: a
+ * branch whose ref is gone is landed-or-abandoned either way and holds
+ * nothing; a branch whose subjects are all in the base has landed; and a
+ * `git log` that could not run is UNMEASURED, which must not read as either.
+ * See {@link isLandedBySubject} for why ancestry is the wrong instrument.
+ */
+function ownerLiveness(
+  project: string,
+  ref: string,
+  owners: readonly string[],
+): { live: Set<string>; unmeasured: Map<string, string> } {
+  const live = new Set<string>();
+  const unmeasured = new Map<string, string>();
+  // One read of the base's subjects, shared across every owner. Bounded
+  // because a squash lands within days of the branch being cut, and an
+  // unbounded log on a long history costs more than the answer is worth.
+  const base = git(project, "log", "--format=%s", "-2000", ref);
+  if (!base.ok) {
+    for (const o of owners) unmeasured.set(o, `could not read ${ref}'s subjects`);
+    return { live, unmeasured };
   }
-  return out;
+  const baseSubjects = base.out.split("\n");
+  for (const owner of owners) {
+    const exists = git(project, "rev-parse", "--verify", "--quiet", `origin/${owner}`);
+    if (!exists.ok) continue; // ref gone: holds nothing
+    const ahead = git(project, "log", "--format=%s", `${ref}..origin/${owner}`);
+    if (!ahead.ok) {
+      unmeasured.set(owner, `could not read ${ref}..origin/${owner}`);
+      continue;
+    }
+    if (!isLandedBySubject(ahead.out.split("\n"), baseSubjects)) live.add(owner);
+  }
+  return { live, unmeasured };
 }
 
 /** The registry as `ref` carries it. `ref` is a full name, e.g. `origin/main`. */
@@ -194,7 +226,20 @@ if (import.meta.main) {
         console.log("Not reporting these paths free: an unreadable registry is not an empty one.");
         process.exit(REFUSE_EXIT);
       }
-      const live = liveOwners(args.project, base);
+      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner));
+      // An owner whose liveness could not be established must not fall through
+      // to "dead". Only the claims on the paths being asked about matter — an
+      // unreadable branch elsewhere in the registry is not this caller's
+      // problem, and refusing on it would make the tool unusable.
+      const blind = args.check
+        .flatMap(p => allClaims(reading.claims, p))
+        .filter(c => unmeasured.has(c.owner));
+      if (blind.length > 0) {
+        console.log(`UNMEASURED: ${blind.length} claim(s) on these paths have an owner this tree cannot resolve.`);
+        for (const c of blind) console.log(`  ${c.owner} — ${unmeasured.get(c.owner)}`);
+        console.log("Not reporting free: an owner that could not be read is not an owner that let go.");
+        process.exit(REFUSE_EXIT);
+      }
       const hits = contention(reading.claims, args.check, live);
       if (hits.size === 0) {
         // Say what was read, so "free" is distinguishable from "read nothing".
@@ -244,7 +289,7 @@ if (import.meta.main) {
         console.log(`UNMEASURED: ${reading.reason}`);
         process.exit(REFUSE_EXIT);
       }
-      const live = liveOwners(args.project, base);
+      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner));
       // ABSENT and READ-EMPTY print differently on purpose. "Nobody has
       // declared anything" and "there is no registry on this ref yet" lead to
       // different next actions, and one line for both is how a reader stops
@@ -255,7 +300,12 @@ if (import.meta.main) {
         console.log("the registry is present and declares no claims");
       }
       for (const c of reading.claims) {
-        console.log(`${live.has(c.owner) ? "LIVE" : "DEAD"}  ${c.owner}${c.issue ? ` (#${c.issue})` : ""}  ${c.paths.join(" ")}`);
+        // Three states in the listing too. A `?` is a claim whose owner this
+        // tree could not resolve, and printing it as DEAD would invite
+        // someone to prune a live lock.
+        const state = unmeasured.has(c.owner) ? "?   " : live.has(c.owner) ? "LIVE" : "DEAD";
+        console.log(`${state}  ${c.owner}${c.issue ? ` (#${c.issue})` : ""}  ${c.paths.join(" ")}`);
+        if (unmeasured.has(c.owner)) console.log(`        ${unmeasured.get(c.owner)}`);
       }
     } else {
       throw new Error("one of --check, --claim, --release or --list is required");

@@ -173,6 +173,42 @@ export function claimCovers(claimed: string, path: string): boolean {
 }
 
 /**
+ * Has this branch's work landed, judged by SUBJECT rather than by ancestry?
+ *
+ * `git merge-base --is-ancestor` and `git branch -r --no-merged` both compare
+ * commits, and this repository squash-merges: the squash commit is a new
+ * object, so a merged branch's tip is never an ancestor of the base and both
+ * tests report it UNMERGED forever. Measured rather than assumed —
+ * `rg/1168-eviction-note` merged at 17:43 on 2026-10-23 and
+ * `git branch -r --no-merged origin/main` still listed it afterwards.
+ *
+ * That matters more for a lock than for a report. `RUNGATE_BRANCH_CLEANUP` is
+ * deliberately unset in this project, so merged refs are never deleted; a
+ * liveness rule built on ancestry would therefore make every claim immortal,
+ * and within days the registry would hold every interesting file on behalf of
+ * branches that landed last week. A lock nobody can acquire is worse than no
+ * lock, because people route around it instead of reading it.
+ *
+ * So: a branch has landed when **every** subject it carries ahead of the base
+ * also appears in the base's own subjects. GitHub's squash subject is the
+ * commit subject with ` (#N)` appended, which is why this is a containment
+ * test and not an equality one.
+ *
+ * A branch with nothing ahead of the base has landed, vacuously and
+ * correctly. An EMPTY `baseSubjects` returns false for any non-empty branch:
+ * no subject can be found in a list nobody read, and answering "landed" there
+ * would release every claim at once the first time a `git log` failed.
+ */
+export function isLandedBySubject(
+  branchSubjects: readonly string[],
+  baseSubjects: readonly string[],
+): boolean {
+  const ahead = branchSubjects.map(s => s.trim()).filter(s => s !== "");
+  if (ahead.length === 0) return true;
+  return ahead.every(s => baseSubjects.some(b => b.includes(s)));
+}
+
+/**
  * The claims that cover `path`, among those whose owner is still live.
  *
  * `liveOwners` is the set of branches that exist and are unmerged, supplied by

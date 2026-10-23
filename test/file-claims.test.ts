@@ -26,6 +26,7 @@ import {
   allClaims,
   claimCovers,
   contention,
+  isLandedBySubject,
   liveClaims,
   readFileClaims,
   type FileClaim,
@@ -217,6 +218,74 @@ describe("#1413: the five PRs that motivated this are serialised, not merged tog
     const live = new Set(["rg/1351-shell-parity"]);
     expect(contention(held, ["lib/ai-review-rounds.ts"], live).size).toBe(0);
     expect(contention(held, PAIR, live).size).toBe(2);
+  });
+});
+
+/**
+ * Liveness, and why ancestry is the wrong instrument for it.
+ *
+ * This repository squash-merges and `RUNGATE_BRANCH_CLEANUP` is deliberately
+ * unset, so merged refs are never deleted. Under an ancestry rule no claim
+ * would ever die and the registry would hold every interesting file on behalf
+ * of branches that landed last week.
+ *
+ * Measured against five real branches before this rule was written, with
+ * `git branch -r --no-merged origin/main` as the control:
+ *
+ * | branch                       | subject rule | `--no-merged` | truth  |
+ * |------------------------------|--------------|---------------|--------|
+ * | `rg/1168-eviction-note`      | LANDED       | live          | merged |
+ * | `rg/1426-dochygiene-witness` | LANDED       | live          | merged |
+ * | `rg/1405-window-writer`      | LIVE         | live          | open   |
+ * | `rg/1406-anchor-absent`      | LIVE         | live          | open   |
+ * | `rg/1401-census-generated`   | LIVE         | live          | open   |
+ *
+ * 5 of 5 against 3 of 5. The control is not merely less precise — it is
+ * wrong in the one direction that matters, because a rule that never says
+ * LANDED is a lock nobody can ever release.
+ */
+describe("#1413: a landed branch is told apart from a live one by SUBJECT", () => {
+  const BASE = [
+    "fix(#1394): the eviction note says how many went (#1399)",
+    "feat(#713): migrate seven PRODUCT-classified hooks (#1118)",
+    "chore: unrelated",
+  ];
+
+  test("a squash-merged subject is found inside the base's `(#N)` form", () => {
+    expect(isLandedBySubject(["fix(#1394): the eviction note says how many went"], BASE)).toBe(true);
+  });
+
+  test("a branch the base has never seen is LIVE", () => {
+    expect(isLandedBySubject(["feat(#1405): the ledger writes its window count"], BASE)).toBe(false);
+  });
+
+  test("EVERY subject must be found — one unlanded commit keeps the branch live", () => {
+    // The `.some`/`.every` inversion is the bug this row exists for. A branch
+    // that was merged and then pushed to is still being written.
+    expect(
+      isLandedBySubject(
+        ["fix(#1394): the eviction note says how many went", "fixup: one more thing"],
+        BASE,
+      ),
+    ).toBe(false);
+  });
+
+  test("a branch with nothing ahead has landed, vacuously", () => {
+    expect(isLandedBySubject([], BASE)).toBe(true);
+    expect(isLandedBySubject(["", "   "], BASE)).toBe(true);
+  });
+
+  test("an EMPTY base reads LIVE, never landed", () => {
+    // The fail-closed direction. A `git log` that returned nothing would
+    // otherwise release every claim in the registry at once.
+    expect(isLandedBySubject(["anything at all"], [])).toBe(false);
+  });
+
+  test("CONTROL: the containment is a substring test, not an equality one", () => {
+    // If it were equality, row 1 would be false and every squash merge would
+    // read live — which is precisely the defect being fixed.
+    expect(BASE).not.toContain("fix(#1394): the eviction note says how many went");
+    expect(isLandedBySubject(["fix(#1394): the eviction note says how many went"], BASE)).toBe(true);
   });
 });
 
