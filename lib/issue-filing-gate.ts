@@ -732,30 +732,40 @@ export async function filingGate(
     if (overridden) notes.push(overrideNote(verdict));
   }
 
-  // ── A refusal blocks the COMMAND, so one duplicate must not take its
-  //    novel siblings with it ─────────────────────────────────────────────
+  // ── A refusal blocks the COMMAND, and every clean clause is NAMED in the
+  //    refusal so none of them is lost ───────────────────────────────────
   //
-  // The first version blocked whenever any clause refused. A command mixing
-  // one known duplicate with three novel findings lost all four, and the
-  // three were exactly the findings this gate exists to let through —
-  // withheld with no artefact anywhere, which is the failure direction
-  // nothing here may have.
+  // This read `rows.length > 0 && rows.every(r => !r.emitted)` — block only
+  // when NOTHING in the command was clean. The concern behind it was real: a
+  // hook's one lever is the whole Bash command, so blocking a mixed command
+  // takes novel findings down with a duplicate, and withholding a real
+  // finding with no artefact anywhere is the direction nothing here may fail
+  // in.
   //
-  // There is no partial block available: the hook's one lever is the whole
-  // Bash command. So the rule is every-or-nothing, and when a mixed command
-  // proceeds the refusal is downgraded to a note naming what was NOT clean,
-  // which is strictly more information than the agent had before.
-  const blocking = rows.length > 0 && rows.every(r => !r.emitted);
-  if (!blocking && refusals.length > 0) {
-    notes.push(
-      `[FindingArbiter] ${refusals.length} of ${rows.length} filings in this command would have ` +
-        "been refused, and the command is ALLOWED because the others are not duplicates — " +
-        "a hook can only block the whole command, and taking novel findings down with a " +
-        "duplicate is the one direction this gate must never fail in. The refused " +
-        `one(s) are recorded in ${ledgerPath()}. Please withdraw them and re-run:\n\n` +
-        refusals.join("\n\n"),
-    );
-  }
+  // What it did not price is the bypass. One duplicate batched with one novel
+  // finding was ALLOWED and the refusal downgraded to a note, so the cheapest
+  // way past the arbiter became putting a refused filing in the same `&&`
+  // chain as a clean one. A gate with a one-clause bypass is worse than no
+  // gate, because it reads as working.
+  //
+  // And `emitted` is `outcome !== "REFUSE" || overridden`, so it is true for
+  // an **UNMEASURED** row too: one unreadable `--body-file` beside any number
+  // of duplicates allowed the whole command. A broken adjudicator was a
+  // bypass as well as a note, which is the one thing the UNMEASURED policy in
+  // this file's header exists to prevent.
+  //
+  // Blocking is affordable because nothing is lost by it. The refusal
+  // ENUMERATES the clauses that were clean, so the agent withdraws the
+  // refused one and re-runs the rest in one step, and the ledger has carried
+  // every row — clean and refused — since the rows above were written. A
+  // finding deferred by one command is not a finding silenced; a finding
+  // filed alongside a duplicate was never adjudicated at all.
+  //
+  // An OVERRIDDEN refusal is deliberately not in `refusals`, so it does not
+  // block: an override is a decision somebody made and recorded.
+  const blocking = refusals.length > 0;
+  const clean = rows.filter(r => r.emitted);
+  if (blocking && clean.length > 0) refusals.push(cleanClauseNote(clean, rows.length));
 
   return {
     refusal: blocking ? refusals.join("\n\n") : null,
@@ -787,6 +797,27 @@ export function refusalMessage(v: FilingAdjudication): string {
     `If this one genuinely is the exception, re-run with --label ${FILING_OVERRIDE_LABEL}.`,
     `The override is recorded in ${ledgerPath()} beside the refusal it waived, so`,
     "an override that was right is evidence and one that was wrong is countable.",
+  ].join("\n");
+}
+
+/**
+ * The clauses that were clean, named inside the refusal that blocks them.
+ *
+ * This is the half that makes blocking a mixed command affordable. A hook can
+ * only block the whole Bash command, so a refusal that said nothing about the
+ * clean clauses would cost the agent the work of reconstructing them — which
+ * is the argument the `every`-based predicate was built on. Naming them turns
+ * "the command was blocked" into "withdraw one, re-run these", and the titles
+ * are quoted verbatim so the re-run is a copy rather than a recollection.
+ */
+export function cleanClauseNote(clean: readonly FilingLedgerRow[], total: number): string {
+  return [
+    `[FindingArbiter] ${clean.length} of ${total} filings in this command WERE clean and are`,
+    "not the reason it was blocked. A hook's one lever is the whole Bash command, so they are",
+    `named here rather than lost, and all ${total} rows are recorded in ${ledgerPath()}.`,
+    "Withdraw the refused one(s) and re-run these:",
+    "",
+    ...clean.map(r => `  - ${r.title}`),
   ].join("\n");
 }
 
