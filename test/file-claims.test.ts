@@ -28,11 +28,13 @@ import {
   allClaims,
   claimCovers,
   contention,
-  isLandedBySubject,
   liveClaims,
+  ownerState,
   readFileClaims,
   type FileClaim,
+  type PullState,
 } from "../lib/file-claims";
+import { repoSlug } from "../scripts/claim-files";
 
 const REPO = join(import.meta.dir, "..");
 const PAIR = ["lib/scaffold/ai-review-step.ts", ".github/workflows/ai-review.yml"];
@@ -224,70 +226,140 @@ describe("#1413: the five PRs that motivated this are serialised, not merged tog
 });
 
 /**
- * Liveness, and why ancestry is the wrong instrument for it.
+ * Liveness, and the two git-only rules that were wrong before this one.
  *
  * This repository squash-merges and `RUNGATE_BRANCH_CLEANUP` is deliberately
- * unset, so merged refs are never deleted. Under an ancestry rule no claim
- * would ever die and the registry would hold every interesting file on behalf
- * of branches that landed last week.
+ * unset, so merged refs are never deleted. Any rule that reads a merged
+ * branch as live therefore makes its claim IMMORTAL — the registry holds
+ * every interesting file on behalf of branches that landed last week, and a
+ * lock nobody can release is one people route around.
  *
- * Measured against five real branches before this rule was written, with
- * `git branch -r --no-merged origin/main` as the control:
+ * **Rule 1, ancestry.** `git merge-base --is-ancestor` and `git branch -r
+ * --no-merged` compare commits, and a squash commit is a new object. Both
+ * report every merged branch unmerged forever. `rg/1168-eviction-note` merged
+ * at 17:43 on 2026-10-23 and `--no-merged` still listed it.
  *
- * | branch                       | subject rule | `--no-merged` | truth  |
- * |------------------------------|--------------|---------------|--------|
- * | `rg/1168-eviction-note`      | LANDED       | live          | merged |
- * | `rg/1426-dochygiene-witness` | LANDED       | live          | merged |
- * | `rg/1405-window-writer`      | LIVE         | live          | open   |
- * | `rg/1406-anchor-absent`      | LIVE         | live          | open   |
- * | `rg/1401-census-generated`   | LIVE         | live          | open   |
+ * **Rule 2, subjects.** "Every subject the branch carries ahead of the base
+ * also appears among the base's subjects." True for a SINGLE-commit pull
+ * request, whose squash subject is the commit subject plus ` (#N)`. False for
+ * every other one: GitHub's squash subject for a multi-commit branch is the
+ * PULL REQUEST TITLE, and the commit subjects go into the squash BODY as `* `
+ * bullets, where `git log --format=%s` cannot see them. Read directly off
+ * `72e3012361e5`, the squash of the two-commit #1438 — subject
+ * `the scratch exemption … not one (#1438)`, and the second commit's subject
+ * `use .match, not .exec: …` present only in the body.
  *
- * 5 of 5 against 3 of 5. The control is not merely less precise — it is
- * wrong in the one direction that matters, because a rule that never says
- * LANDED is a lock nobody can ever release.
+ * That rule passed review on a battery of five branches. Four were
+ * single-commit and the fifth was open, so not one row could discriminate —
+ * the sample had no case the mutation could move. Re-measured against the 15
+ * most recently merged pull requests, all of them merged, so `landed=true` is
+ * the right answer for all 15:
+ *
+ * | population                         | rule 2 says landed |
+ * |------------------------------------|--------------------|
+ * | 11 multi-commit, refs surviving    | 0 of 11            |
+ * | 1 single-commit, ref surviving     | 1 of 1             |
+ * | 3 single-commit, refs deleted      | not measurable     |
+ *
+ * **11 of 12 wrong, every one in the fail-open direction.**
+ *
+ * So liveness is asked of the tracker, where a pull request's state is a fact
+ * somebody recorded rather than a shape inferred from a graph squashing has
+ * already flattened. The rows below are the five states of
+ * {@link ownerState}; each is reachable, and the two UNMEASURED ones are the
+ * reason it does not return a boolean.
  */
-describe("#1413: a landed branch is told apart from a live one by SUBJECT", () => {
-  const BASE = [
-    "fix(#1394): the eviction note says how many went (#1399)",
-    "feat(#713): migrate seven PRODUCT-classified hooks (#1118)",
-    "chore: unrelated",
-  ];
+describe("#1413: liveness comes from the tracker, not from the commit graph", () => {
+  const OPEN: PullState[] = [{ number: 1420, state: "OPEN" }];
+  const MERGED: PullState[] = [{ number: 1399, state: "MERGED" }];
 
-  test("a squash-merged subject is found inside the base's `(#N)` form", () => {
-    expect(isLandedBySubject(["fix(#1394): the eviction note says how many went"], BASE)).toBe(true);
+  test("an open pull request is LIVE, and says which", () => {
+    const r = ownerState(OPEN, true, true);
+    expect(r.state).toBe("live");
+    expect(r.why).toContain("#1420");
   });
 
-  test("a branch the base has never seen is LIVE", () => {
-    expect(isLandedBySubject(["feat(#1405): the ledger writes its window count"], BASE)).toBe(false);
+  test("a DRAFT pull request is live — gh reports a draft as OPEN", () => {
+    expect(ownerState([{ number: 7, state: "OPEN" }], true, true).state).toBe("live");
   });
 
-  test("EVERY subject must be found — one unlanded commit keeps the branch live", () => {
-    // The `.some`/`.every` inversion is the bug this row exists for. A branch
-    // that was merged and then pushed to is still being written.
-    expect(
-      isLandedBySubject(
-        ["fix(#1394): the eviction note says how many went", "fixup: one more thing"],
-        BASE,
-      ),
-    ).toBe(false);
+  test("merged is LANDED even though the branch ref is still on the remote", () => {
+    // The whole defect in one row. Both earlier rules answered "live" here,
+    // and `refExists: true` is the normal state because refs are never
+    // deleted in this project.
+    expect(ownerState(MERGED, true, true).state).toBe("landed");
   });
 
-  test("a branch with nothing ahead has landed, vacuously", () => {
-    expect(isLandedBySubject([], BASE)).toBe(true);
-    expect(isLandedBySubject(["", "   "], BASE)).toBe(true);
+  test("a multi-commit merge is LANDED — the case rule 2 got wrong 11 times", () => {
+    // #1438: two commits, squash subject is the PR title, so neither commit
+    // subject appears in `git log --format=%s origin/main`. The tracker does
+    // not care how many commits there were.
+    expect(ownerState([{ number: 1438, state: "MERGED" }], true, true).state).toBe("landed");
   });
 
-  test("an EMPTY base reads LIVE, never landed", () => {
-    // The fail-closed direction. A `git log` that returned nothing would
-    // otherwise release every claim in the registry at once.
-    expect(isLandedBySubject(["anything at all"], [])).toBe(false);
+  test("a CLOSED pull request is landed too — nobody is writing either way", () => {
+    expect(ownerState([{ number: 9, state: "CLOSED" }], true, true).state).toBe("landed");
   });
 
-  test("CONTROL: the containment is a substring test, not an equality one", () => {
-    // If it were equality, row 1 would be false and every squash merge would
-    // read live — which is precisely the defect being fixed.
-    expect(BASE).not.toContain("fix(#1394): the eviction note says how many went");
-    expect(isLandedBySubject(["fix(#1394): the eviction note says how many went"], BASE)).toBe(true);
+  test("one open among several closed keeps the owner live", () => {
+    const r = ownerState(
+      [{ number: 9, state: "CLOSED" }, { number: 10, state: "OPEN" }, { number: 11, state: "MERGED" }],
+      true,
+      true,
+    );
+    expect(r.state).toBe("live");
+    expect(r.why).toContain("#10");
+  });
+
+  test("pushed with no pull request yet is LIVE — the earliest moment a claim matters", () => {
+    expect(ownerState([], true, true).state).toBe("live");
+  });
+
+  test("no pull request and no ref, refs refreshed, is LANDED", () => {
+    expect(ownerState([], false, true).state).toBe("landed");
+  });
+
+  test("no pull request and no ref WITHOUT a refresh is UNMEASURED, never landed", () => {
+    // A branch nobody fetched and a branch somebody deleted look identical.
+    const r = ownerState([], false, false);
+    expect(r.state).toBe("unmeasured");
+    expect(r.why).toContain("refreshed");
+  });
+
+  test("an unread tracker is UNMEASURED, and is not an empty one", () => {
+    // `null` vs `[]`. If these collapsed, a `gh` outage would report every
+    // claimed file free — the one fail-open this mechanism must not have.
+    expect(ownerState(null, true, true).state).toBe("unmeasured");
+    expect(ownerState(null, false, true).state).toBe("unmeasured");
+    expect(ownerState([], true, true).state).not.toBe("unmeasured");
+  });
+
+  test("CONTROL: refExists only decides when the tracker reports no pull request", () => {
+    // If the ref reading leaked into the pull-request cases, the merged row
+    // above would answer live again and the fix would be inert.
+    for (const refExists of [true, false]) {
+      for (const refreshed of [true, false]) {
+        expect(ownerState(OPEN, refExists, refreshed).state).toBe("live");
+        expect(ownerState(MERGED, refExists, refreshed).state).toBe("landed");
+      }
+    }
+  });
+});
+
+describe("#1413: the repository is parsed from origin, never assumed", () => {
+  test("both GitHub remote spellings resolve to the same slug", () => {
+    expect(repoSlug("git@github.com:hornjason/pai-harness.git")).toBe("hornjason/pai-harness");
+    expect(repoSlug("https://github.com/hornjason/pai-harness.git")).toBe("hornjason/pai-harness");
+    expect(repoSlug("https://github.com/hornjason/pai-harness")).toBe("hornjason/pai-harness");
+    expect(repoSlug("https://github.com/hornjason/pai-harness/\n")).toBe("hornjason/pai-harness");
+  });
+
+  test("a non-GitHub remote is null, not a guess", () => {
+    // A slug guessed off the wrong host would make `gh` answer "no pull
+    // request" with total confidence, which reads as landed.
+    expect(repoSlug("https://gitlab.com/x/y.git")).toBeNull();
+    expect(repoSlug("/Users/jhorn/Projects/some-local-clone")).toBeNull();
+    expect(repoSlug("")).toBeNull();
   });
 });
 

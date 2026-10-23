@@ -23,11 +23,19 @@
  * a place to ask the question from a shell, before any code exists to import
  * anything from.
  *
- * Liveness is resolved from git rather than trusted from the registry: the
- * owners counted are the branches that exist on the remote and are not
- * already merged. A claim whose branch merged is reported DEAD and holds
- * nothing, so an entry nobody pruned costs a line of output rather than a
- * file nobody may ever work on again.
+ * Liveness is resolved rather than trusted from the registry: an owner is
+ * live while its branch has an open pull request, or while the branch is on
+ * the remote with no pull request yet. A claim whose pull request merged or
+ * closed is reported DEAD and holds nothing, so an entry nobody pruned costs
+ * a line of output rather than a file nobody may ever work on again.
+ *
+ * That answer comes from the tracker and not from the commit graph, which
+ * squash-merging has already destroyed the evidence in. Two git-only rules
+ * were tried and both reported merged branches live forever; the second was
+ * measured wrong on 11 of 12 recently merged branches. `lib/file-claims.ts`
+ * carries the measurement. The practical consequence here is that `--check`
+ * and `--list` need `gh` to be working: if it is not, the owners it covers
+ * are UNMEASURED and the tool refuses rather than reporting free.
  */
 
 import { spawnSync } from "child_process";
@@ -39,9 +47,10 @@ import {
   FILE_CLAIMS_PATH,
   allClaims,
   contention,
-  isLandedBySubject,
+  ownerState,
   readFileClaims,
   type FileClaim,
+  type PullState,
 } from "../lib/file-claims.ts";
 
 /** The one exit code every refusal travels through. */
@@ -120,31 +129,54 @@ function defaultBranch(project: string): string {
 }
 
 /**
- * Branches on the remote that are NOT merged into the default branch.
+ * The `owner/repo` this project pushes to, parsed from `origin`.
  *
- * `--no-merged` is the whole of the staleness answer and it is deliberately
- * not `--is-ancestor`: this repository squash-merges, so a merged branch's
- * head is never an ancestor of the default branch and an ancestry test would
- * report every merged branch as live. `git branch -r --no-merged` compares
- * tips the same way, so a squash-merged branch whose ref still exists IS
- * reported live here — which is the safe direction. It holds its claim until
- * someone deletes the ref or releases it, rather than being released while
- * the author is still pushing to it.
+ * Read rather than configured, and `null` rather than a guess: every owner
+ * is UNMEASURED if this cannot be resolved, because a `gh` call against the
+ * wrong repository would answer "no pull request" with total confidence.
  */
+export function repoSlug(originUrl: string): string | null {
+  const m = /github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(originUrl.trim());
+  return m === null ? null : `${m[1]}/${m[2]}`;
+}
+
 /**
- * Which of `owners` still have work that has not landed on `ref`.
+ * Pull requests whose head is `branch`, or `null` if the tracker was not read.
  *
- * Asked per declared owner rather than by listing every remote branch,
- * because the registry has a handful of entries and the remote has hundreds,
- * and because the question is about the branches someone declared — not
- * about the branch list.
+ * `--state all` because a CLOSED pull request answers the question as well as
+ * a merged one: either way nobody is writing under that name. The `null`
+ * return is the whole reason this is not typed `PullState[]` — an empty array
+ * means "the tracker says there are none", and those must not be one value.
+ */
+function pullsForBranch(slug: string, branch: string): PullState[] | null {
+  const r = spawnSync(
+    "gh",
+    ["pr", "list", "--repo", slug, "--head", branch, "--state", "all", "--json", "number,state"],
+    { encoding: "utf-8" },
+  );
+  if (r.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(r.stdout) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return parsed as PullState[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which of `owners` are still being worked on.
  *
- * Three states, and the third is why this does not return a bare boolean: a
- * branch whose ref is REALLY gone is landed-or-abandoned either way and
- * holds nothing; a branch whose subjects are all in the base has landed; and
- * anything that could not be read is UNMEASURED, which must not read as
- * either. See {@link isLandedBySubject} for why ancestry is the wrong
- * instrument.
+ * Asked per declared owner rather than by listing every branch or every open
+ * pull request, because the registry has a handful of entries and the remote
+ * has hundreds — and because a bounded `--limit` listing would answer "no
+ * pull request" for anything older than the page, which is the fail-open
+ * direction. A `--head` query is exact and unbounded.
+ *
+ * {@link ownerState} holds the decision and the evidence for it, including
+ * the two git-only rules that were tried first and the measurement that
+ * killed the second. Nothing here decides anything; it gathers three inputs
+ * per owner and hands them over.
  *
  * ## `fetched` is load-bearing, and the first version of this was a fail-open
  *
@@ -157,46 +189,33 @@ function defaultBranch(project: string): string {
  * somebody was writing. That is the whole defect this tool exists to prevent,
  * arriving inside the tool.
  *
- * So an absent ref is only "gone" when the refs were actually refreshed.
- * Without that, absent means UNMEASURED and the caller refuses: a branch
- * nobody fetched and a branch somebody deleted look identical, and only one
- * of them is safe to treat as free.
+ * The ref reading still matters even with the tracker in play: it is what
+ * separates "pushed, no pull request yet" from "nothing there at all", and
+ * those are opposite answers.
  */
 function ownerLiveness(
   project: string,
-  ref: string,
   owners: readonly string[],
   fetched: boolean,
 ): { live: Set<string>; unmeasured: Map<string, string> } {
   const live = new Set<string>();
   const unmeasured = new Map<string, string>();
-  // One read of the base's subjects, shared across every owner. Bounded
-  // because a squash lands within days of the branch being cut, and an
-  // unbounded log on a long history costs more than the answer is worth.
-  const base = git(project, "log", "--format=%s", "-2000", ref);
-  if (!base.ok) {
-    for (const o of owners) unmeasured.set(o, `could not read ${ref}'s subjects`);
+  if (owners.length === 0) return { live, unmeasured };
+
+  const origin = git(project, "remote", "get-url", "origin");
+  const slug = origin.ok ? repoSlug(origin.out) : null;
+  if (slug === null) {
+    for (const o of owners) {
+      unmeasured.set(o, "could not resolve the GitHub repository from origin, so no pull request state was read");
+    }
     return { live, unmeasured };
   }
-  const baseSubjects = base.out.split("\n");
+
   for (const owner of owners) {
-    const exists = git(project, "rev-parse", "--verify", "--quiet", `origin/${owner}`);
-    if (!exists.ok) {
-      if (!fetched) {
-        unmeasured.set(
-          owner,
-          `origin/${owner} is not in this worktree and the refs were not refreshed, so "deleted" and "never fetched" cannot be told apart`,
-        );
-      }
-      // Fetched and still absent: the branch is really gone, and holds nothing.
-      continue;
-    }
-    const ahead = git(project, "log", "--format=%s", `${ref}..origin/${owner}`);
-    if (!ahead.ok) {
-      unmeasured.set(owner, `could not read ${ref}..origin/${owner}`);
-      continue;
-    }
-    if (!isLandedBySubject(ahead.out.split("\n"), baseSubjects)) live.add(owner);
+    const refExists = git(project, "rev-parse", "--verify", "--quiet", `origin/${owner}`).ok;
+    const { state, why } = ownerState(pullsForBranch(slug, owner), refExists, fetched);
+    if (state === "live") live.add(owner);
+    else if (state === "unmeasured") unmeasured.set(owner, why);
   }
   return { live, unmeasured };
 }
@@ -297,7 +316,7 @@ if (import.meta.main) {
         console.log("Not reporting these paths free: an unreadable registry is not an empty one.");
         process.exit(REFUSE_EXIT);
       }
-      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner), fetched);
+      const { live, unmeasured } = ownerLiveness(args.project, reading.claims.map(c => c.owner), fetched);
       // An owner whose liveness could not be established must not fall through
       // to "dead". Only the claims on the paths being asked about matter — an
       // unreadable branch elsewhere in the registry is not this caller's
@@ -360,7 +379,7 @@ if (import.meta.main) {
         console.log(`UNMEASURED: ${reading.reason}`);
         process.exit(REFUSE_EXIT);
       }
-      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner), fetched);
+      const { live, unmeasured } = ownerLiveness(args.project, reading.claims.map(c => c.owner), fetched);
       // ABSENT and READ-EMPTY print differently on purpose. "Nobody has
       // declared anything" and "there is no registry on this ref yet" lead to
       // different next actions, and one line for both is how a reader stops

@@ -172,40 +172,95 @@ export function claimCovers(claimed: string, path: string): boolean {
   return path === c || path.startsWith(`${c}/`);
 }
 
+/** What a declared owner's branch is doing. Three states, never two. */
+export type OwnerState = "live" | "landed" | "unmeasured";
+
+/** The one field of a pull request this decision reads. `gh`'s spelling. */
+export interface PullState {
+  number: number;
+  /** `OPEN`, `CLOSED` or `MERGED`. A draft pull request is `OPEN`. */
+  state: string;
+}
+
 /**
- * Has this branch's work landed, judged by SUBJECT rather than by ancestry?
+ * Is this owner still working, judged by its pull requests?
  *
- * `git merge-base --is-ancestor` and `git branch -r --no-merged` both compare
- * commits, and this repository squash-merges: the squash commit is a new
- * object, so a merged branch's tip is never an ancestor of the base and both
- * tests report it UNMERGED forever. Measured rather than assumed —
- * `rg/1168-eviction-note` merged at 17:43 on 2026-10-23 and
- * `git branch -r --no-merged origin/main` still listed it afterwards.
+ * ## Two git-only rules were tried first, and both were wrong
  *
- * That matters more for a lock than for a report. `RUNGATE_BRANCH_CLEANUP` is
- * deliberately unset in this project, so merged refs are never deleted; a
- * liveness rule built on ancestry would therefore make every claim immortal,
- * and within days the registry would hold every interesting file on behalf of
- * branches that landed last week. A lock nobody can acquire is worse than no
- * lock, because people route around it instead of reading it.
+ * **Ancestry.** `git merge-base --is-ancestor` and `git branch -r
+ * --no-merged` compare commits, and this repository squash-merges: the squash
+ * commit is a new object, so a merged branch's tip is never an ancestor of
+ * the base and both report it UNMERGED forever. Measured —
+ * `rg/1168-eviction-note` merged at 17:43 on 2026-10-23 and `--no-merged`
+ * still listed it afterwards.
  *
- * So: a branch has landed when **every** subject it carries ahead of the base
- * also appears in the base's own subjects. GitHub's squash subject is the
- * commit subject with ` (#N)` appended, which is why this is a containment
- * test and not an equality one.
+ * **Subjects.** The replacement asked whether every subject the branch
+ * carries ahead of the base also appears among the base's subjects. That is
+ * true for a SINGLE-commit pull request, whose squash subject is the commit
+ * subject with ` (#N)` appended — and false for every other one. GitHub's
+ * squash subject for a multi-commit branch is the PULL REQUEST TITLE; the
+ * individual commit subjects go into the squash BODY as `* ` bullets, where
+ * `git log --format=%s` cannot see them. Measured against the 15 most
+ * recently merged pull requests with surviving refs: **11 of 12 answered
+ * `landed=false`**, every one of them merged. Only the one single-commit row
+ * was right, and the battery that passed this rule in review had sampled
+ * nothing but single-commit branches — it could not have discriminated.
  *
- * A branch with nothing ahead of the base has landed, vacuously and
- * correctly. An EMPTY `baseSubjects` returns false for any non-empty branch:
- * no subject can be found in a list nobody read, and answering "landed" there
- * would release every claim at once the first time a `git log` failed.
+ * Both failures point the same way, and it is the fail-open direction for a
+ * lock: a merged branch that reads LIVE holds its files forever.
+ * `RUNGATE_BRANCH_CLEANUP` is deliberately unset here, so merged refs are
+ * never deleted and nothing else would ever clear the entry. A lock nobody
+ * can acquire is worse than no lock, because people route around it.
+ *
+ * ## So ask the tracker, which is told rather than inferred
+ *
+ * A pull request's state is a fact somebody recorded, not a shape guessed out
+ * of a commit graph that squashing has already destroyed. It is also the same
+ * place this project keeps every other claim about who is doing what.
+ *
+ * The cases, each reachable and each separately witnessed:
+ *
+ * - `pulls === null` — the tracker could not be read. UNMEASURED. This does
+ *   not fall through to landed; an unread tracker is not an empty one.
+ * - any pull is `OPEN` — LIVE. Draft counts: a draft is someone working.
+ * - pulls exist and none is open — LANDED, merged or abandoned alike. Both
+ *   mean nobody is writing those files under this name any more.
+ * - no pull at all, but the ref is on the remote — LIVE. A pushed branch with
+ *   no pull request yet is the EARLIEST moment a claim matters, and it is
+ *   exactly when a second agent is deciding whether to start.
+ * - no pull and no ref, refs refreshed — LANDED. There is nothing there.
+ * - no pull and no ref, refs NOT refreshed — UNMEASURED. A branch nobody
+ *   fetched and a branch somebody deleted look identical, and only one of
+ *   them is safe to call free.
  */
-export function isLandedBySubject(
-  branchSubjects: readonly string[],
-  baseSubjects: readonly string[],
-): boolean {
-  const ahead = branchSubjects.map(s => s.trim()).filter(s => s !== "");
-  if (ahead.length === 0) return true;
-  return ahead.every(s => baseSubjects.some(b => b.includes(s)));
+export function ownerState(
+  pulls: readonly PullState[] | null,
+  refExists: boolean,
+  refsRefreshed: boolean,
+): { state: OwnerState; why: string } {
+  if (pulls === null) {
+    return { state: "unmeasured", why: "the tracker could not be read for this branch" };
+  }
+  const open = pulls.filter(p => p.state.toUpperCase() === "OPEN");
+  if (open.length > 0) {
+    return { state: "live", why: `open pull request ${open.map(p => `#${p.number}`).join(", ")}` };
+  }
+  if (pulls.length > 0) {
+    return {
+      state: "landed",
+      why: `no open pull request (${pulls.map(p => `#${p.number} ${p.state.toLowerCase()}`).join(", ")})`,
+    };
+  }
+  if (refExists) {
+    return { state: "live", why: "branch is on the remote with no pull request yet" };
+  }
+  if (refsRefreshed) {
+    return { state: "landed", why: "no pull request and no branch on the remote" };
+  }
+  return {
+    state: "unmeasured",
+    why: "no pull request, and the refs were not refreshed, so \"deleted\" and \"never fetched\" cannot be told apart",
+  };
 }
 
 /**
