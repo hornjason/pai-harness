@@ -15,18 +15,24 @@ import { join } from "path";
 
 import { BASELINE_REFUSED, loadVarianceCapture } from "../evals/ai-review-control/baselines";
 import {
+  AI_REVIEW_SAME_TREE_READINGS,
   DUPLICATE_PLANT_TWIN,
+  absencesIn,
+  aiReviewVarianceResidue,
   batchFrom,
   detailOf,
   liveArmCaveat,
   plantsFor,
+  promptHeld,
   provenanceRefusal,
   readPlants,
   runBatch,
+  scoredVerdicts,
+  type SameTreeReading,
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
 import { symptomKeys, type Finding } from "../lib/finding-arbiter";
-import { adjudicateFiling } from "../lib/issue-filing-gate";
+import { adjudicateFiling, measuredCorpus } from "../lib/issue-filing-gate";
 
 const EXISTING: Finding[] = [
   {
@@ -49,8 +55,10 @@ function capture(over: Partial<VarianceCapture> = {}): VarianceCapture {
     pinnedCommit: sha,
     commitAtEnd: sha,
     originMain: sha,
-    libTree: "t".repeat(40),
-    originMainLibTree: "t".repeat(40),
+    // Hex, because a tree hash is hex. This fixture used `"t".repeat(40)` and
+    // loaded cleanly, which is how the missing shape check stayed invisible.
+    libTree: "d".repeat(40),
+    originMainLibTree: "d".repeat(40),
     dirtyPaths: [],
     measuredAt: "2026-10-23T00:00:00.000Z",
     repo: "hornjason/pai-harness",
@@ -109,7 +117,7 @@ describe("the plants separate a live adjudicator from an inert one", () => {
   // the plant is alone in an empty set and nothing can match it.
   test("without its twin the duplicate plant is ALLOWed, so the twin is what lands it", async () => {
     const dup = plantsFor([], "b").find(p => p.key.endsWith("plant-duplicate"))!;
-    const v = await adjudicateFiling({ ...dup.attempt }, async () => []);
+    const v = await adjudicateFiling({ ...dup.attempt }, async () => measuredCorpus([]));
     expect(v.outcome).toBe("ALLOW");
   });
 
@@ -209,6 +217,64 @@ describe("loadVarianceCapture refuses rather than returning a partial reading", 
   test("every refusal routes through the one constant", () => {
     const { dir, name } = written(capture({ plantsAgreed: 1 }));
     expect(() => loadVarianceCapture(name, dir)).toThrow(new RegExp(BASELINE_REFUSED));
+    rmSync(dir, { recursive: true });
+  });
+
+  // The input a forged or truncated artefact actually looks like: MALFORMED
+  // BUT INTERNALLY CONSISTENT. Every case above plants either a good artefact
+  // or a mismatched one, and the `libTree` guard was an equality with no shape
+  // check behind it — so two equal non-hashes satisfied the one comparison
+  // whose job is to establish that the measured tree was the deployed tree.
+  // This fixture passed the whole loader before the shape check existed.
+  test("two `libTree` fields that agree but are not tree hashes", () => {
+    const { dir, name } = written(capture({ libTree: "x", originMainLibTree: "x" }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // The 40-character non-hex placeholder, which is the near miss a length
+  // check would wave through and the exact value this file's own fixture
+  // carried.
+  test("a 40-character `libTree` that is not hex", () => {
+    const { dir, name } = written(capture({ libTree: "t".repeat(40), originMainLibTree: "t".repeat(40) }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("a truncated tree hash, agreeing with itself", () => {
+    const { dir, name } = written(capture({ libTree: "abc1234", originMainLibTree: "abc1234" }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // CONTROL for the three above: the shape check must not have become a
+  // refusal of everything. A real pair of equal hex tree hashes still loads,
+  // and this is the case that separates "the guard works" from "the guard
+  // throws".
+  test("and a well-formed `libTree` pair still loads", () => {
+    const { dir, name } = written(capture({ libTree: "0".repeat(40), originMainLibTree: "0".repeat(40) }));
+    expect(loadVarianceCapture(name, dir).libTree).toBe("0".repeat(40));
+    rmSync(dir, { recursive: true });
+  });
+
+  // The mismatch case must still be reachable AFTER the shape check — a shape
+  // check placed wrongly would make the equality unreachable and nothing would
+  // notice, because both refusals are refusals.
+  test("two well-formed tree hashes that differ are still refused as a mismatch", () => {
+    const { dir, name } = written(capture({ libTree: "a".repeat(40), originMainLibTree: "b".repeat(40) }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/was not the deployed one/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // The second half of the review finding, recorded because it is NOT
+  // actionable and the next reader deserves to know why rather than
+  // rediscovering it. `dirtyPaths` elements cannot be type-checked
+  // observably: any array with a non-string element is non-empty, and the
+  // emptiness check already refuses every non-empty array. An element-type
+  // guard would be unreachable code that reads like a check.
+  test("a non-string `dirtyPaths` element is already refused — by the emptiness check", () => {
+    const { dir, name } = written(capture({ dirtyPaths: [42 as unknown as string] }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/uncommitted path\(s\) under/);
     rmSync(dir, { recursive: true });
   });
 });
@@ -344,12 +410,205 @@ describe("the stored artefact", () => {
     // "one exists" alone would not say why its variance is still unread.
     expect(residue).toContain("No agent verifier feeds THIS gate");
     expect(residue).toContain("A deployed agent verifier does exist elsewhere");
-    expect(residue).toContain("gh run rerun");
   });
 
   test("records the span, which is what bounds the live arm's claim", () => {
     const live = loadVarianceCapture("single-adjudicator-variance").arms.find(a => a.arm === "live")!;
     expect(live.spanSeconds).toBeGreaterThan(0);
     expect(live.runs).toBeGreaterThan(1);
+  });
+});
+
+// #1329. The residue entry asserted that no two runs in this repository's
+// history had ever reviewed the same tree, and that the settling experiment
+// was unrun and would cost real money. Three same-tree pairs already existed
+// in the run logs, and one of them flipped BLOCKED to CLEAN. A confident
+// claim that nothing can be known, contradicted by data already on disk, is
+// the exact failure this artefact exists to prevent — so the entry is now
+// DERIVED from the readings instead of asserted beside them (#1310's lesson).
+describe("#1329: the ai-review residue reads the same-tree readings", () => {
+  const FLIP: SameTreeReading = {
+    run: "39962683401",
+    mergeCommit: "99d50fc",
+    rounds: [5, 5],
+    turns: [51, 52],
+    outcomes: [
+      { kind: "verdict", verdict: "BLOCKED" },
+      { kind: "verdict", verdict: "CLEAN" },
+    ],
+  };
+  const AGREED: SameTreeReading = {
+    ...FLIP,
+    run: "x1",
+    outcomes: [
+      { kind: "verdict", verdict: "CLEAN" },
+      { kind: "verdict", verdict: "CLEAN" },
+    ],
+  };
+  const NO_VERDICT: SameTreeReading = {
+    ...FLIP,
+    run: "x2",
+    mergeCommit: null,
+    outcomes: [{ kind: "no-payload" }, { kind: "no-payload" }],
+  };
+  const CONFOUNDED: SameTreeReading = { ...FLIP, run: "x3", rounds: [3, 4] };
+
+  test("a pair whose round changed is not a repeat — it is a different prompt", () => {
+    expect(promptHeld(FLIP)).toBe(true);
+    expect(promptHeld(CONFOUNDED)).toBe(false);
+  });
+
+  test("the shipped residue states the flip and never calls the variance unmeasured", () => {
+    const s = aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS);
+    expect(s).toContain("IS now partly read");
+    expect(s).toContain("39962683401");
+    expect(s).toContain("BLOCKED then CLEAN");
+    expect(s).not.toContain("variance is unmeasured");
+  });
+
+  // CONTROL. Without this the case above is satisfied by any function that
+  // returns one string mentioning the flip, and the entry could never go back
+  // to reporting an absence even when an absence is the honest reading.
+  test("with no verdict anywhere it DOES report an absence, and names the experiment", () => {
+    const s = aiReviewVarianceResidue([NO_VERDICT, CONFOUNDED]);
+    expect(s).toContain("variance is unmeasured");
+    expect(s).toContain("gh run rerun");
+    expect(s).not.toContain("IS now partly read");
+  });
+
+  // The second control: scored pairs that AGREE must not be reported as a
+  // flip. A residue that said "disagreed" whenever it had any verdict at all
+  // would pass the shipped case for the wrong reason.
+  test("two attempts that agreed are counted, and reported as zero disagreements", () => {
+    const s = aiReviewVarianceResidue([AGREED]);
+    expect(s).toContain("1 same-tree pair(s) carry two verdicts");
+    expect(s).toContain("0 of them DISAGREED");
+    expect(s).not.toContain("BLOCKED then CLEAN");
+  });
+
+  test("a confounded pair is excluded from the scored set and named as excluded", () => {
+    const s = aiReviewVarianceResidue([FLIP, CONFOUNDED]);
+    expect(s).toContain("1 same-tree pair(s) carry two verdicts");
+    expect(s).toContain("1 because the round changed between attempts");
+  });
+
+  test("an unread verdict is reported as UNMEASURED, never as agreement", () => {
+    const s = aiReviewVarianceResidue([FLIP, NO_VERDICT]);
+    expect(s).toContain("UNMEASURED and are not attempts that agreed");
+  });
+
+  // The recorded data has to be internally honest: a pair cited as evidence of
+  // a flip must have held the prompt, or it is the confound rather than the
+  // measurement.
+  test("every recorded pair that carries verdicts also held its prompt", () => {
+    for (const r of AI_REVIEW_SAME_TREE_READINGS) {
+      if (scoredVerdicts(r) !== null) {
+        expect(promptHeld(r), `pair ${r.run} carries verdicts but its rounds differ`).toBe(true);
+        expect(r.mergeCommit, `pair ${r.run} carries verdicts but no commit was read`).not.toBeNull();
+      }
+    }
+  });
+});
+
+// #1390. The artefact recorded every missing verdict as one `null`, and the
+// three reasons a verdict is missing are three different facts that send a
+// reader three different places. This is the defect the file exists to name,
+// in the file that names it.
+//
+// These cases are written against THE THREE ABSENCES STAY DISTINGUISHABLE, not
+// against "the residue mentions an absence". A residue that printed one fixed
+// sentence for any missing verdict passes every case the suite had before.
+describe("#1390: an absent verdict is named, not nulled", () => {
+  const scored = (a: string, b: string): SameTreeReading => ({
+    run: "s",
+    mergeCommit: "deadbee",
+    rounds: [5, 5],
+    turns: [51, 52],
+    outcomes: [
+      { kind: "verdict", verdict: a },
+      { kind: "verdict", verdict: b },
+    ],
+  });
+  const withOutcomes = (run: string, outcomes: SameTreeReading["outcomes"]): SameTreeReading => ({
+    run,
+    mergeCommit: null,
+    rounds: [2, 2],
+    turns: [40, 40],
+    outcomes,
+  });
+
+  const NO_PAYLOAD = withOutcomes("np", [{ kind: "no-payload" }, { kind: "no-payload" }]);
+  const UNREAD = withOutcomes("pu", [{ kind: "payload-unread" }, { kind: "payload-unread" }]);
+  const UNREADABLE = withOutcomes("ur", [
+    { kind: "unreadable", why: "the attempt log 404s" },
+    { kind: "unreadable", why: "the attempt log 404s" },
+  ]);
+
+  test("a pair is scored only when BOTH attempts returned a verdict", () => {
+    expect(scoredVerdicts(scored("CLEAN", "CLEAN"))).toEqual(["CLEAN", "CLEAN"]);
+    expect(scoredVerdicts(NO_PAYLOAD)).toBeNull();
+    // The mixed row is the one the old shape could not express at all, and
+    // the one the real data turned out to contain: run 39957264329's second
+    // attempt returned BLOCKED while the row said `verdicts: null`.
+    expect(
+      scoredVerdicts(withOutcomes("mixed", [{ kind: "no-payload" }, { kind: "verdict", verdict: "BLOCKED" }])),
+      "one verdict and one absence is not a pair of verdicts",
+    ).toBeNull();
+  });
+
+  test("the three absences produce three DIFFERENT residues", () => {
+    const a = aiReviewVarianceResidue([NO_PAYLOAD]);
+    const b = aiReviewVarianceResidue([UNREAD]);
+    const c = aiReviewVarianceResidue([UNREADABLE]);
+    expect(new Set([a, b, c]).size, "two absences produced the same sentence").toBe(3);
+  });
+
+  // Each absence must send the reader to ITS OWN next step. Asserting only
+  // that the three strings differ is satisfiable by printing the kind and
+  // nothing else, which would be a label rather than a direction.
+  test("each absence names what is true of it and not of the others", () => {
+    expect(aiReviewVarianceResidue([NO_PAYLOAD])).toContain("wrote no findings payload");
+    const unread = aiReviewVarianceResidue([UNREAD]);
+    expect(unread).toContain("payload was written and nothing read it");
+    expect(unread, "the payload-unread case must not read as nothing having been produced").not.toContain(
+      "wrote no findings payload",
+    );
+    expect(aiReviewVarianceResidue([UNREADABLE])).toContain("the reading could not be taken");
+  });
+
+  // CONTROL, and the one that would catch the cheapest wrong fix: appending
+  // all three sentences unconditionally. That passes both cases above.
+  test("a residue names ONLY the absences actually present", () => {
+    const s = aiReviewVarianceResidue([NO_PAYLOAD]);
+    expect(s).not.toContain("payload was written and nothing read it");
+    expect(s).not.toContain("the reading could not be taken");
+  });
+
+  // CONTROL. A scored pair has no absence to name, and a residue that always
+  // mentioned one would make the shipped entry claim an absence it does not have.
+  test("a fully scored set names no absence at all", () => {
+    const s = aiReviewVarianceResidue([scored("BLOCKED", "CLEAN")]);
+    expect(s).not.toContain("wrote no findings payload");
+    expect(s).not.toContain("payload was written and nothing read it");
+    expect(s).not.toContain("the reading could not be taken");
+  });
+
+  test("the shipped readings record a named reason for every missing verdict", () => {
+    for (const r of AI_REVIEW_SAME_TREE_READINGS) {
+      for (const o of r.outcomes) {
+        expect(["verdict", "no-payload", "payload-unread", "unreadable"]).toContain(o.kind);
+      }
+    }
+    // The real correction, asserted so it cannot quietly revert: this pair is
+    // excluded for its ROUNDS, and one of its attempts did return a verdict.
+    const mixed = AI_REVIEW_SAME_TREE_READINGS.find(r => r.run === "39957264329")!;
+    expect(promptHeld(mixed), "39957264329 is excluded because its rounds differ").toBe(false);
+    expect(mixed.outcomes[1]).toEqual({ kind: "verdict", verdict: "BLOCKED" });
+    expect(absencesIn(mixed)).toEqual(["no-payload"]);
+  });
+
+  test("the stored artefact's residue agrees with the readings it describes", () => {
+    const c = loadVarianceCapture("single-adjudicator-variance");
+    expect(c.permanentlyUnmeasured).toContain(aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS));
   });
 });

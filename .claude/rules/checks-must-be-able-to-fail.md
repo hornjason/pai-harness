@@ -108,35 +108,16 @@ with the axes swapped*.
 
 ## Before you report one: a duration is not a mechanism
 
-This file teaches you to hunt for checks that cannot fail, and **the hunt
-needs evidence too**. On 2026-10-22 a case running 26,925ms against a 5,000ms
-default was reported as a budget that *could not fire*, the mechanism given
-as "a blocking `execFileSync` does not yield to bun's timer". Both halves
-were false. It reached the tracker as #1268 because one agent inferred a
-mechanism from a duration and the next relayed it without re-deriving it.
-
-A case running far over a default has at least three explanations, and
-telling them apart costs one command:
-
-| explanation | the reading that shows it |
-|---|---|
-| no budget governs it | `perTestTimeoutDeclarations(src)` names it in no entry |
-| a generous budget was declared on purpose | it returns `kind: "per-test"` for it |
-| the budget fires but cannot interrupt | the run reports the case red anyway |
-
 **Read the `kind`.** `perTestTimeoutDeclarations` reports `"per-test"`
-separately from `"file-default"`, so a filter on `"file-default"` answering
-"declares nothing" does **not** mean "no budget governs this case". The case
-above closes its own body with `}, 240_000);` — a deliberate 240s budget, on
-the line a reader looking for one would have landed on.
+separately from `"file-default"`, so a `file-default` filter answering
+"declares nothing" does **not** mean no budget governs the case.
 
-Measured while falsifying it, so nobody re-files it: bun 1.3.14 **does** kill
-a blocking `execFileSync` at the budget — 506ms under `--timeout 500`, with
-`stdio`, `encoding`, a child `timeout:` and `cwd` varied one at a time and
-all six killed. The one thing not *interrupted* is a CPU-bound spin with no
-syscall, and it is **still reported red** (`[3000.17ms]`, `this test timed
-out after 500ms`). The budget fires; it cannot stop the work. That is
-wall-clock cost, not a hole in the gate.
+#1268 was filed because one agent inferred a mechanism from a duration and
+the next relayed it without re-deriving it. It is already falsified — bun
+1.3.14 **does** kill a blocking `execFileSync` at the budget — so do not
+re-file it. Both readings, and the six variations behind the second:
+`reference/check-failure-worked-instances.md`, *a duration is not a
+mechanism*.
 
 ## In practice
 

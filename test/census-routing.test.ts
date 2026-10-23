@@ -78,6 +78,7 @@ import {
   parseUnifiedDiff,
   type Change,
 } from "../scripts/census-routing";
+import { TRACKED_ID_PREFIXES } from "../lib/sc-ids";
 
 const REPO = join(import.meta.dir, "..");
 const RULE = join(REPO, ".claude/rules/self-referential-tests.md");
@@ -93,6 +94,12 @@ const SC_CENSUS = [
   "test/behavioral-sc-ratchet.test.ts",
   "test/ticked-sc-absent-symbol.test.ts",
 ];
+
+// The two files #1306 measured as reddening on a new spec and routed by
+// nothing. Written out rather than read from `CENSUS_TRIGGERS`, for the same
+// reason `SC_CENSUS` is: a list derived from the thing it checks agrees with
+// it by construction.
+const NEW_SPEC_CENSUS = ["test/audit-specs.test.ts", "test/scanner.test.ts"];
 
 const change = (p: Partial<Change> & { path: string }): Change => ({
   isNew: false,
@@ -127,6 +134,44 @@ describe("#990: a tick is routed, and an edit that is not a tick is not", () => 
       tick.tests.length - edit.tests.length,
       "a tick and a prose edit route to the same set, so the tick row is doing nothing",
     ).toBe(SC_CENSUS.length);
+  });
+
+  // The SECOND namespace, and the row that would have caught #1298 leaving
+  // this router behind. `CRC-A1`..`CRC-N5` are tracked criteria by
+  // `TRACKED_ID_PREFIXES`, so ticking one moves `UNCLAIMED_RATCHET`,
+  // `CLAIMED_UNBINDABLE` and the per-spec census exactly as ticking an `SC-`
+  // does — and until the prefix here came out of `lib/sc-ids.ts`, a `CRC-`
+  // tick routed the spec-edit pair and nothing else.
+  //
+  // Driven from `TRACKED_ID_PREFIXES` rather than over the literal string
+  // "CRC", so a THIRD prefix added to that list is covered the day it lands
+  // instead of reproducing this defect a second time. `SC` is skipped
+  // because the two cases above already measure it; what this asserts is
+  // that no member of the list is unrouted.
+  test("every tracked prefix routes a tick, not only the first one", () => {
+    const edit = censusTestsFor([change({ path: "specs/X.md", added: ["some prose"] })]);
+    for (const prefix of TRACKED_ID_PREFIXES) {
+      const { tests } = censusTestsFor([
+        change({
+          path: "specs/CODE-REVIEW-CONVERGENCE-SPEC.md",
+          added: [`- [x] ${prefix}-9104: a criterion in the ${prefix} namespace`],
+        }),
+      ]);
+      for (const t of SC_CENSUS) {
+        expect(tests, `a ${prefix}- tick did not route to ${t} — #990 in a second namespace`)
+          .toContain(t);
+      }
+      // Same discrimination as the SC case: `spec-edit` fires on any specs/
+      // line, so membership alone is green under a router with no tick row.
+      expect(
+        tests.length - edit.tests.length,
+        `a ${prefix}- tick routes the same set as a prose edit`,
+      ).toBe(SC_CENSUS.length);
+    }
+    expect(
+      TRACKED_ID_PREFIXES.length,
+      "the prefix list is empty, so the loop above asserted nothing",
+    ).toBeGreaterThan(1);
   });
 
   // CONTROL against the cheapest wrong generalisation: fire on any specs/
@@ -224,6 +269,112 @@ describe("#990: the rule file's block is the router's table", () => {
   });
 });
 
+describe("#1306: adding a spec is a third event, with its own blast radius", () => {
+  /**
+   * #990 split `specs/` into an edit and a tick. It is three events, not two:
+   * ADDING a spec reddens census files that neither of the other two can.
+   *
+   * Measured on this tree rather than grepped. A probe spec was planted in
+   * `specs/`, the 143 test files whose source names `specs` were run against
+   * it, and the baseline was read first — 6802 pass, 0 fail, 143 files. With
+   * the probe present, six files went red, of which `sc-fixture-namespace`
+   * was the probe's own fault (its id sat in the reserved fixture range above
+   * nine thousand; re-cut below that floor, where a real allocation lands, it
+   * is green — and that is the input on which the two probes differ). The id
+   * is spelled in words here deliberately: writing the digits would plant a
+   * live-namespace fixture id in a test file, which `SC-1522` refuses, and
+   * this docstring did exactly that on its first push. The five that fire on
+   * an ordinary new spec:
+   *
+   *   test/scaffold-conformity.test.ts   DRIFT-2, HYGIENE-2/3/4   routed: new-file
+   *   test/agents-md-spec-listing.test.ts SC-1891                 routed: spec-edit
+   *   test/audit-specs.test.ts           SC-398 compliance:strict routed: NOTHING
+   *   test/scanner.test.ts               #91 docs-routing count   routed: NOTHING
+   *   test/spec-drift.test.ts            DRIFT-2                  routed: NOTHING
+   *
+   * `spec-drift.test.ts` is deliberately NOT routed. Its whole body is
+   * `runSpecDrift(ROOT)` — the same binding `scaffold-conformity.test.ts`
+   * runs DRIFT-2 through, and that file is already routed by `new-file`. Two
+   * deciders that agree are behaviourally one, and a row naming both spends
+   * instruction surface to run the same check twice.
+   *
+   * So the row routes two files and costs 1.3s, against a 36-file list the
+   * issue sized by grep. The denominator matters less than the direction: a
+   * router that names everything is ignored, and an ignored router is the
+   * state before #990.
+   *
+   * ## What was broken to prove it, run and counted
+   *
+   * Over this file (15 tests). Every count AND membership was predicted
+   * before the battery ran, and the baseline row was read first.
+   *
+   * | Row | Predicted | Measured | The input on which mutant and original differ |
+   * |---|---|---|---|
+   * | **baseline** — unmutated | 15 pass, 0 fail | **15 pass, 0 fail** | — |
+   * | the `new-spec` row deleted — the genuinely pre-#1306 router | 3: W1, T1, T2 | **3 of 15**, the three named | `{path: "specs/NEW-THING-SPEC.md", isNew: true}`: the original routes `audit-specs` and `scanner`, the mutant routes neither |
+   * | wrong fix #1, router only: the two appended to `spec-edit` | 3: C2, T1, T2 | **2 of 15**: C2, T1 | a prose edit to an existing spec: the original routes neither file, the mutant routes both |
+   * | wrong fix #2, router only: the two appended to `new-file` | 3: C3, T1, T2 | **2 of 15**: C3, T1 | a new `lib/unrelated.ts`: same |
+   * | wrong fix #1 applied FAITHFULLY — router AND rendered table | not predicted | **1 of 15**: C2 | the prose edit above |
+   * | wrong fix #2 applied FAITHFULLY — router AND rendered table | not predicted | **1 of 15**: C3 | the new `lib/` file above |
+   *
+   * **Rows 3 and 4 came back LOW, and the reason is a fact about T2 worth
+   * recording rather than a collapsed pair.** T2 compares the SET of test
+   * names in the rule file's section to `allCensusTests()`. Moving a test
+   * from one row to another leaves that set identical, so T2 cannot see row
+   * placement at all — by design, since what it exists to catch is a test
+   * named in the prose that no row routes. Only T1, which is byte-for-byte,
+   * sees which row a test sits on. The prediction assumed two table cases
+   * where there is one.
+   *
+   * **Rows 5 and 6 are the ones that matter, and they are why rows 3 and 4
+   * are not the real measurement.** T1 goes red the instant the router
+   * changes, so nobody can apply either wrong fix and leave it: the 5pm
+   * repair regenerates the table in the same breath, and then T1 and T2 are
+   * both green. What is left is one case — the control written against that
+   * exact fix — and it is red. Both controls survive their wrong fix
+   * NON-vacuously, which is the only grade of survival that is protection.
+   */
+  const newSpec = () =>
+    censusTestsFor([change({ path: "specs/NEW-THING-SPEC.md", isNew: true, added: ["# New"] })]);
+
+  // WITNESS. Red on the pre-#1306 router, which routes neither.
+  test("adding a specs/ file routes the census tests a new spec reddens", () => {
+    const { tests } = newSpec();
+    for (const t of NEW_SPEC_CENSUS) {
+      expect(tests, `adding a spec did not route to ${t} — this is #1298 again`).toContain(t);
+    }
+  });
+
+  // CONTROL against the cheapest wrong fix: append the two to `spec-edit`.
+  // That is one line, it makes the witness above green, and it routes them on
+  // every prose edit to every spec forever. Measured: a prose edit to
+  // `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` reddens neither file.
+  test("a prose edit to an existing spec does not route them", () => {
+    const { tests } = censusTestsFor([
+      change({ path: "specs/CODE-REVIEW-CONVERGENCE-SPEC.md", added: ["some prose"] }),
+    ]);
+    for (const t of NEW_SPEC_CENSUS) {
+      expect(tests, `a prose edit routed to ${t}, which it cannot redden`).not.toContain(t);
+    }
+    expect(tests, "the spec-edit row stopped firing").toContain("test/spec-requirements.test.ts");
+  });
+
+  // CONTROL against the second-cheapest wrong fix: append the two to
+  // `new-file`, which already fires on this diff. Also one line, also makes
+  // the witness green, and routes a spec census on every new `lib/` file.
+  test("a new file outside specs/ does not route them", () => {
+    const { tests } = censusTestsFor([
+      change({ path: "lib/unrelated.ts", isNew: true, added: ["export const a = 1;"] }),
+    ]);
+    for (const t of NEW_SPEC_CENSUS) {
+      expect(tests, `a new lib/ file routed to ${t}`).not.toContain(t);
+    }
+    expect(tests, "the new-file row stopped firing").toContain(
+      "test/scaffold-conformity.test.ts",
+    );
+  });
+});
+
 describe("#990: the diff parser does not invent a tick", () => {
   test("a `--- a/path` header is not read as a removed line", () => {
     // `--- a/specs/X.md` starts with `-`. Counted as a removal, every diff
@@ -278,5 +429,128 @@ describe("#990: the diff parser does not invent a tick", () => {
     ]);
     const tick = fired.find(f => f.trigger.id === "spec-tick");
     expect(tick?.because).toEqual(["specs/A.md"]);
+  });
+});
+
+/**
+ * #1368: a generated workflow is routed to the suites that READ it.
+ *
+ * `lib/scaffold/**` already routed to the ownership family — which files the
+ * scaffold owns, which gates exist, which hooks are traceable. Nothing routed
+ * to the suites that read the committed `.github/workflows/*.yml` and assert
+ * properties of its TEXT.
+ *
+ * Paid for on PR #1351. Shard 3 went red on `AC-2 (#1116)` in
+ * `test/ai-review-runner-shell-parity.test.ts` — two new `rf=$(...)`
+ * assignments were #1110's shape — after every suite the router named, and
+ * the four `ai-review-*` suites a person would think to name, came back
+ * green locally. The guard is unreachable from the diff by any route an
+ * agent would take: not the source file's own suite, not the ownership
+ * family, and its name shares no string with anything in the diff.
+ */
+const GENERATED_WORKFLOW_CENSUS = [
+  "test/ai-review-runner-shell-parity.test.ts",
+  "test/action-pin-parity.test.ts",
+  "test/scaffold-permissions-merge.test.ts",
+  // #1401. Both caught a real defect in #1387, both on shard 4, and both
+  // survived a targeted run of the three above. Same shape as #1351: a
+  // guard the diff gives an agent no route to.
+  "test/ai-review-wif.test.ts",
+  "test/no-fixed-window-slices.test.ts",
+];
+
+/**
+ * #1387's diff, verbatim, as the exemplar that motivated #1401.
+ *
+ * `git show --name-only --format='' 1de742aa` — the merge of #1387, the
+ * change on which both new members caught something. Written out rather
+ * than read from git, because a fixture that re-reads the commit tests
+ * whatever that commit is today, and the point is the shape of the diff
+ * that was in front of CI.
+ */
+const PR_1387_PATHS = [
+  ".github/workflows/ai-review.yml",
+  "lib/scaffold/ai-review-step.ts",
+  "specs/CODE-REVIEW-CONVERGENCE-SPEC.md",
+  "test/ai-review-rounds-step.test.ts",
+];
+
+describe("#1368: a generated workflow routes to the suites that read it", () => {
+  test("PR #1351's own diff routes the guard that caught it", () => {
+    const { tests } = censusTestsFor([
+      change({ path: "lib/scaffold/ai-review-step.ts" }),
+      change({ path: ".github/workflows/ai-review.yml" }),
+    ]);
+    for (const t of GENERATED_WORKFLOW_CENSUS) {
+      expect(tests, `#1351's diff did not route to ${t} — this is #1368 again`).toContain(t);
+    }
+  });
+
+  test("a change confined to .github/workflows/ routes something at all", () => {
+    // Before this row, a diff touching only a generated workflow fired NO
+    // row: the router printed nothing, which an agent reads as "nothing else
+    // has an opinion about this change" rather than as "the router has no
+    // rule for it". Those are the two states this whole file is about.
+    const { tests } = censusTestsFor([change({ path: ".github/workflows/ai-review.yml" })]);
+    expect(tests, "a generated-workflow change still routes nothing").not.toEqual([]);
+    for (const t of GENERATED_WORKFLOW_CENSUS) expect(tests).toContain(t);
+  });
+
+  test("a scaffold edit routes MORE than the ownership trio", () => {
+    // The discrimination, and the reason membership alone is not enough:
+    // `lib/scaffold/**` fires `gates-hooks-scaffold` too, so a case asserting
+    // only that SOME tests routed is green under a router with no row here.
+    // `hooks/` fires that row and nothing else, so the delta is this row.
+    const scaffold = censusTestsFor([change({ path: "lib/scaffold/ai-review-step.ts" })]);
+    const hooks = censusTestsFor([change({ path: "hooks/Example.hook.ts" })]);
+    expect(hooks.tests.length, "the gates-hooks-scaffold row stopped firing").toBeGreaterThan(0);
+    expect(
+      scaffold.tests.length - hooks.tests.length,
+      "a scaffold edit and a hooks edit route the same set, so this row is doing nothing",
+    ).toBe(GENERATED_WORKFLOW_CENSUS.length);
+  });
+
+  test("an ordinary source edit is NOT routed here", () => {
+    // The negative control. A row that fires on everything routes the whole
+    // suite for every diff, which is the same as having no router — and it
+    // would make all three cases above pass for the wrong reason.
+    const { tests } = censusTestsFor([change({ path: "lib/ai-review-rounds.ts" })]);
+    for (const t of GENERATED_WORKFLOW_CENSUS) {
+      expect(tests, `${t} is routed by an edit touching no generated workflow`).not.toContain(t);
+    }
+  });
+
+  // #1401's own acceptance: run the amended row against the exemplar that
+  // motivated it. A row justified by "it would have caught #1387" that does
+  // not select those suites for #1387's actual paths is still the wrong row,
+  // and nothing above would say so — the cases there use a two-path fixture
+  // written to fire it.
+  test("#1387's real four paths select both suites that caught it", () => {
+    const { tests, fired } = censusTestsFor(PR_1387_PATHS.map(path => change({ path })));
+    expect(tests, "#1387's diff does not route the WIF guard that caught it").toContain(
+      "test/ai-review-wif.test.ts",
+    );
+    expect(tests, "#1387's diff does not route the fixed-window guard that caught it").toContain(
+      "test/no-fixed-window-slices.test.ts",
+    );
+    // Not vacuous on the row: two of those four paths fire other rows, so a
+    // table with no generated-workflow row at all still returns a non-empty
+    // set for this diff. Name the row that has to be among the fired ones.
+    expect(
+      fired.map(f => f.trigger.id),
+      "the generated-workflow row did not fire on the diff it was written for",
+    ).toContain("generated-workflow");
+  });
+
+  // The spec file and the rounds-step suite in #1387's diff are the half
+  // that fire OTHER rows. Without this, the case above could be green on a
+  // router whose generated-workflow row matched every path.
+  test("the two non-generated paths in #1387 do NOT fire this row", () => {
+    const { fired } = censusTestsFor(
+      ["specs/CODE-REVIEW-CONVERGENCE-SPEC.md", "test/ai-review-rounds-step.test.ts"].map(path =>
+        change({ path }),
+      ),
+    );
+    expect(fired.map(f => f.trigger.id)).not.toContain("generated-workflow");
   });
 });

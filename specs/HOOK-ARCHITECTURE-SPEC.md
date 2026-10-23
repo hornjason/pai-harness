@@ -42,7 +42,7 @@ deployment path currently reaches zero hooks.
 | AgentBriefGuard | AgentBriefGuard.hook.ts | 589 | SC-367, SC-370 | Deep logic in hook — extract to lib/ |
 | GateEnforcement | GateEnforcement.hook.ts | 92 | SC-369, SC-370 | Thin trigger — signal shaping and the doc-hygiene sweep live in lib/gate-enforcement.ts |
 | AgentVerdictCapture | AgentVerdictCapture.hook.ts | 182 | SC-370, SC-371 | Acceptable |
-| HookCurrency | HookCurrency.hook.ts | 97 | SC-370, SC-371 | Acceptable |
+| HookCurrency | HookCurrency.hook.ts | 146 | SC-370, SC-371 | Acceptable — two readings, both thin triggers: `scripts/check-installed-hook-currency.ts` for `.git/hooks` (#879) and `lib/hook-tree-currency.ts` for how old the tree a Claude Code registration resolves to is (#1216). Its git runner is `spawnGitRunner`, which is `lib/git-isolation.ts` in both projections — the directories it reads are by definition unsupervised, and git executes its own config |
 | StaleTTLCleanup | StaleTTLCleanup.hook.ts | 170 | SC-370, SC-371 | Acceptable |
 | CommitEnforcement | CommitEnforcement.hook.ts | 146 | SC-304, SC-370 | Acceptable |
 | SpecSCGuard | SpecSCGuard.hook.ts | 123 | SC-370, SC-371 | Acceptable |
@@ -249,18 +249,103 @@ Two cautions for anyone repeating the reading:
   measured 180 commits behind `origin/main` — #1216. `hook-target-tree`
   answers *which directory*, never *which commit*.
 
+### Which commit the resolved directory is on (#1216)
+
+`lib/hook-tree-currency.ts` answers the second caution above, and
+`hooks/HookCurrency.hook.ts` prints it once per session beside #879's
+installed-git-hook reading. It is a READING and repairs nothing: every git
+invocation is a query, asserted as such, because silently moving code
+somebody is executing removes the one moment they could have noticed.
+
+Three states, and the third never degrades to the first:
+
+| state | means |
+|---|---|
+| `current` | the directory's HEAD contains every commit on the base |
+| `behind` | N commits on the base are not in that HEAD — N, HEAD and the base SHA are all named |
+| `unmeasured` | not a working tree, absent, the base ref does not resolve there, or uncommitted bytes under it |
+
+Uncommitted changes can only block a `current` reading, never mask a
+`behind` one. The base is the **target** directory's own `origin/main`, since
+nothing fetches, which is why every line carries the base SHA: two rows
+disagreeing about `origin/main` is then visible at a glance.
+
+Read on this machine, 2026-10-23, from a worktree:
+
+```
+Hook tree currency: 0 current, 2 BEHIND, 0 UNMEASURED — of 2 director(ies) hook registrations execute from
+  BEHIND 16:  /Users/jhorn/Projects/rg-hooks-live/hooks is at 7817f1df … [30 registration(s)]
+  BEHIND 241: /Users/jhorn/Projects/rungate/hooks  is at bc56a7c2 … [4 registration(s)]
+```
+
+That is the same shared primary checkout the row above measured at 180, sixty
+commits later, still executing four registrations. The live tree went stale
+three times in one day on 2026-10-23 (`62536bd3` → `9f2080d6` → `7817f1df`),
+which is the argument for a per-session reading rather than a one-off audit.
+
+### Reading a directory nobody supervises means isolating git's config
+
+Every invocation goes through `spawnGitRunner`, the one binding that applies
+both projections of `lib/git-isolation.ts` and a per-call timeout. This is the
+sharpest instance of #1001's lesson in the tree, and it comes from the
+feature's own premise: the directories being read are the ones nothing is
+watching — that is *why* they go stale — and the reading runs at SessionStart
+in every session on the machine.
+
+Measured 2026-10-23 with the key planted in the target's **own**
+`.git/config`, which the env half of the isolation cannot reach:
+
+| poisoned key | unisolated | isolated |
+|---|---|---|
+| `core.fsmonitor` → a script writing a marker | **marker written twice — git ran it** | not run |
+| `core.excludesFile` → a list naming the edited hook | **`current`** | `unmeasured` |
+
+The second row is specific to this reading: poisoning `core.excludesFile`
+blinds the uncommitted-bytes check, so a hand-edited hook certifies as
+matching a merged commit. The directory gets to lie about its own cleanliness
+to the reading whose job is to catch exactly that.
+
+`test/unit/hook-tree-currency.test.ts` holds both halves. HC-18 asserts the
+**population** of invocations — every call the runner makes carries all four
+`-c` pairs, all three env vars and a timeout — because a subcommand allowlist
+alone stays green against an unisolated call for ever. HC-19 performs the
+`core.excludesFile` exploit against real git with an unisolated control that
+must reproduce it.
+
+This is also `registeredTreeCensus`'s first caller outside `test/`.
+
 ### Who is authoritative for what
 
 | hook | authoritative for | matcher | reach |
 |---|---|---|---|
-| `WorkflowStateGuard` | **whether a tool call may write the artifact at all.** The sanctioned writer is `writeWorkflowState()`, which Zod-validates; the Write and Edit tools bypass that, so every such call is refused regardless of content | `path.includes('workflow-state.json')` — case-SENSITIVE substring | **SHIPS.** `deployToConsumers: true` |
+| `WorkflowStateGuard` | **whether a tool call may write the artifact at all.** The sanctioned writer is `writeWorkflowState()`, which Zod-validates; the Write and Edit tools bypass that, so every such call is refused regardless of content | `path.toLowerCase().includes('workflow-state.json')` — case-FOLDED substring, per #1211 | **SHIPS.** `deployToConsumers: true` |
 | `GateResultProtection` | **what a permitted write may contain.** It refuses a write that forges, erases or changes a `gates.<name>.result`, that advances `phase` to `DONE`, or that the guard could not model | `filePath.toLowerCase().endsWith('workflow-state.json')` — case-FOLDED suffix, per #1184 | **OPT-IN.** `deployToConsumers: false` |
 
-Neither subsumes the other, and this is asserted rather than asserted-about:
-there are inputs each one refuses and the other permits, in both directions.
-If that ever stops being true the pair has collapsed into one decider — the
-fourth shape in `.claude/rules/checks-must-be-able-to-fail.md` — and the
-contract test goes red saying so.
+Since #1211 the two matchers agree on WHICH paths are the artifact and differ
+only in reach — a substring match here, a suffix match there — so the specific
+guard's refusals are a **subset** of the blanket guard's. The contract test
+asserts that asymmetry in both directions rather than asserting about it:
+
+- There must be inputs **only the blanket guard** refuses. If there are not,
+  the pair has collapsed into one decider — the fourth shape in
+  `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either is
+  invisible.
+- There must be **no** input only the specific guard refuses. One would be an
+  input the SHIPPING guard permits, and a consumer tree has no other guard on
+  the artifact.
+
+The second claim used to be its mirror — that such an input must exist — and
+#1211 is why it was inverted. The only member that set ever had was the
+uppercase spelling, and that member was a hole in the shipping guard. A pair
+whose non-redundancy rests on one of them having a gap is not defence in
+depth, so closing the gap emptied the set and the claim that required a member
+now forbids one.
+
+**Subsumed is not dead.** The two do not ship to the same trees: a scaffolded
+consumer gets the blanket guard and not the specific one, and on this machine
+the specific guard's registration resolves outside this repository (#713).
+Behavioural subsumption is a statement about one tree holding both, and
+neither of those is that tree.
 
 ### #1152's body has the deployment backwards
 
@@ -281,27 +366,58 @@ allow-path nothing was exercising.**
 
 ### Where they disagree, and which disagreements are intended
 
-Six of the contract's fourteen rows diverge. Three are the split above working
+Five of the contract's fourteen rows diverge. Three are the split above working
 as designed: a legitimate Write, a legitimate Edit, and an edit to a run whose
 phase is already `DONE` are all refused by the blanket guard and permitted by
 the specific one. That set **is** the specific guard's allow-path, and running
 each hook alone is what makes it observable — #1152's resolution item 3.
 
-The other three are accidents of two independently written path predicates and
-are filed, not fixed here:
+The other two are accidents of two independently written path predicates. Both
+are in the benign direction — the blanket guard over-blocking — and both are
+left alone deliberately:
 
-- **A forged gate result written to `WORKFLOW-STATE.JSON` is permitted by the
-  blanket guard.** `String.includes` is case-sensitive; #1184 measured that the
-  two spellings resolve to the same inode on a case-insensitive filesystem and
-  case-folded the specific guard, and the fix was never carried across. The
-  guard that still has it is the one that ships, so on a consumer tree this
-  input reaches disk with no guard at all.
 - A sibling path such as `workflow-state.json.bak` is refused by the blanket
   guard's substring match and permitted by the specific guard's suffix match.
   Over-blocking a backup file costs a rename; this is the direction to be
   wrong in.
 - The blanket guard falls back to a `path` key that neither tool sends. Dead
   today; a tool-schema change makes it live without either hook being touched.
+
+**A third accident sat here until #1211, and it was the one in the dangerous
+direction**: a forged gate result written to `WORKFLOW-STATE.JSON` was
+permitted by the blanket guard, because `String.includes` is case-sensitive.
+#1184 had measured that the two spellings resolve to the same inode on a
+case-insensitive filesystem and case-folded the specific guard; the fix was
+never carried across, and the guard that kept the defect was the one that
+ships — so on a consumer tree that input reached disk with no guard at all.
+
+#1211 case-folded the blanket guard's matcher. Because folding a matcher can
+only **widen** what it claims, and widening a guard is not automatically safe,
+`test/workflow-state-guard-case.test.ts` runs the old matcher alongside the new
+one over a corpus of spellings and asserts the difference: the refusal set grew
+by exactly six case-variants of the artifact's own name, and shrank by nothing.
+Near-misses the fold must not reach — `workflow_state.json`,
+`workflowstate.json`, `workflow-state.yaml` — are rows in that corpus, so the
+bound on what the guard may claim is executed rather than argued.
+
+**A fourth sat one function over, and #1359 closed it.** The specific guard
+wraps `decideGateResultWrite` in a `try`/`catch` whose stated intent is that
+"a guard that crashes must not thereby allow the thing it guards" (#1137).
+That arm narrowed to the artifact with its **own** hand-written `endsWith`,
+case-sensitive — so #1184's fold reached the predicate a reader looks at and
+not the fallback, and a crash on a payload naming `WORKFLOW-STATE.JSON`
+permitted the write. Measured, not read, because the issue was right to insist
+on the difference: with `decideGateResultWrite` forced to throw,
+`workflow-state.json` was refused and `WORKFLOW-STATE.JSON` was allowed
+silently. The arm now calls `isWorkflowState`, so there is one binding for the
+question rather than two that drift.
+
+This changes no row in the write contract — the corpus exercises the ordinary
+path and the fallback only fires on a crash — which is why the arm went
+untested from #1137 until #1359. `test/gate-result-crash-fallback.test.ts`
+covers it now, injecting the crash with `mock.module` while re-exporting the
+**real** `isWorkflowState`, so its rows follow the shipped predicate instead of
+agreeing with a copy written in the test.
 
 ### If you change either hook
 

@@ -14,8 +14,10 @@ import type { ScNamespaceReading, SourceReading } from "./sc-id-cross-tree";
 import { readScNamespace } from "./sc-id-cross-tree";
 import type { ScReservation, ScReservationReading } from "./sc-reservations";
 import {
+  blocksInNamespace,
   lowestFreeInBlock,
   readScReservations,
+  SC_NAMESPACE,
   RESERVATION_REFUSAL,
   reservationFor,
   reservedCeiling,
@@ -347,11 +349,16 @@ export function takenScNumbers(
 export function scReservationLeg(reading: ScReservationReading): SourceReading {
   const label = `SC reservation store (${SC_RESERVATIONS_PATH})`;
   if (reading.status === "read") {
+    // SC blocks only, on both numbers. `found` is documented as the size of
+    // the space the store removes from the allocator, and since #1363 an
+    // `FG`/`AR` block removes none of it — counting those would make the leg
+    // report a reading it did not take.
+    const sc = blocksInNamespace(reading.blocks, SC_NAMESPACE);
     return {
-      label: `${label}: ${reading.blocks.length} block(s)`,
+      label: `${label}: ${sc.length} block(s)`,
       kind: "reservations",
       status: "read",
-      found: reservedIdCount(reading.blocks),
+      found: reservedIdCount(sc),
     };
   }
   return {
@@ -386,6 +393,16 @@ export function allocateAgainstReservations(
   owner: string | null,
   taken: ReadonlySet<number>,
 ): number {
+  // SC blocks only, and the filter lives HERE rather than at the call site
+  // for the reason the docblock gives: this function is the single binding a
+  // mutation battery points at, and a filter applied by the caller would be a
+  // reservation-aware decision made somewhere this one cannot see.
+  //
+  // An `FG-45..60` block is not a claim on `SC-45..60`. Before #1363 it was
+  // read as one, which both pushed a stranger's allocation above 60 and
+  // answered the FG owner's next `create-sc` out of a block that describes
+  // different ids entirely.
+  blocks = blocksInNamespace(blocks, SC_NAMESPACE);
   const mine = reservationFor(blocks, owner);
   if (mine !== null) {
     const free = lowestFreeInBlock(mine, taken);
