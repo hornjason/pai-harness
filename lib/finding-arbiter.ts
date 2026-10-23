@@ -393,8 +393,8 @@ export const DUPLICATE_MIN_SHARED_LOCATIONS = 1;
  * **The 946-pair table above is not reproducible.** It was measured live
  * against a tracker that has moved and no corpus was stored, so neither
  * constant can be re-derived by anyone — including anyone who disagrees with
- * leaving them. That is tracked separately; until a fixture exists, treat
- * every number in this docblock as a reading someone took once.
+ * leaving them. **Tracked as #1365**; until a fixture exists, treat every
+ * number in this docblock as a reading someone took once.
  *
  * The floor exists because containment is meaningless on a tiny key set — a
  * one-key finding is wholly contained in anything mentioning that key, which
