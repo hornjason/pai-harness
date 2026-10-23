@@ -19,6 +19,17 @@
       ],
       "issue": 1406,
       "note": "PR #1415, open. An unread anchor is absent, not empty."
+    },
+    {
+      "owner": "rg/1413-file-claims",
+      "paths": [
+        "lib/file-claims.ts",
+        "scripts/claim-files.ts",
+        "specs/file-claims.json",
+        "test/file-claims.test.ts"
+      ],
+      "issue": 1413,
+      "note": "PR #1436, open. The lock itself."
     }
   ]
 }
