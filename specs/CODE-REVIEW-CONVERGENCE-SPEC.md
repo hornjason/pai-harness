@@ -1,6 +1,7 @@
 ---
 doc-type: spec
 testable: true
+compliance: strict
 governs: Automated code review convergence — the mechanisms from Anthropic's "Solving code review" that RunGate adopts, what each one must do, and how we know whether it works. This is the alignment reference for all finding-arbiter, jury, review-depth and approval work.
 status: active
 owner: jason
