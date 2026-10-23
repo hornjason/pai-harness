@@ -30,6 +30,12 @@ export interface GitHubClient {
       createComment: (params: { owner: string; repo: string; issue_number: number; body: string }) => Promise<{ data: any }>;
       addLabels: (params: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<{ data: any }>;
       update: (params: { owner: string; repo: string; issue_number: number; state?: string; [key: string]: any }) => Promise<{ data: any }>;
+      /**
+       * The repository's issues. **Returns pull requests too** — the REST API
+       * treats a PR as an issue, and every row carrying a `pull_request` key
+       * is one. `listOpenIssues` drops them; see why there.
+       */
+      listForRepo: (params: { owner: string; repo: string; state?: string; per_page?: number; [key: string]: any }) => Promise<{ data: any[] }>;
     };
     pulls: {
       create: (params: { owner: string; repo: string; title: string; head: string; base: string; body?: string; draft?: boolean }) => Promise<{ data: any }>;
@@ -304,6 +310,55 @@ export async function getIssueLabels(
   return raw
     .map((l: unknown) => (typeof l === "string" ? l : (l as { name?: unknown })?.name))
     .filter((n: unknown): n is string => typeof n === "string" && n.length > 0);
+}
+
+/** One open issue, as little of one as a symptom comparison needs. */
+export interface OpenIssue {
+  number: number;
+  title: string;
+  body: string;
+}
+
+/**
+ * Open issues, newest first, **pull requests excluded** (#1261).
+ *
+ * Written for `lib/issue-filing-gate.ts`, which compares a filing about to be
+ * made against what is already on the tracker. Through Octokit rather than
+ * the GitHub CLI for the reason in `getIssueLabels` above and in
+ * GITHUB-API-MIGRATION-SPEC.md: a hook runs in whatever environment the
+ * session has, and a subprocess needs the CLI installed and authenticated
+ * there.
+ *
+ * **The PR filter is the part that is easy to leave out and expensive to
+ * omit.** `GET /repos/{o}/{r}/issues` returns pull requests as issues, and
+ * every PR row carries a `pull_request` key that an issue row does not. Left
+ * in, every open PR becomes a finding the dedupe can match against — and a
+ * PR body in this repository quotes the symptom of the issue it fixes, so the
+ * filing most likely to collide with an open PR is the one reporting the
+ * defect that PR has not yet merged. That is the exact filing this gate must
+ * not silence.
+ */
+export async function listOpenIssues(
+  client: GitHubClient,
+  repoSlug: string,
+  limit = 100,
+): Promise<OpenIssue[]> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.listForRepo({
+    owner,
+    repo,
+    state: "open",
+    per_page: Math.min(Math.max(limit, 1), 100),
+  });
+  const rows = Array.isArray(response?.data) ? response.data : [];
+  return rows
+    .filter(row => row !== null && typeof row === "object" && row.pull_request === undefined)
+    .filter(row => typeof row.number === "number" && typeof row.title === "string")
+    .map(row => ({
+      number: row.number as number,
+      title: row.title as string,
+      body: typeof row.body === "string" ? row.body : "",
+    }));
 }
 
 /**
