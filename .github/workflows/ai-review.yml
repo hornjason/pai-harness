@@ -1,4 +1,4 @@
-# generated-sha: fb2c45bbbf5c31ad
+# generated-sha: 2856dbceafd2a679
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -2910,12 +2910,20 @@ jobs:
             disarm_refuse "The AI review was WAIVED and this step could not read 'autoMergeRequest' on the pull request, so whether auto-merge is armed is UNMEASURED and a waived pull request may still merge itself. Refusing (#1242). The command reported: ${armed}"
           fi
 
-          # `null` is what the field reads when nothing is armed. Empty is the same
-          # fact arriving through a quiet client, and both are "nothing to do" — this is
-          # the one place a default is not a substitution, because the ACTION taken is
-          # identical and the annotation says which reading was taken.
-          if [ "${armed}" = "null" ] || [ -z "${armed}" ]; then
-            echo "::notice title=AI review waiver disarmed auto-merge::The AI review on this pull request was WAIVED by the 'ai-review-override' label, and auto-merge was not armed, so there was nothing to disarm. The pull request is mergeable and will not merge itself: a human has to read the diff the review did not (#1242)."
+          # EMPTY FIRST, AND IT IS A REFUSAL. `jq` prints the literal `null` for an
+          # absent `autoMergeRequest`, so silence is not that reading — it
+          # is a client that exited zero without answering. The first draft folded the
+          # two together into the not-armed arm, which is a default substituted for a
+          # reading in the one branch where the default lets an armed pull request
+          # through (caught on #1418's push review).
+          if [ -z "${armed}" ]; then
+            disarm_refuse "The AI review was WAIVED and the request for 'autoMergeRequest' came back EMPTY with a success status, so this step has no reading of whether auto-merge is armed. An absent auto-merge reads as the literal 'null' here; silence is a client that did not answer, and treating it as 'nothing is armed' would substitute a default for a reading in the one branch where the default lets an armed pull request through. Refusing (#1242)."
+          fi
+
+          # `null` is what the field reads when nothing is armed, and nothing is the
+          # right thing to do about it.
+          if [ "${armed}" = "null" ]; then
+            echo "::notice title=AI review waiver disarmed auto-merge::The AI review on this pull request was WAIVED by the 'ai-review-override' label, and auto-merge was not armed as it stood when this step read it, so there was nothing to disarm. This is a reading and an action taken at one moment, not a lock: auto-merge re-armed after this run stays armed until some later run of this workflow reaches this step, and if nothing further is pushed and no label changes there is no later run. What stops this pull request landing unread is a person, not this step (#1242)."
             exit 0
           fi
 
@@ -2930,8 +2938,16 @@ jobs:
             disarm_refuse "The AI review was WAIVED and this step could not read 'autoMergeRequest' on the pull request, so whether auto-merge is armed is UNMEASURED and a waived pull request may still merge itself. Refusing (#1242). The command reported: ${after}"
           fi
 
-          if [ "${after}" != "null" ] && [ -n "${after}" ]; then
+          # Same split as the first reading, and this side is the worse one: by here the
+          # disarm request has been ACCEPTED, so an unreadable field is a step that has
+          # acted and cannot confirm the action. The `&& [ -n "${after}" ]` this
+          # replaces made exactly that state green.
+          if [ -z "${after}" ]; then
+            disarm_refuse "The AI review was WAIVED, auto-merge WAS armed, the request to disable it reported success, and the read-back came back EMPTY with a success status. So this step has acted and cannot say whether the action took effect — the worst of the three readings to guess at. An absent auto-merge reads as the literal 'null'; silence does not. Refusing (#1242)."
+          fi
+
+          if [ "${after}" != "null" ]; then
             disarm_refuse "The AI review was WAIVED and the request to disable auto-merge reported success, and 'autoMergeRequest' is STILL not null when read back. The disarm did not take effect, so this pull request can merge itself on a review nobody read. Refusing rather than trusting the exit code of a command that changed nothing (#1242). The field reads: ${after}"
           fi
 
-          echo "::notice title=AI review waiver disarmed auto-merge::The AI review on this pull request was WAIVED by the 'ai-review-override' label, so auto-merge has been DISARMED. The waiver clears the required check and no longer carries the landing with it — this pull request is mergeable and will not merge itself, because the one thing a waived review cannot supply is somebody having looked. Read the diff, then merge by hand. Re-arming auto-merge is a deliberate act and this step will disarm it again on the next run while the label is on (#1242)."
+          echo "::notice title=AI review waiver disarmed auto-merge::The AI review on this pull request was WAIVED by the 'ai-review-override' label, so auto-merge as it stood when this step read it has been DISARMED. The waiver clears the required check and does not also carry the landing with it, because the one thing a waived review cannot supply is somebody having looked. Read the diff, then merge by hand. This is a reading and an action taken at one moment, not a lock: auto-merge re-armed after this run stays armed until some later run of this workflow reaches this step, and if nothing further is pushed and no label changes there is no later run. What stops this pull request landing unread is a person, not this step (#1242)."

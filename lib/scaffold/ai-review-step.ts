@@ -6976,21 +6976,60 @@ function indented(lines: string[], indent: string): string {
  * Substitution this module is about.
  */
 export function buildDisarmScript(): string {
+  /**
+   * What both notices say about how long this step's effect lasts.
+   *
+   * It is a POINT IN TIME and the notice has to say so. This step disarms
+   * what was armed at the moment it read the pull request, and then the job
+   * ends: nothing here prevents auto-merge being re-armed a second later, and
+   * if no further push or label event follows, there is no next run of this
+   * workflow to disarm it again. The first draft promised *"this pull request
+   * is mergeable and will not merge itself"*, which is a guarantee about the
+   * future that this step cannot make — a check that cannot fail, written in
+   * prose, in the one sentence a maintainer actually reads.
+   *
+   * One binding carried into both branches, for the reason
+   * `AI_REVIEW_STANDING_WAIVER_NOTE` gives: two hand-typed copies of a
+   * sentence about the limits of a protection is how one of them gets
+   * updated.
+   */
+  const pointInTime =
+    `This is a reading and an action taken at one moment, not a lock: ` +
+    `auto-merge re-armed after this run stays armed until some later run of ` +
+    `this workflow reaches this step, and if nothing further is pushed and ` +
+    `no label changes there is no later run. What stops this pull request ` +
+    `landing unread is a person, not this step (#1242).`;
+
   const notArmed =
     `The AI review on this pull request was WAIVED by the ` +
-    `'${AI_REVIEW_OVERRIDE_LABEL}' label, and auto-merge was not armed, so ` +
-    `there was nothing to disarm. The pull request is mergeable and will not ` +
-    `merge itself: a human has to read the diff the review did not (#1242).`;
+    `'${AI_REVIEW_OVERRIDE_LABEL}' label, and auto-merge was not armed as it ` +
+    `stood when this step read it, so there was nothing to disarm. ` +
+    `${pointInTime}`;
 
   const disarmed =
     `The AI review on this pull request was WAIVED by the ` +
-    `'${AI_REVIEW_OVERRIDE_LABEL}' label, so auto-merge has been DISARMED. ` +
-    `The waiver clears the required check and no longer carries the landing ` +
-    `with it — this pull request is mergeable and will not merge itself, ` +
-    `because the one thing a waived review cannot supply is somebody having ` +
-    `looked. Read the diff, then merge by hand. Re-arming auto-merge is a ` +
-    `deliberate act and this step will disarm it again on the next run while ` +
-    `the label is on (#1242).`;
+    `'${AI_REVIEW_OVERRIDE_LABEL}' label, so auto-merge as it stood when ` +
+    `this step read it has been DISARMED. The waiver clears the required ` +
+    `check and does not also carry the landing with it, because the one ` +
+    `thing a waived review cannot supply is somebody having looked. Read the ` +
+    `diff, then merge by hand. ${pointInTime}`;
+
+  const readEmpty =
+    `The AI review was WAIVED and the request for ` +
+    `'${AI_REVIEW_AUTO_MERGE_FIELD}' came back EMPTY with a success status, ` +
+    `so this step has no reading of whether auto-merge is armed. An absent ` +
+    `auto-merge reads as the literal 'null' here; silence is a client that ` +
+    `did not answer, and treating it as 'nothing is armed' would substitute ` +
+    `a default for a reading in the one branch where the default lets an ` +
+    `armed pull request through. Refusing (#1242).`;
+
+  const verifyEmpty =
+    `The AI review was WAIVED, auto-merge WAS armed, the request to disable ` +
+    `it reported success, and the read-back came back EMPTY with a success ` +
+    `status. So this step has acted and cannot say whether the action took ` +
+    `effect — the worst of the three readings to guess at. An absent ` +
+    `auto-merge reads as the literal 'null'; silence does not. Refusing ` +
+    `(#1242).`;
 
   const noPr =
     `The AI review was WAIVED and this run carries no pull request number, ` +
@@ -7082,11 +7121,19 @@ if ! armed=$(${view} 2>&1); then
   disarm_refuse "${readFailed} \${armed}"
 fi
 
-# \`null\` is what the field reads when nothing is armed. Empty is the same
-# fact arriving through a quiet client, and both are "nothing to do" — this is
-# the one place a default is not a substitution, because the ACTION taken is
-# identical and the annotation says which reading was taken.
-if [ "\${armed}" = "null" ] || [ -z "\${armed}" ]; then
+# EMPTY FIRST, AND IT IS A REFUSAL. \`jq\` prints the literal \`null\` for an
+# absent \`${AI_REVIEW_AUTO_MERGE_FIELD}\`, so silence is not that reading — it
+# is a client that exited zero without answering. The first draft folded the
+# two together into the not-armed arm, which is a default substituted for a
+# reading in the one branch where the default lets an armed pull request
+# through (caught on #1418's push review).
+if [ -z "\${armed}" ]; then
+  disarm_refuse "${readEmpty}"
+fi
+
+# \`null\` is what the field reads when nothing is armed, and nothing is the
+# right thing to do about it.
+if [ "\${armed}" = "null" ]; then
   echo "::notice title=${AI_REVIEW_DISARM_TITLE}::${notArmed}"
   exit 0
 fi
@@ -7102,7 +7149,15 @@ if ! after=$(${view} 2>&1); then
   disarm_refuse "${readFailed} \${after}"
 fi
 
-if [ "\${after}" != "null" ] && [ -n "\${after}" ]; then
+# Same split as the first reading, and this side is the worse one: by here the
+# disarm request has been ACCEPTED, so an unreadable field is a step that has
+# acted and cannot confirm the action. The \`&& [ -n "\${after}" ]\` this
+# replaces made exactly that state green.
+if [ -z "\${after}" ]; then
+  disarm_refuse "${verifyEmpty}"
+fi
+
+if [ "\${after}" != "null" ]; then
   disarm_refuse "${stillArmed} \${after}"
 fi
 

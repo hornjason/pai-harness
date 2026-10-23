@@ -104,8 +104,25 @@ interface Run {
   output: string;
 }
 
-/** The arming state a stubbed `gh` reports, and how it behaves when asked to disarm. */
-type GhMode = "armed" | "not-armed" | "stubborn" | "merge-fails" | "view-fails";
+/**
+ * The arming state a stubbed `gh` reports, and how it behaves when asked to
+ * disarm.
+ *
+ * `view-empty` and `verify-empty` are the two states the push review on
+ * #1418 named: a `gh` that exits ZERO and prints nothing. Both are distinct
+ * from `not-armed`, where the client prints the literal `null` that `jq`
+ * emits for an absent `autoMergeRequest` — silence is a client that did not
+ * answer, and reading it as "nothing is armed" is a default substituted for a
+ * reading.
+ */
+type GhMode =
+  | "armed"
+  | "not-armed"
+  | "stubborn"
+  | "merge-fails"
+  | "view-fails"
+  | "view-empty"
+  | "verify-empty";
 
 /** The JSON object `gh pr view` prints for an ARMED pull request. */
 const ARMED = `{"enabledAt":"2026-10-23T00:00:00Z"}`;
@@ -140,12 +157,18 @@ function stubGh(mode: GhMode): StubGh {
 
   const onView = mode === "view-fails"
     ? `echo "stub-gh: view refused" >&2\n  exit 1`
-    : `cat ${JSON.stringify(state)}\n  exit 0`;
+    : mode === "view-empty"
+      ? `exit 0`
+      : `cat ${JSON.stringify(state)}\n  exit 0`;
   const onMerge = mode === "merge-fails"
     ? `echo "stub-gh: merge refused" >&2\n  exit 1`
     : mode === "stubborn"
       ? `exit 0`
-      : `printf 'null\\n' > ${JSON.stringify(state)}\n  exit 0`;
+      // `verify-empty`: the disarm is accepted and the READ-BACK goes silent,
+      // so the step has acted and cannot confirm the action.
+      : mode === "verify-empty"
+        ? `printf '' > ${JSON.stringify(state)}\n  exit 0`
+        : `printf 'null\\n' > ${JSON.stringify(state)}\n  exit 0`;
 
   const bin = join(dir, AI_REVIEW_DISARM_CLI);
   writeFileSync(
@@ -507,11 +530,14 @@ describe("AC-5 (#1242): the disarm verifies, rather than trusting an exit code",
     // `stubborn` exits 0 from `pr merge` and leaves the field armed, which is
     // the real state where a pull request merged between the two calls. The
     // exit code cannot tell it from a disarm that worked.
-    const mutant = buildDisarmScript().replace(
-      /if \[ "\$\{after\}" != "null" \] && \[ -n "\$\{after\}" \]; then\n(.*\n)*?fi\n/,
-      "",
-    );
+    // Both post-merge guards go — the emptiness one and the still-armed one —
+    // so what is removed is the whole reading and not half of a conjunction
+    // the other half would hold up.
+    const mutant = buildDisarmScript()
+      .replace(/if \[ -z "\$\{after\}" \]; then\n(?:.*\n)*?fi\n\n/, "")
+      .replace(/if \[ "\$\{after\}" != "null" \]; then\n(?:.*\n)*?fi\n/, "");
     expect(mutant, "no read-back check to remove").not.toBe(buildDisarmScript());
+    expect(mutant, "a post-merge guard survived the mutation").not.toContain(`"\${after}" !=`);
     const r = runDisarm(waived, stubGh("stubborn"), mutant);
     expect(r.code, "the mutant refused anyway, so AC-5a witnessed something else").toBe(0);
   });
@@ -526,6 +552,75 @@ describe("AC-5 (#1242): the disarm verifies, rather than trusting an exit code",
     const r = runDisarm(waived, stubGh("view-fails"));
     expect(r.code).toBe(AI_REVIEW_REQUIRED_EXIT);
     expect(r.err).toContain(AI_REVIEW_AUTO_MERGE_FIELD);
+  });
+
+  test("AC-5f: a SILENT pre-reading is UNMEASURED, not nothing-to-do (#1418 review)", () => {
+    // `null` and `` are different facts. `jq` prints the literal `null` for an
+    // absent `autoMergeRequest`, so an EMPTY reading is a client that exited
+    // zero without answering — and reading it as "nothing is armed" is the
+    // Silent Default Substitution this module's own header is about, in the
+    // one branch where the substituted default lets an armed pull request
+    // through.
+    const gh = stubGh("view-empty");
+    const r = runDisarm(waived, gh);
+    expect(r.code, `a silent reading was taken as unarmed:\n${r.out}${r.err}`).toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(r.err).toContain(`::error title=${AI_REVIEW_DISARM_FAILED_TITLE}`);
+    expect(
+      gh.calls().filter(c => c.startsWith("pr merge")),
+      "it tried to disarm on a reading it did not have",
+    ).toEqual([]);
+  });
+
+  test("AC-5g: a SILENT read-back is UNMEASURED, and the step HAS acted by then", () => {
+    // Worse than AC-5f: the disarm request was accepted, so this is the one
+    // state where the step cannot say whether the thing it just did took
+    // effect. `-n` on the after-reading had made this green.
+    const gh = stubGh("verify-empty");
+    const r = runDisarm(waived, gh);
+    expect(r.code, `a silent read-back passed:\n${r.out}${r.err}`).toBe(AI_REVIEW_REQUIRED_EXIT);
+    expect(gh.calls().filter(c => c.startsWith("pr merge")).length, "it never disarmed").toBe(1);
+  });
+
+  test("AC-5h: the mutant — an emptiness-tolerant reading passes both", () => {
+    // The shape this PR shipped with and the push review caught: `[ -z ]`
+    // folded into the not-armed arm, and `&& [ -n "${after}" ]` guarding the
+    // read-back. Rebuilt here, so AC-5f and AC-5g cannot both be true of a
+    // script that tolerates silence.
+    const tolerant = buildDisarmScript()
+      .replace(/if \[ -z "\$\{armed\}" \]; then\n(?:.*\n)*?fi\n\n/, "")
+      .replace(
+        `if [ "\${armed}" = "null" ]; then`,
+        `if [ "\${armed}" = "null" ] || [ -z "\${armed}" ]; then`,
+      )
+      .replace(/if \[ -z "\$\{after\}" \]; then\n(?:.*\n)*?fi\n\n/, "")
+      .replace(
+        `if [ "\${after}" != "null" ]; then`,
+        `if [ "\${after}" != "null" ] && [ -n "\${after}" ]; then`,
+      );
+    // The mutation is SPELLED, so assert it landed in full rather than
+    // trusting that four substitutions all matched: a mutant that failed to
+    // apply reads exactly like a guard that was never needed.
+    //
+    // Counted by the REFUSAL TEXT, not by the test expression: the
+    // reconstructed conditions legitimately contain `[ -z "${armed}" ]` as
+    // one arm of a disjunction, so a substring check on the expression
+    // reports a survivor that is not one. The message is emitted by the
+    // refusal and by nothing else.
+    const emptyRefusals = (s: string) => s.split("came back EMPTY").length - 1;
+    expect(emptyRefusals(buildDisarmScript()), "the population being removed").toBe(2);
+    expect(tolerant, "nothing was mutated").not.toBe(buildDisarmScript());
+    expect(emptyRefusals(tolerant), "an emptiness refusal survived").toBe(0);
+    expect(tolerant).toContain(`|| [ -z "\${armed}" ]`);
+    expect(tolerant).toContain(`&& [ -n "\${after}" ]`);
+    expect(runDisarm(waived, stubGh("view-empty"), tolerant).code, "AC-5f witnessed nothing").toBe(
+      0,
+    );
+    expect(
+      runDisarm(waived, stubGh("verify-empty"), tolerant).code,
+      "AC-5g witnessed nothing",
+    ).toBe(0);
   });
 
   test("AC-5e: nothing armed is nothing to do, and says so", () => {
@@ -588,6 +683,25 @@ describe("AC-6 (#1242): a waiver it cannot decouple is red, never green", () => 
       [AI_REVIEW_DISARM_TOKEN_VAR]: "",
     });
     expect(r.code, `${r.out}${r.err}`).toBe(0);
+  });
+
+  test("AC-6f: the notices claim a point in time, not standing protection (#1418 review)", () => {
+    // A TEXT assertion, and it is load-bearing for the same reason the
+    // UNMEASURED annotations are: the notice is the only thing a maintainer
+    // reads, and this step's protection genuinely ends when the step does.
+    // Nothing here stops auto-merge being re-armed after this run, and if no
+    // further push or label event follows there is no next run to disarm it.
+    // A notice promising otherwise is a check that cannot fail, written in
+    // prose.
+    const script = buildDisarmScript();
+    expect(
+      script,
+      "the notice promises a protection that outlives the run that printed it",
+    ).not.toContain("will not merge itself");
+    // And the honest sentence is asserted positively, because `not.toContain`
+    // alone is equally satisfied by a notice that says nothing at all.
+    expect(script).toContain("as it stood when this step read it");
+    expect(script).toContain("re-armed after this run");
   });
 
   test("AC-6e: the waived reading is an exact compare, not a prefix", () => {
