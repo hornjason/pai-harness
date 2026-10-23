@@ -765,48 +765,40 @@ export async function filingGate(
     if (overridden) notes.push(overrideNote(verdict));
   }
 
-  // ── Any refused clause refuses the COMMAND ────────────────────────────
+  // ── A refusal blocks the COMMAND, and every clean clause is NAMED in the
+  //    refusal so none of them is lost ───────────────────────────────────
   //
-  // This read `rows.every(r => !r.emitted)` until #1318, and that made
-  // batching the bypass: a command carrying one known duplicate beside one
-  // novel finding was ALLOWED, so the cheapest route past this gate was to
-  // append a clean filing to a refused one. An agent filing several findings
-  // at once reached it by accident.
+  // This read `rows.length > 0 && rows.every(r => !r.emitted)` — block only
+  // when NOTHING in the command was clean. The concern behind it was real: a
+  // hook's one lever is the whole Bash command, so blocking a mixed command
+  // takes novel findings down with a duplicate, and withholding a real
+  // finding with no artefact anywhere is the direction nothing here may fail
+  // in.
   //
-  // The argument for every-or-nothing was that blocking "takes the novel
-  // findings down with a duplicate". That step does not hold, and it is the
-  // one worth writing down because it is persuasive: **this is a PreToolUse
-  // hook, so nothing has executed.** A block costs the agent one re-run with
-  // the duplicate clause removed, and the findings are in its context, not
-  // destroyed. An allow costs a tracker row that a person or an agent has to
-  // triage and close. Those are not comparable, and the expensive,
-  // irreversible one is what the old predicate chose.
+  // What it did not price is the bypass. One duplicate batched with one novel
+  // finding was ALLOWED and the refusal downgraded to a note, so the cheapest
+  // way past the arbiter became putting a refused filing in the same `&&`
+  // chain as a clean one. A gate with a one-clause bypass is worse than no
+  // gate, because it reads as working.
   //
-  // The note the allow emitted said "Please withdraw them and re-run" — an
-  // action the allow had just made impossible, because a filing that already
-  // happened cannot be withdrawn by the agent that made it. A block is that
-  // same instruction delivered while it can still be followed.
+  // And `emitted` is `outcome !== "REFUSE" || overridden`, so it is true for
+  // an **UNMEASURED** row too: one unreadable `--body-file` beside any number
+  // of duplicates allowed the whole command. A broken adjudicator was a
+  // bypass as well as a note, which is the one thing the UNMEASURED policy in
+  // this file's header exists to prevent.
   //
-  // The note is kept. Naming what was not clean is more information than a
-  // bare refusal, so it accompanies the refusal rather than replacing it.
+  // Blocking is affordable because nothing is lost by it. The refusal
+  // ENUMERATES the clauses that were clean, so the agent withdraws the
+  // refused one and re-runs the rest in one step, and the ledger has carried
+  // every row — clean and refused — since the rows above were written. A
+  // finding deferred by one command is not a finding silenced; a finding
+  // filed alongside a duplicate was never adjudicated at all.
   //
-  // Second consequence, and it is why the ledger rows above can be trusted:
-  // they are written with `disposition: "DROP"` and `withheldBy` set BEFORE
-  // this line runs. Under the old predicate an allowed-anyway refusal was
-  // recorded as a successful withhold, so every rate derived from the ledger
-  // counted it as a save — wrong in the direction that flatters the
-  // mechanism. `FG-47` asserts the two can never disagree again.
+  // An OVERRIDDEN refusal is deliberately not in `refusals`, so it does not
+  // block: an override is a decision somebody made and recorded.
   const blocking = refusals.length > 0;
-  if (!blocking && refusals.length > 0) {
-    notes.push(
-      `[FindingArbiter] ${refusals.length} of ${rows.length} filings in this command would have ` +
-        "been refused, and the command is ALLOWED because the others are not duplicates — " +
-        "a hook can only block the whole command, and taking novel findings down with a " +
-        "duplicate is the one direction this gate must never fail in. The refused " +
-        `one(s) are recorded in ${ledgerPath()}. Please withdraw them and re-run:\n\n` +
-        refusals.join("\n\n"),
-    );
-  }
+  const clean = rows.filter(r => r.emitted);
+  if (blocking && clean.length > 0) refusals.push(cleanClauseNote(clean, rows.length));
 
   return {
     refusal: blocking ? refusals.join("\n\n") : null,
@@ -838,6 +830,27 @@ export function refusalMessage(v: FilingAdjudication): string {
     `If this one genuinely is the exception, re-run with --label ${FILING_OVERRIDE_LABEL}.`,
     `The override is recorded in ${ledgerPath()} beside the refusal it waived, so`,
     "an override that was right is evidence and one that was wrong is countable.",
+  ].join("\n");
+}
+
+/**
+ * The clauses that were clean, named inside the refusal that blocks them.
+ *
+ * This is the half that makes blocking a mixed command affordable. A hook can
+ * only block the whole Bash command, so a refusal that said nothing about the
+ * clean clauses would cost the agent the work of reconstructing them — which
+ * is the argument the `every`-based predicate was built on. Naming them turns
+ * "the command was blocked" into "withdraw one, re-run these", and the titles
+ * are quoted verbatim so the re-run is a copy rather than a recollection.
+ */
+export function cleanClauseNote(clean: readonly FilingLedgerRow[], total: number): string {
+  return [
+    `[FindingArbiter] ${clean.length} of ${total} filings in this command WERE clean and are`,
+    "not the reason it was blocked. A hook's one lever is the whole Bash command, so they are",
+    `named here rather than lost, and all ${total} rows are recorded in ${ledgerPath()}.`,
+    "Withdraw the refused one(s) and re-run these:",
+    "",
+    ...clean.map(r => `  - ${r.title}`),
   ].join("\n");
 }
 

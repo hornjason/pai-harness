@@ -645,20 +645,129 @@ describe("#1261 the four suppression classes", () => {
     expect(r.reason).toContain("DUPLICATE");
   });
 
-  test("FG-37: one duplicate beside a novel finding refuses the whole command", async () => {
-    // INVERTED by #1318, and the fixture is unchanged — only the expected
-    // direction moved. This case shipped asserting `blocked === false`, which
-    // made batching a clean filing beside a refused one the cheapest way past
-    // this gate. The reasoning was that a block loses the novel finding; it
-    // does not, because nothing has executed when a PreToolUse hook decides.
-    // See the `blocking` docblock in `lib/issue-filing-gate.ts`.
+  test("FG-37: one duplicate beside a novel finding blocks, and the novel one is NAMED", async () => {
+    // **This row asserted the opposite until FG-45 below.** It read "one
+    // duplicate beside a novel finding does NOT take it down", which made
+    // batching a refused filing with a clean one the cheapest way past the
+    // arbiter. The concern behind it was right and is answered by naming the
+    // clean clause in the refusal rather than by letting the command run —
+    // see the FG-45 block for the argument and the measurement.
     const start = ledgerRows().length;
     const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
-    expect(r.blocked, "a refused clause refuses the command").toBe(true);
-    // Still not silent, and still specific: the agent is told which one.
-    expect(r.payload?.reason ?? "").toContain("already reported");
+    expect(r.blocked).toBe(true);
+    expect(r.reason, "the refusal still names the duplicate").toContain("DUPLICATE");
+    // Both rows still reach the ledger, so the clean one is recorded as clean.
     const added = ledgerRows().slice(start);
     expect(added.map(x => x.withheldBy)).toEqual(["DUPLICATE", null]);
+  });
+});
+
+/**
+ * The `blocking` predicate: a refused filing must not ride through on a clean
+ * sibling.
+ *
+ * ## The defect
+ *
+ * `filingGate` blocked only when `rows.every(r => !r.emitted)` — when NOTHING
+ * in the command was clean. So one duplicate batched with one novel finding
+ * was **ALLOWED**, and the refusal was downgraded to a note. The cheapest way
+ * past the arbiter was to put a refused filing in the same `&&` chain as a
+ * clean one, and a gate with a one-clause bypass is worse than no gate
+ * because it reads as working.
+ *
+ * `emitted` is `verdict.outcome !== "REFUSE" || overridden`, so it is also
+ * true for an **UNMEASURED** row. A single unreadable `--body-file` beside any
+ * number of duplicates therefore allowed the whole command: a broken
+ * adjudicator was a bypass as well as a note, which is the one thing the
+ * UNMEASURED policy in this file's header exists to prevent.
+ *
+ * ## Why blocking is affordable now, when the comment said it was not
+ *
+ * The argument for `every` was real: a hook's one lever is the whole Bash
+ * command, so blocking a mixed command takes novel findings down with a
+ * duplicate, and that is the direction this gate must never fail in. What it
+ * did not price is that nothing is lost by blocking if the refusal **names
+ * the clauses that were clean**. The agent withdraws the refused one and
+ * re-runs the rest in one step; the ledger has held every row, clean and
+ * refused, since #1261. A finding deferred by one command is not a finding
+ * silenced — a finding filed alongside a duplicate was never adjudicated at
+ * all, which is the state the old predicate produced.
+ *
+ * ## What every row in FG-36/FG-37 held fixed
+ *
+ * Both pre-existing rows drove a command whose clauses were all REFUSE or a
+ * mix of REFUSE and ALLOW. Neither drove a mix of REFUSE and **UNMEASURED**,
+ * which is the input the `emitted` spelling and the `refusals` spelling
+ * disagree on and the only one that separates "block when nothing was clean"
+ * from "block when anything refused" at the boundary. FG-47 is that row —
+ * the seventh shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+describe("a refused filing does not ride through on a clean sibling", () => {
+  /** An UNMEASURED filing: the body file does not exist, so nothing was read. */
+  const UNMEASURED_FILING =
+    'gh issue create --title "pullRequestCache is never invalidated" ' +
+    `--body-file ${join(tmpdir(), "rg-filing-gate-absent-body-file.md")}`;
+
+  test("FG-45 BASELINE: a duplicate batched with a novel finding BLOCKS the command", () => {
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
+    expect(r.blocked, "the duplicate rode through on the clean sibling").toBe(true);
+  });
+
+  test("FG-46: the refusal NAMES the clean clause, so re-running it costs one step", () => {
+    // The half that makes blocking affordable. Without it this is the fix the
+    // original comment argued against, and the novel finding is lost.
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
+    expect(r.blocked).toBe(true);
+    expect(r.reason, "the clean clause must be named verbatim").toContain(
+      "pullRequestCache is never invalidated",
+    );
+    expect(r.reason, "and counted, so the agent knows how many to re-run").toContain("1 of 2");
+  });
+
+  test("FG-47: a duplicate beside an UNMEASURED filing blocks — `emitted` said allow", () => {
+    // The input FG-36 and FG-37 both held fixed. `emitted` is true for an
+    // UNMEASURED row, so under `rows.every(r => !r.emitted)` ONE unreadable
+    // body file allowed any number of duplicates beside it.
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${UNMEASURED_FILING}`);
+    expect(r.blocked).toBe(true);
+    expect(r.reason).toContain("DUPLICATE");
+  });
+
+  test("FG-48 CONTROL: a command whose filings are ALL clean is still allowed", () => {
+    // The control against the cheapest wrong fix for the three rows above —
+    // block whenever there is more than one clause, or block unconditionally.
+    const r = runHook(HOOK, `${NOVEL_FILING} && ${SAME_SYMBOL_NEW_READING}`);
+    expect(r.blocked, "two novel findings in one command must still run").toBe(false);
+    expect(r.payload?.systemMessage ?? null, "and with nothing to say about them").toBe(null);
+  });
+
+  test("FG-49 CONTROL: an UNMEASURED filing ALONE is allowed, loudly", () => {
+    // Separates "UNMEASURED no longer excuses a sibling" from "UNMEASURED now
+    // refuses", which would make a broken adjudicator a gag on the tracker.
+    const r = runHook(HOOK, UNMEASURED_FILING);
+    expect(r.blocked).toBe(false);
+    expect(r.payload?.systemMessage ?? "").toContain("UNMEASURED");
+  });
+
+  test("FG-50 CONTROL: an overridden duplicate beside a novel finding still allows", () => {
+    // An override is a decision somebody made and recorded. It must survive
+    // the stricter predicate, or the label stops meaning anything.
+    const r = runHook(
+      HOOK,
+      `${DUPLICATE_FILING} --label ${FILING_OVERRIDE_LABEL} && ${NOVEL_FILING}`,
+    );
+    expect(r.blocked).toBe(false);
+    expect(r.payload?.systemMessage ?? "").toContain(FILING_OVERRIDE_LABEL);
+  });
+
+  test("FG-51 CONTROL: a blocked command still records every row, clean ones included", () => {
+    // The ledger is what makes the block affordable: nothing is withheld with
+    // no artefact anywhere, which is the failure the old predicate avoided.
+    const start = ledgerRows().length;
+    runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
+    const added = ledgerRows().slice(start);
+    expect(added).toHaveLength(2);
+    expect(added.map(x => x.emitted), "the clean row is recorded as clean").toEqual([false, true]);
   });
 });
 
