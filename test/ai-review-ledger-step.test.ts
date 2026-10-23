@@ -25,7 +25,7 @@
  * only answers cannot see the absence of one.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -41,10 +41,12 @@ import { dirname, join } from "node:path";
 
 import {
   AI_REVIEW_FINDINGS_PATH_VAR,
+  AI_REVIEW_GIT_ISOLATED,
   AI_REVIEW_LEDGER_API_VAR,
   AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_BOT_LOGIN,
   AI_REVIEW_LEDGER_MARKER,
+  AI_REVIEW_LEDGER_MAX_PAGES,
   AI_REVIEW_LEDGER_MAX_ROUNDS,
   AI_REVIEW_LEDGER_PR_VAR,
   AI_REVIEW_LEDGER_REPO_VAR,
@@ -55,6 +57,33 @@ import {
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step";
 import { readAiReviewFindings } from "../lib/scaffold/ai-review-findings";
+import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
+
+/**
+ * This file inherited bun's 5,000ms default and `AC-L10` sat on it (#1402).
+ *
+ * Measured on a detached worktree at clean `origin/main` — nothing of this
+ * branch in it — `AC-L10` ran 5003.72ms, 5012.13ms and 7118.04ms, red in 2 of
+ * 3. CI never caught it across eight consecutive green runs because the
+ * runner is faster, which is the risk rather than the reassurance: the first
+ * slower runner reddens whichever pull request happens to be open, and that
+ * author pays to discover it was never theirs.
+ *
+ * The cost is inherent, not accidental. `AC-L10` spawns the persist step once
+ * per shape in `SHAPE_CORPUS`, so it is linear in the corpus and grows every
+ * time somebody adds a shape — which they should.
+ *
+ * A hardcoded per-test budget was the other candidate and is rejected here: a
+ * literal is a guess about the slowest machine that will ever run this, and
+ * the thing that varies IS the machine. `gitFixtureTestTimeout()` calibrates
+ * against the box running the suite, which is the mechanism this repository
+ * already uses for exactly this on seven sibling suites. It also makes
+ * `declaresFileBudget` report this file as DECLARED, so the growth rule in
+ * `lib/junit-checks.ts` stops counting it among the files that inherit a
+ * default nobody chose — "decided" and "nobody looked" become tellable apart,
+ * which is the whole distinction `perTestTimeoutDeclarations` exists to draw.
+ */
+setDefaultTimeout(gitFixtureTestTimeout());
 
 const REPO = join(import.meta.dir, "..");
 const WORKFLOW = join(REPO, ".github", "workflows", "ai-review.yml");
@@ -79,6 +108,22 @@ function ledgerBody(rounds: unknown[]): string {
 interface Rig {
   /** The comment list the GET answers with. `null` makes the GET FAIL. */
   list?: unknown[] | null;
+  /**
+   * One answer per page, chosen by the `page=` in the request URL — #1353.
+   * A request for a page past the end gets `[]`, which is what the API does.
+   * Takes precedence over `list`.
+   */
+  pages?: unknown[][];
+  /**
+   * Raw bytes for the GET's stdout, bypassing JSON entirely. For the case
+   * where the transfer SUCCEEDS and the body is not a comment list.
+   */
+  listRaw?: string;
+  /**
+   * Bytes the GET writes to STDERR while still exiting 0. This is the `2>&1`
+   * case: the step used to merge these into the response body.
+   */
+  listStderr?: string;
   /** The findings payload on disk. `undefined` plants no file at all. */
   payload?: unknown;
   /**
@@ -109,6 +154,13 @@ interface Rig {
    * earlier step or the reviewer itself wrote there.
    */
   untracked?: Record<string, string>;
+  /**
+   * Overwrites a TRACKED path on disk after the index is built, leaving the
+   * working tree dirty against the index. Mechanically the same write as
+   * `untracked`; named apart because the fact under test is different —
+   * here the path IS in the index and the two objects disagree.
+   */
+  dirty?: Record<string, string>;
   /** Overrides for the step's environment. */
   env?: Record<string, string>;
   /** Make the write (POST/PATCH) fail. */
@@ -137,6 +189,14 @@ function runPersist(rig: Rig = {}) {
     const listPath = join(dir, "list.json");
     if (list !== null) writeFileSync(listPath, JSON.stringify(list));
 
+    // #1353. Per-page answers go to per-page FILES for the same reason the
+    // single list does: a ledger body carries ```json fences and a fixture
+    // routed through a shell becomes command substitution.
+    if (rig.pages !== undefined) {
+      rig.pages.forEach((p, i) => writeFileSync(join(dir, `page-${i + 1}.json`), JSON.stringify(p)));
+    }
+    if (rig.listRaw !== undefined) writeFileSync(listPath, rig.listRaw);
+
     // One stub, two modes, told apart the way the script tells them apart:
     // a write passes `-X`. It records argv AND the request body, so a case
     // can assert on what was SENT and not only on what came back.
@@ -154,6 +214,23 @@ function runPersist(rig: Rig = {}) {
       rig.writeFails ? "  exit 22" : '  printf "%s" "${STUB_WRITE_RESPONSE}"',
       "  exit 0",
       "fi",
+      // #1353. Everything below is the READ. The stub answers per page when
+      // the case supplies pages, and can write to stderr while still exiting
+      // 0 — the state a `2>&1` turns into a corrupt body.
+      ...(rig.listStderr === undefined
+        ? []
+        : [`printf '%s\\n' ${JSON.stringify(rig.listStderr)} >&2`]),
+      ...(rig.pages === undefined
+        ? []
+        : [
+            "pg=1",
+            'for a in "$@"; do case "$a" in *page=*) pg="${a##*page=}"; pg="${pg%%&*}";; esac; done',
+            `f=${JSON.stringify(dir)}/page-\${pg}.json`,
+            // A page past the end is `[]`, which is what the real API returns
+            // and is the reading that ends the loop.
+            'if [ -f "$f" ]; then cat "$f"; else printf "[]"; fi',
+            "exit 0",
+          ]),
       list === null ? "exit 22" : `cat ${JSON.stringify(listPath)}`,
     ].join("\n");
     writeFileSync(join(bin, "curl"), `${curl}\n`, { mode: 0o755 });
@@ -208,7 +285,7 @@ function runPersist(rig: Rig = {}) {
       });
     git("init", "-q", "-b", "main", ".");
     git("add", "-A");
-    for (const [rel, contents] of Object.entries(rig.untracked ?? {})) {
+    for (const [rel, contents] of Object.entries({ ...rig.untracked, ...rig.dirty })) {
       const abs = join(work, rel);
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, contents);
@@ -672,13 +749,29 @@ describe("AC-L3 (#1168): it never writes on top of a read it could not take", ()
 
   test("AC-L3: the MUTANT — the failed-read guard removed — overwrites the ledger", () => {
     // The guard removed and nothing else, through the identical rig. This is
-    // the cheapest wrong implementation: carry on with an empty `comments`.
+    // the cheapest wrong implementation: carry on with an empty page.
+    //
+    // #1353 moved this branch inside the pagination loop, so it is indented
+    // four spaces and the old two-space pattern ran past it to a LATER
+    // `exit 0`, deleting a span that included other refusals. The mutant
+    // still differed from the real script and still wrote nothing, so the
+    // row went red looking like a behavioural finding. That is the seventh
+    // shape — a mutation that did not apply as spelled reads exactly like
+    // the guard behaving differently — so the survival assertions below are
+    // part of the experiment, not decoration.
     const real = buildPersistScript();
     const mutant = real.replace(
-      /  ledger_note "the pull request's comments could not be read[\s\S]*?\n  exit 0\n/,
-      '  comments="[]"\n',
+      /    ledger_note "the pull request's comments could not be read[\s\S]*?\n    exit 0\n/,
+      '    page_body="[]"\n',
     );
     expect(mutant, "the mutation did not apply").not.toBe(real);
+    expect(
+      real.length - mutant.length,
+      "the replacement swallowed more than the one branch it names",
+    ).toBeLessThan(600);
+    for (const survives of ["more than", "came back as something other than a JSON array"]) {
+      expect(mutant, `the mutation deleted an unrelated refusal (${survives})`).toContain(survives);
+    }
     const r = runPersist({ list: null, payload: ONE_FINDING, script: mutant });
     expect(r.method, "the mutant must write — that is the defect this guards").toBe("POST");
   });
@@ -737,6 +830,124 @@ describe("AC-L6 (#1168): a write that landed nothing is said out loud", () => {
     // successful write, which is a warning nobody would read for long.
     const r = runPersist({ payload: ONE_FINDING });
     expect(r.stdout).not.toContain("concurrent write");
+  });
+});
+
+// #1353. AC-L3 established that a FAILED read writes nothing. The hole was
+// the read that SUCCEEDS and still yields no usable list — curl exiting 0, or
+// the ledger sitting on a page nobody asked for. Both produced an empty
+// selection, which is byte-identical to "this pull request has no ledger yet",
+// and the step POSTed a fresh one over the top.
+//
+// So these cases are not written against "the ledger works". They are written
+// against the property the defect destroyed: THE THREE STATES STAY
+// DISTINGUISHABLE — found, read-to-the-end-and-absent, unreadable. A test
+// asserting only that a ledger gets written passes against every row below.
+describe("AC-L9 (#1353): a read that returns nothing usable is not a pull request with no ledger", () => {
+  // `at` and `run` are REQUIRED, not decoration: #1386's shape guard refuses a
+  // payload whose entries lack them, and a refused payload produces exactly the
+  // observable these cases are about — no write, step exits 0. A fixture
+  // missing them would make every row below red for a reason that has nothing
+  // to do with pagination.
+  const LEDGER = () => botComment(5, ledgerBody([{ at: "t0", run: "original", round: 1, findings: [] }]));
+  const filler = (n: number, from: number) =>
+    Array.from({ length: n }, (_, i) => botComment(from + i, "ordinary comment"));
+
+  test("stderr on a SUCCESSFUL transfer does not corrupt the body — the `2>&1`", () => {
+    // curl exits 0 and writes a diagnostic. Merged into stdout it makes the
+    // body unparseable, the selection empty, and the step starts again.
+    const r = runPersist({
+      list: [LEDGER()],
+      listStderr: "Warning: Problem transient. Will retry in 1 seconds.",
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "a warning on stderr made the step lose the ledger").toBe("PATCH");
+    expect(r.rounds, "the prior round was dropped").toHaveLength(2);
+  });
+
+  test("a 200 whose body is not an array refuses, and writes nothing", () => {
+    const r = runPersist({ listRaw: '{"message":"Not Found"}', payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "it started a fresh ledger on a body it could not read").toBeNull();
+    expect(r.sentRaw).toBeNull();
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  test("a body that is not JSON at all refuses, and writes nothing", () => {
+    const r = runPersist({ listRaw: "<html>502 Bad Gateway</html>", payload: ONE_FINDING });
+    expect(r.method).toBeNull();
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  test("a ledger on the SECOND page is found, not replaced", () => {
+    // The population this matters for: a pull request with more than 100
+    // comments, which is exactly a long-running one with many review rounds.
+    const r = runPersist({
+      pages: [filler(100, 100), [LEDGER()]],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "a ledger past the first page was not found").toBe("PATCH");
+    expect(r.rounds).toHaveLength(2);
+  });
+
+  test("the OLDEST match still wins when matches sit on different pages", () => {
+    // `first`, across pages. An impersonator's comment is newer, so it lands
+    // later; breaking on the earliest page carrying a match preserves the
+    // property the single-page selection already had.
+    const r = runPersist({
+      pages: [
+        [...filler(99, 200), botComment(5, ledgerBody([{ at: "t0", run: "original", round: 1, findings: [] }]))],
+        [botComment(999, ledgerBody([]))],
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(r.method).toBe("PATCH");
+    expect(r.argv.join(" "), "it patched the newer comment").toContain("/comments/5");
+  });
+
+  test("exhausting the page bound refuses rather than concluding there is none", () => {
+    // A loop bound is not a reading. Every page full and no match means the
+    // ledger may be on the page after the last one looked at.
+    const pages = Array.from({ length: AI_REVIEW_LEDGER_MAX_PAGES + 1 }, (_, i) => filler(100, i * 100));
+    const r = runPersist({ pages, payload: ONE_FINDING });
+    expect(r.method, "it started a fresh ledger after giving up on a list it had not finished").toBeNull();
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  // THE CONTROL, and the reason the rows above are not satisfied by a step
+  // that refuses everything. This is the third state: the list WAS read to
+  // its end and genuinely holds no ledger. It must still POST, or the first
+  // round of every pull request is lost.
+  test("CONTROL: a short page with no ledger is read to the end, and DOES post", () => {
+    const r = runPersist({ pages: [filler(3, 100)], payload: ONE_FINDING });
+    expect(r.method, "a genuine first round stopped being recorded").toBe("POST");
+    expect(r.rounds).toHaveLength(1);
+  });
+
+  test("CONTROL: an empty first page is also read to the end, and DOES post", () => {
+    const r = runPersist({ pages: [[]], payload: ONE_FINDING });
+    expect(r.method).toBe("POST");
+  });
+
+  // The property itself, stated as one assertion rather than inferred from
+  // the rows above: the unreadable state and the absent state must not
+  // produce the same observable. If a later change collapses them again,
+  // this is the case that says so.
+  test("unreadable and absent are not the same observable", () => {
+    const unreadable = runPersist({ listRaw: "<html>502</html>", payload: ONE_FINDING });
+    const absent = runPersist({ pages: [[]], payload: ONE_FINDING });
+    expect(unreadable.method).toBeNull();
+    expect(absent.method).toBe("POST");
+    expect(unreadable.method).not.toBe(absent.method);
+  });
+
+  test("it paginates with a page parameter at all", () => {
+    // A positive control on the mechanism: the rows above would also pass
+    // against a step that happened to request page 2 by luck of the fixture.
+    const r = runPersist({ pages: [filler(100, 0), [LEDGER()]], payload: ONE_FINDING });
+    expect(r.argv.join(" ")).toContain("page=2");
   });
 });
 
@@ -1014,38 +1225,119 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
     expect(r.rounds).toHaveLength(1);
   });
 
-  test("AC-L11: at the cap the OLDEST round is dropped and the drop is announced", () => {
-    const full = Array.from({ length: AI_REVIEW_LEDGER_MAX_ROUNDS }, (_, i) => ({
+  /**
+   * A prior ledger of `n` rounds, named `old-0` … `old-<n-1>`.
+   *
+   * The names are deliberately NOT `run-<i>`. The rig's `GITHUB_RUN_ID` is
+   * `run-9`, so a prior ledger of twelve `run-<i>` rounds already contains
+   * `run-9` — and "the new round was recorded" then held vacuously, against a
+   * row the fixture itself planted. An eviction-order assertion needs the two
+   * populations to be nameable apart.
+   */
+  function priorRounds(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
       at: `t${i}`,
       sha: "cafe",
-      run: `run-${i}`,
+      run: `old-${i}`,
       attempt: "1",
       round: i + 1,
       findings: [],
     }));
-    const r = runPersist({ list: [botComment(5, ledgerBody(full))], payload: ONE_FINDING });
+  }
+
+  test("AC-L11: at the cap the OLDEST round is dropped and the COUNT is announced", () => {
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds, "the ledger grew past its cap").toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
     // The oldest is gone and the newest is present — a cap that dropped the
     // WRONG end keeps the same length and loses every new round instead.
-    expect(JSON.stringify(r.rounds), "run-0 should have been dropped").not.toContain('"run-0"');
-    expect(JSON.stringify(r.rounds)).toContain('"run-9"');
+    expect(JSON.stringify(r.rounds), "old-0 should have been dropped").not.toContain('"old-0"');
+    expect(JSON.stringify(r.rounds), "old-1 is inside the window and was dropped").toContain(
+      '"old-1"',
+    );
     expect(JSON.stringify(r.rounds), "this round was not recorded").toContain('"run-9"');
     // A dropped round is gone, not empty. Silence here would make the ledger
     // a window that reports as a history.
-    expect(r.stdout, "the ledger dropped a round and said nothing").toContain("cap");
+    //
+    // Assert the COUNT, not the word "cap". The count is the one thing only
+    // the announcement branch can write, and `""` and `0` used to reach the
+    // SAME `case` arm — so a note keyed on the word was green whether the
+    // count had been read or not. That is the sixth shape of
+    // `.claude/rules/checks-must-be-able-to-fail.md` living in the arm
+    // rather than in the value, and it shipped live in #1386.
+    expect(r.stdout, "the evicted count was not announced").toContain("1 of the OLDEST");
+  });
+
+  test("AC-L11: the announced count is the number actually evicted, not a constant", () => {
+    // The row the one above cannot be: it evicts THREE, so a hardcoded "1",
+    // a boolean dressed as a count, and an off-by-one all come back wrong.
+    // Two rows differing only in the count is the cheapest way to make the
+    // announcement carry information rather than fire.
+    const over = AI_REVIEW_LEDGER_MAX_ROUNDS + 2;
+    const r = runPersist({ list: [botComment(5, ledgerBody(priorRounds(over)))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds, "the ledger grew past its cap").toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(JSON.stringify(r.rounds), "old-2 should have been dropped").not.toContain('"old-2"');
+    expect(JSON.stringify(r.rounds), "old-3 is inside the window and was dropped").toContain(
+      '"old-3"',
+    );
+    expect(JSON.stringify(r.rounds), "this round was not recorded").toContain('"run-9"');
+    expect(r.stdout, "the announced count does not match the eviction").toContain(
+      "3 of the OLDEST",
+    );
   });
 
   test("AC-L11: under the cap nothing is dropped and nothing is announced", () => {
-    // The control for the row above: the warning must not fire on every run.
-    const few = [{ at: "t0", sha: "cafe", run: "run-0", attempt: "1", round: 1, findings: [] }];
-    const r = runPersist({ list: [botComment(5, ledgerBody(few))], payload: ONE_FINDING });
+    // The control for the rows above: the warning must not fire on every run.
+    const r = runPersist({ list: [botComment(5, ledgerBody(priorRounds(1)))], payload: ONE_FINDING });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds).toHaveLength(2);
     expect(JSON.stringify(r.rounds), "an under-cap ledger lost its oldest round").toContain(
-      '"run-0"',
+      '"old-0"',
     );
-    expect(r.stdout, "the cap warning fired below the cap").not.toContain("cap");
+    expect(r.stdout, "the cap warning fired below the cap").not.toContain("OLDEST");
+  });
+
+  test("AC-L11: a count that cannot be read REFUSES the write rather than reading as zero", () => {
+    // Fault injection on the count position only. In production the count and
+    // the kept list come out of ONE `jq`, so this branch is unreachable while
+    // that invocation succeeds — which is exactly why it needs a row: a
+    // defensive arm nothing exercises is a line in a report.
+    //
+    // The defect this blocks is the one that shipped: when the count was a
+    // SECOND `jq … 2>/dev/null || true`, its failure produced `""`, `""`
+    // shared an arm with `0`, and the ledger was written having evicted
+    // rounds it did not mention. A truncated history that reports as a
+    // complete one is unrecoverable; a round that was not recorded is not.
+    const real = buildPersistScript();
+    const COUNT_EXPR = "(([($g | length) - $keep, 0] | max) | tostring)";
+    expect(
+      real.split(COUNT_EXPR).length - 1,
+      "the count expression moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    const mutant = real.replace(COUNT_EXPR, '("not-a-number")');
+    expect(mutant, "the mutation did not apply").not.toBe(real);
+
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+      script: mutant,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "the ledger was written with an unreadable eviction count").toBe(null);
+    expect(r.stdout, "the refusal was not announced").toContain("NOT recorded");
+
+    // The control, same rig and the real script: the refusal is the
+    // mutation's doing and not something this fixture provokes on its own.
+    const control = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
+    expect(control.method, "the unmutated script also refused").toBe("PATCH");
+    expect(control.stdout).not.toContain("NOT recorded");
   });
 });
 
@@ -1077,6 +1369,22 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
  * identically, `-L` and `-f` agree, and the row goes green against the
  * defect it was written for.
  */
+/** Widens containment to match every resolved path. */
+const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
+
+/**
+ * Reverts the read from the INDEX to the working tree — the one-line
+ * difference between "quote what the pull request contains" and "quote
+ * whatever is on disk". Built from the exported constant rather than a
+ * hand-copied string, so a mutation that silently failed to apply cannot
+ * read as a guard that decided nothing.
+ */
+const dropIndexRead = (s: string) =>
+  s.replace(
+    `rt=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)`,
+    'rt=$(sed -n "${rl}p" "${real}" 2>/dev/null || true)',
+  );
+
 describe("AC-L12 (#1379): a committed symlink does not read outside the checkout", () => {
   const DIRECT = "THE-LINKED-SECRET";
   const VIA_PARENT = "THE-PARENT-LINKED-SECRET";
@@ -1179,24 +1487,19 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     ).toBe("alpha");
   });
 
-  /** Widens containment to match every resolved path. */
-  const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
-  /** Stops the tracked check consulting `rel`, so it answers yes for anything. */
-  const dropTracked = (s: string) =>
-    s.replace('ls-files --error-unmatch -- "${rel}"', "ls-files --error-unmatch -- .");
 
   test("AC-L12: the MUTANT — containment AND tracking removed — posts through a linked parent", () => {
     // `! -L` stays, so this row cannot go green on the guard above.
     //
     // Both are dropped together because, MEASURED, dropping containment
-    // alone does not leak: `git ls-files --error-unmatch` refuses a path
-    // outside the repository too, so the two guards agree on every escaping
-    // input. The row below holds that finding on its own.
+    // alone does not leak: `git show ":${rel}"` refuses a path outside the
+    // repository too, so the two agree on every escaping input. The row
+    // below holds that finding on its own.
     const real = buildPersistScript();
-    const mutant = dropTracked(dropContainment(real));
+    const mutant = dropIndexRead(dropContainment(real));
     expect(mutant, "neither guard was found, so nothing was mutated").not.toBe(real);
     expect(dropContainment(real), "the containment pattern was not found").not.toBe(real);
-    expect(dropTracked(real), "the tracked check was not found").not.toBe(real);
+    expect(dropIndexRead(real), "the index read was not found").not.toBe(real);
     const r = runWithLinks(mutant);
     expect(
       r.sentRaw,
@@ -1205,15 +1508,16 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
-  test("AC-L12: containment alone is SUBSUMED by the tracked check — measured, not assumed", () => {
+  test("AC-L12: containment alone is SUBSUMED by the index read — measured, not assumed", () => {
     // Written down rather than left as a gap. With containment widened to
-    // `*)` and tracking intact, the linked-parent escape is still refused:
-    // the resolved path is outside the repository, so `ls-files` refuses it
-    // as well. Containment is retained for two reasons that are not
-    // refusal — it is what keeps `rel` a repo-RELATIVE pathspec rather than
-    // an absolute one, and it states the boundary where a reader looks for
-    // it — but it decides no input by itself, and a row claiming otherwise
-    // would be the "two deciders" shape going green for the wrong reason.
+    // `*)` and the index read intact, the linked-parent escape is still
+    // refused: the resolved path is outside the repository, so
+    // `git show ":${rel}"` refuses it as well. Containment is retained for
+    // two reasons that are not refusal — it is what keeps `rel` a
+    // repo-RELATIVE name rather than an absolute one, and it states the
+    // boundary where a reader looks for it — but it decides no input by
+    // itself, and a row claiming otherwise would be the "two deciders"
+    // shape going green for the wrong reason.
     const r = runWithLinks(dropContainment(buildPersistScript()));
     expect(r.sentRaw).not.toContain(VIA_PARENT);
     expect(r.rounds![0].findings[2].text).toBe("alpha");
@@ -1385,21 +1689,20 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
       "UNTRACKED-CANARY",
     );
     // `.git/config` is inside the workspace and passes containment, so this
-    // row can only be green because of the tracked check.
+    // row can only be green because the line comes out of the index.
     expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
   });
 
-  test("AC-L13: the MUTANT — the tracked check removed — quotes the untracked file", () => {
+  test("AC-L13: the MUTANT — reading the working tree instead of the index — quotes the untracked file", () => {
     const real = buildPersistScript();
-    // The operand is swapped for `.`, which is always tracked, so the
-    // predicate stops consulting `rel` while still running the same command.
-    const mutant = real.replace('ls-files --error-unmatch -- "${rel}"', "ls-files --error-unmatch -- .");
-    expect(mutant, "the tracked check was not found, so nothing was mutated").not.toBe(real);
+    const mutant = dropIndexRead(real);
+    expect(mutant, "the index read was not found, so nothing was mutated").not.toBe(real);
     const r = runUntracked(mutant);
     expect(
       r.sentRaw,
-      "weakening the tracked check changed nothing, so containment is being credited for it",
+      "reading the working tree changed nothing, so containment is being credited for it",
     ).toContain("UNTRACKED-CANARY");
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   /**
@@ -1423,6 +1726,35 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
    * `--` IS spelled on `readlink`, where the operand is still the
    * attacker-shaped `rf` and both GNU and BSD readlink accept it.
    */
+  /**
+   * The gate and the read must be talking about the SAME object.
+   *
+   * `ls-files` asks the index; a `sed` of the resolved path reads whatever
+   * is on disk now. A tracked file that an earlier step modified passes the
+   * gate and would get its MODIFIED content quoted — a validator and a
+   * consumer looking at two different objects, which is the same class as
+   * the symlink defect this whole arm exists to fix, arriving inside the
+   * guard that fixed it.
+   *
+   * Reading the line out of the index with `git show ":${rel}"` collapses
+   * them to one object. Without this row that repair is unwitnessed: every
+   * other row in this file plants a clean tree, where the index and the
+   * working tree agree and the two readings are indistinguishable.
+   */
+  test("AC-L13: a tracked but DIRTY file quotes the committed line, not the disk line", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "COMMITTED-LINE\n" },
+      dirty: { "lib/a.ts": "MODIFIED-ON-DISK\n" },
+      payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 1, summary: "dirty" }] },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings[0].text).toBe("COMMITTED-LINE");
+    expect(r.sentRaw, "the working-tree line was quoted instead of the committed one").not.toContain(
+      "MODIFIED-ON-DISK",
+    );
+  });
+
   test("AC-L13: a tracked file named `--` does not displace the quote", () => {
     const r = runPersist({
       list: [],

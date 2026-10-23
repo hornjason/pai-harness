@@ -24,11 +24,27 @@
  *
  * Thin trigger: every decision is `scripts/check-installed-hook-currency.ts`.
  * This file chooses a root, prints, and exits 0.
+ *
+ * ## The second reading: Claude Code hooks, not git hooks (#1216)
+ *
+ * The same shape one layer out. `.git/hooks` is untracked, so nothing in the
+ * repository can see what is installed there — and a Claude Code hook
+ * registration names a DIRECTORY, so nothing can see which commit the bytes
+ * it executes are on either. Why a startup report rather than a suite case or
+ * a line per hook, why this hook survives the staleness it reports, and why
+ * it REPORTS and never repairs: `lib/hook-tree-currency.ts`. The runner below
+ * passes through whatever that module asks for, so the query-only constraint
+ * is asserted where the subcommands are chosen —
+ * `test/unit/hook-tree-currency.test.ts` HC-16.
  */
 
-import { existsSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
+import { tryLoadRungateConfig } from '../lib/config-loader';
 import { repoRootFrom } from '../lib/paths';
+import { currencyReportLines, readRegistrationCurrency, spawnGitRunner } from '../lib/hook-tree-currency';
 import {
   readHookCurrency,
   currencyClass,
@@ -94,6 +110,37 @@ try {
   // a broken check byte-indistinguishable from a clean tree, which is the
   // state #879 found the repository in.
   report(`Hook currency UNMEASURED: ${e instanceof Error ? e.message : String(e)}`);
+}
+
+// ── Second reading: how old are the hooks a session actually executes (#1216)
+// Its own `try`: two readings of different files, so one throwing must not
+// take the other's with it — a shared `catch` would be one refusal standing
+// for two, and nobody could tell which was never taken. The `hooks/` gate is
+// the `.git/hooks` gate above, for the same reason: a tree the scaffold never
+// touched owns no hooks of ours to be stale.
+try {
+  const hooksDir = join(PROJECT_ROOT, 'hooks');
+  if (existsSync(hooksDir)) {
+    const config = tryLoadRungateConfig(PROJECT_ROOT) as { hooks?: unknown[] } | null;
+    const reading = readRegistrationCurrency({
+      repoRoot: PROJECT_ROOT,
+      home: homedir(),
+      // Named at the call site, not defaulted inside the module — its header
+      // says why.
+      base: 'origin/main',
+      readFile: p => (existsSync(p) ? readFileSync(p, 'utf-8') : null),
+      ownedHooks: readdirSync(hooksDir)
+        .filter(n => n.endsWith('.hook.ts'))
+        .map(n => n.replace(/\.hook\.ts$/, '')),
+      registryCommands: (config?.hooks ?? []).map(h => String((h as { command?: string })?.command ?? h)),
+      // `spawnGitRunner`, never an inline spawn: these directories are the
+      // unsupervised ones, and git executes its own config. See the module.
+      git: spawnGitRunner(spawnSync),
+    });
+    for (const line of currencyReportLines(reading)) report(line);
+  }
+} catch (e) {
+  report(`Hook tree currency UNMEASURED: ${e instanceof Error ? e.message : String(e)}`);
 }
 
 process.exit(0);

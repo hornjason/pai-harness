@@ -91,6 +91,43 @@ export const RESERVATIONS_CONTROL_KEY = "reservations";
 /** The message prefix every refusal out of this module and its allocator uses. */
 export const RESERVATION_REFUSAL = "SC reservation store is present and unreadable";
 
+/**
+ * The namespace an untagged block's integers belong to.
+ *
+ * Every entry written before #1363 is an SC claim, so this is the value an
+ * absent field resolves to and the reason the field is optional at all.
+ * Absent is the one case with a declared default; a field that is PRESENT
+ * and unusable is refused (`blockFault`), because only absence was ever
+ * given a meaning (`.claude/rules/config-access.md`, Silent Default
+ * Substitution).
+ */
+export const SC_NAMESPACE = "SC";
+
+/**
+ * Every namespace this store can hold, and the only strings `namespace` may
+ * take.
+ *
+ * A closed set, and an unknown value is a refusal rather than a block the
+ * reader passes through: the whole defect in #1363 is a claim the store
+ * accepted and the allocator read as a claim about something else, so a
+ * namespace nobody has taught the allocator about must not be storable
+ * either. Adding one is an edit here plus a line in
+ * `.claude/rules/parallel-sessions.md`, which is the point — the set of
+ * namespaces is a thing sessions agree on, not a thing an entry invents.
+ *
+ * | Namespace | Ids | Allocated by |
+ * |---|---|---|
+ * | `SC` | `SC-<n>` success criteria | `lib/create-sc.ts` |
+ * | `FG` | `FG-<n>` blocks in `test/issue-filing-gate.test.ts` | by hand |
+ * | `AR` | `AR-<n>` blocks in `test/finding-arbiter.test.ts` | by hand |
+ *
+ * `FG` and `AR` have no allocator. That is exactly why they need the
+ * registry: they are chosen by eyeballing headroom above the highest id in
+ * the file, by every agent that adds a block, which is the third method
+ * `.claude/rules/parallel-sessions.md` names as an allocation.
+ */
+export const RESERVATION_NAMESPACES: readonly string[] = [SC_NAMESPACE, "FG", "AR"];
+
 /** One declared block. `from` and `to` are inclusive. */
 export interface ScReservation {
   /** Branch name or issue ref. The thing another session can look you up by. */
@@ -98,6 +135,43 @@ export interface ScReservation {
   from: number;
   to: number;
   note?: string;
+  /**
+   * Which ids these integers claim. Absent means {@link SC_NAMESPACE}.
+   *
+   * Optional on the interface so a caller can build an SC block without
+   * saying so, and ALWAYS populated on a block that came out of
+   * {@link readScReservations} — see {@link ResolvedScReservation}.
+   */
+  namespace?: string;
+}
+
+/**
+ * A block as the reader hands it back: the namespace is resolved, never absent.
+ *
+ * The distinction is load-bearing rather than cosmetic. `namespace?: string`
+ * invites a call site to read `b.namespace` and compare it against `"SC"`,
+ * which is `false` for every entry written before #1363 — the fail-open this
+ * issue is about, arriving in the code that fixes it.
+ */
+export type ResolvedScReservation = ScReservation & { namespace: string };
+
+/**
+ * The namespace a block claims, resolving the documented default.
+ *
+ * One binding. A second site that spelled `b.namespace ?? "SC"` would
+ * survive any mutation of this one (`.claude/rules/checks-must-be-able-to-fail.md`,
+ * fourth shape).
+ */
+export function namespaceOf(block: { namespace?: string }): string {
+  return block.namespace ?? SC_NAMESPACE;
+}
+
+/** The blocks claiming ids in one namespace, with the default resolved. */
+export function blocksInNamespace(
+  blocks: readonly ScReservation[],
+  namespace: string,
+): ScReservation[] {
+  return blocks.filter(b => namespaceOf(b) === namespace);
 }
 
 export type ScReservationStatus = "read" | "absent" | "unreadable";
@@ -107,7 +181,7 @@ export interface ScReservationReading {
   /** Absolute path the reading was taken from, whether or not it existed. */
   path: string;
   /** Empty under every status except a `read` of a store that declares blocks. */
-  blocks: ScReservation[];
+  blocks: ResolvedScReservation[];
   /** Why it could not be read, or why the store is absent. Absent on a clean read. */
   reason?: string;
 }
@@ -134,7 +208,29 @@ function blockFault(raw: unknown, index: number): string | null {
   if (!isCount(b.from)) return `${at} (${String(b.owner)}) has no usable "from"`;
   if (!isCount(b.to)) return `${at} (${String(b.owner)}) has no usable "to"`;
   if ((b.to as number) < (b.from as number)) return `${at} (${String(b.owner)}) runs backwards`;
-  if ((b.to as number) >= FIXTURE_SC_FLOOR) {
+  // PRESENT and unusable is refused; absent resolves to SC. Only absence was
+  // ever given a meaning, so defaulting a `7` or a `"QQ"` would be the store
+  // accepting a claim and the allocator reading it as a claim about something
+  // else — the defect this field exists to end (#1363).
+  let namespace: string | undefined;
+  if (b.namespace !== undefined) {
+    if (typeof b.namespace !== "string") {
+      return `${at} (${String(b.owner)}) has a non-string "namespace"`;
+    }
+    if (!RESERVATION_NAMESPACES.includes(b.namespace)) {
+      return (
+        `${at} (${String(b.owner)}) declares the unknown namespace "${b.namespace}" — ` +
+        `this store holds ${RESERVATION_NAMESPACES.join(", ")}`
+      );
+    }
+    namespace = b.namespace;
+  }
+  // The fixture floor is an SC rule and is applied only to SC blocks. The
+  // 9000s exist because `nextSCNumber` drops fixture ids on purpose; no other
+  // namespace has an allocator, a fixture range, or anything that would make
+  // a high integer unhonourable. Applying an SC-specific bound to an FG block
+  // is the same category error as reading its integers as SC ids.
+  if (namespaceOf({ namespace }) === SC_NAMESPACE && (b.to as number) >= FIXTURE_SC_FLOOR) {
     return `${at} (${String(b.owner)}) reaches into the fixture range, which the allocator cannot honour`;
   }
   if (b.note !== undefined && typeof b.note !== "string") return `${at} (${String(b.owner)}) has a non-string note`;
@@ -149,13 +245,24 @@ function blockFault(raw: unknown, index: number): string | null {
  * two owners is strictly worse than no store, because the sessions reading it
  * both believe they are separated.
  */
-function overlapFault(blocks: ScReservation[]): string | null {
-  const sorted = [...blocks].sort((a, b) => a.from - b.from);
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const cur = sorted[i];
-    if (cur.from <= prev.to) {
-      return `${prev.owner} (${prev.from}-${prev.to}) and ${cur.owner} (${cur.from}-${cur.to}) overlap`;
+function overlapFault(blocks: readonly ResolvedScReservation[]): string | null {
+  // WITHIN a namespace, never across one. `FG-45..60` and `SC-45..60` share
+  // their integers and claim nothing in common, so comparing them would make
+  // the first correctly-declared FG block refuse the whole store — and a
+  // refused store refuses every allocation in the repository. Grouping first
+  // is what lets the check keep its teeth while the store holds more than one
+  // kind of id (#1363).
+  for (const namespace of new Set(blocks.map(namespaceOf))) {
+    const sorted = blocksInNamespace(blocks, namespace).sort((a, b) => a.from - b.from);
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1];
+      const cur = sorted[i];
+      if (cur.from <= prev.to) {
+        return (
+          `${namespace}: ${prev.owner} (${prev.from}-${prev.to}) and ` +
+          `${cur.owner} (${cur.from}-${cur.to}) overlap`
+        );
+      }
     }
   }
   return null;
@@ -214,9 +321,20 @@ export function readScReservations(root: string): ScReservationReading {
     return { status: "unreadable", path, blocks: [], reason: faults.join("; ") };
   }
 
+  // The namespace is RESOLVED here, once, so no downstream reader has to
+  // remember that an absent field means SC. Every block that leaves this
+  // function carries a concrete namespace.
   const blocks = declared.map(b => {
     const r = b as Record<string, unknown>;
-    const block: ScReservation = { owner: r.owner as string, from: r.from as number, to: r.to as number };
+    // `blockFault` has already refused anything that is neither absent nor a
+    // known string, so the narrowing here cannot silently widen the set.
+    const declaredNs = typeof r.namespace === "string" ? r.namespace : undefined;
+    const block: ResolvedScReservation = {
+      owner: r.owner as string,
+      from: r.from as number,
+      to: r.to as number,
+      namespace: namespaceOf({ namespace: declaredNs }),
+    };
     if (typeof r.note === "string") block.note = r.note;
     return block;
   });
