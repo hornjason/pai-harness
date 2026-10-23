@@ -2,6 +2,15 @@
  * The generated round-counting step, and its agreement with the library that
  * decides the same thing (#1168).
  *
+ * Covers CRC-N1 (CODE-REVIEW-CONVERGENCE-SPEC.md).
+ *
+ * `AC-S1` binds the cap to the library's, `AC-S2` holds the bash and the
+ * library to one at-cap decision, `AC-S3` makes an unreadable count red
+ * rather than a first round, `AC-S4` finds the step in the COMMITTED
+ * workflow, and `AC-S5` reads the at-cap branch asking the reviewer for an
+ * approach assessment and refusing silence. That conjunction is the
+ * criterion. No new assertion is added for the id.
+ *
  * `lib/ai-review-rounds.ts` is the source of truth and it delegates the
  * budget arithmetic to `reReviewDecision` in `lib/security-verdict.ts`.
  * `lib/scaffold/ai-review-step.ts` cannot import it — a relative import

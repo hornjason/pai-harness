@@ -127,7 +127,20 @@ const UNCLAIMED_RATCHET = 150;
 // not in the history, and for the same candidate against a real shallow
 // clone. Unmatchable for the same reason — no file-exists pattern expresses
 // a three-armed reading over a planted git repository.
-const CLAIMED_UNBINDABLE = 87;
+//
+// 87 -> 91 on 2026-10-23. The first four criteria of
+// CODE-REVIEW-CONVERGENCE-SPEC.md to be bound to anything: CRC-A6 (a check
+// reads the action's own execution transcript for the reviewer's load of
+// REVIEW.md), CRC-B5 (a style, diagnostics or cleanup filing is refused at
+// the `gh issue create` chokepoint the hook calls), CRC-C4 (`synchronize`
+// re-runs the review on every push, so a repaired defect is simply not found
+// again) and CRC-N1 (the round cap). All four rose for the reason the
+// docblock above gives: each is a claim about what a predicate, a generated
+// bash step or a hook DOES to an input, and no file-exists pattern states
+// that. The fifth criterion ticked in the same commit, CRC-A5, is in neither
+// half — `REVIEW.md` exists is matchable, so the registry builds its
+// assertion and the split never sees it.
+const CLAIMED_UNBINDABLE = 91;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

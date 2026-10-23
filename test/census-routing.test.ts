@@ -78,6 +78,7 @@ import {
   parseUnifiedDiff,
   type Change,
 } from "../scripts/census-routing";
+import { TRACKED_ID_PREFIXES } from "../lib/sc-ids";
 
 const REPO = join(import.meta.dir, "..");
 const RULE = join(REPO, ".claude/rules/self-referential-tests.md");
@@ -133,6 +134,44 @@ describe("#990: a tick is routed, and an edit that is not a tick is not", () => 
       tick.tests.length - edit.tests.length,
       "a tick and a prose edit route to the same set, so the tick row is doing nothing",
     ).toBe(SC_CENSUS.length);
+  });
+
+  // The SECOND namespace, and the row that would have caught #1298 leaving
+  // this router behind. `CRC-A1`..`CRC-N5` are tracked criteria by
+  // `TRACKED_ID_PREFIXES`, so ticking one moves `UNCLAIMED_RATCHET`,
+  // `CLAIMED_UNBINDABLE` and the per-spec census exactly as ticking an `SC-`
+  // does — and until the prefix here came out of `lib/sc-ids.ts`, a `CRC-`
+  // tick routed the spec-edit pair and nothing else.
+  //
+  // Driven from `TRACKED_ID_PREFIXES` rather than over the literal string
+  // "CRC", so a THIRD prefix added to that list is covered the day it lands
+  // instead of reproducing this defect a second time. `SC` is skipped
+  // because the two cases above already measure it; what this asserts is
+  // that no member of the list is unrouted.
+  test("every tracked prefix routes a tick, not only the first one", () => {
+    const edit = censusTestsFor([change({ path: "specs/X.md", added: ["some prose"] })]);
+    for (const prefix of TRACKED_ID_PREFIXES) {
+      const { tests } = censusTestsFor([
+        change({
+          path: "specs/CODE-REVIEW-CONVERGENCE-SPEC.md",
+          added: [`- [x] ${prefix}-9104: a criterion in the ${prefix} namespace`],
+        }),
+      ]);
+      for (const t of SC_CENSUS) {
+        expect(tests, `a ${prefix}- tick did not route to ${t} — #990 in a second namespace`)
+          .toContain(t);
+      }
+      // Same discrimination as the SC case: `spec-edit` fires on any specs/
+      // line, so membership alone is green under a router with no tick row.
+      expect(
+        tests.length - edit.tests.length,
+        `a ${prefix}- tick routes the same set as a prose edit`,
+      ).toBe(SC_CENSUS.length);
+    }
+    expect(
+      TRACKED_ID_PREFIXES.length,
+      "the prefix list is empty, so the loop above asserted nothing",
+    ).toBeGreaterThan(1);
   });
 
   // CONTROL against the cheapest wrong generalisation: fire on any specs/

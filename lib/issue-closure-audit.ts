@@ -63,7 +63,31 @@ export interface ClosedIssue {
   labels: string[];
   /** ISO-8601 close timestamp, used against `AUDIT_EPOCH`. */
   closedAt: string | null;
+  /**
+   * Numbers of MERGED pull requests that cross-reference this issue (#1279).
+   *
+   * This is the second reading, and it exists to split one bucket in two. A
+   * close with no closer tells you nobody linked the merge to the issue; it
+   * does not tell you whether a merge happened. Those are different facts
+   * and they need different work — see `classifyClosure`.
+   *
+   * Unmerged and closed-unmerged pull requests are deliberately absent: a
+   * draft that mentions an issue is not evidence the work shipped.
+   */
+  mergedReferences: number[];
 }
+
+/**
+ * The GraphQL alias the cross-reference timeline is read under.
+ *
+ * One declaring position, on purpose. `toClosedIssue` reads this key and
+ * `scripts/audit-issue-closures.ts` interpolates this same constant into its
+ * query, so a reader and a producer naming different fields is a build-time
+ * impossibility rather than a silent `[]` — which is #530's shape exactly:
+ * a consumer reading a name nothing writes, with no error anywhere, because
+ * an absent key and an empty list are the same reading.
+ */
+export const CROSS_REFERENCE_FIELD = "crossReferences";
 
 /**
  * The date this control went live. Issues closed before it are not findings.
@@ -99,13 +123,30 @@ export const AUDIT_EPOCH = "2026-10-13T00:00:00Z";
  * resolves to the Commit or the PullRequest responsible, and to `null` when
  * GitHub has nothing to attribute the close to. REST's `state_reason` cannot
  * distinguish those, and the timeline endpoint is one request per issue.
+ *
+ * The cross-reference timeline is read under its own alias rather than by
+ * widening the `CLOSED_EVENT` selection (#1279). Widening it would have put
+ * the closer behind `last: N` on a mixed list, so an issue with N later
+ * cross-references would lose its `ClosedEvent` and read as a hand-typed
+ * close — a false finding manufactured by the instrument that was supposed
+ * to classify findings.
  */
 export function toClosedIssue(node: any): ClosedIssue {
   const closer = node?.timelineItems?.nodes?.[0]?.closer ?? null;
   let closedBy: string | null = null;
   if (closer?.__typename === "Commit") closedBy = `commit ${closer.oid}`;
   else if (closer?.__typename === "PullRequest") closedBy = `pull request #${closer.number}`;
+  const xrefs: number[] = [];
+  for (const item of node?.[CROSS_REFERENCE_FIELD]?.nodes ?? []) {
+    const source = item?.source;
+    // `merged` is the whole discriminator. An open or an abandoned pull
+    // request mentioning an issue is not evidence that anything shipped, and
+    // counting one would move a genuinely untraceable close into the bucket
+    // nobody re-reads.
+    if (source?.merged === true && typeof source.number === "number") xrefs.push(source.number);
+  }
   return {
+    mergedReferences: [...new Set(xrefs)].sort((a, b) => a - b),
     number: node.number,
     title: node.title ?? "",
     // GraphQL shouts its enums. The decision compares against `not_planned`,
@@ -119,9 +160,34 @@ export function toClosedIssue(node: any): ClosedIssue {
   };
 }
 
-/** A finding: one issue, and why it was flagged. */
+/**
+ * Which of the two things a hand-typed close actually is (#1279).
+ *
+ * Both are findings. Both break
+ * `.claude/rules/ship-workflow.md`'s *"Let the PR close the issue. Do not run
+ * `gh issue close` yourself."* The split is not about who is at fault, it is
+ * about what the remedy costs:
+ *
+ * - `LINK_LOST` — a merged pull request in this repository references the
+ *   issue, so the work is on `main` and only the attribution was dropped. The
+ *   remedy is to name the PR. Nobody needs to re-do anything.
+ * - `NO_TRACE` — no merged pull request references it at all. Nothing in the
+ *   merge history records that this work ever happened, which is the state
+ *   the audit exists to surface.
+ *
+ * Before the split there was one bucket. Measured over this repository's 299
+ * issues closed between 2026-10-19 and 2026-10-23, 95 were findings and
+ * **79 of them were `LINK_LOST`** — so the 16 rows that are the real signal
+ * sat at one in six of a list people had learnt to scroll past. The count is
+ * the argument: a check is worth what it can discriminate, not what it can
+ * count.
+ */
+export type FindingKind = "LINK_LOST" | "NO_TRACE";
+
+/** A finding: one issue, which kind it is, and why it was flagged. */
 export interface ClosureFinding {
   issue: ClosedIssue;
+  kind: FindingKind;
   reason: string;
 }
 
@@ -148,6 +214,55 @@ export const EXEMPT_LABEL = "closed-by-hand";
 export const FINDING_LABEL = "closed-without-ship";
 
 /**
+ * The label a `LINK_LOST` finding gets instead (#1279).
+ *
+ * A second finding label, not a second exemption. It exists so the split is
+ * queryable on the tracker and not only in a job log — `is:closed
+ * label:ship-link-lost` is a list of attributions somebody can repair, and
+ * `is:closed label:closed-without-ship` stops being 83% of that.
+ *
+ * Both finding labels suppress re-reporting, for the reason the two-label
+ * comment above gives: an audit that reads its own mark as new work reports
+ * the same issue every morning until somebody switches it off.
+ */
+export const LINK_LOST_LABEL = "ship-link-lost";
+
+/** The label each kind is reported under. One row per kind, so a new kind is a build error. */
+export const LABEL_FOR_KIND: Record<FindingKind, string> = {
+  LINK_LOST: LINK_LOST_LABEL,
+  NO_TRACE: FINDING_LABEL,
+};
+
+/**
+ * The single place that decides which kind a finding is, and the evidence.
+ *
+ * Returns both together so there is one derivation. `report` and the labeller
+ * switch on `kind` and never re-read `mergedReferences` to re-decide — a
+ * second comparison of the same facts would survive any mutation of this one
+ * and the guard would go green for an unrelated reason
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ */
+export function classifyClosure(issue: ClosedIssue): { kind: FindingKind; reason: string } {
+  const shipped = issue.mergedReferences ?? [];
+  if (shipped.length > 0) {
+    return {
+      kind: "LINK_LOST",
+      reason:
+        `closed by hand, but merged ${shipped.map(n => `#${n}`).join(", ")} ` +
+        `reference${shipped.length === 1 ? "s" : ""} it — the work is on the default branch ` +
+        `and only the closing link was lost. Repair the attribution; do not re-do the work`,
+    };
+  }
+  return {
+    kind: "NO_TRACE",
+    reason:
+      `closed with nothing to attribute it to, no ${NOT_PLANNED} reason, no ` +
+      `${EXEMPT_LABEL} label and no merged pull request referencing it — nothing ` +
+      `records that this work was ever done`,
+  };
+}
+
+/**
  * The single place that decides. One exported function, so there is one
  * binding to mutate; a second comparison of the same facts elsewhere would
  * survive any mutation of this one and the guard would go green for an
@@ -172,13 +287,14 @@ export function closedWithoutRecord(
     if (issue.closedBy !== null) continue;
     if (issue.stateReason === NOT_PLANNED) continue;
     if (issue.labels.includes(EXEMPT_LABEL)) continue;
-    if (issue.labels.includes(FINDING_LABEL)) continue; // already reported
-    out.push({
-      issue,
-      reason:
-        `closed with nothing to attribute it to, no ${NOT_PLANNED} reason and no ` +
-        `${EXEMPT_LABEL} label — nothing records that it went through the ship pipeline`,
-    });
+    // Already reported, under either finding label (#1279).
+    if (issue.labels.some(l => l === FINDING_LABEL || l === LINK_LOST_LABEL)) continue;
+    // Both kinds are findings. The classification says what the remedy is; it
+    // never decides whether to report. A `continue` here for LINK_LOST is the
+    // cheapest wrong fix for this issue — the list shrinks by 83% and a
+    // hand-typed close of an issue somebody else's PR happens to mention
+    // becomes invisible.
+    out.push({ issue, ...classifyClosure(issue) });
   }
   return out;
 }
@@ -210,16 +326,47 @@ export function shouldReopen(finding: ClosureFinding, reopenEnabled: boolean): b
   return finding.issue.labels.some(l => PROTECTED_LABELS.includes(l));
 }
 
-/** The job summary, as text. Empty findings say so rather than printing nothing. */
+/**
+ * The heading each kind is reported under. One row per kind, so a new kind is
+ * a build error rather than a silently unsectioned finding.
+ */
+export const SECTION_FOR_KIND: Record<FindingKind, string> = {
+  NO_TRACE: "NO_TRACE — no merged pull request references these, so nothing records that the work happened",
+  LINK_LOST: "LINK_LOST — these shipped and the closing link was lost; repair the attribution, do not re-do the work",
+};
+
+/**
+ * The order the sections print in. `NO_TRACE` leads because it is the signal
+ * and `LINK_LOST` is 83% of the volume — a report that interleaves them puts
+ * the actionable rows one in six, which is the state #1279 is about.
+ */
+export const KIND_ORDER: FindingKind[] = ["NO_TRACE", "LINK_LOST"];
+
+/**
+ * The job summary, as text. Empty findings say so rather than printing nothing.
+ *
+ * Sections are keyed off `finding.kind` and nothing else. Re-deriving the kind
+ * here from `mergedReferences` would be a second decider for a question
+ * `classifyClosure` already answers, and the two would always agree right up
+ * until one of them was mutated.
+ */
 export function report(findings: ClosureFinding[], scanned: number): string {
   if (findings.length === 0) {
     return `Issue closure audit: ${scanned} closed issues scanned, none closed without a record.`;
   }
-  const lines = findings.map(
-    f => `- #${f.issue.number} ${f.issue.title} — ${f.reason}`,
-  );
+  const counts = KIND_ORDER.map(k => `${k} ${findings.filter(f => f.kind === k).length}`).join(", ");
+  const blocks: string[] = [];
+  for (const kind of KIND_ORDER) {
+    const of = findings.filter(f => f.kind === kind);
+    if (of.length === 0) continue;
+    blocks.push(
+      `${SECTION_FOR_KIND[kind]}\n` +
+        of.map(f => `- #${f.issue.number} ${f.issue.title} — ${f.reason}`).join("\n"),
+    );
+  }
   return (
-    `Issue closure audit: ${findings.length} of ${scanned} closed issues have no ship record.\n\n` +
-    lines.join("\n")
+    `Issue closure audit: ${findings.length} of ${scanned} closed issues have no ship record ` +
+    `(${counts}).\n\n` +
+    blocks.join("\n\n")
   );
 }

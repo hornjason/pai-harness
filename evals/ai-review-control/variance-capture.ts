@@ -425,17 +425,111 @@ export function liveArmCaveat(arm: Pick<ArmReading, "distinctTrackerSets" | "dis
   );
 }
 
+/**
+ * A pair of `ai-review` attempts that read ONE tree.
+ *
+ * A re-run replays the recorded merge commit instead of recomputing it, so the
+ * two attempts of a single run check out the same commit. That is the only way
+ * a same-tree repeat exists in this repository's history, and it is why the
+ * experiment this file once called unrun had in fact already been run — three
+ * times, incidentally, by ordinary re-runs (#1329).
+ */
+export interface SameTreeReading {
+  /** The run id. Both attempts are attempts of this one run. */
+  run: string;
+  /** The commit both attempts checked out, READ from each attempt's log, or `null` where it was not read. */
+  mergeCommit: string | null;
+  /** The resolved `ai-review round: N (cap 3)` line, per attempt. */
+  rounds: [number, number];
+  /** `num_turns` from the action's result, per attempt. */
+  turns: [number, number];
+  /**
+   * The adjudicated outcome per attempt, or `null` where GitHub retained only
+   * the aggregate log and no verdict survives. `null` is UNMEASURED — it is
+   * emphatically not two attempts agreeing.
+   */
+  verdicts: [string, string] | null;
+}
+
+/**
+ * The two attempts got the SAME prompt.
+ *
+ * Unequal rounds switch `atCapInstruction` and widen the prior-findings set
+ * fed in to suppress repeats, so the input differed and the pair measures
+ * nothing about the verifier. rg-1187-jury proposed this confound for all
+ * three pairs; the resolved round lines show it applies to exactly one, and
+ * that one carries by far the largest turn spread.
+ */
+export const promptHeld = (r: SameTreeReading): boolean => r.rounds[0] === r.rounds[1];
+
+/**
+ * Same-tree `ai-review` pairs, every field read from the run logs.
+ *
+ * Only `39962683401` retained per-step logs; GitHub kept the aggregate only
+ * for the other two, which is why their verdicts are `null` and their merge
+ * commits unread. A reading nobody can take is not a reading that agreed.
+ */
+export const AI_REVIEW_SAME_TREE_READINGS: readonly SameTreeReading[] = [
+  {
+    run: "39962683401",
+    mergeCommit: "99d50fc",
+    rounds: [5, 5],
+    turns: [51, 52],
+    verdicts: ["BLOCKED", "CLEAN"],
+  },
+  { run: "39959490557", mergeCommit: null, rounds: [2, 2], turns: [44, 48], verdicts: null },
+  { run: "39957264329", mergeCommit: null, rounds: [3, 4], turns: [37, 64], verdicts: null },
+];
+
+/**
+ * What remains unread about `ai-review` variance, AFTER saying what was read.
+ *
+ * Derived from the readings rather than restated beside them — the #1310
+ * defect, found by the AI review on this very file, was prose that could
+ * contradict the data it sat next to.
+ */
+export function aiReviewVarianceResidue(readings: readonly SameTreeReading[]): string {
+  const held = readings.filter(promptHeld);
+  const confounded = readings.filter(r => !promptHeld(r));
+  const scored = held.filter(r => r.verdicts !== null);
+  const disagreed = scored.filter(r => r.verdicts![0] !== r.verdicts![1]);
+
+  const lost =
+    `${readings.length - scored.length} of ${readings.length} same-tree pair(s) carry NO verdict — ` +
+    `${confounded.length} because the round changed between attempts (an unequal round is a different ` +
+    "prompt, not a repeat), and the rest because GitHub retained only the aggregate log. Those are " +
+    "UNMEASURED and are not attempts that agreed.";
+
+  if (scored.length === 0) {
+    return (
+      "A deployed agent verifier does exist elsewhere — the `ai-review` workflow — and its run-to-run " +
+      `variance is unmeasured at the level that matters. ${lost} The experiment that would settle it is ` +
+      "`gh run rerun` on an unchanged SHA — a re-run replays the same merge ref, so the input is genuinely " +
+      "fixed — at real API spend per run."
+    );
+  }
+
+  const detail = disagreed
+    .map(r => `run ${r.run} returned ${r.verdicts![0]} then ${r.verdicts![1]} on ${r.mergeCommit ?? "an unread commit"}`)
+    .join("; ");
+
+  return (
+    "A deployed agent verifier does exist elsewhere — the `ai-review` workflow — and its run-to-run variance " +
+    `IS now partly read, so this entry states a measurement rather than an absence. ${scored.length} same-tree ` +
+    `pair(s) carry two verdicts with the tree, head, round and prompt all held fixed, and ${disagreed.length} ` +
+    `of them DISAGREED: ${detail}. A verdict flip is the failure a quorum is for, and it is the one reading ` +
+    "here taken on a verifier that actually ships. Two cautions the number does not carry on its own. The " +
+    "turn counts across that flip were 51 and 52 — so `num_turns` is a poor proxy for verifier variance, and " +
+    `a stability argument built on turn counts is measuring the wrong quantity. And ${lost} n is small enough ` +
+    "that no rate should be read off it; what it establishes is that the rate is not zero."
+  );
+}
+
 export const PERMANENTLY_UNMEASURED = [
   "No agent verifier feeds THIS gate. `arbitrate` has no caller outside lib/ and test/, and only " +
     "`scripts/arbitrate-finding.ts` can supply `--votes`, so the verifier group a quorum would be a variance " +
     "control for does not run on the filing path and is not read here.",
-  "A deployed agent verifier does exist elsewhere — the `ai-review` workflow — and its run-to-run variance is " +
-    "also unmeasured, for a reason worth naming rather than assuming. No two runs in this repository's history " +
-    "have reviewed the SAME TREE: the nearest candidates differ by whole commits, and the only two same-SHA run " +
-    "pairs carry no verdict because both died before the reviewer ran. Diff totals taken against a moving `main` " +
-    "look identical when the content is not, which is how a repeat appears to exist and does not. The experiment " +
-    "that would settle it is `gh run rerun` on an unchanged SHA — a re-run replays the same merge ref, so the " +
-    "input is genuinely fixed — at real API spend per run.",
+  aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS),
   "A withheld candidate leaves no trace on either arm. It is never filed, never commented on and never " +
     "fixed, so nothing downstream records whether withholding it was right. `outcomes.ts` derives from commits " +
     "and the reference graph; a candidate that reached neither is invisible to it, permanently.",
