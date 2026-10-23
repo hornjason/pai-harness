@@ -27,11 +27,11 @@
  * none — and it is the state that left #1157 open after PR #1208 merged.
  *
  * It does NOT refuse a pull request that merely mentions an issue without
- * closing it. Measured over all 46 open issues on 2026-10-23, 24 had a merged
- * pull request referencing them and 23 of those were discussion mentions —
- * `#1204's class`, `#1286 is open about this`. A check that fired on a
- * mention would be wrong 23 times out of 24 on the only corpus available, and
- * a check wrong that often is one people route around.
+ * closing it. Measured at 2026-10-23T15:31Z, 27 of the 50 open issues had a
+ * merged pull request referencing them and 26 of those were discussion
+ * mentions — `#1204's class`, `#1286 is open about this`. A check that fired
+ * on a mention would be wrong 26 times out of 27 on the only corpus
+ * available, and a check wrong that often is one people route around.
  *
  * ONE PROPERTY THIS FILE MUST KEEP, asserted by its test: every refusal exits
  * through REFUSE_EXIT, declared exactly once.

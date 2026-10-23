@@ -57,17 +57,25 @@ describe("a closing keyword inside markup GitHub does not scan", () => {
 });
 
 describe("the negations this repository actually writes", () => {
-  // Measured over all 46 open issues on 2026-10-23: loosening adjacency to
-  // "within 40 characters" produced eight candidates and every one was a
-  // negation. These are the real strings, so the precision is pinned to the
-  // corpus rather than to an opinion about it.
+  // The negative control, pinned to the corpus rather than to an opinion about
+  // it: these six lines are VERBATIM from merged pull request bodies on
+  // hornjason/pai-harness, read at 2026-10-23T15:31Z and quoted character for
+  // character. Loosening adjacency to "within 40 characters" over the same 65
+  // merged pull requests fires on 21 candidates, 19 of them false; every line
+  // below is one of those 19.
   const NEGATIONS = [
-    "Closes nothing — #523 stays open until the dry-run lands.",
-    "Fixes nothing on its own — leaving #713 open deliberately.",
-    "Fixes nothing automatically; #1167 stays open.",
-    "Read, not fixed, and none made trivial by this: #1173, #1186.",
-    "**filed, not fixed here** (#1211), because the predicate is elsewhere.",
-    "| #1290 | the reviewer is sampled | fixed, merged as #1288 |",
+    // PR #1233
+    "Fixes nothing automatically; #1167 stays open for its intent half.",
+    // PR #1020
+    "Closes nothing — #523 stays open, and the reason is in the last section.",
+    // PR #1006
+    "Fixes nothing on its own — leaving #713 open for SC-4 and SC-5.",
+    // PR #976
+    "Refs #910, #713. Neither issue is closed by this PR — #910 SC-5 and #713 SC-4/SC-5 are still open, for the reasons recorded on each.",
+    // PR #1308 — prose about a DIFFERENT issue, not a denial about this one.
+    "| #1281 | the count keyed on head branch NAME | fixed, merged as #1288 |",
+    // PR #1236
+    "Read, not fixed, and none made trivial by this: #1173, #1186, #1167, #1204. #1207 is already closed.",
   ];
 
   test("none of them is reported, in prose or in backticks", () => {
@@ -75,6 +83,15 @@ describe("the negations this repository actually writes", () => {
       expect(inertClosingReferences(line), line).toEqual([]);
       expect(inertClosingReferences("`" + line + "`"), "backticked: " + line).toEqual([]);
     }
+  });
+
+  test("a backticked keyword with no number beside it is not a reference", () => {
+    // Verbatim from PR #1236, and the sharpest near-miss in the corpus: a
+    // backticked number and a backticked keyword, in the same sentence, in
+    // separate code spans. Everything this detector looks for is present
+    // except the one thing it requires.
+    const line = "so `Part of #1168` and not `Fixes`.";
+    expect(inertClosingReferences(line)).toEqual([]);
   });
 
   test("a keyword bound to ONE number does not capture the next number", () => {

@@ -8,11 +8,14 @@
  * it finds inside backticks or a fenced block, so the PR merges, the author
  * sees the sentence they wrote, and the issue stays open.
  *
- * Measured on `hornjason/pai-harness` on 2026-10-23, over all 46 open issues:
- * exactly one — #1157 — had a merged pull request whose body names it with a
- * closing keyword, and PR #1208's second line is the keyword and the number
- * wrapped in backticks. The pull request says in prose that the work is done
- * and verified. `closingIssuesReferences` is empty.
+ * Measured on `hornjason/pai-harness` at 2026-10-23T15:31Z: of **50** open
+ * issues, **27** carry at least one merged pull request cross-reference, from
+ * **65** distinct merged pull requests. Running this detector over all 65
+ * produced **one** report — PR #1208, naming #1148 and #1157. Its second line
+ * is the keyword and the number wrapped in backticks, the pull request says in
+ * prose that the work is done and verified, and `closingIssuesReferences` is
+ * empty. #1148 was rescued by the squash commit subject `fix(#1148): …`;
+ * #1157 was not in the title and is still open.
  *
  * ## Why this reports the INERT ones and not the live ones
  *
@@ -31,14 +34,22 @@
  *
  * This repository writes negations constantly — `.claude/rules/` tells agents
  * never to put a closing keyword next to an issue number they are not closing,
- * and they comply by writing the denial in prose instead. Measured over the
- * same 46 issues, loosening "adjacent" to "within 40 characters" produced
- * **eight** candidates and every one was a negation: `Closes nothing — #523
- * stays`, `Fixes nothing on its own — leaving #713 open`, `filed, not fixed
- * here (#1211)`. Eight false positives, zero true ones.
+ * and they comply by writing the denial in prose instead.
+ *
+ * The negative control, over the same 65 merged pull requests: loosening
+ * "adjacent" to "within 40 characters" produced **21** candidates, of which
+ * the same two were true and **19** were false. Three kinds of false, and only
+ * the first is a negation:
+ *
+ * - a denial — `Closes nothing — #523 stays open`, `Fixes nothing on its own —
+ *   leaving #713 open`, `Neither issue is closed by this PR`;
+ * - prose about a DIFFERENT issue — `| #1281 | … | fixed, merged as #1288 |`;
+ * - a window artefact, where the 40 characters end mid-number and the
+ *   candidate names an issue nobody wrote.
  *
  * So adjacency is not a convenience, it is the whole precision of the check,
- * and widening it is the cheapest wrong fix available here.
+ * and widening it is the cheapest wrong fix available here: on the only corpus
+ * that exists, the loosened rule is wrong nineteen times out of twenty-one.
  */
 
 /**
