@@ -50,6 +50,8 @@
  * DEAD regardless of what the file says.
  */
 
+import { underPrefix } from "./repo-path.ts";
+
 /** The key that tells a store apart from an empty object. See {@link readFileClaims}. */
 export const FILE_CLAIMS_CONTROL_KEY = "claims";
 
@@ -166,10 +168,36 @@ export function readFileClaims(raw: string | null, path = FILE_CLAIMS_PATH): Fil
   return { status: "read", path, claims: list as FileClaim[] };
 }
 
-/** Does `claimed` cover `path`? A directory covers everything beneath it. */
+/**
+ * Does `claimed` cover `path`? A directory covers everything beneath it.
+ *
+ * This is `underPrefix` and nothing else. It used to be four lines of
+ * `startsWith` here, which was a SECOND DECIDER for a question
+ * `lib/repo-path.ts` already answers —
+ * `.claude/rules/checks-must-be-able-to-fail.md`, *two deciders* — and the
+ * two disagreed on exactly the inputs a caller produces by accident. The
+ * registry side was never the gap: `claimFault` already rejects absolute and
+ * `..` paths. It was the CALLER-supplied path, which nothing normalised, and
+ * `./lib/x.ts` is what tab-completion hands you.
+ *
+ * Measured against the local copy before the swap, for the claim `lib`:
+ *
+ * | path | the old local rule | `underPrefix` |
+ * |---|---|---|
+ * | `./lib/x.ts` | false | **true** |
+ * | `Lib/x.ts` | false | **true** |
+ * | `lib\x.ts` | false | **true** |
+ * | `library/x.ts` | false | false |
+ * | `../lib/x.ts` | false | false |
+ *
+ * Three contended paths reading FREE, and the last two rows are why the fix
+ * is a swap rather than a patch: the centralised rule is segment-aware and
+ * refuses a `..` escape, so it is stricter where it matters and looser only
+ * where the old rule was wrong. Every fixture anyone would naturally write
+ * passes under both, which is why the suite was green (#1436 review).
+ */
 export function claimCovers(claimed: string, path: string): boolean {
-  const c = claimed.replace(/\/+$/, "");
-  return path === c || path.startsWith(`${c}/`);
+  return underPrefix(path, claimed);
 }
 
 /** What a declared owner's branch is doing. Three states, never two. */

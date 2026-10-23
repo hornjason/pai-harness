@@ -34,6 +34,7 @@ import {
   type FileClaim,
   type PullState,
 } from "../lib/file-claims";
+import { underPrefix } from "../lib/repo-path";
 import { repoSlug } from "../scripts/claim-files";
 
 const REPO = join(import.meta.dir, "..");
@@ -120,8 +121,65 @@ describe("#1413: a directory claims what is beneath it, and nothing else", () =>
     ["a prefix that is not a path boundary does NOT match", "lib", "library/a.ts", false],
     ["a sibling is not covered", "lib/a.ts", "lib/b.ts", false],
     ["the parent of a claimed file is not covered", "lib/a.ts", "lib", false],
+    // The rows that were missing, and the reason the suite was green while
+    // three contended paths read FREE (#1436 review). Every fixture above is
+    // already normalised, because that is how anybody writes a fixture by
+    // hand — so none of them can tell a rule that normalises from one that
+    // does not. These are what a CALLER produces: `./` is what tab-completion
+    // hands you, the case is what a case-insensitive filesystem hands you,
+    // and the backslash is what a Windows-shaped tool hands you.
+    ["a leading ./ is the same path", "lib", "./lib/a.ts", true],
+    ["case does not free a held file", "lib", "Lib/a.ts", true],
+    ["a backslash separator is the same path", "lib", "lib\\a.ts", true],
+    // These two are DOCUMENTATION, not witnesses, and saying so is the
+    // point: `lib/./a.ts` and `lib/sub/../a.ts` both satisfy a bare
+    // `startsWith("lib/")`, so they are green under the rule this swap
+    // removed as well as under the one it installs. Predicting 7 reds for
+    // the mutation below and measuring 5 is how that surfaced. They state
+    // intent; the four rows above are what would catch a regression.
+    ["a redundant segment is the same path", "lib", "lib/./a.ts", true],
+    ["an interior .. resolves before the comparison", "lib", "lib/sub/../a.ts", true],
+    // And the direction the swap must NOT have loosened: a `..` that leaves
+    // the repository is not a repository-relative path and is refused rather
+    // than clamped, so it cannot be spelled into a claim it is not under.
+    ["a path escaping the root is not covered", "lib", "../lib/a.ts", false],
+    // A leading `/` is STRIPPED, so this reads as covered. That is the safe
+    // direction and it is asserted rather than tolerated: for a claim check
+    // the costly error is reporting a held file FREE, so a spelling that
+    // cannot be resolved should land on "contended". `..` is the opposite
+    // case — it names something outside the repository, so there is no file
+    // here for a claim to be about, and inventing one would be the error.
+    ["a leading slash is stripped, and covered is the safe answer", "lib", "/lib/a.ts", true],
+    ["an absolute path elsewhere is still not covered", "lib", "/etc/passwd", false],
   ])("%s", (_label, claimed, path, want) => {
     expect(claimCovers(claimed, path)).toBe(want);
+  });
+
+  test("claimCovers IS underPrefix, so there is one decider and not two", () => {
+    // The binding, not a restatement. `claimCovers` used to be its own
+    // four-line `startsWith` and agreed with `underPrefix` on every fixture
+    // above the new rows — two deciders answering one question, which no
+    // behavioural test over hand-written paths could separate. Asserting
+    // agreement over the ADVERSARIAL set is what makes the delegation
+    // checkable: reintroduce a local rule and these disagree.
+    //
+    // Measured — reinstating the four-line `startsWith` turns 5 red: the
+    // `./`, case, backslash and leading-slash rows above, and this one.
+    const claimed = "lib";
+    for (const path of [
+      "lib/a.ts",
+      "./lib/a.ts",
+      "Lib/a.ts",
+      "lib\\a.ts",
+      "library/a.ts",
+      "../lib/a.ts",
+      "/lib/a.ts",
+      "lib/sub/../a.ts",
+    ]) {
+      expect(claimCovers(claimed, path), `disagreed about ${JSON.stringify(path)}`).toBe(
+        underPrefix(path, claimed),
+      );
+    }
   });
 });
 
