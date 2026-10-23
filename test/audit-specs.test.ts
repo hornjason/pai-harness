@@ -212,7 +212,7 @@ governs: test
 - [ ] SC-502: The directory docs/ should be present
 `);
       const { auditSpecs } = await importAuditSpecs();
-      auditSpecs(FIXTURE_ROOT, { fix: true });
+      const result = auditSpecs(FIXTURE_ROOT, { fix: true });
 
       // Read back the spec file
       const content = readFileSync(join(FIXTURE_ROOT, "specs", "PRESERVE.md"), "utf-8");
@@ -221,6 +221,17 @@ governs: test
       expect(content).toContain("SC-500:");
       expect(content).toContain("SC-501:");
       expect(content).toContain("SC-502:");
+
+      // #1345: the three above are perfectly satisfied by a file nobody
+      // touched, so on their own they say nothing about PRESERVING ids
+      // THROUGH a rewrite. The claim is "preserved during rewrite", so a
+      // rewrite has to have happened for the claim to be about anything.
+      const rewritten = (result.rewrites ?? []).filter((r) => r.after !== r.before);
+      expect(rewritten.length, "nothing was rewritten, so nothing was preserved").toBeGreaterThan(0);
+      // Every id this run rewrote is still the id it rewrote — a renumbering
+      // writer is what this case exists to catch, and it can only be caught
+      // on lines that were written.
+      for (const r of rewritten) expect(content).toContain(`${r.scId}:`);
     });
   });
 
@@ -276,11 +287,14 @@ governs: test
       const result = auditSpecs(FIXTURE_ROOT, { fix: true });
       const diffOutput = formatDiffSummary(result);
 
-      // Diff output should show before/after for rewrites
-      if (result.rewrites && result.rewrites.length > 0) {
-        expect(diffOutput).toContain("before");
-        expect(diffOutput).toContain("after");
-      }
+      // #1345: both assertions used to sit INSIDE this condition, so zero
+      // rewrites meant zero assertions executed and the case passed having
+      // tested nothing. The condition is now the first assertion.
+      expect(result.rewrites?.length ?? 0, "no rewrite to summarise").toBeGreaterThan(0);
+      expect(diffOutput).toContain("before");
+      expect(diffOutput).toContain("after");
+      // A summary that names no criterion is not a summary of these rewrites.
+      for (const r of result.rewrites!) expect(diffOutput).toContain(r.scId);
     });
   });
 
@@ -308,11 +322,23 @@ governs: test
       // First run
       const result1 = auditSpecs(FIXTURE_ROOT, { fix: true });
 
+      // #1345: the second-run assertion below is ALSO what a writer that
+      // never rewrites anything produces, so "idempotent" and "inert" were
+      // one reading. Idempotence is a claim about a run that DID something,
+      // so establish that first — this is the fifth shape, where the cheapest
+      // wrong fix (break the writer) turns the case green.
+      const rewritten1 = (result1.rewrites ?? []).filter((r) => r.after !== r.before);
+      expect(rewritten1.length, "run 1 rewrote nothing, so run 2 has nothing to be idempotent about")
+        .toBeGreaterThan(0);
+      const afterFirst = readFileSync(join(FIXTURE_ROOT, "specs", "IDEMPOTENT.md"), "utf-8");
+
       // Second run on same file
       const result2 = auditSpecs(FIXTURE_ROOT, { fix: true });
 
-      // Second run should have 0 rewrites
+      // Second run should have 0 rewrites — and leave the bytes alone, which
+      // a rewrite that is a no-op per line would not.
       expect(result2.rewrites?.length ?? 0).toBe(0);
+      expect(readFileSync(join(FIXTURE_ROOT, "specs", "IDEMPOTENT.md"), "utf-8")).toBe(afterFirst);
     });
   });
 
@@ -336,15 +362,25 @@ governs: test
 - [ ] SC-9442: AGENTS.md exists
 `);
       const { auditSpecs } = await importAuditSpecs();
+      const before = readFileSync(join(FIXTURE_ROOT, "specs", "FIX-TARGET.md"), "utf-8");
       const result = auditSpecs(FIXTURE_ROOT, { fix: true });
 
-      // Should contain rewrite output
-      expect(result.rewrites).toBeDefined();
+      // #1345: this case used to assert `result.rewrites` was DEFINED (`[]`
+      // is) and that `SC-9441:` was still in the file — which is what NOT
+      // rewriting looks like. Its comment said "SC-9441 should have been
+      // rewritten to a matchable form" and nothing below it tested that.
+      // Assert the rewrite, which only a writer that ran can satisfy.
+      const rewritten = (result.rewrites ?? []).find((r) => r.scId === "SC-9441");
+      expect(rewritten, "SC-9441 was never rewritten").toBeDefined();
+      expect(rewritten!.after).not.toBe(rewritten!.before);
 
-      // After fix, the file should contain matchable patterns
       const content = readFileSync(join(FIXTURE_ROOT, "specs", "FIX-TARGET.md"), "utf-8");
-      // SC-9441 should have been rewritten to a matchable form
+      // The id survives — that was the original claim, and it is still true.
       expect(content).toContain("SC-9441:");
+      // …and the STATEMENT it carried does not, which is the half that
+      // separates "rewritten" from "untouched".
+      expect(content).not.toContain("The file AGENTS.md should exist at project root");
+      expect(content).not.toBe(before);
     });
   });
 
