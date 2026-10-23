@@ -1538,6 +1538,91 @@ describe("AC-L15 (#1405): the window count is written, and unknown is not zero",
       "ai-review-rounds",
     );
   });
+
+  // AC-4 (#1405): the row that is red when the RECORDED count is wrong.
+  //
+  // Every other row above compares the written count against a number
+  // written beside it in this file, so each one is only as right as the
+  // expectation someone typed next to it. A count that is consistently
+  // wrong — off by one, or this round's drop instead of the total — agrees
+  // with a hand-written expectation that made the same mistake, and nine
+  // green rows say nothing about it.
+  //
+  // This row derives the truth from the loop counter instead. Drive the
+  // real step through more rounds than the cap holds, feeding each output
+  // back in as the next round's prior ledger, and one equality has to hold
+  // at every step for the count to mean what it says:
+  //
+  //     truncated + retained == rounds written so far
+  //
+  // Nothing in the step computes that sum, and the right-hand side is the
+  // iteration index, so no mutation of the writer can satisfy it by
+  // accident. The second assertion is the same law stated over the
+  // announcements: the warnings a human read, one per run, have to add up
+  // to the number the ledger carries for whoever arrives later. That is
+  // #1394's "one computation, not two" extended across time — the two
+  // sites now being this round's annotation and the running total.
+  test("AC-L15/AC-4: across a sequence past the cap, truncated + retained is every round written", () => {
+    // Eight past the cap, and the eight is load-bearing. The deepest count
+    // any row above asserts is 5, so a writer that is correct up to 5 and
+    // drifts after it is green on every one of them. Running past the
+    // deepest typed number is the only part of this that the other rows
+    // cannot reach — measured: the drift mutant below is red here and
+    // nowhere else.
+    const ROUNDS = AI_REVIEW_LEDGER_MAX_ROUNDS + 8;
+    let body: string | null = null;
+    let announced = 0;
+
+    for (let i = 1; i <= ROUNDS; i++) {
+      const runId = `seq-${i}`;
+      const r = runPersist({
+        list: body === null ? [] : [botComment(5, body)],
+        payload: ONE_FINDING,
+        round: String(i),
+        env: {
+          GITHUB_RUN_ID: runId,
+          STUB_WRITE_RESPONSE: JSON.stringify({ id: 5, body: `${runId} ok` }),
+        },
+      });
+      expect(r.status, `round ${i}: ${r.stderr}`).toBe(0);
+      expect(r.sentRaw, `round ${i} wrote nothing`).not.toBeNull();
+
+      const recorded = r.doc?.[AI_REVIEW_LEDGER_TRUNCATED_FIELD];
+      expect(typeof recorded, `round ${i} recorded no count`).toBe("number");
+      expect(
+        recorded + (r.rounds?.length ?? 0),
+        `round ${i}: ${recorded} dropped + ${r.rounds?.length} kept is not ${i} written`,
+      ).toBe(i);
+      expect(r.rounds).toHaveLength(Math.min(i, AI_REVIEW_LEDGER_MAX_ROUNDS));
+
+      const said = r.stdout.match(/(\d+) of the OLDEST/);
+      announced += said === null ? 0 : Number(said[1]);
+      expect(announced, `round ${i}: the warnings total ${announced}, the ledger says ${recorded}`).toBe(
+        recorded,
+      );
+
+      body = JSON.parse(r.sentRaw!).body as string;
+    }
+
+    // Stated as an absolute so a loop that silently ran zero times cannot
+    // pass this: five rounds are gone and the cap's worth remain.
+    const last = readLedger(body!);
+    if (last.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(last));
+    if (last.truncation.status !== AI_REVIEW_TRUNCATION_STATED) {
+      throw new Error(`the reader could not get a count back: ${JSON.stringify(last.truncation)}`);
+    }
+    expect(last.truncation.dropped).toBe(ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(last.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(announced).toBe(ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS);
+    // The window really is a window, and it is the OLDEST that went: the
+    // five that the count claims are gone are the five it names.
+    expect(last.rounds.map((entry: { round?: unknown }) => entry.round)).toEqual(
+      Array.from(
+        { length: AI_REVIEW_LEDGER_MAX_ROUNDS },
+        (_, i) => ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS + 1 + i,
+      ),
+    );
+  });
 });
 
 /**
