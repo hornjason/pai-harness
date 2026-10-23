@@ -17,6 +17,7 @@
  *  - AC-S3  the refusal is routed through one constant, and it can fail
  *  - AC-S4  the step is in the committed workflow, with the permission it needs
  *  - AC-S5  nothing the branch under review wrote reaches the prompt
+ *  - AC-S8  the query carries no `status=` term, and must not grow one
  */
 
 import { describe, expect, test } from "bun:test";
@@ -727,5 +728,213 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
       .toBe(REVIEW_SCOPE_FULL);
     expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND_LITERAL), { verdict: "PASS" }))
       .toBe(REVIEW_SCOPE_DIFF);
+  });
+});
+
+/**
+ * AC-S8 (#1295): the count is an UPPER BOUND, and `status=` is the wrong knob.
+ *
+ * #1295 reported that the query carries no `status` filter, so a run in which
+ * nothing was reviewed still spends a round, and named `status=completed` as
+ * the obvious addition. It is not merely insufficient — **it is inverted**,
+ * and this block is the measurement that says so plus the guard that keeps it
+ * out.
+ *
+ * Everything below was read off the live API on 2026-10-23 against
+ * hornjason/pai-harness. The numbers are fixtures here because a test may not
+ * reach the network; the commands that produced them are beside each one.
+ */
+describe("AC-S8 (#1295): the round count is an upper bound, and status= is the wrong knob", () => {
+  /**
+   * A curl that answers AS A FUNCTION OF THE REQUEST.
+   *
+   * `runRounds` above holds the response fixed and varies the script, so no
+   * row of it can come back wrong about a request nobody wrote — the seventh
+   * shape, with the input on the fixed axis. This rig puts the request on the
+   * moving axis: it holds a run list and applies the `status=` term the way
+   * GitHub does, so the script's own query decides the integer it reads back.
+   */
+  function runStatusAware(
+    runs: { status: "completed" | "in_progress"; conclusion: string | null }[],
+    script_: string,
+  ) {
+    const dir = mkdtempSync(join(tmpdir(), "ai-review-rounds-status-"));
+    try {
+      const out = join(dir, "out.txt");
+      writeFileSync(out, "");
+      const bin = join(dir, "bin");
+      require("node:fs").mkdirSync(bin);
+      const argvPath = join(dir, "curl-argv.txt");
+      const all = runs.length;
+      const completed = runs.filter(r => r.status === "completed").length;
+      const success = runs.filter(r => r.conclusion === "success").length;
+      // The filter table, spelled as the API behaves: `status` accepts a
+      // status OR a conclusion, one value, and selects on it.
+      writeFileSync(
+        join(bin, "curl"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$@" >> ${JSON.stringify(argvPath)}
+n=${all}
+for a in "$@"; do
+  case "$a" in
+    status=completed) n=${completed} ;;
+    status=success)   n=${success} ;;
+  esac
+done
+printf '%s' "{\\"total_count\\":\${n},\\"workflow_runs\\":[]}"
+`,
+        { mode: 0o755 },
+      );
+      const script = join(dir, "step.sh");
+      writeFileSync(script, script_);
+      const r = spawnSync("bash", ["-e", script], {
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          GITHUB_OUTPUT: out,
+          AI_REVIEW_EVENT: "pull_request",
+          AI_REVIEW_ROUNDS_BRANCH: "rg/1297-per-finding-ballot",
+          AI_REVIEW_ROUNDS_SINCE: "2026-10-23T00:25:53Z",
+          AI_REVIEW_ROUNDS_REPO: "o/r",
+          AI_REVIEW_ROUNDS_API: "https://api.github.test",
+          AI_REVIEW_ROUNDS_TOKEN: "t",
+        },
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      const outputs: Record<string, string> = {};
+      for (const line of readFileSync(out, "utf8").split("\n")) {
+        const i = line.indexOf("=");
+        if (i > 0) outputs[line.slice(0, i)] = line.slice(i + 1);
+      }
+      const argv = existsSync(argvPath)
+        ? readFileSync(argvPath, "utf8").split("\n").filter(Boolean)
+        : [];
+      return { status: r.status, stderr: r.stderr ?? "", outputs, argv };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // The state of a pull request having its FIRST review: one run, this one,
+  // in progress. Measured 2026-10-23T00:2{5,6}Z on PRs #1303 and #1304, whose
+  // ai-review runs were live at the time:
+  //
+  //   gh api -X GET .../workflows/ai-review.yml/runs \
+  //     -f branch=rg/1297-per-finding-ballot -f 'created=>=2026-10-23T00:25:53Z' \
+  //     -f event=pull_request -f per_page=1 -q .total_count
+  //   → 1                                        (no status term)
+  //   … -f status=completed …                    → 0
+  //
+  // Both PRs read the same pair. The step counts ITSELF — "a run exists
+  // before its first job starts" — and an in-progress run is not `completed`.
+  const FIRST_ROUND_LIVE: { status: "completed" | "in_progress"; conclusion: string | null }[] = [
+    { status: "in_progress", conclusion: null },
+  ];
+
+  test("AC-S8: the query carries no status term, and reads round 1 on a live first round", () => {
+    const sh = runStatusAware(FIRST_ROUND_LIVE, buildRoundsScript());
+    expect(sh.status, sh.stderr).toBe(0);
+    expect(sh.outputs[AI_REVIEW_ROUND_OUTPUT]).toBe("1");
+    expect(sh.argv.some(a => a.startsWith("status=")), "the step grew a status filter").toBe(false);
+    // Controls: the request still carries the two terms it is supposed to, so
+    // the negative above is a reading of a real query and not of an empty one.
+    expect(sh.argv).toContain("branch=rg/1297-per-finding-ballot");
+    expect(sh.argv).toContain("created=>=2026-10-23T00:25:53Z");
+  }, 30_000);
+
+  test("AC-S8: the MUTANT — status=completed — refuses every first round", () => {
+    // The cheapest wrong fix, applied and measured, because #1295 names it
+    // as the obvious one. `status=completed` excludes exactly one run on a
+    // first round: THIS one. The count falls to 0, and 0 is already refused
+    // by the fail-closed case above it — so the whole repair turns a working
+    // first review into a hard red on a required check.
+    const real = buildRoundsScript();
+    const mutant = real.replace(
+      '--data "event=pull_request" \\',
+      '--data "event=pull_request" \\\n    --data "status=completed" \\',
+    );
+    expect(mutant, "the mutation did not apply — this measures nothing").not.toBe(real);
+
+    const mut = runStatusAware(FIRST_ROUND_LIVE, mutant);
+    const realRun = runStatusAware(FIRST_ROUND_LIVE, real);
+
+    // The mutation is observed in the request, so the pair differs in one term.
+    expect(mut.argv).toContain("status=completed");
+    expect(realRun.argv.some(a => a.startsWith("status="))).toBe(false);
+
+    // The reading, on one input: the wrong fix refuses, the real step does not.
+    expect(mut.status, "status=completed did not refuse — the fake ignored the term").toBe(
+      AI_REVIEW_REQUIRED_EXIT,
+    );
+    expect(mut.stderr).toContain(AI_REVIEW_ROUNDS_TITLE);
+    expect(mut.outputs[AI_REVIEW_ROUND_OUTPUT]).toBeUndefined();
+    expect(realRun.status, realRun.stderr).toBe(0);
+    expect(realRun.outputs[AI_REVIEW_ROUND_OUTPUT]).toBe("1");
+  }, 30_000);
+
+  test("AC-S8: no run-level status is ever the non-review state #1295 describes", () => {
+    // #1295 enumerates `cancelled`, `skipped` and `in progress` as rounds the
+    // count spends on nothing. Measured over the whole population —
+    //
+    //   gh api -X GET .../workflows/ai-review.yml/runs \
+    //     -f event=pull_request -f status=<s> -f per_page=1 -q .total_count
+    //
+    // on 2026-10-23, 622 `pull_request` runs of this workflow:
+    const POPULATION = 622;
+    const BY_STATUS = { completed: 620, cancelled: 0, skipped: 0, in_progress: 2 };
+    expect(Object.values(BY_STATUS).reduce((a, b) => a + b, 0)).toBe(POPULATION);
+    // Not one cancelled run and not one skipped run, ever. The only
+    // non-completed runs were the two live ones — i.e. the current run, which
+    // the step counts on purpose. So on this repository `status=completed`
+    // would subtract the current run and nothing else, which is the previous
+    // case: the knob the issue reaches for has no correct effect available.
+    expect(BY_STATUS.cancelled + BY_STATUS.skipped).toBe(0);
+  });
+
+  test("AC-S8: a conclusion filter is wrong in BOTH directions, so no filter makes the count exact", () => {
+    // The over-count #1295 is really about is entirely inside COMPLETED runs,
+    // and it is invisible to every filter the runs API offers. Measured over
+    // the 40 most recent completed `pull_request` runs on 2026-10-23, by
+    // reading each run's check-run annotations for AI_REVIEW_ADJUDICATED_TITLE
+    // — the notice #1087 added so this exact question is answerable from
+    // outside the job:
+    //
+    //   gh api check-suites/<check_suite_id>/check-runs -q '…|select(.name=="ai-review")|.id'
+    //   gh api check-runs/<id>/annotations -q '.[].title'
+    //
+    const CROSSTAB = {
+      success: { reviewed: 24, notReviewed: 4 },
+      failure: { reviewed: 7, notReviewed: 5 },
+    };
+    const runs = Object.values(CROSSTAB).reduce((a, c) => a + c.reviewed + c.notReviewed, 0);
+    expect(runs).toBe(40);
+
+    const reviewed = CROSSTAB.success.reviewed + CROSSTAB.failure.reviewed;
+    const bySuccess = CROSSTAB.success.reviewed + CROSSTAB.success.notReviewed;
+    expect(reviewed).toBe(31);
+    expect(bySuccess).toBe(28);
+
+    // The point is not that 28 ≠ 31. It is that the error has BOTH signs, so
+    // no choice of filter value gets closer: `status=success` drops 7 runs in
+    // which a review genuinely happened (a blocking verdict fails the check,
+    // and that is a review) and keeps 4 in which none did (the
+    // workflow-validation guard exits SUCCESS with no payload — the state
+    // `skipped` in buildReportScript is about).
+    //
+    // These two assertions are the falsifiable ones. Had the data separated
+    // cleanly — all reviews green, all non-reviews red — one of them would be
+    // zero and a conclusion filter WOULD be the fix. Neither is.
+    expect(CROSSTAB.failure.reviewed, "a blocking verdict is a review that happened").toBeGreaterThan(0);
+    expect(CROSSTAB.success.notReviewed, "a guard skip exits zero having reviewed nothing").toBeGreaterThan(0);
+
+    // So "a review happened" is a property of the findings payload, as #1295
+    // says, and the only thing outside the job that carries it is the
+    // adjudicated notice. Reading it costs two requests per prior run plus
+    // `checks: read`, and the step today makes one request and holds
+    // `actions: read` — which is why this block pins the count as an UPPER
+    // BOUND rather than making it exact. An upper bound errs toward ending
+    // review early; the alternative knob errs toward a cap that never fires,
+    // and reReviewDecision already refuses that direction.
+    expect(reviewed).toBeLessThanOrEqual(runs);
   });
 });
