@@ -140,7 +140,14 @@ const UNCLAIMED_RATCHET = 150;
 // that. The fifth criterion ticked in the same commit, CRC-A5, is in neither
 // half — `REVIEW.md` exists is matchable, so the registry builds its
 // assertion and the split never sees it.
-const CLAIMED_UNBINDABLE = 91;
+// 91 -> 94 on 2026-10-23 (#1437): CRC-E1, CRC-E2 and CRC-E4 ticked, claimed
+// by `test/risk-tier.test.ts`, and unbindable for the same reason as the four
+// above — "the change sets the tier, not the author" is a claim about what a
+// classifier DOES to an input, and no file-exists pattern states that. The
+// battery that stands in for a matchable assertion here is five mutations of
+// `lib/risk-tier.ts` with membership predicted before each run, recorded on
+// #1437; all five matched.
+const CLAIMED_UNBINDABLE = 94;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });
