@@ -36,6 +36,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 import type { FindingOutcomeSummary } from "./outcomes";
+import type { VarianceCapture } from "./variance-capture";
 
 /** Non-zero for every refusal, through one constant. */
 export const BASELINE_REFUSED = "baseline refused";
@@ -97,4 +98,54 @@ export function loadBaseline(name: string, dir?: string): OutcomeBaseline {
   }
 
   return raw as OutcomeBaseline;
+}
+
+/**
+ * Load a stored variance capture.
+ *
+ * A separate loader rather than a widened `loadBaseline`, because the two
+ * artefacts answer different questions and sharing a reader is how one comes
+ * to be interpreted as the other. The refusals are the same discipline with
+ * one addition that `pre-arbiter.json` does not need: **the commit must not
+ * have moved during the run.** A capture whose M runs straddle two versions
+ * of `adjudicateFiling` measures a mixture, and a mixture that happens to be
+ * self-consistent is indistinguishable from a stable reading.
+ */
+export function loadVarianceCapture(name: string, dir?: string): VarianceCapture {
+  const path = join(dir ?? join(import.meta.dir, "baselines"), `${name}.json`);
+  const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<VarianceCapture>;
+
+  for (const field of ["name", "pinnedCommit", "commitAtEnd", "measuredAt", "repo", "caveat"] as const) {
+    const v = raw[field];
+    if (typeof v !== "string" || v === "") {
+      throw new Error(`${BASELINE_REFUSED}: ${path} has no \`${field}\`. A stored reading without its provenance is a number nobody can date.`);
+    }
+  }
+
+  for (const field of ["pinnedCommit", "commitAtEnd"] as const) {
+    if (!/^[0-9a-f]{40}$/.test(raw[field]!)) {
+      throw new Error(`${BASELINE_REFUSED}: ${path} records \`${field}\` as \`${raw[field]}\`, which is not a 40-character SHA.`);
+    }
+  }
+
+  if (raw.pinnedCommit !== raw.commitAtEnd) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} started at ${raw.pinnedCommit} and ended at ${raw.commitAtEnd}. The runs ` +
+        "straddle two adjudicators, so the artefact measures a mixture — and a self-consistent mixture reads " +
+        "exactly like a stable one. Re-take it.",
+    );
+  }
+
+  if (raw.usable !== true) {
+    throw new Error(`${BASELINE_REFUSED}: ${path} is marked unusable: ${raw.caveat}`);
+  }
+
+  if (raw.plantsAgreed !== raw.plantsTotal || (raw.plantsTotal ?? 0) === 0) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} records ${raw.plantsAgreed} of ${raw.plantsTotal} plants agreeing. A capture ` +
+        "whose known-positives did not land cannot tell a stable adjudicator from an inert one.",
+    );
+  }
+
+  return raw as VarianceCapture;
 }
