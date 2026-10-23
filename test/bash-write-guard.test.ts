@@ -1597,12 +1597,19 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
    * directory nobody made and that is exempt.
    */
   test("bash emits BYTES for octal and \\x, which is why the decode assembles bytes", () => {
-    // late-env-ok: the child is `printf` under bash, which reads no RUNGATE
-    // variable and no TMPDIR — every escape is a literal on its command line.
-    const hex = (a: string) => spawnSync("/bin/bash", ["-c", `printf '%s' ${a} | od -An -tx1`], { encoding: "utf8" }).stdout.trim();
-    expect(hex(String.raw`$'\303\251'`)).toBe("c3  a9");
-    expect(hex(String.raw`$'\xc3\xa9'`)).toBe("c3  a9");
-    expect(hex("$'é'")).toBe("c3  a9");
+    // Whitespace-normalised, because BSD `od` and GNU `od` pad their columns
+    // differently and the claim here is about the BYTES. Pinning the padding
+    // made this red on CI and green on the machine it was written on — a
+    // detector narrower than the thing it detects.
+    const hex = (a: string) =>
+      // late-env-ok: the child is `printf` under bash, which reads no RUNGATE
+      // variable and no TMPDIR — every escape is a literal on its command line.
+      spawnSync("/bin/bash", ["-c", `printf '%s' ${a} | od -An -tx1`], { encoding: "utf8" })
+        .stdout.trim()
+        .replace(/\s+/g, " ");
+    expect(hex(String.raw`$'\303\251'`)).toBe("c3 a9");
+    expect(hex(String.raw`$'\xc3\xa9'`)).toBe("c3 a9");
+    expect(hex("$'é'")).toBe("c3 a9");
     // The ASCII side still agrees, which is what keeps the octal and hex
     // void rows above meaningful rather than accidental.
     expect(hex(String.raw`$'\163'`)).toBe("73");
