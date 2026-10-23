@@ -108,6 +108,7 @@ import {
   registeredTreeCensus,
 } from "./hook-target-tree";
 import { readRegistrationScopes } from "./hook-scopes";
+import { gitIsolatedArgs, gitIsolatedEnv } from "./git-isolation";
 
 /** One git query's result. `status` is the exit code; a non-zero one is a reading. */
 export interface GitResult {
@@ -128,6 +129,80 @@ export interface GitResult {
  * have to be caught somewhere that could turn it into silence.
  */
 export type GitRunner = (dir: string, args: string[]) => GitResult;
+
+/**
+ * `spawnSync`, narrowed to what the runner below needs.
+ *
+ * Injected so this module keeps no `child_process` import, for the same
+ * reason `readFile` is injected: a function that reaches for the machine can
+ * only be tested against the machine.
+ */
+export type SpawnGit = (
+  command: string,
+  args: string[],
+  options: { encoding: "utf-8"; env: NodeJS.ProcessEnv; timeout: number },
+) => { status: number | null; stdout: string | null };
+
+/** Per-invocation budget. A wedged directory must become a reading, not a hang. */
+export const GIT_TIMEOUT_MS = 5_000;
+
+/**
+ * The ONE isolated runner, and the only one anything in production may use.
+ *
+ * ## Why this is not an optional hardening
+ *
+ * `git -C <dir>` reads that directory's `.git/config`, and several of its
+ * keys are EXECUTABLE: `core.fsmonitor` is a command git runs, `core.hooksPath`
+ * points at hooks git fires, `core.excludesFile` decides what git can see.
+ * `lib/git-isolation.ts` holds the measured table.
+ *
+ * The exposure is sharper here than at any other call site in this tree,
+ * and it comes from the feature's own premise. The directories this module
+ * reads are the ones `RUNGATE_HOOKS_DIR` and friends resolve to — a
+ * hand-maintained worktree that **this module exists because nobody is
+ * watching**. And it runs at SessionStart, in every session on the machine.
+ * An unisolated reader would be a hook written to report that an unsupervised
+ * directory is stale, which executes whatever that unsupervised directory
+ * tells it to.
+ *
+ * Measured 2026-10-23 on a planted repository with the key in its own
+ * `.git/config` (not `~/.gitconfig`), git 2.x:
+ *
+ * | poisoned key | unisolated | isolated |
+ * |---|---|---|
+ * | `core.fsmonitor` → a script writing a marker | **marker written twice — git ran it** | not run |
+ * | `core.excludesFile` → a list naming the edited hook | **`current`** | `unmeasured` |
+ *
+ * The second row is the one specific to this module: poisoning
+ * `core.excludesFile` in the unwatched tree blinds the uncommitted-bytes
+ * check, so a hand-edited hook certifies as matching a merged commit. The
+ * directory gets to lie about its own cleanliness to the reading whose job
+ * is to catch exactly that.
+ *
+ * `safe.directory` comes along from `GIT_ISOLATION_CONFIG` and is
+ * load-bearing rather than a loosening — neutralising the global file
+ * removes the ownership exception with it, and reading a worktree we
+ * deliberately do not own is this module's whole job.
+ *
+ * Both halves or neither: the `-c` flags are the only thing covering the
+ * checkout's own `.git/config`, and the env vars are the only thing covering
+ * files nobody enumerated. That is why one binding builds both, instead of a
+ * convention each caller follows.
+ */
+export function spawnGitRunner(spawn: SpawnGit, timeoutMs = GIT_TIMEOUT_MS): GitRunner {
+  const env = gitIsolatedEnv();
+  return (dir, args) => {
+    const r = spawn("git", gitIsolatedArgs(["-C", dir, ...args]), {
+      encoding: "utf-8",
+      env,
+      timeout: timeoutMs,
+    });
+    // A timed-out or killed child reports `status: null`. Mapping that to a
+    // non-zero code makes it UNMEASURED, which is the honest reading — the
+    // alternative is a SessionStart that hangs on a poisoned fsmonitor.
+    return { status: r.status ?? 1, stdout: r.stdout ?? "" };
+  };
+}
 
 export type CurrencyState = "current" | "behind" | "unmeasured";
 

@@ -44,7 +44,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { tryLoadRungateConfig } from '../lib/config-loader';
 import { repoRootFrom } from '../lib/paths';
-import { currencyReportLines, readRegistrationCurrency } from '../lib/hook-tree-currency';
+import { currencyReportLines, readRegistrationCurrency, spawnGitRunner } from '../lib/hook-tree-currency';
 import {
   readHookCurrency,
   currencyClass,
@@ -133,10 +133,9 @@ try {
         .filter(n => n.endsWith('.hook.ts'))
         .map(n => n.replace(/\.hook\.ts$/, '')),
       registryCommands: (config?.hooks ?? []).map(h => String((h as { command?: string })?.command ?? h)),
-      git: (dir, args) => {
-        const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf-8' });
-        return { status: r.status ?? 1, stdout: r.stdout ?? '' };
-      },
+      // `spawnGitRunner`, never an inline spawn: these directories are the
+      // unsupervised ones, and git executes its own config. See the module.
+      git: spawnGitRunner(spawnSync),
     });
     for (const line of currencyReportLines(reading)) report(line);
   }

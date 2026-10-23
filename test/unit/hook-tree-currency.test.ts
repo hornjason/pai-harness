@@ -14,11 +14,14 @@ import { join } from "path";
 import {
   type GitResult,
   type GitRunner,
+  type SpawnGit,
   currencyReportLines,
   directoryCurrency,
   readRegistrationCurrency,
   registrationCurrency,
+  spawnGitRunner,
 } from "../../lib/hook-tree-currency";
+import { GIT_ISOLATION_CONFIG, GIT_ISOLATION_ENV } from "../../lib/git-isolation";
 import type { TargetTreeCensus, TargetReading } from "../../lib/hook-target-tree";
 
 /**
@@ -70,11 +73,13 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8" }).trim();
 }
 
-/** The runner the production hook supplies, so the real cases run real git. */
-const realGit: GitRunner = (dir, args) => {
-  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf-8" });
-  return { status: r.status ?? 1, stdout: r.stdout ?? "" };
-};
+/**
+ * The runner the production hook supplies, byte for byte — so every case
+ * below runs the isolated argv and env the hook runs, and an isolation flag
+ * that broke an ordinary reading would redden the whole file rather than
+ * only HC-19.
+ */
+const realGit: GitRunner = spawnGitRunner(spawnSync);
 
 function commit(dir: string, name: string): void {
   writeFileSync(join(dir, name), name);
@@ -345,6 +350,18 @@ describe("#1216: the mechanism has a production caller", () => {
     expect(hook).toContain("hook-tree-currency");
     expect(hook).toContain("currencyReportLines");
     expect(hook).toContain("readRegistrationCurrency");
+
+    // And it builds its runner through the one isolated binding. An inline
+    // `spawnSync('git', …)` here is how the unisolated version shipped in
+    // the first place, and HC-18 cannot see it: HC-18 drives the runner it
+    // is handed, so a second runner built beside it is invisible to the
+    // population it measures.
+    expect(hook).toContain("spawnGitRunner(spawnSync)");
+    expect(
+      [...hook.matchAll(/spawnSync\(\s*['"]git['"]/g)].length,
+      "the hook spawns git directly instead of going through spawnGitRunner, so a directory " +
+        "nobody supervises gets to run its own .git/config at SessionStart",
+    ).toBe(0);
   });
 
   test("HC-16: it never fetches, merges or writes — every git call is a query", () => {
@@ -358,6 +375,100 @@ describe("#1216: the mechanism has a production caller", () => {
       "a git subcommand that is not a query reached a directory somebody is executing from. " +
         "#1216 is explicit that this must REPORT staleness, never repair it",
     ).toEqual([]);
+  });
+
+  test("HC-18: EVERY invocation carries both halves of the isolation, and a timeout", () => {
+    // A subcommand allowlist alone is a detector narrower than what it
+    // detects (`.claude/rules/checks-must-be-able-to-fail.md`, shape two):
+    // "we only ran rev-list" stays green against an unisolated call for
+    // ever. This asserts the POPULATION of invocations, not a string in the
+    // source — the recorder runs a whole multi-directory reading and every
+    // call it saw has to carry the flags.
+    const seen: { args: string[]; env: NodeJS.ProcessEnv; timeout: number }[] = [];
+    const recorder: SpawnGit = (_cmd, args, opts) => {
+      seen.push({ args, env: opts.env, timeout: opts.timeout });
+      // Drive the reading down the longest path: a resolvable base, a HEAD,
+      // a count of zero, and therefore a `status` call too.
+      const last = args[args.length - 1] ?? "";
+      if (args.includes("rev-list")) return { status: 0, stdout: "0\n" };
+      if (args.includes("status")) return { status: 0, stdout: "" };
+      if (last.startsWith("--show-toplevel")) return { status: 0, stdout: "/x\n" };
+      return { status: 0, stdout: `${"a".repeat(40)}\n` };
+    };
+
+    registrationCurrency(census(["/x/hooks/A.hook.ts", "/y/hooks/B.hook.ts"]), BASE, spawnGitRunner(recorder));
+
+    expect(seen.length, "no invocation was recorded, so this asserts nothing").toBeGreaterThan(6);
+
+    for (const [k, v] of GIT_ISOLATION_CONFIG) {
+      const missing = seen.filter(c => {
+        const at = c.args.indexOf("-c");
+        return !c.args.some((a, i) => a === "-c" && c.args[i + 1] === `${k}=${v}` && at >= 0);
+      });
+      expect(
+        missing.length,
+        `${missing.length} of ${seen.length} invocations reached a directory we do not own ` +
+          `without -c ${k}=${v}. git executes its own config; the checkout's .git/config is ` +
+          `reachable only by command scope`,
+      ).toBe(0);
+    }
+
+    for (const [k, v] of Object.entries(GIT_ISOLATION_ENV)) {
+      const missing = seen.filter(c => c.env[k] !== v);
+      expect(
+        missing.length,
+        `${missing.length} of ${seen.length} invocations ran without ${k}=${v}, so ~/.gitconfig ` +
+          `was live. The -c flags do not cover whole config FILES`,
+      ).toBe(0);
+    }
+
+    expect(
+      seen.filter(c => !(c.timeout > 0)).length,
+      "an invocation had no timeout, so a poisoned fsmonitor on a wedged directory hangs " +
+        "SessionStart instead of reading UNMEASURED",
+    ).toBe(0);
+  });
+
+  test("HC-19: a poisoned .git/config cannot make a hand-edited tree read `current`", () => {
+    // The negative control, with real git. Not "the flags are in the argv" —
+    // the exploit, performed, through this module's own decision.
+    //
+    // Measured 2026-10-23 before the fix: `core.excludesFile` set in the
+    // TARGET's own `.git/config` hides the uncommitted hook from
+    // `git status`, so the reading that exists to catch bytes matching no
+    // commit certifies them as current. The same planting also runs
+    // `core.fsmonitor` as a program — arbitrary execution at SessionStart,
+    // out of the unsupervised directory this whole feature is about.
+    const repo = pair("poisoned-config", 0, 0);
+    const dir = join(repo, "hooks");
+    writeFileSync(join(dir, "Edited.hook.ts"), "hand-edited\n");
+
+    const unisolated: GitRunner = (d, args) => {
+      const r = spawnSync("git", ["-C", d, ...args], { encoding: "utf-8" });
+      return { status: r.status ?? 1, stdout: r.stdout ?? "" };
+    };
+    const isolated = spawnGitRunner(spawnSync);
+
+    // Control first: with nothing planted, BOTH runners see the edit. So the
+    // rows below separate on the poisoning and on nothing else.
+    expect(directoryCurrency(dir, BASE, unisolated).state).toBe("unmeasured");
+    expect(directoryCurrency(dir, BASE, isolated).state).toBe("unmeasured");
+
+    const ignore = join(repo, "ignore-list");
+    writeFileSync(ignore, "Edited.hook.ts\n");
+    git(repo, ["config", "core.excludesFile", ignore]);
+
+    expect(
+      directoryCurrency(dir, BASE, unisolated).state,
+      "the unisolated runner no longer reproduces the defect, so the row below proves nothing " +
+        "about isolation — re-derive what git honours before trusting it",
+    ).toBe("current");
+
+    expect(
+      directoryCurrency(dir, BASE, isolated).state,
+      "a directory poisoned its own reading: the hand-edited hook was certified as matching a " +
+        "merged commit, which is the exact failure #1216 exists to catch",
+    ).toBe("unmeasured");
   });
 
   test("HC-17: the live reading on this machine, through the assembled entry point", () => {
