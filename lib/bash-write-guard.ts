@@ -500,7 +500,7 @@ const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
  * by a semicolon" — so it is a syntax error, not a bypass. Count: ONE
  * spelling missed by both nets, ZERO executable. No change made.
  *
- * ## The THREE transforms a shell applies before `cp` sees a flag
+ * ## The FOUR transforms a shell applies before `cp` sees a flag
  *
  * Every bypass found in this family so far has been the same question asked
  * about a different transform, and each was rediscovered separately because
@@ -512,17 +512,27 @@ const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
  * | quote removal | `'-s'`, `"-s"`, `-'s'`, `c""p` all arrive bare | `readWord`, via `scanSegment` (#1429) |
  * | escape removal | `-\s`, `-r\s`, `-\-symbolic-link`, `--sy\mbolic-link` arrive as `-s`, `-rs`, `--symbolic-link` | `isLinkFlag`, before EITHER branch |
  * | substitution grouping | `` `…` `` and `$(…)` hand their text to ANOTHER shell, and `$(…)` nests | `nestedCommands` |
+ * | ANSI-C quoting | `$'-s'` is the word `-s`, and `$'-\163'` is too | `readWord`, via `decodeAnsiC` |
  *
  * Measured against `/bin/bash` rather than assumed: `printf '[%s]' -\s -\l
- * -r\s -\-symbolic-link --sy\mbolic-link` prints
- * `[-s][-l][-rs][--symbolic-link][--symbolic-link]`. Every one of those was
- * ALLOWED before the escape removal, as were `` `cp -s …` ``,
- * ``eval `cp -s …` ``, a `$(…)` containing a second `$(…)`, and a `$(…)`
- * wrapping a parenthesised subshell.
+ * -r\s -\-symbolic-link --sy\mbolic-link $'-s' $'-\163' $'cp'` prints
+ * `[-s][-l][-rs][--symbolic-link][--symbolic-link][-s][-s][cp]`. Every one
+ * of those was ALLOWED before its transform was read, as were
+ * `` `cp -s …` ``, ``eval `cp -s …` ``, a `$(…)` containing a second
+ * `$(…)`, and a `$(…)` wrapping a parenthesised subshell.
  *
- * If a fourth transform turns up, add the row. The point of the table is
- * that the next reader checks all three at once instead of finding them one
- * review at a time, which is exactly how these three arrived.
+ * The fourth arrived the way the second and third did — a review round
+ * after the table said three — which is the argument for the table rather
+ * than against it. If a fifth turns up, add the row. The point is that the
+ * next reader checks all of them at once instead of finding them one review
+ * at a time.
+ *
+ * ANSI-C is the one that hides a VERB as well as a flag: `$'cp' -s` leaves
+ * `verbToken` nothing to match, so it is read in `readWord` — the module's
+ * one quote reader — rather than in `isLinkFlag`, which a hidden verb never
+ * reaches. Unlike the other substitution syntaxes it is settled at parse
+ * time, so decoding it makes a word more readable rather than guessing at
+ * one, and an unexpanded `$(…)` goes on reading as unprovable.
  */
 const LINK_VERBS = new Set(['cp', 'install']);
 
@@ -1120,12 +1130,89 @@ function endOfSubstitution(s: string, i: number): number {
   return j;
 }
 
+/**
+ * ANSI-C quoting: the value of a `$'…'` word.
+ *
+ * Unlike `$(…)` and `` `…` ``, this is settled at parse time — no command
+ * runs and nothing is looked up — so decoding it makes a word MORE readable
+ * rather than guessing at one. `$'-\163'` is the string `-s` on every run.
+ *
+ * An escape this does not recognise keeps its backslash, which is what bash
+ * does with one.
+ */
+const ANSI_C_SHORT: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+};
+
+function decodeAnsiC(body: string): string {
+  let out = '';
+  for (let k = 0; k < body.length; k++) {
+    if (body[k] !== '\\' || k + 1 >= body.length) {
+      out += body[k];
+      continue;
+    }
+    const n = body[k + 1];
+    const short = ANSI_C_SHORT[n];
+    if (short !== undefined) {
+      out += short;
+      k++;
+      continue;
+    }
+    if (n >= '0' && n <= '7') {
+      const oct = /^[0-7]{1,3}/.exec(body.slice(k + 1))?.[0] ?? '';
+      out += String.fromCharCode(parseInt(oct, 8));
+      k += oct.length;
+      continue;
+    }
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const width = n === 'x' ? 2 : n === 'u' ? 4 : 8;
+      const hex = new RegExp(`^[0-9a-fA-F]{1,${width}}`).exec(body.slice(k + 2))?.[0] ?? '';
+      if (hex) {
+        out += String.fromCodePoint(parseInt(hex, 16));
+        k += 1 + hex.length;
+        continue;
+      }
+    }
+    out += body[k]; // an escape bash does not recognise keeps its backslash
+  }
+  return out;
+}
+
 function readWord(s: string, i: number): [string, number] {
   let w = '';
   while (i < s.length) {
     const c = s[i];
     if (c === ' ' || c === '\t' || c === '\n') break;
     if (c === '>' || c === '<') break; // an operator ends a word
+    // ANSI-C quoting, the FOURTH transform. `$'-s'` is the word `-s`, and
+    // reading the `$` as an ordinary character left the token `$-s`, which
+    // fails `isLinkFlag`'s `startsWith('-')` precondition before any flag
+    // letter is looked at. Handled here rather than in `isLinkFlag` because
+    // it is a QUOTING rule and this is the module's quote reader — and
+    // because doing it here also fixes `$'cp'`, where the thing hidden is
+    // the VERB and `isLinkFlag` is never consulted at all.
+    //
+    // A `\'` inside the body is an escaped quote, so the closing quote is
+    // found by walking rather than by `indexOf`.
+    if (c === '$' && s[i + 1] === "'") {
+      let k = i + 2;
+      for (; k < s.length && s[k] !== "'"; k++) if (s[k] === '\\') k++;
+      w += decodeAnsiC(s.slice(i + 2, Math.min(k, s.length)));
+      i = k + 1; // unterminated leaves i past the end, which ends the word
+      continue;
+    }
     if (c === "'" || c === '"') {
       const close = s.indexOf(c, i + 1);
       const end = close === -1 ? s.length : close;
