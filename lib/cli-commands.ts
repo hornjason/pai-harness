@@ -150,7 +150,10 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
   "ai-review-findings": {
     script: "scripts/ai-review-findings.ts",
     summary: "Adjudicate an AI review's findings payload — exits non-zero on a blocking finding",
-    usage: "rungate ai-review-findings <path-to-findings.json>",
+    // `--changed-files` is the pull request's changed-path list (#1204), and
+    // it is OPTIONAL: no generated job supplies it yet, and an absent list
+    // reports its own state rather than switching a check off in silence.
+    usage: "rungate ai-review-findings <path-to-findings.json> [--changed-files <path>]",
   },
 };
 
