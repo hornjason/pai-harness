@@ -6545,9 +6545,19 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
         rf=\$(printf '%s' "\${row}" | jq -r '.${AI_REVIEW_FINDING_FIELDS.file} // ""') || true
         rl=\$(printf '%s' "\${row}" | jq -r 'if (.${AI_REVIEW_FINDING_FIELDS.line}|type) == "number" then (.${AI_REVIEW_FINDING_FIELDS.line}|floor|tostring) else "" end') || true
         # The REVIEWER chooses \`file\`, and this step copies a line of it into
-        # a public comment. An absolute path, or one climbing out of the
-        # checkout, is refused rather than read.
-        case "\${rf}" in ""|/*|*..*) rf="" ;; esac
+        # a public comment. An absolute path, one climbing out of the
+        # checkout, or one spelling a command-line OPTION is refused rather
+        # than read.
+        #
+        # The \`-*\` arm is the CRITICAL half (#1379, second pass). Without
+        # it a value like \`--expression=e id\` reaches \`sed\` as an option,
+        # and GNU sed's \`e\` command executes it through a shell on a
+        # credentialed runner. \`[ -f "\${rf}" ]\` does not close that:
+        # \`test -f\` treats a leading-dash operand as a FILENAME, so it only
+        # requires such a file to exist — and git tracks one happily, so the
+        # author commits a file whose NAME is the option and writes code at
+        # that path shaped to draw a finding. Every input is author-chosen.
+        case "\${rf}" in ""|-*|/*|*..*) rf="" ;; esac
         rt=""
         case "\${rl}" in
           ""|0|*[!0-9]*) ;;
@@ -6578,19 +6588,60 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
             # no-quote rendering — no new failure mode and no annotation.
             # Untrusted input being declined is not a review result.
             #
-            # \`--\` on \`readlink\` and NOT on \`sed\`: \`rf\` is
-            # attacker-shaped and may begin with \`-\`, while \`real\` is a
-            # resolved path already known to start with \`\${root}/\` and so
-            # cannot be read as an option — a stronger guarantee than \`--\`,
-            # not a weaker one. BSD sed takes \`--\` as a FILENAME and exits
-            # non-zero (measured, darwin 25.6), so spelling it there would
-            # split this step's behaviour by runner.
-            if [ -n "\${rf}" ] && [ ! -L "\${rf}" ] && [ -f "\${rf}" ]; then
-              real=\$(readlink -f -- "\${rf}" 2>/dev/null || true)
+            # The \`./\` prefix is the SECOND half of the option defence and
+            # is independent of the \`-*\` arm above, deliberately: the arm
+            # states the intent where a reader looks for it, and the prefix
+            # still holds if someone later adds a path-rewriting step between
+            # them. \`rf\` is known relative here — absolute and \`..\` were
+            # refused above — so \`./\` only ever prefixes, never redirects.
+            #
+            # \`--\` on \`readlink\`, where the operand is still the
+            # attacker-shaped \`rf\` and both GNU and BSD accept it.
+            #
+            # \`--\` DELIBERATELY NOT on \`sed\`, against a review that asked
+            # for it as a third layer. BSD sed does not implement it: it
+            # takes \`--\` as a FILE OPERAND, and numbering is continuous
+            # across operands, so with a file literally named \`--\` in the
+            # tree the quote comes from THAT file. Measured on darwin 25.6 —
+            # \`sed -n 1p -- /abs/a.ts\` printed the contents of \`./--\` —
+            # and git tracks such a file, so on a BSD runner \`--\` would ADD
+            # a disclosure route of exactly the class this fixes. It also
+            # buys nothing: \`sed\` is handed \`\${real}\`, an absolute
+            # resolved path known to start with \`\${root}/\`, which cannot
+            # be parsed as an option. That is a guarantee by construction,
+            # which is stronger than a terminator.
+            if [ -n "\${rf}" ] && [ ! -L "./\${rf}" ] && [ -f "./\${rf}" ]; then
+              real=\$(readlink -f -- "./\${rf}" 2>/dev/null || true)
               root=\$(readlink -f -- "\${GITHUB_WORKSPACE:-\$PWD}" 2>/dev/null || true)
               if [ -n "\${real}" ] && [ -n "\${root}" ]; then
                 case "\${real}" in
-                  "\${root}"/*) rt=\$(sed -n "\${rl}p" "\${real}" 2>/dev/null || true) ;;
+                  "\${root}"/*)
+                    # TRACKED, not merely inside the workspace. Containment
+                    # answers "is this in the checkout"; the question worth
+                    # asking is "is this a file the pull request contains".
+                    # They differ by exactly the interesting set — \`.git/\`,
+                    # and anything an earlier step or the reviewer itself
+                    # wrote into the workspace. Tracked source is public by
+                    # construction for a pull request: the reviewer is
+                    # quoting something already visible in the diff.
+                    #
+                    # This SUBSUMES the \`.git/\`/\`.ssh/\` dot-directory arm
+                    # the same review suggested, so that arm is not added —
+                    # two deciders answering one question are behaviourally
+                    # one, and a mutation of either leaves the other holding
+                    # the case up.
+                    #
+                    # \`ls-files\` reads the INDEX, not history, so
+                    # \`fetch-depth: 1\` is sufficient — asserted in the rig,
+                    # not reasoned about. It is local and reaches no network,
+                    # which matters because this job checks out with
+                    # \`persist-credentials: false\` and has no token in
+                    # \`.git/config\` to spend.
+                    rel=\${real#"\${root}"/}
+                    if ${AI_REVIEW_GIT_ISOLATED} -C "\${root}" ls-files --error-unmatch -- "\${rel}" >/dev/null 2>&1; then
+                      rt=\$(sed -n "\${rl}p" "\${real}" 2>/dev/null || true)
+                    fi
+                    ;;
                 esac
               fi
             fi

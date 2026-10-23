@@ -100,6 +100,14 @@ interface Rig {
    * a real inode carries the `-L`/`-f` disagreement the defect lives in.
    */
   symlinks?: Record<string, string>;
+  /**
+   * Files planted AFTER the index is built, so they exist in the checkout
+   * and are NOT tracked. The step's boundary is "a file the pull request
+   * contains", and an untracked file inside the workspace is the population
+   * that separates that from "a file inside the workspace" — anything an
+   * earlier step or the reviewer itself wrote there.
+   */
+  untracked?: Record<string, string>;
   /** Overrides for the step's environment. */
   env?: Record<string, string>;
   /** Make the write (POST/PATCH) fail. */
@@ -184,6 +192,25 @@ function runPersist(rig: Rig = {}) {
       const abs = join(work, rel);
       mkdirSync(dirname(abs), { recursive: true });
       symlinkSync(target, abs);
+    }
+    // A REAL index, because the step's boundary is now "tracked". `add -A`
+    // and no commit is deliberate and sufficient: `ls-files` reads the
+    // index, not history, which is the property that has to hold under the
+    // job's `fetch-depth: 1` and is asserted here rather than reasoned about.
+    // The symlinks are added too — #1379's premise is a COMMITTED symlink,
+    // so tracking must not be what refuses it.
+    const git = (...args: string[]) =>
+      spawnSync("git", args, {
+        cwd: work,
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+        encoding: "utf8",
+      });
+    git("init", "-q", "-b", "main", ".");
+    git("add", "-A");
+    for (const [rel, contents] of Object.entries(rig.untracked ?? {})) {
+      const abs = join(work, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, contents);
     }
 
     const script = join(dir, "persist.sh");
@@ -967,7 +994,7 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
    */
   test("AC-L12: the MUTANT — `! -L` removed — quotes through an IN-TREE link", () => {
     const real = buildPersistScript();
-    const mutant = real.replace('[ ! -L "${rf}" ] && ', "");
+    const mutant = real.replace('[ ! -L "./${rf}" ] && ', "");
     expect(mutant, "the `! -L` guard was not found, so nothing was mutated").not.toBe(real);
 
     // `../lib/a.ts` is the link's own bytes, resolved by the kernel relative
@@ -989,18 +1016,43 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     ).toBe("alpha");
   });
 
-  test("AC-L12: the MUTANT — containment removed — posts through a linked parent", () => {
-    // `! -L` stays. Only the pattern that requires the resolved path to sit
-    // under the workspace is widened to match everything, so this row cannot
-    // go green on the guard the row above already covers.
+  /** Widens containment to match every resolved path. */
+  const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
+  /** Stops the tracked check consulting `rel`, so it answers yes for anything. */
+  const dropTracked = (s: string) =>
+    s.replace('ls-files --error-unmatch -- "${rel}"', "ls-files --error-unmatch -- .");
+
+  test("AC-L12: the MUTANT — containment AND tracking removed — posts through a linked parent", () => {
+    // `! -L` stays, so this row cannot go green on the guard above.
+    //
+    // Both are dropped together because, MEASURED, dropping containment
+    // alone does not leak: `git ls-files --error-unmatch` refuses a path
+    // outside the repository too, so the two guards agree on every escaping
+    // input. The row below holds that finding on its own.
     const real = buildPersistScript();
-    const mutant = real.replace('"${root}"/*)', "*)");
-    expect(mutant, "the containment pattern was not found, so nothing was mutated").not.toBe(real);
+    const mutant = dropTracked(dropContainment(real));
+    expect(mutant, "neither guard was found, so nothing was mutated").not.toBe(real);
+    expect(dropContainment(real), "the containment pattern was not found").not.toBe(real);
+    expect(dropTracked(real), "the tracked check was not found").not.toBe(real);
     const r = runWithLinks(mutant);
     expect(
       r.sentRaw,
-      "removing containment did not leak, so `! -L` alone is being credited for it",
+      "removing both outside-the-tree guards did not leak, so neither is what refuses",
     ).toContain(VIA_PARENT);
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
+  });
+
+  test("AC-L12: containment alone is SUBSUMED by the tracked check — measured, not assumed", () => {
+    // Written down rather than left as a gap. With containment widened to
+    // `*)` and tracking intact, the linked-parent escape is still refused:
+    // the resolved path is outside the repository, so `ls-files` refuses it
+    // as well. Containment is retained for two reasons that are not
+    // refusal — it is what keeps `rel` a repo-RELATIVE pathspec rather than
+    // an absolute one, and it states the boundary where a reader looks for
+    // it — but it decides no input by itself, and a row claiming otherwise
+    // would be the "two deciders" shape going green for the wrong reason.
+    const r = runWithLinks(dropContainment(buildPersistScript()));
+    expect(r.sentRaw).not.toContain(VIA_PARENT);
     expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
@@ -1063,5 +1115,159 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "alpha"]);
+  });
+});
+
+/**
+ * AC-L13 (#1379, second security pass): the cited path is never parsed as an
+ * OPTION, and must be a file the pull request actually contains.
+ *
+ * Two additions to the same arm, from two later reviews.
+ *
+ * **Argument injection.** `rf` beginning with `-` passed the spelling filter,
+ * and `[ -f "${rf}" ]` does not close it: `test -f` treats a leading-dash
+ * operand as a filename, so it only requires such a file to exist — and git
+ * tracks one happily. `sed` then parses the value as an option, and GNU sed's
+ * `--expression=` can supply an `e` command that executes through a shell on
+ * a credentialed runner.
+ *
+ * **Tracked, not merely inside the workspace.** `"${root}"/*` containment
+ * answers "is this inside the checkout"; the question worth asking is "is
+ * this a file the pull request contains". They differ by exactly the
+ * interesting set — `.git/`, and anything an earlier step or the reviewer
+ * itself wrote into the workspace. Tracked source is public by construction
+ * for a pull request: the reviewer is quoting something already visible in
+ * the diff.
+ *
+ * `git ls-files` subsumes the dot-directory arm that review also suggested,
+ * so that arm is deliberately NOT added — two deciders answering one
+ * question are behaviourally one, and a mutation of either leaves the other
+ * holding the case up.
+ *
+ * Every fixture name here is written as literal bytes. `join()` is used only
+ * to prefix the work directory, and these names carry no `.` or `..`
+ * segment for it to normalise; nothing goes through a shell.
+ */
+describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", () => {
+  const CANARY = "INJECTION-CANARY";
+  const DASH_N = "DASH-N-CANARY";
+
+  /** Every row carries the in-tree control, because it is load-bearing twice
+   *  over now: with four stacked refusals the failure that costs us is not a
+   *  leak, it is a quote feature that silently never quotes again — and every
+   *  refusal row stays green through exactly that. */
+  function runNamed(script?: string) {
+    return runPersist({
+      list: [],
+      script,
+      files: {
+        "lib/a.ts": "alpha\n",
+        "--expression=e id": `${CANARY}\n`,
+        "-n": `${DASH_N}\n`,
+      },
+      payload: {
+        findings: [
+          { severity: "high", file: "--expression=e id", line: 1, summary: "sed option" },
+          { severity: "high", file: "-n", line: 1, summary: "bare flag" },
+          { severity: "high", file: "lib/a.ts", line: 1, summary: "control" },
+        ],
+      },
+    });
+  }
+
+  test("AC-L13: a `file` spelling a sed option renders no quote, and the control still quotes", () => {
+    const r = runNamed();
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.sentRaw, "an option-named path was read into a public comment").not.toContain(CANARY);
+    expect(r.sentRaw, "a flag-named path was read into a public comment").not.toContain(DASH_N);
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+  });
+
+  test("AC-L13: the MUTANT — the `-*` arm removed — quotes the option-named file", () => {
+    const real = buildPersistScript();
+    const mutant = real.replace('""|-*|/*|*..*)', '""|/*|*..*)');
+    expect(mutant, "the `-*` arm was not found, so nothing was mutated").not.toBe(real);
+    const r = runNamed(mutant);
+    expect(r.sentRaw, "removing the `-*` arm changed nothing, so it decides no input").toContain(
+      CANARY,
+    );
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
+  });
+
+  /**
+   * The step plants the file, builds the index, THEN plants the untracked
+   * one — so the only difference between the two refusals and the control is
+   * membership of the index.
+   */
+  function runUntracked(script?: string) {
+    return runPersist({
+      list: [],
+      script,
+      files: { "lib/a.ts": "alpha\n" },
+      untracked: { "lib/scratch.ts": "UNTRACKED-CANARY\n" },
+      payload: {
+        findings: [
+          { severity: "high", file: "lib/scratch.ts", line: 1, summary: "untracked" },
+          { severity: "high", file: ".git/config", line: 1, summary: "inside .git" },
+          { severity: "high", file: "lib/a.ts", line: 1, summary: "control" },
+        ],
+      },
+    });
+  }
+
+  test("AC-L13: an untracked file and a `.git/` path render no quote", () => {
+    const r = runUntracked();
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.sentRaw, "an untracked file in the workspace was quoted publicly").not.toContain(
+      "UNTRACKED-CANARY",
+    );
+    // `.git/config` is inside the workspace and passes containment, so this
+    // row can only be green because of the tracked check.
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+  });
+
+  test("AC-L13: the MUTANT — the tracked check removed — quotes the untracked file", () => {
+    const real = buildPersistScript();
+    // The operand is swapped for `.`, which is always tracked, so the
+    // predicate stops consulting `rel` while still running the same command.
+    const mutant = real.replace('ls-files --error-unmatch -- "${rel}"', "ls-files --error-unmatch -- .");
+    expect(mutant, "the tracked check was not found, so nothing was mutated").not.toBe(real);
+    const r = runUntracked(mutant);
+    expect(
+      r.sentRaw,
+      "weakening the tracked check changed nothing, so containment is being credited for it",
+    ).toContain("UNTRACKED-CANARY");
+  });
+
+  /**
+   * MEASURED, and the reason this step does NOT spell `--` on its `sed`,
+   * against a third review that asked for it as a layer.
+   *
+   * BSD sed does not implement `--`. It takes it as a FILE OPERAND, and line
+   * numbering is continuous across operands, so when a file literally named
+   * `--` exists the quote comes from THAT file instead:
+   *
+   *     $ printf 'alpha\n' > a.ts; printf 'I-AM-THE-DASHDASH-FILE\n' > ./--
+   *     $ sed -n 1p -- /abs/a.ts
+   *     I-AM-THE-DASHDASH-FILE
+   *
+   * git tracks a file named `--` (verified), so on a BSD runner `--` would
+   * ADD a content-disclosure route of exactly the class this issue is about.
+   * On GNU sed it is correct but buys nothing: `sed` is handed `${real}`, an
+   * absolute resolved path known to start with `${root}/`, which can never
+   * be parsed as an option. A guarantee by construction, not by terminator.
+   *
+   * `--` IS spelled on `readlink`, where the operand is still the
+   * attacker-shaped `rf` and both GNU and BSD readlink accept it.
+   */
+  test("AC-L13: a tracked file named `--` does not displace the quote", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "alpha\n", "--": "I-AM-THE-DASHDASH-FILE\n" },
+      payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 1, summary: "control" }] },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings[0].text).toBe("alpha");
+    expect(r.sentRaw).not.toContain("I-AM-THE-DASHDASH-FILE");
   });
 });
