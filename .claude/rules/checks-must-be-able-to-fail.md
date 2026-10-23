@@ -145,6 +145,14 @@ make it fail**. One line is enough: "removing the slice makes it compare the
 run against itself, which this now catches." That sentence is cheap to write,
 and it is the only evidence that separates a real check from a decorative one.
 
+**And write it as an assertion, not as a comment.** A docblock saying a
+property is tested is the reason nobody tests it — it answers, in the right
+file, the question that would have prompted a check. `lib/cli-commands.ts`
+carried *"`test/cli-contract.test.ts` runs every command for real"* while
+that test ran one command of ten, and three CLI commands exited 0 having
+executed nothing. Worked instance: *When the reason nobody checked is a
+comment saying it was checked* (#1322).
+
 When a guard has to ship red — a known-violations ratchet — bank progress in
 the same commit that earns it, and write down what the number means. A ratchet
 nobody can interpret becomes a number nobody lowers.
