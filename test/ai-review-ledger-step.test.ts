@@ -1225,38 +1225,119 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
     expect(r.rounds).toHaveLength(1);
   });
 
-  test("AC-L11: at the cap the OLDEST round is dropped and the drop is announced", () => {
-    const full = Array.from({ length: AI_REVIEW_LEDGER_MAX_ROUNDS }, (_, i) => ({
+  /**
+   * A prior ledger of `n` rounds, named `old-0` … `old-<n-1>`.
+   *
+   * The names are deliberately NOT `run-<i>`. The rig's `GITHUB_RUN_ID` is
+   * `run-9`, so a prior ledger of twelve `run-<i>` rounds already contains
+   * `run-9` — and "the new round was recorded" then held vacuously, against a
+   * row the fixture itself planted. An eviction-order assertion needs the two
+   * populations to be nameable apart.
+   */
+  function priorRounds(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
       at: `t${i}`,
       sha: "cafe",
-      run: `run-${i}`,
+      run: `old-${i}`,
       attempt: "1",
       round: i + 1,
       findings: [],
     }));
-    const r = runPersist({ list: [botComment(5, ledgerBody(full))], payload: ONE_FINDING });
+  }
+
+  test("AC-L11: at the cap the OLDEST round is dropped and the COUNT is announced", () => {
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds, "the ledger grew past its cap").toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
     // The oldest is gone and the newest is present — a cap that dropped the
     // WRONG end keeps the same length and loses every new round instead.
-    expect(JSON.stringify(r.rounds), "run-0 should have been dropped").not.toContain('"run-0"');
-    expect(JSON.stringify(r.rounds)).toContain('"run-9"');
+    expect(JSON.stringify(r.rounds), "old-0 should have been dropped").not.toContain('"old-0"');
+    expect(JSON.stringify(r.rounds), "old-1 is inside the window and was dropped").toContain(
+      '"old-1"',
+    );
     expect(JSON.stringify(r.rounds), "this round was not recorded").toContain('"run-9"');
     // A dropped round is gone, not empty. Silence here would make the ledger
     // a window that reports as a history.
-    expect(r.stdout, "the ledger dropped a round and said nothing").toContain("cap");
+    //
+    // Assert the COUNT, not the word "cap". The count is the one thing only
+    // the announcement branch can write, and `""` and `0` used to reach the
+    // SAME `case` arm — so a note keyed on the word was green whether the
+    // count had been read or not. That is the sixth shape of
+    // `.claude/rules/checks-must-be-able-to-fail.md` living in the arm
+    // rather than in the value, and it shipped live in #1386.
+    expect(r.stdout, "the evicted count was not announced").toContain("1 of the OLDEST");
+  });
+
+  test("AC-L11: the announced count is the number actually evicted, not a constant", () => {
+    // The row the one above cannot be: it evicts THREE, so a hardcoded "1",
+    // a boolean dressed as a count, and an off-by-one all come back wrong.
+    // Two rows differing only in the count is the cheapest way to make the
+    // announcement carry information rather than fire.
+    const over = AI_REVIEW_LEDGER_MAX_ROUNDS + 2;
+    const r = runPersist({ list: [botComment(5, ledgerBody(priorRounds(over)))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds, "the ledger grew past its cap").toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(JSON.stringify(r.rounds), "old-2 should have been dropped").not.toContain('"old-2"');
+    expect(JSON.stringify(r.rounds), "old-3 is inside the window and was dropped").toContain(
+      '"old-3"',
+    );
+    expect(JSON.stringify(r.rounds), "this round was not recorded").toContain('"run-9"');
+    expect(r.stdout, "the announced count does not match the eviction").toContain(
+      "3 of the OLDEST",
+    );
   });
 
   test("AC-L11: under the cap nothing is dropped and nothing is announced", () => {
-    // The control for the row above: the warning must not fire on every run.
-    const few = [{ at: "t0", sha: "cafe", run: "run-0", attempt: "1", round: 1, findings: [] }];
-    const r = runPersist({ list: [botComment(5, ledgerBody(few))], payload: ONE_FINDING });
+    // The control for the rows above: the warning must not fire on every run.
+    const r = runPersist({ list: [botComment(5, ledgerBody(priorRounds(1)))], payload: ONE_FINDING });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds).toHaveLength(2);
     expect(JSON.stringify(r.rounds), "an under-cap ledger lost its oldest round").toContain(
-      '"run-0"',
+      '"old-0"',
     );
-    expect(r.stdout, "the cap warning fired below the cap").not.toContain("cap");
+    expect(r.stdout, "the cap warning fired below the cap").not.toContain("OLDEST");
+  });
+
+  test("AC-L11: a count that cannot be read REFUSES the write rather than reading as zero", () => {
+    // Fault injection on the count position only. In production the count and
+    // the kept list come out of ONE `jq`, so this branch is unreachable while
+    // that invocation succeeds — which is exactly why it needs a row: a
+    // defensive arm nothing exercises is a line in a report.
+    //
+    // The defect this blocks is the one that shipped: when the count was a
+    // SECOND `jq … 2>/dev/null || true`, its failure produced `""`, `""`
+    // shared an arm with `0`, and the ledger was written having evicted
+    // rounds it did not mention. A truncated history that reports as a
+    // complete one is unrecoverable; a round that was not recorded is not.
+    const real = buildPersistScript();
+    const COUNT_EXPR = "(([($g | length) - $keep, 0] | max) | tostring)";
+    expect(
+      real.split(COUNT_EXPR).length - 1,
+      "the count expression moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    const mutant = real.replace(COUNT_EXPR, '("not-a-number")');
+    expect(mutant, "the mutation did not apply").not.toBe(real);
+
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+      script: mutant,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "the ledger was written with an unreadable eviction count").toBe(null);
+    expect(r.stdout, "the refusal was not announced").toContain("NOT recorded");
+
+    // The control, same rig and the real script: the refusal is the
+    // mutation's doing and not something this fixture provokes on its own.
+    const control = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
+    expect(control.method, "the unmutated script also refused").toBe("PATCH");
+    expect(control.stdout).not.toContain("NOT recorded");
   });
 });
 
