@@ -514,13 +514,67 @@ function isLinkFlag(token: string): boolean {
     if (!name) return false;
     return 'symbolic-link'.startsWith(name) || 'link'.startsWith(name);
   }
+  if (!token.startsWith('-') || token.length < 2) return false;
+  // A flag whose letters this module cannot read — `-$F`, `-${X}`, `-`+a
+  // substitution — is one it cannot rule OUT, and the verb is already known
+  // to make links on request. Same fail-closed shape as an unplaceable
+  // literal in `placeLiteral`: declining to clear is cheap and visible,
+  // clearing something unread is neither.
+  if (/[$`]/.test(token)) return true;
   // A short cluster. Lower case only: `-L` follows links in the source and
   // creates none, which is a CONTROL row.
   return /^-[A-Za-z]+$/.test(token) && /[sl]/.test(token.slice(1));
 }
 
+/**
+ * The shell's own tokens, with quotes REMOVED rather than their contents
+ * deleted (#1429 review, raised as a CRITICAL and confirmed by witness).
+ *
+ * `stripQuoted` deletes a quoted span's content, which is right for the
+ * question it was written for — a quoted `sed` script must not read as a
+ * path. It is wrong for this one. Seven spellings defeated the link check
+ * through it, every one of them a command the shell runs identically to
+ * the one that was refused:
+ *
+ *     cp '-s' …     cp "-s" …     cp -'s' …     c""p -s …
+ *     'cp' -s …     'cp' '-s' …   cp '--symbolic-link' …
+ *
+ * A quote is grouping, not content. Removing the quote characters and
+ * splitting on UNQUOTED whitespace is what `sh` does, so the tokens this
+ * returns are the tokens the command will actually run with.
+ */
+function shellTokens(segment: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let started = false;
+  let quote: string | null = null;
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else cur += c;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (started) out.push(cur);
+      cur = '';
+      started = false;
+      continue;
+    }
+    cur += c;
+    started = true;
+  }
+  if (started) out.push(cur);
+  return out;
+}
+
 function flagMakesLink(segment: string): boolean {
-  const tokens = stripQuoted(segment).trim().split(/\s+/).filter(Boolean);
+  const tokens = shellTokens(segment);
   if (!tokens.some(t => LINK_VERBS.has(verbToken(t)))) return false;
   return tokens.some(isLinkFlag);
 }

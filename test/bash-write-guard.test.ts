@@ -1178,6 +1178,25 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     // resolves this segment to `find`, so a verb-keyed reading would miss it
     // and the scan is position-independent for that reason.
     ["find -exec cp -s, where the verb resolves to `find`", `find . -exec cp -s ${VICTIM} /tmp/esc \\;`],
+
+    // The review on #1429 raised these as a CRITICAL and it was right:
+    // the first reading tokenised with `stripQuoted`, which DELETES a
+    // quoted span's content, so quoting the flag removed it from the
+    // token stream entirely. Seven spellings, every one a command the
+    // shell runs identically to the row above, and all seven were
+    // observed ALLOWED before `shellTokens` replaced it.
+    ["cp with the FLAG single-quoted", `cp '-s' ${VICTIM} /tmp/esc`],
+    ["cp with the FLAG double-quoted", `cp "-s" ${VICTIM} /tmp/esc`],
+    ["cp with the flag partly quoted", `cp -'s' ${VICTIM} /tmp/esc`],
+    ["cp with the VERB spliced by an empty string", `c""p -s ${VICTIM} /tmp/esc`],
+    ["cp with the verb quoted", `'cp' -s ${VICTIM} /tmp/esc`],
+    ["cp with verb and flag both quoted", `'cp' '-s' ${VICTIM} /tmp/esc`],
+    ["cp with the long flag quoted", `cp '--symbolic-link' ${VICTIM} /tmp/esc`],
+    // A flag whose letters cannot be read is one that cannot be ruled out,
+    // on a verb already known to make links on request. Fail-closed, and
+    // measured: 0 of 174 real `cp`/`install` commands in the corpus move.
+    ["cp with the flag behind a variable", `cp "-$F" ${VICTIM} /tmp/esc`],
+    ["cp with the flag behind a brace expansion", `cp -\${OPT} ${VICTIM} /tmp/esc`],
   ];
   test.each(voids)("%s voids the exemption", (_l, mk) => {
     expect(decideBashWrite(esc(mk)).blocked, esc(mk)).toBe(true);
@@ -1201,6 +1220,14 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     // The substring control, matching the one the `ln` rows carry: a word
     // containing the letters is not a verb.
     ["a path that merely contains the letters", `echo '{}' > /tmp/cp.d/${STATE}`],
+    // The controls for `shellTokens`. Removing quotes must not make every
+    // quoted argument a flag, and the case rule must survive quoting.
+    ["cp with a quoted FILENAME, not a flag", `cp 'a b.txt' /tmp/fix/${STATE}`],
+    ["cp '-L' quoted, which still creates no link", `cp '-L' /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp '-r' quoted", `cp '-r' /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The control for the unreadable-flag rule: a variable somewhere else
+    // in the segment is not a flag, and must not void anything.
+    ["cp with a variable in the PATH rather than the flag", `cp -r "$SRC" /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
   ];
   test.each(stay)("CONTROL: %s stays exempt", (_l, cmd) => {
     const d = decideBashWrite(cmd);
