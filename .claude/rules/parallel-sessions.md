@@ -188,11 +188,34 @@ because a laundered approval always looks accurate to the session relaying it.
 ## State the tree you measured, and re-read the tip before you send
 
 ```bash
-bun scripts/report-provenance.ts            # paste the three lines it prints
+bun scripts/report-provenance.ts                        # paste the four lines it prints
+bun scripts/report-provenance.ts --expect-branch rg/N   # when the work is in a worktree
 ```
 
 It exits non-zero when the branch has moved past the tree you measured.
-That is the moment to re-measure, not to send. Two security reviews on
+That is the moment to re-measure, not to send.
+
+### You are not necessarily in the tree you are working on
+
+**Your working directory is where you were launched, not where your
+worktree is.** If you reached your branch with `git -C /path/to/worktree`,
+then every command that reads a directory instead of taking one — this
+script with no `--project`, and `/security-review`, whose four git commands
+run in your cwd — measures your *launch* directory. It will do so
+correctly, silently, and with a confident verdict.
+
+Pass `--expect-branch <your branch>` whenever the work is not in your cwd.
+It refuses with `UNMEASURED: wrong tree`, naming both the directory it read
+and the branch you meant.
+
+**And do not build the obvious detector.** A populated `COMMITS` beside an
+empty `FILES MODIFIED` and an empty `DIFF CONTENT` is not
+self-contradictory: `git log A...B` is a **symmetric difference** and
+`git diff A...B` is `merge-base..B`, so that is every branch merged into or
+behind main. A refusal built on it fires on the normal case.
+
+Both measurements, and why the skill itself is not where this gets fixed,
+are in `reference/parallel-sessions-worked-instances.md` (#1348). Two security reviews on
 2026-10-17 were each measured against a tree their branch had already moved
 past, and neither report gave the reader any way to tell.
 
