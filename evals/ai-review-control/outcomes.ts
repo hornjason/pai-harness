@@ -134,9 +134,19 @@ export interface ReviewFinding {
    * Unique within the corpus, and a STRING.
    *
    * A withheld candidate has no issue number and never will — it was never
-   * filed — so the only stable identity it carries is its symptom hash. A
-   * numeric encoding of a hash is #1253 with a harder trigger: hash 1169 and
-   * issue #1169 key the same row. The backfill emits `String(issue.number)`.
+   * filed — so it must carry a key of its own. Use `CandidateRecord.key`
+   * (#1263): `${batch}/${index}`, unique by construction.
+   *
+   * **Not `symptomHash`.** This docblock recommended it until #1272, and the
+   * recommendation was wrong in both directions: the hash is taken over the
+   * sorted symptom key SET, so one reading written two ways hashes alike,
+   * while the dedupe matches on the key INTERSECTION, so two genuine
+   * duplicates can hash apart. It is a similarity identity. A row identity is
+   * a different thing, and the pair it collides on is exactly the pair a
+   * candidate ledger exists to keep apart.
+   *
+   * A numeric encoding of any hash is worse still: hash 1169 and issue #1169
+   * key the same row. The backfill emits `String(issue.number)`.
    */
   id: string;
   /** Epoch seconds. A citation older than this is not a citation. */
@@ -441,13 +451,21 @@ export function summariseFindingOutcomes(
     seen.add(r.id);
   }
   const unique = repeated.size === 0;
+  // `null` and `""` both render as nothing in a join, so the refusal that
+  // fires most often — an unnamed batch, where `CandidateRecord.key` is null
+  // for every row — used to read `cannot be scored: .` and name no id at all.
+  function nameId(id: string): string {
+    if (id === null || id === undefined) return "(null)";
+    return id === "" ? "(empty)" : id;
+  }
   if (!unique) {
     detail.push(
       `duplicate finding ids, so this corpus cannot be scored: ` +
-        `${[...repeated].sort().join(", ")}. Each id must be unique — a repeated one makes ` +
-        "one row's citations overwrite another's, which moves a fixed finding into the cost " +
-        "bucket and reads as a regression that did not happen. An unfiled candidate has no " +
-        "issue number; give it its symptom hash.",
+        `${[...repeated].sort().map(nameId).join(", ")}. Each id must be unique — a repeated ` +
+        "one makes one row's citations overwrite another's, which moves a fixed finding into " +
+        "the cost bucket and reads as a regression that did not happen. An unfiled candidate " +
+        "has no issue number: key it on `CandidateRecord.key`, and name a batch when you " +
+        "adjudicate — the key is null until you do, so an unnamed batch keys every row alike.",
     );
   }
 

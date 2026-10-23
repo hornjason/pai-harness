@@ -76,15 +76,26 @@
  *   on Bash. `lib/issue-create-override.ts` lists the rest of that boundary
  *   and it is unchanged here; this file adds a second question at the same
  *   chokepoint, not a wider one.
- * - **A body passed as `--body-file`.** The symptom keys are in the file, not
- *   in the command, so the dedupe has nothing to read. That is `UNMEASURED`
- *   and therefore allowed — see above.
+ * - **A body passed as `--body-file` that cannot be READ** — absent,
+ *   oversized, or stdin. The file itself is now opened and adjudicated
+ *   (#1300); only a genuine failure to read it is `UNMEASURED`.
+ *
+ *   This entry used to say that *every* `--body-file` was UNMEASURED, which
+ *   was true, documented, and much larger than it sounds: across the last 300
+ *   issues on this tracker, 300 have bodies over five lines and 283 exceed
+ *   2,000 characters, so the exempted class was in practice the whole
+ *   population — and the gate adjudicated the short filings while waving
+ *   through the long ones. Worth keeping as a worked instance of the second
+ *   shape in `.claude/rules/checks-must-be-able-to-fail.md`: the limitation
+ *   was stated plainly and still hid its own size, because nothing had
+ *   measured how much of the input it covered. **A declared limitation is not
+ *   a priced one.**
  * - **Whether a refusal was right.** The ledger records what was adjudicated,
  *   not what the outcome should have been. It supplies the left-hand side of
  *   that join and nothing more, exactly as `CandidateRecord` says of itself.
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
@@ -121,13 +132,32 @@ export const FILING_OVERRIDE_LABEL = "arbiter-override";
 /** How many open issues the dedupe compares against. */
 export const OPEN_ISSUE_LIMIT = 100;
 
+/**
+ * The largest `--body-file` this will read (#1300).
+ *
+ * A bound and not a guess: the longest issue body on this tracker across its
+ * last 300 is a few thousand characters, so 256 KiB is two orders of
+ * magnitude of headroom and still refuses to pull an arbitrary file into the
+ * hook. Over it is UNMEASURED, which allows — the cap can cost a dedupe, it
+ * can never cost a filing.
+ */
+export const MAX_BODY_FILE_BYTES = 256 * 1024;
+
 /** One `gh issue create` clause, as much of it as the two stages read. */
 export interface FilingAttempt {
   title: string;
   body: string;
   labels: string[];
-  /** The body is in a file, so the command does not carry the symptom. */
-  bodyFromFile: boolean;
+  /**
+   * The path given to `--body-file` / `-F`, or `null` when the body is
+   * inline. `"-"` is stdin and is not a path.
+   *
+   * The PATH and not a boolean (#1300): a flag saying only *that* the body is
+   * elsewhere is enough to declare the filing unreadable and not enough to
+   * read it, which is how the dedupe came to skip the filings most worth
+   * deduplicating.
+   */
+  bodyFile: string | null;
 }
 
 /**
@@ -204,9 +234,36 @@ export function filingAttempts(cmd: string): FilingAttempt[] {
         title: flagValues(tokens, TITLE_FLAG).join(" "),
         body: flagValues(tokens, BODY_FLAG).join("\n"),
         labels: labelValues(tokens),
-        bodyFromFile: bodyFile.length > 0,
+        // The LAST one, matching `gh`: a repeated flag overrides.
+        bodyFile: bodyFile.at(-1) ?? null,
       };
     });
+}
+
+/**
+ * A `--body-file`, or `null` when it could not be read (#1300).
+ *
+ * `null` for every failure, and the failures are not told apart on purpose:
+ * absent, unreadable, a directory, oversized and stdin all mean the same
+ * thing to the caller — nobody read the symptom — and all of them ALLOW. The
+ * one distinction that matters here is read / not-read, and an empty file is
+ * READ: it returns `""`, which yields no symptom keys and lands on the
+ * existing "names no symbol" arm rather than on this one.
+ *
+ * `"-"` is stdin. `gh` accepts it and there is nothing on disk to open, so it
+ * stays unreadable exactly as before.
+ *
+ * The path comes from a command the agent is about to run anyway, so reading
+ * it grants this hook no reach it did not already have.
+ */
+export function readBodyFile(path: string, limit: number = MAX_BODY_FILE_BYTES): string | null {
+  if (path === "-" || path.trim() === "") return null;
+  try {
+    if (statSync(path).size > limit) return null;
+    return readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -221,8 +278,22 @@ export function filingAttempts(cmd: string): FilingAttempt[] {
 export async function adjudicateFiling(
   attempt: FilingAttempt,
   readExisting: () => Promise<readonly Finding[] | null>,
+  readBody: (path: string) => string | null = readBodyFile,
 ): Promise<FilingAdjudication> {
-  const finding: Finding = { id: UNFILED_ID, title: attempt.title, body: attempt.body };
+  // ── where is the body? ──
+  //
+  // Resolved before anything reads it, because every stage below wants the
+  // real one. `null` means "there is a file and it could not be read", which
+  // is UNMEASURED further down — distinct from an inline body, and never
+  // collapsed into an empty one.
+  //
+  // This read happens before the category stage, which inverts the
+  // cost-ordering doctrine one paragraph up. Deliberate, and the costs are
+  // not comparable: this is one bounded local `readFileSync`, the thing that
+  // doctrine protects is a network round trip to the GitHub API. Paying it
+  // first buys the category stage the body it classifies on.
+  const body = attempt.bodyFile === null ? attempt.body : readBody(attempt.bodyFile);
+  const finding: Finding = { id: UNFILED_ID, title: attempt.title, body: body ?? attempt.body };
   const category = classifyCategory(finding);
   const base = {
     category,
@@ -257,12 +328,21 @@ export async function adjudicateFiling(
   // blank one costs the category stage its input and costs the dedupe
   // nothing: `symptomKeys` contributes title symbols and paths but no
   // quantities, so a title is never what makes a pair a duplicate anyway.
-  if (attempt.bodyFromFile) {
+  //
+  // The body-file arm NARROWED rather than disappeared (#1300). It used to
+  // fire on every `--body-file`, which measured against this tracker is
+  // essentially every real filing — a detector narrower than what it
+  // detects, and narrowed in the worst direction, since the findings that
+  // need a file are the long detailed ones. It now fires only when the file
+  // genuinely could not be read.
+  if (body === null) {
     return {
       ...base,
       outcome: "UNMEASURED",
       refusal: "UNMEASURED",
-      reason: "the body is in a file, so the keys this would be deduplicated on are not in the command",
+      reason:
+        `the body file \`${attempt.bodyFile}\` could not be read (absent, unreadable, ` +
+        `stdin, or over ${MAX_BODY_FILE_BYTES} bytes), so there was nothing to deduplicate on`,
     };
   }
   if (symptomKeys(finding).length === 0) {
