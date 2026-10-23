@@ -458,6 +458,74 @@ function resolveThroughLinks(normalised: string): string | null {
 const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 
 /**
+ * `ln` is not the only verb that makes a link (#1411, raised as a CRITICAL
+ * by the review on #1354).
+ *
+ * GNU and BSD `cp` create links on request and spell none of
+ * `LINK_CREATION`'s four alternatives, so every one of these was ALLOWED —
+ * the bypass in the docblock above, reachable by a different verb:
+ *
+ *     cp -s ~/.rungate/victim /tmp/esc && echo '{}' > /tmp/esc/workflow-state.json
+ *
+ * Measured before the fix, all allowed: `cp -s`, `cp --symbolic-link`,
+ * `cp -l`, `cp --link`, `cp -rs`, `cp -as`, `cp -sv`, `/bin/cp -s`,
+ * `sudo cp -s`, `install -l s`. `-l` belongs with `-s`: a hard link to a
+ * file inside the run store aims a later write at the victim's inode just
+ * as a symlink aims it at the victim's path.
+ *
+ * ## The FAMILY, not the spelling
+ *
+ * A test for the literal `cp -s` is the cheapest wrong fix — seven of the
+ * ten rows above walk around it. So the reading is token-level: a short
+ * cluster is any `-…` containing a lower-case `s` or `l`, which is what
+ * makes `-rs`, `-as` and `-sv` fall out of one rule rather than three; a
+ * long option is matched by PREFIX, because GNU accepts any unambiguous
+ * abbreviation and `--sym` is as real as `--symbolic-link`.
+ *
+ * Case matters: `cp -L` dereferences links in the SOURCE and creates none,
+ * so only the lower-case letters count. `cp -r`, `cp -p`, `cp -a` and
+ * `mkdir -p` are CONTROL rows and must stay exempt.
+ *
+ * The scan is position-independent rather than keyed to the resolved verb,
+ * so `find . -exec cp -s …` is covered — the same position `LINK_CREATION`
+ * exists to reach for `ln`, where `commandWord` resolves to `find`.
+ *
+ * ## And the `ln` boundary, since it was asked
+ *
+ * `\bln\s` needs a following character, so it misses an `ln` that ends a
+ * segment. Measured over five spellings: the regex misses four, and the
+ * segment-verb net catches three of those four (`ln`, `echo x && ln`,
+ * `sudo ln`). The one neither catches is `find . -exec ln` with no
+ * terminator, which `find(1)` refuses — "the expression must be terminated
+ * by a semicolon" — so it is a syntax error, not a bypass. Count: ONE
+ * spelling missed by both nets, ZERO executable. No change made.
+ */
+const LINK_VERBS = new Set(['cp', 'install']);
+
+/** A token's verb name: `/bin/cp` and `\cp` are both `cp`. */
+function verbToken(token: string): string {
+  const bare = token.replace(/^[\\(]+/, '');
+  return bare.slice(bare.lastIndexOf('/') + 1);
+}
+
+function isLinkFlag(token: string): boolean {
+  if (token.startsWith('--')) {
+    const name = token.slice(2).split('=')[0];
+    if (!name) return false;
+    return 'symbolic-link'.startsWith(name) || 'link'.startsWith(name);
+  }
+  // A short cluster. Lower case only: `-L` follows links in the source and
+  // creates none, which is a CONTROL row.
+  return /^-[A-Za-z]+$/.test(token) && /[sl]/.test(token.slice(1));
+}
+
+function flagMakesLink(segment: string): boolean {
+  const tokens = stripQuoted(segment).trim().split(/\s+/).filter(Boolean);
+  if (!tokens.some(t => LINK_VERBS.has(verbToken(t)))) return false;
+  return tokens.some(isLinkFlag);
+}
+
+/**
  * #1240: both tests read a view that KEEPS the text an interpreter is going
  * to run. `stripHeredocs` deletes a heredoc body, so an `ln` inside
  * `bash <<'EOF'` was invisible to the first test; `segments(cmd)` over the
@@ -468,7 +536,7 @@ function exemptionIsVoid(cmd: string): boolean {
   const programs = interpreterPrograms(cmd).map(p => p.program);
   const view = [stripHeredocs(cmd), ...programs].join('\n');
   if (LINK_CREATION.test(view)) return true;
-  return segments(view).some(seg => commandWord(seg) === 'ln');
+  return segments(view).some(seg => commandWord(seg) === 'ln' || flagMakesLink(seg));
 }
 
 /**
