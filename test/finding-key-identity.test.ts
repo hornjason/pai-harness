@@ -102,19 +102,29 @@ function exportedKeys(source: string, file: string): ExportedKey[] {
   const out: ExportedKey[] = [];
   const decl = /^export (?:async )?function ([A-Za-z0-9_]*Keys?)\s*\(/gm;
   for (let m = decl.exec(source); m !== null; m = decl.exec(source)) {
-    const before = source.slice(0, m.index);
     // The comment must END on the line immediately above the declaration:
     // allow only whitespace between its `*/` and the `export`.
     //
-    // The leading `[\s\S]*` is GREEDY and load-bearing. Without it the first
-    // `/**` in the file that can reach a `*/` before the declaration wins,
-    // which is the MODULE HEADER — so a file whose header happened to state
-    // an identity would satisfy the check for a function that stated none.
-    // The greedy prefix backtracks to the LAST `/**` instead. Written the
+    // It must also be the LAST `/**`, not the first. Otherwise the MODULE
+    // HEADER wins, and a file whose header happened to state an identity
+    // would satisfy the check for a function that stated none. Written the
     // wrong way first and caught by the planted control below, which is the
     // only row that could have caught it.
-    const own = /[\s\S]*\/\*\*([\s\S]*?)\*\/\s*$/.exec(before);
-    out.push({ name: m[1], file, doc: own === null ? "" : own[1] });
+    //
+    // Walked back from the declaration rather than matched with a greedy
+    // `[\s\S]*…$` regex (#1464). That spelling reached the same answer by
+    // backtracking the whole prefix one position at a time, which cost
+    // 521.8ms for a single key in `lib/ticked-sc-symbols.ts` — the worst
+    // case being the key that has NO docblock, where there is no match and
+    // the engine has to prove it. `lastIndexOf` says "the last one"
+    // directly. KEY-4 below is the regression check and the measurements.
+    const trimmed = source.slice(0, m.index).trimEnd();
+    let doc = "";
+    if (trimmed.endsWith("*/")) {
+      const open = trimmed.lastIndexOf("/**", trimmed.length - 2);
+      if (open !== -1) doc = trimmed.slice(open + 3, trimmed.length - 2);
+    }
+    out.push({ name: m[1], file, doc });
   }
   return out;
 }
@@ -329,5 +339,147 @@ describe("KEY-3 (#1398): the two keys still answer different questions", () => {
   test("only the carry key can refuse to key a finding", () => {
     expect(carryKey({}, undefined)).toBeNull();
     expect(typeof advisoryKey({})).toBe("string");
+  });
+});
+
+/**
+ * KEY-4 (#1464): what the extractor COSTS, which is a property of this scan
+ * and not of any key.
+ *
+ * The three rows in KEY-1 that walk the repository timed out at 5000ms on
+ * PR #1361's shard 3 (run `40033596947`), at ~7.7s each, while the same rows
+ * on `main` took ~550ms and every planted-fixture row in this file took
+ * 0.2ms. #1361's diff is 420 lines in two files and does not declare a key.
+ * It was not the cause: it put a spawn-heavy battery in the same shard, and a
+ * CPU-bound row with a 520ms floor went over a 5000ms budget under that
+ * contention. The contention was the trigger; the floor was the defect.
+ *
+ * The floor came from taking each key's own docblock with a greedy
+ * `[\s\S]*` over the whole file prefix, anchored at `$`. One file —
+ * `lib/ticked-sc-symbols.ts` — paid 521.8ms for a single key, three times per
+ * run, because each of the three rows re-walks the tree.
+ *
+ * ## The expensive case is the one that finds NOTHING
+ *
+ * This is worth stating because the obvious fixture does not reproduce it,
+ * and the first draft of this block used the obvious fixture and passed.
+ *
+ * `absentSymbolKey` in that file has no docblock of its own: the prefix ends
+ * `}\n\n`, closing an interface. So `\*\/\s*$` can never be satisfied, and
+ * the engine has to prove that — trying every backtrack position of the
+ * greedy prefix, against every `/**` it meets, expanding the lazy inner to
+ * every following `*/`. A key that HAS a docblock matches on the first few
+ * backtracks and costs nothing. The driver is the number of `/**`…`*\/` pairs
+ * sitting before an UNDOCUMENTED declaration, and the growth on it is steeper
+ * than quadratic — measured 2026-10-23, doubling the pairs costs ~8x:
+ *
+ * ```
+ * pairs   bytes   greedy(ms)   lastIndexOf(ms)
+ *    50    3399         78.6              0.01
+ *   100    6749        615.4              0.01
+ *   200   13649       5006.7              0.02
+ * ```
+ *
+ * At 200 pairs a single undocumented key exceeds this file's whole 5000ms
+ * budget on its own.
+ *
+ * The requirement the greedy prefix implemented is right and is unchanged: it
+ * resolves to the LAST `/**`, so a module header cannot satisfy the check for
+ * a function that states nothing. *"The CONTROL — a FILE-level tag does not
+ * satisfy the FUNCTION's docblock"* above is that requirement, and it is the
+ * row that must keep passing. Backtracking was only an expensive way to say
+ * "the last one"; `lastIndexOf` says it directly.
+ *
+ * ## Why this row is a clock, and why that is defensible here
+ *
+ * A duration is normally the worst thing to assert on — see
+ * `.claude/rules/checks-must-be-able-to-fail.md`. It is sound here only
+ * because the gap is not marginal. On the fixture below, measured both ways
+ * before this was written: **1066.5ms against 0.02ms**, a factor of ~53,000.
+ * The budget sits 4x under the greedy cost and four orders of magnitude over
+ * the `lastIndexOf` one, so no plausible machine speed reorders them.
+ */
+describe("KEY-4 (#1464): an UNDOCUMENTED key does not cost more than the budget", () => {
+  /**
+   * `pairs` documented members, then an interface close, then a key with no
+   * docblock of its own — the shape of `lib/ticked-sc-symbols.ts`, which is
+   * the file that paid 521.8ms.
+   *
+   * The close is load-bearing: it is what makes the prefix end in something
+   * other than `*\/`, so the greedy regex cannot match and has to prove it.
+   * Put a docblock immediately above the declaration and the whole cost
+   * disappears — that fixture passes against both spellings and witnesses
+   * nothing, which is what the first draft of this block did.
+   */
+  function undocumentedKeyAfter(pairs: number): string {
+    const parts: string[] = [];
+    for (let i = 0; i < pairs; i++) {
+      parts.push(`/** Member ${i} of the interface, documented. */`);
+      parts.push(`  member${i}: number;`);
+    }
+    parts.push("}");
+    parts.push("");
+    parts.push(`export function undocumentedKey(f: unknown): string { return ""; }`);
+    return parts.join("\n");
+  }
+
+  /** 1066.5ms greedy, 0.02ms with `lastIndexOf`, on this machine. */
+  const PAIRS = 120;
+  const BUDGET_MS = 250;
+
+  test("KEY-4: 120 docblocks before an undocumented key, within the budget", () => {
+    const source = undocumentedKeyAfter(PAIRS);
+    // The fixture must have the property the budget is about, or a later
+    // edit that shrinks it would pass this row by measuring nothing.
+    expect(
+      source.split("/**").length - 1,
+      "the fixture does not carry the docblock pairs that drive the cost",
+    ).toBe(PAIRS);
+    expect(
+      source.slice(0, source.indexOf("export function")).trimEnd().endsWith("*/"),
+      "the fixture's key HAS a docblock above it, so the greedy regex matches early and " +
+        "this row cannot witness the cost it exists for",
+    ).toBe(false);
+
+    const started = performance.now();
+    const found = exportedKeys(source, "lib/synthetic.ts");
+    const elapsed = performance.now() - started;
+
+    // Correctness first. A row that only timed the call would go green
+    // against an extractor that returns nothing, which is the cheapest way
+    // to make a scan fast.
+    expect(found, "the extractor found no key in the fixture").toHaveLength(1);
+    expect(found[0].name).toBe("undocumentedKey");
+    expect(found[0].doc, "an undocumented key must report no docblock, not a nearby one").toBe("");
+
+    expect(
+      elapsed,
+      `extracting one undocumented key from a ${source.length}-byte file with ${PAIRS} ` +
+        `docblocks took ${elapsed.toFixed(0)}ms. That is the greedy prefix scan (#1464) ` +
+        "proving a match impossible: `[\\s\\S]*` anchored at `$` retries every backtrack " +
+        "position against every `/**`. Walk back from the declaration with `lastIndexOf` " +
+        "instead — same answer, and the module-header CONTROL above still binds it.",
+    ).toBeLessThan(BUDGET_MS);
+  });
+
+  test("KEY-4: the CONTROL — the same file with the key DOCUMENTED is cheap either way", () => {
+    // Why this row exists: it is the fixture that does NOT separate the two
+    // spellings. Keeping it, and saying so, is what stops someone "fixing" a
+    // future red by documenting the fixture's key — which would leave the
+    // row above green, fast, and blind.
+    const documented = undocumentedKeyAfter(PAIRS).replace(
+      "export function undocumentedKey",
+      "/** This one has its own docblock. */\nexport function undocumentedKey",
+    );
+    const started = performance.now();
+    const found = exportedKeys(documented, "lib/synthetic-documented.ts");
+    const elapsed = performance.now() - started;
+
+    expect(found).toHaveLength(1);
+    expect(found[0].doc).toContain("This one has its own docblock.");
+    expect(
+      elapsed,
+      "the documented case was never the expensive one; if THIS is slow, the cause is not #1464",
+    ).toBeLessThan(BUDGET_MS);
   });
 });
