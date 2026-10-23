@@ -2015,29 +2015,45 @@ describe("#1269 WITNESS: a computed destination in an interpreter body", () => {
   });
 
   /**
-   * REVERSED by #1277, deliberately, and this is the one row that moved in
-   * the widening direction — so it is kept and inverted rather than deleted.
+   * REVERSED by #1277, deliberately — and NARROWED again by #1371, which is
+   * the correction the first version of this row needed.
    *
-   * The stopgap asked "is EVERY absolute literal in the body scratch", so a
-   * `readFileSync` of an unrelated run-store file ended the exemption for a
+   * The #1276 stopgap asked "is EVERY absolute literal in the body scratch",
+   * so a `readFileSync` of an unrelated file ended the exemption for a
    * fixture write beside it. That is over-blocking: the second literal is a
    * READ, it carries no protected artifact, and it is not the destination.
-   * Asking about the write TARGET instead allows it.
+   * Asking about the write TARGET instead allows it, and this row is that.
    *
-   * The control below is what bounds the widening, and it is the reason this
-   * reversal is safe to take: the moment the extra literal DOES carry a
-   * protected artifact it is a target in its own right, and the exemption
-   * ends again. So what #1277 newly exempts is exactly the set of bodies
-   * whose only protected-artifact literals are scratch.
+   * What #1277 got wrong, and the push review caught, is WHICH extra literal
+   * is harmless. It wrote this row with the extra literal inside the run
+   * store, and bounded the widening with the control below — "the moment the
+   * extra literal carries a protected artifact it is a target in its own
+   * right". That bound runs through `ALL_PROTECTED`, which is a name list,
+   * and a name list is the one thing the author of a command gets to choose
+   * around. `$HOME/.rungate/run/notes` is in a live tree and spells nothing;
+   * the next row writes the same shape and lands a copy in the run store.
+   *
+   * So the extra literal here is outside every live tree, which is the case
+   * the reversal was actually for, and the two controls below bound it in
+   * both of the directions it can be walked: by NAME and by TREE.
    */
-  test("REVERSED: a non-scratch literal that carries no artifact no longer ends the exemption", () => {
-    const cmd = `bun -e 'readFileSync("${RUN}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
+  test("REVERSED: a non-scratch literal outside every live tree no longer ends the exemption", () => {
+    const cmd = `bun -e 'readFileSync("${LIVE}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
     const d = decideBashWrite(cmd);
     expect(d.blocked, `refused: ${d.reason}`).toBe(false);
   });
 
   test("CONTROL: the same shape where the extra literal IS an artifact still refuses", () => {
     const cmd = `bun -e 'readFileSync("${RUN}/${STATE}"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("CONTROL #1371: the same shape where the extra literal is in a LIVE TREE refuses", () => {
+    // Spells no protected artifact, so the name-list control above cannot
+    // see it. `/opt/bwprobe` and `$HOME/.rungate` differ in exactly one
+    // property — whether `protectedTrees()` contains them — so this pair and
+    // the REVERSED row above isolate that property and nothing else.
+    const cmd = `bun -e 'readFileSync("${RUN}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
     expect(decideBashWrite(cmd).blocked).toBe(true);
   });
 
@@ -2235,13 +2251,57 @@ describe("#1277 CONTROL: the fixture shapes #1175 exists to unblock", () => {
     ["a python fixture", `python3 -I -c "import json; json.dump({}, open('/tmp/fix/${STATE}','w'))"`],
     ["two scratch paths", `python3 -I -c "import shutil; shutil.copy('/tmp/a/${STATE}', '/tmp/b/${STATE}')"`],
     ["a heredoc fixture", `python3 <<'PY'\nopen("/tmp/fix/${STATE}", "w").write("{}")\nPY`],
-    ["a scratch path assigned before use", `python3 -I -c "p = '/tmp/fix/${STATE}'; open(p,'w').write('{}')"`],
-    ["a scratch path in a dict value", `python3 -I -c "d = {'dst': '/tmp/fix/${STATE}'}; open(d['dst'],'w')"`],
     ["a scratch path in a list", `python3 -I -c "for p in ['/tmp/a/${STATE}', '/tmp/b/${STATE}']: open(p,'w')"`],
   ];
   test.each(ok)("%s stays allowed", (_n, cmd) => {
     const d = decideBashWrite(cmd);
     expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+
+  /**
+   * The two rows #1371 COSTS, kept and inverted rather than deleted, which
+   * is the same treatment #1277 gave the row it reversed.
+   *
+   * `=` and `:` were argument openers, so a literal bound to a name was
+   * recorded as a write target and nothing followed the name afterwards.
+   * The fix is to stop reading a binding as a target; the price is that a
+   * body which binds a scratch path before writing it is now UNPROVEN
+   * rather than exempt. Measured over the corpus in the #1371 block below,
+   * and these two rows are the shape of what it costs.
+   *
+   * They are stated as refusals so the cost is visible in the suite. A
+   * quieter repair — delete the rows — would leave the next reader of this
+   * block believing the exemption still covers an assignment.
+   */
+  test("COST of #1371: a scratch path assigned before use is now refused", () => {
+    const cmd = `python3 -I -c "p = '/tmp/fix/${STATE}'; open(p,'w').write('{}')"`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  /**
+   * The dict row is the SIXTH SHAPE in
+   * `.claude/rules/checks-must-be-able-to-fail.md` — green on the signal,
+   * witnessing the wrong mechanism — and it reads as a survivor until you
+   * ask the guard what it saw. It is allowed both before and after #1371,
+   * and for different reasons:
+   *
+   *   before  the literal stood alone, was scratch, and the body was exempt
+   *   after   the literal is a FRAGMENT, so nothing is exempt — and the
+   *           verb is invisible, because `writesNear` reads the DEQUOTED
+   *           view and `WRITE_INTENT`'s `open(…,'w')` alternative needs the
+   *           quotes `dequote` has just removed
+   *
+   * So this row must assert the mechanism, not the verdict. If it asserted
+   * only `allowed` it would certify an exemption that no longer exists.
+   */
+  test("COST of #1371: the dict row is allowed by a DIFFERENT mechanism, not by the exemption", () => {
+    const cmd = `python3 -I -c "d = {'dst': '/tmp/fix/${STATE}'}; open(d['dst'],'w')"`;
+    const t = bodyTargets(programBody(cmd));
+    expect(t.targets).toEqual([]); // the exemption is gone...
+    expect(t.fragments).toEqual([`/tmp/fix/${STATE}`]);
+    // ...and what allows the command is the verb vanishing with the quotes.
+    expect(dequote(cmd)).toContain(`open(d[dst],w)`);
+    expect(decideBashWrite(cmd).blocked).toBe(false);
   });
 
   test("a mutating find keeps the plain exemption — its operands are shell words", () => {
@@ -2302,5 +2362,289 @@ describe("#1277: the cheapest wrong fixes, run rather than described", () => {
     const t = bodyTargets(`writeFileSync("/tmp/fix/${STATE}", "{}`);
     expect(t.unreadable).toBe(true);
     expect(decideBashWrite(`bun -e 'writeFileSync("/tmp/fix/${STATE}", "{}'`).blocked).toBe(true);
+  });
+});
+
+/**
+ * #1371: two HIGH findings from the push security review of #1277, and the
+ * reason the corpus sweep in the block above could not have found either.
+ *
+ * ## Why these are written by hand
+ *
+ * #1277 swept 50,189 unique real commands and reported 0 newly blocked and 2
+ * newly allowed. That sweep is sound and it is a REGRESSION control: it
+ * proves the change did not break what people do. It is structurally
+ * incapable of proving the guard cannot be walked around, because the inputs
+ * that walk around it are absent from a historical corpus by construction —
+ * an honest caller never writes them, which is exactly who they are worth
+ * something to. Both findings below are in that gap.
+ *
+ * ## What was broken to make these fail, run rather than described
+ *
+ * Each row was executed against three modules before the fix was written:
+ * `origin/main` (`e17bacf6`), the #1277 branch tip (`643e3053`), and the
+ * repair. Two of the five are not bypasses but REGRESSIONS — refused by
+ * `main`, allowed by #1277:
+ *
+ *     row                                       main      643e3053  repair
+ *     F1-a copy into the run-store directory    BLOCKED   allowed   BLOCKED
+ *     F1-b the same into ~/.claude              BLOCKED   allowed   BLOCKED
+ *     F1-c the same through a heredoc           allowed   allowed   BLOCKED
+ *     F2-a a binding reassigned before the write allowed  allowed   BLOCKED
+ *     F2-b the same through a dict value        BLOCKED   allowed   BLOCKED
+ *
+ * The `MUTATION` block below re-performs that removal on every run, so the
+ * evidence is not a sentence in a PR that a later reader has to trust.
+ *
+ * ## The population, re-swept, and what it cost
+ *
+ * #1277's sweep was re-run over the same machine with all three modules
+ * evaluated on ONE corpus, which is the control that makes the comparison
+ * mean anything: 31,932 transcript files, 131,696 unique Bash commands,
+ * 5,730 naming a protected artifact. It is 2.6x the file count #1277 swept,
+ * so its numbers are ~2x #1277's and that ratio holds in every column.
+ *
+ *     e17bacf6 -> 643e3053    newly blocked 0    newly allowed 4
+ *     e17bacf6 -> this        newly blocked 0    newly allowed 4
+ *     643e3053 -> this        newly blocked 0    newly allowed 0
+ *
+ * So this repair costs nothing on 131,696 real commands, in either
+ * direction. The 0s are not the instrument failing to report: of the 2,322
+ * non-shell interpreter segments inside the commands that name a protected
+ * artifact, the live-tree reading fires on 678 and the exemption population
+ * moves by one —
+ *
+ *     exempt   e17bacf6 29     643e3053 14     this 13
+ *     643e3053 -> this         lost 1          gained 0
+ *
+ * — because the other 677 were already refused for another reason, and the
+ * one that moved is an assignment of a `/witnesses/` fixture directory
+ * whose COMMAND verdict is unchanged. That one segment is finding 2's cost
+ * and it is the only thing either fix takes from this corpus.
+ *
+ * ## The third finding, and what is NOT fixed here
+ *
+ * The review's MEDIUM has two halves. Dropping `:` from `ARG_OPENS` disposes
+ * of the ternary half outright — a `:` after a `?` cannot read as a dict key
+ * when `:` opens nothing. The other half, that the group-close walk does not
+ * verify WHICH group it stepped out of, is asserted below as an open limit
+ * rather than closed: telling `shutil.copy(src, "/tmp/x")` from
+ * `open(os.environ.get("D", "/tmp/x"), "w")` means matching back to the
+ * opener and reading the callee, which is the second parser this whole
+ * module exists to avoid. It is allowed by `main` as well, so it is a
+ * pre-existing limit of the same family as the assembled NAME and `eval`
+ * limits `bodyTargets` already states, and it is filed rather than guessed
+ * at here.
+ */
+describe("#1371 WITNESS: the exemption granted against a value the write never uses", () => {
+  const RUN4 = `${process.env.HOME}/.rungate/run`;
+  const CLAUDE = `${process.env.HOME}/.claude/agents`;
+
+  /**
+   * Every spelling this block decides, in one table, so the population
+   * assertions below range over a set nobody can quietly add to.
+   *
+   * No fixture here reaches a shell. `decideBashWrite` is called with the
+   * command as literal bytes, and `join()`/`resolve()` are never applied to
+   * a fixture path — a `MECHANISM` row asserts the raw spelling survives to
+   * `bodyTargets`, because a case about path spelling that lets something
+   * normalise the path first is asserting nothing.
+   */
+  const rows: { label: string; cmd: string; blocked: boolean }[] = [
+    {
+      label: "F1-a a copy into the live run-store DIRECTORY, which spells no artifact",
+      cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${RUN4}')"`,
+      blocked: true,
+    },
+    {
+      label: "F1-b the same shape into another live tree",
+      cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${CLAUDE}')"`,
+      blocked: true,
+    },
+    {
+      label: "F1-c the same hole reached through a heredoc",
+      cmd: `python3 <<'PY'\nimport shutil\nshutil.copy("/tmp/fix/${STATE}", "${RUN4}")\nPY`,
+      blocked: true,
+    },
+    {
+      label: "F2-a a scratch literal bound to a name, then reassigned before the write",
+      cmd: `python3 -I -c "import os\np = '/tmp/fix/${STATE}'\np = p.replace('/tmp/fix', os.environ['RG'])\nopen(p,'w').write('{}')"`,
+      blocked: true,
+    },
+    {
+      label: "F2-b the same reassignment through a dict value",
+      cmd: `bun -e 'const d = {dst: "/tmp/fix/${STATE}"}; d.dst = process.env.RG + "/w"; writeFileSync(d.dst, "{}")'`,
+      blocked: true,
+    },
+    { label: "C1 a node fixture", cmd: `bun -e 'writeFileSync("/tmp/fix/${STATE}","{}")'`, blocked: false },
+    {
+      label: "C2 a python fixture",
+      cmd: `python3 -I -c "import json; json.dump({}, open('/tmp/fix/${STATE}','w'))"`,
+      blocked: false,
+    },
+    {
+      label: "C3 two scratch paths, the second closing the call",
+      cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/a/${STATE}', '/tmp/b/${STATE}')"`,
+      blocked: false,
+    },
+    {
+      label: "C4 a heredoc fixture",
+      cmd: `python3 <<'PY'\nopen("/tmp/fix/${STATE}", "w").write("{}")\nPY`,
+      blocked: false,
+    },
+    {
+      label: "C5 a scratch path in a list",
+      cmd: `python3 -I -c "for p in ['/tmp/a/${STATE}', '/tmp/b/${STATE}']: open(p,'w')"`,
+      blocked: false,
+    },
+    {
+      label: "C6 a non-scratch read OUTSIDE every live tree, beside a fixture write",
+      cmd: `bun -e 'readFileSync("${LIVE}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`,
+      blocked: false,
+    },
+    {
+      label: "C7 the pathlib spelling the denylist wrong-fix lets through",
+      cmd: `python3 -I -c "from pathlib import Path; Path('/tmp/x/${STATE}').relative_to('/tmp')"`,
+      blocked: false,
+    },
+  ];
+
+  test.each(rows.map(r => [r.label, r.cmd, r.blocked] as const))("%s", (_l, cmd, blocked) => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, d.reason ?? cmd).toBe(blocked);
+  });
+
+  test("MECHANISM: a live-tree literal is reported whatever it spells, and the filter is the defect", () => {
+    const body = programBody(`python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${RUN4}')"`);
+    const t = bodyTargets(body);
+    // The run-store literal is invisible to the name-list halves — which is
+    // the finding: `targets.every(isScratchPath)` was `every` over a set the
+    // command's author picks the membership of.
+    expect(t.targets).toEqual([`/tmp/fix/${STATE}`]);
+    expect(t.fragments).toEqual([]);
+    expect(t.targets.every(isScratchPath)).toBe(true);
+    // And it is reported by the reading that goes through no name list.
+    expect(t.protectedLiterals).toEqual([RUN4]);
+  });
+
+  test("MECHANISM: a bound literal is no longer a target, so the body is UNPROVEN", () => {
+    const body = programBody(
+      `python3 -I -c "import os\np = '/tmp/fix/${STATE}'\np = p.replace('/tmp/fix', os.environ['RG'])\nopen(p,'w').write('{}')"`,
+    );
+    const t = bodyTargets(body);
+    expect(t.targets).toEqual([]);
+    expect(t.fragments).toEqual([`/tmp/fix/${STATE}`]);
+    // The refusal is "this binding is not shown to be the destination", not
+    // "the path was elsewhere" — the literal reached the reader intact and
+    // is itself scratch.
+    expect(isScratchPath(`/tmp/fix/${STATE}`)).toBe(true);
+    expect(t.protectedLiterals).toEqual([]); // and finding 1's fix is not what caught it
+  });
+
+  test("MECHANISM: the raw spelling survives to the reader; nothing normalises it first", () => {
+    const raw = `/tmp/../opt/bwprobe/${STATE}`;
+    const cmd = `python3 -I -c "import shutil; shutil.copy('${raw}', '/tmp/b/${STATE}')"`;
+    const t = bodyTargets(programBody(cmd));
+    expect(t.targets).toContain(raw);
+    expect(t.targets[0]).toContain("/../"); // said twice, because this is the premise
+    expect(isScratchPath(raw)).toBe(false);
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  /**
+   * OPEN, and asserted as open rather than left to a reader to discover.
+   *
+   * `standsAlone` steps out through a closing bracket and accepts whatever
+   * delimiter follows, without checking which group closed. So a literal
+   * that is an inner call's DEFAULT reads as a direct argument of the write.
+   * `main` allows it too, so it is pre-existing and not #1277's to answer;
+   * closing it needs the callee behind the opener, which is a parser.
+   */
+  test("OPEN LIMIT: a literal that is an inner call's default still reads as a target", () => {
+    const cmd = `python3 -I -c "import os; open(os.environ.get('RG', '/tmp/fix/${STATE}'), 'w').write('{}')"`;
+    expect(bodyTargets(programBody(cmd)).targets).toEqual([`/tmp/fix/${STATE}`]);
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  /**
+   * MUTATION: each fix removed, and the population asserted in BOTH
+   * directions against the module with it removed.
+   *
+   * A battery showing only the new witnesses passing cannot be wrong about
+   * what else moved — which is how both HIGH findings reached a PR whose
+   * author had enumerated the population. So the assertion here is not "the
+   * witnesses are refused", it is "the set of rows that changed verdict is
+   * EXACTLY this set, in each direction".
+   *
+   * Two mutants, one per finding, so neither fix can hold the other's cases
+   * up. Each mutation has a single site and the test proves it: a second
+   * spelling of either would let a refusal bypass the mutation and the rows
+   * would go green having witnessed nothing.
+   */
+  test("MUTATION: removing each fix moves exactly the rows it is responsible for", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const F1_SITE = "function literalInProtectedTree(value: string, live: string[]): boolean {";
+    const F2_SITE = "const ARG_OPENS = new Set(['(', ',', '[', '{', ';']);";
+    const F2_WAS = "const ARG_OPENS = new Set(['(', ',', '[', '{', '=', ':', ';']);";
+    expect(src.split(F1_SITE).length - 1, "finding 1 must have ONE site to mutate").toBe(1);
+    expect(src.split(F2_SITE).length - 1, "finding 2 must have ONE site to mutate").toBe(1);
+    // The mutant runs from a temp directory, so a relative specifier it
+    // cannot resolve would read as a refusal rather than as a module that
+    // failed to load. Exactly one is allowed, and it is carried.
+    expect([...src.matchAll(/from '(\.[^']*)'/g)].map(m => m[1])).toEqual(["./interpreters"]);
+
+    const dir = mkdtempSync(join(tmpdir(), "bw1371-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      // EVERY mutant is written before ANY of them is imported. Bun caches
+      // the directory listing at the first dynamic import from a directory,
+      // so a file created after it is reported `Cannot find module` — which
+      // is a red indistinguishable from the guard behaving differently.
+      // Measured: writing `a` then importing `a` then writing `b` loses `b`.
+      const mutants = {
+        // Finding 1 removed: the live-tree reading answers no for everything.
+        noF1: src.replace(F1_SITE, `${F1_SITE}\n  return false;`),
+        // Finding 2 removed: `=` and `:` open an argument again.
+        noF2: src.replace(F2_SITE, F2_WAS),
+      };
+      for (const [name, text] of Object.entries(mutants)) writeFileSync(join(dir, `${name}.ts`), text);
+      const load = async (name: string) => {
+        const m = (await import(`file://${join(dir, `${name}.ts`)}`)) as {
+          decideBashWrite: (c: string) => { blocked: boolean };
+        };
+        return m.decideBashWrite;
+      };
+      const noF1 = await load("noF1");
+      const noF2 = await load("noF2");
+
+      const moved = (other: (c: string) => { blocked: boolean }) =>
+        rows.filter(r => other(r.cmd).blocked !== decideBashWrite(r.cmd).blocked).map(r => r.label);
+
+      // Both directions, by construction: `moved` is every row whose verdict
+      // differs, and the expectations below say which way each one went.
+      expect(moved(noF1).sort()).toEqual(
+        [
+          "F1-a a copy into the live run-store DIRECTORY, which spells no artifact",
+          "F1-b the same shape into another live tree",
+          "F1-c the same hole reached through a heredoc",
+        ].sort(),
+      );
+      expect(moved(noF2).sort()).toEqual([
+        "F2-a a scratch literal bound to a name, then reassigned before the write",
+        "F2-b the same reassignment through a dict value",
+      ]);
+      // Direction: every row that moved was ALLOWED without the fix. Nothing
+      // in this table is refused only because a fix is absent, so neither
+      // mutant is holding a witness up for the other.
+      for (const r of rows) {
+        if (noF1(r.cmd).blocked !== decideBashWrite(r.cmd).blocked) expect(noF1(r.cmd).blocked).toBe(false);
+        if (noF2(r.cmd).blocked !== decideBashWrite(r.cmd).blocked) expect(noF2(r.cmd).blocked).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

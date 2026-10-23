@@ -1382,18 +1382,42 @@ export function programBody(segment: string): string {
  * it detects — `.claude/rules/checks-must-be-able-to-fail.md` — and it is
  * what #1276's stopgap was a second attempt at.
  *
- * `=` and `:` are openers because `p = "/tmp/x"` and `{"dst": "/tmp/x"}` are
- * both an assignment of a whole path; what matters is that nothing consumes
- * the literal before the filesystem does.
+ * ## `=` and `:` are NOT openers, and that is the #1371 repair
  *
- * A closing bracket is neither. It ENDS the group the literal sits in and
- * leaves the outer expression still running, so the walk steps past it and
- * keeps asking — which is how `Path("/tmp/x").relative_to(…)` is told from
- * `open(Path("/tmp/x"), "w")`. The first version of this stopped at the
- * `)` and reported the pathlib spelling as a target; its own CONTROL row
- * caught it, and that row is in the tests.
+ * They were, on the reading that `p = "/tmp/x"` and `{"dst": "/tmp/x"}` both
+ * bind a whole path and nothing consumes it before the filesystem does. That
+ * reading is true of the BINDING and says nothing about the write, because
+ * nothing here follows the name afterwards:
+ *
+ *     p = '/tmp/fix/workflow-state.json'
+ *     p = p.replace('/tmp/fix', os.environ['RUNGATE_WORK_DIR'])
+ *     open(p, 'w').write('{}')
+ *
+ * Every literal in that body is scratch, the exemption was granted, and the
+ * write lands in the run store. The value the exemption was granted against
+ * is not the value the write used.
+ *
+ * The other repair — follow the name through its reassignments — is a second
+ * parser that has to agree with the host language about what a reassignment
+ * is, which is the parser-differential class this whole module is in. A bound
+ * literal now simply does not stand alone, so a body that binds before it
+ * writes is UNPROVEN and refused. That is the same fail-closed reading a
+ * relative path already gets, and it costs the two assignment rows that used
+ * to be CONTROLs — they are inverted in the tests rather than deleted, with
+ * the measured corpus cost beside them.
+ *
+ * Dropping `:` also disposes of the ternary half of the #1371 MEDIUM: a `:`
+ * following a `?` used to read as a dict key, so a ternary BRANCH read as a
+ * whole-path binding. It cannot now, because `:` opens nothing.
+ *
+ * A closing bracket is neither an opener nor a closer. It ENDS the group the
+ * literal sits in and leaves the outer expression still running, so the walk
+ * steps past it and keeps asking — which is how `Path("/tmp/x")
+ * .relative_to(…)` is told from `shutil.copy(src, "/tmp/x")`. The first
+ * version of this stopped at the `)` and reported the pathlib spelling as a
+ * target; its own CONTROL row caught it, and that row is in the tests.
  */
-const ARG_OPENS = new Set(['(', ',', '[', '{', '=', ':', ';']);
+const ARG_OPENS = new Set(['(', ',', '[', '{', ';']);
 const ARG_CLOSES = new Set([')', ',', ']', '}', ';', ':']);
 const GROUP_CLOSES = new Set([')', ']', '}']);
 
@@ -1402,8 +1426,41 @@ export interface BodyTargets {
   targets: string[];
   /** Carrying literals an expression consumes. The destination is NOT these. */
   fragments: string[];
+  /**
+   * Absolute literals resolving inside a protected tree, whatever they spell
+   * and whether or not anything transforms them (#1371).
+   *
+   * `targets` and `fragments` are both filtered by `ALL_PROTECTED`, so
+   * `targets.every(isScratchPath)` quantifies over a set the caller chose the
+   * membership of. This one is not filtered by a name list at all, which is
+   * the point: the property it reports does not depend on `ALL_PROTECTED`
+   * being complete, and completeness is what failed.
+   */
+  protectedLiterals: string[];
   /** The body does not read as a sequence of complete literals. */
   unreadable: boolean;
+}
+
+/**
+ * Is this literal demonstrably a path inside a tree holding live artifacts?
+ *
+ * Both spellings, for the reason `protectedTrees` gives at length: `resolve`
+ * normalises `..` and does not follow a link, so a pre-existing symlink out
+ * of scratch is invisible to the first reading and named by the second.
+ *
+ * It answers only YES. A relative literal, a `$`-bearing spelling, a name
+ * that is not a path at all — all `false`, because the caller's question is
+ * "can I show this body touches a live tree", and silence is not evidence
+ * either way. What the caller does with silence is the caller's business;
+ * here it costs nothing, because the exemption still has to be EARNED by a
+ * target that `isScratchPath` affirms.
+ */
+function literalInProtectedTree(value: string, live: string[]): boolean {
+  if (!value.startsWith('/')) return false;
+  const normalised = resolve(value);
+  if (inAnyTree(normalised, live)) return true;
+  const real = resolveThroughLinks(normalised);
+  return real !== null && inAnyTree(real, live);
 }
 
 /**
@@ -1446,6 +1503,10 @@ export interface BodyTargets {
 export function bodyTargets(body: string): BodyTargets {
   const targets: string[] = [];
   const fragments: string[] = [];
+  const protectedLiterals: string[] = [];
+  // Read once per body rather than once per literal: each call realpaths up
+  // to six trees, and a body has as many literals as it likes.
+  const live = protectedTrees();
   let i = 0;
   while (i < body.length) {
     const q = body[i];
@@ -1475,13 +1536,14 @@ export function bodyTargets(body: string): BodyTargets {
       j++;
     }
     // An unterminated literal means every boundary after it is a guess.
-    if (!closed) return { targets: [], fragments: [], unreadable: true };
+    if (!closed) return { targets: [], fragments: [], protectedLiterals: [], unreadable: true };
+    if (literalInProtectedTree(value, live)) protectedLiterals.push(value);
     if (ALL_PROTECTED.some(p => value.toLowerCase().includes(p.toLowerCase()))) {
       (standsAlone(body, i, j) ? targets : fragments).push(value);
     }
     i = j + 1;
   }
-  return { targets, fragments, unreadable: false };
+  return { targets, fragments, protectedLiterals, unreadable: false };
 }
 
 /**
@@ -1522,14 +1584,37 @@ function standsAlone(body: string, start: number, end: number): boolean {
  * Can every write this body could make to a protected artifact be shown to
  * land in a scratch tree?
  *
- * Three ways to answer no, and all three are the absence of evidence rather
+ * Four ways to answer no, and all four are the absence of evidence rather
  * than evidence of harm: the body cannot be read, a carrying literal is
- * consumed by an expression, or no literal carries the artifact at all. The
- * exemption's job is to say YES.
+ * consumed by an expression, the body names a live tree, or no literal
+ * carries the artifact at all. The exemption's job is to say YES.
+ *
+ * ## Why the live-tree reading is a separate question (#1371)
+ *
+ * The last line is `every` over `targets`, and `targets` only ever receives
+ * literals that matched `ALL_PROTECTED`. So the quantifier ranges over a set
+ * the command's author chooses the membership of, and the two readings come
+ * apart on a body that writes a protected artifact into scratch AND touches
+ * a live tree under a name no list has:
+ *
+ *     shutil.copy('/tmp/fix/workflow-state.json', '$HOME/.rungate/run')
+ *
+ * Every member of `targets` is scratch, so `every` says yes; the copy lands
+ * in the run store. `main` refused this, this module allowed it until
+ * #1371, and 50,189 real commands could not see it — an honest caller does
+ * not write it, which is exactly who it is worth something to.
+ *
+ * `protectedLiterals` is the reading that does not go through a name list,
+ * so it cannot be walked around by choosing a basename. The alternative on
+ * the table was a second whole-body gate ANDed with this one, and it was
+ * refused: two deciders answering one question are behaviourally one, no
+ * test can tell them apart, and the next reader deletes the live half —
+ * `.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape.
  */
 function bodyTargetsAreScratch(body: string): boolean {
-  const { targets, fragments, unreadable } = bodyTargets(body);
-  if (unreadable || fragments.length > 0 || targets.length === 0) return false;
+  const { targets, fragments, protectedLiterals, unreadable } = bodyTargets(body);
+  if (unreadable || fragments.length > 0 || protectedLiterals.length > 0) return false;
+  if (targets.length === 0) return false;
   return targets.every(isScratchPath);
 }
 
