@@ -212,12 +212,16 @@ export const DEFAULT_TRACKER_TIMEOUT_MS = 10_000;
  * second walk here would be two parsers disagreeing about where a value
  * ends.
  *
- * A command may carry more than one create — `gh issue create … && gh issue
- * create …` — and that is exactly the in-batch case #1187 was filed for:
- * #1195 and #1196 were the same symptom filed a minute apart, close enough
- * that neither was in the tracker when the other was adjudicated. So the
- * proposals go to `arbitrateBatch`, which accumulates as it walks, and not
- * to `arbitrate` once per clause against a fixed snapshot.
+ * A command may carry more than one create — two `gh issue create` clauses
+ * chained with `&&` — and that is exactly the in-batch case #1187 was filed
+ * for: #1195 and #1196 were the same symptom filed a minute apart, close
+ * enough that neither was in the tracker when the other was adjudicated. So
+ * every clause becomes its own proposal here, and `findingGateReading`
+ * accumulates each allowed one into the comparison set for the clauses after
+ * it, rather than comparing all of them against one fixed snapshot.
+ *
+ * That accumulation is a WALK over `arbitrate` and deliberately not
+ * `arbitrateBatch`; the measured reason is in `findingGateReading`.
  */
 export function proposedIssues(cmd: string, cwd: string): ProposedIssue[] {
   const out: ProposedIssue[] = [];
