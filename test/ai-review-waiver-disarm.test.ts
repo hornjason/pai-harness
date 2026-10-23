@@ -110,10 +110,12 @@ interface Run {
  *
  * `view-empty` and `verify-empty` are the two states the push review on
  * #1418 named: a `gh` that exits ZERO and prints nothing. Both are distinct
- * from `not-armed`, where the client prints the literal `null` that `jq`
- * emits for an absent `autoMergeRequest` — silence is a client that did not
- * answer, and reading it as "nothing is armed" is a default substituted for a
- * reading.
+ * from `not-armed` — silence is a client that did not answer, and reading it
+ * as "nothing is armed" is a default substituted for a reading.
+ *
+ * That distinction only EXISTS if the step asks for a reading that cannot
+ * come back empty, which is what `AI_REVIEW_AUTO_MERGE_ABSENT_TOKEN`
+ * documents and what `stubGh` now emulates rather than assumes.
  */
 type GhMode =
   | "armed"
@@ -155,11 +157,32 @@ function stubGh(mode: GhMode): StubGh {
   writeFileSync(state, mode === "not-armed" ? "null\n" : `${ARMED}\n`);
   writeFileSync(log, "");
 
+  // The state file holds the FIELD VALUE — `null`, or the object. What `gh`
+  // prints for that value depends on the `-q` it was handed, and emulating
+  // that dependence is the whole point of this branch (#1418).
+  //
+  // Measured, 2026-10-23: `-q .autoMergeRequest` on an unarmed pull request
+  // prints a BARE NEWLINE. `gh` suppresses a null result; `jq` would have
+  // printed the literal `null`. The previous stub printed `null` for the
+  // not-armed mode whatever it was asked, so it reported a value the real
+  // client does not produce, and the `= "null"` arm it certified was
+  // unreachable in CI. A fixture must not assert its own premise.
   const onView = mode === "view-fails"
     ? `echo "stub-gh: view refused" >&2\n  exit 1`
     : mode === "view-empty"
       ? `exit 0`
-      : `cat ${JSON.stringify(state)}\n  exit 0`;
+      : `value=$(cat ${JSON.stringify(state)})
+  case "$*" in
+    *tostring*)
+      # The always-emitting filter: a token for absent, the object for armed.
+      printf '%s\\n' "$value" ;;
+    *)
+      # The bare field. This is the regression arm, and it is what makes the
+      # not-armed row a witness: read this way, an absent auto-merge is
+      # indistinguishable from a client that said nothing.
+      if [ "$value" = "null" ]; then printf '\\n'; else printf '%s\\n' "$value"; fi ;;
+  esac
+  exit 0`;
   const onMerge = mode === "merge-fails"
     ? `echo "stub-gh: merge refused" >&2\n  exit 1`
     : mode === "stubborn"

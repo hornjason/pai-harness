@@ -1,4 +1,4 @@
-# generated-sha: 97682a121eb40aad
+# generated-sha: add187929f3700d3
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -3066,22 +3066,27 @@ jobs:
           # aborts the whole step under the runner's `bash -e` before the next line
           # reads `$?` — #1110, and `test/ai-review-runner-shell-parity.test.ts` AC-2
           # refuses that shape in the committed file.
-          if ! armed=$(gh pr view "${AI_REVIEW_DISARM_PR}" --repo "${AI_REVIEW_DISARM_REPO}" --json autoMergeRequest -q .autoMergeRequest 2>&1); then
+          if ! armed=$(gh pr view "${AI_REVIEW_DISARM_PR}" --repo "${AI_REVIEW_DISARM_REPO}" --json autoMergeRequest -q 'if .autoMergeRequest == null then "null" else (.autoMergeRequest | tostring) end' 2>&1); then
             disarm_refuse "The AI review was WAIVED and this step could not read 'autoMergeRequest' on the pull request, so whether auto-merge is armed is UNMEASURED and a waived pull request may still merge itself. Refusing (#1242). The command reported: ${armed}"
           fi
 
-          # EMPTY FIRST, AND IT IS A REFUSAL. `jq` prints the literal `null` for an
-          # absent `autoMergeRequest`, so silence is not that reading — it
-          # is a client that exited zero without answering. The first draft folded the
-          # two together into the not-armed arm, which is a default substituted for a
-          # reading in the one branch where the default lets an armed pull request
-          # through (caught on #1418's push review).
+          # EMPTY FIRST, AND IT IS A REFUSAL — silence is a client that exited zero
+          # without answering, not a reading of "nothing is armed". Folding the two
+          # together substitutes a default for a reading in the one branch where the
+          # default lets an armed pull request through (caught on #1418's push review).
+          #
+          # This is only true because the read above asks for a filter that is NEVER
+          # empty. `-q .autoMergeRequest` prints a bare newline for an absent
+          # field — `gh` suppresses the `null` that `jq` would print — so against the
+          # bare field this arm fired on every unarmed pull request and the
+          # `null` arm below was unreachable. See
+          # `AI_REVIEW_AUTO_MERGE_ABSENT_TOKEN` for the measurement.
           if [ -z "${armed}" ]; then
             disarm_refuse "The AI review was WAIVED and the request for 'autoMergeRequest' came back EMPTY with a success status, so this step has no reading of whether auto-merge is armed. An absent auto-merge reads as the literal 'null' here; silence is a client that did not answer, and treating it as 'nothing is armed' would substitute a default for a reading in the one branch where the default lets an armed pull request through. Refusing (#1242)."
           fi
 
-          # `null` is what the field reads when nothing is armed, and nothing is the
-          # right thing to do about it.
+          # The absent token is what the read emits when nothing is armed, and nothing
+          # is the right thing to do about it.
           if [ "${armed}" = "null" ]; then
             echo "::notice title=AI review waiver disarmed auto-merge::The AI review on this pull request was WAIVED by the 'ai-review-override' label, and auto-merge was not armed as it stood when this step read it, so there was nothing to disarm. This is a reading and an action taken at one moment, not a lock: auto-merge re-armed after this run stays armed until some later run of this workflow reaches this step, and if nothing further is pushed and no label changes there is no later run. What stops this pull request landing unread is a person, not this step (#1242)."
             exit 0
@@ -3094,7 +3099,7 @@ jobs:
           # The read-back. The command above exits zero having changed nothing in at
           # least one real state — a pull request that merged between the two calls —
           # so its exit code is not the reading.
-          if ! after=$(gh pr view "${AI_REVIEW_DISARM_PR}" --repo "${AI_REVIEW_DISARM_REPO}" --json autoMergeRequest -q .autoMergeRequest 2>&1); then
+          if ! after=$(gh pr view "${AI_REVIEW_DISARM_PR}" --repo "${AI_REVIEW_DISARM_REPO}" --json autoMergeRequest -q 'if .autoMergeRequest == null then "null" else (.autoMergeRequest | tostring) end' 2>&1); then
             disarm_refuse "The AI review was WAIVED and this step could not read 'autoMergeRequest' on the pull request, so whether auto-merge is armed is UNMEASURED and a waived pull request may still merge itself. Refusing (#1242). The command reported: ${after}"
           fi
 
