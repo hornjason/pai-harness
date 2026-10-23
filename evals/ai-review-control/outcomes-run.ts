@@ -257,8 +257,9 @@ export function buildCorpus(
 
 /**
  * `, #23..#1229` when every id is an issue number, and nothing when they are
- * not. A candidate-ledger corpus keys unfiled rows on a symptom hash, and
- * `Math.min` over those coerces to `NaN` and prints `#NaN..#NaN` — a range
+ * not. A candidate-ledger corpus keys unfiled rows on
+ * `CandidateRecord.key` (`${batch}/${index}`, #1263), and `Math.min` over
+ * those coerces to `NaN` and prints `#NaN..#NaN` — a range
  * that looks like a reading and is not one. Omitting it says less and lies
  * less; the count beside it is the number that matters.
  */

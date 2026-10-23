@@ -145,8 +145,17 @@ the split becomes real without a code change.
 `ReviewFinding.id` is a **string**, because the corpus this module was written
 against is not the only one it will see: rg-1187's finding arbiter holds
 candidates that were never filed, and an unfiled candidate has no issue number
-to be keyed on. A symptom hash is a legal id; `outcomes-run.ts` emits
-`String(issue.number)` and the backfill is unchanged by the widening.
+to be keyed on. Key those on `CandidateRecord.key` (`${batch}/${index}`,
+#1263) — **not** on `symptomHash`, which #1272 established is a similarity
+identity rather than a row identity: it hashes the sorted symptom key SET, so
+one reading written two ways hashes alike, while the dedupe matches on the key
+INTERSECTION, so two genuine duplicates can hash apart. `outcomes-run.ts`
+emits `String(issue.number)` and the backfill is unchanged by the widening.
+
+`key` is `null` until the caller names a batch, deliberately. An unnamed batch
+therefore keys every row alike and the duplicate refusal below fires — which
+is the correct outcome, and the refusal now says so rather than printing an
+empty id.
 
 Ids must be **unique**, and a corpus that repeats one is `usable: false` rather
 than a number. This was a live defect in the merged module, measured on the
