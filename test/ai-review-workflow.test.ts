@@ -1783,6 +1783,114 @@ describe("#1307: the execution file is preserved when no payload was written", (
     }
   });
 
+  // ── The window between validating a path and reading it ───────────────
+
+  /**
+   * Splice a line into the generated script, immediately before a marker.
+   *
+   * The race these guards exist for cannot be produced by planting state
+   * beforehand — by construction it happens BETWEEN two lines of the
+   * script. So it is injected between them, which is the only input on
+   * which a descriptor check and a fourth path check differ. The splice is
+   * asserted to have applied; a mutation that silently did not apply reads
+   * exactly like a guard that worked.
+   */
+  const spliceBefore = (marker: string, line: string) => (s: string) => {
+    expect(s.split(marker).length - 1, `marker not unique: ${marker}`).toBe(1);
+    return s.replace(marker, `${line}\n${marker}`);
+  };
+
+  const OPEN_MARKER = 'if ! exec 9<"${src}" 2>/dev/null; then';
+  const MKDIR_MARKER = 'if ! out=$(mkdir -m 700 "${staged}" 2>&1); then';
+
+  test("#1307: the source swapped for someone else's file after the path checks is refused", () => {
+    // Every path check passed on the real file. The swap happens after
+    // them and before the open, so only a check on the DESCRIPTOR can see
+    // it — `/etc/hosts` is a regular file, so `-f` passes and `-O` is what
+    // fires.
+    const run = stage({
+      execution: "SENSITIVE",
+      mutate: spliceBefore(OPEN_MARKER, 'rm -f "${src}"; ln -s /etc/hosts "${src}"'),
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept, "a file this job does not own was staged for publication").toEqual([]);
+    expect(warnings(run.stdout)[0]).toContain("not a regular file owned by this job");
+  });
+
+  test("#1307: the source swapped for a DIRECTORY is caught by `-f` on the descriptor", () => {
+    // Measured, not assumed: `open(dir, O_RDONLY)` SUCCEEDS on both macOS
+    // and Linux — it is `read()` that fails — so this does not take the
+    // open-failed branch. `-f /dev/fd/9` is what refuses it, which is the
+    // reason that test is asked of the descriptor and not of the path.
+    const run = stage({
+      execution: "SENSITIVE",
+      mutate: spliceBefore(OPEN_MARKER, 'rm -f "${src}"; mkdir -p "${src}"'),
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept).toEqual([]);
+    expect(warnings(run.stdout)[0]).toContain("not a regular file owned by this job");
+  });
+
+  test("#1307: the source REMOVED after the path checks takes the open-failed branch", () => {
+    // The other arm, and the only input that reaches it. Under `bash -e` a
+    // bare `exec 9<` on a missing path aborts the step; this one is in a
+    // condition, so it reports instead.
+    const run = stage({
+      execution: "SENSITIVE",
+      mutate: spliceBefore(OPEN_MARKER, 'rm -f "${src}"'),
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept).toEqual([]);
+    expect(warnings(run.stdout)[0]).toContain("could not be\nOPENED".replace("\n", " "));
+  });
+
+  test("#1307: a symlink planted at the destination name is refused BEFORE the write", () => {
+    // `> path` where path is a link truncates THE TARGET. This is a write
+    // to somewhere else on the runner, not a disclosure, and a check after
+    // the redirect would find it already done — so the planted file is
+    // read back here and asserted untouched.
+    const dir = scratchDir("ai-review-stage-clobber-");
+    const victim = join(dir, "victim.txt");
+    writeFileSync(victim, "DO NOT CLOBBER");
+    const run = stage({
+      execution: "SENSITIVE",
+      mutate: spliceBefore(
+        'if [ ! -O "${staged}" ]; then',
+        `ln -s ${JSON.stringify(victim)} "\${staged}/${AI_REVIEW_EXECUTION_BASENAME}"`,
+      ),
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(readFileSync(victim, "utf-8"), "the redirect wrote through a planted link").toBe(
+      "DO NOT CLOBBER",
+    );
+  });
+
+  test("#1307: a second file in the staged directory stops the upload entirely", () => {
+    // `actions/upload-artifact@v4` FOLLOWS SYMLINKS and exposes no option
+    // not to — its inputs are name, path, if-no-files-found,
+    // retention-days, compression-level, overwrite, include-hidden-files.
+    // So the directory's contents are this step's problem, and anything it
+    // did not write takes the transcript down with it.
+    const run = stage({
+      execution: "SENSITIVE",
+      mutate: spliceBefore(
+        'if [ ! -O "${staged}" ]; then',
+        'printf x > "${staged}/planted.txt"',
+      ),
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept).toEqual(["planted.txt"]);
+    expect(warnings(run.stdout)[0]).toContain("follows symlinks");
+  });
+
+  test("#1307: the splice helper is not vacuous — an unspliced run still publishes", () => {
+    // The control for the four rows above. Without it, a `mutate` that
+    // broke the script outright would satisfy every "nothing was staged"
+    // assertion and the rows would certify nothing.
+    expect(stage({ execution: "SENSITIVE" }).kept).toEqual([AI_REVIEW_EXECUTION_BASENAME]);
+    expect(buildExecutionStageScript().split(MKDIR_MARKER).length - 1).toBe(1);
+  });
+
   // ── The destination name ───────────────────────────────────────────────
 
   test("#1307: the uploaded name is chosen by the workflow, not by the source path", () => {

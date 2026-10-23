@@ -1,4 +1,4 @@
-# generated-sha: df23725a489e028d
+# generated-sha: 0aa596cd46363178
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1544,14 +1544,87 @@ jobs:
             exit 0
           fi
 
-          # A REDIRECT, not `cp` into a directory: the uploaded name is chosen HERE
-          # rather than inherited from the source path's basename.
-          if cat < "${src}" > "${staged}/claude-execution-output.json" 2>/dev/null; then
-            echo "::warning title=AI review UNMEASURED::No findings payload was written, and RUNGATE_UPLOAD_AI_REVIEW_TRANSCRIPT is on, so the reviewer's FULL TRANSCRIPT is being uploaded as a workflow artifact for #1307. ON A PUBLIC REPOSITORY THAT ARTIFACT IS READABLE BY ANYONE ON THE INTERNET. It contains every file the reviewer read and everything it wrote during this run. Unset the variable to stop publishing it"
-          else
-            echo "::warning title=AI review UNMEASURED::this run wrote no findings payload and the reviewer's transcript could not be copied aside, so the only record of what it did with its turns dies with this runner. The review's own verdict is unaffected — the report step still refuses — but #1307 gets no evidence from this run"
+          # ── ONE OPEN, then every remaining check on the DESCRIPTOR.
+          #
+          # The block above validates a PATH. A `cat < "${src}"` would RE-RESOLVE
+          # that path, so the object checked and the object read are two lookups with
+          # a window between them, and a fourth path check would only add a fourth
+          # check on the same side of it. `exec 9<` closes the window: after it,
+          # `/dev/fd/9` IS the object that was opened and cannot be swapped.
+          #
+          # In a condition, not a bare `exec`: under `bash -e` a failing redirect
+          # aborts the step, and this recorder may not fail the job it observes.
+          if ! exec 9<"${src}" 2>/dev/null; then
+            echo "::warning title=AI review UNMEASURED::the execution file passed every path check and then could not be OPENED, which means the path stopped naming a readable file between the two. Nothing is staged. A recorder that cannot vouch for what it read publishes nothing: $(escape_annotation "${src}")"
+            exit 0
           fi
 
+          # Regular and owned by this job, asked of the DESCRIPTOR. A path that was a
+          # file a microsecond ago and is a fifo or someone else's now answers these
+          # differently, which is the whole point of asking them here.
+          if [ ! -f /dev/fd/9 ] || [ ! -O /dev/fd/9 ]; then
+            exec 9<&-
+            echo "::warning title=AI review UNMEASURED::the execution file was opened and the OPEN FILE is not a regular file owned by this job, whatever the path said a moment earlier. Nothing is staged: the checks and the read have to be looking at the same object, and this is the object: $(escape_annotation "${src}")"
+            exit 0
+          fi
+
+          # NOTHING MAY BE AT THE DESTINATION, and this is checked BEFORE the write
+          # rather than after it. `> path` where `path` is a symlink truncates and
+          # writes THE TARGET — so a link planted here is not a disclosure, it is a
+          # write to somewhere else on the runner, and a check placed after the
+          # redirect would find it having already happened. `-L` first, because a
+          # dangling link is `-e`-false. This step created the directory empty
+          # moments ago, so anything here at all was planted.
+          if [ -L "${staged}/claude-execution-output.json" ] || [ -e "${staged}/claude-execution-output.json" ]; then
+            exec 9<&-
+            echo "::warning title=AI review UNMEASURED::the staging directory holds something this step did not write, so the transcript was removed rather than uploaded. actions/upload-artifact follows symlinks and has no option not to, so anything in that directory is published as whatever it points at. Nothing is uploaded from this run"
+            exit 0
+          fi
+
+          # A REDIRECT from the DESCRIPTOR, not `cp` into a directory: the uploaded
+          # name is chosen HERE rather than inherited from the source path's basename,
+          # and the bytes come from the object that was validated.
+          copied=1
+          cat <&9 > "${staged}/claude-execution-output.json" 2>/dev/null || copied=0
+          exec 9<&-
+
+          # ── WHAT GOES UP IS WHAT THIS STEP WROTE, checked here because the upload
+          # cannot check it.
+          #
+          # `actions/upload-artifact@v4` FOLLOWS SYMLINKS and takes no option not
+          # to: its inputs are `name`, `path`, `if-no-files-found`,
+          # `retention-days`, `compression-level`, `overwrite` and
+          # `include-hidden-files`, and there is no `follow-symlinks`. So a link
+          # inside the staged directory would publish whatever it points at, and the
+          # refusal has to happen on this side.
+          #
+          # THIS NARROWS THE WINDOW AND DOES NOT CLOSE IT, and saying so is the
+          # point: the directory is `mkdir -m 700`, `-O`-verified, nonced per run
+          # and written once by this step, so planting inside it means already
+          # running as the runner user — who can read the transcript directly and
+          # does not need the artefact. Against that, deletion here would be theatre.
+          # What this does catch is a link or a second file that is present when the
+          # check runs.
+          if [ "${copied}" != 1 ] \
+            || [ -L "${staged}/claude-execution-output.json" ] \
+            || [ ! -f "${staged}/claude-execution-output.json" ]; then
+            rm -f "${staged}/claude-execution-output.json" 2>/dev/null || true
+            echo "::warning title=AI review UNMEASURED::this run wrote no findings payload and the reviewer's transcript could not be copied aside, so the only record of what it did with its turns dies with this runner. The review's own verdict is unaffected — the report step still refuses — but #1307 gets no evidence from this run"
+            exit 0
+          fi
+
+          extra=0
+          for e in "${staged}"/* "${staged}"/.*; do
+            case "${e##*/}" in "*"|".*"|"."|".."|"claude-execution-output.json") continue ;; esac
+            extra=$((extra + 1))
+          done
+          if [ "${extra}" != 0 ]; then
+            rm -f "${staged}/claude-execution-output.json" 2>/dev/null || true
+            echo "::warning title=AI review UNMEASURED::the staging directory holds something this step did not write, so the transcript was removed rather than uploaded. actions/upload-artifact follows symlinks and has no option not to, so anything in that directory is published as whatever it points at. Nothing is uploaded from this run"
+            exit 0
+          fi
+
+          echo "::warning title=AI review UNMEASURED::No findings payload was written, and RUNGATE_UPLOAD_AI_REVIEW_TRANSCRIPT is on, so the reviewer's FULL TRANSCRIPT is being uploaded as a workflow artifact for #1307. ON A PUBLIC REPOSITORY THAT ARTIFACT IS READABLE BY ANYONE ON THE INTERNET. It contains every file the reviewer read and everything it wrote during this run. Unset the variable to stop publishing it"
           exit 0
       - name: Keep the reviewer's execution file when the review was UNMEASURED
         id: ai-review-execution-artifact
