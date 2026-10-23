@@ -318,14 +318,34 @@ This is also `registeredTreeCensus`'s first caller outside `test/`.
 
 | hook | authoritative for | matcher | reach |
 |---|---|---|---|
-| `WorkflowStateGuard` | **whether a tool call may write the artifact at all.** The sanctioned writer is `writeWorkflowState()`, which Zod-validates; the Write and Edit tools bypass that, so every such call is refused regardless of content | `path.includes('workflow-state.json')` — case-SENSITIVE substring | **SHIPS.** `deployToConsumers: true` |
+| `WorkflowStateGuard` | **whether a tool call may write the artifact at all.** The sanctioned writer is `writeWorkflowState()`, which Zod-validates; the Write and Edit tools bypass that, so every such call is refused regardless of content | `path.toLowerCase().includes('workflow-state.json')` — case-FOLDED substring, per #1211 | **SHIPS.** `deployToConsumers: true` |
 | `GateResultProtection` | **what a permitted write may contain.** It refuses a write that forges, erases or changes a `gates.<name>.result`, that advances `phase` to `DONE`, or that the guard could not model | `filePath.toLowerCase().endsWith('workflow-state.json')` — case-FOLDED suffix, per #1184 | **OPT-IN.** `deployToConsumers: false` |
 
-Neither subsumes the other, and this is asserted rather than asserted-about:
-there are inputs each one refuses and the other permits, in both directions.
-If that ever stops being true the pair has collapsed into one decider — the
-fourth shape in `.claude/rules/checks-must-be-able-to-fail.md` — and the
-contract test goes red saying so.
+Since #1211 the two matchers agree on WHICH paths are the artifact and differ
+only in reach — a substring match here, a suffix match there — so the specific
+guard's refusals are a **subset** of the blanket guard's. The contract test
+asserts that asymmetry in both directions rather than asserting about it:
+
+- There must be inputs **only the blanket guard** refuses. If there are not,
+  the pair has collapsed into one decider — the fourth shape in
+  `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either is
+  invisible.
+- There must be **no** input only the specific guard refuses. One would be an
+  input the SHIPPING guard permits, and a consumer tree has no other guard on
+  the artifact.
+
+The second claim used to be its mirror — that such an input must exist — and
+#1211 is why it was inverted. The only member that set ever had was the
+uppercase spelling, and that member was a hole in the shipping guard. A pair
+whose non-redundancy rests on one of them having a gap is not defence in
+depth, so closing the gap emptied the set and the claim that required a member
+now forbids one.
+
+**Subsumed is not dead.** The two do not ship to the same trees: a scaffolded
+consumer gets the blanket guard and not the specific one, and on this machine
+the specific guard's registration resolves outside this repository (#713).
+Behavioural subsumption is a statement about one tree holding both, and
+neither of those is that tree.
 
 ### #1152's body has the deployment backwards
 
@@ -346,27 +366,39 @@ allow-path nothing was exercising.**
 
 ### Where they disagree, and which disagreements are intended
 
-Six of the contract's fourteen rows diverge. Three are the split above working
+Five of the contract's fourteen rows diverge. Three are the split above working
 as designed: a legitimate Write, a legitimate Edit, and an edit to a run whose
 phase is already `DONE` are all refused by the blanket guard and permitted by
 the specific one. That set **is** the specific guard's allow-path, and running
 each hook alone is what makes it observable — #1152's resolution item 3.
 
-The other three are accidents of two independently written path predicates and
-are filed, not fixed here:
+The other two are accidents of two independently written path predicates. Both
+are in the benign direction — the blanket guard over-blocking — and both are
+left alone deliberately:
 
-- **A forged gate result written to `WORKFLOW-STATE.JSON` is permitted by the
-  blanket guard.** `String.includes` is case-sensitive; #1184 measured that the
-  two spellings resolve to the same inode on a case-insensitive filesystem and
-  case-folded the specific guard, and the fix was never carried across. The
-  guard that still has it is the one that ships, so on a consumer tree this
-  input reaches disk with no guard at all.
 - A sibling path such as `workflow-state.json.bak` is refused by the blanket
   guard's substring match and permitted by the specific guard's suffix match.
   Over-blocking a backup file costs a rename; this is the direction to be
   wrong in.
 - The blanket guard falls back to a `path` key that neither tool sends. Dead
   today; a tool-schema change makes it live without either hook being touched.
+
+**A third accident sat here until #1211, and it was the one in the dangerous
+direction**: a forged gate result written to `WORKFLOW-STATE.JSON` was
+permitted by the blanket guard, because `String.includes` is case-sensitive.
+#1184 had measured that the two spellings resolve to the same inode on a
+case-insensitive filesystem and case-folded the specific guard; the fix was
+never carried across, and the guard that kept the defect was the one that
+ships — so on a consumer tree that input reached disk with no guard at all.
+
+#1211 case-folded the blanket guard's matcher. Because folding a matcher can
+only **widen** what it claims, and widening a guard is not automatically safe,
+`test/workflow-state-guard-case.test.ts` runs the old matcher alongside the new
+one over a corpus of spellings and asserts the difference: the refusal set grew
+by exactly six case-variants of the artifact's own name, and shrank by nothing.
+Near-misses the fold must not reach — `workflow_state.json`,
+`workflowstate.json`, `workflow-state.yaml` — are rows in that corpus, so the
+bound on what the guard may claim is executed rather than argued.
 
 ### If you change either hook
 

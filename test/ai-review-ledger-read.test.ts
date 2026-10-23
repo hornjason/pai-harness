@@ -44,7 +44,7 @@ import {
   FINDING_IDENTITY_NONE,
   FINDING_IDENTITY_TEXT,
   carryForward,
-  findingKey,
+  carryKey,
   ledgerUnreadable,
   priorFindings,
   readLedger,
@@ -105,9 +105,9 @@ describe("AC-R1: identity is stated, not assumed", () => {
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
     expect(prior.prior).toHaveLength(1);
     expect(prior.prior[0]!.identity).toBe(FINDING_IDENTITY_TEXT);
-    // The key is the one findingKey forms from the RECORDED text, which is
+    // The key is the one carryKey forms from the RECORDED text, which is
     // what makes a line that moved still a repeat.
-    expect(prior.keys).toEqual([findingKey(UNSAFE, UNSAFE[AI_REVIEW_LEDGER_TEXT_FIELD])!]);
+    expect(prior.keys).toEqual([carryKey(UNSAFE, UNSAFE[AI_REVIEW_LEDGER_TEXT_FIELD])!]);
   });
 
   test("AC-R1: an identity the reader does not recognise refuses to key, and carries", () => {
@@ -146,7 +146,7 @@ describe("AC-R1: identity is stated, not assumed", () => {
     const prior = priorFindings(readLedger(ledgerBody([entry({ [AI_REVIEW_FINDINGS_KEY]: [noText] })])));
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
     expect(prior.prior[0]!.identity).toBe(FINDING_IDENTITY_LINE);
-    expect(prior.keys).toEqual([findingKey(noText)!]);
+    expect(prior.keys).toEqual([carryKey(noText)!]);
   });
 });
 
@@ -226,7 +226,7 @@ describe("AC-R4: an unkeyable finding is carried, never dropped", () => {
     const blank = { severity: "HIGH", line: 4 };
     const prior = priorFindings(readLedger(ledgerBody([entry({ [AI_REVIEW_FINDINGS_KEY]: [blank] })])));
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
-    expect(findingKey(blank)).toBeNull();
+    expect(carryKey(blank)).toBeNull();
     expect(prior.keys).toEqual([]);
     expect(prior.prior).toHaveLength(1);
     expect(prior.prior[0]!.identity).toBe(FINDING_IDENTITY_NONE);

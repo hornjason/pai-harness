@@ -200,6 +200,23 @@ export const AI_REVIEW_ADVISORY_TITLE = "AI review advisory findings";
 /**
  * A stable identity for one finding, so an answer can name it.
  *
+ * @identity file+summary — whitespace-collapsed and case-folded, FNV-1a, 8
+ * hex characters. Total: every finding gets a key, and it is never `null`.
+ *
+ * **This is the ADJUDICATION key** — "has this advisory already been counted
+ * on this run". Within one payload there is only one version of the file, so
+ * the line genuinely does not matter, and keying on it would split one
+ * finding into two across a reformat.
+ *
+ * Its sibling is `carryKey` in `lib/ai-review-rounds.ts`, which is the
+ * PERSISTENCE key — "is the thing this round raised the thing the last round
+ * raised" — over `file` + the cited line's TEXT + `summary`, and partial: it
+ * returns `null` for a finding it cannot key, which this hash cannot do. The
+ * two were both called `findingKey` until #1398. They answer different
+ * questions and the collapse loses one; neither can quietly become the
+ * other, which was measured rather than assumed, but while they shared a
+ * name no call site could say which it had asked.
+ *
  * CRC-B8 asks that every finding be answered — fixed, or resolved with a
  * stated reason — and an answer has to name what it answers. The line number
  * cannot be that name: the same finding moves line between rounds, which is
@@ -217,7 +234,7 @@ export const AI_REVIEW_ADVISORY_TITLE = "AI review advisory findings";
  * that forged another finding's key would buy the forger an answer on the
  * wrong row, which is a worse annotation and not a bypass of anything.
  */
-export function findingKey(finding: Record<string, unknown>): string {
+export function advisoryKey(finding: Record<string, unknown>): string {
   const f = AI_REVIEW_FINDING_FIELDS;
   const normalise = (v: unknown): string =>
     String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -308,7 +325,7 @@ export function advisoryNotice(reading: AiReviewFindingsReading): string | null 
     const i = reported.indexOf(item);
     const key =
       item !== null && typeof item === "object" && !Array.isArray(item)
-        ? ` [key ${findingKey(item as Record<string, unknown>)}]`
+        ? ` [key ${advisoryKey(item as Record<string, unknown>)}]`
         : "";
     return `${all[i]}${key}`;
   });

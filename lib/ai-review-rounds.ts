@@ -39,7 +39,7 @@
  * **A finding fingerprint may not be keyed on a line number.** The first case
  * above moved 318 → 375 between rounds while staying byte-identical, so a
  * `file:line` key would have failed to suppress the one repeat we can
- * actually observe. `findingKey` therefore keys on the file, the normalised
+ * actually observe. `carryKey` therefore keys on the file, the normalised
  * TEXT of the cited line, and the normalised summary.
  *
  * **`git blame` is the wrong instrument for this question.** It attributed
@@ -259,6 +259,24 @@ function normalise(v: unknown): string {
 /**
  * The identity of a finding, for deciding whether it has already been raised.
  *
+ * @identity file+text+summary — `file`, the TEXT of the cited line (falling
+ * back to the line NUMBER when the text is not known), and `summary`.
+ * Partial: `null` for a finding it cannot key.
+ *
+ * **This is the PERSISTENCE key** — "is the thing this round raised the thing
+ * the last round raised". It is the one the ledger's anchors are recorded
+ * under ({@link AI_REVIEW_LEDGER_IDENTITY}) and the one that can refuse.
+ *
+ * Its sibling is `advisoryKey` in `lib/scaffold/ai-review-findings.ts`, which
+ * is the ADJUDICATION key — "has this advisory already been counted on this
+ * run" — over `file`+`summary` only, total, never `null`. The two were both
+ * called `findingKey` until #1398 and they are deliberately different: a
+ * line anchor here is what makes a re-summary of one file two findings
+ * rather than one, and a line anchor THERE would split a single finding in
+ * two across a reformat. Neither rule can quietly become the other —
+ * measured, and both unification mutants are caught — but a call site could
+ * not tell which question it was asking while they shared a name.
+ *
  * `file` + the TEXT of the cited line + `summary`. **Not the line number**,
  * and that is the measured part rather than a preference: the one repeat this
  * repository can actually show moved from `:318` to `:375` between rounds
@@ -275,7 +293,7 @@ function normalise(v: unknown): string {
  * nothing to compare such a finding against, and giving it a key would make
  * every one of them a repeat of the first.
  */
-export function findingKey(finding: unknown, lineText?: unknown): string | null {
+export function carryKey(finding: unknown, lineText?: unknown): string | null {
   if (typeof finding !== "object" || finding === null || Array.isArray(finding)) return null;
   const f = finding as ReviewFinding;
   const file = normalise(f.file);
@@ -300,7 +318,7 @@ export interface SuppressionReading {
 /**
  * Drop findings an earlier round already raised.
  *
- * Keyed by `findingKey`, so a finding whose line number moved is still a
+ * Keyed by `carryKey`, so a finding whose line number moved is still a
  * repeat and a finding whose summary changed is not.
  *
  * **Within this round too.** A reviewer that lists the same defect twice in
@@ -331,7 +349,7 @@ export function suppressRepeats(
       continue;
     }
     const f = raw as ReviewFinding;
-    const key = findingKey(f, lineTextFor?.(f));
+    const key = carryKey(f, lineTextFor?.(f));
     if (key === null || !seen.has(key)) {
       if (key !== null) seen.add(key);
       kept.push(f);
@@ -781,7 +799,7 @@ export function priorFindings(reading: LedgerReading): PriorState {
       // Only a round stamped with the rule this reader knows gets a key. An
       // unrecognised rule is carried, never dropped, and never keyed.
       if (round.keyable) {
-        key = findingKey(finding, recordedText);
+        key = carryKey(finding, recordedText);
         if (key !== null) {
           identity = normalise(recordedText) !== "" ? FINDING_IDENTITY_TEXT : FINDING_IDENTITY_LINE;
           keys.push(key);
