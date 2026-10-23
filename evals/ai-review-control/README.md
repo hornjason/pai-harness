@@ -16,6 +16,7 @@ Two halves, measuring two different things:
 |---|---|---|
 | recall and precision, on staged subjects | `control.ts`, `run.ts` | did the reviewer find a defect known to be there, and stay quiet about one that is not? |
 | what became of the findings it wrote | `outcomes.ts`, `outcomes-run.ts` | of the findings that reached a person, how many were worth writing? |
+| how much the withheld set moves between runs | `variance-capture.ts` | does the deployed adjudicator disagree with itself? — see **Single-adjudicator variance** below |
 
 `outcomes.ts` is pure and knows nothing about `gh` or `git`; `outcomes-run.ts`
 is the half that turns a repository into a corpus. See **Finding outcomes**
@@ -249,3 +250,27 @@ flow into a `while` with an explicit cursor and replaces the trailing `some`
 with an early return. A reviewer can stay quiet on `clean` by finding nothing
 textual to object to; the lookahead arithmetic in `clean-loop` is the shape it
 is most likely to flag on suspicion.
+
+## Single-adjudicator variance
+
+`variance-capture.ts` runs one batch through the **deployed** filing
+adjudicator M times and records the withheld set each time. The stored
+reading is `baselines/single-adjudicator-variance.json`, loaded by
+`loadVarianceCapture` in `baselines.ts`, which refuses a capture whose commit
+moved mid-run.
+
+**Read the caveat before the number.** The answer is zero, and it is zero *by
+construction*. `hooks/VerifyPhaseLock.hook.ts` → `filingGate` →
+`adjudicateFiling` runs two pure stages — `classifyCategory` (regex) and
+`duplicateCollisions` (set arithmetic over `symptomKeys`) — with no clock, no
+randomness, no network and no model. A repeated run cannot disagree with
+itself, so the capture is a control establishing that the deterministic half
+contributes none of the variance. It is **not** evidence that a quorum has
+nothing to fix: a quorum is a variance control for an *agent* verifier, and
+`arbitrate` — the five-stage path that takes votes — has no caller outside
+`lib/` and `test/`.
+
+The reading that looks most like success here is the signature of the failure
+mode, which is why the artefact carries `permanentlyUnmeasured` as a
+first-class field and why both the capture and its loader refuse rather than
+score.
