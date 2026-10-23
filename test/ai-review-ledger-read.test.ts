@@ -19,6 +19,10 @@
  *  - AC-R6  the writer and the reader agree on the identity string and on the
  *           field names, with no import between them.
  *  - AC-R7  a control: a well-formed two-round ledger reads back exactly.
+ *  - AC-R8  (#1405) the ledger is a WINDOW. It must be able to say how many
+ *           rounds fell off the front, and "it did not say" must not read as
+ *           zero. Both shapes are accepted, because the bare array is live on
+ *           every open pull request that has a ledger.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -29,9 +33,13 @@ import {
   AI_REVIEW_LEDGER_FINDING_TEXT,
   AI_REVIEW_LEDGER_IDENTITY,
   AI_REVIEW_LEDGER_READ,
+  AI_REVIEW_LEDGER_ROUNDS_KEY,
+  AI_REVIEW_LEDGER_TRUNCATED_KEY,
   AI_REVIEW_LEDGER_UNREADABLE,
   AI_REVIEW_PRIOR_MEASURED,
   AI_REVIEW_PRIOR_UNMEASURED,
+  AI_REVIEW_TRUNCATION_STATED,
+  AI_REVIEW_TRUNCATION_UNKNOWN,
   FINDING_IDENTITY_LINE,
   FINDING_IDENTITY_NONE,
   FINDING_IDENTITY_TEXT,
@@ -345,5 +353,124 @@ describe("AC-R7: the control — a well-formed two-round ledger reads back exact
     const s = suppressRepeats([repeat], prior.keys, () => UNSAFE[AI_REVIEW_LEDGER_TEXT_FIELD]);
     expect(s.kept, "a repeat whose line moved is still a repeat").toHaveLength(0);
     expect(s.suppressed).toHaveLength(1);
+  });
+});
+
+/**
+ * AC-R8 (#1405) — the ledger is a window and must say so.
+ *
+ * The round cap drops the oldest rounds, and the only notice is a warning
+ * annotation in a job log that expires. So a twelve-round ledger that evicted
+ * eight and a twelve-round ledger that is the whole history read identically
+ * to anyone arriving afterwards. That is the #1168 distinction — gone is not
+ * empty — re-created one level up, about the ledger rather than about a round.
+ *
+ * The cheapest wrong fix is `truncated ?? 0`, and it is wrong in the same way
+ * `""|0)` was wrong in the shell on #1396: it turns "I could not establish
+ * this" into "nothing happened". Two rows below exist to fail under it.
+ */
+describe("AC-R8: a window states how much it dropped, and zero is a statement", () => {
+  /** The windowed shape: the rounds hang off a key, beside the count. */
+  function windowBody(rounds: unknown[], over: Record<string, unknown> = {}): string {
+    return ledgerBody({ [AI_REVIEW_LEDGER_ROUNDS_KEY]: rounds, ...over });
+  }
+
+  test("AC-R8: a stated count is read, and the rounds come back with it", () => {
+    const reading = readLedger(
+      windowBody([entry({ round: 9 }), entry({ round: 10 })], {
+        [AI_REVIEW_LEDGER_TRUNCATED_KEY]: 8,
+      }),
+    );
+    if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(reading));
+    expect(reading.rounds.map(r => r.round)).toEqual([9, 10]);
+    expect(reading.truncation.status).toBe(AI_REVIEW_TRUNCATION_STATED);
+    if (reading.truncation.status !== AI_REVIEW_TRUNCATION_STATED) throw new Error("unreachable");
+    expect(reading.truncation.dropped).toBe(8);
+  });
+
+  test("AC-R8: a stated ZERO is not the same reading as a ledger that says nothing", () => {
+    // The row `truncated ?? 0` fails on. A complete history and a ledger with
+    // no opinion are different facts, and only one of them licenses a caller
+    // to report "nothing was raised before" rather than "nothing I can see".
+    const stated = readLedger(windowBody([entry()], { [AI_REVIEW_LEDGER_TRUNCATED_KEY]: 0 }));
+    const silent = readLedger(ledgerBody([entry()]));
+    if (stated.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
+    if (silent.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
+    expect(stated.truncation.status).toBe(AI_REVIEW_TRUNCATION_STATED);
+    expect(silent.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
+    expect(stated.truncation.status).not.toBe(silent.truncation.status);
+    // Both ledgers hold one round, so no count tells them apart — the same
+    // construction AC-R2 uses, and the reason it is the TYPE that separates.
+    expect(stated.rounds).toHaveLength(silent.rounds.length);
+  });
+
+  test("AC-R8: an UNKNOWN truncation carries no count field for a caller to read", () => {
+    const silent = readLedger(ledgerBody([entry()]));
+    if (silent.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
+    expect(Object.hasOwn(silent.truncation, "dropped")).toBe(false);
+    expect(silent.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
+    if (silent.truncation.status !== AI_REVIEW_TRUNCATION_UNKNOWN) throw new Error("unreachable");
+    // The reason has to name the shape, or a report of it says only "unknown".
+    expect(silent.truncation.reason).toContain("bare array");
+  });
+
+  test("AC-R8: a legacy bare-array ledger still reads, rounds and all", () => {
+    // Every open pull request with a ledger carries this shape. Refusing it
+    // would discard the history of all of them the moment the writer changed.
+    const reading = readLedger(
+      ledgerBody([entry({ round: 1 }), entry({ round: 2, [AI_REVIEW_FINDINGS_KEY]: [UNSAFE] })]),
+    );
+    if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
+    expect(reading.rounds.map(r => r.round)).toEqual([1, 2]);
+    const prior = priorFindings(reading);
+    if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
+    expect(prior.keys).toHaveLength(1);
+  });
+
+  test.each([
+    ["a string", "8"],
+    ["null", null],
+    ["a negative", -1],
+    ["a fraction", 1.5],
+    ["an object", { n: 8 }],
+  ])("AC-R8: a %s count is UNKNOWN, not zero, and the rounds survive it", (_label, bad) => {
+    const reading = readLedger(
+      windowBody([entry({ round: 4 })], { [AI_REVIEW_LEDGER_TRUNCATED_KEY]: bad }),
+    );
+    if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(reading));
+    expect(reading.rounds, "a bad count discarded the rounds").toHaveLength(1);
+    expect(reading.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
+    expect(Object.hasOwn(reading.truncation, "dropped")).toBe(false);
+  });
+
+  test("AC-R8: an object with no rounds array is UNREADABLE, never an empty ledger", () => {
+    const reading = readLedger(ledgerBody({ [AI_REVIEW_LEDGER_TRUNCATED_KEY]: 3 }));
+    expect(reading.status).toBe(AI_REVIEW_LEDGER_UNREADABLE);
+    if (reading.status !== AI_REVIEW_LEDGER_UNREADABLE) throw new Error("unreachable");
+    // The key, quoted — the pre-#1405 refusal message also contains the word
+    // "rounds", so a bare substring check passes against the shape that has
+    // no object branch at all and witnesses nothing.
+    expect(reading.reason).toContain(`\`${AI_REVIEW_LEDGER_ROUNDS_KEY}\``);
+  });
+
+  test("AC-R8: the control — a windowed ledger round-trips exactly", () => {
+    const reading = readLedger(
+      windowBody(
+        [
+          entry({ round: 11, [AI_REVIEW_FINDINGS_KEY]: [UNSAFE] }),
+          entry({ round: 12, sha: "c".repeat(40), [AI_REVIEW_FINDINGS_KEY]: null }),
+        ],
+        { [AI_REVIEW_LEDGER_TRUNCATED_KEY]: 4 },
+      ),
+    );
+    if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
+    expect(reading.rounds.map(r => r.round)).toEqual([11, 12]);
+    expect(reading.rounds.map(r => r.measured)).toEqual([true, false]);
+    if (reading.truncation.status !== AI_REVIEW_TRUNCATION_STATED) throw new Error("unreachable");
+    expect(reading.truncation.dropped).toBe(4);
+    const prior = priorFindings(reading);
+    if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
+    expect(prior.keys).toHaveLength(1);
+    expect(prior.unmeasuredRounds, "the null round is still counted").toBe(1);
   });
 });
