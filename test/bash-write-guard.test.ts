@@ -2863,7 +2863,26 @@ describe("#1239 BATTERY: an escaped quote must not swallow the redirect", () => 
    * `$( )` substitution branch — so a fix applied to only one of them leaves
    * the other half of the table red.
    */
-  const SPELLINGS: { id: string; scanner: "word" | "subst"; prefix: string; runs: boolean }[] = [
+  const SPELLINGS: {
+    id: string;
+    scanner: "word" | "subst" | "backtick";
+    prefix: string;
+    runs: boolean;
+    /**
+     * bash COMPLAINS about this spelling on stderr and performs the redirect
+     * anyway. Declared per row, never inferred, and asserted in BOTH
+     * directions by the FIXTURE case: a row that stops warning is as much a
+     * change in what the table measures as a row that starts.
+     *
+     * The noise check exists to catch a payload damaged in transport, and
+     * that is still what it does for every row without this flag. These two
+     * are a different fact: bash reports the substitution unterminated,
+     * substitutes nothing, and still truncates the target. A warning on
+     * stderr is not a refusal — the file is overwritten either way, which is
+     * the only thing the guard is for.
+     */
+    warns?: true;
+  }[] = [
     // --- word-level quote scanner ---
     { id: "bare word", scanner: "word", prefix: `echo x`, runs: true },
     { id: "dq word", scanner: "word", prefix: `echo "x"`, runs: true },
@@ -2903,6 +2922,22 @@ describe("#1239 BATTERY: an escaped quote must not swallow the redirect", () => 
     { id: "escaped dq then paren, outside quotes", scanner: "subst", prefix: `echo $(echo \\")b\\")`, runs: false },
     { id: "unterminated dq in sub", scanner: "subst", prefix: `echo $(echo "x)`, runs: false },
     { id: "unterminated sq in sub", scanner: "subst", prefix: `echo $(echo 'x)`, runs: false },
+
+    // --- backtick substitution scanner ---
+    //
+    // The THIRD `indexOf` partner-finder, and the one #1239 left behind.
+    // Found by #1361's own AI review, which was right: `indexOf` cannot tell
+    // `` ` `` from ``\` ``, so the scanner took the escaped backtick as the
+    // closer, ended the word in the wrong place and never saw the `>`.
+    //
+    // These are not "the same shape, probably". Each was run both ways
+    // before it was written down: `writeTargets` returned `[]` — no targets
+    // at all, not a wrong one — and bash performed the write.
+    { id: "backtick sub, plain", scanner: "backtick", prefix: "echo `echo y`", runs: true },
+    { id: "escaped backtick in sub", scanner: "backtick", prefix: "echo `echo a\\`b`", runs: true, warns: true },
+    { id: "escaped backtick alone in sub", scanner: "backtick", prefix: "echo `echo \\``", runs: true, warns: true },
+    { id: "two escaped backticks in sub", scanner: "backtick", prefix: "echo `echo \\`\\`x`", runs: true },
+    { id: "unterminated backtick", scanner: "backtick", prefix: "echo `echo x", runs: false },
   ];
 
   /** Does bash run this row, and does it reach the redirect? */
@@ -2931,25 +2966,39 @@ describe("#1239 BATTERY: an escaped quote must not swallow the redirect", () => 
   test("POPULATION: the table is the one this issue measured", () => {
     // The count that failed is not the finding; the population is. If a row
     // is dropped to make the suite green, this goes red naming the shortfall.
-    expect(SPELLINGS.length).toBe(31);
+    expect(SPELLINGS.length).toBe(36);
     expect(SPELLINGS.filter(s => s.scanner === "word").length).toBe(12);
     expect(SPELLINGS.filter(s => s.scanner === "subst").length).toBe(19);
-    expect(SPELLINGS.filter(s => s.runs).length).toBe(27);
+    // The third site, added when #1361's review found it still on `indexOf`.
+    expect(SPELLINGS.filter(s => s.scanner === "backtick").length).toBe(5);
+    expect(SPELLINGS.filter(s => s.runs).length).toBe(31);
     expect(new Set(SPELLINGS.map(s => s.id)).size).toBe(SPELLINGS.length);
   });
 
   test("FIXTURE: bash agrees with the `runs` column, and the payloads arrived intact", () => {
     const disagree: string[] = [];
     const noisy: string[] = [];
+    const quiet: string[] = [];
     for (const s of SPELLINGS) {
       const { runs, stderr } = execute(s.prefix);
       if (runs !== s.runs) disagree.push(`${s.id}: bash says runs=${runs}, table says ${s.runs}`);
       // A row that should run and emitted anything on stderr did not arrive
-      // the way it was written. That is a broken fixture, not a finding.
-      if (s.runs && stderr.trim()) noisy.push(`${s.id}: ${stderr.trim().split("\n")[0]}`);
+      // the way it was written. That is a broken fixture, not a finding —
+      // UNLESS the row declares `warns`, where the complaint is bash's own
+      // and the redirect is performed regardless.
+      if (s.runs && !s.warns && stderr.trim()) {
+        noisy.push(`${s.id}: ${stderr.trim().split("\n")[0]}`);
+      }
+      // The other direction, so the flag cannot go stale. A declared warning
+      // that stopped appearing means bash changed its mind about the
+      // spelling, and the row is no longer the one that was measured.
+      if (s.runs && s.warns && !stderr.trim()) quiet.push(s.id);
     }
     expect(disagree).toEqual([]);
     expect(noisy).toEqual([]);
+    expect(quiet, "a row declares `warns` and bash said nothing — it is not the row measured").toEqual(
+      [],
+    );
   });
 
   test("every spelling that bash actually RUNS is refused", () => {

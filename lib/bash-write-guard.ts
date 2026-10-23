@@ -1108,7 +1108,10 @@ export function commandWord(segment: string): string {
 function endOfQuoted(s: string, i: number): number {
   const q = s[i];
   for (let j = i + 1; j < s.length; j++) {
-    if (q === '"' && s[j] === '\\') {
+    // Every span except the single-quoted one takes escapes — that is the
+    // asymmetry stated above, and spelling it as "not `'`" rather than as a
+    // list is what let the BACKTICK span join without a second scanner.
+    if (q !== "'" && s[j] === '\\') {
       j++; // the escaped character, whatever it is, is not a delimiter
       continue;
     }
@@ -1364,11 +1367,28 @@ function readWord(s: string, i: number): [string, number] {
     // expand anything, and keeping the `$`/backtick is what lets #1175's
     // `isScratchPath` go on reading an unexpanded path as unprovable.
     if (c === '`') {
-      const close = s.indexOf('`', i + 1);
-      // Unterminated: consume to the end. A substitution this module cannot
-      // see the end of is not one it can read a word boundary out of, so it
-      // takes the rest — the fail-closed direction.
-      const end = close === -1 ? s.length : close + 1;
+      // #1361's AI review found this one, and it is right: this was the last
+      // `indexOf` partner-finder in the module. `indexOf` cannot tell `` ` ``
+      // from ``\` ``, so an escaped backtick inside the substitution was read
+      // as the closer, the word ended in the wrong place, and the `>` that
+      // followed was never seen. No operator, no target, ALLOW — the exact
+      // shape #1239 fixed for `"`, `'` and `$(...)`, surviving in the one
+      // branch those fixes did not touch.
+      //
+      // Verified both halves before fixing, because a guard missing a command
+      // bash refuses to run is not a bypass. All three spellings return no
+      // targets at all AND are performed by bash:
+      //
+      //     echo `echo a\`b`    > <run-store>/workflow-state.json
+      //     echo `echo \``      > <run-store>/workflow-state.json
+      //     echo `echo \`\`x`   > <run-store>/workflow-state.json
+      //
+      // `endOfQuoted` already walks escapes; a backtick span escapes exactly
+      // as a double-quoted one does, so this is a third caller of the one
+      // scanner rather than a fourth hand-rolled one. It returns `s.length`
+      // for an unterminated span, which is the same fail-closed direction
+      // this branch already took.
+      const end = endOfQuoted(s, i);
       w += s.slice(i, end);
       i = end;
       continue;
