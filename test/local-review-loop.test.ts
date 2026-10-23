@@ -237,6 +237,136 @@ describe("the local review loop terminates (#1421)", () => {
   });
 });
 
+/**
+ * The payload a REAL reviewer writes.
+ *
+ * `AI_REVIEW_FINDING_FIELDS` — `{severity, file, line, summary,
+ * failure_scenario}`. No `title`, no `body`. The first version of this PR
+ * read only `lib/finding-arbiter.ts`'s `{id, title, body}` shape and refused
+ * everything else as UNMEASURED, so a real payload would have refused on
+ * every round and the whole mechanism would have been unreachable on real
+ * input — a caller that exists and can never be fed, which is the dormant
+ * control one level deeper than #1381's. Reported by the `ai-review` on this
+ * PR's second push.
+ *
+ * These rows drive the SAME loop as the ones above with the SAME classes, in
+ * the contract's shape. If the two shapes ever stop agreeing on what a class
+ * is, these terminate somewhere else and say so.
+ */
+const contractA1 = {
+  severity: "high",
+  file: "lib/issue-filing-gate.ts",
+  line: 393,
+  summary: "The filing gate reads a different value than `gh` for `headRefOid`",
+  failure_scenario:
+    "`resolveFiling` compares its own reading against what `gh pr view` returns. Measured over " +
+    "38 open findings, 12 were allowed through.",
+};
+const contractA2 = {
+  severity: "high",
+  file: "lib/issue-filing-gate.ts",
+  line: 412,
+  summary: "`resolveFiling` still disagrees with `gh` about `headRefOid`",
+  failure_scenario:
+    "Re-measured after the fix: 38 findings, 12 still allowed through `resolveFiling`, and the " +
+    "`headRefOid` it reads is still not the one `gh` reports.",
+};
+const contractB = {
+  severity: "medium",
+  file: "lib/ai-review-rounds.ts",
+  line: 533,
+  summary: "The ledger evicts its oldest rounds when the comment body overflows",
+  failure_scenario:
+    "`readLedger` parses a comment capped at 65536 bytes, so round 20 silently drops round 1 " +
+    "and the suppression set loses 14 keys.",
+};
+
+const contractRepeating = (turn: number) => [turn === 1 ? contractA1 : contractA2];
+const contractNovel = (turn: number) => [
+  {
+    severity: "high",
+    file: `lib/module-${turn}.ts`,
+    line: turn * 7,
+    summary: `\`handler${turn}Value\` drops rows`,
+    failure_scenario: `\`handler${turn}Value\` drops ${turn * 11 + 17} of ${turn * 13 + 23} rows.`,
+  },
+];
+
+describe("the loop reads the payload a real reviewer writes (#1421)", () => {
+  test("AC-LL8: the contract's shape is accepted, and one class in it still settles at round 2", () => {
+    const { turns } = driveLoop("real", contractRepeating);
+    expect(
+      turns[0].decision,
+      "the first contract-shaped round was refused, so the mechanism never runs on real input",
+    ).toBe(LOCAL_REVIEW_CONTINUE);
+    expect(turns).toHaveLength(2);
+    expect(last(turns).decision).toBe(LOCAL_REVIEW_SETTLED);
+  });
+
+  test("AC-LL9: a contract-shaped reviewer that is new every round stops at the cap", () => {
+    const { turns } = driveLoop("real", contractNovel);
+    expect(turns).toHaveLength(AI_REVIEW_ROUND_CAP + 1);
+    expect(last(turns).decision).toBe(LOCAL_REVIEW_AT_CAP);
+  });
+
+  test("AC-LL10: a finding carrying neither shape is still UNMEASURED", () => {
+    // The widening must not become "accept anything". A payload with no
+    // summary and no title names no defect, and recording it as a round that
+    // found nothing would clear the loop on an unread finding.
+    const { turns } = driveLoop("real", () => [{ severity: "high", line: 4 }]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].decision).toBe(LOCAL_REVIEW_UNMEASURED);
+  });
+
+  /**
+   * AC-LL12 — the `file` half of the synthesised body, isolated.
+   *
+   * The rows above do not need it, and that is measured rather than assumed:
+   * a mutant dropping the file path from the body reddens NOTHING against
+   * `contractA1`/`contractA2`, because their prose shares two backticked
+   * symbols and `sameSymptom` only needs one shared location key. The first
+   * draft of the code comment claimed both halves were load-bearing; half of
+   * that was false.
+   *
+   * These two findings are the case the others cannot see: plain prose, no
+   * backticked symbols at all, agreeing only on the file they name and the
+   * two integers they report. The file key is the only location key there
+   * is, so dropping it takes the pair below the threshold and the loop stops
+   * settling — which is a failure that looks like success, two rounds later.
+   */
+  const plain = (summary: string, scenario: string) => ({
+    severity: "high",
+    file: "lib/issue-filing-gate.ts",
+    line: 393,
+    summary,
+    failure_scenario: scenario,
+  });
+  test("AC-LL12: two findings sharing only a file and their readings are still one class", () => {
+    const first = plain(
+      "The gate reads a different value than the tracker does",
+      "Over 38 attempts, 12 were allowed through.",
+    );
+    const second = plain(
+      "The gate and the tracker still disagree about the pull request head",
+      "Re-measured after the change: 38 attempts, 12 allowed.",
+    );
+    const { turns } = driveLoop("real", turn => [turn === 1 ? first : second]);
+    expect(turns).toHaveLength(2);
+    expect(last(turns).decision).toBe(LOCAL_REVIEW_SETTLED);
+  });
+
+  test("AC-LL11: the two shapes agree about what a class is", () => {
+    // The claim the rows above rest on, asserted rather than assumed: the
+    // same two classes, expressed both ways, terminate the loop on the same
+    // round. A body synthesis that lost the file or the quantities would
+    // still "work" — it would just stop settling, two rounds later.
+    expect(driveLoop("real", contractRepeating).turns).toHaveLength(2);
+    expect(driveLoop("real", repeating).turns).toHaveLength(2);
+    expect(driveLoop("real", contractNovel).turns).toHaveLength(AI_REVIEW_ROUND_CAP + 1);
+    expect(driveLoop("real", alwaysNovel).turns).toHaveLength(AI_REVIEW_ROUND_CAP + 1);
+  });
+});
+
 describe("the history is durable, and an unreadable one is not an empty one (#1421)", () => {
   test("AC-LL3: every round the loop ran is on disk afterwards", () => {
     const { turns, history } = driveLoop("real", alwaysNovel);

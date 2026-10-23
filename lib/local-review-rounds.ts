@@ -157,14 +157,53 @@ function readFinding(raw: unknown, where: string): Finding | string {
     return `${where} is ${describe(raw)} rather than a finding object`;
   }
   const f = raw as Record<string, unknown>;
-  if (typeof f.title !== "string" || typeof f.body !== "string") {
-    return (
-      `${where} has no readable title and body (title is ${describe(f.title)}, body is ` +
-      `${describe(f.body)}) — a finding's class is read out of those two and nothing else, ` +
-      `so half of one is not a class that can be compared`
-    );
+  const id = typeof f.id === "string" ? f.id : UNFILED_ID;
+
+  // The arbiter's own shape, when a caller already has one.
+  if (typeof f.title === "string" && typeof f.body === "string") {
+    return { id, title: f.title, body: f.body };
   }
-  return { id: typeof f.id === "string" ? f.id : UNFILED_ID, title: f.title, body: f.body };
+
+  // THE SHAPE A REAL REVIEWER WRITES, and the one this module existed
+  // without reading for two pushes. `AI_REVIEW_FINDING_FIELDS` is
+  // `{severity, file, line, summary, failure_scenario}` — no `title` and no
+  // `body` — so a reader that accepts only the arbiter's shape refuses every
+  // genuine payload, on every round, and the mechanism is unreachable on
+  // real input while every test of it passes. A caller that exists and can
+  // never be fed is the same defect as no caller at all, one level in.
+  //
+  // `summary` is the title because it is the one sentence stating the
+  // defect, which is what `symptomKeys` reads a title for. The body is
+  // SYNTHESISED rather than taken from one field, and the two halves are
+  // load-bearing on different inputs — measured, because the first draft of
+  // this comment claimed both were load-bearing everywhere and half of that
+  // was false:
+  //
+  //   * dropping `failure_scenario` reddens the ordinary rows at once. It
+  //     carries the measured integers, and `sameSymptom` needs two shared
+  //     quantities before anything else matters.
+  //   * dropping the bare `file` path reddens NOTHING on findings whose
+  //     prose shares backticked symbols — those already supply the one
+  //     location key the rule asks for. It is load-bearing only for a pair
+  //     of plain-prose findings naming no symbols, where the `file:` key
+  //     `pathsIn` extracts is the only location key there is. `AC-LL12` is
+  //     that pair, and it exists because without it this half of the
+  //     synthesis was unfalsifiable.
+  //
+  // Either way the failure mode is the same and it looks like success: the
+  // loop still runs, it just stops settling, two rounds later.
+  if (typeof f.summary === "string") {
+    const file = typeof f.file === "string" ? f.file : "";
+    const scenario = typeof f.failure_scenario === "string" ? f.failure_scenario : "";
+    return { id, title: f.summary, body: `${f.summary}\n\n${scenario}\n\n${file}` };
+  }
+
+  return (
+    `${where} carries neither shape this reader knows: no \`summary\` (the reviewer ` +
+    `contract's) and no \`title\`/\`body\` pair (the arbiter's). A finding naming no defect ` +
+    `cannot be compared against anything, and recording it as a round that found nothing ` +
+    `would clear the loop on an unread finding`
+  );
 }
 
 /** Read the whole history, or say why it could not be read. */
