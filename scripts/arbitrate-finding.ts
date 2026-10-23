@@ -68,6 +68,7 @@ import {
 import { parseVotes, renderComment, type VerifierVote } from "../lib/finding-jury";
 import {
   citedPathsFromKeys,
+  normalisePath,
   routePaths,
   routingSummary,
   type OpenPrCorpus,
@@ -100,6 +101,44 @@ export const EXIT_USAGE = 2;
 export const EXIT_ISSUE = 3;
 export const EXIT_OTHER_PR = 4;
 
+/**
+ * The paths to route on: the anchor when the finding cites it, else the
+ * finding's own cited paths (#1427).
+ *
+ * The anchor narrows; it never introduces a path the finding does not name.
+ * Compared through `normalisePath` so `./lib/a.ts`, `lib/a.ts` and a leading
+ * slash are one path — otherwise the verification is defeated by spelling,
+ * which is the same bug one layer down.
+ *
+ * Exported because this is the whole of the trust decision, and a caller
+ * reading `routePaths(...)` should be able to find it as one named thing.
+ */
+export function anchorOrCited(anchor: string | null, cited: readonly string[]): string[] {
+  if (anchor === null) return [...cited];
+  const wanted = normalisePath(anchor);
+  return cited.some(p => normalisePath(p) === wanted) ? [anchor] : [...cited];
+}
+
+/**
+ * A pull request number, or `null` for absent AND for unusable (#1427).
+ *
+ * Exported so the two states can be witnessed directly. `--this-pr` is read
+ * from a workflow expression, so "the expression produced nothing" arrives
+ * as an empty string or a literal `${{ … }}` rather than as a missing flag.
+ */
+export function parsePrNumber(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number(raw.trim());
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Was `--this-pr` given a value this script could not use? */
+export function prNumberIsUnusable(argv: readonly string[]): boolean {
+  const i = argv.indexOf("--this-pr");
+  if (i === -1 || i + 1 >= argv.length) return false;
+  return parsePrNumber(argv[i + 1]) === null;
+}
+
 function parseArgs(argv: string[]): Args {
   const get = (flag: string): string | null => {
     const i = argv.indexOf(flag);
@@ -119,7 +158,15 @@ function parseArgs(argv: string[]): Args {
     limit: Number.parseInt(get("--limit") ?? "60", 10),
     anchorFile: get("--file"),
     openPrsFile: get("--open-prs"),
-    thisPr: get("--this-pr") !== null ? Number.parseInt(get("--this-pr") as string, 10) : null,
+    // #1427: `null` for a malformed value, never `NaN`. A NaN here is the
+    // worst of the three states — the router sees `thisPr !== undefined` so
+    // it does not refuse for a missing identity, and then
+    // `p.number !== NaN` is true of every row so the own-PR exclusion
+    // removes nothing. The pull request being arbitrated stays a candidate
+    // to route to, which is exactly the fail-open the refusal exists for,
+    // reached through a typo instead of an omission. `main` turns the null
+    // into EXIT_USAGE so a bad flag is reported rather than absorbed.
+    thisPr: parsePrNumber(get("--this-pr")),
     // Its own knob, not `--limit`. That one bounds the ISSUE population and
     // this one bounds the PULL REQUEST population; one flag for two
     // populations would make a truncation refusal name the wrong corpus.
@@ -304,6 +351,14 @@ function main(): number {
     );
     return EXIT_USAGE;
   }
+  // #1427: a `--this-pr` that was GIVEN and could not be read is a usage
+  // error, not an absent identity. Absorbing it would make the router's
+  // refusal fire on a typo and read like a missing flag, and the whole
+  // point of that refusal is that it names what is missing.
+  if (prNumberIsUnusable(process.argv.slice(2))) {
+    console.error("--this-pr must be a positive integer; refusing rather than routing with an unreadable identity");
+    return EXIT_USAGE;
+  }
   // Not usage errors: these are stages with no input, and the doctrine for an
   // absent input is to refuse, not to skip it.
   if (!args.repo && !args.existingFile) {
@@ -345,14 +400,30 @@ function main(): number {
   const routing =
     verdict.disposition === "DROP"
       ? null
-      // `--file` is the payload's own anchor and REPLACES the prose keys when
-      // it is supplied. An `ai-review` finding names one file, and the body
-      // around it usually names more — the exemplar that motivated #1343 cites
-      // the reader it is about AND the writer it blames. Unioning them routes
-      // a precise finding by an imprecise signal: run live on 2026-10-23 the
-      // full prose keys read AMBIGUOUS across three pull requests holding the
-      // second file, while the anchor alone named the one PR holding the first.
-      : routePaths(args.anchorFile !== null ? [args.anchorFile] : citedPathsFromKeys(symptomKeys(finding)), {
+      // `--file` is the payload's own anchor, and it SELECTS among the paths
+      // the finding cites rather than replacing them. An `ai-review` finding
+      // names one file, and the body around it usually names more — the
+      // exemplar that motivated #1343 cites the reader it is about AND the
+      // writer it blames. Unioning them routes a precise finding by an
+      // imprecise signal: run live on 2026-10-23 the full prose keys read
+      // AMBIGUOUS across three pull requests holding the second file, while
+      // the anchor alone named the one PR holding the first.
+      //
+      // #1427: it used to REPLACE them, unverified, and the agent being
+      // arbitrated supplies it. An anchor pointing at some other open pull
+      // request's files produced OTHER_PR, and the caller turns OTHER_PR
+      // into exit 4, which suppresses the filing — so an agent could steer
+      // its own adjudication into silence with one flag, and the finding's
+      // own cited paths were never consulted on that path.
+      //
+      // An anchor the finding does not cite is therefore IGNORED rather than
+      // obeyed, and routing falls back to the finding's own evidence. Not
+      // refused: #1416 is live and working, a wrong answer in the refusing
+      // direction is cheap only when it does not suppress, and falling back
+      // can only widen the cited set — AMBIGUOUS and TRACKER both leave the
+      // arbiter's disposition standing, so this path cannot newly silence
+      // anything.
+      : routePaths(anchorOrCited(args.anchorFile, citedPathsFromKeys(symptomKeys(finding))), {
           corpus: openPrCorpus(args),
           ...(args.thisPr !== null ? { thisPr: args.thisPr } : {}),
           ...(changedFiles !== null ? { changedFiles } : {}),

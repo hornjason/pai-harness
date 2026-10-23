@@ -440,6 +440,35 @@ export function liveArmCaveat(arm: Pick<ArmReading, "distinctTrackerSets" | "dis
  * experiment this file once called unrun had in fact already been run — three
  * times, incidentally, by ordinary re-runs (#1329).
  */
+/**
+ * What one attempt produced — a verdict, or the NAMED reason there is none.
+ *
+ * A union rather than `string | null`, because the three absences below are
+ * three different facts and a single `null` is the *Silent Default
+ * Substitution* this file exists to name. They send a reader to three
+ * different places: `payload-unread` means go and find the payload that was
+ * written, `no-payload` means go to #1307, `unreadable` means the instrument
+ * failed and nothing is known.
+ *
+ * This shape makes an unnamed absence unrepresentable. An optional
+ * `absence?:` beside a nullable `verdicts` would not — a row could omit it
+ * and compile, which is how the flat `null` survived in the first place.
+ */
+export type AttemptOutcome =
+  /** The adjudicator read a payload and returned this verdict. */
+  | { readonly kind: "verdict"; readonly verdict: string }
+  /** The action exited 0 having written no findings payload at all (#1307). */
+  | { readonly kind: "no-payload" }
+  /**
+   * The reviewer wrote findings and the run was discarded anyway — the turn
+   * cap rejecting a completed result. The payload EXISTS and nothing read it,
+   * which is the state that hides best, because the evidence of a real review
+   * is on disk and only the verdict is missing.
+   */
+  | { readonly kind: "payload-unread" }
+  /** The reading could not be taken. Not an absence of findings — an absence of knowledge. */
+  | { readonly kind: "unreadable"; readonly why: string };
+
 export interface SameTreeReading {
   /** The run id. Both attempts are attempts of this one run. */
   run: string;
@@ -449,13 +478,59 @@ export interface SameTreeReading {
   rounds: [number, number];
   /** `num_turns` from the action's result, per attempt. */
   turns: [number, number];
-  /**
-   * The adjudicated outcome per attempt, or `null` where GitHub retained only
-   * the aggregate log and no verdict survives. `null` is UNMEASURED — it is
-   * emphatically not two attempts agreeing.
-   */
-  verdicts: [string, string] | null;
+  /** What each attempt produced, per attempt. Never a bare `null`. */
+  outcomes: readonly [AttemptOutcome, AttemptOutcome];
 }
+
+/**
+ * The two verdicts, or `null` when either attempt did not produce one.
+ *
+ * DERIVED, so "this pair is scored" has exactly one definition. A pair is
+ * scored only when BOTH attempts returned a verdict — one verdict and one
+ * absence is not a comparison, and recording it as a pair of anything would
+ * invite a reader to compare a verdict against an absence.
+ */
+export function scoredVerdicts(r: SameTreeReading): [string, string] | null {
+  const [a, b] = r.outcomes;
+  return a.kind === "verdict" && b.kind === "verdict" ? [a.verdict, b.verdict] : null;
+}
+
+/**
+ * The kinds an absence can be — every `AttemptOutcome` except a verdict.
+ *
+ * Derived from `AttemptOutcome` rather than spelled again, so adding a kind
+ * cannot leave this behind. A second hand-written list would be the fourth
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md`: two deciders
+ * agreeing, where no test can tell which one is dead.
+ */
+export type AbsenceKind = Exclude<AttemptOutcome["kind"], "verdict">;
+
+/** Every absence in a reading, named. Empty when both attempts were scored. */
+export function absencesIn(r: SameTreeReading): readonly AbsenceKind[] {
+  return r.outcomes.flatMap(o => (o.kind === "verdict" ? [] : [o.kind]));
+}
+
+/**
+ * What each absence means, and where it sends the reader.
+ *
+ * One entry per kind, in one place, so a new kind cannot be added without a
+ * sentence — the type makes the map exhaustive and TypeScript refuses a
+ * missing key. A kind with no prose would otherwise reappear as the flat
+ * `null` this whole change removes.
+ */
+const ABSENCE_PROSE: Record<AbsenceKind, string> = {
+  "no-payload":
+    "the reviewer exited successfully and wrote no findings payload (#1307), so there is nothing to " +
+    "read — every attempt log is fetchable, which makes this the reviewer producing nothing rather " +
+    "than a reading being lost",
+  "payload-unread":
+    "a findings payload was written and nothing read it, because the run was discarded after the " +
+    "reviewer had already finished — the evidence of a real review is on disk and only the verdict " +
+    "is missing, which is why this one reads as reassuring and is not",
+  unreadable:
+    "the reading could not be taken at all, which is an absence of knowledge rather than an absence " +
+    "of findings, and says nothing whatever about what the reviewer did",
+};
 
 /**
  * The two attempts got the SAME prompt.
@@ -480,13 +555,26 @@ export const promptHeld = (r: SameTreeReading): boolean => r.rounds[0] === r.rou
 /**
  * Same-tree `ai-review` pairs, every field read from the run logs.
  *
- * `verdicts` is `null` on the other two because the reviewer **wrote no
- * findings payload** (#1307), not because the log was lost. Every one of the
- * 51 attempt logs across this repository's 23 multi-attempt `ai-review` runs
- * is fetchable; 36 of them record `exited successfully WITHOUT writing a
- * findings payload`. The first version of this comment blamed GitHub
- * retention, which was a guess dressed as a reason — retention is not the
- * binding constraint and saying so sent the next reader to the wrong fix.
+ * Where an attempt has no verdict the reason is NAMED, per attempt. Every one
+ * of the 51 attempt logs across this repository's 23 multi-attempt
+ * `ai-review` runs is fetchable, so no absence here is a lost reading. The
+ * first version of this comment blamed GitHub retention, which was a guess
+ * dressed as a reason and sent the next reader to the wrong fix.
+ *
+ * Two corrections came out of re-reading the attempt logs to fill in those
+ * names, and both were in the direction of the artefact claiming to know less
+ * than it did:
+ *
+ *  - run 39957264329's SECOND attempt returned a real `BLOCKED`. The row said
+ *    `verdicts: null`, which read as "neither attempt produced anything". The
+ *    pair is still excluded — its rounds differ, so the prompt moved — but it
+ *    was excluded while also being mis-described.
+ *  - the per-attempt reasons must be read from RESOLVED output only. Grepping
+ *    the raw attempt log matches the step's own echoed `run:` source, which
+ *    contains every one of these strings as literal text; unfiltered, both
+ *    remaining absences classify as `payload-unread`, and filtering the
+ *    script echo turns them into `no-payload`. The wrong reading is the one
+ *    that looks like a finding.
  *
  * A reading nobody can take is still not a reading that agreed.
  */
@@ -496,10 +584,25 @@ export const AI_REVIEW_SAME_TREE_READINGS: readonly SameTreeReading[] = [
     mergeCommit: "99d50fc",
     rounds: [5, 5],
     turns: [51, 52],
-    verdicts: ["BLOCKED", "CLEAN"],
+    outcomes: [
+      { kind: "verdict", verdict: "BLOCKED" },
+      { kind: "verdict", verdict: "CLEAN" },
+    ],
   },
-  { run: "39959490557", mergeCommit: null, rounds: [2, 2], turns: [44, 48], verdicts: null },
-  { run: "39957264329", mergeCommit: null, rounds: [3, 4], turns: [37, 64], verdicts: null },
+  {
+    run: "39959490557",
+    mergeCommit: null,
+    rounds: [2, 2],
+    turns: [44, 48],
+    outcomes: [{ kind: "no-payload" }, { kind: "no-payload" }],
+  },
+  {
+    run: "39957264329",
+    mergeCommit: null,
+    rounds: [3, 4],
+    turns: [37, 64],
+    outcomes: [{ kind: "no-payload" }, { kind: "verdict", verdict: "BLOCKED" }],
+  },
 ];
 
 /**
@@ -512,15 +615,24 @@ export const AI_REVIEW_SAME_TREE_READINGS: readonly SameTreeReading[] = [
 export function aiReviewVarianceResidue(readings: readonly SameTreeReading[]): string {
   const held = readings.filter(promptHeld);
   const confounded = readings.filter(r => !promptHeld(r));
-  const scored = held.filter(r => r.verdicts !== null);
-  const disagreed = scored.filter(r => r.verdicts![0] !== r.verdicts![1]);
+  const scored = held.filter(r => scoredVerdicts(r) !== null);
+  const disagreed = scored.filter(r => {
+    const v = scoredVerdicts(r)!;
+    return v[0] !== v[1];
+  });
+
+  // Named per kind, and only the kinds actually present. Appending all three
+  // unconditionally is the cheapest wrong fix here: it satisfies "the three
+  // absences read differently" while telling every reader to go and look for
+  // a payload that was never written.
+  const present = [...new Set(readings.flatMap(absencesIn))].sort();
+  const named = present.map(k => ABSENCE_PROSE[k]).join("; ");
 
   const lost =
     `${readings.length - scored.length} of ${readings.length} same-tree pair(s) carry NO verdict — ` +
     `${confounded.length} because the round changed between attempts (an unequal round is a different ` +
-    "prompt, not a repeat), and the rest because the reviewer exited successfully without writing a " +
-    "findings payload (#1307) — the logs are all fetchable, so this is the reviewer producing nothing " +
-    "rather than a reading being lost. Those are UNMEASURED and are not attempts that agreed.";
+    `prompt, not a repeat)${named === "" ? "" : `, and where an attempt produced none the reason is ` +
+      `recorded rather than nulled: ${named}`}. Those are UNMEASURED and are not attempts that agreed.`;
 
   if (scored.length === 0) {
     return (
@@ -532,7 +644,10 @@ export function aiReviewVarianceResidue(readings: readonly SameTreeReading[]): s
   }
 
   const detail = disagreed
-    .map(r => `run ${r.run} returned ${r.verdicts![0]} then ${r.verdicts![1]} on ${r.mergeCommit ?? "an unread commit"}`)
+    .map(r => {
+      const v = scoredVerdicts(r)!;
+      return `run ${r.run} returned ${v[0]} then ${v[1]} on ${r.mergeCommit ?? "an unread commit"}`;
+    })
     .join("; ");
 
   return (
