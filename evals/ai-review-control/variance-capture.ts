@@ -241,7 +241,11 @@ const hash = (s: string): string => createHash("sha256").update(s).digest("hex")
 
 /** A finding, as the gate would see it filed from the command line. */
 function attemptOf(title: string, body: string): FilingAttempt {
-  return { title, body, labels: [], bodyFile: null };
+  // `repo` and `repeatedValueFlag` are the two suppression classes #1261
+  // added to the shape. Both are stated rather than defaulted, because this
+  // file is the measuring instrument: a plant filed into another repo, or one
+  // whose title was given twice, is not the finding the arm thinks it scored.
+  return { title, body, labels: [], bodyFile: null, repo: null, repeatedValueFlag: false };
 }
 
 /**

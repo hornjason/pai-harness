@@ -25,12 +25,17 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
-import { listOpenIssues } from "../lib/github";
+import { listOpenIssues, type OpenIssue } from "../lib/github";
 import {
   adjudicateFiling,
   filingAttempts,
+  filingGate,
+  openFindings,
   readBodyFile,
+  trustedCorpus,
+  withTimeout,
   FILING_OVERRIDE_LABEL,
+  MAX_KEYS_PER_EXISTING_ISSUE,
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
 
@@ -282,6 +287,8 @@ describe("#1261 the parts the decision is built from", () => {
       body: "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234.",
       labels: [],
       bodyFile: null,
+      repo: null,
+      repeatedValueFlag: false,
     };
     const v = await adjudicateFiling(attempt, async () =>
       OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })),
@@ -296,6 +303,8 @@ describe("#1261 the parts the decision is built from", () => {
     body: "",
     labels: [] as string[],
     bodyFile: path,
+    repo: null,
+    repeatedValueFlag: false,
   });
   const tracker = async () =>
     OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body }));
@@ -491,6 +500,144 @@ describe("#1261 every decision lands in the ledger, kept and dropped alike", () 
     // The category is on every row, kept and dropped, or the ledger cannot
     // answer the question it was built for.
     for (const row of added) expect(typeof row.category).toBe("string");
+  });
+});
+
+/**
+ * Five rounds of review on this subsystem produced sixteen findings that
+ * collapse to four classes. These are the class rows. Each one is written so
+ * that it would have caught EVERY instance of its class, not the one line
+ * that was reported — which is the whole point of fixing a class.
+ */
+describe("#1261 the four suppression classes", () => {
+  // ── class 1: the gate must adjudicate what `gh` will act on ──
+  //
+  // pflag is last-wins. The differential pair below is the non-vacuous form:
+  // the two titles adjudicate DIFFERENTLY, so a gate reading the first, the
+  // last, or the join of both gives three different answers and only one is
+  // right. A pair whose values adjudicate the same way is green and proves
+  // nothing.
+  const STYLE_TITLE = "Typo in the retry comment";
+  const REAL_TITLE = "retryBudget drops frames on resume";
+  const BODY = '--body "`retryBudget` in lib/pr-cache.ts holds 72 entries."';
+
+  test("FG-28 BASELINE: the LAST --title decides, so a trailing style title blocks", () => {
+    const [a] = filingAttempts(`gh issue create --title "${REAL_TITLE}" --title "${STYLE_TITLE}" ${BODY}`);
+    expect(a.title, "the join would read both").toBe(STYLE_TITLE);
+  });
+
+  test("FG-29 CONTROL: the same two titles swapped allow, which the join cannot do", () => {
+    const [a] = filingAttempts(`gh issue create --title "${STYLE_TITLE}" --title "${REAL_TITLE}" ${BODY}`);
+    expect(a.title).toBe(REAL_TITLE);
+    expect(a.repeatedValueFlag, "the repeat is recorded even though it is resolved").toBe(true);
+  });
+
+  test("FG-30: the two orderings reach OPPOSITE outcomes, so the case is not vacuous", async () => {
+    const trailingStyle = await adjudicateFiling(
+      filingAttempts(`gh issue create --title "${REAL_TITLE}" --title "${STYLE_TITLE}" ${BODY}`)[0],
+      async () => [],
+    );
+    const trailingReal = await adjudicateFiling(
+      filingAttempts(`gh issue create --title "${STYLE_TITLE}" --title "${REAL_TITLE}" ${BODY}`)[0],
+      async () => [],
+    );
+    expect(trailingStyle.outcome).toBe("REFUSE");
+    expect(trailingReal.outcome).toBe("ALLOW");
+  });
+
+  test("FG-31: --repo retargets the dedupe, so a filing is not compared to the wrong tracker", async () => {
+    const [a] = filingAttempts('gh issue create --repo other/project --title "x" --body "y"');
+    expect(a.repo).toBe("other/project");
+
+    const asked: Array<string | null> = [];
+    await filingGate(
+      `gh issue create --repo other/project --title "${REAL_TITLE}" ${BODY}`,
+      {
+        projectRoot: scratch,
+        readExisting: async (_root, repo) => {
+          asked.push(repo);
+          return [];
+        },
+      },
+    );
+    expect(asked).toEqual(["other/project"]);
+  });
+
+  // ── class 2: a reading that could not be taken is UNMEASURED ──
+  test("FG-32: a tracker read that never resolves is bounded, not waited on forever", async () => {
+    const started = Date.now();
+    await expect(withTimeout(new Promise(() => {}), 50)).rejects.toThrow("timed out");
+    expect(Date.now() - started, "it returned, and it returned quickly").toBeLessThan(5_000);
+  });
+
+  // ── class 3: the corpus is attacker-controlled on a public repo ──
+  const trusted = (over: Partial<OpenIssue> = {}): OpenIssue => ({
+    number: 1,
+    title: "retryBudget gives up early",
+    body: "`retryBudget` in lib/command-retry.ts: 144 of 234 over 5060.",
+    authorAssociation: "OWNER",
+    ...over,
+  });
+
+  test("FG-33 BASELINE: an untrusted author cannot put a suppressor in the corpus", () => {
+    expect(trustedCorpus([trusted({ authorAssociation: "NONE" })])).toEqual([]);
+    expect(trustedCorpus([trusted({ authorAssociation: "CONTRIBUTOR" })])).toEqual([]);
+    expect(trustedCorpus([trusted({ authorAssociation: "" })]), "absent is not trusted").toEqual([]);
+  });
+
+  test("FG-34 CONTROL: a trusted author's issue is still in the corpus", () => {
+    for (const association of ["OWNER", "MEMBER", "COLLABORATOR"]) {
+      expect(trustedCorpus([trusted({ authorAssociation: association })])).toHaveLength(1);
+    }
+  });
+
+  test("FG-35: one issue cannot name enough to match everything", () => {
+    const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`symbolNumber${i}\``).join(" ");
+    expect(trustedCorpus([trusted({ body: stuffed })]), "over the cap, so dropped whole").toEqual([]);
+    expect(trustedCorpus([trusted()]), "an ordinary issue is unaffected").toHaveLength(1);
+  });
+
+  test("FG-38: the cap applies to the FIXTURE corpus too, which FG-35 cannot see", async () => {
+    // FG-35 drives `trustedCorpus`. The fixture path reaches the same
+    // predicate through `asFindings`, a different call site that no case
+    // exercised — so mutating the predicate reddened one of the two readers
+    // and the other went green having witnessed nothing. The two differ in
+    // the author filter, which is why they are two readers and not one.
+    const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`fixtureSymbol${i}\``).join(" ");
+    const file = join(scratch, "fixture-corpus.json");
+    const read = async (body: string) => {
+      writeFileSync(file, JSON.stringify([{ number: 77, title: "a fixture issue", body }]));
+      const prior = process.env.RUNGATE_OPEN_FINDINGS;
+      process.env.RUNGATE_OPEN_FINDINGS = file;
+      try {
+        return await openFindings(scratch);
+      } finally {
+        if (prior === undefined) delete process.env.RUNGATE_OPEN_FINDINGS;
+        else process.env.RUNGATE_OPEN_FINDINGS = prior;
+      }
+    };
+    expect(await read(stuffed), "over the cap, so dropped whole").toEqual([]);
+    expect(
+      await read("`retryBudget` in lib/command-retry.ts: 144 of 234."),
+      "an ordinary fixture row is unaffected — this is the control that fails if the reader broke",
+    ).toHaveLength(1);
+  });
+
+  // ── class 4: a refusal must not take novel siblings with it ──
+  test("FG-36 BASELINE: a command whose filings are ALL duplicates is refused", async () => {
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${DUPLICATE_FILING}`);
+    expect(r.blocked).toBe(true);
+    expect(r.reason).toContain("DUPLICATE");
+  });
+
+  test("FG-37 CONTROL: one duplicate beside a novel finding does NOT take it down", async () => {
+    const start = ledgerRows().length;
+    const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
+    expect(r.blocked, "the novel finding would have been lost").toBe(false);
+    // Allowed, but not silently: the refused sibling is named and recorded.
+    expect(r.payload?.systemMessage ?? "").toContain("1 of 2");
+    const added = ledgerRows().slice(start);
+    expect(added.map(x => x.withheldBy)).toEqual(["DUPLICATE", null]);
   });
 });
 

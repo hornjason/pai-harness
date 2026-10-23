@@ -100,7 +100,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 
 import { resolveRepoSlug } from "./branch-cleanup";
-import { createGitHubClient, listOpenIssues } from "./github";
+import { createGitHubClient, listOpenIssues, TRUSTED_ASSOCIATIONS, type OpenIssue } from "./github";
 import {
   duplicateCollisions,
   symptomHash,
@@ -143,7 +143,62 @@ export const OPEN_ISSUE_LIMIT = 100;
  */
 export const MAX_BODY_FILE_BYTES = 256 * 1024;
 
-/** One `gh issue create` clause, as much of it as the two stages read. */
+/**
+ * How long the tracker read gets before the reading is UNMEASURED.
+ *
+ * Restored after the `gh` → Octokit move deleted it: the CLI call carried a
+ * `spawnSync` timeout and Octokit has none by default, so a hung API call
+ * hung the agent's Bash tool with no ceiling. A hook has no retry and no
+ * patience to spend.
+ */
+export const OPEN_ISSUE_TIMEOUT_MS = 20_000;
+
+/**
+ * The most symptom keys one open issue may contribute to the corpus.
+ *
+ * A single issue that names a hundred symbols, files and readings matches
+ * almost anything, so it suppresses almost anything. On a public repo that is
+ * a one-issue denial of service against our own quality mechanism, and it
+ * needs no write access to this repository at all.
+ *
+ * Forty is above every real issue on this tracker — the largest measured,
+ * #1261 itself, is well under it — and an issue over the cap is dropped from
+ * the comparison set rather than truncated. Truncating would silently keep
+ * whichever keys sorted first, which is a reading nobody chose.
+ */
+export const MAX_KEYS_PER_EXISTING_ISSUE = 40;
+
+/** The most colliding keys a refusal message will quote back. */
+const MAX_QUOTED_KEYS = 6;
+
+/** Resolve, or reject, after `ms`. One ceiling for any tracker read. */
+export async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * One `gh issue create` clause, resolved the way `gh` itself would resolve it.
+ *
+ * **Every field here is what the consumer will act on, not what the command
+ * mentions.** That is the whole contract of this type, and it exists because
+ * the first version did not have it: the gate adjudicated `flagValues(...)`
+ * joined together while `gh` uses pflag, which is LAST-WINS — so
+ * `--title <benign> --title <real finding>` was adjudicated on both and filed
+ * as the second. Five rounds of review produced four separate reports of that
+ * one shape (first-vs-last title, the body read, the `--repo` target, the
+ * page cap), which is the signature of a class rather than four defects.
+ * `resolveFiling` is the single binding, so a fifth cannot be written.
+ */
 export interface FilingAttempt {
   title: string;
   body: string;
@@ -158,6 +213,22 @@ export interface FilingAttempt {
    * deduplicating.
    */
   bodyFile: string | null;
+  /**
+   * The tracker this filing targets, from `--repo`/`-R`, or `null` for the
+   * working directory's own. Read because deduplicating a filing aimed at
+   * one repository against a different repository's open issues is not a
+   * weaker reading, it is the wrong one.
+   */
+  repo: string | null;
+  /**
+   * A title, body or body-file flag appeared more than once.
+   *
+   * Recorded rather than refused. Last-wins already resolves it to what `gh`
+   * will post, so there is no differential left to guard against — but the
+   * shape is not one anybody types by accident, and a column that can be
+   * counted later is worth more than a refusal nobody can audit.
+   */
+  repeatedValueFlag: boolean;
 }
 
 /**
@@ -217,6 +288,55 @@ export interface FilingLedgerRow {
 const TITLE_FLAG = { long: "--title", short: "-t" };
 const BODY_FLAG = { long: "--body", short: "-b" };
 const BODY_FILE_FLAG = { long: "--body-file", short: "-F" };
+const REPO_FLAG = { long: "--repo", short: "-R" };
+
+/**
+ * The value `gh` will act on when a flag is given more than once.
+ *
+ * **pflag is last-wins, and this one line is the whole parser-differential
+ * class.** The first version joined the values, so
+ * `--title <benign> --title <real finding>` was adjudicated on the pair and
+ * filed as the second — a complete bypass for anyone who knew it, and
+ * reachable by accident. Joining is the intuitive reading and it is wrong
+ * about every repeated flag; `at(-1)` is what the consumer does.
+ */
+const asGhWould = (values: string[]): string => values.at(-1) ?? "";
+
+/**
+ * One clause, resolved to what `gh` would resolve it to.
+ *
+ * The single binding for "what will actually be filed". Four of the sixteen
+ * review findings on this subsystem were one instance each of the gate
+ * reading a different value than the consumer acts on; they are answered
+ * here, together, so a fifth cannot be written against a second parser.
+ *
+ * ## What this deliberately does not resolve
+ *
+ * **A `cd` in an earlier clause.** `cd /other/repo && gh issue create …`
+ * targets another tracker and this reads the session's directory. Resolving
+ * it means tracking directory state across clauses, which is the shell
+ * interpreter `lib/issue-create-override.ts` explicitly declines to be, and
+ * the failure is in the safe direction: the dedupe runs against the wrong
+ * corpus, finds nothing, and the filing is allowed. `--repo` IS read,
+ * because it is in the clause and costs one more query.
+ */
+export function resolveFiling(tokens: string[]): FilingAttempt {
+  const titles = flagValues(tokens, TITLE_FLAG);
+  const bodies = flagValues(tokens, BODY_FLAG);
+  const bodyFiles = flagValues(tokens, BODY_FILE_FLAG);
+  const repos = flagValues(tokens, REPO_FLAG);
+  return {
+    title: asGhWould(titles),
+    body: asGhWould(bodies),
+    labels: labelValues(tokens),
+    // The PATH, last-wins, or `null` when the body is inline (#1300). The
+    // same `asGhWould` reading as the title and the body — a repeated
+    // `--body-file` overrides rather than accumulating.
+    bodyFile: bodyFiles.length > 0 ? asGhWould(bodyFiles) : null,
+    repo: repos.length > 0 ? asGhWould(repos) : null,
+    repeatedValueFlag: titles.length > 1 || bodies.length > 1 || bodyFiles.length > 1,
+  };
+}
 
 /**
  * Every `gh issue create` in this command, one entry per clause.
@@ -226,18 +346,7 @@ const BODY_FILE_FLAG = { long: "--body-file", short: "-F" };
  * the whole string lets the first half excuse the second.
  */
 export function filingAttempts(cmd: string): FilingAttempt[] {
-  return clauses(cmd)
-    .filter(createsIssue)
-    .map(tokens => {
-      const bodyFile = flagValues(tokens, BODY_FILE_FLAG);
-      return {
-        title: flagValues(tokens, TITLE_FLAG).join(" "),
-        body: flagValues(tokens, BODY_FLAG).join("\n"),
-        labels: labelValues(tokens),
-        // The LAST one, matching `gh`: a repeated flag overrides.
-        bodyFile: bodyFile.at(-1) ?? null,
-      };
-    });
+  return clauses(cmd).filter(createsIssue).map(resolveFiling);
 }
 
 /**
@@ -419,7 +528,10 @@ export async function adjudicateFiling(
  * allowed to be wrong in: the result is a duplicate reaching the tracker,
  * never a real finding silenced.
  */
-export async function openFindings(projectRoot: string): Promise<readonly Finding[] | null> {
+export async function openFindings(
+  projectRoot: string,
+  repo: string | null = null,
+): Promise<readonly Finding[] | null> {
   const override = process.env.RUNGATE_OPEN_FINDINGS;
   if (override !== undefined && override !== "") {
     try {
@@ -429,16 +541,64 @@ export async function openFindings(projectRoot: string): Promise<readonly Findin
     }
   }
   try {
-    const { slug } = resolveRepoSlug({ projectRoot });
+    // `--repo` wins, because it is what `gh` will file against. A slug that
+    // came off the command line is still a slug `parseOwnerRepo` validates.
+    const { slug } = resolveRepoSlug({ projectRoot, repo: repo ?? undefined });
     if (slug === null) return null;
-    const issues = await listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT);
-    return issues.map(i => ({ id: String(i.number), title: i.title, body: i.body }));
+    const issues = await withTimeout(
+      listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT),
+      OPEN_ISSUE_TIMEOUT_MS,
+    );
+    return trustedCorpus(issues);
   } catch {
     // Every failure lands here as `null`, which is "nobody asked" and not
     // "nothing matched" — a missing token, a 403, a rate limit and an
     // unreachable API are all states this must not report as a clean tracker.
     return null;
   }
+}
+
+/**
+ * The open issues that may be used to suppress a filing.
+ *
+ * Two filters, and both exist because **this repository is public, so the
+ * corpus is attacker-controlled input**. An open issue here is not evidence
+ * that something was already reported; it is text somebody on the internet
+ * wrote, and this gate turns it into a refusal.
+ *
+ * - **Author trust.** Only `OWNER`/`MEMBER`/`COLLABORATOR`; see
+ *   `TRUSTED_ASSOCIATIONS`.
+ * - **A key cap per issue.** One issue stuffed with symptom keys matches
+ *   everything, so it is dropped rather than allowed to.
+ *
+ * Both fail in the direction of a duplicate reaching the tracker, never a
+ * real finding silenced. That asymmetry is the whole design and it is why
+ * neither of these is a refusal.
+ */
+/**
+ * Whether one existing issue may join the comparison set.
+ *
+ * One binding, because both corpus readers below apply it and the mutation
+ * battery could not mutate either on its own while the predicate was spelled
+ * twice — an anchor matching two sites is a mutation nobody chose, and a
+ * battery that reports `ANCHOR x2` is telling you about its own range rather
+ * than about the guard (`.claude/rules/checks-must-be-able-to-fail.md`, the
+ * seventh shape). Dropped whole rather than truncated: truncating keeps
+ * whichever keys sorted first, which is a reading nobody picked.
+ */
+function withinKeyCap(finding: Finding): boolean {
+  return symptomKeys(finding).length <= MAX_KEYS_PER_EXISTING_ISSUE;
+}
+
+export function trustedCorpus(issues: readonly OpenIssue[]): readonly Finding[] {
+  const out: Finding[] = [];
+  for (const issue of issues) {
+    if (!TRUSTED_ASSOCIATIONS.has(issue.authorAssociation)) continue;
+    const finding: Finding = { id: String(issue.number), title: issue.title, body: issue.body };
+    if (!withinKeyCap(finding)) continue;
+    out.push(finding);
+  }
+  return out;
 }
 
 /** Supplied rows as `Finding`s, or `null` if the shape is not what we asked for. */
@@ -451,7 +611,17 @@ function asFindings(parsed: unknown): readonly Finding[] | null {
     const id = r.number ?? r.id;
     if (typeof id !== "number" && typeof id !== "string") return null;
     if (typeof r.title !== "string") return null;
-    out.push({ id: String(id), title: r.title, body: typeof r.body === "string" ? r.body : "" });
+    const finding: Finding = {
+      id: String(id),
+      title: r.title,
+      body: typeof r.body === "string" ? r.body : "",
+    };
+    // The key cap applies here too, through the SAME predicate. This file is
+    // operator-supplied rather than attacker-supplied, so the AUTHOR filter
+    // does not, but one row naming everything suppresses everything whoever
+    // wrote it.
+    if (!withinKeyCap(finding)) continue;
+    out.push(finding);
   }
   return out;
 }
@@ -508,7 +678,7 @@ export async function filingGate(
   options: {
     projectRoot: string;
     now?: string;
-    readExisting?: (projectRoot: string) => Promise<readonly Finding[] | null>;
+    readExisting?: (projectRoot: string, repo: string | null) => Promise<readonly Finding[] | null>;
   },
 ): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
@@ -516,19 +686,28 @@ export async function filingGate(
 
   const at = options.now ?? new Date().toISOString();
   const read = options.readExisting ?? openFindings;
-  // Read once per command, not once per clause: two creates in one command
-  // adjudicated against two different snapshots is a reading nobody can act
-  // on. The PROMISE is cached rather than its value, so two clauses cannot
-  // both start a request before either has resolved.
-  let cached: Promise<readonly Finding[] | null> | undefined;
-  const readExisting = () => (cached ??= read(options.projectRoot));
+  // Read once per TARGET TRACKER, not once per command and not once per
+  // clause. Once per clause would adjudicate two creates against two
+  // different snapshots; once per command would adjudicate a `--repo other/x`
+  // filing against THIS repository's issues, which is not a weaker reading,
+  // it is the wrong one. The PROMISE is cached rather than its value, so two
+  // clauses on one tracker cannot both start a request before either resolves.
+  const cached = new Map<string, Promise<readonly Finding[] | null>>();
+  const readFor = (repo: string | null) => {
+    const key = repo ?? "";
+    const hit = cached.get(key);
+    if (hit !== undefined) return hit;
+    const started = read(options.projectRoot, repo);
+    cached.set(key, started);
+    return started;
+  };
 
   const rows: FilingLedgerRow[] = [];
   const refusals: string[] = [];
   const notes: string[] = [];
 
   for (const attempt of attempts) {
-    const verdict = await adjudicateFiling(attempt, readExisting);
+    const verdict = await adjudicateFiling(attempt, () => readFor(attempt.repo));
     const overridden = verdict.outcome === "REFUSE" && attempt.labels.includes(FILING_OVERRIDE_LABEL);
     const emitted = verdict.outcome !== "REFUSE" || overridden;
 
@@ -553,8 +732,33 @@ export async function filingGate(
     if (overridden) notes.push(overrideNote(verdict));
   }
 
+  // ── A refusal blocks the COMMAND, so one duplicate must not take its
+  //    novel siblings with it ─────────────────────────────────────────────
+  //
+  // The first version blocked whenever any clause refused. A command mixing
+  // one known duplicate with three novel findings lost all four, and the
+  // three were exactly the findings this gate exists to let through —
+  // withheld with no artefact anywhere, which is the failure direction
+  // nothing here may have.
+  //
+  // There is no partial block available: the hook's one lever is the whole
+  // Bash command. So the rule is every-or-nothing, and when a mixed command
+  // proceeds the refusal is downgraded to a note naming what was NOT clean,
+  // which is strictly more information than the agent had before.
+  const blocking = rows.length > 0 && rows.every(r => !r.emitted);
+  if (!blocking && refusals.length > 0) {
+    notes.push(
+      `[FindingArbiter] ${refusals.length} of ${rows.length} filings in this command would have ` +
+        "been refused, and the command is ALLOWED because the others are not duplicates — " +
+        "a hook can only block the whole command, and taking novel findings down with a " +
+        "duplicate is the one direction this gate must never fail in. The refused " +
+        `one(s) are recorded in ${ledgerPath()}. Please withdraw them and re-run:\n\n` +
+        refusals.join("\n\n"),
+    );
+  }
+
   return {
-    refusal: refusals.length > 0 ? refusals.join("\n\n") : null,
+    refusal: blocking ? refusals.join("\n\n") : null,
     note: notes.length > 0 ? notes.join("\n\n") : null,
     rows,
   };

@@ -317,7 +317,38 @@ export interface OpenIssue {
   number: number;
   title: string;
   body: string;
+  /**
+   * The author's relationship to the repository, verbatim from the API.
+   *
+   * Carried because a caller that uses issue text as a SUPPRESSION input has
+   * to know who wrote it — see `TRUSTED_ASSOCIATIONS`. Not interpreted here:
+   * this function reports what GitHub said and the policy lives with the
+   * caller that has something to lose.
+   */
+  authorAssociation: string;
 }
+
+/**
+ * Issue authors whose text may be used to suppress something.
+ *
+ * `hornjason/pai-harness` is a PUBLIC repository, so **anyone on the internet
+ * can open an issue**, and `lib/issue-filing-gate.ts` deduplicates proposed
+ * filings against the open-issue corpus. Without this filter that is a
+ * remote, unauthenticated path to switching off our own quality mechanism:
+ * open an issue stuffed with the right symbols, files and readings, and every
+ * future finding that shares them is refused as a duplicate. A suppressed
+ * finding is indistinguishable from a finding nobody had, so it is silent.
+ *
+ * `NONE`, `CONTRIBUTOR` and `FIRST_TIME_CONTRIBUTOR` are excluded. A drive-by
+ * issue can still be a real duplicate, and excluding it costs one duplicate
+ * filing — the direction this is allowed to be wrong in. Including it costs
+ * real findings, which is the direction nothing here may fail in.
+ */
+export const TRUSTED_ASSOCIATIONS: ReadonlySet<string> = new Set([
+  "OWNER",
+  "MEMBER",
+  "COLLABORATOR",
+]);
 
 /**
  * Open issues, newest first, **pull requests excluded** (#1261).
@@ -358,6 +389,10 @@ export async function listOpenIssues(
       number: row.number as number,
       title: row.title as string,
       body: typeof row.body === "string" ? row.body : "",
+      // An absent association is not a trusted one. `""` fails every
+      // membership test in `TRUSTED_ASSOCIATIONS`, which is the reading a
+      // caller should get when GitHub did not say.
+      authorAssociation: typeof row.author_association === "string" ? row.author_association : "",
     }));
 }
 
