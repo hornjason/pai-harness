@@ -1501,6 +1501,168 @@ describe("#1203: an escaped quote outside a quote does not OPEN one", () => {
   });
 });
 
+describe("#1249 WITNESS: an escaped BACKSLASH inside double quotes is a pair", () => {
+  // F14's twin in the other quote. Inside double quotes `\\` is an escaped
+  // backslash — a complete pair — and the `"` after it is the CLOSING quote.
+  // A one-character lookbehind cannot tell that `"` from the escaped `\"` of
+  // the control above, so it read the span as still open, swallowed the
+  // separator and the verb, and left one segment whose command word is
+  // `echo`.
+  //
+  // The outside-quote branch of the same scanner already consumed the pair,
+  // for this exact reason, and says so in its comment. This applies the same
+  // rule inside the span.
+  //
+  // WHY THIS LOOKED UNREAL: the issue's example used `rm`, and `rm` is the
+  // one shape that does NOT escape. The in-place arm matches over the
+  // segment TEXT, so a merged segment still carries its target; the same is
+  // true of the redirect and `tee` arms. Only the arms gated on the COMMAND
+  // WORD are bypassable. A battery built from the issue's own example
+  // therefore reports BLOCK on every row and the hole stays invisible. The
+  // three rows below are the ones that do escape, each measured ALLOW
+  // against `origin/main` at 52750f04 before the fix.
+
+  test("MECHANISM: the quote after `\\\\` closes the span", () => {
+    // ONE segment on origin/main, where the separator is quoted text.
+    expect(segments('echo "x\\\\" ; rm /r/x')).toEqual(['echo "x\\\\"', "rm /r/x"]);
+  });
+
+  test("WITNESS: `cp` overwrites the artifact — ALLOW on origin/main", () => {
+    // Arm 1 resolves the COPY verb from the command word, so a merged
+    // segment beginning `echo` never reaches it.
+    expect(
+      decideBashWrite(`echo "x\\\\" ; cp /etc/hosts ${LIVE_TREE}/run/${STATE}`).blocked,
+    ).toBe(true);
+  });
+
+  test("WITNESS: `chmod` on the artifact — ALLOW on origin/main", () => {
+    // Arm 4, the same arm F14 used to show the single-quote hole.
+    expect(decideBashWrite(`echo "x\\\\" ; chmod 777 ${LIVE_TREE}/run/${STATE}`).blocked).toBe(
+      true,
+    );
+  });
+
+  test("WITNESS: an interpreter writing the artifact — ALLOW on origin/main", () => {
+    // Arm 3 fires on an interpreter COMMAND WORD. Hidden by the merge, the
+    // program text is never read at all.
+    const body = `bun -e 'require("fs").writeFileSync("${LIVE_TREE}/run/${STATE}","{}")'`;
+    // The unmerged spelling FIRST. Without it this row cannot tell #1249
+    // from arm 3 simply not recognising the write — which is how the first
+    // draft of it went red: `open(p,"w")` on its own is ALLOWed on main
+    // whether merged or not, because arm 3 reads a list of write verbs and
+    // `open` is not on it. That is a pre-existing gap of the same
+    // enumeration class as #1269's finding 3, and not what this row is for.
+    expect(decideBashWrite(`echo x ; ${body}`).blocked).toBe(true);
+    expect(decideBashWrite(`echo "x\\\\" ; ${body}`).blocked).toBe(true);
+  });
+
+  test("the shell really runs both commands — the premise, not an assumption", () => {
+    // Without this row the three above only assert that two readers of a
+    // string disagree. `bash -n` says the spelling parses; this says the
+    // second command is reached and has its effect.
+    const dir = mkdtempSync(join(tmpdir(), "bw1249-"));
+    try {
+      const victim = join(dir, "victim.txt");
+      // late-env-ok: the child is `echo` and `cp` under bash, which read no
+      // RUNGATE variable and no TMPDIR — the destination is an absolute path
+      // computed here and passed on the command line. Nothing this file
+      // writes to process.env can change what this row measures.
+      spawnSync("/bin/bash", ["-c", `echo "x\\\\" ; cp /etc/hosts ${victim}`]);
+      expect(existsSync(victim)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("END TO END through the hook — the payload, not the exit code", () => {
+    // Every row above reads the library. This one runs the hook the way the
+    // tool runner does, because that is where the refusal has to happen.
+    const hook = join(import.meta.dir, "..", "hooks", "BashWriteGuard.hook.ts");
+    // This child DOES read RUNGATE_WORK_DIR and TMPDIR, so it gets an
+    // EXPLICIT env rather than a stated reason (#1096). Earlier tests in
+    // this file write both, and relying on Bun dropping a late write to
+    // keep them out of the child would make that an accident of the
+    // runtime rather than a property of the row.
+    const env: Record<string, string | undefined> = { ...process.env, TMPDIR: "/tmp" };
+    delete env.RUNGATE_WORK_DIR;
+    delete env.PAI_HOOKS_DIR;
+    delete env.RUNGATE_HOOKS_DIR;
+    const run = (command: string) => {
+      const r = spawnSync("bun", ["run", hook], {
+        input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }),
+        encoding: "utf8",
+        env,
+      });
+      return { status: r.status, stdout: (r.stdout || "").trim() };
+    };
+    const refused = run(`echo "x\\\\" ; chmod 777 ${LIVE_TREE}/run/${STATE}`);
+    expect(JSON.parse(refused.stdout).decision).toBe("block");
+    // The control that makes this row readable rather than decorative: the
+    // hook ALWAYS exits 0 and signals a refusal on stdout. A permitted
+    // command exits 0 and prints nothing, so the two directions are
+    // indistinguishable by status and a test asserting on it cannot fail.
+    const permitted = run("echo hello");
+    expect(permitted.stdout).toBe("");
+    expect(refused.status).toBe(0);
+    expect(permitted.status).toBe(0);
+  });
+
+  test("CONTROL: a separator INSIDE the double-quoted span still does not split", () => {
+    // The fix must close the span at its real end, not widen the splitter.
+    expect(segments('echo "a\\\\;b"')).toHaveLength(1);
+    expect(segments('echo "a\\"b ; c" ; rm /r/x')).toHaveLength(2);
+  });
+
+  test("CONTROL: the single-quote rule is untouched by the pair rule", () => {
+    // Inside single quotes nothing is escaped, so the first `'` closes and
+    // the pair branch must not run there. Two backslashes, the #1249 shape,
+    // in the #1203 quote.
+    expect(decideBashWrite(`echo 'x\\\\' ; chmod 777 ${LIVE_TREE}/run/${STATE}`).blocked).toBe(
+      true,
+    );
+  });
+
+  test("CONTROL: a dangling backslash at the end of the string is not an index past it", () => {
+    expect(() => segments('echo "x\\')).not.toThrow();
+  });
+});
+
+describe("#1249: the cheapest wrong fix, run rather than described", () => {
+  // Three rules for "where does this double-quoted span close", run against
+  // the two inputs that tell them apart rather than argued about. The
+  // cheapest fix — delete the escape handling, a quote always closes — gets
+  // the new row right and gets the row already in the suite above wrong.
+  const closesAt = (s: string, rule: "naive" | "lookbehind" | "pair"): number => {
+    for (let i = 1; i < s.length; i++) {
+      if (rule === "pair" && s[i] === "\\" && i + 1 < s.length) {
+        i++;
+        continue;
+      }
+      if (s[i] !== '"') continue;
+      if (rule === "lookbehind" && s[i - 1] === "\\") continue;
+      return i;
+    }
+    return -1; // the span never closed
+  };
+  const ESCAPED_BACKSLASH = '"x\\\\"'; // bytes: "x\\"  — a pair, closes at 4
+  const ESCAPED_QUOTE = '"x\\""'; // bytes: "x\""  — an escape, closes at 4
+
+  test("the lookbehind that shipped never closes the escaped-backslash span", () => {
+    expect(closesAt(ESCAPED_BACKSLASH, "lookbehind")).toBe(-1);
+    expect(closesAt(ESCAPED_QUOTE, "lookbehind")).toBe(4);
+  });
+
+  test("`a quote always closes` fixes this row and breaks the escaped quote", () => {
+    expect(closesAt(ESCAPED_BACKSLASH, "naive")).toBe(4);
+    expect(closesAt(ESCAPED_QUOTE, "naive")).toBe(3); // ends the span early
+  });
+
+  test("consuming the PAIR is the only one of the three that gets both", () => {
+    expect(closesAt(ESCAPED_BACKSLASH, "pair")).toBe(4);
+    expect(closesAt(ESCAPED_QUOTE, "pair")).toBe(4);
+  });
+});
+
 /**
  * `bash -n` — does this spelling even parse? A guard that lets through a
  * string the shell refuses to run has let through nothing, and this is the
@@ -1788,5 +1950,107 @@ describe("#1269 WITNESS: a protected tree is subtracted under both spellings", (
       if (before === undefined) delete process.env.RUNGATE_WORK_DIR;
       else process.env.RUNGATE_WORK_DIR = before;
     }
+  });
+});
+
+/**
+ * #1269 finding 2: arm 3's exemption asks about the whole body.
+ *
+ * Arm 3 refuses because an interpreter's program is OPAQUE — what it writes
+ * cannot be read off the command line. Deciding the exemption from a single
+ * path word contradicted that premise, because a destination can be
+ * computed. Measured against the module as merged, one of three computed
+ * spellings escaped; the other two happened to normalise back into the run
+ * store, which is luck and not coverage.
+ *
+ * This is a STOPGAP and the last case below says so by asserting what it
+ * still lets through. The durable repair is to resolve the write TARGET
+ * rather than read literals, which is filed on #1269.
+ */
+describe("#1269 WITNESS: a computed destination in an interpreter body", () => {
+  const RUN = `${process.env.HOME}/.rungate/run`;
+
+  test("a scratch literal rewritten into the run store is refused", () => {
+    const cmd = `bun -e 'writeFileSync("/tmp/x/${STATE}".replace("/tmp/x", "${RUN}"), "{}")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("the same shape with a hook file is refused", () => {
+    const cmd = `bun -e 'writeFileSync("/tmp/x/X.hook.ts".replace("/tmp/x", "${LIVE}/hooks"), "")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  // The controls. Without these the rule could be "refuse every interpreter
+  // body", which is the 1,760-of-5,060 over-blocking arm 3 exists past.
+  test("CONTROL: a body naming only scratch paths is still a fixture", () => {
+    const d = decideBashWrite(`bun -e 'writeFileSync("/tmp/fix/${STATE}", "{}")'`);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+
+  test("CONTROL: two scratch paths are still a fixture", () => {
+    const cmd = `python3 -I -c "import shutil; shutil.copy('/tmp/a/${STATE}', '/tmp/b/${STATE}')"`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("CONTROL: a literal run-store path was always refused", () => {
+    expect(decideBashWrite(`bun -e 'writeFileSync("${RUN}/${STATE}", "{}")'`).blocked).toBe(true);
+  });
+
+  test("MECHANISM: punctuation that looks like a path is not one", () => {
+    // `/` and the `//` of a comment are absolute-looking and are not paths.
+    // Counting them ended the exemption for two real fixture commands on
+    // the strength of a comment marker — 6 newly refused against 4 — so the
+    // test is "a slash followed by a non-slash", and this row is what
+    // separates the two spellings of it.
+    const cmd = `bun -e '// build the fixture\nwriteFileSync("/tmp/fix/${STATE}", "{}")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  test("MECHANISM: one non-scratch absolute literal anywhere in the body ends the exemption", () => {
+    // Identical write to the CONTROL above. The only difference is a second
+    // absolute path that is not scratch, and it is not the destination — so
+    // this row fails if the rule reads the carrying word rather than the
+    // body, which is exactly the mutation this case exists to catch.
+    const cmd = `bun -e 'readFileSync("${RUN}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  /**
+   * The spellings that DO NOT need this fix, measured rather than assumed.
+   * My first draft of this block asserted that a `$HOME`-assembled
+   * destination escapes. It does not — the carrying word is
+   * `/.rungate/run/workflow-state.json`, which is absolute and not scratch,
+   * so the body already failed the all-scratch test. Three of the four
+   * computed spellings I tried were refused on `origin/main` too, and only
+   * the `.replace` of a scratch literal ever escaped:
+   *
+   *     env + absolute suffix          main BLOCK   variant BLOCK
+   *     env var + absolute suffix      main BLOCK   variant BLOCK
+   *     command substitution           main BLOCK   variant BLOCK
+   *     replace of a scratch literal   main ALLOW   variant BLOCK   ← this fix
+   */
+  test("the computed spellings that were already refused stay refused", () => {
+    const run = `${process.env.HOME}/.rungate/run`;
+    for (const cmd of [
+      `bun -e 'writeFileSync(process.env.HOME + "/.rungate/run/${STATE}", "{}")'`,
+      `bun -e 'writeFileSync(process.env.RUNGATE_WORK_DIR + "/${STATE}", "{}")'`,
+      `bun -e 'writeFileSync("$(echo ${run})/${STATE}", "{}")'`,
+    ]) {
+      expect(decideBashWrite(cmd).blocked, cmd).toBe(true);
+    }
+  });
+
+  /**
+   * KNOWN LIMITATION, asserted so it is visible and goes red the day it is
+   * closed. It is NOT the exemption's doing and resolving the write target
+   * would not close it either: when the artifact NAME is assembled from
+   * pieces, `pathWordsContaining` finds no word carrying it, so arm 3 never
+   * gets a candidate to judge. Pre-existing — `origin/main` allows this row
+   * identically. Recorded here because the row next to it could otherwise
+   * be read as "computed destinations are handled".
+   */
+  test("LIMITATION: an assembled artifact NAME is invisible to every arm", () => {
+    const cmd = `python3 -c "import os; open(os.environ['RUNGATE_WORK_DIR'] + os.sep + 'workflow' + '-state.json','w').write('{}')"`;
+    expect(decideBashWrite(cmd).blocked).toBe(false);
   });
 });

@@ -536,7 +536,20 @@ export function segments(cmd: string): string[] {
       // `commandWord` could never reach the verb. Inside DOUBLE quotes `\"`
       // IS an escape, which is why the two cases are told apart rather than
       // handled by one rule.
-      if (c === quote && (quote === "'" || cmd[i - 1] !== '\\')) quote = null;
+      //
+      // #1249: inside DOUBLE quotes, consume the escape PAIR rather than
+      // looking one character back. `\\` is an escaped BACKSLASH — a
+      // complete pair — and the `"` after it closes the span. A lookbehind
+      // cannot tell that `"` from the escaped one in `\"`, so `"x\\"` was
+      // read as still open and the rest of the command, separator and write
+      // verb together, became one segment whose command word is `echo`. The
+      // outside-quote branch below already consumes the pair, for this same
+      // reason; this is that rule applied inside the span.
+      if (quote === '"' && c === '\\' && i + 1 < cmd.length) {
+        cur += cmd[++i];
+        continue;
+      }
+      if (c === quote) quote = null;
       continue;
     }
     if (c === '"' || c === "'") {
@@ -1332,6 +1345,70 @@ function absoluteNamesOutsideScratch(text: string, exempt: boolean): string[] {
   return out;
 }
 
+/**
+ * Does every absolute path literal in an interpreter body sit in a scratch
+ * tree? A STOPGAP, and labelled one — see #1269.
+ *
+ * Arm 3 refuses because an interpreter's program is opaque: what it writes
+ * cannot be read off the command line. The scratch exemption contradicted
+ * that premise by deciding the destination from one path word, and a
+ * destination can be computed. Executed against the module as merged:
+ *
+ *     bun -e 'writeFileSync("/tmp/x/workflow-state.json"
+ *               .replace("/tmp/x", "<run store>"), "{}")'      EXEMPT
+ *
+ * The word carrying the name is the `/tmp` literal that is thrown away. Two
+ * other computed spellings — a `..` chain and an `os.path.join` with `..`
+ * components — happened to normalise back into the store and were already
+ * refused, which is luck rather than coverage.
+ *
+ * This asks a question about the WHOLE body instead of one word: if the
+ * program also names an absolute path that is NOT scratch, the exemption
+ * does not apply. The escaping spelling above names the run store in its
+ * second argument, so it is refused.
+ *
+ * ## What this does NOT cover, stated so nobody reads it as the repair
+ *
+ * It still reads literals, so a spelling that leaves no non-scratch
+ * literal behind would still pass. Three candidates were tried rather than
+ * assumed, and all three were ALREADY refused on `origin/main` — a `$HOME`
+ * concatenation, an env-var concatenation and a command substitution — in
+ * each case because the carrying word is an absolute non-scratch suffix
+ * like `/.rungate/run/workflow-state.json`. Only the `.replace` of a
+ * scratch literal ever escaped, and that is what this closes.
+ *
+ * The durable repair is to resolve the write TARGET and ask whether the
+ * resolved path is under a scratch root, at which point a computed
+ * destination stops being a special case — the same primitive #1269's
+ * first fix introduced for protected trees. Filed; this is the stopgap.
+ *
+ * Neither reading closes an assembled NAME: `'workflow' + '-state.json'`
+ * leaves no word carrying the artifact, so arm 3 never receives a
+ * candidate at all. That is a limit of the candidate search rather than of
+ * the exemption, it is pre-existing, and it has its own row in the tests.
+ *
+ * ## Why not drop the exemption from arm 3 altogether
+ *
+ * It was built and swept. It costs **12** corpus commands against this
+ * one's **4**, and it reverses two of #1175's ten witnesses — the
+ * `python3 -I -c` and `bun -e` rows, which assert that an interpreter
+ * writing under a scratch root is a fixture. It also still reads literals,
+ * so it buys a stricter version of the same weakness rather than the
+ * property. Paying 12 and two witnesses for a different patch is the wrong
+ * trade; paying 6 for today's escape is not.
+ */
+function bodyIsAllScratch(bare: string): boolean {
+  // `/^\/[^/]/` and not `startsWith('/')`: the looser test counted a bare
+  // `/` and the `//` of a comment as absolute paths that are not scratch,
+  // which ended the exemption for two real fixture commands on the strength
+  // of a comment marker. Measured, not reasoned: the loose version newly
+  // refuses 6 corpus commands and this one refuses 4, and the two it drops
+  // had no non-scratch path in them at all — only punctuation that looked
+  // like one.
+  const words = bare.split(/[\s'"`,;(){}[\]]+/).filter(w => /^\/[^/]/.test(w));
+  return words.length > 0 && words.every(isScratchPath);
+}
+
 const ALL_PROTECTED = [...PROTECTED_FILES, ...PROTECTED_HOOKS];
 
 /**
@@ -1448,7 +1525,11 @@ export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): Bas
     }
 
     if (isInterpreter || isMutatingFind) {
-      const candidates = namesOutsideScratch(bare, ALL_PROTECTED, exempt);
+      // #1269: the exemption asks about the whole body, not one word. See
+      // `bodyIsAllScratch` for what it closes, what it does not, and the
+      // 6-against-12 measurement behind choosing it over dropping the
+      // exemption from this arm entirely.
+      const candidates = namesOutsideScratch(bare, ALL_PROTECTED, exempt && bodyIsAllScratch(bare));
       const pf = isMutatingFind
         ? (candidates[0] ?? null)
         : (candidates.find(p => writesNear(bare, p)) ?? null);

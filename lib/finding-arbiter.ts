@@ -340,6 +340,50 @@ export function duplicateOverlap(a: Finding, b: Finding): { duplicate: boolean; 
   };
 }
 
+/**
+ * Issues in `existing` whose symptom collides with this one, strongest first.
+ *
+ * Extracted from `arbitrate`'s stage 1 so that stage has **one binding**.
+ * `arbitrate` runs it with a verifier group behind it;
+ * `lib/issue-filing-gate.ts` runs it at the `gh issue create` chokepoint,
+ * where no group has been convened and the dedupe is the only stage that is
+ * decidable at all. Two spellings of this loop would be two deciders over one
+ * question, and a mutation of either would leave the other holding the case
+ * up (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape) — which
+ * is the same reasoning that deleted the redundant `isAbsolute` check in
+ * `containedCitationPath` above.
+ *
+ * Identity is REFERENCE identity, and the id clause is secondary.
+ *
+ * Keying self-skip on the id string alone made the in-batch dedupe a no-op in
+ * the one configuration it was written for: the CLI labels every unfiled
+ * finding `UNFILED_ID`, so two findings in one batch both carried `"new"`,
+ * each skipped the other as itself, and both survived. Measured on the merged
+ * code with the real #1195/#1196 bodies — 2 survivors under `"new"`/`"new"`,
+ * 1 under their real ids. The acceptance case was green for a true reason
+ * about an input the CLI never produces.
+ *
+ * The sort is here rather than at the call site for the same reason: a caller
+ * that forgot it would name a weaker match than the one it had, and "the
+ * reader lands on the best match" is a property of the collision list, not of
+ * whoever asked for it.
+ */
+export function duplicateCollisions(
+  finding: Finding,
+  existing: readonly Finding[],
+): Array<{ id: string; keys: string[] }> {
+  const collisions: Array<{ id: string; keys: string[] }> = [];
+  for (const other of existing) {
+    if (other === finding) continue;
+    if (other.id === finding.id && finding.id !== UNFILED_ID) continue;
+    const overlap = duplicateOverlap(finding, other);
+    if (overlap.duplicate) collisions.push({ id: other.id, keys: overlap.keys });
+  }
+  // Strongest overlap first, so the reader lands on the best match.
+  collisions.sort((a, b) => b.keys.length - a.keys.length || a.id.localeCompare(b.id));
+  return collisions;
+}
+
 // ── Stage 1b: branch scope ───────────────────────────────────────────────
 
 function git(root: string, args: string[]): { ok: boolean; out: string } {
@@ -526,26 +570,8 @@ export function arbitrate(finding: Finding, options: ArbitrateOptions): Verdict 
   }
 
   // ── 1. is this new? ──
-  const collisions: Array<{ id: string; keys: string[] }> = [];
-  for (const other of options.existing) {
-    // Identity is REFERENCE identity, and the id clause is secondary.
-    //
-    // Keying self-skip on the id string alone made the in-batch dedupe a
-    // no-op in the one configuration it was written for: the CLI labels
-    // every unfiled finding `UNFILED_ID`, so two findings in one batch both
-    // carried `"new"`, each skipped the other as itself, and both survived.
-    // Measured on the merged code with the real #1195/#1196 bodies — 2
-    // survivors under `"new"`/`"new"`, 1 under their real ids. The
-    // acceptance case was green for a true reason about an input the CLI
-    // never produces.
-    if (other === finding) continue;
-    if (other.id === finding.id && finding.id !== UNFILED_ID) continue;
-    const overlap = duplicateOverlap(finding, other);
-    if (overlap.duplicate) collisions.push({ id: other.id, keys: overlap.keys });
-  }
+  const collisions = duplicateCollisions(finding, options.existing);
   if (collisions.length > 0) {
-    // Strongest overlap first, so the reader lands on the best match.
-    collisions.sort((a, b) => b.keys.length - a.keys.length || a.id.localeCompare(b.id));
     return drop(
       "DUPLICATE",
       `the symptom is already reported as ${collisions.map(c => c.id).join(", ")} — ` +
@@ -759,6 +785,35 @@ export type WithheldBy =
  *   left-hand side of that join and nothing more.
  */
 export interface CandidateRecord {
+  /**
+   * A key unique across every ledger produced under the same `batch`, for a
+   * consumer that scores a corpus keyed by one field.
+   *
+   * **`null` when the caller named no batch**, and that is the honest
+   * reading rather than a gap. Neither of the other two fields can do this
+   * job and both look as though they can:
+   *
+   * - `id` is `UNFILED_ID` for everything that has not been filed, which is
+   *   every candidate the ledger exists to record.
+   * - `symptomHash` is not unique either. Measured on an exact re-report
+   *   under two different titles: **1 distinct hash across 2 rows**, the
+   *   original and the duplicate that collided with it. And it does not even
+   *   identify the collision — the real #1195/#1196 pair hashes to
+   *   `11f1ca58d515` and `609a1838a74d`, two different values for one
+   *   symptom, because the dedupe matches on SHARED keys and not on the
+   *   whole set.
+   *
+   * A duplicate key does not degrade a score, it inverts one: in
+   * `evals/ai-review-control/outcomes.ts` two rows sharing a key meant the
+   * second overwrote the first, so a finding with a real fixing commit read
+   * `NO_ACTION` and landed in `cost` — noise manufactured out of a fix.
+   * That module now refuses a repeated key outright, which is why the
+   * failure here must be an absent key and never a plausible one.
+   *
+   * It is position-derived rather than content-derived on purpose: unique by
+   * construction, with no collision bookkeeping to be a second decider.
+   */
+  key: string | null;
   id: string;
   symptomHash: string;
   category: FindingCategory;
@@ -847,7 +902,7 @@ function walkOrder(findings: readonly Finding[]): Array<{ finding: Finding; inde
  */
 export function arbitrateBatch(
   findings: readonly Finding[],
-  options: ArbitrateOptions & { budget?: number; now?: string },
+  options: ArbitrateOptions & { budget?: number; now?: string; batch?: string },
 ): BatchReading {
   const date = options.now ?? new Date().toISOString();
   const seen: Finding[] = [...options.existing];
@@ -919,6 +974,12 @@ export function arbitrateBatch(
   );
 
   const candidates: CandidateRecord[] = verdicts.map((verdict, index) => ({
+    // The batch name is REQUIRED for a key rather than defaulted, because a
+    // default would make every batch's first row collide with every other
+    // batch's first row — the corpus a consumer builds is many batches
+    // concatenated, and a plausible key is the one failure mode that
+    // silently shrinks it.
+    key: options.batch === undefined ? null : `${options.batch}/${index}`,
     id: verdict.id,
     symptomHash: verdict.symptomHash,
     category: verdict.category,
