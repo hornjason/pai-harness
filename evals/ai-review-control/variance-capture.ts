@@ -426,9 +426,16 @@ export function liveArmCaveat(arm: Pick<ArmReading, "distinctTrackerSets" | "dis
 }
 
 export const PERMANENTLY_UNMEASURED = [
-  "There is no deployed agent verifier. `arbitrate` has no caller outside lib/ and test/, and only " +
-    "`scripts/arbitrate-finding.ts` can supply `--votes`. The single-AGENT control the quorum is a variance " +
-    "control FOR has never been read, and is not read here.",
+  "No agent verifier feeds THIS gate. `arbitrate` has no caller outside lib/ and test/, and only " +
+    "`scripts/arbitrate-finding.ts` can supply `--votes`, so the verifier group a quorum would be a variance " +
+    "control for does not run on the filing path and is not read here.",
+  "A deployed agent verifier does exist elsewhere — the `ai-review` workflow — and its run-to-run variance is " +
+    "also unmeasured, for a reason worth naming rather than assuming. No two runs in this repository's history " +
+    "have reviewed the SAME TREE: the nearest candidates differ by whole commits, and the only two same-SHA run " +
+    "pairs carry no verdict because both died before the reviewer ran. Diff totals taken against a moving `main` " +
+    "look identical when the content is not, which is how a repeat appears to exist and does not. The experiment " +
+    "that would settle it is `gh run rerun` on an unchanged SHA — a re-run replays the same merge ref, so the " +
+    "input is genuinely fixed — at real API spend per run.",
   "A withheld candidate leaves no trace on either arm. It is never filed, never commented on and never " +
     "fixed, so nothing downstream records whether withholding it was right. `outcomes.ts` derives from commits " +
     "and the reference graph; a candidate that reached neither is invisible to it, permanently.",
