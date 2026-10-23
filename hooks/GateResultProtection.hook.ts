@@ -65,11 +65,11 @@
  * `specs/HOOK-ARCHITECTURE-SPEC.md` § "The workflow-state.json write contract"
  * in the same commit.
  *
- * Issues: #471, #1137, #1152
+ * Issues: #471, #1137, #1152, #1359
  */
 
 import { parseHookInput } from './lib/parseStdin';
-import { decideGateResultWrite } from '../lib/gate-result-protection';
+import { decideGateResultWrite, isWorkflowState } from '../lib/gate-result-protection';
 
 async function main() {
   const input = await parseHookInput();
@@ -88,8 +88,18 @@ async function main() {
     // A guard that crashes must not thereby allow the thing it guards (#1137).
     // Scoped to a payload that already named workflow-state.json, so a bug
     // here refuses writes to one artifact rather than bricking the session.
+    //
+    // #1359: this used to be a second, hand-written `endsWith` and it was
+    // case-SENSITIVE, so #1184's fold reached the predicate and not the arm
+    // whose whole job is to not fail open. Measured rather than read: with
+    // `decideGateResultWrite` forced to throw, `workflow-state.json` was
+    // refused and `WORKFLOW-STATE.JSON` was ALLOWED, silently. On the default
+    // macOS filesystem those are the same inode.
+    //
+    // One binding for the question, not two. A second predicate deciding the
+    // same thing is exactly how this one drifted away from the first.
     const named = String((input.tool_input as { file_path?: unknown })?.file_path ?? '');
-    if (!named.endsWith('workflow-state.json')) process.exit(0);
+    if (!isWorkflowState(named)) process.exit(0);
     decision = {
       blocked: true,
       reason: `Refused: gate-result protection could not evaluate this write (${String(e)}).`,

@@ -400,6 +400,25 @@ Near-misses the fold must not reach — `workflow_state.json`,
 `workflowstate.json`, `workflow-state.yaml` — are rows in that corpus, so the
 bound on what the guard may claim is executed rather than argued.
 
+**A fourth sat one function over, and #1359 closed it.** The specific guard
+wraps `decideGateResultWrite` in a `try`/`catch` whose stated intent is that
+"a guard that crashes must not thereby allow the thing it guards" (#1137).
+That arm narrowed to the artifact with its **own** hand-written `endsWith`,
+case-sensitive — so #1184's fold reached the predicate a reader looks at and
+not the fallback, and a crash on a payload naming `WORKFLOW-STATE.JSON`
+permitted the write. Measured, not read, because the issue was right to insist
+on the difference: with `decideGateResultWrite` forced to throw,
+`workflow-state.json` was refused and `WORKFLOW-STATE.JSON` was allowed
+silently. The arm now calls `isWorkflowState`, so there is one binding for the
+question rather than two that drift.
+
+This changes no row in the write contract — the corpus exercises the ordinary
+path and the fallback only fires on a crash — which is why the arm went
+untested from #1137 until #1359. `test/gate-result-crash-fallback.test.ts`
+covers it now, injecting the crash with `mock.module` while re-exporting the
+**real** `isWorkflowState`, so its rows follow the shipped predicate instead of
+agreeing with a copy written in the test.
+
 ### If you change either hook
 
 Update the row in `test/workflow-state-write-contract.test.ts` and the table
