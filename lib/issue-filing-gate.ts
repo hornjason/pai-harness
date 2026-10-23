@@ -379,14 +379,15 @@ export function readBodyFile(path: string, limit: number = MAX_BODY_FILE_BYTES):
  * The single place that decides whether a filing may proceed.
  *
  * `readExisting` is a thunk and not a value so the `gh issue list` is never
- * paid for a finding the category stage already drops. It returns `null` for
- * "could not be read", which is a different fact from an empty tracker — the
+ * paid for a finding the category stage already drops. It returns a
+ * `CorpusReading`, whose `UNMEASURED` arm is "could not be read" and carries
+ * its own `why` — a different fact from an empty tracker, which is the
  * distinction `.claude/rules/config-access.md` makes about a corrupt config,
  * applied to the one input this gate cannot produce itself.
  */
 export async function adjudicateFiling(
   attempt: FilingAttempt,
-  readExisting: () => Promise<readonly Finding[] | null>,
+  readExisting: () => Promise<CorpusReading>,
   readBody: (path: string) => string | null = readBodyFile,
 ): Promise<FilingAdjudication> {
   // ── where is the body? ──
@@ -465,15 +466,14 @@ export async function adjudicateFiling(
 
   // ── is this new? ──
   const existing = await readExisting();
-  if (existing === null) {
-    return {
-      ...base,
-      outcome: "UNMEASURED",
-      refusal: "UNMEASURED",
-      reason: "the open-issue set could not be read, so whether this symptom is already filed was never asked",
-    };
+  if (existing.reading === "UNMEASURED") {
+    // The reason is the READING's own, never composed here. A sentence
+    // written at this distance from the failure can be false for the input
+    // it is emitted on, which this file already paid for once in the
+    // `--body-file` arm above.
+    return { ...base, outcome: "UNMEASURED", refusal: "UNMEASURED", reason: existing.why };
   }
-  const collisions = duplicateCollisions(finding, existing);
+  const collisions = duplicateCollisions(finding, existing.findings);
   if (collisions.length > 0) {
     return {
       ...base,
@@ -495,14 +495,55 @@ export async function adjudicateFiling(
   };
 }
 
+/** Why one existing issue was kept out of the comparison set. */
+export interface CorpusDrop {
+  /** The issue number, as a string. */
+  id: string;
+  reason: "untrusted-author" | "over-key-cap";
+  /** The producing filter's own sentence, so the report is not re-derived. */
+  detail: string;
+}
+
 /**
- * The open issues, as findings — or `null` when the set could not be read.
+ * What a corpus read yielded, and what it had to drop to get there.
  *
- * `null` and `[]` are different facts and the caller treats them differently:
- * an empty tracker means nothing is a duplicate, an unreadable one means
- * nobody asked. Every failure path here returns `null` rather than `[]`, so a
- * `gh` that is missing, unauthenticated, rate-limited, slow or returning
- * something unexpected cannot be mistaken for a clean tracker.
+ * **One discriminator.** `reading` is the whole answer — there is no `null`
+ * beside it meaning the same thing, because two spellings of UNMEASURED are
+ * two deciders for one question and the second one always agrees with the
+ * first (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ * Every path that could not take a reading returns `UNMEASURED` **with its
+ * own `why`**, because a reason composed downstream is a reason that can be
+ * false for the input it was emitted on, which this file already paid for
+ * once in the `--body-file` arm above.
+ *
+ * `dropped` is carried on BOTH arms. A read that succeeded after dropping
+ * three issues is a different fact from one that dropped none, and the caller
+ * cannot ask afterwards.
+ */
+export type CorpusReading =
+  | { reading: "MEASURED"; findings: readonly Finding[]; dropped: readonly CorpusDrop[] }
+  | { reading: "UNMEASURED"; why: string; dropped: readonly CorpusDrop[] };
+
+/** A reading that was taken. */
+export function measuredCorpus(
+  findings: readonly Finding[],
+  dropped: readonly CorpusDrop[] = [],
+): CorpusReading {
+  return { reading: "MEASURED", findings, dropped };
+}
+
+/** A reading that was not taken, and why. */
+export function unmeasuredCorpus(why: string, dropped: readonly CorpusDrop[] = []): CorpusReading {
+  return { reading: "UNMEASURED", why, dropped };
+}
+
+/**
+ * The open issues, as findings, or an UNMEASURED reading naming why not.
+ *
+ * An empty tracker means nothing is a duplicate; an unreadable one means
+ * nobody asked. Every failure path here is `UNMEASURED` rather than an empty
+ * list, so a `gh` that is missing, unauthenticated, rate-limited, slow or
+ * returning something unexpected cannot be mistaken for a clean tracker.
  *
  * **Through Octokit and never the GitHub CLI.** `lib/`, `hooks/` and `gates/`
  * may not reach `gh` as a subprocess — GITHUB-API-MIGRATION-SPEC.md's SC-893,
@@ -515,7 +556,7 @@ export async function adjudicateFiling(
  * **The cost, stated because it decides what this gate does on a dev box:**
  * `createGitHubClient` needs `GITHUB_TOKEN` or `GH_TOKEN`, and a developer's
  * GitHub credential usually lives in the CLI's keyring and not in the
- * environment. With no token this returns `null`, the dedupe is UNMEASURED,
+ * environment. With no token the dedupe is UNMEASURED,
  * and only the category stage runs. That is visible rather than silent — the
  * ledger row says `UNMEASURED` and the agent is told — and it is the honest
  * reading: nobody asked the tracker. Export a token, or supply the set below.
@@ -531,7 +572,7 @@ export async function adjudicateFiling(
 export async function openFindings(
   projectRoot: string,
   repo: string | null = null,
-): Promise<readonly Finding[] | null> {
+): Promise<CorpusReading> {
   const override = process.env.RUNGATE_OPEN_FINDINGS;
   if (override !== undefined && override !== "") {
     try {
@@ -539,24 +580,33 @@ export async function openFindings(
       const findings = asFindings(rows);
       return findings === null ? null : measuredCorpus(countOf(rows), findings);
     } catch {
-      return null;
+      return unmeasuredCorpus(
+        `the supplied comparison set \`${override}\` could not be read or parsed, so whether ` +
+          "this symptom is already filed was never asked",
+      );
     }
   }
   try {
     // `--repo` wins, because it is what `gh` will file against. A slug that
     // came off the command line is still a slug `parseOwnerRepo` validates.
     const { slug } = resolveRepoSlug({ projectRoot, repo: repo ?? undefined });
-    if (slug === null) return null;
+    if (slug === null) {
+      return unmeasuredCorpus(
+        "no repository slug could be resolved, so there was no tracker to compare against",
+      );
+    }
     const issues = await withTimeout(
       listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT),
       OPEN_ISSUE_TIMEOUT_MS,
     );
     return measuredCorpus(issues.length, trustedCorpus(issues));
   } catch {
-    // Every failure lands here as `null`, which is "nobody asked" and not
+    // Every failure lands here as UNMEASURED, which is "nobody asked" and not
     // "nothing matched" — a missing token, a 403, a rate limit and an
     // unreachable API are all states this must not report as a clean tracker.
-    return null;
+    return unmeasuredCorpus(
+      "the open-issue set could not be read, so whether this symptom is already filed was never asked",
+    );
   }
 }
 
@@ -592,58 +642,87 @@ function withinKeyCap(finding: Finding): boolean {
   return symptomKeys(finding).length <= MAX_KEYS_PER_EXISTING_ISSUE;
 }
 
-/** How many rows the tracker returned, before any filter saw them. */
-function countOf(rows: unknown): number {
-  return Array.isArray(rows) ? rows.length : 0;
-}
-
 /**
- * The corpus, or `null` because there was no reading — the single binding
- * that decides which (#1318).
+ * A corpus that filtered to nothing is UNMEASURED, not a clean tracker.
  *
- * **A corpus that filtered down to empty is not an empty corpus.** Both
- * filters above drop issues silently, so a tracker whose every issue is
- * untrusted, or whose every issue is over the key cap, produced `[]` — and
- * `[]` is byte-identical to a tracker with nothing in it. The gate read the
- * second meaning and ALLOWed. That is the first shape in
- * `.claude/rules/checks-must-be-able-to-fail.md`, in the gate written to
- * catch it: a reading nobody could take, reported as a reading that passed.
+ * **One binding, because both readers below reach it and because this is the
+ * fail-open the filters create.** Each filter is individually argued to fail
+ * in the safe direction — a duplicate reaches the tracker, never a real
+ * finding silenced — and that argument is about ONE issue being dropped. It
+ * does not survive composition: a non-empty issue list that filters down to
+ * an empty one is byte-indistinguishable from a tracker with nothing on it,
+ * and the gate then ALLOWs on the strength of a comparison it never made.
+ * That is not the safe direction; it is no direction at all, and a filter
+ * with a bug in it would read exactly the same.
  *
- * `null` already means UNMEASURED to every caller and already routes to the
- * refusal that says so, which is why this is three lines rather than a new
- * result type. One binding, so a mutation battery has something to mutate —
- * the predicate was previously implied by the absence of code, and absent
- * code cannot be mutated or covered.
- *
- * The direction this is allowed to be wrong in is unchanged: UNMEASURED
- * allows the filing and records that the dedupe never ran. It costs a
- * possible duplicate, never a silenced finding.
+ * `dropped` travels either way, so a read that succeeded after dropping three
+ * issues can be told from one that dropped none.
  */
-function measuredCorpus(seen: number, findings: readonly Finding[]): readonly Finding[] | null {
-  return seen > 0 && findings.length === 0 ? null : findings;
+function corpusReading(
+  considered: number,
+  findings: readonly Finding[],
+  dropped: readonly CorpusDrop[],
+  source: string,
+): CorpusReading {
+  if (considered === 0 || findings.length > 0) return measuredCorpus(findings, dropped);
+  return unmeasuredCorpus(
+    `the ${source} held ${considered} issue(s) and every one of them was filtered out of the ` +
+      "comparison set, so whether this symptom is already filed was never asked — an empty " +
+      `corpus that was emptied BY US is not a clean tracker. Dropped: ${describeDrops(dropped)}`,
+    dropped,
+  );
 }
 
-export function trustedCorpus(issues: readonly OpenIssue[]): readonly Finding[] {
+/** The drops as one sentence, each with the filter's own reason. */
+export function describeDrops(dropped: readonly CorpusDrop[]): string {
+  if (dropped.length === 0) return "nothing — the list was non-empty and the filters took none of it, which should be impossible here";
+  return dropped.map(d => `#${d.id} (${d.reason}: ${d.detail})`).join("; ");
+}
+
+export function trustedCorpus(issues: readonly OpenIssue[]): CorpusReading {
   const out: Finding[] = [];
+  const dropped: CorpusDrop[] = [];
   for (const issue of issues) {
-    if (!TRUSTED_ASSOCIATIONS.has(issue.authorAssociation)) continue;
-    const finding: Finding = { id: String(issue.number), title: issue.title, body: issue.body };
-    if (!withinKeyCap(finding)) continue;
+    const id = String(issue.number);
+    if (!TRUSTED_ASSOCIATIONS.has(issue.authorAssociation)) {
+      dropped.push({
+        id,
+        reason: "untrusted-author",
+        detail:
+          `author association ${issue.authorAssociation === "" ? "(absent)" : issue.authorAssociation}` +
+          ` is not one of ${[...TRUSTED_ASSOCIATIONS].join("/")}`,
+      });
+      continue;
+    }
+    const finding: Finding = { id, title: issue.title, body: issue.body };
+    if (!withinKeyCap(finding)) {
+      dropped.push({
+        id,
+        reason: "over-key-cap",
+        detail: `names ${symptomKeys(finding).length} symptom keys, over the cap of ${MAX_KEYS_PER_EXISTING_ISSUE}`,
+      });
+      continue;
+    }
     out.push(finding);
   }
-  return out;
+  return corpusReading(issues.length, out, dropped, "tracker");
 }
 
-/** Supplied rows as `Finding`s, or `null` if the shape is not what we asked for. */
-function asFindings(parsed: unknown): readonly Finding[] | null {
-  if (!Array.isArray(parsed)) return null;
+/** Supplied rows as `Finding`s, or UNMEASURED if the shape is not what we asked for. */
+function asFindings(parsed: unknown): CorpusReading {
+  const malformed = (what: string) =>
+    unmeasuredCorpus(
+      `the supplied comparison set is ${what}, so whether this symptom is already filed was never asked`,
+    );
+  if (!Array.isArray(parsed)) return malformed("not an array");
   const out: Finding[] = [];
+  const dropped: CorpusDrop[] = [];
   for (const row of parsed) {
-    if (row === null || typeof row !== "object") return null;
+    if (row === null || typeof row !== "object") return malformed("not a list of objects");
     const r = row as Record<string, unknown>;
     const id = r.number ?? r.id;
-    if (typeof id !== "number" && typeof id !== "string") return null;
-    if (typeof r.title !== "string") return null;
+    if (typeof id !== "number" && typeof id !== "string") return malformed("missing a row id");
+    if (typeof r.title !== "string") return malformed("missing a row title");
     const finding: Finding = {
       id: String(id),
       title: r.title,
@@ -653,10 +732,17 @@ function asFindings(parsed: unknown): readonly Finding[] | null {
     // operator-supplied rather than attacker-supplied, so the AUTHOR filter
     // does not, but one row naming everything suppresses everything whoever
     // wrote it.
-    if (!withinKeyCap(finding)) continue;
+    if (!withinKeyCap(finding)) {
+      dropped.push({
+        id: finding.id,
+        reason: "over-key-cap",
+        detail: `names ${symptomKeys(finding).length} symptom keys, over the cap of ${MAX_KEYS_PER_EXISTING_ISSUE}`,
+      });
+      continue;
+    }
     out.push(finding);
   }
-  return out;
+  return corpusReading(parsed.length, out, dropped, "supplied comparison set");
 }
 
 /** Where the adjudications land. One line of JSON per decision. */
@@ -711,7 +797,7 @@ export async function filingGate(
   options: {
     projectRoot: string;
     now?: string;
-    readExisting?: (projectRoot: string, repo: string | null) => Promise<readonly Finding[] | null>;
+    readExisting?: (projectRoot: string, repo: string | null) => Promise<CorpusReading>;
   },
 ): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
@@ -725,7 +811,7 @@ export async function filingGate(
   // filing against THIS repository's issues, which is not a weaker reading,
   // it is the wrong one. The PROMISE is cached rather than its value, so two
   // clauses on one tracker cannot both start a request before either resolves.
-  const cached = new Map<string, Promise<readonly Finding[] | null>>();
+  const cached = new Map<string, Promise<CorpusReading>>();
   const readFor = (repo: string | null) => {
     const key = repo ?? "";
     const hit = cached.get(key);
@@ -800,6 +886,15 @@ export async function filingGate(
   const clean = rows.filter(r => r.emitted);
   if (blocking && clean.length > 0) refusals.push(cleanClauseNote(clean, rows.length));
 
+  // Whatever the verdict, say what the comparison set lost on the way in.
+  // A dedupe run over a corpus three issues short is a weaker reading than
+  // one run over the whole tracker, and no reader can tell them apart from
+  // the outcome — the drop is only visible here, once per target tracker.
+  for (const pending of cached.values()) {
+    const reading = await pending;
+    if (reading.dropped.length > 0) notes.push(corpusDropNote(reading.dropped));
+  }
+
   return {
     refusal: blocking ? refusals.join("\n\n") : null,
     note: notes.length > 0 ? notes.join("\n\n") : null,
@@ -852,6 +947,22 @@ export function cleanClauseNote(clean: readonly FilingLedgerRow[], total: number
     "",
     ...clean.map(r => `  - ${r.title}`),
   ].join("\n");
+}
+
+/**
+ * What the comparison set lost on the way in, said out loud.
+ *
+ * A dedupe run over a corpus three issues short is a weaker reading than one
+ * run over the whole tracker, and the two produce the same ALLOW. The drops
+ * are the only thing that can tell them apart, and they are invisible by the
+ * time a verdict exists.
+ */
+export function corpusDropNote(dropped: readonly CorpusDrop[]): string {
+  return (
+    `[FindingArbiter] ${dropped.length} open issue(s) were filtered out of the comparison set ` +
+    `before this filing was adjudicated, so the dedupe read a smaller tracker than the one ` +
+    `that exists: ${describeDrops(dropped)}.`
+  );
 }
 
 /** Said out loud, because an UNMEASURED that nobody sees is a silent pass. */
