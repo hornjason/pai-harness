@@ -1136,6 +1136,256 @@ describe("#1175 review round 3: the verb is resolved, not pattern-matched", () =
   });
 });
 
+/**
+ * #1411: `ln` is not the only verb that makes a link.
+ *
+ * Raised as a CRITICAL by the review on #1354, a PR that does not touch
+ * this file. Every row below was run as a command and observed ALLOWED
+ * before `flagMakesLink` existed — the bypass the `exemptionIsVoid`
+ * docblock describes for `ln -s`, reached by a verb the four alternatives
+ * of `LINK_CREATION` do not spell.
+ *
+ * Seven of the ten walk around a test for the literal string `cp -s`,
+ * which is why the reading is token-level and the clusters are derived
+ * rather than listed.
+ *
+ * No corpus sweep can witness any of this, and the reason is worth stating
+ * where the rows are: nobody has ever run `cp -s` to walk this guard, so it
+ * is absent from 132,638 historical commands BY CONSTRUCTION. A sweep is a
+ * regression control. It answers "did I break anything that happened",
+ * never "did I close anything that could happen".
+ */
+describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
+  const VICTIM = `${process.env.HOME}/.rungate/victim`;
+  const esc = (mk: string) => `${mk} && echo '{}' > /tmp/esc/${STATE}`;
+
+  const voids: [string, string][] = [
+    ["ln -s, the documented shape, unchanged", `ln -s ${VICTIM} /tmp/esc`],
+    ["cp -s", `cp -s ${VICTIM} /tmp/esc`],
+    ["cp --symbolic-link", `cp --symbolic-link ${VICTIM} /tmp/esc`],
+    ["cp --sym, an abbreviation GNU accepts", `cp --sym ${VICTIM} /tmp/esc`],
+    // A hard link aims the later write at the victim's INODE. Same bypass,
+    // one indirection fewer.
+    ["cp -l, a HARD link to the victim's inode", `cp -l ${VICTIM} /tmp/esc`],
+    ["cp --link", `cp --link ${VICTIM} /tmp/esc`],
+    ["cp -rs, clustered", `cp -rs ${VICTIM} /tmp/esc`],
+    ["cp -as, clustered", `cp -as ${VICTIM} /tmp/esc`],
+    ["cp -sv, clustered the other way", `cp -sv ${VICTIM} /tmp/esc`],
+    ["/bin/cp -s, path-qualified", `/bin/cp -s ${VICTIM} /tmp/esc`],
+    ["sudo cp -s, wrapped", `sudo cp -s ${VICTIM} /tmp/esc`],
+    ["install -l s, which also makes links", `install -l s ${VICTIM} /tmp/esc`],
+    // The position `LINK_CREATION` exists to reach for `ln`: `commandWord`
+    // resolves this segment to `find`, so a verb-keyed reading would miss it
+    // and the scan is position-independent for that reason.
+    ["find -exec cp -s, where the verb resolves to `find`", `find . -exec cp -s ${VICTIM} /tmp/esc \\;`],
+
+    // The review on #1429 raised these as a CRITICAL and it was right:
+    // the first reading tokenised with `stripQuoted`, which DELETES a
+    // quoted span's content, so quoting the flag removed it from the
+    // token stream entirely. Seven spellings, every one a command the
+    // shell runs identically to the row above, and all seven were
+    // observed ALLOWED before `shellTokens` replaced it.
+    ["cp with the FLAG single-quoted", `cp '-s' ${VICTIM} /tmp/esc`],
+    ["cp with the FLAG double-quoted", `cp "-s" ${VICTIM} /tmp/esc`],
+    ["cp with the flag partly quoted", `cp -'s' ${VICTIM} /tmp/esc`],
+    ["cp with the VERB spliced by an empty string", `c""p -s ${VICTIM} /tmp/esc`],
+    ["cp with the verb quoted", `'cp' -s ${VICTIM} /tmp/esc`],
+    ["cp with verb and flag both quoted", `'cp' '-s' ${VICTIM} /tmp/esc`],
+    ["cp with the long flag quoted", `cp '--symbolic-link' ${VICTIM} /tmp/esc`],
+    // A flag whose letters cannot be read is one that cannot be ruled out,
+    // on a verb already known to make links on request. Fail-closed, and
+    // measured: 0 of 174 real `cp`/`install` commands in the corpus move.
+    ["cp with the flag behind a variable", `cp "-$F" ${VICTIM} /tmp/esc`],
+    ["cp with the flag behind a brace expansion", `cp -\${OPT} ${VICTIM} /tmp/esc`],
+    ["cp with the verb double-quoted", `"cp" -s ${VICTIM} /tmp/esc`],
+    ["cp with one letter of the long flag quoted", `cp --'s'ymbolic-link ${VICTIM} /tmp/esc`],
+    ["cp with the flag last, as getopt permits", `cp ${VICTIM} /tmp/esc -s`],
+
+    // The ATTACHED OPTION ARGUMENT, which neither the fix nor its first
+    // review caught. `-st/tmp/esc` bundles `-s` with `-t`'s argument and
+    // `-sS.bak` bundles it with `-S`'s; an anchored `^-[A-Za-z]+$` rejected
+    // the whole token on the `/` and the `.` and never read the `s`.
+    ["cp -st/tmp/esc, the link letter bundled with an attached argument", `cp -st/tmp/esc ${VICTIM}`],
+    ["cp -sS.bak, the same through a suffix argument", `cp -sS.bak ${VICTIM} /tmp/esc`],
+    ["cp -lt/tmp/esc, the hard-link letter bundled", `cp -lt/tmp/esc ${VICTIM}`],
+
+    // Text handed to ANOTHER shell. `ln` is caught in all four of these by
+    // `LINK_CREATION`, which is a raw-text regex and does not care about
+    // nesting; a reading built on segments and tokens does, so all four
+    // were measured allowed for `cp` while their `ln` twins were refused.
+    ["cp -s inside bash -c", `bash -c 'cp -s ${VICTIM} /tmp/esc'`],
+    ["cp -s inside sh -c with double quotes", `sh -c "cp -s ${VICTIM} /tmp/esc"`],
+    ["cp -s inside a command substitution", `$(cp -s ${VICTIM} /tmp/esc)`],
+    ["cp -s inside eval", `eval 'cp -s ${VICTIM} /tmp/esc'`],
+  ];
+  test.each(voids)("%s voids the exemption", (_l, mk) => {
+    expect(decideBashWrite(esc(mk)).blocked, esc(mk)).toBe(true);
+  });
+
+  /**
+   * The load-bearing half. A rule that voids the exemption for every `cp`
+   * passes all thirteen rows above and makes the guard useless, so each
+   * refusal is paired with the nearest spelling that must stay exempt.
+   */
+  const stay: [string, string][] = [
+    ["a plain cp into scratch", `cp /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp -r, the commonest fixture copy", `cp -r /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // Case is the whole difference: `-L` dereferences links in the SOURCE
+    // and creates none. If this reddens, the reading has become case-blind.
+    ["cp -L, which follows links instead of making them", `cp -L /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp -p", `cp -p /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp -a", `cp -a /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    ["install -m 755, a flag with neither letter", `install -m 755 /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["mkdir -p, which cannot point out of its tree", `mkdir -p /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The substring control, matching the one the `ln` rows carry: a word
+    // containing the letters is not a verb.
+    ["a path that merely contains the letters", `echo '{}' > /tmp/cp.d/${STATE}`],
+    // The controls for `shellTokens`. Removing quotes must not make every
+    // quoted argument a flag, and the case rule must survive quoting.
+    ["cp with a quoted FILENAME, not a flag", `cp 'a b.txt' /tmp/fix/${STATE}`],
+    ["cp '-L' quoted, which still creates no link", `cp '-L' /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp '-r' quoted", `cp '-r' /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The control for the unreadable-flag rule: a variable somewhere else
+    // in the segment is not a flag, and must not void anything.
+    ["cp with a variable in the PATH rather than the flag", `cp -r "$SRC" /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The controls for the attached-argument widening: the same bundles
+    // WITHOUT the link letter. If these redden, reading the leading letter
+    // run has overshot into reading the argument.
+    ["cp -t/tmp/p, an attached argument and no link letter", `cp -t/tmp/p /tmp/a/${STATE} && echo '{}' > /tmp/fix/${STATE}`],
+    ["cp -S.bak, a suffix argument", `cp -S.bak /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp --sparse=always, a long option that is not a link", `cp --sparse=always /tmp/a/${STATE} /tmp/fix/${STATE}`],
+  ];
+  test.each(stay)("CONTROL: %s stays exempt", (_l, cmd) => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${cmd} — ${d.reason}`).toBe(false);
+  });
+
+  /**
+   * The `\bln\s` boundary, asked during review and answered with a count
+   * rather than an argument: `\s` needs a following character, so can an
+   * `ln` that ENDS a segment escape?
+   *
+   * The regex misses four of these five. The segment-verb net catches
+   * three of the four. The one neither catches is `find . -exec ln` with no
+   * terminator, which `find(1)` refuses outright — "the expression must be
+   * terminated by a semicolon" — so it is a syntax error and not a command.
+   *
+   * ONE spelling missed by both nets, ZERO executable. No change made, and
+   * this table is here so the next reader does not re-derive it.
+   */
+  const boundary: [string, boolean, boolean][] = [
+    // segment, regex matches, segment-verb net catches
+    ["ln", false, true],
+    ["find . -exec ln", false, false],
+    ["ln -s a b", true, true],
+    ["echo x && ln", false, true],
+    ["sudo ln", false, true],
+  ];
+  test.each(boundary)("the ln boundary: %s", (seg, byRegex, byVerb) => {
+    expect(/\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/.test(seg), `regex on ${seg}`).toBe(byRegex);
+    expect(
+      segments(seg).some(s => commandWord(s) === "ln"),
+      `verb net on ${seg}`,
+    ).toBe(byVerb);
+  });
+
+  /**
+   * MUTATION: the flag reading removed, and the moved set asserted as an
+   * equality in both directions.
+   *
+   * It is the one thing that separates "these rows are refused because of
+   * the fix" from "these rows were refused anyway". The `ln -s` row is in
+   * the table precisely so it can be seen NOT moving: it is held by
+   * `LINK_CREATION`, which this mutation does not touch.
+   */
+  test("MUTATION: removing the flag reading moves the cp rows and nothing else", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "function isLinkFlag(token: string): boolean {";
+    expect(src.split(site).length - 1, "isLinkFlag must have ONE site to mutate").toBe(1);
+    expect([...src.matchAll(/from '(\.[^']*)'/g)].map(m => m[1])).toEqual(["./interpreters"]);
+
+    const dir = mkdtempSync(join(tmpdir(), "bw1411-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noFlag.ts"), src.replace(site, `${site}\n  return false;`));
+      const mutant = (await import(`file://${join(dir, "noFlag.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+
+      const all: [string, string][] = [
+        ...voids.map(([l, mk]) => [l, esc(mk)] as [string, string]),
+        ...stay,
+      ];
+      const moved = all
+        .filter(([, cmd]) => mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked)
+        .map(([l]) => l)
+        .sort();
+
+      expect(moved).toEqual(voids.filter(([l]) => l !== "ln -s, the documented shape, unchanged").map(([l]) => l).sort());
+      // Direction: every row that moved was ALLOWED without the reading,
+      // so none of them is refused only because the mutation is absent.
+      for (const [label, cmd] of all) {
+        if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
+          expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * MUTATION: the nested reading removed.
+   *
+   * Separate from the one above because the two answer different
+   * questions — one is "is this token a link flag", the other is "does
+   * this segment hand text to another shell" — and a single mutant moving
+   * both sets could not tell them apart. This one must move EXACTLY the
+   * four nested rows: the quoted-flag rows look nested and are not, because
+   * `'-s'` carries no whitespace and never becomes a command.
+   */
+  test("MUTATION: removing the nested reading moves exactly the four nested rows", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "function nestedCommands(view: string): string[] {";
+    expect(src.split(site).length - 1, "nestedCommands must have ONE site to mutate").toBe(1);
+
+    const dir = mkdtempSync(join(tmpdir(), "bw1429-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noNest.ts"), src.replace(site, `${site}\n  return [];`));
+      const mutant = (await import(`file://${join(dir, "noNest.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+      const all: [string, string][] = [...voids.map(([l, mk]) => [l, esc(mk)] as [string, string]), ...stay];
+      const moved = all
+        .filter(([, cmd]) => mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked)
+        .map(([l]) => l)
+        .sort();
+      expect(moved).toEqual(
+        [
+          "cp -s inside bash -c",
+          "cp -s inside sh -c with double quotes",
+          "cp -s inside a command substitution",
+          "cp -s inside eval",
+        ].sort(),
+      );
+      for (const [label, cmd] of all) {
+        if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
+          expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("#1175 review round 3: a glob in a DIRECTORY component", () => {
   /**
    * `echo '{}' > /tmp/sym*​/workflow-state.json` with `/tmp/syma` a symlink
