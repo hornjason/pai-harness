@@ -1794,7 +1794,7 @@ describe("#1307: the execution file is preserved when no payload was written", (
     // So the constraint is REMOVED and the run repeated. The redirect is
     // defence for exactly the day somebody loosens that check, and this is
     // the only input on which it is observable.
-    const guard = /\n.*basename "\$\{real\}".*\n/;
+    const guard = /\n.*\[ "\$\{base\}" != .*\n/;
     const matches = buildExecutionStageScript().match(new RegExp(guard, "g")) ?? [];
     expect(matches.length, "the basename guard is not where the mutation expects it").toBe(1);
     const run = stage({

@@ -6432,9 +6432,18 @@ if [ "\${ok}" = 1 ] && [ ! -f "\${src}" ]; then ok=0; fi
 if [ "\${ok}" = 1 ]; then
   # Canonicalise, then require the RUNNER_TEMP prefix on the RESOLVED path.
   # A prefix test against the unresolved string is defeated by \`..\`.
+  #
+  # EVERY \`$(…)\` HERE SITS INSIDE A CONDITION. An assignment whose right
+  # hand side is a command substitution carries that substitution's exit
+  # status, and \`bash -e\` aborts the step on it before the next line can
+  # look — #1110, and AC-2 of \`test/ai-review-runner-shell-parity.test.ts\`
+  # refuses the shape outright rather than per-command. It caught the first
+  # draft of this block.
   real=
-  if r=$(cd "$(dirname "\${src}")" 2>/dev/null && pwd -P); then
-    real="\${r}/$(basename "\${src}")"
+  base=
+  if b=$(basename "\${src}") && r=$(cd "$(dirname "\${src}")" 2>/dev/null && pwd -P); then
+    base="\${b}"
+    real="\${r}/\${b}"
   fi
   rt=
   if r=$(cd "\${RUNNER_TEMP}" 2>/dev/null && pwd -P); then rt="\${r}"; fi
@@ -6446,7 +6455,7 @@ if [ "\${ok}" = 1 ]; then
       *) ok=0 ;;
     esac
     # The action's own file name, and nothing else.
-    if [ "$(basename "\${real}")" != "${AI_REVIEW_EXECUTION_BASENAME}" ]; then ok=0; fi
+    if [ "\${base}" != "${AI_REVIEW_EXECUTION_BASENAME}" ]; then ok=0; fi
   fi
 fi
 
