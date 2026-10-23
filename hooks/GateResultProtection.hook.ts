@@ -36,10 +36,21 @@
  *    write the artifact at all**, and refuses every Write/Edit of it.
  *  - THIS hook is authoritative for **what a permitted write may contain**.
  *
- * Neither subsumes the other. Because the blanket guard fires first in THIS
- * repository, this hook's ALLOW-path is not observable from an ordinary
- * session here — that is #1152, and the reason the contract test runs each
- * hook on its own rather than through a session.
+ * Since #1211 case-folded the blanket guard's matcher, this hook's refusals
+ * are a SUBSET of the blanket guard's: both now agree on which paths are the
+ * artifact, and the blanket guard refuses every Write/Edit of it. Until then
+ * the one input this hook refused and the blanket guard permitted was
+ * `WORKFLOW-STATE.JSON` — a hole in the SHIPPING guard, not a feature of this
+ * one, which is why closing it was right even though it made this hook
+ * behaviourally subsumed in a tree holding both.
+ *
+ * Subsumed is not dead, and the reason is deployment rather than behaviour:
+ * this hook does not travel to consumers (below), and in a session on this
+ * machine its registration resolves to a tree outside this repository (#713).
+ * Because the blanket guard fires first in THIS repository, this hook's
+ * ALLOW-path is not observable from an ordinary session here — that is #1152,
+ * and the reason the contract test runs each hook on its own rather than
+ * through a session.
  *
  * Note the reach is the opposite way round from what #1152's body assumes:
  * `WorkflowStateGuard` is `deployToConsumers: true` and this hook is
