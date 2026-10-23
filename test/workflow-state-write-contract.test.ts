@@ -29,9 +29,16 @@
  *
  * **`WorkflowStateGuard` is authoritative for whether the artifact may be
  * written by a tool call; `GateResultProtection` is authoritative for what a
- * permitted write may contain.** They are not redundant and neither subsumes
- * the other — rows 8 and 9 below are inputs each one refuses and the other
- * allows, in both directions.
+ * permitted write may contain.**
+ *
+ * Since #1211 the containment runs ONE way: everything the specific guard
+ * refuses, the blanket guard also refuses, and rows 2, 3, 9, 13 and 14 are
+ * inputs the blanket guard refuses and the specific guard allows. That is the
+ * correct direction and it is now asserted in both halves below. Until #1211
+ * the set pointing the other way was non-empty, and its single member was row
+ * 8 — a hole in the SHIPPING guard. A guard pair whose non-redundancy rests on
+ * one of them having a gap is not defence in depth, so the claim that used to
+ * require that member now forbids it.
  *
  * ## Reading a row
  *
@@ -131,12 +138,15 @@ function plant(dir: string, name: string, body: string): string {
 }
 
 /**
- * The contract. Measured on 2026-10-22 against `origin/main` at `dbf10445`.
+ * The contract. First measured on 2026-10-22 against `origin/main` at
+ * `dbf10445`; re-measured on 2026-10-23 for #1211, which moved row 8.
  *
- * Six of the fourteen rows diverge, and the six were predicted by reading the
- * two path predicates before the corpus was run. Three are the intended
- * blanket/specific split (2, 3, 13); three are accidents of two independently
- * written path predicates (8, 9, 14) and are filed rather than fixed here.
+ * Five of the fourteen rows diverge. Three are the intended blanket/specific
+ * split (2, 3, 13); two are accidents of two independently written path
+ * predicates (9, 14), both benign and both left alone. Row 8 was the third
+ * such accident and the only one in the dangerous direction — the blanket
+ * guard permitting what the specific guard refused — and #1211 closed it by
+ * case-folding the blanket guard's matcher.
  */
 const CONTRACT: Row[] = [
   {
@@ -229,17 +239,19 @@ const CONTRACT: Row[] = [
       const p = plant(d, "WORKFLOW-STATE.JSON", j({ phase: "BUILD" }));
       return { file_path: p, content: j({ phase: "BUILD", gates: { scope: { result: "PASS" } } }) };
     },
-    blanket: "ALLOWED",
+    blanket: "REFUSED",
     specific: "REFUSED",
     note:
-      "UNINTENDED DIVERGENCE, and the dangerous direction — filed as a follow-up, not fixed " +
-      "here. The blanket guard matches with a case-SENSITIVE String.includes(); the specific " +
-      "guard case-FOLDS because #1184 measured that WORKFLOW-STATE.JSON and " +
-      "workflow-state.json resolve to the same inode on a case-insensitive filesystem. #1184 " +
-      "closed this in the specific guard and the fix was never carried to the blanket one. " +
-      "It is the SHIPPING guard that still has it, so on a consumer tree — where the specific " +
-      "guard is not deployed — this input reaches disk unguarded. If you fix the matcher, " +
-      "flip this row to REFUSED in the same commit.",
+      "CONVERGED in #1211. This row read blanket=ALLOWED until the blanket guard's matcher " +
+      "was case-folded: it matched with a case-SENSITIVE String.includes() while the " +
+      "specific guard case-FOLDED, because #1184 measured that WORKFLOW-STATE.JSON and " +
+      "workflow-state.json resolve to the same inode on a case-insensitive filesystem. " +
+      "#1184 closed it in the specific guard and the fix was never carried to the blanket " +
+      "one — the SHIPPING one, so on a consumer tree, where the specific guard is not " +
+      "deployed, a forged result at the uppercase spelling reached disk unguarded. " +
+      "The population the fold newly claims is bounded in " +
+      "test/workflow-state-guard-case.test.ts, which measures the old matcher alongside " +
+      "the new one; this row is the same input seen from inside the two-hook contract.",
   },
   {
     id: "9 sibling-backup-path-forged",
@@ -482,18 +494,26 @@ describe("#1152 the workflow-state.json write contract", () => {
   }
 });
 
-describe("#1152 neither hook subsumes the other", () => {
-  // The claim that makes "defence in depth" true rather than decorative. If
-  // one of these ever reads zero, the pair has collapsed into one decider and
-  // whichever is redundant can be deleted — which is the decision #1152 says
-  // nothing in the repo is in a position to make.
+describe("#1152 the pair has not collapsed, and it is subsumed the safe way round", () => {
+  // Two claims about the SHAPE of the pair, in opposite directions, and the
+  // asymmetry is the point.
+  //
+  //  - `only("blanket")` must be NON-EMPTY: if the blanket guard stops
+  //    refusing anything the specific guard permits, the pair has collapsed
+  //    into one decider, a mutation of either is invisible, and whichever is
+  //    redundant can be deleted — the decision #1152 says nothing in the repo
+  //    is in a position to make.
+  //  - `only("specific")` must be EMPTY: a member there is an input the
+  //    SHIPPING guard permits, which on a consumer tree is an unguarded write.
+  //    See the case below for why that flipped in #1211.
   //
   // These read the MEASUREMENTS, not the table above. An earlier draft
   // filtered `CONTRACT`, which made them a declaration asserting itself: a
   // mutation that case-folded the blanket guard's matcher — collapsing the
   // pair in the specific-only direction — left them green, because the table
   // still said what it had always said. Measured: 1 red where 2 were
-  // predicted, and the missing one was this.
+  // predicted, and the missing one was this. That mutation is now the shipped
+  // code, and reverting it is what makes the second case below red.
   const only = (side: "blanket" | "specific") =>
     CONTRACT.filter((r) => {
       const got = readings.get(r.id);
@@ -510,13 +530,40 @@ describe("#1152 neither hook subsumes the other", () => {
     ).toBeGreaterThan(0);
   });
 
-  test("there are inputs only GateResultProtection refuses", () => {
+  // This case used to assert the MIRROR of the one above — that the specific
+  // guard refuses something the blanket guard permits — and #1211 is the reason
+  // it does not any more. Until #1211 the only input in that direction was row
+  // 8, the uppercase spelling, and row 8 was a DEFECT in the shipping guard. So
+  // the existence claim was being held up by the very gap this suite was written
+  // to surface: fixing the gap emptied the set, and a green reading there had
+  // meant "the shipping guard still has a hole", which is not a property anyone
+  // wants to require.
+  //
+  // What replaces it is the containment claim, and it is strictly stronger. The
+  // specific guard's refusals are a SUBSET of the blanket guard's by
+  // construction — it refuses only `Write`/`Edit` whose `file_path` case-folded
+  // ENDS WITH the artifact name, and the blanket guard refuses every
+  // `Write`/`Edit` whose path case-folded CONTAINS it — so any row landing in
+  // this direction means the shipping guard has acquired a hole the harness-only
+  // guard can see. That is #1211's shape exactly, and this now reports it on
+  // arrival instead of recording it as a healthy sign.
+  //
+  // Subsumed is not dead. The two are not deployed to the same trees — the
+  // blanket guard is `deployToConsumers: true` and the specific guard is
+  // OPT-IN, asserted below — so on a consumer tree the blanket guard is the only
+  // one present, and in a session on this machine the specific guard's
+  // registration resolves to a tree outside this repository (#713). Behavioural
+  // subsumption holds within one tree holding both; neither of those is that.
+  test("the shipping guard refuses everything the specific guard refuses", () => {
     expect(
-      only("specific").length,
-      "the specific guard no longer refuses anything the blanket guard permits, so it is " +
-        "fully subsumed — either that is a deliberate decision, in which case record it in " +
-        "specs/HOOK-ARCHITECTURE-SPEC.md, or a guard just became dead code",
-    ).toBeGreaterThan(0);
+      only("specific"),
+      "GateResultProtection refuses an input WorkflowStateGuard permits. The blanket " +
+        "guard is the one that SHIPS, so this is a gap on every consumer tree — the " +
+        "specific guard is not deployed there and nothing else is watching the " +
+        "artifact. #1211 was this, at WORKFLOW-STATE.JSON. Fix the blanket guard's " +
+        "matcher rather than recording the row, and if the divergence is deliberate " +
+        "say so in specs/HOOK-ARCHITECTURE-SPEC.md and explain what guards a consumer.",
+    ).toEqual([]);
   });
 
   test("every divergent row carries a note saying why", () => {
