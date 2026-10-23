@@ -6902,7 +6902,28 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
         # author commits a file whose NAME is the option and writes code at
         # that path shaped to draw a finding. Every input is author-chosen.
         case "\${rf}" in ""|-*|/*|*..*) rf="" ;; esac
+        # \`rt\` holds the anchor; \`got\` says whether there IS one. Two
+        # variables because one value cannot hold two facts, which is the
+        # whole of #1406: \`rt=""\` was the initial value AND the value every
+        # failure path below left behind — a refused spelling, an absent or
+        # non-numeric line, a path outside the checkout, a file not in the
+        # index, a line past the end of the file — AND what a cited line that
+        # is genuinely BLANK produces.
+        #
+        # The reader's undecidable test is \`typeof recordedText !==
+        # "string"\`, and \`""\` is a string. So every one of those failures
+        # reached the comparison instead, and a finding whose anchor was never
+        # obtained was dropped as RESOLVED the moment the cited line had any
+        # content. That is #1351's defect one value over: the repair closed
+        # the route through an absent field and left the route through an
+        # empty one.
+        #
+        # Fixing it at the READER with \`recordedText === ""\` is the wrong
+        # direction and is why it belongs here: a finding on a line that
+        # really is blank would become permanently uncarryable-away. Only
+        # this loop knows which branch it took.
         rt=""
+        got=no
         case "\${rl}" in
           ""|0|*[!0-9]*) ;;
           *)
@@ -7010,14 +7031,42 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
                     # and never globbed. The mismatch was one-sided, which
                     # is exactly what made it invisible.
                     rel=\${real#"\${root}"/}
-                    rt=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)
+                    # The \`X\` is the discriminator, and it is here because
+                    # \`sed -n "\${rl}p"\` prints nothing for a line that is
+                    # BLANK and nothing for a line that does not EXIST — two
+                    # facts, one empty capture (#1406). Prefixing makes a
+                    # blank line \`X\` and a missing line still empty, so
+                    # \`[ -n ]\` below tells them apart. It survives a
+                    # \`git show\` that fails too: \`sed\` then reads empty
+                    # input and prints nothing, so no pipefail is needed for
+                    # the failure to be visible.
+                    #
+                    # Tested on BSD sed (darwin 25.6) as well as GNU: the
+                    # brace form with internal semicolons is portable, and
+                    # the suite runs on macOS while the job runs on ubuntu.
+                    marked=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}{s/^/X/;p;q;}" || true)
+                    if [ -n "\${marked}" ]; then
+                      rt=\${marked#X}
+                      got=yes
+                    fi
                     ;;
                 esac
               fi
             fi
             ;;
         esac
-        jq -nc --arg t "\${rt}" '{${AI_REVIEW_LEDGER_TEXT_FIELD}: \$t}'
+        # An empty object, NOT \`{${AI_REVIEW_LEDGER_TEXT_FIELD}: ""}\`. The
+        # positional join below merges each row into its finding, so \`{}\`
+        # leaves the field off entirely and the reader's existing
+        # \`typeof !== "string"\` test reads it as undecidable and CARRIES the
+        # finding. A stale carried finding is visible and someone argues with
+        # it; a silently cleared one is invisible and nobody learns it
+        # existed.
+        if [ "\${got}" = yes ]; then
+          jq -nc --arg t "\${rt}" '{${AI_REVIEW_LEDGER_TEXT_FIELD}: \$t}'
+        else
+          printf '%s\\n' '{}'
+        fi
       done > "\${texts}"
       # Positional join, one text per finding in order. A texts file that is
       # short or unreadable leaves the field OFF that finding rather than
