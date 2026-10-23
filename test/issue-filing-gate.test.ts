@@ -915,6 +915,54 @@ describe("a corpus every filter emptied is UNMEASURED, not a clean tracker", () 
     expect(said).toContain("#77");
     expect(said, "the surviving row is not reported as a drop").not.toContain("#78");
   });
+
+  test("FG-60: the drop is reported when the command is REFUSED, and it names the filter", () => {
+    // `corpusDropNote` had exactly ONE case binding it — FG-57, which drives
+    // the ALLOWED path and asserts only the id. The battery is what showed
+    // that: M3 (stop pushing the note) was predicted to redden three rows and
+    // reddened one. FG-53 and FG-55 read the `dropped` array directly and
+    // never reach the rendered note, so a row that came back LOWER than
+    // predicted is the whole evidence the path was thin.
+    //
+    // Two things here that FG-57 cannot see. **A refusal computed against a
+    // short corpus is where the shortfall matters most** — the agent is being
+    // told its finding is already filed, by a comparison that did not read
+    // the whole tracker — and `notes` travels independently of `refusal`, so
+    // nothing asserted the two arrive together. And the REASON is the
+    // actionable half: "#77 was dropped" is not something anyone can act on
+    // until it says which filter took it.
+    const file = join(scratch, "blocked-partial-corpus.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        { number: 77, title: "a stuffed fixture issue", body: stuffed },
+        { number: 900, title: "retryBudget gives up early", body: DUPLICATE_BODY },
+      ]),
+      "utf-8",
+    );
+    const r = runHook(HOOK, DUPLICATE_FILING, { RUNGATE_OPEN_FINDINGS: file });
+    // The premise, asserted rather than assumed: this command really is
+    // refused. If the surviving row stopped matching, the case would still
+    // see the note and would be green about nothing.
+    expect(r.blocked, "the surviving row must still collide, or this proves nothing").toBe(true);
+    // `reason` and not `systemMessage`: a `decision: "block"` payload has one
+    // text field and it is `reason`, so that is the only channel a refused
+    // command has. The `blocked` premise above pins which path produced this
+    // string, so the helper's fallback across the two fields cannot make the
+    // case green on the path it is not testing.
+    const said = r.reason;
+    expect(said, "a refusal does not suppress the drop note").toContain("filtered out of the comparison set");
+    // Scoped to the note's own paragraph, not to `reason` as a whole. The
+    // refusal and the note are concatenated into the one text field a block
+    // payload has, and `#900` is named by the REFUSAL — it is the issue the
+    // surviving row collided with. Asserting `not.toContain("#900")` over the
+    // whole string tests the refusal's wording, which is a different check
+    // that would redden every time that sentence is reworded.
+    const note = said.split("\n\n").find(p => p.includes("filtered out of the comparison set")) ?? "";
+    expect(note).toContain("#77");
+    expect(note, "the filter that took it, not just that something went").toContain("over-key-cap");
+    expect(note, "the row that survived and caused the refusal is not a drop").not.toContain("#900");
+  });
 });
 
 describe("the ledger carries every row of a blocked command", () => {
