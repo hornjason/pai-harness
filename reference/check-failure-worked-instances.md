@@ -2124,3 +2124,44 @@ have prompted one. Two things follow:
   the shared binding broken converts a uniform defect into a defect with one
   documented exception, and the exception is what stops the next reader
   looking.
+
+### A migration can delete a guarantee nobody wrote down (#1282, #1304, #1318)
+
+Not one of the seven shapes, and it will recur: **a fix can remove a property
+the thing it replaced supplied implicitly.** The shapes above are all about a
+check that cannot fail. This is about a guarantee that silently stops
+existing, with no check anywhere to notice, because nobody ever wrote it down
+as a requirement — it came free with the old implementation.
+
+The worked instance is a `gh` → Octokit migration, and the defect arrived
+*inside the fix for a different finding*, which is the part worth keeping.
+
+`spawnSync` takes a `timeout` and the call site passed one. #1282 replaced the
+subprocess with an Octokit call to get off the CLI — a correct change, asked
+for by `GITHUB-API-MIGRATION-SPEC.md`. **Octokit has no default timeout.** So a
+hung API call hung the agent's `Bash` tool with no ceiling, and because this
+runs in a PreToolUse hook, that does not fail a finding — it takes out the
+session. No test went red, because no test had ever asserted the ceiling: it
+was a parameter to a function in the standard library, not a property anyone
+had named.
+
+Two more in the same family, found the same night, both in `#1318`:
+
+- `trustedCorpus` filtered a corpus down and returned `[]`. The guarantee the
+  unfiltered read provided implicitly — *an empty result means an empty
+  tracker* — stopped holding the moment a filter was added in front of it,
+  and `[]` went on meaning "clean" to every caller.
+- The `blocking` predicate was written as `rows.every(r => !r.emitted)` to
+  protect novel findings batched beside a duplicate. The implicit guarantee
+  it removed is *a refusal refuses*, and the bypass it created — append a
+  clean filing to a refused one — is reachable by accident.
+
+**What to do about it.** When you replace a mechanism, enumerate what the old
+one gave you that nobody asked for: timeouts, ordering, atomicity, a bound on
+size, the meaning of an empty result. Those are the properties with no test,
+because they were never a requirement — they were a side effect of the
+implementation, and the migration is the moment they disappear.
+
+The direction this is allowed to be wrong in is toward writing down a
+guarantee that was never load-bearing. That costs a sentence. The other
+direction cost a session-killing hang that shipped inside a security fix.

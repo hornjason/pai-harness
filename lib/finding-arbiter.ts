@@ -348,11 +348,42 @@ export const DUPLICATE_MIN_SHARED_LOCATIONS = 1;
  *
  * The floor exists because containment is meaningless on a tiny key set — a
  * one-key finding is wholly contained in anything mentioning that key, which
- * would manufacture a duplicate out of one word. Two rather than four: a
- * floor of 4 costs three of the 38 and flags not one pair fewer.
+ * would manufacture a duplicate out of one word.
+ *
+ * ## The floor is 4, and it was 2 for about an hour (#1318)
+ *
+ * It shipped at 2 on the argument that "a floor of 4 costs three of the 38
+ * and flags not one pair fewer" — which was true, and was the wrong thing to
+ * weigh. Counting the pairs it does not flag says nothing about the findings
+ * it eats, and no case in the suite asked the second question. Re-measured on
+ * the live tracker, at ratio 0.8 over the 35 findings the corpus filters to:
+ *
+ * | floor | self-refile | cross-issue pairs |
+ * |---|---|---|
+ * | 2 | 35/35 | 0 |
+ * | 3 | 34/35 | 0 |
+ * | 4 | **32/35** | 0 |
+ * | 5 | 30/35 | 0 |
+ *
+ * No floor in that range costs a single cross-issue pair, so three of
+ * thirty-five self-refiles is the entire price. What it buys: #1162 carries
+ * 40 keys, and at floor 2 a TWO-key finding whose keys both appear in it is
+ * refused as a duplicate of it. That is a real finding withheld by an
+ * unrelated issue, reachable on the tracker as it stands.
+ *
+ * The two directions are not symmetric and that is what decides this. A
+ * missed duplicate is a tracker row somebody closes. A false DUPLICATE
+ * silences a finding, and an arbiter that quietly eats novel findings turns a
+ * visible backlog into an invisible one — worse than the backlog it exists to
+ * shrink. `AR-20` is the ALLOW-direction control that was missing.
+ *
+ * **Not closed by this:** a FOUR-key finding wholly inside that same issue is
+ * still refused, at either floor. The floor shortens the swallow's reach; it
+ * does not remove it. An absolute shared-key minimum beside the ratio would
+ * not reach that case either, since four keys are genuinely shared.
  */
 export const DUPLICATE_CONTAINMENT_RATIO = 0.8;
-export const DUPLICATE_CONTAINMENT_MIN_KEYS = 2;
+export const DUPLICATE_CONTAINMENT_MIN_KEYS = 4;
 
 /** Does `text` reference `id` as an issue number? */
 function references(text: string, id: string): boolean {

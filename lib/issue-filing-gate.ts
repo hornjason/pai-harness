@@ -535,7 +535,9 @@ export async function openFindings(
   const override = process.env.RUNGATE_OPEN_FINDINGS;
   if (override !== undefined && override !== "") {
     try {
-      return asFindings(JSON.parse(readFileSync(override, "utf-8")));
+      const rows: unknown = JSON.parse(readFileSync(override, "utf-8"));
+      const findings = asFindings(rows);
+      return findings === null ? null : measuredCorpus(countOf(rows), findings);
     } catch {
       return null;
     }
@@ -549,7 +551,7 @@ export async function openFindings(
       listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT),
       OPEN_ISSUE_TIMEOUT_MS,
     );
-    return trustedCorpus(issues);
+    return measuredCorpus(issues.length, trustedCorpus(issues));
   } catch {
     // Every failure lands here as `null`, which is "nobody asked" and not
     // "nothing matched" — a missing token, a 403, a rate limit and an
@@ -588,6 +590,37 @@ export async function openFindings(
  */
 function withinKeyCap(finding: Finding): boolean {
   return symptomKeys(finding).length <= MAX_KEYS_PER_EXISTING_ISSUE;
+}
+
+/** How many rows the tracker returned, before any filter saw them. */
+function countOf(rows: unknown): number {
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
+/**
+ * The corpus, or `null` because there was no reading — the single binding
+ * that decides which (#1318).
+ *
+ * **A corpus that filtered down to empty is not an empty corpus.** Both
+ * filters above drop issues silently, so a tracker whose every issue is
+ * untrusted, or whose every issue is over the key cap, produced `[]` — and
+ * `[]` is byte-identical to a tracker with nothing in it. The gate read the
+ * second meaning and ALLOWed. That is the first shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, in the gate written to
+ * catch it: a reading nobody could take, reported as a reading that passed.
+ *
+ * `null` already means UNMEASURED to every caller and already routes to the
+ * refusal that says so, which is why this is three lines rather than a new
+ * result type. One binding, so a mutation battery has something to mutate —
+ * the predicate was previously implied by the absence of code, and absent
+ * code cannot be mutated or covered.
+ *
+ * The direction this is allowed to be wrong in is unchanged: UNMEASURED
+ * allows the filing and records that the dedupe never ran. It costs a
+ * possible duplicate, never a silenced finding.
+ */
+function measuredCorpus(seen: number, findings: readonly Finding[]): readonly Finding[] | null {
+  return seen > 0 && findings.length === 0 ? null : findings;
 }
 
 export function trustedCorpus(issues: readonly OpenIssue[]): readonly Finding[] {
@@ -732,20 +765,38 @@ export async function filingGate(
     if (overridden) notes.push(overrideNote(verdict));
   }
 
-  // ── A refusal blocks the COMMAND, so one duplicate must not take its
-  //    novel siblings with it ─────────────────────────────────────────────
+  // ── Any refused clause refuses the COMMAND ────────────────────────────
   //
-  // The first version blocked whenever any clause refused. A command mixing
-  // one known duplicate with three novel findings lost all four, and the
-  // three were exactly the findings this gate exists to let through —
-  // withheld with no artefact anywhere, which is the failure direction
-  // nothing here may have.
+  // This read `rows.every(r => !r.emitted)` until #1318, and that made
+  // batching the bypass: a command carrying one known duplicate beside one
+  // novel finding was ALLOWED, so the cheapest route past this gate was to
+  // append a clean filing to a refused one. An agent filing several findings
+  // at once reached it by accident.
   //
-  // There is no partial block available: the hook's one lever is the whole
-  // Bash command. So the rule is every-or-nothing, and when a mixed command
-  // proceeds the refusal is downgraded to a note naming what was NOT clean,
-  // which is strictly more information than the agent had before.
-  const blocking = rows.length > 0 && rows.every(r => !r.emitted);
+  // The argument for every-or-nothing was that blocking "takes the novel
+  // findings down with a duplicate". That step does not hold, and it is the
+  // one worth writing down because it is persuasive: **this is a PreToolUse
+  // hook, so nothing has executed.** A block costs the agent one re-run with
+  // the duplicate clause removed, and the findings are in its context, not
+  // destroyed. An allow costs a tracker row that a person or an agent has to
+  // triage and close. Those are not comparable, and the expensive,
+  // irreversible one is what the old predicate chose.
+  //
+  // The note the allow emitted said "Please withdraw them and re-run" — an
+  // action the allow had just made impossible, because a filing that already
+  // happened cannot be withdrawn by the agent that made it. A block is that
+  // same instruction delivered while it can still be followed.
+  //
+  // The note is kept. Naming what was not clean is more information than a
+  // bare refusal, so it accompanies the refusal rather than replacing it.
+  //
+  // Second consequence, and it is why the ledger rows above can be trusted:
+  // they are written with `disposition: "DROP"` and `withheldBy` set BEFORE
+  // this line runs. Under the old predicate an allowed-anyway refusal was
+  // recorded as a successful withhold, so every rate derived from the ledger
+  // counted it as a save — wrong in the direction that flatters the
+  // mechanism. `FG-47` asserts the two can never disagree again.
+  const blocking = refusals.length > 0;
   if (!blocking && refusals.length > 0) {
     notes.push(
       `[FindingArbiter] ${refusals.length} of ${rows.length} filings in this command would have ` +
