@@ -26,7 +26,7 @@ import {
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
 import { symptomKeys, type Finding } from "../lib/finding-arbiter";
-import { adjudicateFiling } from "../lib/issue-filing-gate";
+import { adjudicateFiling, measuredCorpus } from "../lib/issue-filing-gate";
 
 const EXISTING: Finding[] = [
   {
@@ -109,7 +109,7 @@ describe("the plants separate a live adjudicator from an inert one", () => {
   // the plant is alone in an empty set and nothing can match it.
   test("without its twin the duplicate plant is ALLOWed, so the twin is what lands it", async () => {
     const dup = plantsFor([], "b").find(p => p.key.endsWith("plant-duplicate"))!;
-    const v = await adjudicateFiling({ ...dup.attempt }, async () => []);
+    const v = await adjudicateFiling({ ...dup.attempt }, async () => measuredCorpus([]));
     expect(v.outcome).toBe("ALLOW");
   });
 

@@ -30,9 +30,11 @@ import {
   adjudicateFiling,
   filingAttempts,
   filingGate,
+  measuredCorpus,
   openFindings,
   readBodyFile,
   trustedCorpus,
+  unmeasuredCorpus,
   withTimeout,
   FILING_OVERRIDE_LABEL,
   MAX_KEYS_PER_EXISTING_ISSUE,
@@ -250,13 +252,15 @@ describe("#1261 the parts the decision is built from", () => {
   });
 
   test("FG-4: an unreadable tracker is UNMEASURED, never ALLOW", async () => {
-    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => null);
+    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () =>
+      unmeasuredCorpus("the open-issue set could not be read"),
+    );
     expect(v.outcome).toBe("UNMEASURED");
     expect(v.refusal).toBe("UNMEASURED");
   });
 
   test("FG-5: an EMPTY tracker is a reading, and allows", async () => {
-    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => []);
+    const v = await adjudicateFiling(filingAttempts(NOVEL_FILING)[0], async () => measuredCorpus([]));
     expect(v.outcome).toBe("ALLOW");
     expect(v.refusal).toBeNull();
   });
@@ -265,7 +269,7 @@ describe("#1261 the parts the decision is built from", () => {
     let asked = 0;
     const v = await adjudicateFiling(filingAttempts(DROPPED_FILING)[0], async () => {
       asked += 1;
-      return [];
+      return measuredCorpus([]);
     });
     expect(v.refusal).toBe("DROPPED_CATEGORY");
     // The cost order is the claim, so it is measured and not asserted in prose.
@@ -291,7 +295,7 @@ describe("#1261 the parts the decision is built from", () => {
       repeatedValueFlag: false,
     };
     const v = await adjudicateFiling(attempt, async () =>
-      OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })),
+      measuredCorpus(OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body }))),
     );
     expect(v.outcome).toBe("REFUSE");
     expect(v.refusal).toBe("DUPLICATE");
@@ -307,7 +311,7 @@ describe("#1261 the parts the decision is built from", () => {
     repeatedValueFlag: false,
   });
   const tracker = async () =>
-    OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body }));
+    measuredCorpus(OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })));
 
   test("FG-18: a body-file that cannot be read is UNMEASURED, and says which file", async () => {
     // The arm #1300 narrowed, not removed. A reader returning `null` is the
@@ -535,11 +539,11 @@ describe("#1261 the four suppression classes", () => {
   test("FG-30: the two orderings reach OPPOSITE outcomes, so the case is not vacuous", async () => {
     const trailingStyle = await adjudicateFiling(
       filingAttempts(`gh issue create --title "${REAL_TITLE}" --title "${STYLE_TITLE}" ${BODY}`)[0],
-      async () => [],
+      async () => measuredCorpus([]),
     );
     const trailingReal = await adjudicateFiling(
       filingAttempts(`gh issue create --title "${STYLE_TITLE}" --title "${REAL_TITLE}" ${BODY}`)[0],
-      async () => [],
+      async () => measuredCorpus([]),
     );
     expect(trailingStyle.outcome).toBe("REFUSE");
     expect(trailingReal.outcome).toBe("ALLOW");
@@ -556,7 +560,7 @@ describe("#1261 the four suppression classes", () => {
         projectRoot: scratch,
         readExisting: async (_root, repo) => {
           asked.push(repo);
-          return [];
+          return measuredCorpus([]);
         },
       },
     );
@@ -579,22 +583,26 @@ describe("#1261 the four suppression classes", () => {
     ...over,
   });
 
+  /** The findings an arm yields, or `[]` when it took no reading at all. */
+  const kept = (r: ReturnType<typeof trustedCorpus>) => (r.reading === "MEASURED" ? r.findings : []);
+
   test("FG-33 BASELINE: an untrusted author cannot put a suppressor in the corpus", () => {
-    expect(trustedCorpus([trusted({ authorAssociation: "NONE" })])).toEqual([]);
-    expect(trustedCorpus([trusted({ authorAssociation: "CONTRIBUTOR" })])).toEqual([]);
-    expect(trustedCorpus([trusted({ authorAssociation: "" })]), "absent is not trusted").toEqual([]);
+    for (const association of ["NONE", "CONTRIBUTOR", ""]) {
+      const r = trustedCorpus([trusted({ authorAssociation: association })]);
+      expect(kept(r), `${association || "(absent)"} is not trusted`).toEqual([]);
+    }
   });
 
   test("FG-34 CONTROL: a trusted author's issue is still in the corpus", () => {
     for (const association of ["OWNER", "MEMBER", "COLLABORATOR"]) {
-      expect(trustedCorpus([trusted({ authorAssociation: association })])).toHaveLength(1);
+      expect(kept(trustedCorpus([trusted({ authorAssociation: association })]))).toHaveLength(1);
     }
   });
 
   test("FG-35: one issue cannot name enough to match everything", () => {
     const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`symbolNumber${i}\``).join(" ");
-    expect(trustedCorpus([trusted({ body: stuffed })]), "over the cap, so dropped whole").toEqual([]);
-    expect(trustedCorpus([trusted()]), "an ordinary issue is unaffected").toHaveLength(1);
+    expect(kept(trustedCorpus([trusted({ body: stuffed })])), "over the cap, so dropped whole").toEqual([]);
+    expect(kept(trustedCorpus([trusted()])), "an ordinary issue is unaffected").toHaveLength(1);
   });
 
   test("FG-38: the cap applies to the FIXTURE corpus too, which FG-35 cannot see", async () => {
@@ -616,9 +624,12 @@ describe("#1261 the four suppression classes", () => {
         else process.env.RUNGATE_OPEN_FINDINGS = prior;
       }
     };
-    expect(await read(stuffed), "over the cap, so dropped whole").toEqual([]);
+    const over = await read(stuffed);
+    expect(over.reading, "the one row was dropped, so the set was never compared").toBe("UNMEASURED");
+    expect(over.dropped.map(d => d.reason)).toEqual(["over-key-cap"]);
+    const ordinary = await read("`retryBudget` in lib/command-retry.ts: 144 of 234.");
     expect(
-      await read("`retryBudget` in lib/command-retry.ts: 144 of 234."),
+      ordinary.reading === "MEASURED" ? ordinary.findings : [],
       "an ordinary fixture row is unaffected — this is the control that fails if the reader broke",
     ).toHaveLength(1);
   });
@@ -745,7 +756,159 @@ describe("a refused filing does not ride through on a clean sibling", () => {
     expect(r.payload?.systemMessage ?? "").toContain(FILING_OVERRIDE_LABEL);
   });
 
-  test("FG-51 CONTROL: a blocked command still records every row, clean ones included", () => {
+});
+
+/**
+ * A corpus that filtered to nothing is UNMEASURED, not a clean tracker.
+ *
+ * ## The defect
+ *
+ * `openFindings` read the tracker, dropped every issue whose
+ * `authorAssociation` is untrusted and every issue over the key cap, and
+ * returned the remainder as a list. **A non-empty issue list that filters
+ * down to empty was byte-indistinguishable from a tracker with nothing on
+ * it**, and the gate ALLOWed on the strength of a comparison it never made.
+ *
+ * Each filter is individually argued to fail in the safe direction — a
+ * duplicate reaches the tracker, never a real finding silenced — and that
+ * argument is about ONE issue being dropped. It does not survive
+ * composition: when the filters take everything, the gate is not erring
+ * toward letting a duplicate through, it is reporting a reading it did not
+ * take. A filter with a bug in it reads exactly the same.
+ *
+ * ## What `null` cost, and why it is gone
+ *
+ * Carrying the reason required a channel, and `null` had none. A second
+ * channel beside `null` would have been two spellings of UNMEASURED — two
+ * deciders for one question, the fourth shape — so `null` was collapsed into
+ * the `UNMEASURED` arm of `CorpusReading`, which carries its own `why`. That
+ * matters beyond tidiness: `adjudicateFiling` used to COMPOSE the sentence
+ * *"the open-issue set could not be read"* for every `null`, and that
+ * sentence is false for a corpus that was read perfectly well and then
+ * emptied by our own filters. This file already paid for a reason that was
+ * false for the input it was emitted on, in the `--body-file` arm FG-17
+ * covers.
+ *
+ * ## What every pre-existing row held fixed
+ *
+ * FG-33, FG-34, FG-35 and FG-38 each hand the corpus readers **one issue**.
+ * With one issue, "the filters dropped it" and "the tracker was empty" have
+ * the same consequence for the caller, so none of them can see the
+ * composition — the seventh shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`. The rows below vary that
+ * axis: two issues both dropped, and two issues of which one survives.
+ *
+ * ## Measured, not inferred: the harness's own filing identity
+ *
+ * The allowlist eating its own corpus was the worst case, and it does not
+ * happen. Read from the live tracker on 2026-10-23,
+ * `repos/hornjason/pai-harness/issues?state=open`, pull requests excluded:
+ * **35 of 35 open issues report `author_association: OWNER`**, which is in
+ * `TRUSTED_ASSOCIATIONS`. The author filter currently drops nothing. It is
+ * not asserted here, because a case that calls the GitHub API measures a
+ * network rather than this code.
+ */
+describe("a corpus every filter emptied is UNMEASURED, not a clean tracker", () => {
+  const issue = (over: Partial<OpenIssue> = {}): OpenIssue => ({
+    number: 1,
+    title: "retryBudget gives up early",
+    body: "`retryBudget` in lib/command-retry.ts: 144 of 234 over 5060.",
+    authorAssociation: "OWNER",
+    ...over,
+  });
+  const stuffed = Array.from(
+    { length: MAX_KEYS_PER_EXISTING_ISSUE + 10 },
+    (_, i) => `\`stuffedSymbol${i}\``,
+  ).join(" ");
+
+  test("FG-52 BASELINE: two issues, both filtered out, is UNMEASURED and not an empty corpus", () => {
+    const r = trustedCorpus([
+      issue({ number: 10, authorAssociation: "NONE" }),
+      issue({ number: 11, body: stuffed }),
+    ]);
+    expect(r.reading).toBe("UNMEASURED");
+  });
+
+  test("FG-53: the reading names every dropped issue and the filter that took it", () => {
+    // A reason that does not say what was dropped is a reason nobody can act
+    // on, and the two filters need different repairs — one is a trust
+    // decision, the other is an issue to split up.
+    const r = trustedCorpus([
+      issue({ number: 10, authorAssociation: "NONE" }),
+      issue({ number: 11, body: stuffed }),
+    ]);
+    expect(r.dropped.map(d => [d.id, d.reason])).toEqual([
+      ["10", "untrusted-author"],
+      ["11", "over-key-cap"],
+    ]);
+    const why = r.reading === "UNMEASURED" ? r.why : "";
+    expect(why).toContain("#10");
+    expect(why).toContain("#11");
+    expect(why, "the association that failed, so the reader can check it").toContain("NONE");
+    expect(why, "and the cap, which is the other repair").toContain(
+      String(MAX_KEYS_PER_EXISTING_ISSUE),
+    );
+  });
+
+  test("FG-54 CONTROL: a GENUINELY empty tracker is MEASURED, and allows", () => {
+    // The row that stops the fix becoming "an empty corpus always refuses",
+    // which would make a project with no open issues unable to file anything.
+    const r = trustedCorpus([]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.reading === "MEASURED" ? r.findings : null).toEqual([]);
+    expect(r.dropped).toEqual([]);
+  });
+
+  test("FG-55 CONTROL: one survivor among two is MEASURED, and the drop is still reported", () => {
+    // The other side of the axis. A partial filter is a reading, and the
+    // caller is told it read a smaller tracker than the one that exists.
+    const r = trustedCorpus([issue({ number: 10, authorAssociation: "NONE" }), issue({ number: 11 })]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.reading === "MEASURED" ? r.findings.map(f => f.id) : null).toEqual(["11"]);
+    expect(r.dropped.map(d => d.id), "the drop survives a successful read").toEqual(["10"]);
+  });
+
+  test("FG-56: end to end, a filing against an emptied corpus is UNMEASURED at the hook", () => {
+    // The production path, not the unit. Under the defect the hook ALLOWed
+    // and said nothing; the filing was adjudicated against a comparison that
+    // never happened.
+    const file = join(scratch, "emptied-corpus.json");
+    writeFileSync(
+      file,
+      JSON.stringify([{ number: 77, title: "a stuffed fixture issue", body: stuffed }]),
+      "utf-8",
+    );
+    const r = runHook(HOOK, NOVEL_FILING, { RUNGATE_OPEN_FINDINGS: file });
+    expect(r.blocked, "UNMEASURED allows — a broken adjudicator is not a gag").toBe(false);
+    const said = r.payload?.systemMessage ?? "";
+    expect(said, "but it says so").toContain("UNMEASURED");
+    expect(said, "and names what emptied it").toContain("#77");
+  });
+
+  test("FG-57 CONTROL: a partial drop is reported even when the filing is ALLOWED", () => {
+    // Separates "the gate noticed the drop" from "the gate refused". Two
+    // rows, one kept, one over the cap: the filing runs and the note still
+    // says the dedupe read a smaller tracker than exists.
+    const file = join(scratch, "partial-corpus.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        { number: 77, title: "a stuffed fixture issue", body: stuffed },
+        { number: 78, title: "an ordinary fixture issue", body: "`someOtherSymbol` in lib/x.ts." },
+      ]),
+      "utf-8",
+    );
+    const r = runHook(HOOK, NOVEL_FILING, { RUNGATE_OPEN_FINDINGS: file });
+    expect(r.blocked).toBe(false);
+    const said = r.payload?.systemMessage ?? "";
+    expect(said).toContain("filtered out of the comparison set");
+    expect(said).toContain("#77");
+    expect(said, "the surviving row is not reported as a drop").not.toContain("#78");
+  });
+});
+
+describe("the ledger carries every row of a blocked command", () => {
+  test("FG-58: a blocked command still records every row, clean ones included", () => {
     // The ledger is what makes the block affordable: nothing is withheld with
     // no artefact anywhere, which is the failure the old predicate avoided.
     const start = ledgerRows().length;

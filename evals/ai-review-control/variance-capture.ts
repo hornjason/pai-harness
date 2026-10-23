@@ -85,7 +85,13 @@ import { writeFileSync } from "fs";
 import { join } from "path";
 import { createHash } from "crypto";
 
-import { adjudicateFiling, openFindings, type FilingAttempt, type FilingAdjudication } from "../../lib/issue-filing-gate";
+import {
+  adjudicateFiling,
+  measuredCorpus,
+  openFindings,
+  type FilingAttempt,
+  type FilingAdjudication,
+} from "../../lib/issue-filing-gate";
 import type { Finding } from "../../lib/finding-arbiter";
 
 /** Non-zero for every refusal, through one constant. */
@@ -334,7 +340,7 @@ export async function runBatch(batch: readonly BatchRow[], existing: readonly Fi
   const unmeasured: string[] = [];
   for (const row of batch) {
     const set = comparisonSet(row, existing);
-    const v: FilingAdjudication = await adjudicateFiling(row.attempt, async () => set);
+    const v: FilingAdjudication = await adjudicateFiling(row.attempt, async () => measuredCorpus(set));
     if (v.outcome === "ALLOW") allowed.push(row.key);
     else if (v.outcome === "UNMEASURED") unmeasured.push(row.key);
     else withheld.push(row.key);
@@ -361,7 +367,7 @@ export async function detailOf(
   const out: ArmReading["firstRunDetail"] = [];
   for (const row of batch) {
     const set = comparisonSet(row, existing);
-    const v = await adjudicateFiling(row.attempt, async () => set);
+    const v = await adjudicateFiling(row.attempt, async () => measuredCorpus(set));
     out.push({
       key: row.key,
       provenance: row.provenance,
@@ -384,7 +390,7 @@ export async function readPlants(
   };
   const out: VarianceCapture["plantDetail"] = [];
   for (const row of plantsFor(existing, batch)) {
-    const v = await adjudicateFiling(row.attempt, async () => comparisonSet(row, existing));
+    const v = await adjudicateFiling(row.attempt, async () => measuredCorpus(comparisonSet(row, existing)));
     const observed = v.outcome === "ALLOW" ? "ALLOW" : `${v.outcome}/${v.refusal}`;
     out.push({ plant: row.key, expected: expected[row.key]!, observed, agreed: observed === expected[row.key] });
   }
@@ -493,10 +499,10 @@ export function provenanceRefusal(
 
 export async function capture(opts: CaptureProvenance): Promise<VarianceCapture> {
   const batchName = `variance-${opts.commit.slice(0, 12)}`;
-  const snapshot = await openFindings(opts.root);
+  const reading = await openFindings(opts.root);
   const measuredAt = new Date().toISOString();
 
-  if (snapshot === null) {
+  if (reading.reading === "UNMEASURED") {
     return {
       kind: "single-adjudicator-variance",
       name: "single-adjudicator-variance",
@@ -518,13 +524,15 @@ export async function capture(opts: CaptureProvenance): Promise<VarianceCapture>
       plantDetail: [],
       usable: false,
       caveat:
-        "UNMEASURED: `openFindings` returned null, so the comparison set was never read. A missing token, a " +
-        "403, a rate limit and an unreachable API all land here, and none of them is an empty tracker.",
+        "UNMEASURED: `openFindings` took no reading, so the comparison set was never read. A missing token, " +
+        "a 403, a rate limit, an unreachable API and a corpus every filter emptied all land here, and none " +
+        `of them is an empty tracker. Its own reason: ${reading.why}`,
       permanentlyUnmeasured: PERMANENTLY_UNMEASURED,
       arms: [],
     };
   }
 
+  const snapshot = reading.findings;
   const batch = batchFrom(snapshot, batchName);
   const plantDetail = await readPlants(snapshot, batchName);
   const plantsAgreed = plantDetail.filter(p => p.agreed).length;
@@ -540,9 +548,9 @@ export async function capture(opts: CaptureProvenance): Promise<VarianceCapture>
   let liveDetail: ArmReading["firstRunDetail"] = [];
   for (let i = 0; i < opts.runs; i++) {
     const now = await openFindings(opts.root);
-    if (now === null) break;
-    live.push(await runBatch(batch, now));
-    if (i === 0) liveDetail = await detailOf(batch, now);
+    if (now.reading === "UNMEASURED") break;
+    live.push(await runBatch(batch, now.findings));
+    if (i === 0) liveDetail = await detailOf(batch, now.findings);
   }
   const liveSpan = (Date.now() - liveStart) / 1000;
 
