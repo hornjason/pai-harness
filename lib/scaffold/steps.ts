@@ -3918,10 +3918,24 @@ ${bunStep}
   // test/ai-review-surface-census.test.ts compares the committed file
   // against a FRESH generation — so the two orders are a byte difference
   // that reads as a hand-edit. Measured: that is exactly how this was found.
+  // `pull-requests: write` is #1168's second half: the findings ledger is an
+  // upserted pull-request comment, and nothing else in this job writes one.
+  //
+  // It is APPENDED after `actions: read` for the merge reason above, and it
+  // is the narrowest grant that can write a comment — `issues: write` would
+  // also work and would additionally let this job edit issues, which it has
+  // no reason to touch.
+  //
+  // On a FORK pull request GitHub hands this job a read-only token whatever
+  // is written here, so the grant is inert exactly where the checked-out code
+  // is untrusted. The ledger step reports that case rather than failing on
+  // it. For a same-repo branch the author could already push to the
+  // repository, so the grant adds no reach an attacker did not have.
+  const ledgerPermission = `  # Upsert the findings ledger comment — the round history (#1168).\n  pull-requests: write`;
   const aiReviewPermissions =
     vertex.config === null
-      ? `permissions:\n  contents: read\n  # Count this pull request's previous AI Review runs — the round budget (#1168).\n  actions: read`
-      : `permissions:\n  contents: read\n  # Mint the OIDC token Workload Identity Federation exchanges (#631).\n  id-token: write\n  # Count this pull request's previous AI Review runs — the round budget (#1168).\n  actions: read`;
+      ? `permissions:\n  contents: read\n  # Count this pull request's previous AI Review runs — the round budget (#1168).\n  actions: read\n${ledgerPermission}`
+      : `permissions:\n  contents: read\n  # Mint the OIDC token Workload Identity Federation exchanges (#631).\n  id-token: write\n  # Count this pull request's previous AI Review runs — the round budget (#1168).\n  actions: read\n${ledgerPermission}`;
 
   const aiReviewYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
