@@ -25,6 +25,9 @@ import {
   arbitrate,
   arbitrateBatch,
   containedCitationPath,
+  containmentOf,
+  DUPLICATE_CONTAINMENT_MIN_KEYS,
+  DUPLICATE_MIN_SHARED_QUANTITIES,
   FILING_BUDGET_FINDINGS,
   citedLines,
   citedSymbols,
@@ -209,6 +212,36 @@ describe("AR-2: extraction refuses the shapes that are not readings", () => {
   test("a path:line citation is read as a citation", () => {
     expect(citedLines({ id: "x", title: "t", body: "`hooks/BashWriteGuard.hook.ts:81` and `:115`" }))
       .toEqual([{ path: "hooks/BashWriteGuard.hook.ts", line: 81 }]);
+  });
+
+  // #1333. The ISO form was already masked; a clock time written apart from
+  // its date was not, because the `:\d+` rule took the minutes and left the
+  // hour standing as an ordinary integer over the `n >= 10` floor.
+  const qty = (body: string) => symptomKeys({ id: "x", title: "t", body }).filter(k => k.startsWith("qty:"));
+
+  test("a clock time is not a quantity", () => {
+    expect(qty("the run started at 15:24 and ended at 16:02")).toEqual([]);
+    expect(qty("it timed out at 23:59:01")).toEqual([]);
+    // The ISO form, which was always masked — here so a fix that moved the
+    // clock rule ahead of the date rule cannot pass by shadowing it.
+    expect(qty("the run started at 2026-10-23T15:24:00Z")).toEqual([]);
+  });
+
+  test("masking a clock time does not mask a reading", () => {
+    // The positive control. A fix that widened far enough to swallow ordinary
+    // integers would satisfy the case above and break the function's purpose,
+    // so the two assertions have to sit together.
+    expect(qty("it found 15 violations")).toEqual(["qty:15"]);
+    expect(qty("41 spellings were swept, 7 newly blocked")).toEqual(["qty:41"]);
+    expect(qty("the ratio moved from 1,024 to 2,048")).toEqual(["qty:1024", "qty:2048"]);
+  });
+
+  test("a clock hour and a reading of the same number do not collide", () => {
+    // The defect stated as the thing it costs: these two findings measure
+    // nothing in common, and before #1333 they shared `qty:15`.
+    const clock = symptomKeys({ id: "a", title: "t", body: "the run started at 15:24" });
+    const reading = symptomKeys({ id: "b", title: "t", body: "it found 15 violations" });
+    expect(clock.filter(k => reading.includes(k))).toEqual([]);
   });
 });
 
@@ -573,20 +606,119 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
     for (const f of incident) expect(f.body.length).toBeGreaterThan(1000);
   });
 
+  /** The distinct finding the pair is tied with. A DIFFERENT write-guard
+   * defect — an escaped quote inside `$( )` — in the same subsystem. */
+  const distinct = (
+    JSON.parse(
+      readFileSync(join(import.meta.dir, "fixtures", "finding-distinct-1239.json"), "utf-8"),
+    ) as Finding[]
+  )[0]!;
+
+  /**
+   * ## THE BATCH-MECHANICS PAIR, AND WHY IT IS A SECOND FIXTURE (#1333)
+   *
+   * Four rows below are about `arbitrateBatch` MECHANICS — self-skip by
+   * reference rather than by id, in-batch collision against an empty
+   * tracker, walk-order determinism, and the mutation showing a fixed
+   * snapshot misses all of it. None of them is about #1195/#1196; that pair
+   * was simply the duplicate they were driven on, and after the clock-time
+   * mask it is no longer a duplicate at all.
+   *
+   * So they were repointed rather than weakened. `#1175`/`#1177` are a real
+   * tracker pair that is still a duplicate on three genuine shared
+   * quantities, with 7 and 14 keys — the mask does not touch them.
+   *
+   * The repoint is not optional housekeeping. Left on the incident pair,
+   * `MUTATION: against a fixed snapshot` would have stayed GREEN while
+   * asserting nothing: it expects zero duplicates, and zero is what a
+   * non-duplicate pair gives with or without the mutation applied. That is
+   * the third shape in `.claude/rules/checks-must-be-able-to-fail.md`, and
+   * it arrives silently, on a case nobody had to touch.
+   */
+  const batchPair = JSON.parse(
+    readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1175-1177.json"), "utf-8"),
+  ) as Finding[];
+
+  test("the batch-mechanics pair is a real duplicate, or the four rows below say nothing", () => {
+    expect(batchPair.map(f => f.id).sort()).toEqual(["#1175", "#1177"]);
+    for (const f of batchPair) expect(f.body.length).toBeGreaterThan(1000);
+    // The premise every mechanics row rests on, asserted once, here.
+    expect(duplicateOverlap(batchPair[0]!, batchPair[1]!).duplicate).toBe(true);
+  });
+
   test("the two share a measured symptom under completely different titles", () => {
     const [a, b] = incident;
     const overlap = duplicateOverlap(a, b);
-    expect(overlap.duplicate).toBe(true);
     expect(overlap.keys).toContain("sym:commandWord");
     expect(overlap.keys).toContain("sym:isDirDestination");
     expect(overlap.keys).toContain("sym:statSync");
   });
 
   /**
+   * ## THEY SHARE A SYMPTOM AND ARE NOT DETECTED, AND THAT IS NOT A BUG (#1333)
+   *
+   * These rows used to assert `duplicate === true`. That verdict was real
+   * and its cause was not: both findings say "merged 15:48", and
+   * `quantitiesIn` leaked the hour as `qty:15` — the same key `"it found 15
+   * violations"` emits. That one spurious key was the second of exactly two
+   * quantities they share, and `qty >= 2` is the first arm's threshold.
+   *
+   * **We are not losing a capability here; we are finding out we never had
+   * one, because the only reason that pair was ever caught was two findings
+   * mentioning the same time of day.**
+   *
+   * So these rows now assert the measurement instead of the verdict. They
+   * are still able to fail, and the thing that reddens them is the thing
+   * worth hearing about: a change to key extraction.
+   */
+  test("#1333: the pair is no longer detected, and the numbers say why", () => {
+    const [a, b] = incident;
+    const overlap = duplicateOverlap(a, b);
+    expect(overlap.duplicate).toBe(false);
+    // One shared quantity, against a threshold of two. Before the mask it
+    // was two, and the second was a clock hour.
+    const quantities = overlap.keys.filter(k => k.startsWith("qty:"));
+    expect(quantities.length).toBeLessThan(DUPLICATE_MIN_SHARED_QUANTITIES);
+    // The leaked key, named, so a regression puts it back in front of a reader.
+    expect(quantities).not.toContain("qty:15");
+  });
+
+  /**
+   * ## THE TIE IS THE FINDING, SO IT IS ASSERTED AS A TIE
+   *
+   * #1195/#1196 are the same incident. #1195/#1239 are different defects in
+   * the same subsystem. On clean keys **both pairs have identical
+   * containment**, so no value of `DUPLICATE_CONTAINMENT_RATIO` admits the
+   * first and excludes the second. The docblock's claim that 0.8 is
+   * separated from 0.6 by "a single pair" was true only while the leak
+   * inflated that pair above the other.
+   *
+   * Written as an EQUALITY BETWEEN THE TWO, deliberately. Two bare
+   * assertions on 0.750 would stay green under a change that moved both,
+   * and a change that moved both is not news. A change that *separates*
+   * them is news, and reddens this.
+   */
+  test("#1333: the true pair and a distinct pair are tied, so no containment cut separates them", () => {
+    const [a, b] = incident;
+    const truePair = containmentOf(a, b);
+    const distinctPair = containmentOf(a, distinct);
+
+    expect(truePair).toBe(distinctPair);
+
+    // The tie is only meaningful if both are live readings rather than two
+    // pairs the key floor refused. A refusal scores 0 and would tie too.
+    expect(truePair).toBeGreaterThan(0);
+    expect(symptomKeys(distinct).length).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_MIN_KEYS);
+
+    // And the distinct pair really is distinct, or the tie proves nothing.
+    expect(duplicateOverlap(a, distinct).duplicate).toBe(false);
+  });
+
+  /**
    * THE PAIR IS THE TEST, NOT EITHER ROW.
    *
-   * The row below runs the fixtures under their real ids, `1195` and `1196`,
-   * and it was green on the merged code. The CLI does not produce that input:
+   * The row below runs the fixtures under their real tracker ids, and it was
+   * green on the merged code. The CLI does not produce that input:
    * it labels every unfiled finding `UNFILED_ID`, so the real batch is two
    * findings both carrying `"new"` — and the self-skip guard, keyed on the id
    * string, made each skip the other AS ITSELF. Measured on merged main: 2
@@ -595,7 +727,7 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
    * is the fifth shape in `.claude/rules/checks-must-be-able-to-fail.md`.
    */
   test("BOTH IDS UNFILED — the input the CLI actually sends — still yields one survivor", () => {
-    const asNew = incident.map(f => ({ ...f, id: UNFILED_ID }));
+    const asNew = batchPair.map(f => ({ ...f, id: UNFILED_ID }));
     const r = arbitrateBatch(asNew, opts({ existing: [], ...eachVotedTheSame(AGREED, asNew.length) }));
     expect(r.toComment.length).toBe(1);
     expect(r.verdicts.filter(v => v.refusal === "DUPLICATE").length).toBe(1);
@@ -608,7 +740,7 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
   });
 
   test("ONE BATCH, EMPTY TRACKER: exactly one of them survives", () => {
-    const r = arbitrateBatch(incident, opts({ existing: [], ...eachVotedTheSame(AGREED, incident.length) }));
+    const r = arbitrateBatch(batchPair, opts({ existing: [], ...eachVotedTheSame(AGREED, batchPair.length) }));
     // One posts as a comment on the branch it describes; the other collides
     // with it INSIDE THE BATCH, which is the whole fix.
     expect(r.toComment.length).toBe(1);
@@ -620,13 +752,19 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
   test("MUTATION: against a fixed snapshot — the shape this replaced — both read as new", () => {
     // The cheapest wrong fix, performed and measured rather than described:
     // arbitrate each against the SAME empty snapshot, as the first cut did.
-    const fixed = incident.map(f => arbitrate(f, opts({ existing: [] })));
+    const fixed = batchPair.map(f => arbitrate(f, opts({ existing: [] })));
     expect(fixed.filter(v => v.refusal === "DUPLICATE").length).toBe(0);
+    // The control the zero above needs: the SAME pair, through the batch
+    // path, does find the duplicate. Without this the row reads the same
+    // whether the snapshot is the cause or the pair simply does not collide
+    // — which is exactly how it survived #1333 looking healthy.
+    const batched = arbitrateBatch(batchPair, opts({ existing: [], ...eachVotedTheSame(AGREED, batchPair.length) }));
+    expect(batched.verdicts.filter(v => v.refusal === "DUPLICATE").length).toBe(1);
   });
 
   test("the walk order is pinned, so the survivor does not depend on array position", () => {
-    const forwards = arbitrateBatch(incident, opts(eachVotedTheSame(AGREED, incident.length)));
-    const backwards = arbitrateBatch([...incident].reverse(), opts(eachVotedTheSame(AGREED, incident.length)));
+    const forwards = arbitrateBatch(batchPair, opts(eachVotedTheSame(AGREED, batchPair.length)));
+    const backwards = arbitrateBatch([...batchPair].reverse(), opts(eachVotedTheSame(AGREED, batchPair.length)));
     const dupOf = (r: typeof forwards) => r.verdicts.find(v => v.refusal === "DUPLICATE")!.id;
     expect(dupOf(forwards)).toBe(dupOf(backwards));
   });
@@ -976,14 +1114,26 @@ describe("AR-14: the candidate ledger — the withheld rows are the point", () =
    * marks BOTH incident rows emitted the moment either one is, so the
    * duplicate that was withheld is recorded as having been posted. The
    * ledger would then report the opposite of the thing it exists to record.
+   *
+   * The subject is that cross-contamination, NOT the #1195/#1196 pair, and
+   * the input used to be the incident fixture. #1333 removed a key leak
+   * that was the only reason that pair read as a duplicate at all, so the
+   * fixture stopped exercising this property — and the fixture was swapped
+   * rather than the claim weakened, because any duplicate pair in one batch
+   * will do. Two re-reports of one symptom under different titles are a
+   * duplicate for a reason nothing in #1333 touches.
    */
-  test("duplicate ids do not cross-contaminate: one incident row emitted, one withheld", () => {
-    const incident = (
-      JSON.parse(
-        readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1195-1196.json"), "utf-8"),
-      ) as Finding[]
-    ).map(f => ({ ...f, id: UNFILED_ID }));
+  test("duplicate ids do not cross-contaminate: one row emitted, one withheld", () => {
+    const sameSymptom = (title: string): Finding => ({
+      id: UNFILED_ID,
+      title,
+      body: "`zetaHandler` fails 311 of 742 times in `lib/z.ts`.",
+    });
+    const incident = [sameSymptom("one wording"), sameSymptom("another wording")];
     const r = arbitrateBatch(incident, opts({ existing: [], ...eachVotedTheSame(AGREED, incident.length) }));
+    // The premise, asserted rather than assumed: this input really is a
+    // duplicate pair, or every row below holds vacuously.
+    expect(duplicateOverlap(incident[0]!, incident[1]!).duplicate).toBe(true);
     expect(r.candidates.map(c => c.id)).toEqual([UNFILED_ID, UNFILED_ID]);
     expect(r.candidates.filter(c => c.emitted).length).toBe(1);
     expect(r.candidates.filter(c => c.withheldBy === "DUPLICATE").length).toBe(1);
@@ -1453,12 +1603,24 @@ describe("AR-17: the corpus key is unique by construction, or it is absent", () 
    * The hash does not identify the collision either, which is the half that
    * is easy to miss: the dedupe matches on SHARED keys, not on the whole
    * set, so two findings can be duplicates of each other and hash apart.
+   *
+   * This read `#1195`/`#1196` until #1333. That pair's only shared quantity
+   * was `qty:15`, extracted out of the clock time `15:48` by a `:\d+` rule
+   * that ate the minutes and left the hour, and masking the leak drops them
+   * below the quantity floor — so the pair can no longer carry the premise
+   * this case needs. `#1175`/`#1177` are a duplicate on three real shared
+   * quantities (`144`, `234`, `5060`) and 7-vs-14 keys, which is the same
+   * property measured on a pair the mask does not touch.
    */
-  test("the real #1195/#1196 pair are duplicates with DIFFERENT hashes", () => {
+  test("the real #1175/#1177 pair are duplicates with DIFFERENT hashes", () => {
     const incident = JSON.parse(
-      readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1195-1196.json"), "utf-8"),
+      readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1175-1177.json"), "utf-8"),
     ) as Finding[];
     expect(duplicateOverlap(incident[0]!, incident[1]!).duplicate).toBe(true);
+    // Named, so the next leak of this shape reddens here instead of being
+    // absorbed: the match must not rest on a fragment of a clock time.
+    expect(duplicateOverlap(incident[0]!, incident[1]!).keys.filter(k => k.startsWith("qty:")))
+      .toEqual(["qty:144", "qty:234", "qty:5060"]);
     const r = arbitrateBatch(incident.map(f => ({ ...f, id: UNFILED_ID })), opts(eachVotedTheSame(AGREED, incident.length)));
     expect(new Set(r.candidates.map(c => c.symptomHash)).size).toBe(2);
   });
@@ -1783,5 +1945,100 @@ describe("AR-19: a byte-identical re-filing is a duplicate, whatever it counts",
     );
     expect(ratio, "the fixture must sit below the containment cut").toBeLessThan(0.8);
     expect(duplicateOverlap(a, b).duplicate).toBe(true);
+  });
+});
+
+/**
+ * AR-20: the arm must also LEAVE THINGS ALONE, and nothing asserted that
+ * until now (#1318).
+ *
+ * Every containment case in AR-19 asks the same question — *does it catch a
+ * duplicate?* None asks *does it leave a non-duplicate alone?* That is the
+ * seventh shape in `.claude/rules/checks-must-be-able-to-fail.md` with the
+ * axes swapped: the rows vary the fixture and hold the DIRECTION fixed, so no
+ * count in them can come back wrong about a false refusal.
+ *
+ * It matters here more than it usually would, because the two directions are
+ * not symmetric. A missed duplicate costs a tracker row somebody closes. A
+ * false DUPLICATE **withholds a real finding**, and an arbiter that silently
+ * eats novel findings converts a visible backlog into an invisible one —
+ * which is worse than the backlog it exists to shrink.
+ *
+ * **The floor moved from 2 to 4, measured on the live tracker rather than
+ * argued.** At ratio 0.8 over the 35 findings the corpus filters to:
+ *
+ *     floor=2   self-refile 35/35   cross-issue pairs 0
+ *     floor=3   self-refile 34/35   cross-issue pairs 0
+ *     floor=4   self-refile 32/35   cross-issue pairs 0
+ *     floor=5   self-refile 30/35   cross-issue pairs 0
+ *
+ * No floor in that range costs a single cross-issue pair, so the self-refile
+ * column is the whole price: three of thirty-five. What it buys is the row
+ * below. #1162 carries 40 keys, and at floor 2 a two-key finding whose keys
+ * both appear in it is refused as a duplicate of it — a real finding eaten by
+ * an unrelated issue, reachable on the tracker as it stands today.
+ *
+ * **What this does NOT close, stated rather than left to be discovered:** a
+ * FOUR-key finding wholly inside that same issue is still refused, at floor 2
+ * and at floor 4 alike. The floor shortens the reach of the swallow; it does
+ * not remove it. An absolute shared-key minimum beside the ratio would not
+ * help that case either, since four keys are genuinely shared.
+ */
+describe("AR-20: a small finding is not swallowed by a large unrelated issue", () => {
+  // A big issue naming many symbols. Not stuffed past the corpus cap — this
+  // is an ordinary long finding, which is the point: nothing filters it out.
+  const BIG: Finding = {
+    id: "1162",
+    title: "The scan reports a roster that the matcher never receives",
+    body: [
+      "`rosterFor`, `scanRoster`, `matcherRegistry`, `applyMatchers`, `resolveRole`,",
+      "`roleKey`, `briefPath`, `renderBrief` and `writeBrief` in lib/scanner.ts,",
+      "lib/matchers.ts and lib/scaffold-project.ts disagree about 12 of 31 roles.",
+    ].join(" "),
+  };
+
+  const small = (n: number): Finding => ({
+    id: UNFILED_ID,
+    title: "a finding",
+    body: symptomKeys(BIG).filter(k => k.startsWith("sym:")).slice(0, n).map(k => `\`${k.slice(4)}\``).join(" "),
+  });
+
+  test("AR-20 BASELINE: a two-key finding inside a large issue is NOT a duplicate", () => {
+    const f = small(2);
+    // The premise: its keys really are a subset, so containment is 1.0 and
+    // the ratio arm alone would refuse it. Without this the row could pass
+    // because the fixture shares nothing, which proves nothing at all.
+    expect(symptomKeys(f).length, "the fixture must sit at the floor").toBe(2);
+    expect(sharedKeys(f, BIG).length, "and be wholly contained").toBe(2);
+    expect(duplicateOverlap(f, BIG).duplicate).toBe(false);
+  });
+
+  test("AR-20: a three-key finding inside a large issue is NOT a duplicate either", () => {
+    const f = small(3);
+    expect(symptomKeys(f).length).toBe(3);
+    expect(sharedKeys(f, BIG).length).toBe(3);
+    expect(duplicateOverlap(f, BIG).duplicate).toBe(false);
+  });
+
+  test("AR-20 CONTROL: the arm still fires, so this is not 'refuse nothing'", () => {
+    // The control against the cheapest wrong fix for the two rows above —
+    // raising the floor until the arm never fires — which would make them
+    // green and delete the mechanism AR-19 exists for.
+    const refile: Finding = { id: UNFILED_ID, title: BIG.title, body: BIG.body };
+    expect(duplicateOverlap(refile, BIG).duplicate).toBe(true);
+  });
+
+  test("AR-20: the floor is what decides it, not the ratio", () => {
+    // Names the binding. A two-key finding and a five-key finding differ
+    // only in size here — both are wholly contained, both are at ratio 1.0 —
+    // so a row that moved because the RATIO changed would not separate them.
+    const two = small(2);
+    const five = small(5);
+    for (const f of [two, five]) {
+      expect(sharedKeys(f, BIG).length / symptomKeys(f).length, "both are at containment 1.0").toBe(1);
+    }
+    expect(symptomKeys(five).length).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_MIN_KEYS);
+    expect(duplicateOverlap(five, BIG).duplicate, "above the floor, the arm reaches it").toBe(true);
+    expect(duplicateOverlap(two, BIG).duplicate, "below it, the arm does not").toBe(false);
   });
 });

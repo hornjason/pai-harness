@@ -143,6 +143,36 @@ a review to a commit and refuses when the branch has moved, which is #129,
 pipeline inherits none of it.** Both of these came in that way.
 `scripts/report-provenance.ts` is the same binding, reachable from a terminal.
 
+### You are not necessarily in the tree you are working on (#1348)
+
+On 2026-10-23 two agents reported that `/security-review` had reviewed
+another branch, and filed it as the skill resolving its diff from the
+session's primary directory rather than from their worktree. Both halves of
+that diagnosis are false, and the false version is the one everybody reaches
+for first.
+
+**There was no divergence to resolve.** Both agents were launched with
+`Primary working directory: /Users/jhorn/Projects/rg-wt-release-082` and
+never left it — they created worktrees on disk and drove them with `git -C`,
+so their own directory was the one the skill read. Instrument:
+`grep -o "Primary working directory: [^\"]*"` over each agent's transcript,
+1 distinct value for one and 3 for the other, none of them a worktree.
+Control: the same grep over a transcript that *did* change directory shows
+the move as `<new> (was <old>)`, so an absent result is a reading rather
+than a broken search. The remedy is also not in the skill — it is compiled
+into the Claude Code binary, where its four git commands are `git status`,
+`git diff --name-only origin/HEAD...`, `git log --no-decorate origin/HEAD...`
+and `git diff origin/HEAD...`, each run in the cwd.
+
+**The signature read as proof is the correct output for that directory.**
+`rg/release-0-8-2` was fully contained in `origin/main` — measured
+`merge-base == HEAD`, `rev-list --left-right` of 45/0 — so the four commands
+produce there exactly what was reported: a clean status, an empty
+`--name-only`, an empty diff, and 142,852 bytes of log. `git log A...B` is a
+**symmetric difference**; `git diff A...B` is `merge-base..B`. They do not
+describe the same range, so "log populated, diff empty" is not a
+contradiction and a refusal built on it fires on every merged branch.
+
 ---
 
 ## Verify what a peer tells you before acting on it

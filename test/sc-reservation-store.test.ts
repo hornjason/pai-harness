@@ -363,6 +363,172 @@ describe("the allocation decision, exercised directly", () => {
   });
 });
 
+// ── #1363: the store holds more than one namespace ────────────────────────
+
+/**
+ * An `FG-`/`AR-` block declared here is not a claim on the SC ids of the same
+ * numbers (#1363).
+ *
+ * The instance: `rg/filing-gate-four` held `FG-45..FG-59` and `AR-20` while
+ * PR #1339 independently took `FG-45..FG-49` and `AR-20`. Neither diff
+ * contained the other's ids, so neither PR's CI could see it. The rule says
+ * to reserve a block before consuming an id; the store had no field in which
+ * to say *which* ids, so the entry that follows the rule declares the SC ids
+ * of the same numbers instead — and `allocateAgainstReservations` then hands
+ * the owner an SC id from inside `45..60`, or throws once those are taken.
+ *
+ * ## What each case has to be able to fail on
+ *
+ * The cheapest wrong fix is **"ignore any block that carries a `namespace`
+ * field"**, which is not a namespace comparison at all — it is a presence
+ * check wearing one. It satisfies every case about FG blocks being ignored
+ * and every case about untagged blocks still counting, because those are the
+ * only two shapes an unwary suite plants. `the CONTROL` below is the row it
+ * fails: a block tagged `"SC"` EXPLICITLY must bind exactly as hard as one
+ * with the field absent, and under the presence check it binds not at all.
+ *
+ * The ids here are two-digit FG/AR numbers and the SC ids are computed, so
+ * nothing in this block spells an `SC-<n>` literal — see the file header.
+ */
+describe("#1363: a block declares which namespace its integers belong to", () => {
+  const LOW = 45;
+  const HIGH = 60;
+
+  test("an FG block over the same integers does not move the SC allocation", () => {
+    // The premise first: with ONLY the untagged SC block, where does a
+    // stranger land? That number is what must not change.
+    const scOnly = allocateAgainstReservations(1, [block("someone-else", LOW, HIGH)], null, new Set());
+    expect(scOnly, "premise: an untagged block pushes a stranger above it").toBe(HIGH + 1);
+
+    // The same integers, declared in another namespace. A stranger asking for
+    // an SC id must be unaffected, because nothing has claimed an SC id.
+    const fg: ScReservation = { owner: "rg/filing-gate-four", from: LOW, to: HIGH, namespace: "FG" };
+    expect(
+      allocateAgainstReservations(1, [fg], null, new Set()),
+      "an FG block was read as a claim on the SC ids of the same numbers",
+    ).toBe(1);
+  });
+
+  test("an FG block does not answer its own owner with an SC id from inside it", () => {
+    // The second consequence in the issue, and the worse one: the owner of an
+    // FG block asks for an SC id and is handed one from inside 45..60 — ids
+    // the specs used long ago — or is told its block is spent.
+    const fg: ScReservation = { owner: "rg/filing-gate-four", from: LOW, to: HIGH, namespace: "FG" };
+    const taken = new Set(Array.from({ length: HIGH - LOW + 1 }, (_, i) => LOW + i));
+    expect(
+      () => allocateAgainstReservations(1, [fg], "rg/filing-gate-four", taken),
+      "the owner's SC allocation was answered out of its FG block",
+    ).not.toThrow();
+    expect(allocateAgainstReservations(1, [fg], "rg/filing-gate-four", taken)).toBe(1);
+  });
+
+  test("the CONTROL — an explicit SC namespace binds exactly as hard as an absent one", () => {
+    // The row that fails the presence-check fix. `tagged` and `untagged` are
+    // the same claim written two ways and must allocate identically; a fix
+    // that filters on "has a namespace field" returns 1 for the first and
+    // HIGH+1 for the second, passing every other case in this block.
+    const untagged = allocateAgainstReservations(1, [block("o", LOW, HIGH)], null, new Set());
+    const tagged = allocateAgainstReservations(
+      1,
+      [{ owner: "o", from: LOW, to: HIGH, namespace: "SC" }],
+      null,
+      new Set(),
+    );
+    expect(tagged, 'a block tagged "SC" stopped binding — the fix tests for the FIELD, not its VALUE').toBe(
+      untagged,
+    );
+    expect(tagged).toBe(HIGH + 1);
+  });
+
+  test("the four live blocks allocate exactly what they allocate today", () => {
+    // The backward-compatibility control, run against the SHIPPED store
+    // rather than a fixture, because the acceptance bullet is about these
+    // four entries specifically. None of them carries a namespace.
+    const r = readScReservations(join(import.meta.dir, ".."));
+    expect(r.status).toBe("read");
+    const ceiling = reservedCeiling(r.blocks);
+    expect(ceiling, "the live store declares no blocks").toBeGreaterThan(0);
+    expect(
+      allocateAgainstReservations(1, r.blocks, null, new Set()),
+      "an untagged live block stopped binding the allocator",
+    ).toBe(ceiling + 1);
+    for (const b of r.blocks) {
+      expect(b.namespace, `${b.owner}: the reader left the namespace unresolved`).toBe("SC");
+    }
+  });
+
+  test("an unknown namespace refuses by name, and the store is not partially read", () => {
+    const root = tree({ specIds: [], store: storeOf({ owner: "o", from: LOW, to: HIGH, namespace: "QQ" } as ScReservation) });
+    const r = readScReservations(root);
+    expect(r.status, "an unknown namespace was absorbed rather than refused").toBe("unreadable");
+    expect(r.reason ?? "", "the refusal does not name the namespace it refused").toContain("QQ");
+    expect(r.blocks, "a refused store still handed out blocks").toEqual([]);
+  });
+
+  test("a namespace that is not a string refuses too, rather than defaulting to SC", () => {
+    // `.claude/rules/config-access.md`, Silent Default Substitution: a field
+    // that is PRESENT and unusable is a different fact from an absent one,
+    // and only the absent one has a declared default.
+    const root = tree({ specIds: [], store: storeOf({ owner: "o", from: LOW, to: HIGH, namespace: 7 } as unknown as ScReservation) });
+    const r = readScReservations(root);
+    expect(r.status).toBe("unreadable");
+    expect(r.reason ?? "").toContain("namespace");
+  });
+
+  test("overlap is judged per namespace — FG 45-60 and SC 45-60 are not a collision", () => {
+    // Today the overlap check runs over every block regardless of namespace,
+    // so declaring the FG block the issue describes would make the WHOLE
+    // store unreadable and refuse every allocation in the repository.
+    const root = tree({
+      specIds: [],
+      store: storeOf(
+        { owner: "a", from: LOW, to: HIGH, namespace: "SC" },
+        { owner: "b", from: LOW, to: HIGH, namespace: "FG" },
+      ),
+    });
+    const r = readScReservations(root);
+    expect(r.status, `two namespaces were read as an overlap: ${r.reason ?? ""}`).toBe("read");
+    expect(r.blocks).toHaveLength(2);
+  });
+
+  test("the CONTROL — two blocks in the SAME namespace still refuse", () => {
+    // Without this, the case above is satisfied by a reader that stopped
+    // checking overlap at all, which is the whole protection the store adds.
+    const root = tree({
+      specIds: [],
+      store: storeOf(
+        { owner: "a", from: LOW, to: HIGH, namespace: "FG" },
+        { owner: "b", from: LOW + 1, to: HIGH, namespace: "FG" },
+      ),
+    });
+    const r = readScReservations(root);
+    expect(r.status, "two FG blocks over the same integers were allowed").toBe("unreadable");
+    expect(r.reason ?? "").toContain("overlap");
+  });
+
+  test("the leg counts the ids the SC allocator actually loses", () => {
+    // `found` is documented as "the size of the space it removes from the
+    // allocator". An FG block removes none of it, so counting it there would
+    // make the leg report a reading it did not take.
+    const scIds = HIGH - LOW + 1;
+    const legSc = scReservationLeg({
+      status: "read",
+      path: "p",
+      blocks: [{ owner: "a", from: LOW, to: HIGH, namespace: "SC" }],
+    });
+    const legBoth = scReservationLeg({
+      status: "read",
+      path: "p",
+      blocks: [
+        { owner: "a", from: LOW, to: HIGH, namespace: "SC" },
+        { owner: "b", from: LOW, to: HIGH, namespace: "FG" },
+      ],
+    });
+    expect(legSc.found).toBe(scIds);
+    expect(legBoth.found, "an FG block was counted as space removed from the SC allocator").toBe(scIds);
+  });
+});
+
 // ── the live store in this repository ─────────────────────────────────────
 
 describe("the store this repository ships", () => {
