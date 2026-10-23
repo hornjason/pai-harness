@@ -202,12 +202,64 @@ export function routePaths(citedPaths: readonly string[], options: RouteOptions)
     };
   }
 
-  // ── 2. does the PR it arrived on already own it? ──
+  // ── 2. do we know which pull request is asking? ──
+  //
+  // #1427: with BOTH `thisPr` and `changedFiles` absent, this function used
+  // to carry on. Two things then went wrong together and in the same
+  // direction. Step 3 could not run, so "the diff at hand already owns this"
+  // was never asked; and step 6's `filter(p => p.number !== options.thisPr)`
+  // excluded nothing against `undefined`, so the pull request being
+  // arbitrated stayed in its OWN candidate corpus and could be returned as
+  // the other pull request to route to. `scripts/arbitrate-finding.ts` turns
+  // OTHER_PR into exit 4, which suppresses the filing — so a finding about
+  // the current pull request was routed away from it, to it.
+  //
+  // The absence of a reading is not a reading of absence. It is the same
+  // distinction this repository draws between `findings: null` and
+  // `findings: []`, and the docblock above already draws it for the corpus;
+  // it was simply never drawn for the caller's own identity.
+  //
+  // Either input answers, and they answer different questions: a number lets
+  // the corpus supply the diff, a diff needs no number. Requiring the number
+  // specifically would refuse a caller that has the better evidence.
+  // An EMPTY changed-files list is not a reading either, and that is not a
+  // theoretical door: `scripts/arbitrate-finding.ts` builds the list with
+  // `.split(",").filter(Boolean)`, so `--changed-files ""` arrives as `[]`
+  // rather than as absent. Found by the review on this pull request, which
+  // is the same fail-open one layer in — `[]` standing for "I looked and
+  // there was nothing" when nobody looked.
+  //
+  // With `thisPr` present an empty list is fine: the corpus supplies the
+  // diff and the self-exclusion in step 6 has a number to work with. It is
+  // only the combination that cannot answer.
+  const hasReading =
+    options.thisPr !== undefined ||
+    (options.changedFiles !== undefined && options.changedFiles.length > 0);
+  if (!hasReading) {
+    return {
+      ...base,
+      route: "UNMEASURED",
+      reason:
+        "neither the current pull request number nor its changed files were given, so which " +
+        "pull request is asking is UNMEASURED — and a router that does not know that can return " +
+        "the asker as the pull request to route to",
+    };
+  }
+
+  // ── 3. does the PR it arrived on already own it? ──
   const ownRow =
     corpus.status === "measured" && options.thisPr !== undefined
       ? corpus.prs.find(p => p.number === options.thisPr)
       : undefined;
-  const ownFiles = options.changedFiles ?? ownRow?.files;
+  // `??` would let an EMPTY explicit list shadow the corpus row, which is
+  // the same `[]`-is-not-a-reading confusion one layer in: a caller passing
+  // `--changed-files ""` alongside a real `--this-pr` would lose the diff
+  // GitHub already reported for that pull request. A list is preferred over
+  // the corpus only when it actually says something.
+  const ownFiles =
+    options.changedFiles !== undefined && options.changedFiles.length > 0
+      ? options.changedFiles
+      : ownRow?.files;
   if (ownFiles !== undefined) {
     const own = pathsIn(unique, ownFiles);
     if (own.length > 0) {
@@ -221,12 +273,12 @@ export function routePaths(citedPaths: readonly string[], options: RouteOptions)
     }
   }
 
-  // ── 3. was the corpus read at all? ──
+  // ── 4. was the corpus read at all? ──
   if (corpus.status !== "measured") {
     return { ...base, route: "UNMEASURED", reason: `the open pull requests were not read: ${corpus.why}` };
   }
 
-  // ── 4. was every diff read in full? ──
+  // ── 5. was every diff read in full? ──
   const truncated = corpus.prs.filter(p => p.files.length !== p.declaredFileCount);
   if (truncated.length > 0) {
     return {
@@ -239,7 +291,7 @@ export function routePaths(citedPaths: readonly string[], options: RouteOptions)
     };
   }
 
-  // ── 5. who else is holding the file? ──
+  // ── 6. who else is holding the file? ──
   const scored = corpus.prs
     .filter(p => p.number !== options.thisPr)
     .map(p => ({ pr: p.number, matched: pathsIn(unique, p.files) }))

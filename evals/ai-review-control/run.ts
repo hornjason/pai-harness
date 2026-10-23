@@ -39,6 +39,12 @@ import {
   summariseReviewControl,
   type ReviewControlSubject,
 } from "./control";
+import { readLedger, ledgerUnreadable } from "../../lib/ai-review-rounds";
+import {
+  formatRoundsToPass,
+  summariseRoundsToPass,
+  type PullRequestRounds,
+} from "../../lib/rounds-to-pass";
 
 /** Non-zero for every refusal, through one constant. */
 const REFUSED = 1;
@@ -145,8 +151,71 @@ export function main(argv: string[]): number {
     return score(find(subjects, id), payloadPath, reviewer);
   }
 
-  process.stderr.write("usage: run.ts list | stage <id> <dir> | score <id> <payload> --reviewer <id>\n");
+  if (command === "rounds") {
+    return rounds(rest[0]);
+  }
+
+  process.stderr.write(
+    "usage: run.ts list | stage <id> <dir> | score <id> <payload> --reviewer <id>" +
+      " | rounds <pull-requests.json>\n",
+  );
   return REFUSED;
+}
+
+/**
+ * CRC-M11 — rounds-to-pass, reported here because the criterion says
+ * "alongside recall" and this is where recall is reported.
+ *
+ * The input is a JSON array of `{ number, passed, body }`, one entry per pull
+ * request, where `body` is the ledger comment's text or null. Producing that
+ * array is a tracker query and is deliberately the caller's job: this file
+ * already refuses to invoke a reviewer for the same reason, and a measurement
+ * that can only run against one forge is not one a consumer can take.
+ *
+ * A missing `body` key and a `body` of null are the SAME fact here — nothing
+ * was found — and both reach `readLedger`, which answers ABSENT. An entry
+ * whose `body` is present and not a string is the different fact: somebody
+ * fetched something and it is not a comment, so it is UNREADABLE.
+ */
+function rounds(path: string | undefined): number {
+  if (path === undefined) {
+    process.stderr.write("usage: run.ts rounds <pull-requests.json>\n");
+    return REFUSED;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (e) {
+    process.stderr.write(`rounds: could not read ${path}: ${(e as Error).message}\n`);
+    return REFUSED;
+  }
+  if (!Array.isArray(raw)) {
+    process.stderr.write("rounds: expected a JSON array of pull requests\n");
+    return REFUSED;
+  }
+
+  const prs: PullRequestRounds[] = raw.map((entry, i) => {
+    const e = (entry ?? {}) as Record<string, unknown>;
+    const number = typeof e.number === "number" ? e.number : i;
+    const body = e.body;
+    return {
+      number,
+      passed: e.passed === true,
+      ledger:
+        body === undefined || body === null
+          ? readLedger(null)
+          : typeof body === "string"
+            ? readLedger(body)
+            : ledgerUnreadable(
+                `entry ${i} carries a 'body' that is not a comment: ${typeof body}`,
+              ),
+    };
+  });
+
+  for (const line of formatRoundsToPass(summariseRoundsToPass(prs))) {
+    process.stdout.write(`${line}\n`);
+  }
+  return 0;
 }
 
 if (import.meta.main) process.exit(main(process.argv.slice(2)));
