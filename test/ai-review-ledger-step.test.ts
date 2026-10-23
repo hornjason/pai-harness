@@ -46,6 +46,7 @@ import {
   AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_BOT_LOGIN,
   AI_REVIEW_LEDGER_MARKER,
+  AI_REVIEW_LEDGER_MAX_PAGES,
   AI_REVIEW_LEDGER_MAX_ROUNDS,
   AI_REVIEW_LEDGER_PR_VAR,
   AI_REVIEW_LEDGER_REPO_VAR,
@@ -107,6 +108,22 @@ function ledgerBody(rounds: unknown[]): string {
 interface Rig {
   /** The comment list the GET answers with. `null` makes the GET FAIL. */
   list?: unknown[] | null;
+  /**
+   * One answer per page, chosen by the `page=` in the request URL — #1353.
+   * A request for a page past the end gets `[]`, which is what the API does.
+   * Takes precedence over `list`.
+   */
+  pages?: unknown[][];
+  /**
+   * Raw bytes for the GET's stdout, bypassing JSON entirely. For the case
+   * where the transfer SUCCEEDS and the body is not a comment list.
+   */
+  listRaw?: string;
+  /**
+   * Bytes the GET writes to STDERR while still exiting 0. This is the `2>&1`
+   * case: the step used to merge these into the response body.
+   */
+  listStderr?: string;
   /** The findings payload on disk. `undefined` plants no file at all. */
   payload?: unknown;
   /**
@@ -172,6 +189,14 @@ function runPersist(rig: Rig = {}) {
     const listPath = join(dir, "list.json");
     if (list !== null) writeFileSync(listPath, JSON.stringify(list));
 
+    // #1353. Per-page answers go to per-page FILES for the same reason the
+    // single list does: a ledger body carries ```json fences and a fixture
+    // routed through a shell becomes command substitution.
+    if (rig.pages !== undefined) {
+      rig.pages.forEach((p, i) => writeFileSync(join(dir, `page-${i + 1}.json`), JSON.stringify(p)));
+    }
+    if (rig.listRaw !== undefined) writeFileSync(listPath, rig.listRaw);
+
     // One stub, two modes, told apart the way the script tells them apart:
     // a write passes `-X`. It records argv AND the request body, so a case
     // can assert on what was SENT and not only on what came back.
@@ -189,6 +214,23 @@ function runPersist(rig: Rig = {}) {
       rig.writeFails ? "  exit 22" : '  printf "%s" "${STUB_WRITE_RESPONSE}"',
       "  exit 0",
       "fi",
+      // #1353. Everything below is the READ. The stub answers per page when
+      // the case supplies pages, and can write to stderr while still exiting
+      // 0 — the state a `2>&1` turns into a corrupt body.
+      ...(rig.listStderr === undefined
+        ? []
+        : [`printf '%s\\n' ${JSON.stringify(rig.listStderr)} >&2`]),
+      ...(rig.pages === undefined
+        ? []
+        : [
+            "pg=1",
+            'for a in "$@"; do case "$a" in *page=*) pg="${a##*page=}"; pg="${pg%%&*}";; esac; done',
+            `f=${JSON.stringify(dir)}/page-\${pg}.json`,
+            // A page past the end is `[]`, which is what the real API returns
+            // and is the reading that ends the loop.
+            'if [ -f "$f" ]; then cat "$f"; else printf "[]"; fi',
+            "exit 0",
+          ]),
       list === null ? "exit 22" : `cat ${JSON.stringify(listPath)}`,
     ].join("\n");
     writeFileSync(join(bin, "curl"), `${curl}\n`, { mode: 0o755 });
@@ -707,13 +749,29 @@ describe("AC-L3 (#1168): it never writes on top of a read it could not take", ()
 
   test("AC-L3: the MUTANT — the failed-read guard removed — overwrites the ledger", () => {
     // The guard removed and nothing else, through the identical rig. This is
-    // the cheapest wrong implementation: carry on with an empty `comments`.
+    // the cheapest wrong implementation: carry on with an empty page.
+    //
+    // #1353 moved this branch inside the pagination loop, so it is indented
+    // four spaces and the old two-space pattern ran past it to a LATER
+    // `exit 0`, deleting a span that included other refusals. The mutant
+    // still differed from the real script and still wrote nothing, so the
+    // row went red looking like a behavioural finding. That is the seventh
+    // shape — a mutation that did not apply as spelled reads exactly like
+    // the guard behaving differently — so the survival assertions below are
+    // part of the experiment, not decoration.
     const real = buildPersistScript();
     const mutant = real.replace(
-      /  ledger_note "the pull request's comments could not be read[\s\S]*?\n  exit 0\n/,
-      '  comments="[]"\n',
+      /    ledger_note "the pull request's comments could not be read[\s\S]*?\n    exit 0\n/,
+      '    page_body="[]"\n',
     );
     expect(mutant, "the mutation did not apply").not.toBe(real);
+    expect(
+      real.length - mutant.length,
+      "the replacement swallowed more than the one branch it names",
+    ).toBeLessThan(600);
+    for (const survives of ["more than", "came back as something other than a JSON array"]) {
+      expect(mutant, `the mutation deleted an unrelated refusal (${survives})`).toContain(survives);
+    }
     const r = runPersist({ list: null, payload: ONE_FINDING, script: mutant });
     expect(r.method, "the mutant must write — that is the defect this guards").toBe("POST");
   });
@@ -772,6 +830,124 @@ describe("AC-L6 (#1168): a write that landed nothing is said out loud", () => {
     // successful write, which is a warning nobody would read for long.
     const r = runPersist({ payload: ONE_FINDING });
     expect(r.stdout).not.toContain("concurrent write");
+  });
+});
+
+// #1353. AC-L3 established that a FAILED read writes nothing. The hole was
+// the read that SUCCEEDS and still yields no usable list — curl exiting 0, or
+// the ledger sitting on a page nobody asked for. Both produced an empty
+// selection, which is byte-identical to "this pull request has no ledger yet",
+// and the step POSTed a fresh one over the top.
+//
+// So these cases are not written against "the ledger works". They are written
+// against the property the defect destroyed: THE THREE STATES STAY
+// DISTINGUISHABLE — found, read-to-the-end-and-absent, unreadable. A test
+// asserting only that a ledger gets written passes against every row below.
+describe("AC-L9 (#1353): a read that returns nothing usable is not a pull request with no ledger", () => {
+  // `at` and `run` are REQUIRED, not decoration: #1386's shape guard refuses a
+  // payload whose entries lack them, and a refused payload produces exactly the
+  // observable these cases are about — no write, step exits 0. A fixture
+  // missing them would make every row below red for a reason that has nothing
+  // to do with pagination.
+  const LEDGER = () => botComment(5, ledgerBody([{ at: "t0", run: "original", round: 1, findings: [] }]));
+  const filler = (n: number, from: number) =>
+    Array.from({ length: n }, (_, i) => botComment(from + i, "ordinary comment"));
+
+  test("stderr on a SUCCESSFUL transfer does not corrupt the body — the `2>&1`", () => {
+    // curl exits 0 and writes a diagnostic. Merged into stdout it makes the
+    // body unparseable, the selection empty, and the step starts again.
+    const r = runPersist({
+      list: [LEDGER()],
+      listStderr: "Warning: Problem transient. Will retry in 1 seconds.",
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "a warning on stderr made the step lose the ledger").toBe("PATCH");
+    expect(r.rounds, "the prior round was dropped").toHaveLength(2);
+  });
+
+  test("a 200 whose body is not an array refuses, and writes nothing", () => {
+    const r = runPersist({ listRaw: '{"message":"Not Found"}', payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "it started a fresh ledger on a body it could not read").toBeNull();
+    expect(r.sentRaw).toBeNull();
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  test("a body that is not JSON at all refuses, and writes nothing", () => {
+    const r = runPersist({ listRaw: "<html>502 Bad Gateway</html>", payload: ONE_FINDING });
+    expect(r.method).toBeNull();
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  test("a ledger on the SECOND page is found, not replaced", () => {
+    // The population this matters for: a pull request with more than 100
+    // comments, which is exactly a long-running one with many review rounds.
+    const r = runPersist({
+      pages: [filler(100, 100), [LEDGER()]],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "a ledger past the first page was not found").toBe("PATCH");
+    expect(r.rounds).toHaveLength(2);
+  });
+
+  test("the OLDEST match still wins when matches sit on different pages", () => {
+    // `first`, across pages. An impersonator's comment is newer, so it lands
+    // later; breaking on the earliest page carrying a match preserves the
+    // property the single-page selection already had.
+    const r = runPersist({
+      pages: [
+        [...filler(99, 200), botComment(5, ledgerBody([{ at: "t0", run: "original", round: 1, findings: [] }]))],
+        [botComment(999, ledgerBody([]))],
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(r.method).toBe("PATCH");
+    expect(r.argv.join(" "), "it patched the newer comment").toContain("/comments/5");
+  });
+
+  test("exhausting the page bound refuses rather than concluding there is none", () => {
+    // A loop bound is not a reading. Every page full and no match means the
+    // ledger may be on the page after the last one looked at.
+    const pages = Array.from({ length: AI_REVIEW_LEDGER_MAX_PAGES + 1 }, (_, i) => filler(100, i * 100));
+    const r = runPersist({ pages, payload: ONE_FINDING });
+    expect(r.method, "it started a fresh ledger after giving up on a list it had not finished").toBeNull();
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  // THE CONTROL, and the reason the rows above are not satisfied by a step
+  // that refuses everything. This is the third state: the list WAS read to
+  // its end and genuinely holds no ledger. It must still POST, or the first
+  // round of every pull request is lost.
+  test("CONTROL: a short page with no ledger is read to the end, and DOES post", () => {
+    const r = runPersist({ pages: [filler(3, 100)], payload: ONE_FINDING });
+    expect(r.method, "a genuine first round stopped being recorded").toBe("POST");
+    expect(r.rounds).toHaveLength(1);
+  });
+
+  test("CONTROL: an empty first page is also read to the end, and DOES post", () => {
+    const r = runPersist({ pages: [[]], payload: ONE_FINDING });
+    expect(r.method).toBe("POST");
+  });
+
+  // The property itself, stated as one assertion rather than inferred from
+  // the rows above: the unreadable state and the absent state must not
+  // produce the same observable. If a later change collapses them again,
+  // this is the case that says so.
+  test("unreadable and absent are not the same observable", () => {
+    const unreadable = runPersist({ listRaw: "<html>502</html>", payload: ONE_FINDING });
+    const absent = runPersist({ pages: [[]], payload: ONE_FINDING });
+    expect(unreadable.method).toBeNull();
+    expect(absent.method).toBe("POST");
+    expect(unreadable.method).not.toBe(absent.method);
+  });
+
+  test("it paginates with a page parameter at all", () => {
+    // A positive control on the mechanism: the rows above would also pass
+    // against a step that happened to request page 2 by luck of the fixture.
+    const r = runPersist({ pages: [filler(100, 0), [LEDGER()]], payload: ONE_FINDING });
+    expect(r.argv.join(" ")).toContain("page=2");
   });
 });
 

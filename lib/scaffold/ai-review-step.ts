@@ -2545,6 +2545,23 @@ export const AI_REVIEW_LEDGER_API_VAR = "AI_REVIEW_LEDGER_API";
 export const AI_REVIEW_LEDGER_SHA_VAR = "AI_REVIEW_LEDGER_SHA";
 
 /**
+ * How many 100-comment pages the ledger read will walk before giving up.
+ *
+ * It is a loop bound, not a conclusion: exhausting it is UNMEASURED and the
+ * step refuses rather than POSTing a fresh ledger, because the existing one
+ * may be on the next page. Before #1353 there was no loop at all — one
+ * `per_page=100` request — so a ledger past the first hundred comments was
+ * invisible and the step started a new one on top of it, which is the failure
+ * the ledger exists to prevent, occurring on exactly the long-running pull
+ * requests the round history matters most for.
+ *
+ * 20 pages is 2,000 comments. Nothing in this repository is close, and the
+ * bound is here so a paginating loop against a hostile or looping API
+ * terminates.
+ */
+export const AI_REVIEW_LEDGER_MAX_PAGES = 20;
+
+/**
  * The JSON member the findings array travels under.
  *
  * `lib/scaffold/ai-review-findings.ts` reads the payload and already imports
@@ -6723,20 +6740,92 @@ fi
 # READ FIRST, and never write on top of a read that failed. Replacing a ledger
 # holding N rounds with one holding this round is the worst thing this step
 # could do, and it is indistinguishable from a first round afterwards.
-if ! comments=\$(curl -sS -f \\
-  -H "Authorization: Bearer \${${AI_REVIEW_LEDGER_TOKEN_VAR}}" \\
-  -H "Accept: application/vnd.github+json" \\
-  "\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/\${${AI_REVIEW_LEDGER_PR_VAR}}/comments?per_page=100" 2>&1); then
-  ledger_note "the pull request's comments could not be read, so this round was NOT recorded. Refusing to write a fresh ledger on top of a failed read: that would replace every round already recorded with just this one, and nothing afterwards could tell that it had happened."
+#
+# THREE STATES, and the whole of #1353 is that two of them used to collapse:
+#
+#   ledger found          -> PATCH it
+#   list read to the end, no ledger in it -> POST a first one
+#   list could not be read -> write NOTHING and say so
+#
+# The third silently became the second. Two mechanisms did it. \`2>&1\` merged
+# curl's stderr into the JSON body, so a diagnostic on a successful transfer
+# made the body unparseable; and the selection's \`|| true\` turned that parse
+# failure into an empty string, which is byte-identical to "no ledger exists".
+# The step then POSTed a fresh ledger and every prior round was gone, behind a
+# comment that looks exactly like a correct first round.
+#
+# So: stderr is left on stderr where a human can read it, the response SHAPE is
+# established before anything is selected out of it, and an unreadable page
+# refuses instead of falling through.
+#
+# PAGINATION, which is the other way the ledger went missing. \`per_page=100\`
+# with no second request cannot see a ledger on a pull request with more than
+# 100 comments, and several here already have that many — so the step read a
+# list that genuinely did not contain the ledger and correctly concluded there
+# was none. The page loop selects per page and stops at the first match rather
+# than accumulating: the API returns issue comments oldest-first, so the first
+# match in the earliest page IS the oldest, which is the \`first\` the selection
+# below already depended on. Accumulating every page would also put an
+# unbounded list through \`--argjson\`.
+selected=""
+ledger_page=1
+ledger_read_complete=no
+while [ "\${ledger_page}" -le ${AI_REVIEW_LEDGER_MAX_PAGES} ]; do
+  if ! page_body=\$(curl -sS -f \\
+    -H "Authorization: Bearer \${${AI_REVIEW_LEDGER_TOKEN_VAR}}" \\
+    -H "Accept: application/vnd.github+json" \\
+    "\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/\${${AI_REVIEW_LEDGER_PR_VAR}}/comments?per_page=100&page=\${ledger_page}"); then
+    ledger_note "the pull request's comments could not be read, so this round was NOT recorded. Refusing to write a fresh ledger on top of a failed read: that would replace every round already recorded with just this one, and nothing afterwards could tell that it had happened."
+    exit 0
+  fi
+
+  # The shape, BEFORE selecting anything out of it. A 200 whose body is not an
+  # array is not an empty list of comments, and the difference is a ledger.
+  if ! printf '%s' "\${page_body}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    ledger_note "the pull request's comments came back as something other than a JSON array on page \${ledger_page}, so this round was NOT recorded. A response that cannot be read is not a pull request with no ledger on it, and writing a fresh ledger here would discard every round already recorded."
+    exit 0
+  fi
+
+  # No \`|| true\`. A jq failure here must not read as "nothing matched".
+  if ! page_selected=\$(printf '%s' "\${page_body}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' --arg login '${AI_REVIEW_LEDGER_BOT_LOGIN}' '[.[] | select((.user.type? // "") == "Bot" and (.user.login? // "") == \$login and .body != null and (.body | contains(\$m)))] | first // empty'); then
+    ledger_note "the pull request's comments could not be searched for the ledger on page \${ledger_page}, so this round was NOT recorded. Refusing to treat a failed search as an absent ledger."
+    exit 0
+  fi
+
+  if [ -n "\${page_selected}" ]; then
+    selected="\${page_selected}"
+    ledger_read_complete=yes
+    break
+  fi
+
+  if ! page_count=\$(printf '%s' "\${page_body}" | jq -r 'length'); then
+    ledger_note "the length of comment page \${ledger_page} could not be read, so this round was NOT recorded."
+    exit 0
+  fi
+  # A short page is the last page. That is the only reading that licenses a
+  # POST: it means the list was seen to its end and held no ledger.
+  if [ "\${page_count}" -lt 100 ]; then
+    ledger_read_complete=yes
+    break
+  fi
+  ledger_page=\$((ledger_page + 1))
+done
+
+# Ran out of pages with every one of them full. The ledger may be past the
+# bound, so this is UNMEASURED and must not POST — the bound exists to stop an
+# unbounded loop, not to license a conclusion.
+if [ "\${ledger_read_complete}" != yes ]; then
+  ledger_note "this pull request has more than ${AI_REVIEW_LEDGER_MAX_PAGES} pages of comments and no ledger was found in them, so this round was NOT recorded. Refusing to start a fresh ledger on a list this step did not finish reading."
   exit 0
 fi
 
-# ONE selection, then two reads OUT of it. Selecting twice — once for the id
-# and once for the body — is two searches that can disagree, and the way they
-# disagree is the expensive one: an empty id with a non-empty body POSTs a
-# SECOND ledger carrying the first one's rounds, so the history silently
-# forks into two comments and neither is complete. Found by the mutation
-# battery on #1168, not by reading.
+# ONE selection — made once per page in the loop above, never repeated here —
+# then two reads OUT of it. Selecting twice, once for the id and once for the
+# body, is two searches that can disagree, and the way they disagree is the
+# expensive one: an empty id with a non-empty body POSTs a SECOND ledger
+# carrying the first one's rounds, so the history silently forks into two
+# comments and neither is complete. Found by the mutation battery on #1168,
+# not by reading.
 #
 # AUTHORSHIP, not just the marker. The marker is a string and a pull request
 # is a place anyone can paste one, so selecting on it alone lets any
@@ -6760,7 +6849,15 @@ fi
 # \`first\`, not \`last\`: the OLDEST bot-authored match is the real ledger,
 # because that is the one this step created on round one. \`last\` prefers the
 # newest, which is precisely the one an impersonator would have just posted.
-selected=\$(printf '%s' "\${comments}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' --arg login '${AI_REVIEW_LEDGER_BOT_LOGIN}' '[.[] | select((.user.type? // "") == "Bot" and (.user.login? // "") == \$login and .body != null and (.body | contains(\$m)))] | first // empty' 2>/dev/null || true)
+# The page loop preserves that — it breaks on the earliest page carrying a
+# match, and the API returns issue comments oldest-first.
+#
+# The login binding from #1386 moved INTO the loop with the selection rather
+# than being dropped: each page is selected under the same conjunction (Bot,
+# AND this login, AND the versioned marker), so paginating cannot widen what
+# counts as the ledger. A page-local selection that kept only the marker
+# would have reinstated the impersonation hole for every comment past the
+# first hundred — and nothing downstream of here could tell.
 existing_id=""
 existing_body=""
 if [ -n "\${selected}" ]; then
