@@ -105,8 +105,15 @@ const workflow = readFileSync(
  * every comparison below pass vacuously, which is the shape this whole file
  * exists to avoid.
  */
+/**
+ * The string that locates the restore loop. One binding, so AC-RP1's
+ * uniqueness assertion and this parser cannot drift apart — two spellings of
+ * the anchor would let the count be taken over a string nobody parses.
+ */
+const RESTORE_LOOP_ANCHOR = "for path in ";
+
 function restoredPathsInWorkflow(text: string): string[] | null {
-  const at = text.indexOf("for path in ");
+  const at = text.indexOf(RESTORE_LOOP_ANCHOR);
   if (at === -1) return null;
   const line = text.slice(at, text.indexOf("\n", at));
   const quoted = line.match(/'([^']+)'/g);
@@ -125,6 +132,18 @@ describe("AC-RP1 (#1449): the reviewer is told which paths it holds the base cop
     expect(paths, "the restore loop was not found in the emitted workflow").not.toBeNull();
     expect(paths!.length).toBeGreaterThan(1);
     expect(promptAsReceived(workflow), "the prompt was not found in the action step").not.toBeNull();
+    // And that the parser bound the loop it MEANT to. `restoredPathsInWorkflow`
+    // locates by first occurrence, so a second `for path in ` emitted earlier
+    // would silently retarget every case in this file onto the wrong loop and
+    // all of them would keep passing — an instrument that stopped reporting
+    // without saying so, which is the shape this file exists to prevent
+    // (#1460). The other restore loops in the workflow spell it `for u in`,
+    // so this is one today; nothing but this line keeps it one.
+    expect(
+      workflow.split(RESTORE_LOOP_ANCHOR).length - 1,
+      `${JSON.stringify(RESTORE_LOOP_ANCHOR)} must occur exactly once — the parser takes the ` +
+        "FIRST, so a second loop would retarget every case below while they all stayed green",
+    ).toBe(1);
   });
 
   test.each([...AI_REVIEW_UNTRUSTED_PATHS])(
@@ -191,12 +210,31 @@ describe("AC-RP1 (#1449): the reviewer is told which paths it holds the base cop
     // owns it — a prompt that stopped interpolating the paths would fail
     // here and in AC-RP2, and a YAML fold that mangled it would fail only
     // here, which is the distinction worth keeping.
+    //
+    // That last clause used to be a claim this row could not support (#1460).
+    // It asserted `prompt.length >= built.length - 200`, which no mutation in
+    // #1452's battery ever reached — every red came from the `includes` loop
+    // above — and which a fold truncating 199 characters passes. 199
+    // characters is most of a paragraph, so the line that was supposed to
+    // catch a mangled fold was the one line here that could not fail.
+    //
+    // Containment is the honest version, and it is taken over whitespace-
+    // NORMALISED text rather than raw. A YAML block scalar legitimately
+    // re-indents and re-wraps; that is formatting, not mangling, and a raw
+    // `includes` would redden on it. Collapsing whitespace runs leaves
+    // exactly the difference that matters: dropped or reordered words.
     const prompt = promptAsReceived(workflow);
     if (prompt === null) throw new Error("no prompt in the emitted workflow");
     const built = buildReviewPrompt();
     for (const path of AI_REVIEW_UNTRUSTED_PATHS) {
       expect(built.includes(path), `buildReviewPrompt() omits ${path}`).toBe(true);
     }
-    expect(prompt.length).toBeGreaterThanOrEqual(built.length - 200);
+    const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+    expect(
+      squash(prompt).includes(squash(built)),
+      "the emitted prompt does not contain the generator's output word for word (whitespace " +
+        "aside), so the YAML step dropped or reordered part of it and the rows above are " +
+        "binding a prompt the reviewer does not receive",
+    ).toBe(true);
   });
 });
