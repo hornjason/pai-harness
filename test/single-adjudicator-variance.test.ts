@@ -17,6 +17,7 @@ import { BASELINE_REFUSED, loadVarianceCapture } from "../evals/ai-review-contro
 import {
   AI_REVIEW_SAME_TREE_READINGS,
   DUPLICATE_PLANT_TWIN,
+  absencesIn,
   aiReviewVarianceResidue,
   batchFrom,
   detailOf,
@@ -26,6 +27,7 @@ import {
   provenanceRefusal,
   readPlants,
   runBatch,
+  scoredVerdicts,
   type SameTreeReading,
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
@@ -430,10 +432,25 @@ describe("#1329: the ai-review residue reads the same-tree readings", () => {
     mergeCommit: "99d50fc",
     rounds: [5, 5],
     turns: [51, 52],
-    verdicts: ["BLOCKED", "CLEAN"],
+    outcomes: [
+      { kind: "verdict", verdict: "BLOCKED" },
+      { kind: "verdict", verdict: "CLEAN" },
+    ],
   };
-  const AGREED: SameTreeReading = { ...FLIP, run: "x1", verdicts: ["CLEAN", "CLEAN"] };
-  const NO_VERDICT: SameTreeReading = { ...FLIP, run: "x2", mergeCommit: null, verdicts: null };
+  const AGREED: SameTreeReading = {
+    ...FLIP,
+    run: "x1",
+    outcomes: [
+      { kind: "verdict", verdict: "CLEAN" },
+      { kind: "verdict", verdict: "CLEAN" },
+    ],
+  };
+  const NO_VERDICT: SameTreeReading = {
+    ...FLIP,
+    run: "x2",
+    mergeCommit: null,
+    outcomes: [{ kind: "no-payload" }, { kind: "no-payload" }],
+  };
   const CONFOUNDED: SameTreeReading = { ...FLIP, run: "x3", rounds: [3, 4] };
 
   test("a pair whose round changed is not a repeat — it is a different prompt", () => {
@@ -485,11 +502,109 @@ describe("#1329: the ai-review residue reads the same-tree readings", () => {
   // measurement.
   test("every recorded pair that carries verdicts also held its prompt", () => {
     for (const r of AI_REVIEW_SAME_TREE_READINGS) {
-      if (r.verdicts !== null) {
+      if (scoredVerdicts(r) !== null) {
         expect(promptHeld(r), `pair ${r.run} carries verdicts but its rounds differ`).toBe(true);
         expect(r.mergeCommit, `pair ${r.run} carries verdicts but no commit was read`).not.toBeNull();
       }
     }
+  });
+});
+
+// #1390. The artefact recorded every missing verdict as one `null`, and the
+// three reasons a verdict is missing are three different facts that send a
+// reader three different places. This is the defect the file exists to name,
+// in the file that names it.
+//
+// These cases are written against THE THREE ABSENCES STAY DISTINGUISHABLE, not
+// against "the residue mentions an absence". A residue that printed one fixed
+// sentence for any missing verdict passes every case the suite had before.
+describe("#1390: an absent verdict is named, not nulled", () => {
+  const scored = (a: string, b: string): SameTreeReading => ({
+    run: "s",
+    mergeCommit: "deadbee",
+    rounds: [5, 5],
+    turns: [51, 52],
+    outcomes: [
+      { kind: "verdict", verdict: a },
+      { kind: "verdict", verdict: b },
+    ],
+  });
+  const withOutcomes = (run: string, outcomes: SameTreeReading["outcomes"]): SameTreeReading => ({
+    run,
+    mergeCommit: null,
+    rounds: [2, 2],
+    turns: [40, 40],
+    outcomes,
+  });
+
+  const NO_PAYLOAD = withOutcomes("np", [{ kind: "no-payload" }, { kind: "no-payload" }]);
+  const UNREAD = withOutcomes("pu", [{ kind: "payload-unread" }, { kind: "payload-unread" }]);
+  const UNREADABLE = withOutcomes("ur", [
+    { kind: "unreadable", why: "the attempt log 404s" },
+    { kind: "unreadable", why: "the attempt log 404s" },
+  ]);
+
+  test("a pair is scored only when BOTH attempts returned a verdict", () => {
+    expect(scoredVerdicts(scored("CLEAN", "CLEAN"))).toEqual(["CLEAN", "CLEAN"]);
+    expect(scoredVerdicts(NO_PAYLOAD)).toBeNull();
+    // The mixed row is the one the old shape could not express at all, and
+    // the one the real data turned out to contain: run 39957264329's second
+    // attempt returned BLOCKED while the row said `verdicts: null`.
+    expect(
+      scoredVerdicts(withOutcomes("mixed", [{ kind: "no-payload" }, { kind: "verdict", verdict: "BLOCKED" }])),
+      "one verdict and one absence is not a pair of verdicts",
+    ).toBeNull();
+  });
+
+  test("the three absences produce three DIFFERENT residues", () => {
+    const a = aiReviewVarianceResidue([NO_PAYLOAD]);
+    const b = aiReviewVarianceResidue([UNREAD]);
+    const c = aiReviewVarianceResidue([UNREADABLE]);
+    expect(new Set([a, b, c]).size, "two absences produced the same sentence").toBe(3);
+  });
+
+  // Each absence must send the reader to ITS OWN next step. Asserting only
+  // that the three strings differ is satisfiable by printing the kind and
+  // nothing else, which would be a label rather than a direction.
+  test("each absence names what is true of it and not of the others", () => {
+    expect(aiReviewVarianceResidue([NO_PAYLOAD])).toContain("wrote no findings payload");
+    const unread = aiReviewVarianceResidue([UNREAD]);
+    expect(unread).toContain("payload was written and nothing read it");
+    expect(unread, "the payload-unread case must not read as nothing having been produced").not.toContain(
+      "wrote no findings payload",
+    );
+    expect(aiReviewVarianceResidue([UNREADABLE])).toContain("the reading could not be taken");
+  });
+
+  // CONTROL, and the one that would catch the cheapest wrong fix: appending
+  // all three sentences unconditionally. That passes both cases above.
+  test("a residue names ONLY the absences actually present", () => {
+    const s = aiReviewVarianceResidue([NO_PAYLOAD]);
+    expect(s).not.toContain("payload was written and nothing read it");
+    expect(s).not.toContain("the reading could not be taken");
+  });
+
+  // CONTROL. A scored pair has no absence to name, and a residue that always
+  // mentioned one would make the shipped entry claim an absence it does not have.
+  test("a fully scored set names no absence at all", () => {
+    const s = aiReviewVarianceResidue([scored("BLOCKED", "CLEAN")]);
+    expect(s).not.toContain("wrote no findings payload");
+    expect(s).not.toContain("payload was written and nothing read it");
+    expect(s).not.toContain("the reading could not be taken");
+  });
+
+  test("the shipped readings record a named reason for every missing verdict", () => {
+    for (const r of AI_REVIEW_SAME_TREE_READINGS) {
+      for (const o of r.outcomes) {
+        expect(["verdict", "no-payload", "payload-unread", "unreadable"]).toContain(o.kind);
+      }
+    }
+    // The real correction, asserted so it cannot quietly revert: this pair is
+    // excluded for its ROUNDS, and one of its attempts did return a verdict.
+    const mixed = AI_REVIEW_SAME_TREE_READINGS.find(r => r.run === "39957264329")!;
+    expect(promptHeld(mixed), "39957264329 is excluded because its rounds differ").toBe(false);
+    expect(mixed.outcomes[1]).toEqual({ kind: "verdict", verdict: "BLOCKED" });
+    expect(absencesIn(mixed)).toEqual(["no-payload"]);
   });
 
   test("the stored artefact's residue agrees with the readings it describes", () => {
