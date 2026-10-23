@@ -18,7 +18,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -367,6 +367,100 @@ describe("#1413: --claim refuses to write a registry the reader cannot read", ()
       if (back.status !== "read") throw new Error(back.reason);
       expect(back.claims).toHaveLength(1);
       expect(back.claims[0].paths).toEqual(["lib/b.ts"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * An owner whose ref this worktree has never seen must not read as free.
+ *
+ * Raised as CRITICAL by the AI review on PR #1436, round 2. `origin/<owner>`
+ * is a local remote-tracking ref, and the first version fetched only the
+ * default branch — so a peer's branch this worktree had never fetched failed
+ * `rev-parse` and fell straight through to "ref gone: holds nothing". A
+ * fresh worktree has fetched almost nothing, and a fresh worktree is exactly
+ * the state an agent is in when it asks the question, so the common case
+ * reported FREE on a file somebody was actively writing.
+ *
+ * A branch nobody fetched and a branch somebody deleted look identical from
+ * here. Only one of them is safe to call free, so without a refresh the
+ * answer is UNMEASURED and `--check` refuses.
+ */
+describe("#1413: an owner this worktree cannot resolve is UNMEASURED, never free", () => {
+  /** A repo with a registry on a local branch, and no remote at all. */
+  function fixture(claims: unknown[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "rg1413-live-"));
+    const g = (...a: string[]) =>
+      spawnSync("git", ["-C", dir, ...a], {
+        encoding: "utf-8",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+      });
+    g("init", "-q", "-b", "trunk", ".");
+    g("config", "user.email", "t@t");
+    g("config", "user.name", "t");
+    mkdirSync(join(dir, "specs"));
+    writeFileSync(
+      join(dir, FILE_CLAIMS_PATH),
+      `${JSON.stringify({ [FILE_CLAIMS_CONTROL_KEY]: claims }, null, 2)}\n`,
+    );
+    g("add", "-A");
+    g("commit", "-q", "-m", "registry");
+    return dir;
+  }
+
+  const check = (dir: string, ...args: string[]) =>
+    spawnSync(
+      "bun",
+      [join(REPO, "scripts", "claim-files.ts"), "--project", dir, "--ref", "trunk", ...args],
+      { encoding: "utf-8" },
+    );
+
+  test("--check REFUSES when the claimed owner's ref is not in this worktree", () => {
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib/a.ts"], issue: 1413 }]);
+    try {
+      const r = check(dir, "--check", "lib/a.ts", "--no-fetch");
+      expect(r.stdout, "a claim on an unresolvable owner reported free").toContain("UNMEASURED");
+      expect(r.stdout).toContain("rg/never-fetched");
+      expect(r.status, "an unmeasured owner exited 0, which reads as free").not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("--list marks it `?`, not DEAD", () => {
+    // DEAD invites the next agent to prune a live lock, and the prune is the
+    // irreversible half.
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib/a.ts"] }]);
+    try {
+      const r = check(dir, "--list", "--no-fetch");
+      expect(r.stdout).toContain("?");
+      expect(r.stdout, "an unresolvable owner was reported DEAD").not.toContain("DEAD");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: a path no claim covers is still free in the same repo", () => {
+    // The discrimination. A `--check` that refused everything would pass both
+    // rows above and be useless, and this is what tells them apart.
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib/a.ts"] }]);
+    try {
+      const r = check(dir, "--check", "lib/elsewhere.ts", "--no-fetch");
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain("free");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: an empty registry in the same repo reads free, not UNMEASURED", () => {
+    const dir = fixture([]);
+    try {
+      const r = check(dir, "--check", "lib/a.ts", "--no-fetch");
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain("free");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

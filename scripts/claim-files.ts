@@ -140,15 +140,33 @@ function defaultBranch(project: string): string {
  * about the branch list.
  *
  * Three states, and the third is why this does not return a bare boolean: a
- * branch whose ref is gone is landed-or-abandoned either way and holds
- * nothing; a branch whose subjects are all in the base has landed; and a
- * `git log` that could not run is UNMEASURED, which must not read as either.
- * See {@link isLandedBySubject} for why ancestry is the wrong instrument.
+ * branch whose ref is REALLY gone is landed-or-abandoned either way and
+ * holds nothing; a branch whose subjects are all in the base has landed; and
+ * anything that could not be read is UNMEASURED, which must not read as
+ * either. See {@link isLandedBySubject} for why ancestry is the wrong
+ * instrument.
+ *
+ * ## `fetched` is load-bearing, and the first version of this was a fail-open
+ *
+ * Raised as CRITICAL by the AI review on this pull request. `origin/<owner>`
+ * is a local remote-tracking ref, and the earlier code fetched only the
+ * default branch — so a peer's branch this worktree had never fetched failed
+ * `rev-parse` and fell through to "ref gone: holds nothing". A fresh worktree
+ * has fetched almost nothing, which is exactly the state an agent is in when
+ * it asks this question, so the common case silently reported FREE on a file
+ * somebody was writing. That is the whole defect this tool exists to prevent,
+ * arriving inside the tool.
+ *
+ * So an absent ref is only "gone" when the refs were actually refreshed.
+ * Without that, absent means UNMEASURED and the caller refuses: a branch
+ * nobody fetched and a branch somebody deleted look identical, and only one
+ * of them is safe to treat as free.
  */
 function ownerLiveness(
   project: string,
   ref: string,
   owners: readonly string[],
+  fetched: boolean,
 ): { live: Set<string>; unmeasured: Map<string, string> } {
   const live = new Set<string>();
   const unmeasured = new Map<string, string>();
@@ -163,7 +181,16 @@ function ownerLiveness(
   const baseSubjects = base.out.split("\n");
   for (const owner of owners) {
     const exists = git(project, "rev-parse", "--verify", "--quiet", `origin/${owner}`);
-    if (!exists.ok) continue; // ref gone: holds nothing
+    if (!exists.ok) {
+      if (!fetched) {
+        unmeasured.set(
+          owner,
+          `origin/${owner} is not in this worktree and the refs were not refreshed, so "deleted" and "never fetched" cannot be told apart`,
+        );
+      }
+      // Fetched and still absent: the branch is really gone, and holds nothing.
+      continue;
+    }
     const ahead = git(project, "log", "--format=%s", `${ref}..origin/${owner}`);
     if (!ahead.ok) {
       unmeasured.set(owner, `could not read ${ref}..origin/${owner}`);
@@ -174,12 +201,27 @@ function ownerLiveness(
   return { live, unmeasured };
 }
 
-/** The registry as `ref` carries it. `ref` is a full name, e.g. `origin/main`. */
-export function readFromRemote(project: string, ref: string, doFetch: boolean) {
-  // Fetch the branch the ref names, not the ref: `git fetch origin main`
-  // updates `origin/main`. A ref that is not under `origin/` is a local one
-  // and there is nothing to fetch for it.
-  if (doFetch && ref.startsWith("origin/")) git(project, "fetch", "--quiet", "origin", ref.slice("origin/".length));
+/**
+ * Refresh every remote-tracking ref, and say whether it worked.
+ *
+ * All branches, not just the base: {@link ownerLiveness} resolves each
+ * declared owner through `origin/<owner>`, and a ref this worktree has never
+ * seen is indistinguishable from one that was deleted. `--prune` so a branch
+ * that really went away stops reading live.
+ */
+function refreshRefs(project: string): boolean {
+  return git(project, "fetch", "--quiet", "--prune", "origin").ok;
+}
+
+/**
+ * The registry as `ref` carries it. `ref` is a full name, e.g. `origin/main`.
+ *
+ * Takes no fetch argument: {@link refreshRefs} runs once for the whole
+ * invocation, before this, because the liveness answers need every owner's
+ * ref and not only the base's. A second fetch here would be a second place
+ * that decides how current the reading is.
+ */
+export function readFromRemote(project: string, ref: string) {
   const r = spawnSync("git", ["-C", project, "show", `${ref}:${FILE_CLAIMS_PATH}`], {
     encoding: "utf-8",
   });
@@ -244,15 +286,18 @@ if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
     const base = args.ref ?? `origin/${defaultBranch(args.project)}`;
+    // One refresh for the whole run, and whether it worked is an input to
+    // every liveness answer below. See `ownerLiveness`.
+    const fetched = args.fetch ? refreshRefs(args.project) : false;
 
     if (args.check.length > 0) {
-      const reading = readFromRemote(args.project, base, args.fetch);
+      const reading = readFromRemote(args.project, base);
       if (reading.status === "unreadable") {
         console.log(`UNMEASURED: the claim registry on ${base} could not be read — ${reading.reason}`);
         console.log("Not reporting these paths free: an unreadable registry is not an empty one.");
         process.exit(REFUSE_EXIT);
       }
-      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner));
+      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner), fetched);
       // An owner whose liveness could not be established must not fall through
       // to "dead". Only the claims on the paths being asked about matter — an
       // unreadable branch elsewhere in the registry is not this caller's
@@ -310,12 +355,12 @@ if (import.meta.main) {
       writeStore(args.project, kept);
       console.log(`released ${reading.claims.length - kept.length} claim(s) for ${args.owner}.`);
     } else if (args.list) {
-      const reading = readFromRemote(args.project, base, args.fetch);
+      const reading = readFromRemote(args.project, base);
       if (reading.status === "unreadable") {
         console.log(`UNMEASURED: ${reading.reason}`);
         process.exit(REFUSE_EXIT);
       }
-      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner));
+      const { live, unmeasured } = ownerLiveness(args.project, base, reading.claims.map(c => c.owner), fetched);
       // ABSENT and READ-EMPTY print differently on purpose. "Nobody has
       // declared anything" and "there is no registry on this ref yet" lead to
       // different next actions, and one line for both is how a reader stops
