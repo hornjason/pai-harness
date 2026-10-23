@@ -2251,7 +2251,6 @@ describe("#1277 CONTROL: the fixture shapes #1175 exists to unblock", () => {
     ["a python fixture", `python3 -I -c "import json; json.dump({}, open('/tmp/fix/${STATE}','w'))"`],
     ["two scratch paths", `python3 -I -c "import shutil; shutil.copy('/tmp/a/${STATE}', '/tmp/b/${STATE}')"`],
     ["a heredoc fixture", `python3 <<'PY'\nopen("/tmp/fix/${STATE}", "w").write("{}")\nPY`],
-    ["a scratch path in a list", `python3 -I -c "for p in ['/tmp/a/${STATE}', '/tmp/b/${STATE}']: open(p,'w')"`],
   ];
   test.each(ok)("%s stays allowed", (_n, cmd) => {
     const d = decideBashWrite(cmd);
@@ -2259,15 +2258,39 @@ describe("#1277 CONTROL: the fixture shapes #1175 exists to unblock", () => {
   });
 
   /**
+   * The list row, moved out of the table above and made to say what it
+   * witnesses, which is no longer the exemption.
+   *
+   * A list element is an argument of no call, so `inWritePosition` reports
+   * it as a fragment and the body is UNPROVEN. The command stays allowed
+   * for the same reason the dict row below does — `writesNear` cannot see
+   * `open(p,'w')` in the dequoted view — and an `allowed` assertion on its
+   * own would certify an exemption that is gone. Sixth shape, twice in one
+   * describe, both found by asking the guard what it saw.
+   */
+  test("COST of #1371: the list row is allowed by a DIFFERENT mechanism too", () => {
+    const cmd = `python3 -I -c "for p in ['/tmp/a/${STATE}', '/tmp/b/${STATE}']: open(p,'w')"`;
+    const t = bodyTargets(programBody(cmd));
+    expect(t.targets).toEqual([]);
+    expect(t.fragments).toEqual([`/tmp/a/${STATE}`, `/tmp/b/${STATE}`]);
+    expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+
+  /**
    * The two rows #1371 COSTS, kept and inverted rather than deleted, which
    * is the same treatment #1277 gave the row it reversed.
    *
-   * `=` and `:` were argument openers, so a literal bound to a name was
-   * recorded as a write target and nothing followed the name afterwards.
-   * The fix is to stop reading a binding as a target; the price is that a
-   * body which binds a scratch path before writing it is now UNPROVEN
-   * rather than exempt. Measured over the corpus in the #1371 block below,
-   * and these two rows are the shape of what it costs.
+   * A literal bound to a name was recorded as a write target and nothing
+   * followed the name afterwards. `inWritePosition` answers it: a binding
+   * at statement level is an argument of no call, so it is not a write
+   * position, and a body that binds a scratch path before writing it is
+   * UNPROVEN rather than exempt. Measured over the corpus in the #1371
+   * block below, and these two rows are the shape of what it costs.
+   *
+   * An earlier round answered it by dropping `=` and `:` from `ARG_OPENS`.
+   * That is reverted: it decided the same question as `inWritePosition`,
+   * and keeping both would be two deciders — see `ARG_OPENS` for the
+   * measurement that proved they were.
    *
    * They are stated as refusals so the cost is visible in the suite. A
    * quieter repair — delete the rows — would leave the next reader of this
@@ -2286,10 +2309,11 @@ describe("#1277 CONTROL: the fixture shapes #1175 exists to unblock", () => {
    * and for different reasons:
    *
    *   before  the literal stood alone, was scratch, and the body was exempt
-   *   after   the literal is a FRAGMENT, so nothing is exempt — and the
-   *           verb is invisible, because `writesNear` reads the DEQUOTED
-   *           view and `WRITE_INTENT`'s `open(…,'w')` alternative needs the
-   *           quotes `dequote` has just removed
+   *   after   the literal is an entry in a dict, so it is in no write
+   *           position and is a FRAGMENT — and the command survives only
+   *           because the verb is invisible: `writesNear` reads the
+   *           DEQUOTED view, and `WRITE_INTENT`'s `open(…,'w')` alternative
+   *           needs the quotes `dequote` has just removed
    *
    * So this row must assert the mechanism, not the verdict. If it asserted
    * only `allowed` it would certify an exemption that no longer exists.
@@ -2366,8 +2390,8 @@ describe("#1277: the cheapest wrong fixes, run rather than described", () => {
 });
 
 /**
- * #1371: two HIGH findings from the push security review of #1277, and the
- * reason the corpus sweep in the block above could not have found either.
+ * #1371: the push security review of #1277, answered over three rounds, and
+ * the reason each round needed the next one.
  *
  * ## Why these are written by hand
  *
@@ -2377,106 +2401,160 @@ describe("#1277: the cheapest wrong fixes, run rather than described", () => {
  * incapable of proving the guard cannot be walked around, because the inputs
  * that walk around it are absent from a historical corpus by construction —
  * an honest caller never writes them, which is exactly who they are worth
- * something to. Both findings below are in that gap.
+ * something to. Every row below is in that gap.
  *
- * ## What was broken to make these fail, run rather than described
+ * ## The rounds, and what each one got wrong
  *
- * Each row was executed against three modules before the fix was written:
- * `origin/main` (`e17bacf6`), the #1277 branch tip (`643e3053`), and the
- * repair. Two of the five are not bypasses but REGRESSIONS — refused by
- * `main`, allowed by #1277:
+ * **Round 1** found that `targets.every(isScratchPath)` quantified over a set
+ * filtered by `ALL_PROTECTED`, so a literal spelling no protected basename
+ * was never asked anything. Two of its five witnesses were REGRESSIONS —
+ * refused by `origin/main`, allowed by `643e3053`.
  *
- *     row                                       main      643e3053  repair
- *     F1-a copy into the run-store directory    BLOCKED   allowed   BLOCKED
- *     F1-b the same into ~/.claude              BLOCKED   allowed   BLOCKED
- *     F1-c the same through a heredoc           allowed   allowed   BLOCKED
- *     F2-a a binding reassigned before the write allowed  allowed   BLOCKED
- *     F2-b the same through a dict value        BLOCKED   allowed   BLOCKED
+ * **Round 2** was the AI review, and it found that `standsAlone` treated a
+ * newline as the end of the expression: #1277's own headline witness came
+ * back ALLOWED with one line break inserted before the `.replace`. A
+ * detector a reformat defeats.
  *
- * The `MUTATION` block below re-performs that removal on every run, so the
- * evidence is not a sentence in a PR that a later reader has to trust.
+ * **Round 3** found that round 1's repair had reintroduced the defect it was
+ * the repair for, one layer in. `literalInProtectedTree` opened with
+ * `if (!value.startsWith('/')) return false`, so `~/…`, `$HOME/…` and
+ * `${HOME}/…` took a silent skip that the caller read as "not protected"
+ * rather than "I could not place this". It also asked for the rebinding
+ * question to be answered by POSITION rather than by delimiter.
  *
- * ## The population, re-swept, and what it cost
+ * ## What decides it now, and why these five and not more
  *
- * #1277's sweep was re-run over the same machine with all three modules
- * evaluated on ONE corpus, which is the control that makes the comparison
- * mean anything: 31,932 transcript files, 131,696 unique Bash commands,
- * 5,730 naming a protected artifact. It is 2.6x the file count #1277 swept,
- * so its numbers are ~2x #1277's and that ratio holds in every column.
+ *     IN_LIVE_TREE      a literal resolving inside protectedTrees(), through
+ *                       no name list, with `~`/`$HOME` expanded first
+ *     CANNOT_PLACE      a path-shaped literal with an expansion we cannot
+ *                       perform — fail closed, because a false "unplaceable"
+ *                       costs a refused exemption and a false "elsewhere"
+ *                       costs a bypass
+ *     inWritePosition   a target must be a direct argument of a recognised
+ *                       write call: a whitelist of POSITIONS, where an
+ *                       unanticipated transform fails closed by not being a
+ *                       recognised position
+ *     standsAlone       nothing adjacent to the literal consumes it
+ *
+ * A sixth was asked for and is NOT shipped: case-folding the live-tree
+ * comparison. The mutation battery refused to witness it — see
+ * `placeLiteral` — because the resolution step already canonicalises case.
+ *
+ * `inWritePosition` subsumed two cheaper repairs that were in the branch and
+ * are now gone: dropping `=`/`:` from `ARG_OPENS`, and the proposed drop of
+ * `:` from `ARG_CLOSES`. Keeping either beside it would be two deciders
+ * answering one question — and the measurement that proves they were is in
+ * `ARG_OPENS`'s own docblock: with `inWritePosition` in place, restoring
+ * `=` and `:` moves nothing at all.
+ *
+ * ## The population, re-swept
+ *
+ * All variants evaluated on ONE corpus, which is the control that makes the
+ * comparison mean anything: 32,023 transcript files, 132,196 unique Bash
+ * commands, 5,738 naming a protected artifact. That is 2.6x the file count
+ * #1277 swept and its columns come out at ~2x #1277's throughout.
  *
  *     e17bacf6 -> 643e3053    newly blocked 0    newly allowed 4
  *     e17bacf6 -> this        newly blocked 0    newly allowed 4
  *     643e3053 -> this        newly blocked 0    newly allowed 0
  *
- * Re-run after the whitespace repair the AI review's blocking finding
- * asked for, over 131,942 unique commands: every column above is the same,
- * and the leading half of that repair moves nothing on its own either.
+ *     exempt   e17bacf6 29    643e3053 14    round 2  13    this 12
  *
- * So this repair costs nothing on 131,696 real commands, in either
- * direction. The 0s are not the instrument failing to report: of the 2,322
- * non-shell interpreter segments inside the commands that name a protected
- * artifact, the live-tree reading fires on 678 and the exemption population
- * moves by one —
+ * With five refusals stacked, the failure that costs us is no longer a
+ * bypass — it is an exemption that silently never applies again, and every
+ * refusal row stays green through exactly that. So `exempt > 0` is the
+ * reading that matters most, the CONTROL rows below are the load-bearing
+ * half of this block, and each new refusal is paired with one.
  *
- *     exempt   e17bacf6 29     643e3053 14     this 13
- *     643e3053 -> this         lost 1          gained 0
- *
- * — because the other 677 were already refused for another reason, and the
- * one that moved is an assignment of a `/witnesses/` fixture directory
- * whose COMMAND verdict is unchanged. That one segment is finding 2's cost
- * and it is the only thing either fix takes from this corpus.
- *
- * ## The third finding, and what is NOT fixed here
- *
- * The review's MEDIUM has two halves. Dropping `:` from `ARG_OPENS` disposes
- * of the ternary half outright — a `:` after a `?` cannot read as a dict key
- * when `:` opens nothing. The other half, that the group-close walk does not
- * verify WHICH group it stepped out of, is asserted below as an open limit
- * rather than closed: telling `shutil.copy(src, "/tmp/x")` from
- * `open(os.environ.get("D", "/tmp/x"), "w")` means matching back to the
- * opener and reading the callee, which is the second parser this whole
- * module exists to avoid. It is allowed by `main` as well, so it is a
- * pre-existing limit of the same family as the assembled NAME and `eval`
- * limits `bodyTargets` already states, and it is filed rather than guessed
- * at here.
+ * One width was measured and REJECTED, and the number is the argument.
+ * Treating a relative path-shaped literal as unplaceable costs 7 real
+ * commands and takes the exemption population from 13 segments to 6, because
+ * `'hornjason/pai-config'` and `'./lib/x.ts'` are slash-bearing and are not
+ * paths. It does not even close the class it was widened for: `'.'` and
+ * `'x'` carry no slash. `inWritePosition` is the closure that works, because
+ * it asks only about the literals a write actually consumes.
  */
 describe("#1371 WITNESS: the exemption granted against a value the write never uses", () => {
   const RUN4 = `${process.env.HOME}/.rungate/run`;
   const CLAUDE = `${process.env.HOME}/.claude/agents`;
+  const SHOUTED = `${(process.env.HOME ?? "").toUpperCase()}/.rungate/run`;
+  // Built rather than written: `${HOME}` in a template literal interpolates,
+  // which would substitute the fixture away before the guard ever saw it.
+  const DOLLAR_HOME = "$" + "{HOME}";
 
   /**
    * Every spelling this block decides, in one table, so the population
-   * assertions below range over a set nobody can quietly add to.
+   * assertions range over a set nobody can quietly add to.
    *
-   * No fixture here reaches a shell. `decideBashWrite` is called with the
-   * command as literal bytes, and `join()`/`resolve()` are never applied to
-   * a fixture path — a `MECHANISM` row asserts the raw spelling survives to
-   * `bodyTargets`, because a case about path spelling that lets something
-   * normalise the path first is asserting nothing.
+   * No fixture reaches a shell. `decideBashWrite` is called with the command
+   * as literal bytes, and `join()`/`resolve()` are never applied to a fixture
+   * path — a MECHANISM row asserts the raw spelling survives to `bodyTargets`,
+   * because a case about path spelling that lets something normalise the path
+   * first is asserting nothing.
    */
   const rows: { label: string; cmd: string; blocked: boolean }[] = [
     {
-      label: "F1-a a copy into the live run-store DIRECTORY, which spells no artifact",
+      label: "L1 a copy into the live run-store DIRECTORY, which spells no artifact",
       cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${RUN4}')"`,
       blocked: true,
     },
     {
-      label: "F1-b the same shape into another live tree",
+      label: "L2 the same shape into another live tree",
       cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${CLAUDE}')"`,
       blocked: true,
     },
     {
-      label: "F1-c the same hole reached through a heredoc",
+      label: "L3 the same hole reached through a heredoc",
       cmd: `python3 <<'PY'\nimport shutil\nshutil.copy("/tmp/fix/${STATE}", "${RUN4}")\nPY`,
       blocked: true,
     },
     {
+      label: "L4 the tilde spelling, which the absolute-path precondition skipped",
+      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expanduser("~/.rungate/run"))'`,
+      blocked: true,
+    },
+    {
+      label: "L5 the ${HOME} spelling, same skip",
+      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expandvars("${DOLLAR_HOME}/.rungate/run"))'`,
+      blocked: true,
+    },
+    {
+      // Held by the RESOLUTION, not by a case fold. The review asked for
+      // folding; a fold mutant could not witness it, because
+      // `resolveThroughLinks` climbs to `/USERS` and `realpathSync` hands
+      // back `/Users`. The fold is not shipped and `placeLiteral` says why.
+      label: "L6 the same tree SHOUTED, which the volume reads as one file",
+      cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${SHOUTED}')"`,
+      blocked: true,
+    },
+    {
+      label: "P1 an expansion the reader cannot perform is UNPLACEABLE, not elsewhere",
+      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expandvars("$RG/live"))'`,
+      blocked: true,
+    },
+    {
+      label: "P2 the same with the variable INSIDE an otherwise absolute path",
+      cmd: `python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expandvars("/tmp/$RG/../live"))'`,
+      blocked: true,
+    },
+    {
       // One line, on purpose. The multi-line spelling of this is held up by
-      // the whitespace fix as well, and a row two fixes answer cannot say
-      // which one is load-bearing — the fourth shape. The `;` makes the
-      // binding the only thing under test.
-      label: "F2-a a scratch literal bound to a name, then reassigned before the write",
+      // the whitespace rule as well, and a row two deciders answer cannot
+      // say which one is load-bearing — the fourth shape. The `;` makes the
+      // binding the only thing under test, and the equality below is what
+      // caught the multi-line version being double-covered.
+      label: "W1 a scratch literal bound to a name, then reassigned before the write",
       cmd: `python3 -I -c "import os; p = '/tmp/fix/${STATE}'; p = p.replace('/tmp/fix', os.environ['RG']); open(p,'w').write('{}')"`,
+      blocked: true,
+    },
+    {
+      label: "W2 the same reassignment through a dict value",
+      cmd: `bun -e 'const d = {dst: "/tmp/fix/${STATE}"}; d.dst = process.env.RG + "/w"; writeFileSync(d.dst, "{}")'`,
+      blocked: true,
+    },
+    {
+      label: "W3 a literal that is an inner call's DEFAULT, not the destination",
+      cmd: `python3 -I -c "import os; open(os.environ.get('RG', '/tmp/fix/${STATE}'), 'w').write('{}')"`,
       blocked: true,
     },
     {
@@ -2489,16 +2567,9 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       cmd: `python3 <<'PY'\nimport os\nopen("/tmp/x/${STATE}"\n     .replace("/tmp/x", os.environ["RG"]), "w").write("{}")\nPY`,
       blocked: true,
     },
-    {
-      label: "C8 an ordinary multi-line fixture, where the literal opens a line",
-      cmd: `bun -e 'writeFileSync(\n  "/tmp/fix/${STATE}",\n  "{}"\n)'`,
-      blocked: false,
-    },
-    {
-      label: "F2-b the same reassignment through a dict value",
-      cmd: `bun -e 'const d = {dst: "/tmp/fix/${STATE}"}; d.dst = process.env.RG + "/w"; writeFileSync(d.dst, "{}")'`,
-      blocked: true,
-    },
+
+    // ----- CONTROLS. With five stacked refusals these are the load-bearing
+    // half: an exemption that never applies again passes every witness above.
     { label: "C1 a node fixture", cmd: `bun -e 'writeFileSync("/tmp/fix/${STATE}","{}")'`, blocked: false },
     {
       label: "C2 a python fixture",
@@ -2516,18 +2587,41 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       blocked: false,
     },
     {
-      label: "C5 a scratch path in a list",
-      cmd: `python3 -I -c "for p in ['/tmp/a/${STATE}', '/tmp/b/${STATE}']: open(p,'w')"`,
-      blocked: false,
-    },
-    {
-      label: "C6 a non-scratch read OUTSIDE every live tree, beside a fixture write",
+      label: "C5 a non-scratch read OUTSIDE every live tree, beside a fixture write",
       cmd: `bun -e 'readFileSync("${LIVE}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`,
       blocked: false,
     },
     {
-      label: "C7 the pathlib spelling the denylist wrong-fix lets through",
+      label: "C6 the pathlib spelling the denylist wrong-fix lets through",
       cmd: `python3 -I -c "from pathlib import Path; Path('/tmp/x/${STATE}').relative_to('/tmp')"`,
+      blocked: false,
+    },
+    {
+      label: "C7 an ordinary multi-line fixture, where the literal opens a line",
+      cmd: `bun -e 'writeFileSync(\n  "/tmp/fix/${STATE}",\n  "{}"\n)'`,
+      blocked: false,
+    },
+    {
+      // The negative control for the expansion half. Expanding `~` must not
+      // mean refusing every `~`, or L4 is passing on a refusal of the
+      // character rather than on where it points.
+      label: "C8 a tilde path OUTSIDE every live tree, beside a fixture write",
+      cmd: `bun -e 'readFileSync("~/Projects/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`,
+      blocked: false,
+    },
+    {
+      // The negative control for the placement half, and the row that the
+      // rejected wide reading turns red. A repo slug is slash-bearing and is
+      // not a path.
+      label: "C9 a slash-bearing literal that is not a path at all",
+      cmd: `python3 -I -c "import json; json.dump({'repo': 'hornjason/pai-harness'}, open('/tmp/fix/${STATE}','w'))"`,
+      blocked: false,
+    },
+    {
+      // The negative control for `inWritePosition`. A direct argument of a
+      // recognised write call is still a target, through a dotted callee.
+      label: "C10 a dotted write callee still yields a target",
+      cmd: `bun -e 'const fs = require("fs"); fs.writeFileSync("/tmp/fix/${STATE}", "{}")'`,
       blocked: false,
     },
   ];
@@ -2537,45 +2631,62 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
     expect(d.blocked, d.reason ?? cmd).toBe(blocked);
   });
 
-  test("MECHANISM: a live-tree literal is reported whatever it spells, and the filter is the defect", () => {
-    const body = programBody(`python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${RUN4}')"`);
-    const t = bodyTargets(body);
+  test("CONTROL: the exemption still applies to something", () => {
+    // The one reading that cannot be satisfied by stacking refusals. If this
+    // goes red, every witness above is green for the wrong reason.
+    const exempt = rows.filter(r => !r.blocked && r.cmd.includes("/tmp/fix/"));
+    expect(exempt.length).toBeGreaterThan(4);
+    for (const r of exempt) expect(decideBashWrite(r.cmd).blocked, r.label).toBe(false);
+  });
+
+  test("MECHANISM: a live-tree literal is reported whatever it spells, and the filter was the defect", () => {
+    const t = bodyTargets(programBody(`python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${RUN4}')"`));
     // The run-store literal is invisible to the name-list halves — which is
-    // the finding: `targets.every(isScratchPath)` was `every` over a set the
-    // command's author picks the membership of.
+    // round 1's finding: `targets.every(isScratchPath)` was `every` over a
+    // set the command's author picks the membership of.
     expect(t.targets).toEqual([`/tmp/fix/${STATE}`]);
     expect(t.fragments).toEqual([]);
     expect(t.targets.every(isScratchPath)).toBe(true);
     // And it is reported by the reading that goes through no name list.
     expect(t.protectedLiterals).toEqual([RUN4]);
+    expect(t.unplaceable).toEqual([]);
   });
 
-  test("MECHANISM: a bound literal is no longer a target, so the body is UNPROVEN", () => {
+  test("MECHANISM: an unplaceable literal is its OWN reading, not folded into the protected one", () => {
+    // Round 3's finding: the two were one boolean, and `false` read as "not
+    // protected" rather than "I could not place this". Keeping them apart is
+    // what makes the reason readable after the refusal.
+    const t = bodyTargets(
+      programBody(`python3 -I -c 'import os, shutil; shutil.copy("/tmp/fix/${STATE}", os.path.expandvars("$RG/live"))'`),
+    );
+    expect(t.unplaceable).toEqual(["$RG/live"]);
+    expect(t.protectedLiterals).toEqual([]);
+  });
+
+  test("MECHANISM: a bound literal is not in a write position, so the body is UNPROVEN", () => {
     const body = programBody(
-      `python3 -I -c "import os\np = '/tmp/fix/${STATE}'\np = p.replace('/tmp/fix', os.environ['RG'])\nopen(p,'w').write('{}')"`,
+      `python3 -I -c "import os; p = '/tmp/fix/${STATE}'; p = p.replace('/tmp/fix', os.environ['RG']); open(p,'w').write('{}')"`,
     );
     const t = bodyTargets(body);
     expect(t.targets).toEqual([]);
     expect(t.fragments).toEqual([`/tmp/fix/${STATE}`]);
     // The refusal is "this binding is not shown to be the destination", not
-    // "the path was elsewhere" — the literal reached the reader intact and
-    // is itself scratch.
+    // "the path was elsewhere" — the literal is itself scratch.
     expect(isScratchPath(`/tmp/fix/${STATE}`)).toBe(true);
-    expect(t.protectedLiterals).toEqual([]); // and finding 1's fix is not what caught it
+    expect(t.protectedLiterals).toEqual([]);
+    expect(t.unplaceable).toEqual([]);
   });
 
   /**
    * The LEADING half of the whitespace rule, asserted as a reading and NOT
    * as a verdict, because no verdict claim was earned.
    *
-   * Before #1371 a literal that OPENED a line stood alone whatever preceded
-   * the break, so a concatenation split across lines read as unconsumed.
-   * No harmful instance of that exists that I could write — the literal
-   * would have to be scratch, carry a protected artifact, and be the right
-   * operand of a `+`, and a scratch absolute path is not a suffix of
-   * anything. The half is kept for symmetry at a measured cost of 0 on
-   * 131,942 real commands, and this row is the evidence that it does
-   * something rather than the evidence that it was needed.
+   * Before round 2 a literal that OPENED a line stood alone whatever preceded
+   * the break. No harmful instance of that exists that I could write — the
+   * literal would have to be scratch, carry a protected artifact, and be the
+   * right operand of a `+`, and a scratch absolute path is not a suffix of
+   * anything. The half is kept for symmetry at a measured cost of 0, and this
+   * row is the evidence that it does something rather than that it was needed.
    */
   test("MECHANISM: a literal opening a line after an operator is a fragment, not a target", () => {
     const t = bodyTargets(`writeFileSync(process.env.RG +\n  "/tmp/fix/${STATE}", "{}")`);
@@ -2594,47 +2705,38 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
   });
 
   /**
-   * OPEN, and asserted as open rather than left to a reader to discover.
-   *
-   * `standsAlone` steps out through a closing bracket and accepts whatever
-   * delimiter follows, without checking which group closed. So a literal
-   * that is an inner call's DEFAULT reads as a direct argument of the write.
-   * `main` allows it too, so it is pre-existing and not #1277's to answer;
-   * closing it needs the callee behind the opener, which is a parser.
-   */
-  test("OPEN LIMIT: a literal that is an inner call's default still reads as a target", () => {
-    const cmd = `python3 -I -c "import os; open(os.environ.get('RG', '/tmp/fix/${STATE}'), 'w').write('{}')"`;
-    expect(bodyTargets(programBody(cmd)).targets).toEqual([`/tmp/fix/${STATE}`]);
-    expect(decideBashWrite(cmd).blocked).toBe(false);
-  });
-
-  /**
-   * MUTATION: each fix removed, and the population asserted in BOTH
+   * MUTATION: each decider removed, and the population asserted in BOTH
    * directions against the module with it removed.
    *
-   * A battery showing only the new witnesses passing cannot be wrong about
-   * what else moved — which is how both HIGH findings reached a PR whose
-   * author had enumerated the population. So the assertion here is not "the
-   * witnesses are refused", it is "the set of rows that changed verdict is
-   * EXACTLY this set, in each direction".
+   * A battery showing only its new witnesses passing cannot be wrong about
+   * what else moved — which is how round 1's findings reached a PR whose
+   * author had enumerated the population, and how round 3's reached one
+   * whose author had written a mutation battery.
    *
-   * Two mutants, one per finding, so neither fix can hold the other's cases
-   * up. Each mutation has a single site and the test proves it: a second
-   * spelling of either would let a refusal bypass the mutation and the rows
-   * would go green having witnessed nothing.
+   * One mutant per decider, and every row moves under EXACTLY ONE of them.
+   * That property is the point and it is not free: W1 was written multi-line
+   * and came back held up by the whitespace rule as well as by position, and
+   * the equality below is what said so.
    */
-  test("MUTATION: removing each fix moves exactly the rows it is responsible for", async () => {
+  test("MUTATION: removing each decider moves exactly the rows it is responsible for", async () => {
     const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
-    const F1_SITE = "function literalInProtectedTree(value: string, live: string[]): boolean {";
-    const F2_SITE = "const ARG_OPENS = new Set(['(', ',', '[', '{', ';']);";
-    const F2_WAS = "const ARG_OPENS = new Set(['(', ',', '[', '{', '=', ':', ';']);";
-    // Not "drop `\n` from WHITESPACE" — that mutation is STRICTER than the
-    // code, so every row would hold and the battery would report nothing.
-    // The mutation has to restore the rule the review found, which is the
-    // pre-#1371 `standsAlone` verbatim; the new body is left in place under
-    // a dead name so the brace structure still closes.
-    const NL_SITE = "function standsAlone(body: string, start: number, end: number): boolean {";
-    const NL_WAS = `function standsAlone(body: string, start: number, end: number): boolean {
+    const SITES = {
+      // The live-tree reading, which is also where `~`/`$HOME` expansion lands.
+      noLive: ["const IN_LIVE_TREE: Placement = 'protected';", "const IN_LIVE_TREE: Placement = 'elsewhere';"],
+      // The fail-closed half: an unplaceable literal reads as ordinary again.
+      noPlace: ["const CANNOT_PLACE: Placement = 'unplaceable';", "const CANNOT_PLACE: Placement = 'elsewhere';"],
+      // The write-position whitelist: every position is a write position.
+      noPos: [
+        "function inWritePosition(body: string, start: number, spans: [number, number][]): boolean {",
+        "function inWritePosition(body: string, start: number, spans: [number, number][]): boolean {\n  return true;",
+      ],
+      // Not "drop `\n` from WHITESPACE" — that mutation is STRICTER than the
+      // code, so every row would hold and the battery would report nothing.
+      // This restores the pre-round-2 `standsAlone` verbatim; the current
+      // body is left in place under a dead name so the braces still close.
+      noNL: [
+        "function standsAlone(body: string, start: number, end: number): boolean {",
+        `function standsAlone(body: string, start: number, end: number): boolean {
   let a = start - 1;
   while (a >= 0 && (body[a] === ' ' || body[a] === '\\t')) a--;
   if (a >= 0 && body[a] !== '\\n' && !ARG_OPENS.has(body[a])) return false;
@@ -2649,10 +2751,13 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
     return ARG_CLOSES.has(c);
   }
 }
-function __standsAloneAfter(body: string, start: number, end: number): boolean {`;
-    expect(src.split(F1_SITE).length - 1, "finding 1 must have ONE site to mutate").toBe(1);
-    expect(src.split(F2_SITE).length - 1, "finding 2 must have ONE site to mutate").toBe(1);
-    expect(src.split(NL_SITE).length - 1, "the whitespace rule must have ONE site to mutate").toBe(1);
+function __standsAloneAfter(body: string, start: number, end: number): boolean {`,
+      ],
+    } as const;
+
+    for (const [name, [site]] of Object.entries(SITES)) {
+      expect(src.split(site).length - 1, `${name} must have ONE site to mutate`).toBe(1);
+    }
     // The mutant runs from a temp directory, so a relative specifier it
     // cannot resolve would read as a refusal rather than as a module that
     // failed to load. Exactly one is allowed, and it is carried.
@@ -2666,28 +2771,20 @@ function __standsAloneAfter(body: string, start: number, end: number): boolean {
       );
       // EVERY mutant is written before ANY of them is imported. Bun caches
       // the directory listing at the first dynamic import from a directory,
-      // so a file created after it is reported `Cannot find module` — which
-      // is a red indistinguishable from the guard behaving differently.
-      // Measured: writing `a` then importing `a` then writing `b` loses `b`.
-      const mutants = {
-        // Finding 1 removed: the live-tree reading answers no for everything.
-        noF1: src.replace(F1_SITE, `${F1_SITE}\n  return false;`),
-        // Finding 2 removed: `=` and `:` open an argument again.
-        noF2: src.replace(F2_SITE, F2_WAS),
-        // The newline rule restored: a newline at the literal's own depth
-        // ends the expression, which is what the AI review on #1371 found.
-        noNL: src.replace(NL_SITE, NL_WAS),
-      };
-      for (const [name, text] of Object.entries(mutants)) writeFileSync(join(dir, `${name}.ts`), text);
+      // so a file created after it is reported `Cannot find module` — a red
+      // indistinguishable from the guard behaving differently. Measured:
+      // write `a`, import `a`, write `b` — and `b` is gone.
+      for (const [name, [site, repl]] of Object.entries(SITES)) {
+        writeFileSync(join(dir, `${name}.ts`), src.replace(site, repl));
+      }
       const load = async (name: string) => {
         const m = (await import(`file://${join(dir, `${name}.ts`)}`)) as {
           decideBashWrite: (c: string) => { blocked: boolean };
         };
         return m.decideBashWrite;
       };
-      const noF1 = await load("noF1");
-      const noF2 = await load("noF2");
-      const noNL = await load("noNL");
+      const decide: Record<string, (c: string) => { blocked: boolean }> = {};
+      for (const name of Object.keys(SITES)) decide[name] = await load(name);
 
       const moved = (other: (c: string) => { blocked: boolean }) =>
         rows
@@ -2695,39 +2792,41 @@ function __standsAloneAfter(body: string, start: number, end: number): boolean {
           .map(r => r.label)
           .sort();
 
-      // Both directions, by construction: `moved` is every row whose verdict
-      // differs, and the expectations below say which way each one went.
-      //
-      // Each row appears under EXACTLY ONE mutant, which is the property
-      // worth having: a row two fixes answer cannot say which one is
-      // load-bearing, and a mutation of either leaves the other holding it
-      // up — the fourth shape. F2-a was written multi-line first and was
-      // held by `noF2` and `noNL` both; it is one line here for that reason.
-      expect(moved(noF1)).toEqual(
+      expect(moved(decide.noLive)).toEqual(
         [
-          "F1-a a copy into the live run-store DIRECTORY, which spells no artifact",
-          "F1-b the same shape into another live tree",
-          "F1-c the same hole reached through a heredoc",
+          "L1 a copy into the live run-store DIRECTORY, which spells no artifact",
+          "L2 the same shape into another live tree",
+          "L3 the same hole reached through a heredoc",
+          "L4 the tilde spelling, which the absolute-path precondition skipped",
+          "L5 the ${HOME} spelling, same skip",
+          "L6 the same tree SHOUTED, which the volume reads as one file",
         ].sort(),
       );
-      expect(moved(noF2)).toEqual(
+      expect(moved(decide.noPlace)).toEqual(
         [
-          "F2-a a scratch literal bound to a name, then reassigned before the write",
-          "F2-b the same reassignment through a dict value",
+          "P1 an expansion the reader cannot perform is UNPLACEABLE, not elsewhere",
+          "P2 the same with the variable INSIDE an otherwise absolute path",
         ].sort(),
       );
-      expect(moved(noNL)).toEqual(
+      expect(moved(decide.noPos)).toEqual(
+        [
+          "W1 a scratch literal bound to a name, then reassigned before the write",
+          "W2 the same reassignment through a dict value",
+          "W3 a literal that is an inner call's DEFAULT, not the destination",
+        ].sort(),
+      );
+      expect(moved(decide.noNL)).toEqual(
         [
           "N1 the #1277 headline escape with one newline before the .replace",
           "N2 the same line break in a python heredoc",
         ].sort(),
       );
-      // Direction: every row that moved was ALLOWED without the fix. Nothing
-      // in this table is refused only because a fix is absent, so no mutant
-      // is holding another's witness up.
+      // Direction: every row that moved was ALLOWED without its decider.
+      // Nothing here is refused only because a decider is absent, so no
+      // mutant is holding another's witness up.
       for (const r of rows) {
-        for (const m of [noF1, noF2, noNL]) {
-          if (m(r.cmd).blocked !== decideBashWrite(r.cmd).blocked) expect(m(r.cmd).blocked).toBe(false);
+        for (const d of Object.values(decide)) {
+          if (d(r.cmd).blocked !== decideBashWrite(r.cmd).blocked) expect(d(r.cmd).blocked, r.label).toBe(false);
         }
       }
     } finally {
