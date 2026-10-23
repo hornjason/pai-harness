@@ -1139,6 +1139,39 @@ function endOfSubstitution(s: string, i: number): number {
  *
  * An escape this does not recognise keeps its backslash, which is what bash
  * does with one.
+ *
+ * ## Octal and `\x` are BYTES, so the decode assembles bytes
+ *
+ * Measured: `printf '%s' $'\303\251' | od -An -tx1` gives `c3 a9`, and so
+ * do `$'\xc3\xa9'` and a literal `é` — all three are the UTF-8 encoding of
+ * one character. A per-escape `String.fromCharCode` gives U+00C3 followed
+ * by U+00A9, a different string of four bytes, so above 0x7F that spelling
+ * hands the module a token the shell never produced. Same defect as the
+ * transforms this function exists to close, pointing the other way.
+ *
+ * It is a live one, not a cosmetic differential. With a symlink named
+ * `café` under a scratch root pointing into the run store, the write
+ * through it is REFUSED when spelled literally and when spelled
+ * `$'café'`, and was ALLOWED when spelled `$'caf\303\251'` or
+ * `$'caf\xc3\xa9'` — the module looked for a directory nobody had made,
+ * found nothing to resolve, and exempted it as ordinary scratch. That is
+ * #1175's escape with a name the decoder disagreed about.
+ *
+ * So escapes are decoded into BYTES and the byte string is decoded as
+ * UTF-8 once, at the end. Refusing to decode above 0x80 was the first
+ * repair and it does NOT close this: an undecoded `caf\303\251` is just
+ * another directory that does not exist, which is exempt. The conservative
+ * answer and the wrong answer are the same answer here.
+ *
+ * `\u` and `\U` stay code points, because that is what bash defines them
+ * as — it emits their UTF-8 encoding, which is what they mean once the
+ * command text has itself been decoded from UTF-8.
+ *
+ * What remains: a byte sequence that is not valid UTF-8, such as a lone
+ * `$'\303'`, becomes U+FFFD here and names a file this module cannot
+ * spell. Closing that needs byte-level paths throughout, which is a
+ * different change; the residue is one unmatched character in a position
+ * that is then unprovable rather than wrongly exempt.
  */
 const ANSI_C_SHORT: Record<string, string> = {
   a: '\x07',
@@ -1157,22 +1190,32 @@ const ANSI_C_SHORT: Record<string, string> = {
 };
 
 function decodeAnsiC(body: string): string {
-  let out = '';
+  const bytes: number[] = [];
+  // Plain text accumulates and is encoded in runs rather than per character,
+  // so a surrogate PAIR is encoded as the one code point it spells instead
+  // of as two lone halves.
+  let pending = '';
+  const flush = () => {
+    if (!pending) return;
+    for (const b of new TextEncoder().encode(pending)) bytes.push(b);
+    pending = '';
+  };
   for (let k = 0; k < body.length; k++) {
     if (body[k] !== '\\' || k + 1 >= body.length) {
-      out += body[k];
+      pending += body[k];
       continue;
     }
     const n = body[k + 1];
     const short = ANSI_C_SHORT[n];
     if (short !== undefined) {
-      out += short;
+      pending += short;
       k++;
       continue;
     }
     if (n >= '0' && n <= '7') {
       const oct = /^[0-7]{1,3}/.exec(body.slice(k + 1))?.[0] ?? '';
-      out += String.fromCharCode(parseInt(oct, 8));
+      flush();
+      bytes.push(parseInt(oct, 8) & 0xff); // a BYTE
       k += oct.length;
       continue;
     }
@@ -1180,14 +1223,21 @@ function decodeAnsiC(body: string): string {
       const width = n === 'x' ? 2 : n === 'u' ? 4 : 8;
       const hex = new RegExp(`^[0-9a-fA-F]{1,${width}}`).exec(body.slice(k + 2))?.[0] ?? '';
       if (hex) {
-        out += String.fromCodePoint(parseInt(hex, 16));
+        const value = parseInt(hex, 16);
+        if (n === 'x') {
+          flush();
+          bytes.push(value & 0xff); // a BYTE
+        } else {
+          pending += String.fromCodePoint(value); // a CODE POINT
+        }
         k += 1 + hex.length;
         continue;
       }
     }
-    out += body[k]; // an escape bash does not recognise keeps its backslash
+    pending += body[k]; // an escape bash does not recognise keeps its backslash
   }
-  return out;
+  flush();
+  return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
 }
 
 function readWord(s: string, i: number): [string, number] {

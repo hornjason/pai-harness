@@ -1580,6 +1580,119 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
   });
 
   /**
+   * Octal and `\x` are BYTES in bash, not code points, which is why the
+   * decode assembles bytes and decodes UTF-8 once at the end. Raised by a
+   * push review on this branch, and the diagnosis was right.
+   *
+   * The shell half is executed rather than described, because the claim
+   * this rests on is a claim about bash: all three spellings below emit the
+   * same two bytes, which is the UTF-8 encoding of one character. A
+   * per-escape `String.fromCharCode` would give U+00C3 U+00A9 instead — a
+   * different string, four bytes — so above 0x7F the decoder would hand the
+   * module a token the shell never produced.
+   *
+   * The next test is what settled the repair: refusing to decode above
+   * 0x80 — the conservative option, and the one the review proposed — does
+   * not close the hole it names, because an undecoded name is just a
+   * directory nobody made and that is exempt.
+   */
+  test("bash emits BYTES for octal and \\x, which is why the decode assembles bytes", () => {
+    // late-env-ok: the child is `printf` under bash, which reads no RUNGATE
+    // variable and no TMPDIR — every escape is a literal on its command line.
+    const hex = (a: string) => spawnSync("/bin/bash", ["-c", `printf '%s' ${a} | od -An -tx1`], { encoding: "utf8" }).stdout.trim();
+    expect(hex(String.raw`$'\303\251'`)).toBe("c3  a9");
+    expect(hex(String.raw`$'\xc3\xa9'`)).toBe("c3  a9");
+    expect(hex("$'é'")).toBe("c3  a9");
+    // The ASCII side still agrees, which is what keeps the octal and hex
+    // void rows above meaningful rather than accidental.
+    expect(hex(String.raw`$'\163'`)).toBe("73");
+    expect(hex(String.raw`$'\x73'`)).toBe("73");
+  });
+
+  /**
+   * And the consequence, executed: a symlink out of scratch whose NAME is
+   * non-ASCII. Every spelling of that name must reach the same verdict,
+   * because the shell reaches the same file.
+   *
+   * This is the row that chose the implementation. The first repair for
+   * the byte differential was to refuse to decode above 0x80, and it does
+   * NOT close this: an undecoded `caf\303\251` is simply a directory that
+   * does not exist, and a non-existent directory under a scratch root is
+   * exempt — the last row is that control. The conservative answer and the
+   * wrong answer were the same answer, which is why the decode assembles
+   * bytes instead.
+   */
+  test("every spelling of a non-ASCII symlink name reaches the same verdict", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "bw-ansi-")));
+    try {
+      symlinkSync("/usr", join(dir, "café")); // stands in for the run store
+      const write = (name: string) => decideBashWrite(`echo '{}' > ${dir}/${name}/${STATE}`).blocked;
+      expect(write("café"), "the literal name").toBe(true);
+      expect(write(String.raw`$'café'`), "ANSI-C, literal character").toBe(true);
+      expect(write(String.raw`$'caf\303\251'`), "ANSI-C, the two UTF-8 bytes in octal").toBe(true);
+      expect(write(String.raw`$'caf\xc3\xa9'`), "ANSI-C, the two UTF-8 bytes in hex").toBe(true);
+      expect(write("$'caf\\u00e9'"), "ANSI-C, the CODE POINT rather than the bytes").toBe(true);
+      // The control that makes the four above mean something: a name with
+      // no link behind it is ordinary scratch and stays exempt. Without
+      // it, a decoder that resolved everything to nonsense would pass.
+      expect(write("nosuch"), "a name nobody created").toBe(false);
+      expect(write(String.raw`$'nosu\x63h'`), "the same name, spelled with an escape").toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * MUTATION: the octal escape decoded as a CODE POINT instead of a byte.
+   *
+   * This is not a removal, it is the WRONG FIX — the spelling the decoder
+   * had before the symlink row above was measured, and the one anybody
+   * writes first. The fifth shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md` is a case that goes
+   * green under the cheapest wrong repair, so the repair is applied here
+   * and the case is watched going red.
+   *
+   * The literal row must stay refused under the mutant. That is what makes
+   * this a differential rather than a mutant that breaks everything: the
+   * fixture, the link and the verdict for the literal name are all held
+   * fixed, and only the spelling of the name varies.
+   */
+  test("MUTATION: decoding octal as a code point reopens the symlink bypass", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "bytes.push(parseInt(oct, 8) & 0xff); // a BYTE";
+    expect(src.split(site).length - 1, "the octal decode must have ONE site to mutate").toBe(1);
+
+    const tmp = mkdtempSync(join(tmpdir(), "bwbyte-"));
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "bw-byte-fx-")));
+    try {
+      writeFileSync(
+        join(tmp, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(
+        join(tmp, "asCodePoint.ts"),
+        src.replace(site, "pending += String.fromCharCode(parseInt(oct, 8) & 0xff);"),
+      );
+      const mutant = (await import(`file://${join(tmp, "asCodePoint.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+
+      symlinkSync("/usr", join(fixture, "café"));
+      const cmd = (name: string) => `echo '{}' > ${fixture}/${name}/${STATE}`;
+
+      // Held fixed: the literal name is refused by both.
+      expect(decideBashWrite(cmd("café")).blocked, "literal, real").toBe(true);
+      expect(mutant.decideBashWrite(cmd("café")).blocked, "literal, mutant").toBe(true);
+      // Varied: the octal spelling of that same name.
+      expect(decideBashWrite(cmd(String.raw`$'caf\303\251'`)).blocked, "octal, real").toBe(true);
+      expect(mutant.decideBashWrite(cmd(String.raw`$'caf\303\251'`)).blocked, "octal, mutant").toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * MUTATION: the ANSI-C branch taken back out.
    *
    * The moved set is asserted with a DIRECTION per row rather than one
