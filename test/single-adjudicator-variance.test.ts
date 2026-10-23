@@ -20,6 +20,7 @@ import {
   detailOf,
   liveArmCaveat,
   plantsFor,
+  provenanceRefusal,
   readPlants,
   runBatch,
   type VarianceCapture,
@@ -47,6 +48,10 @@ function capture(over: Partial<VarianceCapture> = {}): VarianceCapture {
     name: "x",
     pinnedCommit: sha,
     commitAtEnd: sha,
+    originMain: sha,
+    libTree: "t".repeat(40),
+    originMainLibTree: "t".repeat(40),
+    dirtyPaths: [],
     measuredAt: "2026-10-23T00:00:00.000Z",
     repo: "hornjason/pai-harness",
     command: "bun evals/ai-review-control/variance-capture.ts",
@@ -252,6 +257,73 @@ describe("#1310: the live arm's caveat reads the arm instead of restating it", (
     const c = loadVarianceCapture("single-adjudicator-variance");
     const live = c.arms.find(a => a.arm === "live")!;
     expect(c.caveat).toContain(liveArmCaveat(live));
+  });
+});
+
+// #1320. The capture recorded `origin/main` as `pinnedCommit` while
+// adjudicating with the working tree's `lib/`. Those agree only by
+// coincidence, and the first artefact was right by coincidence.
+describe("#1320: the pin names the tree that ran, not the tree that is deployed", () => {
+  const sha = (c: string) => c.repeat(40);
+
+  test("a tree level with origin/main and clean is not refused", () => {
+    expect(provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("a"), dirtyPaths: [] })).toBeNull();
+  });
+
+  test("a lib/ differing from the deployed one is UNMEASURED, naming both trees", () => {
+    const r = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("b"), dirtyPaths: [] });
+    expect(r).toContain("UNMEASURED");
+    expect(r).toContain(sha("a"));
+    expect(r).toContain(sha("b"));
+    expect(r).toContain("not the deployed one");
+  });
+
+  // A dirty tree is the case no SHA can express, so it must outrank the SHA
+  // comparison — a tree level with origin/main AND dirty would otherwise read
+  // as clean.
+  test("a dirty lib/ is UNMEASURED even when the trees agree", () => {
+    const r = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("a"), dirtyPaths: ["lib/issue-filing-gate.ts"] });
+    expect(r).toContain("uncommitted path");
+    expect(r).toContain("lib/issue-filing-gate.ts");
+  });
+
+  // CONTROL: the three cases above pass against a function that refuses
+  // everything except one exact input. This names the two independent axes
+  // and asserts each moves the verdict on its own.
+  test("each axis refuses on its own, so neither is dead", () => {
+    const dirtyOnly = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("a"), dirtyPaths: ["lib/x.ts"] });
+    const staleOnly = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("b"), dirtyPaths: [] });
+    expect(dirtyOnly).not.toBeNull();
+    expect(staleOnly).not.toBeNull();
+    expect(dirtyOnly).not.toBe(staleOnly);
+  });
+
+  test("the loader refuses a capture whose tree was not the deployed one", () => {
+    const { dir, name } = written(capture({ originMainLibTree: sha("b") }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not the deployed one/);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("the loader refuses a capture taken on a dirty tree", () => {
+    const { dir, name } = written(capture({ dirtyPaths: ["lib/finding-jury.ts"] }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/uncommitted path/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // An absent reading and a clean tree are different facts, and the whole
+  // point of the field is that they not collapse.
+  test("the loader refuses a capture with no dirtyPaths reading at all", () => {
+    const c = capture();
+    delete (c as Partial<VarianceCapture>).dirtyPaths;
+    const { dir, name } = written(c);
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/An absent reading is not a clean tree/);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("the stored artefact was taken on the deployed tree, clean", () => {
+    const c = loadVarianceCapture("single-adjudicator-variance");
+    expect(c.libTree).toBe(c.originMainLibTree);
+    expect(c.dirtyPaths).toEqual([]);
   });
 });
 

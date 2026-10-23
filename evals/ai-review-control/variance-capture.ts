@@ -185,9 +185,41 @@ export interface ArmReading {
 export interface VarianceCapture {
   kind: "single-adjudicator-variance";
   name: string;
+  /**
+   * The commit whose code ACTUALLY RAN — `HEAD` of the executing tree.
+   *
+   * It used to be `origin/main`, which is a different question (#1320): the
+   * capture adjudicates with the working tree's `lib/`, so a worktree behind
+   * the remote recorded the newer SHA while running the older gate, and a
+   * worktree on a feature branch touching `lib/` recorded a SHA whose code
+   * was not what ran. The first artefact was right by coincidence — its tree
+   * happened to equal `origin/main`. A provenance field that is right by
+   * coincidence is the thing this whole module exists to refuse.
+   */
   pinnedCommit: string;
   /** Re-read at the END of the run. Unequal to `pinnedCommit` makes this UNMEASURED. */
   commitAtEnd: string;
+  /**
+   * Where `origin/main` stood. Recorded beside `pinnedCommit`, not instead
+   * of it, because "what ran" and "what is deployed" are separate facts and
+   * a capture is only a reading of the deployed adjudicator when they agree.
+   */
+  originMain: string;
+  /** `HEAD:lib` — the tree object for the code that ran. */
+  libTree: string;
+  /** `origin/main:lib` — the same tree, as deployed. */
+  originMainLibTree: string;
+  /**
+   * Uncommitted paths under `lib/` at the start of the run.
+   *
+   * **Scope stated because a count without one is unreadable:** this is the
+   * whole of `lib/`, not the three files the behaviour depends on. Deliberate
+   * and in the refusing direction — the capture reaches `adjudicateFiling`
+   * through imports it does not enumerate, so naming three files would be a
+   * detector narrower than what it detects. A dirty `lib/` means no SHA
+   * describes the code that ran, whatever the SHA says.
+   */
+  dirtyPaths: string[];
   measuredAt: string;
   repo: string;
   command: string;
@@ -400,7 +432,55 @@ export const PERMANENTLY_UNMEASURED = [
     "artefact to read, so this is not a measurement that is merely expensive.",
 ];
 
-export async function capture(opts: { root: string; runs: number; commit: string }): Promise<VarianceCapture> {
+export interface CaptureProvenance {
+  root: string;
+  runs: number;
+  /** `HEAD` of the executing tree — the code that actually ran (#1320). */
+  commit: string;
+  /** Where `origin/main` stood. */
+  originMain: string;
+  /** `HEAD:lib` — the tree object for the code the adjudicator lives in. */
+  libTree: string;
+  /** `origin/main:lib` — the same tree, as deployed. */
+  originMainLibTree: string;
+  /** Uncommitted paths under `lib/` at the start of the run. */
+  dirtyPaths: string[];
+}
+
+/**
+ * Why a stale or dirty tree is UNMEASURED rather than a reading with a
+ * footnote.
+ *
+ * The capture's subject is **the deployed adjudicator**. A reading taken
+ * against code that is not deployed is not a weaker reading of that subject,
+ * it is a reading of a different one — and it is indistinguishable from the
+ * real thing once it is a JSON file with a SHA in it.
+ */
+export function provenanceRefusal(
+  p: Pick<CaptureProvenance, "libTree" | "originMainLibTree" | "dirtyPaths">,
+): string | null {
+  if (p.dirtyPaths.length > 0) {
+    return (
+      `UNMEASURED: ${p.dirtyPaths.length} uncommitted path(s) under \`lib/\` — ${p.dirtyPaths.slice(0, 5).join(", ")}` +
+      `${p.dirtyPaths.length > 5 ? ", …" : ""}. No commit describes the code that ran, whatever the SHA says.`
+    );
+  }
+  // The `lib/` TREE, not the commit. Comparing whole SHAs would refuse every
+  // feature branch, including this artefact's own — a detector wider than
+  // what it detects, and one that would make the artefact unmaintainable.
+  // The question is only ever whether the adjudicator's code is the deployed
+  // code, and a tree object answers exactly that.
+  if (p.libTree !== p.originMainLibTree) {
+    return (
+      `UNMEASURED: this tree's \`lib/\` is ${p.libTree} and \`origin/main\`'s is ${p.originMainLibTree}. The ` +
+      "capture would describe an adjudicator that is not the deployed one, which is a reading of a different " +
+      "subject rather than a weaker reading of this one."
+    );
+  }
+  return null;
+}
+
+export async function capture(opts: CaptureProvenance): Promise<VarianceCapture> {
   const batchName = `variance-${opts.commit.slice(0, 12)}`;
   const snapshot = await openFindings(opts.root);
   const measuredAt = new Date().toISOString();
@@ -411,6 +491,10 @@ export async function capture(opts: { root: string; runs: number; commit: string
       name: "single-adjudicator-variance",
       pinnedCommit: opts.commit,
       commitAtEnd: opts.commit,
+      originMain: opts.originMain,
+      libTree: opts.libTree,
+      originMainLibTree: opts.originMainLibTree,
+      dirtyPaths: opts.dirtyPaths,
       measuredAt,
       repo: "hornjason/pai-harness",
       command: `bun evals/ai-review-control/variance-capture.ts --runs ${opts.runs}`,
@@ -469,6 +553,7 @@ export async function capture(opts: { root: string; runs: number; commit: string
   const pinnedArm = arm("pinned", pinned, pinnedSpan, pinnedDetail);
   const liveArm = arm("live", live, liveSpan, liveDetail);
 
+  const provenance = provenanceRefusal(opts);
   const first = pinned[0];
   const degenerate =
     first === undefined || first.withheld.length === 0 || first.allowed.length === 0;
@@ -478,6 +563,10 @@ export async function capture(opts: { root: string; runs: number; commit: string
     name: "single-adjudicator-variance",
     pinnedCommit: opts.commit,
     commitAtEnd: opts.commit,
+    originMain: opts.originMain,
+    libTree: opts.libTree,
+    originMainLibTree: opts.originMainLibTree,
+    dirtyPaths: opts.dirtyPaths,
     measuredAt,
     repo: "hornjason/pai-harness",
     command: `bun evals/ai-review-control/variance-capture.ts --runs ${opts.runs}`,
@@ -491,9 +580,11 @@ export async function capture(opts: { root: string; runs: number; commit: string
     plantsAgreed,
     plantsTotal: plantDetail.length,
     plantDetail,
-    usable: plantsAgreed === plantDetail.length && plantDetail.length > 0 && !degenerate,
+    usable: provenance === null && plantsAgreed === plantDetail.length && plantDetail.length > 0 && !degenerate,
     caveat:
-      plantsAgreed !== plantDetail.length
+      provenance !== null
+        ? provenance
+        : plantsAgreed !== plantDetail.length
         ? "UNMEASURED: a plant did not land, so this run is not distinguishable from a blind one."
         : degenerate
           ? "UNMEASURED: the withheld set is empty or is the whole batch, so `identical every run` is vacuous."
@@ -512,17 +603,34 @@ if (import.meta.main) {
   const runs = runsFlag === -1 ? DEFAULT_RUNS : Number(argv[runsFlag + 1]);
   const root = process.env.RUNGATE_PROJECT_ROOT ?? join(import.meta.dir, "..", "..");
   const { execFileSync } = await import("child_process");
-  const rev = (): string => execFileSync("git", ["-C", root, "rev-parse", "origin/main"], { encoding: "utf-8" }).trim();
+  const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { encoding: "utf-8" }).trim();
+
+  // `HEAD`, not `origin/main` (#1320). The capture adjudicates with THIS
+  // tree's `lib/`, so the only SHA that describes what ran is this one. Both
+  // are recorded, and disagreeing makes the capture UNMEASURED.
+  const rev = (): string => git("rev-parse", "HEAD");
+  const dirtyPaths = git("status", "--porcelain", "--", "lib")
+    .split("\n")
+    .map(l => l.slice(3).trim())
+    .filter(l => l !== "");
 
   const commit = rev();
-  const out = await capture({ root, runs, commit });
+  const out = await capture({
+    root,
+    runs,
+    commit,
+    originMain: git("rev-parse", "origin/main"),
+    libTree: git("rev-parse", "HEAD:lib"),
+    originMainLibTree: git("rev-parse", "origin/main:lib"),
+    dirtyPaths,
+  });
   out.commitAtEnd = rev();
 
   if (out.commitAtEnd !== out.pinnedCommit) {
     out.usable = false;
     out.caveat =
-      `UNMEASURED: origin/main moved from ${out.pinnedCommit} to ${out.commitAtEnd} during the run, so the M ` +
-      "runs may straddle two adjudicators and the artefact would measure a mixture. Re-take it.";
+      `UNMEASURED: the executing tree moved from ${out.pinnedCommit} to ${out.commitAtEnd} during the run, so ` +
+      "the M runs may straddle two adjudicators and the artefact would measure a mixture. Re-take it.";
   }
 
   if (argv.includes("--write")) {
