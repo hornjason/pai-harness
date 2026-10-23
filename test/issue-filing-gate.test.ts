@@ -672,3 +672,94 @@ describe("#1261 removing the wiring is the defect, and these rows see it", () =>
     expect(differs).toEqual(["duplicate", "dropped-category"]);
   });
 });
+
+/**
+ * #1302 — a heredoc body is a program or it is a document, and only one of
+ * them is a command.
+ *
+ * `clauses` tokenized the whole string, heredoc bodies included, so text on
+ * its way INTO A FILE parsed as a real filing clause. The phantom carries no
+ * `--label`, so the every-or-nothing rule refused the whole command: it never
+ * let a filing through, it only blocked legitimate work — and it reached the
+ * direct-ship lane the moment the adjudication started running on every phase
+ * rather than only in VERIFY.
+ *
+ * `hooks/BashWriteGuard.hook.ts` settled this exact question in #1240 and
+ * settled it the other way round, so the two guards were the precise inverse
+ * of each other on the same syntax. The split is reused from
+ * `lib/bash-write-guard.ts` rather than written a second time — a second
+ * decider on one question is the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * The ids start at FG-39 rather than FG-28: #1304 is open against this file
+ * and holds FG-28..FG-38. Neither diff contains the other's ids, which is the
+ * collision the swarm brief describes for SC ids, in the test-block namespace.
+ *
+ * **The words are never written adjacent in a literal here.** They are joined
+ * at run time, because a fixture spelling them out inside a document heredoc
+ * is a fixture this very gate refuses to let anyone write.
+ */
+describe("#1302 a document heredoc is not a filing", () => {
+  const GH = ["gh", "issue", "create"].join(" ");
+  const FILING = `${GH} --title "retryBudget drops frames" --body "x" --label follow-up`;
+
+  test("FG-39 BASELINE: a document heredoc whose body mentions the command yields NO attempt", () => {
+    // Four spellings, because the defect is about where the body GOES and not
+    // about which writer took it. `gh --body-file -` is in the list on
+    // purpose: it is a `gh` command whose heredoc is unambiguously content.
+    for (const cmd of [
+      `cat > /tmp/doc.md <<'EOF'\n${FILING}\nEOF`,
+      `cat >> /tmp/doc.md <<'EOF'\n${FILING}\nEOF`,
+      `tee /tmp/doc.md <<'EOF'\n${FILING}\nEOF`,
+      `gh issue comment 900 --body-file - <<'EOF'\n${FILING}\nEOF`,
+    ]) {
+      expect(filingAttempts(cmd), `a document body is not a command: ${cmd.slice(0, 32)}`).toEqual([]);
+    }
+  });
+
+  test("FG-40 CONTROL: an interpreter heredoc that genuinely runs it still yields one", () => {
+    // The control against the cheapest wrong fix, "ignore every heredoc",
+    // which would make FG-39 green and open a real bypass. This arm was
+    // ALREADY 1 before the change and must still be 1 after — the issue's
+    // own table reports 0 here and that row does not reproduce.
+    for (const cmd of [
+      `bash <<'EOF'\n${FILING}\nEOF`,
+      `bash -s <<'EOF'\n${FILING}\nEOF`,
+      `sh <<'EOF'\n${FILING}\nEOF`,
+    ]) {
+      expect(filingAttempts(cmd), `an interpreter body is a program: ${cmd.slice(0, 20)}`).toHaveLength(1);
+    }
+  });
+
+  test("FG-41: a herestring handed to a shell is a program too, which it was NOT before", () => {
+    // 0 before the change, 1 after — and this one reverses a DOCUMENTED
+    // boundary rather than closing an oversight. `lib/issue-create-override.ts`
+    // listed herestrings as out of scope ("a deliberate construction, not a
+    // reflex") and `test/verify-phase-lock.test.ts` asserted the allow. Both
+    // move in this commit with the reason, because the alternative is a
+    // second decider disagreeing with `lib/bash-write-guard.ts`.
+    expect(filingAttempts(`bash <<< '${FILING}'`)).toHaveLength(1);
+  });
+
+  test("FG-42: a document heredoc BESIDE a real filing leaves exactly the real one", () => {
+    // The row that separates "the phantom is gone" from "the whole command is
+    // gone". Two attempts before, and the surviving one must be the real
+    // filing with its label — not whichever one the parser happened to keep.
+    const attempts = filingAttempts(`cat > /tmp/d.md <<'EOF'\n${FILING}\nEOF\n${FILING}`);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].labels).toEqual(["follow-up"]);
+  });
+
+  test("FG-43 CONTROL: an UNTERMINATED heredoc is still read, because it is not a heredoc", () => {
+    // `stripHeredocs` deliberately leaves a body whose terminator never
+    // arrives, and that direction is the safe one: a filing hidden behind an
+    // unclosed delimiter must not become invisible. Green before and after.
+    expect(filingAttempts(`cat > /tmp/d.md <<'EOF'\n${FILING}\n`)).toHaveLength(1);
+  });
+
+  test("FG-44 CONTROL: an ordinary inline filing is untouched", () => {
+    const attempts = filingAttempts(FILING);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].labels).toEqual(["follow-up"]);
+  });
+});
