@@ -50,6 +50,42 @@ block chosen by eyeballing headroom above the highest number you can see. If
 you are going to write `SC-<N>` anywhere, reserve it first. On 2026-10-19 four
 collisions landed in one day and in three of them the allocator was never run.
 
+### The store holds three namespaces, and an entry must say which
+
+| Namespace | Ids | Allocated by |
+|---|---|---|
+| `SC` | `SC-<N>` success criteria in `specs/` | `bun scripts/create-sc.ts` |
+| `FG` | `FG-<N>` blocks in `test/issue-filing-gate.test.ts` | by hand |
+| `AR` | `AR-<N>` blocks in `test/finding-arbiter.test.ts` | by hand |
+
+`"namespace"` is optional and **absent means `SC`**, so every entry written
+before #1363 keeps its exact meaning. Anything else must say so:
+
+```json
+{ "owner": "rg/my-branch", "from": 45, "to": 60, "namespace": "FG" }
+```
+
+`FG` and `AR` are the ones this rule used to be silent about, and the silence
+cost a collision. They have no allocator — every agent adding a block picks
+ids by eyeballing headroom above the highest in the file, which is the third
+method above, so they collide exactly the way SC ids do. On 2026-10-22
+`rg/filing-gate-four` held `FG-45..59` and `AR-20` while PR #1339
+independently took `FG-45..49` and `AR-20`. Neither diff contained the
+other's ids and neither PR's CI could see the overlap.
+
+Two rules follow from the field, both enforced by `lib/sc-reservations.ts`:
+
+- **An unknown namespace refuses the whole store**, by name. The set is
+  closed; adding a namespace is an edit to `RESERVATION_NAMESPACES` and a row
+  in the table above. A store the allocator cannot fully understand is
+  unreadable, not partially read.
+- **Overlap is judged within a namespace, never across one.** `FG-45..60` and
+  `SC-45..60` share their integers and claim nothing in common.
+
+Re-reading `origin/main` at push time and renumbering is still worth doing,
+but it is not a substitute: it makes a collision **cheap**, not impossible,
+and it does nothing for two branches that push inside the same window.
+
 **Delete your entry when your branch merges.** A block nobody prunes is
 headroom nobody can use.
 
