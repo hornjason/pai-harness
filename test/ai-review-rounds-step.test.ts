@@ -677,28 +677,69 @@ describe("AC-S6 (#1241): the cap bounds re-litigation, never the gate", () => {
     // match is indistinguishable from a tree with no callers — which is what
     // the control below caught when this line was first written with `\s+`.
     const IMPORTS = String.raw`from[[:space:]]+"[^"]*ai-review-rounds(\.ts)?"`;
-    const callers = spawnSync(
-      "git",
-      ["grep", "-l", "-E", IMPORTS, "--", "lib", "gates", "scripts", "workflows", "bin"],
-      { cwd: ROOT, encoding: "utf8" },
-    );
-    const production = (callers.stdout ?? "")
-      .split("\n")
-      .filter(Boolean)
-      .filter(f => f !== "lib/ai-review-rounds.ts");
-    // The control: the detector finds an importer when there is one. Without
-    // this row, a pattern that matches nothing at all reads exactly like a
-    // tree with no production callers, and the branch below holds vacuously.
-    const anyImporter = spawnSync(
-      "git",
-      ["grep", "-l", "-E", IMPORTS, "--", "test"],
-      { cwd: ROOT, encoding: "utf8" },
-    );
+    // An import is NECESSARY for a call and it is not SUFFICIENT, and reading
+    // it as sufficient inverted this case the first time the module gained an
+    // importer that calls something else. `lib/local-review-rounds.ts` (#1342)
+    // imports `roundOutcome` and calls neither symbol below; on the import
+    // reading alone the branch flipped and demanded the prompt promise a
+    // carry-forward that still does not happen — the exact sentence this case
+    // exists to keep out, required by the case itself.
+    //
+    // So the reading is the CONJUNCTION: a file that imports the module AND
+    // names one of the two symbols. Both arms are still necessary — the symbol
+    // names alone are satisfied by a comment, which is the citation-versus-
+    // claim trap `.claude/rules/claiming-sc-coverage.md` describes and which
+    // reddened this case's first draft.
+    // Which SYMBOL the import names, read out of the import block itself.
+    //
+    // A `git grep` for the names cannot do this and the difference is not
+    // academic: `lib/local-review-rounds.ts` imports `roundOutcome` and
+    // DISCUSSES `suppressRepeats` in a docblock, so any reading that accepts a
+    // mention scores it as a caller. That is the citation-versus-claim trap
+    // `.claude/rules/claiming-sc-coverage.md` names, and it is why this is a
+    // source read rather than a second grep — the block spans lines, so a
+    // line-oriented matcher cannot see which names are inside it at all.
+    const importsSymbol = (file: string): boolean => {
+      const src = readFileSync(join(ROOT, file), "utf8");
+      // `[^}]*` cannot cross a closing brace, so each candidate block is the
+      // one whose own `}` is followed by this module's specifier. An earlier
+      // import of something else backtracks out on the `from` clause instead
+      // of lending its braces to this one — which the first draft did, and
+      // which the control below is what caught.
+      const blocks = src.matchAll(
+        /import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["'][^"']*ai-review-rounds(?:\.ts)?["']/g,
+      );
+      return [...blocks].some(b => /\b(carryForward|suppressRepeats)\b/.test(b[1]));
+    };
+    const PRODUCTION = ["lib", "gates", "scripts", "workflows", "bin"];
+    const grep = (pattern: string, paths: string[]) =>
+      (spawnSync("git", ["grep", "-l", "-E", pattern, "--", ...paths], {
+        cwd: ROOT,
+        encoding: "utf8",
+      }).stdout ?? "")
+        .split("\n")
+        .filter(Boolean);
+
+    const production = grep(IMPORTS, PRODUCTION)
+      .filter(f => f !== "lib/ai-review-rounds.ts")
+      .filter(importsSymbol);
+
+    // Two controls, one per arm, because a reading that matches nothing is
+    // indistinguishable from a tree with no production callers and the branch
+    // below then holds vacuously. The second control is the one the first
+    // cannot stand in for: it runs the symbol predicate against a file known
+    // to import `carryForward`, so a predicate that has stopped matching
+    // anything reddens here rather than certifying silence.
     expect(
-      (anyImporter.stdout ?? "").split("\n").filter(Boolean),
+      grep(IMPORTS, ["test"]),
       "the import pattern matches no file anywhere, so it cannot distinguish " +
         "'no production caller' from 'broken detector'",
     ).toContain("test/ai-review-rounds-step.test.ts");
+    expect(
+      importsSymbol("test/ai-review-rounds.test.ts"),
+      "the symbol predicate does not fire on a file that demonstrably imports carryForward, " +
+        "so the filter above is empty by construction",
+    ).toBe(true);
     if (production.length === 0) {
       expect(
         flat,
