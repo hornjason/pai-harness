@@ -138,6 +138,7 @@ apart, so this one carries the added and removed lines.
 | touched specs/ | `test/agents-md-spec-listing.test.ts` `test/spec-requirements.test.ts` |
 | ticked or unticked an SC (ran sync-sc-status) | `test/sc-binding-split.test.ts` `test/ticked-sc-cover.test.ts` `test/behavioral-sc-ratchet.test.ts` `test/ticked-sc-absent-symbol.test.ts` |
 | touched gates/, hooks/ or the scaffold | `test/gate-contracts.test.ts` `test/scaffold-ownership.test.ts` `test/hook-traceability.test.ts` |
+| changed a generated workflow, or the scaffold source that emits one | `test/ai-review-runner-shell-parity.test.ts` `test/action-pin-parity.test.ts` `test/scaffold-permissions-merge.test.ts` |
 
 **That table is rendered from `CENSUS_TRIGGERS` in `scripts/census-routing.ts`
 and compared byte-for-byte by that script's own test file**, in both
