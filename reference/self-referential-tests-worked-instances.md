@@ -14,6 +14,39 @@ somebody wants the demonstration rather than the list. It moved here because
 the always-loaded surface was 36 bytes under its budget and the rule needed a
 new row (#1001).
 
+## Adding an import, not a file — what cost PR #1024 three CI shards (#1024)
+
+Moved out of the rule by #1346, same promise as #1009 and #544: the words are
+unchanged, only the address is. The Tier 1 row already states the remedy —
+teach the copier to carry the dependency, or keep the file import-free.
+
+The last row cost PR #1024 three CI shards and is worse than it looks. Those
+batteries build a mutant by writing **one file** into a scratch directory, so a
+relative specifier added to the original resolves to nothing there and the
+mutant **fails to load**. Every case comparing real against mutant goes red —
+and the reds read as behavioural differences. Turn one around and it is the
+UNMEASURED shape: had a comparison been written so that a non-loading mutant
+resembled a *refusing* one, the whole battery would have gone **green while
+witnessing nothing**. This table previously warned about adding a *file*;
+nobody was warned about adding an *import*.
+
+## The selector, and the two routers that are complements (#1004)
+
+Moved out of the rule by #1346. The operational half stays there: the selector
+runs only inside a ship run, so the census table is still what you run by hand.
+
+**A ship run no longer depends on you reading this** (#1004).
+`scripts/select-affected-tests.ts` selects by import graph, and a census test
+imports none of the things that move it — measured with
+`specs/HARNESS-STANDARD.md` as the only changed file, that selector reached
+`ticked-sc-cover` as a sweep and missed the other two outright, while
+reporting MEASURED, so nothing fell back. It now unions `censusTestsFor` into
+its SELECTED result, and its artefact records `graphTests` and `censusTests`
+separately so the two halves stay tellable apart. The routers are still
+complements — one routes by what the diff DID, the other by what it IMPORTS —
+and this table is still what you run by hand, because the selector runs only
+inside a ship run.
+
 ## This file tripped one of its own checks on the first run
 
 Worth leaving in, because it is the cheapest possible demonstration that the

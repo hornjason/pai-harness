@@ -2009,6 +2009,44 @@ two mechanisms can both produce, so it cannot be wrong about a mechanism. The
 remedies are different and neither substitutes: assert on a channel only the
 intended mechanism can write, versus vary the input in at least one row.
 
+### Before you report one: a duration is not a mechanism (#1268)
+
+Moved out of `.claude/rules/checks-must-be-able-to-fail.md` by #1346, for the
+reason #1009 and #544 moved everything else here and with the same promise:
+the words are unchanged, only the address is. The rule keeps the operational
+half — read the `kind`, and do not re-file #1268 — and this is the evidence
+behind it.
+
+This file teaches you to hunt for checks that cannot fail, and **the hunt
+needs evidence too**. On 2026-10-22 a case running 26,925ms against a 5,000ms
+default was reported as a budget that *could not fire*, the mechanism given
+as "a blocking `execFileSync` does not yield to bun's timer". Both halves
+were false. It reached the tracker as #1268 because one agent inferred a
+mechanism from a duration and the next relayed it without re-deriving it.
+
+A case running far over a default has at least three explanations, and
+telling them apart costs one command:
+
+| explanation | the reading that shows it |
+|---|---|
+| no budget governs it | `perTestTimeoutDeclarations(src)` names it in no entry |
+| a generous budget was declared on purpose | it returns `kind: "per-test"` for it |
+| the budget fires but cannot interrupt | the run reports the case red anyway |
+
+**Read the `kind`.** `perTestTimeoutDeclarations` reports `"per-test"`
+separately from `"file-default"`, so a filter on `"file-default"` answering
+"declares nothing" does **not** mean "no budget governs this case". The case
+above closes its own body with `}, 240_000);` — a deliberate 240s budget, on
+the line a reader looking for one would have landed on.
+
+Measured while falsifying it, so nobody re-files it: bun 1.3.14 **does** kill
+a blocking `execFileSync` at the budget — 506ms under `--timeout 500`, with
+`stdio`, `encoding`, a child `timeout:` and `cwd` varied one at a time and
+all six killed. The one thing not *interrupted* is a CPU-bound spin with no
+syscall, and it is **still reported red** (`[3000.17ms]`, `this test timed
+out after 500ms`). The budget fires; it cannot stop the work. That is
+wall-clock cost, not a hole in the gate.
+
 ### When the reason nobody checked is a comment saying it was checked (#1322, #675)
 
 Every other instance in this file is a check that could not fail. This one is
