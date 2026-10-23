@@ -2203,3 +2203,63 @@ implementation, and the migration is the moment they disappear.
 The direction this is allowed to be wrong in is toward writing down a
 guarantee that was never load-bearing. That costs a sentence. The other
 direction cost a session-killing hang that shipped inside a security fix.
+
+### A falsified hypothesis is the most comfortable place to stop looking (#1456, #1458)
+
+The seventh shape says: name what every row holds fixed, then write the row
+that does not. This is that shape applied to a **hand review**, where there is
+no table to inspect and the axis you held fixed is one you never wrote down.
+It is also the answer to an objection the seventh shape invites — *"I did vary
+an axis, and it was sound"* — because **axis soundness is not additive**.
+
+Reviewing `lib/file-claims.ts` on 2026-10-23, I hypothesised that its
+three-state owner reading collapsed when it reached `liveClaims`, whose
+parameter is a `ReadonlySet<string>`. I checked. It does not: `ownerLiveness`
+returns `{ live, unmeasured }` separately, and `scripts/claim-files.ts` fires
+its `blind` refusal *before* `contention` through `REFUSE_EXIT`. I recorded
+the hypothesis as falsified and moved on, and I was right to — on that axis.
+
+The defect was on the **path** axis, which I never varied. `claimCovers`
+returns a bare boolean for a path `normaliseRepoPath` cannot read, so a held
+file reports free. An automated security review on #1457 found it.
+
+**The part that makes this worth a section** is what the fix revealed, and it
+is strictly worse than the report: `allClaims` is also `claimCovers`, so an
+unreadable path matched **no claims**, which left the `blind` set **empty**,
+which meant the owner refusal I had just verified as sound *never fired at
+all*. The guard was correct and unreachable. So:
+
+> Confirming a guard is sound on one axis is not evidence about the others,
+> and it is not even evidence about **that** guard — a failure on a second
+> axis can prevent the first guard from ever being reached. A verified
+> refusal that nothing routes to is indistinguishable from no refusal.
+
+That is why the new rows in `test/file-claims.test.ts` are a **bypass
+demonstration rather than a gap**: they run against the same fixture and the
+same registry as the existing *"`--check` REFUSES when the claimed owner's ref
+is not in this worktree"* row, which refuses. Only the spelling of the path
+differs.
+
+Three further measurements from the same repair, each its own shape:
+
+- **The first RED reading proved nothing.** The initial assertion was
+  `not.toContain("free")`, and the refusal's own text reads *"Not reporting
+  these free"* — so it matched the fix as well as the defect and could never
+  have gone green. Re-anchored on `/^free:/m`. A red that cannot become green
+  is not a witness; it is the third shape wearing a failing coat.
+- **The rows were green under the cheapest wrong fix** — the fifth shape.
+  Making `claimCovers` return `true` for an unreadable path routes them
+  through the owner refusal and all four pass, certifying the regression they
+  exist to block. They now assert the refusal names the **path** and names no
+  owner, which only the intended refusal can produce, and the wrong fix turns
+  6 red.
+- **The C-quoting was not required.** `normaliseRepoPath`'s character class is
+  ASCII, so a bare non-ASCII filename is unreadable on its own. The reported
+  trigger was narrower than the real one, which is the usual direction for a
+  report written from the mechanism rather than from the input space.
+
+**What to do about it.** When a hypothesis about a guard comes back falsified,
+write down *which axis you varied* before you stop. That sentence is the whole
+cost, and it is the thing that would have shown the path axis was untouched.
+A falsified hypothesis feels like a completed check and is not one: it is a
+single row of a table nobody drew.
