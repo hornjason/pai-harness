@@ -58,6 +58,7 @@ import {
   AI_REVIEW_ADVISORY_TITLE,
   AI_REVIEW_FINDINGS_TITLE,
   AI_REVIEW_OUTCOME_LINE,
+  AI_REVIEW_SCOPE_LINE,
   AI_REVIEW_SEVERITIES,
   advisoryNotice,
   advisoryReported,
@@ -150,7 +151,19 @@ describe("AD-1: a CLEAN reading carrying advisory findings says so", () => {
   test("AD-1: the control — a payload with no findings at all", () => {
     const { lines, result } = captureBoth(() => main([fixtureFile(payload([], "PASS"))]));
     expect(result).toBe(0);
-    expect(lines).toEqual([`${AI_REVIEW_OUTCOME_LINE} CLEAN`]);
+    expect(lines[0]).toBe(`${AI_REVIEW_OUTCOME_LINE} CLEAN`);
+
+    // The population, named, rather than a literal array. `main` prints the
+    // outcome line and #1204's scope line on EVERY run — including this one,
+    // where no changed-file list was supplied, because an absent input that
+    // nothing reports is Silent Default Substitution. Both are properties of
+    // the run and neither carries a finding, which is what this control is
+    // for: the pair below must differ in the FINDINGS and in nothing else.
+    const fromTheRun = lines.filter(
+      l => l.startsWith(AI_REVIEW_OUTCOME_LINE) || l.startsWith(AI_REVIEW_SCOPE_LINE),
+    );
+    expect(fromTheRun, "the empty payload emitted a line that is not the run's own").toEqual(lines);
+    expect(lines).toHaveLength(2);
   });
 
   test("AD-1: three advisory findings produce output the empty payload does not", () => {
@@ -382,8 +395,18 @@ describe("AD-8: the advisory notice is escaped at the single emission site", () 
     const { lines } = captureBoth(() => main([fixtureFile(payload([hostile], "PASS"))]));
     expect(lines.filter(l => l.startsWith("::stop-commands::"))).toEqual([]);
     expect(lines.filter(l => l.includes(AI_REVIEW_ADVISORY_TITLE)).length).toBe(1);
-    // The outcome line and the notice, and nothing the finding wrote.
-    expect(lines.length).toBe(2);
+
+    // "Nothing the finding wrote" is a COMPARISON, not a number. A benign
+    // finding of the same shape is the baseline, so a line `main` legitimately
+    // gains — #1204's scope line was exactly that, and it turned this row red
+    // in the merge — moves both sides and the row still measures forgery.
+    const benign = captureBoth(() =>
+      main([fixtureFile(payload([finding(ADVISORY[0], { summary: "benign" })], "PASS"))]),
+    );
+    expect(benign.lines.length, "the baseline produced nothing to compare against").toBeGreaterThan(
+      0,
+    );
+    expect(lines.length, "the hostile summary wrote a line of its own").toBe(benign.lines.length);
   });
 
   test("AD-8: nothing is double-encoded on this channel either", () => {
