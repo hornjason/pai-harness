@@ -2408,6 +2408,10 @@ describe("#1277: the cheapest wrong fixes, run rather than described", () => {
  *     e17bacf6 -> this        newly blocked 0    newly allowed 4
  *     643e3053 -> this        newly blocked 0    newly allowed 0
  *
+ * Re-run after the whitespace repair the AI review's blocking finding
+ * asked for, over 131,942 unique commands: every column above is the same,
+ * and the leading half of that repair moves nothing on its own either.
+ *
  * So this repair costs nothing on 131,696 real commands, in either
  * direction. The 0s are not the instrument failing to report: of the 2,322
  * non-shell interpreter segments inside the commands that name a protected
@@ -2467,9 +2471,28 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       blocked: true,
     },
     {
+      // One line, on purpose. The multi-line spelling of this is held up by
+      // the whitespace fix as well, and a row two fixes answer cannot say
+      // which one is load-bearing — the fourth shape. The `;` makes the
+      // binding the only thing under test.
       label: "F2-a a scratch literal bound to a name, then reassigned before the write",
-      cmd: `python3 -I -c "import os\np = '/tmp/fix/${STATE}'\np = p.replace('/tmp/fix', os.environ['RG'])\nopen(p,'w').write('{}')"`,
+      cmd: `python3 -I -c "import os; p = '/tmp/fix/${STATE}'; p = p.replace('/tmp/fix', os.environ['RG']); open(p,'w').write('{}')"`,
       blocked: true,
+    },
+    {
+      label: "N1 the #1277 headline escape with one newline before the .replace",
+      cmd: `bun -e 'writeFileSync("/tmp/x/${STATE}"\n  .replace("/tmp/x", process.env.RG), "{}")'`,
+      blocked: true,
+    },
+    {
+      label: "N2 the same line break in a python heredoc",
+      cmd: `python3 <<'PY'\nimport os\nopen("/tmp/x/${STATE}"\n     .replace("/tmp/x", os.environ["RG"]), "w").write("{}")\nPY`,
+      blocked: true,
+    },
+    {
+      label: "C8 an ordinary multi-line fixture, where the literal opens a line",
+      cmd: `bun -e 'writeFileSync(\n  "/tmp/fix/${STATE}",\n  "{}"\n)'`,
+      blocked: false,
     },
     {
       label: "F2-b the same reassignment through a dict value",
@@ -2541,6 +2564,25 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
     expect(t.protectedLiterals).toEqual([]); // and finding 1's fix is not what caught it
   });
 
+  /**
+   * The LEADING half of the whitespace rule, asserted as a reading and NOT
+   * as a verdict, because no verdict claim was earned.
+   *
+   * Before #1371 a literal that OPENED a line stood alone whatever preceded
+   * the break, so a concatenation split across lines read as unconsumed.
+   * No harmful instance of that exists that I could write — the literal
+   * would have to be scratch, carry a protected artifact, and be the right
+   * operand of a `+`, and a scratch absolute path is not a suffix of
+   * anything. The half is kept for symmetry at a measured cost of 0 on
+   * 131,942 real commands, and this row is the evidence that it does
+   * something rather than the evidence that it was needed.
+   */
+  test("MECHANISM: a literal opening a line after an operator is a fragment, not a target", () => {
+    const t = bodyTargets(`writeFileSync(process.env.RG +\n  "/tmp/fix/${STATE}", "{}")`);
+    expect(t.targets).toEqual([]);
+    expect(t.fragments).toEqual([`/tmp/fix/${STATE}`]);
+  });
+
   test("MECHANISM: the raw spelling survives to the reader; nothing normalises it first", () => {
     const raw = `/tmp/../opt/bwprobe/${STATE}`;
     const cmd = `python3 -I -c "import shutil; shutil.copy('${raw}', '/tmp/b/${STATE}')"`;
@@ -2586,8 +2628,31 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
     const F1_SITE = "function literalInProtectedTree(value: string, live: string[]): boolean {";
     const F2_SITE = "const ARG_OPENS = new Set(['(', ',', '[', '{', ';']);";
     const F2_WAS = "const ARG_OPENS = new Set(['(', ',', '[', '{', '=', ':', ';']);";
+    // Not "drop `\n` from WHITESPACE" — that mutation is STRICTER than the
+    // code, so every row would hold and the battery would report nothing.
+    // The mutation has to restore the rule the review found, which is the
+    // pre-#1371 `standsAlone` verbatim; the new body is left in place under
+    // a dead name so the brace structure still closes.
+    const NL_SITE = "function standsAlone(body: string, start: number, end: number): boolean {";
+    const NL_WAS = `function standsAlone(body: string, start: number, end: number): boolean {
+  let a = start - 1;
+  while (a >= 0 && (body[a] === ' ' || body[a] === '\\t')) a--;
+  if (a >= 0 && body[a] !== '\\n' && !ARG_OPENS.has(body[a])) return false;
+  let b = end + 1;
+  let out = 0;
+  for (;;) {
+    while (b < body.length && (body[b] === ' ' || body[b] === '\\t')) b++;
+    if (b >= body.length) return true;
+    const c = body[b];
+    if (c === '\\n') { if (out === 0) return true; b++; continue; }
+    if (GROUP_CLOSES.has(c)) { out++; b++; continue; }
+    return ARG_CLOSES.has(c);
+  }
+}
+function __standsAloneAfter(body: string, start: number, end: number): boolean {`;
     expect(src.split(F1_SITE).length - 1, "finding 1 must have ONE site to mutate").toBe(1);
     expect(src.split(F2_SITE).length - 1, "finding 2 must have ONE site to mutate").toBe(1);
+    expect(src.split(NL_SITE).length - 1, "the whitespace rule must have ONE site to mutate").toBe(1);
     // The mutant runs from a temp directory, so a relative specifier it
     // cannot resolve would read as a refusal rather than as a module that
     // failed to load. Exactly one is allowed, and it is carried.
@@ -2609,6 +2674,9 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
         noF1: src.replace(F1_SITE, `${F1_SITE}\n  return false;`),
         // Finding 2 removed: `=` and `:` open an argument again.
         noF2: src.replace(F2_SITE, F2_WAS),
+        // The newline rule restored: a newline at the literal's own depth
+        // ends the expression, which is what the AI review on #1371 found.
+        noNL: src.replace(NL_SITE, NL_WAS),
       };
       for (const [name, text] of Object.entries(mutants)) writeFileSync(join(dir, `${name}.ts`), text);
       const load = async (name: string) => {
@@ -2619,29 +2687,48 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       };
       const noF1 = await load("noF1");
       const noF2 = await load("noF2");
+      const noNL = await load("noNL");
 
       const moved = (other: (c: string) => { blocked: boolean }) =>
-        rows.filter(r => other(r.cmd).blocked !== decideBashWrite(r.cmd).blocked).map(r => r.label);
+        rows
+          .filter(r => other(r.cmd).blocked !== decideBashWrite(r.cmd).blocked)
+          .map(r => r.label)
+          .sort();
 
       // Both directions, by construction: `moved` is every row whose verdict
       // differs, and the expectations below say which way each one went.
-      expect(moved(noF1).sort()).toEqual(
+      //
+      // Each row appears under EXACTLY ONE mutant, which is the property
+      // worth having: a row two fixes answer cannot say which one is
+      // load-bearing, and a mutation of either leaves the other holding it
+      // up — the fourth shape. F2-a was written multi-line first and was
+      // held by `noF2` and `noNL` both; it is one line here for that reason.
+      expect(moved(noF1)).toEqual(
         [
           "F1-a a copy into the live run-store DIRECTORY, which spells no artifact",
           "F1-b the same shape into another live tree",
           "F1-c the same hole reached through a heredoc",
         ].sort(),
       );
-      expect(moved(noF2).sort()).toEqual([
-        "F2-a a scratch literal bound to a name, then reassigned before the write",
-        "F2-b the same reassignment through a dict value",
-      ]);
+      expect(moved(noF2)).toEqual(
+        [
+          "F2-a a scratch literal bound to a name, then reassigned before the write",
+          "F2-b the same reassignment through a dict value",
+        ].sort(),
+      );
+      expect(moved(noNL)).toEqual(
+        [
+          "N1 the #1277 headline escape with one newline before the .replace",
+          "N2 the same line break in a python heredoc",
+        ].sort(),
+      );
       // Direction: every row that moved was ALLOWED without the fix. Nothing
-      // in this table is refused only because a fix is absent, so neither
-      // mutant is holding a witness up for the other.
+      // in this table is refused only because a fix is absent, so no mutant
+      // is holding another's witness up.
       for (const r of rows) {
-        if (noF1(r.cmd).blocked !== decideBashWrite(r.cmd).blocked) expect(noF1(r.cmd).blocked).toBe(false);
-        if (noF2(r.cmd).blocked !== decideBashWrite(r.cmd).blocked) expect(noF2(r.cmd).blocked).toBe(false);
+        for (const m of [noF1, noF2, noNL]) {
+          if (m(r.cmd).blocked !== decideBashWrite(r.cmd).blocked) expect(m(r.cmd).blocked).toBe(false);
+        }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -1547,32 +1547,65 @@ export function bodyTargets(body: string): BodyTargets {
 }
 
 /**
+ * Whitespace, including a newline. See `standsAlone` for why the newline is
+ * in here rather than carrying a rule of its own.
+ */
+const WHITESPACE = new Set([' ', '\t', '\n', '\r']);
+
+/**
  * Is the literal spanning `[start, end]` a complete argument on both sides,
  * and is every expression ENCLOSING it also complete?
  *
- * A newline ends a statement, so it is a delimiter — but only while the walk
- * is still at the depth the literal was written at. Once it has stepped out
- * through a closing bracket it is inside an expression, where a newline is a
- * continuation and not an end.
+ * ## A newline is whitespace, not a delimiter (#1371)
+ *
+ * It used to be one: a newline at the literal's own depth ENDED the
+ * expression, on the reading that a newline ends a statement. The AI review
+ * on #1371 found what that costs, and it is the whole of #1277 — the
+ * headline escape, with one newline inserted:
+ *
+ *     writeFileSync("/tmp/x/workflow-state.json"
+ *       .replace("/tmp/x", process.env.RUNGATE_WORK_DIR), "{}")
+ *
+ * The literal is followed by a newline, so it read as a complete argument;
+ * the `.replace` on the next line was never looked at. Both JavaScript and
+ * Python continue an expression across a newline, so "a newline ends a
+ * statement" is true only of a statement nothing encloses — which this walk
+ * cannot tell apart from a line break inside one. A detector a reformat
+ * defeats is the second shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, and it defeated the exact
+ * witness the PR was written for.
+ *
+ * So the walk looks THROUGH whitespace in both directions to the real
+ * delimiter, which is the same question it was always asking. It keeps the
+ * ordinary multi-line fixture, because looking back through a newline from
+ * a literal that starts a line lands on the `(` or `,` that really opened
+ * it.
+ *
+ * ## The LEADING half has no witness, and that is said rather than implied
+ *
+ * The trailing half is the escape above, executed. The leading half —
+ * `x +\n  "…"`, where a literal opening a line read as unconsumed — is
+ * symmetry, and no harmful instance of it exists that I could write: for it
+ * to matter the literal must be scratch AND carry a protected artifact AND
+ * be the right operand of a concatenation, and a scratch absolute path is
+ * not a suffix of anything. It is kept because the two halves ask one
+ * question and an asymmetric rule invites the next reader to restore the
+ * half that looks arbitrary. Measured cost over 131,942 real commands:
+ * 0 newly blocked, 0 newly allowed, and the exemption population does not
+ * move. `bodyTargets` reporting it as a fragment is asserted in the tests;
+ * no verdict claim is made for it, because none was earned.
  */
 function standsAlone(body: string, start: number, end: number): boolean {
   let a = start - 1;
-  while (a >= 0 && (body[a] === ' ' || body[a] === '\t')) a--;
-  if (a >= 0 && body[a] !== '\n' && !ARG_OPENS.has(body[a])) return false;
+  while (a >= 0 && WHITESPACE.has(body[a])) a--;
+  if (a >= 0 && !ARG_OPENS.has(body[a])) return false;
 
   let b = end + 1;
-  let out = 0;
   for (;;) {
-    while (b < body.length && (body[b] === ' ' || body[b] === '\t')) b++;
+    while (b < body.length && WHITESPACE.has(body[b])) b++;
     if (b >= body.length) return true;
     const c = body[b];
-    if (c === '\n') {
-      if (out === 0) return true;
-      b++;
-      continue;
-    }
     if (GROUP_CLOSES.has(c)) {
-      out++;
       b++;
       continue;
     }
