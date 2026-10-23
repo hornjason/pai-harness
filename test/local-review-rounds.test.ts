@@ -5,11 +5,17 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import {
+  LOCAL_HISTORY_ABSENT,
+  LOCAL_HISTORY_READ,
+  LOCAL_HISTORY_UNREADABLE,
   LOCAL_REVIEW_AT_CAP,
   LOCAL_REVIEW_CONTINUE,
   LOCAL_REVIEW_SETTLED,
   LOCAL_REVIEW_UNMEASURED,
+  appendRound,
+  localHistoryPath,
   localRoundReading,
+  parseHistory,
   runAnotherRound,
 } from "../lib/local-review-rounds.ts";
 import { AI_REVIEW_ROUND_CAP } from "../lib/ai-review-rounds.ts";
@@ -231,6 +237,110 @@ describe("local review rounds (#1342)", () => {
     const r = localRoundReading([round(classA1), round(classB)], "three");
     expect(r.decision).toBe(LOCAL_REVIEW_AT_CAP);
     expect(r.newClasses.map(f => f.title)).toEqual([classB.title]);
+  });
+});
+
+/* ── the history the loop keeps (#1421) ──────────────────────────────────── */
+
+describe("the local-round history (#1421)", () => {
+  test("AC-LR14: an absent history is ABSENT; every damaged one is UNREADABLE", () => {
+    expect(parseHistory(null).status).toBe(LOCAL_HISTORY_ABSENT);
+    expect(parseHistory("[]")).toEqual({ status: LOCAL_HISTORY_READ, rounds: [] });
+
+    // Each of these yields "no rounds I can see" and none of them is a
+    // reading.
+    for (const damaged of ["", "   ", "not json", '{"rounds":[]}', '[{"at":"x"']) {
+      const r = parseHistory(damaged);
+      expect(r.status, JSON.stringify(damaged)).toBe(LOCAL_HISTORY_UNREADABLE);
+      expect(r.status === LOCAL_HISTORY_UNREADABLE && r.reason.length > 0).toBe(true);
+    }
+
+    // THE EMPTY FILE IS ASSERTED ON ITS REASON, NOT ON ITS STATUS, AND THAT IS
+    // THE WHOLE OF THIS BLOCK.
+    //
+    // Measured: a mutant that deletes `parseHistory`'s empty-file arm reddens
+    // NOTHING on status alone, because `JSON.parse("")` throws and the catch
+    // arm returns UNREADABLE for it anyway. Two deciders agreeing on one
+    // input — `.claude/rules/checks-must-be-able-to-fail.md`, fourth shape —
+    // so the arm was behaviourally dead and a status assertion certified it
+    // vacuously.
+    //
+    // It is kept rather than deleted because the two causes are different
+    // facts for whoever reads the refusal: a file that exists holding nothing
+    // is a write that was interrupted, and a syntax error is a file something
+    // finished writing badly. That difference lives entirely in the text, so
+    // the text is what is asserted — and the mutation is now observable.
+    const empty = parseHistory("");
+    expect(empty.status).toBe(LOCAL_HISTORY_UNREADABLE);
+    expect(
+      empty.status === LOCAL_HISTORY_UNREADABLE ? empty.reason : "",
+      "the empty-file reading fell through to the JSON parse error, so it no longer says " +
+        "which of the two causes it is and the dedicated arm is dead code",
+    ).toMatch(/exists and is empty/);
+  });
+
+  test("AC-LR15: appendRound extends a read history and refuses an unreadable one", () => {
+    const at = "2026-10-23T18:00:00.000Z";
+    const onto = appendRound(parseHistory('[{"at":"a","findings":[]}]'), [classA1], at);
+    expect("rounds" in onto).toBe(true);
+    expect("rounds" in onto && onto.rounds).toHaveLength(2);
+    expect("rounds" in onto && (onto.rounds[1] as { at: string }).at).toBe(at);
+
+    const fresh = appendRound(parseHistory(null), [classA1], at);
+    expect("rounds" in fresh && fresh.rounds).toHaveLength(1);
+
+    // The refusal, and the direction it protects: replacing an unreadable
+    // history with a fresh array destroys the count at the moment nothing can
+    // tell that it happened.
+    const refused = appendRound(parseHistory("not json"), [classA1], at);
+    expect("refusal" in refused).toBe(true);
+  });
+
+  test("AC-LR16: localHistoryPath refuses a repo or a number it cannot read", () => {
+    const base = mkdtempSync(join(tmpdir(), "rg1421-path-"));
+    const prior = process.env.RUNGATE_LOCAL_REVIEW_HISTORY;
+    process.env.RUNGATE_LOCAL_REVIEW_HISTORY = base;
+    try {
+      const ok = localHistoryPath("hornjason/pai-harness", 1414);
+      // The control: the function resolves at all. Without it the refusal
+      // rows below are satisfied by a function that returns null always.
+      expect(ok, "localHistoryPath resolves nothing, so the refusals below say nothing").not.toBeNull();
+      expect(ok!.startsWith(base)).toBe(true);
+      expect(ok).toContain("pr-1414");
+      expect(localHistoryPath("hornjason/pai-harness", "1414")).toBe(ok);
+
+      for (const [repo, pr] of [
+        ["", 1414],
+        ["not-a-slug", 1414],
+        ["hornjason/pai-harness", 0],
+        ["hornjason/pai-harness", -3],
+        ["hornjason/pai-harness", "0x10"],
+        ["hornjason/pai-harness", "nine"],
+        ["hornjason/pai-harness", 1.5],
+      ] as Array<[string, unknown]>) {
+        expect(localHistoryPath(repo, pr), `${repo} #${String(pr)}`).toBeNull();
+      }
+    } finally {
+      if (prior === undefined) delete process.env.RUNGATE_LOCAL_REVIEW_HISTORY;
+      else process.env.RUNGATE_LOCAL_REVIEW_HISTORY = prior;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("AC-LR17: two pull requests do not share a history", () => {
+    const base = mkdtempSync(join(tmpdir(), "rg1421-two-"));
+    const prior = process.env.RUNGATE_LOCAL_REVIEW_HISTORY;
+    process.env.RUNGATE_LOCAL_REVIEW_HISTORY = base;
+    try {
+      expect(localHistoryPath("hornjason/pai-harness", 1)).not.toBe(
+        localHistoryPath("hornjason/pai-harness", 2),
+      );
+      expect(localHistoryPath("a/b", 1)).not.toBe(localHistoryPath("c/d", 1));
+    } finally {
+      if (prior === undefined) delete process.env.RUNGATE_LOCAL_REVIEW_HISTORY;
+      else process.env.RUNGATE_LOCAL_REVIEW_HISTORY = prior;
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 

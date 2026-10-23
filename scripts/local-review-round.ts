@@ -41,11 +41,15 @@
  *      printed the decision demonstrably reached the mechanism.
  */
 
-import { readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { dirname } from "path";
 
 import {
   LOCAL_REVIEW_UNMEASURED,
+  appendRound,
+  localHistoryPath,
   localRoundReading,
+  parseHistory,
   runAnotherRound,
   summarise,
   type LocalRoundReading,
@@ -54,7 +58,7 @@ import {
 /** The one exit code every refusal travels through. See note 1 above. */
 export const REFUSE_EXIT = 1;
 
-const OPTIONS = new Set(["rounds", "cap", "out"]);
+const OPTIONS = new Set(["rounds", "cap", "out", "history", "findings", "pr", "repo"]);
 
 export function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -97,11 +101,96 @@ function firstLine(e: unknown): string {
   return (e instanceof Error ? e.message : String(e)).split("\n")[0];
 }
 
+/**
+ * Record this round, then read the whole history back.
+ *
+ * The RECORDING and the DECISION are one command on purpose. Two commands
+ * means a driver that calls the second and forgets the first, and that driver
+ * does not fail — it reports round 1 forever, which is the unbounded loop
+ * wearing the bound's clothes. There is no way to ask this script for a
+ * verdict on a round it has not written down.
+ *
+ * The write happens BEFORE the reading, and a write that fails is a refusal.
+ * The round happened; a history that does not hold it makes the next turn
+ * miscount, so "I could not record this" is not a state from which a verdict
+ * may be issued.
+ */
+function recordThenRead(
+  historyPath: string,
+  findingsPath: string | undefined,
+): { rounds: unknown } | { refusal: string } {
+  if (!findingsPath) {
+    return { refusal: "--findings is required with --history: a round is recorded by what it found" };
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(readFileSync(findingsPath, "utf-8"));
+  } catch (e) {
+    return { refusal: `--findings ${findingsPath} could not be read as JSON (${firstLine(e)})` };
+  }
+  // Both the adjudicator's `{findings:[...]}` envelope and a bare array, so a
+  // driver can pipe the reviewer's payload through unchanged.
+  const findings = Array.isArray(payload)
+    ? payload
+    : (payload as { findings?: unknown } | null)?.findings;
+  if (!Array.isArray(findings)) {
+    return {
+      refusal:
+        `--findings ${findingsPath} holds no findings array — a round whose findings cannot ` +
+        `be read is not a round that found nothing, and recording it as one would clear the ` +
+        `loop on an unread payload`,
+    };
+  }
+
+  const existing = existsSync(historyPath) ? safeRead(historyPath) : null;
+  if (existing !== null && typeof existing !== "string") {
+    return { refusal: `the review history at ${historyPath} exists and could not be read` };
+  }
+  const appended = appendRound(parseHistory(existing), findings, new Date().toISOString());
+  if ("refusal" in appended) return appended;
+
+  try {
+    mkdirSync(dirname(historyPath), { recursive: true });
+    writeFileSync(historyPath, `${JSON.stringify(appended.rounds, null, 2)}\n`);
+  } catch (e) {
+    return { refusal: `the review history at ${historyPath} could not be written (${firstLine(e)})` };
+  }
+  return { rounds: appended.rounds };
+}
+
+function safeRead(path: string): string | null {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
 if (import.meta.main) {
   let reading: LocalRoundReading;
   try {
     const args = parseArgs(process.argv.slice(2));
-    const read = readRounds(args.rounds);
+
+    // Three ways to name the loop, in order of explicitness. `--pr` is the
+    // one a driver can use without bookkeeping, which is the difference
+    // between a mechanism and a thing somebody has to remember.
+    let historyPath: string | null | undefined = args.history;
+    if (historyPath === undefined && args.pr !== undefined) {
+      historyPath = localHistoryPath(args.repo ?? "", args.pr);
+      if (historyPath === null) {
+        throw new Error(
+          `--pr ${args.pr} and --repo ${args.repo ?? "(none)"} do not name a pull request — ` +
+            `--repo must be owner/name and --pr a positive integer. Refused rather than ` +
+            `resolved from the working directory, which would file one pull request's rounds ` +
+            `under another's`,
+        );
+      }
+    }
+
+    const read =
+      historyPath !== undefined && historyPath !== null
+        ? recordThenRead(historyPath, args.findings)
+        : readRounds(args.rounds);
     reading =
       "refusal" in read
         ? {
