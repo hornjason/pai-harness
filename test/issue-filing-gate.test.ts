@@ -1,6 +1,16 @@
 /**
  * #1261 — the finding arbiter is wired into the `gh issue create` chokepoint.
  *
+ * Covers CRC-B5 (CODE-REVIEW-CONVERGENCE-SPEC.md).
+ *
+ * The DROPPED_CATEGORY rows below are the criterion, and they are here and
+ * not in `test/finding-jury.test.ts` because the criterion is about findings
+ * being dropped rather than about a classifier returning a word: the `WIRING`
+ * assertion holds `hooks/VerifyPhaseLock.hook.ts` to calling `filingGate`, so
+ * a style finding is refused at the chokepoint an agent actually reaches.
+ * `classifyCategory` and the three-member `DROPPED_CATEGORIES` set are bound
+ * in `test/finding-jury.test.ts`; nothing new is asserted for the id here.
+ *
  * ## The channel, which is the whole reason this file is spawned and not unit-called
  *
  * **These hooks signal a refusal on STDOUT and always `process.exit(0)`.** So

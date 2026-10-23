@@ -7,7 +7,7 @@ status: active
 owner: jason
 created: 2026-10-22
 source: https://claude.dev/blog/solving-code-review-at-anthropic/
-updated: 2026-10-22
+updated: 2026-10-23
 ---
 
 # Code Review Convergence
@@ -68,8 +68,8 @@ implementation.
 - [ ] CRC-A2: A fresh-context subagent reviews the diff before the PR opens.
 - [ ] CRC-A3: `CLAUDE.md` is short, states stack/conventions/goals/non-goals, and points elsewhere for detail.
 - [ ] CRC-A4: The reviewer flags code breaking a `CLAUDE.md` convention, AND changes that make a line in it out of date.
-- [ ] CRC-A5: `REVIEW.md` exists per owned area, written by code owners. (shipped, #1167)
-- [ ] CRC-A6: A check reports whether the reviewer actually followed `REVIEW.md`. (shipped, #1233/#1246)
+- [x] CRC-A5: `REVIEW.md` exists per owned area, written by code owners. (shipped, #1167)
+- [x] CRC-A6: A check reports whether the reviewer actually followed `REVIEW.md`. (shipped, #1233/#1246)
 - [ ] CRC-A7: `REVIEW.md` caps the nits, lists paths to skip, demands file-and-line evidence rather than a guess from a name, and requires a summary that starts with a count and says plainly when there is nothing to fix.
 - [ ] CRC-A8: **Fix at the source.** When the reviewer keeps flagging the same thing, the repair goes into the skill, a lint rule, or an instruction file — not into another finding.
 
@@ -79,7 +79,7 @@ implementation.
 - [ ] CRC-B2: On a bug fix, the reviewer looks for the root cause.
 - [ ] CRC-B3: **Several agents look for bugs at the same time** (parallel generation).
 - [ ] CRC-B4: **A separate group of agents votes on each finding**, and it is surfaced only if enough agree it is real. The ledger records **every verifier's individual vote** and **whether the verifiers disagreed**, both as first-class fields written at decision time. Without them every threshold except the one actually used is permanently UNMEASURED, and re-running to recover the votes re-samples the thing being measured. **A reading the mechanism produces whether or not it works does not satisfy this criterion.** Measured: the deployed filing path takes no votes at all — a regex over the title and set arithmetic over symptom keys, with no clock, model or network — so a variance control over it reports a single distinct outcome set, zero variance, by construction, and the reading that looks most like success is the signature of the failure mode. **Nor does a reading that varies for a reason other than the mechanism under test** — name the mechanism the reading is of, not only the number it produced. Where the flattering reading is available by construction, the criterion names what would distinguish it from the real thing, or declares itself UNMEASURED.
-- [ ] CRC-B5: Findings that are only **style, diagnostics or cleanup** are dropped.
+- [x] CRC-B5: Findings that are only **style, diagnostics or cleanup** are dropped.
 - [ ] CRC-B6: The filters are **A/B tested** against real PRs before being kept, **with variance bounded**. The reviewer is a sampled instrument, so two verdicts on the same code are two draws; an A/B that does not account for that is comparing noise.
 - [ ] CRC-B7: Surviving findings are **sorted by severity** and tagged **Important / Nit / Pre-existing**, so a pre-existing bug does not read as the author's fault.
 - [ ] CRC-B8: **Every finding is answered** — fixed, or resolved with a stated reason. A finding is never silently dropped and never becomes a tracker item by default.
@@ -90,7 +90,7 @@ implementation.
 - [ ] CRC-C1: Security review is a separate automated pass.
 - [ ] CRC-C2: A PR cannot merge while any bug-review or security-review finding is open.
 - [ ] CRC-C3: A false positive clears by closing the thread with a short reason.
-- [ ] CRC-C4: A finding clears on its own if a later commit fixes it.
+- [x] CRC-C4: A finding clears on its own if a later commit fixes it.
 
 ### Layer 5 — human approval scaled by risk
 
@@ -131,7 +131,7 @@ implementation.
 The source's measured failure: one PR ran **more than fifty rounds overnight**; git blame
 showed **~59%** of what the reviewer kept flagging was code present at its first pass.
 
-- [ ] CRC-N1: **A round cap.** After three rounds the reviewer asks the author to step back and reconsider the approach. (shipped, #1168)
+- [x] CRC-N1: **A round cap.** After three rounds the reviewer asks the author to step back and reconsider the approach. (shipped, #1168)
 - [ ] CRC-N2: **Diff-only re-review** after the first few passes.
 - [ ] CRC-N3: **Flag the class of bug**, so the author fixes every instance rather than one line.
 - [ ] CRC-N4: **No repeats** of findings already posted.
@@ -148,12 +148,81 @@ Their result, which is our target: pass-after-one-round 65% → 78%; five-or-mor
 - [ ] CRC-H4: Reading the evidence. **"If you can't say what the checks would miss, ask for a real review rather than a quick approval."**
 - [ ] CRC-H5: Owning the outcome — a person is accountable for every change that ships, whoever typed it.
 
+## What an unticked box means here
+
+Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
+0 carried a claiming test**. A spec nothing is bound to cannot drift, because
+there is nothing for it to drift from; the number below is what replaces that.
+
+Of the 56: **5 bound**, **8 where a mechanism exists that nothing in this
+repository can observe**, **1 declared deviation**, **42 not done**.
+
+An unticked box is one of the last three, and they are different facts. The
+second is recorded here because an unticked box that nobody can ever tick
+looks exactly like work nobody has started.
+
+### A mechanism exists; this repository cannot observe it
+
+Do not tick these, and do not count them as remaining work either.
+
+| Criterion | What exists | Why no test here can read it |
+|---|---|---|
+| CRC-C1 | The security review runs as a local Claude Code plugin an agent invokes per session. | It is not repo CI. `.github/workflows/` contains no security pass, so no artefact in this tree records that one ran. |
+| CRC-C2 | **The bug-review half holds.** `test` and `ai-review` are required contexts on `main` with `enforce_admins` on, so a blocking finding reds the check and the merge is refused. Read from the API on 2026-10-23. | Branch protection is GitHub state, not tree state. The security-review half does not hold at all — there is no security check to require, and `required_conversation_resolution` is `false`, so an open thread blocks nothing. |
+| CRC-M2 | `REVIEW_OUTCOME_PLANTS` holds four findings whose outcome was established independently. | Expert confirmation is a human act, and those four grade the outcome sweep rather than an incident case set. |
+| CRC-N3 | `REVIEW.md` asks for the class and not the line, and CRC-A6's check proves the reviewer read it. | Whether it complied is a property of a sampled model. No artefact records a finding the reviewer generalised. |
+| CRC-H1, CRC-H3, CRC-H4, CRC-H5 | Statements about human judgement. | Nothing distinguishes them being honoured from them being ignored. |
+
+### Not done — the remainder, with what is there instead
+
+42 criteria, listed because the near-misses are the expensive ones: each has
+something in the tree that resembles it and is not it.
+
+- **CRC-A1** `missingEvidenceViolations` requires a runnable command per AC and `gates/workflow.test.ts` enforces it — but only inside a harness ship run, and `ship.mode` is `direct`. Dormant on the lane this project ships on.
+- **CRC-A2** Nothing makes a fresh-context subagent review the diff before the PR opens. The generated pre-push hook runs conformity tests, not a review.
+- **CRC-A3** `scripts/check-instruction-surface.ts` holds `CLAUDE.md` under a byte budget. Nothing checks it states stack, conventions, goals and non-goals.
+- **CRC-A4** The second half holds — `REVIEW.md` names "a line that was true of a previous revision and is now false" as a defect class. The first does not: nothing tells the reviewer to flag code breaking a `CLAUDE.md` convention.
+- **CRC-A7** Three of four clauses hold in `REVIEW.md`: a cap of three non-blocking findings, a "Do not flag" path list, and file-and-line evidence. The fourth does not — nothing requires a summary opening with a count, and a CLEAN reading prints no summary at all.
+- **CRC-A8** No path routes a repeated finding into a skill, a lint rule or an instruction file. `lib/rule-promotion.ts` promotes from compliance failures, not from review findings.
+- **CRC-B1** The prompt says to read the whole branch. It never hands the reviewer the pull request's stated intent.
+- **CRC-B2** The prompt says nothing about root cause on a bug fix.
+- **CRC-B3** One reviewer agent per round.
+- **CRC-B4** `lib/finding-jury.ts` has the group size, the quorum, per-verifier votes and a disagreement flag. `arbitrate`, the only path that reads them, has no caller outside `lib/`, `test/` and `scripts/arbitrate-finding.ts`. Nothing deployed takes a vote.
+- **CRC-B6** `compareReviewOutcomes` and `evals/ai-review-control/variance-capture.ts` exist. No filter has been A/B tested before being kept, and the variance control reads zero by construction — see below.
+- **CRC-B7** `SEVERITY_RANK` tags Important / Nit / Pre-existing. The deployed annotation renders findings in payload order, under the reviewer's own severity words, with no pre-existing tag.
+- **CRC-B8** Half. A duplicate or a dropped-category filing is refused at the chokepoint; ALLOW is still the default for a novel finding, and nothing requires any finding to be answered.
+- **CRC-B9** No per-repo review depth. `ceremonyTier` LIGHT / STANDARD / THOROUGH is the harness gate ceremony, a different axis.
+- **CRC-C3** The reviewer is told not to post comments and `required_conversation_resolution` is `false`. There is no thread to close with a reason.
+- **CRC-E1, CRC-E2, CRC-E3, CRC-E5, CRC-E7, CRC-E9** No risk tiers exist anywhere in the tree.
+- **CRC-E4** The thing that looks like this is its inverse. The action refuses to review a pull request whose `.github/workflows/ai-review.yml` differs from the default branch's — one file, not any CI workflow file — and the documented escape, the `ai-review-override` label, **waives the check** rather than routing to a person. Branch protection requires zero approvals, so there is no human state to route to.
+- **CRC-E6** Branch protection declares no required reviews, so no approval counts toward anything and the criterion is vacuous rather than satisfied.
+- **CRC-E8** No required reviews means no stale-review dismissal, and `strict` is `false`, so a branch need not even be up to date. `gh pr merge --match-head-commit` is a convention agents follow by hand; nothing enforces it.
+- **CRC-F1** There is no merge queue. `gh api …/rulesets` returns `[]` and branch protection declares none. `.github/workflows/ai-review.yml` carries a `merge_group:` trigger, and on that event the job annotates UNMEASURED and passes, saying in its own text that the per-head review is the measurement. The trigger is readiness for a queue, not the criterion.
+- **CRC-F2** Several `vars.*` switches gate behaviour. None stages by audience.
+- **CRC-F3** No one-step rollback, and none exercised.
+- **CRC-F4** No incident review asks which layer should have caught it.
+- **CRC-F5** No circuit breaker. The source admits this as a gap on their side too.
+- **CRC-M1** One subject directory, holding an authored plant and two clean variants. Not a case set drawn from past incident-causing pull requests.
+- **CRC-M3** Nothing adds a case when an incident happens.
+- **CRC-M4** Nothing rescores the whole set when the reviewer's prompt, tools or model change.
+- **CRC-M5** No schedule runs the eval. The only crons in the tree are `.github/workflows/issue-audit.yml` daily and `.github/workflows/action-pins.yml` weekly.
+- **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
+- **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
+- **CRC-M8** Stated **and enforced** is the claim. What is stated here is the opposite order, deliberately, and nothing enforces either — see the deviation added below.
+- **CRC-M9** Nothing tracks approvals per pull request, human comments, or time waiting on a person.
+- **CRC-M10** Nothing tracks revert or incident rates.
+- **CRC-M11** The round number is computed per run and retained nowhere. Nothing tracks rounds-to-pass beside recall.
+- **CRC-N4** `suppressRepeats`, `carryForward` and `noRepeatsInstruction` are defined and tested, and have no caller outside their own file. The prompt states the opposite in so many words: nothing carries its findings forward.
+- **CRC-N5** Nothing runs review agents nightly over existing code.
+- **CRC-H2** Risky code requires a human. There is no `CODEOWNERS` and no required approval, so nothing does.
+
 ## Known deviations, declared
 
 A deviation is legitimate when it is written here with its reason. An undeclared one is drift.
 
 | Deviation | Reason | Revisit when |
 |---|---|---|
+| **CRC-M8 inverted — precision is ranked above recall.** | Found undeclared by the 2026-10-23 audit, and argued at length in `evals/ai-review-control/README.md`: the source's order is right when a human absorbs the noise, and nobody absorbs it here. A false blocking finding costs a remedy commit, a CI round, a review round and an agent's whole context, so `MISSED` and `FIRED` are reported as failures of equal weight. | A human is reading the findings again, or the cost of a false block falls. |
 | **CRC-N2 diff-only re-review NOT adopted.** Scope stays `full`. | The generated step argues scope must stay full until an adjudicator re-emits unresolved prior findings; dropping to diff-only first would lose them silently. | An adjudicator re-emits unresolved findings. |
 | **CRC-B8 inverted — we file issues instead of blocking threads.** | Historical accident, not a decision. **This is the defect, not a deviation.** | #1261. Highest priority in the spec. |
 | **Findings routed to an open PR touching the same file.** Not in the source. | Measured: 45% of filings that name a file had an open PR on it. Addresses CRC-B8 in our tracker-shaped world. | Once CRC-B8 holds, this may become unnecessary. |
