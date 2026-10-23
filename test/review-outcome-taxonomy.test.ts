@@ -19,7 +19,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -606,5 +606,116 @@ describe("#1253: a corpus it cannot score unambiguously is refused, not scored w
     expect(run.usable).toBe(true);
     expect(run.fixed).toBe(1);
     expect(run.suppressed).toBe(1);
+  });
+});
+
+/**
+ * #1296: the refusal must not recommend the defect it is reporting.
+ *
+ * #1253 shipped the duplicate-id refusal with the advice "give it its symptom
+ * hash". #1272 then established that `symptomHash` is not a key — it hashes
+ * the sorted symptom key SET while the dedupe matches on the key
+ * INTERSECTION — so an agent hitting this refusal with a candidate ledger was
+ * being sent straight back into the bug that produced it. `CandidateRecord.key`
+ * (#1263) is the answer, and it is `null` until the caller names a batch.
+ */
+describe("#1296: the refusal names a key that works, and says what a null id means", () => {
+  const row = (id: string) => finding({ id });
+
+  test("the refusal no longer recommends the symptom hash", () => {
+    const run = summariseFindingOutcomes(
+      readFindingOutcomes([row("7"), row("7")], new Set()),
+      "duplicate corpus",
+    );
+    expect(run.usable).toBe(false);
+    expect(run.detail.join(" ")).not.toContain("symptom hash");
+  });
+
+  test("it names the key that is unique by construction, and the batch it needs", () => {
+    const run = summariseFindingOutcomes(
+      readFindingOutcomes([row("7"), row("7")], new Set()),
+      "duplicate corpus",
+    );
+    const said = run.detail.join(" ");
+    expect(said).toContain("CandidateRecord.key");
+    expect(said).toContain("batch");
+  });
+
+  test("an all-null corpus is named as null rather than printed as nothing", () => {
+    // The case a consumer hits FIRST: `arbitrateBatch` emits `key: null` for
+    // every row until a caller names a batch, so the whole ledger keys alike.
+    // The refusal already fired; what it could not do is say what fired it —
+    // `: .` names no id at all.
+    const nulls = [row(null as unknown as string), row(null as unknown as string)];
+    const run = summariseFindingOutcomes(readFindingOutcomes(nulls, new Set()), "unnamed batch");
+
+    expect(run.usable).toBe(false);
+    const said = run.detail.join(" ");
+    expect(said).toContain("(null)");
+    expect(said).not.toContain("scored: .");
+  });
+
+  test("an empty-string id is named too — it is the same failure spelled differently", () => {
+    const run = summariseFindingOutcomes(
+      readFindingOutcomes([row(""), row("")], new Set()),
+      "empty ids",
+    );
+    expect(run.usable).toBe(false);
+    expect(run.detail.join(" ")).toContain("(empty)");
+  });
+
+  test("CONTROL: a unique corpus says none of this", () => {
+    // Without this the four cases above pass on any message that happens to
+    // contain the words, including one emitted unconditionally.
+    const run = summariseFindingOutcomes(
+      readFindingOutcomes([row("7"), row("8")], new Set()),
+      "unique corpus",
+    );
+    expect(run.usable).toBe(true);
+    expect(run.detail.join(" ")).not.toContain("CandidateRecord.key");
+  });
+});
+
+/**
+ * #1296: the recommendation cannot come back without the correction.
+ *
+ * Four sites named `symptomHash` as the identity for an unfiled candidate,
+ * all written in #1253 and all wrong after #1272. Two survive, both now
+ * explaining why the hash is NOT a key. This keeps that true.
+ *
+ * **What it cannot catch, stated rather than implied:** a recommendation
+ * added to a file that already cites #1272. The guard is a floor — a new file
+ * or a reintroduced one that does not carry the correction fails — not a
+ * proof that every mention is a warning. A stronger detector would have to
+ * read intent, and a detector narrower than what it detects is worse than an
+ * honest floor (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+describe("#1296: no file names the symptom hash as an id without citing the correction", () => {
+  const dir = join(import.meta.dir, "..", "evals", "ai-review-control");
+  const files = readdirSync(dir).filter(f => f.endsWith(".ts") || f.endsWith(".md"));
+
+  test("CONTROL: the population is real and someone still mentions the hash", () => {
+    // Without both halves this passes vacuously — an empty glob and a tree
+    // where nobody mentions it produce the same green.
+    expect(files.length).toBeGreaterThanOrEqual(5);
+    const mentioning = files.filter(f =>
+      /symptomHash|symptom hash/i.test(readFileSync(join(dir, f), "utf-8")),
+    );
+    expect(mentioning.length).toBeGreaterThan(0);
+  });
+
+  test("every mention sits in a file that also cites #1272", () => {
+    const offenders = files.filter(f => {
+      const src = readFileSync(join(dir, f), "utf-8");
+      return /symptomHash|symptom hash/i.test(src) && !src.includes("1272");
+    });
+
+    expect(
+      offenders,
+      `${offenders.join(", ")} name the symptom hash without citing #1272, which established ` +
+        "it is a similarity identity and not a row identity. Key an unfiled candidate on " +
+        "`CandidateRecord.key` (#1263). If the mention is explaining why the hash is NOT a " +
+        "key, cite #1272 in the same file.",
+    ).toEqual([]);
   });
 });
