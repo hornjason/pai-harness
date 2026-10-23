@@ -6864,7 +6864,9 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
         # \`|| true\` on both, and it is not decoration: under \`bash -e\` an
         # assignment whose only word is a failing \$(...) aborts the loop
         # before anything reads \$? (#1110), and this recorder may not fail
-        # the job it observes. An unreadable row records an empty anchor.
+        # the job it observes. An unreadable row records NO anchor (#1409) —
+        # see the \`rt_read\` comment below for why "no anchor" stopped being
+        # spelled as the empty string.
         rf=\$(printf '%s' "\${row}" | jq -r '.${AI_REVIEW_FINDING_FIELDS.file} // ""') || true
         rl=\$(printf '%s' "\${row}" | jq -r 'if (.${AI_REVIEW_FINDING_FIELDS.line}|type) == "number" then (.${AI_REVIEW_FINDING_FIELDS.line}|floor|tostring) else "" end') || true
         # The REVIEWER chooses \`file\`, and this step copies a line of it into
@@ -6881,7 +6883,34 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
         # author commits a file whose NAME is the option and writes code at
         # that path shaped to draw a finding. Every input is author-chosen.
         case "\${rf}" in ""|-*|/*|*..*) rf="" ;; esac
+        # TWO variables, and the second one is the whole of #1409.
+        #
+        # Five conditions reach the emitter below with nothing read: the
+        # \`file\` spelling was refused just above, the \`line\` was absent or
+        # not a number, containment or the index read refused the path, the
+        # cited line is past the end of the file — and the cited line really
+        # is blank. The first four obtained NO ANCHOR. The fifth is a reading,
+        # and its text happens to be empty.
+        #
+        # All five used to be \`rt=""\`, and the reader cannot tell them apart
+        # from that: \`carryForward\`'s undecidable branch is
+        # \`typeof recordedText !== "string"\` and \`""\` IS a string, so a
+        # finding whose anchor could never be read went to the content
+        # comparison, differed from every real line, and was dropped as
+        # RESOLVED. Silently — which is the expensive direction, because a
+        # stale carried finding is visible and somebody argues with it.
+        #
+        # That is #1351's defect one value over. #1351 made an ABSENT text
+        # carry and left the EMPTY one, and this recorder kept emitting the
+        # empty one for exactly the conditions that used to emit nothing.
+        #
+        # So \`rt_read\` carries the fact the value cannot: 1 only when a line
+        # was actually read out of the index. The fix is HERE and not in the
+        # reader, because \`recordedText === ""\` there would be wrong in the
+        # other direction — it would make a finding on a genuinely blank line
+        # permanently uncarryable-away.
         rt=""
+        rt_read=0
         case "\${rl}" in
           ""|0|*[!0-9]*) ;;
           *)
@@ -6989,19 +7018,45 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
                     # and never globbed. The mismatch was one-sided, which
                     # is exactly what made it invisible.
                     rel=\${real#"\${root}"/}
-                    rt=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)
+                    # A MARKED read, because \$(...) strips trailing
+                    # newlines and that is what made the two states one
+                    # (#1409). \`sed -n "\${rl}p"\` prints \`\\n\` for a
+                    # blank line and nothing at all for a line past the end
+                    # of the file, and command substitution turns both into
+                    # \`""\`. Prefixing the printed line with \`=\` survives
+                    # the stripping: \`=\` means a blank line was read,
+                    # \`=text\` means that text was read, and the empty
+                    # string now means only that nothing was printed.
+                    #
+                    # \`s/^/=/p\` rather than a \`{...}\` block or a
+                    # sentinel \`printf\` appended after the pipeline: it is
+                    # one substitution on one addressed line, the form both
+                    # GNU and BSD sed have always taken, and it needs no
+                    # \`\$'\\n'\` to strip afterwards. Measured on darwin
+                    # 25.6 against all three inputs before it was written.
+                    rraw=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}s/^/=/p" || true)
+                    case "\${rraw}" in
+                      "="*) rt=\${rraw#=}; rt_read=1 ;;
+                    esac
                     ;;
                 esac
               fi
             fi
             ;;
         esac
-        jq -nc --arg t "\${rt}" '{${AI_REVIEW_LEDGER_TEXT_FIELD}: \$t}'
+        # One JSON object per row either way, so the positional join below is
+        # untouched: a row that read no anchor emits \`{}\`, which the join
+        # merges as no key rather than as a shifted position (#1409).
+        if [ "\${rt_read}" = 1 ]; then jq -nc --arg t "\${rt}" '{${AI_REVIEW_LEDGER_TEXT_FIELD}: \$t}'; else jq -nc '{}'; fi
       done > "\${texts}"
       # Positional join, one text per finding in order. A texts file that is
       # short or unreadable leaves the field OFF that finding rather than
       # guessing — and an absent text is undecidable to the reader, which
       # carries the finding, where a wrong text would resolve it away.
+      #
+      # \`.[\$i] // {}\` is also the route a SINGLE unread row takes (#1409),
+      # so the two absences — a short file and a refused anchor — arrive at
+      # the reader as the same fact, which is the fact they are.
       if annotated=\$(jq -sc --argjson base "\${parsed}" '[range(0; (\$base|length)) as \$i | \$base[\$i] + (.[\$i] // {})]' "\${texts}" 2>/dev/null); then
         parsed="\${annotated}"
       fi

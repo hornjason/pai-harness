@@ -57,6 +57,11 @@ import {
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step";
 import { readAiReviewFindings } from "../lib/scaffold/ai-review-findings";
+// #1409. The recorder's output is only meaningful as the reader's input, and
+// the defect lived in the gap between them: each half was correct about its
+// own value and they disagreed about what `""` meant. AC-L14 below joins them
+// with no adapter, so the agreement is asserted rather than described.
+import { type CarriedFinding, carryForward } from "../lib/ai-review-rounds";
 import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
 
 /**
@@ -362,8 +367,9 @@ describe("AC-L1 (#1168): a round is written, and the ledger is cumulative", () =
     expect(r.rounds).toHaveLength(1);
     expect(r.rounds![0].findings).toEqual([
       // `lib/a.ts` is not in this case's checkout, so there was no line to
-      // read and the recorded text is empty. AC-L9 is where it is planted.
-      { severity: "high", file: "lib/a.ts", line: 4, summary: "s", text: "" },
+      // read and NO anchor is recorded — the key is absent, not empty
+      // (#1409). AC-L9 is where a readable one is planted.
+      { severity: "high", file: "lib/a.ts", line: 4, summary: "s" },
     ]);
     expect(r.rounds![0].round).toBe(2);
     // The identity rule is stamped on the entry, so a later round reads which
@@ -1075,15 +1081,20 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
       expect(r.sentRaw, "an absolute path was read into a public comment").not.toContain(
         "THE-SECRET-LINE",
       );
-      // The control is what makes the two empties above a refusal rather than
-      // a step that records nothing at all.
-      expect(texts).toEqual(["", "", "alpha"]);
+      // The control is what makes the two absences above a refusal rather
+      // than a step that records nothing at all.
+      //
+      // `undefined`, not `""` (#1409). A refused path obtained no anchor, and
+      // the reader's undecidable branch is `typeof recordedText !== "string"`
+      // — so recording `""` here sent a finding nobody could check to the
+      // content comparison, where it read as RESOLVED against any real line.
+      expect(texts).toEqual([undefined, undefined, "alpha"]);
     } finally {
       rmSync(secret, { force: true });
     }
   });
 
-  test("AC-L9: an unreadable or absent anchor records the empty string, and never fails", () => {
+  test("AC-L9: an unreadable or absent anchor records NO anchor, and never fails", () => {
     const r = runPersist({
       list: [],
       files: { "lib/a.ts": "alpha\n" },
@@ -1098,7 +1109,23 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
     });
     // The recorder observes; it never fails the job it is observing (#1110).
     expect(r.status, r.stderr).toBe(0);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "", ""]);
+    // Four absences, not four empty strings (#1409). This row used to assert
+    // `["", "", "", ""]` and it was the defect written down as a requirement:
+    // see AC-L14 below for what `""` costs the reader.
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    // And the KEY is gone, not present holding null. `"text" in f` is the
+    // only reading that tells those apart, and `toEqual` above cannot.
+    expect(r.rounds![0].findings.map((f: any) => "text" in f)).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
   });
 
   test("AC-L9: a round with no findings still writes a well-formed entry", () => {
@@ -1113,6 +1140,168 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
     const r = runPersist({ list: [], payload: "{ not json" });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds![0].findings).toBeNull();
+  });
+});
+
+/**
+ * AC-L14 (#1409): "no anchor was obtained" and "the anchor is a blank line"
+ * are different facts, and the RECORDER is where they are told apart.
+ *
+ * Both used to arrive as `text: ""`. `""` **is** a string, so the reader's
+ * undecidable branch — `typeof entry.recordedText !== "string"` — does not
+ * take it, and the finding falls through to the content comparison instead.
+ * Every real line differs from `""`, so a finding whose anchor could never be
+ * read was reported as RESOLVED and dropped. Silently, which is the whole
+ * cost: a stale carried finding is visible and somebody argues with it.
+ *
+ * This is #1351's defect one value over. #1351's commit says it exactly —
+ * *"`normalise(undefined)` was `""`, which differs from every real line: one
+ * finding in, ZERO carried out, silently"* — and the repair it shipped closed
+ * the route through an ABSENT field while the recorder kept emitting an EMPTY
+ * one for the same "could not read it" conditions.
+ *
+ * Five paths reach the join with nothing read, and they are not alike:
+ *
+ *  1. the `file` spelling was refused — `""`, `-*`, `/*`, `*..*` (#1379)
+ *  2. the `line` was absent, zero, or not a number
+ *  3. containment, the `! -L` test or the index read refused the path
+ *  4. the cited line is past the end of the file
+ *  5. the cited line genuinely IS blank — **and this one is a reading**
+ *
+ * The fifth is why `if (recordedText === "")` in the reader is the wrong fix
+ * in the other direction: it would make a finding on a blank line permanently
+ * uncarryable-away. So 1–4 omit the field, which is what the reader already
+ * treats as undecidable, and 5 records `""`, which is the true text of a
+ * blank line and stays comparable.
+ *
+ * Omission is available because the join is `$base[$i] + (.[$i] // {})` — a
+ * row emitting `{}` contributes no key and shifts no position. The row still
+ * emits exactly one JSON object, so the positional alignment AC-L9 asserts is
+ * untouched, and the mixed-payload case below is what proves that.
+ */
+describe("AC-L14 (#1409): a refused anchor is UNDECIDABLE, a blank line is a reading", () => {
+  // Line 2 is blank, line 3 is not. One file carries both readings, so a
+  // recorder that collapsed them would have to collapse them visibly here.
+  const BLANK_AT_2 = "alpha\n\ngamma\n";
+
+  test("AC-L14: a blank cited line records the empty string, and the key is PRESENT", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": BLANK_AT_2 },
+      payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 2, summary: "blank" }] },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const f = r.rounds![0].findings[0];
+    expect(f.text).toBe("");
+    // The load-bearing half. `toBe("")` passes on an absent key too once the
+    // value is read through `f.text`, so the key's PRESENCE is what separates
+    // this row from the refusals below — and it is the only thing that does.
+    expect("text" in f, "a blank line is a reading, and a reading is recorded").toBe(true);
+  });
+
+  test("AC-L14: refused and blank are two observables in ONE payload, in order", () => {
+    const secret = join(tmpdir(), `ledger-1409-${process.pid}.txt`);
+    writeFileSync(secret, "THE-SECRET-LINE\n");
+    try {
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": BLANK_AT_2 },
+        payload: {
+          findings: [
+            { severity: "high", file: secret, line: 1, summary: "1 refused spelling" },
+            { severity: "high", file: "lib/a.ts", summary: "2 no line" },
+            { severity: "high", file: "lib/missing.ts", line: 1, summary: "3 not in the index" },
+            { severity: "high", file: "lib/a.ts", line: 99, summary: "4 past the end" },
+            { severity: "high", file: "lib/a.ts", line: 2, summary: "5 genuinely blank" },
+            { severity: "high", file: "lib/a.ts", line: 3, summary: "6 ordinary control" },
+          ],
+        },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const got = r.rounds![0].findings.map((f: any) => ("text" in f ? f.text : "(absent)"));
+      expect(got).toEqual(["(absent)", "(absent)", "(absent)", "(absent)", "", "gamma"]);
+      // The join is positional and four of six rows now contribute no key.
+      // The ordinary control landing on row six is the alignment assertion:
+      // a row that emitted nothing at all would shift it to row five.
+      expect(r.rounds![0].findings[5].summary).toBe("6 ordinary control");
+      expect(r.sentRaw, "a refused path was read into a public comment").not.toContain(
+        "THE-SECRET-LINE",
+      );
+    } finally {
+      rmSync(secret, { force: true });
+    }
+  });
+
+  /**
+   * The two halves joined. These are the cases #1409 is actually about: the
+   * recorder's output is fed to the reader with no adapter, which is the same
+   * join `lib/ai-review-rounds.ts` documents for the real one.
+   */
+  const recordFor = (files: Record<string, string>, finding: Record<string, unknown>) => {
+    const r = runPersist({ list: [], files, payload: { findings: [finding] } });
+    expect(r.status, r.stderr).toBe(0);
+    const recorded = r.rounds![0].findings[0];
+    const entry: CarriedFinding = { finding: recorded };
+    if ("text" in recorded) entry.recordedText = recorded.text;
+    return entry;
+  };
+
+  test("AC-L14: a finding whose anchor was REFUSED is carried when the line changes", () => {
+    // This is the defect. Before the fix the recorder wrote `text: ""`, the
+    // reader compared `""` against the line's new content, found them
+    // different, and dropped the finding as resolved — having never once
+    // been able to read the line it was about.
+    const entry = recordFor(
+      { "lib/a.ts": "alpha\n" },
+      { severity: "high", file: "lib/missing.ts", line: 1, summary: "untracked" },
+    );
+    expect(entry.recordedText, "an anchor that was never obtained is not an empty one").toBe(
+      undefined,
+    );
+    expect(carryForward([entry], () => "anything at all here now")).toHaveLength(1);
+  });
+
+  test("AC-L14 CONTROL: a finding anchored to a line that really is blank still RESOLVES", () => {
+    // The other direction, and the reason the fix is not `recordedText === ""`
+    // in the reader. A blank line is a real anchor: when it stops being blank
+    // the finding is resolved, exactly as any other changed line would be.
+    const entry = recordFor(
+      { "lib/a.ts": BLANK_AT_2 },
+      { severity: "high", file: "lib/a.ts", line: 2, summary: "blank" },
+    );
+    expect(entry.recordedText).toBe("");
+    expect(carryForward([entry], () => "the line has content now")).toHaveLength(0);
+    // …and is still carried while it is unchanged, so the row above is a
+    // resolution and not a reader that drops blank anchors outright.
+    expect(carryForward([entry], () => "")).toHaveLength(1);
+  });
+
+  test("AC-L14 MUTANT: the recorder restored to emitting `\"\"` drops the refused finding", () => {
+    // What was broken to make the case above fail, performed rather than
+    // asserted in prose. The mutation is the pre-#1409 emitter — one `jq`
+    // program, unconditional — and nothing else changes.
+    const real = buildPersistScript();
+    const mutated = real.replace(
+      /if \[ "\$\{rt_read\}" = 1 \][^\n]*\n/,
+      'jq -nc --arg t "${rt}" \'{text: $t}\'\n',
+    );
+    expect(mutated, "the emitter's guard was not found — re-read the recorder").not.toBe(real);
+
+    const r = runPersist({
+      list: [],
+      script: mutated,
+      files: { "lib/a.ts": "alpha\n" },
+      payload: {
+        findings: [{ severity: "high", file: "lib/missing.ts", line: 1, summary: "untracked" }],
+      },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const recorded = r.rounds![0].findings[0];
+    expect(recorded.text, "the mutant must reinstate the empty string").toBe("");
+    const entry: CarriedFinding = { finding: recorded, recordedText: recorded.text };
+    // Green here is the finding vanishing. If this ever returns 1 the mutation
+    // stopped applying and the row above is witnessing nothing.
+    expect(carryForward([entry], () => "anything at all here now")).toHaveLength(0);
   });
 });
 
@@ -1300,8 +1489,8 @@ const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
  */
 const dropIndexRead = (s: string) =>
   s.replace(
-    `rt=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)`,
-    'rt=$(sed -n "${rl}p" "${real}" 2>/dev/null || true)',
+    `rraw=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}s/^/=/p" || true)`,
+    'rraw=$(sed -n "${rl}s/^/=/p" "${real}" 2>/dev/null || true)',
   );
 
 describe("AC-L12 (#1379): a committed symlink does not read outside the checkout", () => {
@@ -1354,7 +1543,9 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     // The negative control, and it is not decoration: without it a repair
     // that deletes the quoting outright satisfies both assertions above and
     // this whole block certifies a step that records nothing.
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    // `undefined` for the two refusals since #1409: a path that was never
+    // read records NO anchor, where `""` used to also mean "a blank line".
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual([undefined, undefined, "alpha"]);
   });
 
   /**
@@ -1399,7 +1590,8 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
       },
     };
 
-    expect(runPersist({ ...rig }).rounds![0].findings[0].text).toBe("");
+    // No anchor, not an empty one (#1409): `! -L` refused before the read.
+    expect(runPersist({ ...rig }).rounds![0].findings[0].text).toBeUndefined();
     expect(
       runPersist({ ...rig, script: mutant }).rounds![0].findings[0].text,
       "removing `! -L` changed nothing, so the guard decides no input at all",
@@ -1470,7 +1662,9 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
         payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 1, summary: "x" }] },
       });
       expect(r.status, r.stderr).toBe(0);
-      expect(r.rounds![0].findings[0].text).toBe("");
+      // No anchor at all, not an empty one (#1409) — containment refused
+      // before anything was read.
+      expect(r.rounds![0].findings[0].text).toBeUndefined();
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
@@ -1479,9 +1673,15 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
   test("AC-L12 (#1357): a cited line past the end of the file renders no quote", () => {
     // #1357's symptom as it reaches THIS step, re-asserted because the fix
     // changes the path `sed` is handed — `${rf}` became the resolved
-    // `${real}` — so past-EOF now runs through new code. `sed -n 999p` on a
-    // one-line file prints nothing, the field is the empty string, and the
-    // comment carries no quote. Identical before this change and after it.
+    // `${real}` — so past-EOF now runs through new code. `sed` on a one-line
+    // file prints nothing for line 999, so no anchor is recorded and the
+    // comment carries no quote.
+    //
+    // Since #1409 that is an ABSENT field rather than an empty one, and the
+    // distinction belongs to this case more than to any other: past-EOF and
+    // a cited line that genuinely IS blank were the two readings `""`
+    // conflated, and conflating them is what made a finding nobody could
+    // locate read as a finding somebody had fixed.
     //
     // #1357's own acceptance is NOT this. It asks the ADJUDICATOR
     // (`lib/scaffold/ai-review-findings.ts`) to carry an unlocatable citation
@@ -1500,7 +1700,7 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
       },
     });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "alpha"]);
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual([undefined, "alpha"]);
   });
 });
 
@@ -1566,7 +1766,9 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
     expect(r.status, r.stderr).toBe(0);
     expect(r.sentRaw, "an option-named path was read into a public comment").not.toContain(CANARY);
     expect(r.sentRaw, "a flag-named path was read into a public comment").not.toContain(DASH_N);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    // `undefined` for the two refusals since #1409: a path that was never
+    // read records NO anchor, where `""` used to also mean "a blank line".
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual([undefined, undefined, "alpha"]);
   });
 
   test("AC-L13: the MUTANT — the `-*` arm removed — quotes the option-named file", () => {
@@ -1609,7 +1811,9 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
     );
     // `.git/config` is inside the workspace and passes containment, so this
     // row can only be green because the line comes out of the index.
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    // `undefined` for the two refusals since #1409: a path that was never
+    // read records NO anchor, where `""` used to also mean "a blank line".
+    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual([undefined, undefined, "alpha"]);
   });
 
   test("AC-L13: the MUTANT — reading the working tree instead of the index — quotes the untracked file", () => {
