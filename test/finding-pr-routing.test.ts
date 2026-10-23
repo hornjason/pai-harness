@@ -247,6 +247,29 @@ const CASES: readonly Case[] = [
     route: "OTHER_PR",
     prs: [1410],
   },
+  {
+    id: "RT-14",
+    what: "an EMPTY changed-files list with no --this-pr is not a reading either",
+    // Found by the review on PR #1446. `scripts/arbitrate-finding.ts` builds
+    // the list with `.split(",").filter(Boolean)`, so `--changed-files ""`
+    // arrives as `[]` and not as absent — `[]` standing for "I looked and
+    // there was nothing" when nobody looked. The same fail-open one layer in.
+    cited: ["lib/finding-arbiter.ts"],
+    options: { corpus: LIVE, changedFiles: [] },
+    route: "UNMEASURED",
+    prs: [],
+  },
+  {
+    id: "RT-15",
+    what: "an empty changed-files list WITH --this-pr still answers",
+    // The discrimination. Only the combination cannot answer: with a number
+    // the corpus supplies the diff and step 6 has something to exclude on.
+    // Without this row, refusing on every empty list would pass RT-14.
+    cited: ["lib/finding-arbiter.ts"],
+    options: { corpus: LIVE, thisPr: 1393, changedFiles: [] },
+    route: "THIS_PR",
+    prs: [1393],
+  },
 ];
 
 describe("#1343: a finding is routed to the open PR that is holding the file", () => {
@@ -539,7 +562,7 @@ const MUTANTS: readonly Mutant[] = [
     to:
       "export function routePaths(citedPaths: readonly string[], options: RouteOptions): Routing {\n" +
       '  if (true) return { route: "TRACKER", citedPaths: [], prs: [], matchedPaths: [], consideredPrs: null, reason: "mutant" };',
-    reddens: ["RT-1", "RT-2", "RT-3", "RT-5", "RT-6", "RT-7", "RT-8", "RT-9", "RT-10", "RT-11", "RT-12", "RT-13"],
+    reddens: ["RT-1", "RT-2", "RT-3", "RT-5", "RT-6", "RT-7", "RT-8", "RT-9", "RT-10", "RT-11", "RT-12", "RT-13", "RT-14", "RT-15"] as const,
   },
   {
     name: "a bare suffix test instead of a whole trailing segment",
@@ -551,7 +574,7 @@ const MUTANTS: readonly Mutant[] = [
     name: "the PR the finding arrived on is not consulted",
     from: "if (own.length > 0) {",
     to: "if (false) {",
-    reddens: ["RT-3", "RT-10", "RT-12"],
+    reddens: ["RT-3", "RT-10", "RT-12", "RT-15"],
   },
   {
     // #1427's defect, restored. Without the refusal the router carries on
@@ -559,16 +582,34 @@ const MUTANTS: readonly Mutant[] = [
     // `p.number !== undefined` excludes nothing — so the asker is returned
     // as the pull request to route TO, and the caller turns that into exit 4.
     name: "the asker's identity is not required, so the asker can be routed to",
-    from: "if (options.thisPr === undefined && options.changedFiles === undefined) {",
+    from: "  if (!hasReading) {",
     to: "if (false) {",
-    reddens: ["RT-11"],
+    reddens: ["RT-11", "RT-14"],
+  },
+  {
+    // The empty-list door the review on #1446 found. `[]` is not absent, and
+    // `scripts/arbitrate-finding.ts` produces `[]` from `--changed-files ""`.
+    name: "an empty changed-file list counts as a reading",
+    from: "    (options.changedFiles !== undefined && options.changedFiles.length > 0);",
+    to: "    options.changedFiles !== undefined;",
+    reddens: ["RT-14"],
+  },
+  {
+    // And the same confusion at the `ownFiles` pick: an empty explicit list
+    // shadowing the corpus row loses the diff GitHub already reported.
+    name: "an empty explicit list shadows the corpus row",
+    from: `    options.changedFiles !== undefined && options.changedFiles.length > 0
+      ? options.changedFiles
+      : ownRow?.files;`,
+    to: "    options.changedFiles ?? ownRow?.files;",
+    reddens: ["RT-15"],
   },
   {
     // The other direction, and the one a careless fix reaches for: demanding
     // the NUMBER rather than a reading. A caller holding the diff has better
     // evidence than a caller holding an integer.
     name: "a changed-file list is not accepted in place of the PR number",
-    from: "if (options.thisPr === undefined && options.changedFiles === undefined) {",
+    from: "  if (!hasReading) {",
     to: "if (options.thisPr === undefined) {",
     reddens: ["RT-12", "RT-13"],
   },

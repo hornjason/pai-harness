@@ -222,7 +222,20 @@ export function routePaths(citedPaths: readonly string[], options: RouteOptions)
   // Either input answers, and they answer different questions: a number lets
   // the corpus supply the diff, a diff needs no number. Requiring the number
   // specifically would refuse a caller that has the better evidence.
-  if (options.thisPr === undefined && options.changedFiles === undefined) {
+  // An EMPTY changed-files list is not a reading either, and that is not a
+  // theoretical door: `scripts/arbitrate-finding.ts` builds the list with
+  // `.split(",").filter(Boolean)`, so `--changed-files ""` arrives as `[]`
+  // rather than as absent. Found by the review on this pull request, which
+  // is the same fail-open one layer in — `[]` standing for "I looked and
+  // there was nothing" when nobody looked.
+  //
+  // With `thisPr` present an empty list is fine: the corpus supplies the
+  // diff and the self-exclusion in step 6 has a number to work with. It is
+  // only the combination that cannot answer.
+  const hasReading =
+    options.thisPr !== undefined ||
+    (options.changedFiles !== undefined && options.changedFiles.length > 0);
+  if (!hasReading) {
     return {
       ...base,
       route: "UNMEASURED",
@@ -238,7 +251,15 @@ export function routePaths(citedPaths: readonly string[], options: RouteOptions)
     corpus.status === "measured" && options.thisPr !== undefined
       ? corpus.prs.find(p => p.number === options.thisPr)
       : undefined;
-  const ownFiles = options.changedFiles ?? ownRow?.files;
+  // `??` would let an EMPTY explicit list shadow the corpus row, which is
+  // the same `[]`-is-not-a-reading confusion one layer in: a caller passing
+  // `--changed-files ""` alongside a real `--this-pr` would lose the diff
+  // GitHub already reported for that pull request. A list is preferred over
+  // the corpus only when it actually says something.
+  const ownFiles =
+    options.changedFiles !== undefined && options.changedFiles.length > 0
+      ? options.changedFiles
+      : ownRow?.files;
   if (ownFiles !== undefined) {
     const own = pathsIn(unique, ownFiles);
     if (own.length > 0) {
