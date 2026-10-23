@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { ProjectScan } from "./types";
 import { OWNED_FILES, ownedFilesTable } from "../scaffold/owned-files";
+import { commandRoutingTable } from "../cli-commands";
 import { isHarnessItself } from "../harness-identity";
 import { typecheckDecision } from "../typescript-project";
 import { localCalendarDay } from "../local-calendar-day";
@@ -407,6 +408,34 @@ ${createRows.join("\n")}
 `,
     });
   }
+
+  // #1309. The three rules above route DOCUMENTS, and `key-files.md` routes
+  // FILES. Nothing routed the project's CLI, so a command reached an agent
+  // only if somebody had hand-written a row for it in AGENTS.md's Commands
+  // table — four of ten, and the generated table reads as complete, so
+  // nothing signals that six more exist. Seven of the ten were named in no
+  // file an agent loads at launch.
+  //
+  // Un-scoped on purpose: a `paths:` key here would move the rule out of the
+  // launch surface, and the whole defect is a command nobody loads. It is the
+  // cheapest thing to reach for when the byte budget complains, so
+  // `test/commands-routed.test.ts` refuses it by name.
+  const cliPrefix = isHarnessItself(scan.root) ? "bun bin/rungate.ts" : "bunx rungate";
+  rules.push({
+    filename: "commands-routing.md",
+    content: `---
+description: Every command the rungate CLI exposes in this project, generated from its command registry
+---
+
+## Command Routing
+
+Generated from the CLI's own command registry, so it cannot list a subset.
+Run one as \`${cliPrefix} <command>\`.
+\`${cliPrefix} --help\` prints each command's own arguments.
+
+${commandRoutingTable()}
+`,
+  });
 
   rules.push({
     filename: "harness-managed.md",
