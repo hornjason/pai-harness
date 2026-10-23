@@ -62,7 +62,7 @@ import {
   advisoryNotice,
   advisoryReported,
   aiReviewExitCode,
-  findingKey,
+  advisoryKey,
   main,
   readAiReviewFindings,
 } from "../lib/scaffold/ai-review-findings";
@@ -349,22 +349,22 @@ describe("AD-7: the finding key is stable where the finding is", () => {
     const a = finding(ADVISORY[0], { line: 90 });
     const b = finding(ADVISORY[0], { line: 97 });
     const rerated = finding(BLOCKING[0], { line: 90 });
-    expect(findingKey(a)).toBe(findingKey(b));
-    expect(findingKey(a)).toBe(findingKey(rerated));
+    expect(advisoryKey(a)).toBe(advisoryKey(b));
+    expect(advisoryKey(a)).toBe(advisoryKey(rerated));
   });
 
   test("AD-7: a different file or a different summary is a different key", () => {
     const base = finding(ADVISORY[0]);
-    expect(findingKey(finding(ADVISORY[0], { file: "lib/other.ts" }))).not.toBe(findingKey(base));
-    expect(findingKey(finding(ADVISORY[0], { summary: "something else" }))).not.toBe(
-      findingKey(base),
+    expect(advisoryKey(finding(ADVISORY[0], { file: "lib/other.ts" }))).not.toBe(advisoryKey(base));
+    expect(advisoryKey(finding(ADVISORY[0], { summary: "something else" }))).not.toBe(
+      advisoryKey(base),
     );
   });
 
   test("AD-7: the key is in the annotation, so an answer has something to cite", () => {
     const f = finding(ADVISORY[0], { file: "lib/keyed.ts", summary: "keyed finding" });
     const notice = advisoryNotice(readAiReviewFindings(payload([f], "PASS")));
-    expect(notice).toContain(findingKey(f));
+    expect(notice).toContain(advisoryKey(f));
   });
 });
 
