@@ -25,7 +25,7 @@
  * only answers cannot see the absence of one.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -55,6 +55,33 @@ import {
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step";
 import { readAiReviewFindings } from "../lib/scaffold/ai-review-findings";
+import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
+
+/**
+ * This file inherited bun's 5,000ms default and `AC-L10` sat on it (#1402).
+ *
+ * Measured on a detached worktree at clean `origin/main` — nothing of this
+ * branch in it — `AC-L10` ran 5003.72ms, 5012.13ms and 7118.04ms, red in 2 of
+ * 3. CI never caught it across eight consecutive green runs because the
+ * runner is faster, which is the risk rather than the reassurance: the first
+ * slower runner reddens whichever pull request happens to be open, and that
+ * author pays to discover it was never theirs.
+ *
+ * The cost is inherent, not accidental. `AC-L10` spawns the persist step once
+ * per shape in `SHAPE_CORPUS`, so it is linear in the corpus and grows every
+ * time somebody adds a shape — which they should.
+ *
+ * A hardcoded per-test budget was the other candidate and is rejected here: a
+ * literal is a guess about the slowest machine that will ever run this, and
+ * the thing that varies IS the machine. `gitFixtureTestTimeout()` calibrates
+ * against the box running the suite, which is the mechanism this repository
+ * already uses for exactly this on seven sibling suites. It also makes
+ * `declaresFileBudget` report this file as DECLARED, so the growth rule in
+ * `lib/junit-checks.ts` stops counting it among the files that inherit a
+ * default nobody chose — "decided" and "nobody looked" become tellable apart,
+ * which is the whole distinction `perTestTimeoutDeclarations` exists to draw.
+ */
+setDefaultTimeout(gitFixtureTestTimeout());
 
 const REPO = join(import.meta.dir, "..");
 const WORKFLOW = join(REPO, ".github", "workflows", "ai-review.yml");
