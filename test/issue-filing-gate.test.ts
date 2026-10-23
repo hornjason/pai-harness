@@ -29,6 +29,7 @@ import { listOpenIssues } from "../lib/github";
 import {
   adjudicateFiling,
   filingAttempts,
+  readBodyFile,
   FILING_OVERRIDE_LABEL,
   type FilingLedgerRow,
 } from "../lib/issue-filing-gate";
@@ -54,11 +55,20 @@ const OPEN_ISSUES = [
   },
 ];
 
-/** Same symptom as #900, different prose. Must be refused as a DUPLICATE. */
+/**
+ * Same symptom as #900, different prose. Must be refused as a DUPLICATE.
+ *
+ * The body is named separately so the inline and `--body-file` rows (#1300)
+ * are driven by the SAME bytes. Two copies that drifted would make the pair
+ * prove nothing: the whole claim is that where the body is stored does not
+ * change the verdict.
+ */
+const DUPLICATE_BODY =
+  "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234.";
+
 const DUPLICATE_FILING =
   'gh issue create --title "retryBudget gives up early on long command sweeps" ' +
-  '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts ' +
-  'completes 144 of 234."';
+  `--body ${JSON.stringify(DUPLICATE_BODY)}`;
 
 /**
  * A style/diagnostics finding. Refused before the tracker is ever read, which
@@ -186,7 +196,17 @@ describe("#1261 the parts the decision is built from", () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0].title).toBe("retryBudget gives up early on long command sweeps");
     expect(attempts[0].body).toContain("lib/command-retry.ts");
-    expect(attempts[0].bodyFromFile).toBe(false);
+    expect(attempts[0].bodyFile).toBeNull();
+  });
+
+  test("FG-27: a repeated --body-file takes the LAST, as `gh` does", () => {
+    // `filingAttempts` claims `gh` semantics in a comment; this is the only
+    // thing that makes that claim checkable. Reading the first would
+    // adjudicate a body the filing is not going to use.
+    const attempts = filingAttempts(
+      'gh issue create --title t --body-file /first.md --body-file /second.md',
+    );
+    expect(attempts[0].bodyFile).toBe("/second.md");
   });
 
   test("FG-2: a command that creates nothing yields no attempt", () => {
@@ -261,7 +281,7 @@ describe("#1261 the parts the decision is built from", () => {
       title: "",
       body: "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234.",
       labels: [],
-      bodyFromFile: false,
+      bodyFile: null,
     };
     const v = await adjudicateFiling(attempt, async () =>
       OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body })),
@@ -271,13 +291,63 @@ describe("#1261 the parts the decision is built from", () => {
     expect(v.duplicateOf).toEqual(["900"]);
   });
 
-  test("FG-18: a body-file filing is UNMEASURED, and says that rather than guessing", async () => {
-    const v = await adjudicateFiling(
-      { title: "retryBudget misbehaves", body: "", labels: [], bodyFromFile: true },
-      async () => [],
-    );
+  const fromFile = (path: string) => ({
+    title: "retryBudget misbehaves",
+    body: "",
+    labels: [] as string[],
+    bodyFile: path,
+  });
+  const tracker = async () =>
+    OPEN_ISSUES.map(i => ({ id: String(i.number), title: i.title, body: i.body }));
+
+  test("FG-18: a body-file that cannot be read is UNMEASURED, and says which file", async () => {
+    // The arm #1300 narrowed, not removed. A reader returning `null` is the
+    // only thing that reaches it now.
+    const v = await adjudicateFiling(fromFile("/nope/missing.md"), tracker, () => null);
     expect(v.outcome).toBe("UNMEASURED");
-    expect(v.reason).toContain("in a file");
+    expect(v.refusal).toBe("UNMEASURED");
+    // A reason naming the file, because the old one ("the body is in a file")
+    // was true of readable files too and told the reader nothing to act on.
+    expect(v.reason).toContain("/nope/missing.md");
+  });
+
+  test("FG-24: a body-file IS read, and a duplicate in it is refused", async () => {
+    const v = await adjudicateFiling(
+      fromFile("/planted/body.md"),
+      tracker,
+      p => (p === "/planted/body.md" ? DUPLICATE_BODY : null),
+    );
+    expect(v.outcome).toBe("REFUSE");
+    expect(v.refusal).toBe("DUPLICATE");
+    expect(v.duplicateOf).toEqual(["900"]);
+  });
+
+  test("FG-25 CONTROL: a body-file with a NOVEL body is allowed", async () => {
+    // Pins FG-24 to the bytes rather than to the flag. Same path, same
+    // reader, different content — the only axis that moved.
+    const v = await adjudicateFiling(
+      fromFile("/planted/body.md"),
+      tracker,
+      () => "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.",
+    );
+    expect(v.outcome).toBe("ALLOW");
+  });
+
+  test("FG-26: readBodyFile refuses stdin, an absent path and an oversized file", () => {
+    // The real reader, since every row above plants one. Its three `null`
+    // arms are the whole of what makes FG-18 reachable in production.
+    const at = join(scratch, "fg26-body.md");
+    writeFileSync(at, "x".repeat(64), "utf-8");
+    expect(readBodyFile("-")).toBeNull();
+    expect(readBodyFile(join(scratch, "fg26-absent.md"))).toBeNull();
+    expect(readBodyFile(at, 8)).toBeNull();
+    // The control: the same file, under a limit that admits it. Without this
+    // every row above is consistent with a reader that returns null always.
+    expect(readBodyFile(at, 1024)).toBe("x".repeat(64));
+    // An EMPTY file is read, not refused — it lands on "names no symbol".
+    const empty = join(scratch, "fg26-empty.md");
+    writeFileSync(empty, "", "utf-8");
+    expect(readBodyFile(empty)).toBe("");
   });
 
   test("FG-16: listOpenIssues drops pull requests, which the REST API returns as issues", async () => {
@@ -350,6 +420,53 @@ describe("#1261 the hook reaches the adjudication — read on stdout, not on the
 
   test("FG-12: an unreadable tracker allows the filing and says UNMEASURED out loud", () => {
     const r = runHook(HOOK, NOVEL_FILING, { RUNGATE_OPEN_FINDINGS: join(scratch, "absent.json") });
+    expect(r.blocked).toBe(false);
+    expect(r.payload?.systemMessage ?? "").toContain("UNMEASURED");
+    expect(ledgerRows().at(-1)!.refusal).toBe("UNMEASURED");
+  });
+
+  /**
+   * #1300, end to end, in the real process that does the reading.
+   *
+   * The unit rows below plant a reader; this one plants a FILE and lets the
+   * hook open it. Both are needed: a reader injected in-process proves the
+   * decision, and only this proves the wiring passes a path the spawned hook
+   * can actually resolve.
+   *
+   * Measured before the fix: this row was ALLOWED with `UNMEASURED`, on a
+   * body byte-identical to FG-6's, which blocks. That pair is the finding.
+   */
+  test("FG-21: a duplicate arriving by --body-file is blocked, exactly as inline", () => {
+    const at = join(scratch, "fg21-body.md");
+    // The SAME bytes FG-6 passes inline, so the pair differs in one axis.
+    writeFileSync(at, DUPLICATE_BODY, "utf-8");
+    const r = runHook(
+      HOOK,
+      `gh issue create --title "retryBudget gives up early on long command sweeps" --body-file ${at}`,
+    );
+    expect(r.blocked, `hook said: ${JSON.stringify(r.payload)}`).toBe(true);
+    expect(r.reason).toContain("DUPLICATE");
+    expect(r.reason).toContain("#900");
+  });
+
+  /**
+   * The control FG-21 needs, and it is the one that stops this becoming a
+   * gate on "used --body-file". Same flag, same mechanism, different bytes.
+   */
+  test("FG-22 CONTROL: a NOVEL finding arriving by --body-file is allowed", () => {
+    const at = join(scratch, "fg22-body.md");
+    writeFileSync(at, "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.", "utf-8");
+    const r = runHook(HOOK, `gh issue create --title "pullRequestCache is never invalidated" --body-file ${at}`);
+    expect(r.blocked).toBe(false);
+  });
+
+  test("FG-23: a --body-file that does not exist is UNMEASURED, and still files", () => {
+    // The arm narrows; it does not disappear. A finding nobody could read is
+    // not a finding that was rejected.
+    const r = runHook(
+      HOOK,
+      `gh issue create --title "retryBudget gives up early" --body-file ${join(scratch, "absent-body.md")}`,
+    );
     expect(r.blocked).toBe(false);
     expect(r.payload?.systemMessage ?? "").toContain("UNMEASURED");
     expect(ledgerRows().at(-1)!.refusal).toBe("UNMEASURED");
