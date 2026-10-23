@@ -34,8 +34,11 @@ import {
   report,
   shouldReopen,
   toClosedIssue,
+  CROSS_REFERENCE_FIELD,
   EXEMPT_LABEL,
   FINDING_LABEL,
+  LABEL_FOR_KIND,
+  LINK_LOST_LABEL,
   type ClosedIssue,
 } from "../lib/issue-closure-audit";
 import { addLabels, createGitHubClient, parseOwnerRepo, updateIssue } from "../lib/github";
@@ -61,6 +64,17 @@ function refuse(message: string): never {
  * when GitHub has nothing to attribute the close to — which is every
  * hand-typed close, whatever tool typed it. REST's `state_reason` cannot
  * distinguish those, and one timeline call per issue is a request per issue.
+ *
+ * The cross-reference list is a SECOND aliased selection on the same
+ * connection, not a widened `itemTypes` on the first (#1279). Widening would
+ * put the `ClosedEvent` behind `last: N` on a mixed timeline, so a chatty
+ * issue would lose its closer and read as a hand-typed close — the reading
+ * that classifies findings would have started manufacturing them.
+ *
+ * The alias is `CROSS_REFERENCE_FIELD` rather than a literal, because
+ * `toClosedIssue` reads that same constant. A producer and a consumer naming
+ * different fields is #530's shape: no error anywhere, because an absent key
+ * and an empty list are the same reading.
  */
 const QUERY = `
 query($owner: String!, $name: String!, $limit: Int!) {
@@ -72,6 +86,13 @@ query($owner: String!, $name: String!, $limit: Int!) {
         stateReason
         closedAt
         labels(first: 30) { nodes { name } }
+        ${CROSS_REFERENCE_FIELD}: timelineItems(last: 100, itemTypes: [CROSS_REFERENCED_EVENT]) {
+          nodes {
+            ... on CrossReferencedEvent {
+              source { ... on PullRequest { number merged } }
+            }
+          }
+        }
         timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) {
           nodes {
             ... on ClosedEvent {
@@ -137,25 +158,34 @@ async function main(): Promise<void> {
     const reopenEnabled = flag("reopen");
     for (const finding of findings) {
       const n = finding.issue.number;
-      await addLabels(client, repo!, n, [FINDING_LABEL]);
+      // The label is looked up from the kind the decision already made. It is
+      // never re-derived from `mergedReferences` here — see `classifyClosure`.
+      const label = LABEL_FOR_KIND[finding.kind];
+      await addLabels(client, repo!, n, [label]);
       if (shouldReopen(finding, reopenEnabled)) {
         await updateIssue(client, repo!, n, { state: "open" });
-        console.log(`#${n}: labelled and REOPENED (carries a ship-priority label)`);
+        console.log(`#${n}: labelled ${label} and REOPENED (carries a ship-priority label)`);
       } else {
-        console.log(`#${n}: labelled ${FINDING_LABEL}`);
+        console.log(`#${n}: labelled ${label}`);
       }
     }
   } else {
     console.log(
-      `\n(read-only: re-run with --apply to label them ${FINDING_LABEL}; ` +
-        `add ${EXEMPT_LABEL} to any that were closed deliberately)`,
+      `\n(read-only: re-run with --apply to label them ${FINDING_LABEL} / ` +
+        `${LINK_LOST_LABEL}; add ${EXEMPT_LABEL} to any that were closed deliberately)`,
     );
   }
 
   // Non-zero so the scheduled job is visibly red rather than a green run
   // nobody opens. A control whose findings are only in the log is a control
   // that reports itself to nobody.
-  refuse(`${findings.length} issue(s) closed without a ship record`);
+  // The refusal carries the split too. A single total is the reading #1279
+  // is about: it cannot tell a lost attribution from work nobody can find.
+  const noTrace = findings.filter(f => f.kind === "NO_TRACE").length;
+  refuse(
+    `${findings.length} issue(s) closed without a ship record ` +
+      `(${noTrace} with no merged pull request referencing them at all)`,
+  );
 }
 
 await main();
