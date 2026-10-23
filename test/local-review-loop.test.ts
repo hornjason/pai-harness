@@ -1,6 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -142,11 +153,12 @@ function driveLoop(
   which: string,
   reviewer: (turn: number) => unknown[],
   opts: { history?: string; seed?: string } = {},
-): { turns: Turn[]; history: string } {
+): { turns: Turn[]; history: string; reasons: string[] } {
   const dir = mkdtempSync(join(SANDBOX, "run-"));
   const history = opts.history ?? join(dir, "history.json");
   if (opts.seed !== undefined) writeFileSync(history, opts.seed);
 
+  const reasons: string[] = [];
   const turns: Turn[] = [];
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
     const findings = join(dir, `round-${turn}.json`);
@@ -157,15 +169,19 @@ function driveLoop(
       { encoding: "utf-8" },
     );
     let decision = "(no decision printed)";
+    let reason = "(no reading printed)";
     try {
-      decision = JSON.parse(r.stdout ?? "").decision ?? decision;
+      const read = JSON.parse(r.stdout ?? "");
+      decision = read.decision ?? decision;
+      reason = read.reason ?? reason;
     } catch {
-      /* left as the sentinel: a turn that printed nothing is a turn that failed to run */
+      /* left as the sentinels: a turn that printed nothing is a turn that failed to run */
     }
     turns.push({ turn, decision, exit: r.status ?? -1 });
+    reasons.push(reason);
     if (r.status !== 0) break;
   }
-  return { turns, history };
+  return { turns, history, reasons };
 }
 
 const last = (t: Turn[]) => t[t.length - 1];
@@ -267,6 +283,86 @@ describe("the history is durable, and an unreadable one is not an empty one (#14
       expect(turns[0].exit).not.toBe(0);
     });
   }
+
+  /**
+   * AC-LL7 — a history that EXISTS and cannot be read.
+   *
+   * Reported by the `ai-review` on this pull request's first push, against
+   * `recordThenRead`, and it was right: the read collapsed every failure into
+   * `null`, `null` is what an ABSENT history looks like, and the run then
+   * recorded round 1 and OVERWROTE the file it had failed to read. The guard
+   * that was supposed to catch it tested `typeof existing !== "string"` on a
+   * value that could only ever be a string or null, so it was unreachable.
+   *
+   * Every other corrupt-history row in this file hands the reader bytes it
+   * can parse an opinion out of. This one is the case where the read itself
+   * fails, which is a different code path and the one nothing covered.
+   */
+  test("AC-LL7: a history that exists and cannot be read refuses, and survives", () => {
+    const dir = mkdtempSync(join(SANDBOX, "unreadable-"));
+    const history = join(dir, "history.json");
+    const seed = '[{"at":"a","findings":[]}]';
+    writeFileSync(history, seed);
+    // WRITE-ONLY, not 0o000, and the difference is the whole case. At 0o000
+    // the WRITE fails too, so the run refuses on the write-side guard and the
+    // file survives for a reason that has nothing to do with the read — the
+    // case passes against the defective code, witnessing the wrong mechanism
+    // (`.claude/rules/checks-must-be-able-to-fail.md`, sixth shape). It was
+    // written that way first and did exactly that. At 0o222 the read fails
+    // and the write succeeds, which is the only configuration in which the
+    // read-side refusal is the thing being observed.
+    chmodSync(history, 0o222);
+    try {
+      // Both halves of the precondition are ESTABLISHED, not assumed. Running
+      // as root — or on a filesystem that ignores the mode — breaks one or
+      // both, and the case would then pass having exercised the ordinary
+      // path. A vacuous green, so it fails loudly rather than skipping.
+      let readable = true;
+      try {
+        readFileSync(history, "utf-8");
+      } catch {
+        readable = false;
+      }
+      expect(
+        readable,
+        "the history is still readable at mode 0222, so this case cannot reach the " +
+          "unreadable-read path and must not be counted as covering it",
+      ).toBe(false);
+      expect(
+        (() => {
+          try {
+            // `accessSync`, not a trial write: every write flag either needs
+            // read permission too (`r+`) or destroys the seed (`w`, `a`), and
+            // a control that damages the fixture it is checking is not one.
+            accessSync(history, constants.W_OK);
+            return true;
+          } catch {
+            return false;
+          }
+        })(),
+        "the history is not writable at mode 0222, so a refusal here could be the " +
+          "write-side guard rather than the read-side one",
+      ).toBe(true);
+
+      const { turns, reasons } = driveLoop("real", alwaysNovel, { history });
+      expect(turns).toHaveLength(1);
+      expect(turns[0].decision).toBe(LOCAL_REVIEW_UNMEASURED);
+      expect(turns[0].exit).not.toBe(0);
+      expect(
+        reasons[0],
+        "the refusal does not name the READ, so it came from the write-side guard and this " +
+          "case is not observing the mechanism it is about",
+      ).toMatch(/could not be read/);
+
+      chmodSync(history, 0o600);
+      expect(
+        readFileSync(history, "utf-8"),
+        "the run overwrote a history it could not read, which discards every round it held",
+      ).toBe(seed);
+    } finally {
+      chmodSync(history, 0o600);
+    }
+  });
 
   test("AC-LL6: a refused round is not appended — a history nobody could read is not overwritten", () => {
     const dir = mkdtempSync(join(SANDBOX, "keep-"));

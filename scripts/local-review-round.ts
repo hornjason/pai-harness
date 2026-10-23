@@ -41,7 +41,7 @@
  *      printed the decision demonstrably reached the mechanism.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 
 import {
@@ -142,11 +142,9 @@ function recordThenRead(
     };
   }
 
-  const existing = existsSync(historyPath) ? safeRead(historyPath) : null;
-  if (existing !== null && typeof existing !== "string") {
-    return { refusal: `the review history at ${historyPath} exists and could not be read` };
-  }
-  const appended = appendRound(parseHistory(existing), findings, new Date().toISOString());
+  const existing = readHistoryBytes(historyPath);
+  if ("refusal" in existing) return existing;
+  const appended = appendRound(parseHistory(existing.raw), findings, new Date().toISOString());
   if ("refusal" in appended) return appended;
 
   try {
@@ -158,11 +156,37 @@ function recordThenRead(
   return { rounds: appended.rounds };
 }
 
-function safeRead(path: string): string | null {
+/**
+ * The history's bytes, `raw: null` for a file that is NOT THERE, and a
+ * refusal for one that is there and could not be read.
+ *
+ * **Those are the only two things a failed read is allowed to collapse to,
+ * and collapsing them was a high finding on this pull request's first push.**
+ * The previous reading returned `null` for every failure; `null` is what an
+ * absent history looks like, so a permission-denied read became round 1 and
+ * the next line OVERWROTE the file it had just failed to open. Driven as a
+ * loop that is not a quiet data loss — it is the unbounded loop itself, every
+ * turn re-reading as the first: the regression case ran 12 turns before its
+ * backstop, against 1 now.
+ *
+ * `ENOENT` and nothing else is absence, and it is read from the error rather
+ * than from a prior `existsSync`. That removes the window between the two
+ * calls, and it is the narrower reading: an `EACCES`, an `EISDIR` or an `EIO`
+ * are all "there is something here I cannot read", which is the fact this
+ * distinction exists to keep.
+ */
+function readHistoryBytes(path: string): { raw: string | null } | { refusal: string } {
   try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    return null;
+    return { raw: readFileSync(path, "utf-8") };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return { raw: null };
+    return {
+      refusal:
+        `the review history at ${path} exists and could not be read (${firstLine(e)}) — ` +
+        `how many rounds this loop has already spent is unknown, and it is not being read ` +
+        `as round 1: that would restart the count on every turn, which is a cap that can ` +
+        `never be reached`,
+    };
   }
 }
 

@@ -385,7 +385,16 @@ afterAll(() => {
 function run(script: string, rounds: unknown, extra: string[] = []) {
   const file = join(SANDBOX, `rounds-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(file, JSON.stringify(rounds));
-  const r = spawnSync("bun", [script, "--rounds", file, ...extra], { encoding: "utf-8" });
+  // `env` is explicit because this file writes `RUNGATE_LOCAL_REVIEW_HISTORY`
+  // and Bun does not pass a late `process.env` write to a child spawned
+  // without one (#1096). These cases use `--rounds` and never resolve a
+  // history path, so today the child does not read it — which is exactly the
+  // reasoning that stops being true the first time someone adds a `--pr`
+  // case here, so the env is passed rather than the exemption claimed.
+  const r = spawnSync("bun", [script, "--rounds", file, ...extra], {
+    encoding: "utf-8",
+    env: { ...process.env },
+  });
   rmSync(file, { force: true });
   let decision: string | null = null;
   try {
@@ -444,6 +453,7 @@ describe("scripts/local-review-round.ts", () => {
   test("AC-LR13: a missing --rounds file is UNMEASURED and refuses", () => {
     const r = spawnSync("bun", [REAL, "--rounds", join(SANDBOX, "does-not-exist.json")], {
       encoding: "utf-8",
+      env: { ...process.env },
     });
     expect(r.status).not.toBe(0);
     expect(JSON.parse(r.stdout ?? "").decision).toBe(LOCAL_REVIEW_UNMEASURED);
