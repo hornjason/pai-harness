@@ -2478,6 +2478,19 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
   const RUN4 = `${process.env.HOME}/.rungate/run`;
   const CLAUDE = `${process.env.HOME}/.claude/agents`;
   const SHOUTED = `${(process.env.HOME ?? "").toUpperCase()}/.rungate/run`;
+  // Whether the SHOUTED spelling names the SAME FILE is the filesystem's
+  // answer, not ours, so the row asks the filesystem. `existsSync` on the
+  // uppercase HOME is deliberately NOT the call the guard makes — the guard
+  // reaches `realpathSync` through `resolveThroughLinks`, and a probe using
+  // the guard's own call would agree with it by construction.
+  //
+  // This row shipped asserting `blocked: true` unconditionally and CI went
+  // red: on the Linux runner `/HOME/RUNNER/.rungate/run` does not exist and
+  // is not the artifact, so allowing it is correct. The expectation now
+  // tracks the volume, which makes the row a differential detector in both
+  // directions — a blind `.toLowerCase()` fold reddens it on Linux, and
+  // losing the resolution step reddens it on macOS.
+  const CASE_FOLDS = process.env.HOME ? existsSync(process.env.HOME.toUpperCase()) : false;
   // Built rather than written: `${HOME}` in a template literal interpolates,
   // which would substitute the fixture away before the guard ever saw it.
   const DOLLAR_HOME = "$" + "{HOME}";
@@ -2523,9 +2536,11 @@ describe("#1371 WITNESS: the exemption granted against a value the write never u
       // folding; a fold mutant could not witness it, because
       // `resolveThroughLinks` climbs to `/USERS` and `realpathSync` hands
       // back `/Users`. The fold is not shipped and `placeLiteral` says why.
-      label: "L6 the same tree SHOUTED, which the volume reads as one file",
+      // On a case-SENSITIVE volume this is a different path and allowing it
+      // is the right answer — see CASE_FOLDS above.
+      label: "L6 the same tree SHOUTED, decided by what the VOLUME calls one file",
       cmd: `python3 -I -c "import shutil; shutil.copy('/tmp/fix/${STATE}', '${SHOUTED}')"`,
-      blocked: true,
+      blocked: CASE_FOLDS,
     },
     {
       label: "P1 an expansion the reader cannot perform is UNPLACEABLE, not elsewhere",
@@ -2799,7 +2814,10 @@ function __standsAloneAfter(body: string, start: number, end: number): boolean {
           "L3 the same hole reached through a heredoc",
           "L4 the tilde spelling, which the absolute-path precondition skipped",
           "L5 the ${HOME} spelling, same skip",
-          "L6 the same tree SHOUTED, which the volume reads as one file",
+          // Only a volume that folds case can have this row move: where the
+          // SHOUTED path is a different file, the live-tree reading is not
+          // what decides it and removing that reading changes nothing.
+          ...(CASE_FOLDS ? ["L6 the same tree SHOUTED, decided by what the VOLUME calls one file"] : []),
         ].sort(),
       );
       expect(moved(decide.noPlace)).toEqual(

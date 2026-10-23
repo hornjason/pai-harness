@@ -1500,7 +1500,7 @@ const IN_LIVE_TREE: Placement = 'protected';
 const CANNOT_PLACE: Placement = 'unplaceable';
 
 /**
- * ## The case-sensitivity differential does not exist here, measured (#1371)
+ * ## The case comparison is the VOLUME's to make, and it makes it (#1371)
  *
  * The review asked for both sides of the live-tree comparison to be
  * case-folded, as `names()` already is, because `/Users/JHORN/…` and
@@ -1518,6 +1518,15 @@ const CANNOT_PLACE: Placement = 'unplaceable';
  * `/Users/JHORN/x` really is a different file, which the fold would report
  * as live. `names()` folds for a different situation — it matches a
  * basename inside a command string where nothing resolves anything.
+ *
+ * CI proved both halves of that, and corrected the heading this note used
+ * to carry. It said the differential "does not exist here", measured on
+ * macOS — and the SHOUTED row went red on the Linux runner, where
+ * `/HOME/RUNNER/.rungate/run` is a path that does not exist and is not the
+ * artifact. The guard was right on both volumes; the claim was macOS's,
+ * read as universal. The row now probes the volume and asserts the verdict
+ * tracks it in BOTH directions, so a blind `.toLowerCase()` fold reddens it
+ * on Linux and dropping the resolution reddens it on macOS.
  *
  * #1211 / #1358 is the same QUESTION about `WorkflowStateGuard` and may
  * well have a different answer, because that matcher has no resolution step
