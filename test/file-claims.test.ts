@@ -537,6 +537,70 @@ describe("#1413: an owner this worktree cannot resolve is UNMEASURED, never free
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * A ref that does not resolve is not a ref with no registry on it.
+   *
+   * Raised as HIGH by the AI review on PR #1436 — the fourth finding on that
+   * pull request and the fourth in the fail-open direction. `readFromRemote`
+   * classified `git show`'s failure by its MESSAGE, and treated `unknown
+   * revision` and `invalid object name` as "the path is not on that ref".
+   * Those two mean the REF did not resolve. Measured before the fix:
+   *
+   *     $ claim-files --check lib/file-claims.ts --ref origin/no-such-ref
+   *     free: there is no registry at specs/file-claims.json … yet
+   *     exit=0
+   *
+   * So a typo in `--ref`, or an `origin/main` this worktree had never
+   * fetched, reported every path free. The ref is now resolved on its own,
+   * which also takes the question off git's wording: what remains to
+   * classify is only about the path.
+   */
+  const refCheck = (dir: string, ref: string) =>
+    spawnSync(
+      "bun",
+      [join(REPO, "scripts", "claim-files.ts"), "--project", dir, "--ref", ref, "--check", "lib/a.ts", "--no-fetch"],
+      { encoding: "utf-8" },
+    );
+
+  test("a ref that does not resolve is UNMEASURED, never an absent registry", () => {
+    const dir = fixture([{ owner: "rg/x", paths: ["lib/a.ts"] }]);
+    try {
+      const r = refCheck(dir, "no-such-ref-at-all");
+      expect(r.stdout, "an unresolvable ref reported the registry absent, which reads free").toContain("UNMEASURED");
+      expect(r.stdout).toContain("does not resolve");
+      expect(r.status, "exited 0 on a ref it could not read").not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: a ref that DOES resolve but carries no registry is free", () => {
+    // The discrimination, and the row that stops the fix from becoming "every
+    // reading refuses". `trunk~` here is the repository's root commit, which
+    // predates `specs/file-claims.json` — a resolvable ref with the file
+    // genuinely absent, which is the one case that may read free.
+    const dir = mkdtempSync(join(tmpdir(), "rg1413-refctl-"));
+    try {
+      const g = (...a: string[]) =>
+        spawnSync("git", ["-C", dir, ...a], {
+          encoding: "utf-8",
+          env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+        });
+      g("init", "-q", "-b", "trunk", ".");
+      g("config", "user.email", "t@t");
+      g("config", "user.name", "t");
+      writeFileSync(join(dir, "README.md"), "before the registry existed\n");
+      g("add", "-A");
+      g("commit", "-q", "-m", "no registry yet");
+
+      const r = refCheck(dir, "trunk");
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain("there is no registry");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("#1413: the registry committed in this repository is readable", () => {

@@ -241,15 +241,53 @@ function refreshRefs(project: string): boolean {
  * that decides how current the reading is.
  */
 export function readFromRemote(project: string, ref: string) {
+  // ## The ref is resolved on its OWN, before anything is read from it
+  //
+  // Raised as HIGH by the AI review on this pull request, the fourth finding
+  // on it and the fourth in the fail-open direction. The classification below
+  // used to treat `unknown revision` and `invalid object name` as "the path
+  // is not on that ref" — but those two mean the REF did not resolve, which
+  // is a different fact entirely. Measured:
+  //
+  //     $ claim-files --check lib/file-claims.ts --ref origin/no-such-ref
+  //     free: there is no registry at specs/file-claims.json … yet
+  //     exit=0
+  //
+  // A typo in `--ref`, or an `origin/main` this worktree has never fetched,
+  // reported every path free. "Nobody has declared anything" and "I could
+  // not find the place declarations live" are opposite answers and one of
+  // them must refuse.
+  //
+  // Asking `rev-parse` separately also takes the question off git's message
+  // wording. What remains to classify is only about the PATH, which is the
+  // one thing a successful ref resolution leaves open.
+  const resolved = spawnSync(
+    "git",
+    ["-C", project, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+    { encoding: "utf-8" },
+  );
+  if (resolved.status !== 0) {
+    return {
+      status: "unreadable" as const,
+      path: FILE_CLAIMS_PATH,
+      claims: [],
+      reason:
+        `the ref ${ref} does not resolve in this tree, so the registry was never read. ` +
+        "This is not an absent registry: a ref nobody fetched and a ref that does not exist " +
+        "both land here, and neither one means nobody has declared anything.",
+    };
+  }
+
   const r = spawnSync("git", ["-C", project, "show", `${ref}:${FILE_CLAIMS_PATH}`], {
     encoding: "utf-8",
   });
-  // A path that does not exist on that ref and a `git show` that could not run
-  // are different facts: the first is an absent registry, the second is a
+  // The ref resolved, so a failure now is about the path. A path that does
+  // not exist on that ref and a `git show` that could not run are still
+  // different facts: the first is an absent registry, the second is a
   // reading nobody took. Only the first may read as "nobody has declared".
   if (r.status !== 0) {
     const why = (r.stderr ?? "").trim().split("\n")[0];
-    if (/does not exist|exists on disk, but not in|unknown revision|invalid object name/i.test(why)) {
+    if (/does not exist|exists on disk, but not in/i.test(why)) {
       return readFileClaims(null);
     }
     return { status: "unreadable" as const, path: FILE_CLAIMS_PATH, claims: [], reason: `git show failed: ${why}` };
