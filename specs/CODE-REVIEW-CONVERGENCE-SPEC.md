@@ -124,7 +124,7 @@ implementation.
 - [ ] CRC-M8: Priority order is stated and enforced: **catching real bugs first, cutting review rounds second.**
 - [ ] CRC-M9: Human-time metrics tracked — approvals per PR (median and p95), human comments, time waiting on a person.
 - [ ] CRC-M10: **Revert and incident rates are the guardrail.** If they rise, human time was moved, not saved.
-- [ ] CRC-M11: Rounds-to-pass is tracked alongside recall.
+- [x] CRC-M11: Rounds-to-pass is tracked alongside recall. (shipped, #1441/#1448)
 
 ### Convergence — the non-convergent review failure
 
@@ -140,6 +140,35 @@ showed **~59%** of what the reviewer kept flagging was code present at its first
 Their result, which is our target: pass-after-one-round 65% → 78%; five-or-more rounds
 8.9% → 1.5%; mean reviews to pass 2.08 → 1.32.
 
+### Where we actually stand, measured
+
+The first reading CRC-M11 was able to take, over the 45 most recent pull
+requests on 2026-10-23 — 44 measured, 1 refused for carrying no ledger:
+
+| | their before | their after | **us** |
+|---|---|---|---|
+| passed after one round | 65% | 78% | **39.4%** |
+| five or more rounds | 8.9% | 1.5% | **20.5%** |
+| mean rounds to pass | 2.08 | 1.32 | **2.64** |
+
+**We are worse than the state they were improving from, on all three.** That
+is the number this spec exists to move, and it is the argument for ranking
+criteria by rounds-to-pass rather than by how interesting they are to build.
+
+Two things the shape of it says, beyond the headline. The tail is the problem
+rather than the median: 20.5% at five rounds or more is over twice their
+starting figure while the mean is only a quarter above it, so a minority of
+pull requests is absorbing the loop. And eleven of the 44 have not passed at
+all, at up to ten rounds spent — excluded from the mean by definition, which
+is why this table is reported beside them rather than alone.
+
+The mean is `2.64` and not `1.32` partly for reasons nothing in the review
+model controls: #1449 is a harness defect that raises a blocking finding on
+**every** pull request editing `.claude/` or `CLAUDE.md`, which in this
+repository is how conventions ship. A false finding is a whole round. Re-take
+this reading after it lands; a baseline measured across a known artefact is a
+baseline that will appear to improve for the wrong reason.
+
 ### What stays human
 
 - [ ] CRC-H1: Direction, taste and scope — whether to build it at all.
@@ -154,14 +183,14 @@ Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
 0 carried a claiming test**. A spec nothing is bound to cannot drift, because
 there is nothing for it to drift from; the number below is what replaces that.
 
-Of the 56: **8 bound**, **8 where a mechanism exists that nothing in this
+Of the 56: **9 bound**, **8 where a mechanism exists that nothing in this
 repository can observe**, **4 that cannot be meaningful in this deployment**,
-**3 blocked on an owner decision**, **2 declared deviations**, **31 not done**.
+**3 blocked on an owner decision**, **2 declared deviations**, **30 not done**.
 
-Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4. The
-audit above was taken the same day, at 0 bound; the three moved by
-engineering, and none of the other four categories changed, which is the
-point of keeping them separate.
+Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
+again after #1448 bound CRC-M11. The audit above was taken the same day, at 0
+bound; the four moved by engineering, and none of the other four categories
+changed, which is the point of keeping them separate.
 
 An unticked box is one of the last five, and they are five different facts.
 Four of them are recorded here because an unticked box nobody can ever tick,
@@ -257,7 +286,7 @@ something in the tree that resembles it and is not it.
 - **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
 - **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
 - **CRC-M10** Nothing tracks revert or incident rates.
-- **CRC-M11** The measurement now exists and **still reports UNMEASURED on this repository**, which is why this stays unticked rather than being ticked on the existence of code. `lib/rounds-to-pass.ts` turns per-pull-request ledgers into the three numbers this spec's target is written in, and `bun evals/ai-review-control/run.ts rounds <prs.json>` prints them beside recall. Run against the last 40 pull requests on 2026-10-23 it measured **1 and refused 39**: every one of those 39 carries a ledger in the legacy bare-array shape, which states nothing about how many rounds it evicted, so its length is a lower bound and not a count. Counting it anyway would understate exactly the long histories the metric exists to find — the same direction as the survivorship bias below, which is why it refuses rather than estimates. **What unblocks it is #1405's eviction count reaching the ledgers** (PR #1420), not more work here. Two further things the module holds that a one-line average would not: the mean is over pull requests that PASSED and is reported beside the count and round-spend of those that have not, because a process that gets worse loses its slow pull requests from the numerator and can show a FALLING mean; and the five-or-more rate is computed over the whole measured population for the same reason, since a tail measured on survivors has had its tail cut off.
+- **CRC-M11** Ticked, and it reports a number. `lib/rounds-to-pass.ts` turns per-pull-request ledgers into the three figures this spec's target is written in, and `bun evals/ai-review-control/run.ts rounds <prs.json>` prints them beside recall. Two further things it holds that a one-line average would not: the mean is over pull requests that PASSED and is reported beside the count and round-spend of those that have not, because a process that gets worse loses its slow pull requests from the numerator and can show a FALLING mean; and the five-or-more rate is computed over the whole measured population for the same reason, since a tail measured on survivors has had its tail cut off. It went from `measured 1, unmeasured 39` to `measured 44, unmeasured 1` in #1448, which taught the reader a derivation its own writer already made — a legacy ledger shorter than the cap it was written under was never cut. The one remaining refusal is a pull request carrying no ledger at all, which is the correct answer.
 - **CRC-N4** Seven exports of `lib/ai-review-rounds.ts` — `readLedger`, `priorFindings`, `carryForward`, `suppressRepeats`, `noRepeatsInstruction`, `atCapInstruction`, `reviewScopeForRound` — have **zero production callers between them**; every caller is a test. The prompt states the opposite in so many words: nothing carries its findings forward. **This is structural, not an oversight, and that changes what the work is.** The only non-test file naming the module is `lib/scaffold/ai-review-step.ts`, where every mention is prose in a comment — it cannot import, because the step is deliberately import-free so that the suites copying it into a temp directory can build mutants that load. So the first production caller cannot arrive as an import; it has to arrive the way the adjudicator did, as a CLI command the generated bash invokes under a pinned version. **The data path is already complete** — #1319 shipped the ledger writer and #1351 the reader and the per-finding text anchor — so what is missing is the invocation and nothing else.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
 - **CRC-H2** Risky code requires a human. There is no `CODEOWNERS` and no required approval, so nothing does.
