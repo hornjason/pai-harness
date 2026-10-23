@@ -102,21 +102,27 @@ async function main() {
   // inside one phase would leave the intake rate untouched.
   const gate = await filingGate(cmd, { projectRoot: process.cwd() });
   const unrecorded = gate.rows.filter(row => !recordAdjudication(row)).length;
+  // A refusal says the override "is recorded beside the refusal it waived".
+  // When the write failed that sentence is false, and a security control
+  // asserting a guarantee it is not providing is worse than one that says
+  // nothing — so the unrecorded notice rides ON the refusal rather than
+  // being skipped by the early exit, which is where it used to go.
+  const unrecordedNote =
+    unrecorded > 0
+      ? `[FindingArbiter] ${unrecorded} adjudication(s) could NOT be written to ${ledgerPath()}, ` +
+        "so they are not in the population that prices this gate and any claim below that " +
+        "a decision was recorded does not hold for them."
+      : null;
 
   if (gate.refusal !== null) {
-    console.log(JSON.stringify({ decision: "block", reason: gate.refusal }));
+    const reason = unrecordedNote === null ? gate.refusal : `${gate.refusal}\n\n${unrecordedNote}`;
+    console.log(JSON.stringify({ decision: "block", reason }));
     process.exit(0);
   }
   // systemMessage and not stderr: stderr from a hook that exits 0 is not
   // shown. An UNMEASURED nobody sees is a silent pass, which is the one thing
   // lib/issue-filing-gate.ts's header says this must not become.
-  const notes = [
-    gate.note,
-    unrecorded > 0
-      ? `[FindingArbiter] ${unrecorded} adjudication(s) could not be written to ${ledgerPath()}, ` +
-        `so this filing is not in the population that prices the gate.`
-      : null,
-  ].filter((n): n is string => n !== null);
+  const notes = [gate.note, unrecordedNote].filter((n): n is string => n !== null);
   if (notes.length > 0) console.log(JSON.stringify({ systemMessage: notes.join("\n\n") }));
   process.exit(0);
 }
