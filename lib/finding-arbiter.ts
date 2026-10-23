@@ -502,6 +502,39 @@ export interface Verdict {
   symptomHash: string;
 }
 
+/** No group was convened at all. The single-finding case. */
+export const NO_BALLOT =
+  "no verifier group was convened, so no quorum was reached — not reaching one and not having one are different states";
+
+/**
+ * One ballot was offered for a batch of several findings.
+ *
+ * A vote is about a finding. Spreading one across a heterogeneous batch does
+ * not give the other findings a quorum, it gives them somebody else's — and
+ * `VERIFIER_QUORUM` then counts agreement that was never about them. The
+ * refusal is the point: a batch cannot be waved through on one vote.
+ */
+export const SHARED_BALLOT =
+  "one ballot was supplied for a batch of several findings, and a vote is about a finding: " +
+  "the other findings in this batch have not failed a quorum, they have not had one. " +
+  "Supply `ballots`, one group per finding, in input order";
+
+/**
+ * The ballot list did not describe the batch.
+ *
+ * Padding the short end would invent votes nobody cast and truncating the
+ * long end would discard ones somebody did — the same argument
+ * `INCOMPLETE_GROUP` makes one level down, where an absent vote is neither
+ * agreement nor dissent.
+ */
+export const BALLOT_COUNT_MISMATCH =
+  "the ballot list does not have one entry per finding, so which group voted on which finding is not recoverable";
+
+/** Both `votes` and `ballots` arrived. Two instructions, no tie-break. */
+export const BALLOT_AMBIGUOUS =
+  "both `votes` and `ballots` were supplied and they are two different instructions about the same batch; " +
+  "choosing one silently would be a decision nobody recorded";
+
 export interface ArbitrateOptions {
   /** Repository root. `origin/main` is read from here; never checked out. */
   projectRoot: string;
@@ -517,6 +550,17 @@ export interface ArbitrateOptions {
    * repository, and no caller genuinely has no verifiers.
    */
   votes?: readonly VerifierVote[];
+  /**
+   * What to say when `votes` is absent. The refusal is unchanged either way
+   * — this is the sentence, not the reading.
+   *
+   * It exists because `arbitrateBatch` knows something this function cannot:
+   * *why* a finding has no ballot. "Nobody convened a group" and "a ballot
+   * list arrived that does not describe this finding" are the same verdict
+   * and different defects, and a reader debugging the second one should not
+   * be told the first.
+   */
+  noBallotReason?: string;
   /** Group size and quorum. Both default; see `lib/finding-jury.ts`. */
   jury?: JuryConfig;
   /**
@@ -586,7 +630,7 @@ export function arbitrate(finding: Finding, options: ArbitrateOptions): Verdict 
 
   // ── 2. do enough of the verifiers agree it is real? ──
   if (votes === undefined) {
-    return drop("UNMEASURED", "no verifier group was convened, so no quorum was reached — not reaching one and not having one are different states");
+    return drop("UNMEASURED", options.noBallotReason ?? NO_BALLOT);
   }
   const jury = juryReading(votes, options.jury);
   if (jury.reading === "UNMEASURED") {
@@ -899,17 +943,61 @@ function walkOrder(findings: readonly Finding[]): Array<{ finding: Finding; inde
  *
  * So each survivor joins the comparison set for everything walked after it.
  * See `walkOrder` for why the order is pinned rather than inherited.
+ *
+ * ## One ballot per finding, and no way to spread one across the batch
+ *
+ * `ballots` is indexed by INPUT position, not by walk order and not by id —
+ * every unfiled finding carries `UNFILED_ID`, so a batch of them is a batch
+ * of one id and an id-keyed ballot map resolves all of them to whichever came
+ * first.
+ *
+ * `votes` remains the single-finding path and is refused for a batch of
+ * several, because a vote is about a finding: spreading one across a
+ * heterogeneous batch does not give the others a quorum, it gives them
+ * somebody else's, and `VERIFIER_QUORUM` then counts agreement that was never
+ * about them.
+ *
+ * **There is deliberately no `sharedBallot: true`.** A flag that re-enables
+ * the defect is satisfied by typing a word, and every caller who wants to get
+ * past a gate learns to type it — the same thing `--label follow-up` had
+ * become before #1261. A caller that genuinely has one group's verdict on
+ * several findings writes the expansion at its own call site, where a reader
+ * can see that it happened.
  */
 export function arbitrateBatch(
   findings: readonly Finding[],
-  options: ArbitrateOptions & { budget?: number; now?: string; batch?: string },
+  options: ArbitrateOptions & {
+    budget?: number;
+    now?: string;
+    batch?: string;
+    /** One verifier group per finding, in INPUT order. */
+    ballots?: readonly (readonly VerifierVote[])[];
+  },
 ): BatchReading {
   const date = options.now ?? new Date().toISOString();
   const seen: Finding[] = [...options.existing];
   const verdicts: Verdict[] = new Array(findings.length);
+  const { ballots } = options;
+
+  // Resolved once, before the walk, so every finding in a refused batch gets
+  // the same sentence and no finding is adjudicated on a ballot the batch as
+  // a whole could not account for.
+  const refusal: string | null =
+    ballots !== undefined && options.votes !== undefined
+      ? BALLOT_AMBIGUOUS
+      : ballots !== undefined && ballots.length !== findings.length
+        ? BALLOT_COUNT_MISMATCH
+        : ballots === undefined && options.votes !== undefined && findings.length > 1
+          ? SHARED_BALLOT
+          : null;
 
   for (const { finding, index } of walkOrder(findings)) {
-    const verdict = arbitrate(finding, { ...options, existing: seen });
+    const verdict = arbitrate(finding, {
+      ...options,
+      existing: seen,
+      votes: refusal !== null ? undefined : (ballots?.[index] ?? options.votes),
+      noBallotReason: refusal ?? options.noBallotReason,
+    });
     verdicts[index] = verdict;
     // Only something that will actually be posted or filed occupies the
     // space. A dropped finding leaves no artefact for a later one to

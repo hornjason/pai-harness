@@ -33,6 +33,9 @@ import {
   symptomHash,
   symptomKeys,
   UNFILED_ID,
+  BALLOT_AMBIGUOUS,
+  BALLOT_COUNT_MISMATCH,
+  SHARED_BALLOT,
   type Finding,
 } from "../lib/finding-arbiter";
 import type { CandidateRecord } from "../lib/finding-arbiter";
@@ -242,6 +245,25 @@ const opts = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+/**
+ * One group's verdict, repeated once per finding — written out, because
+ * `arbitrateBatch` refuses a single `votes` for a batch of several (#1297).
+ *
+ * **This is the expansion the production path will not do for you**, and
+ * spelling it at every call site is the point rather than the cost. Seventeen
+ * cases in this file were handing one ballot to a multi-finding batch before
+ * #1297, and each was asserting something about the dedupe or the budget
+ * while quietly also asserting that one vote about one finding settled the
+ * quorum for all the others. Here, that second claim is written down.
+ *
+ * `votes: undefined` is not tidiness: supplying both is `BALLOT_AMBIGUOUS`,
+ * two instructions about one batch with no tie-break.
+ */
+const eachVotedTheSame = (votes: readonly VerifierVote[], n: number) => ({
+  votes: undefined,
+  ballots: Array.from({ length: n }, () => votes),
+});
+
 describe("AR-3: branch scope is a reading, not a refusal", () => {
   /**
    * THE INVERSION. `OFF_MAIN` used to refuse. A finding about code that
@@ -429,7 +451,8 @@ describe("AR-7: the issue budget is rule-promotion's, not a second one", () => {
     }));
 
   test("a batch over budget is evicted by promoteCandidates, not filed", () => {
-    const r = arbitrateBatch(batchOf(FILING_BUDGET_FINDINGS + 3), opts());
+    const batch = batchOf(FILING_BUDGET_FINDINGS + 3);
+    const r = arbitrateBatch(batch, opts(eachVotedTheSame(AGREED, batch.length)));
     expect(r.verdicts.every(v => v.disposition === "ISSUE")).toBe(true);
     expect(r.toFile.length).toBe(FILING_BUDGET_FINDINGS);
     expect(r.promotion.withheld.filter(w => w.reason === "OVER_BUDGET").length).toBe(3);
@@ -437,13 +460,14 @@ describe("AR-7: the issue budget is rule-promotion's, not a second one", () => {
   });
 
   test("CONTROL: a batch under budget files all of it", () => {
-    const r = arbitrateBatch(batchOf(FILING_BUDGET_FINDINGS - 2), opts());
+    const batch = batchOf(FILING_BUDGET_FINDINGS - 2);
+    const r = arbitrateBatch(batch, opts(eachVotedTheSame(AGREED, batch.length)));
     expect(r.toFile.length).toBe(FILING_BUDGET_FINDINGS - 2);
     expect(r.promotion.withheld).toEqual([]);
   });
 
   test("one UNMEASURED finding makes the whole batch reading UNMEASURED", () => {
-    const r = arbitrateBatch([...batchOf(2), { id: "vague", title: "slow", body: "it feels slow" }], opts());
+    const r = arbitrateBatch([...batchOf(2), { id: "vague", title: "slow", body: "it feels slow" }], opts(eachVotedTheSame(AGREED, 3)));
     expect(r.promotion.reading).toBe("UNMEASURED");
     expect(r.promotion.unmeasuredReasons.some(x => x.startsWith("vague:"))).toBe(true);
   });
@@ -459,7 +483,7 @@ describe("AR-7: the issue budget is rule-promotion's, not a second one", () => {
    * false while every other row here stayed green.
    */
   test("an UNMEASURED batch files nothing, even though the promoter still ranked a list", () => {
-    const r = arbitrateBatch([...batchOf(2), { id: "vague", title: "slow", body: "it feels slow" }], opts());
+    const r = arbitrateBatch([...batchOf(2), { id: "vague", title: "slow", body: "it feels slow" }], opts(eachVotedTheSame(AGREED, 3)));
     expect(r.promotion.reading).toBe("UNMEASURED");
     expect(r.promotion.promoted.length).toBeGreaterThan(0); // the shape being guarded against
     expect(r.toFile).toEqual([]);
@@ -572,7 +596,7 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
    */
   test("BOTH IDS UNFILED — the input the CLI actually sends — still yields one survivor", () => {
     const asNew = incident.map(f => ({ ...f, id: UNFILED_ID }));
-    const r = arbitrateBatch(asNew, opts({ existing: [] }));
+    const r = arbitrateBatch(asNew, opts({ existing: [], ...eachVotedTheSame(AGREED, asNew.length) }));
     expect(r.toComment.length).toBe(1);
     expect(r.verdicts.filter(v => v.refusal === "DUPLICATE").length).toBe(1);
   });
@@ -584,7 +608,7 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
   });
 
   test("ONE BATCH, EMPTY TRACKER: exactly one of them survives", () => {
-    const r = arbitrateBatch(incident, opts({ existing: [] }));
+    const r = arbitrateBatch(incident, opts({ existing: [], ...eachVotedTheSame(AGREED, incident.length) }));
     // One posts as a comment on the branch it describes; the other collides
     // with it INSIDE THE BATCH, which is the whole fix.
     expect(r.toComment.length).toBe(1);
@@ -601,8 +625,8 @@ describe("AR-9: the incident that motivated #1187, driven through the real funct
   });
 
   test("the walk order is pinned, so the survivor does not depend on array position", () => {
-    const forwards = arbitrateBatch(incident, opts());
-    const backwards = arbitrateBatch([...incident].reverse(), opts());
+    const forwards = arbitrateBatch(incident, opts(eachVotedTheSame(AGREED, incident.length)));
+    const backwards = arbitrateBatch([...incident].reverse(), opts(eachVotedTheSame(AGREED, incident.length)));
     const dupOf = (r: typeof forwards) => r.verdicts.find(v => v.refusal === "DUPLICATE")!.id;
     expect(dupOf(forwards)).toBe(dupOf(backwards));
   });
@@ -810,7 +834,7 @@ describe("AR-13: the dedupe is one-hop on purpose", () => {
   });
 
   test("a batch drops the middle and KEEPS both ends", () => {
-    const r = arbitrateBatch([A, B, C].map(f => ({ ...f, id: UNFILED_ID })), opts({ existing: [] }));
+    const r = arbitrateBatch([A, B, C].map(f => ({ ...f, id: UNFILED_ID })), opts({ existing: [], ...eachVotedTheSame(AGREED, 3) }));
     expect(r.verdicts.filter(v => v.refusal === "DUPLICATE").length).toBe(1);
     // Two survivors, not one. A transitive dedupe would return one here and
     // would be withholding a finding nothing says is a duplicate of anything.
@@ -879,7 +903,10 @@ describe("AR-14: the candidate ledger — the withheld rows are the point", () =
       dup,
       ...Array.from({ length: FILING_BUDGET_FINDINGS + 2 }, (_, i) => outOfScope(i)),
     ];
-    return { findings, reading: arbitrateBatch(findings, opts({ existing: [filed] })) };
+    return {
+      findings,
+      reading: arbitrateBatch(findings, opts({ existing: [filed], ...eachVotedTheSame(AGREED, findings.length) })),
+    };
   };
 
   test("THE POPULATION: one row per input finding, in input order, ids included", () => {
@@ -930,7 +957,7 @@ describe("AR-14: the candidate ledger — the withheld rows are the point", () =
       { verifier: "v2", real: false, reason: "could not reproduce" },
       { verifier: "v3", real: false, reason: "could not reproduce" },
     ];
-    const noQuorum = arbitrateBatch([inScope(1), inScope(2)], opts({ votes: dissent }));
+    const noQuorum = arbitrateBatch([inScope(1), inScope(2)], opts(eachVotedTheSame(dissent, 2)));
     expect(noQuorum.candidates.map(c => c.withheldBy)).toEqual(["NO_QUORUM", "NO_QUORUM"]);
     expect(noQuorum.candidates.every(c => c.emitted)).toBe(false);
 
@@ -956,7 +983,7 @@ describe("AR-14: the candidate ledger — the withheld rows are the point", () =
         readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1195-1196.json"), "utf-8"),
       ) as Finding[]
     ).map(f => ({ ...f, id: UNFILED_ID }));
-    const r = arbitrateBatch(incident, opts({ existing: [] }));
+    const r = arbitrateBatch(incident, opts({ existing: [], ...eachVotedTheSame(AGREED, incident.length) }));
     expect(r.candidates.map(c => c.id)).toEqual([UNFILED_ID, UNFILED_ID]);
     expect(r.candidates.filter(c => c.emitted).length).toBe(1);
     expect(r.candidates.filter(c => c.withheldBy === "DUPLICATE").length).toBe(1);
@@ -972,7 +999,7 @@ describe("AR-14: the candidate ledger — the withheld rows are the point", () =
    */
   test("BATCH_UNMEASURED is distinguishable from the row that caused it", () => {
     const vague: Finding = { id: "vague", title: "slow", body: "it feels slow" };
-    const r = arbitrateBatch([outOfScope(1), outOfScope(2), vague], opts());
+    const r = arbitrateBatch([outOfScope(1), outOfScope(2), vague], opts(eachVotedTheSame(AGREED, 3)));
     expect(r.promotion.reading).toBe("UNMEASURED");
     expect(r.toFile).toEqual([]);
     const by = Object.fromEntries(r.candidates.map(c => [c.id, c.withheldBy]));
@@ -1002,7 +1029,7 @@ describe("AR-14: the candidate ledger — the withheld rows are the point", () =
   test("an UNMEASURED batch that is ALSO over budget reports the fold, not the cut", () => {
     const vague: Finding = { id: "vague", title: "slow", body: "it feels slow" };
     const over = Array.from({ length: FILING_BUDGET_FINDINGS + 2 }, (_, i) => outOfScope(i));
-    const r = arbitrateBatch([...over, vague], opts());
+    const r = arbitrateBatch([...over, vague], opts(eachVotedTheSame(AGREED, over.length + 1)));
     expect(r.promotion.reading).toBe("UNMEASURED");
     expect(r.toFile).toEqual([]);
     // The promoter really did produce the plausible wrong answer for two of
@@ -1081,8 +1108,8 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
   // id across the concatenation. Two batches, because the quorum runs before
   // the category check and one call carries one ballot.
   const corpus = (): CandidateRecord[] => [
-    ...arbitrateBatch([measurable(11), measurable(12)], opts({ votes: DISSENT, batch: "pr-a" })).candidates,
-    ...arbitrateBatch([measurable(21), styleNit, measurable(22)], opts({ batch: "pr-b" })).candidates,
+    ...arbitrateBatch([measurable(11), measurable(12)], opts({ batch: "pr-a", ...eachVotedTheSame(DISSENT, 2) })).candidates,
+    ...arbitrateBatch([measurable(21), styleNit, measurable(22)], opts({ batch: "pr-b", ...eachVotedTheSame(AGREED, 3) })).candidates,
   ];
 
   /**
@@ -1225,7 +1252,7 @@ describe("AR-15: one ledger, three summaries, the two filters priced apart", () 
     // The batch is named, because `key` is `null` without one and a null id
     // would make this case pass or fail for a reason about the fixture
     // rather than about the keying. AR-17 covers the unnamed reading.
-    const pair = arbitrateBatch([wordedA, wordedB], opts({ votes: DISSENT, batch: "pr-1272" })).candidates;
+    const pair = arbitrateBatch([wordedA, wordedB], opts({ batch: "pr-1272", ...eachVotedTheSame(DISSENT, 2) })).candidates;
     expect(pair.length).toBe(2);
 
     const ids = bridge(pair, () => false).map(f => f.id);
@@ -1413,7 +1440,7 @@ describe("AR-17: the corpus key is unique by construction, or it is absent", () 
    * so a later assertion about distinct keys is not holding vacuously.
    */
   test("CONTROL: symptomHash collides — 1 distinct hash across 2 rows", () => {
-    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts());
+    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts(eachVotedTheSame(AGREED, 2)));
     expect(r.candidates.length).toBe(2);
     expect(new Set(r.candidates.map(c => c.symptomHash)).size).toBe(1);
     // And the ids collide too, for the separate reason that neither is filed.
@@ -1432,12 +1459,12 @@ describe("AR-17: the corpus key is unique by construction, or it is absent", () 
       readFileSync(join(import.meta.dir, "fixtures", "finding-incident-1195-1196.json"), "utf-8"),
     ) as Finding[];
     expect(duplicateOverlap(incident[0]!, incident[1]!).duplicate).toBe(true);
-    const r = arbitrateBatch(incident.map(f => ({ ...f, id: UNFILED_ID })), opts());
+    const r = arbitrateBatch(incident.map(f => ({ ...f, id: UNFILED_ID })), opts(eachVotedTheSame(AGREED, incident.length)));
     expect(new Set(r.candidates.map(c => c.symptomHash)).size).toBe(2);
   });
 
   test("named a batch, every key is distinct even where the hash and the id are not", () => {
-    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts({ batch: "pr-1251" }));
+    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts({ batch: "pr-1251", ...eachVotedTheSame(AGREED, 2) }));
     expect(r.candidates.map(c => c.key)).toEqual(["pr-1251/0", "pr-1251/1"]);
     expect(new Set(r.candidates.map(c => c.key)).size).toBe(r.candidates.length);
   });
@@ -1456,7 +1483,7 @@ describe("AR-17: the corpus key is unique by construction, or it is absent", () 
    * silently, which is the one direction the instrument must not fail in.
    */
   test("unnamed, the key is absent rather than plausible", () => {
-    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts());
+    const r = arbitrateBatch([reReport("one wording"), reReport("another wording")], opts(eachVotedTheSame(AGREED, 2)));
     expect(r.candidates.map(c => c.key)).toEqual([null, null]);
   });
 
@@ -1481,5 +1508,153 @@ describe("AR-17: the corpus key is unique by construction, or it is absent", () 
     // `summariseFindingOutcomes` refuses a repeated key rather than scoring
     // it, so this surfaces as a refusal and never as a quiet shrink.
     expect(new Set(corpus.map(c => c.key)).size).toBe(1);
+  });
+});
+
+/**
+ * AR-18: the ballot is about a finding (#1297).
+ *
+ * `arbitrateBatch` used to hand `options.votes` — one ballot — to every
+ * finding in the call. A batch of eight was decided by one vote about one of
+ * them, and `VERIFIER_QUORUM = 2` then counted agreement that had never been
+ * about the other seven.
+ *
+ * **The size of it, measured rather than argued:** applying the refusal
+ * turned **17 existing cases in this file red** at once. Every one had been
+ * asserting something true about the dedupe or the budget while silently also
+ * asserting that one group's vote settled the quorum for findings it had
+ * never seen.
+ *
+ * One of those seventeen is worth naming, because it did not go red — *"one
+ * UNMEASURED finding makes the whole batch reading UNMEASURED"* kept passing,
+ * because under the new refusal all three of its findings are UNMEASURED and
+ * its assertion only asks that one of them is. Green, for a true reason,
+ * about a mechanism it was no longer reaching: the fifth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, created and caught inside
+ * one change.
+ */
+describe("AR-18: one ballot per finding, and no way to spread one across a batch", () => {
+  const DISSENT: readonly VerifierVote[] = [
+    { verifier: "v1", real: true, reason: "reproduced" },
+    { verifier: "v2", real: false, reason: "could not reproduce" },
+    { verifier: "v3", real: false, reason: "could not reproduce" },
+  ];
+  const reading = (id: string, n: number): Finding => ({
+    id,
+    title: `reading ${id}`,
+    body: `\`queueHandler${n}\` drops ${300 + n} of ${900 + n} messages.`,
+  });
+
+  /**
+   * THE CAPABILITY, and it did not exist before this change: two findings in
+   * one call, judged by two different groups, reaching two different
+   * verdicts. With a single batch-wide `votes` this reading is unreachable —
+   * both findings get whichever ballot the caller passed.
+   */
+  test("CONTROL: two groups, two verdicts, one call", () => {
+    const r = arbitrateBatch([reading("a", 1), reading("b", 2)], opts({
+      votes: undefined,
+      ballots: [AGREED, DISSENT],
+    }));
+    expect(r.verdicts.map(v => v.refusal)).toEqual([null, "NO_QUORUM"]);
+    expect(r.verdicts[0]!.disposition).toBe("COMMENT");
+    // The jury reading is per finding too, not one reading restated twice.
+    expect(r.verdicts.map(v => v.jury?.agree)).toEqual([2, 1]);
+  });
+
+  /**
+   * THE BALLOTS ARE INDEXED BY INPUT POSITION, NOT BY WALK ORDER.
+   *
+   * `walkOrder` sorts numeric ids numerically, so a batch given as
+   * `["10", "9"]` is WALKED as `9, 10`. A ballot list indexed by walk
+   * position therefore hands each finding the other one's group — an
+   * inversion no single-ballot test could ever show, because with one ballot
+   * every order gives the same answer.
+   */
+  test("ballots follow the input order, not the order the batch is walked in", () => {
+    const ten = reading("10", 1);
+    const nine = reading("9", 2);
+    // The premise, asserted rather than assumed: the walk really does
+    // reorder these. Without this the case is about nothing.
+    const walked = arbitrateBatch([ten, nine], opts({
+      votes: undefined,
+      ballots: [AGREED, AGREED],
+    }));
+    expect(walked.verdicts.map(v => v.id)).toEqual(["10", "9"]);
+
+    const r = arbitrateBatch([ten, nine], opts({ votes: undefined, ballots: [AGREED, DISSENT] }));
+    // Input position 0 is `10` and it was given AGREED.
+    expect(r.verdicts[0]!.id).toBe("10");
+    expect(r.verdicts[0]!.refusal).toBeNull();
+    expect(r.verdicts[1]!.id).toBe("9");
+    expect(r.verdicts[1]!.refusal).toBe("NO_QUORUM");
+  });
+
+  test("a multi-finding batch given ONE ballot refuses, and says why", () => {
+    const r = arbitrateBatch([reading("a", 1), reading("b", 2)], opts({ votes: AGREED }));
+    expect(r.verdicts.map(v => v.refusal)).toEqual(["UNMEASURED", "UNMEASURED"]);
+    expect(r.verdicts[0]!.reason).toBe(SHARED_BALLOT);
+    // UNMEASURED, not NO_QUORUM. These findings did not fail a vote; they
+    // did not have one, and only one of those is a reading.
+    expect(r.verdicts.some(v => v.refusal === "NO_QUORUM")).toBe(false);
+  });
+
+  test("a SINGLE-finding batch given one ballot is unaffected", () => {
+    const r = arbitrateBatch([reading("a", 1)], opts({ votes: AGREED }));
+    expect(r.verdicts[0]!.refusal).toBeNull();
+    expect(r.verdicts[0]!.disposition).toBe("COMMENT");
+  });
+
+  test("a ballot list shorter than the batch refuses rather than padding", () => {
+    const r = arbitrateBatch([reading("a", 1), reading("b", 2)], opts({
+      votes: undefined,
+      ballots: [AGREED],
+    }));
+    expect(r.verdicts.map(v => v.refusal)).toEqual(["UNMEASURED", "UNMEASURED"]);
+    expect(r.verdicts[0]!.reason).toBe(BALLOT_COUNT_MISMATCH);
+  });
+
+  test("a ballot list LONGER than the batch refuses rather than truncating", () => {
+    const r = arbitrateBatch([reading("a", 1)], opts({
+      votes: undefined,
+      ballots: [AGREED, AGREED],
+    }));
+    expect(r.verdicts.map(v => v.refusal)).toEqual(["UNMEASURED"]);
+    expect(r.verdicts[0]!.reason).toBe(BALLOT_COUNT_MISMATCH);
+  });
+
+  /**
+   * Two instructions about one batch. Letting `ballots` win silently would
+   * be a precedence rule nobody wrote down, and a caller who passed both
+   * believes something about the one that lost.
+   */
+  test("both `votes` and `ballots` refuses — no silent precedence", () => {
+    const r = arbitrateBatch([reading("a", 1), reading("b", 2)], opts({
+      votes: AGREED,
+      ballots: [AGREED, AGREED],
+    }));
+    expect(r.verdicts.map(v => v.refusal)).toEqual(["UNMEASURED", "UNMEASURED"]);
+    expect(r.verdicts[0]!.reason).toBe(BALLOT_AMBIGUOUS);
+  });
+
+  /**
+   * WHAT EVERY ROW ABOVE HOLDS FIXED (seventh shape): every ballot in them is
+   * a well-formed three-vote group. The per-ballot shape is `juryReading`'s
+   * business and it has its own cases, but nothing above would notice if the
+   * batch stopped passing a malformed ballot through to it — so the row that
+   * does not hold it fixed is here.
+   */
+  test("a malformed ballot inside the list still reaches the jury's own refusal", () => {
+    const r = arbitrateBatch([reading("a", 1), reading("b", 2)], opts({
+      votes: undefined,
+      // Two votes where the declared group is three: INCOMPLETE_GROUP.
+      ballots: [AGREED, AGREED.slice(0, 2)],
+    }));
+    expect(r.verdicts[0]!.refusal).toBeNull();
+    expect(r.verdicts[1]!.refusal).toBe("UNMEASURED");
+    // The jury's sentence, not the batch's — proof the ballot was forwarded
+    // rather than pre-judged here.
+    expect(r.verdicts[1]!.reason).not.toBe(SHARED_BALLOT);
+    expect(r.verdicts[1]!.reason).toContain("ballot");
   });
 });
