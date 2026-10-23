@@ -122,7 +122,7 @@ export function loadVarianceCapture(name: string, dir?: string): VarianceCapture
     }
   }
 
-  for (const field of ["pinnedCommit", "commitAtEnd"] as const) {
+  for (const field of ["pinnedCommit", "commitAtEnd", "originMain"] as const) {
     if (!/^[0-9a-f]{40}$/.test(raw[field]!)) {
       throw new Error(`${BASELINE_REFUSED}: ${path} records \`${field}\` as \`${raw[field]}\`, which is not a 40-character SHA.`);
     }
@@ -133,6 +133,36 @@ export function loadVarianceCapture(name: string, dir?: string): VarianceCapture
       `${BASELINE_REFUSED}: ${path} started at ${raw.pinnedCommit} and ended at ${raw.commitAtEnd}. The runs ` +
         "straddle two adjudicators, so the artefact measures a mixture — and a self-consistent mixture reads " +
         "exactly like a stable one. Re-take it.",
+    );
+  }
+
+  // #1320. The `lib/` TREE, not the commit: comparing commits would refuse
+  // every capture taken on a branch, including the branch that updates this
+  // artefact. The only question is whether the adjudicator's code was the
+  // deployed code, and a tree object answers exactly that.
+  if (typeof raw.libTree !== "string" || raw.libTree === "") {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} has no \`libTree\`, so nothing records which adjudicator code ran.`,
+    );
+  }
+  if (raw.libTree !== raw.originMainLibTree) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} ran with lib/ at ${raw.libTree} while origin/main's was ` +
+        `${raw.originMainLibTree}, so it describes an adjudicator that was not the deployed one.`,
+    );
+  }
+
+  if (!Array.isArray(raw.dirtyPaths)) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} records no \`dirtyPaths\`. An absent reading is not a clean tree — the two ` +
+        "are the distinction this field exists to make.",
+    );
+  }
+
+  if (raw.dirtyPaths.length > 0) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} was taken with ${raw.dirtyPaths.length} uncommitted path(s) under \`lib/\`, so ` +
+        `no commit describes the code that ran: ${raw.dirtyPaths.slice(0, 5).join(", ")}.`,
     );
   }
 
