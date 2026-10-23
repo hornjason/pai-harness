@@ -3977,6 +3977,8 @@ ${buildAuthDetectStep(vertex)}${buildReviewRunStep(
       auth: actionRef(GOOGLE_AUTH_ACTION),
       review: actionRef(CLAUDE_CODE_ACTION),
       setupBun: actionRef("oven-sh/setup-bun"),
+      // #1307. The witness on the UNMEASURED route.
+      uploadArtifact: actionRef("actions/upload-artifact"),
       // The same single declaration the test and gates jobs resolve from
       // (#622), at the indent this job's step bodies use.
       setupBunWith: setupBunWith(declaredBunVersion(root), "    "),
