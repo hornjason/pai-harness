@@ -259,6 +259,37 @@ describe("#1306: adding a spec is a third event, with its own blast radius", () 
    * issue sized by grep. The denominator matters less than the direction: a
    * router that names everything is ignored, and an ignored router is the
    * state before #990.
+   *
+   * ## What was broken to prove it, run and counted
+   *
+   * Over this file (15 tests). Every count AND membership was predicted
+   * before the battery ran, and the baseline row was read first.
+   *
+   * | Row | Predicted | Measured | The input on which mutant and original differ |
+   * |---|---|---|---|
+   * | **baseline** — unmutated | 15 pass, 0 fail | **15 pass, 0 fail** | — |
+   * | the `new-spec` row deleted — the genuinely pre-#1306 router | 3: W1, T1, T2 | **3 of 15**, the three named | `{path: "specs/NEW-THING-SPEC.md", isNew: true}`: the original routes `audit-specs` and `scanner`, the mutant routes neither |
+   * | wrong fix #1, router only: the two appended to `spec-edit` | 3: C2, T1, T2 | **2 of 15**: C2, T1 | a prose edit to an existing spec: the original routes neither file, the mutant routes both |
+   * | wrong fix #2, router only: the two appended to `new-file` | 3: C3, T1, T2 | **2 of 15**: C3, T1 | a new `lib/unrelated.ts`: same |
+   * | wrong fix #1 applied FAITHFULLY — router AND rendered table | not predicted | **1 of 15**: C2 | the prose edit above |
+   * | wrong fix #2 applied FAITHFULLY — router AND rendered table | not predicted | **1 of 15**: C3 | the new `lib/` file above |
+   *
+   * **Rows 3 and 4 came back LOW, and the reason is a fact about T2 worth
+   * recording rather than a collapsed pair.** T2 compares the SET of test
+   * names in the rule file's section to `allCensusTests()`. Moving a test
+   * from one row to another leaves that set identical, so T2 cannot see row
+   * placement at all — by design, since what it exists to catch is a test
+   * named in the prose that no row routes. Only T1, which is byte-for-byte,
+   * sees which row a test sits on. The prediction assumed two table cases
+   * where there is one.
+   *
+   * **Rows 5 and 6 are the ones that matter, and they are why rows 3 and 4
+   * are not the real measurement.** T1 goes red the instant the router
+   * changes, so nobody can apply either wrong fix and leave it: the 5pm
+   * repair regenerates the table in the same breath, and then T1 and T2 are
+   * both green. What is left is one case — the control written against that
+   * exact fix — and it is red. Both controls survive their wrong fix
+   * NON-vacuously, which is the only grade of survival that is protection.
    */
   const newSpec = () =>
     censusTestsFor([change({ path: "specs/NEW-THING-SPEC.md", isNew: true, added: ["# New"] })]);
