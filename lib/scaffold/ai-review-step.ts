@@ -6393,6 +6393,20 @@ export function buildPersistScript(): string {
 # refuse the thing it records is worse than no recorder. Failures are loud —
 # a warning annotation naming what could not be done — because the only thing
 # worse than losing a round is losing it silently.
+#
+# THIS STEP'S POSITION IS A DECISION, NOT AN ACCIDENT OF ORDERING. It runs
+# after the reviewer and BEFORE the adjudicator, and moving it later breaks
+# it silently. The adjudicator exits non-zero on a blocking finding, so a
+# ledger placed after it records clean rounds and drops blocked ones — a
+# recorder biased against exactly the rounds worth recording. The usual
+# repair is \`if: always()\`, and this job forbids \`if:\` because a step
+# skipped by a condition reports \`skipped\`. Running before the adjudicator
+# needs no condition at all: the reviewer has already written the payload.
+#
+# It records findings and NEVER a verdict. Whether a severity blocks is
+# AI_REVIEW_SEVERITIES' decision, read by lib/scaffold/ai-review-findings.ts.
+# A verdict computed here would be a second decider answering the same
+# question about the same input, and both would read as covered.
 ${AI_REVIEW_ANNOTATION_ESCAPE}
 
 ledger_note() {
@@ -6421,11 +6435,18 @@ api="\${${AI_REVIEW_LEDGER_API_VAR}:-https://api.github.com}"
 # The round number, from the file the counter step already wrote. Read rather
 # than recomputed: a second count here would be a decider that always agrees
 # with that one until the day it does not.
+# Parse the KEY, never scrape the digits. The round file states three things
+# — \`review_round\`, \`round_budget\` and \`round_budget_spent\` — so a
+# \`tr -dc '0-9'\` over it concatenates all three: round 2 under a budget of 3
+# records as 23. Caught on #1319's review; the battery could not see it,
+# because the fixture held a single number and a scrape and a parse agree on
+# every input shaped like that. \`\\r\` is stripped first so a CRLF file
+# cannot wedge the match forever.
 round="null"
 if [ -n "\${${AI_REVIEW_ROUND_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_ROUND_PATH_VAR}}" ]; then
-  digits=\$(tr -dc '0-9' < "\${${AI_REVIEW_ROUND_PATH_VAR}}" | head -c 8 || true)
-  if [ -n "\${digits}" ]; then
-    round="\${digits}"
+  parsed_round=\$(tr -d '\\r' < "\${${AI_REVIEW_ROUND_PATH_VAR}}" | sed -n 's/^review_round=\\([0-9][0-9]*\\)\$/\\1/p' | head -n 1 || true)
+  if [ -n "\${parsed_round}" ]; then
+    round="\${parsed_round}"
   fi
 fi
 
@@ -6469,7 +6490,18 @@ fi
 # SECOND ledger carrying the first one's rounds, so the history silently
 # forks into two comments and neither is complete. Found by the mutation
 # battery on #1168, not by reading.
-selected=\$(printf '%s' "\${comments}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' '[.[] | select(.body != null and (.body | contains(\$m)))] | last // empty' 2>/dev/null || true)
+#
+# AUTHORSHIP, not just the marker. The marker is a string and a pull request
+# is a place anyone can paste one, so selecting on it alone lets any
+# commenter nominate their own comment as the ledger — and then this step
+# PATCHes a human's text away and writes the round history somewhere nobody
+# is watching. The author check is what makes the marker an identifier rather
+# than a suggestion (#1319 review).
+#
+# \`first\`, not \`last\`: the OLDEST bot-authored match is the real ledger,
+# because that is the one this step created on round one. \`last\` prefers the
+# newest, which is precisely the one an impersonator would have just posted.
+selected=\$(printf '%s' "\${comments}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' '[.[] | select((.user.type? // "") == "Bot" and .body != null and (.body | contains(\$m)))] | first // empty' 2>/dev/null || true)
 existing_id=""
 existing_body=""
 if [ -n "\${selected}" ]; then
@@ -6481,7 +6513,11 @@ prior="[]"
 if [ -n "\${existing_body}" ]; then
   # Everything between the fences. A ledger whose payload cannot be read is
   # NOT an empty ledger, so this refuses rather than starting a new one.
-  extracted=\$(printf '%s' "\${existing_body}" | sed -n '/^${fence}json\$/,/^${fence}\$/p' | sed '1d;\$d' || true)
+  # \`tr -d '\\r'\` FIRST. A body that came back with CRLF line endings never
+  # matches a \`\$\`-anchored fence, so the payload reads as unparseable, the
+  # guard below refuses, and the ledger is wedged permanently — a recording
+  # failure that looks exactly like a corrupt ledger (#1319 review).
+  extracted=\$(printf '%s' "\${existing_body}" | tr -d '\\r' | sed -n '/^${fence}json\$/,/^${fence}\$/p' | sed '1d;\$d' || true)
   if [ -n "\${extracted}" ] && printf '%s' "\${extracted}" | jq -e 'type == "array"' >/dev/null 2>&1; then
     prior="\${extracted}"
   else
@@ -6823,7 +6859,7 @@ export function buildReviewRunStep(
     `  id: ${AI_REVIEW_PERSIST_STEP_ID}`,
     `  env:`,
     `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
-    `    ${AI_REVIEW_ROUND_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.dir }}/ai-review-round.txt`,
+    `    ${AI_REVIEW_ROUND_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_ROUND_BASENAME}`,
     // Empty on a merge_group run, which is how the script knows there is no
     // pull request to carry a ledger. Read from the event rather than from a
     // second `github.event_name` test, so there is one decider.

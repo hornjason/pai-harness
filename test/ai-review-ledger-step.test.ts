@@ -47,6 +47,11 @@ import {
 const REPO = join(import.meta.dir, "..");
 const WORKFLOW = join(REPO, ".github", "workflows", "ai-review.yml");
 
+/** A ledger comment as the step itself would have written it. */
+function botComment(id: number, body: string) {
+  return { id, user: { type: "Bot", login: "github-actions[bot]" }, body };
+}
+
 /** A comment body in the ledger's own format, holding `rounds`. */
 function ledgerBody(rounds: unknown[]): string {
   return [
@@ -64,8 +69,13 @@ interface Rig {
   list?: unknown[] | null;
   /** The findings payload on disk. `undefined` plants no file at all. */
   payload?: unknown;
-  /** The round number file's contents. */
+  /**
+   * The round number, placed into the round file's REAL three-line format.
+   * Pass `rawRound` instead to write arbitrary bytes.
+   */
   round?: string;
+  /** The round file verbatim, for cases about the format itself. */
+  rawRound?: string;
   /** Overrides for the step's environment. */
   env?: Record<string, string>;
   /** Make the write (POST/PATCH) fail. */
@@ -122,8 +132,18 @@ function runPersist(rig: Rig = {}) {
         typeof rig.payload === "string" ? rig.payload : JSON.stringify(rig.payload),
       );
     }
+    // THE REAL FORMAT, three lines, as `buildRoundsScript` writes it. The
+    // first version of this rig wrote a bare "2", and that single number is
+    // why the battery could not see a defect worth a MEDIUM: a scrape of
+    // every digit and a parse of `review_round=` agree on every input shaped
+    // like that, so the fixture and the bug shared a blind spot. Round 2
+    // under a budget of 3 was being recorded as 23.
     const roundPath = join(dir, "round.txt");
-    writeFileSync(roundPath, rig.round ?? "2");
+    writeFileSync(
+      roundPath,
+      rig.rawRound ??
+        `review_round=${rig.round ?? "2"}\nround_budget=3\nround_budget_spent=no\n`,
+    );
 
     const script = join(dir, "persist.sh");
     writeFileSync(script, rig.script ?? buildPersistScript());
@@ -179,7 +199,7 @@ describe("AC-L0 (#1168): the rig delivers its own fixture unmangled", () => {
    */
   test("AC-L0: the ledger fixture still contains its marker and its fences", () => {
     const body = ledgerBody([{ run: "run-1" }]);
-    const r = runPersist({ list: [{ id: 5, body }], payload: ONE_FINDING });
+    const r = runPersist({ list: [botComment(5, body)], payload: ONE_FINDING });
     expect(r.stderr, "the stub shelled out while answering with the fixture").toBe("");
     // Reached the script intact: it found the comment and PATCHed it.
     expect(r.method, "the fixture's marker did not survive the stub").toBe("PATCH");
@@ -206,7 +226,7 @@ describe("AC-L1 (#1168): a round is written, and the ledger is cumulative", () =
    */
   test("AC-L1: a second round PATCHes, and the EARLIER round is still there", () => {
     const prior = [{ at: "t0", sha: "cafe", run: "run-1", attempt: "1", round: 1, findings: [] }];
-    const r = runPersist({ list: [{ id: 5, body: ledgerBody(prior) }], payload: ONE_FINDING });
+    const r = runPersist({ list: [botComment(5, ledgerBody(prior))], payload: ONE_FINDING });
     expect(r.status, r.stderr).toBe(0);
     expect(r.method).toBe("PATCH");
     expect(r.rounds).toHaveLength(2);
@@ -217,9 +237,122 @@ describe("AC-L1 (#1168): a round is written, and the ledger is cumulative", () =
   test("AC-L1 CONTROL: a comment WITHOUT the marker is not mistaken for the ledger", () => {
     // Otherwise the first row is consistent with "upsert whatever comment is
     // last", which would overwrite a human's comment and lose every round.
-    const r = runPersist({ list: [{ id: 9, body: "a human talking about ```json [] ```" }], payload: ONE_FINDING });
+    const r = runPersist({
+      list: [{ id: 9, user: { type: "Bot" }, body: "a human talking about ```json [] ```" }],
+      payload: ONE_FINDING,
+    });
     expect(r.method).toBe("POST");
     expect(r.rounds).toHaveLength(1);
+  });
+});
+
+describe("AC-L7 (#1319 review): the round number is parsed, never scraped", () => {
+  /**
+   * The round file states THREE things. Scraping its digits concatenates all
+   * of them, so round 2 under a budget of 3 records as 23 — and every round
+   * number in the ledger is then wrong in a way that is silent and permanent.
+   *
+   * The reviewer that found this named the fixture as the fix, and that is
+   * the real lesson: a one-number fixture makes a scrape and a parse agree
+   * on every row, so the battery was 5 of 5 against a defect it structurally
+   * could not express. Seventh shape — the battery varied the guard and held
+   * the input's SHAPE fixed.
+   */
+  test("AC-L7: round 2 under a budget of 3 records 2, not 23", () => {
+    const r = runPersist({ round: "2", payload: ONE_FINDING });
+    expect(r.rounds![0].round).toBe(2);
+  });
+
+  test("AC-L7: a two-digit round under a two-digit budget is still read whole", () => {
+    // 12 and 34 concatenate to 1234 under a scrape, and to 12 under a parse.
+    const r = runPersist({
+      rawRound: "review_round=12\nround_budget=34\nround_budget_spent=no\n",
+      payload: ONE_FINDING,
+    });
+    expect(r.rounds![0].round).toBe(12);
+  });
+
+  test("AC-L7: a CRLF round file is still read", () => {
+    const r = runPersist({
+      rawRound: "review_round=7\r\nround_budget=3\r\nround_budget_spent=no\r\n",
+      payload: ONE_FINDING,
+    });
+    expect(r.rounds![0].round).toBe(7);
+  });
+
+  test("AC-L7: a round file with no review_round line records null, not a guess", () => {
+    const r = runPersist({
+      rawRound: "round_budget=3\nround_budget_spent=no\n",
+      payload: ONE_FINDING,
+    });
+    expect(r.rounds![0].round).toBeNull();
+  });
+
+  test("AC-L7: the MUTANT — scraping the digits — reports the concatenation", () => {
+    // The defect as it shipped to review, performed and observed, so the row
+    // above cannot go green for an unrelated reason later.
+    const real = buildPersistScript();
+    const mutant = real.replace(
+      /parsed_round=\$\(tr -d '\\r'[^\n]*\n/,
+      "parsed_round=$(tr -dc '0-9' < \"${AI_REVIEW_ROUND_PATH}\" | head -c 8 || true)\n",
+    );
+    expect(mutant, "the mutation did not apply").not.toBe(real);
+    const r = runPersist({ round: "2", payload: ONE_FINDING, script: mutant });
+    expect(r.rounds![0].round, "the scrape must concatenate — that is the defect").toBe(23);
+  });
+});
+
+describe("AC-L8 (#1319 review): the ledger is identified by AUTHOR, not by a string", () => {
+  /**
+   * The marker is a string, and a pull request is a place anyone can paste
+   * one. Selecting on it alone lets any commenter nominate their own comment
+   * as the ledger: this step then PATCHes a human's text away and writes the
+   * round history somewhere nobody is watching.
+   */
+  const HUMAN_IMPOSTOR = {
+    id: 99,
+    user: { type: "User", login: "someone" },
+    body: ledgerBody([{ run: "planted" }]),
+  };
+
+  test("AC-L8: a HUMAN comment carrying the marker is not adopted", () => {
+    const r = runPersist({ list: [HUMAN_IMPOSTOR], payload: ONE_FINDING });
+    expect(r.method, "it PATCHed a human's comment").toBe("POST");
+    expect(r.rounds, "it inherited rounds from a comment anyone could write").toHaveLength(1);
+  });
+
+  test("AC-L8 CONTROL: the same body from a BOT is adopted", () => {
+    // One axis: identical marker, identical body, different author.
+    const r = runPersist({
+      list: [{ ...HUMAN_IMPOSTOR, user: { type: "Bot", login: "github-actions[bot]" } }],
+      payload: ONE_FINDING,
+    });
+    expect(r.method).toBe("PATCH");
+  });
+
+  test("AC-L8: the OLDEST bot ledger wins, not the newest", () => {
+    // `last` would prefer whichever was posted most recently, which is the
+    // one an impersonating bot would have just created. The real ledger is
+    // the one this step made on round one.
+    const r = runPersist({
+      list: [
+        { id: 10, user: { type: "Bot", login: "github-actions[bot]" }, body: ledgerBody([{ run: "original" }]) },
+        { id: 20, user: { type: "Bot", login: "github-actions[bot]" }, body: ledgerBody([{ run: "newer" }]) },
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(r.argv.join(" ")).toContain("/issues/comments/10");
+    expect(r.rounds![0].run).toBe("original");
+  });
+
+  test("AC-L8: the MUTANT — marker alone, newest wins — adopts the impostor", () => {
+    const real = buildPersistScript();
+    const mutant = real
+      .replace('(.user.type? // "") == "Bot" and ', "")
+      .replace("] | first // empty", "] | last // empty");
+    expect(mutant, "the mutation did not apply").not.toBe(real);
+    const r = runPersist({ list: [HUMAN_IMPOSTOR], payload: ONE_FINDING, script: mutant });
+    expect(r.method, "the mutant must adopt it — that is the defect").toBe("PATCH");
   });
 });
 
@@ -260,7 +393,7 @@ describe("AC-L3 (#1168): it never writes on top of a read it could not take", ()
 
   test("AC-L3: an existing ledger whose payload will not parse is NOT replaced", () => {
     const broken = `${AI_REVIEW_LEDGER_MARKER}\n\n\`\`\`json\n{not an array\n\`\`\``;
-    const r = runPersist({ list: [{ id: 5, body: broken }], payload: ONE_FINDING });
+    const r = runPersist({ list: [botComment(5, broken)], payload: ONE_FINDING });
     expect(r.status, r.stderr).toBe(0);
     expect(r.method, "it overwrote a ledger it could not read").toBeNull();
   });
@@ -308,7 +441,7 @@ describe("AC-L4 (#1168): it is a recorder, so it never fails the job", () => {
     ["the write fails", { writeFails: true }],
     ["no findings payload", { payload: undefined }],
     ["an unparseable payload", { payload: "{" }],
-    ["an unreadable existing ledger", { list: [{ id: 5, body: `${AI_REVIEW_LEDGER_MARKER}\nnope` }] }],
+    ["an unreadable existing ledger", { list: [botComment(5, `${AI_REVIEW_LEDGER_MARKER}\nnope`)] }],
   ];
   for (const [name, rig] of cases) {
     test(`AC-L4: ${name} exits 0`, () => {
