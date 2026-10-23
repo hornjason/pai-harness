@@ -817,7 +817,12 @@ describe("AC-L6 (#1168): a write that landed nothing is said out loud", () => {
 // DISTINGUISHABLE — found, read-to-the-end-and-absent, unreadable. A test
 // asserting only that a ledger gets written passes against every row below.
 describe("AC-L9 (#1353): a read that returns nothing usable is not a pull request with no ledger", () => {
-  const LEDGER = () => botComment(5, ledgerBody([{ round: 1, findings: [] }]));
+  // `at` and `run` are REQUIRED, not decoration: #1386's shape guard refuses a
+  // payload whose entries lack them, and a refused payload produces exactly the
+  // observable these cases are about — no write, step exits 0. A fixture
+  // missing them would make every row below red for a reason that has nothing
+  // to do with pagination.
+  const LEDGER = () => botComment(5, ledgerBody([{ at: "t0", run: "original", round: 1, findings: [] }]));
   const filler = (n: number, from: number) =>
     Array.from({ length: n }, (_, i) => botComment(from + i, "ordinary comment"));
 
@@ -865,7 +870,10 @@ describe("AC-L9 (#1353): a read that returns nothing usable is not a pull reques
     // later; breaking on the earliest page carrying a match preserves the
     // property the single-page selection already had.
     const r = runPersist({
-      pages: [[...filler(99, 200), botComment(5, ledgerBody([{ round: 1, findings: [] }]))], [botComment(999, ledgerBody([]))]],
+      pages: [
+        [...filler(99, 200), botComment(5, ledgerBody([{ at: "t0", run: "original", round: 1, findings: [] }]))],
+        [botComment(999, ledgerBody([]))],
+      ],
       payload: ONE_FINDING,
     });
     expect(r.method).toBe("PATCH");
