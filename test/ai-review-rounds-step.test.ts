@@ -29,7 +29,7 @@
  *  - AC-S8  the query carries no `status=` term, and must not grow one
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,6 +62,23 @@ import {
   buildReviewPrompt,
   buildRoundsScript,
 } from "../lib/scaffold/ai-review-step.ts";
+import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
+
+/**
+ * The second file in the state #1402 was filed about, and it was NOT the one
+ * reported — it was found by supplying `AC-5` the JUnit reading it says it
+ * needs, instead of accepting its UNMEASURED.
+ *
+ * `AC-S3: a count that cannot be read refuses, and names the permission` ran
+ * 6284.99ms against the 5,000ms this file inherits — 125.7% of it, so already
+ * over, on a machine fast enough to keep CI green. The sibling that prompted
+ * the issue was at 100.1%; this one is worse and nobody had looked.
+ *
+ * Same remedy and the same reason as `ai-review-ledger-step.test.ts`: the
+ * quantity that varies is the machine, so the budget is calibrated against
+ * the machine rather than guessed at as a literal.
+ */
+setDefaultTimeout(gitFixtureTestTimeout());
 
 const ROOT = join(import.meta.dir, "..");
 const WORKFLOW = join(ROOT, ".github/workflows/ai-review.yml");
