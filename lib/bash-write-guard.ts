@@ -1081,6 +1081,45 @@ export function commandWord(segment: string): string {
  * then dequoted, because `> "x/.gate-salt"` writes the same file as `>
  * x/.gate-salt`.
  */
+
+/**
+ * The index just past a quoted span whose OPENING quote is at `i`.
+ *
+ * #1239: both scanners below used to find the partner with `indexOf`, and
+ * `indexOf` cannot tell `"` from `\"`. Inside a double-quoted span the
+ * escaped quote was read as the closing one, every subsequent quote was
+ * paired off by one, and the scanner ran off the end of the line — taking
+ * the `>` operator with it. No operator, no target, ALLOW. Seven spellings
+ * that bash runs and that overwrite the file reached a real write that way,
+ * across both call sites; `test/bash-write-guard.test.ts` holds the table.
+ *
+ * The asymmetry is bash's and is the whole of the fix: a single-quoted span
+ * takes NO escapes, so `'a\'` is a complete span whose contents are `a\`,
+ * while in a double-quoted span `\` escapes whatever follows it.
+ *
+ * Unterminated spans return `s.length` — the pre-existing, fail-closed
+ * direction. Those spellings are syntax errors that bash refuses to run, so
+ * nothing executable depends on the choice; it is kept because changing it
+ * in this commit would make the regression battery green for two reasons
+ * and leave nobody able to say which one held.
+ *
+ * One function, two callers, so a mutation of it moves both.
+ */
+function endOfQuoted(s: string, i: number): number {
+  const q = s[i];
+  for (let j = i + 1; j < s.length; j++) {
+    // Every span except the single-quoted one takes escapes — that is the
+    // asymmetry stated above, and spelling it as "not `'`" rather than as a
+    // list is what let the BACKTICK span join without a second scanner.
+    if (q !== "'" && s[j] === '\\') {
+      j++; // the escaped character, whatever it is, is not a delimiter
+      continue;
+    }
+    if (s[j] === q) return j + 1;
+  }
+  return s.length;
+}
+
 /**
  * Read one word starting at `i`, honouring quotes. Returns the word's
  * CONTENTS — quote characters removed, contents kept — and the index after
@@ -1110,15 +1149,37 @@ export function commandWord(segment: string): string {
  * weaker: it cannot match a substitution containing parentheses at all, so
  * `$(cp -s $(echo V) /tmp/esc)` matched only the INNER one and the outer
  * body was never read. One reader.
+ *
+ * ## The escape handling is #1239's and it is load-bearing here (#1361)
+ *
+ * This function was extracted on `main` from a copy of the walk that
+ * predated #1239, so it opened spans on `\"` and found their ends with
+ * `indexOf`. Merging the two branches by taking the extraction unchanged
+ * would have reinstated the bypass it had already fixed on the other side:
+ * `echo \" > <protected>` opens a span that never closes, the scanner
+ * swallows the `>`, no operator means no target, and the write is allowed.
+ * One reader is still right — the reader just has to be the fixed one.
+ *
+ * So: a backslash OUTSIDE a span escapes the next character, and the end of
+ * a span is `endOfQuoted`, which honours `\"` inside double quotes and
+ * correctly does not inside single ones, because bash processes no escapes
+ * there.
  */
 function endOfSubstitution(s: string, i: number): number {
   let depth = 0;
   let j = i;
   for (; j < s.length; j++) {
     const q = s[j];
+    // #1239: outside a quoted span a backslash escapes the next character,
+    // so `\"` does not OPEN a span and `\)` does not close the substitution.
+    if (q === '\\') {
+      j++; // the loop's j++ steps past the escaped character
+      continue;
+    }
     if (q === "'" || q === '"') {
-      const close = s.indexOf(q, j + 1);
-      j = close === -1 ? s.length : close; // the loop's j++ steps past it
+      // `endOfQuoted` returns the index AFTER the closing quote; the loop's
+      // j++ would then step over the character following it, so back up one.
+      j = endOfQuoted(s, j) - 1;
       continue;
     }
     if (s[j] === '(') depth++;
@@ -1246,6 +1307,17 @@ function readWord(s: string, i: number): [string, number] {
     const c = s[i];
     if (c === ' ' || c === '\t' || c === '\n') break;
     if (c === '>' || c === '<') break; // an operator ends a word
+    // #1239: a backslash escapes the next character, so `\"` is a literal
+    // quote and does not open a span. Without this, `echo \" > <protected>`
+    // opened a span that never closed and the scanner swallowed the `>` —
+    // the shortest bypass in the family, needing no `$( )` at all. The text
+    // is kept verbatim because this module expands nothing; what matters is
+    // that the escaped character cannot act as a delimiter.
+    if (c === '\\' && i + 1 < s.length) {
+      w += c + s[i + 1];
+      i += 2;
+      continue;
+    }
     // ANSI-C quoting, the FOURTH transform. `$'-s'` is the word `-s`, and
     // reading the `$` as an ordinary character left the token `$-s`, which
     // fails `isLinkFlag`'s `startsWith('-')` precondition before any flag
@@ -1256,6 +1328,13 @@ function readWord(s: string, i: number): [string, number] {
     //
     // A `\'` inside the body is an escaped quote, so the closing quote is
     // found by walking rather than by `indexOf`.
+    //
+    // ORDER AGAINST THE CLAUSE ABOVE DOES NOT MATTER and the merge that put
+    // them together should say so: one tests `\` and the other `$`, so no
+    // input reaches both. What does matter is that BOTH precede the quote
+    // clause below, or an escaped or ANSI-C quote opens a span and the
+    // scanner swallows the redirect — which is #1239's bypass arriving by a
+    // second route (#1361 merge).
     if (c === '$' && s[i + 1] === "'") {
       let k = i + 2;
       for (; k < s.length && s[k] !== "'"; k++) if (s[k] === '\\') k++;
@@ -1263,11 +1342,18 @@ function readWord(s: string, i: number): [string, number] {
       i = k + 1; // unterminated leaves i past the end, which ends the word
       continue;
     }
+    // #1239: `echo "x\"" > <protected>` needs no substitution at all — the
+    // shortest bypass in the family, and the issue that filed the `$( )`
+    // spellings did not name it. `endOfQuoted` honours the backslash.
     if (c === "'" || c === '"') {
-      const close = s.indexOf(c, i + 1);
-      const end = close === -1 ? s.length : close;
-      w += s.slice(i + 1, end);
-      i = end + 1;
+      const end = endOfQuoted(s, i);
+      // The span's CONTENTS, outer quotes removed. The escape is kept rather
+      // than resolved: this module expands nothing, and keeping the text
+      // verbatim is what lets `isScratchPath` go on reading an unexpanded
+      // path as unprovable (#1175). What had to be right here is the word
+      // BOUNDARY, so the operator after it is still seen.
+      w += s.slice(i + 1, end === s.length ? s.length : end - 1);
+      i = end;
       continue;
     }
     // #1205: a command substitution is part of the word it sits in, however
@@ -1281,16 +1367,39 @@ function readWord(s: string, i: number): [string, number] {
     // expand anything, and keeping the `$`/backtick is what lets #1175's
     // `isScratchPath` go on reading an unexpanded path as unprovable.
     if (c === '`') {
-      const close = s.indexOf('`', i + 1);
-      // Unterminated: consume to the end. A substitution this module cannot
-      // see the end of is not one it can read a word boundary out of, so it
-      // takes the rest — the fail-closed direction.
-      const end = close === -1 ? s.length : close + 1;
+      // #1361's AI review found this one, and it is right: this was the last
+      // `indexOf` partner-finder in the module. `indexOf` cannot tell `` ` ``
+      // from ``\` ``, so an escaped backtick inside the substitution was read
+      // as the closer, the word ended in the wrong place, and the `>` that
+      // followed was never seen. No operator, no target, ALLOW — the exact
+      // shape #1239 fixed for `"`, `'` and `$(...)`, surviving in the one
+      // branch those fixes did not touch.
+      //
+      // Verified both halves before fixing, because a guard missing a command
+      // bash refuses to run is not a bypass. All three spellings return no
+      // targets at all AND are performed by bash:
+      //
+      //     echo `echo a\`b`    > <run-store>/workflow-state.json
+      //     echo `echo \``      > <run-store>/workflow-state.json
+      //     echo `echo \`\`x`   > <run-store>/workflow-state.json
+      //
+      // `endOfQuoted` already walks escapes; a backtick span escapes exactly
+      // as a double-quoted one does, so this is a third caller of the one
+      // scanner rather than a fourth hand-rolled one. It returns `s.length`
+      // for an unterminated span, which is the same fail-closed direction
+      // this branch already took.
+      const end = endOfQuoted(s, i);
       w += s.slice(i, end);
       i = end;
       continue;
     }
     if (c === '$' && s[i + 1] === '(') {
+      // #1361 merge: main extracted this walk into `endOfSubstitution` so
+      // `nestedCommands` could reuse it — one reader, which is the right
+      // call and is kept. #1239's backslash handling, which this branch had
+      // added to the inline copy, is ported INTO that function rather than
+      // left behind here. Taking main's line unchanged would have silently
+      // reinstated the bypass.
       const j = endOfSubstitution(s, i);
       w += s.slice(i, j); // unterminated falls out here with j === s.length
       i = j;
@@ -1586,6 +1695,68 @@ function shellBody(segment: string): string {
  * and `.claude/rules/checks-must-be-able-to-fail.md` would call it a
  * detector narrower than what it detects. It is the widest setting the
  * measured false-positive rate allows.
+ *
+ * ## #1214: an imported project function is outside what this arm can decide
+ *
+ * The concession above says an interpreter can evade this arm by calling
+ * through a variable or putting the program in a file. #1214 filed a case
+ * needing neither — a plain call to a project function the enumeration has
+ * never heard of:
+ *
+ *     bun -e "
+ *     import {initWorkflow, writeACs} from '<harness>/gates/orchestrator.ts';
+ *     const sf = '<run store>/workflow-state.json';
+ *     initWorkflow(sf, {…});
+ *     writeACs(sf, JSON.parse(process.argv[1]));"
+ *
+ * `initWorkflow` and `writeACs` both write `sf`, `sf` is a live run-store
+ * artifact, and nothing in the list above matches. ALLOW.
+ *
+ * The issue's framing 1 — derive the suspicious-call set from the body's OWN
+ * `import` statement, so the module enumerates nothing and stays
+ * project-agnostic — was implemented and swept over 130,247 real commands
+ * from this machine's 31,793 transcripts:
+ *
+ *     newly BLOCKED  616          newly ALLOWED  0
+ *       600  call a writing orchestrator symbol  (writeWorkflowState 301,
+ *            initWorkflow+writeACs 285, the rest in ones and twos)
+ *        10  call a reading one (readWorkflow, loadWorkflow, …)
+ *         6  probe this module or take a hook census
+ *     0 of the 616 are scratch fixtures; every one names the live run store.
+ *
+ * 97% precision by that reading, and it is still **not shippable** — for a
+ * reason no count could show. The 600 are not evasions. They are this
+ * harness's own prescribed mechanism:
+ *
+ *   - `workflows/ship.js` EMITS the filed command, at the GOAL phase, under
+ *     an instruction reading "Run this EXACTLY as written". The payload
+ *     spelling `JSON.parse(process.argv[1])` is generated by
+ *     `acPayloadReadExpression()` in `lib/evidence-command-transport.ts`, so
+ *     the fingerprint belongs to the harness and to nothing else.
+ *   - `gates/SCHEMA-GUIDE.md` prescribes `writeWorkflowState` via `bun -e`
+ *     in place of the Write tool or `cat >`.
+ *   - `lib/gate-result-protection.ts` and `lib/gate-enforcement.ts` PRINT
+ *     that command to the agent as the sanctioned repair.
+ *
+ * So the predicate would refuse the GOAL phase of every run, and the guard
+ * would be refusing the exact command its sibling modules hand out as the
+ * remedy. The filed case and the sanctioned repair are the same operation,
+ * differing only in which orchestrator symbol is called — and separating
+ * them means enumerating one consumer's API, which is what #1214 forbids and
+ * is wrong in every other tree besides.
+ *
+ * **The result is therefore framing 2, and it belongs here rather than in an
+ * open issue: a program that imports project code is outside what a
+ * command-line guard can decide.** Nothing read off the command line
+ * distinguishes a sanctioned write from an unsanctioned one when both are
+ * the same call to the same function on the same path. That is a question
+ * about the command's PROVENANCE, not its text, so closing it needs the
+ * harness to mark the commands it issued — a different mechanism from
+ * parsing, and not one this module can reach.
+ *
+ * `test/bash-write-guard.test.ts` pins the conclusion rather than leaving it
+ * as prose: the sanctioned commands must stay ALLOWED, so the next person to
+ * reach for the obvious fix gets a red suite naming what it costs.
  */
 const WRITE_INTENT =
   /\b(?:writeFileSync|appendFileSync|createWriteStream|copyFileSync|renameSync|unlinkSync|rmSync|truncateSync|write_text|json\.dump|os\.remove|os\.rename|os\.replace|os\.unlink|shutil\.(?:copy|move|rmtree))\b|(?<!stdout)(?<!stderr)\.write\s*\(|\bopen\s*\([^)]*['"][wax]\+?['"]/;
@@ -2421,6 +2592,17 @@ export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): Bas
     }
 
     if (isInterpreter || isMutatingFind) {
+      // #1214 asked for a third reading here — an imported project symbol
+      // called with a protected path — and it was built, measured and
+      // REJECTED. See `WRITE_INTENT` for the numbers and for the one fact
+      // that decided it.
+      //
+      // #1361 merge: this branch read the exemption with `bodyIsAllScratch`
+      // (#1269). `main` has since replaced that with the TARGET question
+      // below (#1277), which its own comment says closes the class #1269's
+      // predicate only sampled. Main's is kept and `bodyIsAllScratch` is
+      // deleted rather than left defined-and-uncalled — a superseded
+      // predicate still in the file is the next reader's second decider.
       // #1277: the exemption asks whether the body's write TARGET can be
       // shown to be scratch — see `bodyTargets`. It replaces #1276's
       // all-absolute-literals stopgap, which this closes the class of.

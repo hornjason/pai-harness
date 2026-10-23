@@ -253,6 +253,10 @@ function runReport(opts: {
     AI_REVIEW_MODE: "vertex",
     AI_REVIEW_ACTION_OUTCOME: "success",
     [AI_REVIEW_FINDINGS_PATH_VAR]: findings,
+    // #1242. The runner always sets this, and since #1242 the waiver branches
+    // write the marker that disarms auto-merge into it and REFUSE when they
+    // cannot. A runner that omits it drives a script no runner ever runs.
+    GITHUB_OUTPUT: join(dir, "github_output"),
   };
   if (opts.execution !== null) {
     const exec = join(dir, "claude-execution-output.json");

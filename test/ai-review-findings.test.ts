@@ -13,12 +13,14 @@ import {
   AI_REVIEW_FINDINGS_KEY,
   AI_REVIEW_SEVERITIES,
   AI_REVIEW_VERDICT_KEY,
+  advisoryNotice,
   aiReviewExitCode,
   aiReviewRefusal,
   escapeAnnotation,
   main,
   readAiReviewFindings,
   readAiReviewFindingsFile,
+  scopeMeasured,
   renderFinding,
   severityBlocks,
 } from "../lib/scaffold/ai-review-findings";
@@ -934,5 +936,309 @@ describe("#1166: a blocking finding that breaks the payload contract is its own 
     ).toBe("BLOCKED");
     expect(mutant.readAiReviewFindings(payloadOf("BLOCK", [blockingFinding("critical")])).outcome)
       .toBe("BLOCKED");
+  });
+});
+
+/**
+ * Covers CRC-B7 (CODE-REVIEW-CONVERGENCE-SPEC.md).
+ *
+ * > Surviving findings are sorted by severity and tagged Important / Nit /
+ * > Pre-existing, so a pre-existing bug does not read as the change's fault.
+ *
+ * ## The mechanism existed and nothing called it
+ *
+ * `severityOf` in `lib/finding-jury.ts` has computed `Pre-existing` since
+ * #1187 — `cited.length > 0 && !cited.some(p => changed.has(p))`, which is
+ * exactly "this finding names no file the PR touched". Measured on `main`
+ * 2026-10-23: **zero production callers** outside its own module. Meanwhile
+ * this reader blocked on the reviewer's self-declared severity with no notion
+ * of pre-existing at all. Two deciders, one dead — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * The cost was not theoretical. Nine PRs sat BLOCKED on findings naming files
+ * their diffs did not contain, because `ai-review` reads the MERGE REF and so
+ * adjudicates `main`'s defects against whichever PR is standing closest.
+ *
+ * ## Why the finding's own `file`, and not `citedPaths`
+ *
+ * `citedPaths` text-mines a path out of prose because the arbiter's findings
+ * arrive as prose. This contract **declares** `file`, and
+ * `blockingContractViolations` already refuses a blocking finding without
+ * one. Mining a declared field would be a second decider for a question the
+ * payload answers.
+ *
+ * ## The direction this is allowed to be wrong in
+ *
+ * Toward BLOCKING. An absent changed-file list does not silently tag
+ * everything in-scope: it is said out loud, and everything blocks as before.
+ * A pre-existing tag computed from a reading nobody took would turn a real
+ * finding into an advisory line, which is the one outcome worse than the jam
+ * this fixes.
+ */
+describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not blocking", () => {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const at = (file: string, severity = "critical") => ({
+    [f.severity]: severity,
+    [f.file]: file,
+    [f.line]: 12,
+    [f.summary]: `a defect in ${file}`,
+    [f.failureScenario]: `calling it with 0 returns 1 in ${file}`,
+  });
+
+  test("B7-1: a critical naming an UNTOUCHED file does not block", () => {
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), scopeMeasured([
+      "lib/cli-commands.ts",
+      "test/ai-review-finding-scope.test.ts",
+    ]));
+    expect(r.outcome).toBe("CLEAN");
+    expect(r.blocked).toBe(false);
+    expect(r.blockingReported).toEqual([]);
+  });
+
+  test("B7-2 CONTROL: the same critical naming a TOUCHED file still blocks", () => {
+    // The only axis that moves between B7-1 and this row is whether the
+    // declared file is in the list. Without it B7-1 would be witnessing "a
+    // changed-file list makes findings go away".
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), scopeMeasured([
+      "lib/bash-write-guard.ts",
+    ]));
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blockingReported).toHaveLength(1);
+  });
+
+  test("B7-3: the pre-existing finding is still REPORTED, never dropped", () => {
+    // CRC-B8 — a finding is never silently dropped. Demoted is not deleted:
+    // it leaves `blockingReported` and stays in `reported`, so the advisory
+    // tail still carries it and a maintainer still sees it.
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), scopeMeasured(["lib/mine.ts"]));
+    expect(r.reported).toHaveLength(1);
+    expect(r.blockingReported).toEqual([]);
+  });
+
+  test("B7-4: the demotion is said out loud, naming the file and the tag", () => {
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), scopeMeasured(["lib/mine.ts"]));
+    const said = `${advisoryNotice(r) ?? ""}\n${r.detail.join("\n")}`;
+    expect(said).toContain("Pre-existing");
+    expect(said).toContain("lib/other.ts");
+  });
+
+  test("B7-5: a mixed payload blocks on the touched one and demotes the other", () => {
+    const r = readAiReviewFindings(
+      payloadOf("BLOCK", [at("lib/untouched.ts"), at("lib/touched.ts")]),
+      scopeMeasured(["lib/touched.ts"]),
+    );
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blockingReported).toHaveLength(1);
+    expect((r.blockingReported?.[0] as Record<string, unknown>)[f.file]).toBe("lib/touched.ts");
+  });
+
+  test("B7-6: NO changed-file list means everything blocks, exactly as before", () => {
+    // The whole existing suite is this case, so the regression surface is
+    // every other test in this file. Stated here as its own row anyway: an
+    // absent reading must not become a permissive one.
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/anything.ts")]));
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.blockingReported).toHaveLength(1);
+  });
+
+  test("B7-7: an EMPTY changed-file list is UNMEASURED, not 'nothing was touched'", () => {
+    // `[]` and absent are different facts and neither is "no file in this PR
+    // matches". A PR always touches something, so an empty list is a reading
+    // that failed — and under it every finding would demote, which is the
+    // fail-open this module exists to refuse.
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/anything.ts")]), scopeMeasured([]));
+    expect(r.outcome).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons).toContain("CHANGED_FILES_EMPTY");
+  });
+
+  test("B7-8: the comparison is case-insensitive, as the jury's already is", () => {
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("Lib/Mixed.TS")]), scopeMeasured(["lib/mixed.ts"]));
+    expect(r.outcome, "a case difference is not a different file on this platform").toBe("BLOCKED");
+  });
+
+  /**
+   * B7-10..B7-16 — the demotion fails CLOSED on anything it cannot read.
+   *
+   * The first cut of this stage did `String(finding[file]).toLowerCase()` and
+   * compared it to a raw list. Every input below then DEMOTED a `critical` to
+   * CLEAN, because a spelling the comparison cannot read is a spelling that
+   * is never in the set:
+   *
+   *     CLEAN  0 blocking   file: {}
+   *     CLEAN  0 blocking   file: 123
+   *     CLEAN  0 blocking   "./lib/mine.ts"
+   *     CLEAN  0 blocking   "lib/mine.ts:12"
+   *     CLEAN  0 blocking   "lib\\mine.ts"
+   *     CLEAN  0 blocking   "/lib/mine.ts"
+   *
+   * Six for six, against a changed-file list containing `lib/mine.ts`. The
+   * docblock already said the direction this may be wrong in is TOWARD
+   * blocking; the code said the opposite for every input it could not parse.
+   *
+   * This is the same lesson as the one about matching a parser rather than a
+   * spelling, applied to paths: `./x`, `x`, `/x` and `x:12` are one file and
+   * four strings, and an equality test over raw strings is a different
+   * question from the one being asked.
+   */
+  const undecidable = (file: unknown) =>
+    readAiReviewFindings(
+      JSON.stringify({
+        verdict: "BLOCK",
+        findings: [
+          {
+            [f.severity]: "critical",
+            [f.file]: file,
+            [f.line]: 1,
+            [f.summary]: "s",
+            [f.failureScenario]: "fs",
+          },
+        ],
+      }),
+      scopeMeasured(["lib/mine.ts"]),
+    );
+
+  test("B7-10: a non-string file is UNMEASURED, never a demotion", () => {
+    for (const file of [{}, 123, [], true]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("UNMEASURED");
+      expect(r.unmeasuredReasons).toContain("BLOCKING_FINDING_INCOMPLETE");
+    }
+  });
+
+  test("B7-11: a path spelt differently is the SAME file, and still blocks", () => {
+    // Each of these is `lib/mine.ts`, which the list contains. A demotion
+    // here would be the gate answering a question nobody asked.
+    for (const file of ["./lib/mine.ts", "/lib/mine.ts", "lib\\mine.ts", "  lib/mine.ts  "]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("BLOCKED");
+      expect(r.blockingReported).toHaveLength(1);
+    }
+  });
+
+  test("B7-11b: dot segments COLLAPSE — one strip is a bypass, not a normalisation", () => {
+    // Round two's own fail-open, found by the push review. Measured on this
+    // file before the fix, against a list containing `lib/mine.ts`:
+    //
+    //   "././lib/mine.ts"    -> "./lib/mine.ts"
+    //   "lib/./mine.ts"      -> "lib/./mine.ts"
+    //   "lib/../lib/mine.ts" -> "lib/../lib/mine.ts"
+    //
+    // `.replace(/^\.\//, "")` strips ONE leading `./`, and `.` and `..` are
+    // both legal matches for `[\w.@+-]+`, so each survived the shape test,
+    // compared unequal to the path it names, and demoted a critical finding
+    // to CLEAN. B7-11's four spellings all happened to be one-step fixes.
+    for (const file of [
+      "././lib/mine.ts",
+      "./././lib/mine.ts",
+      "lib/./mine.ts",
+      "lib/../lib/mine.ts",
+      "./lib/../lib/./mine.ts",
+      "lib//mine.ts",
+    ]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("BLOCKED");
+      expect(r.blockingReported, `file: ${JSON.stringify(file)}`).toHaveLength(1);
+    }
+  });
+
+  test("B7-11c: a `..` leaving the repository root is refused, not clamped", () => {
+    // Clamping `../outside.ts` to `outside.ts` would invent a path, and the
+    // invented one may well be in the change list. Undecidable keeps blocking.
+    for (const file of ["../outside.ts", "lib/../../outside.ts", ".."]) {
+      expect(undecidable(file).outcome, `file: ${file}`).toBe("BLOCKED");
+    }
+  });
+
+  test("B7-12: a trailing :line or :line:col is stripped before comparing", () => {
+    for (const file of ["lib/mine.ts:12", "lib/mine.ts:12:4"]) {
+      expect(undecidable(file).outcome, `file: ${file}`).toBe("BLOCKED");
+    }
+  });
+
+  test("B7-13: a file that normalises to nothing readable KEEPS BLOCKING", () => {
+    // Undecidable is not pre-existing. If the path cannot be resolved to a
+    // repo-relative shape at all, the honest answer is "I could not tell",
+    // and the direction that is allowed to be wrong in is toward blocking.
+    const r = undecidable('"lib/\\303\\251.ts"'); // git C-quoted, not comparable
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.detail.join(" ")).toContain("could not be read as a repository path");
+  });
+
+  test("B7-13b: the SHAPE refusal is reachable too, not only the C-quote one", () => {
+    // Added because a mutation said so. Replacing the shape test's refusal
+    // with `return p.toLowerCase()` moved ZERO rows: B7-13 and B7-14 both
+    // refuse at the C-quote branch one line earlier, so the regex arm was
+    // uncovered and a mutation of it was green by construction — the seventh
+    // shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+    //
+    // These are not C-quoted and are not repository paths. Each must keep
+    // blocking rather than demote.
+    for (const file of ["lib/my file.ts", "$HOME/x.ts", "lib/<generated>.ts", "???"]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("BLOCKED");
+    }
+  });
+
+  test("B7-14: an UNREADABLE entry in the changed-file list is UNMEASURED", () => {
+    // The mirror of B7-13 on the other side of the comparison. A list the
+    // reader cannot normalise is a list it cannot compare against, and
+    // comparing anyway would demote every finding.
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        verdict: "BLOCK",
+        findings: [
+          {
+            [f.severity]: "critical",
+            [f.file]: "lib/mine.ts",
+            [f.line]: 1,
+            [f.summary]: "s",
+            [f.failureScenario]: "fs",
+          },
+        ],
+      }),
+      scopeMeasured(['"lib/\\303\\251.ts"']),
+    );
+    expect(r.outcome).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons).toContain("CHANGED_FILES_UNREADABLE");
+  });
+
+  test("B7-15 CONTROL: normalising did not make everything match", () => {
+    // The risk in B7-11 is a normaliser so eager that two different files
+    // collide. This is the row that would catch it: a genuinely different
+    // path must still demote.
+    const r = undecidable("./lib/other.ts");
+    expect(r.outcome).toBe("CLEAN");
+    expect(r.blockingReported).toEqual([]);
+  });
+
+  test("B7-16 CONTROL: a path-shaped list entry is normalised the same way", () => {
+    // Both SIDES go through one function. If only the finding were
+    // normalised, a list spelt `./lib/mine.ts` would stop matching.
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        verdict: "BLOCK",
+        findings: [
+          {
+            [f.severity]: "critical",
+            [f.file]: "lib/mine.ts",
+            [f.line]: 1,
+            [f.summary]: "s",
+            [f.failureScenario]: "fs",
+          },
+        ],
+      }),
+      scopeMeasured(["./lib/mine.ts"]),
+    );
+    expect(r.outcome).toBe("BLOCKED");
+  });
+
+  test("B7-9: a non-blocking severity is unaffected by the tag", () => {
+    // `info` never blocked, so demoting it changes nothing and must not be
+    // counted as this stage having done something.
+    const r = readAiReviewFindings(payloadOf("PASS", [at("lib/untouched.ts", "info")]), scopeMeasured([
+      "lib/mine.ts",
+    ]));
+    expect(r.outcome).toBe("CLEAN");
+    expect(r.reported).toHaveLength(1);
   });
 });

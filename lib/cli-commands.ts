@@ -143,17 +143,19 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
   // because a scaffolded consumer has no copy of rungate's sources at a path
   // the workflow could hardcode. This registry is the path (#675).
   //
-  // No `projectRootFlag`: the argument is the findings payload, which lives
-  // outside the checkout by design (`RUNNER_TEMP`), and appending
-  // `--project-root <cwd>` would arrive as a second positional and be read as
-  // a second payload.
+  // No `projectRootFlag`: the arguments are the findings payload and the
+  // changed-path list, both of which live outside the checkout by design
+  // (`RUNNER_TEMP`), and appending `--project-root <cwd>` would arrive as a
+  // third positional. That absence is now load-bearing twice over — it is
+  // also why the changed-path list may safely BE a positional.
   "ai-review-findings": {
     script: "scripts/ai-review-findings.ts",
     summary: "Adjudicate an AI review's findings payload — exits non-zero on a blocking finding",
-    // `--changed-files` is the pull request's changed-path list (#1204), and
-    // it is OPTIONAL: no generated job supplies it yet, and an absent list
-    // reports its own state rather than switching a check off in silence.
-    usage: "rungate ai-review-findings <path-to-findings.json> [--changed-files <path>]",
+    // The second positional is the pull request's changed-path list, one path
+    // per line (#1204, #1435). It is OPTIONAL: no generated job supplies it
+    // yet, and an absent list reports its own state rather than switching a
+    // check off in silence.
+    usage: "rungate ai-review-findings <path-to-findings.json> [<path-to-changed-files.txt>]",
   },
 };
 

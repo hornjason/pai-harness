@@ -255,6 +255,26 @@ function attemptOf(title: string, body: string): FilingAttempt {
 }
 
 /**
+ * What a plant says to satisfy the `NO_CLAIM` gate (#1434), and why it is here.
+ *
+ * `adjudicateFiling` withholds a NOVEL filing that names no `SUCCESS.md`
+ * claim. Two plants here are novel by construction — `plant-allowed` is the
+ * known positive that proves the adjudicator is LIVE rather than refusing
+ * everything, and the duplicate plant must be ALLOWed when its twin is
+ * withheld, which is what makes the twin the thing that lands it.
+ *
+ * Without this line both land on `NO_CLAIM` instead of their intended stage.
+ * The batch then has an empty `allowed` set, every plant "agrees", and the
+ * capture reports a variance of zero — which is this file's one failure mode,
+ * stated in its own docblock: *a zero that came from an instrument that
+ * stopped reporting, rather than from an adjudicator that did not move.*
+ *
+ * It is a constant rather than inline text so the two plants cannot drift
+ * apart, and so a reader finds one explanation rather than two half ones.
+ */
+const PLANT_CLAIM_LINE = "Claim 1.";
+
+/**
  * The twin the duplicate plant collides with.
  *
  * Synthetic and carried in the plant's own `extraExisting`, so the plant is a
@@ -267,7 +287,8 @@ export const DUPLICATE_PLANT_TWIN: Finding = {
   title: "`zqxjPlantTwin` miscounts and the mismatch is silent",
   body:
     "`zqxjPlantTwin()` in `lib/zqxj-plant-twin.ts` reports 60571 rows where the fixture holds 60572, " +
-    "across 60573 entries. Measured 60571 against 60572 on 60573.",
+    "across 60573 entries. Measured 60571 against 60572 on 60573. " +
+    PLANT_CLAIM_LINE,
 };
 
 /**
@@ -302,7 +323,8 @@ export function plantsFor(_existing: readonly Finding[], batch: string): BatchRo
       attempt: attemptOf(
         "`zqxjVarianceProbe` returns the wrong count and the off-by-one is silent",
         "`zqxjVarianceProbe()` in `lib/zqxj-variance-probe.ts` reports 81731 rows where the fixture holds " +
-          "81732. Measured 81731 against 81732 on a corpus of 40771 entries.",
+          "81732. Measured 81731 against 81732 on a corpus of 40771 entries. " +
+          PLANT_CLAIM_LINE,
       ),
       holdOut: null,
     },

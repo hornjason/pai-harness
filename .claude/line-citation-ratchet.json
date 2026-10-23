@@ -19,10 +19,10 @@
       "anchors": 0
     },
     "PROJECT-STATE.md": {
-      "broken": 1,
-      "unmeasured": 1,
+      "broken": 0,
+      "unmeasured": 0,
       "anchors": 0,
-      "note": "DA-owned (#296). An agent in a worktree must never write this file, so its citations are banked here and reported as prose rather than repaired in passing. Lowered 6 -> 1 in session 56: PROJECT-STATE.md renders only the newest three sessions, so banking a number for it tracks which sessions are currently rendered as much as it tracks decay. Expect it to move whenever a session lands."
+      "note": "DA-owned (#296). An agent in a worktree must never write this file, so its citations are banked here and reported as prose rather than repaired in passing. Lowered 6 -> 1 in session 56: PROJECT-STATE.md renders only the newest three sessions, so banking a number for it tracks which sessions are currently rendered as much as it tracks decay. Lowered 1 -> 0 in session 59, when the priorities block was rewritten to the CRC phase plan and the last line-numbered citation left the rendered window. Expect it to move whenever a session lands: a session whose summary cites a line number puts it straight back."
     },
     "SUCCESS.md": {
       "broken": 4,
