@@ -6,7 +6,7 @@ paths:
   - "gates/**"
   - "hooks/**"
   - "scripts/**"
-generated-sha: 1556c2833874e423
+generated-sha: 907549e23abc5876
 ---
 
 Read the governing spec BEFORE making changes in that area.
@@ -17,6 +17,7 @@ Read the governing spec BEFORE making changes in that area.
 | AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | true |
 | BOOTSTRAP-DATA-FLOW-SPEC.md | STATES NO CRITERIA — Redirect stub — this spec was split into specs/bootstrap-data-flow/; it governs nothing itself and exists to point reade | false |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content as | true |
+| CODE-REVIEW-CONVERGENCE-SPEC.md | Automated code review convergence — the mechanisms from Anthropic's "Solving code review" that RunGate adopts, what each | true |
 | CONFIG-DIRECTORY-STRUCTURE-SPEC.md | rungate config architecture — directory-based config replacing monolithic rungate.json, self-describing compliance polic | true |
 | CONFIG-DRIVEN-TESTING-SPEC.md | Test architecture — config-driven testing, matcher expansion, zero SC fallthrough, phase test migration | true |
 | DA-COMPLIANCE-SPEC.md | DA compliance evaluation — role-specific grading criteria for DA, Marcus, and Quinn agents with scoring dashboard | false |
