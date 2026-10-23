@@ -29,6 +29,31 @@
  * closed is reported DEAD and holds nothing, so an entry nobody pruned costs
  * a line of output rather than a file nobody may ever work on again.
  *
+ * ## Every lookup in this file, and what it does when it cannot resolve
+ *
+ * The AI review on PR #1436 said this three times before I listened: five
+ * separate instances of ONE class were found across seven rounds — a git or
+ * `gh` lookup that could not be resolved defaulting to the safe-looking
+ * answer — and each was fixed as a patch to the site that was caught, rather
+ * than by auditing the file for the shape. The audit, done once:
+ *
+ * | lookup                        | cannot resolve      | round found |
+ * |-------------------------------|---------------------|-------------|
+ * | `defaultBranch` origin/HEAD   | REFUSE, names the fix | 7 (low)   |
+ * | `repoSlug` from origin        | null -> UNMEASURED  | push review |
+ * | `refreshRefs` fetch           | `fetched: false`, an input | 2 (critical) |
+ * | `rev-parse origin/<owner>`    | UNMEASURED unless fetched | 2 (critical) |
+ * | `pullsForBranch` via gh       | null -> UNMEASURED  | —           |
+ * | `readFromRemote` ref resolve  | UNMEASURED          | 5 (high)    |
+ * | `readFromRemote` path read    | absent only on a resolved ref | 5 (high) |
+ * | `readLocal`                   | ENOENT absent, else throws | —    |
+ * | `writeStore` round trip       | refuses to write    | 1 (medium)  |
+ *
+ * Nothing in this file may answer "free" from a reading it did not take.
+ * `test/file-claims.test.ts` holds that list as an executed census, so a
+ * tenth lookup added later has to join it or redden the suite — which is the
+ * difference between closing a class and patching its instances.
+ *
  * That answer comes from the tracker and not from the commit graph, which
  * squash-merging has already destroyed the evidence in. Two git-only rules
  * were tried and both reported merged branches live forever; the second was
@@ -121,11 +146,23 @@ function git(project: string, ...args: string[]): { ok: boolean; out: string } {
   return { ok: r.status === 0, out: (r.stdout ?? "").trim() };
 }
 
-/** The remote's default branch, read rather than assumed to be `main`. */
-function defaultBranch(project: string): string {
+/**
+ * The remote's default branch, or `null` when it is not recorded here.
+ *
+ * It used to claim to be "read rather than assumed to be `main`" and then
+ * return `"main"` whenever `origin/HEAD` was not set — the fifth instance in
+ * this file of one unresolvable lookup defaulting to the safe-looking
+ * answer, and the AI review was right to keep saying so. `origin/HEAD` is
+ * not set by a plain `git clone --mirror`, nor in many CI checkouts, so this
+ * is not a rare path; on a project whose default branch is not `main` it
+ * reads the registry from a branch that may not exist, or worse, one that
+ * does and is stale.
+ *
+ * `null` here, and the caller refuses and says which command fixes it.
+ */
+function defaultBranch(project: string): string | null {
   const r = git(project, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD");
-  if (r.ok && r.out) return r.out.replace("refs/remotes/origin/", "");
-  return "main";
+  return r.ok && r.out !== "" ? r.out.replace("refs/remotes/origin/", "") : null;
 }
 
 /**
@@ -259,6 +296,20 @@ function ownerLiveness(
   return { live, unmeasured };
 }
 
+/** {@link defaultBranch}, or a refusal that names the command which fixes it. */
+function requireDefaultBranch(project: string): string {
+  const branch = defaultBranch(project);
+  if (branch === null) {
+    throw new Error(
+      "origin/HEAD is not set in this tree, so the remote's default branch is UNMEASURED. " +
+        "Not assuming `main`: reading the registry from a branch that is not the default is how " +
+        "a claim goes unseen, and this project's default branch is not this script's to guess. " +
+        "Run `git remote set-head origin -a`, or pass `--ref <ref>` explicitly.",
+    );
+  }
+  return branch;
+}
+
 /**
  * Refresh every remote-tracking ref, and say whether it worked.
  *
@@ -381,12 +432,17 @@ if (import.meta.main) {
   let exit = 0;
   try {
     const args = parseArgs(process.argv.slice(2));
-    const base = args.ref ?? `origin/${defaultBranch(args.project)}`;
+    // Lazy, because `--claim` and `--release` write the LOCAL file and never
+    // read a ref. Resolving eagerly made the default-branch refusal fire on
+    // the two modes that do not need it — a refusal in the wrong place is
+    // still a tool nobody can use.
+    const baseRef = () => args.ref ?? `origin/${requireDefaultBranch(args.project)}`;
     // One refresh for the whole run, and whether it worked is an input to
     // every liveness answer below. See `ownerLiveness`.
     const fetched = args.fetch ? refreshRefs(args.project) : false;
 
     if (args.check.length > 0) {
+      const base = baseRef();
       const reading = readFromRemote(args.project, base);
       if (reading.status === "unreadable") {
         console.log(`UNMEASURED: the claim registry on ${base} could not be read — ${reading.reason}`);
@@ -451,6 +507,7 @@ if (import.meta.main) {
       writeStore(args.project, kept);
       console.log(`released ${reading.claims.length - kept.length} claim(s) for ${args.owner}.`);
     } else if (args.list) {
+      const base = baseRef();
       const reading = readFromRemote(args.project, base);
       if (reading.status === "unreadable") {
         console.log(`UNMEASURED: ${reading.reason}`);

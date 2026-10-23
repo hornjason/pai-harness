@@ -633,6 +633,85 @@ describe("#1413: an owner this worktree cannot resolve is UNMEASURED, never free
   });
 });
 
+/**
+ * The class, closed once, instead of five patches to five call sites.
+ *
+ * The AI review on PR #1436 made this point three times — rounds 5, 6 and 7
+ * — and it was right: every round found a new instance of ONE shape, a git
+ * or `gh` lookup that could not be resolved defaulting to the safe-looking
+ * answer, and each was fixed where it was caught. Five instances: the
+ * owner-ref fetch scope, the `writeStore` round trip, the base-ref
+ * resolution, the `repoSlug` host anchoring, and `defaultBranch` silently
+ * returning "main".
+ *
+ * So the list of lookups is an EXECUTED census rather than a paragraph. A
+ * tenth lookup added later has to join it or redden this row, which is the
+ * difference between closing a class and patching its instances.
+ *
+ * It is a census of the SOURCE because the alternative — one behavioural
+ * row per lookup — is what the previous seven rounds already were, and they
+ * did not stop the eighth being written. This asks the question the author
+ * of the eighth will not think to ask.
+ */
+describe("#1413: no lookup in claim-files.ts may default to the safe-looking answer", () => {
+  const SCRIPT = readFileSync(join(REPO, "scripts", "claim-files.ts"), "utf-8");
+
+  /** Every `git(...)`/`spawnSync` lookup in the file, and its refusal. */
+  const LOOKUPS = [
+    "defaultBranch",
+    "repoSlug",
+    "refreshRefs",
+    "pullsForBranch",
+    "readFromRemote",
+    "readLocal",
+    "writeStore",
+  ] as const;
+
+  test("the audit table names every lookup the file performs", () => {
+    // The table is in the file header. If a reader cannot find a lookup in
+    // it, the table has stopped being the audit it claims to be.
+    for (const name of LOOKUPS) {
+      expect(SCRIPT, `the header audit table does not mention ${name}`).toContain(name);
+    }
+  });
+
+  test("the file starts no process this census does not cover", () => {
+    // The census's own population check. Counting the call sites rather than
+    // trusting the list: a lookup added through a new `spawnSync` is exactly
+    // the case the previous seven rounds missed, and a list nobody bounds is
+    // a list that silently stops being complete.
+    const spawns = [...SCRIPT.matchAll(/\bspawnSync\(/g)].length;
+    expect(
+      spawns,
+      `claim-files.ts now makes ${spawns} spawnSync calls; the audit table in its header covers 4 ` +
+        "(git, gh, git show, rev-parse). Add the new one to the table and to LOOKUPS here, " +
+        "and say what it does when it cannot resolve.",
+    ).toBe(4);
+  });
+
+  test("defaultBranch refuses rather than assuming main", () => {
+    // The fifth instance, and the one that proves the audit was not
+    // retrospective decoration: it was found by the review at round 7 and
+    // fixed as part of writing this census.
+    expect(SCRIPT).toContain("origin/HEAD is not set in this tree");
+    expect(SCRIPT, "defaultBranch still falls back to a literal main").not.toMatch(
+      /return\s+["']main["']\s*;/,
+    );
+  });
+
+  test("CONTROL: the census can fail — a literal main fallback is detectable", () => {
+    // Names what the row above can show. Without this, `not.toMatch` on a
+    // pattern that never appears in any version of the file would be green
+    // by construction — the seventh shape in checks-must-be-able-to-fail.md.
+    const mutated = SCRIPT.replace(
+      "  return r.ok && r.out !== \"\" ? r.out.replace(\"refs/remotes/origin/\", \"\") : null;",
+      "  return 'main';",
+    );
+    expect(mutated, "the anchor the mutant replaces is no longer in the file").not.toBe(SCRIPT);
+    expect(mutated).toMatch(/return\s+["']main["']\s*;/);
+  });
+});
+
 describe("#1413: the registry committed in this repository is readable", () => {
   test("specs/file-claims.json parses and every entry is usable", () => {
     // The instrument, pointed at the real artifact. A registry that ships
