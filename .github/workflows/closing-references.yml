@@ -1,0 +1,49 @@
+# NOT a rungate-generated workflow, deliberately (#1362).
+#
+# This file carries no `generated-sha` marker, so a re-scaffold reports it
+# NOT-OWNED and leaves it alone — `.claude/rules/harness-managed.md`. That is
+# the right ownership for it: the check is a policy this repository holds
+# about its own pull request bodies, not something the harness generates for
+# its consumers. Putting the job inside the generated `gates.yml` instead
+# makes that file `generated-and-hand-edited` with no key declared in
+# `ci.workflowOverrides`, which WORKFLOW-DRIFT-1 FAILs — correctly, because
+# `bunx rungate scaffold .` would then overwrite the job without saying so.
+name: Closing references
+
+on:
+  # A pull request is the only event with a body to read. On push and in a
+  # merge queue there is nothing to check, and a job that cannot take a
+  # reading must not report one.
+  pull_request:
+
+permissions:
+  contents: read
+  # `closingIssuesReferences` resolves through the GraphQL API and reads the
+  # linked ISSUES, not just the pull request, so both are needed.
+  pull-requests: read
+  issues: read
+
+jobs:
+  closing-references:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # Pinned by .bun-version — the project's single declaration (#622).
+          bun-version-file: ".bun-version"
+      - run: bun install
+      - name: A closing keyword GitHub cannot see
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # The field is fetched here and handed to the script, so nothing in
+          # the script can compute its own idea of whether an issue is linked
+          # — GitHub's answer is the input, not something to agree with.
+          #
+          # No `|| true` and no `2>/dev/null`: a `gh` failure must reach the
+          # script as an empty payload, which it reports as UNMEASURED rather
+          # than as a clean pull request.
+          gh pr view "$PR" --json number,body,closingIssuesReferences \
+            | bun scripts/audit-closing-references.ts
