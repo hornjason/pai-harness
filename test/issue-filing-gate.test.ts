@@ -36,6 +36,7 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 
 import { listOpenIssues, type OpenIssue } from "../lib/github";
+import { symptomKeys, type Finding } from "../lib/finding-arbiter";
 import {
   adjudicateFiling,
   filingAttempts,
@@ -626,7 +627,11 @@ describe("#1261 the four suppression classes", () => {
         else process.env.RUNGATE_OPEN_FINDINGS = prior;
       }
     };
-    expect(await read(stuffed), "over the cap, so dropped whole").toEqual([]);
+    // `null`, not `[]`, since #1318. The row is still dropped whole — what
+    // changed is what a corpus with nothing left in it REPORTS. `[]` said
+    // "the tracker is clean" about a tracker nobody managed to read, and the
+    // gate allowed on it. FG-48 is the case that names that directly.
+    expect(await read(stuffed), "over the cap, so dropped whole — and that is UNMEASURED").toBeNull();
     expect(
       await read("`retryBudget` in lib/command-retry.ts: 144 of 234."),
       "an ordinary fixture row is unaffected — this is the control that fails if the reader broke",
@@ -640,12 +645,18 @@ describe("#1261 the four suppression classes", () => {
     expect(r.reason).toContain("DUPLICATE");
   });
 
-  test("FG-37 CONTROL: one duplicate beside a novel finding does NOT take it down", async () => {
+  test("FG-37: one duplicate beside a novel finding refuses the whole command", async () => {
+    // INVERTED by #1318, and the fixture is unchanged — only the expected
+    // direction moved. This case shipped asserting `blocked === false`, which
+    // made batching a clean filing beside a refused one the cheapest way past
+    // this gate. The reasoning was that a block loses the novel finding; it
+    // does not, because nothing has executed when a PreToolUse hook decides.
+    // See the `blocking` docblock in `lib/issue-filing-gate.ts`.
     const start = ledgerRows().length;
     const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
-    expect(r.blocked, "the novel finding would have been lost").toBe(false);
-    // Allowed, but not silently: the refused sibling is named and recorded.
-    expect(r.payload?.systemMessage ?? "").toContain("1 of 2");
+    expect(r.blocked, "a refused clause refuses the command").toBe(true);
+    // Still not silent, and still specific: the agent is told which one.
+    expect(r.payload?.reason ?? "").toContain("already reported");
     const added = ledgerRows().slice(start);
     expect(added.map(x => x.withheldBy)).toEqual(["DUPLICATE", null]);
   });
@@ -773,5 +784,132 @@ describe("#1302 a document heredoc is not a filing", () => {
     const attempts = filingAttempts(FILING);
     expect(attempts).toHaveLength(1);
     expect(attempts[0].labels).toEqual(["follow-up"]);
+  });
+});
+
+/**
+ * FG-45..FG-49: a refusal must refuse, and a corpus nobody could read is not
+ * an empty one (#1318).
+ *
+ * Both findings here are the same mistake in two places: **a state that could
+ * not be measured, reported as a state that passed.** The first shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`, twice, in the gate written
+ * to catch it.
+ *
+ * **The `blocking` predicate.** `rows.every(r => !r.emitted)` allowed any
+ * command in which at least one clause was clean, so batching a refused
+ * filing beside a novel one was a complete bypass — and the cheapest one,
+ * because an agent filing several findings at once hits it by accident. The
+ * argument for it was that blocking "takes the novel findings down with a
+ * duplicate". That step does not hold: this is a **PreToolUse** hook, so
+ * nothing has executed. A block costs one re-run with the duplicate clause
+ * removed; the findings are in the agent's context, not destroyed. An allow
+ * costs a tracker row somebody has to triage. The note the allow emitted said
+ * *"Please withdraw them and re-run"* — asking for an action the allow had
+ * just made impossible, since a filing that already happened cannot be
+ * withdrawn by the agent that made it.
+ *
+ * **The ledger was lying in the flattering direction.** Rows are written with
+ * `disposition: "DROP"` and `withheldBy` set BEFORE `blocking` is computed,
+ * so every allowed-anyway refusal was recorded as a successful withhold. Any
+ * rate derived from the ledger counted those as saves. FG-47 is the row that
+ * fails if the two ever disagree again.
+ *
+ * **`trustedCorpus` was fail-open.** A non-empty issue list that filters down
+ * to empty — every author untrusted, or every issue over the key cap — was
+ * returned as `[]`, which is byte-identical to a clean tracker, and the gate
+ * ALLOWed. `null` already means UNMEASURED here and already routes to the
+ * right refusal, so the fix is to return it.
+ */
+describe("FG-45..FG-49: a bypass by batching, and a corpus nobody could read", () => {
+  const MIXED = `${DUPLICATE_FILING} && ${NOVEL_FILING}`;
+
+  /** The fixture corpus path, which `openFindings` shares with the live one. */
+  const fixtureCorpus = async (rows: unknown[]): Promise<readonly Finding[] | null> => {
+    const file = join(scratch, "unmeasured-corpus.json");
+    writeFileSync(file, JSON.stringify(rows));
+    const prior = process.env.RUNGATE_OPEN_FINDINGS;
+    process.env.RUNGATE_OPEN_FINDINGS = file;
+    try {
+      return await openFindings(scratch);
+    } finally {
+      if (prior === undefined) delete process.env.RUNGATE_OPEN_FINDINGS;
+      else process.env.RUNGATE_OPEN_FINDINGS = prior;
+    }
+  };
+  const existing = async (): Promise<readonly Finding[]> => [
+    { id: "900", title: "retryBudget gives up early", body: DUPLICATE_BODY },
+  ];
+
+  test("FG-45 BASELINE: a duplicate batched beside a novel filing still refuses", async () => {
+    const r = await filingGate(MIXED, { projectRoot: scratch, readExisting: existing });
+    // The premise, asserted rather than assumed: this command really does
+    // carry one of each. Without it the row could pass on a command the
+    // parser never split, which is green for the wrong reason.
+    expect(r.rows, "the fixture must carry two clauses").toHaveLength(2);
+    expect(r.rows.filter(x => x.emitted), "exactly one of them is clean").toHaveLength(1);
+    expect(r.refusal, "one refused clause refuses the command").not.toBeNull();
+  });
+
+  test("FG-46 CONTROL: a command whose clauses are ALL novel is still allowed", async () => {
+    // The control against "refuse everything", which would make FG-45 green
+    // and the gate useless. Same call, same corpus, no duplicate clause.
+    const r = await filingGate(`${NOVEL_FILING} && ${NOVEL_FILING}`, {
+      projectRoot: scratch,
+      readExisting: existing,
+    });
+    expect(r.rows).toHaveLength(2);
+    expect(r.refusal).toBeNull();
+  });
+
+  test("FG-47: the ledger cannot record a DROP for a filing the gate let through", async () => {
+    // The instrument check. A row saying `emitted: false` is a claim that the
+    // filing did not happen, and that claim is only true when the command was
+    // blocked. Asserting the agreement rather than either side alone is what
+    // makes this fail if a later change reintroduces partial admission
+    // without also fixing the rows.
+    for (const cmd of [MIXED, NOVEL_FILING, DUPLICATE_FILING]) {
+      const r = await filingGate(cmd, { projectRoot: scratch, readExisting: existing });
+      const withheld = r.rows.filter(x => !x.emitted);
+      expect(
+        withheld.length > 0 ? r.refusal !== null : true,
+        `${cmd.slice(0, 40)}: rows claim ${withheld.length} withheld, refusal=${r.refusal === null ? "null" : "set"}`,
+      ).toBe(true);
+    }
+  });
+
+  test("FG-48 BASELINE: a corpus that filters down to empty is UNMEASURED, not clean", async () => {
+    // Driven through `openFindings`, the production reader, not through a
+    // helper written alongside the fix — a new binding asserted by a new
+    // case is green on arrival and proves nothing. One issue IS present and
+    // the key cap drops it, so the reading is "could not be taken", and
+    // before this it came back `[]` and allowed.
+    const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`stuffedSymbol${i}\``).join(" ");
+    const row = { number: 77, title: "a stuffed issue", body: stuffed };
+    // The premise, asserted rather than assumed. My first fixture spelled
+    // these `stuffed0`, which the key reader does not treat as a symbol at
+    // all — so nothing was over the cap, nothing was dropped, and the case
+    // was measuring a corpus that passed straight through while claiming to
+    // measure one that had been emptied.
+    expect(
+      symptomKeys({ id: "77", title: row.title, body: row.body }).length,
+      "the fixture must exceed the cap, or this row is about nothing",
+    ).toBeGreaterThan(MAX_KEYS_PER_EXISTING_ISSUE);
+    expect(
+      await fixtureCorpus([row]),
+      "every issue dropped is not the same fact as no issues",
+    ).toBeNull();
+  });
+
+  test("FG-49 CONTROL: a genuinely empty tracker is MEASURED and still allows", async () => {
+    // The row that separates "nothing was there" from "nothing survived the
+    // filter". Without it the cheapest fix for FG-48 is `always null`, which
+    // switches the dedupe off entirely and passes FG-48 while making the
+    // gate useless — the fifth shape, green under the wrong repair.
+    expect(await fixtureCorpus([]), "an empty tracker is a reading that WAS taken").toEqual([]);
+    expect(
+      await fixtureCorpus([{ number: 78, title: "retryBudget gives up early", body: DUPLICATE_BODY }]),
+      "and an ordinary issue still reaches the corpus",
+    ).toHaveLength(1);
   });
 });

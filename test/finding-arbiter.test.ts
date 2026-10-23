@@ -33,6 +33,7 @@ import {
   symptomHash,
   symptomKeys,
   UNFILED_ID,
+  DUPLICATE_CONTAINMENT_MIN_KEYS,
   BALLOT_AMBIGUOUS,
   BALLOT_COUNT_MISMATCH,
   SHARED_BALLOT,
@@ -1783,5 +1784,100 @@ describe("AR-19: a byte-identical re-filing is a duplicate, whatever it counts",
     );
     expect(ratio, "the fixture must sit below the containment cut").toBeLessThan(0.8);
     expect(duplicateOverlap(a, b).duplicate).toBe(true);
+  });
+});
+
+/**
+ * AR-20: the arm must also LEAVE THINGS ALONE, and nothing asserted that
+ * until now (#1318).
+ *
+ * Every containment case in AR-19 asks the same question — *does it catch a
+ * duplicate?* None asks *does it leave a non-duplicate alone?* That is the
+ * seventh shape in `.claude/rules/checks-must-be-able-to-fail.md` with the
+ * axes swapped: the rows vary the fixture and hold the DIRECTION fixed, so no
+ * count in them can come back wrong about a false refusal.
+ *
+ * It matters here more than it usually would, because the two directions are
+ * not symmetric. A missed duplicate costs a tracker row somebody closes. A
+ * false DUPLICATE **withholds a real finding**, and an arbiter that silently
+ * eats novel findings converts a visible backlog into an invisible one —
+ * which is worse than the backlog it exists to shrink.
+ *
+ * **The floor moved from 2 to 4, measured on the live tracker rather than
+ * argued.** At ratio 0.8 over the 35 findings the corpus filters to:
+ *
+ *     floor=2   self-refile 35/35   cross-issue pairs 0
+ *     floor=3   self-refile 34/35   cross-issue pairs 0
+ *     floor=4   self-refile 32/35   cross-issue pairs 0
+ *     floor=5   self-refile 30/35   cross-issue pairs 0
+ *
+ * No floor in that range costs a single cross-issue pair, so the self-refile
+ * column is the whole price: three of thirty-five. What it buys is the row
+ * below. #1162 carries 40 keys, and at floor 2 a two-key finding whose keys
+ * both appear in it is refused as a duplicate of it — a real finding eaten by
+ * an unrelated issue, reachable on the tracker as it stands today.
+ *
+ * **What this does NOT close, stated rather than left to be discovered:** a
+ * FOUR-key finding wholly inside that same issue is still refused, at floor 2
+ * and at floor 4 alike. The floor shortens the reach of the swallow; it does
+ * not remove it. An absolute shared-key minimum beside the ratio would not
+ * help that case either, since four keys are genuinely shared.
+ */
+describe("AR-20: a small finding is not swallowed by a large unrelated issue", () => {
+  // A big issue naming many symbols. Not stuffed past the corpus cap — this
+  // is an ordinary long finding, which is the point: nothing filters it out.
+  const BIG: Finding = {
+    id: "1162",
+    title: "The scan reports a roster that the matcher never receives",
+    body: [
+      "`rosterFor`, `scanRoster`, `matcherRegistry`, `applyMatchers`, `resolveRole`,",
+      "`roleKey`, `briefPath`, `renderBrief` and `writeBrief` in lib/scanner.ts,",
+      "lib/matchers.ts and lib/scaffold-project.ts disagree about 12 of 31 roles.",
+    ].join(" "),
+  };
+
+  const small = (n: number): Finding => ({
+    id: UNFILED_ID,
+    title: "a finding",
+    body: symptomKeys(BIG).filter(k => k.startsWith("sym:")).slice(0, n).map(k => `\`${k.slice(4)}\``).join(" "),
+  });
+
+  test("AR-20 BASELINE: a two-key finding inside a large issue is NOT a duplicate", () => {
+    const f = small(2);
+    // The premise: its keys really are a subset, so containment is 1.0 and
+    // the ratio arm alone would refuse it. Without this the row could pass
+    // because the fixture shares nothing, which proves nothing at all.
+    expect(symptomKeys(f).length, "the fixture must sit at the floor").toBe(2);
+    expect(sharedKeys(f, BIG).length, "and be wholly contained").toBe(2);
+    expect(duplicateOverlap(f, BIG).duplicate).toBe(false);
+  });
+
+  test("AR-20: a three-key finding inside a large issue is NOT a duplicate either", () => {
+    const f = small(3);
+    expect(symptomKeys(f).length).toBe(3);
+    expect(sharedKeys(f, BIG).length).toBe(3);
+    expect(duplicateOverlap(f, BIG).duplicate).toBe(false);
+  });
+
+  test("AR-20 CONTROL: the arm still fires, so this is not 'refuse nothing'", () => {
+    // The control against the cheapest wrong fix for the two rows above —
+    // raising the floor until the arm never fires — which would make them
+    // green and delete the mechanism AR-19 exists for.
+    const refile: Finding = { id: UNFILED_ID, title: BIG.title, body: BIG.body };
+    expect(duplicateOverlap(refile, BIG).duplicate).toBe(true);
+  });
+
+  test("AR-20: the floor is what decides it, not the ratio", () => {
+    // Names the binding. A two-key finding and a five-key finding differ
+    // only in size here — both are wholly contained, both are at ratio 1.0 —
+    // so a row that moved because the RATIO changed would not separate them.
+    const two = small(2);
+    const five = small(5);
+    for (const f of [two, five]) {
+      expect(sharedKeys(f, BIG).length / symptomKeys(f).length, "both are at containment 1.0").toBe(1);
+    }
+    expect(symptomKeys(five).length).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_MIN_KEYS);
+    expect(duplicateOverlap(five, BIG).duplicate, "above the floor, the arm reaches it").toBe(true);
+    expect(duplicateOverlap(two, BIG).duplicate, "below it, the arm does not").toBe(false);
   });
 });
