@@ -41,6 +41,7 @@ import { dirname, join } from "node:path";
 
 import {
   AI_REVIEW_FINDINGS_PATH_VAR,
+  AI_REVIEW_GIT_ISOLATED,
   AI_REVIEW_LEDGER_API_VAR,
   AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_BOT_LOGIN,
@@ -109,6 +110,13 @@ interface Rig {
    * earlier step or the reviewer itself wrote there.
    */
   untracked?: Record<string, string>;
+  /**
+   * Overwrites a TRACKED path on disk after the index is built, leaving the
+   * working tree dirty against the index. Mechanically the same write as
+   * `untracked`; named apart because the fact under test is different —
+   * here the path IS in the index and the two objects disagree.
+   */
+  dirty?: Record<string, string>;
   /** Overrides for the step's environment. */
   env?: Record<string, string>;
   /** Make the write (POST/PATCH) fail. */
@@ -208,7 +216,7 @@ function runPersist(rig: Rig = {}) {
       });
     git("init", "-q", "-b", "main", ".");
     git("add", "-A");
-    for (const [rel, contents] of Object.entries(rig.untracked ?? {})) {
+    for (const [rel, contents] of Object.entries({ ...rig.untracked, ...rig.dirty })) {
       const abs = join(work, rel);
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, contents);
@@ -1077,6 +1085,22 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
  * identically, `-L` and `-f` agree, and the row goes green against the
  * defect it was written for.
  */
+/** Widens containment to match every resolved path. */
+const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
+
+/**
+ * Reverts the read from the INDEX to the working tree — the one-line
+ * difference between "quote what the pull request contains" and "quote
+ * whatever is on disk". Built from the exported constant rather than a
+ * hand-copied string, so a mutation that silently failed to apply cannot
+ * read as a guard that decided nothing.
+ */
+const dropIndexRead = (s: string) =>
+  s.replace(
+    `rt=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)`,
+    'rt=$(sed -n "${rl}p" "${real}" 2>/dev/null || true)',
+  );
+
 describe("AC-L12 (#1379): a committed symlink does not read outside the checkout", () => {
   const DIRECT = "THE-LINKED-SECRET";
   const VIA_PARENT = "THE-PARENT-LINKED-SECRET";
@@ -1179,24 +1203,19 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     ).toBe("alpha");
   });
 
-  /** Widens containment to match every resolved path. */
-  const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
-  /** Stops the tracked check consulting `rel`, so it answers yes for anything. */
-  const dropTracked = (s: string) =>
-    s.replace('ls-files --error-unmatch -- "${rel}"', "ls-files --error-unmatch -- .");
 
   test("AC-L12: the MUTANT — containment AND tracking removed — posts through a linked parent", () => {
     // `! -L` stays, so this row cannot go green on the guard above.
     //
     // Both are dropped together because, MEASURED, dropping containment
-    // alone does not leak: `git ls-files --error-unmatch` refuses a path
-    // outside the repository too, so the two guards agree on every escaping
-    // input. The row below holds that finding on its own.
+    // alone does not leak: `git show ":${rel}"` refuses a path outside the
+    // repository too, so the two agree on every escaping input. The row
+    // below holds that finding on its own.
     const real = buildPersistScript();
-    const mutant = dropTracked(dropContainment(real));
+    const mutant = dropIndexRead(dropContainment(real));
     expect(mutant, "neither guard was found, so nothing was mutated").not.toBe(real);
     expect(dropContainment(real), "the containment pattern was not found").not.toBe(real);
-    expect(dropTracked(real), "the tracked check was not found").not.toBe(real);
+    expect(dropIndexRead(real), "the index read was not found").not.toBe(real);
     const r = runWithLinks(mutant);
     expect(
       r.sentRaw,
@@ -1205,15 +1224,16 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
-  test("AC-L12: containment alone is SUBSUMED by the tracked check — measured, not assumed", () => {
+  test("AC-L12: containment alone is SUBSUMED by the index read — measured, not assumed", () => {
     // Written down rather than left as a gap. With containment widened to
-    // `*)` and tracking intact, the linked-parent escape is still refused:
-    // the resolved path is outside the repository, so `ls-files` refuses it
-    // as well. Containment is retained for two reasons that are not
-    // refusal — it is what keeps `rel` a repo-RELATIVE pathspec rather than
-    // an absolute one, and it states the boundary where a reader looks for
-    // it — but it decides no input by itself, and a row claiming otherwise
-    // would be the "two deciders" shape going green for the wrong reason.
+    // `*)` and the index read intact, the linked-parent escape is still
+    // refused: the resolved path is outside the repository, so
+    // `git show ":${rel}"` refuses it as well. Containment is retained for
+    // two reasons that are not refusal — it is what keeps `rel` a
+    // repo-RELATIVE name rather than an absolute one, and it states the
+    // boundary where a reader looks for it — but it decides no input by
+    // itself, and a row claiming otherwise would be the "two deciders"
+    // shape going green for the wrong reason.
     const r = runWithLinks(dropContainment(buildPersistScript()));
     expect(r.sentRaw).not.toContain(VIA_PARENT);
     expect(r.rounds![0].findings[2].text).toBe("alpha");
@@ -1385,21 +1405,20 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
       "UNTRACKED-CANARY",
     );
     // `.git/config` is inside the workspace and passes containment, so this
-    // row can only be green because of the tracked check.
+    // row can only be green because the line comes out of the index.
     expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
   });
 
-  test("AC-L13: the MUTANT — the tracked check removed — quotes the untracked file", () => {
+  test("AC-L13: the MUTANT — reading the working tree instead of the index — quotes the untracked file", () => {
     const real = buildPersistScript();
-    // The operand is swapped for `.`, which is always tracked, so the
-    // predicate stops consulting `rel` while still running the same command.
-    const mutant = real.replace('ls-files --error-unmatch -- "${rel}"', "ls-files --error-unmatch -- .");
-    expect(mutant, "the tracked check was not found, so nothing was mutated").not.toBe(real);
+    const mutant = dropIndexRead(real);
+    expect(mutant, "the index read was not found, so nothing was mutated").not.toBe(real);
     const r = runUntracked(mutant);
     expect(
       r.sentRaw,
-      "weakening the tracked check changed nothing, so containment is being credited for it",
+      "reading the working tree changed nothing, so containment is being credited for it",
     ).toContain("UNTRACKED-CANARY");
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   /**
@@ -1423,6 +1442,35 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
    * `--` IS spelled on `readlink`, where the operand is still the
    * attacker-shaped `rf` and both GNU and BSD readlink accept it.
    */
+  /**
+   * The gate and the read must be talking about the SAME object.
+   *
+   * `ls-files` asks the index; a `sed` of the resolved path reads whatever
+   * is on disk now. A tracked file that an earlier step modified passes the
+   * gate and would get its MODIFIED content quoted — a validator and a
+   * consumer looking at two different objects, which is the same class as
+   * the symlink defect this whole arm exists to fix, arriving inside the
+   * guard that fixed it.
+   *
+   * Reading the line out of the index with `git show ":${rel}"` collapses
+   * them to one object. Without this row that repair is unwitnessed: every
+   * other row in this file plants a clean tree, where the index and the
+   * working tree agree and the two readings are indistinguishable.
+   */
+  test("AC-L13: a tracked but DIRTY file quotes the committed line, not the disk line", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "COMMITTED-LINE\n" },
+      dirty: { "lib/a.ts": "MODIFIED-ON-DISK\n" },
+      payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 1, summary: "dirty" }] },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings[0].text).toBe("COMMITTED-LINE");
+    expect(r.sentRaw, "the working-tree line was quoted instead of the committed one").not.toContain(
+      "MODIFIED-ON-DISK",
+    );
+  });
+
   test("AC-L13: a tracked file named `--` does not displace the quote", () => {
     const r = runPersist({
       list: [],
