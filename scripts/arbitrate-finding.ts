@@ -52,6 +52,27 @@
  * `--votes` is a JSON array of `{ verifier, real, reason, category?,
  * severity? }`. **It is not optional**: a finding nobody voted on has not
  * cleared a quorum, it has not had one, and those are different states.
+ *
+ * ## Every adjudication is appended to the ledger (#1467, CRC-B4)
+ *
+ * One row per run, to `ledgerPath()` — the same
+ * `~/.rungate/finding-ledger.jsonl` the `gh issue create` chokepoint writes,
+ * because the value of the two populations is the corpus they form together.
+ * Redirect it with `RUNGATE_FINDING_LEDGER`.
+ *
+ * This is the only writer in the tree that can fill the row's `jury`: the
+ * chokepoint convenes no verifier group, so every row it has ever written
+ * carries `null` there. The row records **every verifier's individual vote**
+ * and **whether they disagreed**, which is what CRC-B4 asks for and what no
+ * count of agreement can reconstruct — the verifiers are a sampled
+ * instrument, so a second ballot is a second draw and not a recovery of the
+ * first. See `ledgerRow` for why a DROP is recorded too.
+ *
+ * **What it still cannot record: a group of any size but three.** There is no
+ * `--group-size`/`--quorum` flag, so a hand-run two-verifier quorum — the
+ * shape of the first real split this path has seen — arrives here as a short
+ * ballot and is refused `INCOMPLETE_GROUP`. A flag for it is a separate
+ * change, and worth one.
  */
 
 import { execFileSync } from "child_process";
