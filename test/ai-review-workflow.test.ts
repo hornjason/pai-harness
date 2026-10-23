@@ -1883,6 +1883,25 @@ describe("#1307: the execution file is preserved when no payload was written", (
     expect(warnings(run.stdout)[0]).toContain("follows symlinks");
   });
 
+  test("#1307: a swap between the last check and the read publishes the VALIDATED bytes", () => {
+    // THE input that separates reading the descriptor from re-reading the
+    // path, and without it that distinction is unfalsifiable — measured:
+    // every other race row refuses before the copy, so mutating `cat <&9`
+    // back to `cat < "${src}"` left the suite at 110 pass / 0 fail.
+    //
+    // This row lets the copy happen and asks which object's bytes arrived.
+    const run = stage({
+      execution: "ORIGINAL",
+      mutate: spliceBefore("copied=1", 'rm -f "${src}"; printf SWAPPED > "${src}"'),
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.kept).toEqual([AI_REVIEW_EXECUTION_BASENAME]);
+    expect(
+      readFileSync(join(run.staged, AI_REVIEW_EXECUTION_BASENAME), "utf-8"),
+      "the copy re-resolved the path instead of reading the descriptor it validated",
+    ).toBe("ORIGINAL");
+  });
+
   test("#1307: the splice helper is not vacuous — an unspliced run still publishes", () => {
     // The control for the four rows above. Without it, a `mutate` that
     // broke the script outright would satisfy every "nothing was staged"
