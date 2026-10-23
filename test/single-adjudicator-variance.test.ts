@@ -53,8 +53,10 @@ function capture(over: Partial<VarianceCapture> = {}): VarianceCapture {
     pinnedCommit: sha,
     commitAtEnd: sha,
     originMain: sha,
-    libTree: "t".repeat(40),
-    originMainLibTree: "t".repeat(40),
+    // Hex, because a tree hash is hex. This fixture used `"t".repeat(40)` and
+    // loaded cleanly, which is how the missing shape check stayed invisible.
+    libTree: "d".repeat(40),
+    originMainLibTree: "d".repeat(40),
     dirtyPaths: [],
     measuredAt: "2026-10-23T00:00:00.000Z",
     repo: "hornjason/pai-harness",
@@ -213,6 +215,64 @@ describe("loadVarianceCapture refuses rather than returning a partial reading", 
   test("every refusal routes through the one constant", () => {
     const { dir, name } = written(capture({ plantsAgreed: 1 }));
     expect(() => loadVarianceCapture(name, dir)).toThrow(new RegExp(BASELINE_REFUSED));
+    rmSync(dir, { recursive: true });
+  });
+
+  // The input a forged or truncated artefact actually looks like: MALFORMED
+  // BUT INTERNALLY CONSISTENT. Every case above plants either a good artefact
+  // or a mismatched one, and the `libTree` guard was an equality with no shape
+  // check behind it — so two equal non-hashes satisfied the one comparison
+  // whose job is to establish that the measured tree was the deployed tree.
+  // This fixture passed the whole loader before the shape check existed.
+  test("two `libTree` fields that agree but are not tree hashes", () => {
+    const { dir, name } = written(capture({ libTree: "x", originMainLibTree: "x" }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // The 40-character non-hex placeholder, which is the near miss a length
+  // check would wave through and the exact value this file's own fixture
+  // carried.
+  test("a 40-character `libTree` that is not hex", () => {
+    const { dir, name } = written(capture({ libTree: "t".repeat(40), originMainLibTree: "t".repeat(40) }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("a truncated tree hash, agreeing with itself", () => {
+    const { dir, name } = written(capture({ libTree: "abc1234", originMainLibTree: "abc1234" }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // CONTROL for the three above: the shape check must not have become a
+  // refusal of everything. A real pair of equal hex tree hashes still loads,
+  // and this is the case that separates "the guard works" from "the guard
+  // throws".
+  test("and a well-formed `libTree` pair still loads", () => {
+    const { dir, name } = written(capture({ libTree: "0".repeat(40), originMainLibTree: "0".repeat(40) }));
+    expect(loadVarianceCapture(name, dir).libTree).toBe("0".repeat(40));
+    rmSync(dir, { recursive: true });
+  });
+
+  // The mismatch case must still be reachable AFTER the shape check — a shape
+  // check placed wrongly would make the equality unreachable and nothing would
+  // notice, because both refusals are refusals.
+  test("two well-formed tree hashes that differ are still refused as a mismatch", () => {
+    const { dir, name } = written(capture({ libTree: "a".repeat(40), originMainLibTree: "b".repeat(40) }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/was not the deployed one/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // The second half of the review finding, recorded because it is NOT
+  // actionable and the next reader deserves to know why rather than
+  // rediscovering it. `dirtyPaths` elements cannot be type-checked
+  // observably: any array with a non-string element is non-empty, and the
+  // emptiness check already refuses every non-empty array. An element-type
+  // guard would be unreachable code that reads like a check.
+  test("a non-string `dirtyPaths` element is already refused — by the emptiness check", () => {
+    const { dir, name } = written(capture({ dirtyPaths: [42 as unknown as string] }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/uncommitted path\(s\) under/);
     rmSync(dir, { recursive: true });
   });
 });
