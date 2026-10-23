@@ -458,6 +458,30 @@ function resolveThroughLinks(normalised: string): string | null {
 const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 
 /**
+ * #1204: `ln` is not the only verb that makes one. GNU `cp -s` creates a
+ * symbolic link and `cp -l` a hard one, and neither spells anything in
+ * `LINK_CREATION`, so both walked straight past the exemption's only guard.
+ *
+ * The flag, not the verb, is what decides: a bare `cp` into a scratch tree
+ * is the single most common thing a fixture does, and refusing it would
+ * refuse nearly every fixture in the suite. So this matches `cp` followed by
+ * any run of flags in which one is a link flag.
+ *
+ * The short arm is deliberately `-[a-zA-Z]*[sl][a-zA-Z]*` rather than a list
+ * of spellings: short flags bundle, every letter in a bundle IS a flag, and
+ * so an `s` or an `l` anywhere in one is `-s` or `-l`. It cannot run away
+ * with a long flag — `[a-zA-Z]` does not match the second `-`, so
+ * `--strip-trailing-slashes` fails at that character rather than matching on
+ * its `s`, and the two long spellings are named explicitly instead.
+ *
+ * NOT covered, and left uncovered on purpose: `cp -a` and `cp -d` preserve an
+ * EXISTING symlink, so copying one that already points out of the tree is the
+ * same escape with no link flag in the command at all. Catching that needs
+ * the source resolved on disk, which this module does not do.
+ */
+const CP_LINK = /\bcp\s+(?:-\S+\s+)*(?:-[a-zA-Z]*[sl][a-zA-Z]*|--symbolic-link|--link)\b/;
+
+/**
  * #1240: both tests read a view that KEEPS the text an interpreter is going
  * to run. `stripHeredocs` deletes a heredoc body, so an `ln` inside
  * `bash <<'EOF'` was invisible to the first test; `segments(cmd)` over the
@@ -467,7 +491,7 @@ const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 function exemptionIsVoid(cmd: string): boolean {
   const programs = interpreterPrograms(cmd).map(p => p.program);
   const view = [stripHeredocs(cmd), ...programs].join('\n');
-  if (LINK_CREATION.test(view)) return true;
+  if (LINK_CREATION.test(view) || CP_LINK.test(view)) return true;
   return segments(view).some(seg => commandWord(seg) === 'ln');
 }
 

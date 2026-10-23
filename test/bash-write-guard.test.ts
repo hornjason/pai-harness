@@ -3001,3 +3001,85 @@ function __standsAloneAfter(body: string, start: number, end: number): boolean {
     }
   });
 });
+
+describe("#1204: `cp` creates links too, and the exemption did not know it", () => {
+  /**
+   * `LINK_CREATION` recognised `ln`, `symlinkSync`, `os.symlink` and
+   * `symlink(`. GNU `cp -s` creates a symbolic link and spells none of them,
+   * so it did not void the scratch-path exemption — the identical escape
+   * this function's own docblock describes for `ln -s`, through a different
+   * verb.
+   *
+   * `-l`/`--link` is here for the same reason: a hard link into a scratch
+   * tree is a second name for a file outside it, and a write through that
+   * name is a write to the outside file. It cannot cross a filesystem and it
+   * cannot point at a directory, which makes it narrower than `-s` — not
+   * harmless.
+   *
+   * The rows are hand-written rather than taken from the command corpus. A
+   * corpus sweep is a regression control; it can only contain shapes somebody
+   * has already typed, and the shape that matters here is the one nobody has.
+   */
+  const RUN = `${process.env.HOME}/.rungate/victim`;
+
+  const voids = [
+    ["the reported spelling", `cp -s ${RUN} /tmp/x`],
+    ["long form", `cp --symbolic-link ${RUN} /tmp/x`],
+    ["hard link, short", `cp -l ${RUN} /tmp/x`],
+    ["hard link, long", `cp --link ${RUN} /tmp/x`],
+    ["bundled after a flag that is not one", `cp -rs ${RUN} /tmp/x`],
+    ["bundled before one", `cp -sv ${RUN} /tmp/x`],
+    ["bundled with archive", `cp -as ${RUN} /tmp/x`],
+    ["a separate earlier flag", `cp -v -s ${RUN} /tmp/x`],
+    ["two separate earlier flags", `cp -v -f -s ${RUN} /tmp/x`],
+    ["sudo wrapper", `sudo cp -s ${RUN} /tmp/x`],
+    ["path-qualified", `/bin/cp -s ${RUN} /tmp/x`],
+    ["backslash-escaped", `\\cp -s ${RUN} /tmp/x`],
+    ["env wrapper", `env cp -s ${RUN} /tmp/x`],
+    ["via find -exec, which resolves to `find`", `find . -exec cp -s ${RUN} /tmp/x \\;`],
+    ["inside a heredoc body an interpreter will run", `bash <<'EOF'\ncp -s ${RUN} /tmp/x\nEOF`],
+  ];
+  test.each(voids)("%s voids the exemption", (_label, link) => {
+    const d = decideBashWrite(`${link} && echo y > /tmp/x/${STATE}`);
+    expect(d.blocked, `allowed: ${link}`).toBe(true);
+  });
+
+  test("CONTROL: a `cp` that creates no link does not void it", () => {
+    // If these go red the voiding has become "any cp", and every fixture
+    // that copies a file into a scratch tree is refused.
+    for (const cmd of [
+      `cp a.txt /tmp/p/${STATE}`,
+      `cp -r src /tmp/p && echo x > /tmp/p/${STATE}`,
+      `cp -p a.txt /tmp/p/${STATE}`,
+      `cp -f a.txt /tmp/p/${STATE}`,
+      `cp --strip-trailing-slashes a.txt /tmp/p/${STATE}`,
+      `cp --no-clobber a.txt /tmp/p/${STATE}`,
+    ]) {
+      const d = decideBashWrite(cmd);
+      expect(d.blocked, `refused: ${cmd} — ${d.reason}`).toBe(false);
+    }
+  });
+
+  test("CONTROL: words merely containing the letters do not void it", () => {
+    for (const cmd of [
+      `echo cps > /tmp/p/${STATE}`,
+      `bun run cp-scan.ts > /tmp/p/${STATE}`,
+      `scp a.txt host:/tmp/p && echo x > /tmp/p/${STATE}`,
+    ]) {
+      const d = decideBashWrite(cmd);
+      expect(d.blocked, `refused: ${cmd} — ${d.reason}`).toBe(false);
+    }
+  });
+
+  /**
+   * NOT fixed here, and stated so it is not mistaken for covered: `cp -a`
+   * and `cp -d` preserve an EXISTING symlink as a symlink, so copying one
+   * that already points out of the tree reproduces the escape with no
+   * link-creating flag anywhere in the command. Catching it needs the SOURCE
+   * resolved on disk, which this module does not do, and refusing every
+   * `cp -a` would refuse a very common fixture. Filed separately.
+   */
+  test("KNOWN GAP: `cp -a` of an already-existing link is not caught", () => {
+    expect(decideBashWrite(`cp -a somelink /tmp/x && echo y > /tmp/x/${STATE}`).blocked).toBe(false);
+  });
+});
