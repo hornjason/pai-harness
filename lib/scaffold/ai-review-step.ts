@@ -2418,6 +2418,63 @@ export const AI_REVIEW_DRIFT_STEP_NAME = "Refuse a reviewer that modified the tr
 export const AI_REVIEW_DRIFT_TITLE = "AI review modified the tree";
 
 /**
+ * The step that writes this round's findings onto the pull request (#1168).
+ *
+ * ## Why this exists at all
+ *
+ * Nothing holds a finding past the runner. There is no `upload-artifact` step
+ * in this workflow, the payload is written under `RUNNER_TEMP`, and a real run
+ * reports zero artifacts — three readings that agree. The only reason any
+ * historical finding was recoverable at all is that the adjudication step
+ * echoes the reader's output into the job log, and logs expire.
+ *
+ * That was measured on #1168 while answering a different question, and it is
+ * the thing that has to be fixed first: **the round cap's justification needs
+ * the finding set to be cumulative across rounds**, and a set cannot be
+ * cumulative if each round's half of it evaporates with the runner. Carrying
+ * findings forward is the second half of that work and lives in
+ * `lib/ai-review-rounds.ts`; this is the first half, and it is deliberately
+ * in the YAML rather than in `lib/` because a `lib/` change is dormant until
+ * the next publish while this file is live the moment it merges. Every day
+ * without it is a day of findings nobody can analyse later.
+ *
+ * ## What it is NOT
+ *
+ * Not a gate. It decides nothing, blocks nothing and cannot turn a review
+ * red: every path through it exits zero. A recorder that can refuse the thing
+ * it records is worse than no recorder, which is the doctrine
+ * `recordAdjudication` in `lib/issue-filing-gate.ts` already states for the
+ * filing ledger. It is loud on failure — a warning annotation naming what it
+ * could not do — because the one thing worse than losing a round is losing it
+ * silently.
+ */
+export const AI_REVIEW_PERSIST_STEP_ID = "ai-review-persist";
+
+export const AI_REVIEW_PERSIST_STEP_NAME = "Persist this round's findings to the pull request";
+
+export const AI_REVIEW_PERSIST_TITLE = "AI review ledger";
+
+/**
+ * The HTML comment that identifies the ledger comment, and the whole of how
+ * the upsert finds it again.
+ *
+ * Carries a version so a later format change can be told from a corrupt one
+ * rather than parsed hopefully. A marker nobody versioned is a marker whose
+ * second format is indistinguishable from its first having gone wrong.
+ */
+export const AI_REVIEW_LEDGER_MARKER = "<!-- rungate:ai-review-ledger:v1 -->";
+
+/** The fence the ledger's machine-readable half sits inside. */
+export const AI_REVIEW_LEDGER_FENCE = "```json";
+
+/** Environment variables the persist step reads. Spelled once, used twice. */
+export const AI_REVIEW_LEDGER_PR_VAR = "AI_REVIEW_LEDGER_PR";
+export const AI_REVIEW_LEDGER_TOKEN_VAR = "AI_REVIEW_LEDGER_TOKEN";
+export const AI_REVIEW_LEDGER_REPO_VAR = "AI_REVIEW_LEDGER_REPO";
+export const AI_REVIEW_LEDGER_API_VAR = "AI_REVIEW_LEDGER_API";
+export const AI_REVIEW_LEDGER_SHA_VAR = "AI_REVIEW_LEDGER_SHA";
+
+/**
  * The JSON member the findings array travels under.
  *
  * `lib/scaffold/ai-review-findings.ts` reads the payload and already imports
@@ -6279,6 +6336,259 @@ function indented(lines: string[], indent: string): string {
  * `if:`: a step skipped by `if:` reports `skipped`, and a skipped required
  * check can be treated as satisfied.
  */
+/**
+ * The ledger writer (#1168). Runs BETWEEN the reviewer and the adjudicator.
+ *
+ * ## Why that position, and not last
+ *
+ * The obvious place is after the adjudication, so the ledger could record the
+ * verdict too. Two things rule it out and both matter.
+ *
+ * The adjudication step **exits non-zero on a blocking finding**, so a step
+ * after it does not run on exactly the rounds worth recording. A ledger that
+ * captures clean rounds and drops blocked ones is a detector narrower than
+ * what it detects, biased toward the rounds that carry nothing — the second
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md`, and the same defect
+ * #1300 had just fixed one subsystem over.
+ *
+ * The repair for that is normally `if: always()`, and **this job does not
+ * allow `if:`** — a step skipped by a condition reports `skipped`, and this
+ * workflow's whole doctrine is that nothing here may report `skipped`.
+ * Running before the adjudicator needs no condition at all: the reviewer has
+ * already written the payload, and ordinary step ordering does the rest.
+ *
+ * ## It records findings and never a verdict
+ *
+ * Deliberate, and not an omission. Whether a severity blocks is
+ * `AI_REVIEW_SEVERITIES`' decision, read by `lib/scaffold/ai-review-findings.ts`
+ * and by nothing else. A verdict computed here would be a SECOND decider
+ * answering the same question about the same input — the fourth shape, where
+ * both read as covered and a mutation of either leaves the other holding the
+ * case up. So the ledger stores what was found; what it means stays with the
+ * reader, and the check conclusion already carries the outcome.
+ *
+ * ## `null` findings and `[]` findings are different facts
+ *
+ * `[]` is a round that was read and found nothing. `null` is a round whose
+ * payload was absent or unparseable — nobody asked. Collapsing them is
+ * *Silent Default Substitution* (`.claude/rules/config-access.md`) applied to
+ * the one record that is supposed to make the finding set cumulative, and it
+ * would quietly convert "the reviewer did not run" into "the reviewer was
+ * happy".
+ *
+ * ## It never writes on top of a read it could not take
+ *
+ * The single most destructive thing this step could do is replace a ledger
+ * holding seven rounds with one holding this round. So every failure to READ
+ * — the comment list, the existing payload — exits without writing. An
+ * unreadable ledger costs one round; an overwritten one costs all of them,
+ * and the two are indistinguishable afterwards.
+ */
+export function buildPersistScript(): string {
+  const fence = "```";
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+#
+# Writes this round's findings into one upserted pull-request comment (#1168).
+# It is a RECORDER, not a gate: every path exits 0, because a recorder that can
+# refuse the thing it records is worse than no recorder. Failures are loud —
+# a warning annotation naming what could not be done — because the only thing
+# worse than losing a round is losing it silently.
+#
+# THIS STEP'S POSITION IS A DECISION, NOT AN ACCIDENT OF ORDERING. It runs
+# after the reviewer and BEFORE the adjudicator, and moving it later breaks
+# it silently. The adjudicator exits non-zero on a blocking finding, so a
+# ledger placed after it records clean rounds and drops blocked ones — a
+# recorder biased against exactly the rounds worth recording. The usual
+# repair is \`if: always()\`, and this job forbids \`if:\` because a step
+# skipped by a condition reports \`skipped\`. Running before the adjudicator
+# needs no condition at all: the reviewer has already written the payload.
+#
+# It records findings and NEVER a verdict. Whether a severity blocks is
+# AI_REVIEW_SEVERITIES' decision, read by lib/scaffold/ai-review-findings.ts.
+# A verdict computed here would be a second decider answering the same
+# question about the same input, and both would read as covered.
+${AI_REVIEW_ANNOTATION_ESCAPE}
+
+ledger_note() {
+  echo "::warning title=${AI_REVIEW_PERSIST_TITLE}::\$(escape_annotation "\$1")"
+}
+
+# A merge_group run carries no pull request, so there is nothing to attach a
+# ledger to. Not a gap: the round cap is a pull-request mechanism, and a queue
+# entry is not a round.
+if [ -z "\${${AI_REVIEW_LEDGER_PR_VAR}:-}" ]; then
+  exit 0
+fi
+
+if [ -z "\${${AI_REVIEW_LEDGER_TOKEN_VAR}:-}" ] || [ -z "\${${AI_REVIEW_LEDGER_REPO_VAR}:-}" ]; then
+  ledger_note "this round's findings were not recorded: the API token or the repository name is missing from this step's environment, so there is nowhere to write the ledger. The round is lost to the history this cap depends on."
+  exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  ledger_note "this round's findings were not recorded: jq is not on this runner and the ledger is JSON. The round is lost to the history this cap depends on."
+  exit 0
+fi
+
+api="\${${AI_REVIEW_LEDGER_API_VAR}:-https://api.github.com}"
+
+# The round number, from the file the counter step already wrote. Read rather
+# than recomputed: a second count here would be a decider that always agrees
+# with that one until the day it does not.
+# Parse the KEY, never scrape the digits. The round file states three things
+# — \`review_round\`, \`round_budget\` and \`round_budget_spent\` — so a
+# \`tr -dc '0-9'\` over it concatenates all three: round 2 under a budget of 3
+# records as 23. Caught on #1319's review; the battery could not see it,
+# because the fixture held a single number and a scrape and a parse agree on
+# every input shaped like that. \`\\r\` is stripped first so a CRLF file
+# cannot wedge the match forever.
+round="null"
+if [ -n "\${${AI_REVIEW_ROUND_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_ROUND_PATH_VAR}}" ]; then
+  parsed_round=\$(tr -d '\\r' < "\${${AI_REVIEW_ROUND_PATH_VAR}}" | sed -n 's/^review_round=\\([0-9][0-9]*\\)\$/\\1/p' | head -n 1 || true)
+  if [ -n "\${parsed_round}" ]; then
+    round="\${parsed_round}"
+  fi
+fi
+
+# \`null\` and \`[]\` are DIFFERENT and the difference is the point: one is a
+# round nobody read, the other is a round that was read and was clean.
+findings="null"
+if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" ]; then
+  if parsed=\$(jq -c '[ .${AI_REVIEW_FINDINGS_KEY}[]? | {${AI_REVIEW_FINDING_FIELDS.severity}, ${AI_REVIEW_FINDING_FIELDS.file}, ${AI_REVIEW_FINDING_FIELDS.line}, ${AI_REVIEW_FINDING_FIELDS.summary}} ]' "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>/dev/null); then
+    findings="\${parsed}"
+  else
+    ledger_note "the findings payload exists and could not be parsed as JSON, so this round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
+  fi
+fi
+
+if ! entry=\$(jq -nc \\
+  --arg at "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" \\
+  --arg sha "\${${AI_REVIEW_LEDGER_SHA_VAR}:-}" \\
+  --arg run "\${GITHUB_RUN_ID:-}" \\
+  --arg attempt "\${GITHUB_RUN_ATTEMPT:-}" \\
+  --argjson round "\${round}" \\
+  --argjson findings "\${findings}" \\
+  '{at:\$at, sha:\$sha, run:\$run, attempt:\$attempt, round:\$round, ${AI_REVIEW_FINDINGS_KEY}:\$findings}'); then
+  ledger_note "this round's entry could not be assembled, so nothing was recorded."
+  exit 0
+fi
+
+# READ FIRST, and never write on top of a read that failed. Replacing a ledger
+# holding N rounds with one holding this round is the worst thing this step
+# could do, and it is indistinguishable from a first round afterwards.
+if ! comments=\$(curl -sS -f \\
+  -H "Authorization: Bearer \${${AI_REVIEW_LEDGER_TOKEN_VAR}}" \\
+  -H "Accept: application/vnd.github+json" \\
+  "\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/\${${AI_REVIEW_LEDGER_PR_VAR}}/comments?per_page=100" 2>&1); then
+  ledger_note "the pull request's comments could not be read, so this round was NOT recorded. Refusing to write a fresh ledger on top of a failed read: that would replace every round already recorded with just this one, and nothing afterwards could tell that it had happened."
+  exit 0
+fi
+
+# ONE selection, then two reads OUT of it. Selecting twice — once for the id
+# and once for the body — is two searches that can disagree, and the way they
+# disagree is the expensive one: an empty id with a non-empty body POSTs a
+# SECOND ledger carrying the first one's rounds, so the history silently
+# forks into two comments and neither is complete. Found by the mutation
+# battery on #1168, not by reading.
+#
+# AUTHORSHIP, not just the marker. The marker is a string and a pull request
+# is a place anyone can paste one, so selecting on it alone lets any
+# commenter nominate their own comment as the ledger — and then this step
+# PATCHes a human's text away and writes the round history somewhere nobody
+# is watching. The author check is what makes the marker an identifier rather
+# than a suggestion (#1319 review).
+#
+# \`first\`, not \`last\`: the OLDEST bot-authored match is the real ledger,
+# because that is the one this step created on round one. \`last\` prefers the
+# newest, which is precisely the one an impersonator would have just posted.
+selected=\$(printf '%s' "\${comments}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' '[.[] | select((.user.type? // "") == "Bot" and .body != null and (.body | contains(\$m)))] | first // empty' 2>/dev/null || true)
+existing_id=""
+existing_body=""
+if [ -n "\${selected}" ]; then
+  existing_id=\$(printf '%s' "\${selected}" | jq -r '.id // empty' 2>/dev/null || true)
+  existing_body=\$(printf '%s' "\${selected}" | jq -r '.body // empty' 2>/dev/null || true)
+fi
+
+prior="[]"
+if [ -n "\${existing_body}" ]; then
+  # Everything between the fences. A ledger whose payload cannot be read is
+  # NOT an empty ledger, so this refuses rather than starting a new one.
+  # \`tr -d '\\r'\` FIRST. A body that came back with CRLF line endings never
+  # matches a \`\$\`-anchored fence, so the payload reads as unparseable, the
+  # guard below refuses, and the ledger is wedged permanently — a recording
+  # failure that looks exactly like a corrupt ledger (#1319 review).
+  extracted=\$(printf '%s' "\${existing_body}" | tr -d '\\r' | sed -n '/^${fence}json\$/,/^${fence}\$/p' | sed '1d;\$d' || true)
+  if [ -n "\${extracted}" ] && printf '%s' "\${extracted}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    prior="\${extracted}"
+  else
+    ledger_note "the existing ledger comment was found and its payload could not be parsed as a JSON array, so this round was NOT recorded. Refusing to replace it: a ledger that cannot be read is not an empty one, and overwriting it would discard every round it holds."
+    exit 0
+  fi
+fi
+
+if ! all=\$(printf '%s' "\${prior}" | jq -c --argjson e "\${entry}" '. + [\$e]'); then
+  ledger_note "this round could not be appended to the existing ledger, so nothing was written."
+  exit 0
+fi
+
+# \`if !\`, not \`body_file="\$(mktemp)"\`. An assignment whose only word is a
+# failing command substitution aborts the step under the runner's \`bash -e\`
+# BEFORE anything can read its status (#1110) — which would make this
+# recorder fail the job it is only supposed to observe, and do it before the
+# adjudication step has run at all.
+if ! body_file=\$(mktemp); then
+  ledger_note "no temporary file could be created for the ledger body, so this round was not recorded."
+  exit 0
+fi
+{
+  printf '%s\\n' '${AI_REVIEW_LEDGER_MARKER}'
+  printf '%s\\n\\n' '### AI review findings ledger'
+  printf '%s\\n\\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168). Nothing reads this to decide anything yet.'
+  printf '%s\\n\\n' 'A \`${AI_REVIEW_FINDINGS_KEY}\` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
+  printf '%s\\n' '${fence}json'
+  printf '%s\\n' "\${all}"
+  printf '%s\\n' '${fence}'
+} > "\${body_file}"
+
+if ! payload=\$(jq -nc --rawfile b "\${body_file}" '{body: \$b}'); then
+  ledger_note "the ledger comment body could not be encoded, so this round was not recorded."
+  rm -f "\${body_file}"
+  exit 0
+fi
+rm -f "\${body_file}"
+
+if [ -n "\${existing_id}" ]; then
+  url="\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/comments/\${existing_id}"
+  method="PATCH"
+else
+  url="\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/\${${AI_REVIEW_LEDGER_PR_VAR}}/comments"
+  method="POST"
+fi
+
+if ! written=\$(curl -sS -f -X "\${method}" \\
+  -H "Authorization: Bearer \${${AI_REVIEW_LEDGER_TOKEN_VAR}}" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "Content-Type: application/json" \\
+  --data-binary "\${payload}" \\
+  "\${url}" 2>&1); then
+  ledger_note "the ledger comment could not be written (\${method}), so this round was not recorded. A pull request from a fork gets a read-only token whatever this workflow's permissions block says, and that is the expected cause here."
+  exit 0
+fi
+
+# READ BACK. A write that returned success and landed nothing looks exactly
+# like a write that happened, and two runs racing on one comment lose an entry
+# without either of them failing. This cannot prevent that; it makes it
+# VISIBLE, which is the difference between a known gap and a silent one.
+if [ -n "\${GITHUB_RUN_ID:-}" ]; then
+  if ! printf '%s' "\${written}" | jq -e --arg r "\${GITHUB_RUN_ID}" '(.body // "") | contains(\$r)' >/dev/null 2>&1; then
+    ledger_note "the ledger was written and this round's run id is not in what the API returned, so the entry was probably lost to a concurrent write by another round of this same pull request. The ledger is intact; this one round may be missing from it."
+  fi
+fi
+
+exit 0
+`;
+}
+
 export function buildReviewRunStep(
   vertex: VertexCiDecision,
   refs: AiReviewActionRefs,
@@ -6540,6 +6850,28 @@ export function buildReviewRunStep(
     ...buildReviewRunScript(version).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
+  // #1168. BETWEEN the reviewer and the adjudicator, and the position is the
+  // whole reason this step needs no `if:` — see `buildPersistScript`. The
+  // reviewer has written its payload by here, and the adjudicator, which
+  // exits non-zero on a blocking finding, has not run yet.
+  const persist = [
+    `- name: ${AI_REVIEW_PERSIST_STEP_NAME}`,
+    `  id: ${AI_REVIEW_PERSIST_STEP_ID}`,
+    `  env:`,
+    `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
+    `    ${AI_REVIEW_ROUND_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_ROUND_BASENAME}`,
+    // Empty on a merge_group run, which is how the script knows there is no
+    // pull request to carry a ledger. Read from the event rather than from a
+    // second `github.event_name` test, so there is one decider.
+    `    ${AI_REVIEW_LEDGER_PR_VAR}: \${{ github.event.pull_request.number }}`,
+    `    ${AI_REVIEW_LEDGER_SHA_VAR}: \${{ github.event.pull_request.head.sha }}`,
+    `    ${AI_REVIEW_LEDGER_REPO_VAR}: \${{ github.repository }}`,
+    `    ${AI_REVIEW_LEDGER_API_VAR}: \${{ github.api_url }}`,
+    `    ${AI_REVIEW_LEDGER_TOKEN_VAR}: \${{ secrets.GITHUB_TOKEN }}`,
+    `  run: |`,
+    ...buildPersistScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
   return (
     indented(checkout, indent) +
     indented(prepare, indent) +
@@ -6560,6 +6892,7 @@ export function buildReviewRunStep(
     indented(rounds, indent) +
     indented(baseline, indent) +
     indented(review, indent) +
+    indented(persist, indent) +
     indented(report, indent) +
     indented(drift, indent)
   );
