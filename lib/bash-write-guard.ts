@@ -1346,67 +1346,191 @@ function absoluteNamesOutsideScratch(text: string, exempt: boolean): string[] {
 }
 
 /**
- * Does every absolute path literal in an interpreter body sit in a scratch
- * tree? A STOPGAP, and labelled one — see #1269.
+ * The `-c`/`-e` program of an interpreter segment, with only its OUTER
+ * quoting removed (#1277).
  *
- * Arm 3 refuses because an interpreter's program is opaque: what it writes
- * cannot be read off the command line. The scratch exemption contradicted
- * that premise by deciding the destination from one path word, and a
- * destination can be computed. Executed against the module as merged:
+ * `shellBody` next door `dequote`s, which is right for a shell body about to
+ * be re-parsed as shell and wrong for every other language: it deletes the
+ * only thing that marks where one string literal ends and the next
+ * expression begins. `bodyTargets` is the whole point of this function, and
+ * it cannot answer its question on a view with no quotes in it.
+ *
+ * An unmatched outer quote leaves the text as it stands. `bodyTargets` then
+ * reports the body `unreadable` rather than guessing, which is the
+ * fail-closed direction.
+ */
+export function programBody(segment: string): string {
+  const m = /\s-[a-z]*[ce]\s+([\s\S]+)$/.exec(segment);
+  if (!m) return '';
+  const raw = m[1].trim();
+  const q = raw[0];
+  if ((q === "'" || q === '"') && raw.length > 1 && raw[raw.length - 1] === q) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
+/**
+ * A literal that STANDS ALONE as an argument is one nothing transforms, so
+ * the path it spells is the path the program hands to the filesystem.
+ *
+ * Both sets are closed-world and that is the point. They enumerate what may
+ * legally DELIMIT an argument, not what may operate on one — so a language
+ * whose concatenation operator nobody here thought of reads as "not
+ * delimited", which refuses. The other spelling, a denylist of operators
+ * (`+`, `%`, `.replace`, an f-string, …), is a detector narrower than what
+ * it detects — `.claude/rules/checks-must-be-able-to-fail.md` — and it is
+ * what #1276's stopgap was a second attempt at.
+ *
+ * `=` and `:` are openers because `p = "/tmp/x"` and `{"dst": "/tmp/x"}` are
+ * both an assignment of a whole path; what matters is that nothing consumes
+ * the literal before the filesystem does.
+ *
+ * A closing bracket is neither. It ENDS the group the literal sits in and
+ * leaves the outer expression still running, so the walk steps past it and
+ * keeps asking — which is how `Path("/tmp/x").relative_to(…)` is told from
+ * `open(Path("/tmp/x"), "w")`. The first version of this stopped at the
+ * `)` and reported the pathlib spelling as a target; its own CONTROL row
+ * caught it, and that row is in the tests.
+ */
+const ARG_OPENS = new Set(['(', ',', '[', '{', '=', ':', ';']);
+const ARG_CLOSES = new Set([')', ',', ']', '}', ';', ':']);
+const GROUP_CLOSES = new Set([')', ']', '}']);
+
+export interface BodyTargets {
+  /** Carrying literals that stand alone — the paths the program can write. */
+  targets: string[];
+  /** Carrying literals an expression consumes. The destination is NOT these. */
+  fragments: string[];
+  /** The body does not read as a sequence of complete literals. */
+  unreadable: boolean;
+}
+
+/**
+ * Which path literals in an interpreter body can be shown to be the write
+ * TARGET, and which are merely fragments of an expression that computes one
+ * (#1277).
+ *
+ * ## The mistake this replaces
+ *
+ * Every escape in this family is the same one wearing a different costume:
+ * the exemption read a path LITERAL off the command line and treated it as
+ * the destination. #1276 shipped a labelled stopgap — "is every absolute
+ * literal in the body scratch" — which closed the one spelling that had been
+ * measured and left the class open, because a computed destination need not
+ * leave a non-scratch literal behind. Four spellings that it exempts and
+ * this refuses are asserted in `test/bash-write-guard.test.ts`; the one that
+ * matters least is also the one that reads worst:
  *
  *     bun -e 'writeFileSync("/tmp/x/workflow-state.json"
- *               .replace("/tmp/x", "<run store>"), "{}")'      EXEMPT
+ *               .replace("/tmp/x", process.env.RUNGATE_WORK_DIR), "{}")'
  *
- * The word carrying the name is the `/tmp` literal that is thrown away. Two
- * other computed spellings — a `..` chain and an `os.path.join` with `..`
- * components — happened to normalise back into the store and were already
- * refused, which is luck rather than coverage.
+ * Every absolute literal in it is scratch. The write lands in the run store.
  *
- * This asks a question about the WHOLE body instead of one word: if the
- * program also names an absolute path that is NOT scratch, the exemption
- * does not apply. The escaping spelling above names the run store in its
- * second argument, so it is refused.
+ * ## What is asked instead
  *
- * ## What this does NOT cover, stated so nobody reads it as the repair
+ * A literal is a target only when nothing between it and the filesystem
+ * transforms it — then, and only then, `isScratchPath` resolving it answers
+ * the real question. A carrying literal that does NOT stand alone is not
+ * evidence against the write, it is the ABSENCE of evidence for it, so it
+ * ends the exemption rather than being ignored. That is the same fail-closed
+ * reading `isScratchPath` already applies to a relative path.
  *
- * It still reads literals, so a spelling that leaves no non-scratch
- * literal behind would still pass. Three candidates were tried rather than
- * assumed, and all three were ALREADY refused on `origin/main` — a `$HOME`
- * concatenation, an env-var concatenation and a command substitution — in
- * each case because the carrying word is an absolute non-scratch suffix
- * like `/.rungate/run/workflow-state.json`. Only the `.replace` of a
- * scratch literal ever escaped, and that is what this closes.
- *
- * The durable repair is to resolve the write TARGET and ask whether the
- * resolved path is under a scratch root, at which point a computed
- * destination stops being a special case — the same primitive #1269's
- * first fix introduced for protected trees. Filed; this is the stopgap.
- *
- * Neither reading closes an assembled NAME: `'workflow' + '-state.json'`
- * leaves no word carrying the artifact, so arm 3 never receives a
- * candidate at all. That is a limit of the candidate search rather than of
- * the exemption, it is pre-existing, and it has its own row in the tests.
- *
- * ## Why not drop the exemption from arm 3 altogether
- *
- * It was built and swept. It costs **12** corpus commands against this
- * one's **4**, and it reverses two of #1175's ten witnesses — the
- * `python3 -I -c` and `bun -e` rows, which assert that an interpreter
- * writing under a scratch root is a fixture. It also still reads literals,
- * so it buys a stricter version of the same weakness rather than the
- * property. Paying 12 and two witnesses for a different patch is the wrong
- * trade; paying 6 for today's escape is not.
+ * The three things this still does not do are stated rather than hidden.
+ * It cannot see an assembled NAME (`'workflow' + '-state.json'`) — no
+ * literal carries the artifact, so arm 3 never receives a candidate, which
+ * is a limit of the candidate search and has its own asserted row. It does
+ * not read a program in a FILE. And `eval` defeats it, as it defeats any
+ * reading of a program that does not run it.
  */
-function bodyIsAllScratch(bare: string): boolean {
-  // `/^\/[^/]/` and not `startsWith('/')`: the looser test counted a bare
-  // `/` and the `//` of a comment as absolute paths that are not scratch,
-  // which ended the exemption for two real fixture commands on the strength
-  // of a comment marker. Measured, not reasoned: the loose version newly
-  // refuses 6 corpus commands and this one refuses 4, and the two it drops
-  // had no non-scratch path in them at all — only punctuation that looked
-  // like one.
-  const words = bare.split(/[\s'"`,;(){}[\]]+/).filter(w => /^\/[^/]/.test(w));
-  return words.length > 0 && words.every(isScratchPath);
+export function bodyTargets(body: string): BodyTargets {
+  const targets: string[] = [];
+  const fragments: string[] = [];
+  let i = 0;
+  while (i < body.length) {
+    const q = body[i];
+    if (q !== "'" && q !== '"') {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    let value = '';
+    let closed = false;
+    while (j < body.length) {
+      const c = body[j];
+      // Only a DOUBLE-quoted literal escapes. Inside single quotes a
+      // backslash is literal in both shell and Python, and treating it as an
+      // escape keeps the span open past its real end — #1203's defect, one
+      // layer down.
+      if (q === '"' && c === '\\' && j + 1 < body.length) {
+        value += body[j + 1];
+        j += 2;
+        continue;
+      }
+      if (c === q) {
+        closed = true;
+        break;
+      }
+      value += c;
+      j++;
+    }
+    // An unterminated literal means every boundary after it is a guess.
+    if (!closed) return { targets: [], fragments: [], unreadable: true };
+    if (ALL_PROTECTED.some(p => value.toLowerCase().includes(p.toLowerCase()))) {
+      (standsAlone(body, i, j) ? targets : fragments).push(value);
+    }
+    i = j + 1;
+  }
+  return { targets, fragments, unreadable: false };
+}
+
+/**
+ * Is the literal spanning `[start, end]` a complete argument on both sides,
+ * and is every expression ENCLOSING it also complete?
+ *
+ * A newline ends a statement, so it is a delimiter — but only while the walk
+ * is still at the depth the literal was written at. Once it has stepped out
+ * through a closing bracket it is inside an expression, where a newline is a
+ * continuation and not an end.
+ */
+function standsAlone(body: string, start: number, end: number): boolean {
+  let a = start - 1;
+  while (a >= 0 && (body[a] === ' ' || body[a] === '\t')) a--;
+  if (a >= 0 && body[a] !== '\n' && !ARG_OPENS.has(body[a])) return false;
+
+  let b = end + 1;
+  let out = 0;
+  for (;;) {
+    while (b < body.length && (body[b] === ' ' || body[b] === '\t')) b++;
+    if (b >= body.length) return true;
+    const c = body[b];
+    if (c === '\n') {
+      if (out === 0) return true;
+      b++;
+      continue;
+    }
+    if (GROUP_CLOSES.has(c)) {
+      out++;
+      b++;
+      continue;
+    }
+    return ARG_CLOSES.has(c);
+  }
+}
+
+/**
+ * Can every write this body could make to a protected artifact be shown to
+ * land in a scratch tree?
+ *
+ * Three ways to answer no, and all three are the absence of evidence rather
+ * than evidence of harm: the body cannot be read, a carrying literal is
+ * consumed by an expression, or no literal carries the artifact at all. The
+ * exemption's job is to say YES.
+ */
+function bodyTargetsAreScratch(body: string): boolean {
+  const { targets, fragments, unreadable } = bodyTargets(body);
+  if (unreadable || fragments.length > 0 || targets.length === 0) return false;
+  return targets.every(isScratchPath);
 }
 
 const ALL_PROTECTED = [...PROTECTED_FILES, ...PROTECTED_HOOKS];
@@ -1450,7 +1574,13 @@ export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): Bas
       if (inner.blocked) return inner;
       continue;
     }
-    const pf = absoluteNamesOutsideScratch(program, exempt).find(p => writesNear(program, p));
+    // #1277: the same target question as arm 3 below. A stdin program is
+    // the arm 3 body reached by another route, and it had NO body gate at
+    // all — so the `.replace` spelling #1276 closed for `-e` was still open
+    // here, in a heredoc, for as long as the stopgap existed.
+    const pf = absoluteNamesOutsideScratch(program, exempt && bodyTargetsAreScratch(program)).find(p =>
+      writesNear(program, p),
+    );
     if (pf) {
       return {
         blocked: true,
@@ -1525,11 +1655,19 @@ export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): Bas
     }
 
     if (isInterpreter || isMutatingFind) {
-      // #1269: the exemption asks about the whole body, not one word. See
-      // `bodyIsAllScratch` for what it closes, what it does not, and the
-      // 6-against-12 measurement behind choosing it over dropping the
-      // exemption from this arm entirely.
-      const candidates = namesOutsideScratch(bare, ALL_PROTECTED, exempt && bodyIsAllScratch(bare));
+      // #1277: the exemption asks whether the body's write TARGET can be
+      // shown to be scratch — see `bodyTargets`. It replaces #1276's
+      // all-absolute-literals stopgap, which this closes the class of.
+      //
+      // Two cases keep the plain `exempt`, because their destinations are
+      // SHELL WORDS and not source literals, so `namesOutsideScratch`
+      // already asks the target question of them directly: a mutating
+      // `find`, whose operands are on the command line, and a shell `-c`
+      // body, which arm 3a re-enters as shell. Handing either to a reader of
+      // string literals would refuse them for having none.
+      const bodyExempt =
+        isMutatingFind || isShellWord(word) ? exempt : exempt && bodyTargetsAreScratch(programBody(seg));
+      const candidates = namesOutsideScratch(bare, ALL_PROTECTED, bodyExempt);
       const pf = isMutatingFind
         ? (candidates[0] ?? null)
         : (candidates.find(p => writesNear(bare, p)) ?? null);

@@ -26,9 +26,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import {
+  bodyTargets,
   decideBashWrite,
   interpreterPrograms,
   isScratchPath,
+  programBody,
   segments,
   stripQuoted,
   stripHeredocs,
@@ -1963,9 +1965,12 @@ describe("#1269 WITNESS: a protected tree is subtracted under both spellings", (
  * spellings escaped; the other two happened to normalise back into the run
  * store, which is luck and not coverage.
  *
- * This is a STOPGAP and the last case below says so by asserting what it
- * still lets through. The durable repair is to resolve the write TARGET
- * rather than read literals, which is filed on #1269.
+ * The stopgap this block was written for is GONE (#1277). The rows are kept
+ * because the commands are still the right questions and all but one still
+ * have the same answer; what decides them now is `bodyTargets`, which asks
+ * whether the write target can be shown to be scratch rather than whether
+ * every absolute literal is. The one row that moved is labelled REVERSED
+ * and carries its own control.
  */
 describe("#1269 WITNESS: a computed destination in an interpreter body", () => {
   const RUN = `${process.env.HOME}/.rungate/run`;
@@ -1999,19 +2004,40 @@ describe("#1269 WITNESS: a computed destination in an interpreter body", () => {
   test("MECHANISM: punctuation that looks like a path is not one", () => {
     // `/` and the `//` of a comment are absolute-looking and are not paths.
     // Counting them ended the exemption for two real fixture commands on
-    // the strength of a comment marker — 6 newly refused against 4 — so the
-    // test is "a slash followed by a non-slash", and this row is what
-    // separates the two spellings of it.
+    // the strength of a comment marker — 6 newly refused against 4.
+    //
+    // #1277 retired the reading that made this delicate: the rule no longer
+    // asks anything about absolute-looking WORDS, only about complete
+    // string literals, and `//` is not one. The row is kept because the
+    // command is real and must stay allowed, not because the hazard is.
     const cmd = `bun -e '// build the fixture\nwriteFileSync("/tmp/fix/${STATE}", "{}")'`;
     expect(decideBashWrite(cmd).blocked).toBe(false);
   });
 
-  test("MECHANISM: one non-scratch absolute literal anywhere in the body ends the exemption", () => {
-    // Identical write to the CONTROL above. The only difference is a second
-    // absolute path that is not scratch, and it is not the destination — so
-    // this row fails if the rule reads the carrying word rather than the
-    // body, which is exactly the mutation this case exists to catch.
+  /**
+   * REVERSED by #1277, deliberately, and this is the one row that moved in
+   * the widening direction — so it is kept and inverted rather than deleted.
+   *
+   * The stopgap asked "is EVERY absolute literal in the body scratch", so a
+   * `readFileSync` of an unrelated run-store file ended the exemption for a
+   * fixture write beside it. That is over-blocking: the second literal is a
+   * READ, it carries no protected artifact, and it is not the destination.
+   * Asking about the write TARGET instead allows it.
+   *
+   * The control below is what bounds the widening, and it is the reason this
+   * reversal is safe to take: the moment the extra literal DOES carry a
+   * protected artifact it is a target in its own right, and the exemption
+   * ends again. So what #1277 newly exempts is exactly the set of bodies
+   * whose only protected-artifact literals are scratch.
+   */
+  test("REVERSED: a non-scratch literal that carries no artifact no longer ends the exemption", () => {
     const cmd = `bun -e 'readFileSync("${RUN}/notes"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+
+  test("CONTROL: the same shape where the extra literal IS an artifact still refuses", () => {
+    const cmd = `bun -e 'readFileSync("${RUN}/${STATE}"); writeFileSync("/tmp/fix/${STATE}", "{}")'`;
     expect(decideBashWrite(cmd).blocked).toBe(true);
   });
 
@@ -2052,5 +2078,229 @@ describe("#1269 WITNESS: a computed destination in an interpreter body", () => {
   test("LIMITATION: an assembled artifact NAME is invisible to every arm", () => {
     const cmd = `python3 -c "import os; open(os.environ['RUNGATE_WORK_DIR'] + os.sep + 'workflow' + '-state.json','w').write('{}')"`;
     expect(decideBashWrite(cmd).blocked).toBe(false);
+  });
+});
+
+/**
+ * #1277: the exemption is decided on the resolved write TARGET, not on a
+ * path literal somewhere in the command.
+ *
+ * ## What was broken to make these fail
+ *
+ * Nothing had to be broken. All four WITNESS rows below were ALLOWED by
+ * `origin/main` (`e17bacf6`) and are refused here — run before the fix, with
+ * the four CONTROL rows green in the same run, so the reds are the escape
+ * and not a module that stopped loading.
+ *
+ * Two of the four are the spelling #1276's stopgap was written for, reached
+ * by routes it does not cover: a heredoc, which had no body gate at all, and
+ * a `.replace` whose replacement is not a literal, so the "is every absolute
+ * literal scratch" question answers yes and the write still lands in the run
+ * store. That is the class #1277 predicted and the reason the stopgap
+ * labelled itself one.
+ *
+ * ## The population, enumerated rather than asserted to be unchanged
+ *
+ * Swept over this machine's transcripts — 23,905 files, 50,189 unique Bash
+ * commands, 1,843 of them naming a protected artifact:
+ *
+ *     newly blocked   0
+ *     newly allowed   2      both real `/tmp` fixture builds; see REVERSED above
+ *
+ * A `0` in the blocked column is the reading `.claude/rules/
+ * checks-must-be-able-to-fail.md` calls an instrument reporting nothing, so
+ * here is what the instrument DID see, at the level the change operates on.
+ * Of 531 non-shell interpreter segments in that corpus:
+ *
+ *     exempt before   15        exempt after    7
+ *     lost exemption  11        gained          3
+ *     a carrying literal consumed by an expression      235
+ *     a body that does not read as complete literals     10
+ *     no literal carrying a protected artifact          182
+ *
+ * So the fragment mechanism is exercised 235 times by real commands, and in
+ * every one of them `origin/main` already refused for another reason — which
+ * is why the command-level column is 0 and why that 0 is not blindness. The
+ * four witnesses are synthesised because no agent on this machine has yet
+ * written the escape; that is the same position #1270 was in.
+ */
+describe("#1277 WITNESS: a computed destination that leaves no non-scratch literal", () => {
+  const RUN2 = `${process.env.HOME}/.rungate/run`;
+  const escapes: [string, string][] = [
+    [
+      "a heredoc, which had no body gate at all",
+      `python3 <<'PY'\nopen("/tmp/x/${STATE}".replace("/tmp/x", "${RUN2}"), "w").write("{}")\nPY`,
+    ],
+    [
+      "a -e body whose replacement is an env var, not a literal",
+      `bun -e 'writeFileSync("/tmp/x/${STATE}".replace("/tmp/x", process.env.RUNGATE_WORK_DIR), "{}")'`,
+    ],
+    [
+      "a -c body whose replacement is expanduser, so no literal is absolute",
+      `python3 -I -c "import os; open('/tmp/x/${STATE}'.replace('/tmp/x', os.path.expanduser('~/.rungate/run')),'w').write('{}')"`,
+    ],
+    [
+      "the witnesses DIRECTORY, where there is no basename to compare",
+      `bun -e 'writeFileSync("/tmp/x/witnesses/ac-1.json".replace("/tmp/x", process.env.RUNGATE_WORK_DIR), "{}")'`,
+    ],
+  ];
+
+  test.each(escapes)("%s is refused", (_n, cmd) => {
+    expect(decideBashWrite(cmd).blocked, cmd).toBe(true);
+  });
+
+  /**
+   * The guard's own VIEW of the input, not just its verdict.
+   *
+   * A verdict-only case cannot tell "refused because the literal is a
+   * fragment" from "refused because something upstream mangled the command",
+   * and the second is how a detector ends up narrower than its own test.
+   */
+  test("MECHANISM: the carrying literal is reported as a FRAGMENT, not as a target", () => {
+    const body = programBody(
+      `bun -e 'writeFileSync("/tmp/x/${STATE}".replace("/tmp/x", process.env.RUNGATE_WORK_DIR), "{}")'`,
+    );
+    const t = bodyTargets(body);
+    // The literal reached the reader intact and un-normalised...
+    expect(t.fragments).toEqual([`/tmp/x/${STATE}`]);
+    // ...and it is scratch, so the refusal is NOT "the path was elsewhere".
+    // It is "this literal is not the destination", which is the whole change.
+    expect(isScratchPath(`/tmp/x/${STATE}`)).toBe(true);
+    expect(t.targets).toEqual([]);
+    expect(t.unreadable).toBe(false);
+  });
+
+  test("MECHANISM: a literal nothing transforms is reported as a target", () => {
+    const t = bodyTargets(programBody(`bun -e 'writeFileSync("/tmp/fix/${STATE}", "{}")'`));
+    expect(t.targets).toEqual([`/tmp/fix/${STATE}`]);
+    expect(t.fragments).toEqual([]);
+  });
+
+  /**
+   * The raw spelling must survive to the guard, or the fixture is lying.
+   *
+   * `join()` and `resolve()` normalise `.` and `..` away. A case asserting
+   * that a climbing path is refused proves nothing if something normalised
+   * it before the guard saw it — so this asserts the UNNORMALISED text is
+   * what `bodyTargets` reports, and only then that resolution refuses it.
+   */
+  test("MECHANISM: the reader receives the raw spelling, and resolution is what refuses", () => {
+    const raw = `/tmp/../opt/bwprobe/${STATE}`;
+    const cmd = `bun -e 'writeFileSync("${raw}", "{}")'`;
+    const t = bodyTargets(programBody(cmd));
+    expect(t.targets).toEqual([raw]); // the `..` is still there
+    expect(t.targets[0]).toContain("/../"); // said twice, because this is the premise
+    expect(isScratchPath(raw)).toBe(false); // resolution, not spelling, decides
+    expect(decideBashWrite(cmd).blocked).toBe(true);
+  });
+
+  test("MECHANISM: a target under a symlink out of scratch is resolved, not trusted", () => {
+    // `/tmp` and not `tmpdir()`, and that is not cosmetic. On this machine
+    // `tmpdir()` is a 49-character `/var/folders/…` path, which pushes the
+    // body's write VERB more than `writesNear`'s 80-character window away
+    // from the artifact name — so the first draft of this case went green
+    // for a reason that had nothing to do with symlinks. The window is
+    // pre-existing and is reported separately; this row must not depend on
+    // it in either direction.
+    const dir = mkdtempSync(join("/tmp", "bw1277-"));
+    const link = join(dir, "esc");
+    try {
+      // Positive control first: a plain name in the same directory IS
+      // exempt, so a red below is about the link and not about the tree.
+      expect(decideBashWrite(`bun -e 'writeFileSync("${join(dir, STATE)}", "{}")'`).blocked).toBe(false);
+      symlinkSync("/usr", link); // stands in for the run store: exists, not scratch
+      const through = join(link, STATE);
+      expect(bodyTargets(programBody(`bun -e 'writeFileSync("${through}", "{}")'`)).targets).toEqual([through]);
+      expect(decideBashWrite(`bun -e 'writeFileSync("${through}", "{}")'`).blocked).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("MECHANISM: programBody keeps inner quoting, which dequote destroys", () => {
+    const seg = `bun -e 'writeFileSync("/tmp/fix/${STATE}", "{}")'`;
+    expect(programBody(seg)).toBe(`writeFileSync("/tmp/fix/${STATE}", "{}")`);
+    // The view the exemption used to be decided on. With no quotes in it
+    // there is no boundary between a literal and the expression consuming
+    // it, which is why the `.replace` spelling was invisible: the carrying
+    // WORD is `/tmp/x/workflow-state.json.replace`, and it is scratch.
+    expect(dequote(seg)).not.toContain('"');
+    expect(isScratchPath(`/tmp/x/${STATE}.replace`)).toBe(true);
+  });
+});
+
+describe("#1277 CONTROL: the fixture shapes #1175 exists to unblock", () => {
+  const ok: [string, string][] = [
+    ["a node fixture", `bun -e 'writeFileSync("/tmp/fix/${STATE}","{}")'`],
+    ["a python fixture", `python3 -I -c "import json; json.dump({}, open('/tmp/fix/${STATE}','w'))"`],
+    ["two scratch paths", `python3 -I -c "import shutil; shutil.copy('/tmp/a/${STATE}', '/tmp/b/${STATE}')"`],
+    ["a heredoc fixture", `python3 <<'PY'\nopen("/tmp/fix/${STATE}", "w").write("{}")\nPY`],
+    ["a scratch path assigned before use", `python3 -I -c "p = '/tmp/fix/${STATE}'; open(p,'w').write('{}')"`],
+    ["a scratch path in a dict value", `python3 -I -c "d = {'dst': '/tmp/fix/${STATE}'}; open(d['dst'],'w')"`],
+    ["a scratch path in a list", `python3 -I -c "for p in ['/tmp/a/${STATE}', '/tmp/b/${STATE}']: open(p,'w')"`],
+  ];
+  test.each(ok)("%s stays allowed", (_n, cmd) => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${d.reason}`).toBe(false);
+  });
+
+  test("a mutating find keeps the plain exemption — its operands are shell words", () => {
+    // `find` has no source literals, so a reader of them would refuse every
+    // one. The target question is already asked of its operands directly.
+    expect(decideBashWrite(`find /tmp/fix -name '*.json' -exec rm /tmp/fix/${STATE} ;`).blocked).toBe(false);
+    expect(decideBashWrite(`find /tmp/fix -name '*.json' -exec rm ${LIVE}/run/${STATE} ;`).blocked).toBe(true);
+  });
+
+  test("a shell -c body keeps the plain exemption — arm 3a re-enters it as shell", () => {
+    expect(decideBashWrite(`bash -c 'echo x > /tmp/fix/${SALT}'`).blocked).toBe(false);
+    expect(decideBashWrite(`bash -c 'echo x > ${LIVE}/run/${SALT}'`).blocked).toBe(true);
+  });
+});
+
+describe("#1277: the cheapest wrong fixes, run rather than described", () => {
+  const RUN3 = `${process.env.HOME}/.rungate/run`;
+
+  test("the stopgap it replaces exempts two of the four witnesses", () => {
+    // #1276's rule, re-implemented here rather than described, so the claim
+    // that it leaves the class open is executed.
+    const stopgap = (bare: string) => {
+      const words = bare.split(/[\s'"`,;(){}[\]]+/).filter(w => /^\/[^/]/.test(w));
+      return words.length > 0 && words.every(isScratchPath);
+    };
+    const envVar = `bun -e writeFileSync(/tmp/x/${STATE}.replace(/tmp/x, process.env.RUNGATE_WORK_DIR), {})`;
+    const witnessDir = `bun -e writeFileSync(/tmp/x/witnesses/ac-1.json.replace(/tmp/x, process.env.RUNGATE_WORK_DIR), {})`;
+    expect(stopgap(envVar)).toBe(true); // exempt under the stopgap
+    expect(stopgap(witnessDir)).toBe(true);
+    // and the literal the stopgap was built for is caught by it, so the two
+    // rows above are the CLASS it left open rather than a misreading of it
+    expect(stopgap(`bun -e writeFileSync(/tmp/x/${STATE}.replace(/tmp/x, ${RUN3}), {})`)).toBe(false);
+  });
+
+  test("a denylist of transforming operators passes the witness and fails on the next operator", () => {
+    // The tempting repair: refuse a literal followed by one of the ways to
+    // compute a path. It answers the four witnesses, and it is a detector
+    // narrower than what it detects — the fifth spelling walks through.
+    const TRANSFORMS = /^\s*(?:\.\w+\s*\(|\+|%)/;
+    const after = (body: string, lit: string) => body.slice(body.indexOf(lit) + lit.length + 1);
+    const caught = `writeFileSync("/tmp/x/${STATE}".replace("/tmp/x", d), "{}")`;
+    expect(TRANSFORMS.test(after(caught, `/tmp/x/${STATE}`))).toBe(true);
+    // Python's pathlib. Not a `.replace`, not a `+`, not a `%`.
+    const escapes = `open(Path("/tmp/x/${STATE}") .relative_to("/tmp/x") , "w")`;
+    expect(TRANSFORMS.test(after(escapes, `/tmp/x/${STATE}`))).toBe(false); // the denylist allows it
+    // The closed-world reading does not care which operator it is: the
+    // literal is not followed by an argument delimiter, so it is a fragment.
+    const t = bodyTargets(escapes);
+    expect(t.targets).toEqual([]);
+    expect(t.fragments).toEqual([`/tmp/x/${STATE}`]);
+  });
+
+  test("an unterminated literal is UNREADABLE, not an empty reading", () => {
+    // A body whose quoting does not close gives every boundary after it as a
+    // guess. Reporting no targets would read identically to a body with no
+    // protected literal in it, and that reading exempts nothing either way —
+    // so the flag exists to keep the two states tellable apart.
+    const t = bodyTargets(`writeFileSync("/tmp/fix/${STATE}", "{}`);
+    expect(t.unreadable).toBe(true);
+    expect(decideBashWrite(`bun -e 'writeFileSync("/tmp/fix/${STATE}", "{}'`).blocked).toBe(true);
   });
 });
