@@ -30,8 +30,12 @@ So for the orphan and untested-spec checks the only legal fix is to make
 something genuinely reference the new file. Reaching for the allowlist makes it
 worse, and it is the first thing a stuck agent reaches for.
 
-One consequence worth knowing: DRIFT-3 compares against `origin/main`, so a
-branch that is behind can fail on somebody else's merged entry. Rebase before
+One consequence worth knowing, and the direction is the opposite of the
+obvious one: DRIFT-3 computes `allowlistAdditions(origin/main, yours)` and
+refuses entries **yours has that main lacks**. So somebody else's merged
+*addition* cannot redden a branch that is behind — your copy is the smaller
+one — but somebody else's merged *removal* can, because an entry main has
+dropped and your branch still carries reads as one you added. Rebase before
 you debug.
 
 ## Tier 1 — tripped by adding ANY ordinary file
