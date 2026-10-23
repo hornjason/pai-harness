@@ -1382,33 +1382,32 @@ export function programBody(segment: string): string {
  * it detects — `.claude/rules/checks-must-be-able-to-fail.md` — and it is
  * what #1276's stopgap was a second attempt at.
  *
- * ## `=` and `:` are NOT openers, and that is the #1371 repair
- *
- * They were, on the reading that `p = "/tmp/x"` and `{"dst": "/tmp/x"}` both
- * bind a whole path and nothing consumes it before the filesystem does. That
- * reading is true of the BINDING and says nothing about the write, because
- * nothing here follows the name afterwards:
+ * ## `=` and `:` ARE openers, and the rebinding question moved (#1371)
+
+ * A round of #1371 dropped them, on the finding that `p = "/tmp/x"` records
+ * a target nothing then follows through its reassignment:
  *
  *     p = '/tmp/fix/workflow-state.json'
  *     p = p.replace('/tmp/fix', os.environ['RUNGATE_WORK_DIR'])
  *     open(p, 'w').write('{}')
  *
- * Every literal in that body is scratch, the exemption was granted, and the
- * write lands in the run store. The value the exemption was granted against
- * is not the value the write used.
+ * Dropping them worked and was the wrong place to answer it. `inWritePosition`
+ * answers the same question generally — a binding at statement level is an
+ * argument of no call, so it is not a write position — and it also catches the
+ * dict KEY, the ternary branch, and the inner call's default that the `:` drop
+ * reached only by accident or not at all. Measured: with `inWritePosition` in
+ * place, restoring `=` and `:` moves nothing — 0 newly blocked and 0 newly
+ * allowed over 132,196 real commands, and the same exemption population.
  *
- * The other repair — follow the name through its reassignments — is a second
- * parser that has to agree with the host language about what a reassignment
- * is, which is the parser-differential class this whole module is in. A bound
- * literal now simply does not stand alone, so a body that binds before it
- * writes is UNPROVEN and refused. That is the same fail-closed reading a
- * relative path already gets, and it costs the two assignment rows that used
- * to be CONTROLs — they are inverted in the tests rather than deleted, with
- * the measured corpus cost beside them.
+ * So they are restored, because two deciders answering one question are
+ * behaviourally one, no behavioural test can tell them apart, and the next
+ * reader deletes whichever looks redundant — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`. The measurement above is
+ * exactly the evidence that they WERE two deciders.
  *
- * Dropping `:` also disposes of the ternary half of the #1371 MEDIUM: a `:`
- * following a `?` used to read as a dict key, so a ternary BRANCH read as a
- * whole-path binding. It cannot now, because `:` opens nothing.
+ * What this set still answers alone is ADJACENCY: `x + "/tmp/…"` has an
+ * operator against the literal, and no question about write position can see
+ * that.
  *
  * A closing bracket is neither an opener nor a closer. It ENDS the group the
  * literal sits in and leaves the outer expression still running, so the walk
@@ -1417,7 +1416,7 @@ export function programBody(segment: string): string {
  * version of this stopped at the `)` and reported the pathlib spelling as a
  * target; its own CONTROL row caught it, and that row is in the tests.
  */
-const ARG_OPENS = new Set(['(', ',', '[', '{', ';']);
+const ARG_OPENS = new Set(['(', ',', '[', '{', '=', ':', ';']);
 const ARG_CLOSES = new Set([')', ',', ']', '}', ';', ':']);
 const GROUP_CLOSES = new Set([')', ']', '}']);
 
@@ -1427,8 +1426,8 @@ export interface BodyTargets {
   /** Carrying literals an expression consumes. The destination is NOT these. */
   fragments: string[];
   /**
-   * Absolute literals resolving inside a protected tree, whatever they spell
-   * and whether or not anything transforms them (#1371).
+   * Literals resolving inside a protected tree, whatever they spell and
+   * whether or not anything transforms them (#1371).
    *
    * `targets` and `fragments` are both filtered by `ALL_PROTECTED`, so
    * `targets.every(isScratchPath)` quantifies over a set the caller chose the
@@ -1437,30 +1436,121 @@ export interface BodyTargets {
    * being complete, and completeness is what failed.
    */
   protectedLiterals: string[];
+  /**
+   * Path-shaped literals the reader could NOT place — an expansion it cannot
+   * perform, a backtick, or a relative path whose meaning depends on a
+   * working directory. Kept on their own list rather than folded into
+   * `protectedLiterals`, so that afterwards the reason a body was refused is
+   * still readable: "it names a live tree" and "I could not tell" are
+   * different facts and only one of them is a finding about the command.
+   */
+  unplaceable: string[];
   /** The body does not read as a sequence of complete literals. */
   unreadable: boolean;
 }
 
 /**
- * Is this literal demonstrably a path inside a tree holding live artifacts?
+ * Where a literal sits, as THREE readings and not two (#1371, second round).
  *
- * Both spellings, for the reason `protectedTrees` gives at length: `resolve`
- * normalises `..` and does not follow a link, so a pre-existing symlink out
- * of scratch is invisible to the first reading and named by the second.
+ * The first version of this returned a boolean behind
+ * `if (!value.startsWith('/')) return false`, and the review was right that
+ * the word *absolute* in the remedy I was given is where the hole came
+ * from. `~/.rungate/run`, `$HOME/.rungate/run` and `${HOME}/.claude` all
+ * took that early exit, and the caller read `false` as **not a protected
+ * target** rather than as **I could not place this** — a silent skip, one
+ * layer inside the remedy for silent skips.
  *
- * It answers only YES. A relative literal, a `$`-bearing spelling, a name
- * that is not a path at all — all `false`, because the caller's question is
- * "can I show this body touches a live tree", and silence is not evidence
- * either way. What the caller does with silence is the caller's business;
- * here it costs nothing, because the exemption still has to be EARNED by a
- * target that `isScratchPath` affirms.
+ * The asymmetry that settles it: a false `unplaceable` costs a refused
+ * exemption, which somebody notices and fixes. A false `elsewhere` costs a
+ * bypass, which nobody notices.
+ *
+ * Expansion handles the spellings we thought of; `unplaceable` handles the
+ * ones we did not, and it is the half that matters. Both are kept because
+ * expansion is what stops the fail-closed half from refusing every ordinary
+ * `~/`-spelled read.
  */
-function literalInProtectedTree(value: string, live: string[]): boolean {
-  if (!value.startsWith('/')) return false;
-  const normalised = resolve(value);
-  if (inAnyTree(normalised, live)) return true;
+type Placement = 'protected' | 'unplaceable' | 'elsewhere';
+
+/** A leading `~`, `$HOME` or `${HOME}`, which the runtime or shell expands. */
+const HOME_PREFIX = /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/;
+
+/**
+ * Path-shaped and NOT placeable: an expansion we cannot perform, a backtick,
+ * or a relative path whose meaning depends on a working directory this
+ * module cannot see. `isScratchPath` already gives a relative path exactly
+ * this reading — "only an ABSOLUTE path can be placed in a tree" — so this
+ * is that rule applied on the other side of the same question.
+ */
+const UNPLACEABLE = /[$`~]/;
+
+function expandHome(value: string): string {
+  const home = process.env.HOME || '';
+  if (!home) return value;
+  return value.replace(HOME_PREFIX, home);
+}
+
+/**
+ * One site per reading, so a mutation battery can remove the live-tree
+ * reading without removing the fail-closed one and report which rows each
+ * is actually holding up. Inlining either verdict at a second site would
+ * let a refusal bypass the mutation and the rows would go green having
+ * witnessed nothing — `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+const IN_LIVE_TREE: Placement = 'protected';
+const CANNOT_PLACE: Placement = 'unplaceable';
+
+/**
+ * ## The case-sensitivity differential does not exist here, measured (#1371)
+ *
+ * The review asked for both sides of the live-tree comparison to be
+ * case-folded, as `names()` already is, because `/Users/JHORN/…` and
+ * `/Users/jhorn/…` are one file and two strings on this volume. It was
+ * built, and then the mutation battery refused to witness it: removing the
+ * fold left the SHOUTED row refused anyway, because `resolveThroughLinks`
+ * climbs to the deepest EXISTING ancestor and `realpathSync` returns the
+ * canonical case — `/USERS` comes back `/Users`. So the fold decided
+ * nothing that the resolution had not already decided.
+ *
+ * It is not shipped, and the reason is not thrift. Two deciders answering
+ * one question are behaviourally one, no test can tell them apart, and the
+ * next reader deletes whichever looks redundant. And on a case-SENSITIVE
+ * volume the fold is the wrong answer rather than a spare one: there
+ * `/Users/JHORN/x` really is a different file, which the fold would report
+ * as live. `names()` folds for a different situation — it matches a
+ * basename inside a command string where nothing resolves anything.
+ *
+ * #1211 / #1358 is the same QUESTION about `WorkflowStateGuard` and may
+ * well have a different answer, because that matcher has no resolution step
+ * to fall back on. Worth reading this note before fixing it there.
+ */
+function placeLiteral(value: string, live: string[]): Placement {
+  const expanded = expandHome(value);
+  // Not path-shaped at all: a mode string, a JSON blob, a module name. The
+  // exemption would never apply again if these ended it.
+  if (!expanded.includes('/')) return 'elsewhere';
+  if (UNPLACEABLE.test(expanded)) return CANNOT_PLACE;
+  // A RELATIVE path-shaped literal stays `elsewhere`, and that is measured
+  // rather than comfortable. Treating one as unplaceable costs 7 real
+  // commands and halves the exemption population (13 segments to 6),
+  // because `'hornjason/pai-config'` and `'./lib/x.ts'` are slash-bearing
+  // and are not paths — and it does not even close the class it was
+  // widened for, since `'.'` and `'x'` carry no slash at all. The honest
+  // closure for a relative destination is `inWritePosition`, which asks
+  // only about literals the write actually consumes.
+  if (!expanded.startsWith('/')) return 'elsewhere';
+  const normalised = resolve(expanded);
+  if (inAnyTree(normalised, live)) return IN_LIVE_TREE;
   const real = resolveThroughLinks(normalised);
-  return real !== null && inAnyTree(real, live);
+  // Nothing in the chain resolved, so this is a path we could not place —
+  // not a path we placed outside the live trees. The distinction is the
+  // whole of #1371's third round, and `isScratchPath` already notes that an
+  // unreachable fail-OPEN in a fail-closed module reads as permission.
+  if (real === null) return CANNOT_PLACE;
+  // Both spellings, for the reason `protectedTrees` gives at length:
+  // `resolve` normalises `..` and does not follow a link, so a pre-existing
+  // symlink out of scratch is invisible to the first reading.
+  if (inAnyTree(real, live)) return IN_LIVE_TREE;
+  return 'elsewhere';
 }
 
 /**
@@ -1504,6 +1594,9 @@ export function bodyTargets(body: string): BodyTargets {
   const targets: string[] = [];
   const fragments: string[] = [];
   const protectedLiterals: string[] = [];
+  const unplaceable: string[] = [];
+  /** Every literal span read so far, so the backward walk can step over one. */
+  const spans: [number, number][] = [];
   // Read once per body rather than once per literal: each call realpaths up
   // to six trees, and a body has as many literals as it likes.
   const live = protectedTrees();
@@ -1536,14 +1629,17 @@ export function bodyTargets(body: string): BodyTargets {
       j++;
     }
     // An unterminated literal means every boundary after it is a guess.
-    if (!closed) return { targets: [], fragments: [], protectedLiterals: [], unreadable: true };
-    if (literalInProtectedTree(value, live)) protectedLiterals.push(value);
+    if (!closed) return { targets: [], fragments: [], protectedLiterals: [], unplaceable: [], unreadable: true };
+    spans.push([i, j]);
+    const where = placeLiteral(value, live);
+    if (where === 'protected') protectedLiterals.push(value);
+    if (where === 'unplaceable') unplaceable.push(value);
     if (ALL_PROTECTED.some(p => value.toLowerCase().includes(p.toLowerCase()))) {
-      (standsAlone(body, i, j) ? targets : fragments).push(value);
+      (standsAlone(body, i, j) && inWritePosition(body, i, spans) ? targets : fragments).push(value);
     }
     i = j + 1;
   }
-  return { targets, fragments, protectedLiterals, unreadable: false };
+  return { targets, fragments, protectedLiterals, unplaceable, unreadable: false };
 }
 
 /**
@@ -1551,6 +1647,120 @@ export function bodyTargets(body: string): BodyTargets {
  * in here rather than carrying a rule of its own.
  */
 const WHITESPACE = new Set([' ', '\t', '\n', '\r']);
+
+/**
+ * The callees a literal may be a direct argument of and still be the write
+ * TARGET (#1371, second round).
+ *
+ * This is a WHITELIST OF POSITIONS, which is why it is allowed to exist at
+ * all. The thing refused twice on this PR is a denylist of TRANSFORMS —
+ * `.replace(`, `+`, `%`, an f-string — because a transform nobody listed
+ * reads as "no transform" and the exemption holds; `Path("/tmp/x")
+ * .relative_to(…)` is the standing proof and it is a CONTROL row. A
+ * whitelist fails the other way: a callee nobody listed is not a recognised
+ * write position, so the literal is a fragment and the exemption ends.
+ *
+ * The names are not a new list. They are the names already in
+ * `WRITE_INTENT`, which is what makes a command a candidate for arm 3 in
+ * the first place — so a verb missing here is a verb that never brought a
+ * command to this question.
+ *
+ * `remove`, `rename`, `replace`, `unlink` and `write` are qualified rather
+ * than matched bare: `str.replace` and `stdout.write` are not writes to a
+ * file, and a bare match would read a transform as a write position, which
+ * is the denylist's failure wearing a whitelist's clothes.
+ */
+const WRITE_CALLEES = new Set([
+  'writeFileSync',
+  'appendFileSync',
+  'createWriteStream',
+  'copyFileSync',
+  'renameSync',
+  'unlinkSync',
+  'rmSync',
+  'truncateSync',
+  'write_text',
+  'open',
+  'dump',
+  'copy',
+  'copyfile',
+  'copytree',
+  'move',
+  'rmtree',
+]);
+const QUALIFIED_WRITE_CALLEES = new Set([
+  'os.remove',
+  'os.rename',
+  'os.replace',
+  'os.unlink',
+  'os.rmdir',
+  'shutil.copy',
+  'shutil.copyfile',
+  'shutil.copytree',
+  'shutil.move',
+  'shutil.rmtree',
+  'json.dump',
+]);
+
+function isWriteCallee(name: string): boolean {
+  if (!name) return false;
+  if (QUALIFIED_WRITE_CALLEES.has(name)) return true;
+  const last = name.slice(name.lastIndexOf('.') + 1);
+  return WRITE_CALLEES.has(last);
+}
+
+/**
+ * Is the literal beginning at `start` a DIRECT argument of a recognised
+ * write call?
+ *
+ * The walk goes backwards to the opener of the group the literal sits in,
+ * stepping over balanced groups and over literal spans already read — a
+ * `(` inside a string is not a bracket. Three endings, and only the first
+ * is a yes:
+ *
+ *   a `(` at depth 0      the literal is an argument of that call; read the
+ *                         callee in front of it and ask the whitelist
+ *   a `[` or `{` at 0     the literal is an element of a list or an entry
+ *                         in a dict, not an argument of anything
+ *   the start of the body the literal is at statement level: a binding, a
+ *                         bare expression, a dict key with no enclosing call
+ *
+ * This is what makes the exemption a claim about the WRITE rather than
+ * about a path that appears somewhere near one, and it is what the two
+ * earlier rounds were each reaching for with a cheaper instrument.
+ */
+function inWritePosition(body: string, start: number, spans: [number, number][]): boolean {
+  let i = start - 1;
+  let depth = 0;
+  while (i >= 0) {
+    const span = spans.find(([s, e]) => i >= s && i <= e);
+    if (span) {
+      i = span[0] - 1;
+      continue;
+    }
+    const c = body[i];
+    if (c === ')' || c === ']' || c === '}') {
+      depth++;
+    } else if (c === '(') {
+      if (depth === 0) return isWriteCallee(calleeBefore(body, i));
+      depth--;
+    } else if (c === '[' || c === '{') {
+      if (depth === 0) return false;
+      depth--;
+    }
+    i--;
+  }
+  return false;
+}
+
+/** The dotted name immediately in front of an opening parenthesis. */
+function calleeBefore(body: string, openIndex: number): string {
+  let i = openIndex - 1;
+  while (i >= 0 && WHITESPACE.has(body[i])) i--;
+  let end = i + 1;
+  while (i >= 0 && /[A-Za-z0-9_$.]/.test(body[i])) i--;
+  return body.slice(i + 1, end);
+}
 
 /**
  * Is the literal spanning `[start, end]` a complete argument on both sides,
@@ -1617,10 +1827,17 @@ function standsAlone(body: string, start: number, end: number): boolean {
  * Can every write this body could make to a protected artifact be shown to
  * land in a scratch tree?
  *
- * Four ways to answer no, and all four are the absence of evidence rather
+ * Five ways to answer no, and all five are the absence of evidence rather
  * than evidence of harm: the body cannot be read, a carrying literal is
- * consumed by an expression, the body names a live tree, or no literal
- * carries the artifact at all. The exemption's job is to say YES.
+ * consumed by an expression, the body names a live tree, the body names a
+ * path the reader cannot PLACE, or no literal carries the artifact at all.
+ * The exemption's job is to say YES.
+ *
+ * With five refusals stacked, the failure that costs us is no longer a
+ * bypass — it is an exemption that silently never applies again, and every
+ * refusal row stays green through exactly that. So the CONTROL rows are the
+ * load-bearing half of the suite, and the corpus reading that matters most
+ * is `exempt > 0`, not `newly blocked == 0`.
  *
  * ## Why the live-tree reading is a separate question (#1371)
  *
@@ -1645,8 +1862,9 @@ function standsAlone(body: string, start: number, end: number): boolean {
  * `.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape.
  */
 function bodyTargetsAreScratch(body: string): boolean {
-  const { targets, fragments, protectedLiterals, unreadable } = bodyTargets(body);
-  if (unreadable || fragments.length > 0 || protectedLiterals.length > 0) return false;
+  const { targets, fragments, protectedLiterals, unplaceable, unreadable } = bodyTargets(body);
+  if (unreadable || fragments.length > 0) return false;
+  if (protectedLiterals.length > 0 || unplaceable.length > 0) return false;
   if (targets.length === 0) return false;
   return targets.every(isScratchPath);
 }
