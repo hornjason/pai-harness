@@ -77,6 +77,7 @@ import {
   type FileClaim,
   type PullState,
 } from "../lib/file-claims.ts";
+import { normaliseRepoPath } from "../lib/repo-path.ts";
 
 /** The one exit code every refusal travels through. */
 export const REFUSE_EXIT = 1;
@@ -442,6 +443,41 @@ if (import.meta.main) {
     const fetched = args.fetch ? refreshRefs(args.project) : false;
 
     if (args.check.length > 0) {
+      // THE THIRD AXIS (#1458). Two refusals below guard an unreadable
+      // registry and an unresolvable owner; this guards the caller's own
+      // path, and without it an unreadable one did not merely fail to match
+      // — it went around the owner refusal as well, because `allClaims` is
+      // `claimCovers` too. No claims found, empty `blind`, empty
+      // `contention`, `free:`, exit 0. A lock that answers "free" because it
+      // could not read the question is the one direction this must never be
+      // wrong in.
+      //
+      // Reachable by the intended use rather than by a hostile caller:
+      // `core.quotePath` defaults to true, so `git diff --name-only` emits
+      // `"lib/\303\251.ts"` for any non-ASCII filename, and piping a
+      // changed-file list in here is what `--check` is for. Spaces and globs
+      // take the same route, and the bare non-ASCII spelling is unreadable
+      // too because `normaliseRepoPath`'s character class is ASCII.
+      //
+      // Decided HERE and not in `underPrefix`. That function documents
+      // itself as never inventing an answer and leaves the meaning of
+      // unreadable to its caller; widening its return type would push this
+      // decision onto `risk-tier.ts` and `ai-review-findings.ts`, which
+      // already resolve it correctly in their own direction.
+      const unreadable = args.check.filter(p => normaliseRepoPath(p) === null);
+      if (unreadable.length > 0) {
+        console.log(
+          `UNMEASURED: ${unreadable.length} of ${args.check.length} path(s) could not be read as repository-relative paths.`,
+        );
+        for (const p of unreadable) console.log(`  ${p}`);
+        console.log(
+          "Not reporting these free: a path this tool cannot parse is not a path nobody holds.",
+        );
+        console.log(
+          "If these came from `git diff --name-only`, re-run it with `-c core.quotePath=false`.",
+        );
+        process.exit(REFUSE_EXIT);
+      }
       const base = baseRef();
       const reading = readFromRemote(args.project, base);
       if (reading.status === "unreadable") {

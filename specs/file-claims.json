@@ -1,35 +1,3 @@
 {
-  "claims": [
-    {
-      "owner": "rg/1405-window-writer",
-      "paths": [
-        "lib/scaffold/ai-review-step.ts",
-        ".github/workflows/ai-review.yml",
-        "test/ai-review-ledger-step.test.ts"
-      ],
-      "issue": 1405,
-      "note": "PR #1420, open. The ledger writes its truncation count."
-    },
-    {
-      "owner": "rg/1406-anchor-absent",
-      "paths": [
-        "lib/scaffold/ai-review-step.ts",
-        ".github/workflows/ai-review.yml",
-        "test/ai-review-ledger-step.test.ts"
-      ],
-      "issue": 1406,
-      "note": "PR #1415, open. An unread anchor is absent, not empty."
-    },
-    {
-      "owner": "rg/1413-file-claims",
-      "paths": [
-        "lib/file-claims.ts",
-        "scripts/claim-files.ts",
-        "specs/file-claims.json",
-        "test/file-claims.test.ts"
-      ],
-      "issue": 1413,
-      "note": "PR #1436, open. The lock itself."
-    }
-  ]
+  "claims": []
 }

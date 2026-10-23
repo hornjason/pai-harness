@@ -34,6 +34,7 @@ import {
   type FileClaim,
   type PullState,
 } from "../lib/file-claims";
+import { underPrefix } from "../lib/repo-path";
 import { repoSlug } from "../scripts/claim-files";
 
 const REPO = join(import.meta.dir, "..");
@@ -120,8 +121,65 @@ describe("#1413: a directory claims what is beneath it, and nothing else", () =>
     ["a prefix that is not a path boundary does NOT match", "lib", "library/a.ts", false],
     ["a sibling is not covered", "lib/a.ts", "lib/b.ts", false],
     ["the parent of a claimed file is not covered", "lib/a.ts", "lib", false],
+    // The rows that were missing, and the reason the suite was green while
+    // three contended paths read FREE (#1436 review). Every fixture above is
+    // already normalised, because that is how anybody writes a fixture by
+    // hand — so none of them can tell a rule that normalises from one that
+    // does not. These are what a CALLER produces: `./` is what tab-completion
+    // hands you, the case is what a case-insensitive filesystem hands you,
+    // and the backslash is what a Windows-shaped tool hands you.
+    ["a leading ./ is the same path", "lib", "./lib/a.ts", true],
+    ["case does not free a held file", "lib", "Lib/a.ts", true],
+    ["a backslash separator is the same path", "lib", "lib\\a.ts", true],
+    // These two are DOCUMENTATION, not witnesses, and saying so is the
+    // point: `lib/./a.ts` and `lib/sub/../a.ts` both satisfy a bare
+    // `startsWith("lib/")`, so they are green under the rule this swap
+    // removed as well as under the one it installs. Predicting 7 reds for
+    // the mutation below and measuring 5 is how that surfaced. They state
+    // intent; the four rows above are what would catch a regression.
+    ["a redundant segment is the same path", "lib", "lib/./a.ts", true],
+    ["an interior .. resolves before the comparison", "lib", "lib/sub/../a.ts", true],
+    // And the direction the swap must NOT have loosened: a `..` that leaves
+    // the repository is not a repository-relative path and is refused rather
+    // than clamped, so it cannot be spelled into a claim it is not under.
+    ["a path escaping the root is not covered", "lib", "../lib/a.ts", false],
+    // A leading `/` is STRIPPED, so this reads as covered. That is the safe
+    // direction and it is asserted rather than tolerated: for a claim check
+    // the costly error is reporting a held file FREE, so a spelling that
+    // cannot be resolved should land on "contended". `..` is the opposite
+    // case — it names something outside the repository, so there is no file
+    // here for a claim to be about, and inventing one would be the error.
+    ["a leading slash is stripped, and covered is the safe answer", "lib", "/lib/a.ts", true],
+    ["an absolute path elsewhere is still not covered", "lib", "/etc/passwd", false],
   ])("%s", (_label, claimed, path, want) => {
     expect(claimCovers(claimed, path)).toBe(want);
+  });
+
+  test("claimCovers IS underPrefix, so there is one decider and not two", () => {
+    // The binding, not a restatement. `claimCovers` used to be its own
+    // four-line `startsWith` and agreed with `underPrefix` on every fixture
+    // above the new rows — two deciders answering one question, which no
+    // behavioural test over hand-written paths could separate. Asserting
+    // agreement over the ADVERSARIAL set is what makes the delegation
+    // checkable: reintroduce a local rule and these disagree.
+    //
+    // Measured — reinstating the four-line `startsWith` turns 5 red: the
+    // `./`, case, backslash and leading-slash rows above, and this one.
+    const claimed = "lib";
+    for (const path of [
+      "lib/a.ts",
+      "./lib/a.ts",
+      "Lib/a.ts",
+      "lib\\a.ts",
+      "library/a.ts",
+      "../lib/a.ts",
+      "/lib/a.ts",
+      "lib/sub/../a.ts",
+    ]) {
+      expect(claimCovers(claimed, path), `disagreed about ${JSON.stringify(path)}`).toBe(
+        underPrefix(path, claimed),
+      );
+    }
   });
 });
 
@@ -561,6 +619,92 @@ describe("#1413: an owner this worktree cannot resolve is UNMEASURED, never free
     const dir = fixture([]);
     try {
       const r = check(dir, "--check", "lib/a.ts", "--no-fetch");
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain("free");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * #1458: the THIRD axis. The two rows above guard an unreadable registry
+   * and an unresolvable owner. Nothing guarded the caller's own path, and an
+   * unreadable one did not merely fail to match — it went around the
+   * `blind` refusal as well, because `allClaims` is `claimCovers` too. So a
+   * path this tool cannot read produced no claims, an empty `blind` set, an
+   * empty `contention` set, and `free:` with exit 0.
+   *
+   * These rows run against the SAME fixture and the SAME registry as "--check
+   * REFUSES when the claimed owner's ref is not in this worktree" above. That
+   * row refuses. Only the spelling of the path differs, which is what makes
+   * this a bypass rather than a gap: the refusal exists and the input walks
+   * past it.
+   *
+   * It is reachable by the intended use. `core.quotePath` defaults to true,
+   * so `git diff --name-only` emits `"lib/\303\251.ts"` for any non-ASCII
+   * filename, and piping a changed-file list into `--check` is what this is
+   * for. The bare non-ASCII spelling is unreadable too — `normaliseRepoPath`'s
+   * character class is ASCII — so the quoting is not even required.
+   */
+  test.each([
+    ["a git C-quoted path", '"lib/\\303\\251.ts"'],
+    ["a bare non-ASCII path", "lib/é.ts"],
+    ["a path containing a space", "lib/a b.ts"],
+    ["a glob rather than a path", "lib/*.ts"],
+  ])("#1458: --check REFUSES rather than reporting free for %s", (_label, path) => {
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib"], issue: 1458 }]);
+    try {
+      const r = check(dir, "--check", path, "--no-fetch");
+      // The VERDICT line, anchored — not the word. The refusal's own text
+      // says "Not reporting these free", so a bare `toContain("free")`
+      // matches the fix as well as the defect and can never go green.
+      expect(
+        r.stdout,
+        `an unreadable path reported free against a registry claiming lib/: ${r.stdout}`,
+      ).not.toMatch(/^free:/m);
+      expect(r.stdout).toContain("UNMEASURED");
+      expect(r.status, "an unreadable path exited 0, which the caller reads as free").not.toBe(0);
+      // The refusal has to be about the PATH, and this is what separates the
+      // fix from the cheapest wrong one (the fifth shape). Making
+      // `claimCovers` return true for an unreadable path also turns these
+      // rows green — every unreadable path would then match every claim, the
+      // OWNER refusal would fire, and the output would say UMEASURED for the
+      // wrong reason while attributing `docs/é.md` to a claim on `lib`.
+      // Naming the path and naming no owner is the only reading that can
+      // only come from the refusal this adds.
+      expect(r.stdout, "the refusal did not name the path it could not read").toContain(path);
+      expect(
+        r.stdout,
+        "an unreadable path was attributed to an owner, which no reading can establish",
+      ).not.toContain("rg/never-fetched");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#1458 CONTROL: a readable path against the same registry still answers", () => {
+    // Without this the four rows above are satisfied by a `--check` that
+    // refuses every input, which would be the cheapest wrong fix and would
+    // make the tool useless. One readable path, same fixture: it must reach
+    // the owner refusal, which is a DIFFERENT refusal from the new one.
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib"], issue: 1458 }]);
+    try {
+      const r = check(dir, "--check", "lib/a.ts", "--no-fetch");
+      expect(r.stdout, "a readable path stopped reaching the owner refusal").toContain(
+        "rg/never-fetched",
+      );
+      expect(r.status).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#1458 CONTROL: a readable path nobody claims is still free", () => {
+    // And the other direction — the new refusal must not swallow the free
+    // answer, or `--check` stops being able to say yes.
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib"], issue: 1458 }]);
+    try {
+      const r = check(dir, "--check", "docs/x.md", "--no-fetch");
       expect(r.status, r.stdout).toBe(0);
       expect(r.stdout).toContain("free");
     } finally {
