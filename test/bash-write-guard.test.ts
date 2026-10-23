@@ -1136,6 +1136,621 @@ describe("#1175 review round 3: the verb is resolved, not pattern-matched", () =
   });
 });
 
+/**
+ * #1411: `ln` is not the only verb that makes a link.
+ *
+ * Raised as a CRITICAL by the review on #1354, a PR that does not touch
+ * this file. Every row below was run as a command and observed ALLOWED
+ * before `flagMakesLink` existed — the bypass the `exemptionIsVoid`
+ * docblock describes for `ln -s`, reached by a verb the four alternatives
+ * of `LINK_CREATION` do not spell.
+ *
+ * Seven of the ten walk around a test for the literal string `cp -s`,
+ * which is why the reading is token-level and the clusters are derived
+ * rather than listed.
+ *
+ * No corpus sweep can witness any of this, and the reason is worth stating
+ * where the rows are: nobody has ever run `cp -s` to walk this guard, so it
+ * is absent from 132,638 historical commands BY CONSTRUCTION. A sweep is a
+ * regression control. It answers "did I break anything that happened",
+ * never "did I close anything that could happen".
+ */
+describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
+  const VICTIM = `${process.env.HOME}/.rungate/victim`;
+  const esc = (mk: string) => `${mk} && echo '{}' > /tmp/esc/${STATE}`;
+
+  const voids: [string, string][] = [
+    ["ln -s, the documented shape, unchanged", `ln -s ${VICTIM} /tmp/esc`],
+    ["cp -s", `cp -s ${VICTIM} /tmp/esc`],
+    ["cp --symbolic-link", `cp --symbolic-link ${VICTIM} /tmp/esc`],
+    ["cp --sym, an abbreviation GNU accepts", `cp --sym ${VICTIM} /tmp/esc`],
+    // A hard link aims the later write at the victim's INODE. Same bypass,
+    // one indirection fewer.
+    ["cp -l, a HARD link to the victim's inode", `cp -l ${VICTIM} /tmp/esc`],
+    ["cp --link", `cp --link ${VICTIM} /tmp/esc`],
+    ["cp -rs, clustered", `cp -rs ${VICTIM} /tmp/esc`],
+    ["cp -as, clustered", `cp -as ${VICTIM} /tmp/esc`],
+    ["cp -sv, clustered the other way", `cp -sv ${VICTIM} /tmp/esc`],
+    ["/bin/cp -s, path-qualified", `/bin/cp -s ${VICTIM} /tmp/esc`],
+    ["sudo cp -s, wrapped", `sudo cp -s ${VICTIM} /tmp/esc`],
+    ["install -l s, which also makes links", `install -l s ${VICTIM} /tmp/esc`],
+    // The position `LINK_CREATION` exists to reach for `ln`: `commandWord`
+    // resolves this segment to `find`, so a verb-keyed reading would miss it
+    // and the scan is position-independent for that reason.
+    ["find -exec cp -s, where the verb resolves to `find`", `find . -exec cp -s ${VICTIM} /tmp/esc \\;`],
+
+    // The review on #1429 raised these as a CRITICAL and it was right:
+    // the first reading tokenised with `stripQuoted`, which DELETES a
+    // quoted span's content, so quoting the flag removed it from the
+    // token stream entirely. Seven spellings, every one a command the
+    // shell runs identically to the row above, and all seven were
+    // observed ALLOWED before `shellTokens` replaced it.
+    ["cp with the FLAG single-quoted", `cp '-s' ${VICTIM} /tmp/esc`],
+    ["cp with the FLAG double-quoted", `cp "-s" ${VICTIM} /tmp/esc`],
+    ["cp with the flag partly quoted", `cp -'s' ${VICTIM} /tmp/esc`],
+    ["cp with the VERB spliced by an empty string", `c""p -s ${VICTIM} /tmp/esc`],
+    ["cp with the verb quoted", `'cp' -s ${VICTIM} /tmp/esc`],
+    ["cp with verb and flag both quoted", `'cp' '-s' ${VICTIM} /tmp/esc`],
+    ["cp with the long flag quoted", `cp '--symbolic-link' ${VICTIM} /tmp/esc`],
+    // A flag whose letters cannot be read is one that cannot be ruled out,
+    // on a verb already known to make links on request. Fail-closed, and
+    // measured: 0 of 174 real `cp`/`install` commands in the corpus move.
+    ["cp with the flag behind a variable", `cp "-$F" ${VICTIM} /tmp/esc`],
+    ["cp with the flag behind a brace expansion", `cp -\${OPT} ${VICTIM} /tmp/esc`],
+    ["cp with the verb double-quoted", `"cp" -s ${VICTIM} /tmp/esc`],
+    ["cp with one letter of the long flag quoted", `cp --'s'ymbolic-link ${VICTIM} /tmp/esc`],
+    ["cp with the flag last, as getopt permits", `cp ${VICTIM} /tmp/esc -s`],
+
+    // The ATTACHED OPTION ARGUMENT, which neither the fix nor its first
+    // review caught. `-st/tmp/esc` bundles `-s` with `-t`'s argument and
+    // `-sS.bak` bundles it with `-S`'s; an anchored `^-[A-Za-z]+$` rejected
+    // the whole token on the `/` and the `.` and never read the `s`.
+    ["cp -st/tmp/esc, the link letter bundled with an attached argument", `cp -st/tmp/esc ${VICTIM}`],
+    ["cp -sS.bak, the same through a suffix argument", `cp -sS.bak ${VICTIM} /tmp/esc`],
+    ["cp -lt/tmp/esc, the hard-link letter bundled", `cp -lt/tmp/esc ${VICTIM}`],
+
+    // Text handed to ANOTHER shell. `ln` is caught in all four of these by
+    // `LINK_CREATION`, which is a raw-text regex and does not care about
+    // nesting; a reading built on segments and tokens does, so all four
+    // were measured allowed for `cp` while their `ln` twins were refused.
+    ["cp -s inside bash -c", `bash -c 'cp -s ${VICTIM} /tmp/esc'`],
+    ["cp -s inside sh -c with double quotes", `sh -c "cp -s ${VICTIM} /tmp/esc"`],
+    ["cp -s inside a command substitution", `$(cp -s ${VICTIM} /tmp/esc)`],
+    ["cp -s inside eval", `eval 'cp -s ${VICTIM} /tmp/esc'`],
+
+    // ESCAPE REMOVAL, the transform the previous two rounds did not read.
+    // Confirmed against the shell rather than assumed: `printf '[%s]' -\s
+    // -\l -r\s -\-symbolic-link --sy\mbolic-link` prints
+    // `[-s][-l][-rs][--symbolic-link][--symbolic-link]`, so every one of
+    // these reaches `cp` as a flag the bare rows above are refused for.
+    // All five were measured ALLOWED: against the raw token the leading
+    // letter run reads `''` and the long name fails its prefix test.
+    ["cp -\\s, the short letter escaped", `cp -\\s ${VICTIM} /tmp/esc`],
+    ["cp -\\l, the hard-link letter escaped", `cp -\\l ${VICTIM} /tmp/esc`],
+    ["cp -r\\s, an escape inside the cluster", `cp -r\\s ${VICTIM} /tmp/esc`],
+    // Both branches, not just the short one: the escape can hide the second
+    // dash, which moves the token out of the `--` branch entirely, or sit
+    // inside the long name, which defeats the prefix test.
+    ["cp -\\-symbolic-link, the second DASH escaped", `cp -\\-symbolic-link ${VICTIM} /tmp/esc`],
+    ["cp --sy\\mbolic-link, an escape inside the long name", `cp --sy\\mbolic-link ${VICTIM} /tmp/esc`],
+
+    // SUBSTITUTION GROUPING, the two spellings the first nested reading
+    // missed. Backticks were absent from it altogether; `$(…)` was read by
+    // a flat `/\$\(([^()]*)\)/` that cannot match a substitution containing
+    // parentheses, so for the first of these it matched only the INNER
+    // `$(echo …)` and the outer body carrying `cp -s` was never read.
+    ["cp -s inside BACKTICKS", "`cp -s " + VICTIM + " /tmp/esc`"],
+    ["cp -s inside backticks inside eval", "eval `cp -s " + VICTIM + " /tmp/esc`"],
+    // Seen NOT moving under the nested mutation, the way `ln -s` is seen
+    // not moving under the flag mutation: `LINK_CREATION` is a raw-text
+    // regex and holds this one however the grouping is read.
+    ["ln -s inside backticks, the family control", "`ln -s " + VICTIM + " /tmp/esc`"],
+    ["cp -s in a $( ) containing a nested $( )", `$(cp -s $(echo ${VICTIM}) /tmp/esc)`],
+    ["cp -s in a $( ) wrapping a parenthesised subshell", `$( (cp -s ${VICTIM} /tmp/esc) )`],
+  ];
+  test.each(voids)("%s voids the exemption", (_l, mk) => {
+    expect(decideBashWrite(esc(mk)).blocked, esc(mk)).toBe(true);
+  });
+
+  /**
+   * The load-bearing half. A rule that voids the exemption for every `cp`
+   * passes all thirteen rows above and makes the guard useless, so each
+   * refusal is paired with the nearest spelling that must stay exempt.
+   */
+  const stay: [string, string][] = [
+    ["a plain cp into scratch", `cp /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp -r, the commonest fixture copy", `cp -r /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // Case is the whole difference: `-L` dereferences links in the SOURCE
+    // and creates none. If this reddens, the reading has become case-blind.
+    ["cp -L, which follows links instead of making them", `cp -L /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp -p", `cp -p /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp -a", `cp -a /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    ["install -m 755, a flag with neither letter", `install -m 755 /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["mkdir -p, which cannot point out of its tree", `mkdir -p /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The substring control, matching the one the `ln` rows carry: a word
+    // containing the letters is not a verb.
+    ["a path that merely contains the letters", `echo '{}' > /tmp/cp.d/${STATE}`],
+    // The controls for `shellTokens`. Removing quotes must not make every
+    // quoted argument a flag, and the case rule must survive quoting.
+    ["cp with a quoted FILENAME, not a flag", `cp 'a b.txt' /tmp/fix/${STATE}`],
+    ["cp '-L' quoted, which still creates no link", `cp '-L' /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp '-r' quoted", `cp '-r' /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The control for the unreadable-flag rule: a variable somewhere else
+    // in the segment is not a flag, and must not void anything.
+    ["cp with a variable in the PATH rather than the flag", `cp -r "$SRC" /tmp/fix && echo '{}' > /tmp/fix/${STATE}`],
+    // The controls for the attached-argument widening: the same bundles
+    // WITHOUT the link letter. If these redden, reading the leading letter
+    // run has overshot into reading the argument.
+    ["cp -t/tmp/p, an attached argument and no link letter", `cp -t/tmp/p /tmp/a/${STATE} && echo '{}' > /tmp/fix/${STATE}`],
+    ["cp -S.bak, a suffix argument", `cp -S.bak /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    ["cp --sparse=always, a long option that is not a link", `cp --sparse=always /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    // The controls for ESCAPE REMOVAL, which did not exist before and are
+    // the ones that rule actually risks. A backslash inside a quoted word
+    // is literal to the shell, and `readWord` has removed the quotes by the
+    // time `isLinkFlag` sees the token — so the rule cannot tell `-\s` from
+    // `'-\s'`. Neither of these carries a leading `-`, which is why the
+    // fail-closed reading costs them nothing, and if either reddens the
+    // escape stripping has reached words that are not flags at all.
+    ["cp with a quoted filename containing a backslash", `cp 'a\\b.txt' /tmp/fix/${STATE}`],
+    ["cp with a backslash in the DESTINATION word", `cp /tmp/a/x /tmp/fix/a\\b-${STATE}`],
+  ];
+  test.each(stay)("CONTROL: %s stays exempt", (_l, cmd) => {
+    const d = decideBashWrite(cmd);
+    expect(d.blocked, `refused: ${cmd} — ${d.reason}`).toBe(false);
+  });
+
+  /**
+   * The `\bln\s` boundary, asked during review and answered with a count
+   * rather than an argument: `\s` needs a following character, so can an
+   * `ln` that ENDS a segment escape?
+   *
+   * The regex misses four of these five. The segment-verb net catches
+   * three of the four. The one neither catches is `find . -exec ln` with no
+   * terminator, which `find(1)` refuses outright — "the expression must be
+   * terminated by a semicolon" — so it is a syntax error and not a command.
+   *
+   * ONE spelling missed by both nets, ZERO executable. No change made, and
+   * this table is here so the next reader does not re-derive it.
+   */
+  const boundary: [string, boolean, boolean][] = [
+    // segment, regex matches, segment-verb net catches
+    ["ln", false, true],
+    ["find . -exec ln", false, false],
+    ["ln -s a b", true, true],
+    ["echo x && ln", false, true],
+    ["sudo ln", false, true],
+  ];
+  test.each(boundary)("the ln boundary: %s", (seg, byRegex, byVerb) => {
+    expect(/\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/.test(seg), `regex on ${seg}`).toBe(byRegex);
+    expect(
+      segments(seg).some(s => commandWord(s) === "ln"),
+      `verb net on ${seg}`,
+    ).toBe(byVerb);
+  });
+
+  /**
+   * MUTATION: the flag reading removed, and the moved set asserted as an
+   * equality in both directions.
+   *
+   * It is the one thing that separates "these rows are refused because of
+   * the fix" from "these rows were refused anyway". The `ln -s` row is in
+   * the table precisely so it can be seen NOT moving: it is held by
+   * `LINK_CREATION`, which this mutation does not touch.
+   */
+  test("MUTATION: removing the flag reading moves the cp rows and nothing else", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "function isLinkFlag(raw: string): boolean {";
+    expect(src.split(site).length - 1, "isLinkFlag must have ONE site to mutate").toBe(1);
+    expect([...src.matchAll(/from '(\.[^']*)'/g)].map(m => m[1])).toEqual(["./interpreters"]);
+
+    const dir = mkdtempSync(join(tmpdir(), "bw1411-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noFlag.ts"), src.replace(site, `${site}\n  return false;`));
+      const mutant = (await import(`file://${join(dir, "noFlag.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+
+      const all: [string, string][] = [
+        ...voids.map(([l, mk]) => [l, esc(mk)] as [string, string]),
+        ...stay,
+      ];
+      const moved = all
+        .filter(([, cmd]) => mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked)
+        .map(([l]) => l)
+        .sort();
+
+      // Both `ln` rows are excluded, and for one reason: `LINK_CREATION`
+      // holds them, and this mutation does not touch it. They are in the
+      // table to be seen NOT moving.
+      const heldByRegex = ["ln -s, the documented shape, unchanged", "ln -s inside backticks, the family control"];
+      expect(moved).toEqual(voids.filter(([l]) => !heldByRegex.includes(l)).map(([l]) => l).sort());
+      // Direction: every row that moved was ALLOWED without the reading,
+      // so none of them is refused only because the mutation is absent.
+      for (const [label, cmd] of all) {
+        if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
+          expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * MUTATION: the nested reading removed.
+   *
+   * Separate from the one above because the two answer different
+   * questions — one is "is this token a link flag", the other is "does
+   * this segment hand text to another shell" — and a single mutant moving
+   * both sets could not tell them apart. This one must move EXACTLY the
+   * four nested rows: the quoted-flag rows look nested and are not, because
+   * `'-s'` carries no whitespace and never becomes a command.
+   */
+  test("MUTATION: removing the nested reading moves exactly the four nested rows", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "function nestedCommands(view: string): string[] {";
+    expect(src.split(site).length - 1, "nestedCommands must have ONE site to mutate").toBe(1);
+
+    const dir = mkdtempSync(join(tmpdir(), "bw1429-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noNest.ts"), src.replace(site, `${site}\n  return [];`));
+      const mutant = (await import(`file://${join(dir, "noNest.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+      const all: [string, string][] = [...voids.map(([l, mk]) => [l, esc(mk)] as [string, string]), ...stay];
+      const moved = all
+        .filter(([, cmd]) => mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked)
+        .map(([l]) => l)
+        .sort();
+      expect(moved).toEqual(
+        [
+          "cp -s inside bash -c",
+          "cp -s inside sh -c with double quotes",
+          "cp -s inside a command substitution",
+          "cp -s inside eval",
+          // The four added when the reading grew the other substitution
+          // syntax and the depth-aware walk. The `ln` backtick row is
+          // deliberately absent: `LINK_CREATION` holds it either way.
+          "cp -s inside BACKTICKS",
+          "cp -s inside backticks inside eval",
+          "cp -s in a $( ) containing a nested $( )",
+          "cp -s in a $( ) wrapping a parenthesised subshell",
+        ].sort(),
+      );
+      for (const [label, cmd] of all) {
+        if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
+          expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * MUTATION: escape removal taken back out.
+   *
+   * A third mutant rather than a widening of the first, for the reason the
+   * second exists: "is this token a link flag" and "what does the shell
+   * strip before the token arrives" are different questions, and one
+   * mutant moving both sets could not tell them apart.
+   *
+   * It must move EXACTLY the five escaped rows. If it moves a control, the
+   * stripping has reached a word that is not a flag; if it moves fewer than
+   * five, one of those rows is refused for some other reason and is not
+   * evidence for this transform.
+   */
+  test("MUTATION: removing escape removal moves exactly the five escaped rows", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "const token = raw.replace(/\\\\(.)/g, '$1');";
+    expect(src.split(site).length - 1, "escape removal must have ONE site to mutate").toBe(1);
+
+    const dir = mkdtempSync(join(tmpdir(), "bwesc-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noEscape.ts"), src.replace(site, "const token = raw;"));
+      const mutant = (await import(`file://${join(dir, "noEscape.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+      const all: [string, string][] = [...voids.map(([l, mk]) => [l, esc(mk)] as [string, string]), ...stay];
+      const moved = all
+        .filter(([, cmd]) => mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked)
+        .map(([l]) => l)
+        .sort();
+      expect(moved).toEqual(
+        [
+          "cp -\\s, the short letter escaped",
+          "cp -\\l, the hard-link letter escaped",
+          "cp -r\\s, an escape inside the cluster",
+          "cp -\\-symbolic-link, the second DASH escaped",
+          "cp --sy\\mbolic-link, an escape inside the long name",
+        ].sort(),
+      );
+      for (const [label, cmd] of all) {
+        if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
+          expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Why the `$(…)` reading is a walk and not a second regex, as a count.
+   *
+   * The flat `/\$\(([^()]*)\)/` cannot match a substitution containing
+   * parentheses, so on the two rows below it either matches the INNER
+   * substitution and leaves the outer body — the one carrying `cp -s` —
+   * unread, or matches nothing at all. The walk returns the outer body in
+   * both cases.
+   *
+   * This is the measurement behind "one reader, not a second spelling":
+   * the second spelling is not merely redundant, it is the weaker of the
+   * two, and the mutant above cannot show that because removing the whole
+   * nested reading moves these rows either way.
+   */
+  const flatVsWalk: [string, string | null][] = [
+    [`$(cp -s ${VICTIM} /tmp/esc)`, `cp -s ${VICTIM} /tmp/esc`],
+    [`$(cp -s $(echo ${VICTIM}) /tmp/esc)`, `echo ${VICTIM}`],
+    [`$( (cp -s ${VICTIM} /tmp/esc) )`, null],
+  ];
+  test.each(flatVsWalk)("the flat regex on %s yields %s, which is not the outer body", (cmd, flat) => {
+    // `.match` rather than `.exec`: #1096's spawn scan matches a bare
+    // `exec(` on any receiver, so a regex `.exec` reads as a child process
+    // and this file writes `process.env`. Same reading either way, and it
+    // keeps a non-spawn out of that census instead of exempting it.
+    const m = cmd.match(/\$\(([^()]*)\)/);
+    expect(m?.[1] ?? null).toBe(flat);
+    // And the command is refused anyway, because the walk read it.
+    expect(decideBashWrite(esc(cmd)).blocked).toBe(true);
+  });
+
+  /**
+   * The FOURTH transform, raised on the PR for the first three: ANSI-C
+   * quoting. `$'-s'` is the word `-s` and `$'-\163'` is too —
+   * `printf '[%s]' $'-s' $'-\163' $'cp'` prints `[-s][-s][cp]` — and
+   * reading the `$` as an ordinary character left the token `$-s`, which
+   * never met `isLinkFlag`'s `startsWith('-')` precondition.
+   *
+   * It is read in `readWord` rather than in `isLinkFlag`, and the last two
+   * rows are why: what `$'…'` hides can be the VERB, and a hidden verb
+   * never reaches a flag test at all. `LINK_CREATION` does not hold the
+   * `ln` rows here either — `\bln\s` needs `ln` followed by whitespace and
+   * `$'ln'` has a quote in the way — so unlike every other `ln` row in this
+   * file these two are held by the tokeniser.
+   */
+  const ansiC: [string, string][] = [
+    ["cp $'-s'", `cp $'-s' ${VICTIM} /tmp/esc`],
+    ["cp $'-\\163', the letter in octal", `cp $'-\\163' ${VICTIM} /tmp/esc`],
+    ["cp $'-\\x73', the letter in hex", `cp $'-\\x73' ${VICTIM} /tmp/esc`],
+    ["cp $'--symbolic-link'", `cp $'--symbolic-link' ${VICTIM} /tmp/esc`],
+    ["$'cp' -s, the VERB hidden", `$'cp' -s ${VICTIM} /tmp/esc`],
+    ["$'ln' -s, the ln verb hidden from the raw-text regex too", `$'ln' -s ${VICTIM} /tmp/esc`],
+    ["$'\\154n' -s, the ln verb in octal", `$'\\154n' -s ${VICTIM} /tmp/esc`],
+  ];
+  test.each(ansiC)("%s voids the exemption", (_l, mk) => {
+    expect(decideBashWrite(esc(mk)).blocked, esc(mk)).toBe(true);
+  });
+
+  /**
+   * An ANSI-C quote left open swallows the redirect operator, which is
+   * #1205's shape. The plain `'` and `"` spellings were already refused;
+   * this one was ALLOWED, and `$` was the whole difference.
+   */
+  test("an open ANSI-C quote cannot swallow the operator", () => {
+    expect(decideBashWrite(`cp $'-s /x /tmp/esc && echo ' {} > /tmp/esc/${STATE}`).blocked).toBe(true);
+  });
+
+  /**
+   * The controls, and ONE of them changed direction, which is worth saying
+   * out loud rather than leaving for someone to find.
+   *
+   * `cp $'-L'` was REFUSED before this change and is allowed now. It was
+   * never refused for the flag: the `$` survived into the token stream and
+   * made the path unprovable, so the fail-closed arm fired. `$'-L'` is
+   * deterministically `-L`, creates no link, and `cp -L` is allowed — so
+   * allowing it is the reading that agrees with the rest of the table.
+   *
+   * The relaxation is bounded to ANSI-C, and the last two rows are the
+   * boundary: a variable and a command substitution in a path are still
+   * unprovable and still refused, because unlike `$'…'` they are not
+   * settled until the command runs.
+   */
+  const ansiCStay: [string, string, boolean][] = [
+    ["cp $'-L', which creates no link", `cp $'-L' /tmp/a/${STATE} /tmp/fix/${STATE}`, false],
+    ["cp $'-r'", `cp $'-r' /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`, false],
+    ["ANSI-C in a PATH is now resolvable", `echo '{}' > /tmp/$'fix'/${STATE}`, false],
+    ["a VARIABLE in a path is still unprovable", `echo '{}' > /tmp/$FIX/${STATE}`, true],
+    ["a SUBSTITUTION in a path is still unprovable", `echo '{}' > /tmp/$(id -un)/${STATE}`, true],
+  ];
+  test.each(ansiCStay)("CONTROL: %s", (_l, cmd, blocked) => {
+    expect(decideBashWrite(cmd).blocked, cmd).toBe(blocked);
+  });
+
+  /**
+   * Octal and `\x` are BYTES in bash, not code points, which is why the
+   * decode assembles bytes and decodes UTF-8 once at the end. Raised by a
+   * push review on this branch, and the diagnosis was right.
+   *
+   * The shell half is executed rather than described, because the claim
+   * this rests on is a claim about bash: all three spellings below emit the
+   * same two bytes, which is the UTF-8 encoding of one character. A
+   * per-escape `String.fromCharCode` would give U+00C3 U+00A9 instead — a
+   * different string, four bytes — so above 0x7F the decoder would hand the
+   * module a token the shell never produced.
+   *
+   * The next test is what settled the repair: refusing to decode above
+   * 0x80 — the conservative option, and the one the review proposed — does
+   * not close the hole it names, because an undecoded name is just a
+   * directory nobody made and that is exempt.
+   */
+  test("bash emits BYTES for octal and \\x, which is why the decode assembles bytes", () => {
+    // Whitespace-normalised, because BSD `od` and GNU `od` pad their columns
+    // differently and the claim here is about the BYTES. Pinning the padding
+    // made this red on CI and green on the machine it was written on — a
+    // detector narrower than the thing it detects.
+    const hex = (a: string) =>
+      // late-env-ok: the child is `printf` under bash, which reads no RUNGATE
+      // variable and no TMPDIR — every escape is a literal on its command line.
+      spawnSync("/bin/bash", ["-c", `printf '%s' ${a} | od -An -tx1`], { encoding: "utf8" })
+        .stdout.trim()
+        .replace(/\s+/g, " ");
+    expect(hex(String.raw`$'\303\251'`)).toBe("c3 a9");
+    expect(hex(String.raw`$'\xc3\xa9'`)).toBe("c3 a9");
+    expect(hex("$'é'")).toBe("c3 a9");
+    // The ASCII side still agrees, which is what keeps the octal and hex
+    // void rows above meaningful rather than accidental.
+    expect(hex(String.raw`$'\163'`)).toBe("73");
+    expect(hex(String.raw`$'\x73'`)).toBe("73");
+  });
+
+  /**
+   * And the consequence, executed: a symlink out of scratch whose NAME is
+   * non-ASCII. Every spelling of that name must reach the same verdict,
+   * because the shell reaches the same file.
+   *
+   * This is the row that chose the implementation. The first repair for
+   * the byte differential was to refuse to decode above 0x80, and it does
+   * NOT close this: an undecoded `caf\303\251` is simply a directory that
+   * does not exist, and a non-existent directory under a scratch root is
+   * exempt — the last row is that control. The conservative answer and the
+   * wrong answer were the same answer, which is why the decode assembles
+   * bytes instead.
+   */
+  test("every spelling of a non-ASCII symlink name reaches the same verdict", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "bw-ansi-")));
+    try {
+      symlinkSync("/usr", join(dir, "café")); // stands in for the run store
+      const write = (name: string) => decideBashWrite(`echo '{}' > ${dir}/${name}/${STATE}`).blocked;
+      expect(write("café"), "the literal name").toBe(true);
+      expect(write(String.raw`$'café'`), "ANSI-C, literal character").toBe(true);
+      expect(write(String.raw`$'caf\303\251'`), "ANSI-C, the two UTF-8 bytes in octal").toBe(true);
+      expect(write(String.raw`$'caf\xc3\xa9'`), "ANSI-C, the two UTF-8 bytes in hex").toBe(true);
+      expect(write("$'caf\\u00e9'"), "ANSI-C, the CODE POINT rather than the bytes").toBe(true);
+      // The control that makes the four above mean something: a name with
+      // no link behind it is ordinary scratch and stays exempt. Without
+      // it, a decoder that resolved everything to nonsense would pass.
+      expect(write("nosuch"), "a name nobody created").toBe(false);
+      expect(write(String.raw`$'nosu\x63h'`), "the same name, spelled with an escape").toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * MUTATION: the octal escape decoded as a CODE POINT instead of a byte.
+   *
+   * This is not a removal, it is the WRONG FIX — the spelling the decoder
+   * had before the symlink row above was measured, and the one anybody
+   * writes first. The fifth shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md` is a case that goes
+   * green under the cheapest wrong repair, so the repair is applied here
+   * and the case is watched going red.
+   *
+   * The literal row must stay refused under the mutant. That is what makes
+   * this a differential rather than a mutant that breaks everything: the
+   * fixture, the link and the verdict for the literal name are all held
+   * fixed, and only the spelling of the name varies.
+   */
+  test("MUTATION: decoding octal as a code point reopens the symlink bypass", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "bytes.push(parseInt(oct, 8) & 0xff); // a BYTE";
+    expect(src.split(site).length - 1, "the octal decode must have ONE site to mutate").toBe(1);
+
+    const tmp = mkdtempSync(join(tmpdir(), "bwbyte-"));
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "bw-byte-fx-")));
+    try {
+      writeFileSync(
+        join(tmp, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(
+        join(tmp, "asCodePoint.ts"),
+        src.replace(site, "pending += String.fromCharCode(parseInt(oct, 8) & 0xff);"),
+      );
+      const mutant = (await import(`file://${join(tmp, "asCodePoint.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+
+      symlinkSync("/usr", join(fixture, "café"));
+      const cmd = (name: string) => `echo '{}' > ${fixture}/${name}/${STATE}`;
+
+      // Held fixed: the literal name is refused by both.
+      expect(decideBashWrite(cmd("café")).blocked, "literal, real").toBe(true);
+      expect(mutant.decideBashWrite(cmd("café")).blocked, "literal, mutant").toBe(true);
+      // Varied: the octal spelling of that same name.
+      expect(decideBashWrite(cmd(String.raw`$'caf\303\251'`)).blocked, "octal, real").toBe(true);
+      expect(mutant.decideBashWrite(cmd(String.raw`$'caf\303\251'`)).blocked, "octal, mutant").toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * MUTATION: the ANSI-C branch taken back out.
+   *
+   * The moved set is asserted with a DIRECTION per row rather than one
+   * blanket "everything moved was allowed", because this mutation moves
+   * rows both ways: the seven void rows become allowed, and `cp $'-L'`
+   * and the ANSI-C path become refused, since the `$` goes back into the
+   * token stream and the unprovable arm fires again. A blanket assertion
+   * would have had to be weakened to accommodate that, and a weakened
+   * assertion is how a mutation stops witnessing anything.
+   */
+  test("MUTATION: removing the ANSI-C branch moves seven rows one way and two the other", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = `if (c === '$' && s[i + 1] === "'") {`;
+    expect(src.split(site).length - 1, "the ANSI-C branch must have ONE site to mutate").toBe(1);
+
+    const dir = mkdtempSync(join(tmpdir(), "bwansi-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noAnsiC.ts"), src.replace(site, "if (false) {"));
+      const mutant = (await import(`file://${join(dir, "noAnsiC.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+
+      const expected = new Map<string, boolean>([
+        // void rows: refused here, ALLOWED without the branch
+        ...ansiC.map(([l, mk]) => [l, false] as [string, boolean]),
+        // controls that go the other way: allowed here, REFUSED without it,
+        // because the `$` returns to the token stream
+        ["cp $'-L', which creates no link", true],
+        ["ANSI-C in a PATH is now resolvable", true],
+      ]);
+      const rows: [string, string][] = [
+        ...ansiC.map(([l, mk]) => [l, esc(mk)] as [string, string]),
+        ...ansiCStay.map(([l, c]) => [l, c] as [string, string]),
+      ];
+      const moved = new Map<string, boolean>();
+      for (const [l, c] of rows) {
+        const m = mutant.decideBashWrite(c).blocked;
+        if (m !== decideBashWrite(c).blocked) moved.set(l, m);
+      }
+      expect([...moved.keys()].sort()).toEqual([...expected.keys()].sort());
+      for (const [l, dir_] of expected) expect(moved.get(l), l).toBe(dir_);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("#1175 review round 3: a glob in a DIRECTORY component", () => {
   /**
    * `echo '{}' > /tmp/sym*​/workflow-state.json` with `/tmp/syma` a symlink

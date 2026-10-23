@@ -458,6 +458,194 @@ function resolveThroughLinks(normalised: string): string | null {
 const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 
 /**
+ * `ln` is not the only verb that makes a link (#1411, raised as a CRITICAL
+ * by the review on #1354).
+ *
+ * GNU and BSD `cp` create links on request and spell none of
+ * `LINK_CREATION`'s four alternatives, so every one of these was ALLOWED —
+ * the bypass in the docblock above, reachable by a different verb:
+ *
+ *     cp -s ~/.rungate/victim /tmp/esc && echo '{}' > /tmp/esc/workflow-state.json
+ *
+ * Measured before the fix, all allowed: `cp -s`, `cp --symbolic-link`,
+ * `cp -l`, `cp --link`, `cp -rs`, `cp -as`, `cp -sv`, `/bin/cp -s`,
+ * `sudo cp -s`, `install -l s`. `-l` belongs with `-s`: a hard link to a
+ * file inside the run store aims a later write at the victim's inode just
+ * as a symlink aims it at the victim's path.
+ *
+ * ## The FAMILY, not the spelling
+ *
+ * A test for the literal `cp -s` is the cheapest wrong fix — seven of the
+ * ten rows above walk around it. So the reading is token-level: a short
+ * cluster is any `-…` containing a lower-case `s` or `l`, which is what
+ * makes `-rs`, `-as` and `-sv` fall out of one rule rather than three; a
+ * long option is matched by PREFIX, because GNU accepts any unambiguous
+ * abbreviation and `--sym` is as real as `--symbolic-link`.
+ *
+ * Case matters: `cp -L` dereferences links in the SOURCE and creates none,
+ * so only the lower-case letters count. `cp -r`, `cp -p`, `cp -a` and
+ * `mkdir -p` are CONTROL rows and must stay exempt.
+ *
+ * The scan is position-independent rather than keyed to the resolved verb,
+ * so `find . -exec cp -s …` is covered — the same position `LINK_CREATION`
+ * exists to reach for `ln`, where `commandWord` resolves to `find`.
+ *
+ * ## And the `ln` boundary, since it was asked
+ *
+ * `\bln\s` needs a following character, so it misses an `ln` that ends a
+ * segment. Measured over five spellings: the regex misses four, and the
+ * segment-verb net catches three of those four (`ln`, `echo x && ln`,
+ * `sudo ln`). The one neither catches is `find . -exec ln` with no
+ * terminator, which `find(1)` refuses — "the expression must be terminated
+ * by a semicolon" — so it is a syntax error, not a bypass. Count: ONE
+ * spelling missed by both nets, ZERO executable. No change made.
+ *
+ * ## The FOUR transforms a shell applies before `cp` sees a flag
+ *
+ * Every bypass found in this family so far has been the same question asked
+ * about a different transform, and each was rediscovered separately because
+ * nothing wrote the list down. There are three, and a reading of a token is
+ * only correct if it survives all of them:
+ *
+ * | transform | what the shell does | where this module does it |
+ * |---|---|---|
+ * | quote removal | `'-s'`, `"-s"`, `-'s'`, `c""p` all arrive bare | `readWord`, via `scanSegment` (#1429) |
+ * | escape removal | `-\s`, `-r\s`, `-\-symbolic-link`, `--sy\mbolic-link` arrive as `-s`, `-rs`, `--symbolic-link` | `isLinkFlag`, before EITHER branch |
+ * | substitution grouping | `` `…` `` and `$(…)` hand their text to ANOTHER shell, and `$(…)` nests | `nestedCommands` |
+ * | ANSI-C quoting | `$'-s'` is the word `-s`, and `$'-\163'` is too | `readWord`, via `decodeAnsiC` |
+ *
+ * Measured against `/bin/bash` rather than assumed: `printf '[%s]' -\s -\l
+ * -r\s -\-symbolic-link --sy\mbolic-link $'-s' $'-\163' $'cp'` prints
+ * `[-s][-l][-rs][--symbolic-link][--symbolic-link][-s][-s][cp]`. Every one
+ * of those was ALLOWED before its transform was read, as were
+ * `` `cp -s …` ``, ``eval `cp -s …` ``, a `$(…)` containing a second
+ * `$(…)`, and a `$(…)` wrapping a parenthesised subshell.
+ *
+ * The fourth arrived the way the second and third did — a review round
+ * after the table said three — which is the argument for the table rather
+ * than against it. If a fifth turns up, add the row. The point is that the
+ * next reader checks all of them at once instead of finding them one review
+ * at a time.
+ *
+ * ANSI-C is the one that hides a VERB as well as a flag: `$'cp' -s` leaves
+ * `verbToken` nothing to match, so it is read in `readWord` — the module's
+ * one quote reader — rather than in `isLinkFlag`, which a hidden verb never
+ * reaches. Unlike the other substitution syntaxes it is settled at parse
+ * time, so decoding it makes a word more readable rather than guessing at
+ * one, and an unexpanded `$(…)` goes on reading as unprovable.
+ */
+const LINK_VERBS = new Set(['cp', 'install']);
+
+/** A token's verb name: `/bin/cp` and `\cp` are both `cp`. */
+function verbToken(token: string): string {
+  const bare = token.replace(/^[\\(]+/, '');
+  return bare.slice(bare.lastIndexOf('/') + 1);
+}
+
+function isLinkFlag(raw: string): boolean {
+  // ESCAPE REMOVAL, the second of the three transforms in the table above,
+  // and it governs BOTH branches below rather than only the short one.
+  // `cp -\s` reaches `cp` as `-s` and `cp --sy\mbolic-link` reaches it as
+  // `--symbolic-link`; against the raw token the letter run reads `''` and
+  // the long name fails its prefix test, so all five escaped spellings were
+  // measured ALLOWED.
+  //
+  // A backslash inside a QUOTED word is literal to the shell, and `readWord`
+  // has already removed the quotes by the time the token arrives, so this
+  // cannot tell `-\s` from `'-\s'` and treats both as `-s`. That is the
+  // fail-closed direction and it costs a token that `cp` itself rejects as
+  // an invalid option. The control that keeps it honest is an ordinary
+  // quoted filename containing a backslash, which carries no leading `-`
+  // and so never reaches either branch.
+  const token = raw.replace(/\\(.)/g, '$1');
+  if (token.startsWith('--')) {
+    const name = token.slice(2).split('=')[0];
+    if (!name) return false;
+    return 'symbolic-link'.startsWith(name) || 'link'.startsWith(name);
+  }
+  if (!token.startsWith('-') || token.length < 2) return false;
+  // A flag whose letters this module cannot read — `-$F`, `-${X}`, `-`+a
+  // substitution — is one it cannot rule OUT, and the verb is already known
+  // to make links on request. Same fail-closed shape as an unplaceable
+  // literal in `placeLiteral`: declining to clear is cheap and visible,
+  // clearing something unread is neither.
+  if (/[$`]/.test(token)) return true;
+  // The LEADING LETTER RUN, not the whole token. `cp -st/tmp/esc` bundles
+  // `-s` with `-t`'s attached argument and `cp -sS.bak` bundles it with
+  // `-S`'s, and an anchored `^-[A-Za-z]+$` rejected both on the `/` and the
+  // `.` without ever reading the `s`. Both were measured ALLOWED. The
+  // controls are the same bundles without the link letter — `-t/tmp/p` and
+  // `-S.bak` — which must stay exempt, and do.
+  //
+  // Lower case only: `-L` follows links in the SOURCE and creates none.
+  const letters = /^-([A-Za-z]*)/.exec(token)?.[1] ?? '';
+  return /[sl]/.test(letters);
+}
+
+/**
+ * The tokens come from `scanSegment`, the module's ONE quote-aware pass.
+ *
+ * The first spelling of this used `stripQuoted`, which deletes a quoted
+ * span's content rather than removing the quotes, and the #1429 review was
+ * right that it defeated the whole check: `cp '-s'`, `cp "-s"`, `"cp" -s`,
+ * `c""p -s` and `cp --'s'ymbolic-link` were all measured ALLOWED, each one
+ * a command the shell runs identically to the one that was refused.
+ *
+ * The second spelling was a tokeniser of my own, and that was the wrong
+ * repair even though it worked. `commandWord` already resolves `"cp"`
+ * correctly, through `scanSegment`, because #1184 and #1196 taught it to
+ * after `stripQuoted` deleted `"chmod"` outright. A second tokeniser beside
+ * it is two deciders answering one question — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either
+ * leaves the other holding every case up. One tokeniser.
+ */
+function flagMakesLink(segment: string): boolean {
+  const words = scanSegment(segment).words;
+  if (!words.some(w => LINK_VERBS.has(verbToken(w)))) return false;
+  return words.some(isLinkFlag);
+}
+
+/**
+ * Text a segment will hand to ANOTHER shell: the contents of its quoted
+ * words and of its command substitutions (#1429).
+ *
+ * `ln` is caught inside `bash -c '…'`, `$( … )` and `eval '…'` today, but
+ * only because `LINK_CREATION` is a regex read off the raw text and a regex
+ * does not care about nesting. A reading built on segments and tokens does,
+ * and all four spellings of `cp -s` were measured ALLOWED while their `ln`
+ * twins were refused — so this is not a new hole, it is the old net's reach
+ * that the new one had to be given too.
+ *
+ * `interpreterPrograms` was the obvious place and is the wrong one: it
+ * reaches a heredoc body and returns NOTHING for `bash -c 'cp -s …'`,
+ * `sh -c "…"`, `$( … )` or `eval '…'` — measured, all four empty, against
+ * a heredoc control that returns the body. Widening it would change what
+ * every other arm reads. This is local to the void check.
+ */
+function nestedCommands(view: string): string[] {
+  const out: string[] = [];
+  for (const m of view.matchAll(/'([^']*)'|"([^"]*)"/g)) out.push(m[1] ?? m[2] ?? '');
+  // Backticks are the OTHER substitution syntax and were missing entirely:
+  // `` `cp -s …` `` and ``eval `cp -s …` `` were measured ALLOWED while
+  // their `ln` twins were refused, for the same reason the `$(…)` rows were
+  // — `LINK_CREATION` is a raw-text regex that does not care about nesting
+  // and this reading is built on segments. They do not nest in bash, so a
+  // flat match is the whole grammar here.
+  for (const m of view.matchAll(/`([^`]*)`/g)) out.push(m[1]);
+  // `$(…)` DOES nest, so it gets the module's one substitution walk rather
+  // than a second spelling of it. Every `$(` position is examined — the
+  // index is not advanced past a substitution that was just read — so an
+  // inner body is collected as well as the outer one it sits in.
+  for (let i = 0; i < view.length; i++) {
+    if (view[i] !== '$' || view[i + 1] !== '(') continue;
+    const end = endOfSubstitution(view, i);
+    const body = view.slice(i + 2, end);
+    out.push(body.endsWith(')') ? body.slice(0, -1) : body); // unterminated keeps all of it
+  }
+  return out.filter(s => /\s/.test(s));
+}
+
+/**
  * #1240: both tests read a view that KEEPS the text an interpreter is going
  * to run. `stripHeredocs` deletes a heredoc body, so an `ln` inside
  * `bash <<'EOF'` was invisible to the first test; `segments(cmd)` over the
@@ -468,7 +656,8 @@ function exemptionIsVoid(cmd: string): boolean {
   const programs = interpreterPrograms(cmd).map(p => p.program);
   const view = [stripHeredocs(cmd), ...programs].join('\n');
   if (LINK_CREATION.test(view)) return true;
-  return segments(view).some(seg => commandWord(seg) === 'ln');
+  const all = [...segments(view), ...nestedCommands(view).flatMap(inner => segments(inner))];
+  return all.some(seg => commandWord(seg) === 'ln' || flagMakesLink(seg));
 }
 
 /**
@@ -898,12 +1087,182 @@ export function commandWord(segment: string): string {
  * it, so `dir/"workflow-state.json"` reads as one word and not as two halves
  * either side of a span that was deleted.
  */
+/**
+ * The index just past the `)` that closes the `$(` at `i`, or the end of
+ * the string if it never closes.
+ *
+ * A parenthesis inside a STRING LITERAL is data, not grammar. Counting it
+ * dropped the depth to zero early, ended the word in the middle of the
+ * substitution, and left a `"` whose partner had already been consumed — so
+ * `readWord`'s quote branch then took `close === -1` and swallowed the rest
+ * of the line INCLUDING the `>` operator. No operator, no target, allow:
+ *
+ *     echo $(echo "x)") > <protected>     ran, and wrote
+ *
+ * That is #1205's own sentence a second time — the bug is what the scanner
+ * cannot see, not the substitution — so it was fixed the same way rather
+ * than by special-casing the literal that exposed it.
+ *
+ * Extracted from `readWord` so `nestedCommands` can reuse the walk. The
+ * alternative was a second flat `/\$\(([^()]*)\)/`, which is two deciders
+ * answering one question about substitution structure — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and the flat one is the
+ * weaker: it cannot match a substitution containing parentheses at all, so
+ * `$(cp -s $(echo V) /tmp/esc)` matched only the INNER one and the outer
+ * body was never read. One reader.
+ */
+function endOfSubstitution(s: string, i: number): number {
+  let depth = 0;
+  let j = i;
+  for (; j < s.length; j++) {
+    const q = s[j];
+    if (q === "'" || q === '"') {
+      const close = s.indexOf(q, j + 1);
+      j = close === -1 ? s.length : close; // the loop's j++ steps past it
+      continue;
+    }
+    if (s[j] === '(') depth++;
+    else if (s[j] === ')' && --depth === 0) {
+      j++;
+      break;
+    }
+  }
+  return j;
+}
+
+/**
+ * ANSI-C quoting: the value of a `$'…'` word.
+ *
+ * Unlike `$(…)` and `` `…` ``, this is settled at parse time — no command
+ * runs and nothing is looked up — so decoding it makes a word MORE readable
+ * rather than guessing at one. `$'-\163'` is the string `-s` on every run.
+ *
+ * An escape this does not recognise keeps its backslash, which is what bash
+ * does with one.
+ *
+ * ## Octal and `\x` are BYTES, so the decode assembles bytes
+ *
+ * Measured: `printf '%s' $'\303\251' | od -An -tx1` gives `c3 a9`, and so
+ * do `$'\xc3\xa9'` and a literal `é` — all three are the UTF-8 encoding of
+ * one character. A per-escape `String.fromCharCode` gives U+00C3 followed
+ * by U+00A9, a different string of four bytes, so above 0x7F that spelling
+ * hands the module a token the shell never produced. Same defect as the
+ * transforms this function exists to close, pointing the other way.
+ *
+ * It is a live one, not a cosmetic differential. With a symlink named
+ * `café` under a scratch root pointing into the run store, the write
+ * through it is REFUSED when spelled literally and when spelled
+ * `$'café'`, and was ALLOWED when spelled `$'caf\303\251'` or
+ * `$'caf\xc3\xa9'` — the module looked for a directory nobody had made,
+ * found nothing to resolve, and exempted it as ordinary scratch. That is
+ * #1175's escape with a name the decoder disagreed about.
+ *
+ * So escapes are decoded into BYTES and the byte string is decoded as
+ * UTF-8 once, at the end. Refusing to decode above 0x80 was the first
+ * repair and it does NOT close this: an undecoded `caf\303\251` is just
+ * another directory that does not exist, which is exempt. The conservative
+ * answer and the wrong answer are the same answer here.
+ *
+ * `\u` and `\U` stay code points, because that is what bash defines them
+ * as — it emits their UTF-8 encoding, which is what they mean once the
+ * command text has itself been decoded from UTF-8.
+ *
+ * What remains: a byte sequence that is not valid UTF-8, such as a lone
+ * `$'\303'`, becomes U+FFFD here and names a file this module cannot
+ * spell. Closing that needs byte-level paths throughout, which is a
+ * different change; the residue is one unmatched character in a position
+ * that is then unprovable rather than wrongly exempt.
+ */
+const ANSI_C_SHORT: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+};
+
+function decodeAnsiC(body: string): string {
+  const bytes: number[] = [];
+  // Plain text accumulates and is encoded in runs rather than per character,
+  // so a surrogate PAIR is encoded as the one code point it spells instead
+  // of as two lone halves.
+  let pending = '';
+  const flush = () => {
+    if (!pending) return;
+    for (const b of new TextEncoder().encode(pending)) bytes.push(b);
+    pending = '';
+  };
+  for (let k = 0; k < body.length; k++) {
+    if (body[k] !== '\\' || k + 1 >= body.length) {
+      pending += body[k];
+      continue;
+    }
+    const n = body[k + 1];
+    const short = ANSI_C_SHORT[n];
+    if (short !== undefined) {
+      pending += short;
+      k++;
+      continue;
+    }
+    if (n >= '0' && n <= '7') {
+      const oct = /^[0-7]{1,3}/.exec(body.slice(k + 1))?.[0] ?? '';
+      flush();
+      bytes.push(parseInt(oct, 8) & 0xff); // a BYTE
+      k += oct.length;
+      continue;
+    }
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const width = n === 'x' ? 2 : n === 'u' ? 4 : 8;
+      const hex = new RegExp(`^[0-9a-fA-F]{1,${width}}`).exec(body.slice(k + 2))?.[0] ?? '';
+      if (hex) {
+        const value = parseInt(hex, 16);
+        if (n === 'x') {
+          flush();
+          bytes.push(value & 0xff); // a BYTE
+        } else {
+          pending += String.fromCodePoint(value); // a CODE POINT
+        }
+        k += 1 + hex.length;
+        continue;
+      }
+    }
+    pending += body[k]; // an escape bash does not recognise keeps its backslash
+  }
+  flush();
+  return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+}
+
 function readWord(s: string, i: number): [string, number] {
   let w = '';
   while (i < s.length) {
     const c = s[i];
     if (c === ' ' || c === '\t' || c === '\n') break;
     if (c === '>' || c === '<') break; // an operator ends a word
+    // ANSI-C quoting, the FOURTH transform. `$'-s'` is the word `-s`, and
+    // reading the `$` as an ordinary character left the token `$-s`, which
+    // fails `isLinkFlag`'s `startsWith('-')` precondition before any flag
+    // letter is looked at. Handled here rather than in `isLinkFlag` because
+    // it is a QUOTING rule and this is the module's quote reader — and
+    // because doing it here also fixes `$'cp'`, where the thing hidden is
+    // the VERB and `isLinkFlag` is never consulted at all.
+    //
+    // A `\'` inside the body is an escaped quote, so the closing quote is
+    // found by walking rather than by `indexOf`.
+    if (c === '$' && s[i + 1] === "'") {
+      let k = i + 2;
+      for (; k < s.length && s[k] !== "'"; k++) if (s[k] === '\\') k++;
+      w += decodeAnsiC(s.slice(i + 2, Math.min(k, s.length)));
+      i = k + 1; // unterminated leaves i past the end, which ends the word
+      continue;
+    }
     if (c === "'" || c === '"') {
       const close = s.indexOf(c, i + 1);
       const end = close === -1 ? s.length : close;
@@ -932,33 +1291,7 @@ function readWord(s: string, i: number): [string, number] {
       continue;
     }
     if (c === '$' && s[i + 1] === '(') {
-      let depth = 0;
-      let j = i;
-      for (; j < s.length; j++) {
-        // A parenthesis inside a STRING LITERAL is data, not grammar.
-        // Counting it dropped the depth to zero early, ended the word in the
-        // middle of the substitution, and left a `"` whose partner had
-        // already been consumed — so the quote branch above then took
-        // `close === -1` and swallowed the rest of the line INCLUDING the
-        // `>` operator. No operator, no target, allow:
-        //
-        //     echo $(echo "x)") > <protected>     ran, and wrote
-        //
-        // This is #1205's own sentence a second time — the bug is what the
-        // scanner cannot see, not the substitution — so it is fixed the same
-        // way rather than by special-casing the literal that exposed it.
-        const q = s[j];
-        if (q === "'" || q === '"') {
-          const close = s.indexOf(q, j + 1);
-          j = close === -1 ? s.length : close; // the loop's j++ steps past it
-          continue;
-        }
-        if (s[j] === '(') depth++;
-        else if (s[j] === ')' && --depth === 0) {
-          j++;
-          break;
-        }
-      }
+      const j = endOfSubstitution(s, i);
       w += s.slice(i, j); // unterminated falls out here with j === s.length
       i = j;
       continue;

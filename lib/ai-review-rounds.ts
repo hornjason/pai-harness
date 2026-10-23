@@ -39,7 +39,7 @@
  * **A finding fingerprint may not be keyed on a line number.** The first case
  * above moved 318 → 375 between rounds while staying byte-identical, so a
  * `file:line` key would have failed to suppress the one repeat we can
- * actually observe. `findingKey` therefore keys on the file, the normalised
+ * actually observe. `carryKey` therefore keys on the file, the normalised
  * TEXT of the cited line, and the normalised summary.
  *
  * **`git blame` is the wrong instrument for this question.** It attributed
@@ -259,6 +259,24 @@ function normalise(v: unknown): string {
 /**
  * The identity of a finding, for deciding whether it has already been raised.
  *
+ * @identity file+text+summary — `file`, the TEXT of the cited line (falling
+ * back to the line NUMBER when the text is not known), and `summary`.
+ * Partial: `null` for a finding it cannot key.
+ *
+ * **This is the PERSISTENCE key** — "is the thing this round raised the thing
+ * the last round raised". It is the one the ledger's anchors are recorded
+ * under ({@link AI_REVIEW_LEDGER_IDENTITY}) and the one that can refuse.
+ *
+ * Its sibling is `advisoryKey` in `lib/scaffold/ai-review-findings.ts`, which
+ * is the ADJUDICATION key — "has this advisory already been counted on this
+ * run" — over `file`+`summary` only, total, never `null`. The two were both
+ * called `findingKey` until #1398 and they are deliberately different: a
+ * line anchor here is what makes a re-summary of one file two findings
+ * rather than one, and a line anchor THERE would split a single finding in
+ * two across a reformat. Neither rule can quietly become the other —
+ * measured, and both unification mutants are caught — but a call site could
+ * not tell which question it was asking while they shared a name.
+ *
  * `file` + the TEXT of the cited line + `summary`. **Not the line number**,
  * and that is the measured part rather than a preference: the one repeat this
  * repository can actually show moved from `:318` to `:375` between rounds
@@ -275,7 +293,7 @@ function normalise(v: unknown): string {
  * nothing to compare such a finding against, and giving it a key would make
  * every one of them a repeat of the first.
  */
-export function findingKey(finding: unknown, lineText?: unknown): string | null {
+export function carryKey(finding: unknown, lineText?: unknown): string | null {
   if (typeof finding !== "object" || finding === null || Array.isArray(finding)) return null;
   const f = finding as ReviewFinding;
   const file = normalise(f.file);
@@ -300,7 +318,7 @@ export interface SuppressionReading {
 /**
  * Drop findings an earlier round already raised.
  *
- * Keyed by `findingKey`, so a finding whose line number moved is still a
+ * Keyed by `carryKey`, so a finding whose line number moved is still a
  * repeat and a finding whose summary changed is not.
  *
  * **Within this round too.** A reviewer that lists the same defect twice in
@@ -331,7 +349,7 @@ export function suppressRepeats(
       continue;
     }
     const f = raw as ReviewFinding;
-    const key = findingKey(f, lineTextFor?.(f));
+    const key = carryKey(f, lineTextFor?.(f));
     if (key === null || !seen.has(key)) {
       if (key !== null) seen.add(key);
       kept.push(f);
@@ -523,6 +541,36 @@ export const AI_REVIEW_TRUNCATION_UNKNOWN = "AI_REVIEW_TRUNCATION_UNKNOWN";
 export const AI_REVIEW_TRUNCATION_STATED = "AI_REVIEW_TRUNCATION_STATED";
 
 /**
+ * The round cap in force when every bare-array ledger in existence was
+ * written (#1447).
+ *
+ * **Deliberately not `AI_REVIEW_LEDGER_MAX_ROUNDS`, and deliberately not
+ * imported from it.** Two separate reasons, and they are both load-bearing:
+ *
+ * The derivation below — *a bare array shorter than its cap was never cut* —
+ * is only sound against the cap that was in force when that array was
+ * written. Binding it to the live cap would mean lowering the cap tomorrow
+ * silently re-reads ledgers written months ago as complete when they were
+ * truncated. It cannot do that here: the bare-array shape is CLOSED. #1405's
+ * writer migrates every ledger it touches to `{rounds, truncated}`, so no new
+ * bare array will ever be written and the population this constant describes
+ * is fixed. A fact about history is spelled as a historical constant.
+ *
+ * The value is 12 because `AI_REVIEW_LEDGER_MAX_ROUNDS` has been 12 since it
+ * was introduced in `41f2e93f` (#1168) and has never held another value —
+ * checked rather than assumed, because a cap that had once been lower would
+ * make every bare array between the old cap and 12 read as a complete history
+ * when it had been cut. That is the direction `lib/rounds-to-pass.ts` warns
+ * about in its own docblock: this metric's errors all flatter.
+ *
+ * And this module must gain no import. Mutation batteries copy it into a
+ * tmpdir, where a relative import dies on module resolution and the mutant
+ * reads as a refusal rather than as a guard that held —
+ * `.claude/rules/self-referential-tests.md`, Tier 1.
+ */
+export const AI_REVIEW_LEGACY_LEDGER_CAP = 12;
+
+/**
  * Whether the rounds in hand are the whole history.
  *
  * UNKNOWN carries **no count field at all**, the same construction
@@ -612,18 +660,12 @@ export function readLedger(body: unknown): LedgerReading {
   }
   // Two shapes, and the older one is still on every open pull request that
   // has a ledger. A bare array is the pre-#1405 ledger: readable, and silent
-  // about whether it is the whole history.
+  // about whether it is the whole history — but not therefore unknowable.
   if (Array.isArray(parsed)) {
     return {
       status: AI_REVIEW_LEDGER_READ,
       rounds: parsed.map(toLedgerRound),
-      truncation: {
-        status: AI_REVIEW_TRUNCATION_UNKNOWN,
-        reason:
-          `the ledger's JSON block is a bare array, the shape written before the ` +
-          `\`${AI_REVIEW_LEDGER_TRUNCATED_KEY}\` count existed, so it states nothing about ` +
-          `rounds dropped off the front; it may hold the whole history and it does not say so`,
-      },
+      truncation: legacyTruncation(parsed.length),
     };
   }
   if (typeof parsed !== "object" || parsed === null) {
@@ -644,6 +686,41 @@ export function readLedger(body: unknown): LedgerReading {
     status: AI_REVIEW_LEDGER_READ,
     rounds: rounds.map(toLedgerRound),
     truncation: readTruncation(obj[AI_REVIEW_LEDGER_TRUNCATED_KEY]),
+  };
+}
+
+/**
+ * How deep a legacy bare-array ledger is, derived from its length (#1447).
+ *
+ * The list grows by exactly one entry per round and is only ever cut when it
+ * reaches the cap, so **a length below the cap means the cut never ran** and
+ * the array is the whole history. That is a derivation from the writer's
+ * behaviour, not an assumption about it, and #1405's writer already makes the
+ * identical one when it migrates such a ledger forward — this is the reader
+ * catching up to it, for the ledgers no future round will ever touch.
+ *
+ * At or above the cap the length is a LOWER BOUND and nothing more: this
+ * round's eviction is knowable and the ones before it are not, and writing
+ * the bound as a count would hand a caller a number it cannot tell from a
+ * total.
+ *
+ * The cheap wrong fix is to call every bare array complete. It passes every
+ * case below the cap and is wrong at it, which is why
+ * `test/ai-review-ledger-read.test.ts` puts 11 and 12 adjacent.
+ */
+function legacyTruncation(length: number): LedgerTruncation {
+  if (length < AI_REVIEW_LEGACY_LEDGER_CAP) {
+    return { status: AI_REVIEW_TRUNCATION_STATED, dropped: 0 };
+  }
+  return {
+    status: AI_REVIEW_TRUNCATION_UNKNOWN,
+    reason:
+      `the ledger's JSON block is a bare array of ${length} rounds, the shape written ` +
+      `before the \`${AI_REVIEW_LEDGER_TRUNCATED_KEY}\` count existed, and it is at or past ` +
+      `the ${AI_REVIEW_LEGACY_LEDGER_CAP}-round cap those ledgers were written under. A ` +
+      `shorter one could be derived complete — the list only grows by one per round and is ` +
+      `only cut at the cap — but at the cap its length is a lower bound on the rounds it ` +
+      `held and says nothing about how many fell off the front`,
   };
 }
 
@@ -781,7 +858,7 @@ export function priorFindings(reading: LedgerReading): PriorState {
       // Only a round stamped with the rule this reader knows gets a key. An
       // unrecognised rule is carried, never dropped, and never keyed.
       if (round.keyable) {
-        key = findingKey(finding, recordedText);
+        key = carryKey(finding, recordedText);
         if (key !== null) {
           identity = normalise(recordedText) !== "" ? FINDING_IDENTITY_TEXT : FINDING_IDENTITY_LINE;
           keys.push(key);
