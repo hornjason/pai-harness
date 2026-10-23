@@ -92,6 +92,21 @@ const OPEN_PRS: readonly OpenPullRequest[] = [
 
 const LIVE: OpenPrCorpus = { status: "measured", prs: OPEN_PRS };
 
+/**
+ * A current-PR number that is in no fixture corpus here.
+ *
+ * Several cases below are about path matching, truncation or corpus status
+ * and do not care which pull request is asking — they used to say nothing,
+ * and since #1427 saying nothing is a refusal. This names the thing they
+ * always meant: routing on behalf of a pull request the corpus does not
+ * contain. Step 3 finds no row for it and step 6 excludes nothing, so every
+ * one of those cases keeps the exact behaviour it had.
+ *
+ * It must stay absent from every corpus in this file, or those cases quietly
+ * start testing the own-PR exclusion instead of what they are named for.
+ */
+const ABSENT_PR = 999_999;
+
 /** A case the suite and the mutation battery both run. */
 interface Case {
   id: string;
@@ -139,7 +154,7 @@ const CASES: readonly Case[] = [
     id: "RT-5",
     what: "a corpus that could not be fetched is not a corpus with no matches",
     cited: ["lib/ai-review-rounds.ts"],
-    options: { corpus: { status: "unmeasured", why: "gh pr list exited 1" } },
+    options: { corpus: { status: "unmeasured", why: "gh pr list exited 1" }, thisPr: ABSENT_PR },
     route: "UNMEASURED",
     prs: [],
   },
@@ -152,6 +167,7 @@ const CASES: readonly Case[] = [
         status: "measured",
         prs: [{ number: 900, files: ["lib/other.ts"], declaredFileCount: 140 }],
       },
+      thisPr: ABSENT_PR,
     },
     route: "UNMEASURED",
     prs: [900],
@@ -170,6 +186,7 @@ const CASES: readonly Case[] = [
     cited: ["rungate.ts"],
     options: {
       corpus: { status: "measured", prs: [pr(1, "bin/rungate.ts"), pr(2, "lib/my-rungate.ts")] },
+      thisPr: ABSENT_PR,
     },
     route: "OTHER_PR",
     prs: [1],
@@ -180,6 +197,7 @@ const CASES: readonly Case[] = [
     cited: ["lib/a.ts", "lib/b.ts"],
     options: {
       corpus: { status: "measured", prs: [pr(1, "lib/a.ts", "lib/b.ts"), pr(2, "lib/b.ts")] },
+      thisPr: ABSENT_PR,
     },
     route: "OTHER_PR",
     prs: [1],
@@ -189,6 +207,66 @@ const CASES: readonly Case[] = [
     what: "the PR under review wins over the corpus, and is answered before it is consulted",
     cited: ["lib/finding-arbiter.ts"],
     options: { corpus: LIVE, thisPr: 1393 },
+    route: "THIS_PR",
+    prs: [1393],
+  },
+  // ── #1427: an unknown current-PR identity is not "there is no current PR" ──
+  {
+    id: "RT-11",
+    what: "neither --this-pr nor changed files: the router does not know which PR it is on, so it refuses",
+    // RED before #1427. `ownFiles` was undefined so step 3 never ran, and
+    // `filter(p => p.number !== undefined)` excluded nothing — so the PR being
+    // arbitrated stayed in its own candidate corpus and was returned as the
+    // OTHER pull request to route to. `scripts/arbitrate-finding.ts` turns
+    // OTHER_PR into exit 4, which SUPPRESSES the filing. The finding about
+    // #1393 was routed away from #1393, to #1393.
+    cited: ["lib/finding-arbiter.ts"],
+    options: { corpus: LIVE },
+    route: "UNMEASURED",
+    prs: [],
+  },
+  {
+    id: "RT-12",
+    what: "changed files alone are enough to answer, with no --this-pr",
+    // The discrimination. A fix that refused whenever `thisPr` was absent
+    // would pass RT-11 and break the caller that supplies a diff instead of a
+    // number — the absence of a NUMBER is not the absence of a READING.
+    cited: ["lib/finding-arbiter.ts"],
+    options: { corpus: LIVE, changedFiles: ["lib/finding-arbiter.ts"] },
+    route: "THIS_PR",
+    prs: [],
+  },
+  {
+    id: "RT-13",
+    what: "changed files that do not hold the cited path still answer, and route onward",
+    // The other half of RT-12: having a reading is what lifts the refusal,
+    // not the reading saying THIS_PR. Without this row a fix could return
+    // UNMEASURED on every non-matching diff and still look right.
+    cited: ["lib/ai-review-rounds.ts"],
+    options: { corpus: LIVE, changedFiles: ["lib/finding-arbiter.ts"] },
+    route: "OTHER_PR",
+    prs: [1410],
+  },
+  {
+    id: "RT-14",
+    what: "an EMPTY changed-files list with no --this-pr is not a reading either",
+    // Found by the review on PR #1446. `scripts/arbitrate-finding.ts` builds
+    // the list with `.split(",").filter(Boolean)`, so `--changed-files ""`
+    // arrives as `[]` and not as absent — `[]` standing for "I looked and
+    // there was nothing" when nobody looked. The same fail-open one layer in.
+    cited: ["lib/finding-arbiter.ts"],
+    options: { corpus: LIVE, changedFiles: [] },
+    route: "UNMEASURED",
+    prs: [],
+  },
+  {
+    id: "RT-15",
+    what: "an empty changed-files list WITH --this-pr still answers",
+    // The discrimination. Only the combination cannot answer: with a number
+    // the corpus supplies the diff and step 6 has something to exclude on.
+    // Without this row, refusing on every empty list would pass RT-14.
+    cited: ["lib/finding-arbiter.ts"],
+    options: { corpus: LIVE, thisPr: 1393, changedFiles: [] },
     route: "THIS_PR",
     prs: [1393],
   },
@@ -219,7 +297,10 @@ describe("#1343: a finding is routed to the open PR that is holding the file", (
   });
 
   test("an unreadable corpus carries no population count rather than a zero", () => {
-    const routing = routePaths(["lib/x.ts"], { corpus: { status: "unmeasured", why: "no token" } });
+    const routing = routePaths(["lib/x.ts"], {
+      corpus: { status: "unmeasured", why: "no token" },
+      thisPr: ABSENT_PR,
+    });
     expect(routing.consideredPrs).toBeNull();
     expect(routing.reason).toContain("no token");
   });
@@ -331,6 +412,59 @@ describe("#1343: the CLI routes, and exit 4 says where", () => {
     expect(`${r.code} ${r.out.includes("ROUTE THIS_PR")}`).toBe("0 true");
   });
 
+  /**
+   * #1427 — the arbiter must survive the agent it is arbitrating.
+   *
+   * `--file` is supplied by the agent whose finding is being adjudicated, and
+   * it used to REPLACE the finding's own cited paths with no check. Exit 4
+   * suppresses the filing, so one flag naming another open pull request's
+   * files bought silence. The body here cites `lib/ai-review-rounds.ts` and
+   * nothing else; `lib/cli-commands.ts` is held by exactly one open pull
+   * request (#1354) and is named nowhere in the finding.
+   */
+  test("an anchor the finding does not cite cannot suppress the filing", () => {
+    // RED before #1427: exit 4, ROUTE OTHER_PR #1354 — a legitimate THIS_PR
+    // filing silenced by an invented anchor. The pull request here OWNS the
+    // cited file, so without the anchor this is the CONTROL case above.
+    const r = run(pinned(
+      "--this-pr", "1410",
+      "--changed-files", "lib/ai-review-rounds.ts,test/ai-review-ledger-read.test.ts",
+      "--file", "lib/cli-commands.ts",
+    ));
+    expect(`${r.code} ${r.out.includes("ROUTE THIS_PR")}`, r.out).toBe("0 true");
+    expect(r.out, "the unverified anchor still steered the routing").not.toContain("#1354");
+  });
+
+  // The "a cited anchor is still honoured" controls live in the nested
+  // describe below, not here. Against THIS body they would be vacuous: it
+  // cites one path, so honouring the anchor and discarding it give the same
+  // answer and the row cannot tell a fix from its over-correction. Measured
+  // — mutating `anchorOrCited` to `return [...cited]` left both green, which
+  // is why they were moved rather than kept as reassurance.
+
+  test("no --this-pr and no --changed-files refuses rather than routing to the asker", () => {
+    // RED before #1427: exit 4. With neither input the router did not know
+    // which pull request was asking, its own-PR exclusion removed nothing,
+    // and it returned a pull request from a corpus that still contained the
+    // asker. UNMEASURED leaves the arbiter's disposition standing.
+    const r = run(pinned());
+    expect(r.code, r.out).not.toBe(4);
+    expect(r.out).toContain("UNMEASURED");
+  });
+
+  test.each(["abc", "0", "-3", "1393.5", "${{ github.event.number }}", ""])(
+    "--this-pr %p is a usage error, not an absent identity",
+    bad => {
+      // A NaN was the worst of the three states: `thisPr !== undefined` so the
+      // refusal did not fire, and `p.number !== NaN` is true of every row so
+      // the own-PR exclusion removed nothing. The same fail-open, reached by
+      // a typo instead of an omission — and `${{ … }}` is how an unexpanded
+      // workflow expression actually arrives.
+      const r = run(pinned("--this-pr", bad));
+      expect(r.code, r.out).toBe(2);
+    },
+  );
+
   test("with no corpus the arbiter's own exit stands, and the run says it was not read", () => {
     // The regression this blocks: a routing reading nobody could take turning
     // into a route. `AR-12`'s three exit codes are the population it protects.
@@ -338,11 +472,74 @@ describe("#1343: the CLI routes, and exit 4 says where", () => {
     expect(`${r.code} ${r.out.includes("ROUTE UNMEASURED")}`).toBe("0 true");
   });
 
-  test("--file is the payload's anchor and replaces the prose keys", () => {
-    // Without it the same body routes by every path it names. Run live on
-    // 2026-10-23 that was three pull requests holding the second file.
-    const r = run(pinned("--this-pr", "1393", "--file", "lib/bash-write-guard.ts"));
-    expect(`${r.code} ${r.out.includes("ROUTE AMBIGUOUS #1361,#1411")}`).toBe("0 true");
+  /**
+   * `--file` selects ONE of the paths the finding cites, and that is what
+   * makes it worth having.
+   *
+   * This pair used to be a single row anchored on `lib/bash-write-guard.ts`,
+   * a path the body never named — so it asserted the REPLACE behaviour by
+   * exercising precisely the unverified case #1427 is about. The property is
+   * real and is kept; it is now demonstrated the way the #1343 exemplar
+   * actually looks, with a body that cites the reader it is about AND the
+   * writer it blames, and an anchor that is one of the two.
+   */
+  describe("#1343: the anchor narrows to one of the cited paths", () => {
+    const twoFileBody = () => join(scratch, "two-files.md");
+
+    beforeAll(() => {
+      writeFileSync(
+        twoFileBody(),
+        "`carryForward` in `lib/ai-review-rounds.ts` treats a recorded line-text of \"\" as a genuine " +
+          "reading. The empty text is written by the quoting pass in `lib/bash-write-guard.ts`, " +
+          "which emits \"\" rather than refusing when it cannot resolve the line.",
+      );
+    });
+
+    const runTwo = (extra: string[]) => {
+      const r = Bun.spawnSync(
+        ["bun", script,
+         "--title", "carryForward reads an empty recorded text as a genuine reading",
+         "--body-file", twoFileBody(),
+         "--existing", join(scratch, "empty.json"),
+         "--votes", join(scratch, "votes.json"),
+         "--project-root", join(import.meta.dir, ".."),
+         "--open-prs", join(scratch, "prs.json"),
+         ...extra],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      return { code: r.exitCode, out: new TextDecoder().decode(r.stdout) };
+    };
+
+    test("without an anchor, both cited paths route and the answer is AMBIGUOUS", () => {
+      // The baseline the anchor exists to improve on. Three pull requests
+      // hold one of the two files each, so nothing can be picked.
+      const r = runTwo(["--this-pr", "1393"]);
+      expect(`${r.code} ${r.out.includes("ROUTE AMBIGUOUS")}`, r.out).toBe("0 true");
+    });
+
+    test("with a CITED anchor, the one pull request holding it is named", () => {
+      // The #1343 property, measured on an anchor the finding actually
+      // cites — so it does not depend on the arbiter trusting its input.
+      const r = runTwo(["--this-pr", "1393", "--file", "lib/ai-review-rounds.ts"]);
+      expect(`${r.code} ${r.out.includes("ROUTE OTHER_PR #1410")}`, r.out).toBe("4 true");
+    });
+
+    test("a cited anchor is matched through normalisation, not by spelling", () => {
+      // `./lib/ai-review-rounds.ts` is the same path. A verification that
+      // compared raw strings would discard this anchor as uncited, fall back
+      // to both paths, and answer AMBIGUOUS — so an agent defeats the check
+      // with a leading `./`, and the honoured-anchor row above stays green.
+      const r = runTwo(["--this-pr", "1393", "--file", "./lib/ai-review-rounds.ts"]);
+      expect(`${r.code} ${r.out.includes("ROUTE OTHER_PR #1410")}`, r.out).toBe("4 true");
+    });
+
+    test("with an UNCITED anchor, the finding's own paths are used instead", () => {
+      // #1427. The agent names a file the finding does not, pointing at a
+      // single-holder pull request to buy an exit 4. It gets the baseline.
+      const r = runTwo(["--this-pr", "1393", "--file", "lib/cli-commands.ts"]);
+      expect(`${r.code} ${r.out.includes("ROUTE AMBIGUOUS")}`, r.out).toBe("0 true");
+      expect(r.out, "the invented anchor still steered the routing").not.toContain("#1354");
+    });
   });
 });
 
@@ -365,7 +562,7 @@ const MUTANTS: readonly Mutant[] = [
     to:
       "export function routePaths(citedPaths: readonly string[], options: RouteOptions): Routing {\n" +
       '  if (true) return { route: "TRACKER", citedPaths: [], prs: [], matchedPaths: [], consideredPrs: null, reason: "mutant" };',
-    reddens: ["RT-1", "RT-2", "RT-3", "RT-5", "RT-6", "RT-7", "RT-8", "RT-9", "RT-10"],
+    reddens: ["RT-1", "RT-2", "RT-3", "RT-5", "RT-6", "RT-7", "RT-8", "RT-9", "RT-10", "RT-11", "RT-12", "RT-13", "RT-14", "RT-15"] as const,
   },
   {
     name: "a bare suffix test instead of a whole trailing segment",
@@ -377,7 +574,44 @@ const MUTANTS: readonly Mutant[] = [
     name: "the PR the finding arrived on is not consulted",
     from: "if (own.length > 0) {",
     to: "if (false) {",
-    reddens: ["RT-3", "RT-10"],
+    reddens: ["RT-3", "RT-10", "RT-12", "RT-15"],
+  },
+  {
+    // #1427's defect, restored. Without the refusal the router carries on
+    // with no idea which pull request is asking, and step 6's
+    // `p.number !== undefined` excludes nothing — so the asker is returned
+    // as the pull request to route TO, and the caller turns that into exit 4.
+    name: "the asker's identity is not required, so the asker can be routed to",
+    from: "  if (!hasReading) {",
+    to: "if (false) {",
+    reddens: ["RT-11", "RT-14"],
+  },
+  {
+    // The empty-list door the review on #1446 found. `[]` is not absent, and
+    // `scripts/arbitrate-finding.ts` produces `[]` from `--changed-files ""`.
+    name: "an empty changed-file list counts as a reading",
+    from: "    (options.changedFiles !== undefined && options.changedFiles.length > 0);",
+    to: "    options.changedFiles !== undefined;",
+    reddens: ["RT-14"],
+  },
+  {
+    // And the same confusion at the `ownFiles` pick: an empty explicit list
+    // shadowing the corpus row loses the diff GitHub already reported.
+    name: "an empty explicit list shadows the corpus row",
+    from: `    options.changedFiles !== undefined && options.changedFiles.length > 0
+      ? options.changedFiles
+      : ownRow?.files;`,
+    to: "    options.changedFiles ?? ownRow?.files;",
+    reddens: ["RT-15"],
+  },
+  {
+    // The other direction, and the one a careless fix reaches for: demanding
+    // the NUMBER rather than a reading. A caller holding the diff has better
+    // evidence than a caller holding an integer.
+    name: "a changed-file list is not accepted in place of the PR number",
+    from: "  if (!hasReading) {",
+    to: "if (options.thisPr === undefined) {",
+    reddens: ["RT-12", "RT-13"],
   },
   {
     name: "an unreadable corpus falls through as a corpus with no matches",

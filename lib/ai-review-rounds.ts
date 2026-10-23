@@ -541,6 +541,36 @@ export const AI_REVIEW_TRUNCATION_UNKNOWN = "AI_REVIEW_TRUNCATION_UNKNOWN";
 export const AI_REVIEW_TRUNCATION_STATED = "AI_REVIEW_TRUNCATION_STATED";
 
 /**
+ * The round cap in force when every bare-array ledger in existence was
+ * written (#1447).
+ *
+ * **Deliberately not `AI_REVIEW_LEDGER_MAX_ROUNDS`, and deliberately not
+ * imported from it.** Two separate reasons, and they are both load-bearing:
+ *
+ * The derivation below — *a bare array shorter than its cap was never cut* —
+ * is only sound against the cap that was in force when that array was
+ * written. Binding it to the live cap would mean lowering the cap tomorrow
+ * silently re-reads ledgers written months ago as complete when they were
+ * truncated. It cannot do that here: the bare-array shape is CLOSED. #1405's
+ * writer migrates every ledger it touches to `{rounds, truncated}`, so no new
+ * bare array will ever be written and the population this constant describes
+ * is fixed. A fact about history is spelled as a historical constant.
+ *
+ * The value is 12 because `AI_REVIEW_LEDGER_MAX_ROUNDS` has been 12 since it
+ * was introduced in `41f2e93f` (#1168) and has never held another value —
+ * checked rather than assumed, because a cap that had once been lower would
+ * make every bare array between the old cap and 12 read as a complete history
+ * when it had been cut. That is the direction `lib/rounds-to-pass.ts` warns
+ * about in its own docblock: this metric's errors all flatter.
+ *
+ * And this module must gain no import. Mutation batteries copy it into a
+ * tmpdir, where a relative import dies on module resolution and the mutant
+ * reads as a refusal rather than as a guard that held —
+ * `.claude/rules/self-referential-tests.md`, Tier 1.
+ */
+export const AI_REVIEW_LEGACY_LEDGER_CAP = 12;
+
+/**
  * Whether the rounds in hand are the whole history.
  *
  * UNKNOWN carries **no count field at all**, the same construction
@@ -630,18 +660,12 @@ export function readLedger(body: unknown): LedgerReading {
   }
   // Two shapes, and the older one is still on every open pull request that
   // has a ledger. A bare array is the pre-#1405 ledger: readable, and silent
-  // about whether it is the whole history.
+  // about whether it is the whole history — but not therefore unknowable.
   if (Array.isArray(parsed)) {
     return {
       status: AI_REVIEW_LEDGER_READ,
       rounds: parsed.map(toLedgerRound),
-      truncation: {
-        status: AI_REVIEW_TRUNCATION_UNKNOWN,
-        reason:
-          `the ledger's JSON block is a bare array, the shape written before the ` +
-          `\`${AI_REVIEW_LEDGER_TRUNCATED_KEY}\` count existed, so it states nothing about ` +
-          `rounds dropped off the front; it may hold the whole history and it does not say so`,
-      },
+      truncation: legacyTruncation(parsed.length),
     };
   }
   if (typeof parsed !== "object" || parsed === null) {
@@ -662,6 +686,41 @@ export function readLedger(body: unknown): LedgerReading {
     status: AI_REVIEW_LEDGER_READ,
     rounds: rounds.map(toLedgerRound),
     truncation: readTruncation(obj[AI_REVIEW_LEDGER_TRUNCATED_KEY]),
+  };
+}
+
+/**
+ * How deep a legacy bare-array ledger is, derived from its length (#1447).
+ *
+ * The list grows by exactly one entry per round and is only ever cut when it
+ * reaches the cap, so **a length below the cap means the cut never ran** and
+ * the array is the whole history. That is a derivation from the writer's
+ * behaviour, not an assumption about it, and #1405's writer already makes the
+ * identical one when it migrates such a ledger forward — this is the reader
+ * catching up to it, for the ledgers no future round will ever touch.
+ *
+ * At or above the cap the length is a LOWER BOUND and nothing more: this
+ * round's eviction is knowable and the ones before it are not, and writing
+ * the bound as a count would hand a caller a number it cannot tell from a
+ * total.
+ *
+ * The cheap wrong fix is to call every bare array complete. It passes every
+ * case below the cap and is wrong at it, which is why
+ * `test/ai-review-ledger-read.test.ts` puts 11 and 12 adjacent.
+ */
+function legacyTruncation(length: number): LedgerTruncation {
+  if (length < AI_REVIEW_LEGACY_LEDGER_CAP) {
+    return { status: AI_REVIEW_TRUNCATION_STATED, dropped: 0 };
+  }
+  return {
+    status: AI_REVIEW_TRUNCATION_UNKNOWN,
+    reason:
+      `the ledger's JSON block is a bare array of ${length} rounds, the shape written ` +
+      `before the \`${AI_REVIEW_LEDGER_TRUNCATED_KEY}\` count existed, and it is at or past ` +
+      `the ${AI_REVIEW_LEGACY_LEDGER_CAP}-round cap those ledgers were written under. A ` +
+      `shorter one could be derived complete — the list only grows by one per round and is ` +
+      `only cut at the cap — but at the cap its length is a lower bound on the rounds it ` +
+      `held and says nothing about how many fell off the front`,
   };
 }
 
