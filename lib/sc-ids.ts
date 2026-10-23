@@ -77,14 +77,60 @@ export interface ScDeclaration {
 }
 
 /**
- * The id itself: `SC-`, an optional uppercase class letter, digits.
+ * The prefixes whose ids are TRACKED CRITERIA (#1298).
  *
- * Not `\w+`. A class letter is part of the notation (`A` for anti-criterion);
- * an arbitrary word is a prose fragment. Kept as a source string so the
- * declaration and mention patterns are built from one definition and cannot
- * drift — the drift is what #330 is about.
+ * `SC` was the only one for as long as there was only one namespace. The
+ * second arrived with `specs/CODE-REVIEW-CONVERGENCE-SPEC.md`, whose 56
+ * criteria are `CRC-A1`..`CRC-N5`, and the reason it is a second PREFIX
+ * rather than 56 more `SC-` ids is the class letter: in this namespace a
+ * letter means ANTI-criterion (`isAntiCriterion`, and SPEC-TEMPLATE.md's
+ * `- [ ] SC-A1: [anti-criterion — must NOT happen]`), so all 56 would have
+ * read as things that must not happen. In the convergence spec the letter is
+ * a SECTION. Same character, different fact, so: different prefix.
+ *
+ * ## This list is the only thing that decides
+ *
+ * Adding a prefix here is the whole of adding a namespace, because every
+ * pattern below is built from `SC_ID_SOURCE` and `SC_ID_SOURCE` is built from
+ * this. That is #330's property — four files parsing ids four ways is what
+ * made an anti-criterion a declaration to one reader and invisible to three —
+ * extended one axis further.
+ *
+ * ## What it deliberately does NOT reach
+ *
+ * `isAntiCriterion` and `isIssueShaped` stay spelled `SC-` by hand, and each
+ * says why at its own definition. They are not readers of the namespace; they
+ * are statements about what a character MEANS inside one. Building them from
+ * this list is the cheapest wrong fix here: it parses all 56 criteria — so a
+ * parse-only test goes green — and makes every one of them an anti-criterion,
+ * which is the exact bug the rename was done to avoid. `crossSpecCollisions`
+ * and `crossFormCollisions` both filter anti-criteria OUT, so the 56 would
+ * also have become the only ids in the tree two specs could silently share.
+ * `test/tracked-id-prefixes.test.ts` holds that pair apart.
  */
-export const SC_ID_SOURCE = "SC-[A-Z]?\\d+";
+export const TRACKED_ID_PREFIXES: readonly string[] = ["SC", "CRC"];
+
+/**
+ * The prefixes as a regex alternation, longest first.
+ *
+ * Alternation is first-match, not longest-match, so `(?:S|SC)-1` can never
+ * reach its second branch. Nothing in the list today is a prefix of anything
+ * else in it; sorting is what keeps that from mattering when one is.
+ */
+export const TRACKED_ID_PREFIX_SOURCE = `(?:${[...TRACKED_ID_PREFIXES]
+  .sort((a, b) => b.length - a.length)
+  .join("|")})`;
+
+/**
+ * The id itself: a tracked prefix, an optional uppercase class letter, digits.
+ *
+ * Not `\w+`. A class letter is part of the notation (`A` for anti-criterion in
+ * the `SC-` namespace, a section in `CRC-`); an arbitrary word is a prose
+ * fragment. Kept as a source string so the declaration and mention patterns
+ * are built from one definition and cannot drift — the drift is what #330 is
+ * about.
+ */
+export const SC_ID_SOURCE = `${TRACKED_ID_PREFIX_SOURCE}-[A-Z]?\\d+`;
 
 /** A declared id: a checklist line opening with one. Not a mention. */
 export function scDeclarationPattern(): RegExp {
@@ -123,6 +169,16 @@ export function oneScMentionPattern(id: string): RegExp {
  * Anti-criteria are numbered per spec, so the id alone does not identify one.
  * `specs/SPEC-TEMPLATE.md` ships `- [ ] SC-A1: [anti-criterion — must NOT
  * happen]`, which is where every spec's A1 comes from.
+ *
+ * **`SC-` by hand, and it must not be built from `TRACKED_ID_PREFIXES`**
+ * (#1298). This is not a reader of the id pattern — it is a statement about
+ * what a class letter means in ONE namespace, and the two namespaces disagree
+ * about exactly that. `CRC-B3`'s letter is the convergence spec's section B;
+ * reading it as "must NOT happen" inverts the criterion, and the three
+ * consumers make that expensive rather than merely wrong: `ambiguityOf`
+ * returns `"per-spec"`, and `crossSpecCollisions` and `crossFormCollisions`
+ * filter the id out before looking for duplicates, so two specs could declare
+ * the same `CRC-` id with nothing to notice.
  */
 export function isAntiCriterion(id: string): boolean {
   return /^SC-[A-Z]\d+$/.test(id);
@@ -135,6 +191,11 @@ export function isAntiCriterion(id: string): boolean {
  * produces is `SC-1`..`SC-9` — and all nine are declared by
  * `specs/bootstrap-data-flow/success-criteria.md`. The overlap is exactly the
  * single-digit numerics; `SC-640` cannot be an issue's 640th criterion.
+ *
+ * `SC-` by hand for the same reason as `isAntiCriterion`: the collision is
+ * with how the HARNESS numbers an issue's own criteria, and it numbers them
+ * `SC-1`..`SC-9`. Nothing produces a bare `CRC-1` by accident, so a tracked
+ * prefix added here would qualify criteria that are not ambiguous.
  */
 export function isIssueShaped(id: string): boolean {
   return /^SC-\d$/.test(id);
@@ -179,6 +240,10 @@ export function isFixtureScId(id: string): boolean {
   const n = Number(id.replace(/^SC-/, ""));
   return Number.isInteger(n) && n >= FIXTURE_SC_FLOOR;
 }
+// `SC-` only, and so is `scMentionsInSource` below. Both serve the ALLOCATOR,
+// and `scripts/create-sc.ts` allocates in the `SC-` namespace alone — a `CRC-`
+// id is hand-numbered inside one spec's section. Widening either without an
+// allocator to protect would add a reading nothing consumes (#1298).
 
 /**
  * The registry: which spec files declare each id.
