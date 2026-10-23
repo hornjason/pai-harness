@@ -19,12 +19,22 @@
  *  - `GateResultProtection` is authoritative for **what a permitted write may
  *    contain** — forged, erased or changed gate results, and `phase` DONE.
  *
- * Neither subsumes the other. THIS hook is the one that ships
- * (`deployToConsumers: true`); the specific guard is OPT-IN and a scaffolded
- * consumer does not get it. So on a consumer tree this is the ONLY guard on
- * the artifact — which is why its matcher being case-SENSITIVE while the
- * specific guard's is case-folded (#1184) is a consumer-reachable gap and not
- * a tidiness question.
+ * THIS hook is the one that ships (`deployToConsumers: true`); the specific
+ * guard is OPT-IN and a scaffolded consumer does not get it. So on a consumer
+ * tree this is the ONLY guard on the artifact, and that is why its matcher
+ * being case-SENSITIVE while the specific guard's was case-folded (#1184) was
+ * a consumer-reachable gap and not a tidiness question. #1211 closed it: the
+ * matcher below case-folds, so the two predicates now agree on WHICH paths are
+ * the artifact and differ only in reach — `.includes()` here against
+ * `.endsWith()` there.
+ *
+ * The specific guard's refusals are therefore a SUBSET of this hook's. That is
+ * the safe direction and it is asserted, not assumed: this hook refusing every
+ * Write/Edit of the artifact means a consumer tree is covered for the question
+ * "may a tool call write this at all", which is the only question a consumer
+ * tree has a guard for. Subsumed is not dead — the two do not ship to the same
+ * trees, and the specific guard's refusal messages name the forgery while this
+ * one names the sanctioned writer.
  *
  * The contract is executed, not described:
  * `test/workflow-state-write-contract.test.ts` runs both hooks over one corpus
@@ -47,7 +57,14 @@ async function main() {
   // Write tool uses file_path; Edit tool uses file_path
   const path = (toolInput.file_path as string) || (toolInput.path as string) || '';
 
-  if (!path.includes('workflow-state.json')) process.exit(0);
+  // Case-FOLDED (#1211). `WORKFLOW-STATE.JSON` and `workflow-state.json` are one
+  // file on a case-insensitive filesystem — measured in #1184, which closed this
+  // in GateResultProtection and never carried the fix here. This is the guard
+  // that ships, so the uppercase spelling was reaching a consumer's disk with no
+  // guard at all. The population the fold newly claims is enumerated and bounded
+  // in test/workflow-state-guard-case.test.ts; it is case-variants of this name
+  // and nothing else.
+  if (!path.toLowerCase().includes('workflow-state.json')) process.exit(0);
 
   // Block the write
   const reason = [
