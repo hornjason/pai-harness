@@ -474,9 +474,15 @@ export const promptHeld = (r: SameTreeReading): boolean => r.rounds[0] === r.rou
 /**
  * Same-tree `ai-review` pairs, every field read from the run logs.
  *
- * Only `39962683401` retained per-step logs; GitHub kept the aggregate only
- * for the other two, which is why their verdicts are `null` and their merge
- * commits unread. A reading nobody can take is not a reading that agreed.
+ * `verdicts` is `null` on the other two because the reviewer **wrote no
+ * findings payload** (#1307), not because the log was lost. Every one of the
+ * 51 attempt logs across this repository's 23 multi-attempt `ai-review` runs
+ * is fetchable; 36 of them record `exited successfully WITHOUT writing a
+ * findings payload`. The first version of this comment blamed GitHub
+ * retention, which was a guess dressed as a reason — retention is not the
+ * binding constraint and saying so sent the next reader to the wrong fix.
+ *
+ * A reading nobody can take is still not a reading that agreed.
  */
 export const AI_REVIEW_SAME_TREE_READINGS: readonly SameTreeReading[] = [
   {
@@ -506,8 +512,9 @@ export function aiReviewVarianceResidue(readings: readonly SameTreeReading[]): s
   const lost =
     `${readings.length - scored.length} of ${readings.length} same-tree pair(s) carry NO verdict — ` +
     `${confounded.length} because the round changed between attempts (an unequal round is a different ` +
-    "prompt, not a repeat), and the rest because GitHub retained only the aggregate log. Those are " +
-    "UNMEASURED and are not attempts that agreed.";
+    "prompt, not a repeat), and the rest because the reviewer exited successfully without writing a " +
+    "findings payload (#1307) — the logs are all fetchable, so this is the reviewer producing nothing " +
+    "rather than a reading being lost. Those are UNMEASURED and are not attempts that agreed.";
 
   if (scored.length === 0) {
     return (
