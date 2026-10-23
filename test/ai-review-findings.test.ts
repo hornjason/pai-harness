@@ -1055,6 +1055,148 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
     expect(r.outcome, "a case difference is not a different file on this platform").toBe("BLOCKED");
   });
 
+  /**
+   * B7-10..B7-16 — the demotion fails CLOSED on anything it cannot read.
+   *
+   * The first cut of this stage did `String(finding[file]).toLowerCase()` and
+   * compared it to a raw list. Every input below then DEMOTED a `critical` to
+   * CLEAN, because a spelling the comparison cannot read is a spelling that
+   * is never in the set:
+   *
+   *     CLEAN  0 blocking   file: {}
+   *     CLEAN  0 blocking   file: 123
+   *     CLEAN  0 blocking   "./lib/mine.ts"
+   *     CLEAN  0 blocking   "lib/mine.ts:12"
+   *     CLEAN  0 blocking   "lib\\mine.ts"
+   *     CLEAN  0 blocking   "/lib/mine.ts"
+   *
+   * Six for six, against a changed-file list containing `lib/mine.ts`. The
+   * docblock already said the direction this may be wrong in is TOWARD
+   * blocking; the code said the opposite for every input it could not parse.
+   *
+   * This is the same lesson as the one about matching a parser rather than a
+   * spelling, applied to paths: `./x`, `x`, `/x` and `x:12` are one file and
+   * four strings, and an equality test over raw strings is a different
+   * question from the one being asked.
+   */
+  const undecidable = (file: unknown) =>
+    readAiReviewFindings(
+      JSON.stringify({
+        verdict: "BLOCK",
+        findings: [
+          {
+            [f.severity]: "critical",
+            [f.file]: file,
+            [f.line]: 1,
+            [f.summary]: "s",
+            [f.failureScenario]: "fs",
+          },
+        ],
+      }),
+      ["lib/mine.ts"],
+    );
+
+  test("B7-10: a non-string file is UNMEASURED, never a demotion", () => {
+    for (const file of [{}, 123, [], true]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("UNMEASURED");
+      expect(r.unmeasuredReasons).toContain("BLOCKING_FINDING_INCOMPLETE");
+    }
+  });
+
+  test("B7-11: a path spelt differently is the SAME file, and still blocks", () => {
+    // Each of these is `lib/mine.ts`, which the list contains. A demotion
+    // here would be the gate answering a question nobody asked.
+    for (const file of ["./lib/mine.ts", "/lib/mine.ts", "lib\\mine.ts", "  lib/mine.ts  "]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("BLOCKED");
+      expect(r.blockingReported).toHaveLength(1);
+    }
+  });
+
+  test("B7-12: a trailing :line or :line:col is stripped before comparing", () => {
+    for (const file of ["lib/mine.ts:12", "lib/mine.ts:12:4"]) {
+      expect(undecidable(file).outcome, `file: ${file}`).toBe("BLOCKED");
+    }
+  });
+
+  test("B7-13: a file that normalises to nothing readable KEEPS BLOCKING", () => {
+    // Undecidable is not pre-existing. If the path cannot be resolved to a
+    // repo-relative shape at all, the honest answer is "I could not tell",
+    // and the direction that is allowed to be wrong in is toward blocking.
+    const r = undecidable('"lib/\\303\\251.ts"'); // git C-quoted, not comparable
+    expect(r.outcome).toBe("BLOCKED");
+    expect(r.detail.join(" ")).toContain("could not be read as a repository path");
+  });
+
+  test("B7-13b: the SHAPE refusal is reachable too, not only the C-quote one", () => {
+    // Added because a mutation said so. Replacing the shape test's refusal
+    // with `return p.toLowerCase()` moved ZERO rows: B7-13 and B7-14 both
+    // refuse at the C-quote branch one line earlier, so the regex arm was
+    // uncovered and a mutation of it was green by construction — the seventh
+    // shape in `.claude/rules/checks-must-be-able-to-fail.md`.
+    //
+    // These are not C-quoted and are not repository paths. Each must keep
+    // blocking rather than demote.
+    for (const file of ["lib/my file.ts", "$HOME/x.ts", "lib/<generated>.ts", "???"]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("BLOCKED");
+    }
+  });
+
+  test("B7-14: an UNREADABLE entry in the changed-file list is UNMEASURED", () => {
+    // The mirror of B7-13 on the other side of the comparison. A list the
+    // reader cannot normalise is a list it cannot compare against, and
+    // comparing anyway would demote every finding.
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        verdict: "BLOCK",
+        findings: [
+          {
+            [f.severity]: "critical",
+            [f.file]: "lib/mine.ts",
+            [f.line]: 1,
+            [f.summary]: "s",
+            [f.failureScenario]: "fs",
+          },
+        ],
+      }),
+      ['"lib/\\303\\251.ts"'],
+    );
+    expect(r.outcome).toBe("UNMEASURED");
+    expect(r.unmeasuredReasons).toContain("CHANGED_FILES_UNREADABLE");
+  });
+
+  test("B7-15 CONTROL: normalising did not make everything match", () => {
+    // The risk in B7-11 is a normaliser so eager that two different files
+    // collide. This is the row that would catch it: a genuinely different
+    // path must still demote.
+    const r = undecidable("./lib/other.ts");
+    expect(r.outcome).toBe("CLEAN");
+    expect(r.blockingReported).toEqual([]);
+  });
+
+  test("B7-16 CONTROL: a path-shaped list entry is normalised the same way", () => {
+    // Both SIDES go through one function. If only the finding were
+    // normalised, a list spelt `./lib/mine.ts` would stop matching.
+    const r = readAiReviewFindings(
+      JSON.stringify({
+        verdict: "BLOCK",
+        findings: [
+          {
+            [f.severity]: "critical",
+            [f.file]: "lib/mine.ts",
+            [f.line]: 1,
+            [f.summary]: "s",
+            [f.failureScenario]: "fs",
+          },
+        ],
+      }),
+      ["./lib/mine.ts"],
+    );
+    expect(r.outcome).toBe("BLOCKED");
+  });
+
   test("B7-9: a non-blocking severity is unaffected by the tag", () => {
     // `info` never blocked, so demoting it changes nothing and must not be
     // counted as this stage having done something.

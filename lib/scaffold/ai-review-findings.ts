@@ -366,7 +366,13 @@ export type AiReviewUnmeasuredReason =
    * finding `Pre-existing` and block none of them, which is the fail-open this
    * module exists to refuse.
    */
-  | "CHANGED_FILES_EMPTY";
+  | "CHANGED_FILES_EMPTY"
+  /**
+   * A changed-file list entry could not be read as a repository path.
+   * Comparing against a list the reader cannot normalise would demote every
+   * finding, so the list being unreadable is a reading that failed.
+   */
+  | "CHANGED_FILES_UNREADABLE";
 
 /**
  * The fields a BLOCKING finding must carry, derived from the one contract map
@@ -506,8 +512,22 @@ export function readAiReviewFindings(
       ],
     );
   }
-  const touched =
-    changedFiles === undefined ? null : new Set(changedFiles.map(p => p.toLowerCase()));
+  let touched: Set<string> | null = null;
+  if (changedFiles !== undefined) {
+    const unreadable = changedFiles.filter(p => normaliseRepoPath(p) === null);
+    if (unreadable.length > 0) {
+      return unmeasured(
+        ["CHANGED_FILES_UNREADABLE"],
+        [
+          `${unreadable.length} changed-file entr(ies) could not be read as a repository ` +
+            `path: ${unreadable.slice(0, 3).map(p => JSON.stringify(p)).join(", ")}. ` +
+            `Comparing against a list this reader cannot normalise would tag every finding ` +
+            `Pre-existing. Produce the list with -z or core.quotePath=false`,
+        ],
+      );
+    }
+    touched = new Set(changedFiles.map(p => normaliseRepoPath(p) as string));
+  }
 
   let doc: unknown;
   try {
@@ -604,8 +624,33 @@ export function readAiReviewFindings(
       // maintainer still sees it; it simply stops reddening a required check
       // over a defect the diff did not introduce and cannot fix.
       if (touched !== null) {
-        const named = String(finding[AI_REVIEW_FINDING_FIELDS.file]).toLowerCase();
-        if (!touched.has(named)) {
+        const declared = finding[AI_REVIEW_FINDING_FIELDS.file];
+        // A non-string `file` is a CONTRACT violation, not a demotion input.
+        // `blockingContractViolations` refuses `undefined`, `null` and the
+        // empty string and lets a number or an object through, so without
+        // this a finding declaring `file: {}` stringifies to
+        // `[object Object]`, matches nothing, and demotes itself.
+        if (typeof declared !== "string") {
+          reasons.push("BLOCKING_FINDING_INCOMPLETE");
+          detail.push(
+            `finding ${i} blocks and declares a non-string ` +
+              `'${AI_REVIEW_FINDING_FIELDS.file}' (${typeof declared}). A path that is not a ` +
+              `string cannot be compared to the changed-file list, and a comparison that ` +
+              `cannot be made is not a finding that is pre-existing`,
+          );
+          return;
+        }
+        const named = normaliseRepoPath(declared);
+        // Undecidable is NOT pre-existing. The finding is well-formed and
+        // this reader simply cannot resolve its path, so it keeps blocking —
+        // the direction this stage is allowed to be wrong in.
+        if (named === null) {
+          detail.push(
+            `finding ${i} declares ${JSON.stringify(declared)}, which could not be read as a ` +
+              `repository path, so it could not be compared to the changed-file list. It ` +
+              `keeps blocking: undecidable is not pre-existing`,
+          );
+        } else if (!touched.has(named)) {
           demoted += 1;
           detail.push(
             `finding ${i} is Pre-existing: it names ${JSON.stringify(
@@ -681,6 +726,44 @@ export function readAiReviewFindings(
  * Blank lines are dropped before the emptiness test, so a file containing
  * only whitespace reads as empty rather than as one unnamed file.
  */
+/**
+ * One repository path, in the one spelling both sides of CRC-B7's comparison
+ * are reduced to — or `null` for "this cannot be read as a repository path".
+ *
+ * **`null` is the important return.** The first cut of CRC-B7 compared
+ * `String(finding.file).toLowerCase()` against a raw list, and every input
+ * the comparison could not read demoted a `critical` to CLEAN, because a
+ * spelling that is never in the set is indistinguishable from a file the
+ * pull request did not touch. Measured against a list holding `lib/mine.ts`:
+ *
+ * ```
+ * CLEAN 0 blocking   {}   123   "./lib/mine.ts"   "lib/mine.ts:12"
+ * CLEAN 0 blocking   "lib\mine.ts"                "/lib/mine.ts"
+ * ```
+ *
+ * Six for six, five of them the SAME FILE spelt differently. `./x`, `/x`,
+ * `x` and `x:12` are one file and four strings, and an equality test over
+ * raw strings answers a different question from the one being asked.
+ *
+ * So both sides go through here, and a `null` on either side is a refusal
+ * rather than a mismatch. The git C-quoted form — `"lib/\303\251.ts"`, which
+ * git emits for a non-ASCII path unless `core.quotePath=false` — is
+ * deliberately `null` rather than unescaped here: decoding octal escapes to
+ * compare a path is a second parser, and the right repair is to produce the
+ * list with `-z` or `core.quotePath=false` in the first place.
+ */
+export function normaliseRepoPath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  let p = value.trim().replace(/\\/g, "/");
+  // git's C-quoted spelling. Not comparable without a second unescaper.
+  if (p.startsWith('"') && p.endsWith('"')) return null;
+  p = p
+    .replace(/^\.\//, "")
+    .replace(/^\/+/, "")
+    .replace(/:\d+(?::\d+)?$/, "");
+  return /^(?:[\w.@+-]+\/)*[\w.@+-]+$/.test(p) ? p.toLowerCase() : null;
+}
+
 export function readChangedFiles(path: string): string[] | null {
   try {
     return readFileSync(path, "utf-8")
