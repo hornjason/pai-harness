@@ -50,8 +50,10 @@ import {
   filingGate,
   ghRepoTarget,
   measuredCorpus,
+  namedClaim,
   openFindings,
   readBodyFile,
+  SUCCESS_CLAIM_COUNT,
   trustedCorpus,
   unmeasuredCorpus,
   withTimeout,
@@ -128,10 +130,17 @@ const DROPPED_FILING =
   'gh issue create --title "The error message should name the legal values" ' +
   '--body "`legalValues` in lib/config-loader.ts is not printed when the check refuses."';
 
-/** A novel correctness finding. Must be allowed. */
+/**
+ * A novel correctness finding. Must be allowed.
+ *
+ * It names a claim because every ALLOW now has to: the last stage of
+ * `adjudicateFiling` converts a claimless ALLOW into `NO_CLAIM`. Measured when
+ * that stage landed — 17 of this file's cases went red, all of them ALLOW
+ * controls, which is the population it was built to catch.
+ */
 const NOVEL_FILING =
   'gh issue create --title "pullRequestCache is never invalidated" ' +
-  '--body "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours."';
+  '--body "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4."';
 
 /**
  * The differential control the DUPLICATE row needs.
@@ -145,7 +154,7 @@ const NOVEL_FILING =
 const SAME_SYMBOL_NEW_READING =
   'gh issue create --title "retryBudget retries too often on a short sweep" ' +
   '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts ' +
-  'completes 88 of 97."';
+  'completes 88 of 97. Claim 4."';
 
 interface HookReading {
   /** The parsed stdout payload, or `null` when the hook printed nothing. */
@@ -392,7 +401,7 @@ describe("#1261 the parts the decision is built from", () => {
     const v = await adjudicateFiling(
       fromFile("/planted/body.md"),
       tracker,
-      () => "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.",
+      () => "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.",
     );
     expect(v.outcome).toBe("ALLOW");
   });
@@ -525,7 +534,7 @@ describe("#1261 the hook reaches the adjudication — read on stdout, not on the
    */
   test("FG-22 CONTROL: a NOVEL finding arriving by --body-file is allowed", () => {
     const at = join(scratch, "fg22-body.md");
-    writeFileSync(at, "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.", "utf-8");
+    writeFileSync(at, "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.", "utf-8");
     const r = runHook(HOOK, `gh issue create --title "pullRequestCache is never invalidated" --body-file ${at}`);
     expect(r.blocked).toBe(false);
   });
@@ -580,7 +589,7 @@ describe("#1261 the four suppression classes", () => {
   // nothing.
   const STYLE_TITLE = "Typo in the retry comment";
   const REAL_TITLE = "retryBudget drops frames on resume";
-  const BODY = '--body "`retryBudget` in lib/pr-cache.ts holds 72 entries."';
+  const BODY = '--body "`retryBudget` in lib/pr-cache.ts holds 72 entries. Claim 4."';
 
   test("FG-28 BASELINE: the LAST --title decides, so a trailing style title blocks", () => {
     const [a] = filingAttempts(`gh issue create --title "${REAL_TITLE}" --title "${STYLE_TITLE}" ${BODY}`);
@@ -1597,5 +1606,160 @@ describe("FG-72..FG-78: the corpus count is the population, not the survivors", 
     expect(r.rows[0].refusal, "and recorded as UNMEASURED rather than as a finding that passed").toBe(
       "UNMEASURED",
     );
+  });
+});
+
+/**
+ * FG-79..FG-89: a filing says what it MOVES, or it is not a filing.
+ *
+ * `CLAUDE.md` has carried this as prose for the life of the repository —
+ * *"before filing an issue … say which claim it moves. Something that moves
+ * none of them is cleanup and should say so rather than borrowing urgency."*
+ * Nothing executed it. Measured across 2026-10-23, open issues went 53 → 52 →
+ * 55 while the close rate fell from 11/h to 7/h: the tracker is an OUTPUT of
+ * the review loop, and a loop whose input is unbounded does not converge by
+ * closing faster.
+ *
+ * ## What was broken to prove these can fail
+ *
+ * The stage was briefly placed FIRST in `adjudicateFiling`, before the dedupe.
+ * **34 of this file's 78 cases went red** — every one a dedupe or UNMEASURED
+ * case short-circuited before it could run. Moved last, where it can only
+ * convert an ALLOW, the number fell to **17**, and all 17 were ALLOW controls
+ * whose fixtures genuinely named no claim. That is the population the stage
+ * exists to catch, counted rather than argued, and it is why the ordering is
+ * part of the design and not an accident of where the code was pasted.
+ */
+describe("FG-79..FG-89: a filing names the claim it moves", () => {
+  const claimless = (title: string, body: string) =>
+    `gh issue create --title ${JSON.stringify(title)} --body ${JSON.stringify(body)}`;
+
+  const NOVEL_NO_CLAIM = claimless(
+    "pullRequestCache is never invalidated",
+    "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.",
+  );
+
+  test("FG-79: a novel finding naming no claim is REFUSED", async () => {
+    const v = await adjudicateFiling(filingAttempts(NOVEL_NO_CLAIM)[0], async () => measuredCorpus([]));
+    expect(v.outcome).toBe("REFUSE");
+    expect(v.refusal).toBe("NO_CLAIM");
+  });
+
+  test("FG-80: the refusal says what to type, in both of the two ways out", async () => {
+    // A check that stops somebody without telling them how to proceed is an
+    // obstacle — `.claude/rules/self-referential-tests.md`. Both exits are
+    // named because they are genuinely different acts: one asserts the work
+    // matters, the other declares it cleanup and is counted.
+    const v = await adjudicateFiling(filingAttempts(NOVEL_NO_CLAIM)[0], async () => measuredCorpus([]));
+    expect(v.reason).toContain("Claim");
+    expect(v.reason).toContain(FILING_OVERRIDE_LABEL);
+  });
+
+  test("FG-81 CONTROL: the same filing naming a claim is ALLOWED", async () => {
+    // The ONLY axis that moves between FG-79 and this row is the claim
+    // sentence. Without it FG-79 would be witnessing "this fixture is
+    // refused" rather than "a claimless filing is refused".
+    const withClaim = claimless(
+      "pullRequestCache is never invalidated",
+      "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours. Claim 4.",
+    );
+    const v = await adjudicateFiling(filingAttempts(withClaim)[0], async () => measuredCorpus([]));
+    expect(v.outcome).toBe("ALLOW");
+    expect(v.refusal).toBeNull();
+  });
+
+  test("FG-82: the claim may be in the TITLE as well as the body", async () => {
+    const v = await adjudicateFiling(
+      filingAttempts(
+        claimless(
+          "Claim 4: pullRequestCache is never invalidated",
+          "`pullRequestCache` in lib/pr-cache.ts holds 72 entries for 36 hours.",
+        ),
+      )[0],
+      async () => measuredCorpus([]),
+    );
+    expect(v.outcome).toBe("ALLOW");
+  });
+
+  test("FG-83: a claim number out of range does NOT satisfy the gate", () => {
+    // The hole every format-only check has: a gate whose whole content is
+    // "name one" is satisfied by naming a number nobody can look up. This is
+    // the vacuous-assertion shape from `.claude/rules/checks-must-be-able-to-fail.md`,
+    // closed by bounding rather than by shaping.
+    expect(namedClaim("Claim 99 is moved by this")).toBeNull();
+    expect(namedClaim("claim 0")).toBeNull();
+    expect(namedClaim(`claim ${SUCCESS_CLAIM_COUNT + 1}`)).toBeNull();
+  });
+
+  test("FG-84: the spellings a person actually types all read", () => {
+    for (const text of [
+      "Claim 4",
+      "claim 4",
+      "CLAIM 4",
+      "claims 2 and 4",
+      "SUCCESS.md claim 4 — fail-open is the defect",
+      "Moves claim #4.",
+      "claim  4",
+    ]) {
+      expect(namedClaim(text), text).not.toBeNull();
+    }
+  });
+
+  test("FG-85 CONTROL: the near-misses that are NOT a claim", () => {
+    // `#4` is an issue number far more often than a claim and `SC-4` is a
+    // success criterion. If either read as a claim, the gate would be
+    // satisfied by the reference every finding already carries, which is the
+    // same as not having a gate.
+    for (const text of ["#4", "SC-4", "fixes #4", "reclaimed 4 bytes", "disclaimer 4"]) {
+      expect(namedClaim(text), text).toBeNull();
+    }
+  });
+
+  test("FG-86: a DUPLICATE is still reported as DUPLICATE, not as NO_CLAIM", async () => {
+    // The ordering, asserted rather than described. "Already filed as #900" is
+    // actionable; "name a claim" about a finding that should not be filed at
+    // all sends the agent to do the wrong work.
+    const v = await adjudicateFiling(filingAttempts(DUPLICATE_FILING)[0], async () =>
+      measuredCorpus([{ id: "900", title: "retryBudget gives up early", body: DUPLICATE_BODY }]),
+    );
+    expect(v.refusal).toBe("DUPLICATE");
+  });
+
+  test("FG-87: an UNMEASURED tracker outranks the claim test", async () => {
+    // A policy refusal that outranks a reading failure is a reading failure
+    // nobody ever sees. The filing here names no claim AND could not be
+    // deduplicated; the second is the one that must be said.
+    const v = await adjudicateFiling(filingAttempts(NOVEL_NO_CLAIM)[0], async () =>
+      unmeasuredCorpus("the open-issue set could not be read"),
+    );
+    expect(v.outcome).toBe("UNMEASURED");
+    expect(v.refusal).toBe("UNMEASURED");
+  });
+
+  test("FG-88: the override label posts a claimless filing, and is counted", async () => {
+    const r = await filingGate(`${NOVEL_NO_CLAIM} --label ${FILING_OVERRIDE_LABEL}`, {
+      projectRoot: scratch,
+      readExisting: async () => measuredCorpus([]),
+    });
+    expect(r.refusal, "cleanup is still postable").toBeNull();
+    expect(r.rows[0].refusal, "and the override is recorded, not erased").toBe("NO_CLAIM");
+  });
+
+  test("FG-89: SUCCESS_CLAIM_COUNT equals the claims SUCCESS.md states", () => {
+    // The constant exists so the gate needs no I/O to decide — a gate that
+    // needs a file read fails open when the read does. This is the agreement
+    // that keeps it honest: add a claim to SUCCESS.md and this goes red until
+    // the number follows.
+    const success = readFileSync(join(resolve(import.meta.dir, ".."), "SUCCESS.md"), "utf-8");
+    const harness = success.slice(
+      success.indexOf("## Done, for the harness"),
+      success.indexOf("## Done, for a consumer"),
+    );
+    expect(harness.length, "the section headings must both still be present").toBeGreaterThan(200);
+    const stated = [...harness.matchAll(/^(\d+)\.\s+\*\*/gm)].map(m => Number(m[1]));
+    expect(stated, "the claims are numbered 1..N with no gaps").toEqual(
+      Array.from({ length: stated.length }, (_, i) => i + 1),
+    );
+    expect(SUCCESS_CLAIM_COUNT).toBe(stated.length);
   });
 });

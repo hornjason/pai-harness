@@ -624,6 +624,12 @@ export type ArbiterRefusal =
   | "DROPPED_CATEGORY"
   /** A cited line is past the end of the file it cites. */
   | "STALE_CITATION"
+  /**
+   * The filing names no `SUCCESS.md` claim, so nothing says what it moves.
+   * A chokepoint refusal only — a review round's findings are adjudicated
+   * against a diff rather than filed by hand, and have no title to carry one.
+   */
+  | "NO_CLAIM"
   /** Something could not be evaluated. Fails; never skips. */
   | "UNMEASURED";
 

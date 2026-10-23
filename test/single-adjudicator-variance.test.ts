@@ -34,16 +34,38 @@ import {
 import { symptomKeys, type Finding } from "../lib/finding-arbiter";
 import { adjudicateFiling, measuredCorpus } from "../lib/issue-filing-gate";
 
+/**
+ * Both bodies name a `SUCCESS.md` claim, and the reason is the hold-out
+ * (#1434).
+ *
+ * `batchFrom` replays each of these against the set MINUS itself, so in the
+ * base run the replay of `900` is NOVEL and must be ALLOWed; in the twinned
+ * run it collides with the added copy and must be WITHHELD. That difference
+ * is the entire subject of *"a comparison set that gained a twin produces a
+ * different withheld set"*.
+ *
+ * `adjudicateFiling` now withholds a novel filing naming no claim. Without
+ * these two words the base run withholds the replay as `NO_CLAIM` and the
+ * twinned run withholds it as a duplicate — **both withheld**, the two sets
+ * identical, the hashes equal, and a case whose whole job is to detect a
+ * changed comparison set can no longer detect one. It would have gone green
+ * again the moment anyone widened the hash to include the refusal reason,
+ * which is the wrong fix, so the fixture is what moves.
+ */
 const EXISTING: Finding[] = [
   {
     id: "900",
     title: "`loadThing` returns the wrong count and the off-by-one is silent",
-    body: "`loadThing()` in `lib/thing.ts` reports 41 rows where the fixture holds 42. Measured 41 against 42.",
+    body:
+      "`loadThing()` in `lib/thing.ts` reports 41 rows where the fixture holds 42. " +
+      "Measured 41 against 42. Claim 1.",
   },
   {
     id: "901",
     title: "the scaffold crashes when `roles.json` is absent",
-    body: "`scaffoldProject()` in `lib/scaffold-project.ts` throws on a tree with no roles file. 3 of 7 consumers.",
+    body:
+      "`scaffoldProject()` in `lib/scaffold-project.ts` throws on a tree with no roles file. " +
+      "3 of 7 consumers. Claim 1.",
   },
 ];
 
