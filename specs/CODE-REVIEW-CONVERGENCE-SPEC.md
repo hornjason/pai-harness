@@ -311,6 +311,24 @@ phases they are not: each phase names what the next one needs.
 
 ### Phase 0 — three settings, no engineering
 
+**CRC-C3 is APPLIED as of 2026-10-23.** `required_conversation_resolution` is
+`true` on `main`, set through a full `PUT` that preserved the two required
+contexts, `enforce_admins`, and every other field unchanged. It stays
+**unticked** because the setting is GitHub state and no check in this tree
+reads it — which is the distinction the table above exists to keep, and the
+reason "applied" and "bound" are recorded separately.
+
+**CRC-E8 does not belong in this phase and is moved to the table above it.**
+With one account and `enforce_admins: true`, requiring an approving review
+deadlocks the repository: the only possible approver is the author, so
+nothing merges at all, including every agent's pull request. That is the
+same "needs a second person" constraint CRC-E5 and CRC-E7 carry, and it is a
+hard stop rather than a cost. It was listed here in the plan's first draft
+and that was wrong.
+
+So Phase 0 is **one setting applied, one waiting on a quiet queue, one
+withdrawn**:
+
 CRC-F1 (`strict: true`), CRC-C3 (`required_conversation_resolution`), CRC-E8
 (`required_pull_request_reviews` with `dismiss_stale_reviews`). Minutes, by
 the owner. They are first because two further criteria — CRC-E6 and CRC-M9 —
@@ -321,6 +339,18 @@ Read CRC-F1's caveat before flipping it. A merge queue serialises merges, and
 on `merge_group` the review annotates UNMEASURED and passes, so "every check"
 would be half true. `strict: true` is the cheaper half and closes the same
 hole.
+
+**The trigger for `strict: true` is a number, not a judgement call: open
+pull requests ≤ 2, with no agent mid-push.** Under `strict`, every merge
+stales every other open pull request, and the repair is
+`gh pr update-branch`, which **force-rewrites the contributor's branch** —
+including one an agent is pushing to. On 2026-10-23 this repository merged
+eleven pull requests with four sessions running; flipping it in that state
+converts each merge into five forced rewrites. The hole it closes is real
+(an armed PR merging green against a base it never ran against) and it is
+not urgent enough to pay that. Flip it at the next quiet queue and then
+watch rounds-to-pass: if `strict` costs more rounds than the stale-base hole
+does, that is measurable and the criterion should say so.
 
 ### Phase 1 — stop the repeats
 
