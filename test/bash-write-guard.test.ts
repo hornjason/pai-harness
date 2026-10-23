@@ -2805,6 +2805,12 @@ console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
     // tree. The docstring DISCUSSES them, so the check is scoped to the
     // executable constant rather than the file.
     const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    // late-env-ok: this is RegExp.prototype.exec against a string already read
+    // into memory, not a child process. #1096's SPAWN pattern carries a bare
+    // `exec` alternative and `\b` matches after the dot, so a regex `.exec(` in
+    // a file that also writes `process.env` lands in its population. Widening
+    // the pattern's view is the safe direction for that scan; the site is the
+    // place to say so, which is what this marker is for.
     const m = /const WRITE_INTENT =\s*([\s\S]*?);\n/.exec(src);
     expect(m, "WRITE_INTENT must remain a single declared constant").not.toBeNull();
     for (const sym of ["initWorkflow", "writeACs", "writeWorkflowState", "updateAC", "writeEvidence"]) {
@@ -2907,6 +2913,14 @@ describe("#1239 BATTERY: an escaped quote must not swallow the redirect", () => 
       const script = join(dir, "payload.sh");
       writeFileSync(victim, "ORIGINAL\n");
       writeFileSync(script, `${prefix} > ${victim}\n`);
+      // late-env-ok: this child reads no variable this file writes. The script
+      // is `<prefix> > <victim>` with both paths absolute from `mkdtempSync`,
+      // resolved in the PARENT before the spawn, and every prefix is an `echo`.
+      // The file's `process.env.TMPDIR` writes belong to the `scratchRoots()`
+      // cases, which call an in-process function and restore the value in a
+      // `finally`; they never overlap this battery. Passing the parent's env
+      // would be inert here, and inert noise at a spawn site is how a reader
+      // stops believing the ones that matter (#1096).
       const r = spawnSync("bash", [script], { encoding: "utf8" });
       return { runs: readFileSync(victim, "utf8").trim() !== "ORIGINAL", stderr: r.stderr ?? "" };
     } finally {
