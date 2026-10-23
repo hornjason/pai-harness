@@ -1217,6 +1217,36 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     ["cp -s inside sh -c with double quotes", `sh -c "cp -s ${VICTIM} /tmp/esc"`],
     ["cp -s inside a command substitution", `$(cp -s ${VICTIM} /tmp/esc)`],
     ["cp -s inside eval", `eval 'cp -s ${VICTIM} /tmp/esc'`],
+
+    // ESCAPE REMOVAL, the transform the previous two rounds did not read.
+    // Confirmed against the shell rather than assumed: `printf '[%s]' -\s
+    // -\l -r\s -\-symbolic-link --sy\mbolic-link` prints
+    // `[-s][-l][-rs][--symbolic-link][--symbolic-link]`, so every one of
+    // these reaches `cp` as a flag the bare rows above are refused for.
+    // All five were measured ALLOWED: against the raw token the leading
+    // letter run reads `''` and the long name fails its prefix test.
+    ["cp -\\s, the short letter escaped", `cp -\\s ${VICTIM} /tmp/esc`],
+    ["cp -\\l, the hard-link letter escaped", `cp -\\l ${VICTIM} /tmp/esc`],
+    ["cp -r\\s, an escape inside the cluster", `cp -r\\s ${VICTIM} /tmp/esc`],
+    // Both branches, not just the short one: the escape can hide the second
+    // dash, which moves the token out of the `--` branch entirely, or sit
+    // inside the long name, which defeats the prefix test.
+    ["cp -\\-symbolic-link, the second DASH escaped", `cp -\\-symbolic-link ${VICTIM} /tmp/esc`],
+    ["cp --sy\\mbolic-link, an escape inside the long name", `cp --sy\\mbolic-link ${VICTIM} /tmp/esc`],
+
+    // SUBSTITUTION GROUPING, the two spellings the first nested reading
+    // missed. Backticks were absent from it altogether; `$(…)` was read by
+    // a flat `/\$\(([^()]*)\)/` that cannot match a substitution containing
+    // parentheses, so for the first of these it matched only the INNER
+    // `$(echo …)` and the outer body carrying `cp -s` was never read.
+    ["cp -s inside BACKTICKS", "`cp -s " + VICTIM + " /tmp/esc`"],
+    ["cp -s inside backticks inside eval", "eval `cp -s " + VICTIM + " /tmp/esc`"],
+    // Seen NOT moving under the nested mutation, the way `ln -s` is seen
+    // not moving under the flag mutation: `LINK_CREATION` is a raw-text
+    // regex and holds this one however the grouping is read.
+    ["ln -s inside backticks, the family control", "`ln -s " + VICTIM + " /tmp/esc`"],
+    ["cp -s in a $( ) containing a nested $( )", `$(cp -s $(echo ${VICTIM}) /tmp/esc)`],
+    ["cp -s in a $( ) wrapping a parenthesised subshell", `$( (cp -s ${VICTIM} /tmp/esc) )`],
   ];
   test.each(voids)("%s voids the exemption", (_l, mk) => {
     expect(decideBashWrite(esc(mk)).blocked, esc(mk)).toBe(true);
@@ -1254,6 +1284,15 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     ["cp -t/tmp/p, an attached argument and no link letter", `cp -t/tmp/p /tmp/a/${STATE} && echo '{}' > /tmp/fix/${STATE}`],
     ["cp -S.bak, a suffix argument", `cp -S.bak /tmp/a/${STATE} /tmp/fix/${STATE}`],
     ["cp --sparse=always, a long option that is not a link", `cp --sparse=always /tmp/a/${STATE} /tmp/fix/${STATE}`],
+    // The controls for ESCAPE REMOVAL, which did not exist before and are
+    // the ones that rule actually risks. A backslash inside a quoted word
+    // is literal to the shell, and `readWord` has removed the quotes by the
+    // time `isLinkFlag` sees the token — so the rule cannot tell `-\s` from
+    // `'-\s'`. Neither of these carries a leading `-`, which is why the
+    // fail-closed reading costs them nothing, and if either reddens the
+    // escape stripping has reached words that are not flags at all.
+    ["cp with a quoted filename containing a backslash", `cp 'a\\b.txt' /tmp/fix/${STATE}`],
+    ["cp with a backslash in the DESTINATION word", `cp /tmp/a/x /tmp/fix/a\\b-${STATE}`],
   ];
   test.each(stay)("CONTROL: %s stays exempt", (_l, cmd) => {
     const d = decideBashWrite(cmd);
@@ -1300,7 +1339,7 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
    */
   test("MUTATION: removing the flag reading moves the cp rows and nothing else", async () => {
     const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
-    const site = "function isLinkFlag(token: string): boolean {";
+    const site = "function isLinkFlag(raw: string): boolean {";
     expect(src.split(site).length - 1, "isLinkFlag must have ONE site to mutate").toBe(1);
     expect([...src.matchAll(/from '(\.[^']*)'/g)].map(m => m[1])).toEqual(["./interpreters"]);
 
@@ -1324,7 +1363,11 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
         .map(([l]) => l)
         .sort();
 
-      expect(moved).toEqual(voids.filter(([l]) => l !== "ln -s, the documented shape, unchanged").map(([l]) => l).sort());
+      // Both `ln` rows are excluded, and for one reason: `LINK_CREATION`
+      // holds them, and this mutation does not touch it. They are in the
+      // table to be seen NOT moving.
+      const heldByRegex = ["ln -s, the documented shape, unchanged", "ln -s inside backticks, the family control"];
+      expect(moved).toEqual(voids.filter(([l]) => !heldByRegex.includes(l)).map(([l]) => l).sort());
       // Direction: every row that moved was ALLOWED without the reading,
       // so none of them is refused only because the mutation is absent.
       for (const [label, cmd] of all) {
@@ -1373,6 +1416,13 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
           "cp -s inside sh -c with double quotes",
           "cp -s inside a command substitution",
           "cp -s inside eval",
+          // The four added when the reading grew the other substitution
+          // syntax and the depth-aware walk. The `ln` backtick row is
+          // deliberately absent: `LINK_CREATION` holds it either way.
+          "cp -s inside BACKTICKS",
+          "cp -s inside backticks inside eval",
+          "cp -s in a $( ) containing a nested $( )",
+          "cp -s in a $( ) wrapping a parenthesised subshell",
         ].sort(),
       );
       for (const [label, cmd] of all) {
@@ -1383,6 +1433,88 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * MUTATION: escape removal taken back out.
+   *
+   * A third mutant rather than a widening of the first, for the reason the
+   * second exists: "is this token a link flag" and "what does the shell
+   * strip before the token arrives" are different questions, and one
+   * mutant moving both sets could not tell them apart.
+   *
+   * It must move EXACTLY the five escaped rows. If it moves a control, the
+   * stripping has reached a word that is not a flag; if it moves fewer than
+   * five, one of those rows is refused for some other reason and is not
+   * evidence for this transform.
+   */
+  test("MUTATION: removing escape removal moves exactly the five escaped rows", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = "const token = raw.replace(/\\\\(.)/g, '$1');";
+    expect(src.split(site).length - 1, "escape removal must have ONE site to mutate").toBe(1);
+
+    const dir = mkdtempSync(join(tmpdir(), "bwesc-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noEscape.ts"), src.replace(site, "const token = raw;"));
+      const mutant = (await import(`file://${join(dir, "noEscape.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+      const all: [string, string][] = [...voids.map(([l, mk]) => [l, esc(mk)] as [string, string]), ...stay];
+      const moved = all
+        .filter(([, cmd]) => mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked)
+        .map(([l]) => l)
+        .sort();
+      expect(moved).toEqual(
+        [
+          "cp -\\s, the short letter escaped",
+          "cp -\\l, the hard-link letter escaped",
+          "cp -r\\s, an escape inside the cluster",
+          "cp -\\-symbolic-link, the second DASH escaped",
+          "cp --sy\\mbolic-link, an escape inside the long name",
+        ].sort(),
+      );
+      for (const [label, cmd] of all) {
+        if (mutant.decideBashWrite(cmd).blocked !== decideBashWrite(cmd).blocked) {
+          expect(mutant.decideBashWrite(cmd).blocked, label).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Why the `$(…)` reading is a walk and not a second regex, as a count.
+   *
+   * The flat `/\$\(([^()]*)\)/` cannot match a substitution containing
+   * parentheses, so on the two rows below it either matches the INNER
+   * substitution and leaves the outer body — the one carrying `cp -s` —
+   * unread, or matches nothing at all. The walk returns the outer body in
+   * both cases.
+   *
+   * This is the measurement behind "one reader, not a second spelling":
+   * the second spelling is not merely redundant, it is the weaker of the
+   * two, and the mutant above cannot show that because removing the whole
+   * nested reading moves these rows either way.
+   */
+  const flatVsWalk: [string, string | null][] = [
+    [`$(cp -s ${VICTIM} /tmp/esc)`, `cp -s ${VICTIM} /tmp/esc`],
+    [`$(cp -s $(echo ${VICTIM}) /tmp/esc)`, `echo ${VICTIM}`],
+    [`$( (cp -s ${VICTIM} /tmp/esc) )`, null],
+  ];
+  test.each(flatVsWalk)("the flat regex on %s yields %s, which is not the outer body", (cmd, flat) => {
+    // `.match` rather than `.exec`: #1096's spawn scan matches a bare
+    // `exec(` on any receiver, so a regex `.exec` reads as a child process
+    // and this file writes `process.env`. Same reading either way, and it
+    // keeps a non-spawn out of that census instead of exempting it.
+    const m = cmd.match(/\$\(([^()]*)\)/);
+    expect(m?.[1] ?? null).toBe(flat);
+    // And the command is refused anyway, because the walk read it.
+    expect(decideBashWrite(esc(cmd)).blocked).toBe(true);
   });
 });
 

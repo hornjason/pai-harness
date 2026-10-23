@@ -499,6 +499,30 @@ const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
  * terminator, which `find(1)` refuses — "the expression must be terminated
  * by a semicolon" — so it is a syntax error, not a bypass. Count: ONE
  * spelling missed by both nets, ZERO executable. No change made.
+ *
+ * ## The THREE transforms a shell applies before `cp` sees a flag
+ *
+ * Every bypass found in this family so far has been the same question asked
+ * about a different transform, and each was rediscovered separately because
+ * nothing wrote the list down. There are three, and a reading of a token is
+ * only correct if it survives all of them:
+ *
+ * | transform | what the shell does | where this module does it |
+ * |---|---|---|
+ * | quote removal | `'-s'`, `"-s"`, `-'s'`, `c""p` all arrive bare | `readWord`, via `scanSegment` (#1429) |
+ * | escape removal | `-\s`, `-r\s`, `-\-symbolic-link`, `--sy\mbolic-link` arrive as `-s`, `-rs`, `--symbolic-link` | `isLinkFlag`, before EITHER branch |
+ * | substitution grouping | `` `…` `` and `$(…)` hand their text to ANOTHER shell, and `$(…)` nests | `nestedCommands` |
+ *
+ * Measured against `/bin/bash` rather than assumed: `printf '[%s]' -\s -\l
+ * -r\s -\-symbolic-link --sy\mbolic-link` prints
+ * `[-s][-l][-rs][--symbolic-link][--symbolic-link]`. Every one of those was
+ * ALLOWED before the escape removal, as were `` `cp -s …` ``,
+ * ``eval `cp -s …` ``, a `$(…)` containing a second `$(…)`, and a `$(…)`
+ * wrapping a parenthesised subshell.
+ *
+ * If a fourth transform turns up, add the row. The point of the table is
+ * that the next reader checks all three at once instead of finding them one
+ * review at a time, which is exactly how these three arrived.
  */
 const LINK_VERBS = new Set(['cp', 'install']);
 
@@ -508,7 +532,22 @@ function verbToken(token: string): string {
   return bare.slice(bare.lastIndexOf('/') + 1);
 }
 
-function isLinkFlag(token: string): boolean {
+function isLinkFlag(raw: string): boolean {
+  // ESCAPE REMOVAL, the second of the three transforms in the table above,
+  // and it governs BOTH branches below rather than only the short one.
+  // `cp -\s` reaches `cp` as `-s` and `cp --sy\mbolic-link` reaches it as
+  // `--symbolic-link`; against the raw token the letter run reads `''` and
+  // the long name fails its prefix test, so all five escaped spellings were
+  // measured ALLOWED.
+  //
+  // A backslash inside a QUOTED word is literal to the shell, and `readWord`
+  // has already removed the quotes by the time the token arrives, so this
+  // cannot tell `-\s` from `'-\s'` and treats both as `-s`. That is the
+  // fail-closed direction and it costs a token that `cp` itself rejects as
+  // an invalid option. The control that keeps it honest is an ordinary
+  // quoted filename containing a backslash, which carries no leading `-`
+  // and so never reaches either branch.
+  const token = raw.replace(/\\(.)/g, '$1');
   if (token.startsWith('--')) {
     const name = token.slice(2).split('=')[0];
     if (!name) return false;
@@ -576,7 +615,23 @@ function flagMakesLink(segment: string): boolean {
 function nestedCommands(view: string): string[] {
   const out: string[] = [];
   for (const m of view.matchAll(/'([^']*)'|"([^"]*)"/g)) out.push(m[1] ?? m[2] ?? '');
-  for (const m of view.matchAll(/\$\(([^()]*)\)/g)) out.push(m[1]);
+  // Backticks are the OTHER substitution syntax and were missing entirely:
+  // `` `cp -s …` `` and ``eval `cp -s …` `` were measured ALLOWED while
+  // their `ln` twins were refused, for the same reason the `$(…)` rows were
+  // — `LINK_CREATION` is a raw-text regex that does not care about nesting
+  // and this reading is built on segments. They do not nest in bash, so a
+  // flat match is the whole grammar here.
+  for (const m of view.matchAll(/`([^`]*)`/g)) out.push(m[1]);
+  // `$(…)` DOES nest, so it gets the module's one substitution walk rather
+  // than a second spelling of it. Every `$(` position is examined — the
+  // index is not advanced past a substitution that was just read — so an
+  // inner body is collected as well as the outer one it sits in.
+  for (let i = 0; i < view.length; i++) {
+    if (view[i] !== '$' || view[i + 1] !== '(') continue;
+    const end = endOfSubstitution(view, i);
+    const body = view.slice(i + 2, end);
+    out.push(body.endsWith(')') ? body.slice(0, -1) : body); // unterminated keeps all of it
+  }
   return out.filter(s => /\s/.test(s));
 }
 
@@ -1022,6 +1077,49 @@ export function commandWord(segment: string): string {
  * it, so `dir/"workflow-state.json"` reads as one word and not as two halves
  * either side of a span that was deleted.
  */
+/**
+ * The index just past the `)` that closes the `$(` at `i`, or the end of
+ * the string if it never closes.
+ *
+ * A parenthesis inside a STRING LITERAL is data, not grammar. Counting it
+ * dropped the depth to zero early, ended the word in the middle of the
+ * substitution, and left a `"` whose partner had already been consumed — so
+ * `readWord`'s quote branch then took `close === -1` and swallowed the rest
+ * of the line INCLUDING the `>` operator. No operator, no target, allow:
+ *
+ *     echo $(echo "x)") > <protected>     ran, and wrote
+ *
+ * That is #1205's own sentence a second time — the bug is what the scanner
+ * cannot see, not the substitution — so it was fixed the same way rather
+ * than by special-casing the literal that exposed it.
+ *
+ * Extracted from `readWord` so `nestedCommands` can reuse the walk. The
+ * alternative was a second flat `/\$\(([^()]*)\)/`, which is two deciders
+ * answering one question about substitution structure — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and the flat one is the
+ * weaker: it cannot match a substitution containing parentheses at all, so
+ * `$(cp -s $(echo V) /tmp/esc)` matched only the INNER one and the outer
+ * body was never read. One reader.
+ */
+function endOfSubstitution(s: string, i: number): number {
+  let depth = 0;
+  let j = i;
+  for (; j < s.length; j++) {
+    const q = s[j];
+    if (q === "'" || q === '"') {
+      const close = s.indexOf(q, j + 1);
+      j = close === -1 ? s.length : close; // the loop's j++ steps past it
+      continue;
+    }
+    if (s[j] === '(') depth++;
+    else if (s[j] === ')' && --depth === 0) {
+      j++;
+      break;
+    }
+  }
+  return j;
+}
+
 function readWord(s: string, i: number): [string, number] {
   let w = '';
   while (i < s.length) {
@@ -1056,33 +1154,7 @@ function readWord(s: string, i: number): [string, number] {
       continue;
     }
     if (c === '$' && s[i + 1] === '(') {
-      let depth = 0;
-      let j = i;
-      for (; j < s.length; j++) {
-        // A parenthesis inside a STRING LITERAL is data, not grammar.
-        // Counting it dropped the depth to zero early, ended the word in the
-        // middle of the substitution, and left a `"` whose partner had
-        // already been consumed — so the quote branch above then took
-        // `close === -1` and swallowed the rest of the line INCLUDING the
-        // `>` operator. No operator, no target, allow:
-        //
-        //     echo $(echo "x)") > <protected>     ran, and wrote
-        //
-        // This is #1205's own sentence a second time — the bug is what the
-        // scanner cannot see, not the substitution — so it is fixed the same
-        // way rather than by special-casing the literal that exposed it.
-        const q = s[j];
-        if (q === "'" || q === '"') {
-          const close = s.indexOf(q, j + 1);
-          j = close === -1 ? s.length : close; // the loop's j++ steps past it
-          continue;
-        }
-        if (s[j] === '(') depth++;
-        else if (s[j] === ')' && --depth === 0) {
-          j++;
-          break;
-        }
-      }
+      const j = endOfSubstitution(s, i);
       w += s.slice(i, j); // unterminated falls out here with j === s.length
       i = j;
       continue;
