@@ -42,7 +42,7 @@ deployment path currently reaches zero hooks.
 | AgentBriefGuard | AgentBriefGuard.hook.ts | 589 | SC-367, SC-370 | Deep logic in hook — extract to lib/ |
 | GateEnforcement | GateEnforcement.hook.ts | 92 | SC-369, SC-370 | Thin trigger — signal shaping and the doc-hygiene sweep live in lib/gate-enforcement.ts |
 | AgentVerdictCapture | AgentVerdictCapture.hook.ts | 182 | SC-370, SC-371 | Acceptable |
-| HookCurrency | HookCurrency.hook.ts | 97 | SC-370, SC-371 | Acceptable |
+| HookCurrency | HookCurrency.hook.ts | 146 | SC-370, SC-371 | Acceptable — two readings, both thin triggers: `scripts/check-installed-hook-currency.ts` for `.git/hooks` (#879) and `lib/hook-tree-currency.ts` for how old the tree a Claude Code registration resolves to is (#1216). Its git runner is `spawnGitRunner`, which is `lib/git-isolation.ts` in both projections — the directories it reads are by definition unsupervised, and git executes its own config |
 | StaleTTLCleanup | StaleTTLCleanup.hook.ts | 170 | SC-370, SC-371 | Acceptable |
 | CommitEnforcement | CommitEnforcement.hook.ts | 146 | SC-304, SC-370 | Acceptable |
 | SpecSCGuard | SpecSCGuard.hook.ts | 123 | SC-370, SC-371 | Acceptable |
@@ -248,6 +248,71 @@ Two cautions for anyone repeating the reading:
 - An `in-repo` resolution does not make the bytes current. That checkout was
   measured 180 commits behind `origin/main` — #1216. `hook-target-tree`
   answers *which directory*, never *which commit*.
+
+### Which commit the resolved directory is on (#1216)
+
+`lib/hook-tree-currency.ts` answers the second caution above, and
+`hooks/HookCurrency.hook.ts` prints it once per session beside #879's
+installed-git-hook reading. It is a READING and repairs nothing: every git
+invocation is a query, asserted as such, because silently moving code
+somebody is executing removes the one moment they could have noticed.
+
+Three states, and the third never degrades to the first:
+
+| state | means |
+|---|---|
+| `current` | the directory's HEAD contains every commit on the base |
+| `behind` | N commits on the base are not in that HEAD — N, HEAD and the base SHA are all named |
+| `unmeasured` | not a working tree, absent, the base ref does not resolve there, or uncommitted bytes under it |
+
+Uncommitted changes can only block a `current` reading, never mask a
+`behind` one. The base is the **target** directory's own `origin/main`, since
+nothing fetches, which is why every line carries the base SHA: two rows
+disagreeing about `origin/main` is then visible at a glance.
+
+Read on this machine, 2026-10-23, from a worktree:
+
+```
+Hook tree currency: 0 current, 2 BEHIND, 0 UNMEASURED — of 2 director(ies) hook registrations execute from
+  BEHIND 16:  /Users/jhorn/Projects/rg-hooks-live/hooks is at 7817f1df … [30 registration(s)]
+  BEHIND 241: /Users/jhorn/Projects/rungate/hooks  is at bc56a7c2 … [4 registration(s)]
+```
+
+That is the same shared primary checkout the row above measured at 180, sixty
+commits later, still executing four registrations. The live tree went stale
+three times in one day on 2026-10-23 (`62536bd3` → `9f2080d6` → `7817f1df`),
+which is the argument for a per-session reading rather than a one-off audit.
+
+### Reading a directory nobody supervises means isolating git's config
+
+Every invocation goes through `spawnGitRunner`, the one binding that applies
+both projections of `lib/git-isolation.ts` and a per-call timeout. This is the
+sharpest instance of #1001's lesson in the tree, and it comes from the
+feature's own premise: the directories being read are the ones nothing is
+watching — that is *why* they go stale — and the reading runs at SessionStart
+in every session on the machine.
+
+Measured 2026-10-23 with the key planted in the target's **own**
+`.git/config`, which the env half of the isolation cannot reach:
+
+| poisoned key | unisolated | isolated |
+|---|---|---|
+| `core.fsmonitor` → a script writing a marker | **marker written twice — git ran it** | not run |
+| `core.excludesFile` → a list naming the edited hook | **`current`** | `unmeasured` |
+
+The second row is specific to this reading: poisoning `core.excludesFile`
+blinds the uncommitted-bytes check, so a hand-edited hook certifies as
+matching a merged commit. The directory gets to lie about its own cleanliness
+to the reading whose job is to catch exactly that.
+
+`test/unit/hook-tree-currency.test.ts` holds both halves. HC-18 asserts the
+**population** of invocations — every call the runner makes carries all four
+`-c` pairs, all three env vars and a timeout — because a subcommand allowlist
+alone stays green against an unisolated call for ever. HC-19 performs the
+`core.excludesFile` exploit against real git with an unisolated control that
+must reproduce it.
+
+This is also `registeredTreeCensus`'s first caller outside `test/`.
 
 ### Who is authoritative for what
 

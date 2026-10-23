@@ -27,7 +27,7 @@ import {
   REVIEW_SCOPE_FULL,
   atCapInstruction,
   carryForward,
-  findingKey,
+  carryKey,
   noRepeatsInstruction,
   readRoundNumber,
   reviewScopeForRound,
@@ -197,8 +197,8 @@ describe("AC-4: no repeats, keyed on content", () => {
   const round2: ReviewFinding = { ...round1, line: 375 };
 
   test("AC-4: the same defect at a moved line is one finding", () => {
-    const k1 = findingKey(round1, LINK_LINE);
-    const k2 = findingKey(round2, LINK_LINE);
+    const k1 = carryKey(round1, LINK_LINE);
+    const k2 = carryKey(round2, LINK_LINE);
     expect(k1).not.toBeNull();
     expect(k2).toBe(k1!);
   });
@@ -215,7 +215,7 @@ describe("AC-4: no repeats, keyed on content", () => {
     expect(underWrongFix.kept).toHaveLength(1);
     expect(underWrongFix.suppressed).toHaveLength(0);
 
-    const underRealFix = suppressRepeats([round2], [findingKey(round1, LINK_LINE)!], () => LINK_LINE);
+    const underRealFix = suppressRepeats([round2], [carryKey(round1, LINK_LINE)!], () => LINK_LINE);
     expect(underRealFix.kept).toHaveLength(0);
     expect(underRealFix.suppressed).toHaveLength(1);
   });
@@ -224,7 +224,7 @@ describe("AC-4: no repeats, keyed on content", () => {
     // The direction this must not be wrong in. A key that collapses two
     // findings on one line suppresses a real one.
     const other: ReviewFinding = { ...round2, summary: "and it also misses ln -sf" };
-    const out = suppressRepeats([other], [findingKey(round1, LINK_LINE)!], () => LINK_LINE);
+    const out = suppressRepeats([other], [carryKey(round1, LINK_LINE)!], () => LINK_LINE);
     expect(out.kept).toHaveLength(1);
     expect(out.suppressed).toHaveLength(0);
   });
@@ -233,7 +233,7 @@ describe("AC-4: no repeats, keyed on content", () => {
     // Content keying has to cut both ways or it is just a looser line key.
     const out = suppressRepeats(
       [round2],
-      [findingKey(round1, LINK_LINE)!],
+      [carryKey(round1, LINK_LINE)!],
       () => "const LINK_CREATION = /something else entirely/;",
     );
     expect(out.kept).toHaveLength(1);
@@ -248,24 +248,24 @@ describe("AC-4: no repeats, keyed on content", () => {
 
   test("AC-4: an unkeyable finding is always kept", () => {
     const blank = { severity: "high" };
-    expect(findingKey(blank)).toBeNull();
+    expect(carryKey(blank)).toBeNull();
     const out = suppressRepeats([blank, blank], ["anything"], () => "");
     expect(out.kept).toHaveLength(2);
   });
 
   test("AC-4: with no line text the key falls back to the number, and says so", () => {
-    expect(findingKey(round1)).not.toBe(findingKey(round2));
-    expect(findingKey(round1)).toBe(findingKey({ ...round1 }));
+    expect(carryKey(round1)).not.toBe(carryKey(round2));
+    expect(carryKey(round1)).toBe(carryKey({ ...round1 }));
   });
 
   test("AC-4: case and whitespace do not make a new finding", () => {
     const reworded = { ...round2, summary: "  The LINK_CREATION  regex does NOT match cp -s " };
-    const out = suppressRepeats([reworded], [findingKey(round1, LINK_LINE)!], () => LINK_LINE);
+    const out = suppressRepeats([reworded], [carryKey(round1, LINK_LINE)!], () => LINK_LINE);
     expect(out.suppressed).toHaveLength(1);
   });
 
   test("AC-4: every suppression says why", () => {
-    const out = suppressRepeats([round2], [findingKey(round1, LINK_LINE)!], () => LINK_LINE);
+    const out = suppressRepeats([round2], [carryKey(round1, LINK_LINE)!], () => LINK_LINE);
     expect(out.reasons).toHaveLength(1);
     expect(out.reasons[0]).toContain("lib/bash-write-guard.ts");
     expect(out.reasons[0]).toContain("earlier round");

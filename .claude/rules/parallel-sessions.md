@@ -50,6 +50,42 @@ block chosen by eyeballing headroom above the highest number you can see. If
 you are going to write `SC-<N>` anywhere, reserve it first. On 2026-10-19 four
 collisions landed in one day and in three of them the allocator was never run.
 
+### The store holds three namespaces, and an entry must say which
+
+| Namespace | Ids | Allocated by |
+|---|---|---|
+| `SC` | `SC-<N>` success criteria in `specs/` | `bun scripts/create-sc.ts` |
+| `FG` | `FG-<N>` blocks in `test/issue-filing-gate.test.ts` | by hand |
+| `AR` | `AR-<N>` blocks in `test/finding-arbiter.test.ts` | by hand |
+
+`"namespace"` is optional and **absent means `SC`**, so every entry written
+before #1363 keeps its exact meaning. Anything else must say so:
+
+```json
+{ "owner": "rg/my-branch", "from": 45, "to": 60, "namespace": "FG" }
+```
+
+`FG` and `AR` are the ones this rule used to be silent about, and the silence
+cost a collision. They have no allocator — every agent adding a block picks
+ids by eyeballing headroom above the highest in the file, which is the third
+method above, so they collide exactly the way SC ids do. On 2026-10-22
+`rg/filing-gate-four` held `FG-45..59` and `AR-20` while PR #1339
+independently took `FG-45..49` and `AR-20`. Neither diff contained the
+other's ids and neither PR's CI could see the overlap.
+
+Two rules follow from the field, both enforced by `lib/sc-reservations.ts`:
+
+- **An unknown namespace refuses the whole store**, by name. The set is
+  closed; adding a namespace is an edit to `RESERVATION_NAMESPACES` and a row
+  in the table above. A store the allocator cannot fully understand is
+  unreadable, not partially read.
+- **Overlap is judged within a namespace, never across one.** `FG-45..60` and
+  `SC-45..60` share their integers and claim nothing in common.
+
+Re-reading `origin/main` at push time and renumbering is still worth doing,
+but it is not a substitute: it makes a collision **cheap**, not impossible,
+and it does nothing for two branches that push inside the same window.
+
 **Delete your entry when your branch merges.** A block nobody prunes is
 headroom nobody can use.
 
@@ -152,11 +188,34 @@ because a laundered approval always looks accurate to the session relaying it.
 ## State the tree you measured, and re-read the tip before you send
 
 ```bash
-bun scripts/report-provenance.ts            # paste the three lines it prints
+bun scripts/report-provenance.ts                        # paste the four lines it prints
+bun scripts/report-provenance.ts --expect-branch rg/N   # when the work is in a worktree
 ```
 
 It exits non-zero when the branch has moved past the tree you measured.
-That is the moment to re-measure, not to send. Two security reviews on
+That is the moment to re-measure, not to send.
+
+### You are not necessarily in the tree you are working on
+
+**Your working directory is where you were launched, not where your
+worktree is.** If you reached your branch with `git -C /path/to/worktree`,
+then every command that reads a directory instead of taking one — this
+script with no `--project`, and `/security-review`, whose four git commands
+run in your cwd — measures your *launch* directory. It will do so
+correctly, silently, and with a confident verdict.
+
+Pass `--expect-branch <your branch>` whenever the work is not in your cwd.
+It refuses with `UNMEASURED: wrong tree`, naming both the directory it read
+and the branch you meant.
+
+**And do not build the obvious detector.** A populated `COMMITS` beside an
+empty `FILES MODIFIED` and an empty `DIFF CONTENT` is not
+self-contradictory: `git log A...B` is a **symmetric difference** and
+`git diff A...B` is `merge-base..B`, so that is every branch merged into or
+behind main. A refusal built on it fires on the normal case.
+
+Both measurements, and why the skill itself is not where this gets fixed,
+are in `reference/parallel-sessions-worked-instances.md` (#1348). Two security reviews on
 2026-10-17 were each measured against a tree their branch had already moved
 past, and neither report gave the reader any way to tell.
 

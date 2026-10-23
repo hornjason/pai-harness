@@ -234,6 +234,14 @@ function quantitiesIn(body: string): number[] {
     .replace(/#\d+/g, m => " ".repeat(m.length))
     .replace(/\b(?:SC|AC|PR|H|R)-?\d+/gi, m => " ".repeat(m.length))
     .replace(/\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?/g, m => " ".repeat(m.length))
+    // Before the `:\d+` rule, not after (#1333). That rule takes the minutes
+    // and leaves the hour, so by the time a later rule ran there would be no
+    // clock time left to see — `15:24` scored `qty:15`, the same key a
+    // genuine reading of 15 produces. Colon-joined numbers are a time or a
+    // ratio far more often than two independent readings, and masking both
+    // is the direction this function is allowed to be wrong in: a key it
+    // declines to emit cannot make two unrelated findings agree.
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, m => " ".repeat(m.length))
     .replace(/:\d+/g, m => " ".repeat(m.length))
     .replace(/\bv?\d+\.\d+(?:\.\d+)?/g, m => " ".repeat(m.length));
   for (const m of masked.matchAll(/\b\d[\d,]*\b/g)) {
@@ -346,13 +354,86 @@ export const DUPLICATE_MIN_SHARED_LOCATIONS = 1;
  * reviewable: the refusal names the colliding issue and the shared keys, and
  * `arbiter-override` waives it.
  *
+ * ## THAT SEPARATING PAIR WAS A TIMESTAMP, AND THE JUSTIFICATION IS VOID (#1333)
+ *
+ * The single pair was #1195/#1196 at 0.778, and 0.778 was inflated by a leak:
+ * both findings say "merged 15:48" and `quantitiesIn` emitted the hour as
+ * `qty:15`. With the leak masked the pair reads **0.750** — and so does
+ * #1195/#1239, which is a DIFFERENT write-guard defect. They are exactly
+ * tied, so **no value of this constant admits the first and excludes the
+ * second.** The margin that chose 0.8 over 0.6 was the two findings
+ * mentioning the same time of day.
+ *
+ * Measured on the 11 issues this file's tables name, 49 pairs after the
+ * cross-reference escape, with two known duplicates (#1175/#1177,
+ * #1195/#1196):
+ *
+ * | arm | can it isolate #1195/#1196? |
+ * |---|---|
+ * | containment | **no** — tied at 0.750 with a distinct pair |
+ * | quantities | **no** — needs `>= 1`, which fires on 11 distinct pairs |
+ * | locations | **no** — the highest shared-location pair (7) is distinct, above the true pair (5) |
+ *
+ * **We are not losing a capability here; we are finding out we never had
+ * one, because the only reason that pair was ever caught was two findings
+ * mentioning the same time of day.**
+ *
+ * **The tie survives the floor of 4 below**, re-measured against the merged
+ * constant rather than predicted: both pairs still read 0.750, because #1239
+ * carries exactly 4 keys and sits on the floor rather than under it. A floor
+ * of 5 would separate them — by refusing the distinct pair a reading at all,
+ * which is a different mechanism from a ratio and is not an argument for
+ * moving the ratio.
+ *
+ * So both constants are left where they are. Every setting that recovers the
+ * pair costs false positives, and a false DUPLICATE is a real finding
+ * silently withheld — the direction this file already calls worse. Missing a
+ * duplicate means a duplicate gets filed, which a human can see.
+ *
+ * **The 946-pair table above is not reproducible.** It was measured live
+ * against a tracker that has moved and no corpus was stored, so neither
+ * constant can be re-derived by anyone — including anyone who disagrees with
+ * leaving them. **Tracked as #1365**; until a fixture exists, treat every
+ * number in this docblock as a reading someone took once.
+ *
  * The floor exists because containment is meaningless on a tiny key set — a
  * one-key finding is wholly contained in anything mentioning that key, which
- * would manufacture a duplicate out of one word. Two rather than four: a
- * floor of 4 costs three of the 38 and flags not one pair fewer.
+ * would manufacture a duplicate out of one word.
+ *
+ * ## The floor is 4, and it was 2 for about an hour (#1318)
+ *
+ * It shipped at 2 on the argument that "a floor of 4 costs three of the 38
+ * and flags not one pair fewer" — which was true, and was the wrong thing to
+ * weigh. Counting the pairs it does not flag says nothing about the findings
+ * it eats, and no case in the suite asked the second question. Re-measured on
+ * the live tracker, at ratio 0.8 over the 35 findings the corpus filters to:
+ *
+ * | floor | self-refile | cross-issue pairs |
+ * |---|---|---|
+ * | 2 | 35/35 | 0 |
+ * | 3 | 34/35 | 0 |
+ * | 4 | **32/35** | 0 |
+ * | 5 | 30/35 | 0 |
+ *
+ * No floor in that range costs a single cross-issue pair, so three of
+ * thirty-five self-refiles is the entire price. What it buys: #1162 carries
+ * 40 keys, and at floor 2 a TWO-key finding whose keys both appear in it is
+ * refused as a duplicate of it. That is a real finding withheld by an
+ * unrelated issue, reachable on the tracker as it stands.
+ *
+ * The two directions are not symmetric and that is what decides this. A
+ * missed duplicate is a tracker row somebody closes. A false DUPLICATE
+ * silences a finding, and an arbiter that quietly eats novel findings turns a
+ * visible backlog into an invisible one — worse than the backlog it exists to
+ * shrink. `AR-20` is the ALLOW-direction control that was missing.
+ *
+ * **Not closed by this:** a FOUR-key finding wholly inside that same issue is
+ * still refused, at either floor. The floor shortens the swallow's reach; it
+ * does not remove it. An absolute shared-key minimum beside the ratio would
+ * not reach that case either, since four keys are genuinely shared.
  */
 export const DUPLICATE_CONTAINMENT_RATIO = 0.8;
-export const DUPLICATE_CONTAINMENT_MIN_KEYS = 2;
+export const DUPLICATE_CONTAINMENT_MIN_KEYS = 4;
 
 /** Does `text` reference `id` as an issue number? */
 function references(text: string, id: string): boolean {
@@ -389,13 +470,30 @@ export function duplicateOverlap(a: Finding, b: Finding): { duplicate: boolean; 
   // re-filing answers yes to and a paraphrase does not, and the first arm
   // cannot ask it — see DUPLICATE_CONTAINMENT_RATIO for the 946-pair reading
   // that sets the cut and for what the floor is protecting against.
-  const sizeA = symptomKeys(a).length;
-  const sizeB = symptomKeys(b).length;
-  const contained =
-    Math.min(sizeA, sizeB) >= DUPLICATE_CONTAINMENT_MIN_KEYS &&
-    Math.max(keys.length / sizeA, keys.length / sizeB) >= DUPLICATE_CONTAINMENT_RATIO;
+  const contained = containmentOf(a, b) >= DUPLICATE_CONTAINMENT_RATIO;
 
   return { duplicate: sameSymptom || contained, keys };
+}
+
+/**
+ * How much of the smaller key set sits inside the larger, as a ratio.
+ *
+ * **`0` when either side is under `DUPLICATE_CONTAINMENT_MIN_KEYS`** — a
+ * refusal, not a reading, and the two are deliberately the same number here
+ * because both mean "this arm does not fire". A caller that needs to tell
+ * them apart must check the sizes itself, and `AR-9`'s tie case does.
+ *
+ * Exported so the arm has **one binding**. A test that recomputed this
+ * expression would be a second decider over the same question and a
+ * mutation of either would leave the other holding the case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape).
+ */
+export function containmentOf(a: Finding, b: Finding): number {
+  const sizeA = symptomKeys(a).length;
+  const sizeB = symptomKeys(b).length;
+  if (Math.min(sizeA, sizeB) < DUPLICATE_CONTAINMENT_MIN_KEYS) return 0;
+  const keys = sharedKeys(a, b);
+  return Math.max(keys.length / sizeA, keys.length / sizeB);
 }
 
 /**
