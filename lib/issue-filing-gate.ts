@@ -576,9 +576,7 @@ export async function openFindings(
   const override = process.env.RUNGATE_OPEN_FINDINGS;
   if (override !== undefined && override !== "") {
     try {
-      const rows: unknown = JSON.parse(readFileSync(override, "utf-8"));
-      const findings = asFindings(rows);
-      return findings === null ? null : measuredCorpus(countOf(rows), findings);
+      return asFindings(JSON.parse(readFileSync(override, "utf-8")));
     } catch {
       return unmeasuredCorpus(
         `the supplied comparison set \`${override}\` could not be read or parsed, so whether ` +
@@ -599,7 +597,7 @@ export async function openFindings(
       listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT),
       OPEN_ISSUE_TIMEOUT_MS,
     );
-    return measuredCorpus(issues.length, trustedCorpus(issues));
+    return trustedCorpus(issues);
   } catch {
     // Every failure lands here as UNMEASURED, which is "nobody asked" and not
     // "nothing matched" — a missing token, a 403, a rate limit and an

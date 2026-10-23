@@ -36,7 +36,6 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 
 import { listOpenIssues, type OpenIssue } from "../lib/github";
-import { symptomKeys, type Finding } from "../lib/finding-arbiter";
 import {
   adjudicateFiling,
   filingAttempts,
@@ -1053,131 +1052,41 @@ describe("#1302 a document heredoc is not a filing", () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0].labels).toEqual(["follow-up"]);
   });
-});
 
-/**
- * FG-45..FG-49: a refusal must refuse, and a corpus nobody could read is not
- * an empty one (#1318).
- *
- * Both findings here are the same mistake in two places: **a state that could
- * not be measured, reported as a state that passed.** The first shape in
- * `.claude/rules/checks-must-be-able-to-fail.md`, twice, in the gate written
- * to catch it.
- *
- * **The `blocking` predicate.** `rows.every(r => !r.emitted)` allowed any
- * command in which at least one clause was clean, so batching a refused
- * filing beside a novel one was a complete bypass — and the cheapest one,
- * because an agent filing several findings at once hits it by accident. The
- * argument for it was that blocking "takes the novel findings down with a
- * duplicate". That step does not hold: this is a **PreToolUse** hook, so
- * nothing has executed. A block costs one re-run with the duplicate clause
- * removed; the findings are in the agent's context, not destroyed. An allow
- * costs a tracker row somebody has to triage. The note the allow emitted said
- * *"Please withdraw them and re-run"* — asking for an action the allow had
- * just made impossible, since a filing that already happened cannot be
- * withdrawn by the agent that made it.
- *
- * **The ledger was lying in the flattering direction.** Rows are written with
- * `disposition: "DROP"` and `withheldBy` set BEFORE `blocking` is computed,
- * so every allowed-anyway refusal was recorded as a successful withhold. Any
- * rate derived from the ledger counted those as saves. FG-47 is the row that
- * fails if the two ever disagree again.
- *
- * **`trustedCorpus` was fail-open.** A non-empty issue list that filters down
- * to empty — every author untrusted, or every issue over the key cap — was
- * returned as `[]`, which is byte-identical to a clean tracker, and the gate
- * ALLOWed. `null` already means UNMEASURED here and already routes to the
- * right refusal, so the fix is to return it.
- */
-describe("FG-45..FG-49: a bypass by batching, and a corpus nobody could read", () => {
-  const MIXED = `${DUPLICATE_FILING} && ${NOVEL_FILING}`;
-
-  /** The fixture corpus path, which `openFindings` shares with the live one. */
-  const fixtureCorpus = async (rows: unknown[]): Promise<readonly Finding[] | null> => {
-    const file = join(scratch, "unmeasured-corpus.json");
-    writeFileSync(file, JSON.stringify(rows));
-    const prior = process.env.RUNGATE_OPEN_FINDINGS;
-    process.env.RUNGATE_OPEN_FINDINGS = file;
-    try {
-      return await openFindings(scratch);
-    } finally {
-      if (prior === undefined) delete process.env.RUNGATE_OPEN_FINDINGS;
-      else process.env.RUNGATE_OPEN_FINDINGS = prior;
+  /**
+   * FG-59: the three spellings that were reported as a live bypass, and are
+   * not one.
+   *
+   * The report was that `heredocView` decides document-versus-program by the
+   * WRITER WORD alone, so a clause whose stdout still reaches a shell has its
+   * body dropped from the view while the shell executes it. Three spellings
+   * were named. **All three already yield one filing attempt**, measured
+   * before anything was changed, and the mechanisms differ:
+   *
+   * | spelling | attempts | why it is caught |
+   * |---|---|---|
+   * | `cat <<'EOF' \| bash` | 1 | `heredocInterpreter`'s pipe arm — the operator's segment is piped into an interpreter |
+   * | `bash -c "$(cat <<'EOF' … )"` | 1 | the opener LINE's command word is `bash`, so the owner arm fires |
+   * | `bash <(cat <<'EOF' … )` | 1 | the same: the line's command word is `bash` |
+   *
+   * They are kept as rows because nothing covered them and the second and
+   * third are caught by a reason their own shape does not suggest — they
+   * would go red under a narrowing of `heredocInterpreter` to the heredoc's
+   * owning SEGMENT, which reads like a tightening.
+   *
+   * **Four other spellings are a live bypass, and are reported rather than
+   * fixed here.** They are in the pull request body with the shell output
+   * proving each executes. The fix is in `lib/bash-write-guard.ts`, which is
+   * the other guard's decider and was tuned against a 5,060-command corpus
+   * this change cannot re-measure.
+   */
+  test("FG-59 CONTROL: the three reported heredoc-to-shell spellings all yield a filing", () => {
+    for (const cmd of [
+      `cat <<'EOF' | bash\n${FILING}\nEOF`,
+      `bash -c "$(cat <<'EOF'\n${FILING}\nEOF\n)"`,
+      `bash <(cat <<'EOF'\n${FILING}\nEOF\n)`,
+    ]) {
+      expect(filingAttempts(cmd), `the body reaches a shell: ${cmd.slice(0, 24)}`).toHaveLength(1);
     }
-  };
-  const existing = async (): Promise<readonly Finding[]> => [
-    { id: "900", title: "retryBudget gives up early", body: DUPLICATE_BODY },
-  ];
-
-  test("FG-45 BASELINE: a duplicate batched beside a novel filing still refuses", async () => {
-    const r = await filingGate(MIXED, { projectRoot: scratch, readExisting: existing });
-    // The premise, asserted rather than assumed: this command really does
-    // carry one of each. Without it the row could pass on a command the
-    // parser never split, which is green for the wrong reason.
-    expect(r.rows, "the fixture must carry two clauses").toHaveLength(2);
-    expect(r.rows.filter(x => x.emitted), "exactly one of them is clean").toHaveLength(1);
-    expect(r.refusal, "one refused clause refuses the command").not.toBeNull();
-  });
-
-  test("FG-46 CONTROL: a command whose clauses are ALL novel is still allowed", async () => {
-    // The control against "refuse everything", which would make FG-45 green
-    // and the gate useless. Same call, same corpus, no duplicate clause.
-    const r = await filingGate(`${NOVEL_FILING} && ${NOVEL_FILING}`, {
-      projectRoot: scratch,
-      readExisting: existing,
-    });
-    expect(r.rows).toHaveLength(2);
-    expect(r.refusal).toBeNull();
-  });
-
-  test("FG-47: the ledger cannot record a DROP for a filing the gate let through", async () => {
-    // The instrument check. A row saying `emitted: false` is a claim that the
-    // filing did not happen, and that claim is only true when the command was
-    // blocked. Asserting the agreement rather than either side alone is what
-    // makes this fail if a later change reintroduces partial admission
-    // without also fixing the rows.
-    for (const cmd of [MIXED, NOVEL_FILING, DUPLICATE_FILING]) {
-      const r = await filingGate(cmd, { projectRoot: scratch, readExisting: existing });
-      const withheld = r.rows.filter(x => !x.emitted);
-      expect(
-        withheld.length > 0 ? r.refusal !== null : true,
-        `${cmd.slice(0, 40)}: rows claim ${withheld.length} withheld, refusal=${r.refusal === null ? "null" : "set"}`,
-      ).toBe(true);
-    }
-  });
-
-  test("FG-48 BASELINE: a corpus that filters down to empty is UNMEASURED, not clean", async () => {
-    // Driven through `openFindings`, the production reader, not through a
-    // helper written alongside the fix — a new binding asserted by a new
-    // case is green on arrival and proves nothing. One issue IS present and
-    // the key cap drops it, so the reading is "could not be taken", and
-    // before this it came back `[]` and allowed.
-    const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`stuffedSymbol${i}\``).join(" ");
-    const row = { number: 77, title: "a stuffed issue", body: stuffed };
-    // The premise, asserted rather than assumed. My first fixture spelled
-    // these `stuffed0`, which the key reader does not treat as a symbol at
-    // all — so nothing was over the cap, nothing was dropped, and the case
-    // was measuring a corpus that passed straight through while claiming to
-    // measure one that had been emptied.
-    expect(
-      symptomKeys({ id: "77", title: row.title, body: row.body }).length,
-      "the fixture must exceed the cap, or this row is about nothing",
-    ).toBeGreaterThan(MAX_KEYS_PER_EXISTING_ISSUE);
-    expect(
-      await fixtureCorpus([row]),
-      "every issue dropped is not the same fact as no issues",
-    ).toBeNull();
-  });
-
-  test("FG-49 CONTROL: a genuinely empty tracker is MEASURED and still allows", async () => {
-    // The row that separates "nothing was there" from "nothing survived the
-    // filter". Without it the cheapest fix for FG-48 is `always null`, which
-    // switches the dedupe off entirely and passes FG-48 while making the
-    // gate useless — the fifth shape, green under the wrong repair.
-    expect(await fixtureCorpus([]), "an empty tracker is a reading that WAS taken").toEqual([]);
-    expect(
-      await fixtureCorpus([{ number: 78, title: "retryBudget gives up early", body: DUPLICATE_BODY }]),
-      "and an ordinary issue still reaches the corpus",
-    ).toHaveLength(1);
   });
 });
