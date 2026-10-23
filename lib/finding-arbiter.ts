@@ -858,6 +858,37 @@ export interface CandidateRecord {
    * construction, with no collision bookkeeping to be a second decider.
    */
   key: string | null;
+  /**
+   * The tracker's issue number once the finding has been filed, and
+   * `UNFILED_ID` before that.
+   *
+   * **For a withheld candidate this is `UNFILED_ID`, and it will never be
+   * anything else.** Not "not yet" — never. Being withheld IS the state of
+   * not acquiring an issue number, so the two can only ever be read
+   * together: there is no later moment at which a row recording a finding
+   * the quorum voted down, or the category filter dropped, or the budget
+   * ranked below the cut, comes back carrying a number. Those rows are the
+   * population this ledger exists to record, so the field is absent exactly
+   * where the data matters.
+   *
+   * ## What follows, and it is the reason this comment is here
+   *
+   * **The outcome join has to be on content.** This ledger supplies the
+   * left-hand side of a join against something that arrives later and from
+   * somewhere else — a fixing commit, a re-report, a bug that shipped. The
+   * right-hand side will be keyed by whatever that source keys by, and the
+   * one thing it can never be matched on is this field, because half the
+   * rows do not have a value and the half that do were never the question.
+   * Match on `symptomHash`, on the title, on the cited symbols — on
+   * something the finding SAYS.
+   *
+   * **So do not add an id field to make the join easier.** It is the
+   * obvious repair and there is nothing to put in it: a synthetic id minted
+   * here is a key only this file has ever seen, which is `key` and is
+   * already present, and it still will not appear on the other side of the
+   * join. The thing that looks like a missing column is a fact about the
+   * domain.
+   */
   id: string;
   symptomHash: string;
   category: FindingCategory;
