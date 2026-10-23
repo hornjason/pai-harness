@@ -627,6 +627,92 @@ describe("#1413: an owner this worktree cannot resolve is UNMEASURED, never free
   });
 
   /**
+   * #1458: the THIRD axis. The two rows above guard an unreadable registry
+   * and an unresolvable owner. Nothing guarded the caller's own path, and an
+   * unreadable one did not merely fail to match — it went around the
+   * `blind` refusal as well, because `allClaims` is `claimCovers` too. So a
+   * path this tool cannot read produced no claims, an empty `blind` set, an
+   * empty `contention` set, and `free:` with exit 0.
+   *
+   * These rows run against the SAME fixture and the SAME registry as "--check
+   * REFUSES when the claimed owner's ref is not in this worktree" above. That
+   * row refuses. Only the spelling of the path differs, which is what makes
+   * this a bypass rather than a gap: the refusal exists and the input walks
+   * past it.
+   *
+   * It is reachable by the intended use. `core.quotePath` defaults to true,
+   * so `git diff --name-only` emits `"lib/\303\251.ts"` for any non-ASCII
+   * filename, and piping a changed-file list into `--check` is what this is
+   * for. The bare non-ASCII spelling is unreadable too — `normaliseRepoPath`'s
+   * character class is ASCII — so the quoting is not even required.
+   */
+  test.each([
+    ["a git C-quoted path", '"lib/\\303\\251.ts"'],
+    ["a bare non-ASCII path", "lib/é.ts"],
+    ["a path containing a space", "lib/a b.ts"],
+    ["a glob rather than a path", "lib/*.ts"],
+  ])("#1458: --check REFUSES rather than reporting free for %s", (_label, path) => {
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib"], issue: 1458 }]);
+    try {
+      const r = check(dir, "--check", path, "--no-fetch");
+      // The VERDICT line, anchored — not the word. The refusal's own text
+      // says "Not reporting these free", so a bare `toContain("free")`
+      // matches the fix as well as the defect and can never go green.
+      expect(
+        r.stdout,
+        `an unreadable path reported free against a registry claiming lib/: ${r.stdout}`,
+      ).not.toMatch(/^free:/m);
+      expect(r.stdout).toContain("UNMEASURED");
+      expect(r.status, "an unreadable path exited 0, which the caller reads as free").not.toBe(0);
+      // The refusal has to be about the PATH, and this is what separates the
+      // fix from the cheapest wrong one (the fifth shape). Making
+      // `claimCovers` return true for an unreadable path also turns these
+      // rows green — every unreadable path would then match every claim, the
+      // OWNER refusal would fire, and the output would say UMEASURED for the
+      // wrong reason while attributing `docs/é.md` to a claim on `lib`.
+      // Naming the path and naming no owner is the only reading that can
+      // only come from the refusal this adds.
+      expect(r.stdout, "the refusal did not name the path it could not read").toContain(path);
+      expect(
+        r.stdout,
+        "an unreadable path was attributed to an owner, which no reading can establish",
+      ).not.toContain("rg/never-fetched");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#1458 CONTROL: a readable path against the same registry still answers", () => {
+    // Without this the four rows above are satisfied by a `--check` that
+    // refuses every input, which would be the cheapest wrong fix and would
+    // make the tool useless. One readable path, same fixture: it must reach
+    // the owner refusal, which is a DIFFERENT refusal from the new one.
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib"], issue: 1458 }]);
+    try {
+      const r = check(dir, "--check", "lib/a.ts", "--no-fetch");
+      expect(r.stdout, "a readable path stopped reaching the owner refusal").toContain(
+        "rg/never-fetched",
+      );
+      expect(r.status).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#1458 CONTROL: a readable path nobody claims is still free", () => {
+    // And the other direction — the new refusal must not swallow the free
+    // answer, or `--check` stops being able to say yes.
+    const dir = fixture([{ owner: "rg/never-fetched", paths: ["lib"], issue: 1458 }]);
+    try {
+      const r = check(dir, "--check", "docs/x.md", "--no-fetch");
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain("free");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * A ref that does not resolve is not a ref with no registry on it.
    *
    * Raised as HIGH by the AI review on PR #1436 — the fourth finding on that
