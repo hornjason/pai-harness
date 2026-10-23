@@ -171,6 +171,31 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     fires: c => inDir(c.path, "specs") && isMarkdown(c.path),
   },
   {
+    // #1306. ADDING a spec is a third event, and it reddens census files that
+    // neither an edit nor a tick can touch: `audit-specs` refuses a testable
+    // spec without `compliance: strict`, and `scanner`'s live-tree case holds
+    // `.claude/rules/docs-routing.md`'s `specs/ (N files)` row to a recursive
+    // count. PR #1298 paid a CI round for the first; neither is reachable
+    // from the import graph, and the spec it names imports nothing.
+    //
+    // Measured rather than grepped: a probe spec was planted and the 143 test
+    // files whose source names `specs` were run against a 0-fail baseline.
+    // Five went red. Three were already routed — `scaffold-conformity` by
+    // `new-file`, `agents-md-spec-listing` by `spec-edit`, and
+    // `spec-drift.test.ts`, whose whole body is the same `runSpecDrift(ROOT)`
+    // call `scaffold-conformity` already makes, so routing it would run one
+    // check twice. These two were routed by nothing, and cost 1.3s together.
+    //
+    // Scoped to `isNew` on purpose. On the `spec-edit` row these would run on
+    // every prose edit to every spec, and a router that names more than it
+    // has to is a router people stop running — which is the state #990 is
+    // about, arriving from the other side.
+    id: "new-spec",
+    event: "added a specs/ file",
+    tests: ["test/audit-specs.test.ts", "test/scanner.test.ts"],
+    fires: c => c.isNew && inDir(c.path, "specs") && isMarkdown(c.path),
+  },
+  {
     // #990 itself. Fires on a tick in EITHER direction: an untick lowers the
     // same three numbers, and `test/sc-binding-split.test.ts` brackets both of
     // its counts with an equality, so a fall is red there even where the
@@ -222,12 +247,50 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     // edit to `lib/scaffold/**` without a re-scaffold, and a hand edit to a
     // workflow with no source change, are each a real event — and the second
     // fired no row at all before this one existed.
+    // #1401 added the last two, and the membership rule is worth stating
+    // because three attempts to DERIVE it all failed and the measurements
+    // are the reason this list is still hand-kept:
+    //
+    //   - suites that CO-CHANGE with `lib/scaffold/**`, over 202 such
+    //     commits: `ai-review-wif` scores 2 and `no-fixed-window-slices`
+    //     scores 0. Both are known catchers. Co-change finds the suites an
+    //     author edited, and these two catch by going red UNTOUCHED, which
+    //     is the opposite population.
+    //   - suites that READ the generated YAML or import a scaffold builder:
+    //     138 of 588 test files. Routing 138 is routing everything, and it
+    //     still misses `no-fixed-window-slices`, which reads neither.
+    //   - suites named beside a redness word in the commit messages of those
+    //     202 commits: 13, and neither of the two. The catches were reported
+    //     in a rebase, not written down here.
+    //
+    // So a suite joins this row on EVIDENCE OF A CATCH, recorded inline.
+    // Nothing derivable from the tree reproduces the list, and all three
+    // instruments above have a control that fails — which is why none of
+    // them is wired up as a check.
+    //
+    // `ai-review-wif` (#1387, reported by rg-crc-bind): a comment written
+    // INSIDE the generated bash, explaining that the PR title and body are
+    // never interpolated, spelled the interpolation construct literally. A
+    // shell `#` does not hide it — the runner substitutes over the whole
+    // `run:` body, comments included. Strictly wider than the author's own
+    // AC-S8a, which greps for `github.event.pull_request.body` and
+    // structurally could not have seen it.
+    //
+    // `no-fixed-window-slices` (#1387, same report): an assertion used
+    // `yml.slice(at - 400, at + 400)` around an annotation. #664's guard was
+    // right twice over — the fixed window runs off the end of the construct,
+    // and it read only the first occurrence while the generator emits three.
+    //
+    // Both landed on shard 4 and both survived a targeted run of every suite
+    // this file named at the time.
     id: "generated-workflow",
     event: "changed a generated workflow, or the scaffold source that emits one",
     tests: [
       "test/ai-review-runner-shell-parity.test.ts",
       "test/action-pin-parity.test.ts",
       "test/scaffold-permissions-merge.test.ts",
+      "test/ai-review-wif.test.ts",
+      "test/no-fixed-window-slices.test.ts",
     ],
     fires: c => inDir(c.path, ".github/workflows") || inDir(c.path, "lib/scaffold"),
   },

@@ -94,10 +94,10 @@ implementation.
 
 ### Layer 5 — human approval scaled by risk
 
-- [ ] CRC-E1: Risk tiers are written down: low needs no human, medium one, high two.
-- [ ] CRC-E2: **The change sets the tier, not the author** — a classifier reads the change.
+- [x] CRC-E1: Risk tiers are written down: low needs no human, medium one, high two. (shipped, #1437)
+- [x] CRC-E2: **The change sets the tier, not the author** — a classifier reads the change. (shipped, #1437)
 - [ ] CRC-E3: A **second classifier** asks whether this change needs another person even when its tier says no.
-- [ ] CRC-E4: Owner-listed sensitive paths and **any CI workflow file** always require a human.
+- [x] CRC-E4: Owner-listed sensitive paths and **any CI workflow file** always require a human. (shipped, #1437)
 - [ ] CRC-E5: Only trusted authors get the lighter paths.
 - [ ] CRC-E6: **An agent's approval never counts as a person's.**
 - [ ] CRC-E7: Whoever prompted the change counts as one of the required reviewers.
@@ -124,7 +124,7 @@ implementation.
 - [ ] CRC-M8: Priority order is stated and enforced: **catching real bugs first, cutting review rounds second.**
 - [ ] CRC-M9: Human-time metrics tracked — approvals per PR (median and p95), human comments, time waiting on a person.
 - [ ] CRC-M10: **Revert and incident rates are the guardrail.** If they rise, human time was moved, not saved.
-- [ ] CRC-M11: Rounds-to-pass is tracked alongside recall.
+- [x] CRC-M11: Rounds-to-pass is tracked alongside recall. (shipped, #1441/#1448)
 
 ### Convergence — the non-convergent review failure
 
@@ -140,6 +140,35 @@ showed **~59%** of what the reviewer kept flagging was code present at its first
 Their result, which is our target: pass-after-one-round 65% → 78%; five-or-more rounds
 8.9% → 1.5%; mean reviews to pass 2.08 → 1.32.
 
+### Where we actually stand, measured
+
+The first reading CRC-M11 was able to take, over the 45 most recent pull
+requests on 2026-10-23 — 44 measured, 1 refused for carrying no ledger:
+
+| | their before | their after | **us** |
+|---|---|---|---|
+| passed after one round | 65% | 78% | **39.4%** |
+| five or more rounds | 8.9% | 1.5% | **20.5%** |
+| mean rounds to pass | 2.08 | 1.32 | **2.64** |
+
+**We are worse than the state they were improving from, on all three.** That
+is the number this spec exists to move, and it is the argument for ranking
+criteria by rounds-to-pass rather than by how interesting they are to build.
+
+Two things the shape of it says, beyond the headline. The tail is the problem
+rather than the median: 20.5% at five rounds or more is over twice their
+starting figure while the mean is only a quarter above it, so a minority of
+pull requests is absorbing the loop. And eleven of the 44 have not passed at
+all, at up to ten rounds spent — excluded from the mean by definition, which
+is why this table is reported beside them rather than alone.
+
+The mean is `2.64` and not `1.32` partly for reasons nothing in the review
+model controls: #1449 is a harness defect that raises a blocking finding on
+**every** pull request editing `.claude/` or `CLAUDE.md`, which in this
+repository is how conventions ship. A false finding is a whole round. Re-take
+this reading after it lands; a baseline measured across a known artefact is a
+baseline that will appear to improve for the wrong reason.
+
 ### What stays human
 
 - [ ] CRC-H1: Direction, taste and scope — whether to build it at all.
@@ -154,9 +183,14 @@ Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
 0 carried a claiming test**. A spec nothing is bound to cannot drift, because
 there is nothing for it to drift from; the number below is what replaces that.
 
-Of the 56: **5 bound**, **8 where a mechanism exists that nothing in this
+Of the 56: **9 bound**, **8 where a mechanism exists that nothing in this
 repository can observe**, **4 that cannot be meaningful in this deployment**,
-**3 blocked on an owner decision**, **2 declared deviations**, **34 not done**.
+**3 blocked on an owner decision**, **2 declared deviations**, **30 not done**.
+
+Re-counted on 2026-10-23 after #1437 bound CRC-E1, CRC-E2 and CRC-E4, and
+again after #1448 bound CRC-M11. The audit above was taken the same day, at 0
+bound; the four moved by engineering, and none of the other four categories
+changed, which is the point of keeping them separate.
 
 An unticked box is one of the last five, and they are five different facts.
 Four of them are recorded here because an unticked box nobody can ever tick,
@@ -237,11 +271,10 @@ something in the tree that resembles it and is not it.
 - **CRC-B3** One reviewer agent per round. **Not adoptable before CRC-B4, and the criterion now says why**: N generators over a sampled instrument are N draws, and run `39962683401` is a same-tree pair that disagreed BLOCKED/CLEAN with a false positive on the blocking side. Without a quorum to filter them, parallel generation multiplies exactly that. Ordering, not absence of effort.
 - **CRC-B4** `lib/finding-jury.ts` has the group size, the quorum, per-verifier votes and a disagreement flag. `arbitrate`, the only path that reads them, has no caller outside `lib/`, `test/` and `scripts/arbitrate-finding.ts`. Nothing deployed takes a vote.
 - **CRC-B6** `compareReviewOutcomes` and `evals/ai-review-control/variance-capture.ts` exist. No filter has been A/B tested before being kept, and the variance control reads zero by construction — see below.
-- **CRC-B7** Three clauses, and they have three different costs — reading it as one item is what made it look cheap. **Sorting** is now possible and was not before #1337: there is a rendered tail to put in an order, and `advisoryNotice` and `renderCountedFindings` both emit in payload order, which is whatever order the model wrote. **The vocabulary** does not exist in the deployed path: `SEVERITY_RANK` tags Important / Nit / Pre-existing in `lib/finding-jury.ts`, which the CI path never calls — its callers are `scripts/arbitrate-finding.ts`, `lib/issue-filing-gate.ts`, `lib/failure-intake.ts` and `hooks/VerifyPhaseLock.hook.ts` — while the deployed table, `AI_REVIEW_SEVERITIES`, declares `critical`, `high`, `medium`, `low` and `info`. **Pre-existing** is not decidable there at all: `severityOf` decides it from the pull request's changed files and the findings step has no changed-path list to scope against. **The prerequisite is #1204/#1354, not #1337**, because that is the change carrying the changed-path list into this module; until it lands the criterion cannot be ticked on the first two clauses alone. A weaker route to the third exists and is worth knowing before anyone plumbs the diff: `findingKey` identifies a finding by file and summary rather than by line, so the same observation has one identity across rounds and *first seen on round 1* becomes decidable from the accumulated ledger with no diff at all. That is a different and smaller claim than `severityOf`'s — first-seen-round, not present-before-the-pull-request — and it should be labelled as the one it is rather than sold as `Pre-existing`. **One trap for whoever sorts**: `renderFinding` prints `finding <index>`, and the blocking annotation and the advisory notice now share that numbering, so a sort must reorder the display and keep the payload index in the label. A case in `test/ai-review-advisory-findings.test.ts` asserts the tail is indexed against the whole payload and reds on renumbering.
+- **CRC-B7** Three clauses, and they have three different costs — reading it as one item is what made it look cheap. **Sorting** is now possible and was not before #1337: there is a rendered tail to put in an order, and `advisoryNotice` and `renderCountedFindings` both emit in payload order, which is whatever order the model wrote. **The vocabulary** does not exist in the deployed path: `SEVERITY_RANK` tags Important / Nit / Pre-existing in `lib/finding-jury.ts`, which the CI path never calls — its callers are `scripts/arbitrate-finding.ts`, `lib/issue-filing-gate.ts`, `lib/failure-intake.ts` and `hooks/VerifyPhaseLock.hook.ts` — while the deployed table, `AI_REVIEW_SEVERITIES`, declares `critical`, `high`, `medium`, `low` and `info`. **Pre-existing** is not decidable there at all: `severityOf` decides it from the pull request's changed files and the findings step has no changed-path list to scope against. **The prerequisite is #1204/#1354, not #1337**, because that is the change carrying the changed-path list into this module; until it lands the criterion cannot be ticked on the first two clauses alone. A weaker route to the third exists and is worth knowing before anyone plumbs the diff: `advisoryKey` (named `findingKey` before #1398) identifies a finding by file and summary rather than by line, so the same observation has one identity across rounds and *first seen on round 1* becomes decidable from the accumulated ledger with no diff at all. That is a different and smaller claim than `severityOf`'s — first-seen-round, not present-before-the-pull-request — and it should be labelled as the one it is rather than sold as `Pre-existing`. **One trap for whoever sorts**: `renderFinding` prints `finding <index>`, and the blocking annotation and the advisory notice now share that numbering, so a sort must reorder the display and keep the payload index in the label. A case in `test/ai-review-advisory-findings.test.ts` asserts the tail is indexed against the whole payload and reds on renumbering.
 - **CRC-B8** Half, and a different half since #1337. The advisory tail is no longer discarded — `advisoryNotice` names every counted non-blocking finding, with a key, in an annotation that says each is UNANSWERED. What is still missing is the requirement: nothing obliges anyone to answer one, so "fixed, or resolved with a stated reason" remains a request. A duplicate or a dropped-category filing is refused at the chokepoint; ALLOW is still the default for a novel finding.
 - **CRC-B9** No per-repo review depth. `ceremonyTier` LIGHT / STANDARD / THOROUGH is the harness gate ceremony, a different axis.
-- **CRC-E1, CRC-E2, CRC-E3, CRC-E9** No risk tiers exist anywhere in the tree. `E1` and `E2` gate the rest: without a written tier set and a classifier that reads the change, `E3` and `E9` have nothing to second-guess or loosen.
-- **CRC-E4** The thing that looks like this is its inverse. The action refuses to review a pull request whose `.github/workflows/ai-review.yml` differs from the default branch's — one file, not any CI workflow file — and the documented escape, the `ai-review-override` label, **waives the check** rather than routing to a person. Branch protection requires zero approvals, so there is no human state to route to.
+- **CRC-E3, CRC-E9** `lib/risk-tier.ts` now exists, so these two have something to second-guess and something to loosen — which is why they were sequenced after #1437 rather than built with it. `E3` needs a second classifier that can raise a LOW the first one is content with; `E9` needs a recorded outcome per tier to loosen against, and the ledger does not carry a tier yet. `LOW_MAX_FILES` and `LOW_MAX_LINES` are therefore declared strict and not evidence-based, and that is stated at the constants rather than left to be discovered.
 - **CRC-E6** Branch protection declares no required reviews, so no approval counts toward anything and the criterion is vacuous rather than satisfied.
 - **CRC-F3** No one-step rollback, and none exercised.
 - **CRC-F4** No incident review asks which layer should have caught it.
@@ -253,10 +286,140 @@ something in the tree that resembles it and is not it.
 - **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
 - **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
 - **CRC-M10** Nothing tracks revert or incident rates.
-- **CRC-M11** The round number is computed per run and retained nowhere. Nothing tracks rounds-to-pass beside recall.
 - **CRC-N4** Seven exports of `lib/ai-review-rounds.ts` — `readLedger`, `priorFindings`, `carryForward`, `suppressRepeats`, `noRepeatsInstruction`, `atCapInstruction`, `reviewScopeForRound` — have **zero production callers between them**; every caller is a test. The prompt states the opposite in so many words: nothing carries its findings forward. **This is structural, not an oversight, and that changes what the work is.** The only non-test file naming the module is `lib/scaffold/ai-review-step.ts`, where every mention is prose in a comment — it cannot import, because the step is deliberately import-free so that the suites copying it into a temp directory can build mutants that load. So the first production caller cannot arrive as an import; it has to arrive the way the adjudicator did, as a CLI command the generated bash invokes under a pinned version. **The data path is already complete** — #1319 shipped the ledger writer and #1351 the reader and the per-finding text anchor — so what is missing is the invocation and nothing else.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
 - **CRC-H2** Risky code requires a human. There is no `CODEOWNERS` and no required approval, so nothing does.
+
+## The order to build the remainder in
+
+Written 2026-10-23 because the work had been running without one, and
+criteria were being picked by whichever looked tractable. That produces the
+failure this section exists to stop: an agent spends a session discovering
+that the criterion it chose is blocked behind one nobody has scheduled, and
+writes the discovery down instead of the code.
+
+**The backlog is 30, not 47.** Of the unticked boxes, 8 are mechanisms this
+tree cannot observe, 4 cannot be meaningful in this deployment, 2 are
+declared deviations, and 3 are repository settings. Only the remainder is
+engineering, and the four categories above are not a smaller version of it —
+they are a different kind of fact, and the tables above say which is which.
+
+Phases are ordered by **effect on rounds-to-pass**, which the table in *Where
+we actually stand, measured* says is 2.64 against the source's 1.32. Within a
+phase the criteria are independent and may be built in parallel. Across
+phases they are not: each phase names what the next one needs.
+
+### Phase 0 — three settings, no engineering
+
+**CRC-C3 is APPLIED as of 2026-10-23.** `required_conversation_resolution` is
+`true` on `main`, set through a full `PUT` that preserved the two required
+contexts, `enforce_admins`, and every other field unchanged. It stays
+**unticked** because the setting is GitHub state and no check in this tree
+reads it — which is the distinction the table above exists to keep, and the
+reason "applied" and "bound" are recorded separately.
+
+**CRC-E8 does not belong in this phase and is moved to the table above it.**
+With one account and `enforce_admins: true`, requiring an approving review
+deadlocks the repository: the only possible approver is the author, so
+nothing merges at all, including every agent's pull request. That is the
+same "needs a second person" constraint CRC-E5 and CRC-E7 carry, and it is a
+hard stop rather than a cost. It was listed here in the plan's first draft
+and that was wrong.
+
+So Phase 0 is **one setting applied, one waiting on a quiet queue, one
+withdrawn**:
+
+CRC-F1 (`strict: true`), CRC-C3 (`required_conversation_resolution`), CRC-E8
+(`required_pull_request_reviews` with `dismiss_stale_reviews`). Minutes, by
+the owner. They are first because two further criteria — CRC-E6 and CRC-M9 —
+are **vacuous rather than unbuilt** until they land: there is no approval to
+count, so nothing can be built that counts one.
+
+Read CRC-F1's caveat before flipping it. A merge queue serialises merges, and
+on `merge_group` the review annotates UNMEASURED and passes, so "every check"
+would be half true. `strict: true` is the cheaper half and closes the same
+hole.
+
+**The trigger for `strict: true` is a number, not a judgement call: open
+pull requests ≤ 2, with no agent mid-push.** Under `strict`, every merge
+stales every other open pull request, and the repair is
+`gh pr update-branch`, which **force-rewrites the contributor's branch** —
+including one an agent is pushing to. On 2026-10-23 this repository merged
+eleven pull requests with four sessions running; flipping it in that state
+converts each merge into five forced rewrites. The hole it closes is real
+(an armed PR merging green against a base it never ran against) and it is
+not urgent enough to pay that. Flip it at the next quiet queue and then
+watch rounds-to-pass: if `strict` costs more rounds than the stale-base hole
+does, that is measurable and the criterion should say so.
+
+### Phase 1 — stop the repeats
+
+**The tail is the problem, not the median.** 20.5% of pull requests take five
+rounds or more, against their 8.9% before; the mean is only a quarter above
+theirs. A minority of PRs is absorbing the loop, and a finding re-posted
+every round is, arithmetically, an extra round.
+
+| | Depends on |
+|---|---|
+| **CRC-N4** — no repeats | nothing. `lib/ai-review-rounds.ts` exports seven functions with **zero production callers between them**. The machinery is built and uncalled. |
+| **CRC-B7** — Pre-existing tagging | the changed-file list reaching the adjudicator, and then a release |
+| **CRC-N2** — diff-only re-review | CRC-N4. It is a declared deviation *only* until `carryForward` has a production caller |
+
+CRC-N4 is the single highest-value item in this document and it is not a
+design problem. Its own entry says the gap is structural: the only non-test
+file naming the module mentions it in prose.
+
+### Phase 2 — stop the false findings
+
+The other half of the tail. A false blocking finding costs a remedy commit, a
+CI round and a review round, and run `39962683401` is the measured instance —
+a same-tree pair that disagreed BLOCKED/CLEAN with the false positive on the
+blocking side.
+
+| | Depends on |
+|---|---|
+| **CRC-B4** — verifier quorum | nothing. `lib/finding-jury.ts` holds group size, quorum, per-verifier votes and a disagreement flag; nothing deployed takes a vote |
+| **CRC-B6** — A/B the filters | CRC-B4, and a variance control that does not read zero by construction |
+| **CRC-B3** — parallel generation | CRC-B4, strictly. Without a quorum, N generators are N chances to block falsely, which is **worse than one** |
+
+### Phase 3 — what the reviewer is told
+
+Cheap, mostly prompt and `REVIEW.md` text, and independent of Phases 1 and 2.
+Sequenced third rather than first because a reviewer given more context and
+no falsification step produces more confident false premises — so Phase 2
+earns the right to do this one.
+
+CRC-A4 (flag a `CLAUDE.md` convention break — the obvious objection does not
+apply, see its entry), CRC-B2 (root cause on a bug fix), CRC-B9 (per-repo
+Quick/Standard/Deep), CRC-A7 (the summary clause).
+
+### Phase 4 — findings get answered, and repeats get fixed at the source
+
+CRC-B8 (every finding answered — CRC-C3 from Phase 0 is half of it), CRC-A8
+(a repeated finding becomes a rule or a lint, not another finding), CRC-A2
+(a fresh-context review before the PR opens), CRC-A1, CRC-A3.
+
+### Phase 5 — the instruments
+
+CRC-M6 (four outcome buckets; one of four is evidence-derived today),
+CRC-M10 (revert and incident rates), CRC-M1/M3/M4/M5 (an incident case set
+and a daily rescore), CRC-M7 (a finding carries no remedy, so the control's
+own number is UNMEASURED), CRC-E3 and CRC-E9 (a second classifier, and a
+ledger that carries a tier to loosen against).
+
+### Phase 6 — release and detection
+
+CRC-F3, CRC-F4, CRC-F5, CRC-N5, CRC-H2. Last because none of them moves
+rounds-to-pass, and CRC-F5 is a gap the source admits on its own side.
+
+### The thing that would make this plan wrong
+
+Re-take the CRC-M11 reading after #1449 and #1452 land. The 2.64 was measured
+across a harness defect that raised a blocking finding on **every** pull
+request editing `.claude/` or `CLAUDE.md`, which in this repository is how
+conventions ship. If the tail collapses on its own, Phases 1 and 2 are
+ordered against a baseline that no longer exists, and the ordering argument
+has to be made again rather than inherited.
 
 ## Known deviations, declared
 
@@ -273,9 +436,12 @@ A deviation is legitimate when it is written here with its reason. An undeclared
 
 Recorded because each one invalidates a naive reading of the criteria above.
 
+- **A metric that exists is not a metric that reports, and CRC-M11 sat in that gap for two days.** `lib/rounds-to-pass.ts` shipped in #1441 and printed `measured 1, unmeasured 39` against the live tracker: every refusal was `ROUNDS_TRUNCATION_UNKNOWN`, because `readLedger` called every legacy bare-array ledger unknowable while the #1405 WRITER already derived the opposite for the same input — a list that grows by one per round and is only cut at the cap was never cut if it is shorter than the cap. Same fact, two modules, two answers, and the metric consumed the readers. #1448 taught the reader the derivation and the reading became `measured 44, unmeasured 1`. **The lesson is the shape, not the bug:** a criterion asking for a number must be checked by running it, because a file-exists matcher would have ticked this while the command refused 39 of 40 rows. It is why CRC-M11 is banked in `CLAIMED_UNBINDABLE` rather than given a pattern.
+
 - **`ai-review` is a sampled instrument, not an enumerated one.** `lib/scaffold/ai-review-step.ts` reviewed CLEAN on #1262 and BLOCKED on #1274 about an hour later, both at `scope=full`, with the flagged construct byte-identical across the two heads (content hash equal; whole-file hash differing as the control). **A green review means this run did not find this thing.** Any criterion scored by comparing reviewer verdicts across runs is reading a sample.
 - **A second mechanism produces the same error direction, and it is a different axis from a same-tree repeat.** The #1262/#1274 pair above and the #1334 pair in `CRC-B3` both hold the tree fixed. This one does not: on #1337, run `39972693180` (head `fb295a47`, created 14:47:51Z) returned `findings: []` and run `39973400503` (head `3d3c5b62`, created 14:52:46Z) returned one `high` naming `lib/scaffold/steps.ts`. **`git diff` between the two heads is 18 insertions in one test file and nothing else**, and the subject the finding names is the identical blob `57cb319f` at both — the whole-file object hash, which is the stronger form of the content-hash control used above. Both runs were created before #1340 merged at 15:00:18Z, so the base is held too. So the instrument flipped on a change that cannot have caused the flip, and the direction was the costly one again: four observations now, all false positives. **The third draw is not a fourth instance and must not be counted as one** — run `39975917885` (head `0bf21bcc`, created 15:10:01Z) returned `[]`, but it was created after #1340 merged, so its merge ref carries a base the first two never reviewed. It is an uncontrolled sample, not a reversal.
 - **A ledger timestamp is not the tree that was reviewed.** The near-miss above is worth more than the instance. The ledger rows for those runs read 14:53:08Z and 15:01:15Z, and the second is after #1340 merged — which reads as the second round having reviewed it, and it did not. **The ledger step runs late in the job; the merge ref is fixed at run creation.** `at` is when the step wrote, `createdAt` is what was reviewed, and only the second answers the question. The ledger's own timestamps are the field a reader reaches for first and the wrong one for this.
+- **CRC-E4 was satisfied by its own inverse before #1437, and the inverse looked like compliance.** `ai-review` refuses any pull request whose `.github/workflows/ai-review.yml` differs from the default branch's — one file, not any CI workflow file — and the documented escape, the `ai-review-override` label, **waives the check** rather than routing to a person. Measured at 19:15Z on 2026-10-23, with 15 pull requests open: **five edit that file and so can never go green** (a change to the reviewer cannot pass the reviewer), and **five more were red only because `main` had moved it underneath them** — `gh pr update-branch` cleared those five, and #1358 merged twenty minutes later having been red for four hours for a reason it did not cause. A check that cannot pass, plus a label that waives it, records nothing about whether anybody read the diff. `ALWAYS_HIGH_PREFIXES` in `lib/risk-tier.ts` is a floor no configuration can lower, but branch protection still requires zero approvals, so what the tier produces today is a **reading** rather than an enforced gate — CRC-E6 and CRC-E8 remain blocked on that setting, and the reading is what a consumer with required reviews would hand to it.
 - **CRC-M6's four buckets are not all measurable here yet.** Three of the four — wrong / intentional / didn't matter — report `UNMEASURED` rather than 0, because closing comments follow no parseable convention. `noiseRate` is `null`, not `0`.
 - **There is nothing deployed for a quorum to vary, so its variance control reads zero by construction.** The live filing path is `hooks/VerifyPhaseLock.hook.ts` → `filingGate` → `adjudicateFiling`, which runs a category regex over the title and set arithmetic over symptom keys and nothing else — no clock, no randomness, no network, no model. `arbitrate`, the five-stage path that takes votes, has exactly one caller outside `lib/` and `test/`: `scripts/arbitrate-finding.ts`. So twenty runs of the single adjudicator report one distinct outcome set, and **a quorum would introduce variance here rather than reduce it**. Calling the quorum "the variance control" inverts which way the causation runs.
 - **Two of the residues do not close by running the measurement more times.** A withheld candidate leaves no downstream trace — never filed, never commented on, never fixed — so the outcome graph it would have to be read from is one it never entered; and a finding nobody acted on leaves no trace from the other side either. Raising the run count does not help, because there is no artefact to read at any count.

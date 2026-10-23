@@ -6,8 +6,27 @@
  *
  * Exit **0** — post it as an inline comment that must be answered.
  * Exit **3** — file it as an issue. Only reachable with `--out-of-scope`.
+ * Exit **4** — post it, but on ANOTHER open pull request. See below.
  * Exit **1** — drop it; the refusal and its reason are on stdout.
  * Exit **2** — usage.
+ *
+ * ## Exit 4: the tracker is not the only other place a finding can go (#1343)
+ *
+ * About 45% of filings measured while working #1261 named a file an open pull
+ * request was already changing, and a tracker row about a file somebody is
+ * editing is a race it usually loses. The same shape arrives from the review
+ * side, because `ai-review` reads the MERGE REF and attributes a defect that
+ * lives on `main` to whichever pull request is standing closest — on
+ * 2026-10-23 that blocked #1393 with a `high` naming `lib/ai-review-rounds.ts`
+ * and #1354 with a `critical` naming `lib/bash-write-guard.ts`, neither file
+ * in the diff it was blocking. Both were re-routed by a person reading diffs.
+ *
+ * `lib/finding-pr-routing.ts` is that lookup, and the reading is printed on
+ * every run. It only CHANGES the exit when exactly one other open pull request
+ * holds the cited file: several holders, no holder, or a corpus that could not
+ * be read all leave the arbiter's own disposition alone and say so on stdout.
+ * A router that guessed between two candidates would be worse than the hand
+ * routing it replaces.
  *
  * **Exit 1 is also what UNMEASURED produces.** A finding the arbiter could
  * not evaluate is not a finding that passes; that is #1187's doctrine and the
@@ -40,12 +59,22 @@ import { readFileSync } from "fs";
 
 import {
   arbitrate,
+  symptomKeys,
   UNFILED_ID,
   verdictSummary,
   type Finding,
   type Verdict,
 } from "../lib/finding-arbiter";
 import { parseVotes, renderComment, type VerifierVote } from "../lib/finding-jury";
+import {
+  citedPathsFromKeys,
+  normalisePath,
+  routePaths,
+  routingSummary,
+  type OpenPrCorpus,
+  type OpenPullRequest,
+  type Routing,
+} from "../lib/finding-pr-routing";
 
 interface Args {
   title: string;
@@ -59,6 +88,10 @@ interface Args {
   json: boolean;
   comment: boolean;
   limit: number;
+  anchorFile: string | null;
+  openPrsFile: string | null;
+  thisPr: number | null;
+  prLimit: number;
 }
 
 /** Exit codes, each declared once so no branch can invent its own. */
@@ -66,6 +99,45 @@ export const EXIT_COMMENT = 0;
 export const EXIT_DROP = 1;
 export const EXIT_USAGE = 2;
 export const EXIT_ISSUE = 3;
+export const EXIT_OTHER_PR = 4;
+
+/**
+ * The paths to route on: the anchor when the finding cites it, else the
+ * finding's own cited paths (#1427).
+ *
+ * The anchor narrows; it never introduces a path the finding does not name.
+ * Compared through `normalisePath` so `./lib/a.ts`, `lib/a.ts` and a leading
+ * slash are one path — otherwise the verification is defeated by spelling,
+ * which is the same bug one layer down.
+ *
+ * Exported because this is the whole of the trust decision, and a caller
+ * reading `routePaths(...)` should be able to find it as one named thing.
+ */
+export function anchorOrCited(anchor: string | null, cited: readonly string[]): string[] {
+  if (anchor === null) return [...cited];
+  const wanted = normalisePath(anchor);
+  return cited.some(p => normalisePath(p) === wanted) ? [anchor] : [...cited];
+}
+
+/**
+ * A pull request number, or `null` for absent AND for unusable (#1427).
+ *
+ * Exported so the two states can be witnessed directly. `--this-pr` is read
+ * from a workflow expression, so "the expression produced nothing" arrives
+ * as an empty string or a literal `${{ … }}` rather than as a missing flag.
+ */
+export function parsePrNumber(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number(raw.trim());
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Was `--this-pr` given a value this script could not use? */
+export function prNumberIsUnusable(argv: readonly string[]): boolean {
+  const i = argv.indexOf("--this-pr");
+  if (i === -1 || i + 1 >= argv.length) return false;
+  return parsePrNumber(argv[i + 1]) === null;
+}
 
 function parseArgs(argv: string[]): Args {
   const get = (flag: string): string | null => {
@@ -84,7 +156,97 @@ function parseArgs(argv: string[]): Args {
     json: argv.includes("--json"),
     comment: argv.includes("--comment"),
     limit: Number.parseInt(get("--limit") ?? "60", 10),
+    anchorFile: get("--file"),
+    openPrsFile: get("--open-prs"),
+    // #1427: `null` for a malformed value, never `NaN`. A NaN here is the
+    // worst of the three states — the router sees `thisPr !== undefined` so
+    // it does not refuse for a missing identity, and then
+    // `p.number !== NaN` is true of every row so the own-PR exclusion
+    // removes nothing. The pull request being arbitrated stays a candidate
+    // to route to, which is exactly the fail-open the refusal exists for,
+    // reached through a typo instead of an omission. `main` turns the null
+    // into EXIT_USAGE so a bad flag is reported rather than absorbed.
+    thisPr: parsePrNumber(get("--this-pr")),
+    // Its own knob, not `--limit`. That one bounds the ISSUE population and
+    // this one bounds the PULL REQUEST population; one flag for two
+    // populations would make a truncation refusal name the wrong corpus.
+    prLimit: Number.parseInt(get("--pr-limit") ?? "60", 10),
   };
+}
+
+/**
+ * The open pull requests the finding is routed against (#1343).
+ *
+ * Fetched in ONE call — `gh pr list --json files` resolves each PR's diff in
+ * the same GraphQL query, so this is not N round-trips — and `changedFiles`
+ * is asked for alongside `files` so a page-limited file list is detectable
+ * without hardcoding whatever page size `gh` currently uses. The two numbers
+ * disagreeing IS the truncation detector; see `OpenPullRequest`.
+ *
+ * Every failure here is `unmeasured` and never an empty list. "No open pull
+ * request touches this file" is the reading that sends a finding to the
+ * tracker, and producing it from a `gh` that did not run is the fail-open
+ * this whole module exists to avoid.
+ */
+function openPrCorpus(args: Args): OpenPrCorpus {
+  if (args.openPrsFile === null && !args.repo) {
+    return { status: "unmeasured", why: "no --repo and no --open-prs, so no pull requests were looked at" };
+  }
+  let raw: string;
+  try {
+    raw = args.openPrsFile
+      ? readFileSync(args.openPrsFile, "utf-8")
+      : execFileSync(
+          "gh",
+          ["pr", "list", "--repo", args.repo, "--state", "open",
+           "--limit", String(args.prLimit + 1), "--json", "number,changedFiles,files"],
+          { encoding: "utf-8", maxBuffer: 32 * 1024 * 1024 },
+        );
+  } catch (error) {
+    return { status: "unmeasured", why: `the open pull requests could not be listed: ${message(error)}` };
+  }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(raw);
+  } catch (error) {
+    return { status: "unmeasured", why: `the open pull request list is not JSON: ${message(error)}` };
+  }
+  if (!Array.isArray(rows)) {
+    return { status: "unmeasured", why: "the open pull request list is not an array" };
+  }
+  if (args.openPrsFile === null && rows.length > args.prLimit) {
+    return {
+      status: "unmeasured",
+      why: `the repository returned more than --pr-limit ${args.prLimit} open pull requests, ` +
+        "so a PR holding the cited file may not be in the population at all",
+    };
+  }
+  const prs: OpenPullRequest[] = [];
+  for (const row of rows) {
+    if (row === null || typeof row !== "object") {
+      return { status: "unmeasured", why: "an entry in the open pull request list is not an object" };
+    }
+    const r = row as { number?: unknown; files?: unknown; changedFiles?: unknown };
+    const files = Array.isArray(r.files)
+      ? r.files.map(f => (typeof f === "string" ? f : (f as { path?: unknown })?.path)).filter((p): p is string => typeof p === "string")
+      : null;
+    if (typeof r.number !== "number" || files === null) {
+      return { status: "unmeasured", why: `pull request entry ${JSON.stringify(r.number)} has no number or no file list` };
+    }
+    prs.push({
+      number: r.number,
+      files,
+      // An absent count is not a complete one. Reporting `files.length` here
+      // would assert the list is whole on the strength of nothing, which is
+      // the one reading the truncation guard exists to refuse.
+      declaredFileCount: typeof r.changedFiles === "number" ? r.changedFiles : -1,
+    });
+  }
+  return { status: "measured", prs };
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Raised when the comparison population could not be read in full. */
@@ -162,14 +324,20 @@ function readVotes(path: string): readonly VerifierVote[] {
   }
 }
 
-function emit(args: Args, verdict: Verdict, finding: Finding): void {
+function emit(args: Args, verdict: Verdict, finding: Finding, routing: Routing | null): void {
   if (args.json) {
-    console.log(JSON.stringify(verdict, null, 2));
-  } else if (args.comment && verdict.disposition === "COMMENT") {
+    console.log(JSON.stringify({ ...verdict, routing }, null, 2));
+    return;
+  }
+  if (args.comment && verdict.disposition === "COMMENT") {
     console.log(renderComment(finding, verdict.severity ?? "Important", verdict.category));
   } else {
     console.log(verdictSummary(verdict));
   }
+  // Always printed when it was taken, including when it changed nothing. A
+  // routing reading that only appears when it fires is one a reader cannot
+  // tell from one that was never asked for.
+  if (routing !== null) console.log(routingSummary(routing));
 }
 
 function main(): number {
@@ -178,8 +346,17 @@ function main(): number {
     console.error(
       "usage: arbitrate-finding.ts --title <t> --body-file <p> --votes <p> " +
       "[--repo owner/name | --existing issues.json] [--project-root <p>] " +
-      "[--changed-files a.ts,b.ts] [--out-of-scope <reason>] [--json|--comment] [--limit N]",
+      "[--changed-files a.ts,b.ts] [--out-of-scope <reason>] [--json|--comment] [--limit N] " +
+      "[--this-pr N] [--file path] [--open-prs prs.json] [--pr-limit N]",
     );
+    return EXIT_USAGE;
+  }
+  // #1427: a `--this-pr` that was GIVEN and could not be read is a usage
+  // error, not an absent identity. Absorbing it would make the router's
+  // refusal fire on a typo and read like a missing flag, and the whole
+  // point of that refusal is that it names what is missing.
+  if (prNumberIsUnusable(process.argv.slice(2))) {
+    console.error("--this-pr must be a positive integer; refusing rather than routing with an unreadable identity");
     return EXIT_USAGE;
   }
   // Not usage errors: these are stages with no input, and the doctrine for an
@@ -200,25 +377,66 @@ function main(): number {
     ...(args.outOfScope ? { outOfScope: { reason: args.outOfScope } } : {}),
   };
 
+  const changedFiles =
+    args.changedFilesArg !== null
+      ? args.changedFilesArg.split(",").map(s => s.trim()).filter(Boolean)
+      : null;
+
   let verdict: Verdict;
   try {
     verdict = arbitrate(finding, {
       projectRoot: args.projectRoot,
       existing: existingFindings(args),
       votes: readVotes(args.votesFile),
-      ...(args.changedFilesArg !== null
-        ? { changedFiles: args.changedFilesArg.split(",").map(s => s.trim()).filter(Boolean) }
-        : {}),
+      ...(changedFiles !== null ? { changedFiles } : {}),
     });
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
-    console.log(`DROP new (UNMEASURED): ${why}`);
+    console.log(`DROP new (UNMEASURED): ${message(error)}`);
     return EXIT_DROP;
   }
 
-  emit(args, verdict, finding);
-  if (verdict.disposition === "ISSUE") return EXIT_ISSUE;
-  return verdict.disposition === "COMMENT" ? EXIT_COMMENT : EXIT_DROP;
+  // Cost order, the same doctrine `arbitrate` applies to its own stages: a
+  // dropped finding is going nowhere, so it is never paid a `gh pr list`.
+  const routing =
+    verdict.disposition === "DROP"
+      ? null
+      // `--file` is the payload's own anchor, and it SELECTS among the paths
+      // the finding cites rather than replacing them. An `ai-review` finding
+      // names one file, and the body around it usually names more — the
+      // exemplar that motivated #1343 cites the reader it is about AND the
+      // writer it blames. Unioning them routes a precise finding by an
+      // imprecise signal: run live on 2026-10-23 the full prose keys read
+      // AMBIGUOUS across three pull requests holding the second file, while
+      // the anchor alone named the one PR holding the first.
+      //
+      // #1427: it used to REPLACE them, unverified, and the agent being
+      // arbitrated supplies it. An anchor pointing at some other open pull
+      // request's files produced OTHER_PR, and the caller turns OTHER_PR
+      // into exit 4, which suppresses the filing — so an agent could steer
+      // its own adjudication into silence with one flag, and the finding's
+      // own cited paths were never consulted on that path.
+      //
+      // An anchor the finding does not cite is therefore IGNORED rather than
+      // obeyed, and routing falls back to the finding's own evidence. Not
+      // refused: #1416 is live and working, a wrong answer in the refusing
+      // direction is cheap only when it does not suppress, and falling back
+      // can only widen the cited set — AMBIGUOUS and TRACKER both leave the
+      // arbiter's disposition standing, so this path cannot newly silence
+      // anything.
+      : routePaths(anchorOrCited(args.anchorFile, citedPathsFromKeys(symptomKeys(finding))), {
+          corpus: openPrCorpus(args),
+          ...(args.thisPr !== null ? { thisPr: args.thisPr } : {}),
+          ...(changedFiles !== null ? { changedFiles } : {}),
+        });
+
+  emit(args, verdict, finding, routing);
+  if (verdict.disposition === "DROP") return EXIT_DROP;
+  // Only the unambiguous case moves the answer. AMBIGUOUS, TRACKER,
+  // NO_CITED_PATH and UNMEASURED all leave the arbiter's disposition standing
+  // — see the exit-4 section at the top of this file for why a router that
+  // picked between two candidates would be worse than the hand routing.
+  if (routing !== null && routing.route === "OTHER_PR") return EXIT_OTHER_PR;
+  return verdict.disposition === "ISSUE" ? EXIT_ISSUE : EXIT_COMMENT;
 }
 
 process.exit(main());

@@ -42,7 +42,23 @@ import { reviewIsCurrent } from "./security-verdict";
 /** The exit code of a stale or unmeasurable reading. One site, so it can be mutated. */
 export const STALE_EXIT = 1;
 
+/**
+ * The refusal when the directory read is not the one under review (#1348).
+ *
+ * One site, so `test/report-provenance.test.ts` can prove the refusal fires
+ * rather than inferring it from an exit code that a dozen other conditions
+ * also produce.
+ */
+export const WRONG_TREE = "UNMEASURED: wrong tree";
+
 export interface ProvenanceReading {
+  /**
+   * The directory the reading was taken in. Always present: a SHA does not
+   * say where it was read, and that is the fact a reader cannot reconstruct.
+   */
+  root: string;
+  /** The branch checked out at `root`, or null for a detached HEAD. */
+  branch: string | null;
   /** The commit the report describes. */
   measured: string | null;
   /** The commit the branch ends at now, or null when it could not be read. */
@@ -68,6 +84,16 @@ function git(root: string, args: string[]): string | null {
 }
 
 /**
+ * The branch checked out at `root`. Null for a detached HEAD, an empty
+ * answer, or a directory that is not a repository — all three are "there is
+ * no branch here", which is a different fact from any branch name.
+ */
+export function branchAt(root: string): string | null {
+  const branch = git(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  return branch === null || branch === "" || branch === "HEAD" ? null : branch;
+}
+
+/**
  * The ref whose tip a report should be aged against.
  *
  * `origin/<branch>` when it exists, because that is what another session can
@@ -75,8 +101,8 @@ function git(root: string, args: string[]): string | null {
  * has not been pushed. Detached HEAD has no branch and says so.
  */
 export function defaultRef(root: string): string | null {
-  const branch = git(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (branch === null || branch === "" || branch === "HEAD") return null;
+  const branch = branchAt(root);
+  if (branch === null) return null;
   if (git(root, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]) !== null) {
     return `origin/${branch}`;
   }
@@ -93,12 +119,35 @@ export function provenanceReading(
   root: string,
   measured?: string,
   ref?: string,
+  expectBranch?: string,
 ): ProvenanceReading {
   const measuredSha = measured ?? git(root, ["rev-parse", "HEAD"]);
+  const branch = branchAt(root);
+
+  // Before anything else, because a reading taken in the wrong directory is
+  // not stale and not current — it is about a different tree, and every
+  // other field below would be a true statement about the wrong thing.
+  if (expectBranch !== undefined && branch !== expectBranch) {
+    return {
+      root,
+      branch,
+      measured: measuredSha,
+      tip: null,
+      ref: null,
+      current: false,
+      reason:
+        `${WRONG_TREE}: ${root} is on ${branch ?? "no branch"}, not ${expectBranch}. ` +
+        `A command reads the directory it ran in, which here is not the one under ` +
+        `review — re-run it in the worktree holding ${expectBranch}.`,
+    };
+  }
+
   const resolvedRef = ref ?? defaultRef(root);
 
   if (resolvedRef === null) {
     return {
+      root,
+      branch,
       measured: measuredSha,
       tip: null,
       ref: null,
@@ -117,6 +166,8 @@ export function provenanceReading(
   const tip = git(root, ["rev-parse", "--verify", `${resolvedRef}^{commit}`]);
   if (tip === null) {
     return {
+      root,
+      branch,
       measured: measuredSha,
       tip: null,
       ref: resolvedRef,
@@ -132,6 +183,8 @@ export function provenanceReading(
   // two to parity; this is the library side, imported rather than repeated.
   const currency = reviewIsCurrent(measuredSha, tip);
   return {
+    root,
+    branch,
     measured: measuredSha,
     tip,
     ref: resolvedRef,
@@ -143,9 +196,18 @@ export function provenanceReading(
   };
 }
 
-/** The block to paste at the top of a report. Always states both commits. */
+/**
+ * The block to paste at the top of a report. Always states the directory
+ * and both commits.
+ *
+ * The directory line is first because it is the one a reader cannot
+ * reconstruct from the others (#1348): two SHAs describe a tree without
+ * saying which checkout they were read in, and a report whose reviewer was
+ * sitting in another worktree looks exactly like one whose reviewer was not.
+ */
 export function provenanceBlock(reading: ProvenanceReading): string {
   const lines = [
+    `Measured in: ${reading.root} (branch ${reading.branch ?? "none"})`,
     `Measured against: ${reading.measured ?? "UNKNOWN"}`,
     `Branch tip (${reading.ref ?? "unresolved"}): ${reading.tip ?? "UNKNOWN"}`,
     reading.current

@@ -48,15 +48,34 @@ import {
   AI_REVIEW_LEDGER_MARKER,
   AI_REVIEW_LEDGER_MAX_PAGES,
   AI_REVIEW_LEDGER_MAX_ROUNDS,
+  AI_REVIEW_LEDGER_TEXT_FIELD,
   AI_REVIEW_LEDGER_PR_VAR,
   AI_REVIEW_LEDGER_REPO_VAR,
+  AI_REVIEW_LEDGER_ROUNDS_FIELD,
   AI_REVIEW_LEDGER_SHA_VAR,
+  AI_REVIEW_LEDGER_TRUNCATED_FIELD,
   AI_REVIEW_LEDGER_TOKEN_VAR,
   AI_REVIEW_PERSIST_STEP_ID,
   AI_REVIEW_ROUND_PATH_VAR,
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step";
+// The reader, imported here on purpose. The recorder's whole job is to hand
+// `carryForward` something it can tell apart, and asserting the shape without
+// running it through the consumer is how `text: ""` passed review twice.
+import { carryForward } from "../lib/ai-review-rounds";
 import { readAiReviewFindings } from "../lib/scaffold/ai-review-findings";
+// The reader, imported by the TEST only. Neither production file imports the
+// other — the step stays import-free because mutation batteries copy it into
+// a tmpdir — so an agreement about field names has to be asserted somewhere,
+// and the only honest place is where both can be run against each other.
+import {
+  AI_REVIEW_LEDGER_READ,
+  AI_REVIEW_LEDGER_ROUNDS_KEY,
+  AI_REVIEW_LEDGER_TRUNCATED_KEY,
+  AI_REVIEW_TRUNCATION_STATED,
+  AI_REVIEW_TRUNCATION_UNKNOWN,
+  readLedger,
+} from "../lib/ai-review-rounds";
 import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
 
 /**
@@ -94,15 +113,20 @@ function botComment(id: number, body: string) {
 }
 
 /** A comment body in the ledger's own format, holding `rounds`. */
-function ledgerBody(rounds: unknown[]): string {
+function ledgerBody(payload: unknown): string {
   return [
     AI_REVIEW_LEDGER_MARKER,
     "### AI review findings ledger",
     "",
     "```json",
-    JSON.stringify(rounds),
+    JSON.stringify(payload),
     "```",
   ].join("\n");
+}
+
+/** A ledger in the windowed shape this step writes from #1405 onward. */
+function windowBody(rounds: unknown[], over: Record<string, unknown> = {}): string {
+  return ledgerBody({ [AI_REVIEW_LEDGER_ROUNDS_FIELD]: rounds, ...over });
 }
 
 interface Rig {
@@ -319,14 +343,24 @@ function runPersist(rig: Rig = {}) {
     const argv = existsSync(argvPath) ? readFileSync(argvPath, "utf8").split("\n").filter(Boolean) : [];
     const sentRaw = existsSync(bodyPath) ? readFileSync(bodyPath, "utf8") : null;
     // What the ledger comment would say, parsed back out of the request.
+    // TWO SHAPES (#1405). The bare array is what this step used to write and
+    // what fixtures still plant as a legacy ledger; `{rounds, truncated}` is
+    // what it writes now. `doc` is the whole document so a case can assert on
+    // the field's PRESENCE, which is the distinction the window count exists
+    // to carry — an absent `truncated` is "unknown", never zero.
     let rounds: any[] | null = null;
+    let doc: any = undefined;
     if (sentRaw !== null) {
       const body = JSON.parse(sentRaw).body as string;
       const fenced = body.split("```json")[1]?.split("```")[0];
-      rounds = fenced === undefined ? null : JSON.parse(fenced);
+      doc = fenced === undefined ? null : JSON.parse(fenced);
+      if (Array.isArray(doc)) rounds = doc;
+      else if (doc !== null && typeof doc === "object" && Array.isArray(doc.rounds)) {
+        rounds = doc.rounds;
+      }
     }
     const method = argv.includes("PATCH") ? "PATCH" : argv.includes("POST") ? "POST" : null;
-    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", argv, rounds, method, sentRaw };
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", argv, rounds, doc, method, sentRaw };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -363,7 +397,9 @@ describe("AC-L1 (#1168): a round is written, and the ledger is cumulative", () =
     expect(r.rounds![0].findings).toEqual([
       // `lib/a.ts` is not in this case's checkout, so there was no line to
       // read and the recorded text is empty. AC-L9 is where it is planted.
-      { severity: "high", file: "lib/a.ts", line: 4, summary: "s", text: "" },
+      // No `text`: nothing is planted at `lib/a.ts` here, so the anchor could
+      // not be read and the recorder records its absence (AC-L14, #1406).
+      { severity: "high", file: "lib/a.ts", line: 4, summary: "s" },
     ]);
     expect(r.rounds![0].round).toBe(2);
     // The identity rule is stamped on the entry, so a later round reads which
@@ -1001,6 +1037,11 @@ describe("AC-L5 (#1168): the committed workflow carries the step, in position", 
  * `sed` that reads the wrong line, which is the failure that matters: a wrong
  * text does not look wrong, it resolves a live finding away.
  */
+/** Whether the entry carries an anchor at all. `""` is one; absent is not. */
+function hasText(finding: Record<string, unknown>): boolean {
+  return Object.hasOwn(finding, AI_REVIEW_LEDGER_TEXT_FIELD);
+}
+
 describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout", () => {
   const SRC = "line one\nline two\n  await symlink(target, path);\nline four\n";
 
@@ -1071,19 +1112,20 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
         },
       });
       expect(r.status, r.stderr).toBe(0);
-      const texts = r.rounds![0].findings.map((f: any) => f.text);
       expect(r.sentRaw, "an absolute path was read into a public comment").not.toContain(
         "THE-SECRET-LINE",
       );
-      // The control is what makes the two empties above a refusal rather than
-      // a step that records nothing at all.
-      expect(texts).toEqual(["", "", "alpha"]);
+      // A refusal records NO anchor — see AC-L12. The control is what makes
+      // the two absences above a refusal rather than a step that recorded
+      // nothing at all.
+      expect(r.rounds![0].findings.map((f: any) => hasText(f))).toEqual([false, false, true]);
+      expect(r.rounds![0].findings[2].text).toBe("alpha");
     } finally {
       rmSync(secret, { force: true });
     }
   });
 
-  test("AC-L9: an unreadable or absent anchor records the empty string, and never fails", () => {
+  test("AC-L9: an unreadable or absent anchor records NO anchor, and never fails", () => {
     const r = runPersist({
       list: [],
       files: { "lib/a.ts": "alpha\n" },
@@ -1098,7 +1140,124 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
     });
     // The recorder observes; it never fails the job it is observing (#1110).
     expect(r.status, r.stderr).toBe(0);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "", ""]);
+    expect(r.rounds![0].findings.map((f: any) => hasText(f))).toEqual([false, false, false, false]);
+  });
+
+  /**
+   * AC-L14 (#1406) — "no anchor" and "the anchor is a blank line" are two
+   * facts, and the recorder wrote one value for both.
+   *
+   * `rt=""` was the initial value AND the value left behind by every path
+   * where the text could not be determined: a refused path spelling, an
+   * absent or non-numeric line, a file not in the index, a line past the end
+   * of the file. It was also what a genuinely blank cited line produces.
+   *
+   * The reader's undecidable test is `typeof recordedText !== "string"`, and
+   * `""` is a string — so all four failure paths went to the comparison, and
+   * a finding whose anchor was never obtained was dropped as RESOLVED the
+   * moment the cited line had any content. That is #1351's defect one value
+   * over: the repair closed the route through an absent field and left the
+   * route through an empty one.
+   *
+   * The fix is in the recorder because the recorder is the only thing that
+   * knows which branch it took. `recordedText === ""` at the reader would be
+   * the wrong fix in the other direction — a finding on a line that really is
+   * blank would become permanently uncarryable-away.
+   */
+  describe("AC-L14 (#1406): a missing anchor is absent, a blank anchor is empty", () => {
+    const WITH_BLANK = "alpha\n\ngamma\n";
+
+    test("AC-L14: a genuinely blank cited line records an EMPTY anchor, present", () => {
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 2, summary: "blank" }] },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const f = r.rounds![0].findings[0];
+      expect(hasText(f), "a blank line is a reading and must be recorded as one").toBe(true);
+      expect(f.text).toBe("");
+    });
+
+    test.each([
+      ["a refused absolute path", { file: "/etc/hosts", line: 1 }],
+      ["a path climbing out", { file: "../../etc/hosts", line: 1 }],
+      ["a path spelling an option", { file: "--expression=e id", line: 1 }],
+      ["a file not in the index", { file: "lib/missing.ts", line: 1 }],
+      ["no line number", { file: "lib/a.ts" }],
+      ["a zero line", { file: "lib/a.ts", line: 0 }],
+      ["a line past the end", { file: "lib/a.ts", line: 99 }],
+    ])("AC-L14: %s records NO anchor, not an empty one", (_label, over) => {
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: { findings: [{ severity: "high", summary: "s", ...over }] },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const f = r.rounds![0].findings[0];
+      expect(
+        hasText(f),
+        `recorded ${JSON.stringify(f.text)} — an unread anchor is UNDECIDABLE, and an empty ` +
+          "string resolves the finding away the moment the cited line has content",
+      ).toBe(false);
+    });
+
+    test("AC-L14: the two cases sit in ONE payload and stay apart", () => {
+      // The row that fails under a recorder which simply stopped emitting the
+      // field at all: the blank anchor is real and must survive.
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: {
+          findings: [
+            { severity: "high", file: "lib/a.ts", line: 1, summary: "content" },
+            { severity: "high", file: "lib/a.ts", line: 2, summary: "blank" },
+            { severity: "high", file: "lib/a.ts", line: 99, summary: "past the end" },
+            { severity: "high", file: "/etc/hosts", line: 1, summary: "refused" },
+          ],
+        },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const fs = r.rounds![0].findings;
+      expect(fs.map(hasText)).toEqual([true, true, false, false]);
+      expect(fs.map((f: any) => f.text)).toEqual(["alpha", "", undefined, undefined]);
+      // Positional: the join must not have shifted the survivors up into the
+      // slots the absences vacated.
+      expect(fs.map((f: any) => f.summary)).toEqual([
+        "content",
+        "blank",
+        "past the end",
+        "refused",
+      ]);
+    });
+
+    test("AC-L14: the reader carries the absent anchor and resolves the blank one", () => {
+      // The end of the chain the recorder exists for. Both findings go into
+      // `carryForward` against a round where the cited line now has content:
+      // the one with no anchor is UNDECIDABLE and carried, the one recorded
+      // as genuinely blank is resolved and dropped.
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: {
+          findings: [
+            { severity: "high", file: "lib/a.ts", line: 2, summary: "was blank" },
+            { severity: "high", file: "lib/a.ts", line: 99, summary: "never read" },
+          ],
+        },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const carried = carryForward(
+        r.rounds![0].findings.map((f: any) => ({
+          finding: f,
+          recordedText: f[AI_REVIEW_LEDGER_TEXT_FIELD],
+        })),
+        () => "the line has content now",
+      );
+      expect(carried.map((f: any) => f.summary), "an unread anchor was resolved away").toEqual([
+        "never read",
+      ]);
+    });
   });
 
   test("AC-L9: a round with no findings still writes a well-formed entry", () => {
@@ -1225,38 +1384,547 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
     expect(r.rounds).toHaveLength(1);
   });
 
-  test("AC-L11: at the cap the OLDEST round is dropped and the drop is announced", () => {
-    const full = Array.from({ length: AI_REVIEW_LEDGER_MAX_ROUNDS }, (_, i) => ({
+  /**
+   * A prior ledger of `n` rounds, named `old-0` … `old-<n-1>`.
+   *
+   * The names are deliberately NOT `run-<i>`. The rig's `GITHUB_RUN_ID` is
+   * `run-9`, so a prior ledger of twelve `run-<i>` rounds already contains
+   * `run-9` — and "the new round was recorded" then held vacuously, against a
+   * row the fixture itself planted. An eviction-order assertion needs the two
+   * populations to be nameable apart.
+   */
+  function priorRounds(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
       at: `t${i}`,
       sha: "cafe",
-      run: `run-${i}`,
+      run: `old-${i}`,
       attempt: "1",
       round: i + 1,
       findings: [],
     }));
-    const r = runPersist({ list: [botComment(5, ledgerBody(full))], payload: ONE_FINDING });
+  }
+
+  test("AC-L11: at the cap the OLDEST round is dropped and the COUNT is announced", () => {
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds, "the ledger grew past its cap").toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
     // The oldest is gone and the newest is present — a cap that dropped the
     // WRONG end keeps the same length and loses every new round instead.
-    expect(JSON.stringify(r.rounds), "run-0 should have been dropped").not.toContain('"run-0"');
-    expect(JSON.stringify(r.rounds)).toContain('"run-9"');
+    expect(JSON.stringify(r.rounds), "old-0 should have been dropped").not.toContain('"old-0"');
+    expect(JSON.stringify(r.rounds), "old-1 is inside the window and was dropped").toContain(
+      '"old-1"',
+    );
     expect(JSON.stringify(r.rounds), "this round was not recorded").toContain('"run-9"');
     // A dropped round is gone, not empty. Silence here would make the ledger
     // a window that reports as a history.
-    expect(r.stdout, "the ledger dropped a round and said nothing").toContain("cap");
+    //
+    // Assert the COUNT, not the word "cap". The count is the one thing only
+    // the announcement branch can write, and `""` and `0` used to reach the
+    // SAME `case` arm — so a note keyed on the word was green whether the
+    // count had been read or not. That is the sixth shape of
+    // `.claude/rules/checks-must-be-able-to-fail.md` living in the arm
+    // rather than in the value, and it shipped live in #1386.
+    expect(r.stdout, "the evicted count was not announced").toContain("1 of the OLDEST");
+  });
+
+  test("AC-L11: the announced count is the number actually evicted, not a constant", () => {
+    // The row the one above cannot be: it evicts THREE, so a hardcoded "1",
+    // a boolean dressed as a count, and an off-by-one all come back wrong.
+    // Two rows differing only in the count is the cheapest way to make the
+    // announcement carry information rather than fire.
+    const over = AI_REVIEW_LEDGER_MAX_ROUNDS + 2;
+    const r = runPersist({ list: [botComment(5, ledgerBody(priorRounds(over)))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds, "the ledger grew past its cap").toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(JSON.stringify(r.rounds), "old-2 should have been dropped").not.toContain('"old-2"');
+    expect(JSON.stringify(r.rounds), "old-3 is inside the window and was dropped").toContain(
+      '"old-3"',
+    );
+    expect(JSON.stringify(r.rounds), "this round was not recorded").toContain('"run-9"');
+    expect(r.stdout, "the announced count does not match the eviction").toContain(
+      "3 of the OLDEST",
+    );
   });
 
   test("AC-L11: under the cap nothing is dropped and nothing is announced", () => {
-    // The control for the row above: the warning must not fire on every run.
-    const few = [{ at: "t0", sha: "cafe", run: "run-0", attempt: "1", round: 1, findings: [] }];
-    const r = runPersist({ list: [botComment(5, ledgerBody(few))], payload: ONE_FINDING });
+    // The control for the rows above: the warning must not fire on every run.
+    const r = runPersist({ list: [botComment(5, ledgerBody(priorRounds(1)))], payload: ONE_FINDING });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds).toHaveLength(2);
     expect(JSON.stringify(r.rounds), "an under-cap ledger lost its oldest round").toContain(
-      '"run-0"',
+      '"old-0"',
     );
-    expect(r.stdout, "the cap warning fired below the cap").not.toContain("cap");
+    expect(r.stdout, "the cap warning fired below the cap").not.toContain("OLDEST");
+  });
+
+  test("AC-L11: a count that cannot be read REFUSES the write rather than reading as zero", () => {
+    // Fault injection on the count position only. In production the count and
+    // the kept list come out of ONE `jq`, so this branch is unreachable while
+    // that invocation succeeds — which is exactly why it needs a row: a
+    // defensive arm nothing exercises is a line in a report.
+    //
+    // The defect this blocks is the one that shipped: when the count was a
+    // SECOND `jq … 2>/dev/null || true`, its failure produced `""`, `""`
+    // shared an arm with `0`, and the ledger was written having evicted
+    // rounds it did not mention. A truncated history that reports as a
+    // complete one is unrecoverable; a round that was not recorded is not.
+    const real = buildPersistScript();
+    const COUNT_EXPR = "($d | tostring)";
+    expect(
+      real.split(COUNT_EXPR).length - 1,
+      "the count expression moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    const mutant = real.replace(COUNT_EXPR, '("not-a-number")');
+    expect(mutant, "the mutation did not apply").not.toBe(real);
+
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+      script: mutant,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "the ledger was written with an unreadable eviction count").toBe(null);
+    expect(r.stdout, "the refusal was not announced").toContain("NOT recorded");
+
+    // The control, same rig and the real script: the refusal is the
+    // mutation's doing and not something this fixture provokes on its own.
+    const control = runPersist({
+      list: [botComment(5, ledgerBody(priorRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
+    expect(control.method, "the unmutated script also refused").toBe("PATCH");
+    expect(control.stdout).not.toContain("NOT recorded");
+  });
+});
+
+/**
+ * AC-L15 (#1405): the ledger says on its face that it is a WINDOW.
+ *
+ * The cap evicts, and the only notice is a warning annotation in a job log
+ * that expires. So the notice reaches whoever watched that run and nobody
+ * afterwards, and a twelve-round ledger that dropped eight reads exactly
+ * like a twelve-round ledger that is the whole history. That is #1168's
+ * distinction — gone is not empty — one level up, about the ledger rather
+ * than about a round.
+ *
+ * The reader half merged in #1410 and accepts both shapes already. This is
+ * the writer.
+ *
+ * Three facts have to stay apart, and only two of them are numbers:
+ *
+ *  - **0** — nothing was ever dropped. A fresh pull request, and also a
+ *    legacy bare array SHORTER than the cap, because the list only grows by
+ *    one per round and is only ever cut at the cap, so a length below it
+ *    means the cut never ran. That is a derivation, not an assumption.
+ *  - **N** — exactly N were dropped, carried forward and added to.
+ *  - **absent** — the depth cannot be established. A legacy array adopted at
+ *    exactly the cap: this round's eviction is known and the ones before it
+ *    are not. Writing the lower bound here would be a number a reader cannot
+ *    tell from a total.
+ */
+describe("AC-L15 (#1405): the window count is written, and unknown is not zero", () => {
+  // How far past the cap the sequence row drives the real step. Shared with
+  // the mutant row below rather than written twice, because that row's job
+  // is to prove THIS NUMBER is big enough: it measures the depth at which a
+  // saturating total first diverges and asserts this constant reaches it.
+  // Lower it to `+ 5` and the mutant row goes red naming the shortfall
+  // (#1451).
+  const SEQUENCE_ROUNDS = AI_REVIEW_LEDGER_MAX_ROUNDS + 8;
+
+  const entry = (over: Record<string, unknown> = {}) => ({
+    at: "t",
+    sha: "cafe",
+    run: "old",
+    attempt: "1",
+    round: 1,
+    findings: [],
+    ...over,
+  });
+  const nRounds = (n: number) =>
+    Array.from({ length: n }, (_, i) => entry({ run: `old-${i}`, round: i + 1 }));
+
+  test("AC-L15: a first round states ZERO dropped, as a field and not as an absence", () => {
+    const r = runPersist({ list: [], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("POST");
+    expect(Object.hasOwn(r.doc, AI_REVIEW_LEDGER_TRUNCATED_FIELD)).toBe(true);
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(0);
+    expect(r.rounds).toHaveLength(1);
+  });
+
+  test("AC-L15: a legacy bare array UNDER the cap migrates to a stated zero", () => {
+    // Derived rather than assumed: a list below the cap was never cut.
+    const r = runPersist({ list: [botComment(5, ledgerBody(nRounds(3)))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("PATCH");
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(0);
+    expect(r.rounds, "the legacy rounds were discarded by the migration").toHaveLength(4);
+    expect(JSON.stringify(r.rounds)).toContain('"old-0"');
+  });
+
+  test("AC-L15: a legacy bare array AT the cap migrates to NO count, and says why", () => {
+    // The row that fails under `truncated: dropped-this-round`. That number
+    // is a lower bound, and a reader cannot tell a lower bound from a total.
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("PATCH");
+    expect(
+      Object.hasOwn(r.doc, AI_REVIEW_LEDGER_TRUNCATED_FIELD),
+      `wrote ${JSON.stringify(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD])} for a depth it cannot know`,
+    ).toBe(false);
+    expect(Array.isArray(r.doc[AI_REVIEW_LEDGER_ROUNDS_FIELD])).toBe(true);
+    expect(r.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(r.stdout, "an unknowable depth was not announced").toContain("cannot be established");
+  });
+
+  test("AC-L15: an existing count under the cap is carried forward unchanged", () => {
+    const r = runPersist({
+      list: [botComment(5, windowBody(nRounds(2), { [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4 }))],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(4);
+    expect(r.rounds, "an object ledger's rounds were not read").toHaveLength(3);
+    expect(JSON.stringify(r.rounds)).toContain('"old-0"');
+    expect(r.stdout, "a drop was announced where none happened").not.toContain("OLDEST");
+  });
+
+  test("AC-L15: an eviction ADDS to the existing count, and the two numbers agree", () => {
+    // 4 already gone, 1 more this round, so 5 — and the warning says 1.
+    // Both come out of the same `jq`, which is the whole of #1394: two
+    // computations of one number are two numbers that can disagree.
+    const r = runPersist({
+      list: [
+        botComment(
+          5,
+          windowBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS), {
+            [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4,
+          }),
+        ),
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD], "the count did not accumulate").toBe(5);
+    expect(r.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(JSON.stringify(r.rounds), "the oldest round survived the cap").not.toContain('"old-0"');
+    expect(r.stdout, "the announced drop is this round's, not the total").toContain(
+      "1 of the OLDEST",
+    );
+  });
+
+  test("AC-L15: a malformed count is UNKNOWN, never zero, and the rounds survive", () => {
+    const r = runPersist({
+      list: [
+        botComment(5, windowBody(nRounds(2), { [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: "4" })),
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(
+      Object.hasOwn(r.doc, AI_REVIEW_LEDGER_TRUNCATED_FIELD),
+      "a count that could not be read was written as a number anyway",
+    ).toBe(false);
+    expect(r.rounds, "a bad count discarded the rounds").toHaveLength(3);
+  });
+
+  test("AC-L15: an object whose rounds is not an array is REFUSED, not replaced", () => {
+    const r = runPersist({
+      list: [botComment(5, ledgerBody({ [AI_REVIEW_LEDGER_ROUNDS_FIELD]: "nope" }))],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "an unreadable ledger was overwritten").toBe(null);
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  test("AC-L15: the control — what this step writes is what the reader reads", () => {
+    // The two sides have no import between them, so the agreement is only
+    // real if something runs one against the other.
+    const under = runPersist({ list: [botComment(5, ledgerBody(nRounds(3)))], payload: ONE_FINDING });
+    const atCap = runPersist({
+      list: [botComment(5, ledgerBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
+    const bodyOf = (sent: string | null) => JSON.parse(sent!).body as string;
+
+    const stated = readLedger(bodyOf(under.sentRaw));
+    if (stated.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(stated));
+    expect(stated.truncation.status).toBe(AI_REVIEW_TRUNCATION_STATED);
+    if (stated.truncation.status !== AI_REVIEW_TRUNCATION_STATED) throw new Error("unreachable");
+    expect(stated.truncation.dropped).toBe(0);
+    expect(stated.rounds).toHaveLength(4);
+
+    const unknown = readLedger(bodyOf(atCap.sentRaw));
+    if (unknown.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(unknown));
+    expect(unknown.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
+    expect(unknown.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+  });
+
+  test("AC-L15: the two sides spell the field names identically, with no import between them", () => {
+    const script = buildPersistScript();
+    expect(AI_REVIEW_LEDGER_ROUNDS_FIELD).toBe(AI_REVIEW_LEDGER_ROUNDS_KEY);
+    expect(AI_REVIEW_LEDGER_TRUNCATED_FIELD).toBe(AI_REVIEW_LEDGER_TRUNCATED_KEY);
+    expect(script).toContain(`{${AI_REVIEW_LEDGER_TRUNCATED_FIELD}: $t, ${AI_REVIEW_LEDGER_ROUNDS_FIELD}: .}`);
+    expect(script, "the step imports the reader, so the agreement is vacuous").not.toContain(
+      "ai-review-rounds",
+    );
+  });
+
+  // AC-4 (#1405): the row that is red when the RECORDED count is wrong.
+  //
+  // Every other row above compares the written count against a number
+  // written beside it in this file, so each one is only as right as the
+  // expectation someone typed next to it. A count that is consistently
+  // wrong — off by one, or this round's drop instead of the total — agrees
+  // with a hand-written expectation that made the same mistake, and nine
+  // green rows say nothing about it.
+  //
+  // This row derives the truth from the loop counter instead. Drive the
+  // real step through more rounds than the cap holds, feeding each output
+  // back in as the next round's prior ledger, and one equality has to hold
+  // at every step for the count to mean what it says:
+  //
+  //     truncated + retained == rounds written so far
+  //
+  // Nothing in the step computes that sum, and the right-hand side is the
+  // iteration index, so no mutation of the writer can satisfy it by
+  // accident. The second assertion is the same law stated over the
+  // announcements: the warnings a human read, one per run, have to add up
+  // to the number the ledger carries for whoever arrives later. That is
+  // #1394's "one computation, not two" extended across time — the two
+  // sites now being this round's annotation and the running total.
+  test("AC-L15/AC-4: across a sequence past the cap, truncated + retained is every round written", () => {
+    // Eight past the cap, and the eight is load-bearing. The deepest total
+    // any row above asserts is 5, so a writer that is correct up to 5 and
+    // drifts after it is green on every one of them. Running past the
+    // deepest typed number is the part of this the other rows cannot reach.
+    //
+    // That used to be asserted here as "measured: the drift mutant below is
+    // red here and nowhere else", with no mutant below it and no measurement
+    // anyone could re-run. Both halves were wrong, and #1451 measured them:
+    //
+    //  - the OBVIOUS drift — `$d`, this round's eviction, written where the
+    //    running total belongs — is caught by three rows, not one. The two
+    //    shallow ones are "an existing count under the cap is carried
+    //    forward unchanged" and "an eviction ADDS to the existing count",
+    //    and the first needs no eviction at all. Nothing about depth is
+    //    required to see it.
+    //  - a total that goes on being RIGHT and then saturates past the
+    //    deepest typed number is the one only this row can see: 1 of 100.
+    //
+    // So the depth claim is true and the mutant that was named for it was
+    // not. The real one is the row directly below this test, which also
+    // binds `SEQUENCE_ROUNDS` — measured there, the first divergence is at
+    // the cap + 6, so this constant carries two rounds of headroom.
+    const ROUNDS = SEQUENCE_ROUNDS;
+    let body: string | null = null;
+    let announced = 0;
+
+    for (let i = 1; i <= ROUNDS; i++) {
+      const runId = `seq-${i}`;
+      const r = runPersist({
+        list: body === null ? [] : [botComment(5, body)],
+        payload: ONE_FINDING,
+        round: String(i),
+        env: {
+          GITHUB_RUN_ID: runId,
+          STUB_WRITE_RESPONSE: JSON.stringify({ id: 5, body: `${runId} ok` }),
+        },
+      });
+      expect(r.status, `round ${i}: ${r.stderr}`).toBe(0);
+      expect(r.sentRaw, `round ${i} wrote nothing`).not.toBeNull();
+
+      const recorded = r.doc?.[AI_REVIEW_LEDGER_TRUNCATED_FIELD];
+      expect(typeof recorded, `round ${i} recorded no count`).toBe("number");
+      expect(
+        recorded + (r.rounds?.length ?? 0),
+        `round ${i}: ${recorded} dropped + ${r.rounds?.length} kept is not ${i} written`,
+      ).toBe(i);
+      expect(r.rounds).toHaveLength(Math.min(i, AI_REVIEW_LEDGER_MAX_ROUNDS));
+
+      const said = r.stdout.match(/(\d+) of the OLDEST/);
+      announced += said === null ? 0 : Number(said[1]);
+      expect(announced, `round ${i}: the warnings total ${announced}, the ledger says ${recorded}`).toBe(
+        recorded,
+      );
+
+      body = JSON.parse(r.sentRaw!).body as string;
+    }
+
+    // Stated as an absolute so a loop that silently ran zero times cannot
+    // pass this: eight rounds are gone and the cap's worth remain. (Eight,
+    // not five — the depth moved to `+ 8` and this sentence kept the old
+    // number until #1451. The assertions never said five; they are written
+    // against the constant, which is the only reason the drift was in the
+    // prose and not in the result.)
+    const last = readLedger(body!);
+    if (last.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(last));
+    if (last.truncation.status !== AI_REVIEW_TRUNCATION_STATED) {
+      throw new Error(`the reader could not get a count back: ${JSON.stringify(last.truncation)}`);
+    }
+    expect(last.truncation.dropped).toBe(ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(last.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(announced).toBe(ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS);
+    // The window really is a window, and it is the OLDEST that went: the
+    // rounds the count claims are gone are the ones it names.
+    expect(last.rounds.map((entry: { round?: unknown }) => entry.round)).toEqual(
+      Array.from(
+        { length: AI_REVIEW_LEDGER_MAX_ROUNDS },
+        (_, i) => ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS + 1 + i,
+      ),
+    );
+  });
+
+  // AC-1/AC-2/AC-3 (#1451): the mutant the row above used to CITE.
+  //
+  // Its comment read "measured: the drift mutant below is red here and
+  // nowhere else" and there was no mutant below it — the sentence answered,
+  // in the right file, the question that would otherwise have prompted
+  // somebody to write one. That is `checks-must-be-able-to-fail.md`'s #1322
+  // shape, and SUCCESS.md's "what is not success" list names the weaker
+  // version of it directly ("a guard with a passing mutant test").
+  //
+  // Writing it falsified the claim it was supposed to support. The obvious
+  // drift — `$d`, this round's eviction count, written where the running
+  // total belongs — moves THREE rows, measured over the whole file:
+  //
+  //     ($pt + $d) -> ($d + 0)      97 pass / 3 fail
+  //       · an existing count under the cap is carried forward unchanged
+  //       · an eviction ADDS to the existing count
+  //       · across a sequence past the cap  (the row above)
+  //
+  // The first of those evicts nothing, so depth is not what catches it. A
+  // mutation is a thing you spell, and the first spelling of this one —
+  // `($d | tostring)` — moved a FOURTH row by colliding with the string
+  // `AC-L11`'s count mutant rewrites, tripping its uniqueness guard. That
+  // row was reporting a vanished mutation target, not a caught defect.
+  //
+  // The mutant below is the one the depth actually buys, and it is the
+  // comment's own theory made real: a total that is RIGHT up to the deepest
+  // number anybody typed and wrong after it. 1 of 100.
+  test("AC-L15/AC-4: the MUTANT — a total saturating past the deepest typed number — is caught HERE and not by the shallow rows", () => {
+    const real = buildPersistScript();
+    const TOTAL_EXPR = "(($pt + $d) | tostring)";
+    expect(
+      real.split(TOTAL_EXPR).length - 1,
+      "the running-total expression moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    // Saturate at 5, the deepest total any other row in this file asserts.
+    const mutant = real.replace(TOTAL_EXPR, "(([($pt + $d), 5] | min) | tostring)");
+    expect(mutant, "the mutation did not apply").not.toBe(real);
+
+    // Half one — "not by the shallow rows", run rather than asserted in
+    // prose. These are the two fixtures that DO catch the obvious drift,
+    // and they are blind to this one: both land on totals at or under the
+    // saturation point, which is the whole reason depth is needed.
+    const carried = runPersist({
+      list: [botComment(5, windowBody(nRounds(2), { [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4 }))],
+      payload: ONE_FINDING,
+      script: mutant,
+    });
+    expect(
+      carried.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD],
+      "the carry-forward fixture saw the saturation, so it is not a shallow-blind case",
+    ).toBe(4);
+
+    const added = runPersist({
+      list: [
+        botComment(
+          5,
+          windowBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS), {
+            [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4,
+          }),
+        ),
+      ],
+      payload: ONE_FINDING,
+      script: mutant,
+    });
+    expect(
+      added.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD],
+      "the accumulate fixture saw the saturation, so it is not a shallow-blind case",
+    ).toBe(5);
+
+    // Half two — the sequence DOES see it, and the round it first sees it
+    // on is the measurement that justifies `SEQUENCE_ROUNDS`. Driven only
+    // as far as it needs to go: one past the predicted divergence, so a
+    // divergence that arrives LATE is a failure rather than something this
+    // loop runs past.
+    const probeTo = AI_REVIEW_LEDGER_MAX_ROUNDS + 6;
+    let body: string | null = null;
+    let firstDivergence: number | null = null;
+    let observed = 0;
+
+    for (let i = 1; i <= probeTo; i++) {
+      const runId = `sat-${i}`;
+      const r = runPersist({
+        list: body === null ? [] : [botComment(5, body)],
+        payload: ONE_FINDING,
+        round: String(i),
+        env: {
+          GITHUB_RUN_ID: runId,
+          STUB_WRITE_RESPONSE: JSON.stringify({ id: 5, body: `${runId} ok` }),
+        },
+        script: mutant,
+      });
+      expect(r.status, `round ${i}: ${r.stderr}`).toBe(0);
+      expect(r.sentRaw, `round ${i} wrote nothing`).not.toBeNull();
+      observed += 1;
+
+      const recorded = r.doc?.[AI_REVIEW_LEDGER_TRUNCATED_FIELD];
+      expect(typeof recorded, `round ${i} recorded no count`).toBe("number");
+      if (
+        firstDivergence === null &&
+        (recorded as number) + (r.rounds?.length ?? 0) !== i
+      ) {
+        firstDivergence = i;
+      }
+
+      body = JSON.parse(r.sentRaw!).body as string;
+    }
+
+    // The loop ran. A `firstDivergence` of null and a loop that never
+    // executed are the same reading otherwise, and only one of them is a
+    // finding.
+    expect(observed, "the probe loop ran zero rounds").toBe(probeTo);
+    expect(
+      firstDivergence,
+      "the saturating total was never caught — this row's mutant no longer reaches the defect it names",
+    ).toBe(AI_REVIEW_LEDGER_MAX_ROUNDS + 6);
+
+    // And the constant the row above runs on is deep enough to get there.
+    // This is the "eight is load-bearing" claim, executable: measured at
+    // `+ 5` the row above is GREEN under this mutant and at `+ 6` it is
+    // red, so the shipped `+ 8` carries two rounds of headroom. Shorten it
+    // and this fails naming the shortfall.
+    expect(
+      SEQUENCE_ROUNDS,
+      `the sequence row runs to the cap + ${SEQUENCE_ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS}, which never reaches the cap + 6 where this mutant first diverges`,
+    ).toBeGreaterThanOrEqual(firstDivergence!);
+
+    // The control, same rig and the real script: the divergence is the
+    // mutation's doing and not something this fixture provokes on its own.
+    const control = runPersist({
+      list: [
+        botComment(
+          5,
+          windowBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS), {
+            [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4,
+          }),
+        ),
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(
+      control.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD],
+      "the unmutated script did not accumulate either",
+    ).toBe(5);
   });
 });
 
@@ -1300,8 +1968,8 @@ const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
  */
 const dropIndexRead = (s: string) =>
   s.replace(
-    `rt=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)`,
-    'rt=$(sed -n "${rl}p" "${real}" 2>/dev/null || true)',
+    `marked=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}{s/^/X/;p;q;}" || true)`,
+    'marked=$(sed -n "${rl}{s/^/X/;p;q;}" "${real}" 2>/dev/null || true)',
   );
 
 describe("AC-L12 (#1379): a committed symlink does not read outside the checkout", () => {
@@ -1354,7 +2022,8 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     // The negative control, and it is not decoration: without it a repair
     // that deletes the quoting outright satisfies both assertions above and
     // this whole block certifies a step that records nothing.
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, false, true]);
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   /**
@@ -1399,7 +2068,7 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
       },
     };
 
-    expect(runPersist({ ...rig }).rounds![0].findings[0].text).toBe("");
+    expect(hasText(runPersist({ ...rig }).rounds![0].findings[0])).toBe(false);
     expect(
       runPersist({ ...rig, script: mutant }).rounds![0].findings[0].text,
       "removing `! -L` changed nothing, so the guard decides no input at all",
@@ -1470,7 +2139,7 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
         payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 1, summary: "x" }] },
       });
       expect(r.status, r.stderr).toBe(0);
-      expect(r.rounds![0].findings[0].text).toBe("");
+      expect(hasText(r.rounds![0].findings[0])).toBe(false);
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
@@ -1500,7 +2169,8 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
       },
     });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, true]);
+    expect(r.rounds![0].findings[1].text).toBe("alpha");
   });
 });
 
@@ -1566,7 +2236,8 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
     expect(r.status, r.stderr).toBe(0);
     expect(r.sentRaw, "an option-named path was read into a public comment").not.toContain(CANARY);
     expect(r.sentRaw, "a flag-named path was read into a public comment").not.toContain(DASH_N);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, false, true]);
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   test("AC-L13: the MUTANT — the `-*` arm removed — quotes the option-named file", () => {
@@ -1609,7 +2280,8 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
     );
     // `.git/config` is inside the workspace and passes containment, so this
     // row can only be green because the line comes out of the index.
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, false, true]);
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   test("AC-L13: the MUTANT — reading the working tree instead of the index — quotes the untracked file", () => {

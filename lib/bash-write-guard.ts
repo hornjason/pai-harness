@@ -458,6 +458,194 @@ function resolveThroughLinks(normalised: string): string | null {
 const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 
 /**
+ * `ln` is not the only verb that makes a link (#1411, raised as a CRITICAL
+ * by the review on #1354).
+ *
+ * GNU and BSD `cp` create links on request and spell none of
+ * `LINK_CREATION`'s four alternatives, so every one of these was ALLOWED —
+ * the bypass in the docblock above, reachable by a different verb:
+ *
+ *     cp -s ~/.rungate/victim /tmp/esc && echo '{}' > /tmp/esc/workflow-state.json
+ *
+ * Measured before the fix, all allowed: `cp -s`, `cp --symbolic-link`,
+ * `cp -l`, `cp --link`, `cp -rs`, `cp -as`, `cp -sv`, `/bin/cp -s`,
+ * `sudo cp -s`, `install -l s`. `-l` belongs with `-s`: a hard link to a
+ * file inside the run store aims a later write at the victim's inode just
+ * as a symlink aims it at the victim's path.
+ *
+ * ## The FAMILY, not the spelling
+ *
+ * A test for the literal `cp -s` is the cheapest wrong fix — seven of the
+ * ten rows above walk around it. So the reading is token-level: a short
+ * cluster is any `-…` containing a lower-case `s` or `l`, which is what
+ * makes `-rs`, `-as` and `-sv` fall out of one rule rather than three; a
+ * long option is matched by PREFIX, because GNU accepts any unambiguous
+ * abbreviation and `--sym` is as real as `--symbolic-link`.
+ *
+ * Case matters: `cp -L` dereferences links in the SOURCE and creates none,
+ * so only the lower-case letters count. `cp -r`, `cp -p`, `cp -a` and
+ * `mkdir -p` are CONTROL rows and must stay exempt.
+ *
+ * The scan is position-independent rather than keyed to the resolved verb,
+ * so `find . -exec cp -s …` is covered — the same position `LINK_CREATION`
+ * exists to reach for `ln`, where `commandWord` resolves to `find`.
+ *
+ * ## And the `ln` boundary, since it was asked
+ *
+ * `\bln\s` needs a following character, so it misses an `ln` that ends a
+ * segment. Measured over five spellings: the regex misses four, and the
+ * segment-verb net catches three of those four (`ln`, `echo x && ln`,
+ * `sudo ln`). The one neither catches is `find . -exec ln` with no
+ * terminator, which `find(1)` refuses — "the expression must be terminated
+ * by a semicolon" — so it is a syntax error, not a bypass. Count: ONE
+ * spelling missed by both nets, ZERO executable. No change made.
+ *
+ * ## The FOUR transforms a shell applies before `cp` sees a flag
+ *
+ * Every bypass found in this family so far has been the same question asked
+ * about a different transform, and each was rediscovered separately because
+ * nothing wrote the list down. There are three, and a reading of a token is
+ * only correct if it survives all of them:
+ *
+ * | transform | what the shell does | where this module does it |
+ * |---|---|---|
+ * | quote removal | `'-s'`, `"-s"`, `-'s'`, `c""p` all arrive bare | `readWord`, via `scanSegment` (#1429) |
+ * | escape removal | `-\s`, `-r\s`, `-\-symbolic-link`, `--sy\mbolic-link` arrive as `-s`, `-rs`, `--symbolic-link` | `isLinkFlag`, before EITHER branch |
+ * | substitution grouping | `` `…` `` and `$(…)` hand their text to ANOTHER shell, and `$(…)` nests | `nestedCommands` |
+ * | ANSI-C quoting | `$'-s'` is the word `-s`, and `$'-\163'` is too | `readWord`, via `decodeAnsiC` |
+ *
+ * Measured against `/bin/bash` rather than assumed: `printf '[%s]' -\s -\l
+ * -r\s -\-symbolic-link --sy\mbolic-link $'-s' $'-\163' $'cp'` prints
+ * `[-s][-l][-rs][--symbolic-link][--symbolic-link][-s][-s][cp]`. Every one
+ * of those was ALLOWED before its transform was read, as were
+ * `` `cp -s …` ``, ``eval `cp -s …` ``, a `$(…)` containing a second
+ * `$(…)`, and a `$(…)` wrapping a parenthesised subshell.
+ *
+ * The fourth arrived the way the second and third did — a review round
+ * after the table said three — which is the argument for the table rather
+ * than against it. If a fifth turns up, add the row. The point is that the
+ * next reader checks all of them at once instead of finding them one review
+ * at a time.
+ *
+ * ANSI-C is the one that hides a VERB as well as a flag: `$'cp' -s` leaves
+ * `verbToken` nothing to match, so it is read in `readWord` — the module's
+ * one quote reader — rather than in `isLinkFlag`, which a hidden verb never
+ * reaches. Unlike the other substitution syntaxes it is settled at parse
+ * time, so decoding it makes a word more readable rather than guessing at
+ * one, and an unexpanded `$(…)` goes on reading as unprovable.
+ */
+const LINK_VERBS = new Set(['cp', 'install']);
+
+/** A token's verb name: `/bin/cp` and `\cp` are both `cp`. */
+function verbToken(token: string): string {
+  const bare = token.replace(/^[\\(]+/, '');
+  return bare.slice(bare.lastIndexOf('/') + 1);
+}
+
+function isLinkFlag(raw: string): boolean {
+  // ESCAPE REMOVAL, the second of the three transforms in the table above,
+  // and it governs BOTH branches below rather than only the short one.
+  // `cp -\s` reaches `cp` as `-s` and `cp --sy\mbolic-link` reaches it as
+  // `--symbolic-link`; against the raw token the letter run reads `''` and
+  // the long name fails its prefix test, so all five escaped spellings were
+  // measured ALLOWED.
+  //
+  // A backslash inside a QUOTED word is literal to the shell, and `readWord`
+  // has already removed the quotes by the time the token arrives, so this
+  // cannot tell `-\s` from `'-\s'` and treats both as `-s`. That is the
+  // fail-closed direction and it costs a token that `cp` itself rejects as
+  // an invalid option. The control that keeps it honest is an ordinary
+  // quoted filename containing a backslash, which carries no leading `-`
+  // and so never reaches either branch.
+  const token = raw.replace(/\\(.)/g, '$1');
+  if (token.startsWith('--')) {
+    const name = token.slice(2).split('=')[0];
+    if (!name) return false;
+    return 'symbolic-link'.startsWith(name) || 'link'.startsWith(name);
+  }
+  if (!token.startsWith('-') || token.length < 2) return false;
+  // A flag whose letters this module cannot read — `-$F`, `-${X}`, `-`+a
+  // substitution — is one it cannot rule OUT, and the verb is already known
+  // to make links on request. Same fail-closed shape as an unplaceable
+  // literal in `placeLiteral`: declining to clear is cheap and visible,
+  // clearing something unread is neither.
+  if (/[$`]/.test(token)) return true;
+  // The LEADING LETTER RUN, not the whole token. `cp -st/tmp/esc` bundles
+  // `-s` with `-t`'s attached argument and `cp -sS.bak` bundles it with
+  // `-S`'s, and an anchored `^-[A-Za-z]+$` rejected both on the `/` and the
+  // `.` without ever reading the `s`. Both were measured ALLOWED. The
+  // controls are the same bundles without the link letter — `-t/tmp/p` and
+  // `-S.bak` — which must stay exempt, and do.
+  //
+  // Lower case only: `-L` follows links in the SOURCE and creates none.
+  const letters = /^-([A-Za-z]*)/.exec(token)?.[1] ?? '';
+  return /[sl]/.test(letters);
+}
+
+/**
+ * The tokens come from `scanSegment`, the module's ONE quote-aware pass.
+ *
+ * The first spelling of this used `stripQuoted`, which deletes a quoted
+ * span's content rather than removing the quotes, and the #1429 review was
+ * right that it defeated the whole check: `cp '-s'`, `cp "-s"`, `"cp" -s`,
+ * `c""p -s` and `cp --'s'ymbolic-link` were all measured ALLOWED, each one
+ * a command the shell runs identically to the one that was refused.
+ *
+ * The second spelling was a tokeniser of my own, and that was the wrong
+ * repair even though it worked. `commandWord` already resolves `"cp"`
+ * correctly, through `scanSegment`, because #1184 and #1196 taught it to
+ * after `stripQuoted` deleted `"chmod"` outright. A second tokeniser beside
+ * it is two deciders answering one question — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either
+ * leaves the other holding every case up. One tokeniser.
+ */
+function flagMakesLink(segment: string): boolean {
+  const words = scanSegment(segment).words;
+  if (!words.some(w => LINK_VERBS.has(verbToken(w)))) return false;
+  return words.some(isLinkFlag);
+}
+
+/**
+ * Text a segment will hand to ANOTHER shell: the contents of its quoted
+ * words and of its command substitutions (#1429).
+ *
+ * `ln` is caught inside `bash -c '…'`, `$( … )` and `eval '…'` today, but
+ * only because `LINK_CREATION` is a regex read off the raw text and a regex
+ * does not care about nesting. A reading built on segments and tokens does,
+ * and all four spellings of `cp -s` were measured ALLOWED while their `ln`
+ * twins were refused — so this is not a new hole, it is the old net's reach
+ * that the new one had to be given too.
+ *
+ * `interpreterPrograms` was the obvious place and is the wrong one: it
+ * reaches a heredoc body and returns NOTHING for `bash -c 'cp -s …'`,
+ * `sh -c "…"`, `$( … )` or `eval '…'` — measured, all four empty, against
+ * a heredoc control that returns the body. Widening it would change what
+ * every other arm reads. This is local to the void check.
+ */
+function nestedCommands(view: string): string[] {
+  const out: string[] = [];
+  for (const m of view.matchAll(/'([^']*)'|"([^"]*)"/g)) out.push(m[1] ?? m[2] ?? '');
+  // Backticks are the OTHER substitution syntax and were missing entirely:
+  // `` `cp -s …` `` and ``eval `cp -s …` `` were measured ALLOWED while
+  // their `ln` twins were refused, for the same reason the `$(…)` rows were
+  // — `LINK_CREATION` is a raw-text regex that does not care about nesting
+  // and this reading is built on segments. They do not nest in bash, so a
+  // flat match is the whole grammar here.
+  for (const m of view.matchAll(/`([^`]*)`/g)) out.push(m[1]);
+  // `$(…)` DOES nest, so it gets the module's one substitution walk rather
+  // than a second spelling of it. Every `$(` position is examined — the
+  // index is not advanced past a substitution that was just read — so an
+  // inner body is collected as well as the outer one it sits in.
+  for (let i = 0; i < view.length; i++) {
+    if (view[i] !== '$' || view[i + 1] !== '(') continue;
+    const end = endOfSubstitution(view, i);
+    const body = view.slice(i + 2, end);
+    out.push(body.endsWith(')') ? body.slice(0, -1) : body); // unterminated keeps all of it
+  }
+  return out.filter(s => /\s/.test(s));
+}
+
+/**
  * #1240: both tests read a view that KEEPS the text an interpreter is going
  * to run. `stripHeredocs` deletes a heredoc body, so an `ln` inside
  * `bash <<'EOF'` was invisible to the first test; `segments(cmd)` over the
@@ -468,7 +656,8 @@ function exemptionIsVoid(cmd: string): boolean {
   const programs = interpreterPrograms(cmd).map(p => p.program);
   const view = [stripHeredocs(cmd), ...programs].join('\n');
   if (LINK_CREATION.test(view)) return true;
-  return segments(view).some(seg => commandWord(seg) === 'ln');
+  const all = [...segments(view), ...nestedCommands(view).flatMap(inner => segments(inner))];
+  return all.some(seg => commandWord(seg) === 'ln' || flagMakesLink(seg));
 }
 
 /**
@@ -892,23 +1081,279 @@ export function commandWord(segment: string): string {
  * then dequoted, because `> "x/.gate-salt"` writes the same file as `>
  * x/.gate-salt`.
  */
+
+/**
+ * The index just past a quoted span whose OPENING quote is at `i`.
+ *
+ * #1239: both scanners below used to find the partner with `indexOf`, and
+ * `indexOf` cannot tell `"` from `\"`. Inside a double-quoted span the
+ * escaped quote was read as the closing one, every subsequent quote was
+ * paired off by one, and the scanner ran off the end of the line — taking
+ * the `>` operator with it. No operator, no target, ALLOW. Seven spellings
+ * that bash runs and that overwrite the file reached a real write that way,
+ * across both call sites; `test/bash-write-guard.test.ts` holds the table.
+ *
+ * The asymmetry is bash's and is the whole of the fix: a single-quoted span
+ * takes NO escapes, so `'a\'` is a complete span whose contents are `a\`,
+ * while in a double-quoted span `\` escapes whatever follows it.
+ *
+ * Unterminated spans return `s.length` — the pre-existing, fail-closed
+ * direction. Those spellings are syntax errors that bash refuses to run, so
+ * nothing executable depends on the choice; it is kept because changing it
+ * in this commit would make the regression battery green for two reasons
+ * and leave nobody able to say which one held.
+ *
+ * One function, two callers, so a mutation of it moves both.
+ */
+function endOfQuoted(s: string, i: number): number {
+  const q = s[i];
+  for (let j = i + 1; j < s.length; j++) {
+    // Every span except the single-quoted one takes escapes — that is the
+    // asymmetry stated above, and spelling it as "not `'`" rather than as a
+    // list is what let the BACKTICK span join without a second scanner.
+    if (q !== "'" && s[j] === '\\') {
+      j++; // the escaped character, whatever it is, is not a delimiter
+      continue;
+    }
+    if (s[j] === q) return j + 1;
+  }
+  return s.length;
+}
+
 /**
  * Read one word starting at `i`, honouring quotes. Returns the word's
  * CONTENTS — quote characters removed, contents kept — and the index after
  * it, so `dir/"workflow-state.json"` reads as one word and not as two halves
  * either side of a span that was deleted.
  */
+/**
+ * The index just past the `)` that closes the `$(` at `i`, or the end of
+ * the string if it never closes.
+ *
+ * A parenthesis inside a STRING LITERAL is data, not grammar. Counting it
+ * dropped the depth to zero early, ended the word in the middle of the
+ * substitution, and left a `"` whose partner had already been consumed — so
+ * `readWord`'s quote branch then took `close === -1` and swallowed the rest
+ * of the line INCLUDING the `>` operator. No operator, no target, allow:
+ *
+ *     echo $(echo "x)") > <protected>     ran, and wrote
+ *
+ * That is #1205's own sentence a second time — the bug is what the scanner
+ * cannot see, not the substitution — so it was fixed the same way rather
+ * than by special-casing the literal that exposed it.
+ *
+ * Extracted from `readWord` so `nestedCommands` can reuse the walk. The
+ * alternative was a second flat `/\$\(([^()]*)\)/`, which is two deciders
+ * answering one question about substitution structure — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and the flat one is the
+ * weaker: it cannot match a substitution containing parentheses at all, so
+ * `$(cp -s $(echo V) /tmp/esc)` matched only the INNER one and the outer
+ * body was never read. One reader.
+ *
+ * ## The escape handling is #1239's and it is load-bearing here (#1361)
+ *
+ * This function was extracted on `main` from a copy of the walk that
+ * predated #1239, so it opened spans on `\"` and found their ends with
+ * `indexOf`. Merging the two branches by taking the extraction unchanged
+ * would have reinstated the bypass it had already fixed on the other side:
+ * `echo \" > <protected>` opens a span that never closes, the scanner
+ * swallows the `>`, no operator means no target, and the write is allowed.
+ * One reader is still right — the reader just has to be the fixed one.
+ *
+ * So: a backslash OUTSIDE a span escapes the next character, and the end of
+ * a span is `endOfQuoted`, which honours `\"` inside double quotes and
+ * correctly does not inside single ones, because bash processes no escapes
+ * there.
+ */
+function endOfSubstitution(s: string, i: number): number {
+  let depth = 0;
+  let j = i;
+  for (; j < s.length; j++) {
+    const q = s[j];
+    // #1239: outside a quoted span a backslash escapes the next character,
+    // so `\"` does not OPEN a span and `\)` does not close the substitution.
+    if (q === '\\') {
+      j++; // the loop's j++ steps past the escaped character
+      continue;
+    }
+    if (q === "'" || q === '"') {
+      // `endOfQuoted` returns the index AFTER the closing quote; the loop's
+      // j++ would then step over the character following it, so back up one.
+      j = endOfQuoted(s, j) - 1;
+      continue;
+    }
+    if (s[j] === '(') depth++;
+    else if (s[j] === ')' && --depth === 0) {
+      j++;
+      break;
+    }
+  }
+  return j;
+}
+
+/**
+ * ANSI-C quoting: the value of a `$'…'` word.
+ *
+ * Unlike `$(…)` and `` `…` ``, this is settled at parse time — no command
+ * runs and nothing is looked up — so decoding it makes a word MORE readable
+ * rather than guessing at one. `$'-\163'` is the string `-s` on every run.
+ *
+ * An escape this does not recognise keeps its backslash, which is what bash
+ * does with one.
+ *
+ * ## Octal and `\x` are BYTES, so the decode assembles bytes
+ *
+ * Measured: `printf '%s' $'\303\251' | od -An -tx1` gives `c3 a9`, and so
+ * do `$'\xc3\xa9'` and a literal `é` — all three are the UTF-8 encoding of
+ * one character. A per-escape `String.fromCharCode` gives U+00C3 followed
+ * by U+00A9, a different string of four bytes, so above 0x7F that spelling
+ * hands the module a token the shell never produced. Same defect as the
+ * transforms this function exists to close, pointing the other way.
+ *
+ * It is a live one, not a cosmetic differential. With a symlink named
+ * `café` under a scratch root pointing into the run store, the write
+ * through it is REFUSED when spelled literally and when spelled
+ * `$'café'`, and was ALLOWED when spelled `$'caf\303\251'` or
+ * `$'caf\xc3\xa9'` — the module looked for a directory nobody had made,
+ * found nothing to resolve, and exempted it as ordinary scratch. That is
+ * #1175's escape with a name the decoder disagreed about.
+ *
+ * So escapes are decoded into BYTES and the byte string is decoded as
+ * UTF-8 once, at the end. Refusing to decode above 0x80 was the first
+ * repair and it does NOT close this: an undecoded `caf\303\251` is just
+ * another directory that does not exist, which is exempt. The conservative
+ * answer and the wrong answer are the same answer here.
+ *
+ * `\u` and `\U` stay code points, because that is what bash defines them
+ * as — it emits their UTF-8 encoding, which is what they mean once the
+ * command text has itself been decoded from UTF-8.
+ *
+ * What remains: a byte sequence that is not valid UTF-8, such as a lone
+ * `$'\303'`, becomes U+FFFD here and names a file this module cannot
+ * spell. Closing that needs byte-level paths throughout, which is a
+ * different change; the residue is one unmatched character in a position
+ * that is then unprovable rather than wrongly exempt.
+ */
+const ANSI_C_SHORT: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+};
+
+function decodeAnsiC(body: string): string {
+  const bytes: number[] = [];
+  // Plain text accumulates and is encoded in runs rather than per character,
+  // so a surrogate PAIR is encoded as the one code point it spells instead
+  // of as two lone halves.
+  let pending = '';
+  const flush = () => {
+    if (!pending) return;
+    for (const b of new TextEncoder().encode(pending)) bytes.push(b);
+    pending = '';
+  };
+  for (let k = 0; k < body.length; k++) {
+    if (body[k] !== '\\' || k + 1 >= body.length) {
+      pending += body[k];
+      continue;
+    }
+    const n = body[k + 1];
+    const short = ANSI_C_SHORT[n];
+    if (short !== undefined) {
+      pending += short;
+      k++;
+      continue;
+    }
+    if (n >= '0' && n <= '7') {
+      const oct = /^[0-7]{1,3}/.exec(body.slice(k + 1))?.[0] ?? '';
+      flush();
+      bytes.push(parseInt(oct, 8) & 0xff); // a BYTE
+      k += oct.length;
+      continue;
+    }
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const width = n === 'x' ? 2 : n === 'u' ? 4 : 8;
+      const hex = new RegExp(`^[0-9a-fA-F]{1,${width}}`).exec(body.slice(k + 2))?.[0] ?? '';
+      if (hex) {
+        const value = parseInt(hex, 16);
+        if (n === 'x') {
+          flush();
+          bytes.push(value & 0xff); // a BYTE
+        } else {
+          pending += String.fromCodePoint(value); // a CODE POINT
+        }
+        k += 1 + hex.length;
+        continue;
+      }
+    }
+    pending += body[k]; // an escape bash does not recognise keeps its backslash
+  }
+  flush();
+  return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+}
+
 function readWord(s: string, i: number): [string, number] {
   let w = '';
   while (i < s.length) {
     const c = s[i];
     if (c === ' ' || c === '\t' || c === '\n') break;
     if (c === '>' || c === '<') break; // an operator ends a word
+    // #1239: a backslash escapes the next character, so `\"` is a literal
+    // quote and does not open a span. Without this, `echo \" > <protected>`
+    // opened a span that never closed and the scanner swallowed the `>` —
+    // the shortest bypass in the family, needing no `$( )` at all. The text
+    // is kept verbatim because this module expands nothing; what matters is
+    // that the escaped character cannot act as a delimiter.
+    if (c === '\\' && i + 1 < s.length) {
+      w += c + s[i + 1];
+      i += 2;
+      continue;
+    }
+    // ANSI-C quoting, the FOURTH transform. `$'-s'` is the word `-s`, and
+    // reading the `$` as an ordinary character left the token `$-s`, which
+    // fails `isLinkFlag`'s `startsWith('-')` precondition before any flag
+    // letter is looked at. Handled here rather than in `isLinkFlag` because
+    // it is a QUOTING rule and this is the module's quote reader — and
+    // because doing it here also fixes `$'cp'`, where the thing hidden is
+    // the VERB and `isLinkFlag` is never consulted at all.
+    //
+    // A `\'` inside the body is an escaped quote, so the closing quote is
+    // found by walking rather than by `indexOf`.
+    //
+    // ORDER AGAINST THE CLAUSE ABOVE DOES NOT MATTER and the merge that put
+    // them together should say so: one tests `\` and the other `$`, so no
+    // input reaches both. What does matter is that BOTH precede the quote
+    // clause below, or an escaped or ANSI-C quote opens a span and the
+    // scanner swallows the redirect — which is #1239's bypass arriving by a
+    // second route (#1361 merge).
+    if (c === '$' && s[i + 1] === "'") {
+      let k = i + 2;
+      for (; k < s.length && s[k] !== "'"; k++) if (s[k] === '\\') k++;
+      w += decodeAnsiC(s.slice(i + 2, Math.min(k, s.length)));
+      i = k + 1; // unterminated leaves i past the end, which ends the word
+      continue;
+    }
+    // #1239: `echo "x\"" > <protected>` needs no substitution at all — the
+    // shortest bypass in the family, and the issue that filed the `$( )`
+    // spellings did not name it. `endOfQuoted` honours the backslash.
     if (c === "'" || c === '"') {
-      const close = s.indexOf(c, i + 1);
-      const end = close === -1 ? s.length : close;
-      w += s.slice(i + 1, end);
-      i = end + 1;
+      const end = endOfQuoted(s, i);
+      // The span's CONTENTS, outer quotes removed. The escape is kept rather
+      // than resolved: this module expands nothing, and keeping the text
+      // verbatim is what lets `isScratchPath` go on reading an unexpanded
+      // path as unprovable (#1175). What had to be right here is the word
+      // BOUNDARY, so the operator after it is still seen.
+      w += s.slice(i + 1, end === s.length ? s.length : end - 1);
+      i = end;
       continue;
     }
     // #1205: a command substitution is part of the word it sits in, however
@@ -922,43 +1367,40 @@ function readWord(s: string, i: number): [string, number] {
     // expand anything, and keeping the `$`/backtick is what lets #1175's
     // `isScratchPath` go on reading an unexpanded path as unprovable.
     if (c === '`') {
-      const close = s.indexOf('`', i + 1);
-      // Unterminated: consume to the end. A substitution this module cannot
-      // see the end of is not one it can read a word boundary out of, so it
-      // takes the rest — the fail-closed direction.
-      const end = close === -1 ? s.length : close + 1;
+      // #1361's AI review found this one, and it is right: this was the last
+      // `indexOf` partner-finder in the module. `indexOf` cannot tell `` ` ``
+      // from ``\` ``, so an escaped backtick inside the substitution was read
+      // as the closer, the word ended in the wrong place, and the `>` that
+      // followed was never seen. No operator, no target, ALLOW — the exact
+      // shape #1239 fixed for `"`, `'` and `$(...)`, surviving in the one
+      // branch those fixes did not touch.
+      //
+      // Verified both halves before fixing, because a guard missing a command
+      // bash refuses to run is not a bypass. All three spellings return no
+      // targets at all AND are performed by bash:
+      //
+      //     echo `echo a\`b`    > <run-store>/workflow-state.json
+      //     echo `echo \``      > <run-store>/workflow-state.json
+      //     echo `echo \`\`x`   > <run-store>/workflow-state.json
+      //
+      // `endOfQuoted` already walks escapes; a backtick span escapes exactly
+      // as a double-quoted one does, so this is a third caller of the one
+      // scanner rather than a fourth hand-rolled one. It returns `s.length`
+      // for an unterminated span, which is the same fail-closed direction
+      // this branch already took.
+      const end = endOfQuoted(s, i);
       w += s.slice(i, end);
       i = end;
       continue;
     }
     if (c === '$' && s[i + 1] === '(') {
-      let depth = 0;
-      let j = i;
-      for (; j < s.length; j++) {
-        // A parenthesis inside a STRING LITERAL is data, not grammar.
-        // Counting it dropped the depth to zero early, ended the word in the
-        // middle of the substitution, and left a `"` whose partner had
-        // already been consumed — so the quote branch above then took
-        // `close === -1` and swallowed the rest of the line INCLUDING the
-        // `>` operator. No operator, no target, allow:
-        //
-        //     echo $(echo "x)") > <protected>     ran, and wrote
-        //
-        // This is #1205's own sentence a second time — the bug is what the
-        // scanner cannot see, not the substitution — so it is fixed the same
-        // way rather than by special-casing the literal that exposed it.
-        const q = s[j];
-        if (q === "'" || q === '"') {
-          const close = s.indexOf(q, j + 1);
-          j = close === -1 ? s.length : close; // the loop's j++ steps past it
-          continue;
-        }
-        if (s[j] === '(') depth++;
-        else if (s[j] === ')' && --depth === 0) {
-          j++;
-          break;
-        }
-      }
+      // #1361 merge: main extracted this walk into `endOfSubstitution` so
+      // `nestedCommands` could reuse it — one reader, which is the right
+      // call and is kept. #1239's backslash handling, which this branch had
+      // added to the inline copy, is ported INTO that function rather than
+      // left behind here. Taking main's line unchanged would have silently
+      // reinstated the bypass.
+      const j = endOfSubstitution(s, i);
       w += s.slice(i, j); // unterminated falls out here with j === s.length
       i = j;
       continue;
@@ -1253,6 +1695,68 @@ function shellBody(segment: string): string {
  * and `.claude/rules/checks-must-be-able-to-fail.md` would call it a
  * detector narrower than what it detects. It is the widest setting the
  * measured false-positive rate allows.
+ *
+ * ## #1214: an imported project function is outside what this arm can decide
+ *
+ * The concession above says an interpreter can evade this arm by calling
+ * through a variable or putting the program in a file. #1214 filed a case
+ * needing neither — a plain call to a project function the enumeration has
+ * never heard of:
+ *
+ *     bun -e "
+ *     import {initWorkflow, writeACs} from '<harness>/gates/orchestrator.ts';
+ *     const sf = '<run store>/workflow-state.json';
+ *     initWorkflow(sf, {…});
+ *     writeACs(sf, JSON.parse(process.argv[1]));"
+ *
+ * `initWorkflow` and `writeACs` both write `sf`, `sf` is a live run-store
+ * artifact, and nothing in the list above matches. ALLOW.
+ *
+ * The issue's framing 1 — derive the suspicious-call set from the body's OWN
+ * `import` statement, so the module enumerates nothing and stays
+ * project-agnostic — was implemented and swept over 130,247 real commands
+ * from this machine's 31,793 transcripts:
+ *
+ *     newly BLOCKED  616          newly ALLOWED  0
+ *       600  call a writing orchestrator symbol  (writeWorkflowState 301,
+ *            initWorkflow+writeACs 285, the rest in ones and twos)
+ *        10  call a reading one (readWorkflow, loadWorkflow, …)
+ *         6  probe this module or take a hook census
+ *     0 of the 616 are scratch fixtures; every one names the live run store.
+ *
+ * 97% precision by that reading, and it is still **not shippable** — for a
+ * reason no count could show. The 600 are not evasions. They are this
+ * harness's own prescribed mechanism:
+ *
+ *   - `workflows/ship.js` EMITS the filed command, at the GOAL phase, under
+ *     an instruction reading "Run this EXACTLY as written". The payload
+ *     spelling `JSON.parse(process.argv[1])` is generated by
+ *     `acPayloadReadExpression()` in `lib/evidence-command-transport.ts`, so
+ *     the fingerprint belongs to the harness and to nothing else.
+ *   - `gates/SCHEMA-GUIDE.md` prescribes `writeWorkflowState` via `bun -e`
+ *     in place of the Write tool or `cat >`.
+ *   - `lib/gate-result-protection.ts` and `lib/gate-enforcement.ts` PRINT
+ *     that command to the agent as the sanctioned repair.
+ *
+ * So the predicate would refuse the GOAL phase of every run, and the guard
+ * would be refusing the exact command its sibling modules hand out as the
+ * remedy. The filed case and the sanctioned repair are the same operation,
+ * differing only in which orchestrator symbol is called — and separating
+ * them means enumerating one consumer's API, which is what #1214 forbids and
+ * is wrong in every other tree besides.
+ *
+ * **The result is therefore framing 2, and it belongs here rather than in an
+ * open issue: a program that imports project code is outside what a
+ * command-line guard can decide.** Nothing read off the command line
+ * distinguishes a sanctioned write from an unsanctioned one when both are
+ * the same call to the same function on the same path. That is a question
+ * about the command's PROVENANCE, not its text, so closing it needs the
+ * harness to mark the commands it issued — a different mechanism from
+ * parsing, and not one this module can reach.
+ *
+ * `test/bash-write-guard.test.ts` pins the conclusion rather than leaving it
+ * as prose: the sanctioned commands must stay ALLOWED, so the next person to
+ * reach for the obvious fix gets a red suite naming what it costs.
  */
 const WRITE_INTENT =
   /\b(?:writeFileSync|appendFileSync|createWriteStream|copyFileSync|renameSync|unlinkSync|rmSync|truncateSync|write_text|json\.dump|os\.remove|os\.rename|os\.replace|os\.unlink|shutil\.(?:copy|move|rmtree))\b|(?<!stdout)(?<!stderr)\.write\s*\(|\bopen\s*\([^)]*['"][wax]\+?['"]/;
@@ -1382,33 +1886,32 @@ export function programBody(segment: string): string {
  * it detects — `.claude/rules/checks-must-be-able-to-fail.md` — and it is
  * what #1276's stopgap was a second attempt at.
  *
- * ## `=` and `:` are NOT openers, and that is the #1371 repair
- *
- * They were, on the reading that `p = "/tmp/x"` and `{"dst": "/tmp/x"}` both
- * bind a whole path and nothing consumes it before the filesystem does. That
- * reading is true of the BINDING and says nothing about the write, because
- * nothing here follows the name afterwards:
+ * ## `=` and `:` ARE openers, and the rebinding question moved (#1371)
+
+ * A round of #1371 dropped them, on the finding that `p = "/tmp/x"` records
+ * a target nothing then follows through its reassignment:
  *
  *     p = '/tmp/fix/workflow-state.json'
  *     p = p.replace('/tmp/fix', os.environ['RUNGATE_WORK_DIR'])
  *     open(p, 'w').write('{}')
  *
- * Every literal in that body is scratch, the exemption was granted, and the
- * write lands in the run store. The value the exemption was granted against
- * is not the value the write used.
+ * Dropping them worked and was the wrong place to answer it. `inWritePosition`
+ * answers the same question generally — a binding at statement level is an
+ * argument of no call, so it is not a write position — and it also catches the
+ * dict KEY, the ternary branch, and the inner call's default that the `:` drop
+ * reached only by accident or not at all. Measured: with `inWritePosition` in
+ * place, restoring `=` and `:` moves nothing — 0 newly blocked and 0 newly
+ * allowed over 132,196 real commands, and the same exemption population.
  *
- * The other repair — follow the name through its reassignments — is a second
- * parser that has to agree with the host language about what a reassignment
- * is, which is the parser-differential class this whole module is in. A bound
- * literal now simply does not stand alone, so a body that binds before it
- * writes is UNPROVEN and refused. That is the same fail-closed reading a
- * relative path already gets, and it costs the two assignment rows that used
- * to be CONTROLs — they are inverted in the tests rather than deleted, with
- * the measured corpus cost beside them.
+ * So they are restored, because two deciders answering one question are
+ * behaviourally one, no behavioural test can tell them apart, and the next
+ * reader deletes whichever looks redundant — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`. The measurement above is
+ * exactly the evidence that they WERE two deciders.
  *
- * Dropping `:` also disposes of the ternary half of the #1371 MEDIUM: a `:`
- * following a `?` used to read as a dict key, so a ternary BRANCH read as a
- * whole-path binding. It cannot now, because `:` opens nothing.
+ * What this set still answers alone is ADJACENCY: `x + "/tmp/…"` has an
+ * operator against the literal, and no question about write position can see
+ * that.
  *
  * A closing bracket is neither an opener nor a closer. It ENDS the group the
  * literal sits in and leaves the outer expression still running, so the walk
@@ -1417,7 +1920,7 @@ export function programBody(segment: string): string {
  * version of this stopped at the `)` and reported the pathlib spelling as a
  * target; its own CONTROL row caught it, and that row is in the tests.
  */
-const ARG_OPENS = new Set(['(', ',', '[', '{', ';']);
+const ARG_OPENS = new Set(['(', ',', '[', '{', '=', ':', ';']);
 const ARG_CLOSES = new Set([')', ',', ']', '}', ';', ':']);
 const GROUP_CLOSES = new Set([')', ']', '}']);
 
@@ -1427,8 +1930,8 @@ export interface BodyTargets {
   /** Carrying literals an expression consumes. The destination is NOT these. */
   fragments: string[];
   /**
-   * Absolute literals resolving inside a protected tree, whatever they spell
-   * and whether or not anything transforms them (#1371).
+   * Literals resolving inside a protected tree, whatever they spell and
+   * whether or not anything transforms them (#1371).
    *
    * `targets` and `fragments` are both filtered by `ALL_PROTECTED`, so
    * `targets.every(isScratchPath)` quantifies over a set the caller chose the
@@ -1437,30 +1940,138 @@ export interface BodyTargets {
    * being complete, and completeness is what failed.
    */
   protectedLiterals: string[];
+  /**
+   * Path-shaped literals the reader could NOT place — an expansion it cannot
+   * perform, a backtick, or a relative path whose meaning depends on a
+   * working directory. Kept on their own list rather than folded into
+   * `protectedLiterals`, so that afterwards the reason a body was refused is
+   * still readable: "it names a live tree" and "I could not tell" are
+   * different facts and only one of them is a finding about the command.
+   */
+  unplaceable: string[];
   /** The body does not read as a sequence of complete literals. */
   unreadable: boolean;
 }
 
 /**
- * Is this literal demonstrably a path inside a tree holding live artifacts?
+ * Where a literal sits, as THREE readings and not two (#1371, second round).
  *
- * Both spellings, for the reason `protectedTrees` gives at length: `resolve`
- * normalises `..` and does not follow a link, so a pre-existing symlink out
- * of scratch is invisible to the first reading and named by the second.
+ * The first version of this returned a boolean behind
+ * `if (!value.startsWith('/')) return false`, and the review was right that
+ * the word *absolute* in the remedy I was given is where the hole came
+ * from. `~/.rungate/run`, `$HOME/.rungate/run` and `${HOME}/.claude` all
+ * took that early exit, and the caller read `false` as **not a protected
+ * target** rather than as **I could not place this** — a silent skip, one
+ * layer inside the remedy for silent skips.
  *
- * It answers only YES. A relative literal, a `$`-bearing spelling, a name
- * that is not a path at all — all `false`, because the caller's question is
- * "can I show this body touches a live tree", and silence is not evidence
- * either way. What the caller does with silence is the caller's business;
- * here it costs nothing, because the exemption still has to be EARNED by a
- * target that `isScratchPath` affirms.
+ * The asymmetry that settles it: a false `unplaceable` costs a refused
+ * exemption, which somebody notices and fixes. A false `elsewhere` costs a
+ * bypass, which nobody notices.
+ *
+ * Expansion handles the spellings we thought of; `unplaceable` handles the
+ * ones we did not, and it is the half that matters. Both are kept because
+ * expansion is what stops the fail-closed half from refusing every ordinary
+ * `~/`-spelled read.
  */
-function literalInProtectedTree(value: string, live: string[]): boolean {
-  if (!value.startsWith('/')) return false;
-  const normalised = resolve(value);
-  if (inAnyTree(normalised, live)) return true;
+type Placement = 'protected' | 'unplaceable' | 'elsewhere';
+
+/** A leading `~`, `$HOME` or `${HOME}`, which the runtime or shell expands. */
+const HOME_PREFIX = /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/;
+
+/**
+ * Path-shaped and NOT placeable: an expansion we cannot perform, a backtick,
+ * or a relative path whose meaning depends on a working directory this
+ * module cannot see. `isScratchPath` already gives a relative path exactly
+ * this reading — "only an ABSOLUTE path can be placed in a tree" — so this
+ * is that rule applied on the other side of the same question.
+ */
+const UNPLACEABLE = /[$`~]/;
+
+function expandHome(value: string): string {
+  const home = process.env.HOME || '';
+  if (!home) return value;
+  return value.replace(HOME_PREFIX, home);
+}
+
+/**
+ * One site per reading, so a mutation battery can remove the live-tree
+ * reading without removing the fail-closed one and report which rows each
+ * is actually holding up. Inlining either verdict at a second site would
+ * let a refusal bypass the mutation and the rows would go green having
+ * witnessed nothing — `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+const IN_LIVE_TREE: Placement = 'protected';
+const CANNOT_PLACE: Placement = 'unplaceable';
+
+/**
+ * ## The case comparison is the VOLUME's to make, and it makes it (#1371)
+ *
+ * The review asked for both sides of the live-tree comparison to be
+ * case-folded, as `names()` already is, because `/Users/JHORN/…` and
+ * `/Users/jhorn/…` are one file and two strings on this volume. It was
+ * built, and then the mutation battery refused to witness it: removing the
+ * fold left the SHOUTED row refused anyway, because `resolveThroughLinks`
+ * climbs to the deepest EXISTING ancestor and `realpathSync` returns the
+ * canonical case — `/USERS` comes back `/Users`. So the fold decided
+ * nothing that the resolution had not already decided.
+ *
+ * It is not shipped, and the reason is not thrift. Two deciders answering
+ * one question are behaviourally one, no test can tell them apart, and the
+ * next reader deletes whichever looks redundant. And on a case-SENSITIVE
+ * volume the fold is the wrong answer rather than a spare one: there
+ * `/Users/JHORN/x` really is a different file, which the fold would report
+ * as live. `names()` folds for a different situation — it matches a
+ * basename inside a command string where nothing resolves anything.
+ *
+ * CI proved both halves of that, and corrected the heading this note used
+ * to carry. It said the differential "does not exist here", measured on
+ * macOS — and the SHOUTED row went red on the Linux runner, where
+ * `/HOME/RUNNER/.rungate/run` is a path that does not exist and is not the
+ * artifact. The guard was right on both volumes; the claim was macOS's,
+ * read as universal. The row now probes the volume and asserts the verdict
+ * tracks it in BOTH directions, so a blind `.toLowerCase()` fold reddens it
+ * on Linux and dropping the resolution reddens it on macOS.
+ *
+ * #1211 / #1358 is the same QUESTION about `WorkflowStateGuard` and may
+ * well have a different answer, because that matcher has no resolution step
+ * to fall back on. Worth reading this note before fixing it there.
+ */
+function placeLiteral(value: string, live: string[]): Placement {
+  const expanded = expandHome(value);
+  // UNPLACEABLE is asked FIRST, and the order is the fix for a hole the
+  // other way round left open (#1411 review): `"$RG"` carries no slash, so
+  // a slash test in front of this one answered `elsewhere` — "I placed it,
+  // and it is not protected" — for a value nothing had placed. Witnessed:
+  // `shutil.copy("/tmp/fix/workflow-state.json", os.path.expandvars("$RG"))`
+  // was ALLOWED before this swap and is refused after it. The slash-bearing
+  // spelling of the same command was already refused, which is what made
+  // the gap invisible.
+  if (UNPLACEABLE.test(expanded)) return CANNOT_PLACE;
+  // Not path-shaped at all: a mode string, a JSON blob, a module name. The
+  // exemption would never apply again if these ended it.
+  if (!expanded.includes('/')) return 'elsewhere';
+  // A RELATIVE path-shaped literal stays `elsewhere`, and that is measured
+  // rather than comfortable. Treating one as unplaceable costs 7 real
+  // commands and halves the exemption population (13 segments to 6),
+  // because `'hornjason/pai-config'` and `'./lib/x.ts'` are slash-bearing
+  // and are not paths — and it does not even close the class it was
+  // widened for, since `'.'` and `'x'` carry no slash at all. The honest
+  // closure for a relative destination is `inWritePosition`, which asks
+  // only about literals the write actually consumes.
+  if (!expanded.startsWith('/')) return 'elsewhere';
+  const normalised = resolve(expanded);
+  if (inAnyTree(normalised, live)) return IN_LIVE_TREE;
   const real = resolveThroughLinks(normalised);
-  return real !== null && inAnyTree(real, live);
+  // Nothing in the chain resolved, so this is a path we could not place —
+  // not a path we placed outside the live trees. The distinction is the
+  // whole of #1371's third round, and `isScratchPath` already notes that an
+  // unreachable fail-OPEN in a fail-closed module reads as permission.
+  if (real === null) return CANNOT_PLACE;
+  // Both spellings, for the reason `protectedTrees` gives at length:
+  // `resolve` normalises `..` and does not follow a link, so a pre-existing
+  // symlink out of scratch is invisible to the first reading.
+  if (inAnyTree(real, live)) return IN_LIVE_TREE;
+  return 'elsewhere';
 }
 
 /**
@@ -1504,6 +2115,9 @@ export function bodyTargets(body: string): BodyTargets {
   const targets: string[] = [];
   const fragments: string[] = [];
   const protectedLiterals: string[] = [];
+  const unplaceable: string[] = [];
+  /** Every literal span read so far, so the backward walk can step over one. */
+  const spans: [number, number][] = [];
   // Read once per body rather than once per literal: each call realpaths up
   // to six trees, and a body has as many literals as it likes.
   const live = protectedTrees();
@@ -1536,14 +2150,20 @@ export function bodyTargets(body: string): BodyTargets {
       j++;
     }
     // An unterminated literal means every boundary after it is a guess.
-    if (!closed) return { targets: [], fragments: [], protectedLiterals: [], unreadable: true };
-    if (literalInProtectedTree(value, live)) protectedLiterals.push(value);
+    if (!closed) return { targets: [], fragments: [], protectedLiterals: [], unplaceable: [], unreadable: true };
+    spans.push([i, j]);
+    const where = placeLiteral(value, live);
+    if (where === 'protected') protectedLiterals.push(value);
+    if (where === 'unplaceable') unplaceable.push(value);
     if (ALL_PROTECTED.some(p => value.toLowerCase().includes(p.toLowerCase()))) {
-      (standsAlone(body, i, j) ? targets : fragments).push(value);
+      const pos = standsAlone(body, i, j) ? inWritePosition(body, i, spans) : UNPROVEN;
+      if (pos === 'destination') targets.push(value);
+      // `argument` is deliberately in neither list — see `inWritePosition`.
+      else if (pos === 'unproven') fragments.push(value);
     }
     i = j + 1;
   }
-  return { targets, fragments, protectedLiterals, unreadable: false };
+  return { targets, fragments, protectedLiterals, unplaceable, unreadable: false };
 }
 
 /**
@@ -1551,6 +2171,197 @@ export function bodyTargets(body: string): BodyTargets {
  * in here rather than carrying a rule of its own.
  */
 const WHITESPACE = new Set([' ', '\t', '\n', '\r']);
+
+/**
+ * The callees a literal may be a direct argument of and still be the write
+ * TARGET (#1371, second round).
+ *
+ * This is a WHITELIST OF POSITIONS, which is why it is allowed to exist at
+ * all. The thing refused twice on this PR is a denylist of TRANSFORMS —
+ * `.replace(`, `+`, `%`, an f-string — because a transform nobody listed
+ * reads as "no transform" and the exemption holds; `Path("/tmp/x")
+ * .relative_to(…)` is the standing proof and it is a CONTROL row. A
+ * whitelist fails the other way: a callee nobody listed is not a recognised
+ * write position, so the literal is a fragment and the exemption ends.
+ *
+ * The names are not a new list. They are the names already in
+ * `WRITE_INTENT`, which is what makes a command a candidate for arm 3 in
+ * the first place — so a verb missing here is a verb that never brought a
+ * command to this question.
+ *
+ * `remove`, `rename`, `replace`, `unlink` and `write` are qualified rather
+ * than matched bare: `str.replace` and `stdout.write` are not writes to a
+ * file, and a bare match would read a transform as a write position, which
+ * is the denylist's failure wearing a whitelist's clothes.
+ */
+const WRITE_CALLEES = new Set([
+  'writeFileSync',
+  'appendFileSync',
+  'createWriteStream',
+  'copyFileSync',
+  'renameSync',
+  'unlinkSync',
+  'rmSync',
+  'truncateSync',
+  'write_text',
+  'open',
+  'dump',
+  'copy',
+  'copyfile',
+  'copytree',
+  'move',
+  'rmtree',
+]);
+const QUALIFIED_WRITE_CALLEES = new Set([
+  'os.remove',
+  'os.rename',
+  'os.replace',
+  'os.unlink',
+  'os.rmdir',
+  'shutil.copy',
+  'shutil.copyfile',
+  'shutil.copytree',
+  'shutil.move',
+  'shutil.rmtree',
+  'json.dump',
+]);
+
+/**
+ * WHICH argument of a recognised write call is the destination (#1411).
+ *
+ * Recognising the callee is not enough, because most of these take a SOURCE
+ * as well: `shutil.copy("/tmp/fix/workflow-state.json", dest)` put a scratch
+ * literal in `targets` while the destination was a name nothing tracks, and
+ * `targets.every(isScratchPath)` then exempted a copy whose destination was
+ * unknown. Witnessed allowed before this map and refused after it.
+ *
+ * `-1` means NO argument of that callee is ever a destination path:
+ * `json.dump(obj, fp)` writes to a file object, and `p.write_text(data)`
+ * writes to its RECEIVER. A literal argument of either is data, and reading
+ * it as a target is the same defect pointed the other way.
+ *
+ * The default is 0 rather than "unknown", because every remaining name in
+ * `WRITE_CALLEES` takes its path first and a name that reaches here has
+ * already passed the whitelist.
+ */
+const DEST_INDEX = new Map<string, number>([
+  ['copy', 1],
+  ['copyfile', 1],
+  ['copytree', 1],
+  ['copyFileSync', 1],
+  ['move', 1],
+  ['rename', 1],
+  ['renameSync', 1],
+  ['replace', 1],
+  ['dump', -1],
+  ['write_text', -1],
+]);
+
+function destIndexOf(name: string): number {
+  const last = name.slice(name.lastIndexOf('.') + 1);
+  const at = DEST_INDEX.get(last);
+  return at === undefined ? 0 : at;
+}
+
+function isWriteCallee(name: string): boolean {
+  if (!name) return false;
+  if (QUALIFIED_WRITE_CALLEES.has(name)) return true;
+  const last = name.slice(name.lastIndexOf('.') + 1);
+  return WRITE_CALLEES.has(last);
+}
+
+/**
+ * Is the literal beginning at `start` a DIRECT argument of a recognised
+ * write call?
+ *
+ * The walk goes backwards to the opener of the group the literal sits in,
+ * stepping over balanced groups and over literal spans already read — a
+ * `(` inside a string is not a bracket. Three endings, and only the first
+ * is a yes:
+ *
+ *   a `(` at depth 0      the literal is an argument of that call; read the
+ *                         callee in front of it and ask the whitelist
+ *   a `[` or `{` at 0     the literal is an element of a list or an entry
+ *                         in a dict, not an argument of anything
+ *   the start of the body the literal is at statement level: a binding, a
+ *                         bare expression, a dict key with no enclosing call
+ *
+ * This is what makes the exemption a claim about the WRITE rather than
+ * about a path that appears somewhere near one, and it is what the two
+ * earlier rounds were each reaching for with a cheaper instrument.
+ *
+ * ## Three answers, because two of them conflated placed with unreadable
+ *
+ * `argument` is a literal that IS a direct argument of a recognised write
+ * call and is NOT at the destination index — `shutil.copy`'s source, or
+ * `json.dump`'s object. A boolean had to call that `unproven`, which is a
+ * fragment, which ends the exemption: with the index map added and two
+ * answers available, `shutil.copy('/tmp/a/x', '/tmp/b/x')` went from
+ * allowed to refused, and that command is the exact shape #1175 exists to
+ * unblock. It is three CONTROL rows across three describes and all three
+ * went red together, which is what a control is for.
+ *
+ * So: `destination` counts as a target, `unproven` ends the exemption, and
+ * `argument` does neither — the literal is placed, and placed somewhere
+ * that is not the write. A command whose ONLY literal is an `argument`
+ * still reaches `targets.length === 0` and is refused.
+ */
+type Position = 'destination' | 'argument' | 'unproven';
+const IS_DESTINATION: Position = 'destination';
+const UNPROVEN: Position = 'unproven';
+
+function inWritePosition(body: string, start: number, spans: [number, number][]): Position {
+  let i = start - 1;
+  let depth = 0;
+  /** Depth-0 commas between the opener and the literal: its argument index. */
+  let index = 0;
+  while (i >= 0) {
+    const span = spans.find(([s, e]) => i >= s && i <= e);
+    if (span) {
+      i = span[0] - 1;
+      continue;
+    }
+    const c = body[i];
+    if (c === ')' || c === ']' || c === '}') {
+      depth++;
+    } else if (c === '(') {
+      if (depth === 0) {
+        const callee = calleeBefore(body, i);
+        if (!isWriteCallee(callee)) return UNPROVEN;
+        return index === destIndexOf(callee) ? IS_DESTINATION : 'argument';
+      }
+      depth--;
+    } else if (c === '[' || c === '{') {
+      if (depth === 0) return UNPROVEN;
+      depth--;
+    } else if (c === ',') {
+      if (depth === 0) index++;
+    } else if (c === '?') {
+      // A ternary BRANCH is not a destination, it is one of two candidates,
+      // and the guard has no way to say which runs. `:` is an `ARG_OPEN`, so
+      // the false branch read as a complete argument and the walk continued
+      // past `?` to the write call's own paren — witnessed:
+      // `writeFileSync(x ? d : "/tmp/fix/workflow-state.json", "{}")` was
+      // ALLOWED, while the same command with the literal in the TRUE branch
+      // was already refused, because `?` is not an `ARG_OPEN` and the
+      // literal fell out as a fragment. That asymmetry is the whole finding:
+      // one spelling of one expression was fail-closed by accident and the
+      // other was not.
+      if (depth === 0) return UNPROVEN;
+    }
+    i--;
+  }
+  return UNPROVEN;
+}
+
+/** The dotted name immediately in front of an opening parenthesis. */
+function calleeBefore(body: string, openIndex: number): string {
+  let i = openIndex - 1;
+  while (i >= 0 && WHITESPACE.has(body[i])) i--;
+  let end = i + 1;
+  while (i >= 0 && /[A-Za-z0-9_$.]/.test(body[i])) i--;
+  return body.slice(i + 1, end);
+}
 
 /**
  * Is the literal spanning `[start, end]` a complete argument on both sides,
@@ -1617,10 +2428,17 @@ function standsAlone(body: string, start: number, end: number): boolean {
  * Can every write this body could make to a protected artifact be shown to
  * land in a scratch tree?
  *
- * Four ways to answer no, and all four are the absence of evidence rather
+ * Five ways to answer no, and all five are the absence of evidence rather
  * than evidence of harm: the body cannot be read, a carrying literal is
- * consumed by an expression, the body names a live tree, or no literal
- * carries the artifact at all. The exemption's job is to say YES.
+ * consumed by an expression, the body names a live tree, the body names a
+ * path the reader cannot PLACE, or no literal carries the artifact at all.
+ * The exemption's job is to say YES.
+ *
+ * With five refusals stacked, the failure that costs us is no longer a
+ * bypass — it is an exemption that silently never applies again, and every
+ * refusal row stays green through exactly that. So the CONTROL rows are the
+ * load-bearing half of the suite, and the corpus reading that matters most
+ * is `exempt > 0`, not `newly blocked == 0`.
  *
  * ## Why the live-tree reading is a separate question (#1371)
  *
@@ -1645,8 +2463,9 @@ function standsAlone(body: string, start: number, end: number): boolean {
  * `.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape.
  */
 function bodyTargetsAreScratch(body: string): boolean {
-  const { targets, fragments, protectedLiterals, unreadable } = bodyTargets(body);
-  if (unreadable || fragments.length > 0 || protectedLiterals.length > 0) return false;
+  const { targets, fragments, protectedLiterals, unplaceable, unreadable } = bodyTargets(body);
+  if (unreadable || fragments.length > 0) return false;
+  if (protectedLiterals.length > 0 || unplaceable.length > 0) return false;
   if (targets.length === 0) return false;
   return targets.every(isScratchPath);
 }
@@ -1773,6 +2592,17 @@ export function decideBashWrite(cmd: string, depth = 0, exemptIn?: boolean): Bas
     }
 
     if (isInterpreter || isMutatingFind) {
+      // #1214 asked for a third reading here — an imported project symbol
+      // called with a protected path — and it was built, measured and
+      // REJECTED. See `WRITE_INTENT` for the numbers and for the one fact
+      // that decided it.
+      //
+      // #1361 merge: this branch read the exemption with `bodyIsAllScratch`
+      // (#1269). `main` has since replaced that with the TARGET question
+      // below (#1277), which its own comment says closes the class #1269's
+      // predicate only sampled. Main's is kept and `bodyIsAllScratch` is
+      // deleted rather than left defined-and-uncalled — a superseded
+      // predicate still in the file is the next reader's second decider.
       // #1277: the exemption asks whether the body's write TARGET can be
       // shown to be scratch — see `bodyTargets`. It replaces #1276's
       // all-absolute-literals stopgap, which this closes the class of.

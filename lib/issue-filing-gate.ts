@@ -135,6 +135,45 @@ import { clauses, createsIssue, flagValues, labelValues } from "./issue-create-o
  */
 export const FILING_OVERRIDE_LABEL = "arbiter-override";
 
+/**
+ * How many claims `SUCCESS.md` states under "Done, for the harness".
+ *
+ * A constant and not a read, because this decision runs inside a hook from an
+ * arbitrary working directory and a gate that needs I/O to decide is a gate
+ * that fails open when the I/O does. `test/issue-filing-gate.test.ts` binds it
+ * to the file — add a claim to `SUCCESS.md` and the suite goes red until this
+ * number follows.
+ */
+export const SUCCESS_CLAIM_COUNT = 6;
+
+/**
+ * Which `SUCCESS.md` claim a filing says it moves, or `null` for none.
+ *
+ * `CLAUDE.md` has required this since the file was written — *"before filing
+ * an issue … say which claim it moves. Something that moves none of them is
+ * cleanup and should say so rather than borrowing urgency."* It was prose, so
+ * nothing executed it, and the tracker grew faster than it drained: measured
+ * across 2026-10-23, open issues went 53 → 52 → 55 while the close rate fell
+ * from 11/h to 7/h. A backlog that is an output of the review loop cannot be
+ * drained by closing faster.
+ *
+ * The number is BOUNDED rather than merely shaped. `Claim 99` would otherwise
+ * satisfy a gate whose whole content is "name one", which is the hole any
+ * format-only check has — see `.claude/rules/checks-must-be-able-to-fail.md`
+ * on assertions that hold vacuously.
+ *
+ * Deliberately NOT accepted: a bare `#4`, which is an issue number far more
+ * often than a claim, and `SC-4`, which is a success criterion and a different
+ * register entirely. The word has to be there.
+ */
+export function namedClaim(text: string): number | null {
+  for (const m of text.matchAll(/\bclaims?\s*#?\s*(\d+)/gi)) {
+    const n = Number(m[1]);
+    if (n >= 1 && n <= SUCCESS_CLAIM_COUNT) return n;
+  }
+  return null;
+}
+
 /** How many open issues the dedupe compares against. */
 export const OPEN_ISSUE_LIMIT = 100;
 
@@ -587,11 +626,52 @@ export async function adjudicateFiling(
     };
   }
 
+  // ── it is novel and postable. does it say what it MOVES? ──
+  //
+  // **Last, and the ordering is the design.** A regex over a string already in
+  // hand is the cheapest test in this function, so the cost doctrine every
+  // other stage follows would put it first — and first is wrong here, twice
+  // over. A duplicate must be refused as DUPLICATE, because "already filed as
+  // #1173" is actionable and "name a claim" is not; and an UNMEASURED tracker
+  // must stay UNMEASURED, because a policy refusal that outranks a reading
+  // failure is a reading failure nobody ever sees. This stage only ever
+  // converts an ALLOW, so it can mask nothing.
+  //
+  // Measured when it was briefly placed first: 34 of 78 cases in this file's
+  // own suite went red, every one a dedupe or UNMEASURED case short-circuited
+  // before it could run. That is the mask, observed rather than reasoned
+  // about.
+  //
+  // This REFUSES rather than noting, and the difference is the whole point.
+  // `CLAUDE.md` has carried the rule as prose for the life of this repository
+  // — *"say which claim it moves"* — and nothing executed it, so the tracker
+  // grew faster than it drained: open issues went 53 → 52 → 55 across
+  // 2026-10-23 while the close rate fell from 11/h to 7/h. A rule nothing
+  // executes is not a rule; `.claude/rules/config-access.md` says that about
+  // ADRs and it was true of this line too.
+  //
+  // The escape hatch is the label that already exists. Cleanup is still
+  // postable — say so with `--label arbiter-override`, and it is counted. An
+  // override nobody can count is the thing this gate is not.
+  if (namedClaim(`${attempt.title}\n${body}`) === null) {
+    return {
+      ...base,
+      outcome: "REFUSE",
+      refusal: "NO_CLAIM",
+      reason:
+        `the filing is novel, and names no SUCCESS.md claim — nothing says what it moves. ` +
+        `Name one as "Claim <1-${SUCCESS_CLAIM_COUNT}>" in the title or body, or post it as ` +
+        `cleanup with \`--label ${FILING_OVERRIDE_LABEL}\``,
+    };
+  }
+
   return {
     ...base,
     outcome: "ALLOW",
     refusal: null,
-    reason: `no open issue shares this symptom, and ${category} is not a dropped category`,
+    reason:
+      `no open issue shares this symptom, ${category} is not a dropped category, ` +
+      `and it names SUCCESS.md claim ${namedClaim(`${attempt.title}\n${body}`)}`,
   };
 }
 

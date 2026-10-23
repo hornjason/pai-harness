@@ -134,14 +134,16 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
   test("every setup-bun step is read, and the scan says how many it read", () => {
     // The coverage assertion, first and on its own. Every case below is
     // satisfied by an empty reading, so the reading is established before any
-    // of them run. Eight workflow files carry a setup-bun step today:
-    // action-pins, ai-review, ci, claude-review, gates, issue-audit, release
-    // and suite-flake. `ai-review` joined in #1013, which runs the findings
+    // of them run. Nine workflow files carry a setup-bun step today:
+    // action-pins, ai-review, ci, claude-review, closing-references, gates,
+    // issue-audit, release and suite-flake. `ai-review` joined in #1013,
+    // which runs the findings
     // adjudicator through `bunx`; `claude-review` joined in #732, which needs bun on PATH
     // for the post-step that reads what the review actually did;
     // `action-pins` joined in #789, the weekly freshness check for the pins
     // this file is about; `suite-flake` joined in #323, which runs the suite
-    // ten times on one tree and reads the series.
+    // ten times on one tree and reads the series; `closing-references` joined
+    // in #1362, which runs the closing-reference audit this branch adds.
     //
     // The floor and the list are two different claims, deliberately:
     // the floor says the scan read SOMETHING, so no case below is satisfied
@@ -151,13 +153,14 @@ describe("AC-2: no workflow under .github/workflows resolves Bun from a moving t
     // meant to turn this red once.
     const steps = setupBunStepsUnder(WORKFLOW_DIR);
     expect(steps.length, "fewer setup-bun steps than this repo has workflows that install bun")
-      .toBeGreaterThanOrEqual(8);
+      .toBeGreaterThanOrEqual(9);
     const files = new Set(steps.map(s => s.file));
     expect([...files].sort()).toEqual([
       "action-pins.yml",
       "ai-review.yml",
       "ci.yml",
       "claude-review.yml",
+      "closing-references.yml",
       "gates.yml",
       "issue-audit.yml",
       "release.yml",

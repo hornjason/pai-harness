@@ -241,7 +241,23 @@ function quantitiesIn(body: string): number[] {
     // ratio far more often than two independent readings, and masking both
     // is the direction this function is allowed to be wrong in: a key it
     // declines to emit cannot make two unrelated findings agree.
-    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, m => " ".repeat(m.length))
+    // ## The boundaries are lookarounds, NOT `\b` (#1385)
+    //
+    // This shipped as `/\b\d{1,2}:\d{2}(?::\d{2})?\b/` and the trailing `\b`
+    // is the bug: it needs a NON-word character after the match, and a UTC
+    // `Z` is a word character. So `19:05Z` did not match, the `:\d+` rule
+    // below then ate `:05`, and the hour survived as `qty:19` — the exact
+    // defect #1333 was filed about, surviving #1333's fix.
+    //
+    // It had a live instance. `#1226` says "registry served 0.8.1 at roughly
+    // 19:05Z" and `#1162` says "19 distinct check names"; that collision was
+    // one of only two cross-issue duplicate pairs the arbiter produced on the
+    // open corpus, and closing it drops the pair below the quantity floor.
+    //
+    // `(?<![\d:])` refuses to start mid-number, so the `48` of `15:48:30`
+    // cannot begin a second match. `(?!\d)` refuses to stop mid-number but
+    // allows a letter, which is the whole fix.
+    .replace(/(?<![\d:])\d{1,2}:\d{2}(?::\d{2})?(?!\d)/g, m => " ".repeat(m.length))
     .replace(/:\d+/g, m => " ".repeat(m.length))
     .replace(/\bv?\d+\.\d+(?:\.\d+)?/g, m => " ".repeat(m.length));
   for (const m of masked.matchAll(/\b\d[\d,]*\b/g)) {
@@ -608,6 +624,12 @@ export type ArbiterRefusal =
   | "DROPPED_CATEGORY"
   /** A cited line is past the end of the file it cites. */
   | "STALE_CITATION"
+  /**
+   * The filing names no `SUCCESS.md` claim, so nothing says what it moves.
+   * A chokepoint refusal only — a review round's findings are adjudicated
+   * against a diff rather than filed by hand, and have no title to carry one.
+   */
+  | "NO_CLAIM"
   /** Something could not be evaluated. Fails; never skips. */
   | "UNMEASURED";
 

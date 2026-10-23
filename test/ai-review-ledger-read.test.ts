@@ -29,6 +29,7 @@ import { describe, expect, test } from "bun:test";
 import {
   AI_REVIEW_LEDGER_ABSENT,
   AI_REVIEW_LEDGER_COMMENT_MARKER,
+  AI_REVIEW_LEGACY_LEDGER_CAP,
   AI_REVIEW_LEDGER_FINDINGS_KEY,
   AI_REVIEW_LEDGER_FINDING_TEXT,
   AI_REVIEW_LEDGER_IDENTITY,
@@ -44,7 +45,7 @@ import {
   FINDING_IDENTITY_NONE,
   FINDING_IDENTITY_TEXT,
   carryForward,
-  findingKey,
+  carryKey,
   ledgerUnreadable,
   priorFindings,
   readLedger,
@@ -58,6 +59,10 @@ import {
   AI_REVIEW_LEDGER_TEXT_FIELD,
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step.ts";
+// AC-R9 only. The derivation is worth nothing unless the metric that refused
+// 39 of 40 pull requests stops refusing, and that is measured here rather
+// than asserted about the reader in isolation.
+import { summariseRoundsToPass } from "../lib/rounds-to-pass.ts";
 
 /** A ledger comment body in exactly the shape the persist step writes. */
 function ledgerBody(entries: unknown): string {
@@ -105,9 +110,9 @@ describe("AC-R1: identity is stated, not assumed", () => {
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
     expect(prior.prior).toHaveLength(1);
     expect(prior.prior[0]!.identity).toBe(FINDING_IDENTITY_TEXT);
-    // The key is the one findingKey forms from the RECORDED text, which is
+    // The key is the one carryKey forms from the RECORDED text, which is
     // what makes a line that moved still a repeat.
-    expect(prior.keys).toEqual([findingKey(UNSAFE, UNSAFE[AI_REVIEW_LEDGER_TEXT_FIELD])!]);
+    expect(prior.keys).toEqual([carryKey(UNSAFE, UNSAFE[AI_REVIEW_LEDGER_TEXT_FIELD])!]);
   });
 
   test("AC-R1: an identity the reader does not recognise refuses to key, and carries", () => {
@@ -146,7 +151,7 @@ describe("AC-R1: identity is stated, not assumed", () => {
     const prior = priorFindings(readLedger(ledgerBody([entry({ [AI_REVIEW_FINDINGS_KEY]: [noText] })])));
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
     expect(prior.prior[0]!.identity).toBe(FINDING_IDENTITY_LINE);
-    expect(prior.keys).toEqual([findingKey(noText)!]);
+    expect(prior.keys).toEqual([carryKey(noText)!]);
   });
 });
 
@@ -226,7 +231,7 @@ describe("AC-R4: an unkeyable finding is carried, never dropped", () => {
     const blank = { severity: "HIGH", line: 4 };
     const prior = priorFindings(readLedger(ledgerBody([entry({ [AI_REVIEW_FINDINGS_KEY]: [blank] })])));
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
-    expect(findingKey(blank)).toBeNull();
+    expect(carryKey(blank)).toBeNull();
     expect(prior.keys).toEqual([]);
     expect(prior.prior).toHaveLength(1);
     expect(prior.prior[0]!.identity).toBe(FINDING_IDENTITY_NONE);
@@ -392,8 +397,15 @@ describe("AC-R8: a window states how much it dropped, and zero is a statement", 
     // The row `truncated ?? 0` fails on. A complete history and a ledger with
     // no opinion are different facts, and only one of them licenses a caller
     // to report "nothing was raised before" rather than "nothing I can see".
+    //
+    // The SILENT fixture is an object carrying no `truncated` key, not the
+    // one-round bare array it used to be. #1447 gave that input an answer —
+    // a bare array below the cap it was written under dropped nothing — so
+    // it is no longer an example of a ledger with no opinion, and a row that
+    // kept it would be asserting the derivation away. The property is
+    // unchanged; only the shape that still exhibits it has moved.
     const stated = readLedger(windowBody([entry()], { [AI_REVIEW_LEDGER_TRUNCATED_KEY]: 0 }));
-    const silent = readLedger(ledgerBody([entry()]));
+    const silent = readLedger(windowBody([entry()]));
     if (stated.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
     if (silent.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
     expect(stated.truncation.status).toBe(AI_REVIEW_TRUNCATION_STATED);
@@ -405,7 +417,11 @@ describe("AC-R8: a window states how much it dropped, and zero is a statement", 
   });
 
   test("AC-R8: an UNKNOWN truncation carries no count field for a caller to read", () => {
-    const silent = readLedger(ledgerBody([entry()]));
+    // A bare array AT the cap (#1447): still the legacy shape, and still the
+    // one whose depth cannot be established. Below the cap it now can be.
+    const silent = readLedger(
+      ledgerBody(Array.from({ length: AI_REVIEW_LEGACY_LEDGER_CAP }, () => entry())),
+    );
     if (silent.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
     expect(Object.hasOwn(silent.truncation, "dropped")).toBe(false);
     expect(silent.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
@@ -472,5 +488,114 @@ describe("AC-R8: a window states how much it dropped, and zero is a statement", 
     if (prior.status !== AI_REVIEW_PRIOR_MEASURED) throw new Error("unreachable");
     expect(prior.keys).toHaveLength(1);
     expect(prior.unmeasuredRounds, "the null round is still counted").toBe(1);
+  });
+});
+
+/**
+ * AC-R9 (#1447): a legacy bare array SHORTER than the cap it was written
+ * under dropped nothing, and that is a derivation rather than an assumption.
+ *
+ * Covers AC-R9, CRC-M11 (specs/CODE-REVIEW-CONVERGENCE-SPEC.md).
+ *
+ * The writer already reasons this way — #1405's migration writes `truncated:
+ * 0` for exactly this input, because the list grows by one per round and is
+ * only ever cut at the cap, so a length below it means the cut never ran. The
+ * reader called every bare array UNKNOWN, so the same fact had two answers in
+ * two modules and the reader's was the one CRC-M11 consumed. Measured on the
+ * live tracker the day this landed: 40 pull requests carried a ledger, 39 of
+ * them a bare array, **all 39 below the cap**, deepest history 8 rounds. So
+ * `rounds-to-pass` reported `measured 1, unmeasured 39` for a population in
+ * which nothing was actually unknowable.
+ *
+ * ## Why the constant is frozen and is not `AI_REVIEW_LEDGER_MAX_ROUNDS`
+ *
+ * The derivation is only sound against the cap that was in force **when the
+ * array was written**. `AI_REVIEW_LEDGER_MAX_ROUNDS` has been 12 since it was
+ * introduced in `41f2e93f` (#1168) and is 12 today — checked, not assumed,
+ * because a cap that had ever been lower would make every bare array between
+ * the old cap and 12 read as complete when it was cut. That is the flattering
+ * direction, and `lib/rounds-to-pass.ts` says in its own docblock that this
+ * metric's failures all point that way.
+ *
+ * Binding to the live cap would mean a future cap change silently
+ * re-interprets ledgers written years earlier. It cannot: the bare-array
+ * shape is closed, nothing will write another one, and the population is
+ * therefore fixed. A historical constant is the honest spelling of a fact
+ * about history.
+ */
+describe("AC-R9 (#1447): a legacy array below the cap it was written under dropped nothing", () => {
+  const nRounds = (n: number) => Array.from({ length: n }, (_, i) => entry({ round: i + 1 }));
+
+  test("AC-R9: the frozen cap is the one every bare array was written under", () => {
+    // Not an equality with the live cap — see the docblock. This asserts the
+    // value and the reason it does not move, so a later edit to either has to
+    // be deliberate.
+    expect(AI_REVIEW_LEGACY_LEDGER_CAP).toBe(12);
+  });
+
+  test.each([1, 2, 8, 11])(
+    "AC-R9: a bare array of %i rounds states a dropped count of zero",
+    n => {
+      const reading = readLedger(ledgerBody(nRounds(n)));
+      if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(reading));
+      expect(reading.rounds).toHaveLength(n);
+      expect(reading.truncation.status).toBe(AI_REVIEW_TRUNCATION_STATED);
+      if (reading.truncation.status !== AI_REVIEW_TRUNCATION_STATED) throw new Error("unreachable");
+      expect(reading.truncation.dropped).toBe(0);
+    },
+  );
+
+  // THE ROW THE CHEAP FIX FAILS. "Every bare array dropped nothing" passes
+  // every case above and is wrong here, where the length is a floor and not a
+  // count — `.claude/rules/checks-must-be-able-to-fail.md`, *a case that goes
+  // green under the WRONG fix*. 11 above and 12 here are adjacent on purpose:
+  // the boundary is the whole content of the derivation.
+  test.each([12, 13, 40])(
+    "AC-R9: a bare array of %i rounds is at or past the cap, so its depth is UNKNOWN",
+    n => {
+      const reading = readLedger(ledgerBody(nRounds(n)));
+      if (reading.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(reading));
+      expect(reading.rounds, "the rounds in hand are still real").toHaveLength(n);
+      expect(reading.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
+      expect(Object.hasOwn(reading.truncation, "dropped")).toBe(false);
+      if (reading.truncation.status !== AI_REVIEW_TRUNCATION_UNKNOWN) throw new Error("unreachable");
+      // The reason has to say which fact stopped it, or a report of it reads
+      // the same as the pre-#1447 blanket refusal and nobody can tell whether
+      // the derivation ran at all.
+      expect(reading.truncation.reason).toContain(String(AI_REVIEW_LEGACY_LEDGER_CAP));
+      expect(reading.truncation.reason).toMatch(/lower bound|floor/);
+    },
+  );
+
+  test("AC-R9: the two sides of the boundary are different readings of the same shape", () => {
+    // Both are bare arrays and both read their rounds back. If a mutation
+    // made the branch unconditional in either direction, one of these two
+    // assertions is the one that notices — a single-sided case could not.
+    const under = readLedger(ledgerBody(nRounds(AI_REVIEW_LEGACY_LEDGER_CAP - 1)));
+    const at = readLedger(ledgerBody(nRounds(AI_REVIEW_LEGACY_LEDGER_CAP)));
+    if (under.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
+    if (at.status !== AI_REVIEW_LEDGER_READ) throw new Error("unreachable");
+    expect(under.truncation.status).toBe(AI_REVIEW_TRUNCATION_STATED);
+    expect(at.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
+    expect(under.truncation.status).not.toBe(at.truncation.status);
+  });
+
+  test("AC-R9: the derivation reaches rounds-to-pass, which is the point of it", () => {
+    // The reader change is only worth anything if the metric stops refusing.
+    // Three pull requests, bare-array ledgers, two passed. Before #1447 every
+    // one of them was ROUNDS_TRUNCATION_UNKNOWN and the reading was all nulls.
+    const reading = summariseRoundsToPass([
+      { number: 1, passed: true, ledger: readLedger(ledgerBody(nRounds(1))) },
+      { number: 2, passed: true, ledger: readLedger(ledgerBody(nRounds(3))) },
+      { number: 3, passed: false, ledger: readLedger(ledgerBody(nRounds(8))) },
+    ]);
+    expect(reading.unmeasured, "a bare array still refuses").toEqual([]);
+    expect(reading.meanRoundsToPass).toBe(2);
+    expect(reading.passedAfterOneRoundRate).toBe(0.5);
+    expect(reading.passedCount).toBe(2);
+    expect(reading.stillOpenCount).toBe(1);
+    // 8 is past LONG_REVIEW_ROUNDS and it is the one that did NOT pass, so a
+    // tail computed over survivors only would read 0 here. It reads 1 of 3.
+    expect(reading.fiveOrMoreRate).toBeCloseTo(1 / 3, 10);
   });
 });

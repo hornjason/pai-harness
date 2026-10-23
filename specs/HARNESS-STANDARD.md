@@ -11270,6 +11270,7 @@ test can tell them apart.
 
 ```
 $ bun scripts/report-provenance.ts
+Measured in: /Users/j/Projects/rungate (branch fix/553)
 Measured against: 1e122b12…
 Branch tip (origin/fix/553): 1e122b12…
 Currency: CURRENT — the report describes 1e122b12…, which is the tip of origin/fix/553
@@ -11311,6 +11312,67 @@ block is now asserted directly and the row is 1.
 - [x] SC-1927: test/report-provenance.test.ts contains [a currency it could not establish is never a pass] — no repository, detached HEAD and an unresolvable ref, with a current reading as the positive control
 - [x] SC-1928: test/report-provenance.test.ts contains [origin is preferred over the local branch] — against a real bare remote, so an unpushed commit reads as not current rather than as the tip
 - [x] SC-1929: test/report-provenance.test.ts contains [the CLI exits non-zero on a stale reading] — every library case stays green if the script prints the block and exits 0, which is the one line that makes a reviewer stop
+
+## A provenance block that never says which directory it measured (#1348)
+
+A reading states two SHAs and a ref. It does not state **where it was
+taken**, and that is the one fact a reader cannot reconstruct from the
+others. So a report written by a reviewer sitting in a different worktree is
+textually identical to one written by a reviewer sitting in the right one.
+
+**Measured 2026-10-23.** Two agents reported that `/security-review` had
+reviewed the wrong tree, and filed it as the skill resolving its diff from
+the session's primary directory instead of the worktree. Both halves of that
+diagnosis are false, and the measurements are worth keeping because the
+false version is the one everybody reaches for first:
+
+1. **There was no divergence to resolve.** Both agents were launched with
+   `Primary working directory: /Users/jhorn/Projects/rg-wt-release-082` and
+   never left it — they created worktrees on disk and drove them with
+   `git -C`, so their *own* directory was the one the skill read. The skill
+   read its cwd correctly. The cwd was simply not where the work was.
+   Instrument: `grep -o "Primary working directory: [^\"]*"` over each
+   agent's transcript — 1 distinct value for one agent, 3 for the other
+   (none a worktree). Control: the same grep over a transcript that *did*
+   change directory shows the move as `<new> (was <old>)`, so an absent
+   result is a reading and not a broken search.
+2. **The signature cited as proof is the correct output for that
+   directory.** `rg/release-0-8-2` was fully contained in `origin/main`
+   (`merge-base == HEAD`), and the four commands the skill runs produce,
+   there, exactly what was reported: a clean status, an empty
+   `git diff --name-only origin/HEAD...`, and 142,852 bytes of
+   `git log --no-decorate origin/HEAD...`. **`git log A...B` is a symmetric
+   difference; `git diff A...B` is `merge-base..B`.** They do not describe
+   the same range, so "log populated, diff empty" is not a contradiction —
+   it is every branch that is merged into or behind main. A refusal built on
+   that comparison, which the issue proposed as the cheap half, fires on the
+   normal case.
+
+What is actually missing is in this repo, and it is the sending side again:
+`provenanceReading` defaults its root to `process.cwd()` and returns a
+confident `CURRENT` about whatever directory that is. The fix is the one
+fact and the one refusal — the block names its directory, and
+`--expect-branch` turns "I am not where I think I am" into an exit code.
+
+### What was broken to prove it
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| the wrong-tree refusal is removed (the defect restored) | 2 | 2 |
+| the block stops naming the directory | 1 | 1 |
+| **CONTROL — refuse whenever `--expect-branch` is passed** | 2 | 2 |
+| `branchAt` drops its detached-HEAD guard | 2 | 2 |
+| the CLI stops reading `--expect-branch` | 1 | 1 |
+
+The control row is the one that matters. Every other row is satisfied by a
+"fix" that refuses unconditionally, which measures nothing and would block
+the branch it was meant to clear.
+
+### Success Criteria
+
+- [x] SC-2500: test/report-provenance.test.ts contains [the block names the directory and branch, not only two SHAs] — asserted as the whole `Measured in: <root> (branch <b>)` line, because a bare `toContain(branch)` passes off the ref line that was already there
+- [x] SC-2501: test/report-provenance.test.ts contains [a reading taken outside the tree under review is UNMEASURED, not current] — over a real second worktree, with the unguarded reading asserted still CURRENT so the fixture keeps reproducing the defect, and a positive control in the right tree
+- [x] SC-2502: test/report-provenance.test.ts contains [the CLI exits non-zero when it measured another tree] — the library can decide perfectly and stay green if the script ignores the flag, which is SC-1929's lesson re-run for a flag that did not exist then
 
 ## A refusal proven on one strategy and described as belonging to all of them (#507)
 
