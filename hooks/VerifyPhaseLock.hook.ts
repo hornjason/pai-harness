@@ -102,21 +102,38 @@ async function main() {
   // inside one phase would leave the intake rate untouched.
   const gate = await filingGate(cmd, { projectRoot: process.cwd() });
   const unrecorded = gate.rows.filter(row => !recordAdjudication(row)).length;
+  // A refusal says the override "is recorded beside the refusal it waived".
+  // When the write failed that sentence is false, and a security control
+  // asserting a guarantee it is not providing is worse than one that says
+  // nothing — so the unrecorded notice rides ON the refusal rather than
+  // being skipped by the early exit, which is where it used to go.
+  const unrecordedNote =
+    unrecorded > 0
+      ? `[FindingArbiter] ${unrecorded} adjudication(s) could NOT be written to ${ledgerPath()}, ` +
+        "so they are not in the population that prices this gate and any claim below that " +
+        "a decision was recorded does not hold for them."
+      : null;
 
+  // `gate.note` rides on the refusal for the same reason `unrecordedNote`
+  // does, and it was missed when that one was fixed: a `decision: "block"`
+  // payload has ONE text field, so anything not folded into `reason` here is
+  // discarded by the early exit and never reaches the agent.
+  //
+  // The note that mattered is the corpus-drop one. A refusal computed against
+  // a tracker three issues short is exactly where the shortfall needs saying
+  // — the agent is being told its finding is already filed, by a comparison
+  // that did not read the whole tracker — and that was the one path on which
+  // it was silently dropped. `FG-60` is the case; it went red here first.
   if (gate.refusal !== null) {
-    console.log(JSON.stringify({ decision: "block", reason: gate.refusal }));
+    const riders = [gate.note, unrecordedNote].filter((n): n is string => n !== null);
+    const reason = [gate.refusal, ...riders].join("\n\n");
+    console.log(JSON.stringify({ decision: "block", reason }));
     process.exit(0);
   }
   // systemMessage and not stderr: stderr from a hook that exits 0 is not
   // shown. An UNMEASURED nobody sees is a silent pass, which is the one thing
   // lib/issue-filing-gate.ts's header says this must not become.
-  const notes = [
-    gate.note,
-    unrecorded > 0
-      ? `[FindingArbiter] ${unrecorded} adjudication(s) could not be written to ${ledgerPath()}, ` +
-        `so this filing is not in the population that prices the gate.`
-      : null,
-  ].filter((n): n is string => n !== null);
+  const notes = [gate.note, unrecordedNote].filter((n): n is string => n !== null);
   if (notes.length > 0) console.log(JSON.stringify({ systemMessage: notes.join("\n\n") }));
   process.exit(0);
 }

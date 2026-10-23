@@ -15,17 +15,22 @@ import { join } from "path";
 
 import { BASELINE_REFUSED, loadVarianceCapture } from "../evals/ai-review-control/baselines";
 import {
+  AI_REVIEW_SAME_TREE_READINGS,
   DUPLICATE_PLANT_TWIN,
+  aiReviewVarianceResidue,
   batchFrom,
   detailOf,
   liveArmCaveat,
   plantsFor,
+  promptHeld,
+  provenanceRefusal,
   readPlants,
   runBatch,
+  type SameTreeReading,
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
 import { symptomKeys, type Finding } from "../lib/finding-arbiter";
-import { adjudicateFiling } from "../lib/issue-filing-gate";
+import { adjudicateFiling, measuredCorpus } from "../lib/issue-filing-gate";
 
 const EXISTING: Finding[] = [
   {
@@ -47,6 +52,12 @@ function capture(over: Partial<VarianceCapture> = {}): VarianceCapture {
     name: "x",
     pinnedCommit: sha,
     commitAtEnd: sha,
+    originMain: sha,
+    // Hex, because a tree hash is hex. This fixture used `"t".repeat(40)` and
+    // loaded cleanly, which is how the missing shape check stayed invisible.
+    libTree: "d".repeat(40),
+    originMainLibTree: "d".repeat(40),
+    dirtyPaths: [],
     measuredAt: "2026-10-23T00:00:00.000Z",
     repo: "hornjason/pai-harness",
     command: "bun evals/ai-review-control/variance-capture.ts",
@@ -104,7 +115,7 @@ describe("the plants separate a live adjudicator from an inert one", () => {
   // the plant is alone in an empty set and nothing can match it.
   test("without its twin the duplicate plant is ALLOWed, so the twin is what lands it", async () => {
     const dup = plantsFor([], "b").find(p => p.key.endsWith("plant-duplicate"))!;
-    const v = await adjudicateFiling({ ...dup.attempt }, async () => []);
+    const v = await adjudicateFiling({ ...dup.attempt }, async () => measuredCorpus([]));
     expect(v.outcome).toBe("ALLOW");
   });
 
@@ -206,6 +217,64 @@ describe("loadVarianceCapture refuses rather than returning a partial reading", 
     expect(() => loadVarianceCapture(name, dir)).toThrow(new RegExp(BASELINE_REFUSED));
     rmSync(dir, { recursive: true });
   });
+
+  // The input a forged or truncated artefact actually looks like: MALFORMED
+  // BUT INTERNALLY CONSISTENT. Every case above plants either a good artefact
+  // or a mismatched one, and the `libTree` guard was an equality with no shape
+  // check behind it — so two equal non-hashes satisfied the one comparison
+  // whose job is to establish that the measured tree was the deployed tree.
+  // This fixture passed the whole loader before the shape check existed.
+  test("two `libTree` fields that agree but are not tree hashes", () => {
+    const { dir, name } = written(capture({ libTree: "x", originMainLibTree: "x" }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // The 40-character non-hex placeholder, which is the near miss a length
+  // check would wave through and the exact value this file's own fixture
+  // carried.
+  test("a 40-character `libTree` that is not hex", () => {
+    const { dir, name } = written(capture({ libTree: "t".repeat(40), originMainLibTree: "t".repeat(40) }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("a truncated tree hash, agreeing with itself", () => {
+    const { dir, name } = written(capture({ libTree: "abc1234", originMainLibTree: "abc1234" }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not a 40-character tree hash/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // CONTROL for the three above: the shape check must not have become a
+  // refusal of everything. A real pair of equal hex tree hashes still loads,
+  // and this is the case that separates "the guard works" from "the guard
+  // throws".
+  test("and a well-formed `libTree` pair still loads", () => {
+    const { dir, name } = written(capture({ libTree: "0".repeat(40), originMainLibTree: "0".repeat(40) }));
+    expect(loadVarianceCapture(name, dir).libTree).toBe("0".repeat(40));
+    rmSync(dir, { recursive: true });
+  });
+
+  // The mismatch case must still be reachable AFTER the shape check — a shape
+  // check placed wrongly would make the equality unreachable and nothing would
+  // notice, because both refusals are refusals.
+  test("two well-formed tree hashes that differ are still refused as a mismatch", () => {
+    const { dir, name } = written(capture({ libTree: "a".repeat(40), originMainLibTree: "b".repeat(40) }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/was not the deployed one/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // The second half of the review finding, recorded because it is NOT
+  // actionable and the next reader deserves to know why rather than
+  // rediscovering it. `dirtyPaths` elements cannot be type-checked
+  // observably: any array with a non-string element is non-empty, and the
+  // emptiness check already refuses every non-empty array. An element-type
+  // guard would be unreachable code that reads like a check.
+  test("a non-string `dirtyPaths` element is already refused — by the emptiness check", () => {
+    const { dir, name } = written(capture({ dirtyPaths: [42 as unknown as string] }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/uncommitted path\(s\) under/);
+    rmSync(dir, { recursive: true });
+  });
 });
 
 // The AI review on #1310 found this: the live arm's sentence spelled
@@ -255,6 +324,73 @@ describe("#1310: the live arm's caveat reads the arm instead of restating it", (
   });
 });
 
+// #1320. The capture recorded `origin/main` as `pinnedCommit` while
+// adjudicating with the working tree's `lib/`. Those agree only by
+// coincidence, and the first artefact was right by coincidence.
+describe("#1320: the pin names the tree that ran, not the tree that is deployed", () => {
+  const sha = (c: string) => c.repeat(40);
+
+  test("a tree level with origin/main and clean is not refused", () => {
+    expect(provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("a"), dirtyPaths: [] })).toBeNull();
+  });
+
+  test("a lib/ differing from the deployed one is UNMEASURED, naming both trees", () => {
+    const r = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("b"), dirtyPaths: [] });
+    expect(r).toContain("UNMEASURED");
+    expect(r).toContain(sha("a"));
+    expect(r).toContain(sha("b"));
+    expect(r).toContain("not the deployed one");
+  });
+
+  // A dirty tree is the case no SHA can express, so it must outrank the SHA
+  // comparison — a tree level with origin/main AND dirty would otherwise read
+  // as clean.
+  test("a dirty lib/ is UNMEASURED even when the trees agree", () => {
+    const r = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("a"), dirtyPaths: ["lib/issue-filing-gate.ts"] });
+    expect(r).toContain("uncommitted path");
+    expect(r).toContain("lib/issue-filing-gate.ts");
+  });
+
+  // CONTROL: the three cases above pass against a function that refuses
+  // everything except one exact input. This names the two independent axes
+  // and asserts each moves the verdict on its own.
+  test("each axis refuses on its own, so neither is dead", () => {
+    const dirtyOnly = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("a"), dirtyPaths: ["lib/x.ts"] });
+    const staleOnly = provenanceRefusal({ libTree: sha("a"), originMainLibTree: sha("b"), dirtyPaths: [] });
+    expect(dirtyOnly).not.toBeNull();
+    expect(staleOnly).not.toBeNull();
+    expect(dirtyOnly).not.toBe(staleOnly);
+  });
+
+  test("the loader refuses a capture whose tree was not the deployed one", () => {
+    const { dir, name } = written(capture({ originMainLibTree: sha("b") }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/not the deployed one/);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("the loader refuses a capture taken on a dirty tree", () => {
+    const { dir, name } = written(capture({ dirtyPaths: ["lib/finding-jury.ts"] }));
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/uncommitted path/);
+    rmSync(dir, { recursive: true });
+  });
+
+  // An absent reading and a clean tree are different facts, and the whole
+  // point of the field is that they not collapse.
+  test("the loader refuses a capture with no dirtyPaths reading at all", () => {
+    const c = capture();
+    delete (c as Partial<VarianceCapture>).dirtyPaths;
+    const { dir, name } = written(c);
+    expect(() => loadVarianceCapture(name, dir)).toThrow(/An absent reading is not a clean tree/);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("the stored artefact was taken on the deployed tree, clean", () => {
+    const c = loadVarianceCapture("single-adjudicator-variance");
+    expect(c.libTree).toBe(c.originMainLibTree);
+    expect(c.dirtyPaths).toEqual([]);
+  });
+});
+
 describe("the stored artefact", () => {
   test("loads, and records a commit that did not move", () => {
     const c = loadVarianceCapture("single-adjudicator-variance");
@@ -267,12 +403,97 @@ describe("the stored artefact", () => {
     const c = loadVarianceCapture("single-adjudicator-variance");
     expect(c.caveat).toContain("BY CONSTRUCTION");
     expect(c.permanentlyUnmeasured.length).toBeGreaterThanOrEqual(3);
-    expect(c.permanentlyUnmeasured.join(" ")).toContain("no deployed agent verifier");
+    const residue = c.permanentlyUnmeasured.join(" ");
+    // Both halves, because "no agent verifier exists" would be false and
+    // "one exists" alone would not say why its variance is still unread.
+    expect(residue).toContain("No agent verifier feeds THIS gate");
+    expect(residue).toContain("A deployed agent verifier does exist elsewhere");
   });
 
   test("records the span, which is what bounds the live arm's claim", () => {
     const live = loadVarianceCapture("single-adjudicator-variance").arms.find(a => a.arm === "live")!;
     expect(live.spanSeconds).toBeGreaterThan(0);
     expect(live.runs).toBeGreaterThan(1);
+  });
+});
+
+// #1329. The residue entry asserted that no two runs in this repository's
+// history had ever reviewed the same tree, and that the settling experiment
+// was unrun and would cost real money. Three same-tree pairs already existed
+// in the run logs, and one of them flipped BLOCKED to CLEAN. A confident
+// claim that nothing can be known, contradicted by data already on disk, is
+// the exact failure this artefact exists to prevent — so the entry is now
+// DERIVED from the readings instead of asserted beside them (#1310's lesson).
+describe("#1329: the ai-review residue reads the same-tree readings", () => {
+  const FLIP: SameTreeReading = {
+    run: "39962683401",
+    mergeCommit: "99d50fc",
+    rounds: [5, 5],
+    turns: [51, 52],
+    verdicts: ["BLOCKED", "CLEAN"],
+  };
+  const AGREED: SameTreeReading = { ...FLIP, run: "x1", verdicts: ["CLEAN", "CLEAN"] };
+  const NO_VERDICT: SameTreeReading = { ...FLIP, run: "x2", mergeCommit: null, verdicts: null };
+  const CONFOUNDED: SameTreeReading = { ...FLIP, run: "x3", rounds: [3, 4] };
+
+  test("a pair whose round changed is not a repeat — it is a different prompt", () => {
+    expect(promptHeld(FLIP)).toBe(true);
+    expect(promptHeld(CONFOUNDED)).toBe(false);
+  });
+
+  test("the shipped residue states the flip and never calls the variance unmeasured", () => {
+    const s = aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS);
+    expect(s).toContain("IS now partly read");
+    expect(s).toContain("39962683401");
+    expect(s).toContain("BLOCKED then CLEAN");
+    expect(s).not.toContain("variance is unmeasured");
+  });
+
+  // CONTROL. Without this the case above is satisfied by any function that
+  // returns one string mentioning the flip, and the entry could never go back
+  // to reporting an absence even when an absence is the honest reading.
+  test("with no verdict anywhere it DOES report an absence, and names the experiment", () => {
+    const s = aiReviewVarianceResidue([NO_VERDICT, CONFOUNDED]);
+    expect(s).toContain("variance is unmeasured");
+    expect(s).toContain("gh run rerun");
+    expect(s).not.toContain("IS now partly read");
+  });
+
+  // The second control: scored pairs that AGREE must not be reported as a
+  // flip. A residue that said "disagreed" whenever it had any verdict at all
+  // would pass the shipped case for the wrong reason.
+  test("two attempts that agreed are counted, and reported as zero disagreements", () => {
+    const s = aiReviewVarianceResidue([AGREED]);
+    expect(s).toContain("1 same-tree pair(s) carry two verdicts");
+    expect(s).toContain("0 of them DISAGREED");
+    expect(s).not.toContain("BLOCKED then CLEAN");
+  });
+
+  test("a confounded pair is excluded from the scored set and named as excluded", () => {
+    const s = aiReviewVarianceResidue([FLIP, CONFOUNDED]);
+    expect(s).toContain("1 same-tree pair(s) carry two verdicts");
+    expect(s).toContain("1 because the round changed between attempts");
+  });
+
+  test("an unread verdict is reported as UNMEASURED, never as agreement", () => {
+    const s = aiReviewVarianceResidue([FLIP, NO_VERDICT]);
+    expect(s).toContain("UNMEASURED and are not attempts that agreed");
+  });
+
+  // The recorded data has to be internally honest: a pair cited as evidence of
+  // a flip must have held the prompt, or it is the confound rather than the
+  // measurement.
+  test("every recorded pair that carries verdicts also held its prompt", () => {
+    for (const r of AI_REVIEW_SAME_TREE_READINGS) {
+      if (r.verdicts !== null) {
+        expect(promptHeld(r), `pair ${r.run} carries verdicts but its rounds differ`).toBe(true);
+        expect(r.mergeCommit, `pair ${r.run} carries verdicts but no commit was read`).not.toBeNull();
+      }
+    }
+  });
+
+  test("the stored artefact's residue agrees with the readings it describes", () => {
+    const c = loadVarianceCapture("single-adjudicator-variance");
+    expect(c.permanentlyUnmeasured).toContain(aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS));
   });
 });

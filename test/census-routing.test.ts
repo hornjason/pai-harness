@@ -78,6 +78,7 @@ import {
   parseUnifiedDiff,
   type Change,
 } from "../scripts/census-routing";
+import { TRACKED_ID_PREFIXES } from "../lib/sc-ids";
 
 const REPO = join(import.meta.dir, "..");
 const RULE = join(REPO, ".claude/rules/self-referential-tests.md");
@@ -127,6 +128,44 @@ describe("#990: a tick is routed, and an edit that is not a tick is not", () => 
       tick.tests.length - edit.tests.length,
       "a tick and a prose edit route to the same set, so the tick row is doing nothing",
     ).toBe(SC_CENSUS.length);
+  });
+
+  // The SECOND namespace, and the row that would have caught #1298 leaving
+  // this router behind. `CRC-A1`..`CRC-N5` are tracked criteria by
+  // `TRACKED_ID_PREFIXES`, so ticking one moves `UNCLAIMED_RATCHET`,
+  // `CLAIMED_UNBINDABLE` and the per-spec census exactly as ticking an `SC-`
+  // does — and until the prefix here came out of `lib/sc-ids.ts`, a `CRC-`
+  // tick routed the spec-edit pair and nothing else.
+  //
+  // Driven from `TRACKED_ID_PREFIXES` rather than over the literal string
+  // "CRC", so a THIRD prefix added to that list is covered the day it lands
+  // instead of reproducing this defect a second time. `SC` is skipped
+  // because the two cases above already measure it; what this asserts is
+  // that no member of the list is unrouted.
+  test("every tracked prefix routes a tick, not only the first one", () => {
+    const edit = censusTestsFor([change({ path: "specs/X.md", added: ["some prose"] })]);
+    for (const prefix of TRACKED_ID_PREFIXES) {
+      const { tests } = censusTestsFor([
+        change({
+          path: "specs/CODE-REVIEW-CONVERGENCE-SPEC.md",
+          added: [`- [x] ${prefix}-9104: a criterion in the ${prefix} namespace`],
+        }),
+      ]);
+      for (const t of SC_CENSUS) {
+        expect(tests, `a ${prefix}- tick did not route to ${t} — #990 in a second namespace`)
+          .toContain(t);
+      }
+      // Same discrimination as the SC case: `spec-edit` fires on any specs/
+      // line, so membership alone is green under a router with no tick row.
+      expect(
+        tests.length - edit.tests.length,
+        `a ${prefix}- tick routes the same set as a prose edit`,
+      ).toBe(SC_CENSUS.length);
+    }
+    expect(
+      TRACKED_ID_PREFIXES.length,
+      "the prefix list is empty, so the loop above asserted nothing",
+    ).toBeGreaterThan(1);
   });
 
   // CONTROL against the cheapest wrong generalisation: fire on any specs/
@@ -278,5 +317,73 @@ describe("#990: the diff parser does not invent a tick", () => {
     ]);
     const tick = fired.find(f => f.trigger.id === "spec-tick");
     expect(tick?.because).toEqual(["specs/A.md"]);
+  });
+});
+
+/**
+ * #1368: a generated workflow is routed to the suites that READ it.
+ *
+ * `lib/scaffold/**` already routed to the ownership family — which files the
+ * scaffold owns, which gates exist, which hooks are traceable. Nothing routed
+ * to the suites that read the committed `.github/workflows/*.yml` and assert
+ * properties of its TEXT.
+ *
+ * Paid for on PR #1351. Shard 3 went red on `AC-2 (#1116)` in
+ * `test/ai-review-runner-shell-parity.test.ts` — two new `rf=$(...)`
+ * assignments were #1110's shape — after every suite the router named, and
+ * the four `ai-review-*` suites a person would think to name, came back
+ * green locally. The guard is unreachable from the diff by any route an
+ * agent would take: not the source file's own suite, not the ownership
+ * family, and its name shares no string with anything in the diff.
+ */
+const GENERATED_WORKFLOW_CENSUS = [
+  "test/ai-review-runner-shell-parity.test.ts",
+  "test/action-pin-parity.test.ts",
+  "test/scaffold-permissions-merge.test.ts",
+];
+
+describe("#1368: a generated workflow routes to the suites that read it", () => {
+  test("PR #1351's own diff routes the guard that caught it", () => {
+    const { tests } = censusTestsFor([
+      change({ path: "lib/scaffold/ai-review-step.ts" }),
+      change({ path: ".github/workflows/ai-review.yml" }),
+    ]);
+    for (const t of GENERATED_WORKFLOW_CENSUS) {
+      expect(tests, `#1351's diff did not route to ${t} — this is #1368 again`).toContain(t);
+    }
+  });
+
+  test("a change confined to .github/workflows/ routes something at all", () => {
+    // Before this row, a diff touching only a generated workflow fired NO
+    // row: the router printed nothing, which an agent reads as "nothing else
+    // has an opinion about this change" rather than as "the router has no
+    // rule for it". Those are the two states this whole file is about.
+    const { tests } = censusTestsFor([change({ path: ".github/workflows/ai-review.yml" })]);
+    expect(tests, "a generated-workflow change still routes nothing").not.toEqual([]);
+    for (const t of GENERATED_WORKFLOW_CENSUS) expect(tests).toContain(t);
+  });
+
+  test("a scaffold edit routes MORE than the ownership trio", () => {
+    // The discrimination, and the reason membership alone is not enough:
+    // `lib/scaffold/**` fires `gates-hooks-scaffold` too, so a case asserting
+    // only that SOME tests routed is green under a router with no row here.
+    // `hooks/` fires that row and nothing else, so the delta is this row.
+    const scaffold = censusTestsFor([change({ path: "lib/scaffold/ai-review-step.ts" })]);
+    const hooks = censusTestsFor([change({ path: "hooks/Example.hook.ts" })]);
+    expect(hooks.tests.length, "the gates-hooks-scaffold row stopped firing").toBeGreaterThan(0);
+    expect(
+      scaffold.tests.length - hooks.tests.length,
+      "a scaffold edit and a hooks edit route the same set, so this row is doing nothing",
+    ).toBe(GENERATED_WORKFLOW_CENSUS.length);
+  });
+
+  test("an ordinary source edit is NOT routed here", () => {
+    // The negative control. A row that fires on everything routes the whole
+    // suite for every diff, which is the same as having no router — and it
+    // would make all three cases above pass for the wrong reason.
+    const { tests } = censusTestsFor([change({ path: "lib/ai-review-rounds.ts" })]);
+    for (const t of GENERATED_WORKFLOW_CENSUS) {
+      expect(tests, `${t} is routed by an edit touching no generated workflow`).not.toContain(t);
+    }
   });
 });

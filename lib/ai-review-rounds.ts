@@ -385,6 +385,20 @@ export function carryForward(
 ): ReviewFinding[] {
   const out: ReviewFinding[] = [];
   for (const entry of prior) {
+    // NOTHING WAS RECORDED, so resolution is UNDECIDABLE — carry it.
+    //
+    // This branch is the whole of the reading half's first defect. Without
+    // it, `normalise(undefined)` is `""`, which differs from any real line,
+    // so a finding whose text was never recorded is read as RESOLVED and
+    // dropped — silently, every time. Measured against the ledger #1319
+    // actually writes, which recorded `{severity, file, line, summary}` and
+    // no text: one finding in, zero carried out. An absent reading is not a
+    // reading that cleared, and this is the same refusal `roundOutcome`
+    // makes about an unreadable budget.
+    if (typeof entry.recordedText !== "string") {
+      out.push(entry.finding);
+      continue;
+    }
     const now = currentLineText(entry.finding);
     if (typeof now !== "string") {
       out.push(entry.finding);
@@ -394,6 +408,284 @@ export function carryForward(
     out.push(entry.finding);
   }
   return out;
+}
+
+/* ───────────────── reading the ledger a previous round wrote ──────────────
+ *
+ * `lib/scaffold/ai-review-step.ts` upserts ONE comment per pull request
+ * holding one JSON entry per review round (#1319). Everything above this line
+ * takes the prior rounds as a parameter, deliberately — a function that
+ * fetches its own evidence cannot be given a negative control. This is the
+ * part that turns that comment into the parameter.
+ *
+ * The two properties it exists to hold, both of which are easy to lose:
+ *
+ *  1. **Identity is stated, not assumed.** The ledger stamps the rule its
+ *     anchors were recorded under. A reader that meets a rule it does not
+ *     know refuses to form keys rather than keying under its own — because
+ *     keying under the wrong rule does not fail, it silently compares two
+ *     different things and suppresses live findings.
+ *
+ *  2. **"Nothing recorded" and "could not read what was recorded" are
+ *     different facts.** `lib/config-loader.ts` makes the same distinction
+ *     about an absent config versus a corrupt one, for the same reason: both
+ *     yield nothing, and only one of them is a reading. Here the type carries
+ *     it — an unmeasured reading does not HAVE a `keys` field, so a caller
+ *     cannot reach for one without narrowing the status first.
+ *
+ * These four constants are declared again in `lib/scaffold/ai-review-step.ts`
+ * and must agree. They are not imported from there, and that file must not
+ * import this one: the mutation batteries build a mutant by copying that file
+ * alone into a scratch directory, so a relative import added to it resolves
+ * to nothing and the mutant fails to LOAD — which reads as a behavioural
+ * difference on every row (`.claude/rules/self-referential-tests.md`, Tier 1).
+ * `test/ai-review-ledger-read.test.ts` AC-R6 binds all four instead.
+ */
+
+/**
+ * The identity rule the ledger's recorded anchors were formed under.
+ *
+ * Versioned in the string itself. A reader meeting an identity it does not
+ * recognise carries the findings and declines to key them, so changing the
+ * rule is a safe, one-sided operation: old rounds stop suppressing, and
+ * nothing silently compares an old anchor against a new rule.
+ */
+export const AI_REVIEW_LEDGER_IDENTITY = "file+text+summary@v1";
+
+/** The HTML comment that identifies the ledger comment. */
+export const AI_REVIEW_LEDGER_COMMENT_MARKER = "<!-- rungate:ai-review-ledger:v1 -->";
+
+/** The key the per-round findings array is recorded under. */
+export const AI_REVIEW_LEDGER_FINDINGS_KEY = "findings";
+
+/** The key holding the text at the cited line when the finding was raised. */
+export const AI_REVIEW_LEDGER_FINDING_TEXT = "text";
+
+/** No ledger comment on this pull request. A MEASURED reading of nothing. */
+export const AI_REVIEW_LEDGER_ABSENT = "AI_REVIEW_LEDGER_ABSENT";
+
+/** A ledger is there and could not be read. NOT the same as absent. */
+export const AI_REVIEW_LEDGER_UNREADABLE = "AI_REVIEW_LEDGER_UNREADABLE";
+
+/** The ledger was read. */
+export const AI_REVIEW_LEDGER_READ = "AI_REVIEW_LEDGER_READ";
+
+/** Keyed on the file, the recorded TEXT of the cited line, and the summary. */
+export const FINDING_IDENTITY_TEXT = "file+text+summary";
+
+/**
+ * Keyed on the file, the cited line NUMBER, and the summary.
+ *
+ * Weaker, and recorded as such rather than passed off as the above: the one
+ * repeat this repository can demonstrate moved `:318` → `:375` between rounds
+ * while staying byte-identical, so this key would have missed it.
+ */
+export const FINDING_IDENTITY_LINE = "file+line+summary";
+
+/** No key could be formed. The finding is carried and suppresses nothing. */
+export const FINDING_IDENTITY_NONE = "unclassifiable";
+
+export type FindingIdentity =
+  | typeof FINDING_IDENTITY_TEXT
+  | typeof FINDING_IDENTITY_LINE
+  | typeof FINDING_IDENTITY_NONE;
+
+export interface LedgerRound {
+  /** The round number the entry recorded, or null if it recorded none. */
+  round: number | null;
+  /** The commit the round reviewed. */
+  sha: string;
+  /** False when the entry recorded `findings: null`, or was not an object. */
+  measured: boolean;
+  /** True when the entry stamped the identity rule this reader knows. */
+  keyable: boolean;
+  findings: ReviewFinding[];
+}
+
+export type LedgerReading =
+  | { status: typeof AI_REVIEW_LEDGER_ABSENT }
+  | { status: typeof AI_REVIEW_LEDGER_UNREADABLE; reason: string }
+  | { status: typeof AI_REVIEW_LEDGER_READ; rounds: LedgerRound[] };
+
+/**
+ * Say that the ledger could not be read, for a reason only the caller knows.
+ *
+ * The API call that lists a pull request's comments can fail, and when it
+ * does the caller has no body to hand to `readLedger`. Without this it would
+ * have to pass `null`, which reads as ABSENT — a failed fetch would then be
+ * indistinguishable from a pull request on its first round, and every earlier
+ * finding would silently stop being carried.
+ */
+export function ledgerUnreadable(reason: string): LedgerReading {
+  return { status: AI_REVIEW_LEDGER_UNREADABLE, reason };
+}
+
+/**
+ * Parse the ledger comment's body.
+ *
+ * `null`, `undefined` and a body without the marker are ABSENT: there is no
+ * ledger, which is the correct and complete reading on round one. A body that
+ * HAS the marker and whose JSON block is missing, truncated, unparseable or
+ * not an array is UNREADABLE — never an empty ledger, because treating a
+ * damaged ledger as empty discards every round it holds at exactly the moment
+ * nothing can tell that it happened.
+ */
+export function readLedger(body: unknown): LedgerReading {
+  if (typeof body !== "string") return { status: AI_REVIEW_LEDGER_ABSENT };
+  const marker = body.indexOf(AI_REVIEW_LEDGER_COMMENT_MARKER);
+  if (marker === -1) return { status: AI_REVIEW_LEDGER_ABSENT };
+
+  const fence = body.indexOf("```json", marker);
+  if (fence === -1) {
+    return ledgerUnreadable(
+      "the ledger comment is present and holds no ```json block, so the rounds it " +
+        "recorded cannot be read; it is not being treated as an empty ledger",
+    );
+  }
+  const start = body.indexOf("\n", fence);
+  const close = start === -1 ? -1 : body.indexOf("\n```", start);
+  if (close === -1) {
+    return ledgerUnreadable(
+      "the ledger comment's ```json block is not closed, so it was truncated in " +
+        "transit or in storage and the rounds it recorded cannot be read",
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.slice(start + 1, close));
+  } catch (e) {
+    return ledgerUnreadable(
+      `the ledger comment's JSON block could not be parsed (${
+        e instanceof Error ? e.message : String(e)
+      }), so the rounds it recorded cannot be read`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    return ledgerUnreadable(
+      `the ledger comment's JSON block is ${describe(parsed)} rather than an array of ` +
+        "rounds, so the rounds it recorded cannot be read",
+    );
+  }
+  return { status: AI_REVIEW_LEDGER_READ, rounds: parsed.map(toLedgerRound) };
+}
+
+function toLedgerRound(raw: unknown): LedgerRound {
+  // An entry that is not an object is a round that was recorded and cannot be
+  // read. It is counted, not skipped: a round that vanishes from the count
+  // makes a three-round pull request look like a two-round one.
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { round: null, sha: "", measured: false, keyable: false, findings: [] };
+  }
+  const e = raw as Record<string, unknown>;
+  const list = e[AI_REVIEW_LEDGER_FINDINGS_KEY];
+  const measured = Array.isArray(list);
+  return {
+    round: readRoundNumber(e.round),
+    sha: typeof e.sha === "string" ? e.sha : "",
+    measured,
+    keyable: e.identity === AI_REVIEW_LEDGER_IDENTITY,
+    findings: measured
+      ? (list as unknown[]).filter(
+          (f): f is ReviewFinding => typeof f === "object" && f !== null && !Array.isArray(f),
+        )
+      : [],
+  };
+}
+
+/** The prior state could not be established at all. */
+export const AI_REVIEW_PRIOR_UNMEASURED = "AI_REVIEW_PRIOR_UNMEASURED";
+
+/** The prior state was established — possibly as nothing. */
+export const AI_REVIEW_PRIOR_MEASURED = "AI_REVIEW_PRIOR_MEASURED";
+
+export interface PriorFinding {
+  finding: ReviewFinding;
+  /**
+   * The text at the cited line when the finding was raised. Absent when the
+   * ledger did not record one — and absent is UNDECIDABLE in `carryForward`,
+   * not resolved.
+   */
+  recordedText?: string;
+  /** Which rule formed this finding's key. Stated, so a caller can weigh it. */
+  identity: FindingIdentity;
+  /** The key, or null when no identity could be formed. */
+  key: string | null;
+  /** The round it was raised on, where the ledger recorded one. */
+  round: number | null;
+}
+
+export type PriorState =
+  | { status: typeof AI_REVIEW_PRIOR_UNMEASURED; reason: string }
+  | {
+      status: typeof AI_REVIEW_PRIOR_MEASURED;
+      /** Keys earlier rounds raised, for `suppressRepeats`. */
+      keys: string[];
+      /** Everything earlier rounds raised, for `carryForward`. */
+      prior: PriorFinding[];
+      /** Rounds recorded whose findings were never read. */
+      unmeasuredRounds: number;
+      /** Rounds read under an identity rule this reader does not know. */
+      unkeyableRounds: number;
+    };
+
+/**
+ * Turn a ledger reading into what `suppressRepeats` and `carryForward` take.
+ *
+ * `PriorFinding` is assignable to `CarriedFinding`, so `prior` goes straight
+ * into `carryForward` with no adapter between them — that join is the point
+ * of the shape.
+ *
+ * **An UNREADABLE ledger returns a state with no `keys` and no `prior`.** Not
+ * empty ones: absent ones. A caller holding an unmeasured state cannot
+ * suppress a finding or resolve one, and the type stops it reaching for the
+ * fields that would let it, instead of trusting it to check a boolean nobody
+ * has to read.
+ */
+export function priorFindings(reading: LedgerReading): PriorState {
+  if (reading.status === AI_REVIEW_LEDGER_UNREADABLE) {
+    return { status: AI_REVIEW_PRIOR_UNMEASURED, reason: reading.reason };
+  }
+  if (reading.status === AI_REVIEW_LEDGER_ABSENT) {
+    return {
+      status: AI_REVIEW_PRIOR_MEASURED,
+      keys: [],
+      prior: [],
+      unmeasuredRounds: 0,
+      unkeyableRounds: 0,
+    };
+  }
+
+  const keys: string[] = [];
+  const prior: PriorFinding[] = [];
+  let unmeasuredRounds = 0;
+  let unkeyableRounds = 0;
+
+  for (const round of reading.rounds) {
+    if (!round.measured) {
+      unmeasuredRounds++;
+      continue;
+    }
+    if (!round.keyable) unkeyableRounds++;
+    for (const finding of round.findings) {
+      const recorded = finding[AI_REVIEW_LEDGER_FINDING_TEXT];
+      const recordedText = typeof recorded === "string" ? recorded : undefined;
+      let identity: FindingIdentity = FINDING_IDENTITY_NONE;
+      let key: string | null = null;
+      // Only a round stamped with the rule this reader knows gets a key. An
+      // unrecognised rule is carried, never dropped, and never keyed.
+      if (round.keyable) {
+        key = findingKey(finding, recordedText);
+        if (key !== null) {
+          identity = normalise(recordedText) !== "" ? FINDING_IDENTITY_TEXT : FINDING_IDENTITY_LINE;
+          keys.push(key);
+        }
+      }
+      prior.push({ finding, recordedText, identity, key, round: round.round });
+    }
+  }
+
+  return { status: AI_REVIEW_PRIOR_MEASURED, keys, prior, unmeasuredRounds, unkeyableRounds };
 }
 
 /**

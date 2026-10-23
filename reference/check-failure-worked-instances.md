@@ -2008,3 +2008,198 @@ it cannot be wrong about a population. This is a single case whose **signal**
 two mechanisms can both produce, so it cannot be wrong about a mechanism. The
 remedies are different and neither substitutes: assert on a channel only the
 intended mechanism can write, versus vary the input in at least one row.
+
+### Before you report one: a duration is not a mechanism (#1268)
+
+Moved out of `.claude/rules/checks-must-be-able-to-fail.md` by #1346, for the
+reason #1009 and #544 moved everything else here and with the same promise:
+the words are unchanged, only the address is. The rule keeps the operational
+half — read the `kind`, and do not re-file #1268 — and this is the evidence
+behind it.
+
+This file teaches you to hunt for checks that cannot fail, and **the hunt
+needs evidence too**. On 2026-10-22 a case running 26,925ms against a 5,000ms
+default was reported as a budget that *could not fire*, the mechanism given
+as "a blocking `execFileSync` does not yield to bun's timer". Both halves
+were false. It reached the tracker as #1268 because one agent inferred a
+mechanism from a duration and the next relayed it without re-deriving it.
+
+A case running far over a default has at least three explanations, and
+telling them apart costs one command:
+
+| explanation | the reading that shows it |
+|---|---|
+| no budget governs it | `perTestTimeoutDeclarations(src)` names it in no entry |
+| a generous budget was declared on purpose | it returns `kind: "per-test"` for it |
+| the budget fires but cannot interrupt | the run reports the case red anyway |
+
+**Read the `kind`.** `perTestTimeoutDeclarations` reports `"per-test"`
+separately from `"file-default"`, so a filter on `"file-default"` answering
+"declares nothing" does **not** mean "no budget governs this case". The case
+above closes its own body with `}, 240_000);` — a deliberate 240s budget, on
+the line a reader looking for one would have landed on.
+
+Measured while falsifying it, so nobody re-files it: bun 1.3.14 **does** kill
+a blocking `execFileSync` at the budget — 506ms under `--timeout 500`, with
+`stdio`, `encoding`, a child `timeout:` and `cwd` varied one at a time and
+all six killed. The one thing not *interrupted* is a CPU-bound spin with no
+syscall, and it is **still reported red** (`[3000.17ms]`, `this test timed
+out after 500ms`). The budget fires; it cannot stop the work. That is
+wall-clock cost, not a hole in the gate.
+
+### When the reason nobody checked is a comment saying it was checked (#1322, #675)
+
+Every other instance in this file is a check that could not fail. This one is
+a check that was never written, because **the tree contained a sentence
+asserting it existed** — in the place a reader goes to find out, written by
+someone who was right at the time.
+
+`bin/rungate.ts` rewrote `process.argv` and then `await import(script)`.
+`import.meta.main` is false for a dynamically imported module, so a command
+script guarding its CLI body on it loaded, executed nothing, and the
+dispatcher exited 0. Three of ten commands were silent that way, including
+`audit-specs`, whose entire job is reporting spec status.
+
+`lib/cli-commands.ts`'s docblock said this could not happen:
+
+> None of them guards on `import.meta.main` … Adding a guard to any of them
+> would silently turn its subcommand into a no-op, so
+> `test/cli-contract.test.ts` runs every command for real.
+
+Both clauses were false when the defect was found, and the sentence is the
+reason that went unnoticed for as long as it did. It does not merely fail to
+catch the defect — **it names the defect precisely, argues it is impossible,
+and cites the test that would have caught it.** An agent who wonders whether
+the dispatcher reaches command bodies finds an answer, in the right file,
+phrased as settled. Nobody runs the test, because the comment already
+reported its result.
+
+Three properties made it rot without anyone touching it:
+
+| clause | true when written | what falsified it | who could have noticed |
+|---|---|---|---|
+| "none of them guards on `import.meta.main`" | yes | three scripts later acquired a guard | each author, who had no reason to read a docblock in a different file |
+| "runs every command for real" | plausible | the test ran **one** — `create-sc --list` | nobody; the test was green |
+
+Neither change was careless. Adding `import.meta.main` to a script is the
+normal thing to do, and the test's own comment is *correct*: "a dispatcher
+that imported the module and never reached its top-level code would also exit
+0, and this is what tells the two apart." It is exactly right, about one
+member of a population of ten. The battery varied the dispatcher and held the
+**command** fixed while the defect sat on the command axis — the seventh
+shape, with the comment supplying the false assurance that the held axis did
+not matter.
+
+**The second half is sharper than the first, and it is about where a fix gets
+recorded.** #675 hit this mechanism, understood it, and wrote it down — in
+`scripts/ai-review-findings.ts`'s docblock — then worked around it with an
+unguarded wrapper for that one script. A correct local fix. It left the
+dispatcher as it was, and it is why `ai-review-findings` is the one row that
+still worked:
+
+| command | via dispatcher | run directly | |
+|---|---|---|---|
+| `audit-specs` | 0B | 2092B | silent |
+| `sync-spec-tests` | 0B | 1254B | silent |
+| `extract-constraints` | 0B | 57B | silent |
+| `ai-review-findings` | 270B | 270B | reached — #675's workaround |
+
+That row is the damage. A population with one healthy member and a docblock
+explaining why reads as a population with one *exception*. The knowledge was
+in the tree, in a true comment, at the wrong scope — attached to the instance
+rather than to the binding — and the shape it left behind actively argued
+against generalising it.
+
+**The fix is the generalisation: one binding, not three more wrappers.**
+`runCommandScript` spawns the script with `process.execPath`, which makes it
+the entry module. A guard becomes the normal thing for a script to have
+rather than a trap, and **there is no per-command axis left to enumerate** —
+once the dispatcher runs scripts as entry modules, every command is reached
+by construction. That is why the new cases deliberately do *not* loop over
+the ten commands: enumerating is what failed, two of the ten write when run
+bare, and an enumeration would either dirty the tree or carry exclusions —
+an excluded row being an unmeasured one.
+
+What was broken to prove the cases fail, predicted before each run:
+
+| mutation | predicted | measured |
+|---|---|---|
+| dispatcher back to `await import(script)` | 2 red | **2, exact set** |
+| `r.status ?? 0` instead of `?? 1` | 1 red | **0 — a real defect in the test** |
+| both, **plus** deleting the guard from `audit-specs.ts` | 1 red | **1, exact set** |
+
+The `?? 0` row came back **lower** than predicted, which is the signature
+worth recognising. "A script that cannot run is a failure" passed under the
+mutation because a missing script makes *bun* exit non-zero — a real status
+the `??` never sees — and a separate `if (r.signal)` branch made `?? 1`
+unreachable by any input at all. An assertion holding for a reason that is
+not the one claimed: the third shape, found only because a number came back
+smaller than a prediction made in advance.
+
+The third row is the one that justifies the design. Under the per-script
+workaround — #675's approach, applied three more times — the end-to-end case
+goes green and only the source-binding assertion stays red. **Fixing this
+per-script would have looked correct**, which is precisely what happened the
+first time.
+
+One self-inflicted catch belongs here too, because it is this section's own
+subject turned on itself: the source-binding assertion first went red against
+**the comment I had just written quoting the old `await import(script)`
+line**. It now reads through `stripJsComments`. A guard that cannot tell code
+from a comment about code is reading authored text, not the program — and
+authored text is the thing this entire section is a warning about.
+
+**The rule this reduces to.** A comment asserting that a property is tested
+is not evidence the property is tested; it is evidence that somebody once
+believed it, and it suppresses the check by answering the question that would
+have prompted one. Two things follow:
+
+- **When you rely on a property, bind it, do not describe it.** If the
+  sentence is worth writing, the assertion is worth writing, and then the
+  sentence can cite the assertion instead of standing in for it.
+- **Record a fix at the scope of the mechanism, not the instance.** #675's
+  comment was true, useful, and in the wrong file. A workaround that leaves
+  the shared binding broken converts a uniform defect into a defect with one
+  documented exception, and the exception is what stops the next reader
+  looking.
+
+### A migration can delete a guarantee nobody wrote down (#1282, #1304, #1318)
+
+Not one of the seven shapes, and it will recur: **a fix can remove a property
+the thing it replaced supplied implicitly.** The shapes above are all about a
+check that cannot fail. This is about a guarantee that silently stops
+existing, with no check anywhere to notice, because nobody ever wrote it down
+as a requirement — it came free with the old implementation.
+
+The worked instance is a `gh` → Octokit migration, and the defect arrived
+*inside the fix for a different finding*, which is the part worth keeping.
+
+`spawnSync` takes a `timeout` and the call site passed one. #1282 replaced the
+subprocess with an Octokit call to get off the CLI — a correct change, asked
+for by `GITHUB-API-MIGRATION-SPEC.md`. **Octokit has no default timeout.** So a
+hung API call hung the agent's `Bash` tool with no ceiling, and because this
+runs in a PreToolUse hook, that does not fail a finding — it takes out the
+session. No test went red, because no test had ever asserted the ceiling: it
+was a parameter to a function in the standard library, not a property anyone
+had named.
+
+Two more in the same family, found the same night, both in `#1318`:
+
+- `trustedCorpus` filtered a corpus down and returned `[]`. The guarantee the
+  unfiltered read provided implicitly — *an empty result means an empty
+  tracker* — stopped holding the moment a filter was added in front of it,
+  and `[]` went on meaning "clean" to every caller.
+- The `blocking` predicate was written as `rows.every(r => !r.emitted)` to
+  protect novel findings batched beside a duplicate. The implicit guarantee
+  it removed is *a refusal refuses*, and the bypass it created — append a
+  clean filing to a refused one — is reachable by accident.
+
+**What to do about it.** When you replace a mechanism, enumerate what the old
+one gave you that nobody asked for: timeouts, ordering, atomicity, a bound on
+size, the meaning of an empty result. Those are the properties with no test,
+because they were never a requirement — they were a side effect of the
+implementation, and the migration is the moment they disappear.
+
+The direction this is allowed to be wrong in is toward writing down a
+guarantee that was never load-bearing. That costs a sentence. The other
+direction cost a session-killing hang that shipped inside a security fix.

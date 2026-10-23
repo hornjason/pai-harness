@@ -3285,10 +3285,75 @@ Three reasons:
 3. Reopening does not restore the gate. It restores the issue. What is
    actually wanted is a human looking.
 
-`closed-by-hand` (the exemption) and `closed-without-ship` (the finding) are
-deliberately different words. Collapsing them would let the audit silence
-itself on its second run — apply the mark, then read its own mark as an
-exemption.
+`closed-by-hand` (the exemption), `closed-without-ship` and `ship-link-lost`
+(the two findings, see #1279 below) are deliberately different words.
+Collapsing an exemption into a finding would let the audit silence itself on
+its second run — apply the mark, then read its own mark as an exemption. Both
+finding labels suppress re-reporting, for the same reason read from the other
+end: an audit that reports the same issue every morning gets switched off.
+
+#### One bucket for two facts (#1279)
+
+Every finding this control reports is a hand-typed close, and the control was
+right about all of them — `.claude/rules/ship-workflow.md` step 6 forbids
+`gh issue close`. What it could not say is **which remedy each one needs**,
+and the two are not close to each other in cost.
+
+Measured against `hornjason/pai-harness` on 2026-10-23, over the 299 issues
+closed between `2026-10-19T17:37:16Z` and `2026-10-23T14:29:51Z` — three
+GraphQL pages of 100 ordered by `UPDATED_AT`, filtered to `closedAt >=
+AUDIT_EPOCH`, read through **this file's own shipped query and
+`toClosedIssue`** rather than a hand-written one beside it:
+
+| reading | count |
+|---|---|
+| closed BY a pull request | 181 |
+| closed BY a commit | 12 |
+| no closer, `not_planned` | 13 |
+| **no closer, `COMPLETED` — the population the audit reports on** | **93** |
+| …of which a MERGED pull request references the issue | 77 |
+| …of which nothing merged references it | 16 |
+
+The row to read with the date beside it is the first one. An earlier pass
+twenty minutes before, with a hand-written query, returned 180 / 95 / 79 / 16
+over the same nominal window: the tracker moved under the instrument, which is
+why the command and the clock travel with the count. `NO_TRACE` was 16 in both.
+
+Honoured labels make the live finding count smaller than the population —
+35 at the time of measurement, because earlier audit runs have already marked
+58 of the 93. The table deliberately re-classifies the whole population rather
+than the unlabelled remainder, because the question is what the control could
+discriminate, not what is left to report this morning.
+
+So 83% of the list was *the attribution was dropped from work that is on
+`main`*, and the 17% that is *nothing records this work ever happened* sat one
+row in six of a report people had learnt to scroll past. A check is worth what
+it can discriminate, not what it can count.
+
+`classifyClosure` is the one binding that splits them, and both halves are
+still findings and still exit non-zero:
+
+- **`LINK_LOST`** — a merged pull request references the issue. The reason
+  names it, so the remedy is to repair the attribution. Labelled
+  `ship-link-lost`.
+- **`NO_TRACE`** — nothing merged references it. Labelled
+  `closed-without-ship`, and the report leads with this section.
+
+Two things about the reading are deliberate. An **unmerged** pull request does
+not count, because a draft that mentions an issue is not evidence anything
+shipped — counting one would move a genuinely untraceable close into the
+bucket nobody re-reads. And the cross-reference list is a **separately aliased
+selection** on the same connection rather than a widened `itemTypes` on the
+closer's: folding both into one `last: N` would push the `ClosedEvent` off the
+end of a chatty issue's window, and the reading that classifies findings would
+have started manufacturing them.
+
+**The cheapest wrong fix, named: stop reporting `LINK_LOST`.** The list drops
+from 93 to 16, the symptom is gone, and a hand-typed close of an issue that
+some unrelated merged pull request happens to mention becomes invisible. The
+case *"AC-1: the two are classified apart, and BOTH are still findings"* goes
+red under it — measured at 5 of 46, as row M1 of the battery recorded on the
+pull request for #1279.
 
 The script is **read-only by default**; `--apply` is required to write
 anything. But `--apply` does not govern whether the run is RED: findings exit

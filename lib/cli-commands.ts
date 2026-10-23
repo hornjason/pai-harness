@@ -235,6 +235,135 @@ export function helpText(): string {
 }
 
 /**
+ * The routing table for `.claude/rules/commands-routing.md`, generated.
+ *
+ * #1309 in one function. The scaffold routed specs, docs, key files and
+ * managed files and did not route COMMANDS, so a command reached an agent
+ * only if somebody had hand-written a row for it in `AGENTS.md`'s Commands
+ * table — four of ten, and the four were the four somebody happened to need
+ * in 2026-09. Measured over the always-loaded surface on `11a60f67`, seven of
+ * the ten were named in no file an agent loads, including `audit-specs`,
+ * whose whole job is reporting spec status. An agent spent a day
+ * hand-building a tracking mechanism that was already a subcommand.
+ *
+ * Generated from `CLI_COMMANDS` rather than written, because a hand-list is
+ * precisely what failed: the generated table is present and plausible, reads
+ * as complete, and nothing in it signals that six more commands exist.
+ *
+ * ## No usage strings here, deliberately
+ *
+ * `helpText()` carries them and `--help` prints them. This table is the
+ * always-loaded surface, which is at 93% of `SURFACE_BUDGET_BYTES` — adding
+ * ten usage lines would cost ~600 bytes to save one `--help`, and the thing
+ * an agent cannot discover by running a command is that the command EXISTS.
+ * The summary is what makes `audit-specs` findable by someone thinking "which
+ * criteria are covered"; the arguments are one invocation away.
+ */
+export function commandRoutingTable(): string {
+  const rows = Object.entries(CLI_COMMANDS).map(
+    ([name, c]) => `| \`${name}\` | ${c.summary} |`,
+  );
+  return ["| Command | What it does |", "|---------|--------------|", ...rows].join("\n");
+}
+
+/**
+ * Every code span in a markdown document — fenced blocks and inline spans.
+ *
+ * `commandNamed` searches this slice rather than the whole document, and the
+ * slice is the point: `.claude/rules/harness-managed.md` says "a re-scaffold
+ * rewrites them" and `AGENTS.md` says "Re-scaffold", and neither of those
+ * routes anyone to the `scaffold` command. A command name is a thing you
+ * TYPE, so the region where it counts is the region reserved for things you
+ * type (`.claude/rules/checks-must-be-able-to-fail.md`, "search the slice,
+ * not the document").
+ */
+export function codeSpans(markdown: string): string {
+  const fenced = markdown.match(/```[\s\S]*?```/g) ?? [];
+  const withoutFences = markdown.replace(/```[\s\S]*?```/g, "\n");
+  const inline = withoutFences.match(/`[^`\n]+`/g) ?? [];
+  return [...fenced, ...inline].join("\n");
+}
+
+/**
+ * Is `name` typed, as a whole word, anywhere in this document's code spans?
+ *
+ * `.` is in the boundary class alongside `-` so that `scripts/convert-spec.ts`
+ * does not count as routing the `convert-spec` COMMAND. It is the script the
+ * command runs, named in the form a consumer cannot use, and treating a path
+ * as a routing is how `convert-spec` read as present while `bunx rungate
+ * convert-spec` was documented nowhere.
+ *
+ * The direction this is allowed to be wrong in is toward reporting a command
+ * UNROUTED: a routing form nobody thought of costs one generated row, and the
+ * other direction is a command that reads as discoverable and is not — which
+ * is the whole of #1309.
+ */
+export function commandNamed(markdown: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![a-z0-9.-])${escaped}(?![a-z0-9.-])`).test(codeSpans(markdown));
+}
+
+/** One always-loaded document, as `measureSurface` reports the population. */
+export interface SurfaceDoc {
+  file: string;
+  text: string;
+}
+
+export interface CommandRoutingReading {
+  /** UNMEASURED FAILS. An empty search is not a clean one. */
+  reading: "MEASURED" | "UNMEASURED";
+  unmeasuredReasons: string[];
+  /** Registered commands named nowhere in the surface. */
+  unrouted: string[];
+  filesSearched: number;
+  /** Bytes of code span searched. Zero is the instrument, not the answer. */
+  spanBytes: number;
+}
+
+/**
+ * Which registered commands are named nowhere an agent loads.
+ *
+ * Takes the surface as an argument rather than deriving it, because the
+ * population of always-loaded files is already decided once, by
+ * `measureSurface` in `scripts/check-instruction-surface.ts`. A second
+ * definition here would be two deciders that agree, and the one that matters
+ * — whether a `paths:` key has quietly moved a rule out of the launch surface
+ * — would be invisible to a check that had its own idea of what loads.
+ *
+ * The three UNMEASURED states are all ways this returns `[]` while having
+ * searched nothing: no documents, no code spans in any of them, or an empty
+ * registry. Each of them reads exactly like a tree where every command is
+ * routed (`.claude/rules/config-access.md`).
+ */
+export function commandRoutingReading(surface: SurfaceDoc[]): CommandRoutingReading {
+  const reasons: string[] = [];
+  const spans = surface.map(d => codeSpans(d.text)).join("\n");
+  const spanBytes = Buffer.byteLength(spans, "utf-8");
+  const names = publishedCommands();
+
+  if (surface.length === 0) {
+    reasons.push("the always-loaded surface came back empty — no documents were searched");
+  }
+  if (spanBytes === 0) {
+    reasons.push(
+      `${surface.length} document(s) yielded no code spans at all; a command name is only ` +
+        `counted inside one, so every command would read as unrouted for an instrument reason`,
+    );
+  }
+  if (names.length === 0) {
+    reasons.push("CLI_COMMANDS is empty — nothing to route, which is not the same as routed");
+  }
+
+  return {
+    reading: reasons.length > 0 ? "UNMEASURED" : "MEASURED",
+    unmeasuredReasons: reasons,
+    unrouted: names.filter(n => !surface.some(d => commandNamed(d.text, n))),
+    filesSearched: surface.length,
+    spanBytes,
+  };
+}
+
+/**
  * Every `bunx <pkg> <cmd>` invocation in a markdown command table.
  *
  * Used in both directions by `test/cli-contract.test.ts`: a published command

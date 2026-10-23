@@ -3,6 +3,18 @@
  * review conventions, and a separate check says whether it loaded them
  * (#1167).
  *
+ * Covers CRC-A5, CRC-A6 (CODE-REVIEW-CONVERGENCE-SPEC.md).
+ *
+ * `AC-C10` is CRC-A5's binding — the conventions document the prompt points
+ * at exists, at the one path `AI_REVIEW_CONVENTIONS_FILE` names, and
+ * `AC-C6` holds that name equal across the prompt, the restore list and the
+ * check. `AC-C1`..`AC-C9b` are CRC-A6's: the check is a reading of the
+ * action's own execution transcript, it refuses a mention, a near-miss name,
+ * a write and a subdirectory read, and `AC-C8`/`AC-C9` prove it can stop
+ * refusing. Nothing new is asserted for either id; these two lines say which
+ * criterion the cases above already hold up, because a criterion nobody has
+ * attached to a test is indistinguishable from one nobody has built.
+ *
  * ## The defect
  *
  * `claude_args` carries `--setting-sources user`, so project settings never

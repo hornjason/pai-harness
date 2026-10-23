@@ -45,6 +45,8 @@ import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { TRACKED_ID_PREFIX_SOURCE } from "../lib/sc-ids";
+
 /**
  * One changed file, with enough of the diff to tell an edit from an event.
  *
@@ -90,9 +92,25 @@ const inDir = (p: string, dir: string) => p.startsWith(`${dir}/`);
  */
 const LINE_CITATION = /[\w./-]+\.tsx?:\d+/;
 
-/** A criterion checkbox, ticked. The space inside `[ ]` is the discriminator. */
-const TICKED_CRITERION = /^\s*[-*]\s*\[[xX]\]\s*SC-/;
-const UNTICKED_CRITERION = /^\s*[-*]\s*\[ \]\s*SC-/;
+/**
+ * A criterion checkbox, ticked. The space inside `[ ]` is the discriminator.
+ *
+ * The PREFIX comes from `TRACKED_ID_PREFIX_SOURCE` and is not respelled here.
+ * It used to be a hand-written `SC-`, and #1298 added a second tracked
+ * namespace — `CRC-A1`..`CRC-N5` in `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` —
+ * which this row could not see. Ticking one of those routed the spec-edit
+ * pair and nothing else, while moving `UNCLAIMED_RATCHET` and
+ * `CLAIMED_UNBINDABLE` in `test/sc-binding-split.test.ts` and the per-spec
+ * census in `test/ticked-sc-cover.test.ts`, all three of which this row
+ * exists to route. That is #990 exactly — the same event, in the same file,
+ * invisible to the same router — one namespace later, and it was found by
+ * running this script on the first diff that ticked a `CRC-` id.
+ *
+ * `lib/sc-ids.ts` says the list is the only thing that decides what a tracked
+ * criterion id is. A reader that respells it is a reader that decides again.
+ */
+const TICKED_CRITERION = new RegExp(`^\\s*[-*]\\s*\\[[xX]\\]\\s*${TRACKED_ID_PREFIX_SOURCE}-`);
+const UNTICKED_CRITERION = new RegExp(`^\\s*[-*]\\s*\\[ \\]\\s*${TRACKED_ID_PREFIX_SOURCE}-`);
 
 /**
  * The routing table.
@@ -184,6 +202,34 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
       "test/hook-traceability.test.ts",
     ],
     fires: c => inDir(c.path, "gates") || inDir(c.path, "hooks") || inDir(c.path, "lib/scaffold"),
+  },
+  {
+    // #1368. The row above routes the OWNERSHIP family — which files the
+    // scaffold owns, which gates exist, which hooks are traceable. Nothing
+    // routed to the suites that read the committed workflow and assert
+    // properties of its TEXT, and those are the self-referential shape this
+    // whole table exists for: they go red on a change in a file they do not
+    // name, for a reason the diff does not contain.
+    //
+    // Paid for on PR #1351. Shard 3 went red on `AC-2 (#1116)` in
+    // `ai-review-runner-shell-parity` — two new `rf=$(...)` assignments were
+    // #1110's shape — after every suite this router named came back green.
+    // The guard is unreachable from the diff by any route an agent takes:
+    // not the source file's own suite, not the ownership family, and its
+    // name shares no string with anything that changed.
+    //
+    // Fires on BOTH halves on purpose. The two usually move together, but an
+    // edit to `lib/scaffold/**` without a re-scaffold, and a hand edit to a
+    // workflow with no source change, are each a real event — and the second
+    // fired no row at all before this one existed.
+    id: "generated-workflow",
+    event: "changed a generated workflow, or the scaffold source that emits one",
+    tests: [
+      "test/ai-review-runner-shell-parity.test.ts",
+      "test/action-pin-parity.test.ts",
+      "test/scaffold-permissions-merge.test.ts",
+    ],
+    fires: c => inDir(c.path, ".github/workflows") || inDir(c.path, "lib/scaffold"),
   },
 ];
 

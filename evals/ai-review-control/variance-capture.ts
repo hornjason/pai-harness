@@ -85,7 +85,13 @@ import { writeFileSync } from "fs";
 import { join } from "path";
 import { createHash } from "crypto";
 
-import { adjudicateFiling, openFindings, type FilingAttempt, type FilingAdjudication } from "../../lib/issue-filing-gate";
+import {
+  adjudicateFiling,
+  measuredCorpus,
+  openFindings,
+  type FilingAttempt,
+  type FilingAdjudication,
+} from "../../lib/issue-filing-gate";
 import type { Finding } from "../../lib/finding-arbiter";
 
 /** Non-zero for every refusal, through one constant. */
@@ -185,9 +191,41 @@ export interface ArmReading {
 export interface VarianceCapture {
   kind: "single-adjudicator-variance";
   name: string;
+  /**
+   * The commit whose code ACTUALLY RAN — `HEAD` of the executing tree.
+   *
+   * It used to be `origin/main`, which is a different question (#1320): the
+   * capture adjudicates with the working tree's `lib/`, so a worktree behind
+   * the remote recorded the newer SHA while running the older gate, and a
+   * worktree on a feature branch touching `lib/` recorded a SHA whose code
+   * was not what ran. The first artefact was right by coincidence — its tree
+   * happened to equal `origin/main`. A provenance field that is right by
+   * coincidence is the thing this whole module exists to refuse.
+   */
   pinnedCommit: string;
   /** Re-read at the END of the run. Unequal to `pinnedCommit` makes this UNMEASURED. */
   commitAtEnd: string;
+  /**
+   * Where `origin/main` stood. Recorded beside `pinnedCommit`, not instead
+   * of it, because "what ran" and "what is deployed" are separate facts and
+   * a capture is only a reading of the deployed adjudicator when they agree.
+   */
+  originMain: string;
+  /** `HEAD:lib` — the tree object for the code that ran. */
+  libTree: string;
+  /** `origin/main:lib` — the same tree, as deployed. */
+  originMainLibTree: string;
+  /**
+   * Uncommitted paths under `lib/` at the start of the run.
+   *
+   * **Scope stated because a count without one is unreadable:** this is the
+   * whole of `lib/`, not the three files the behaviour depends on. Deliberate
+   * and in the refusing direction — the capture reaches `adjudicateFiling`
+   * through imports it does not enumerate, so naming three files would be a
+   * detector narrower than what it detects. A dirty `lib/` means no SHA
+   * describes the code that ran, whatever the SHA says.
+   */
+  dirtyPaths: string[];
   measuredAt: string;
   repo: string;
   command: string;
@@ -209,7 +247,11 @@ const hash = (s: string): string => createHash("sha256").update(s).digest("hex")
 
 /** A finding, as the gate would see it filed from the command line. */
 function attemptOf(title: string, body: string): FilingAttempt {
-  return { title, body, labels: [], bodyFile: null };
+  // `repo` and `repeatedValueFlag` are the two suppression classes #1261
+  // added to the shape. Both are stated rather than defaulted, because this
+  // file is the measuring instrument: a plant filed into another repo, or one
+  // whose title was given twice, is not the finding the arm thinks it scored.
+  return { title, body, labels: [], bodyFile: null, repo: null, repeatedValueFlag: false };
 }
 
 /**
@@ -298,7 +340,7 @@ export async function runBatch(batch: readonly BatchRow[], existing: readonly Fi
   const unmeasured: string[] = [];
   for (const row of batch) {
     const set = comparisonSet(row, existing);
-    const v: FilingAdjudication = await adjudicateFiling(row.attempt, async () => set);
+    const v: FilingAdjudication = await adjudicateFiling(row.attempt, async () => measuredCorpus(set));
     if (v.outcome === "ALLOW") allowed.push(row.key);
     else if (v.outcome === "UNMEASURED") unmeasured.push(row.key);
     else withheld.push(row.key);
@@ -325,7 +367,7 @@ export async function detailOf(
   const out: ArmReading["firstRunDetail"] = [];
   for (const row of batch) {
     const set = comparisonSet(row, existing);
-    const v = await adjudicateFiling(row.attempt, async () => set);
+    const v = await adjudicateFiling(row.attempt, async () => measuredCorpus(set));
     out.push({
       key: row.key,
       provenance: row.provenance,
@@ -348,7 +390,7 @@ export async function readPlants(
   };
   const out: VarianceCapture["plantDetail"] = [];
   for (const row of plantsFor(existing, batch)) {
-    const v = await adjudicateFiling(row.attempt, async () => comparisonSet(row, existing));
+    const v = await adjudicateFiling(row.attempt, async () => measuredCorpus(comparisonSet(row, existing)));
     const observed = v.outcome === "ALLOW" ? "ALLOW" : `${v.outcome}/${v.refusal}`;
     out.push({ plant: row.key, expected: expected[row.key]!, observed, agreed: observed === expected[row.key] });
   }
@@ -389,10 +431,127 @@ export function liveArmCaveat(arm: Pick<ArmReading, "distinctTrackerSets" | "dis
   );
 }
 
+/**
+ * A pair of `ai-review` attempts that read ONE tree.
+ *
+ * A re-run replays the recorded merge commit instead of recomputing it, so the
+ * two attempts of a single run check out the same commit. That is the only way
+ * a same-tree repeat exists in this repository's history, and it is why the
+ * experiment this file once called unrun had in fact already been run — three
+ * times, incidentally, by ordinary re-runs (#1329).
+ */
+export interface SameTreeReading {
+  /** The run id. Both attempts are attempts of this one run. */
+  run: string;
+  /** The commit both attempts checked out, READ from each attempt's log, or `null` where it was not read. */
+  mergeCommit: string | null;
+  /** The resolved `ai-review round: N (cap 3)` line, per attempt. */
+  rounds: [number, number];
+  /** `num_turns` from the action's result, per attempt. */
+  turns: [number, number];
+  /**
+   * The adjudicated outcome per attempt, or `null` where GitHub retained only
+   * the aggregate log and no verdict survives. `null` is UNMEASURED — it is
+   * emphatically not two attempts agreeing.
+   */
+  verdicts: [string, string] | null;
+}
+
+/**
+ * The two attempts got the SAME prompt.
+ *
+ * Unequal rounds switch `atCapInstruction`, so the input differed and the pair
+ * measures nothing about the verifier. rg-1187-jury proposed this confound for
+ * all three pairs; the resolved round lines show it applies to exactly one, and
+ * that one carries by far the largest turn spread.
+ *
+ * This docblock previously added "and widen the prior-findings set fed in to
+ * suppress repeats", which is false and was shipped in #1329. There is no
+ * carry-forward: the round file written by the workflow holds exactly
+ * `review_round`, `round_budget` and `round_budget_spent`, the reviewer's
+ * prompt says nothing carries findings forward (#1255), and the workflow's
+ * only mention of `carryForward` is a comment saying narrowing stays unsafe
+ * UNTIL something re-emits prior findings. The instruction switch alone is
+ * sufficient to disqualify the pair; the second reason was doing reinforcing
+ * work in an argument and was not real. Caught by rg-1187-jury.
+ */
+export const promptHeld = (r: SameTreeReading): boolean => r.rounds[0] === r.rounds[1];
+
+/**
+ * Same-tree `ai-review` pairs, every field read from the run logs.
+ *
+ * `verdicts` is `null` on the other two because the reviewer **wrote no
+ * findings payload** (#1307), not because the log was lost. Every one of the
+ * 51 attempt logs across this repository's 23 multi-attempt `ai-review` runs
+ * is fetchable; 36 of them record `exited successfully WITHOUT writing a
+ * findings payload`. The first version of this comment blamed GitHub
+ * retention, which was a guess dressed as a reason — retention is not the
+ * binding constraint and saying so sent the next reader to the wrong fix.
+ *
+ * A reading nobody can take is still not a reading that agreed.
+ */
+export const AI_REVIEW_SAME_TREE_READINGS: readonly SameTreeReading[] = [
+  {
+    run: "39962683401",
+    mergeCommit: "99d50fc",
+    rounds: [5, 5],
+    turns: [51, 52],
+    verdicts: ["BLOCKED", "CLEAN"],
+  },
+  { run: "39959490557", mergeCommit: null, rounds: [2, 2], turns: [44, 48], verdicts: null },
+  { run: "39957264329", mergeCommit: null, rounds: [3, 4], turns: [37, 64], verdicts: null },
+];
+
+/**
+ * What remains unread about `ai-review` variance, AFTER saying what was read.
+ *
+ * Derived from the readings rather than restated beside them — the #1310
+ * defect, found by the AI review on this very file, was prose that could
+ * contradict the data it sat next to.
+ */
+export function aiReviewVarianceResidue(readings: readonly SameTreeReading[]): string {
+  const held = readings.filter(promptHeld);
+  const confounded = readings.filter(r => !promptHeld(r));
+  const scored = held.filter(r => r.verdicts !== null);
+  const disagreed = scored.filter(r => r.verdicts![0] !== r.verdicts![1]);
+
+  const lost =
+    `${readings.length - scored.length} of ${readings.length} same-tree pair(s) carry NO verdict — ` +
+    `${confounded.length} because the round changed between attempts (an unequal round is a different ` +
+    "prompt, not a repeat), and the rest because the reviewer exited successfully without writing a " +
+    "findings payload (#1307) — the logs are all fetchable, so this is the reviewer producing nothing " +
+    "rather than a reading being lost. Those are UNMEASURED and are not attempts that agreed.";
+
+  if (scored.length === 0) {
+    return (
+      "A deployed agent verifier does exist elsewhere — the `ai-review` workflow — and its run-to-run " +
+      `variance is unmeasured at the level that matters. ${lost} The experiment that would settle it is ` +
+      "`gh run rerun` on an unchanged SHA — a re-run replays the same merge ref, so the input is genuinely " +
+      "fixed — at real API spend per run."
+    );
+  }
+
+  const detail = disagreed
+    .map(r => `run ${r.run} returned ${r.verdicts![0]} then ${r.verdicts![1]} on ${r.mergeCommit ?? "an unread commit"}`)
+    .join("; ");
+
+  return (
+    "A deployed agent verifier does exist elsewhere — the `ai-review` workflow — and its run-to-run variance " +
+    `IS now partly read, so this entry states a measurement rather than an absence. ${scored.length} same-tree ` +
+    `pair(s) carry two verdicts with the tree, head, round and prompt all held fixed, and ${disagreed.length} ` +
+    `of them DISAGREED: ${detail}. A verdict flip is the failure a quorum is for, and it is the one reading ` +
+    "here taken on a verifier that actually ships. Two cautions the number does not carry on its own. The " +
+    "turn counts across that flip were 51 and 52 — so `num_turns` is a poor proxy for verifier variance, and " +
+    `a stability argument built on turn counts is measuring the wrong quantity. And ${lost} n is small enough ` +
+    "that no rate should be read off it; what it establishes is that the rate is not zero."
+  );
+}
+
 export const PERMANENTLY_UNMEASURED = [
-  "There is no deployed agent verifier. `arbitrate` has no caller outside lib/ and test/, and only " +
-    "`scripts/arbitrate-finding.ts` can supply `--votes`. The single-AGENT control the quorum is a variance " +
-    "control FOR has never been read, and is not read here.",
+  "No agent verifier feeds THIS gate. `arbitrate` has no caller outside lib/ and test/, and only " +
+    "`scripts/arbitrate-finding.ts` can supply `--votes`, so the verifier group a quorum would be a variance " +
+    "control for does not run on the filing path and is not read here.",
+  aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS),
   "A withheld candidate leaves no trace on either arm. It is never filed, never commented on and never " +
     "fixed, so nothing downstream records whether withholding it was right. `outcomes.ts` derives from commits " +
     "and the reference graph; a candidate that reached neither is invisible to it, permanently.",
@@ -400,17 +559,69 @@ export const PERMANENTLY_UNMEASURED = [
     "artefact to read, so this is not a measurement that is merely expensive.",
 ];
 
-export async function capture(opts: { root: string; runs: number; commit: string }): Promise<VarianceCapture> {
+export interface CaptureProvenance {
+  root: string;
+  runs: number;
+  /** `HEAD` of the executing tree — the code that actually ran (#1320). */
+  commit: string;
+  /** Where `origin/main` stood. */
+  originMain: string;
+  /** `HEAD:lib` — the tree object for the code the adjudicator lives in. */
+  libTree: string;
+  /** `origin/main:lib` — the same tree, as deployed. */
+  originMainLibTree: string;
+  /** Uncommitted paths under `lib/` at the start of the run. */
+  dirtyPaths: string[];
+}
+
+/**
+ * Why a stale or dirty tree is UNMEASURED rather than a reading with a
+ * footnote.
+ *
+ * The capture's subject is **the deployed adjudicator**. A reading taken
+ * against code that is not deployed is not a weaker reading of that subject,
+ * it is a reading of a different one — and it is indistinguishable from the
+ * real thing once it is a JSON file with a SHA in it.
+ */
+export function provenanceRefusal(
+  p: Pick<CaptureProvenance, "libTree" | "originMainLibTree" | "dirtyPaths">,
+): string | null {
+  if (p.dirtyPaths.length > 0) {
+    return (
+      `UNMEASURED: ${p.dirtyPaths.length} uncommitted path(s) under \`lib/\` — ${p.dirtyPaths.slice(0, 5).join(", ")}` +
+      `${p.dirtyPaths.length > 5 ? ", …" : ""}. No commit describes the code that ran, whatever the SHA says.`
+    );
+  }
+  // The `lib/` TREE, not the commit. Comparing whole SHAs would refuse every
+  // feature branch, including this artefact's own — a detector wider than
+  // what it detects, and one that would make the artefact unmaintainable.
+  // The question is only ever whether the adjudicator's code is the deployed
+  // code, and a tree object answers exactly that.
+  if (p.libTree !== p.originMainLibTree) {
+    return (
+      `UNMEASURED: this tree's \`lib/\` is ${p.libTree} and \`origin/main\`'s is ${p.originMainLibTree}. The ` +
+      "capture would describe an adjudicator that is not the deployed one, which is a reading of a different " +
+      "subject rather than a weaker reading of this one."
+    );
+  }
+  return null;
+}
+
+export async function capture(opts: CaptureProvenance): Promise<VarianceCapture> {
   const batchName = `variance-${opts.commit.slice(0, 12)}`;
-  const snapshot = await openFindings(opts.root);
+  const reading = await openFindings(opts.root);
   const measuredAt = new Date().toISOString();
 
-  if (snapshot === null) {
+  if (reading.reading === "UNMEASURED") {
     return {
       kind: "single-adjudicator-variance",
       name: "single-adjudicator-variance",
       pinnedCommit: opts.commit,
       commitAtEnd: opts.commit,
+      originMain: opts.originMain,
+      libTree: opts.libTree,
+      originMainLibTree: opts.originMainLibTree,
+      dirtyPaths: opts.dirtyPaths,
       measuredAt,
       repo: "hornjason/pai-harness",
       command: `bun evals/ai-review-control/variance-capture.ts --runs ${opts.runs}`,
@@ -423,13 +634,15 @@ export async function capture(opts: { root: string; runs: number; commit: string
       plantDetail: [],
       usable: false,
       caveat:
-        "UNMEASURED: `openFindings` returned null, so the comparison set was never read. A missing token, a " +
-        "403, a rate limit and an unreachable API all land here, and none of them is an empty tracker.",
+        "UNMEASURED: `openFindings` took no reading, so the comparison set was never read. A missing token, " +
+        "a 403, a rate limit, an unreachable API and a corpus every filter emptied all land here, and none " +
+        `of them is an empty tracker. Its own reason: ${reading.why}`,
       permanentlyUnmeasured: PERMANENTLY_UNMEASURED,
       arms: [],
     };
   }
 
+  const snapshot = reading.findings;
   const batch = batchFrom(snapshot, batchName);
   const plantDetail = await readPlants(snapshot, batchName);
   const plantsAgreed = plantDetail.filter(p => p.agreed).length;
@@ -445,9 +658,9 @@ export async function capture(opts: { root: string; runs: number; commit: string
   let liveDetail: ArmReading["firstRunDetail"] = [];
   for (let i = 0; i < opts.runs; i++) {
     const now = await openFindings(opts.root);
-    if (now === null) break;
-    live.push(await runBatch(batch, now));
-    if (i === 0) liveDetail = await detailOf(batch, now);
+    if (now.reading === "UNMEASURED") break;
+    live.push(await runBatch(batch, now.findings));
+    if (i === 0) liveDetail = await detailOf(batch, now.findings);
   }
   const liveSpan = (Date.now() - liveStart) / 1000;
 
@@ -469,6 +682,7 @@ export async function capture(opts: { root: string; runs: number; commit: string
   const pinnedArm = arm("pinned", pinned, pinnedSpan, pinnedDetail);
   const liveArm = arm("live", live, liveSpan, liveDetail);
 
+  const provenance = provenanceRefusal(opts);
   const first = pinned[0];
   const degenerate =
     first === undefined || first.withheld.length === 0 || first.allowed.length === 0;
@@ -478,6 +692,10 @@ export async function capture(opts: { root: string; runs: number; commit: string
     name: "single-adjudicator-variance",
     pinnedCommit: opts.commit,
     commitAtEnd: opts.commit,
+    originMain: opts.originMain,
+    libTree: opts.libTree,
+    originMainLibTree: opts.originMainLibTree,
+    dirtyPaths: opts.dirtyPaths,
     measuredAt,
     repo: "hornjason/pai-harness",
     command: `bun evals/ai-review-control/variance-capture.ts --runs ${opts.runs}`,
@@ -491,9 +709,11 @@ export async function capture(opts: { root: string; runs: number; commit: string
     plantsAgreed,
     plantsTotal: plantDetail.length,
     plantDetail,
-    usable: plantsAgreed === plantDetail.length && plantDetail.length > 0 && !degenerate,
+    usable: provenance === null && plantsAgreed === plantDetail.length && plantDetail.length > 0 && !degenerate,
     caveat:
-      plantsAgreed !== plantDetail.length
+      provenance !== null
+        ? provenance
+        : plantsAgreed !== plantDetail.length
         ? "UNMEASURED: a plant did not land, so this run is not distinguishable from a blind one."
         : degenerate
           ? "UNMEASURED: the withheld set is empty or is the whole batch, so `identical every run` is vacuous."
@@ -512,17 +732,34 @@ if (import.meta.main) {
   const runs = runsFlag === -1 ? DEFAULT_RUNS : Number(argv[runsFlag + 1]);
   const root = process.env.RUNGATE_PROJECT_ROOT ?? join(import.meta.dir, "..", "..");
   const { execFileSync } = await import("child_process");
-  const rev = (): string => execFileSync("git", ["-C", root, "rev-parse", "origin/main"], { encoding: "utf-8" }).trim();
+  const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { encoding: "utf-8" }).trim();
+
+  // `HEAD`, not `origin/main` (#1320). The capture adjudicates with THIS
+  // tree's `lib/`, so the only SHA that describes what ran is this one. Both
+  // are recorded, and disagreeing makes the capture UNMEASURED.
+  const rev = (): string => git("rev-parse", "HEAD");
+  const dirtyPaths = git("status", "--porcelain", "--", "lib")
+    .split("\n")
+    .map(l => l.slice(3).trim())
+    .filter(l => l !== "");
 
   const commit = rev();
-  const out = await capture({ root, runs, commit });
+  const out = await capture({
+    root,
+    runs,
+    commit,
+    originMain: git("rev-parse", "origin/main"),
+    libTree: git("rev-parse", "HEAD:lib"),
+    originMainLibTree: git("rev-parse", "origin/main:lib"),
+    dirtyPaths,
+  });
   out.commitAtEnd = rev();
 
   if (out.commitAtEnd !== out.pinnedCommit) {
     out.usable = false;
     out.caveat =
-      `UNMEASURED: origin/main moved from ${out.pinnedCommit} to ${out.commitAtEnd} during the run, so the M ` +
-      "runs may straddle two adjudicators and the artefact would measure a mixture. Re-take it.";
+      `UNMEASURED: the executing tree moved from ${out.pinnedCommit} to ${out.commitAtEnd} during the run, so ` +
+      "the M runs may straddle two adjudicators and the artefact would measure a mixture. Re-take it.";
   }
 
   if (argv.includes("--write")) {

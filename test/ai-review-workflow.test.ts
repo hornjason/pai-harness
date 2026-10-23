@@ -356,6 +356,17 @@ describe("AC-3: no base filter on on.pull_request, and the branch globs stay quo
  * the one-word repair fixes the waiver and silently stops a REQUIRED check
  * running on ordinary pushes. That is why the assertion is over all five
  * members and not over `labeled` alone.
+ *
+ * Covers CRC-C4 (CODE-REVIEW-CONVERGENCE-SPEC.md) — a finding clears on its
+ * own when a later commit fixes it. `synchronize` is what makes that true —
+ * every push re-runs the review over the tree as it now stands, and the
+ * required check's verdict comes from that run's payload alone, so a defect
+ * the author has repaired is simply not found again and nobody has to
+ * dismiss anything. The membership assertion below is therefore load-bearing
+ * twice over, and the wrong fix it already refuses is the one that would
+ * silently break this criterion too. Worth pinning now rather than later:
+ * #1319 is making a round's findings cumulative, and a carried set with no
+ * clearing rule is exactly how this criterion stops holding.
  */
 describe("AC-3b (#1207): on.pull_request subscribes to the label events the waiver needs", () => {
   test("AC-3b: all five activity types reach ai-review.yml, defaults included", () => {

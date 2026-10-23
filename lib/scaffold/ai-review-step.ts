@@ -2418,6 +2418,133 @@ export const AI_REVIEW_DRIFT_STEP_NAME = "Refuse a reviewer that modified the tr
 export const AI_REVIEW_DRIFT_TITLE = "AI review modified the tree";
 
 /**
+ * The step that writes this round's findings onto the pull request (#1168).
+ *
+ * ## Why this exists at all
+ *
+ * Nothing holds a finding past the runner. There is no `upload-artifact` step
+ * in this workflow, the payload is written under `RUNNER_TEMP`, and a real run
+ * reports zero artifacts — three readings that agree. The only reason any
+ * historical finding was recoverable at all is that the adjudication step
+ * echoes the reader's output into the job log, and logs expire.
+ *
+ * That was measured on #1168 while answering a different question, and it is
+ * the thing that has to be fixed first: **the round cap's justification needs
+ * the finding set to be cumulative across rounds**, and a set cannot be
+ * cumulative if each round's half of it evaporates with the runner. Carrying
+ * findings forward is the second half of that work and lives in
+ * `lib/ai-review-rounds.ts`; this is the first half, and it is deliberately
+ * in the YAML rather than in `lib/` because a `lib/` change is dormant until
+ * the next publish while this file is live the moment it merges. Every day
+ * without it is a day of findings nobody can analyse later.
+ *
+ * ## What it is NOT
+ *
+ * Not a gate. It decides nothing, blocks nothing and cannot turn a review
+ * red: every path through it exits zero. A recorder that can refuse the thing
+ * it records is worse than no recorder, which is the doctrine
+ * `recordAdjudication` in `lib/issue-filing-gate.ts` already states for the
+ * filing ledger. It is loud on failure — a warning annotation naming what it
+ * could not do — because the one thing worse than losing a round is losing it
+ * silently.
+ */
+export const AI_REVIEW_PERSIST_STEP_ID = "ai-review-persist";
+
+export const AI_REVIEW_PERSIST_STEP_NAME = "Persist this round's findings to the pull request";
+
+export const AI_REVIEW_PERSIST_TITLE = "AI review ledger";
+
+/**
+ * The HTML comment that identifies the ledger comment, and the whole of how
+ * the upsert finds it again.
+ *
+ * Carries a version so a later format change can be told from a corrupt one
+ * rather than parsed hopefully. A marker nobody versioned is a marker whose
+ * second format is indistinguishable from its first having gone wrong.
+ */
+export const AI_REVIEW_LEDGER_MARKER = "<!-- rungate:ai-review-ledger:v1 -->";
+
+/** The fence the ledger's machine-readable half sits inside. */
+export const AI_REVIEW_LEDGER_FENCE = "```json";
+
+/**
+ * The login the ledger comment is written as, and the only one adopted.
+ *
+ * **`user.type == "Bot"` is a CLASS, not an identity.** Every GitHub App
+ * installed on a repository is `type: Bot`, so filtering on it alone narrows
+ * the set of possible impostors from "anyone who can comment" to "any
+ * installed app" — and an app with comment scope can still plant the marker
+ * and have this step PATCH its own round history into it.
+ *
+ * **This is a smaller class, still not a unique identity, and the difference
+ * matters.** `github-actions[bot]` is the login of EVERY workflow in a
+ * repository that authenticates with `GITHUB_TOKEN`, not just this one. What
+ * makes the selection safe is the conjunction: this login, AND the versioned
+ * marker, AND that nothing else in the tree writes that marker — which is
+ * the load-bearing term, so `test/ai-review-ledger-step.test.ts` asserts it
+ * rather than leaving it as a sentence here.
+ */
+export const AI_REVIEW_LEDGER_BOT_LOGIN = "github-actions[bot]";
+
+/**
+ * The most rounds the ledger retains. Older entries are dropped, loudly.
+ *
+ * A comment body has a hard limit of 65,536 characters and nothing warns you
+ * approaching it — the write just fails, on a long-lived pull request, at
+ * the point the history is most worth having. The arithmetic: the prose
+ * header is ~1.2 KB, and a pathological round carrying ten findings with
+ * long summaries and recorded line text is ~4 KB. Twelve of those is 48 KB,
+ * which clears the limit with the header and room over.
+ *
+ * Twelve is also four times `AI_REVIEW_ROUND_CAP`, and well past anything
+ * observed: over 294 merged pull requests with an `AI Review` run the mean
+ * was 1.738 rounds and thirteen reached five or more. So the cap bounds the
+ * pathological case without truncating a real one.
+ *
+ * **A dropped round is not a round that did not happen.** The step emits a
+ * warning naming how many were dropped, because a ledger that silently
+ * became a window would report as a history — the exact collapse between
+ * "not seen before" and "could not read it" that this whole mechanism keeps
+ * apart.
+ */
+export const AI_REVIEW_LEDGER_MAX_ROUNDS = 12;
+
+/**
+ * The identity rule this step records its finding anchors under.
+ *
+ * Stamped on every entry so a later round reads which rule produced the
+ * anchors instead of assuming its own. `lib/ai-review-rounds.ts` declares the
+ * same string as `AI_REVIEW_LEDGER_IDENTITY` and refuses to key an entry
+ * stamped with anything else; the two are bound by `AC-R6` in
+ * `test/ai-review-ledger-read.test.ts`, not by an import, because this module
+ * must stay free of relative imports (the mutant copies run from a temp
+ * directory).
+ */
+export const AI_REVIEW_LEDGER_IDENTITY_V1 = "file+text+summary@v1";
+
+/**
+ * The per-finding key holding the TEXT at the cited line.
+ *
+ * Recorded because a later round cannot obtain it: `actions/checkout` runs at
+ * `fetch-depth: 1`, so the commit the finding was raised against is not in
+ * the next round's checkout and `git show <sha>:<file>` has nothing to read.
+ *
+ * Without it `carryForward` has no way to tell a resolved finding from an
+ * unresolved one. Measured against the ledger this step wrote before the
+ * field existed: one finding in, **zero** carried out — a silent total drop,
+ * because an absent recorded text compared equal to the empty string and so
+ * differed from every real line.
+ */
+export const AI_REVIEW_LEDGER_TEXT_FIELD = "text";
+
+/** Environment variables the persist step reads. Spelled once, used twice. */
+export const AI_REVIEW_LEDGER_PR_VAR = "AI_REVIEW_LEDGER_PR";
+export const AI_REVIEW_LEDGER_TOKEN_VAR = "AI_REVIEW_LEDGER_TOKEN";
+export const AI_REVIEW_LEDGER_REPO_VAR = "AI_REVIEW_LEDGER_REPO";
+export const AI_REVIEW_LEDGER_API_VAR = "AI_REVIEW_LEDGER_API";
+export const AI_REVIEW_LEDGER_SHA_VAR = "AI_REVIEW_LEDGER_SHA";
+
+/**
  * The JSON member the findings array travels under.
  *
  * `lib/scaffold/ai-review-findings.ts` reads the payload and already imports
@@ -6279,6 +6406,445 @@ function indented(lines: string[], indent: string): string {
  * `if:`: a step skipped by `if:` reports `skipped`, and a skipped required
  * check can be treated as satisfied.
  */
+/**
+ * The ledger writer (#1168). Runs BETWEEN the reviewer and the adjudicator.
+ *
+ * ## Why that position, and not last
+ *
+ * The obvious place is after the adjudication, so the ledger could record the
+ * verdict too. Two things rule it out and both matter.
+ *
+ * The adjudication step **exits non-zero on a blocking finding**, so a step
+ * after it does not run on exactly the rounds worth recording. A ledger that
+ * captures clean rounds and drops blocked ones is a detector narrower than
+ * what it detects, biased toward the rounds that carry nothing — the second
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md`, and the same defect
+ * #1300 had just fixed one subsystem over.
+ *
+ * The repair for that is normally `if: always()`, and **this job does not
+ * allow `if:`** — a step skipped by a condition reports `skipped`, and this
+ * workflow's whole doctrine is that nothing here may report `skipped`.
+ * Running before the adjudicator needs no condition at all: the reviewer has
+ * already written the payload, and ordinary step ordering does the rest.
+ *
+ * ## It records findings and never a verdict
+ *
+ * Deliberate, and not an omission. Whether a severity blocks is
+ * `AI_REVIEW_SEVERITIES`' decision, read by `lib/scaffold/ai-review-findings.ts`
+ * and by nothing else. A verdict computed here would be a SECOND decider
+ * answering the same question about the same input — the fourth shape, where
+ * both read as covered and a mutation of either leaves the other holding the
+ * case up. So the ledger stores what was found; what it means stays with the
+ * reader, and the check conclusion already carries the outcome.
+ *
+ * ## `null` findings and `[]` findings are different facts
+ *
+ * `[]` is a round that was read and found nothing. `null` is a round whose
+ * payload was absent or unparseable — nobody asked. Collapsing them is
+ * *Silent Default Substitution* (`.claude/rules/config-access.md`) applied to
+ * the one record that is supposed to make the finding set cumulative, and it
+ * would quietly convert "the reviewer did not run" into "the reviewer was
+ * happy".
+ *
+ * ## It never writes on top of a read it could not take
+ *
+ * The single most destructive thing this step could do is replace a ledger
+ * holding seven rounds with one holding this round. So every failure to READ
+ * — the comment list, the existing payload — exits without writing. An
+ * unreadable ledger costs one round; an overwritten one costs all of them,
+ * and the two are indistinguishable afterwards.
+ */
+export function buildPersistScript(): string {
+  const fence = "```";
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+#
+# Writes this round's findings into one upserted pull-request comment (#1168).
+# It is a RECORDER, not a gate: every path exits 0, because a recorder that can
+# refuse the thing it records is worse than no recorder. Failures are loud —
+# a warning annotation naming what could not be done — because the only thing
+# worse than losing a round is losing it silently.
+#
+# THIS STEP'S POSITION IS A DECISION, NOT AN ACCIDENT OF ORDERING. It runs
+# after the reviewer and BEFORE the adjudicator, and moving it later breaks
+# it silently. The adjudicator exits non-zero on a blocking finding, so a
+# ledger placed after it records clean rounds and drops blocked ones — a
+# recorder biased against exactly the rounds worth recording. The usual
+# repair is \`if: always()\`, and this job forbids \`if:\` because a step
+# skipped by a condition reports \`skipped\`. Running before the adjudicator
+# needs no condition at all: the reviewer has already written the payload.
+#
+# It records findings and NEVER a verdict. Whether a severity blocks is
+# AI_REVIEW_SEVERITIES' decision, read by lib/scaffold/ai-review-findings.ts.
+# A verdict computed here would be a second decider answering the same
+# question about the same input, and both would read as covered.
+${AI_REVIEW_ANNOTATION_ESCAPE}
+
+ledger_note() {
+  echo "::warning title=${AI_REVIEW_PERSIST_TITLE}::\$(escape_annotation "\$1")"
+}
+
+# A merge_group run carries no pull request, so there is nothing to attach a
+# ledger to. Not a gap: the round cap is a pull-request mechanism, and a queue
+# entry is not a round.
+if [ -z "\${${AI_REVIEW_LEDGER_PR_VAR}:-}" ]; then
+  exit 0
+fi
+
+if [ -z "\${${AI_REVIEW_LEDGER_TOKEN_VAR}:-}" ] || [ -z "\${${AI_REVIEW_LEDGER_REPO_VAR}:-}" ]; then
+  ledger_note "this round's findings were not recorded: the API token or the repository name is missing from this step's environment, so there is nowhere to write the ledger. The round is lost to the history this cap depends on."
+  exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  ledger_note "this round's findings were not recorded: jq is not on this runner and the ledger is JSON. The round is lost to the history this cap depends on."
+  exit 0
+fi
+
+api="\${${AI_REVIEW_LEDGER_API_VAR}:-https://api.github.com}"
+
+# The round number, from the file the counter step already wrote. Read rather
+# than recomputed: a second count here would be a decider that always agrees
+# with that one until the day it does not.
+# Parse the KEY, never scrape the digits. The round file states three things
+# — \`review_round\`, \`round_budget\` and \`round_budget_spent\` — so a
+# \`tr -dc '0-9'\` over it concatenates all three: round 2 under a budget of 3
+# records as 23. Caught on #1319's review; the battery could not see it,
+# because the fixture held a single number and a scrape and a parse agree on
+# every input shaped like that. \`\\r\` is stripped first so a CRLF file
+# cannot wedge the match forever.
+round="null"
+if [ -n "\${${AI_REVIEW_ROUND_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_ROUND_PATH_VAR}}" ]; then
+  parsed_round=\$(tr -d '\\r' < "\${${AI_REVIEW_ROUND_PATH_VAR}}" | sed -n 's/^review_round=\\([0-9][0-9]*\\)\$/\\1/p' | head -n 1 || true)
+  if [ -n "\${parsed_round}" ]; then
+    round="\${parsed_round}"
+  fi
+fi
+
+# \`null\` and \`[]\` are DIFFERENT and the difference is the point: one is a
+# round nobody read, the other is a round that was read and was clean.
+#
+# THE SHAPE IS CHECKED BEFORE THE ITERATION, and the absence of a \`?\` after
+# \`[]\` is the whole of #1352 rather than an omission. (AC-8a counts every
+# spelling of the key across this module and its contract, and a bash comment
+# inside this template is not a JS comment, so the sentence interpolates the
+# key rather than typing it — the same trap the git-isolation note above
+# describes for AC-6b, caught the same way: by the guard, not by review.)
+# \`.\${key}[]?\` suppresses the iteration error, so a document that PARSES but carries no
+# array under \`${AI_REVIEW_FINDINGS_KEY}\` exits 0 with an empty
+# comprehension — and \`[]\` is this script's spelling of "read and clean",
+# two lines up. Measured over ten shapes: six recorded \`[]\` that way,
+# including \`{}\`, a null document, and a \`${AI_REVIEW_FINDINGS_KEY}\` key
+# holding a string, a number or an object.
+#
+# \`error\` rather than a \`null\` literal, so every unreadable shape leaves
+# by the one branch that already exists below and already says UNMEASURED
+# out loud. A second way to be unreadable would be a second decider.
+findings="null"
+if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" ]; then
+  if parsed=\$(jq -c 'if (.${AI_REVIEW_FINDINGS_KEY} | type) == "array" then [ .${AI_REVIEW_FINDINGS_KEY}[] | {${AI_REVIEW_FINDING_FIELDS.severity}, ${AI_REVIEW_FINDING_FIELDS.file}, ${AI_REVIEW_FINDING_FIELDS.line}, ${AI_REVIEW_FINDING_FIELDS.summary}} ] else error("${AI_REVIEW_FINDINGS_KEY} is not a list") end' "\${${AI_REVIEW_FINDINGS_PATH_VAR}}" 2>/dev/null); then
+    # Record the TEXT at each cited line, out of the checkout this round
+    # reviewed. A later round cannot obtain it: \`actions/checkout\` above runs
+    # at \`fetch-depth: 1\`, so the commit a finding was raised against is not
+    # present in the next round's checkout and there is nothing to read it
+    # from. Without the text, \`carryForward\` cannot tell a resolved finding
+    # from an unresolved one and reads EVERY finding as resolved — one in,
+    # zero out, silently (#1168).
+    #
+    # An \`if\` around the assignment, never a bare \`texts=\$(mktemp)\`: under
+    # \`bash -e\` a bare one aborts the whole step when it fails (#1110), and
+    # this recorder may not fail the job it only observes.
+    if texts=\$(mktemp); then
+      printf '%s' "\${parsed}" | jq -c '.[]' | while IFS= read -r row; do
+        # \`|| true\` on both, and it is not decoration: under \`bash -e\` an
+        # assignment whose only word is a failing \$(...) aborts the loop
+        # before anything reads \$? (#1110), and this recorder may not fail
+        # the job it observes. An unreadable row records an empty anchor.
+        rf=\$(printf '%s' "\${row}" | jq -r '.${AI_REVIEW_FINDING_FIELDS.file} // ""') || true
+        rl=\$(printf '%s' "\${row}" | jq -r 'if (.${AI_REVIEW_FINDING_FIELDS.line}|type) == "number" then (.${AI_REVIEW_FINDING_FIELDS.line}|floor|tostring) else "" end') || true
+        # The REVIEWER chooses \`file\`, and this step copies a line of it into
+        # a public comment. An absolute path, one climbing out of the
+        # checkout, or one spelling a command-line OPTION is refused rather
+        # than read.
+        #
+        # The \`-*\` arm is the CRITICAL half (#1379, second pass). Without
+        # it a value like \`--expression=e id\` reaches \`sed\` as an option,
+        # and GNU sed's \`e\` command executes it through a shell on a
+        # credentialed runner. \`[ -f "\${rf}" ]\` does not close that:
+        # \`test -f\` treats a leading-dash operand as a FILENAME, so it only
+        # requires such a file to exist — and git tracks one happily, so the
+        # author commits a file whose NAME is the option and writes code at
+        # that path shaped to draw a finding. Every input is author-chosen.
+        case "\${rf}" in ""|-*|/*|*..*) rf="" ;; esac
+        rt=""
+        case "\${rl}" in
+          ""|0|*[!0-9]*) ;;
+          *)
+            # \`! -L\` BEFORE \`-f\`, and the ORDER is the fix (#1379).
+            # The three string tests above read the SPELLING of the path, and
+            # a committed symlink needs neither a leading \`/\` nor a \`..\`
+            # to leave the checkout. \`-f\` FOLLOWS the link, so it is not
+            # evidence of an ordinary in-tree file — it is the test that
+            # makes the link transparent. Ordering these the other way round
+            # reinstates the whole hole.
+            #
+            # \`! -L\` alone is not enough either: in \`notes/x.md\` the
+            # LINK can be \`notes\`, and \`x.md\` is then not a link by any
+            # test. So resolve the path and require the result to sit under
+            # the workspace. Both sides go through \`readlink -f\` because
+            # the root itself is reached through a symlink on some runners
+            # (\`/tmp\` on macOS), and comparing a resolved path against an
+            # unresolved root refuses every legitimate quote.
+            #
+            # An empty \`real\` or \`root\` REFUSES rather than defaulting:
+            # an empty root makes the pattern \`/*\`, which matches every
+            # absolute path there is. That is the fail-open shape in
+            # .claude/rules/checks-must-be-able-to-fail.md, arriving inside
+            # the guard it would disarm.
+            #
+            # Failing containment leaves \`rt\` empty, which is the existing
+            # no-quote rendering — no new failure mode and no annotation.
+            # Untrusted input being declined is not a review result.
+            #
+            # The \`./\` prefix is the SECOND half of the option defence and
+            # is independent of the \`-*\` arm above, deliberately: the arm
+            # states the intent where a reader looks for it, and the prefix
+            # still holds if someone later adds a path-rewriting step between
+            # them. \`rf\` is known relative here — absolute and \`..\` were
+            # refused above — so \`./\` only ever prefixes, never redirects.
+            #
+            # \`--\` on \`readlink\`, where the operand is still the
+            # attacker-shaped \`rf\` and both GNU and BSD accept it.
+            #
+            # \`--\` DELIBERATELY NOT on \`sed\`, against a review that asked
+            # for it as a third layer. BSD sed does not implement it: it
+            # takes \`--\` as a FILE OPERAND, and numbering is continuous
+            # across operands, so with a file literally named \`--\` in the
+            # tree the quote comes from THAT file. Measured on darwin 25.6 —
+            # \`sed -n 1p -- /abs/a.ts\` printed the contents of \`./--\` —
+            # and git tracks such a file, so on a BSD runner \`--\` would ADD
+            # a disclosure route of exactly the class this fixes. It also
+            # buys nothing: \`sed\` is handed \`\${real}\`, an absolute
+            # resolved path known to start with \`\${root}/\`, which cannot
+            # be parsed as an option. That is a guarantee by construction,
+            # which is stronger than a terminator.
+            if [ -n "\${rf}" ] && [ ! -L "./\${rf}" ] && [ -f "./\${rf}" ]; then
+              real=\$(readlink -f -- "./\${rf}" 2>/dev/null || true)
+              root=\$(readlink -f -- "\${GITHUB_WORKSPACE:-\$PWD}" 2>/dev/null || true)
+              if [ -n "\${real}" ] && [ -n "\${root}" ]; then
+                case "\${real}" in
+                  "\${root}"/*)
+                    # TRACKED, not merely inside the workspace. Containment
+                    # answers "is this in the checkout"; the question worth
+                    # asking is "is this a file the pull request contains".
+                    # They differ by exactly the interesting set — \`.git/\`,
+                    # and anything an earlier step or the reviewer itself
+                    # wrote into the workspace. Tracked source is public by
+                    # construction for a pull request: the reviewer is
+                    # quoting something already visible in the diff.
+                    #
+                    # This SUBSUMES the \`.git/\`/\`.ssh/\` dot-directory arm
+                    # the same review suggested, so that arm is not added —
+                    # two deciders answering one question are behaviourally
+                    # one, and a mutation of either leaves the other holding
+                    # the case up.
+                    #
+                    # \`ls-files\` reads the INDEX, not history, so
+                    # \`fetch-depth: 1\` is sufficient — asserted in the rig,
+                    # not reasoned about. It is local and reaches no network,
+                    # which matters because this job checks out with
+                    # \`persist-credentials: false\` and has no token in
+                    # \`.git/config\` to spend.
+                    rel=\${real#"\${root}"/}
+                    if ${AI_REVIEW_GIT_ISOLATED} -C "\${root}" ls-files --error-unmatch -- "\${rel}" >/dev/null 2>&1; then
+                      rt=\$(sed -n "\${rl}p" "\${real}" 2>/dev/null || true)
+                    fi
+                    ;;
+                esac
+              fi
+            fi
+            ;;
+        esac
+        jq -nc --arg t "\${rt}" '{${AI_REVIEW_LEDGER_TEXT_FIELD}: \$t}'
+      done > "\${texts}"
+      # Positional join, one text per finding in order. A texts file that is
+      # short or unreadable leaves the field OFF that finding rather than
+      # guessing — and an absent text is undecidable to the reader, which
+      # carries the finding, where a wrong text would resolve it away.
+      if annotated=\$(jq -sc --argjson base "\${parsed}" '[range(0; (\$base|length)) as \$i | \$base[\$i] + (.[\$i] // {})]' "\${texts}" 2>/dev/null); then
+        parsed="\${annotated}"
+      fi
+      rm -f "\${texts}"
+    fi
+    findings="\${parsed}"
+  else
+    ledger_note "the findings payload exists and could not be read as a list of findings — it is not JSON, or it carries no '${AI_REVIEW_FINDINGS_KEY}' array. This round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
+  fi
+fi
+
+if ! entry=\$(jq -nc \\
+  --arg at "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" \\
+  --arg sha "\${${AI_REVIEW_LEDGER_SHA_VAR}:-}" \\
+  --arg run "\${GITHUB_RUN_ID:-}" \\
+  --arg attempt "\${GITHUB_RUN_ATTEMPT:-}" \\
+  --arg identity '${AI_REVIEW_LEDGER_IDENTITY_V1}' \\
+  --argjson round "\${round}" \\
+  --argjson findings "\${findings}" \\
+  '{at:\$at, sha:\$sha, run:\$run, attempt:\$attempt, identity:\$identity, round:\$round, ${AI_REVIEW_FINDINGS_KEY}:\$findings}'); then
+  ledger_note "this round's entry could not be assembled, so nothing was recorded."
+  exit 0
+fi
+
+# READ FIRST, and never write on top of a read that failed. Replacing a ledger
+# holding N rounds with one holding this round is the worst thing this step
+# could do, and it is indistinguishable from a first round afterwards.
+if ! comments=\$(curl -sS -f \\
+  -H "Authorization: Bearer \${${AI_REVIEW_LEDGER_TOKEN_VAR}}" \\
+  -H "Accept: application/vnd.github+json" \\
+  "\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/\${${AI_REVIEW_LEDGER_PR_VAR}}/comments?per_page=100" 2>&1); then
+  ledger_note "the pull request's comments could not be read, so this round was NOT recorded. Refusing to write a fresh ledger on top of a failed read: that would replace every round already recorded with just this one, and nothing afterwards could tell that it had happened."
+  exit 0
+fi
+
+# ONE selection, then two reads OUT of it. Selecting twice — once for the id
+# and once for the body — is two searches that can disagree, and the way they
+# disagree is the expensive one: an empty id with a non-empty body POSTs a
+# SECOND ledger carrying the first one's rounds, so the history silently
+# forks into two comments and neither is complete. Found by the mutation
+# battery on #1168, not by reading.
+#
+# AUTHORSHIP, not just the marker. The marker is a string and a pull request
+# is a place anyone can paste one, so selecting on it alone lets any
+# commenter nominate their own comment as the ledger — and then this step
+# PATCHes a human's text away and writes the round history somewhere nobody
+# is watching. The author check is what makes the marker an identifier rather
+# than a suggestion (#1319 review).
+#
+# LOGIN, not just \`type == "Bot"\`. Every GitHub App installed on the
+# repository is \`type: Bot\`, so the type alone narrows the impostor set from
+# "anyone who can comment" to "any installed app" — and an app with comment
+# scope clears that bar. Binding to the login this step writes as closes it.
+#
+# The login is still a CLASS and not an identity: \`github-actions[bot]\` is
+# every workflow in this repository using \`GITHUB_TOKEN\`. What makes the
+# selection safe is the conjunction — this login, AND the versioned marker,
+# AND nothing else in the tree writing that marker. The third term is the
+# load-bearing one, so it is asserted in
+# \`test/ai-review-ledger-step.test.ts\` rather than trusted here.
+#
+# \`first\`, not \`last\`: the OLDEST bot-authored match is the real ledger,
+# because that is the one this step created on round one. \`last\` prefers the
+# newest, which is precisely the one an impersonator would have just posted.
+selected=\$(printf '%s' "\${comments}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' --arg login '${AI_REVIEW_LEDGER_BOT_LOGIN}' '[.[] | select((.user.type? // "") == "Bot" and (.user.login? // "") == \$login and .body != null and (.body | contains(\$m)))] | first // empty' 2>/dev/null || true)
+existing_id=""
+existing_body=""
+if [ -n "\${selected}" ]; then
+  existing_id=\$(printf '%s' "\${selected}" | jq -r '.id // empty' 2>/dev/null || true)
+  existing_body=\$(printf '%s' "\${selected}" | jq -r '.body // empty' 2>/dev/null || true)
+fi
+
+prior="[]"
+if [ -n "\${existing_body}" ]; then
+  # Everything between the fences. A ledger whose payload cannot be read is
+  # NOT an empty ledger, so this refuses rather than starting a new one.
+  # \`tr -d '\\r'\` FIRST. A body that came back with CRLF line endings never
+  # matches a \`\$\`-anchored fence, so the payload reads as unparseable, the
+  # guard below refuses, and the ledger is wedged permanently — a recording
+  # failure that looks exactly like a corrupt ledger (#1319 review).
+  extracted=\$(printf '%s' "\${existing_body}" | tr -d '\\r' | sed -n '/^${fence}json\$/,/^${fence}\$/p' | sed '1d;\$d' || true)
+  # SHAPE, not just \`type == "array"\`. The prior payload is parsed out of a
+  # COMMENT BODY and then re-serialised into the next one, so whatever it
+  # holds becomes permanent: an array of strings, of nulls, of anything, is
+  # adopted once and carried forever. \`all(.[]; …)\` is over an empty array
+  # vacuously TRUE, which is what keeps a legitimately empty ledger readable.
+  if [ -n "\${extracted}" ] && printf '%s' "\${extracted}" | jq -e 'type == "array" and all(.[]; type == "object" and has("at") and has("run"))' >/dev/null 2>&1; then
+    prior="\${extracted}"
+  else
+    ledger_note "the existing ledger comment was found and its payload could not be parsed as a JSON array, so this round was NOT recorded. Refusing to replace it: a ledger that cannot be read is not an empty one, and overwriting it would discard every round it holds."
+    exit 0
+  fi
+fi
+
+# CAPPED, and the drop is announced. A comment body has a hard 65,536
+# character limit and nothing warns you approaching it — the write simply
+# fails, on a long-lived pull request, at the point the history is most
+# worth having. See \`AI_REVIEW_LEDGER_MAX_ROUNDS\` for the arithmetic.
+#
+# The warning is not decoration. A ledger that silently became a window
+# would report as a history, which collapses "this round was never raised
+# before" into "the round that raised it is no longer in the file" — the one
+# distinction this whole mechanism exists to hold open. A reader cannot
+# recover a round that is gone; it can only be told that one is.
+if ! all=\$(printf '%s' "\${prior}" | jq -c --argjson e "\${entry}" --argjson keep ${AI_REVIEW_LEDGER_MAX_ROUNDS} '(. + [\$e]) | if length > \$keep then .[-\$keep:] else . end'); then
+  ledger_note "this round could not be appended to the existing ledger, so nothing was written."
+  exit 0
+fi
+
+dropped=\$(printf '%s' "\${prior}" | jq -r --argjson keep ${AI_REVIEW_LEDGER_MAX_ROUNDS} '[(length + 1 - \$keep), 0] | max' 2>/dev/null || true)
+case "\${dropped}" in
+  ""|0) ;;
+  *) ledger_note "the ledger is at its ${AI_REVIEW_LEDGER_MAX_ROUNDS}-round cap, so \${dropped} of the OLDEST round(s) were dropped to keep the comment under GitHub's body limit. Those rounds are gone, not empty: a finding only they recorded can no longer be carried forward, and nothing downstream can tell that from a finding that was never raised." ;;
+esac
+
+# \`if !\`, not \`body_file="\$(mktemp)"\`. An assignment whose only word is a
+# failing command substitution aborts the step under the runner's \`bash -e\`
+# BEFORE anything can read its status (#1110) — which would make this
+# recorder fail the job it is only supposed to observe, and do it before the
+# adjudication step has run at all.
+if ! body_file=\$(mktemp); then
+  ledger_note "no temporary file could be created for the ledger body, so this round was not recorded."
+  exit 0
+fi
+{
+  printf '%s\\n' '${AI_REVIEW_LEDGER_MARKER}'
+  printf '%s\\n\\n' '### AI review findings ledger'
+  printf '%s\\n\\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168).'
+  printf '%s\\n\\n' 'A \`${AI_REVIEW_FINDINGS_KEY}\` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
+  printf '%s\\n\\n' 'At most ${AI_REVIEW_LEDGER_MAX_ROUNDS} rounds are retained — a comment body has a hard 65,536 character limit. When the oldest are dropped the step says so in a warning annotation, because a dropped round is gone rather than empty and nothing downstream can tell those apart.'
+  printf '%s\\n\\n' '\`identity\` names the rule the per-finding anchors were recorded under. A reader that does not recognise it carries those findings without keying them, rather than keying them under a rule they were not recorded with. \`${AI_REVIEW_LEDGER_TEXT_FIELD}\` is the content of the cited line at the time, which is the anchor that rule uses; a finding with no \`${AI_REVIEW_LEDGER_TEXT_FIELD}\` cannot be shown resolved and is carried.'
+  printf '%s\\n' '${fence}json'
+  printf '%s\\n' "\${all}"
+  printf '%s\\n' '${fence}'
+} > "\${body_file}"
+
+if ! payload=\$(jq -nc --rawfile b "\${body_file}" '{body: \$b}'); then
+  ledger_note "the ledger comment body could not be encoded, so this round was not recorded."
+  rm -f "\${body_file}"
+  exit 0
+fi
+rm -f "\${body_file}"
+
+if [ -n "\${existing_id}" ]; then
+  url="\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/comments/\${existing_id}"
+  method="PATCH"
+else
+  url="\${api}/repos/\${${AI_REVIEW_LEDGER_REPO_VAR}}/issues/\${${AI_REVIEW_LEDGER_PR_VAR}}/comments"
+  method="POST"
+fi
+
+if ! written=\$(curl -sS -f -X "\${method}" \\
+  -H "Authorization: Bearer \${${AI_REVIEW_LEDGER_TOKEN_VAR}}" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "Content-Type: application/json" \\
+  --data-binary "\${payload}" \\
+  "\${url}" 2>&1); then
+  ledger_note "the ledger comment could not be written (\${method}), so this round was not recorded. A pull request from a fork gets a read-only token whatever this workflow's permissions block says, and that is the expected cause here."
+  exit 0
+fi
+
+# READ BACK. A write that returned success and landed nothing looks exactly
+# like a write that happened, and two runs racing on one comment lose an entry
+# without either of them failing. This cannot prevent that; it makes it
+# VISIBLE, which is the difference between a known gap and a silent one.
+if [ -n "\${GITHUB_RUN_ID:-}" ]; then
+  if ! printf '%s' "\${written}" | jq -e --arg r "\${GITHUB_RUN_ID}" '(.body // "") | contains(\$r)' >/dev/null 2>&1; then
+    ledger_note "the ledger was written and this round's run id is not in what the API returned, so the entry was probably lost to a concurrent write by another round of this same pull request. The ledger is intact; this one round may be missing from it."
+  fi
+fi
+
+exit 0
+`;
+}
+
 export function buildReviewRunStep(
   vertex: VertexCiDecision,
   refs: AiReviewActionRefs,
@@ -6540,6 +7106,28 @@ export function buildReviewRunStep(
     ...buildReviewRunScript(version).trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
+  // #1168. BETWEEN the reviewer and the adjudicator, and the position is the
+  // whole reason this step needs no `if:` — see `buildPersistScript`. The
+  // reviewer has written its payload by here, and the adjudicator, which
+  // exits non-zero on a blocking finding, has not run yet.
+  const persist = [
+    `- name: ${AI_REVIEW_PERSIST_STEP_NAME}`,
+    `  id: ${AI_REVIEW_PERSIST_STEP_ID}`,
+    `  env:`,
+    `    ${AI_REVIEW_FINDINGS_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.path }}`,
+    `    ${AI_REVIEW_ROUND_PATH_VAR}: \${{ steps.${AI_REVIEW_PREPARE_STEP_ID}.outputs.${AI_REVIEW_FINDINGS_DIR_OUTPUT} }}/${AI_REVIEW_ROUND_BASENAME}`,
+    // Empty on a merge_group run, which is how the script knows there is no
+    // pull request to carry a ledger. Read from the event rather than from a
+    // second `github.event_name` test, so there is one decider.
+    `    ${AI_REVIEW_LEDGER_PR_VAR}: \${{ github.event.pull_request.number }}`,
+    `    ${AI_REVIEW_LEDGER_SHA_VAR}: \${{ github.event.pull_request.head.sha }}`,
+    `    ${AI_REVIEW_LEDGER_REPO_VAR}: \${{ github.repository }}`,
+    `    ${AI_REVIEW_LEDGER_API_VAR}: \${{ github.api_url }}`,
+    `    ${AI_REVIEW_LEDGER_TOKEN_VAR}: \${{ secrets.GITHUB_TOKEN }}`,
+    `  run: |`,
+    ...buildPersistScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
   return (
     indented(checkout, indent) +
     indented(prepare, indent) +
@@ -6560,6 +7148,7 @@ export function buildReviewRunStep(
     indented(rounds, indent) +
     indented(baseline, indent) +
     indented(review, indent) +
+    indented(persist, indent) +
     indented(report, indent) +
     indented(drift, indent)
   );

@@ -122,7 +122,7 @@ export function loadVarianceCapture(name: string, dir?: string): VarianceCapture
     }
   }
 
-  for (const field of ["pinnedCommit", "commitAtEnd"] as const) {
+  for (const field of ["pinnedCommit", "commitAtEnd", "originMain"] as const) {
     if (!/^[0-9a-f]{40}$/.test(raw[field]!)) {
       throw new Error(`${BASELINE_REFUSED}: ${path} records \`${field}\` as \`${raw[field]}\`, which is not a 40-character SHA.`);
     }
@@ -133,6 +133,53 @@ export function loadVarianceCapture(name: string, dir?: string): VarianceCapture
       `${BASELINE_REFUSED}: ${path} started at ${raw.pinnedCommit} and ended at ${raw.commitAtEnd}. The runs ` +
         "straddle two adjudicators, so the artefact measures a mixture — and a self-consistent mixture reads " +
         "exactly like a stable one. Re-take it.",
+    );
+  }
+
+  // #1320. The `lib/` TREE, not the commit: comparing commits would refuse
+  // every capture taken on a branch, including the branch that updates this
+  // artefact. The only question is whether the adjudicator's code was the
+  // deployed code, and a tree object answers exactly that.
+  if (typeof raw.libTree !== "string" || raw.libTree === "") {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} has no \`libTree\`, so nothing records which adjudicator code ran.`,
+    );
+  }
+  // The equality below establishes that the two fields AGREE, not that either
+  // one is a tree hash — `"x" === "x"` satisfied it, and so did the 40-character
+  // non-hex placeholder this file's own fixture used. A forged or truncated
+  // artefact is internally consistent by construction, which is precisely the
+  // input the comparison was built to refuse, so the SHAPE has to be
+  // established before the comparison carries any meaning. Same defect as
+  // #1320 one layer down: there the pin named the wrong tree, here it need not
+  // name a tree at all.
+  for (const field of ["libTree", "originMainLibTree"] as const) {
+    if (!/^[0-9a-f]{40}$/.test(raw[field]!)) {
+      throw new Error(
+        `${BASELINE_REFUSED}: ${path} records \`${field}\` as \`${raw[field]}\`, which is not a ` +
+          "40-character tree hash. Two fields agreeing is not provenance unless each one is an identifier.",
+      );
+    }
+  }
+
+  if (raw.libTree !== raw.originMainLibTree) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} ran with lib/ at ${raw.libTree} while origin/main's was ` +
+        `${raw.originMainLibTree}, so it describes an adjudicator that was not the deployed one.`,
+    );
+  }
+
+  if (!Array.isArray(raw.dirtyPaths)) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} records no \`dirtyPaths\`. An absent reading is not a clean tree — the two ` +
+        "are the distinction this field exists to make.",
+    );
+  }
+
+  if (raw.dirtyPaths.length > 0) {
+    throw new Error(
+      `${BASELINE_REFUSED}: ${path} was taken with ${raw.dirtyPaths.length} uncommitted path(s) under \`lib/\`, so ` +
+        `no commit describes the code that ran: ${raw.dirtyPaths.slice(0, 5).join(", ")}.`,
     );
   }
 

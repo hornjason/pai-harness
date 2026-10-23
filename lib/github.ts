@@ -317,7 +317,38 @@ export interface OpenIssue {
   number: number;
   title: string;
   body: string;
+  /**
+   * The author's relationship to the repository, verbatim from the API.
+   *
+   * Carried because a caller that uses issue text as a SUPPRESSION input has
+   * to know who wrote it — see `TRUSTED_ASSOCIATIONS`. Not interpreted here:
+   * this function reports what GitHub said and the policy lives with the
+   * caller that has something to lose.
+   */
+  authorAssociation: string;
 }
+
+/**
+ * Issue authors whose text may be used to suppress something.
+ *
+ * `hornjason/pai-harness` is a PUBLIC repository, so **anyone on the internet
+ * can open an issue**, and `lib/issue-filing-gate.ts` deduplicates proposed
+ * filings against the open-issue corpus. Without this filter that is a
+ * remote, unauthenticated path to switching off our own quality mechanism:
+ * open an issue stuffed with the right symbols, files and readings, and every
+ * future finding that shares them is refused as a duplicate. A suppressed
+ * finding is indistinguishable from a finding nobody had, so it is silent.
+ *
+ * `NONE`, `CONTRIBUTOR` and `FIRST_TIME_CONTRIBUTOR` are excluded. A drive-by
+ * issue can still be a real duplicate, and excluding it costs one duplicate
+ * filing — the direction this is allowed to be wrong in. Including it costs
+ * real findings, which is the direction nothing here may fail in.
+ */
+export const TRUSTED_ASSOCIATIONS: ReadonlySet<string> = new Set([
+  "OWNER",
+  "MEMBER",
+  "COLLABORATOR",
+]);
 
 /**
  * Open issues, newest first, **pull requests excluded** (#1261).
@@ -337,28 +368,102 @@ export interface OpenIssue {
  * filing most likely to collide with an open PR is the one reporting the
  * defect that PR has not yet merged. That is the exact filing this gate must
  * not silence.
+ *
+ * ## It returns a PAGE, not a list, and that is the whole of #1374
+ *
+ * This used to return `OpenIssue[]`, so the only count a caller could take
+ * was a POST-filter one. `lib/issue-filing-gate.ts` took it, and its guard
+ * against "a corpus we emptied is not a clean tracker" was therefore blind to
+ * a page we had emptied **here**: 100 pull requests arrived as zero issues,
+ * the caller read `considered === 0`, and a page holding nothing usable was
+ * reported as a tracker holding nothing. The same fail-open #1338 closed, one
+ * level up, with a function boundary between the filter and the counter.
+ *
+ * So the filter now reports what it dropped, in the same value. The fix is
+ * not a fourth check at the caller's depth — it is moving the boundary, so
+ * there is no depth left at which a count can be taken of something already
+ * filtered. A caller that wants only the issues reads `.issues`; it can no
+ * longer do so without the population being in its hand.
+ *
+ * `truncated` is the second half, and it is the one that is weeks away rather
+ * than live: one page, no pagination, so a tracker with more open issues than
+ * `limit` returns exactly `limit` and a caller cannot tell a complete answer
+ * from a cut-off one. It is reported rather than fixed by paginating, because
+ * what the dedupe needs is to KNOW the comparison was narrower than the
+ * question, and that is true of a second page nobody fetched as well.
  */
+export interface DroppedRow {
+  /** The row's number when it had a usable one, else `null`. */
+  number: number | null;
+  reason: "pull-request" | "malformed-row";
+}
+
+/**
+ * One page of open issues, with the population it was drawn from.
+ *
+ * `considered` is the count **before** this module dropped anything, so a
+ * caller deciding whether its own empty result is a reading or the absence of
+ * one has the number that question needs.
+ */
+export interface OpenIssuePage {
+  /** Rows the API returned, before any filter here saw them. */
+  considered: number;
+  /** The page size actually requested, which is not always `limit`. */
+  perPage: number;
+  /** The page came back full, so the tracker may hold rows nobody fetched. */
+  truncated: boolean;
+  /** Every row this module dropped, with why. */
+  droppedRows: DroppedRow[];
+  issues: OpenIssue[];
+}
+
 export async function listOpenIssues(
   client: GitHubClient,
   repoSlug: string,
   limit = 100,
-): Promise<OpenIssue[]> {
+): Promise<OpenIssuePage> {
   const { owner, repo } = parseOwnerRepo(repoSlug);
+  const perPage = Math.min(Math.max(limit, 1), 100);
   const response = await client.rest.issues.listForRepo({
     owner,
     repo,
     state: "open",
-    per_page: Math.min(Math.max(limit, 1), 100),
+    per_page: perPage,
   });
   const rows = Array.isArray(response?.data) ? response.data : [];
-  return rows
-    .filter(row => row !== null && typeof row === "object" && row.pull_request === undefined)
-    .filter(row => typeof row.number === "number" && typeof row.title === "string")
-    .map(row => ({
+  const issues: OpenIssue[] = [];
+  const droppedRows: DroppedRow[] = [];
+  for (const row of rows) {
+    // Order matters for the reason recorded, never for the verdict. A null
+    // row is malformed and not a pull request, and a row reported under the
+    // wrong reason is a report nobody can act on.
+    if (row === null || typeof row !== "object") {
+      droppedRows.push({ number: null, reason: "malformed-row" });
+      continue;
+    }
+    const numbered = typeof row.number === "number" ? (row.number as number) : null;
+    if (row.pull_request !== undefined) {
+      droppedRows.push({ number: numbered, reason: "pull-request" });
+      continue;
+    }
+    if (typeof row.number !== "number" || typeof row.title !== "string") {
+      droppedRows.push({ number: numbered, reason: "malformed-row" });
+      continue;
+    }
+    issues.push({
       number: row.number as number,
       title: row.title as string,
       body: typeof row.body === "string" ? row.body : "",
-    }));
+      // An absent association is not a trusted one. `""` fails every
+      // membership test in `TRUSTED_ASSOCIATIONS`, which is the reading a
+      // caller should get when GitHub did not say.
+      authorAssociation: typeof row.author_association === "string" ? row.author_association : "",
+    });
+  }
+  // `>=` and not `>`: a full page is the only observation available, and the
+  // API cannot return more than was asked for, so `>` is a predicate that can
+  // never fire. It is the cheapest wrong spelling of this line.
+  return { considered: rows.length, perPage, truncated: rows.length >= perPage, droppedRows, issues };
 }
 
 /**

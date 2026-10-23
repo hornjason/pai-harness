@@ -23,16 +23,23 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  classifyClosure,
   closedWithoutRecord,
   report,
   shouldReopen,
+  CROSS_REFERENCE_FIELD,
   EXEMPT_LABEL,
   FINDING_LABEL,
+  KIND_ORDER,
+  LABEL_FOR_KIND,
+  LINK_LOST_LABEL,
+  SECTION_FOR_KIND,
   toClosedIssue,
   NOT_PLANNED,
   AUDIT_EPOCH,
   PROTECTED_LABELS,
   type ClosedIssue,
+  type ClosureFinding,
 } from "../lib/issue-closure-audit";
 
 const ROOT = join(import.meta.dir, "..");
@@ -56,6 +63,7 @@ const issue = (over: Partial<ClosedIssue> = {}): ClosedIssue => ({
   stateReason: "completed",
   labels: [],
   closedAt: AFTER,
+  mergedReferences: [],
   ...over,
 });
 
@@ -168,7 +176,8 @@ describe("#144 SC-834: the ratchet starts from a recorded date", () => {
 describe("#144 SC-835: what the audit does about it, and what it does not", () => {
   // AC-3: the action is stated and justified. Label and report; reopen only
   // behind a flag, and then only for the issues the hook itself protects.
-  const finding = (labels: string[]) => ({ issue: issue({ labels }), reason: "x" });
+  const finding = (labels: string[]): ClosureFinding =>
+    ({ issue: issue({ labels }), kind: "NO_TRACE", reason: "x" });
 
   test("reopen is off by default, whatever the labels say", () => {
     expect(shouldReopen(finding(PROTECTED_LABELS), false)).toBe(false);
@@ -204,7 +213,7 @@ describe("#144 SC-836: the GraphQL reading becomes the decision's input", () => 
       timelineItems: { nodes: [{ closer: { __typename: "PullRequest", number: 376 } }] },
     })).toEqual({
       number: 1, title: "t", stateReason: "completed", labels: [],
-      closedAt: AFTER, closedBy: "pull request #376",
+      closedAt: AFTER, closedBy: "pull request #376", mergedReferences: [],
     });
   });
 
@@ -229,6 +238,173 @@ describe("#144 SC-836: the GraphQL reading becomes the decision's input", () => 
     const got = toClosedIssue({ number: 5, title: "t", stateReason: "NOT_PLANNED" });
     expect(got.stateReason).toBe(NOT_PLANNED);
     expect(closedWithoutRecord([got]), "the case mismatch disabled the exemption").toEqual([]);
+  });
+});
+
+/**
+ * #1279 — the audit had one bucket for two facts.
+ *
+ * Measured against `hornjason/pai-harness` on 2026-10-23 through this
+ * module's own query and `toClosedIssue`, over the 299 issues closed between
+ * 2026-10-19T17:37:16Z and 2026-10-23T14:29:51Z (the window three GraphQL
+ * pages of 100, ordered by UPDATED_AT, reach past the epoch). The full table
+ * and its provenance are in specs/HARNESS-STANDARD.md:
+ *
+ *   closed BY a pull request        : 181   not findings, and never were
+ *   closed BY a commit              :  12   not findings
+ *   no closer, not_planned          :  13   exempt
+ *   no closer, COMPLETED            :  93   the population reported on
+ *     of which a merged PR names it :  77   LINK_LOST — shipped, link lost
+ *     of which nothing names it     :  16   NO_TRACE  — the actual signal
+ *
+ * So the finding people learnt to scroll past was 83% one thing and the
+ * thing worth reading was one row in six. Both are still findings here —
+ * both break `.claude/rules/ship-workflow.md` — but they cost different work
+ * and now say which.
+ */
+describe("#1279: a hand-typed close is two different facts, and the audit says which", () => {
+  const shipped = (over: Partial<ClosedIssue> = {}) =>
+    issue({ number: 1190, mergedReferences: [1215], ...over });
+  const untraceable = (over: Partial<ClosedIssue> = {}) =>
+    issue({ number: 1238, mergedReferences: [], ...over });
+
+  test("AC-1: the two are classified apart, and BOTH are still findings", () => {
+    // The anti-silencing case. The cheapest wrong fix for #1279 is to stop
+    // reporting LINK_LOST — the list drops 95 to 16 and the symptom is gone,
+    // along with every hand-typed close of an issue some unrelated merged PR
+    // happens to mention. This case goes red under it.
+    const found = closedWithoutRecord([shipped(), untraceable()]);
+    expect(found.length, "a kind was dropped from the report").toBe(2);
+    expect(found.map(f => [f.issue.number, f.kind])).toEqual([
+      [1190, "LINK_LOST"],
+      [1238, "NO_TRACE"],
+    ]);
+  });
+
+  test("AC-1: the evidence names the pull request, so the remedy is one click", () => {
+    const [f] = closedWithoutRecord([shipped({ mergedReferences: [1215, 1228] })]);
+    expect(f.reason).toContain("#1215");
+    expect(f.reason).toContain("#1228");
+    expect(f.reason, "a reader cannot tell this from work nobody can find")
+      .toContain("do not re-do the work");
+  });
+
+  test("AC-2: an UNMERGED pull request is not a ship record", () => {
+    // The direction this is allowed to be wrong in. Counting an open or
+    // abandoned PR would move a genuinely untraceable close into the bucket
+    // nobody re-reads, which is the defect arriving from the other side.
+    const node = {
+      number: 7, title: "t", stateReason: "COMPLETED", closedAt: AFTER,
+      labels: { nodes: [] },
+      timelineItems: { nodes: [{ closer: null }] },
+      [CROSS_REFERENCE_FIELD]: {
+        nodes: [
+          { source: { number: 101, merged: false } },
+          { source: { number: 102, merged: true } },
+          { source: {} }, // a cross-reference from an issue, not a PR
+        ],
+      },
+    };
+    expect(toClosedIssue(node).mergedReferences).toEqual([102]);
+  });
+
+  test("AC-2: the reader and the query name one field, declared once", () => {
+    // #530's shape: a consumer reading a key no producer writes returns `[]`,
+    // which is byte-identical to "no merged PR references this" — every
+    // finding would silently become NO_TRACE and the split would read as
+    // working. So the alias is a constant both sides use, and this asserts
+    // the script interpolates it rather than spelling its own.
+    const src = readFileSync(SCRIPT, "utf-8");
+    expect(src, "the query does not ask for cross-references")
+      .toContain("CROSS_REFERENCED_EVENT");
+    expect(src, "the query spells the alias instead of using the constant")
+      .toContain("${CROSS_REFERENCE_FIELD}: timelineItems");
+    expect(src, "a literal spelling of the alias is a second declaring position")
+      .not.toContain(CROSS_REFERENCE_FIELD);
+    // And the closer selection is still its OWN `last: 1` on CLOSED_EVENT.
+    // Folding both into one `itemTypes` would push the ClosedEvent off the
+    // end of a chatty issue's window, and the classifier would start
+    // manufacturing the findings it exists to classify.
+    expect(src).toContain("timelineItems(last: 1, itemTypes: [CLOSED_EVENT])");
+  });
+
+  test("AC-3: the report leads with NO_TRACE and sections both kinds", () => {
+    const out = report(closedWithoutRecord([shipped(), untraceable()]), 299);
+    expect(out).toContain("NO_TRACE 1");
+    expect(out).toContain("LINK_LOST 1");
+    expect(out.indexOf(SECTION_FOR_KIND.NO_TRACE),
+      "LINK_LOST is 83% of the volume; putting it first buries the signal")
+      .toBeLessThan(out.indexOf(SECTION_FOR_KIND.LINK_LOST));
+    expect(out).toContain("#1238");
+    expect(out).toContain("#1190");
+  });
+
+  test("AC-3: the report reads `kind`, it does not re-derive one", () => {
+    // Two deciders that agree are behaviourally one, and a mutation of either
+    // leaves the other holding the case up. The input that separates them is
+    // a finding whose `kind` and whose `mergedReferences` disagree: a report
+    // that sections off the array puts this under LINK_LOST.
+    const contradictory = {
+      issue: issue({ number: 55, mergedReferences: [999] }),
+      kind: "NO_TRACE" as const,
+      reason: "planted",
+    };
+    const out = report([contradictory], 1);
+    const noTrace = out.indexOf(SECTION_FOR_KIND.NO_TRACE);
+    expect(noTrace, "the report re-derived the kind from mergedReferences")
+      .toBeGreaterThanOrEqual(0);
+    expect(out).not.toContain(SECTION_FOR_KIND.LINK_LOST);
+  });
+
+  test("AC-4: each kind has its own label, and all three labels differ", () => {
+    // The split has to be queryable on the tracker, not only in a job log.
+    // One label for both kinds leaves `label:closed-without-ship` 83% rows
+    // nobody needs to act on, which is the defect one level down.
+    expect(new Set([EXEMPT_LABEL, FINDING_LABEL, LINK_LOST_LABEL]).size).toBe(3);
+    expect(LABEL_FOR_KIND.NO_TRACE).toBe(FINDING_LABEL);
+    expect(LABEL_FOR_KIND.LINK_LOST).toBe(LINK_LOST_LABEL);
+    expect(Object.keys(LABEL_FOR_KIND).sort()).toEqual([...KIND_ORDER].sort());
+    expect(Object.keys(SECTION_FOR_KIND).sort()).toEqual([...KIND_ORDER].sort());
+  });
+
+  test("AC-4: the labeller looks the label up from the kind, it does not pick one", () => {
+    // A source-text link, and said so plainly: nothing here runs `--apply`,
+    // because that path needs a client. What it rules out is the mutation
+    // that makes the map correct and the call site ignore it — the map and
+    // the writer disagreeing is two deciders with the artefact in between.
+    const src = readFileSync(SCRIPT, "utf-8");
+    expect(src, "the apply path does not read the kind").toContain("LABEL_FOR_KIND[finding.kind]");
+    expect(src, "a hardcoded label at the call site survives any change to the map")
+      .not.toMatch(/addLabels\([^)]*\[\s*(FINDING_LABEL|LINK_LOST_LABEL)\s*\]/);
+  });
+
+  test("AC-4: EITHER finding label suppresses re-reporting", () => {
+    // The audit must not read its own mark as new work. Adding a second
+    // finding label without adding it here would report every LINK_LOST
+    // issue every morning until somebody switched the job off.
+    expect(closedWithoutRecord([shipped({ labels: [LINK_LOST_LABEL] })])).toEqual([]);
+    expect(closedWithoutRecord([untraceable({ labels: [FINDING_LABEL] })])).toEqual([]);
+    expect(closedWithoutRecord([shipped({ labels: [FINDING_LABEL] })])).toEqual([]);
+  });
+
+  test("AC-5: classification never reaches an exempt or pre-epoch close", () => {
+    // The positive controls, restated against the new axis. A split that
+    // started reporting the issues the old code exempted would be a bigger
+    // regression than the one it fixes.
+    expect(closedWithoutRecord([shipped({ closedBy: "pull request #1215" })])).toEqual([]);
+    expect(closedWithoutRecord([shipped({ stateReason: NOT_PLANNED })])).toEqual([]);
+    expect(closedWithoutRecord([shipped({ labels: [EXEMPT_LABEL] })])).toEqual([]);
+    expect(closedWithoutRecord([shipped({ closedAt: BEFORE })])).toEqual([]);
+  });
+
+  test("AC-5: classifyClosure is total and agrees with what the list reports", () => {
+    for (const probe of [shipped(), untraceable()]) {
+      const direct = classifyClosure(probe);
+      const [viaList] = closedWithoutRecord([probe]);
+      expect(KIND_ORDER).toContain(direct.kind);
+      expect(viaList.kind, "the list classified differently from the binding").toBe(direct.kind);
+      expect(viaList.reason).toBe(direct.reason);
+    }
   });
 });
 
@@ -275,6 +451,28 @@ describe("#144 SC-836: the script runs, refuses through one exit, and writes not
     labels: { nodes: [] },
     timelineItems: { nodes: [{ closer: { __typename: "PullRequest", number: 99 } }] },
   };
+
+  // #1279: the same shape as BARE, except a merged PR names it.
+  const LINK_LOST = {
+    number: 25, title: "shipped, link lost", stateReason: "COMPLETED",
+    closedAt: "2099-01-01T00:00:00Z",
+    labels: { nodes: [] }, timelineItems: { nodes: [{ closer: null }] },
+    [CROSS_REFERENCE_FIELD]: { nodes: [{ source: { number: 1215, merged: true } }] },
+  };
+
+  test("#1279: both kinds are reported, sectioned, and the run is still red", () => {
+    const r = run(SCRIPT, ["--fixture", fixtureFile([BARE, LINK_LOST, SHIPPED])]);
+    expect(r.out, "the untraceable close went missing").toContain("#23 closed by a raw PATCH");
+    expect(r.out, "the lost-link close was silenced").toContain("#25 shipped, link lost");
+    expect(r.out, "the evidence does not name the merge").toContain("#1215");
+    expect(r.out).toContain("NO_TRACE 1");
+    expect(r.out).toContain("LINK_LOST 1");
+    expect(r.out, "the shipped issue was reported too").not.toContain("#24");
+    expect(r.code, "findings left the scheduled job green").not.toBe(0);
+    // The refusal line carries the split too, so a reader who sees only the
+    // last line of a red job still knows how many rows need a human.
+    expect(r.out).toContain("1 with no merged pull request referencing them at all");
+  }, 180_000);
 
   test("a bare close is reported and the run is red", () => {
     const r = run(SCRIPT, ["--fixture", fixtureFile([BARE, SHIPPED])]);
