@@ -3038,6 +3038,19 @@ describe("#1204: `cp` creates links too, and the exemption did not know it", () 
     ["env wrapper", `env cp -s ${RUN} /tmp/x`],
     ["via find -exec, which resolves to `find`", `find . -exec cp -s ${RUN} /tmp/x \\;`],
     ["inside a heredoc body an interpreter will run", `bash <<'EOF'\ncp -s ${RUN} /tmp/x\nEOF`],
+    // ROUND 2 — three bypasses of the first spelling of this fix, which read
+    // the flags with a positional regex off the raw text. Each is a way the
+    // SHELL and GETOPT see a link flag that the regex did not.
+    ["getopt permutes: the flag AFTER the operands", `cp ${RUN} /tmp/x -s`],
+    ["permuted, between the operands", `cp ${RUN} -s /tmp/x`],
+    ["permuted past a leading flag", `cp -v ${RUN} -s /tmp/x`],
+    ["long option by unambiguous prefix", `cp --sym ${RUN} /tmp/x`],
+    ["the shortest unambiguous prefix of --link", `cp --l ${RUN} /tmp/x`],
+    ["--symbolic-lin, one character short", `cp --symbolic-lin ${RUN} /tmp/x`],
+    ["the flag in double quotes, which the shell removes", `cp "-s" ${RUN} /tmp/x`],
+    ["the flag in single quotes", `cp '-s' ${RUN} /tmp/x`],
+    ["the verb in quotes", `"cp" -s ${RUN} /tmp/x`],
+    ["a quote inside the long flag", `cp --'s'ymbolic-link ${RUN} /tmp/x`],
   ];
   test.each(voids)("%s voids the exemption", (_label, link) => {
     const d = decideBashWrite(`${link} && echo y > /tmp/x/${STATE}`);
@@ -3054,6 +3067,13 @@ describe("#1204: `cp` creates links too, and the exemption did not know it", () 
       `cp -f a.txt /tmp/p/${STATE}`,
       `cp --strip-trailing-slashes a.txt /tmp/p/${STATE}`,
       `cp --no-clobber a.txt /tmp/p/${STATE}`,
+      // Long options whose own unambiguous prefixes are NEIGHBOURS of the two
+      // that matter. If prefix acceptance is implemented as "starts with an
+      // `s`" rather than "is a prefix OF `--symbolic-link`", these go red.
+      `cp --sparse=always a.txt /tmp/p/${STATE}`,
+      `cp --suffix=.bak a.txt /tmp/p/${STATE}`,
+      `cp --sp a.txt /tmp/p/${STATE}`,
+      `cp -- a.txt /tmp/p/${STATE}`,
     ]) {
       const d = decideBashWrite(cmd);
       expect(d.blocked, `refused: ${cmd} — ${d.reason}`).toBe(false);

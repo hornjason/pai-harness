@@ -457,29 +457,82 @@ function resolveThroughLinks(normalised: string): string | null {
  */
 const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
 
+/** The two long `cp` options that create a link. */
+const CP_LINK_LONG = ['--symbolic-link', '--link'];
+
 /**
- * #1204: `ln` is not the only verb that makes one. GNU `cp -s` creates a
- * symbolic link and `cp -l` a hard one, and neither spells anything in
+ * Is this argv word a `cp` flag that creates a link?
+ *
+ * Short flags BUNDLE, and every letter in a bundle is a flag, so an `s` or
+ * an `l` anywhere in one is `-s` or `-l` — `-rs`, `-sv` and `-as` are
+ * covered by construction rather than by enumeration.
+ *
+ * Long flags are matched by PREFIX, because that is what `getopt_long`
+ * accepts: `cp --sym` and `cp --l` both run. Prefix OF the real spelling,
+ * not "begins with the same letter" — `--sparse`, `--suffix` and
+ * `--strip-trailing-slashes` are neighbours of `--symbolic-link` that create
+ * nothing, and they are controls in the suite for exactly that reason. An
+ * ambiguous prefix like `--s` is accepted here although getopt would reject
+ * it; that errs toward refusing a command which does not run at all.
+ */
+function isCpLinkFlag(word: string): boolean {
+  if (word.startsWith('--')) {
+    const name = word.split('=')[0];
+    if (name.length < 3) return false; // bare `--`, the end-of-options marker
+    return CP_LINK_LONG.some(f => f.startsWith(name));
+  }
+  return /^-[a-zA-Z]+$/.test(word) && /[sl]/.test(word.slice(1));
+}
+
+/**
+ * #1204: `ln` is not the only verb that makes a link. GNU `cp -s` creates a
+ * symbolic one and `cp -l` a hard one, and neither spells anything in
  * `LINK_CREATION`, so both walked straight past the exemption's only guard.
  *
- * The flag, not the verb, is what decides: a bare `cp` into a scratch tree
- * is the single most common thing a fixture does, and refusing it would
- * refuse nearly every fixture in the suite. So this matches `cp` followed by
- * any run of flags in which one is a link flag.
+ * The FLAG decides, not the verb: a bare `cp` into a scratch tree is the
+ * single most common thing a fixture does, and refusing it would refuse
+ * nearly every fixture in the suite.
  *
- * The short arm is deliberately `-[a-zA-Z]*[sl][a-zA-Z]*` rather than a list
- * of spellings: short flags bundle, every letter in a bundle IS a flag, and
- * so an `s` or an `l` anywhere in one is `-s` or `-l`. It cannot run away
- * with a long flag — `[a-zA-Z]` does not match the second `-`, so
- * `--strip-trailing-slashes` fails at that character rather than matching on
- * its `s`, and the two long spellings are named explicitly instead.
+ * This reads argv, not the raw text. The first spelling was a positional
+ * regex, and a review found three ways the shell and getopt see a flag that
+ * a regex over raw text does not — all three now rows in the suite:
  *
- * NOT covered, and left uncovered on purpose: `cp -a` and `cp -d` preserve an
- * EXISTING symlink, so copying one that already points out of the tree is the
- * same escape with no link flag in the command at all. Catching that needs
- * the source resolved on disk, which this module does not do.
+ *   - **getopt permutes.** `cp src dst -s` is a link; a pattern anchored to
+ *     the leading run of flags cannot see one that follows the operands.
+ *   - **Long options abbreviate.** `cp --sym` and `cp --l` run.
+ *   - **The shell removes quotes.** `cp "-s"` and `"cp" -s` both execute,
+ *     and neither has a bare `-s` in the text.
+ *
+ * `scanSegment` is the same quote-aware tokeniser `commandWord` uses, which
+ * is what closes the third — one tokeniser, not a second spelling of the
+ * idea. The verb is found by scanning for a `cp` token rather than by
+ * `commandWord`, because `find . -exec cp -s …` resolves to `find`; that is
+ * the position the old `LINK_CREATION` regex exists to reach, reached here
+ * with tokens instead.
+ *
+ * NOT covered, and left uncovered on purpose (#1425): `cp -a` and `cp -d`
+ * preserve an EXISTING symlink, so copying one that already points out of
+ * the tree is the same escape with no link flag in the command at all.
+ * Catching it needs the source resolved on disk, which this module does not
+ * do, and refusing every `cp -a` would refuse a very common fixture.
  */
-const CP_LINK = /\bcp\s+(?:-\S+\s+)*(?:-[a-zA-Z]*[sl][a-zA-Z]*|--symbolic-link|--link)\b/;
+function cpCreatesLink(segment: string): boolean {
+  const words = scanSegment(segment)
+    .words.map(w =>
+      dequote(w)
+        .replace(/^[({\\]+/, '') // `(cp …`, `{ cp …`, `\cp` — alias bypass
+        .replace(/^.*\//, ''),
+    ) // `/bin/cp` -> `cp`
+    .filter(Boolean);
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] !== 'cp') continue;
+    for (let j = i + 1; j < words.length; j++) {
+      if (words[j] === '--') break; // everything after is an operand
+      if (isCpLinkFlag(words[j])) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * #1240: both tests read a view that KEEPS the text an interpreter is going
@@ -491,8 +544,8 @@ const CP_LINK = /\bcp\s+(?:-\S+\s+)*(?:-[a-zA-Z]*[sl][a-zA-Z]*|--symbolic-link|-
 function exemptionIsVoid(cmd: string): boolean {
   const programs = interpreterPrograms(cmd).map(p => p.program);
   const view = [stripHeredocs(cmd), ...programs].join('\n');
-  if (LINK_CREATION.test(view) || CP_LINK.test(view)) return true;
-  return segments(view).some(seg => commandWord(seg) === 'ln');
+  if (LINK_CREATION.test(view)) return true;
+  return segments(view).some(seg => commandWord(seg) === 'ln' || cpCreatesLink(seg));
 }
 
 /**
