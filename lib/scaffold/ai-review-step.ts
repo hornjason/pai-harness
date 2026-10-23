@@ -6637,10 +6637,36 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
                     # which matters because this job checks out with
                     # \`persist-credentials: false\` and has no token in
                     # \`.git/config\` to spend.
+                    # READ THE INDEX, not the working tree. \`ls-files\`
+                    # asks the index "is this path tracked"; a \`sed\` of
+                    # \`\${real}\` reads whatever is on disk NOW. A tracked
+                    # file that an earlier step modified passes the gate and
+                    # gets its MODIFIED content quoted — the validator and
+                    # the consumer talking about two different objects,
+                    # which is the same class as the symlink defect this arm
+                    # exists to fix, arriving inside the guard that fixed it.
+                    #
+                    # \`git show ":\${rel}"\` makes them one object: the
+                    # thing quoted IS the thing the pull request contains,
+                    # which is what the tracked boundary was for.
+                    #
+                    # ONE decider, and no separate \`ls-files\` gate. An
+                    # earlier draft kept it as a membership check and it was
+                    # measured redundant: \`git show\` on a path not in the
+                    # index fails by itself, so defeating \`ls-files\`
+                    # changed no input and the mutation rows for it went
+                    # green witnessing nothing. Two deciders answering one
+                    # question are behaviourally one, and a mutation of
+                    # either leaves the other holding the case up.
+                    #
+                    # Dropping it also removes a PATHSPEC. \`ls-files --
+                    # "\${rel}"\` reads \`rel\` as a pathspec, where glob
+                    # magic means a tracked \`a?c.ts\` answers yes for a
+                    # request naming \`abc.ts\`; \`:\${rel}\` is a revision
+                    # and never globbed. The mismatch was one-sided, which
+                    # is exactly what made it invisible.
                     rel=\${real#"\${root}"/}
-                    if ${AI_REVIEW_GIT_ISOLATED} -C "\${root}" ls-files --error-unmatch -- "\${rel}" >/dev/null 2>&1; then
-                      rt=\$(sed -n "\${rl}p" "\${real}" 2>/dev/null || true)
-                    fi
+                    rt=\$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)
                     ;;
                 esac
               fi
