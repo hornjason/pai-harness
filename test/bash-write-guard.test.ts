@@ -1507,7 +1507,11 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     [`$( (cp -s ${VICTIM} /tmp/esc) )`, null],
   ];
   test.each(flatVsWalk)("the flat regex on %s yields %s, which is not the outer body", (cmd, flat) => {
-    const m = /\$\(([^()]*)\)/.exec(cmd);
+    // `.match` rather than `.exec`: #1096's spawn scan matches a bare
+    // `exec(` on any receiver, so a regex `.exec` reads as a child process
+    // and this file writes `process.env`. Same reading either way, and it
+    // keeps a non-spawn out of that census instead of exempting it.
+    const m = cmd.match(/\$\(([^()]*)\)/);
     expect(m?.[1] ?? null).toBe(flat);
     // And the command is refused anyway, because the walk read it.
     expect(decideBashWrite(esc(cmd)).blocked).toBe(true);
