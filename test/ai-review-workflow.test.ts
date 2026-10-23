@@ -1719,6 +1719,25 @@ describe("#1307: the execution file is preserved when no payload was written", (
     expect(statSync(run.staged).mode & 0o777).toBe(0o700);
   });
 
+  test("#1307: the ownership check is present — and this row is STRUCTURAL, not behavioural", () => {
+    // SAY WHAT THIS IS. Every other row here runs the script and reads what
+    // it did. This one reads the script's text, because the input that
+    // separates `-O` from no `-O` is a directory this process created and
+    // another user owns, and nothing a test can do produces one without
+    // root. Measured: deleting the `-O` refusal leaves the suite at 103
+    // pass / 0 fail.
+    //
+    // So this is a presence assertion wearing its label, not coverage. It
+    // catches a deletion and it cannot catch a `-O` that reads the wrong
+    // path — `.claude/rules/checks-must-be-able-to-fail.md`, and the number
+    // above is the evidence rather than this sentence.
+    const script = buildExecutionStageScript();
+    expect(script).toContain('if [ ! -O "${staged}" ]; then');
+    expect(script.indexOf('[ ! -O "${staged}" ]')).toBeLessThan(
+      script.indexOf(`> "\${staged}/${AI_REVIEW_EXECUTION_BASENAME}"`),
+    );
+  });
+
   test("#1307: the staging path carries the run nonce, so it cannot be a leftover", () => {
     const run = stage({ execution: '[{"type":"result"}]' });
     expect(run.staged).toContain(`-${RUN_ID}-${RUN_ATTEMPT}`);
