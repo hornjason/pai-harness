@@ -158,8 +158,22 @@ const TABLE: Array<[string, boolean, string]> = [
   // rather than a claim. See the module docblock.
   ["GH=gh; $GH issue create --label bug", true,
     "variable indirection — resolving it is the shell interpreter this is not"],
-  ["bash <<< 'gh issue create --label bug'", true,
-    "a here-string is not a shape anyone types to file an issue"],
+  // WAS out of scope, with the reason "a here-string is not a shape anyone
+  // types to file an issue". #1302 reversed it, and the reversal is a
+  // consequence rather than a judgement: stripping document heredoc bodies
+  // means the interpreter bodies have to be put back, and the binding that
+  // puts them back — `interpreterPrograms` in `lib/bash-write-guard.ts` —
+  // returns herestrings in the same list. Narrowing it again would mean
+  // writing a second decider to disagree with the first one.
+  //
+  // The old reason was about typing frequency, which is not a property of
+  // the input. This row now asserts the refusal, in the direction that costs
+  // a legitimate command nothing: a herestring filing still clears by
+  // carrying a real `--label` override, exactly like the inline form.
+  ["bash <<< 'gh issue create --label bug'", false,
+    "a herestring to a shell is a program, the same reading BashWriteGuard takes"],
+  ["bash <<< 'gh issue create --label follow-up'", true,
+    "...and the control: the override is read inside the program, so nothing legitimate is lost"],
 ];
 
 describe("#365 SC-825: the override is a label argument, not a word in the command", () => {

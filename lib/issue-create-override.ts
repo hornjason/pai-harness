@@ -1,3 +1,5 @@
+import { interpreterPrograms, stripHeredocs } from "./bash-write-guard";
+
 /**
  * Whether a `gh issue create` may run during VERIFY, and why not (#365).
  *
@@ -59,14 +61,27 @@
  * - Variable indirection — `GH=gh; $GH issue create`. Resolving it means
  *   tracking assignments across clauses, which is the shell interpreter this
  *   file is explicitly not, and nobody reaches for `$GH` by reflex.
- * - Here-strings and here-documents — `bash <<< "gh issue create …"`. Same
- *   reason: a deliberate construction, not a reflex.
  * - A caller who writes a script and runs it.
+ * - A `cd` in an earlier clause, which retargets the tracker invisibly.
+ *   Resolving it needs directory state across clauses, same reason as above.
  *
  * Each of those takes a decision to get around the lock, and an agent that
  * has made that decision is a problem no matcher fixes. Chasing them trades
  * false refusals — which teach people to work around a guard — for
  * protection against someone already doing so.
+ *
+ * **Here-strings and here-documents left this list in #1302, and the entry is
+ * kept here rather than deleted because the reason it gave was wrong.** It
+ * read "a deliberate construction, not a reflex" — an argument about how
+ * often a shape is typed, which is not a property of the input and cannot be
+ * measured. What settled it was that the body of a heredoc had to be parsed
+ * either way: `clauses` was reading the bodies that go into FILES, which is
+ * the one case that is certainly not a command, and refusing real work for
+ * it. Once `stripHeredocs` removes those, `interpreterPrograms` has to put
+ * the executable ones back, and that binding returns herestrings in the same
+ * list. So the scope widened as a consequence of fixing a false refusal, and
+ * narrowing it again would mean writing a second decider that disagrees with
+ * `lib/bash-write-guard.ts`. See `heredocView` below.
  */
 
 /** Labels that permit an issue to be filed mid-VERIFY, and what each means. */
@@ -197,7 +212,7 @@ const SEPARATORS = new Set(OPERATORS);
  */
 export function clauses(cmd: string, depth = 0): string[][] {
   const flat: string[][] = [[]];
-  for (const t of tokenize(cmd)) {
+  for (const t of tokenize(heredocView(cmd))) {
     if (SEPARATORS.has(t)) flat.push([]);
     else flat[flat.length - 1].push(t);
   }
@@ -210,6 +225,41 @@ export function clauses(cmd: string, depth = 0): string[][] {
     for (const inner of commandArguments(c)) out.push(...clauses(inner, depth + 1));
   }
   return out;
+}
+
+/**
+ * The command text, with heredoc bodies routed by where they GO (#1302).
+ *
+ * A heredoc body handed to an interpreter is a program and is parsed. A body
+ * going anywhere else — `cat > doc.md <<'EOF'`, `tee`, `gh --body-file -` —
+ * is a DOCUMENT and is removed, because text on its way into a file is not a
+ * command however exactly it is spelled.
+ *
+ * **Both halves come from `lib/bash-write-guard.ts`, which already decided
+ * this and proved it over 5,060 real commands in #1240.** Writing the split
+ * again here would be two deciders on one question — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and they were already
+ * disagreeing: `BashWriteGuard` read the interpreter body and stripped the
+ * document body, and this parser did the exact inverse. The inverse is the
+ * one that false-positives, and it blocked real work: a `cat > probe.ts`
+ * whose body quoted a filing was refused as though it were one.
+ *
+ * It is the same expression `decideBashWrite` builds its own view from, so
+ * the two guards now read a command the same way by construction rather than
+ * by agreement.
+ *
+ * Two behaviours worth knowing, both inherited and both in the safe
+ * direction. An UNTERMINATED heredoc is left in place, so a filing hidden
+ * behind an unclosed delimiter does not become invisible. And a herestring
+ * to a shell — `bash <<< '…'` — now parses where it did not before. That
+ * last one is a DOCUMENTED boundary being reversed, not an oversight being
+ * corrected: the module docblock listed it as out of scope and
+ * `test/verify-phase-lock.test.ts` asserted the allow. Both are updated in
+ * the same commit, with the reason, because a boundary that moves silently
+ * is worse than either position.
+ */
+function heredocView(cmd: string): string {
+  return [stripHeredocs(cmd), ...interpreterPrograms(cmd).map(p => p.program)].join("\n");
 }
 
 /** Arguments of this clause that are themselves commands. */
