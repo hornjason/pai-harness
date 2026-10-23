@@ -6551,7 +6551,50 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
         rt=""
         case "\${rl}" in
           ""|0|*[!0-9]*) ;;
-          *) if [ -n "\${rf}" ] && [ -f "\${rf}" ]; then rt=\$(sed -n "\${rl}p" "\${rf}" 2>/dev/null || true); fi ;;
+          *)
+            # \`! -L\` BEFORE \`-f\`, and the ORDER is the fix (#1379).
+            # The three string tests above read the SPELLING of the path, and
+            # a committed symlink needs neither a leading \`/\` nor a \`..\`
+            # to leave the checkout. \`-f\` FOLLOWS the link, so it is not
+            # evidence of an ordinary in-tree file — it is the test that
+            # makes the link transparent. Ordering these the other way round
+            # reinstates the whole hole.
+            #
+            # \`! -L\` alone is not enough either: in \`notes/x.md\` the
+            # LINK can be \`notes\`, and \`x.md\` is then not a link by any
+            # test. So resolve the path and require the result to sit under
+            # the workspace. Both sides go through \`readlink -f\` because
+            # the root itself is reached through a symlink on some runners
+            # (\`/tmp\` on macOS), and comparing a resolved path against an
+            # unresolved root refuses every legitimate quote.
+            #
+            # An empty \`real\` or \`root\` REFUSES rather than defaulting:
+            # an empty root makes the pattern \`/*\`, which matches every
+            # absolute path there is. That is the fail-open shape in
+            # .claude/rules/checks-must-be-able-to-fail.md, arriving inside
+            # the guard it would disarm.
+            #
+            # Failing containment leaves \`rt\` empty, which is the existing
+            # no-quote rendering — no new failure mode and no annotation.
+            # Untrusted input being declined is not a review result.
+            #
+            # \`--\` on \`readlink\` and NOT on \`sed\`: \`rf\` is
+            # attacker-shaped and may begin with \`-\`, while \`real\` is a
+            # resolved path already known to start with \`\${root}/\` and so
+            # cannot be read as an option — a stronger guarantee than \`--\`,
+            # not a weaker one. BSD sed takes \`--\` as a FILENAME and exits
+            # non-zero (measured, darwin 25.6), so spelling it there would
+            # split this step's behaviour by runner.
+            if [ -n "\${rf}" ] && [ ! -L "\${rf}" ] && [ -f "\${rf}" ]; then
+              real=\$(readlink -f -- "\${rf}" 2>/dev/null || true)
+              root=\$(readlink -f -- "\${GITHUB_WORKSPACE:-\$PWD}" 2>/dev/null || true)
+              if [ -n "\${real}" ] && [ -n "\${root}" ]; then
+                case "\${real}" in
+                  "\${root}"/*) rt=\$(sed -n "\${rl}p" "\${real}" 2>/dev/null || true) ;;
+                esac
+              fi
+            fi
+            ;;
         esac
         jq -nc --arg t "\${rt}" '{${AI_REVIEW_LEDGER_TEXT_FIELD}: \$t}'
       done > "\${texts}"
