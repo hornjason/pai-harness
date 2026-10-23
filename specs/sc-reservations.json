@@ -6,9 +6,17 @@
     "A renumber is an allocation. See .claude/rules/parallel-sessions.md and issue #725.",
     "",
     "Shape: every entry needs owner (branch name or issue ref), from and to (inclusive,",
-    "positive integers below the 9000 fixture floor). note is optional. Blocks must not",
-    "overlap \u2014 the reader refuses the whole store if two do, because a store that hands",
-    "one id to two owners is worse than no store at all.",
+    "positive integers; below the 9000 fixture floor for SC). note is optional. Blocks",
+    "must not overlap \u2014 the reader refuses the whole store if two do, because a store",
+    "that hands one id to two owners is worse than no store at all.",
+    "",
+    "namespace is optional and ABSENT MEANS SC, so every entry written before #1363",
+    "keeps its exact meaning. The store also holds FG (test/issue-filing-gate.test.ts)",
+    "and AR (test/finding-arbiter.test.ts), which have no allocator and so collide the",
+    "same way SC ids do. An unknown namespace refuses the whole store by name, and",
+    "overlap is judged WITHIN a namespace \u2014 FG 45-60 and SC 45-60 claim nothing in",
+    "common. Adding a namespace means editing RESERVATION_NAMESPACES in",
+    "lib/sc-reservations.ts and the table in .claude/rules/parallel-sessions.md.",
     "",
     "The `reservations` key is the control string: an object without it is UNREADABLE,",
     "not empty, and the allocator refuses rather than returning a number. Delete your",
@@ -38,6 +46,12 @@
       "from": 2480,
       "to": 2499,
       "note": "#312 SC-A15 harness half: the container tier is the one probe target lib/dev-liveness.ts never claimed, so ship.js builds its own URL with `hosts[0]` on a possibly-empty array and `port || 3000`. Reserved before any id is consumed."
+    },
+    {
+      "owner": "rg/1348",
+      "from": 2500,
+      "to": 2519,
+      "note": "#1348 - a provenance reading states the directory it was taken in. Above every declared block, which is what the allocator hands an owner who has none; 2460-2479 looked free by eyeballing headroom and collided with PARALLEL-AGENT-COORDINATION-SPEC.md, caught by test/spec-sc-ids-unique.test.ts. Delete when the PR merges."
     }
   ]
 }

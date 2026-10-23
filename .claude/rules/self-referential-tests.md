@@ -30,8 +30,12 @@ So for the orphan and untested-spec checks the only legal fix is to make
 something genuinely reference the new file. Reaching for the allowlist makes it
 worse, and it is the first thing a stuck agent reaches for.
 
-One consequence worth knowing: DRIFT-3 compares against `origin/main`, so a
-branch that is behind can fail on somebody else's merged entry. Rebase before
+One consequence worth knowing, and the direction is the opposite of the
+obvious one: DRIFT-3 computes `allowlistAdditions(origin/main, yours)` and
+refuses entries **yours has that main lacks**. So somebody else's merged
+*addition* cannot redden a branch that is behind — your copy is the smaller
+one — but somebody else's merged *removal* can, because an entry main has
+dropped and your branch still carries reads as one you added. Rebase before
 you debug.
 
 ## Tier 1 — tripped by adding ANY ordinary file
@@ -51,15 +55,10 @@ every one fails with a bare `expect(...).toEqual([])` and no guidance.
 `CLOSURE-8` is the one people miss: a `join(import.meta.dir, "..")` read is the
 same property as an import, expressed in different syntax.
 
-The last row cost PR #1024 three CI shards and is worse than it looks. Those
-batteries build a mutant by writing **one file** into a scratch directory, so a
-relative specifier added to the original resolves to nothing there and the
-mutant **fails to load**. Every case comparing real against mutant goes red —
-and the reds read as behavioural differences. Turn one around and it is the
-UNMEASURED shape: had a comparison been written so that a non-loading mutant
-resembled a *refusing* one, the whole battery would have gone **green while
-witnessing nothing**. This table previously warned about adding a *file*;
-nobody was warned about adding an *import*.
+The last row cost PR #1024 three CI shards, and turned around it is the
+UNMEASURED shape rather than a noisy one: a battery whose mutant fails to
+load can go **green while witnessing nothing**. Why, in full:
+`reference/self-referential-tests-worked-instances.md`, *adding an import*.
 
 ## Tier 2 — a hand-maintained list or number you must update
 
@@ -136,8 +135,10 @@ apart, so this one carries the added and removed lines.
 | added or edited CLAUDE.md, AGENTS.md or a .claude/rules/ doc | `test/rule-provenance.test.ts` `test/instruction-surface-budget.test.ts` `test/harness-fixed-point.test.ts` |
 | added a test file | `test/sc-id-namespace.test.ts` `test/scratch-paths-unique.test.ts` |
 | touched specs/ | `test/agents-md-spec-listing.test.ts` `test/spec-requirements.test.ts` |
+| added a specs/ file | `test/audit-specs.test.ts` `test/scanner.test.ts` |
 | ticked or unticked an SC (ran sync-sc-status) | `test/sc-binding-split.test.ts` `test/ticked-sc-cover.test.ts` `test/behavioral-sc-ratchet.test.ts` `test/ticked-sc-absent-symbol.test.ts` |
 | touched gates/, hooks/ or the scaffold | `test/gate-contracts.test.ts` `test/scaffold-ownership.test.ts` `test/hook-traceability.test.ts` |
+| changed a generated workflow, or the scaffold source that emits one | `test/ai-review-runner-shell-parity.test.ts` `test/action-pin-parity.test.ts` `test/scaffold-permissions-merge.test.ts` |
 
 **That table is rendered from `CENSUS_TRIGGERS` in `scripts/census-routing.ts`
 and compared byte-for-byte by that script's own test file**, in both
@@ -156,17 +157,11 @@ version is a check that refuses a diff whose census tests were not in the same
 run's measured set, and that needs a notion of "what this session ran" which
 does not exist here.
 
-**A ship run no longer depends on you reading this** (#1004).
-`scripts/select-affected-tests.ts` selects by import graph, and a census test
-imports none of the things that move it — measured with
-`specs/HARNESS-STANDARD.md` as the only changed file, that selector reached
-`ticked-sc-cover` as a sweep and missed the other two outright, while
-reporting MEASURED, so nothing fell back. It now unions `censusTestsFor` into
-its SELECTED result, and its artefact records `graphTests` and `censusTests`
-separately so the two halves stay tellable apart. The routers are still
-complements — one routes by what the diff DID, the other by what it IMPORTS —
-and this table is still what you run by hand, because the selector runs only
-inside a ship run.
+**A ship run no longer depends on you reading this** (#1004):
+`scripts/select-affected-tests.ts` unions `censusTestsFor` into its SELECTED
+result. It runs only inside a ship run, so this table is still what you run
+by hand. What it missed before, and why the two routers are complements:
+`reference/self-referential-tests-worked-instances.md`, *the selector*.
 
 ## If you are writing one of these
 

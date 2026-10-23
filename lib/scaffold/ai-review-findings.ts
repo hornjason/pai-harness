@@ -185,6 +185,163 @@ export function renderCountedFindings(reported: unknown[] | null): string[] {
 /** The annotation title the script prints its refusal under. */
 export const AI_REVIEW_FINDINGS_TITLE = "AI review findings";
 
+/**
+ * The annotation title the advisory tail is printed under.
+ *
+ * A SEPARATE title from `AI_REVIEW_FINDINGS_TITLE`, deliberately. The refusal
+ * is a thing somebody has to act on before the pull request moves; this is a
+ * thing somebody has to answer before it merges, and GitHub groups
+ * annotations by title. One title for both would make the advisory tail
+ * read, in the checks UI, as part of the refusal — which is the misattribution
+ * `blockingContractViolations` is about, arriving from the other direction.
+ */
+export const AI_REVIEW_ADVISORY_TITLE = "AI review advisory findings";
+
+/**
+ * A stable identity for one finding, so an answer can name it.
+ *
+ * @identity file+summary — whitespace-collapsed and case-folded, FNV-1a, 8
+ * hex characters. Total: every finding gets a key, and it is never `null`.
+ *
+ * **This is the ADJUDICATION key** — "has this advisory already been counted
+ * on this run". Within one payload there is only one version of the file, so
+ * the line genuinely does not matter, and keying on it would split one
+ * finding into two across a reformat.
+ *
+ * Its sibling is `carryKey` in `lib/ai-review-rounds.ts`, which is the
+ * PERSISTENCE key — "is the thing this round raised the thing the last round
+ * raised" — over `file` + the cited line's TEXT + `summary`, and partial: it
+ * returns `null` for a finding it cannot key, which this hash cannot do. The
+ * two were both called `findingKey` until #1398. They answer different
+ * questions and the collapse loses one; neither can quietly become the
+ * other, which was measured rather than assumed, but while they shared a
+ * name no call site could say which it had asked.
+ *
+ * CRC-B8 asks that every finding be answered — fixed, or resolved with a
+ * stated reason — and an answer has to name what it answers. The line number
+ * cannot be that name: the same finding moves line between rounds, which is
+ * exactly what #1319 measured (`bash-write-guard.ts:90 → :97` across two
+ * rounds of #1213 was *one* finding). So the key is over the file and the
+ * summary, whitespace-collapsed and case-folded, and it is deliberately NOT
+ * over the severity either — a reviewer that re-rates the same observation
+ * has not produced a second finding.
+ *
+ * FNV-1a, written out, rather than `node:crypto`. Not a preference: this
+ * module is copied into a temp directory by the mutation battery in
+ * `test/ai-review-advisory-findings.test.ts`, and every import it carries has
+ * to be carried with it. The property wanted here is determinism and a short
+ * printable token, not collision resistance against an adversary — a finding
+ * that forged another finding's key would buy the forger an answer on the
+ * wrong row, which is a worse annotation and not a bypass of anything.
+ */
+export function advisoryKey(finding: Record<string, unknown>): string {
+  const f = AI_REVIEW_FINDING_FIELDS;
+  const normalise = (v: unknown): string =>
+    String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  const subject = `${normalise(finding[f.file])}\u0000${normalise(finding[f.summary])}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < subject.length; i++) {
+    hash ^= subject.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * The findings this reading counted and did NOT act on — the advisory tail.
+ *
+ * `null`, never `[]`, when the complement cannot be taken. Under UNMEASURED
+ * `blockingReported` is `null` — a withheld decision, not an empty one — so
+ * subtracting it from `reported` would manufacture an advisory set out of
+ * findings nobody classified. Those are different facts and this module's
+ * whole philosophy is that they stay different.
+ *
+ * Computed by identity against `blockingReported` rather than by re-reading
+ * the severities. Re-reading them here would be a second decider over the one
+ * question `severityBlocks` already answers — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either
+ * would leave the other holding every case up.
+ */
+export function advisoryReported(reading: AiReviewFindingsReading): unknown[] | null {
+  if (reading.reported === null || reading.blockingReported === null) return null;
+  const blocking = new Set(reading.blockingReported);
+  return reading.reported.filter(item => !blocking.has(item));
+}
+
+/**
+ * The sentence naming every advisory finding, or `null` when there is nothing
+ * to name.
+ *
+ * ## The silent drop this closes (CRC-B8)
+ *
+ * `AI_REVIEW_SEVERITIES` declares `medium`, `low` and `info` as advisory, and
+ * until this function existed a reading counted them and then dropped them.
+ * `detail` is populated inside `if (blocks)`; `aiReviewRefusal` returns `null`
+ * for CLEAN and lists only `detail` for BLOCKED. So `main()` printed the
+ * outcome line and nothing else, and a payload carrying seven `medium`
+ * findings produced **byte-identical output** to a payload carrying none.
+ * The payload itself lives under `$RUNNER_TEMP`, is uploaded nowhere (#1319
+ * measured zero artifacts) and dies with the runner, so the finding was not
+ * merely unreported — it was unrecoverable the moment the job ended.
+ *
+ * That is CRC-B8's second sentence failing in the live path: *a finding is
+ * never silently dropped*. It is also the reason the tail could not be
+ * answered rather than filed — you cannot resolve on the pull request a
+ * finding the pull request never shows you.
+ *
+ * ## Why CONTRADICTION returns null here
+ *
+ * The contradiction arm of `aiReviewRefusal` already prints EVERY counted
+ * finding, advisory ones included, through `renderCountedFindings` — #1178,
+ * and for a reason that still holds. Emitting this notice alongside it would
+ * print the advisory tail twice, and that module's own comment says why that
+ * is worse than printing it once: *a duplicate reads as two findings*. The
+ * rule lives here, in one function, rather than as a condition at the call
+ * site, so there is one binding to mutate.
+ *
+ * ## What this does NOT do
+ *
+ * It decides nothing. `aiReviewExitCode` is untouched and reads only the
+ * outcome, so an advisory finding does not block and cannot be made to block
+ * from here. Surfacing a finding and adjudicating one are different jobs, and
+ * this module already holds the second; a notice that quietly became a
+ * refusal would be a severity table nobody declared.
+ */
+export function advisoryNotice(reading: AiReviewFindingsReading): string | null {
+  if (reading.outcome === "CONTRADICTION") return null;
+  const advisory = advisoryReported(reading);
+  if (advisory === null || advisory.length === 0) return null;
+
+  // Rendered through `renderCountedFindings` over the WHOLE list and then
+  // selected, rather than over the filtered list. Two reasons, and the second
+  // is the one that bites: the renderer numbers what it is given, so rendering
+  // the tail alone would renumber it from zero and `finding 3` in this notice
+  // would be a different finding from `finding 3` in a refusal. And selecting
+  // out of the full render means this notice and the contradiction arm's list
+  // come from one call of one function, which is what keeps them from drifting.
+  const reported = reading.reported ?? [];
+  const all = renderCountedFindings(reported);
+  const rendered = advisory.map(item => {
+    const i = reported.indexOf(item);
+    const key =
+      item !== null && typeof item === "object" && !Array.isArray(item)
+        ? ` [key ${advisoryKey(item as Record<string, unknown>)}]`
+        : "";
+    return `${all[i]}${key}`;
+  });
+
+  return (
+    `${advisory.length} advisory finding(s) were counted and block nothing. ` +
+    `${rendered.join("; ")}. ` +
+    `Each is UNANSWERED: nothing in this pipeline requires it to be fixed, ` +
+    `resolved with a reason, or filed, and this annotation is the only place ` +
+    `it survives the job — the payload lives under the runner's temp directory ` +
+    `and is uploaded nowhere. Answer each one on this pull request (fix it, or ` +
+    `say in a comment why it stands), naming its key. Filing an issue is the ` +
+    `exception, not the default.`
+  );
+}
+
 /** The four states a reading can be in. Exactly one is reached per run. */
 export type AiReviewOutcome = "CLEAN" | "BLOCKED" | "CONTRADICTION" | "UNMEASURED";
 
@@ -538,6 +695,18 @@ export function main(argv: string[]): number {
   const refusal = aiReviewRefusal(reading);
   if (refusal !== null) {
     console.error(`::error title=${AI_REVIEW_FINDINGS_TITLE}::${escapeAnnotation(refusal)}`);
+  }
+
+  // AFTER the refusal and BEFORE the exit code, and on its own title. A
+  // `::notice` rather than a `::warning` or an `::error`: the advisory tail
+  // does not block, and a notice is what GitHub records against the check run
+  // without changing its conclusion. It goes through the same single escaper
+  // the refusal does — this is a new value reaching a workflow command, and
+  // `escapeAnnotation`'s own docblock has the measured instance of what an
+  // unescaped one can do to a verdict.
+  const advisory = advisoryNotice(reading);
+  if (advisory !== null) {
+    console.log(`::notice title=${AI_REVIEW_ADVISORY_TITLE}::${escapeAnnotation(advisory)}`);
   }
 
   return aiReviewExitCode(reading);

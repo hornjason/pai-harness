@@ -85,6 +85,99 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     ).toEqual([]);
   });
 
+  test("every criterion is accounted for in exactly one bucket", () => {
+    // The audit section sorts all 56 criteria into five states, and the
+    // difference between them is the whole point of it: "nobody can observe
+    // this", "this would measure a constant here", "somebody has to decide",
+    // "we decided against it" and "nobody has built it" are four different
+    // things that an unticked checkbox renders identically.
+    //
+    // Asserted rather than stated. A document that sorts its own criteria
+    // and then says "5 / 8 / 4 / 3 / 2 / 34" in prose is a document making a
+    // claim nothing checks, which is the defect
+    // `.claude/rules/checks-must-be-able-to-fail.md` names in *In practice*:
+    // the sentence answers, in the right file, the question that would have
+    // prompted a check. Ticking a criterion without moving it out of its
+    // bucket now reds this.
+    const declared = [...body!.matchAll(/^- \[([ xX])\] (CRC-[A-Z]?\d+):/gm)];
+    expect(declared.length, "no criteria parsed, so the partition below is over nothing")
+      .toBeGreaterThan(40);
+
+    // MEMBERSHIP IS A DECLARING POSITION, not a mention — the first cell of a
+    // row, or a bullet's leading bold. The same claim-vs-citation distinction
+    // `.claude/rules/claiming-sc-coverage.md` draws, one level up, and it is
+    // not theoretical here: a first draft of this case read every id in each
+    // section and reported CRC-A6 as unobservable (it is cited in CRC-N3's
+    // row) and CRC-C2 and CRC-B8 as blocked-on-owner (both cited in prose
+    // there). Three false memberships from one loose matcher.
+    const ID = /CRC-[A-Z]?\d+/g;
+    const section = (heading: string): string => {
+      const at = body!.indexOf(heading);
+      expect(at, `the audit section "${heading}" is gone — rename it here too`)
+        .toBeGreaterThan(-1);
+      const ends = [body!.indexOf("\n### ", at + 1), body!.indexOf("\n## ", at + 1)]
+        .filter(i => i > 0);
+      return body!.slice(at, ends.length > 0 ? Math.min(...ends) : body!.length);
+    };
+    const firstCells = (s: string) =>
+      s.split("\n")
+        .filter(l => l.startsWith("| ") && !l.startsWith("|---"))
+        .flatMap(l => [...(l.split("|")[1] ?? "").matchAll(ID)].map(m => m[0]));
+    const leadingBold = (s: string) =>
+      s.split("\n")
+        .filter(l => l.startsWith("- **"))
+        .flatMap(l => [...(/^- \*\*(.+?)\*\*/.exec(l)?.[1] ?? "").matchAll(ID)].map(m => m[0]));
+
+    const buckets: Record<string, string[]> = {
+      bound: declared.filter(m => m[1] !== " ").map(m => m[2]),
+      unobservable: firstCells(section("### A mechanism exists; this repository cannot observe it")),
+      "not meaningful": firstCells(section("### Cannot be meaningful in this deployment")),
+      "blocked on an owner": firstCells(section("### Blocked on an owner decision")),
+      "not adopted": firstCells(section("### Deliberately not adopted")),
+      "not done": leadingBold(section("### Not done — the remainder")),
+    };
+
+    const placements = new Map(
+      declared.map(m => [
+        m[2],
+        Object.entries(buckets).filter(([, ids]) => ids.includes(m[2])).map(([name]) => name),
+      ]),
+    );
+    expect(
+      [...placements].filter(([, w]) => w.length === 0).map(([id]) => id),
+      "criteria in NO bucket: the audit does not account for them. Add each to one " +
+        "of the five sections, or tick it.",
+    ).toEqual([]);
+    expect(
+      [...placements].filter(([, w]) => w.length > 1).map(([id, w]) => `${id} in ${w.join(" and ")}`),
+      "criteria in TWO buckets: the states are meant to be exclusive, so one of the " +
+        "two placements is wrong. CRC-B8 is the one that looks like an exception and " +
+        "is not — its deviations-table row says it is the defect rather than a " +
+        "deviation, which is why that table is not a bucket.",
+    ).toEqual([]);
+
+    // Every bucket carries somebody, or a section silently emptied and the
+    // two assertions above still hold over what is left.
+    for (const [name, ids] of Object.entries(buckets)) {
+      expect(ids.length, `the "${name}" bucket is empty — did its section lose its rows?`)
+        .toBeGreaterThan(0);
+    }
+  });
+
+  test("the stated counts are the measured ones", () => {
+    // The prose says the split in words. A reader acts on that sentence and
+    // not on the sections below it, so it is the thing most worth holding to
+    // the tree — and the cheapest way for this whole audit to go quietly
+    // wrong is for someone to move a criterion and leave the summary.
+    const stated = /\*\*(\d+) bound\*\*/.exec(body!);
+    expect(stated, "the summary sentence no longer states a bound count").not.toBeNull();
+    const ticked = (body!.match(/^- \[[xX]\] CRC-/gm) ?? []).length;
+    expect(
+      Number(stated![1]),
+      `the summary says ${stated![1]} bound and ${ticked} boxes are ticked`,
+    ).toBe(ticked);
+  });
+
   test("a mis-cited path is caught, so the case above is not green by construction", () => {
     // Driven over a planted body. The real spec cannot be made to mis-cite on
     // demand, and a case that cannot be staged is a case that never runs.

@@ -171,6 +171,31 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     fires: c => inDir(c.path, "specs") && isMarkdown(c.path),
   },
   {
+    // #1306. ADDING a spec is a third event, and it reddens census files that
+    // neither an edit nor a tick can touch: `audit-specs` refuses a testable
+    // spec without `compliance: strict`, and `scanner`'s live-tree case holds
+    // `.claude/rules/docs-routing.md`'s `specs/ (N files)` row to a recursive
+    // count. PR #1298 paid a CI round for the first; neither is reachable
+    // from the import graph, and the spec it names imports nothing.
+    //
+    // Measured rather than grepped: a probe spec was planted and the 143 test
+    // files whose source names `specs` were run against a 0-fail baseline.
+    // Five went red. Three were already routed — `scaffold-conformity` by
+    // `new-file`, `agents-md-spec-listing` by `spec-edit`, and
+    // `spec-drift.test.ts`, whose whole body is the same `runSpecDrift(ROOT)`
+    // call `scaffold-conformity` already makes, so routing it would run one
+    // check twice. These two were routed by nothing, and cost 1.3s together.
+    //
+    // Scoped to `isNew` on purpose. On the `spec-edit` row these would run on
+    // every prose edit to every spec, and a router that names more than it
+    // has to is a router people stop running — which is the state #990 is
+    // about, arriving from the other side.
+    id: "new-spec",
+    event: "added a specs/ file",
+    tests: ["test/audit-specs.test.ts", "test/scanner.test.ts"],
+    fires: c => c.isNew && inDir(c.path, "specs") && isMarkdown(c.path),
+  },
+  {
     // #990 itself. Fires on a tick in EITHER direction: an untick lowers the
     // same three numbers, and `test/sc-binding-split.test.ts` brackets both of
     // its counts with an equality, so a fall is red there even where the
@@ -202,6 +227,34 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
       "test/hook-traceability.test.ts",
     ],
     fires: c => inDir(c.path, "gates") || inDir(c.path, "hooks") || inDir(c.path, "lib/scaffold"),
+  },
+  {
+    // #1368. The row above routes the OWNERSHIP family — which files the
+    // scaffold owns, which gates exist, which hooks are traceable. Nothing
+    // routed to the suites that read the committed workflow and assert
+    // properties of its TEXT, and those are the self-referential shape this
+    // whole table exists for: they go red on a change in a file they do not
+    // name, for a reason the diff does not contain.
+    //
+    // Paid for on PR #1351. Shard 3 went red on `AC-2 (#1116)` in
+    // `ai-review-runner-shell-parity` — two new `rf=$(...)` assignments were
+    // #1110's shape — after every suite this router named came back green.
+    // The guard is unreachable from the diff by any route an agent takes:
+    // not the source file's own suite, not the ownership family, and its
+    // name shares no string with anything that changed.
+    //
+    // Fires on BOTH halves on purpose. The two usually move together, but an
+    // edit to `lib/scaffold/**` without a re-scaffold, and a hand edit to a
+    // workflow with no source change, are each a real event — and the second
+    // fired no row at all before this one existed.
+    id: "generated-workflow",
+    event: "changed a generated workflow, or the scaffold source that emits one",
+    tests: [
+      "test/ai-review-runner-shell-parity.test.ts",
+      "test/action-pin-parity.test.ts",
+      "test/scaffold-permissions-merge.test.ts",
+    ],
+    fires: c => inDir(c.path, ".github/workflows") || inDir(c.path, "lib/scaffold"),
   },
 ];
 

@@ -19,6 +19,8 @@ import { join } from "path";
 
 import {
   STALE_EXIT,
+  WRONG_TREE,
+  branchAt,
   defaultRef,
   provenanceBlock,
   provenanceReading,
@@ -162,5 +164,95 @@ describe("#553: a report states the tree it measured", () => {
     const current = run([]);
     expect(current.exitCode, "a current report was refused").toBe(0);
     expect(new TextDecoder().decode(current.stdout)).toContain("Currency: CURRENT");
+  });
+});
+
+/** A second worktree of `root`, on its own branch — what a swarm agent works in. */
+function worktree(root: string, branch: string): string {
+  const path = realpathSync(mkdtempSync(join(tmpdir(), "rg-1348-wt-")));
+  rmSync(path, { recursive: true, force: true });
+  git(root, ["worktree", "add", "-q", "-b", branch, path]);
+  roots.push(path);
+  return path;
+}
+
+const decode = (b: Uint8Array) => new TextDecoder().decode(b);
+
+describe("#1348: a reading names the directory it was taken in", () => {
+  test("SC-2500: the block names the directory and branch, not only two SHAs", () => {
+    const root = repo();
+    const reading = provenanceReading(root);
+
+    expect(reading.root).toBe(root);
+    expect(reading.branch).toBe("main");
+
+    // The SHAs alone do not say WHERE they were read. Two agents on
+    // 2026-10-23 each had to establish that by hand from a block that
+    // carried three lines of commits and no directory.
+    const block = provenanceBlock(reading);
+    expect(block, "the block does not name the directory it measured").toContain(
+      `Measured in: ${root} (branch main)`,
+    );
+
+    // A detached HEAD has no branch, and saying so beats inventing one.
+    git(root, ["checkout", "-q", "--detach", "HEAD"]);
+    expect(branchAt(root), "a detached HEAD invented a branch").toBeNull();
+    expect(provenanceBlock(provenanceReading(root))).toContain(`(branch none)`);
+  });
+
+  test("SC-2501: a reading taken outside the tree under review is UNMEASURED, not current", () => {
+    const root = repo();
+    commit(root, "export const a = 6;\n");
+    const wt = worktree(root, "rg/under-review");
+
+    // This is the defect exactly. The agent's working directory is `root`;
+    // the work under review is in `wt`, reached only with `git -C`. Nothing
+    // in the reading disagrees, so it is a confident CURRENT about a
+    // directory nobody asked about.
+    const silent = provenanceReading(root);
+    expect(silent.current, "the unguarded reading no longer reproduces the defect").toBe(true);
+    expect(silent.branch).toBe("main");
+
+    const wrong = provenanceReading(root, undefined, undefined, "rg/under-review");
+    expect(wrong.current, "a reading taken in the wrong tree read as current").toBe(false);
+    expect(wrong.reason).toContain(WRONG_TREE);
+    expect(wrong.reason, "the refusal does not name the directory it read").toContain(root);
+    expect(wrong.reason, "the refusal does not name the branch under review").toContain(
+      "rg/under-review",
+    );
+    expect(wrong.reason, "the refusal does not name the branch it was on").toContain("main");
+
+    // CONTROL. Without this row every assertion above is satisfied by
+    // "refuse whenever an expectation is passed", which measures nothing and
+    // would be refused on the branch it was meant to clear.
+    const right = provenanceReading(wt, undefined, undefined, "rg/under-review");
+    expect(right.current, "a reading taken in the tree under review was refused").toBe(true);
+    expect(right.branch).toBe("rg/under-review");
+  });
+
+  test("SC-2502: the CLI exits non-zero when it measured another tree", () => {
+    const root = repo();
+    const wt = worktree(root, "rg/cli-under-review");
+    const run = (project: string, args: string[]) =>
+      Bun.spawnSync(["bun", CLI, "--project", project, ...args], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+    // The library can decide perfectly and every case above stays green if
+    // the script prints the block and exits 0 — SC-1929's lesson, re-run for
+    // the flag that did not exist when it was written.
+    const refused = run(root, ["--expect-branch", "rg/cli-under-review"]);
+    expect(refused.exitCode, "the CLI measured another tree and exited 0").toBe(STALE_EXIT);
+    const out = decode(refused.stdout);
+    expect(out).toContain(WRONG_TREE);
+    expect(out, "the block does not name the directory the CLI read").toContain(root);
+
+    // CONTROL, for the same reason as SC-2501's.
+    const ok = run(wt, ["--expect-branch", "rg/cli-under-review"]);
+    expect(ok.exitCode, "the CLI refused the tree under review").toBe(0);
+    expect(decode(ok.stdout), "the control did not reach a currency verdict").toContain(
+      "Currency: CURRENT",
+    );
   });
 });
