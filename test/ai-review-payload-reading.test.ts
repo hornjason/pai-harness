@@ -120,6 +120,10 @@ function run(opts: {
     PATH: stubBunxAbsent(),
     AI_REVIEW_MODE: opts.mode ?? "vertex",
     AI_REVIEW_ACTION_OUTCOME: opts.outcome ?? "success",
+    // #1242. The runner always sets this, and since #1242 the waiver branches
+    // write the marker that disarms auto-merge into it and REFUSE when they
+    // cannot. A runner that omits it drives a script no runner ever runs.
+    GITHUB_OUTPUT: join(dir, "github_output"),
   };
   if (!opts.unsetPath) env[AI_REVIEW_FINDINGS_PATH_VAR] = findings;
   if (opts.require) env[AI_REVIEW_REQUIRE_VAR] = AI_REVIEW_REQUIRE_VALUE;

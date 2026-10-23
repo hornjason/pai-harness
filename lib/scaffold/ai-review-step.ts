@@ -484,6 +484,116 @@ export const AI_REVIEW_STANDING_WAIVER_NOTE =
   `'unlabeled' activity type, so removing it re-runs the check.`;
 
 /**
+ * The report step's output saying a waiver was EXERCISED, not merely available
+ * (#1242).
+ *
+ * **What went wrong.** `ai-review` refuses any pull request that edits
+ * `AI_REVIEW_WORKFLOW_FILE` — the action's own workflow validation declines to
+ * review against a copy that differs from the default branch — and since
+ * #1166/#1180 that refusal is a hard red on a REQUIRED context. So the only
+ * route to green for a change to the merge gate is
+ * `AI_REVIEW_OVERRIDE_LABEL`, the label is standing (see its docblock), and
+ * auto-merge survives it. The configuration that produces is: *a change to the
+ * gate itself merges on a waiver nobody has to read.* #1236 did exactly that,
+ * and its defects are #1241.
+ *
+ * **What is NOT the fix, and both were considered on the issue.** Dropping the
+ * workflow-validation guard lets a branch rewrite its own reviewer's
+ * instructions in the commit that needs them relaxed — the worse failure, and
+ * #1233 already made this trade correctly for `AI_REVIEW_CONVENTIONS_FILE`.
+ * Pinning the label to a head SHA was rejected by #1207 and is still rejected
+ * here: it buys a label per push, which an operator routes around.
+ *
+ * **What this is.** The waiver keeps clearing the red and stops carrying the
+ * landing with it: a waived pull request is MERGEABLE but not SELF-merging, so
+ * the one property that made the escape hatch dangerous — that nobody has to
+ * look — is the only one removed.
+ *
+ * **Why an output and not a second reading of the label.** `waived` is written
+ * on the two branches that actually take the waiver and nowhere else, so
+ * "the label is on this pull request" and "this run passed BECAUSE of the
+ * label" stay different facts. They are different on a real pull request: a
+ * labelled branch that edits no workflow gets a real review, the adjudicator
+ * runs, and nothing was waived. Reading the label again in the disarm step
+ * would disarm that pull request too — a second decider answering a question
+ * it was never asked, which is `.claude/rules/checks-must-be-able-to-fail.md`
+ * fourth shape with a user-visible cost. `test/ai-review-waiver-disarm.test.ts`
+ * holds that line with a mutant that makes exactly that substitution.
+ */
+export const AI_REVIEW_WAIVED_OUTPUT = "waived";
+
+/** The exact value of that output which means a waiver was exercised. */
+export const AI_REVIEW_WAIVED_OUTPUT_VALUE = "true";
+
+/**
+ * The step that turns an exercised waiver into a pull request a human has to
+ * merge by hand (#1242).
+ *
+ * LAST in the job, and the position is a decision. It is a CONSEQUENCE and not
+ * a check: putting it before `AI_REVIEW_DRIFT_STEP_ID` would make a failed
+ * disarm skip the drift reading, which is a gate, and a consequence must never
+ * be able to cost the job one of its measurements.
+ *
+ * It carries no `if:`, like every other step here — see
+ * `test/ai-review-credentialed-job.test.ts` AC-8. A step skipped by a
+ * condition reports `skipped`, and this one's whole job is to be unskippable
+ * on the run that needs it.
+ */
+export const AI_REVIEW_DISARM_STEP_ID = "ai-review-disarm";
+
+export const AI_REVIEW_DISARM_STEP_NAME =
+  "Disarm auto-merge when the review was waived";
+
+/** The annotation title for a disarm that happened, or had nothing to do. */
+export const AI_REVIEW_DISARM_TITLE = "AI review waiver disarmed auto-merge";
+
+/**
+ * The title for a waiver this job could NOT decouple from the landing.
+ *
+ * Its own title, for `AI_REVIEW_ADJUDICATED_TITLE`'s reason: "the waiver was
+ * disarmed" and "the waiver could not be disarmed" are the two states a reader
+ * of the check list most needs to tell apart, and sharing a title makes them
+ * one. Distinct from every other title in this module and a substring of none.
+ */
+export const AI_REVIEW_DISARM_FAILED_TITLE = "AI review waiver NOT DISARMED";
+
+/** The disarm step's reading of `AI_REVIEW_WAIVED_OUTPUT`. */
+export const AI_REVIEW_DISARM_WAIVED_VAR = "AI_REVIEW_DISARM_WAIVED";
+
+/** The pull request to disarm. Empty on `merge_group`, which carries none. */
+export const AI_REVIEW_DISARM_PR_VAR = "AI_REVIEW_DISARM_PR";
+
+/** `owner/name`, for the CLI call. */
+export const AI_REVIEW_DISARM_REPO_VAR = "AI_REVIEW_DISARM_REPO";
+
+/** The token the CLI authenticates with. Needs `pull-requests: write`. */
+export const AI_REVIEW_DISARM_TOKEN_VAR = "AI_REVIEW_DISARM_TOKEN";
+
+/**
+ * The CLI the disarm step drives.
+ *
+ * `gh` rather than this module's usual `curl` against the REST API, because
+ * disabling auto-merge is a GraphQL mutation (`disablePullRequestAutoMerge`)
+ * that takes a pull request NODE id — so the REST route is two calls and a
+ * `jq` before the mutation, and three ways to be wrong instead of one. `gh` is
+ * pre-installed on GitHub-hosted runners; a runner without it is a refusal
+ * here, not a silent pass, because a waiver that could not be disarmed is
+ * exactly the state this step exists to prevent.
+ */
+export const AI_REVIEW_DISARM_CLI = "gh";
+
+/**
+ * The JSON field that says whether auto-merge is armed, and the one the
+ * acceptance rows on #1242 are written against.
+ *
+ * `null` means not armed. The step reads it BEFORE and AFTER, and refuses when
+ * the after-reading is not `null`: a `gh` that exits zero having changed
+ * nothing is the shape `.claude/rules/checks-must-be-able-to-fail.md` calls
+ * green on the exit code, witnessing the wrong mechanism.
+ */
+export const AI_REVIEW_AUTO_MERGE_FIELD = "autoMergeRequest";
+
+/**
  * The title that says a review was READ, carried by the one branch that can
  * only be reached by reading one (#1087).
  *
@@ -3888,6 +3998,34 @@ export function buildReviewRunScript(version: string): string {
     `adjudicates the payload for real. This check is UNMEASURED, not a ` +
     `passing review.`;
 
+  // #1242. The three ways recording the waiver can fail, each said in its own
+  // words, because "the waiver could not be recorded" is the one sentence an
+  // operator has to act on and a shared one would not say what to do.
+  const waiverUnrecordable =
+    `This pull request carries the '${AI_REVIEW_OVERRIDE_LABEL}' label and ` +
+    `the waiver would apply, but GITHUB_OUTPUT is not set, so this step ` +
+    `cannot tell the '${AI_REVIEW_DISARM_STEP_ID}' step to disarm auto-merge. ` +
+    `Passing here would report a green required check on a pull request that ` +
+    `can still merge itself on a review nobody read, which is the ` +
+    `configuration #1242 removed. Refusing instead. This check is ` +
+    `UNMEASURED, not a passing review.`;
+
+  const waiverWriteFailed =
+    `This pull request carries the '${AI_REVIEW_OVERRIDE_LABEL}' label and ` +
+    `the waiver would apply, but the ` +
+    `'${AI_REVIEW_WAIVED_OUTPUT}' marker could not be written to ` +
+    `GITHUB_OUTPUT, so the '${AI_REVIEW_DISARM_STEP_ID}' step cannot disarm ` +
+    `auto-merge. Refusing rather than passing a waiver that still carries the ` +
+    `landing with it (#1242). The write reported:`;
+
+  const waiverWriteLost =
+    `This pull request carries the '${AI_REVIEW_OVERRIDE_LABEL}' label and ` +
+    `the waiver would apply. The '${AI_REVIEW_WAIVED_OUTPUT}' marker was ` +
+    `written to GITHUB_OUTPUT and is not there when read back, so the ` +
+    `'${AI_REVIEW_DISARM_STEP_ID}' step will not see it and auto-merge would ` +
+    `stay armed on a review nobody read (#1242). Refusing. This check is ` +
+    `UNMEASURED, not a passing review.`;
+
   // The third state, and the one most easily mistaken for a pass: the
   // reviewer ran, wrote a payload, and the ADJUDICATOR could not run over it
   // (#1013). Not "nobody wired it" — the command is right there in the step —
@@ -4299,6 +4437,38 @@ ${AI_REVIEW_ANNOTATION_ESCAPE}
 
 ${AI_REVIEW_ERE_ESCAPE}
 
+# #1242. Record that this run took a WAIVER branch, for the step that
+# decouples the waiver from the automatic landing.
+#
+# Called from the two branches that exercise the waiver and from nowhere else.
+# That is the whole design: the label being ON this pull request and the run
+# having PASSED because of it are different facts, and the second one is only
+# knowable here. A labelled pull request that edits no workflow gets a real
+# review, the adjudicator runs, and this function is never reached.
+#
+# IT REFUSES RATHER THAN WARNS when it cannot write. A waived run whose
+# successor cannot learn that it was waived is a green required check on an
+# armed auto-merge, which is the exact configuration #1242 is about — so the
+# unwritable case fails the check instead of passing it quietly. Same shape,
+# and the same read-back, as the credential-relocation step: a write that
+# reports success and is not there on the next read is indistinguishable from
+# one that never happened.
+record_waiver() {
+  local line="${AI_REVIEW_WAIVED_OUTPUT}=${AI_REVIEW_WAIVED_OUTPUT_VALUE}"
+  if [ -z "\${GITHUB_OUTPUT:-}" ]; then
+    echo "::error title=${AI_REVIEW_DISARM_FAILED_TITLE}::${waiverUnrecordable}" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+  fi
+  if ! out=$( { echo "\${line}" >> "\${GITHUB_OUTPUT}"; } 2>&1 ); then
+    echo "::error title=${AI_REVIEW_DISARM_FAILED_TITLE}::$(escape_annotation "${waiverWriteFailed} \${out}")" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+  fi
+  if ! grep -qF "\${line}" "\${GITHUB_OUTPUT}"; then
+    echo "::error title=${AI_REVIEW_DISARM_FAILED_TITLE}::${waiverWriteLost}" >&2
+    exit ${AI_REVIEW_REQUIRED_EXIT}
+  fi
+}
+
 # #867, and FIRST, because on this event none of the readings below can hold.
 #
 # The job runs on \`merge_group\` so that a repository which has made
@@ -4670,6 +4840,10 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
   # route that explains what it waived.
   if [ "\${${AI_REVIEW_OVERRIDE_VAR}:-}" = "${AI_REVIEW_OVERRIDE_VALUE}" ]; then
     echo "::warning title=${AI_REVIEW_WAIVED_TITLE}::${skippedWaived}"
+    # #1242, and BEFORE the exit: this is the branch #1236 took — the action
+    # declined on its workflow-validation guard, so the pull request editing
+    # the merge gate is exactly the one that reaches here.
+    record_waiver
     exit 0
   fi
 
@@ -4733,6 +4907,10 @@ if [ "\${${AI_REVIEW_OVERRIDE_VAR}:-}" = "${AI_REVIEW_OVERRIDE_VALUE}" ]; then
   # waiver only when there is genuinely nothing to adjudicate.
   if [ ! -s "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ]; then
     echo "::warning title=${AI_REVIEW_WAIVED_TITLE}::${waived}"
+    # #1242. The other half of the pair above — same waiver, reached when the
+    # action FAILED with nothing to adjudicate. Both halves record, or the
+    # disarm would depend on which way the action happened to die.
+    record_waiver
     exit 0
   fi
   echo "::error title=${AI_REVIEW_UNMEASURED_TITLE}::${waiverWithPayload}" >&2
@@ -6760,6 +6938,178 @@ function indented(lines: string[], indent: string): string {
  * unreadable ledger costs one round; an overwritten one costs all of them,
  * and the two are indistinguishable afterwards.
  */
+/**
+ * The bash that takes an exercised waiver off auto-merge (#1242).
+ *
+ * ## What it reads, and the one thing it refuses to read
+ *
+ * `AI_REVIEW_DISARM_WAIVED_VAR` — the report step's own output, written only
+ * on a branch that waived. It does NOT read
+ * `contains(…labels…, AI_REVIEW_OVERRIDE_LABEL)`, which is available here and
+ * is the cheaper spelling and is wrong: the label is standing and is often on
+ * a pull request whose review ran perfectly well, and disarming those is the
+ * "quietly disarm everything" the issue's second acceptance row forbids.
+ *
+ * ## It verifies, rather than trusting the exit code
+ *
+ * `AI_REVIEW_CLI` exits zero on a `--disable-auto` that changed nothing —
+ * including the case the pull request merged between the read and the write,
+ * which is precisely how #1236 got away. So the step reads
+ * `AI_REVIEW_AUTO_MERGE_FIELD` before, acts only when it is armed, and reads
+ * it again after. A non-`null` after-reading is a refusal.
+ *
+ * ## Every failure is a refusal, and that is the opposite of the ledger step
+ *
+ * `buildPersistScript` exits zero on everything because it is a recorder.
+ * This one is the enforcement half of a gate: a waiver it could not decouple
+ * from the landing leaves exactly the configuration #1242 removed — green
+ * required check, armed auto-merge, nobody reading. A red check on a waived
+ * pull request costs a human one click; the silent pass cost #1241.
+ *
+ * ## A run with no pull request
+ *
+ * `merge_group` carries none, and the waiver is unreachable there anyway —
+ * #867's branch exits first. So an empty `AI_REVIEW_DISARM_PR_VAR` alongside a
+ * `true` waived marker is a state nothing can produce, and it refuses rather
+ * than exiting zero: the two readings disagree, and a step that resolves a
+ * contradiction by picking the harmless half is the Silent Default
+ * Substitution this module is about.
+ */
+export function buildDisarmScript(): string {
+  const notArmed =
+    `The AI review on this pull request was WAIVED by the ` +
+    `'${AI_REVIEW_OVERRIDE_LABEL}' label, and auto-merge was not armed, so ` +
+    `there was nothing to disarm. The pull request is mergeable and will not ` +
+    `merge itself: a human has to read the diff the review did not (#1242).`;
+
+  const disarmed =
+    `The AI review on this pull request was WAIVED by the ` +
+    `'${AI_REVIEW_OVERRIDE_LABEL}' label, so auto-merge has been DISARMED. ` +
+    `The waiver clears the required check and no longer carries the landing ` +
+    `with it — this pull request is mergeable and will not merge itself, ` +
+    `because the one thing a waived review cannot supply is somebody having ` +
+    `looked. Read the diff, then merge by hand. Re-arming auto-merge is a ` +
+    `deliberate act and this step will disarm it again on the next run while ` +
+    `the label is on (#1242).`;
+
+  const noPr =
+    `The AI review was WAIVED and this run carries no pull request number, ` +
+    `so auto-merge cannot be disarmed and this job cannot say whether any is ` +
+    `armed. Those two readings contradict each other — the waiver is reached ` +
+    `only on a pull request — so this is a state nothing should produce and ` +
+    `it refuses rather than passing the harmless half (#1242).`;
+
+  const noAuth =
+    `The AI review was WAIVED and this step has no repository name or no API ` +
+    `token, so auto-merge cannot be disarmed. Refusing rather than reporting ` +
+    `a green required check on a pull request that can still merge itself on ` +
+    `a review nobody read (#1242).`;
+
+  const noCli =
+    `The AI review was WAIVED and '${AI_REVIEW_DISARM_CLI}' is not on this ` +
+    `runner, so auto-merge cannot be disarmed. It is pre-installed on ` +
+    `GitHub-hosted runners; a self-hosted runner needs it installed. ` +
+    `Refusing rather than leaving a waived pull request armed (#1242).`;
+
+  const readFailed =
+    `The AI review was WAIVED and this step could not read ` +
+    `'${AI_REVIEW_AUTO_MERGE_FIELD}' on the pull request, so whether ` +
+    `auto-merge is armed is UNMEASURED and a waived pull request may still ` +
+    `merge itself. Refusing (#1242). The command reported:`;
+
+  const disarmFailed =
+    `The AI review was WAIVED, auto-merge IS armed, and the request to ` +
+    `disable it failed, so this pull request can still merge itself on a ` +
+    `review nobody read. Refusing (#1242). The command reported:`;
+
+  const stillArmed =
+    `The AI review was WAIVED and the request to disable auto-merge reported ` +
+    `success, and '${AI_REVIEW_AUTO_MERGE_FIELD}' is STILL not null when read ` +
+    `back. The disarm did not take effect, so this pull request can merge ` +
+    `itself on a review nobody read. Refusing rather than trusting the exit ` +
+    `code of a command that changed nothing (#1242). The field reads:`;
+
+  const view =
+    `${AI_REVIEW_DISARM_CLI} pr view "\${${AI_REVIEW_DISARM_PR_VAR}}" ` +
+    `--repo "\${${AI_REVIEW_DISARM_REPO_VAR}}" ` +
+    `--json ${AI_REVIEW_AUTO_MERGE_FIELD} ` +
+    `-q .${AI_REVIEW_AUTO_MERGE_FIELD}`;
+
+  return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+#
+# #1242. The waiver clears the red; it does not also land the pull request.
+set -uo pipefail
+
+${AI_REVIEW_ANNOTATION_ESCAPE}
+
+disarm_refuse() {
+  echo "::error title=${AI_REVIEW_DISARM_FAILED_TITLE}::$(escape_annotation "\$1")" >&2
+  exit ${AI_REVIEW_REQUIRED_EXIT}
+}
+
+# NOT WAIVED — the overwhelming majority of runs, including every run on a
+# pull request that carries the label and got a real review. The report step
+# writes this marker on the two branches that take the waiver and on no other,
+# so an empty reading here means the review was measured and the landing is
+# none of this step's business.
+#
+# Read as an exact-string compare, like every other switch in this job: a
+# prefix or a case-insensitive match is a switch that turns itself on.
+if [ "\${${AI_REVIEW_DISARM_WAIVED_VAR}:-}" != "${AI_REVIEW_WAIVED_OUTPUT_VALUE}" ]; then
+  exit 0
+fi
+
+if [ -z "\${${AI_REVIEW_DISARM_PR_VAR}:-}" ]; then
+  disarm_refuse "${noPr}"
+fi
+
+if [ -z "\${${AI_REVIEW_DISARM_REPO_VAR}:-}" ] || [ -z "\${${AI_REVIEW_DISARM_TOKEN_VAR}:-}" ]; then
+  disarm_refuse "${noAuth}"
+fi
+
+if ! command -v ${AI_REVIEW_DISARM_CLI} >/dev/null 2>&1; then
+  disarm_refuse "${noCli}"
+fi
+
+export GH_TOKEN="\${${AI_REVIEW_DISARM_TOKEN_VAR}}"
+
+# Every command substitution below is the condition of an \`if !\`, so its
+# status is consumed. An assignment whose only word is a failing \`$(...)\`
+# aborts the whole step under the runner's \`bash -e\` before the next line
+# reads \`$?\` — #1110, and \`test/ai-review-runner-shell-parity.test.ts\` AC-2
+# refuses that shape in the committed file.
+if ! armed=$(${view} 2>&1); then
+  disarm_refuse "${readFailed} \${armed}"
+fi
+
+# \`null\` is what the field reads when nothing is armed. Empty is the same
+# fact arriving through a quiet client, and both are "nothing to do" — this is
+# the one place a default is not a substitution, because the ACTION taken is
+# identical and the annotation says which reading was taken.
+if [ "\${armed}" = "null" ] || [ -z "\${armed}" ]; then
+  echo "::notice title=${AI_REVIEW_DISARM_TITLE}::${notArmed}"
+  exit 0
+fi
+
+if ! out=$(${AI_REVIEW_DISARM_CLI} pr merge "\${${AI_REVIEW_DISARM_PR_VAR}}" --repo "\${${AI_REVIEW_DISARM_REPO_VAR}}" --disable-auto 2>&1); then
+  disarm_refuse "${disarmFailed} \${out}"
+fi
+
+# The read-back. The command above exits zero having changed nothing in at
+# least one real state — a pull request that merged between the two calls —
+# so its exit code is not the reading.
+if ! after=$(${view} 2>&1); then
+  disarm_refuse "${readFailed} \${after}"
+fi
+
+if [ "\${after}" != "null" ] && [ -n "\${after}" ]; then
+  disarm_refuse "${stillArmed} \${after}"
+fi
+
+echo "::notice title=${AI_REVIEW_DISARM_TITLE}::${disarmed}"
+`;
+}
+
 export function buildPersistScript(): string {
   const fence = "```";
   return `# Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
@@ -7585,6 +7935,27 @@ export function buildReviewRunStep(
     ...buildPersistScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
+  // #1242. The consequence of a waiver, and LAST for that reason — see
+  // `AI_REVIEW_DISARM_STEP_ID`. It carries no `if:`, like every other step in
+  // this job: the waived marker is resolved inside `run:` so the step reports
+  // success or failure and never `skipped`.
+  const disarm = [
+    `- name: ${AI_REVIEW_DISARM_STEP_NAME}`,
+    `  id: ${AI_REVIEW_DISARM_STEP_ID}`,
+    `  env:`,
+    // The report step's OUTPUT, not the label. The distinction is the whole
+    // fix — see `AI_REVIEW_WAIVED_OUTPUT`.
+    `    ${AI_REVIEW_DISARM_WAIVED_VAR}: \${{ steps.${AI_REVIEW_RUN_STEP_ID}.outputs.${AI_REVIEW_WAIVED_OUTPUT} }}`,
+    // Empty on a merge_group run, which carries no pull request. Same
+    // reading the ledger step takes, and for the same reason: one decider
+    // rather than a second `github.event_name` test.
+    `    ${AI_REVIEW_DISARM_PR_VAR}: \${{ github.event.pull_request.number }}`,
+    `    ${AI_REVIEW_DISARM_REPO_VAR}: \${{ github.repository }}`,
+    `    ${AI_REVIEW_DISARM_TOKEN_VAR}: \${{ secrets.GITHUB_TOKEN }}`,
+    `  run: |`,
+    ...buildDisarmScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
+  ];
+
   return (
     indented(checkout, indent) +
     indented(prepare, indent) +
@@ -7607,6 +7978,7 @@ export function buildReviewRunStep(
     indented(review, indent) +
     indented(persist, indent) +
     indented(report, indent) +
-    indented(drift, indent)
+    indented(drift, indent) +
+    indented(disarm, indent)
   );
 }
