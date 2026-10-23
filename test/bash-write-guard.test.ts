@@ -1516,6 +1516,119 @@ describe("#1411 WITNESS: a link made by a verb that is not `ln`", () => {
     // And the command is refused anyway, because the walk read it.
     expect(decideBashWrite(esc(cmd)).blocked).toBe(true);
   });
+
+  /**
+   * The FOURTH transform, raised on the PR for the first three: ANSI-C
+   * quoting. `$'-s'` is the word `-s` and `$'-\163'` is too —
+   * `printf '[%s]' $'-s' $'-\163' $'cp'` prints `[-s][-s][cp]` — and
+   * reading the `$` as an ordinary character left the token `$-s`, which
+   * never met `isLinkFlag`'s `startsWith('-')` precondition.
+   *
+   * It is read in `readWord` rather than in `isLinkFlag`, and the last two
+   * rows are why: what `$'…'` hides can be the VERB, and a hidden verb
+   * never reaches a flag test at all. `LINK_CREATION` does not hold the
+   * `ln` rows here either — `\bln\s` needs `ln` followed by whitespace and
+   * `$'ln'` has a quote in the way — so unlike every other `ln` row in this
+   * file these two are held by the tokeniser.
+   */
+  const ansiC: [string, string][] = [
+    ["cp $'-s'", `cp $'-s' ${VICTIM} /tmp/esc`],
+    ["cp $'-\\163', the letter in octal", `cp $'-\\163' ${VICTIM} /tmp/esc`],
+    ["cp $'-\\x73', the letter in hex", `cp $'-\\x73' ${VICTIM} /tmp/esc`],
+    ["cp $'--symbolic-link'", `cp $'--symbolic-link' ${VICTIM} /tmp/esc`],
+    ["$'cp' -s, the VERB hidden", `$'cp' -s ${VICTIM} /tmp/esc`],
+    ["$'ln' -s, the ln verb hidden from the raw-text regex too", `$'ln' -s ${VICTIM} /tmp/esc`],
+    ["$'\\154n' -s, the ln verb in octal", `$'\\154n' -s ${VICTIM} /tmp/esc`],
+  ];
+  test.each(ansiC)("%s voids the exemption", (_l, mk) => {
+    expect(decideBashWrite(esc(mk)).blocked, esc(mk)).toBe(true);
+  });
+
+  /**
+   * An ANSI-C quote left open swallows the redirect operator, which is
+   * #1205's shape. The plain `'` and `"` spellings were already refused;
+   * this one was ALLOWED, and `$` was the whole difference.
+   */
+  test("an open ANSI-C quote cannot swallow the operator", () => {
+    expect(decideBashWrite(`cp $'-s /x /tmp/esc && echo ' {} > /tmp/esc/${STATE}`).blocked).toBe(true);
+  });
+
+  /**
+   * The controls, and ONE of them changed direction, which is worth saying
+   * out loud rather than leaving for someone to find.
+   *
+   * `cp $'-L'` was REFUSED before this change and is allowed now. It was
+   * never refused for the flag: the `$` survived into the token stream and
+   * made the path unprovable, so the fail-closed arm fired. `$'-L'` is
+   * deterministically `-L`, creates no link, and `cp -L` is allowed — so
+   * allowing it is the reading that agrees with the rest of the table.
+   *
+   * The relaxation is bounded to ANSI-C, and the last two rows are the
+   * boundary: a variable and a command substitution in a path are still
+   * unprovable and still refused, because unlike `$'…'` they are not
+   * settled until the command runs.
+   */
+  const ansiCStay: [string, string, boolean][] = [
+    ["cp $'-L', which creates no link", `cp $'-L' /tmp/a/${STATE} /tmp/fix/${STATE}`, false],
+    ["cp $'-r'", `cp $'-r' /tmp/a /tmp/fix && echo '{}' > /tmp/fix/${STATE}`, false],
+    ["ANSI-C in a PATH is now resolvable", `echo '{}' > /tmp/$'fix'/${STATE}`, false],
+    ["a VARIABLE in a path is still unprovable", `echo '{}' > /tmp/$FIX/${STATE}`, true],
+    ["a SUBSTITUTION in a path is still unprovable", `echo '{}' > /tmp/$(id -un)/${STATE}`, true],
+  ];
+  test.each(ansiCStay)("CONTROL: %s", (_l, cmd, blocked) => {
+    expect(decideBashWrite(cmd).blocked, cmd).toBe(blocked);
+  });
+
+  /**
+   * MUTATION: the ANSI-C branch taken back out.
+   *
+   * The moved set is asserted with a DIRECTION per row rather than one
+   * blanket "everything moved was allowed", because this mutation moves
+   * rows both ways: the seven void rows become allowed, and `cp $'-L'`
+   * and the ANSI-C path become refused, since the `$` goes back into the
+   * token stream and the unprovable arm fires again. A blanket assertion
+   * would have had to be weakened to accommodate that, and a weakened
+   * assertion is how a mutation stops witnessing anything.
+   */
+  test("MUTATION: removing the ANSI-C branch moves seven rows one way and two the other", async () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "bash-write-guard.ts"), "utf8");
+    const site = `if (c === '$' && s[i + 1] === "'") {`;
+    expect(src.split(site).length - 1, "the ANSI-C branch must have ONE site to mutate").toBe(1);
+
+    const dir = mkdtempSync(join(tmpdir(), "bwansi-"));
+    try {
+      writeFileSync(
+        join(dir, "interpreters.ts"),
+        readFileSync(join(import.meta.dir, "..", "lib", "interpreters.ts"), "utf8"),
+      );
+      writeFileSync(join(dir, "noAnsiC.ts"), src.replace(site, "if (false) {"));
+      const mutant = (await import(`file://${join(dir, "noAnsiC.ts")}`)) as {
+        decideBashWrite: (c: string) => { blocked: boolean };
+      };
+
+      const expected = new Map<string, boolean>([
+        // void rows: refused here, ALLOWED without the branch
+        ...ansiC.map(([l, mk]) => [l, false] as [string, boolean]),
+        // controls that go the other way: allowed here, REFUSED without it,
+        // because the `$` returns to the token stream
+        ["cp $'-L', which creates no link", true],
+        ["ANSI-C in a PATH is now resolvable", true],
+      ]);
+      const rows: [string, string][] = [
+        ...ansiC.map(([l, mk]) => [l, esc(mk)] as [string, string]),
+        ...ansiCStay.map(([l, c]) => [l, c] as [string, string]),
+      ];
+      const moved = new Map<string, boolean>();
+      for (const [l, c] of rows) {
+        const m = mutant.decideBashWrite(c).blocked;
+        if (m !== decideBashWrite(c).blocked) moved.set(l, m);
+      }
+      expect([...moved.keys()].sort()).toEqual([...expected.keys()].sort());
+      for (const [l, dir_] of expected) expect(moved.get(l), l).toBe(dir_);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("#1175 review round 3: a glob in a DIRECTORY component", () => {
