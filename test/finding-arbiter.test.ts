@@ -236,6 +236,63 @@ describe("AR-2: extraction refuses the shapes that are not readings", () => {
     expect(qty("the ratio moved from 1,024 to 2,048")).toEqual(["qty:1024", "qty:2048"]);
   });
 
+  /**
+   * ## #1385: every row above hands the guard the SAME SHAPE of input
+   *
+   * `15:24`, `16:02`, `23:59:01` — a bare clock time with a non-word
+   * character after it, three times. The mask shipped as
+   * `/\b\d{1,2}:\d{2}(?::\d{2})?\b/` and **every one of these passed with
+   * the defect open**, because `\b` only fails when the character after the
+   * match is a word character and none of them had one.
+   *
+   * That is the seventh shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md`, named by the battery it
+   * got past: the rows varied the guard and held the input shape fixed, so
+   * no count could come back wrong about an input nobody wrote. The axis
+   * that mattered was the character AFTER the time, and nothing varied it.
+   *
+   * The three rows below vary exactly that, and they are three different
+   * things — which is the point, so say which is which:
+   */
+  test("#1385: the character after a clock time is the axis nothing varied", () => {
+    // 1. THE DEFECT. `Z` is a word character, so the trailing `\b` failed,
+    //    the `:\d+` rule then ate `:05`, and `19:05Z` scored `qty:19`. This
+    //    row is RED before the fix. It has a live instance: #1226 says
+    //    "served 0.8.1 at roughly 19:05Z" and #1162 says "19 distinct check
+    //    names", and that collision was one of only two cross-issue
+    //    duplicate pairs on the open corpus.
+    expect(qty("registry served 0.8.1 at roughly 19:05Z, most of it the suite")).toEqual([]);
+    expect(qty("the window (19:05Z) closed")).toEqual([]);
+
+    // 2. ALREADY GREEN, FOR A REASON THE FIX CHANGES. The space after
+    //    `19:05` supplies the word boundary, so this passed with the defect
+    //    open and passes now — but it used to pass BECAUSE of `\b` and now
+    //    passes because of `(?!\d)`. Pinned so the two readings stay
+    //    distinguishable from the row above.
+    expect(qty("at 19:05 UTC we saw it")).toEqual([]);
+
+    // 3. GREEN BY ACCIDENT BEFORE, GREEN BY DESIGN NOW. `18:48:45Z` could
+    //    not match whole — `\b` failed before the `Z` — but the regex
+    //    BACKTRACKED to the `HH:MM` form `18:48`, whose boundary held, and
+    //    the `:\d+` rule swallowed the `:45Z` remainder. So it was masked
+    //    without the full-length alternative ever matching. After the fix it
+    //    matches outright. The assertion is the same; what it witnesses is
+    //    not, and a reader who assumed this row covered the seconds form
+    //    would have been wrong before today.
+    expect(qty("published 18:48:45Z and then waited")).toEqual([]);
+  });
+
+  test("#1385: the fix does not start a match inside a longer number", () => {
+    // The negative control for `(?<![\d:])`. Without it the `48:30` of
+    // `15:48:30` is a second candidate match, and a lookbehind that admitted
+    // it would mask more than a clock time.
+    expect(qty("the gap was 15:48:30 exactly")).toEqual([]);
+    // And the positive control, restated against the NEW boundary: widening
+    // to swallow ordinary integers would satisfy every row above.
+    expect(qty("it found 19 violations")).toEqual(["qty:19"]);
+    expect(qty("105 checks ran")).toEqual(["qty:105"]);
+  });
+
   test("a clock hour and a reading of the same number do not collide", () => {
     // The defect stated as the thing it costs: these two findings measure
     // nothing in common, and before #1333 they shared `qty:15`.
