@@ -1,4 +1,4 @@
-# generated-sha: 7dfa5389306cb4f3
+# generated-sha: 8eb0a2549b6b73b4
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1219,8 +1219,12 @@ jobs:
               # this recorder may not fail the job it only observes.
               if texts=$(mktemp); then
                 printf '%s' "${parsed}" | jq -c '.[]' | while IFS= read -r row; do
-                  rf=$(printf '%s' "${row}" | jq -r '.file // ""')
-                  rl=$(printf '%s' "${row}" | jq -r 'if (.line|type) == "number" then (.line|floor|tostring) else "" end')
+                  # `|| true` on both, and it is not decoration: under `bash -e` an
+                  # assignment whose only word is a failing $(...) aborts the loop
+                  # before anything reads $? (#1110), and this recorder may not fail
+                  # the job it observes. An unreadable row records an empty anchor.
+                  rf=$(printf '%s' "${row}" | jq -r '.file // ""') || true
+                  rl=$(printf '%s' "${row}" | jq -r 'if (.line|type) == "number" then (.line|floor|tostring) else "" end') || true
                   # The REVIEWER chooses `file`, and this step copies a line of it into
                   # a public comment. An absolute path, or one climbing out of the
                   # checkout, is refused rather than read.

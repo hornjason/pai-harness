@@ -6496,8 +6496,12 @@ if [ -n "\${${AI_REVIEW_FINDINGS_PATH_VAR}:-}" ] && [ -s "\${${AI_REVIEW_FINDING
     # this recorder may not fail the job it only observes.
     if texts=\$(mktemp); then
       printf '%s' "\${parsed}" | jq -c '.[]' | while IFS= read -r row; do
-        rf=\$(printf '%s' "\${row}" | jq -r '.${AI_REVIEW_FINDING_FIELDS.file} // ""')
-        rl=\$(printf '%s' "\${row}" | jq -r 'if (.${AI_REVIEW_FINDING_FIELDS.line}|type) == "number" then (.${AI_REVIEW_FINDING_FIELDS.line}|floor|tostring) else "" end')
+        # \`|| true\` on both, and it is not decoration: under \`bash -e\` an
+        # assignment whose only word is a failing \$(...) aborts the loop
+        # before anything reads \$? (#1110), and this recorder may not fail
+        # the job it observes. An unreadable row records an empty anchor.
+        rf=\$(printf '%s' "\${row}" | jq -r '.${AI_REVIEW_FINDING_FIELDS.file} // ""') || true
+        rl=\$(printf '%s' "\${row}" | jq -r 'if (.${AI_REVIEW_FINDING_FIELDS.line}|type) == "number" then (.${AI_REVIEW_FINDING_FIELDS.line}|floor|tostring) else "" end') || true
         # The REVIEWER chooses \`file\`, and this step copies a line of it into
         # a public comment. An absolute path, or one climbing out of the
         # checkout, is refused rather than read.
