@@ -17,7 +17,7 @@
 
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { execFileSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -42,7 +42,7 @@ import {
   type Finding,
 } from "../lib/finding-arbiter";
 import type { CandidateRecord } from "../lib/finding-arbiter";
-import { INCOMPLETE_GROUP, SEVERITY_RANK, type VerifierVote } from "../lib/finding-jury";
+import { INCOMPLETE_GROUP, juryReading, SEVERITY_RANK, type VerifierVote } from "../lib/finding-jury";
 import {
   compareReviewOutcomes,
   readFindingOutcomes,
@@ -326,6 +326,23 @@ beforeAll(() => {
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+/**
+ * The environment for a spawn of `scripts/arbitrate-finding.ts` (#1467).
+ *
+ * Since CRC-B4 the script appends an adjudication to `ledgerPath()`, which
+ * defaults to `~/.rungate/finding-ledger.jsonl` — the real one, shared by
+ * every agent on this machine. A suite that left it there would write test
+ * ballots into the corpus the quorum's cardinality is supposed to be derived
+ * from, and nothing downstream could tell them from decisions somebody took.
+ *
+ * Passed explicitly rather than set on `process.env`: bun does not hand a
+ * child a parent's late environment edits when the spawn declares no `env`.
+ */
+const scratchLedgerEnv = (dir: string): Record<string, string | undefined> => ({
+  ...process.env,
+  RUNGATE_FINDING_LEDGER: join(dir, "finding-ledger.jsonl"),
+});
 
 const onMain = (body: string, id = "new"): Finding => ({ id, title: "a finding", body });
 const opts = (extra: Record<string, unknown> = {}) => ({
@@ -916,7 +933,8 @@ describe("AR-12: the CLI contract", () => {
   let scratch = "";
 
   const run = (args: string[]): { code: number; out: string } => {
-    const r = Bun.spawnSync(["bun", script, "--project-root", root, ...args], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(["bun", script, "--project-root", root, ...args],
+      { stdout: "pipe", stderr: "pipe", env: scratchLedgerEnv(scratch) });
     return { code: r.exitCode, out: new TextDecoder().decode(r.stdout) };
   };
 
@@ -1530,7 +1548,7 @@ describe("AR-16: a malformed ballot is UNMEASURED, not a dissent", () => {
        "--body-file", join(scratch, "body.md"),
        "--existing", join(scratch, "empty.json"),
        "--votes", join(scratch, votesFile)],
-      { stdout: "pipe", stderr: "pipe" },
+      { stdout: "pipe", stderr: "pipe", env: scratchLedgerEnv(scratch) },
     );
     return { code: r.exitCode, out: new TextDecoder().decode(r.stdout) };
   };
@@ -2097,5 +2115,210 @@ describe("AR-20: a small finding is not swallowed by a large unrelated issue", (
     expect(symptomKeys(five).length).toBeGreaterThanOrEqual(DUPLICATE_CONTAINMENT_MIN_KEYS);
     expect(duplicateOverlap(five, BIG).duplicate, "above the floor, the arm reaches it").toBe(true);
     expect(duplicateOverlap(two, BIG).duplicate, "below it, the arm does not").toBe(false);
+  });
+});
+
+/**
+ * AR-21..AR-26 — the ballot reaches the ledger (#1467).
+ *
+ * Covers CRC-B4 (CODE-REVIEW-CONVERGENCE-SPEC.md), recording half:
+ * *"The ledger records every verifier's individual vote and whether the
+ * verifiers disagreed, both as first-class fields written at decision time.
+ * Without them every threshold except the one actually used is permanently
+ * UNMEASURED, and re-running to recover the votes re-samples the thing being
+ * measured."*
+ *
+ * ## What was true before this block
+ *
+ * `juryReading` was handed `VerifierVote[]` and returned two integers. No
+ * verifier id and no reason survived the call, so `Verdict.jury` —
+ * everything downstream has — could say *2 of 3* and could not say which two,
+ * or why the third said no. `scripts/arbitrate-finding.ts`, the only caller
+ * in the tree that takes a ballot at all, wrote nothing anywhere: the ballot
+ * lived for the length of one process.
+ *
+ * ## AR-23 is the case that chooses the fix
+ *
+ * The cheapest wrong fix is to record the findings you SURFACE. It satisfies
+ * "the ledger records the votes" for every row anybody looks at, and it
+ * leaves the withheld population exactly as unrecoverable as it was — which
+ * is the population the quorum's own cardinality would have to be derived
+ * from (`CandidateRecord`: *"written down at the moment the candidate is
+ * withheld, or never"*). So the row that must be asserted is the one at
+ * `exit 1`.
+ *
+ * ## The dissent is a real one
+ *
+ * `SPLIT`'s dissenting reason is from a two-verifier quorum run by hand on
+ * 2026-10-23, before this existed. The verifiers split 1-1 on a candidate
+ * finding; the dissent had read the generated workflow and found the line
+ * that made the finding's premise false, and the filing was dropped. That is
+ * the first variance datapoint the jury path has, and it is the one thing a
+ * count of `agree` cannot carry.
+ */
+describe("AR-21: every verifier's vote, and the disagreement, reach the ledger", () => {
+  const SCRIPT = join(import.meta.dir, "..", "scripts", "arbitrate-finding.ts");
+  const REPO = join(import.meta.dir, "..");
+  /** The one site the mutant neutralises. Asserted unique by AR-26. */
+  const BINDING = "jury: verdict.jury,";
+
+  let scratch = "";
+  let mutant = "";
+  let runs = 0;
+
+  const UNANIMOUS: VerifierVote[] = [
+    { verifier: "v1", real: true, reason: "reproduced against origin/main" },
+    { verifier: "v2", real: true, reason: "reproduced against origin/main" },
+    { verifier: "v3", real: true, reason: "reproduced against origin/main" },
+  ];
+  const SPLIT: VerifierVote[] = [
+    { verifier: "v1", real: true, reason: "read the adjudicator module and the tracker" },
+    { verifier: "v2", real: true, reason: "read the adjudicator module and the tracker" },
+    { verifier: "v3", real: false, reason: "the generated workflow carries the line that makes the premise false" },
+  ];
+  const REJECTED: VerifierVote[] = [
+    { verifier: "v1", real: true, reason: "looks real to me" },
+    { verifier: "v2", real: false, reason: "the cited symbol is not in the tree" },
+    { verifier: "v3", real: false, reason: "the cited symbol is not in the tree" },
+  ];
+  /** Two votes against a declared group of three: UNMEASURED, not a dissent. */
+  const SHORT: VerifierVote[] = SPLIT.slice(0, 2);
+
+  interface Run {
+    code: number | null;
+    out: string;
+    rows: Array<Record<string, unknown>>;
+  }
+
+  const run = (script: string, votes: readonly VerifierVote[]): Run => {
+    const ledger = join(scratch, `ledger-${runs++}.jsonl`);
+    const votesFile = join(scratch, `votes-${runs}.json`);
+    writeFileSync(votesFile, JSON.stringify(votes));
+    const r = Bun.spawnSync(
+      ["bun", script, "--project-root", root,
+       "--title", "`widgetHandler` leaks descriptors",
+       "--body-file", join(scratch, "body.md"),
+       "--existing", join(scratch, "empty.json"),
+       "--votes", votesFile],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        // Explicit env: bun does not hand a child a `process.env` mutated in
+        // the parent, and the whole point of the variable is that no run
+        // here touches the real `~/.rungate/finding-ledger.jsonl`.
+        env: { ...process.env, RUNGATE_FINDING_LEDGER: ledger },
+      },
+    );
+    const rows = existsSync(ledger)
+      ? readFileSync(ledger, "utf-8").split("\n").filter(Boolean).map(l => JSON.parse(l) as Record<string, unknown>)
+      : [];
+    return { code: r.exitCode, out: new TextDecoder().decode(r.stdout), rows };
+  };
+
+  const jury = (r: Run): Record<string, unknown> => {
+    expect(r.rows.length, `the run wrote ${r.rows.length} ledger rows, not 1\n${r.out}`).toBe(1);
+    const j = r.rows[0].jury;
+    expect(j, "the row carries no jury reading at all").not.toBeNull();
+    return j as Record<string, unknown>;
+  };
+
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), "arbiter-ballot-ledger-"));
+    writeFileSync(join(scratch, "body.md"),
+      "`widgetHandler` leaks 58 descriptors across 19 runs in `widget.ts`.");
+    writeFileSync(join(scratch, "empty.json"), "[]");
+
+    // ── The mutant: the recording, removed, and nothing else ──────────────
+    const src = readFileSync(SCRIPT, "utf-8");
+    const n = src.split(BINDING).length - 1;
+    if (n !== 1) {
+      throw new Error(`could not build the mutant: \`${BINDING}\` appears ${n} times in the script, not once`);
+    }
+    let out = src.replace(BINDING, "jury: null,");
+    out = out.replace(/from "(\.\.?\/[^"]+)"/g,
+      (_m, spec: string) => `from ${JSON.stringify(join(REPO, "scripts", spec))}`);
+    if (/from "\.\.?\//.test(out)) {
+      throw new Error("could not build the mutant: a relative import survived rewriting, so it would die on module resolution and read as a refusal");
+    }
+    mutant = join(scratch, "arbitrate.mutant.ts");
+    writeFileSync(mutant, out);
+  });
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  test("AR-21: a unanimous ballot is recorded in full, and says the group did not disagree", () => {
+    const r = run(SCRIPT, UNANIMOUS);
+    expect(r.code, r.out).toBe(0);
+    const j = jury(r);
+    expect(j.disagreed).toBe(false);
+    expect((j.ballot as VerifierVote[]).map(v => v.verifier)).toEqual(["v1", "v2", "v3"]);
+    expect(r.rows[0].emitted).toBe(true);
+  });
+
+  test("AR-22: a 2-1 ballot records the dissenter by name and carries their reasoning", () => {
+    const r = run(SCRIPT, SPLIT);
+    expect(r.code, r.out).toBe(0);
+    const j = jury(r);
+    expect(j.disagreed, "a split ballot must not read as agreement").toBe(true);
+    const ballot = j.ballot as VerifierVote[];
+    expect(ballot).toHaveLength(3);
+    const dissent = ballot.find(v => !v.real);
+    expect(dissent?.verifier).toBe("v3");
+    // The half a count of `agree` can never carry. Re-running to recover it
+    // re-samples the thing being measured.
+    expect(dissent?.reason).toContain("makes the premise false");
+  });
+
+  test("AR-23: a finding the quorum voted DOWN is recorded, with every vote on it", () => {
+    const r = run(SCRIPT, REJECTED);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain("NO_QUORUM");
+    const j = jury(r);
+    expect(j.agree).toBe(1);
+    expect(j.disagreed).toBe(true);
+    expect((j.ballot as VerifierVote[]).map(v => v.reason))
+      .toContain("the cited symbol is not in the tree");
+    expect(r.rows[0].emitted, "a withheld finding did not reach a reader").toBe(false);
+    expect(r.rows[0].withheldBy).toBe("NO_QUORUM");
+  });
+
+  test("AR-24: an UNMEASURED reading still records the ballot it could not count", () => {
+    const r = run(SCRIPT, SHORT);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain("UNMEASURED");
+    const j = jury(r);
+    expect(j.reading).toBe("UNMEASURED");
+    // Decision time, not outcome time: the two votes that WERE cast are the
+    // only record that the group was convened at all.
+    expect((j.ballot as VerifierVote[])).toHaveLength(2);
+  });
+
+  test("AR-25: the mutant writes the row and loses the ballot — real red, mutant green", () => {
+    for (const ballot of [UNANIMOUS, SPLIT, REJECTED]) {
+      const real = run(SCRIPT, ballot);
+      const mut = run(mutant, ballot);
+
+      // Observed running, before any claim about what it observed: a mutant
+      // that failed to load writes no row and would otherwise read exactly
+      // like a mutant whose recording was correctly neutralised.
+      expect(mut.rows.length, `the mutant wrote no ledger row — it may not have loaded\n${mut.out}`).toBe(1);
+      expect(mut.code, "the mutant must differ in the FIELD, not in the verdict").toBe(real.code);
+
+      expect(real.rows[0].jury, "the real script lost the ballot").not.toBeNull();
+      expect(mut.rows[0].jury, "the mutation did not apply: the mutant still recorded a jury").toBeNull();
+    }
+  });
+
+  test("AR-26: the recording has one site, so no branch can bypass the mutation", () => {
+    const src = readFileSync(SCRIPT, "utf-8");
+    expect(src.split(BINDING).length - 1,
+      `more than one \`${BINDING}\` — the mutant would neutralise only one of them`).toBe(1);
+    // And the reading itself carries both fields rather than leaving a
+    // consumer to re-derive `disagreed` from the counts, which would be two
+    // deciders over one question.
+    const split = juryReading(SPLIT);
+    const unanimous = juryReading(UNANIMOUS);
+    expect(split.disagreed).toBe(true);
+    expect(unanimous.disagreed).toBe(false);
+    expect(split.ballot).toEqual(SPLIT);
   });
 });

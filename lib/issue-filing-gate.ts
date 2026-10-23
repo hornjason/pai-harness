@@ -121,6 +121,8 @@ import {
   DROPPED_CATEGORIES,
   type Disposition,
   type FindingCategory,
+  type JuryReading,
+  type Severity,
 } from "./finding-jury";
 import { clauses, createsIssue, flagValues, labelValues } from "./issue-create-override";
 
@@ -303,9 +305,18 @@ export interface FilingAdjudication {
  * A second set of names for `category` / `refusal` / `withheldBy` would make
  * that union a join nobody can write.
  *
- * `severity` and `jury` are always `null` here and are present anyway, so the
- * two row shapes parse under one reader. A chokepoint has no verifier group,
- * and an absent vote is not a severity of `Important`.
+ * `severity` and `jury` are always `null` **when this file writes the row**,
+ * and are present anyway, so the two row shapes parse under one reader. A
+ * chokepoint has no verifier group, and an absent vote is not a severity of
+ * `Important`.
+ *
+ * They are typed `| null` rather than `null` since #1467. They were the bare
+ * literal, which made the row shape unable to *hold* a vote rather than merely
+ * not carrying one here — and `scripts/arbitrate-finding.ts`, the one path in
+ * the tree that takes a ballot, writes to this same ledger. CRC-B4 asks that
+ * the ledger record every verifier's individual vote and whether the verifiers
+ * disagreed; a field typed `null` cannot, whatever is wired to it. The
+ * chokepoint's own rows are unchanged and still write `null` for both.
  */
 export interface FilingLedgerRow {
   at: string;
@@ -333,13 +344,14 @@ export interface FilingLedgerRow {
   title: string;
   symptomHash: string;
   category: FindingCategory;
-  severity: null;
+  severity: Severity | null;
   disposition: Disposition;
   refusal: ArbiterRefusal | null;
   /** Did it reach the tracker? */
   emitted: boolean;
   withheldBy: WithheldBy | null;
-  jury: null;
+  /** The vote, when one was taken. `null` when no group was convened. */
+  jury: JuryReading | null;
   duplicateOf: string[];
   /** The refusal was overridden with `--label arbiter-override`. */
   overridden: boolean;
