@@ -149,7 +149,7 @@
     "enabled": true,
     "deployToConsumers": true,
     "scope": "project",
-    "description": "Reports installed git hooks that are not the generator output (#879)"
+    "description": "Reports installed git hooks that are not the generator output (#879), and how many commits behind main the tree each Claude Code hook registration resolves to is (#1216)"
   },
   {
     "name": "StaleTTLCleanup",
