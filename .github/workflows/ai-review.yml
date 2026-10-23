@@ -1,4 +1,4 @@
-# generated-sha: a913440d342894fb
+# generated-sha: add187929f3700d3
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1965,6 +1965,38 @@ jobs:
             printf '%s' "${v}"
           }
 
+          # #1242. Record that this run took a WAIVER branch, for the step that
+          # decouples the waiver from the automatic landing.
+          #
+          # Called from the two branches that exercise the waiver and from nowhere else.
+          # That is the whole design: the label being ON this pull request and the run
+          # having PASSED because of it are different facts, and the second one is only
+          # knowable here. A labelled pull request that edits no workflow gets a real
+          # review, the adjudicator runs, and this function is never reached.
+          #
+          # IT REFUSES RATHER THAN WARNS when it cannot write. A waived run whose
+          # successor cannot learn that it was waived is a green required check on an
+          # armed auto-merge, which is the exact configuration #1242 is about — so the
+          # unwritable case fails the check instead of passing it quietly. Same shape,
+          # and the same read-back, as the credential-relocation step: a write that
+          # reports success and is not there on the next read is indistinguishable from
+          # one that never happened.
+          record_waiver() {
+            local line="waived=true"
+            if [ -z "${GITHUB_OUTPUT:-}" ]; then
+              echo "::error title=AI review waiver NOT DISARMED::This pull request carries the 'ai-review-override' label and the waiver would apply, but GITHUB_OUTPUT is not set, so this step cannot tell the 'ai-review-disarm' step to disarm auto-merge. Passing here would report a green required check on a pull request that can still merge itself on a review nobody read, which is the configuration #1242 removed. Refusing instead. This check is UNMEASURED, not a passing review." >&2
+              exit 1
+            fi
+            if ! out=$( { echo "${line}" >> "${GITHUB_OUTPUT}"; } 2>&1 ); then
+              echo "::error title=AI review waiver NOT DISARMED::$(escape_annotation "This pull request carries the 'ai-review-override' label and the waiver would apply, but the 'waived' marker could not be written to GITHUB_OUTPUT, so the 'ai-review-disarm' step cannot disarm auto-merge. Refusing rather than passing a waiver that still carries the landing with it (#1242). The write reported: ${out}")" >&2
+              exit 1
+            fi
+            if ! grep -qF "${line}" "${GITHUB_OUTPUT}"; then
+              echo "::error title=AI review waiver NOT DISARMED::This pull request carries the 'ai-review-override' label and the waiver would apply. The 'waived' marker was written to GITHUB_OUTPUT and is not there when read back, so the 'ai-review-disarm' step will not see it and auto-merge would stay armed on a review nobody read (#1242). Refusing. This check is UNMEASURED, not a passing review." >&2
+              exit 1
+            fi
+          }
+
           # #867, and FIRST, because on this event none of the readings below can hold.
           #
           # The job runs on `merge_group` so that a repository which has made
@@ -2336,6 +2368,10 @@ jobs:
             # route that explains what it waived.
             if [ "${AI_REVIEW_OVERRIDE:-}" = "true" ]; then
               echo "::warning title=AI review WAIVED::This pull request carries the 'ai-review-override' label, so the refusal above is WAIVED and this check passes having measured nothing. The reviewer wrote no findings payload; no AI review was read on this pull request and this is not one. A human applied the label and the pull request's timeline records which account and when. This waiver is STANDING: it survives every later push to this pull request, so the diff that finally merges may be much larger than the one that was waived — this annotation re-appears on every run while the label is on, and that is the only notice you get. Remove the label to put the refusal back on the next push, or now: this workflow subscribes to the 'unlabeled' activity type, so removing it re-runs the check."
+              # #1242, and BEFORE the exit: this is the branch #1236 took — the action
+              # declined on its workflow-validation guard, so the pull request editing
+              # the merge gate is exactly the one that reaches here.
+              record_waiver
               exit 0
             fi
 
@@ -2399,6 +2435,10 @@ jobs:
             # waiver only when there is genuinely nothing to adjudicate.
             if [ ! -s "${AI_REVIEW_FINDINGS_PATH:-}" ]; then
               echo "::warning title=AI review WAIVED::This pull request carries the 'ai-review-override' label, so the refusal above is WAIVED and this check passes having measured nothing. The review action did not complete and wrote NO findings payload, so no AI review was read on this pull request and this is not one. A human applied the label and the pull request's timeline records which account and when. This waiver is STANDING: it survives every later push to this pull request, so the diff that finally merges may be much larger than the one that was waived — this annotation re-appears on every run while the label is on, and that is the only notice you get. Remove the label to put the refusal back on the next push, or now: this workflow subscribes to the 'unlabeled' activity type, so removing it re-runs the check."
+              # #1242. The other half of the pair above — same waiver, reached when the
+              # action FAILED with nothing to adjudicate. Both halves record, or the
+              # disarm would depend on which way the action happened to die.
+              record_waiver
               exit 0
             fi
             echo "::error title=AI review UNMEASURED::This pull request carries the 'ai-review-override' label and the waiver does NOT apply here. The label waives "nobody looked"; a findings payload IS present at the path this job gave the reviewer, so somebody looked and wrote a result, and this job will not pass a run whose own artefact may carry a blocking finding it declined to read. The payload is NOT adjudicated for the reason the route above states — the action did not complete, and a partially written findings list is indistinguishable from a clean one — so neither "it is clean" nor "it blocks" is a reading this run can take, and waiving on an unread payload would be passing a review nobody adjudicated (#1207). Read the payload and the execution file, then re-run: a run whose action COMPLETES adjudicates the payload for real. This check is UNMEASURED, not a passing review." >&2
@@ -2969,3 +3009,110 @@ jobs:
           # value that is safe at one of its two uses is not encoded, it is lucky.
           echo "::error title=AI review modified the tree::The reviewer modified the tree it was reviewing: $(escape_annotation "${added}"). A review that edits the code under review is not a result." >&2
           exit 1
+      - name: Disarm auto-merge when the review was waived
+        id: ai-review-disarm
+        env:
+          AI_REVIEW_DISARM_WAIVED: ${{ steps.ai-review-run.outputs.waived }}
+          AI_REVIEW_DISARM_PR: ${{ github.event.pull_request.number }}
+          AI_REVIEW_DISARM_REPO: ${{ github.repository }}
+          AI_REVIEW_DISARM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Generated by rungate — lib/scaffold/ai-review-step.ts. Do not edit.
+          #
+          # #1242. The waiver clears the red; it does not also land the pull request.
+          set -uo pipefail
+
+          escape_annotation() {
+            local v="$1"
+            v="${v//%/%25}"
+            v="${v//$'\r'/%0D}"
+            v="${v//$'\n'/%0A}"
+            printf '%s' "${v}"
+          }
+
+          disarm_refuse() {
+            echo "::error title=AI review waiver NOT DISARMED::$(escape_annotation "$1")" >&2
+            exit 1
+          }
+
+          # NOT WAIVED — the overwhelming majority of runs, including every run on a
+          # pull request that carries the label and got a real review. The report step
+          # writes this marker on the two branches that take the waiver and on no other,
+          # so an empty reading here means the review was measured and the landing is
+          # none of this step's business.
+          #
+          # Read as an exact-string compare, like every other switch in this job: a
+          # prefix or a case-insensitive match is a switch that turns itself on.
+          if [ "${AI_REVIEW_DISARM_WAIVED:-}" != "true" ]; then
+            exit 0
+          fi
+
+          if [ -z "${AI_REVIEW_DISARM_PR:-}" ]; then
+            disarm_refuse "The AI review was WAIVED and this run carries no pull request number, so auto-merge cannot be disarmed and this job cannot say whether any is armed. Those two readings contradict each other — the waiver is reached only on a pull request — so this is a state nothing should produce and it refuses rather than passing the harmless half (#1242)."
+          fi
+
+          if [ -z "${AI_REVIEW_DISARM_REPO:-}" ] || [ -z "${AI_REVIEW_DISARM_TOKEN:-}" ]; then
+            disarm_refuse "The AI review was WAIVED and this step has no repository name or no API token, so auto-merge cannot be disarmed. Refusing rather than reporting a green required check on a pull request that can still merge itself on a review nobody read (#1242)."
+          fi
+
+          if ! command -v gh >/dev/null 2>&1; then
+            disarm_refuse "The AI review was WAIVED and 'gh' is not on this runner, so auto-merge cannot be disarmed. It is pre-installed on GitHub-hosted runners; a self-hosted runner needs it installed. Refusing rather than leaving a waived pull request armed (#1242)."
+          fi
+
+          export GH_TOKEN="${AI_REVIEW_DISARM_TOKEN}"
+
+          # Every command substitution below is the condition of an `if !`, so its
+          # status is consumed. An assignment whose only word is a failing `$(...)`
+          # aborts the whole step under the runner's `bash -e` before the next line
+          # reads `$?` — #1110, and `test/ai-review-runner-shell-parity.test.ts` AC-2
+          # refuses that shape in the committed file.
+          if ! armed=$(gh pr view "${AI_REVIEW_DISARM_PR}" --repo "${AI_REVIEW_DISARM_REPO}" --json autoMergeRequest -q 'if .autoMergeRequest == null then "null" else (.autoMergeRequest | tostring) end' 2>&1); then
+            disarm_refuse "The AI review was WAIVED and this step could not read 'autoMergeRequest' on the pull request, so whether auto-merge is armed is UNMEASURED and a waived pull request may still merge itself. Refusing (#1242). The command reported: ${armed}"
+          fi
+
+          # EMPTY FIRST, AND IT IS A REFUSAL — silence is a client that exited zero
+          # without answering, not a reading of "nothing is armed". Folding the two
+          # together substitutes a default for a reading in the one branch where the
+          # default lets an armed pull request through (caught on #1418's push review).
+          #
+          # This is only true because the read above asks for a filter that is NEVER
+          # empty. `-q .autoMergeRequest` prints a bare newline for an absent
+          # field — `gh` suppresses the `null` that `jq` would print — so against the
+          # bare field this arm fired on every unarmed pull request and the
+          # `null` arm below was unreachable. See
+          # `AI_REVIEW_AUTO_MERGE_ABSENT_TOKEN` for the measurement.
+          if [ -z "${armed}" ]; then
+            disarm_refuse "The AI review was WAIVED and the request for 'autoMergeRequest' came back EMPTY with a success status, so this step has no reading of whether auto-merge is armed. An absent auto-merge reads as the literal 'null' here; silence is a client that did not answer, and treating it as 'nothing is armed' would substitute a default for a reading in the one branch where the default lets an armed pull request through. Refusing (#1242)."
+          fi
+
+          # The absent token is what the read emits when nothing is armed, and nothing
+          # is the right thing to do about it.
+          if [ "${armed}" = "null" ]; then
+            echo "::notice title=AI review waiver disarmed auto-merge::The AI review on this pull request was WAIVED by the 'ai-review-override' label, and auto-merge was not armed as it stood when this step read it, so there was nothing to disarm. This is a reading and an action taken at one moment, not a lock: auto-merge re-armed after this run stays armed until some later run of this workflow reaches this step, and if nothing further is pushed and no label changes there is no later run. What stops this pull request landing unread is a person, not this step (#1242)."
+            exit 0
+          fi
+
+          if ! out=$(gh pr merge "${AI_REVIEW_DISARM_PR}" --repo "${AI_REVIEW_DISARM_REPO}" --disable-auto 2>&1); then
+            disarm_refuse "The AI review was WAIVED, auto-merge IS armed, and the request to disable it failed, so this pull request can still merge itself on a review nobody read. Refusing (#1242). The command reported: ${out}"
+          fi
+
+          # The read-back. The command above exits zero having changed nothing in at
+          # least one real state — a pull request that merged between the two calls —
+          # so its exit code is not the reading.
+          if ! after=$(gh pr view "${AI_REVIEW_DISARM_PR}" --repo "${AI_REVIEW_DISARM_REPO}" --json autoMergeRequest -q 'if .autoMergeRequest == null then "null" else (.autoMergeRequest | tostring) end' 2>&1); then
+            disarm_refuse "The AI review was WAIVED and this step could not read 'autoMergeRequest' on the pull request, so whether auto-merge is armed is UNMEASURED and a waived pull request may still merge itself. Refusing (#1242). The command reported: ${after}"
+          fi
+
+          # Same split as the first reading, and this side is the worse one: by here the
+          # disarm request has been ACCEPTED, so an unreadable field is a step that has
+          # acted and cannot confirm the action. The `&& [ -n "${after}" ]` this
+          # replaces made exactly that state green.
+          if [ -z "${after}" ]; then
+            disarm_refuse "The AI review was WAIVED, auto-merge WAS armed, the request to disable it reported success, and the read-back came back EMPTY with a success status. So this step has acted and cannot say whether the action took effect — the worst of the three readings to guess at. An absent auto-merge reads as the literal 'null'; silence does not. Refusing (#1242)."
+          fi
+
+          if [ "${after}" != "null" ]; then
+            disarm_refuse "The AI review was WAIVED and the request to disable auto-merge reported success, and 'autoMergeRequest' is STILL not null when read back. The disarm did not take effect, so this pull request can merge itself on a review nobody read. Refusing rather than trusting the exit code of a command that changed nothing (#1242). The field reads: ${after}"
+          fi
+
+          echo "::notice title=AI review waiver disarmed auto-merge::The AI review on this pull request was WAIVED by the 'ai-review-override' label, so auto-merge as it stood when this step read it has been DISARMED. The waiver clears the required check and does not also carry the landing with it, because the one thing a waived review cannot supply is somebody having looked. Read the diff, then merge by hand. This is a reading and an action taken at one moment, not a lock: auto-merge re-armed after this run stays armed until some later run of this workflow reaches this step, and if nothing further is pushed and no label changes there is no later run. What stops this pull request landing unread is a person, not this step (#1242)."
