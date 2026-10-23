@@ -105,7 +105,7 @@ import {
   listOpenIssues,
   parseOwnerRepo,
   TRUSTED_ASSOCIATIONS,
-  type OpenIssue,
+  type OpenIssuePage,
 } from "./github";
 import {
   duplicateCollisions,
@@ -595,11 +595,30 @@ export async function adjudicateFiling(
   };
 }
 
-/** Why one existing issue was kept out of the comparison set. */
+/**
+ * Why one existing issue was kept out of the comparison set.
+ *
+ * **Five reasons across two modules, and that is the point of #1374.** The
+ * first two are this file's own filters. The last three happen in
+ * `lib/github.ts`, before this file sees a row at all, and they used to
+ * happen silently — the count this file took was already post-filter, so a
+ * page holding 100 pull requests and no issues reached `corpusReading` as
+ * `considered === 0` and was reported as a clean tracker. A drop nobody
+ * records is a drop nobody can reason about, wherever it happens.
+ */
 export interface CorpusDrop {
-  /** The issue number, as a string. */
-  id: string;
-  reason: "untrusted-author" | "over-key-cap";
+  /**
+   * The issue number as a string, or `null` for a drop that is not about one
+   * issue — a malformed row that carried no number, or the page cap, which
+   * is a fact about the request rather than about any row in the answer.
+   */
+  id: string | null;
+  reason:
+    | "untrusted-author"
+    | "over-key-cap"
+    | "pull-request"
+    | "malformed-row"
+    | "page-cap";
   /** The producing filter's own sentence, so the report is not re-derived. */
   detail: string;
 }
@@ -716,11 +735,11 @@ export async function openFindings(
             "was no tracker to compare against",
       );
     }
-    const issues = await withTimeout(
+    const page = await withTimeout(
       listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT),
       OPEN_ISSUE_TIMEOUT_MS,
     );
-    return trustedCorpus(issues);
+    return trustedCorpus(page);
   } catch {
     // Every failure lands here as UNMEASURED, which is "nobody asked" and not
     // "nothing matched" — a missing token, a 403, a rate limit and an
@@ -797,12 +816,47 @@ function corpusReading(
 /** The drops as one sentence, each with the filter's own reason. */
 export function describeDrops(dropped: readonly CorpusDrop[]): string {
   if (dropped.length === 0) return "nothing — the list was non-empty and the filters took none of it, which should be impossible here";
-  return dropped.map(d => `#${d.id} (${d.reason}: ${d.detail})`).join("; ");
+  return dropped
+    .map(d => (d.id === null ? `(${d.reason}: ${d.detail})` : `#${d.id} (${d.reason}: ${d.detail})`))
+    .join("; ");
 }
 
-export function trustedCorpus(issues: readonly OpenIssue[]): CorpusReading {
+/**
+ * The open-issue page as a comparison set, or the reading that says why not.
+ *
+ * **It takes the PAGE and not the issues** (#1374). The count that decides
+ * MEASURED from UNMEASURED has to be the population the tracker returned, and
+ * the only place that number exists is beside the rows `lib/github.ts`
+ * dropped. Taking `issues.length` here — which is what this did — asks "did
+ * OUR filters empty it?" of a list somebody else had already emptied.
+ */
+export function trustedCorpus(page: OpenIssuePage): CorpusReading {
+  const { issues } = page;
   const out: Finding[] = [];
   const dropped: CorpusDrop[] = [];
+  for (const row of page.droppedRows) {
+    dropped.push({
+      id: row.number === null ? null : String(row.number),
+      reason: row.reason,
+      detail:
+        row.reason === "pull-request"
+          ? "the REST issues endpoint returns pull requests as issues, and a PR body quotes the symptom of the issue it fixes"
+          : "the row carried no usable number or title, so there was nothing to compare against",
+    });
+  }
+  if (page.truncated) {
+    // Not an UNMEASURED on its own: a full page IS a reading, of a narrower
+    // question than the one asked. It travels as a drop so the agent is told
+    // the comparison could not see the whole tracker, which is the fact a
+    // bare "no duplicate found" hides.
+    dropped.push({
+      id: null,
+      reason: "page-cap",
+      detail:
+        `the tracker returned a full page of ${page.perPage} and this gate does not paginate, ` +
+        "so any issue past that position was never compared against",
+    });
+  }
   for (const issue of issues) {
     const id = String(issue.number);
     if (!TRUSTED_ASSOCIATIONS.has(issue.authorAssociation)) {
@@ -826,7 +880,8 @@ export function trustedCorpus(issues: readonly OpenIssue[]): CorpusReading {
     }
     out.push(finding);
   }
-  return corpusReading(issues.length, out, dropped, "tracker");
+  // `page.considered`, never `issues.length`. That one substitution is #1374.
+  return corpusReading(page.considered, out, dropped, "tracker");
 }
 
 /** Supplied rows as `Finding`s, or UNMEASURED if the shape is not what we asked for. */

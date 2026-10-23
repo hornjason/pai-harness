@@ -35,9 +35,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
-import { listOpenIssues, parseOwnerRepo, type OpenIssue } from "../lib/github";
+import {
+  listOpenIssues,
+  parseOwnerRepo,
+  type OpenIssue,
+  type OpenIssuePage,
+} from "../lib/github";
 import {
   adjudicateFiling,
+  corpusDropNote,
   corpusSlug,
   filingAttempts,
   filingBatch,
@@ -62,6 +68,24 @@ import {
 
 const REPO = resolve(import.meta.dir, "..");
 const HOOK = join(REPO, "hooks", "VerifyPhaseLock.hook.ts");
+
+/**
+ * An `OpenIssuePage` holding exactly these issues and nothing else.
+ *
+ * `considered` equals the length, which is what an ordinary page looks like:
+ * `lib/github.ts` dropped none of it. The #1374 cases below supply a page
+ * whose `considered` is HIGHER than its `issues`, and that is the input no
+ * fixture shaped like a bare array can express — which is why the defect
+ * survived two rounds of fixes to the same fail-open.
+ */
+const page = (issues: OpenIssue[], over: Partial<OpenIssuePage> = {}): OpenIssuePage => ({
+  considered: issues.length,
+  perPage: 100,
+  truncated: false,
+  droppedRows: [],
+  issues,
+  ...over,
+});
 
 /**
  * The open tracker the dedupe compares against.
@@ -403,8 +427,14 @@ describe("#1261 the parts the decision is built from", () => {
         },
       },
     } as unknown as Parameters<typeof listOpenIssues>[0];
-    const issues = await listOpenIssues(client, "owner/repo");
-    expect(issues.map(i => i.number)).toEqual([10]);
+    const read = await listOpenIssues(client, "owner/repo");
+    expect(read.issues.map(i => i.number)).toEqual([10]);
+    // #1374: the drop is now REPORTED, and the population it was drawn from
+    // travels with it. Under the old return shape a caller could only count
+    // what survived, so this row's own fixture — two rows in, one out — was
+    // indistinguishable from a tracker holding one issue.
+    expect(read.considered, "two rows arrived").toBe(2);
+    expect(read.droppedRows).toEqual([{ number: 11, reason: "pull-request" }]);
   });
 });
 
@@ -615,21 +645,21 @@ describe("#1261 the four suppression classes", () => {
 
   test("FG-33 BASELINE: an untrusted author cannot put a suppressor in the corpus", () => {
     for (const association of ["NONE", "CONTRIBUTOR", ""]) {
-      const r = trustedCorpus([trusted({ authorAssociation: association })]);
+      const r = trustedCorpus(page([trusted({ authorAssociation: association })]));
       expect(kept(r), `${association || "(absent)"} is not trusted`).toEqual([]);
     }
   });
 
   test("FG-34 CONTROL: a trusted author's issue is still in the corpus", () => {
     for (const association of ["OWNER", "MEMBER", "COLLABORATOR"]) {
-      expect(kept(trustedCorpus([trusted({ authorAssociation: association })]))).toHaveLength(1);
+      expect(kept(trustedCorpus(page([trusted({ authorAssociation: association })])))).toHaveLength(1);
     }
   });
 
   test("FG-35: one issue cannot name enough to match everything", () => {
     const stuffed = Array.from({ length: MAX_KEYS_PER_EXISTING_ISSUE + 10 }, (_, i) => `\`symbolNumber${i}\``).join(" ");
-    expect(kept(trustedCorpus([trusted({ body: stuffed })])), "over the cap, so dropped whole").toEqual([]);
-    expect(kept(trustedCorpus([trusted()])), "an ordinary issue is unaffected").toHaveLength(1);
+    expect(kept(trustedCorpus(page([trusted({ body: stuffed })]))), "over the cap, so dropped whole").toEqual([]);
+    expect(kept(trustedCorpus(page([trusted()]))), "an ordinary issue is unaffected").toHaveLength(1);
   });
 
   test("FG-38: the cap applies to the FIXTURE corpus too, which FG-35 cannot see", async () => {
@@ -849,10 +879,10 @@ describe("a corpus every filter emptied is UNMEASURED, not a clean tracker", () 
   ).join(" ");
 
   test("FG-52 BASELINE: two issues, both filtered out, is UNMEASURED and not an empty corpus", () => {
-    const r = trustedCorpus([
+    const r = trustedCorpus(page([
       issue({ number: 10, authorAssociation: "NONE" }),
       issue({ number: 11, body: stuffed }),
-    ]);
+    ]));
     expect(r.reading).toBe("UNMEASURED");
   });
 
@@ -860,10 +890,10 @@ describe("a corpus every filter emptied is UNMEASURED, not a clean tracker", () 
     // A reason that does not say what was dropped is a reason nobody can act
     // on, and the two filters need different repairs — one is a trust
     // decision, the other is an issue to split up.
-    const r = trustedCorpus([
+    const r = trustedCorpus(page([
       issue({ number: 10, authorAssociation: "NONE" }),
       issue({ number: 11, body: stuffed }),
-    ]);
+    ]));
     expect(r.dropped.map(d => [d.id, d.reason])).toEqual([
       ["10", "untrusted-author"],
       ["11", "over-key-cap"],
@@ -880,7 +910,7 @@ describe("a corpus every filter emptied is UNMEASURED, not a clean tracker", () 
   test("FG-54 CONTROL: a GENUINELY empty tracker is MEASURED, and allows", () => {
     // The row that stops the fix becoming "an empty corpus always refuses",
     // which would make a project with no open issues unable to file anything.
-    const r = trustedCorpus([]);
+    const r = trustedCorpus(page([]));
     expect(r.reading).toBe("MEASURED");
     expect(r.reading === "MEASURED" ? r.findings : null).toEqual([]);
     expect(r.dropped).toEqual([]);
@@ -889,7 +919,7 @@ describe("a corpus every filter emptied is UNMEASURED, not a clean tracker", () 
   test("FG-55 CONTROL: one survivor among two is MEASURED, and the drop is still reported", () => {
     // The other side of the axis. A partial filter is a reading, and the
     // caller is told it read a smaller tracker than the one that exists.
-    const r = trustedCorpus([issue({ number: 10, authorAssociation: "NONE" }), issue({ number: 11 })]);
+    const r = trustedCorpus(page([issue({ number: 10, authorAssociation: "NONE" }), issue({ number: 11 })]));
     expect(r.reading).toBe("MEASURED");
     expect(r.reading === "MEASURED" ? r.findings.map(f => f.id) : null).toEqual(["11"]);
     expect(r.dropped.map(d => d.id), "the drop survives a successful read").toEqual(["10"]);
@@ -1426,5 +1456,146 @@ describe("FG-66..FG-71: a ledger row that can be told apart", () => {
       score(unkeyed.rows).usable,
       "and two unkeyed rows are refused by name rather than scored as one",
     ).toBe(false);
+  });
+});
+
+/**
+ * FG-72..FG-78: the count is taken before the filter, not after it (#1374).
+ *
+ * **The third level of one fail-open, and the sequence is the point.**
+ * #1338 closed *a corpus that empties completely reads as a clean tracker*.
+ * #1366 closed *a partial drop is silent*. Both are correct at their own
+ * depth and neither can see this one: `corpusReading`'s `considered` came
+ * from `listOpenIssues`'s RETURN, and `listOpenIssues` had already discarded
+ * pull requests and malformed rows. So a page of 100 pull requests and zero
+ * issues arrived as `considered === 0` — the same arm a genuinely empty
+ * tracker takes — and was reported MEASURED-empty, which ALLOWS.
+ *
+ * The remedy is a boundary move rather than a fourth check at the same
+ * depth: `listOpenIssues` returns the population beside the survivors, so
+ * there is no longer a position from which a caller can count a list
+ * somebody else already filtered.
+ *
+ * **The trap in testing it, and it is why every row below asserts on
+ * `reading`.** The defect and the fix both produce ZERO findings and both
+ * allow the filing, so a case asserting "no duplicate was found" — or
+ * asserting the verdict at all — passes either way. Only two inputs
+ * discriminate: a page that held rows and yielded none (UNMEASURED) and a
+ * page that held nothing (MEASURED). FG-72 and FG-73 are that pair.
+ *
+ * The page cap is the second half and is not live here yet — this tracker is
+ * near 50 open issues against a cap of 100. It is live now for any busier
+ * consumer, and a truncated page is a reading of a narrower question than
+ * the one asked, so it travels as a drop rather than as a refusal.
+ */
+describe("FG-72..FG-78: the corpus count is the population, not the survivors", () => {
+  const clientReturning = (data: unknown[]) =>
+    ({
+      rest: { issues: { listForRepo: async () => ({ data }) } },
+    }) as unknown as Parameters<typeof listOpenIssues>[0];
+
+  const prRow = (n: number) => ({
+    number: n,
+    title: `pull request ${n}`,
+    body: "x",
+    pull_request: { url: "https://example.invalid" },
+    author_association: "OWNER",
+  });
+  const issueRow = (n: number) => ({
+    number: n,
+    title: `issue ${n}`,
+    body: `\`widgetCache\` in lib/widget.ts: ${n} of ${n + 1}.`,
+    author_association: "OWNER",
+  });
+
+  const read = async (data: unknown[]) => trustedCorpus(await listOpenIssues(clientReturning(data), "o/r"));
+
+  test("FG-72 BASELINE: a page of pull requests is UNMEASURED, not an empty tracker", async () => {
+    const r = await read(Array.from({ length: 100 }, (_, i) => prRow(i + 1)));
+    // Not `findings` and not the verdict: both are the same under the defect
+    // and under the fix. `reading` is the only field that moves.
+    expect(r.reading, "100 rows arrived and none survived — that is a drop, not a clean tracker").toBe(
+      "UNMEASURED",
+    );
+  });
+
+  test("FG-73 CONTROL: a genuinely empty tracker is still MEASURED", async () => {
+    // The other half of the discriminating pair. Without it the cheapest fix
+    // for FG-72 is "an empty findings list is always UNMEASURED", which
+    // refuses nothing but switches the dedupe off for every project that has
+    // not filed its first issue — and passes FG-72 while doing it.
+    const r = await read([]);
+    expect(r.reading).toBe("MEASURED");
+    expect(r.reading === "MEASURED" ? r.findings : null).toEqual([]);
+    expect(r.dropped).toEqual([]);
+  });
+
+  test("FG-74: the reading names what emptied the page, and where", async () => {
+    // A reason that says "every issue was filtered out" about a page with no
+    // issues in it is false for the input it was emitted on — the defect the
+    // `--body-file` arm already paid for once in this file. The drops from
+    // the OTHER module have to reach the sentence.
+    const r = await read([prRow(10), { number: null }, prRow(12)]);
+    expect(r.dropped.map(d => [d.id, d.reason])).toEqual([
+      ["10", "pull-request"],
+      [null, "malformed-row"],
+      ["12", "pull-request"],
+    ]);
+    const why = r.reading === "UNMEASURED" ? r.why : "";
+    expect(why, "the count is the population, so the sentence says 3").toContain("3 issue(s)");
+    expect(why).toContain("pull-request");
+    expect(why, "an id-less drop renders without a bare #").toContain("(malformed-row:");
+    // Asserted as an ABSENCE too, because the first version of this row was
+    // green under the cheapest wrong spelling. `#${d.id}` on a null id
+    // renders `#null`, which still contains `(malformed-row:` — the fifth
+    // shape, certifying the regression it was written to block.
+    expect(why, "and never as `#null`").not.toContain("null");
+  });
+
+  test("FG-75: a full page is a reading of a narrower question, and says so", async () => {
+    const r = await read(Array.from({ length: 100 }, (_, i) => issueRow(i + 1)));
+    expect(r.reading, "100 usable issues IS a reading").toBe("MEASURED");
+    expect(r.dropped.map(d => d.reason), "and the cap travels with it").toEqual(["page-cap"]);
+    expect(r.dropped[0].id, "the cap is a fact about the request, not about a row").toBeNull();
+  });
+
+  test("FG-76 CONTROL: a page one short of the cap is not truncated", async () => {
+    // `rows.length > perPage` is the cheapest wrong spelling of the
+    // predicate and can never fire, because the API cannot return more than
+    // was asked for. This row and FG-75 are the pair that separates them;
+    // either alone is green under one of the two.
+    const r = await read(Array.from({ length: 99 }, (_, i) => issueRow(i + 1)));
+    expect(r.reading).toBe("MEASURED");
+    expect(r.dropped).toEqual([]);
+  });
+
+  test("FG-77: corpusDropNote renders the new reason, and an id-less drop", () => {
+    // `corpusDropNote` had exactly ONE case binding it before this — measured
+    // during #1366's battery, where a mutation predicted at 3 red came back
+    // 1, because every other case asserts the `dropped` array rather than the
+    // rendered sentence. A reporting path about to carry a new reason with
+    // one witness is a renderer nobody is checking.
+    const note = corpusDropNote([
+      { id: null, reason: "page-cap", detail: "a full page of 100" },
+      { id: "77", reason: "pull-request", detail: "returned as an issue" },
+    ]);
+    expect(note).toContain("page-cap");
+    expect(note).toContain("#77");
+    expect(note, "no `#` in front of a drop that names no issue").not.toContain("#(");
+    expect(note, "and no `#null` either — see FG-74").not.toContain("null");
+    expect(note, "and it still says what it means for the reading").toContain("exists");
+  });
+
+  test("FG-78: end to end, a filing against a page of pull requests is told", async () => {
+    // The production shape. ALLOWED — a gate that cannot read the tracker
+    // must not become a gag on it — and LOUD, which is the half the defect
+    // removed: under it the hook allowed and said nothing at all.
+    const emptied = async () => trustedCorpus(await listOpenIssues(clientReturning([prRow(9)]), "o/r"));
+    const r = await filingGate(NOVEL_FILING, { projectRoot: scratch, readExisting: emptied });
+    expect(r.refusal, "never a refusal on a corpus we could not read").toBeNull();
+    expect(r.note ?? "", "the UNMEASURED is said out loud").toContain("UNMEASURED");
+    expect(r.rows[0].refusal, "and recorded as UNMEASURED rather than as a finding that passed").toBe(
+      "UNMEASURED",
+    );
   });
 });
