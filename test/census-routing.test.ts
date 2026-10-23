@@ -340,6 +340,27 @@ const GENERATED_WORKFLOW_CENSUS = [
   "test/ai-review-runner-shell-parity.test.ts",
   "test/action-pin-parity.test.ts",
   "test/scaffold-permissions-merge.test.ts",
+  // #1401. Both caught a real defect in #1387, both on shard 4, and both
+  // survived a targeted run of the three above. Same shape as #1351: a
+  // guard the diff gives an agent no route to.
+  "test/ai-review-wif.test.ts",
+  "test/no-fixed-window-slices.test.ts",
+];
+
+/**
+ * #1387's diff, verbatim, as the exemplar that motivated #1401.
+ *
+ * `git show --name-only --format='' 1de742aa` — the merge of #1387, the
+ * change on which both new members caught something. Written out rather
+ * than read from git, because a fixture that re-reads the commit tests
+ * whatever that commit is today, and the point is the shape of the diff
+ * that was in front of CI.
+ */
+const PR_1387_PATHS = [
+  ".github/workflows/ai-review.yml",
+  "lib/scaffold/ai-review-step.ts",
+  "specs/CODE-REVIEW-CONVERGENCE-SPEC.md",
+  "test/ai-review-rounds-step.test.ts",
 ];
 
 describe("#1368: a generated workflow routes to the suites that read it", () => {
@@ -385,5 +406,39 @@ describe("#1368: a generated workflow routes to the suites that read it", () => 
     for (const t of GENERATED_WORKFLOW_CENSUS) {
       expect(tests, `${t} is routed by an edit touching no generated workflow`).not.toContain(t);
     }
+  });
+
+  // #1401's own acceptance: run the amended row against the exemplar that
+  // motivated it. A row justified by "it would have caught #1387" that does
+  // not select those suites for #1387's actual paths is still the wrong row,
+  // and nothing above would say so — the cases there use a two-path fixture
+  // written to fire it.
+  test("#1387's real four paths select both suites that caught it", () => {
+    const { tests, fired } = censusTestsFor(PR_1387_PATHS.map(path => change({ path })));
+    expect(tests, "#1387's diff does not route the WIF guard that caught it").toContain(
+      "test/ai-review-wif.test.ts",
+    );
+    expect(tests, "#1387's diff does not route the fixed-window guard that caught it").toContain(
+      "test/no-fixed-window-slices.test.ts",
+    );
+    // Not vacuous on the row: two of those four paths fire other rows, so a
+    // table with no generated-workflow row at all still returns a non-empty
+    // set for this diff. Name the row that has to be among the fired ones.
+    expect(
+      fired.map(f => f.trigger.id),
+      "the generated-workflow row did not fire on the diff it was written for",
+    ).toContain("generated-workflow");
+  });
+
+  // The spec file and the rounds-step suite in #1387's diff are the half
+  // that fire OTHER rows. Without this, the case above could be green on a
+  // router whose generated-workflow row matched every path.
+  test("the two non-generated paths in #1387 do NOT fire this row", () => {
+    const { fired } = censusTestsFor(
+      ["specs/CODE-REVIEW-CONVERGENCE-SPEC.md", "test/ai-review-rounds-step.test.ts"].map(path =>
+        change({ path }),
+      ),
+    );
+    expect(fired.map(f => f.trigger.id)).not.toContain("generated-workflow");
   });
 });
