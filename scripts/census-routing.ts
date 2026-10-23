@@ -228,6 +228,34 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
     ],
     fires: c => inDir(c.path, "gates") || inDir(c.path, "hooks") || inDir(c.path, "lib/scaffold"),
   },
+  {
+    // #1368. The row above routes the OWNERSHIP family — which files the
+    // scaffold owns, which gates exist, which hooks are traceable. Nothing
+    // routed to the suites that read the committed workflow and assert
+    // properties of its TEXT, and those are the self-referential shape this
+    // whole table exists for: they go red on a change in a file they do not
+    // name, for a reason the diff does not contain.
+    //
+    // Paid for on PR #1351. Shard 3 went red on `AC-2 (#1116)` in
+    // `ai-review-runner-shell-parity` — two new `rf=$(...)` assignments were
+    // #1110's shape — after every suite this router named came back green.
+    // The guard is unreachable from the diff by any route an agent takes:
+    // not the source file's own suite, not the ownership family, and its
+    // name shares no string with anything that changed.
+    //
+    // Fires on BOTH halves on purpose. The two usually move together, but an
+    // edit to `lib/scaffold/**` without a re-scaffold, and a hand edit to a
+    // workflow with no source change, are each a real event — and the second
+    // fired no row at all before this one existed.
+    id: "generated-workflow",
+    event: "changed a generated workflow, or the scaffold source that emits one",
+    tests: [
+      "test/ai-review-runner-shell-parity.test.ts",
+      "test/action-pin-parity.test.ts",
+      "test/scaffold-permissions-merge.test.ts",
+    ],
+    fires: c => inDir(c.path, ".github/workflows") || inDir(c.path, "lib/scaffold"),
+  },
 ];
 
 export interface CensusRouting {

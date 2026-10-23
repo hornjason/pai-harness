@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join, resolve } from "path";
 
 /**
@@ -79,6 +80,56 @@ function runHook(file: string, stdin: string, env: Record<string, string | undef
  * two suites running at once delete each other's fixtures mid-assertion.
  */
 const scratch = (prefix: string) => mkdtempSync(join(ROOT, `.rg713-${prefix}-`));
+
+/**
+ * The hook's OWN skip list, read out of its source (#1426).
+ *
+ * The comment above routes around ONE pattern, `/tmp/`, written out as a
+ * literal. The list has ten entries and `.claude/worktrees/` is among them,
+ * so a checkout living at `…/rungate/.claude/worktrees/rg-N` — which is
+ * where every agent session in this project works — makes `ROOT` itself a
+ * skipped path, and with it every scratch directory under it. The three
+ * stamp witnesses then assert against a file nothing stamped, and they fail
+ * in a worktree while passing in a plain checkout, with no code difference
+ * between the two. Measured: same hook, same payload, same bytes, one path
+ * containing `.claude/worktrees/` and one not — stamped NO and YES.
+ *
+ * Reading the list rather than restating it is the point. A pattern added
+ * tomorrow is covered the day it lands, which is the failure this issue is.
+ */
+function hookSkipPatterns(): string[] {
+  const src = readFileSync(join(ROOT, "hooks", "DocHygiene.hook.ts"), "utf-8");
+  const block = /const SKIP_PATTERNS = \[([^\]]*)\]/.exec(src);
+  if (block === null) {
+    throw new Error("could not find SKIP_PATTERNS in DocHygiene.hook.ts — this check reads nothing");
+  }
+  return [...block[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+}
+
+/**
+ * A scratch root the hook will not skip, wherever this checkout lives.
+ *
+ * In-repo first, because that is this project's convention and `.gitignore`
+ * carries the reason. `tmpdir()` is NOT a fallback — on Linux it is `/tmp`,
+ * which is the pattern the original comment routed around. The home
+ * directory is, because no pattern matches it on either platform.
+ *
+ * If no candidate survives, this throws rather than returning the least bad
+ * one: a stamp witness that cannot be measured is UNMEASURED, and a green
+ * row would say the mechanism is live.
+ */
+function unskippedScratch(prefix: string): string {
+  const patterns = hookSkipPatterns();
+  const failures: string[] = [];
+  for (const base of [ROOT, homedir()]) {
+    const dir = mkdtempSync(join(base, `.rg713-${prefix}-`));
+    const hit = patterns.find(p => dir.includes(p));
+    if (hit === undefined) return dir;
+    rmSync(dir, { recursive: true, force: true });
+    failures.push(`${base} matches ${hit}`);
+  }
+  throw new Error(`no scratch root escapes the hook's skip list: ${failures.join("; ")}`);
+}
 
 describe("#713: every migrated hook loads and runs under bun", () => {
   // Not the behavioural claim — the floor under it. A hook with a syntax
@@ -382,15 +433,35 @@ describe("#713 TeamInit: creates the team config Claude Code expects", () => {
 describe("#713 DocHygiene: stamps through lib/frontmatter, add-only", () => {
   /** A doc whose path trips none of the hook's SKIP_PATTERNS. */
   function doc(contents: string): { dir: string; path: string; payload: string } {
-    const dir = scratch("dh");
+    const dir = unskippedScratch("dh");
     const path = join(dir, "GUIDE.md");
     writeFileSync(path, contents);
-    // If the scratch root ever lands under `/tmp/`, the hook SKIPS it and
-    // every stamp case below would go green having stamped nothing. Asserted
-    // so that configuration change is red instead of invisible.
-    expect(path.includes("/tmp/"), "scratch root is skipped by the hook itself").toBe(false);
+    // The premise, checked against the hook's whole list rather than one
+    // literal from it. A skipped path makes every stamp case below green
+    // having stamped nothing, so this has to be red instead of invisible —
+    // and before #1426 it only covered `/tmp/`, one entry of ten.
+    for (const pattern of hookSkipPatterns()) {
+      expect(path.includes(pattern), `scratch root is skipped by the hook's own "${pattern}"`).toBe(
+        false,
+      );
+    }
     return { dir, path, payload: JSON.stringify({ tool_name: "Write", tool_input: { file_path: path } }) };
   }
+
+  // The premise check above reads a list out of a file, so it is vacuous if
+  // the read comes back empty — ten assertions over zero patterns is zero
+  // assertions, and every stamp row would be green for the reason this
+  // issue exists. Name a member the list must contain.
+  test("CONTROL: the skip list this fixture reads is non-empty and real", () => {
+    const patterns = hookSkipPatterns();
+    expect(patterns.length, "SKIP_PATTERNS was read as empty, so the premise check asserts nothing")
+      .toBeGreaterThan(1);
+    expect(patterns, "the `/tmp/` entry the original comment named is gone").toContain("/tmp/");
+    expect(
+      patterns,
+      "`.claude/worktrees/` left the list — the premise check may now be measuring nothing",
+    ).toContain(".claude/worktrees/");
+  });
 
   test("WITNESS: a doc with no frontmatter gets the three inferable fields", () => {
     // Three, not four, since #1119. `owner:` left this set because it is the
@@ -459,7 +530,7 @@ describe("#713 DocHygiene: stamps through lib/frontmatter, add-only", () => {
   });
 
   test("CONTROL: a non-markdown file is untouched", () => {
-    const dir = scratch("dh-nonmd");
+    const dir = unskippedScratch("dh-nonmd");
     try {
       const path = join(dir, "data.json");
       writeFileSync(path, "{}\n");
