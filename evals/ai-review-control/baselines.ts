@@ -145,6 +145,23 @@ export function loadVarianceCapture(name: string, dir?: string): VarianceCapture
       `${BASELINE_REFUSED}: ${path} has no \`libTree\`, so nothing records which adjudicator code ran.`,
     );
   }
+  // The equality below establishes that the two fields AGREE, not that either
+  // one is a tree hash — `"x" === "x"` satisfied it, and so did the 40-character
+  // non-hex placeholder this file's own fixture used. A forged or truncated
+  // artefact is internally consistent by construction, which is precisely the
+  // input the comparison was built to refuse, so the SHAPE has to be
+  // established before the comparison carries any meaning. Same defect as
+  // #1320 one layer down: there the pin named the wrong tree, here it need not
+  // name a tree at all.
+  for (const field of ["libTree", "originMainLibTree"] as const) {
+    if (!/^[0-9a-f]{40}$/.test(raw[field]!)) {
+      throw new Error(
+        `${BASELINE_REFUSED}: ${path} records \`${field}\` as \`${raw[field]}\`, which is not a ` +
+          "40-character tree hash. Two fields agreeing is not provenance unless each one is an identifier.",
+      );
+    }
+  }
+
   if (raw.libTree !== raw.originMainLibTree) {
     throw new Error(
       `${BASELINE_REFUSED}: ${path} ran with lib/ at ${raw.libTree} while origin/main's was ` +

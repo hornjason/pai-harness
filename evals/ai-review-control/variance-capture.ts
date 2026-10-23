@@ -454,11 +454,20 @@ export interface SameTreeReading {
 /**
  * The two attempts got the SAME prompt.
  *
- * Unequal rounds switch `atCapInstruction` and widen the prior-findings set
- * fed in to suppress repeats, so the input differed and the pair measures
- * nothing about the verifier. rg-1187-jury proposed this confound for all
- * three pairs; the resolved round lines show it applies to exactly one, and
+ * Unequal rounds switch `atCapInstruction`, so the input differed and the pair
+ * measures nothing about the verifier. rg-1187-jury proposed this confound for
+ * all three pairs; the resolved round lines show it applies to exactly one, and
  * that one carries by far the largest turn spread.
+ *
+ * This docblock previously added "and widen the prior-findings set fed in to
+ * suppress repeats", which is false and was shipped in #1329. There is no
+ * carry-forward: the round file written by the workflow holds exactly
+ * `review_round`, `round_budget` and `round_budget_spent`, the reviewer's
+ * prompt says nothing carries findings forward (#1255), and the workflow's
+ * only mention of `carryForward` is a comment saying narrowing stays unsafe
+ * UNTIL something re-emits prior findings. The instruction switch alone is
+ * sufficient to disqualify the pair; the second reason was doing reinforcing
+ * work in an argument and was not real. Caught by rg-1187-jury.
  */
 export const promptHeld = (r: SameTreeReading): boolean => r.rounds[0] === r.rounds[1];
 
