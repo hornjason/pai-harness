@@ -1296,8 +1296,47 @@ export const AI_REVIEW_SETUP_BUN_STEP_NAME = "Install bun for the findings adjud
  * repository-global, `run_attempt` counts re-runs of one run, and
  * `pull_request.commits` counts commits — which in this repository is not a
  * round count at all, because branches are amended and rebased between
- * rounds. The only thing that IS a review round is a completed run of this
- * workflow on this pull request, so that is what the step counts.
+ * rounds. The nearest readable thing is a run of this workflow on this pull
+ * request, so that is what the step counts.
+ *
+ * ## It counts RUNS, and a run is an UPPER BOUND on a review (#1295)
+ *
+ * This paragraph used to say the thing the step counts IS a review round. It
+ * is not, and #1295 was right to report the contradiction. A run of this
+ * workflow in which nobody reviewed anything still appears in the list — the
+ * action's own workflow-validation guard exits SUCCESS having written no
+ * payload, a crash around the write ends in the UNMEASURED routes
+ * `buildReportScript` enumerates, and an override-labelled pull request is
+ * WAIVED. So `round` is the number of runs, which is at least the number of
+ * reviews and may be more.
+ *
+ * **No filter on the runs query narrows it, and the obvious one makes things
+ * worse.** Measured against the live API on 2026-10-23 and pinned in `AC-S8`:
+ *
+ *  - `status=completed`, the repair #1295 names, subtracts exactly ONE run on
+ *    a first round — this one, which is `in_progress` and which the step
+ *    counts on purpose. Two live first-round reviews read `1` without the
+ *    term and `0` with it, and `0` is already refused by the fail-closed case
+ *    below. The cheapest fix turns every first review into a hard red.
+ *  - `cancelled` and `skipped`, the other states #1295 enumerates, have never
+ *    occurred here: 0 and 0 of 622 `pull_request` runs of this workflow.
+ *  - A conclusion filter is wrong in both directions. Over the 40 most recent
+ *    completed runs, read through their check-run annotations: 24 success
+ *    with a review, 4 success without, 7 failure with, 5 failure without. A
+ *    blocking verdict fails the check and IS a review; a guard skip passes it
+ *    and is not. `status=success` would drop 7 real reviews and keep 4
+ *    non-reviews.
+ *
+ * "A review happened" is a property of the findings payload, not of the run,
+ * exactly as #1295 says. The one reading of it available from outside the job
+ * is the `${AI_REVIEW_ADJUDICATED_TITLE}` notice, which #1087 added so this
+ * question needs no log download — but reaching it costs two requests per
+ * prior run (the check suite's check runs, then that check run's annotations)
+ * and a `checks: read` the job does not hold, against the one request and
+ * `actions: read` it does. So the count stays an upper bound here, and the
+ * bound errs in the safe direction: too many rounds ends re-litigation early,
+ * while an under-count is a cap that never fires, which is the state
+ * `reReviewDecision` refuses by design.
  *
  * ## The permission, and the objection already recorded against it
  *
@@ -2879,12 +2918,23 @@ export function buildAuthDetectStep(vertex: VertexCiDecision, indent = "      ")
  * before its first job starts — so the count is the round number and not the
  * number of rounds before it.
  *
- * Three things it deliberately does not do:
+ * It is an UPPER BOUND on the reviews this pull request has had, not a count
+ * of them: see `AI_REVIEW_ROUNDS_STEP_ID`'s docblock for what a run can be
+ * without being a review, and for the measurements showing that no filter on
+ * this query narrows it (#1295).
+ *
+ * Four things it deliberately does not do:
  *
  *  - **It does not use `jq`.** `grep -o` over `"total_count":<digits>` is
  *    enough for one top-level integer, and the one assumption #803 raised
  *    against `actions: read` that still applies here is a runner whose
  *    tooling the consumer chooses.
+ *  - **It does not send a `status=` term, and must not grow one.** The runs
+ *    API takes one status OR conclusion per query, and every value of it
+ *    makes this reading worse rather than better — `AC-S8` in
+ *    test/ai-review-rounds-step.test.ts runs the measured first-round case
+ *    through a `curl` that honours the term and watches `status=completed`
+ *    drive the step into its own zero-refusal (#1295).
  *  - **It does not fall back.** No default round, no "assume 1". See
  *    `AI_REVIEW_ROUNDS_STEP_ID`'s docblock for why this one state is red
  *    where the credential states warn.
