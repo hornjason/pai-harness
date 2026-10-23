@@ -354,12 +354,42 @@ describe("#1413: the repository is parsed from origin, never assumed", () => {
     expect(repoSlug("https://github.com/hornjason/pai-harness/\n")).toBe("hornjason/pai-harness");
   });
 
+  test("ssh:// and a bare git@ host both resolve", () => {
+    expect(repoSlug("ssh://git@github.com/hornjason/pai-harness.git")).toBe("hornjason/pai-harness");
+    expect(repoSlug("github.com:hornjason/pai-harness.git")).toBe("hornjason/pai-harness");
+  });
+
   test("a non-GitHub remote is null, not a guess", () => {
     // A slug guessed off the wrong host would make `gh` answer "no pull
     // request" with total confidence, which reads as landed.
     expect(repoSlug("https://gitlab.com/x/y.git")).toBeNull();
     expect(repoSlug("/Users/jhorn/Projects/some-local-clone")).toBeNull();
     expect(repoSlug("")).toBeNull();
+    expect(repoSlug("   ")).toBeNull();
+  });
+
+  /**
+   * The host is COMPARED, not pattern-matched.
+   *
+   * Raised by a push review on PR #1436. The first version of `repoSlug`
+   * was unanchored, so `github.com` anywhere in the URL satisfied it. The
+   * slug is the key a file claim is recorded and released under, so two
+   * remotes resolving to one slug is two projects sharing a lock namespace
+   * — a lock released on a key its holder never took.
+   *
+   * The two rows that ALREADY returned null are here on purpose. Without
+   * them a later rewrite can lose that behaviour silently, which is the
+   * same reason `test/census-routing.test.ts` keeps its non-firing paths.
+   */
+  test.each([
+    ["https://gitlab.com/github.com/org/repo.git", "a github.com PATH SEGMENT on another host"],
+    ["https://mygithub.com/org/repo.git", "a host whose name merely ends in github.com"],
+    ["https://github.com@evil.com/org/repo.git", "github.com as USERINFO, not the host"],
+    ["https://github.com./org/repo.git", "a trailing dot makes it a different host"],
+    ["git@gitlab.com:org/repo.git", "the scp-like form on another host"],
+    ["https://notgithub.com/org/repo.git", "a host with github.com as a suffix of one label"],
+  ])("%s is null — %s", url => {
+    expect(repoSlug(url)).toBeNull();
   });
 });
 

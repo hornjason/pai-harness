@@ -134,10 +134,49 @@ function defaultBranch(project: string): string {
  * Read rather than configured, and `null` rather than a guess: every owner
  * is UNMEASURED if this cannot be resolved, because a `gh` call against the
  * wrong repository would answer "no pull request" with total confidence.
+ *
+ * ## The host is compared, not pattern-matched
+ *
+ * Raised by a push review on this pull request. The first version was
+ * `/github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?\/?$/` — unanchored, so
+ * `github.com` ANYWHERE in the URL satisfied it:
+ *
+ *     https://gitlab.com/github.com/org/repo.git   ->  "org/repo"   WRONG
+ *     https://mygithub.com/org/repo.git            ->  "org/repo"   WRONG
+ *
+ * That matters more here than it would elsewhere. This slug is the key a
+ * file claim is recorded and released under, so two different remotes
+ * resolving to one slug is two projects sharing one lock namespace — and a
+ * lock released on a key its holder never took is the exact fail-open the
+ * mechanism exists to prevent.
+ *
+ * Two arms, one per syntax, because `new URL()` is the right instrument for
+ * a URL and does not accept `git@github.com:owner/repo.git` at all. One
+ * regex covering both is how the first one ended up unanchored. Parsing the
+ * URL form also answers `https://github.com@evil.com/…` and
+ * `https://github.com./…` structurally rather than by adding patterns.
  */
 export function repoSlug(originUrl: string): string | null {
-  const m = /github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(originUrl.trim());
-  return m === null ? null : `${m[1]}/${m[2]}`;
+  const raw = originUrl.trim();
+  if (raw === "") return null;
+
+  const onGitHub = (host: string, path: string): string | null => {
+    if (host.toLowerCase() !== "github.com") return null;
+    const m = /^\/?([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(path);
+    return m === null ? null : `${m[1]}/${m[2]}`;
+  };
+
+  // scp-like: `git@github.com:owner/repo.git`. The lookahead keeps
+  // `https://…` out of this arm — there the colon is followed by a slash.
+  const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(raw);
+  if (scp !== null) return onGitHub(scp[1], scp[2]);
+
+  try {
+    const url = new URL(raw);
+    return onGitHub(url.hostname, url.pathname);
+  } catch {
+    return null;
+  }
 }
 
 /**
