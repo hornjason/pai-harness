@@ -757,10 +757,37 @@ export function normaliseRepoPath(value: unknown): string | null {
   let p = value.trim().replace(/\\/g, "/");
   // git's C-quoted spelling. Not comparable without a second unescaper.
   if (p.startsWith('"') && p.endsWith('"')) return null;
-  p = p
-    .replace(/^\.\//, "")
-    .replace(/^\/+/, "")
-    .replace(/:\d+(?::\d+)?$/, "");
+  p = p.replace(/^\/+/, "").replace(/:\d+(?::\d+)?$/, "");
+
+  // Dot segments are COLLAPSED, not stripped once. `.replace(/^\.\//, "")`
+  // removes one leading `./` and leaves `././lib/a.ts` as `./lib/a.ts`, which
+  // the shape test below accepts — `.` and `..` are both legal matches for
+  // `[\w.@+-]+`. Measured on this file before the fix:
+  //
+  //   "././lib/mine.ts"    -> "./lib/mine.ts"
+  //   "lib/./mine.ts"      -> "lib/./mine.ts"
+  //   "lib/../lib/mine.ts" -> "lib/../lib/mine.ts"
+  //
+  // Each compares unequal to `lib/mine.ts`, so a blocking finding naming the
+  // file in one of those spellings was demoted to Pre-existing against a
+  // change list that contained it — the same fail-open round one shipped,
+  // in a narrower spelling. Found by the push review on this branch.
+  //
+  // A `..` that would leave the repository root is refused rather than
+  // clamped: `../outside.ts` is not a repository-relative path, and turning
+  // it into `outside.ts` invents a file this change may well have touched.
+  const out: string[] = [];
+  for (const segment of p.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (out.pop() === undefined) return null;
+      continue;
+    }
+    out.push(segment);
+  }
+  p = out.join("/");
+  if (p === "") return null;
+
   return /^(?:[\w.@+-]+\/)*[\w.@+-]+$/.test(p) ? p.toLowerCase() : null;
 }
 

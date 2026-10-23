@@ -1114,6 +1114,40 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
     }
   });
 
+  test("B7-11b: dot segments COLLAPSE — one strip is a bypass, not a normalisation", () => {
+    // Round two's own fail-open, found by the push review. Measured on this
+    // file before the fix, against a list containing `lib/mine.ts`:
+    //
+    //   "././lib/mine.ts"    -> "./lib/mine.ts"
+    //   "lib/./mine.ts"      -> "lib/./mine.ts"
+    //   "lib/../lib/mine.ts" -> "lib/../lib/mine.ts"
+    //
+    // `.replace(/^\.\//, "")` strips ONE leading `./`, and `.` and `..` are
+    // both legal matches for `[\w.@+-]+`, so each survived the shape test,
+    // compared unequal to the path it names, and demoted a critical finding
+    // to CLEAN. B7-11's four spellings all happened to be one-step fixes.
+    for (const file of [
+      "././lib/mine.ts",
+      "./././lib/mine.ts",
+      "lib/./mine.ts",
+      "lib/../lib/mine.ts",
+      "./lib/../lib/./mine.ts",
+      "lib//mine.ts",
+    ]) {
+      const r = undecidable(file);
+      expect(r.outcome, `file: ${JSON.stringify(file)}`).toBe("BLOCKED");
+      expect(r.blockingReported, `file: ${JSON.stringify(file)}`).toHaveLength(1);
+    }
+  });
+
+  test("B7-11c: a `..` leaving the repository root is refused, not clamped", () => {
+    // Clamping `../outside.ts` to `outside.ts` would invent a path, and the
+    // invented one may well be in the change list. Undecidable keeps blocking.
+    for (const file of ["../outside.ts", "lib/../../outside.ts", ".."]) {
+      expect(undecidable(file).outcome, `file: ${file}`).toBe("BLOCKED");
+    }
+  });
+
   test("B7-12: a trailing :line or :line:col is stripped before comparing", () => {
     for (const file of ["lib/mine.ts:12", "lib/mine.ts:12:4"]) {
       expect(undecidable(file).outcome, `file: ${file}`).toBe("BLOCKED");
