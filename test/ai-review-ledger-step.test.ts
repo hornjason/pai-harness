@@ -50,13 +50,27 @@ import {
   AI_REVIEW_LEDGER_MAX_ROUNDS,
   AI_REVIEW_LEDGER_PR_VAR,
   AI_REVIEW_LEDGER_REPO_VAR,
+  AI_REVIEW_LEDGER_ROUNDS_FIELD,
   AI_REVIEW_LEDGER_SHA_VAR,
+  AI_REVIEW_LEDGER_TRUNCATED_FIELD,
   AI_REVIEW_LEDGER_TOKEN_VAR,
   AI_REVIEW_PERSIST_STEP_ID,
   AI_REVIEW_ROUND_PATH_VAR,
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step";
 import { readAiReviewFindings } from "../lib/scaffold/ai-review-findings";
+// The reader, imported by the TEST only. Neither production file imports the
+// other — the step stays import-free because mutation batteries copy it into
+// a tmpdir — so an agreement about field names has to be asserted somewhere,
+// and the only honest place is where both can be run against each other.
+import {
+  AI_REVIEW_LEDGER_READ,
+  AI_REVIEW_LEDGER_ROUNDS_KEY,
+  AI_REVIEW_LEDGER_TRUNCATED_KEY,
+  AI_REVIEW_TRUNCATION_STATED,
+  AI_REVIEW_TRUNCATION_UNKNOWN,
+  readLedger,
+} from "../lib/ai-review-rounds";
 import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
 
 /**
@@ -94,15 +108,20 @@ function botComment(id: number, body: string) {
 }
 
 /** A comment body in the ledger's own format, holding `rounds`. */
-function ledgerBody(rounds: unknown[]): string {
+function ledgerBody(payload: unknown): string {
   return [
     AI_REVIEW_LEDGER_MARKER,
     "### AI review findings ledger",
     "",
     "```json",
-    JSON.stringify(rounds),
+    JSON.stringify(payload),
     "```",
   ].join("\n");
+}
+
+/** A ledger in the windowed shape this step writes from #1405 onward. */
+function windowBody(rounds: unknown[], over: Record<string, unknown> = {}): string {
+  return ledgerBody({ [AI_REVIEW_LEDGER_ROUNDS_FIELD]: rounds, ...over });
 }
 
 interface Rig {
@@ -319,14 +338,24 @@ function runPersist(rig: Rig = {}) {
     const argv = existsSync(argvPath) ? readFileSync(argvPath, "utf8").split("\n").filter(Boolean) : [];
     const sentRaw = existsSync(bodyPath) ? readFileSync(bodyPath, "utf8") : null;
     // What the ledger comment would say, parsed back out of the request.
+    // TWO SHAPES (#1405). The bare array is what this step used to write and
+    // what fixtures still plant as a legacy ledger; `{rounds, truncated}` is
+    // what it writes now. `doc` is the whole document so a case can assert on
+    // the field's PRESENCE, which is the distinction the window count exists
+    // to carry — an absent `truncated` is "unknown", never zero.
     let rounds: any[] | null = null;
+    let doc: any = undefined;
     if (sentRaw !== null) {
       const body = JSON.parse(sentRaw).body as string;
       const fenced = body.split("```json")[1]?.split("```")[0];
-      rounds = fenced === undefined ? null : JSON.parse(fenced);
+      doc = fenced === undefined ? null : JSON.parse(fenced);
+      if (Array.isArray(doc)) rounds = doc;
+      else if (doc !== null && typeof doc === "object" && Array.isArray(doc.rounds)) {
+        rounds = doc.rounds;
+      }
     }
     const method = argv.includes("PATCH") ? "PATCH" : argv.includes("POST") ? "POST" : null;
-    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", argv, rounds, method, sentRaw };
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", argv, rounds, doc, method, sentRaw };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1313,7 +1342,7 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
     // rounds it did not mention. A truncated history that reports as a
     // complete one is unrecoverable; a round that was not recorded is not.
     const real = buildPersistScript();
-    const COUNT_EXPR = "(([($g | length) - $keep, 0] | max) | tostring)";
+    const COUNT_EXPR = "($d | tostring)";
     expect(
       real.split(COUNT_EXPR).length - 1,
       "the count expression moved — this row mutates a string that is no longer there",
@@ -1338,6 +1367,261 @@ describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", (
     });
     expect(control.method, "the unmutated script also refused").toBe("PATCH");
     expect(control.stdout).not.toContain("NOT recorded");
+  });
+});
+
+/**
+ * AC-L15 (#1405): the ledger says on its face that it is a WINDOW.
+ *
+ * The cap evicts, and the only notice is a warning annotation in a job log
+ * that expires. So the notice reaches whoever watched that run and nobody
+ * afterwards, and a twelve-round ledger that dropped eight reads exactly
+ * like a twelve-round ledger that is the whole history. That is #1168's
+ * distinction — gone is not empty — one level up, about the ledger rather
+ * than about a round.
+ *
+ * The reader half merged in #1410 and accepts both shapes already. This is
+ * the writer.
+ *
+ * Three facts have to stay apart, and only two of them are numbers:
+ *
+ *  - **0** — nothing was ever dropped. A fresh pull request, and also a
+ *    legacy bare array SHORTER than the cap, because the list only grows by
+ *    one per round and is only ever cut at the cap, so a length below it
+ *    means the cut never ran. That is a derivation, not an assumption.
+ *  - **N** — exactly N were dropped, carried forward and added to.
+ *  - **absent** — the depth cannot be established. A legacy array adopted at
+ *    exactly the cap: this round's eviction is known and the ones before it
+ *    are not. Writing the lower bound here would be a number a reader cannot
+ *    tell from a total.
+ */
+describe("AC-L15 (#1405): the window count is written, and unknown is not zero", () => {
+  const entry = (over: Record<string, unknown> = {}) => ({
+    at: "t",
+    sha: "cafe",
+    run: "old",
+    attempt: "1",
+    round: 1,
+    findings: [],
+    ...over,
+  });
+  const nRounds = (n: number) =>
+    Array.from({ length: n }, (_, i) => entry({ run: `old-${i}`, round: i + 1 }));
+
+  test("AC-L15: a first round states ZERO dropped, as a field and not as an absence", () => {
+    const r = runPersist({ list: [], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("POST");
+    expect(Object.hasOwn(r.doc, AI_REVIEW_LEDGER_TRUNCATED_FIELD)).toBe(true);
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(0);
+    expect(r.rounds).toHaveLength(1);
+  });
+
+  test("AC-L15: a legacy bare array UNDER the cap migrates to a stated zero", () => {
+    // Derived rather than assumed: a list below the cap was never cut.
+    const r = runPersist({ list: [botComment(5, ledgerBody(nRounds(3)))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("PATCH");
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(0);
+    expect(r.rounds, "the legacy rounds were discarded by the migration").toHaveLength(4);
+    expect(JSON.stringify(r.rounds)).toContain('"old-0"');
+  });
+
+  test("AC-L15: a legacy bare array AT the cap migrates to NO count, and says why", () => {
+    // The row that fails under `truncated: dropped-this-round`. That number
+    // is a lower bound, and a reader cannot tell a lower bound from a total.
+    const r = runPersist({
+      list: [botComment(5, ledgerBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("PATCH");
+    expect(
+      Object.hasOwn(r.doc, AI_REVIEW_LEDGER_TRUNCATED_FIELD),
+      `wrote ${JSON.stringify(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD])} for a depth it cannot know`,
+    ).toBe(false);
+    expect(Array.isArray(r.doc[AI_REVIEW_LEDGER_ROUNDS_FIELD])).toBe(true);
+    expect(r.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(r.stdout, "an unknowable depth was not announced").toContain("cannot be established");
+  });
+
+  test("AC-L15: an existing count under the cap is carried forward unchanged", () => {
+    const r = runPersist({
+      list: [botComment(5, windowBody(nRounds(2), { [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4 }))],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(4);
+    expect(r.rounds, "an object ledger's rounds were not read").toHaveLength(3);
+    expect(JSON.stringify(r.rounds)).toContain('"old-0"');
+    expect(r.stdout, "a drop was announced where none happened").not.toContain("OLDEST");
+  });
+
+  test("AC-L15: an eviction ADDS to the existing count, and the two numbers agree", () => {
+    // 4 already gone, 1 more this round, so 5 — and the warning says 1.
+    // Both come out of the same `jq`, which is the whole of #1394: two
+    // computations of one number are two numbers that can disagree.
+    const r = runPersist({
+      list: [
+        botComment(
+          5,
+          windowBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS), {
+            [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 4,
+          }),
+        ),
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD], "the count did not accumulate").toBe(5);
+    expect(r.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(JSON.stringify(r.rounds), "the oldest round survived the cap").not.toContain('"old-0"');
+    expect(r.stdout, "the announced drop is this round's, not the total").toContain(
+      "1 of the OLDEST",
+    );
+  });
+
+  test("AC-L15: a malformed count is UNKNOWN, never zero, and the rounds survive", () => {
+    const r = runPersist({
+      list: [
+        botComment(5, windowBody(nRounds(2), { [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: "4" })),
+      ],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(
+      Object.hasOwn(r.doc, AI_REVIEW_LEDGER_TRUNCATED_FIELD),
+      "a count that could not be read was written as a number anyway",
+    ).toBe(false);
+    expect(r.rounds, "a bad count discarded the rounds").toHaveLength(3);
+  });
+
+  test("AC-L15: an object whose rounds is not an array is REFUSED, not replaced", () => {
+    const r = runPersist({
+      list: [botComment(5, ledgerBody({ [AI_REVIEW_LEDGER_ROUNDS_FIELD]: "nope" }))],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "an unreadable ledger was overwritten").toBe(null);
+    expect(r.stdout).toContain("NOT recorded");
+  });
+
+  test("AC-L15: the control — what this step writes is what the reader reads", () => {
+    // The two sides have no import between them, so the agreement is only
+    // real if something runs one against the other.
+    const under = runPersist({ list: [botComment(5, ledgerBody(nRounds(3)))], payload: ONE_FINDING });
+    const atCap = runPersist({
+      list: [botComment(5, ledgerBody(nRounds(AI_REVIEW_LEDGER_MAX_ROUNDS)))],
+      payload: ONE_FINDING,
+    });
+    const bodyOf = (sent: string | null) => JSON.parse(sent!).body as string;
+
+    const stated = readLedger(bodyOf(under.sentRaw));
+    if (stated.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(stated));
+    expect(stated.truncation.status).toBe(AI_REVIEW_TRUNCATION_STATED);
+    if (stated.truncation.status !== AI_REVIEW_TRUNCATION_STATED) throw new Error("unreachable");
+    expect(stated.truncation.dropped).toBe(0);
+    expect(stated.rounds).toHaveLength(4);
+
+    const unknown = readLedger(bodyOf(atCap.sentRaw));
+    if (unknown.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(unknown));
+    expect(unknown.truncation.status).toBe(AI_REVIEW_TRUNCATION_UNKNOWN);
+    expect(unknown.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+  });
+
+  test("AC-L15: the two sides spell the field names identically, with no import between them", () => {
+    const script = buildPersistScript();
+    expect(AI_REVIEW_LEDGER_ROUNDS_FIELD).toBe(AI_REVIEW_LEDGER_ROUNDS_KEY);
+    expect(AI_REVIEW_LEDGER_TRUNCATED_FIELD).toBe(AI_REVIEW_LEDGER_TRUNCATED_KEY);
+    expect(script).toContain(`{${AI_REVIEW_LEDGER_TRUNCATED_FIELD}: $t, ${AI_REVIEW_LEDGER_ROUNDS_FIELD}: .}`);
+    expect(script, "the step imports the reader, so the agreement is vacuous").not.toContain(
+      "ai-review-rounds",
+    );
+  });
+
+  // AC-4 (#1405): the row that is red when the RECORDED count is wrong.
+  //
+  // Every other row above compares the written count against a number
+  // written beside it in this file, so each one is only as right as the
+  // expectation someone typed next to it. A count that is consistently
+  // wrong — off by one, or this round's drop instead of the total — agrees
+  // with a hand-written expectation that made the same mistake, and nine
+  // green rows say nothing about it.
+  //
+  // This row derives the truth from the loop counter instead. Drive the
+  // real step through more rounds than the cap holds, feeding each output
+  // back in as the next round's prior ledger, and one equality has to hold
+  // at every step for the count to mean what it says:
+  //
+  //     truncated + retained == rounds written so far
+  //
+  // Nothing in the step computes that sum, and the right-hand side is the
+  // iteration index, so no mutation of the writer can satisfy it by
+  // accident. The second assertion is the same law stated over the
+  // announcements: the warnings a human read, one per run, have to add up
+  // to the number the ledger carries for whoever arrives later. That is
+  // #1394's "one computation, not two" extended across time — the two
+  // sites now being this round's annotation and the running total.
+  test("AC-L15/AC-4: across a sequence past the cap, truncated + retained is every round written", () => {
+    // Eight past the cap, and the eight is load-bearing. The deepest count
+    // any row above asserts is 5, so a writer that is correct up to 5 and
+    // drifts after it is green on every one of them. Running past the
+    // deepest typed number is the only part of this that the other rows
+    // cannot reach — measured: the drift mutant below is red here and
+    // nowhere else.
+    const ROUNDS = AI_REVIEW_LEDGER_MAX_ROUNDS + 8;
+    let body: string | null = null;
+    let announced = 0;
+
+    for (let i = 1; i <= ROUNDS; i++) {
+      const runId = `seq-${i}`;
+      const r = runPersist({
+        list: body === null ? [] : [botComment(5, body)],
+        payload: ONE_FINDING,
+        round: String(i),
+        env: {
+          GITHUB_RUN_ID: runId,
+          STUB_WRITE_RESPONSE: JSON.stringify({ id: 5, body: `${runId} ok` }),
+        },
+      });
+      expect(r.status, `round ${i}: ${r.stderr}`).toBe(0);
+      expect(r.sentRaw, `round ${i} wrote nothing`).not.toBeNull();
+
+      const recorded = r.doc?.[AI_REVIEW_LEDGER_TRUNCATED_FIELD];
+      expect(typeof recorded, `round ${i} recorded no count`).toBe("number");
+      expect(
+        recorded + (r.rounds?.length ?? 0),
+        `round ${i}: ${recorded} dropped + ${r.rounds?.length} kept is not ${i} written`,
+      ).toBe(i);
+      expect(r.rounds).toHaveLength(Math.min(i, AI_REVIEW_LEDGER_MAX_ROUNDS));
+
+      const said = r.stdout.match(/(\d+) of the OLDEST/);
+      announced += said === null ? 0 : Number(said[1]);
+      expect(announced, `round ${i}: the warnings total ${announced}, the ledger says ${recorded}`).toBe(
+        recorded,
+      );
+
+      body = JSON.parse(r.sentRaw!).body as string;
+    }
+
+    // Stated as an absolute so a loop that silently ran zero times cannot
+    // pass this: five rounds are gone and the cap's worth remain.
+    const last = readLedger(body!);
+    if (last.status !== AI_REVIEW_LEDGER_READ) throw new Error(JSON.stringify(last));
+    if (last.truncation.status !== AI_REVIEW_TRUNCATION_STATED) {
+      throw new Error(`the reader could not get a count back: ${JSON.stringify(last.truncation)}`);
+    }
+    expect(last.truncation.dropped).toBe(ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(last.rounds).toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(announced).toBe(ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS);
+    // The window really is a window, and it is the OLDEST that went: the
+    // five that the count claims are gone are the five it names.
+    expect(last.rounds.map((entry: { round?: unknown }) => entry.round)).toEqual(
+      Array.from(
+        { length: AI_REVIEW_LEDGER_MAX_ROUNDS },
+        (_, i) => ROUNDS - AI_REVIEW_LEDGER_MAX_ROUNDS + 1 + i,
+      ),
+    );
   });
 });
 
