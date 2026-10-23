@@ -37,7 +37,7 @@
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -440,11 +440,23 @@ describe("#1363: a block declares which namespace its integers belong to", () =>
     expect(tagged).toBe(HIGH + 1);
   });
 
-  test("the four live blocks allocate exactly what they allocate today", () => {
+  test("the live blocks allocate exactly what they allocate today", () => {
     // The backward-compatibility control, run against the SHIPPED store
-    // rather than a fixture, because the acceptance bullet is about these
-    // four entries specifically. None of them carries a namespace.
-    const r = readScReservations(join(import.meta.dir, ".."));
+    // rather than a fixture, because the acceptance bullet is about the live
+    // entries specifically.
+    //
+    // **The population is derived from the store, not counted here** (#1467).
+    // It used to assert `b.namespace === "SC"` for every live block, over a
+    // store in which none carried the field — so the first entry that
+    // declared one reddened this row, and the repair that suggests itself is
+    // to drop the loop. That would delete the backward-compatibility reading
+    // the row exists for. The loop below re-reads the raw JSON instead and
+    // asserts the resolution in both directions, which is strictly more than
+    // it checked before: an ABSENT `namespace` must come back `SC`, and a
+    // DECLARED one must come back unchanged. Neither side is vacuous —
+    // asserting `b.namespace` against itself would be.
+    const root = join(import.meta.dir, "..");
+    const r = readScReservations(root);
     expect(r.status).toBe("read");
     const ceiling = reservedCeiling(r.blocks);
     expect(ceiling, "the live store declares no blocks").toBeGreaterThan(0);
@@ -452,8 +464,24 @@ describe("#1363: a block declares which namespace its integers belong to", () =>
       allocateAgainstReservations(1, r.blocks, null, new Set()),
       "an untagged live block stopped binding the allocator",
     ).toBe(ceiling + 1);
-    for (const b of r.blocks) {
-      expect(b.namespace, `${b.owner}: the reader left the namespace unresolved`).toBe("SC");
+
+    const raw = JSON.parse(readFileSync(join(root, "specs", "sc-reservations.json"), "utf-8")) as {
+      reservations: Array<{ owner: string; namespace?: string }>;
+    };
+    expect(raw.reservations.length, "the reader and the file disagree about how many blocks there are")
+      .toBe(r.blocks.length);
+    const untagged = raw.reservations.filter(e => e.namespace === undefined);
+    expect(untagged.length, "no untagged block is left, so the absent-means-SC default is unexercised here")
+      .toBeGreaterThan(0);
+    for (const declared of raw.reservations) {
+      const block = r.blocks.find(b => b.owner === declared.owner);
+      expect(block, `${declared.owner}: the reader dropped a declared block`).toBeDefined();
+      expect(
+        block!.namespace,
+        declared.namespace === undefined
+          ? `${declared.owner}: an absent namespace did not resolve to SC`
+          : `${declared.owner}: the reader rewrote a declared namespace`,
+      ).toBe(declared.namespace ?? "SC");
     }
   });
 

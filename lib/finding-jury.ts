@@ -370,6 +370,43 @@ export interface JuryReading {
   agree: number;
   quorum: number;
   groupSize: number;
+  /**
+   * Every verifier's vote, as cast, in ballot order (#1467, CRC-B4).
+   *
+   * **The counts above are a summary and this is the record.** Before this
+   * field existed, `juryReading` was handed `VerifierVote[]` and returned two
+   * integers, so a reading saying *2 of 3* could not say which two agreed or
+   * what the third's objection was — and a ledger row built from it carried
+   * the same hole. CRC-B4 asks for the individual votes specifically because
+   * *"re-running to recover the votes re-samples the thing being measured"*: a
+   * verifier is a sampled instrument, so the second ballot is a second draw
+   * and not a recovery of the first.
+   *
+   * Carried on an UNMEASURED reading too. A ballot that could not be counted
+   * is still a ballot that was cast, and the votes on it are the only record
+   * that a group was convened at all.
+   *
+   * What it is NOT: evidence the verifiers were independent. Three agent runs
+   * behind three ids look exactly like three agents — see this module's
+   * header.
+   */
+  ballot: readonly VerifierVote[];
+  /**
+   * Did any verifier dissent from any other?
+   *
+   * **Arithmetically derivable from `agree` and `votes`, and a field anyway**,
+   * which is worth stating plainly rather than overselling: it carries no
+   * information those two do not. It is first-class for two reasons. CRC-B4
+   * names it as one, at decision time — and a consumer computing
+   * `agree > 0 && agree < votes` for itself is a second decider over one
+   * question, which is the fourth shape in
+   * `.claude/rules/checks-must-be-able-to-fail.md`: two deciders that agree
+   * are behaviourally one, and nothing can tell which of them is dead.
+   *
+   * The half that genuinely cannot be recovered from the counts is `ballot`
+   * above — *which* verifier dissented, and on what reasoning.
+   */
+  disagreed: boolean;
   unmeasuredReasons: string[];
 }
 
@@ -400,7 +437,17 @@ export function juryReading(votes: readonly VerifierVote[], config: JuryConfig =
   const groupSize = config.groupSize ?? VERIFIER_GROUP_SIZE;
   const quorum = config.quorum ?? VERIFIER_QUORUM;
   const agree = votes.filter(v => v.real).length;
-  const base = { votes: votes.length, agree, quorum, groupSize };
+  // Written here and on every return below, so there is no path out of this
+  // function that produces a reading without the ballot that made it. A
+  // refused reading needs it most: it is the only record the group met.
+  const base = {
+    votes: votes.length,
+    agree,
+    quorum,
+    groupSize,
+    ballot: [...votes],
+    disagreed: agree > 0 && agree < votes.length,
+  };
   const unmeasuredReasons: string[] = [];
 
   if (quorum * 2 <= groupSize || quorum < 1) {
