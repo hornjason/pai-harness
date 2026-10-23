@@ -77,7 +77,7 @@ implementation.
 
 - [ ] CRC-B1: The reviewer reads the diff against the whole repo **and the PR's stated intent**.
 - [ ] CRC-B2: On a bug fix, the reviewer looks for the root cause.
-- [ ] CRC-B3: **Several agents look for bugs at the same time** (parallel generation).
+- [ ] CRC-B3: **Several agents look for bugs at the same time** (parallel generation). **Not an unqualified good here, and the qualification is CRC-B4's, pointed the other way.** The reviewer is a *sampled* instrument, so N generators are N draws and they raise recall and the false-positive rate together. Measured on run `39962683401`: two attempts on merge commit `99d50fc`, both at round 5, with the tree, the head, the prompt and the model all held fixed, returned **BLOCKED then CLEAN** — and the blocking finding was false, claiming a routing row that was present at the reviewed head. So the disagreement a second draw buys has already been observed arriving in the costly direction. Under the source's priority that trade is worth taking; under ours it is not, because CRC-M8 is inverted here by declared decision and a false block costs a remedy commit, a CI round, a review round and an agent's whole context. **Parallel generation without CRC-B4's quorum behind it is therefore strictly worse than one generator** — it is N chances to block on a false positive with nothing filtering them — so this criterion is not adoptable before CRC-B4, and adopting it first would be measurable harm rather than partial progress.
 - [ ] CRC-B4: **A separate group of agents votes on each finding**, and it is surfaced only if enough agree it is real. The ledger records **every verifier's individual vote** and **whether the verifiers disagreed**, both as first-class fields written at decision time. Without them every threshold except the one actually used is permanently UNMEASURED, and re-running to recover the votes re-samples the thing being measured. **A reading the mechanism produces whether or not it works does not satisfy this criterion.** Measured: the deployed filing path takes no votes at all — a regex over the title and set arithmetic over symptom keys, with no clock, model or network — so a variance control over it reports a single distinct outcome set, zero variance, by construction, and the reading that looks most like success is the signature of the failure mode. **Nor does a reading that varies for a reason other than the mechanism under test** — name the mechanism the reading is of, not only the number it produced. Where the flattering reading is available by construction, the criterion names what would distinguish it from the real thing, or declares itself UNMEASURED.
 - [x] CRC-B5: Findings that are only **style, diagnostics or cleanup** are dropped.
 - [ ] CRC-B6: The filters are **A/B tested** against real PRs before being kept, **with variance bounded**. The reviewer is a sampled instrument, so two verdicts on the same code are two draws; an A/B that does not account for that is comparing noise.
@@ -155,11 +155,16 @@ Audited criterion by criterion on 2026-10-23, when **0 of 56 were ticked and
 there is nothing for it to drift from; the number below is what replaces that.
 
 Of the 56: **5 bound**, **8 where a mechanism exists that nothing in this
-repository can observe**, **1 declared deviation**, **42 not done**.
+repository can observe**, **4 that cannot be meaningful in this deployment**,
+**3 blocked on an owner decision**, **2 declared deviations**, **34 not done**.
 
-An unticked box is one of the last three, and they are different facts. The
-second is recorded here because an unticked box that nobody can ever tick
-looks exactly like work nobody has started.
+An unticked box is one of the last five, and they are five different facts.
+Four of them are recorded here because an unticked box nobody can ever tick,
+one waiting on a person, and one nobody has started all look identical, and
+only the last is work.
+
+The split is load-bearing rather than tidy: 42 unticked boxes read as 42
+pieces of engineering. Eight of them are not engineering at all.
 
 ### A mechanism exists; this repository cannot observe it
 
@@ -173,9 +178,52 @@ Do not tick these, and do not count them as remaining work either.
 | CRC-N3 | `REVIEW.md` asks for the class and not the line, and CRC-A6's check proves the reviewer read it. | Whether it complied is a property of a sampled model. No artefact records a finding the reviewer generalised. |
 | CRC-H1, CRC-H3, CRC-H4, CRC-H5 | Statements about human judgement. | Nothing distinguishes them being honoured from them being ignored. |
 
+### Cannot be meaningful in this deployment
+
+Four criteria that would measure a constant here. They are not debt, and
+leaving them in the remainder overstated it — but each says what would make
+it meaningful again, because three of the four turn on headcount and the
+fourth turns on a setting, and both can change.
+
+| Criterion | Why it is a constant here | What would make it meaningful |
+|---|---|---|
+| CRC-M9 — human-time metrics | Approvals per pull request is **0 by configuration**, not by behaviour: branch protection declares no `required_pull_request_reviews`. Median and p95 of a constant are the constant. | Requiring any human approval at all. This is a setting, not headcount — see the blocked row below. |
+| CRC-E5 — only trusted authors get the lighter paths | One human, one account. Every author is the trusted author, so the partition has one side. | A second author. |
+| CRC-E7 — whoever prompted the change counts as a reviewer | The prompter and the only possible reviewer are the same person, so the rule either waives review entirely or does nothing. | A second person. |
+| CRC-F2 — new behaviour ships to internal users first | There is one user, and this repository's only consumer of its own scaffold is itself. "Internal first" and "everyone" name the same set. | A second consumer, or an external one. |
+
+### Blocked on an owner decision, not on engineering
+
+Three criteria are satisfiable by **repository configuration** and cost no
+engineering. They are listed apart because "nobody has built it" and
+"somebody has to decide" are different debts, and the second does not get
+smaller by working on it.
+
+All three are also unobservable from inside this tree for the same reason
+CRC-C2 is — they are GitHub state, not tree state. Binding any of them needs
+a check that reads the API, which is a design decision in its own right.
+
+| Criterion | The setting | What it closes |
+|---|---|---|
+| CRC-F1 — a merge queue re-runs every check against main | `strict: true`, or a merge queue. The `merge_group:` trigger is already generated and already handles the event. | `strict` is `false` today, so an armed pull request can merge green against a base it never ran against. **Caveat, stated rather than buried: a merge queue serialises merges**, which at this repository's concurrency may cost more than the hole. `strict: true` is the cheaper half and closes the same gap. And on `merge_group` the review annotates UNMEASURED and passes, so a queue re-runs `test` against main but not `ai-review` — "every check" would be half true. |
+| CRC-C3 — a false positive clears by closing the thread with a reason | `required_conversation_resolution`, currently `false`. | The native mechanism for "a finding blocks merge until it is dispositioned", which is also half of CRC-B8. |
+| CRC-E8 — an approval covers one specific commit | `required_pull_request_reviews` with `dismiss_stale_reviews`. | Nothing today: with no required reviews there is no approval to carry or dismiss. `gh pr merge --match-head-commit` is a convention agents follow by hand. |
+
+### Deliberately not adopted
+
+| Criterion | Reason in full |
+|---|---|
+| CRC-N2 — diff-only re-review | The deviations table below. Retirable once `carryForward` has a production caller; not before, and not by assertion. |
+| CRC-M8 — bugs first, rounds second | The deviations table below. The order is inverted here on purpose; the *enforcement* half is unbuilt either way. |
+
+**The deviations table is not this bucket, and the difference matters.** It
+carries a third row, CRC-B8, whose own text says *"This is the defect, not a
+deviation."* A criterion listed there under protest is not a decision to
+deviate, so CRC-B8 counts with the remainder below and these two do not.
+
 ### Not done — the remainder, with what is there instead
 
-42 criteria, listed because the near-misses are the expensive ones: each has
+34 criteria, listed because the near-misses are the expensive ones: each has
 something in the tree that resembles it and is not it.
 
 - **CRC-A1** `missingEvidenceViolations` requires a runnable command per AC and `gates/workflow.test.ts` enforces it — but only inside a harness ship run, and `ship.mode` is `direct`. Dormant on the lane this project ships on.
@@ -186,19 +234,15 @@ something in the tree that resembles it and is not it.
 - **CRC-A8** No path routes a repeated finding into a skill, a lint rule or an instruction file. `lib/rule-promotion.ts` promotes from compliance failures, not from review findings.
 - **CRC-B1** The prompt says to read the whole branch. It never hands the reviewer the pull request's stated intent.
 - **CRC-B2** The prompt says nothing about root cause on a bug fix.
-- **CRC-B3** One reviewer agent per round.
+- **CRC-B3** One reviewer agent per round. **Not adoptable before CRC-B4, and the criterion now says why**: N generators over a sampled instrument are N draws, and run `39962683401` is a same-tree pair that disagreed BLOCKED/CLEAN with a false positive on the blocking side. Without a quorum to filter them, parallel generation multiplies exactly that. Ordering, not absence of effort.
 - **CRC-B4** `lib/finding-jury.ts` has the group size, the quorum, per-verifier votes and a disagreement flag. `arbitrate`, the only path that reads them, has no caller outside `lib/`, `test/` and `scripts/arbitrate-finding.ts`. Nothing deployed takes a vote.
 - **CRC-B6** `compareReviewOutcomes` and `evals/ai-review-control/variance-capture.ts` exist. No filter has been A/B tested before being kept, and the variance control reads zero by construction — see below.
 - **CRC-B7** `SEVERITY_RANK` tags Important / Nit / Pre-existing. The deployed annotation renders findings in payload order, under the reviewer's own severity words, with no pre-existing tag.
 - **CRC-B8** Half. A duplicate or a dropped-category filing is refused at the chokepoint; ALLOW is still the default for a novel finding, and nothing requires any finding to be answered.
 - **CRC-B9** No per-repo review depth. `ceremonyTier` LIGHT / STANDARD / THOROUGH is the harness gate ceremony, a different axis.
-- **CRC-C3** The reviewer is told not to post comments and `required_conversation_resolution` is `false`. There is no thread to close with a reason.
-- **CRC-E1, CRC-E2, CRC-E3, CRC-E5, CRC-E7, CRC-E9** No risk tiers exist anywhere in the tree.
+- **CRC-E1, CRC-E2, CRC-E3, CRC-E9** No risk tiers exist anywhere in the tree. `E1` and `E2` gate the rest: without a written tier set and a classifier that reads the change, `E3` and `E9` have nothing to second-guess or loosen.
 - **CRC-E4** The thing that looks like this is its inverse. The action refuses to review a pull request whose `.github/workflows/ai-review.yml` differs from the default branch's — one file, not any CI workflow file — and the documented escape, the `ai-review-override` label, **waives the check** rather than routing to a person. Branch protection requires zero approvals, so there is no human state to route to.
 - **CRC-E6** Branch protection declares no required reviews, so no approval counts toward anything and the criterion is vacuous rather than satisfied.
-- **CRC-E8** No required reviews means no stale-review dismissal, and `strict` is `false`, so a branch need not even be up to date. `gh pr merge --match-head-commit` is a convention agents follow by hand; nothing enforces it.
-- **CRC-F1** There is no merge queue. `gh api …/rulesets` returns `[]` and branch protection declares none. `.github/workflows/ai-review.yml` carries a `merge_group:` trigger, and on that event the job annotates UNMEASURED and passes, saying in its own text that the per-head review is the measurement. The trigger is readiness for a queue, not the criterion.
-- **CRC-F2** Several `vars.*` switches gate behaviour. None stages by audience.
 - **CRC-F3** No one-step rollback, and none exercised.
 - **CRC-F4** No incident review asks which layer should have caught it.
 - **CRC-F5** No circuit breaker. The source admits this as a gap on their side too.
@@ -208,8 +252,6 @@ something in the tree that resembles it and is not it.
 - **CRC-M5** No schedule runs the eval. The only crons in the tree are `.github/workflows/issue-audit.yml` daily and `.github/workflows/action-pins.yml` weekly.
 - **CRC-M6** One bucket of four is derived from evidence. The other three report UNMEASURED unless hand-declared, and `noiseRate` is `null`.
 - **CRC-M7** The control exists and counts `FIRED` on clean subjects. The criterion's own number — findings that *would have led to a harmful change* — is declared UNMEASURED by the control's README, because a finding carries no remedy anything can apply. A tripwire in `test/review-negative-control.test.ts` reds the day the contract grows one.
-- **CRC-M8** Stated **and enforced** is the claim. What is stated here is the opposite order, deliberately, and nothing enforces either — see the deviation added below.
-- **CRC-M9** Nothing tracks approvals per pull request, human comments, or time waiting on a person.
 - **CRC-M10** Nothing tracks revert or incident rates.
 - **CRC-M11** The round number is computed per run and retained nowhere. Nothing tracks rounds-to-pass beside recall.
 - **CRC-N4** `suppressRepeats`, `carryForward` and `noRepeatsInstruction` are defined and tested, and have no caller outside their own file. The prompt states the opposite in so many words: nothing carries its findings forward.
