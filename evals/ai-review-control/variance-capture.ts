@@ -126,6 +126,23 @@ export interface BatchRow {
    * were filed fresh today?*
    */
   holdOut: string | null;
+  /**
+   * Rows added to the comparison set for THIS row only.
+   *
+   * The duplicate plant needs a twin in the set to collide with, and it must
+   * not depend on the tracker to supply one. The first cut copied
+   * `existing[0]` and assumed a verbatim copy is always a duplicate — false
+   * under a rule that requires **two shared quantity keys**, so the plant
+   * landed only while the first open issue happened to carry two numbers.
+   * It stopped landing within hours of being written, on a tracker whose
+   * first row had changed, and the capture correctly went UNMEASURED.
+   *
+   * That is the seventh shape in `.claude/rules/checks-must-be-able-to-fail.md`
+   * — a battery row meeting a precondition nobody named. A known-positive
+   * that is hostage to what the corpus happens to contain is not a known
+   * positive.
+   */
+  extraExisting?: readonly Finding[];
 }
 
 export interface RunReading {
@@ -196,16 +213,30 @@ function attemptOf(title: string, body: string): FilingAttempt {
 }
 
 /**
- * The three plants, built from the live set so the duplicate one is real.
+ * The twin the duplicate plant collides with.
  *
- * `duplicate` copies an existing issue verbatim and is compared against the
- * whole set INCLUDING it, which is the one row where the hold-out is
- * deliberately not applied — that is what makes it a known positive for the
- * dedupe stage rather than for the category stage.
+ * Synthetic and carried in the plant's own `extraExisting`, so the plant is a
+ * known positive whatever the tracker contains. It names three quantities
+ * because `duplicateOverlap` requires **two** shared `qty:` keys — one is not
+ * a duplicate, and a plant built on one number is a plant that lands by luck.
  */
-export function plantsFor(existing: readonly Finding[], batch: string): BatchRow[] {
-  const source = existing[0];
-  if (source === undefined) return [];
+export const DUPLICATE_PLANT_TWIN: Finding = {
+  id: "plant-twin",
+  title: "`zqxjPlantTwin` miscounts and the mismatch is silent",
+  body:
+    "`zqxjPlantTwin()` in `lib/zqxj-plant-twin.ts` reports 60571 rows where the fixture holds 60572, " +
+    "across 60573 entries. Measured 60571 against 60572 on 60573.",
+};
+
+/**
+ * The three plants. None depends on what the tracker happens to contain.
+ *
+ * `duplicate` is compared against the set plus `DUPLICATE_PLANT_TWIN`, which
+ * is the one row where the hold-out is deliberately not applied — that is
+ * what makes it a known positive for the **dedupe** stage rather than for the
+ * category stage, and the synthetic twin is what makes it one every time.
+ */
+export function plantsFor(_existing: readonly Finding[], batch: string): BatchRow[] {
   return [
     {
       key: `${batch}/plant-dropped`,
@@ -218,9 +249,10 @@ export function plantsFor(existing: readonly Finding[], batch: string): BatchRow
     },
     {
       key: `${batch}/plant-duplicate`,
-      provenance: `PLANT: issue #${source.id} replayed verbatim against a set that still contains it`,
-      attempt: attemptOf(source.title, source.body),
+      provenance: "PLANT: a synthetic finding replayed verbatim against a set carrying its twin, so it cannot depend on tracker content",
+      attempt: attemptOf(DUPLICATE_PLANT_TWIN.title, DUPLICATE_PLANT_TWIN.body),
       holdOut: null,
+      extraExisting: [DUPLICATE_PLANT_TWIN],
     },
     {
       key: `${batch}/plant-allowed`,
@@ -246,13 +278,26 @@ export function batchFrom(existing: readonly Finding[], batch: string): BatchRow
   return [...replays, ...plantsFor(existing, batch)];
 }
 
+/**
+ * The set one row is adjudicated against. One binding, three callers.
+ *
+ * The hold-out and the injected twin are both per-row, and keeping them in a
+ * single function is what stops the plant path and the replay path drifting
+ * apart — two deciders answering the same question would be behaviourally one
+ * decider, and a mutation of either would leave the other holding the case up.
+ */
+export function comparisonSet(row: BatchRow, existing: readonly Finding[]): readonly Finding[] {
+  const base = row.holdOut === null ? existing : existing.filter(f => f.id !== row.holdOut);
+  return row.extraExisting === undefined ? base : [...base, ...row.extraExisting];
+}
+
 /** One pass of the whole batch through the deployed adjudicator. */
 export async function runBatch(batch: readonly BatchRow[], existing: readonly Finding[]): Promise<RunReading> {
   const withheld: string[] = [];
   const allowed: string[] = [];
   const unmeasured: string[] = [];
   for (const row of batch) {
-    const set = row.holdOut === null ? existing : existing.filter(f => f.id !== row.holdOut);
+    const set = comparisonSet(row, existing);
     const v: FilingAdjudication = await adjudicateFiling(row.attempt, async () => set);
     if (v.outcome === "ALLOW") allowed.push(row.key);
     else if (v.outcome === "UNMEASURED") unmeasured.push(row.key);
@@ -279,7 +324,7 @@ export async function detailOf(
 ): Promise<ArmReading["firstRunDetail"]> {
   const out: ArmReading["firstRunDetail"] = [];
   for (const row of batch) {
-    const set = row.holdOut === null ? existing : existing.filter(f => f.id !== row.holdOut);
+    const set = comparisonSet(row, existing);
     const v = await adjudicateFiling(row.attempt, async () => set);
     out.push({
       key: row.key,
@@ -303,11 +348,45 @@ export async function readPlants(
   };
   const out: VarianceCapture["plantDetail"] = [];
   for (const row of plantsFor(existing, batch)) {
-    const v = await adjudicateFiling(row.attempt, async () => existing);
+    const v = await adjudicateFiling(row.attempt, async () => comparisonSet(row, existing));
     const observed = v.outcome === "ALLOW" ? "ALLOW" : `${v.outcome}/${v.refusal}`;
     out.push({ plant: row.key, expected: expected[row.key]!, observed, agreed: observed === expected[row.key] });
   }
   return out;
+}
+
+/**
+ * The sentence that bounds what the live arm can claim.
+ *
+ * One binding, and it reads the arm rather than restating it. The first cut
+ * spelled `distinctTrackerSets: 1` as a literal next to an interpolated span,
+ * which the AI review on #1310 caught: in an artefact whose only job is to
+ * stop a reading being misread, the prose could contradict the `arms` data
+ * beside it on exactly the run where the contradiction mattered — the one
+ * where the tracker DID move.
+ *
+ * And a moved tracker is not a weaker version of the same sentence, it is a
+ * different fact, so this returns different text rather than a different
+ * number. A live arm that varied has measured something: the adjudicator is
+ * unchanged, so the divergence is attributable to its input.
+ */
+export function liveArmCaveat(arm: Pick<ArmReading, "distinctTrackerSets" | "distinctWithheldSets" | "spanSeconds">): string {
+  const span = arm.spanSeconds.toFixed(1);
+  if (arm.distinctTrackerSets > 1 || arm.distinctWithheldSets > 1) {
+    return (
+      `The live arm DID vary over its ${span}s span: ${arm.distinctTrackerSets} distinct comparison set(s) and ` +
+      `${arm.distinctWithheldSets} distinct withheld set(s). The adjudicator did not change between those runs, ` +
+      "so the divergence is attributable to its input — the tracker moved — and not to the gate. That is a real " +
+      "reading of deployed instability in the withheld set, and it is still not a reading of verifier variance."
+    );
+  }
+  return (
+    `And the live arm's zero is bounded by its span (${span}s): M reads taken back to back cannot catch a tracker ` +
+    `that moves on the scale of tens of minutes, so \`distinctTrackerSets: ${arm.distinctTrackerSets}\` here is a ` +
+    "control on the API read and NOT a measurement of tracker drift. Measuring that needs an hours-long window, " +
+    "which is a separate capture and was not taken — deliberately, because a window that long would likely " +
+    "straddle a merge to `lib/issue-filing-gate.ts` and measure a mixture."
+  );
 }
 
 export const PERMANENTLY_UNMEASURED = [
@@ -387,6 +466,9 @@ export async function capture(opts: { root: string; runs: number; commit: string
     readings,
   });
 
+  const pinnedArm = arm("pinned", pinned, pinnedSpan, pinnedDetail);
+  const liveArm = arm("live", live, liveSpan, liveDetail);
+
   const first = pinned[0];
   const degenerate =
     first === undefined || first.withheld.length === 0 || first.allowed.length === 0;
@@ -418,13 +500,9 @@ export async function capture(opts: { root: string; runs: number; commit: string
           : "The pinned arm's zero is zero BY CONSTRUCTION — `adjudicateFiling` is regex plus set arithmetic, " +
             "with no clock, no randomness, no network and no model. Read it as a control establishing that the " +
             "deterministic half contributes no variance, never as evidence that a quorum has nothing to fix. " +
-            `And the live arm's zero is bounded by its span (${liveSpan.toFixed(1)}s): M reads taken back to ` +
-            "back cannot catch a tracker that moves on the scale of tens of minutes, so `distinctTrackerSets: 1` " +
-            "here is a control on the API read and NOT a measurement of tracker drift. Measuring that needs an " +
-            "hours-long window, which is a separate capture and was not taken — deliberately, because a window " +
-            "that long would likely straddle a merge to `lib/issue-filing-gate.ts` and measure a mixture.",
+            liveArmCaveat(liveArm),
     permanentlyUnmeasured: PERMANENTLY_UNMEASURED,
-    arms: [arm("pinned", pinned, pinnedSpan, pinnedDetail), arm("live", live, liveSpan, liveDetail)],
+    arms: [pinnedArm, liveArm],
   };
 }
 

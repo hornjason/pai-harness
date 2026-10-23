@@ -15,14 +15,17 @@ import { join } from "path";
 
 import { BASELINE_REFUSED, loadVarianceCapture } from "../evals/ai-review-control/baselines";
 import {
+  DUPLICATE_PLANT_TWIN,
   batchFrom,
   detailOf,
+  liveArmCaveat,
   plantsFor,
   readPlants,
   runBatch,
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
-import type { Finding } from "../lib/finding-arbiter";
+import { symptomKeys, type Finding } from "../lib/finding-arbiter";
+import { adjudicateFiling } from "../lib/issue-filing-gate";
 
 const EXISTING: Finding[] = [
   {
@@ -79,20 +82,37 @@ describe("the plants separate a live adjudicator from an inert one", () => {
     expect(detail.every(p => p.agreed)).toBe(true);
   });
 
-  // CONTROL: without this the case above is three assertions about an
-  // adjudicator that might refuse everything. The duplicate plant copies
-  // EXISTING[0], so removing EXISTING[0] from the comparison set is the one
-  // edit that must turn exactly that plant and no other.
-  test("the duplicate plant stops landing when its source leaves the set", async () => {
-    const detail = await readPlants(EXISTING.slice(1), "b");
-    const dup = detail.find(p => p.plant.endsWith("plant-duplicate"))!;
-    expect(dup.agreed).toBe(false);
-    expect(dup.observed).toBe("ALLOW");
-    expect(detail.filter(p => !p.agreed)).toHaveLength(1);
+  // The regression. The first cut built the duplicate plant by copying
+  // `existing[0]`, so it landed only while the tracker's first row happened
+  // to carry two quantities — `duplicateOverlap` requires two shared `qty:`
+  // keys and one is not a duplicate. It stopped landing within hours, on a
+  // real tracker, and the capture went UNMEASURED. A known positive that
+  // depends on what the corpus contains is not a known positive.
+  test("all three land on an EMPTY corpus, so none depends on tracker content", async () => {
+    const detail = await readPlants([], "b");
+    expect(detail).toHaveLength(3);
+    expect(detail.filter(p => !p.agreed)).toEqual([]);
   });
 
-  test("an empty set yields no plants at all, rather than plants that vacuously agree", () => {
-    expect(plantsFor([], "b")).toEqual([]);
+  test("the duplicate plant carries its own twin rather than borrowing one", () => {
+    const dup = plantsFor([], "b").find(p => p.key.endsWith("plant-duplicate"))!;
+    expect(dup.extraExisting).toEqual([DUPLICATE_PLANT_TWIN]);
+    expect(dup.attempt.title).toBe(DUPLICATE_PLANT_TWIN.title);
+  });
+
+  // CONTROL: the twin must be the reason it collides. Without the injection
+  // the plant is alone in an empty set and nothing can match it.
+  test("without its twin the duplicate plant is ALLOWed, so the twin is what lands it", async () => {
+    const dup = plantsFor([], "b").find(p => p.key.endsWith("plant-duplicate"))!;
+    const v = await adjudicateFiling({ ...dup.attempt }, async () => []);
+    expect(v.outcome).toBe("ALLOW");
+  });
+
+  // The twin needs TWO shared quantities, not one. A twin carrying one number
+  // would reproduce the original defect in a different costume.
+  test("the twin names at least two quantities", () => {
+    const qty = symptomKeys(DUPLICATE_PLANT_TWIN).filter(k => k.startsWith("qty:"));
+    expect(qty.length).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -185,6 +205,53 @@ describe("loadVarianceCapture refuses rather than returning a partial reading", 
     const { dir, name } = written(capture({ plantsAgreed: 1 }));
     expect(() => loadVarianceCapture(name, dir)).toThrow(new RegExp(BASELINE_REFUSED));
     rmSync(dir, { recursive: true });
+  });
+});
+
+// The AI review on #1310 found this: the live arm's sentence spelled
+// `distinctTrackerSets: 1` as a literal beside an interpolated span, so in an
+// artefact whose only job is to stop a reading being misread, the prose could
+// contradict the `arms` data on exactly the run where it mattered.
+describe("#1310: the live arm's caveat reads the arm instead of restating it", () => {
+  test("a stable arm names its own count rather than a baked-in 1", () => {
+    const s = liveArmCaveat({ distinctTrackerSets: 1, distinctWithheldSets: 1, spanSeconds: 20.6 });
+    expect(s).toContain("distinctTrackerSets: 1");
+    expect(s).toContain("20.6s");
+    expect(s).toContain("NOT a measurement of tracker drift");
+  });
+
+  // The case the literal failed. A tracker that moved must never produce prose
+  // claiming it did not, and the count it names must be the one measured.
+  test("an arm that varied never claims `distinctTrackerSets: 1`", () => {
+    const s = liveArmCaveat({ distinctTrackerSets: 3, distinctWithheldSets: 2, spanSeconds: 41.2 });
+    expect(s).not.toContain("distinctTrackerSets: 1");
+    expect(s).toContain("3 distinct comparison set(s)");
+    expect(s).toContain("2 distinct withheld set(s)");
+  });
+
+  // CONTROL: the two cases above would both pass against a function that
+  // returned one string mentioning every number. This is the behavioural
+  // difference — a moved tracker is a different FACT, not a different number,
+  // and the text has to say the divergence is attributable to the input.
+  test("a varied arm attributes the divergence to the input, not the gate", () => {
+    const varied = liveArmCaveat({ distinctTrackerSets: 3, distinctWithheldSets: 2, spanSeconds: 41.2 });
+    const stable = liveArmCaveat({ distinctTrackerSets: 1, distinctWithheldSets: 1, spanSeconds: 41.2 });
+    expect(varied).toContain("attributable to its input");
+    expect(varied).toContain("still not a reading of verifier variance");
+    expect(stable).not.toContain("attributable to its input");
+    expect(varied).not.toBe(stable);
+  });
+
+  test("a withheld set that moved is enough on its own, even with a fixed tracker", () => {
+    const s = liveArmCaveat({ distinctTrackerSets: 1, distinctWithheldSets: 2, spanSeconds: 10 });
+    expect(s).toContain("DID vary");
+    expect(s).not.toContain("NOT a measurement of tracker drift");
+  });
+
+  test("the stored artefact's caveat agrees with the arm it describes", () => {
+    const c = loadVarianceCapture("single-adjudicator-variance");
+    const live = c.arms.find(a => a.arm === "live")!;
+    expect(c.caveat).toContain(liveArmCaveat(live));
   });
 });
 
