@@ -15,14 +15,18 @@ import { join } from "path";
 
 import { BASELINE_REFUSED, loadVarianceCapture } from "../evals/ai-review-control/baselines";
 import {
+  AI_REVIEW_SAME_TREE_READINGS,
   DUPLICATE_PLANT_TWIN,
+  aiReviewVarianceResidue,
   batchFrom,
   detailOf,
   liveArmCaveat,
   plantsFor,
+  promptHeld,
   provenanceRefusal,
   readPlants,
   runBatch,
+  type SameTreeReading,
   type VarianceCapture,
 } from "../evals/ai-review-control/variance-capture";
 import { symptomKeys, type Finding } from "../lib/finding-arbiter";
@@ -344,12 +348,92 @@ describe("the stored artefact", () => {
     // "one exists" alone would not say why its variance is still unread.
     expect(residue).toContain("No agent verifier feeds THIS gate");
     expect(residue).toContain("A deployed agent verifier does exist elsewhere");
-    expect(residue).toContain("gh run rerun");
   });
 
   test("records the span, which is what bounds the live arm's claim", () => {
     const live = loadVarianceCapture("single-adjudicator-variance").arms.find(a => a.arm === "live")!;
     expect(live.spanSeconds).toBeGreaterThan(0);
     expect(live.runs).toBeGreaterThan(1);
+  });
+});
+
+// #1329. The residue entry asserted that no two runs in this repository's
+// history had ever reviewed the same tree, and that the settling experiment
+// was unrun and would cost real money. Three same-tree pairs already existed
+// in the run logs, and one of them flipped BLOCKED to CLEAN. A confident
+// claim that nothing can be known, contradicted by data already on disk, is
+// the exact failure this artefact exists to prevent — so the entry is now
+// DERIVED from the readings instead of asserted beside them (#1310's lesson).
+describe("#1329: the ai-review residue reads the same-tree readings", () => {
+  const FLIP: SameTreeReading = {
+    run: "39962683401",
+    mergeCommit: "99d50fc",
+    rounds: [5, 5],
+    turns: [51, 52],
+    verdicts: ["BLOCKED", "CLEAN"],
+  };
+  const AGREED: SameTreeReading = { ...FLIP, run: "x1", verdicts: ["CLEAN", "CLEAN"] };
+  const NO_VERDICT: SameTreeReading = { ...FLIP, run: "x2", mergeCommit: null, verdicts: null };
+  const CONFOUNDED: SameTreeReading = { ...FLIP, run: "x3", rounds: [3, 4] };
+
+  test("a pair whose round changed is not a repeat — it is a different prompt", () => {
+    expect(promptHeld(FLIP)).toBe(true);
+    expect(promptHeld(CONFOUNDED)).toBe(false);
+  });
+
+  test("the shipped residue states the flip and never calls the variance unmeasured", () => {
+    const s = aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS);
+    expect(s).toContain("IS now partly read");
+    expect(s).toContain("39962683401");
+    expect(s).toContain("BLOCKED then CLEAN");
+    expect(s).not.toContain("variance is unmeasured");
+  });
+
+  // CONTROL. Without this the case above is satisfied by any function that
+  // returns one string mentioning the flip, and the entry could never go back
+  // to reporting an absence even when an absence is the honest reading.
+  test("with no verdict anywhere it DOES report an absence, and names the experiment", () => {
+    const s = aiReviewVarianceResidue([NO_VERDICT, CONFOUNDED]);
+    expect(s).toContain("variance is unmeasured");
+    expect(s).toContain("gh run rerun");
+    expect(s).not.toContain("IS now partly read");
+  });
+
+  // The second control: scored pairs that AGREE must not be reported as a
+  // flip. A residue that said "disagreed" whenever it had any verdict at all
+  // would pass the shipped case for the wrong reason.
+  test("two attempts that agreed are counted, and reported as zero disagreements", () => {
+    const s = aiReviewVarianceResidue([AGREED]);
+    expect(s).toContain("1 same-tree pair(s) carry two verdicts");
+    expect(s).toContain("0 of them DISAGREED");
+    expect(s).not.toContain("BLOCKED then CLEAN");
+  });
+
+  test("a confounded pair is excluded from the scored set and named as excluded", () => {
+    const s = aiReviewVarianceResidue([FLIP, CONFOUNDED]);
+    expect(s).toContain("1 same-tree pair(s) carry two verdicts");
+    expect(s).toContain("1 because the round changed between attempts");
+  });
+
+  test("an unread verdict is reported as UNMEASURED, never as agreement", () => {
+    const s = aiReviewVarianceResidue([FLIP, NO_VERDICT]);
+    expect(s).toContain("UNMEASURED and are not attempts that agreed");
+  });
+
+  // The recorded data has to be internally honest: a pair cited as evidence of
+  // a flip must have held the prompt, or it is the confound rather than the
+  // measurement.
+  test("every recorded pair that carries verdicts also held its prompt", () => {
+    for (const r of AI_REVIEW_SAME_TREE_READINGS) {
+      if (r.verdicts !== null) {
+        expect(promptHeld(r), `pair ${r.run} carries verdicts but its rounds differ`).toBe(true);
+        expect(r.mergeCommit, `pair ${r.run} carries verdicts but no commit was read`).not.toBeNull();
+      }
+    }
+  });
+
+  test("the stored artefact's residue agrees with the readings it describes", () => {
+    const c = loadVarianceCapture("single-adjudicator-variance");
+    expect(c.permanentlyUnmeasured).toContain(aiReviewVarianceResidue(AI_REVIEW_SAME_TREE_READINGS));
   });
 });
