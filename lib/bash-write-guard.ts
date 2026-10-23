@@ -500,7 +500,7 @@ const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
  * by a semicolon" — so it is a syntax error, not a bypass. Count: ONE
  * spelling missed by both nets, ZERO executable. No change made.
  *
- * ## The THREE transforms a shell applies before `cp` sees a flag
+ * ## The FOUR transforms a shell applies before `cp` sees a flag
  *
  * Every bypass found in this family so far has been the same question asked
  * about a different transform, and each was rediscovered separately because
@@ -512,17 +512,27 @@ const LINK_CREATION = /\bln\s|\bsymlinkSync\b|\bos\.symlink\b|\bsymlink\s*\(/;
  * | quote removal | `'-s'`, `"-s"`, `-'s'`, `c""p` all arrive bare | `readWord`, via `scanSegment` (#1429) |
  * | escape removal | `-\s`, `-r\s`, `-\-symbolic-link`, `--sy\mbolic-link` arrive as `-s`, `-rs`, `--symbolic-link` | `isLinkFlag`, before EITHER branch |
  * | substitution grouping | `` `…` `` and `$(…)` hand their text to ANOTHER shell, and `$(…)` nests | `nestedCommands` |
+ * | ANSI-C quoting | `$'-s'` is the word `-s`, and `$'-\163'` is too | `readWord`, via `decodeAnsiC` |
  *
  * Measured against `/bin/bash` rather than assumed: `printf '[%s]' -\s -\l
- * -r\s -\-symbolic-link --sy\mbolic-link` prints
- * `[-s][-l][-rs][--symbolic-link][--symbolic-link]`. Every one of those was
- * ALLOWED before the escape removal, as were `` `cp -s …` ``,
- * ``eval `cp -s …` ``, a `$(…)` containing a second `$(…)`, and a `$(…)`
- * wrapping a parenthesised subshell.
+ * -r\s -\-symbolic-link --sy\mbolic-link $'-s' $'-\163' $'cp'` prints
+ * `[-s][-l][-rs][--symbolic-link][--symbolic-link][-s][-s][cp]`. Every one
+ * of those was ALLOWED before its transform was read, as were
+ * `` `cp -s …` ``, ``eval `cp -s …` ``, a `$(…)` containing a second
+ * `$(…)`, and a `$(…)` wrapping a parenthesised subshell.
  *
- * If a fourth transform turns up, add the row. The point of the table is
- * that the next reader checks all three at once instead of finding them one
- * review at a time, which is exactly how these three arrived.
+ * The fourth arrived the way the second and third did — a review round
+ * after the table said three — which is the argument for the table rather
+ * than against it. If a fifth turns up, add the row. The point is that the
+ * next reader checks all of them at once instead of finding them one review
+ * at a time.
+ *
+ * ANSI-C is the one that hides a VERB as well as a flag: `$'cp' -s` leaves
+ * `verbToken` nothing to match, so it is read in `readWord` — the module's
+ * one quote reader — rather than in `isLinkFlag`, which a hidden verb never
+ * reaches. Unlike the other substitution syntaxes it is settled at parse
+ * time, so decoding it makes a word more readable rather than guessing at
+ * one, and an unexpanded `$(…)` goes on reading as unprovable.
  */
 const LINK_VERBS = new Set(['cp', 'install']);
 
@@ -1120,12 +1130,139 @@ function endOfSubstitution(s: string, i: number): number {
   return j;
 }
 
+/**
+ * ANSI-C quoting: the value of a `$'…'` word.
+ *
+ * Unlike `$(…)` and `` `…` ``, this is settled at parse time — no command
+ * runs and nothing is looked up — so decoding it makes a word MORE readable
+ * rather than guessing at one. `$'-\163'` is the string `-s` on every run.
+ *
+ * An escape this does not recognise keeps its backslash, which is what bash
+ * does with one.
+ *
+ * ## Octal and `\x` are BYTES, so the decode assembles bytes
+ *
+ * Measured: `printf '%s' $'\303\251' | od -An -tx1` gives `c3 a9`, and so
+ * do `$'\xc3\xa9'` and a literal `é` — all three are the UTF-8 encoding of
+ * one character. A per-escape `String.fromCharCode` gives U+00C3 followed
+ * by U+00A9, a different string of four bytes, so above 0x7F that spelling
+ * hands the module a token the shell never produced. Same defect as the
+ * transforms this function exists to close, pointing the other way.
+ *
+ * It is a live one, not a cosmetic differential. With a symlink named
+ * `café` under a scratch root pointing into the run store, the write
+ * through it is REFUSED when spelled literally and when spelled
+ * `$'café'`, and was ALLOWED when spelled `$'caf\303\251'` or
+ * `$'caf\xc3\xa9'` — the module looked for a directory nobody had made,
+ * found nothing to resolve, and exempted it as ordinary scratch. That is
+ * #1175's escape with a name the decoder disagreed about.
+ *
+ * So escapes are decoded into BYTES and the byte string is decoded as
+ * UTF-8 once, at the end. Refusing to decode above 0x80 was the first
+ * repair and it does NOT close this: an undecoded `caf\303\251` is just
+ * another directory that does not exist, which is exempt. The conservative
+ * answer and the wrong answer are the same answer here.
+ *
+ * `\u` and `\U` stay code points, because that is what bash defines them
+ * as — it emits their UTF-8 encoding, which is what they mean once the
+ * command text has itself been decoded from UTF-8.
+ *
+ * What remains: a byte sequence that is not valid UTF-8, such as a lone
+ * `$'\303'`, becomes U+FFFD here and names a file this module cannot
+ * spell. Closing that needs byte-level paths throughout, which is a
+ * different change; the residue is one unmatched character in a position
+ * that is then unprovable rather than wrongly exempt.
+ */
+const ANSI_C_SHORT: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+};
+
+function decodeAnsiC(body: string): string {
+  const bytes: number[] = [];
+  // Plain text accumulates and is encoded in runs rather than per character,
+  // so a surrogate PAIR is encoded as the one code point it spells instead
+  // of as two lone halves.
+  let pending = '';
+  const flush = () => {
+    if (!pending) return;
+    for (const b of new TextEncoder().encode(pending)) bytes.push(b);
+    pending = '';
+  };
+  for (let k = 0; k < body.length; k++) {
+    if (body[k] !== '\\' || k + 1 >= body.length) {
+      pending += body[k];
+      continue;
+    }
+    const n = body[k + 1];
+    const short = ANSI_C_SHORT[n];
+    if (short !== undefined) {
+      pending += short;
+      k++;
+      continue;
+    }
+    if (n >= '0' && n <= '7') {
+      const oct = /^[0-7]{1,3}/.exec(body.slice(k + 1))?.[0] ?? '';
+      flush();
+      bytes.push(parseInt(oct, 8) & 0xff); // a BYTE
+      k += oct.length;
+      continue;
+    }
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const width = n === 'x' ? 2 : n === 'u' ? 4 : 8;
+      const hex = new RegExp(`^[0-9a-fA-F]{1,${width}}`).exec(body.slice(k + 2))?.[0] ?? '';
+      if (hex) {
+        const value = parseInt(hex, 16);
+        if (n === 'x') {
+          flush();
+          bytes.push(value & 0xff); // a BYTE
+        } else {
+          pending += String.fromCodePoint(value); // a CODE POINT
+        }
+        k += 1 + hex.length;
+        continue;
+      }
+    }
+    pending += body[k]; // an escape bash does not recognise keeps its backslash
+  }
+  flush();
+  return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+}
+
 function readWord(s: string, i: number): [string, number] {
   let w = '';
   while (i < s.length) {
     const c = s[i];
     if (c === ' ' || c === '\t' || c === '\n') break;
     if (c === '>' || c === '<') break; // an operator ends a word
+    // ANSI-C quoting, the FOURTH transform. `$'-s'` is the word `-s`, and
+    // reading the `$` as an ordinary character left the token `$-s`, which
+    // fails `isLinkFlag`'s `startsWith('-')` precondition before any flag
+    // letter is looked at. Handled here rather than in `isLinkFlag` because
+    // it is a QUOTING rule and this is the module's quote reader — and
+    // because doing it here also fixes `$'cp'`, where the thing hidden is
+    // the VERB and `isLinkFlag` is never consulted at all.
+    //
+    // A `\'` inside the body is an escaped quote, so the closing quote is
+    // found by walking rather than by `indexOf`.
+    if (c === '$' && s[i + 1] === "'") {
+      let k = i + 2;
+      for (; k < s.length && s[k] !== "'"; k++) if (s[k] === '\\') k++;
+      w += decodeAnsiC(s.slice(i + 2, Math.min(k, s.length)));
+      i = k + 1; // unterminated leaves i past the end, which ends the word
+      continue;
+    }
     if (c === "'" || c === '"') {
       const close = s.indexOf(c, i + 1);
       const end = close === -1 ? s.length : close;
