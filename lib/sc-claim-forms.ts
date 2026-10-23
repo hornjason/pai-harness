@@ -46,6 +46,29 @@
  * `.claude/rules/checks-must-be-able-to-fail.md` says never to fail that way.
  */
 
+import { TRACKED_ID_PREFIXES } from "./sc-ids";
+
+/**
+ * The id shapes a claim form may name: every TRACKED criterion prefix, plus
+ * `AC` for an issue's own acceptance criteria (#1298).
+ *
+ * `AC` is here and is not in `TRACKED_ID_PREFIXES`, which is the distinction
+ * worth keeping: an `AC-` id is never a criterion anything ticks, but it does
+ * appear in the id runs these forms recognise — `// AC-2 / SC-516 / SC-517:`
+ * is one label, and dropping `AC` would stop the run parsing and lose the two
+ * credits after it.
+ *
+ * Built from the list rather than respelled, because respelling it is what
+ * made `CRC-` claimable in two forms of five: `covers` and `spec-ref` look
+ * for a VERB and credit whatever id follows, while `label`, `line` and
+ * `attribution` recognise the id itself and so carried their own copy of
+ * `(?:SC|AC)`. A prefix whose credit depends on how the author happened to
+ * phrase the comment is not tracked, it is lucky.
+ */
+const CLAIM_ID = `(?:${[...TRACKED_ID_PREFIXES, "AC"]
+  .sort((a, b) => b.length - a.length)
+  .join("|")})-[A-Z]?\\d+`;
+
 /** A structural position that could only have been written to declare coverage. */
 export type ClaimForm =
   /** `covers`/`covering`/`coverage` within 60 chars before the id. */
@@ -99,10 +122,14 @@ const SPEC_REF_LINE = /^[\s*\/|─—-]*SPEC-REF\b/i;
  * `#173 — SC-587, SC-588, SC-589, SC-590.`, `#323 SC-6 —`, `#190 / SC-624:`.
  * An issue number before the ids does not make the line less of a heading.
  */
-const LEADING_ID_RUN = /^[\s*\/|─—-]*(?:#\d+\s*[\/|—–:-]*\s*)?(?:(?:SC|AC)-[A-Z]?\d+(?:\s*(?:\.\.+|,|\/|\||and|&|–|—|-)\s*)?)+/;
+const LEADING_ID_RUN = new RegExp(
+  `^[\\s*/|─—-]*(?:#\\d+\\s*[/|—–:-]*\\s*)?(?:${CLAIM_ID}(?:\\s*(?:\\.\\.+|,|/|\\||and|&|–|—|-)\\s*)?)+`,
+);
 
 /** The same run, but required to terminate in a colon — a label, not a list. */
-const LEADING_ID_LABEL = /^[\s*\/|─—-]*(?:#\d+\s*[\/|—–-]*\s*)?(?:(?:SC|AC)-[A-Z]?\d+[\s,\/|]*)+:/;
+const LEADING_ID_LABEL = new RegExp(
+  `^[\\s*/|─—-]*(?:#\\d+\\s*[/|—–-]*\\s*)?(?:${CLAIM_ID}[\\s,/|]*)+:`,
+);
 
 const LINE_START = /(?:^|\n)[\s*\/|─—-]*$/;
 
@@ -154,8 +181,9 @@ export function commentClaimForm(comment: string, at: number, id: string): Claim
  * is the self-reference this whole area keeps producing, and it was caught by
  * reading the diff of lost credits rather than by the rule itself.
  */
-const IDS_ONLY =
-  /^[\s,\/|&+-]*(?:(?:#\d+|(?:SC|AC)-[A-Z]?\d+)(?:\s*(?:\.\.+|,|\/|\||&|and|–|—|-)\s*)?)+[\s.]*$/;
+const IDS_ONLY = new RegExp(
+  `^[\\s,/|&+-]*(?:(?:#\\d+|${CLAIM_ID})(?:\\s*(?:\\.\\.+|,|/|\\||&|and|–|—|-)\\s*)?)+[\\s.]*$`,
+);
 
 /**
  * A parenthetical that LABELS: opens with an id and a colon, then prose.
@@ -167,7 +195,7 @@ const IDS_ONLY =
  * `// The SC statement in a spec file: "SC-318: Something (behavioral)"`,
  * which is a QUOTED EXAMPLE of a spec line, not a claim about one.
  */
-const PAREN_LABEL = /^\s*(?:SC|AC)-[A-Z]?\d+\s*:/;
+const PAREN_LABEL = new RegExp(`^\\s*${CLAIM_ID}\\s*:`);
 
 /**
  * A RANGE inside a parenthetical — `(SC-1930..SC-1948)`.

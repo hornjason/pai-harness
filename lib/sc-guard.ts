@@ -15,6 +15,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { parseFrontmatter, isMatchablePattern, isBehavioralSC } from "./conformity";
+import { SC_ID_SOURCE } from "./sc-ids";
 import type { ParsedSC } from "./conformity";
 
 // ── Types ──────────────────────────────────────────────────
@@ -34,7 +35,16 @@ export interface SCValidationResult {
 
 // ── SC Detection ───────────────────────────────────────────
 
-const SC_LINE_PATTERN = /^- \[ \] (SC-\w+):\s*(.+)$/gm;
+/**
+ * An unchecked declaration, built from `SC_ID_SOURCE` (#1298).
+ *
+ * Was `SC-\w+`, which is wrong in both directions at once: wider than the
+ * notation, so `SC-guard` and `SC-TEST` in prose read as new criteria, and
+ * narrower than the namespace, so a `CRC-` criterion arriving in a spec edit
+ * was never validated against the matcher registry at all. The shared source
+ * is the only spelling that is neither.
+ */
+const SC_LINE_PATTERN = new RegExp(`^- \\[ \\] (${SC_ID_SOURCE}):\\s*(.+)$`, "gm");
 
 /**
  * Extract all unchecked SC lines from content.

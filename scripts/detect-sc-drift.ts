@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { collectSpecFiles } from "../lib/spec-files";
+import { SC_ID_SOURCE } from "../lib/sc-ids";
 import { join } from "path";
 
 export interface DriftResult {
@@ -112,8 +113,15 @@ export function detectDrift(specsDir: string, projectRoot: string): DriftResult 
     const specPath = join(specsDir, specFile);
     const content = readFileSync(specPath, "utf-8");
 
-    // Find all SC lines (both checked and unchecked)
-    const scPattern = /^- \[[ x]\] (SC-\d+):\s*(.+)$/gm;
+    // Find all SC lines (both checked and unchecked).
+    //
+    // Built from `SC_ID_SOURCE` (#1298). This is the gate
+    // `scripts/sync-sc-status.ts` runs before it flips a box, so a criterion
+    // this pattern cannot see is not merely unreported — it is auto-ticked
+    // with no drift gate at all. That is the same failure the docblock above
+    // records for subdirectory specs, arriving a second time by prefix, and
+    // `SC-\d+` could see neither an anti-criterion nor a `CRC-` id.
+    const scPattern = new RegExp(`^- \\[[ x]\\] (${SC_ID_SOURCE}):\\s*(.+)$`, "gm");
     let match;
 
     while ((match = scPattern.exec(content)) !== null) {

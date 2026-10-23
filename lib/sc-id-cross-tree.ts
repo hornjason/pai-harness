@@ -55,7 +55,12 @@ import { execFileSync, spawnSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 
-import { isFixtureScId, scDeclarationPattern, scHeadingDeclarationPattern } from "./sc-ids";
+import {
+  isFixtureScId,
+  scDeclarationPattern,
+  scHeadingDeclarationPattern,
+  TRACKED_ID_PREFIXES,
+} from "./sc-ids";
 
 /**
  * One place ids were looked for, and whether the look succeeded.
@@ -274,7 +279,17 @@ export function idsInRefs(root: string): { ids: string[]; refs: number; grepped:
         // Declaration-shaped lines only — a checkbox or a heading. Every
         // mention would be correct and is ~30x the output, which is how the
         // first version hit the buffer limit.
-        "^(- \\[.\\] |#+ )SC-[A-Z]?[0-9]+",
+        //
+        // The PREFIX comes from `TRACKED_ID_PREFIXES`, and the id's shape is
+        // deliberately NOT restated here (#1298). This is a prefilter for the
+        // two declaration patterns applied to its output below, so the only
+        // error that costs anything is being NARROWER than they are — a
+        // dropped line never reaches `matchAll` and reads as an id nobody
+        // declared (`.claude/rules/checks-must-be-able-to-fail.md`, second
+        // shape). Wider is free: `- [ ] SC-foo:` survives the grep and the
+        // parsers reject it. Spelled as a POSIX ERE, which `git grep -E`
+        // takes and which has neither `(?:` nor `\d`.
+        `^(- \\[.\\] |#+ )(${TRACKED_ID_PREFIXES.join("|")})-`,
         ...refs.slice(i, i + 100),
         "--",
         "specs/*.md",

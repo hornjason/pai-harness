@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { localCalendarDay } from "../local-calendar-day";
+import { SC_ID_SOURCE } from "../sc-ids";
 
 /**
  * SC-278: Detect specs that exceed 500 lines and suggest splitting.
@@ -114,8 +115,11 @@ export function detectUnconvertedSpecs(specsDir: string, actions: string[]): voi
     // Check if this spec has frontmatter with testable field
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fmMatch) continue;
-    // Check if file has any SC checkbox lines
-    const hasSCLines = /^- \[[ x]\] SC-\d+:/m.test(content);
+    // Check if file has any SC checkbox lines. Built from `SC_ID_SOURCE`
+    // (#1298) — a spec whose criteria all carry a tracked prefix this does
+    // not know reads as unconverted, and the WARN tells the author to run
+    // `convert-spec.ts` over a spec that is already converted.
+    const hasSCLines = new RegExp(`^- \\[[ x]\\] ${SC_ID_SOURCE}:`, "m").test(content);
     if (!hasSCLines) {
       actions.push(
         `WARN: specs/${file} has no SC checkboxes — run \`bun scripts/convert-spec.ts specs/${file}\` to convert`
