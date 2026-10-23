@@ -13,7 +13,7 @@
 import { existsSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { CLI_COMMANDS, helpText } from "../lib/cli-commands";
+import { CLI_COMMANDS, helpText, runCommandScript } from "../lib/cli-commands";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -63,8 +63,13 @@ if (!existsSync(script)) {
 const needsRoot = command.projectRootFlag && !rest.includes("--project-root");
 const args = needsRoot ? [...rest, "--project-root", process.cwd()] : rest;
 
-// Each script reads process.argv at the top level and none guards on
-// import.meta.main, so the import IS the invocation. Rewrite argv first so
-// the script sees its own arguments and not the subcommand name.
-process.argv = [process.argv[0], script, ...args];
-await import(script);
+// Run the script as an ENTRY MODULE, so `import.meta.main` is true inside it
+// and it sees its own arguments rather than the subcommand name.
+//
+// This was `process.argv = [...]; await import(script)`, and the argv rewrite
+// was the tell: it existed to make an imported module look like an entry
+// module, which is most of the way to just running it as one. The half it
+// could not fake is `import.meta.main`, which is false for any dynamic
+// import — so the three command scripts that guard on it loaded, ran nothing
+// and exited 0. `lib/cli-commands.ts` carries the measurement.
+process.exit(runCommandScript(script, args).code);

@@ -20,11 +20,18 @@
  */
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { CLI_COMMANDS, bunxInvocations, helpText, publishedCommands } from "../lib/cli-commands";
+import {
+  CLI_COMMANDS,
+  bunxInvocations,
+  helpText,
+  publishedCommands,
+  runCommandScript,
+} from "../lib/cli-commands";
 import { generateAgentsMd } from "../lib/generators/agents-md";
+import { stripJsComments } from "../lib/strip-js-comments";
 
 const ROOT = join(import.meta.dir, "..");
 const PKG = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
@@ -224,5 +231,141 @@ describe("#363 SC-811: the generator publishes only commands that exist", () => 
       expect(help).toContain(name);
       expect(help).toContain(cmd.summary);
     }
+  });
+});
+
+/**
+ * A dispatched script is an ENTRY MODULE.
+ *
+ * `bin/rungate.ts` used to rewrite `process.argv` and `await import(script)`.
+ * `import.meta.main` is false for a dynamic import, so the three command
+ * scripts that guard their CLI body on it loaded, ran nothing and exited 0.
+ * Measured on `3da782dc`, dispatcher vs the same script run directly:
+ * `audit-specs` 0B vs 2092B, `sync-spec-tests` 0B vs 1254B,
+ * `extract-constraints` 0B vs 57B. Three of ten commands reported success
+ * having done nothing.
+ *
+ * ## Why this does not enumerate the ten commands
+ *
+ * Because enumerating is what failed. "a registered command dispatches — the
+ * script RUNS, not merely resolves" above is correct, says so in its own
+ * comment, and runs `create-sc --list` — one member of a population of ten,
+ * and one of the six that never had the guard. It varied the dispatcher and
+ * held the COMMAND fixed while the defect sat on the command axis
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, seventh shape).
+ *
+ * Adding nine more rows would be the same mistake with a longer list: two of
+ * the ten WRITE when run bare, so the enumeration would either dirty the tree
+ * or carry exclusions, and an excluded row is an unmeasured one.
+ *
+ * So the axis is removed rather than covered. `runCommandScript` is the one
+ * binding that decides how any subcommand is invoked; once it runs the script
+ * as an entry module, every command is reached by construction and there is
+ * no per-command question left to ask. These cases pin that one fact, and the
+ * last one pins that `bin/rungate.ts` actually routes through it — because
+ * the mechanism being right proves nothing if the dispatcher stops calling it.
+ */
+describe("the dispatcher runs a command script as an entry module", () => {
+  /** A stand-in for a real command script: guarded exactly as the three are. */
+  const PROBE = [
+    "if (import.meta.main) {",
+    '  console.log("MAIN=true ARGV=" + JSON.stringify(process.argv.slice(2)));',
+    "  process.exit(3);",
+    "}",
+  ].join("\n");
+
+  function withProbe<T>(fn: (path: string) => T): T {
+    const dir = mkdtempSync(join(tmpdir(), "rungate-probe-"));
+    try {
+      const p = join(dir, "probe.ts");
+      writeFileSync(p, PROBE);
+      return fn(p);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("import.meta.main is true inside the script", () => {
+    // THE case. Under `await import(script)` the probe prints nothing at all,
+    // which is the whole defect: no output, no exit code, no complaint.
+    withProbe(p => {
+      const r = runCommandScript(p, [], { capture: true });
+      expect(r.stdout, "the script's top-level code never ran").toContain("MAIN=true");
+    });
+  });
+
+  test("the script sees its own arguments, not the subcommand name", () => {
+    withProbe(p => {
+      const r = runCommandScript(p, ["alpha", "--beta"], { capture: true });
+      expect(r.stdout).toContain('ARGV=["alpha","--beta"]');
+    });
+  });
+
+  test("the script's exit code is the one the dispatcher exits with", () => {
+    withProbe(p => {
+      expect(runCommandScript(p, [], { capture: true }).code).toBe(3);
+    });
+  });
+
+  test("a script that does not exist is a failure, never a silent success", () => {
+    const r = runCommandScript(join(tmpdir(), "rungate-absent-9f3a", "nope.ts"), [], {
+      capture: true,
+    });
+    expect(r.code).not.toBe(0);
+    // Named so nobody re-reads this as covering the `?? 1`: a missing script
+    // makes BUN exit non-zero, so `status` is a real number here and the
+    // nullish branch is never reached. The case below is the one that
+    // reaches it.
+  });
+
+  test("a child that never returns an exit code is a failure", () => {
+    // `status: null`, which is the only input that reaches the `?? 1` in
+    // `runCommandScript`. Mutating it to `?? 0` turns this red and nothing
+    // else — a command that did not run, reporting success.
+    const dir = mkdtempSync(join(tmpdir(), "rungate-probe-"));
+    try {
+      const p = join(dir, "suicide.ts");
+      writeFileSync(p, 'process.kill(process.pid, "SIGKILL");\n');
+      const r = runCommandScript(p, [], { capture: true });
+      expect(r.code, "a SIGKILLed child reported success").not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a real guarded command produces its report through the dispatcher", () => {
+    // End-to-end, and asserted on CONTENT. Exit 0 is exactly what the broken
+    // dispatcher returned, so an exit-code assertion here would be green on
+    // the defect — the sixth shape. `audit-specs` is the one guarded command
+    // that is read-only, so running it cannot dirty the tree.
+    // Run from a scratch cwd for the same reason the block above does: a
+    // test for a dispatcher must not be able to edit the repo it tests.
+    const scratch = mkdtempSync(join(tmpdir(), "rungate-cli-"));
+    try {
+      const r = spawnSync("bun", [join(ROOT, "bin", "rungate.ts"), "audit-specs", ROOT], {
+        encoding: "utf-8",
+        cwd: scratch,
+        timeout: 60_000,
+      });
+      expect(r.stdout, "the dispatcher reached no top-level code").toContain("audit-specs report");
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  test("bin/rungate.ts invokes commands through that one binding and no other", () => {
+    // The mechanism can be correct while the dispatcher stops calling it, and
+    // nothing above would notice. `await import(script)` is the regression.
+    //
+    // Read with comments stripped, or this asserts against prose: the comment
+    // at the call site quotes the old line verbatim to say what changed, and
+    // the first version of this case went red on that sentence. A guard that
+    // cannot tell code from a comment about code is reading authored text,
+    // not the program.
+    const bin = stripJsComments(readFileSync(join(ROOT, "bin", "rungate.ts"), "utf-8"));
+    expect(bin).toContain("runCommandScript(script");
+    expect(bin, "a dynamic import of the script is the defect, by name").not.toMatch(
+      /await import\(script\)/,
+    );
   });
 });
