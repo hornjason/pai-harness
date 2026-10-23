@@ -99,8 +99,14 @@ import { appendFileSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
-import { resolveRepoSlug } from "./branch-cleanup";
-import { createGitHubClient, listOpenIssues, TRUSTED_ASSOCIATIONS, type OpenIssue } from "./github";
+import { githubSlugFromRemoteUrl, resolveRepoSlug } from "./branch-cleanup";
+import {
+  createGitHubClient,
+  listOpenIssues,
+  parseOwnerRepo,
+  TRUSTED_ASSOCIATIONS,
+  type OpenIssue,
+} from "./github";
 import {
   duplicateCollisions,
   symptomHash,
@@ -264,6 +270,26 @@ export interface FilingAdjudication {
  */
 export interface FilingLedgerRow {
   at: string;
+  /**
+   * This row, told apart from every other row on a shared ledger (#1318).
+   *
+   * **The same field, the same composition and the same `null` as
+   * `CandidateRecord.key`** — `${batch}/${index}` — because the value of the
+   * two row shapes is the population they form together, and two schemes
+   * answering "which row is this" is one decider with a spare
+   * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+   * Neither of the fields that look as though they could do this job can:
+   * `id` is `UNFILED_ID` for every row this writer emits, and `symptomHash`
+   * is a similarity identity, not a row identity — 6 of the 8 rows on the
+   * live ledger share one value.
+   *
+   * `null` when the session identity is absent, and that is a reading rather
+   * than a gap: `summariseFindingOutcomes` already refuses a corpus of
+   * repeated ids and names this field in the refusal. A plausible-looking key
+   * would be the Silent Default Substitution `.claude/rules/config-access.md`
+   * forbids, and the one failure mode that silently shrinks a corpus.
+   */
+  key: string | null;
   id: string;
   title: string;
   symptomHash: string;
@@ -301,6 +327,50 @@ const REPO_FLAG = { long: "--repo", short: "-R" };
  * about every repeated flag; `at(-1)` is what the consumer does.
  */
 const asGhWould = (values: string[]): string => values.at(-1) ?? "";
+
+/**
+ * The repository `gh` will file against, as `owner/repo` — or `null` because
+ * this gate cannot read that tracker (#1318 PR, the `--repo` differential).
+ *
+ * **`asGhWould` above is last-wins; this is the other half of the same
+ * class.** `gh` resolves `--repo` through `ghrepo.FromFullName`, which accepts
+ * a bare `OWNER/REPO`, a `HOST/OWNER/REPO`, a full `https://` URL and an
+ * scp-style `git@github.com:owner/repo.git`. `parseOwnerRepo` accepts only
+ * the first of those and **throws** on the rest, inside the `catch` in
+ * `openFindings` — so for three spellings `gh` files perfectly well against,
+ * the corpus read came back `null`, the dedupe never ran, and the filing was
+ * ALLOWED as UNMEASURED. Measured against this tracker: `gh issue list --repo`
+ * returned the same first issue for `hornjason/pai-harness`,
+ * `https://github.com/hornjason/pai-harness` and `github.com/hornjason/pai-harness`,
+ * while `parseOwnerRepo` threw `Invalid repo format` for the last two.
+ *
+ * `githubSlugFromRemoteUrl` already parses every host-bearing form — it is
+ * what `resolveRepoSlug` runs the `origin` remote through — so this is a
+ * composition and not a second parser. **`parseOwnerRepo` remains the only
+ * validator**: whatever this returns, it returned because that function
+ * accepted it, so no second opinion about what a slug is can drift from the
+ * one the API client holds (the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`).
+ *
+ * The `catch` is fail-CLOSED and that is the difference from the one it
+ * replaces: `null` here routes to a refusal, not to an allow.
+ *
+ * **A non-github.com host is `null` on purpose.** `gh` accepts
+ * `HOST/OWNER/REPO` for an enterprise instance; `createGitHubClient` talks to
+ * github.com and nothing else. A tracker this process genuinely cannot read
+ * must not resolve to a slug that names a different one.
+ */
+export function ghRepoTarget(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const candidate = githubSlugFromRemoteUrl(trimmed) ?? trimmed.replace(/\.git$/i, "");
+  try {
+    const { owner, repo } = parseOwnerRepo(candidate);
+    return `${owner}/${repo}`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * One clause, resolved to what `gh` would resolve it to.
@@ -379,14 +449,15 @@ export function readBodyFile(path: string, limit: number = MAX_BODY_FILE_BYTES):
  * The single place that decides whether a filing may proceed.
  *
  * `readExisting` is a thunk and not a value so the `gh issue list` is never
- * paid for a finding the category stage already drops. It returns `null` for
- * "could not be read", which is a different fact from an empty tracker — the
+ * paid for a finding the category stage already drops. It returns a
+ * `CorpusReading`, whose `UNMEASURED` arm is "could not be read" and carries
+ * its own `why` — a different fact from an empty tracker, which is the
  * distinction `.claude/rules/config-access.md` makes about a corrupt config,
  * applied to the one input this gate cannot produce itself.
  */
 export async function adjudicateFiling(
   attempt: FilingAttempt,
-  readExisting: () => Promise<readonly Finding[] | null>,
+  readExisting: () => Promise<CorpusReading>,
   readBody: (path: string) => string | null = readBodyFile,
 ): Promise<FilingAdjudication> {
   // ── where is the body? ──
@@ -463,17 +534,46 @@ export async function adjudicateFiling(
     };
   }
 
-  // ── is this new? ──
-  const existing = await readExisting();
-  if (existing === null) {
+  // ── which tracker is this going to? ──
+  //
+  // **The one UNMEASURED in this file that REFUSES, and the reason it is not
+  // an exception to the policy above.** Every other unreadable input here is
+  // a fact about the environment — no token, a 403, a rate limit, an
+  // unreachable API — which the agent cannot fix and must not be gagged by.
+  // This one is a fact about the COMMAND: the agent wrote a `--repo` value,
+  // it is in the clause, and re-spelling it as `owner/repo` is a one-token
+  // edit. A refusal somebody can act on in the same turn is not a gag.
+  //
+  // `outcome` and `refusal` are separate fields precisely so the policy can
+  // differ from the reading. Every other site sets them in lockstep, which is
+  // what makes the lockstep look like an invariant; it never was one.
+  //
+  // Fail-closed here because the alternative is the fail-open that made the
+  // differential exploitable in the first place: `gh` accepts more spellings
+  // of `--repo` than this process can read, and a spelling we cannot read
+  // must not be the cheapest way past the dedupe.
+  if (attempt.repo !== null && ghRepoTarget(attempt.repo) === null) {
     return {
       ...base,
-      outcome: "UNMEASURED",
+      outcome: "REFUSE",
       refusal: "UNMEASURED",
-      reason: "the open-issue set could not be read, so whether this symptom is already filed was never asked",
+      reason:
+        `\`--repo ${attempt.repo}\` does not resolve to a github.com \`owner/repo\`, so the ` +
+        `open issues of the tracker this would file against were never read. Re-run with ` +
+        `\`--repo owner/repo\`; an enterprise host is not readable from here at all`,
     };
   }
-  const collisions = duplicateCollisions(finding, existing);
+
+  // ── is this new? ──
+  const existing = await readExisting();
+  if (existing.reading === "UNMEASURED") {
+    // The reason is the READING's own, never composed here. A sentence
+    // written at this distance from the failure can be false for the input
+    // it is emitted on, which this file already paid for once in the
+    // `--body-file` arm above.
+    return { ...base, outcome: "UNMEASURED", refusal: "UNMEASURED", reason: existing.why };
+  }
+  const collisions = duplicateCollisions(finding, existing.findings);
   if (collisions.length > 0) {
     return {
       ...base,
@@ -495,14 +595,55 @@ export async function adjudicateFiling(
   };
 }
 
+/** Why one existing issue was kept out of the comparison set. */
+export interface CorpusDrop {
+  /** The issue number, as a string. */
+  id: string;
+  reason: "untrusted-author" | "over-key-cap";
+  /** The producing filter's own sentence, so the report is not re-derived. */
+  detail: string;
+}
+
 /**
- * The open issues, as findings — or `null` when the set could not be read.
+ * What a corpus read yielded, and what it had to drop to get there.
  *
- * `null` and `[]` are different facts and the caller treats them differently:
- * an empty tracker means nothing is a duplicate, an unreadable one means
- * nobody asked. Every failure path here returns `null` rather than `[]`, so a
- * `gh` that is missing, unauthenticated, rate-limited, slow or returning
- * something unexpected cannot be mistaken for a clean tracker.
+ * **One discriminator.** `reading` is the whole answer — there is no `null`
+ * beside it meaning the same thing, because two spellings of UNMEASURED are
+ * two deciders for one question and the second one always agrees with the
+ * first (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ * Every path that could not take a reading returns `UNMEASURED` **with its
+ * own `why`**, because a reason composed downstream is a reason that can be
+ * false for the input it was emitted on, which this file already paid for
+ * once in the `--body-file` arm above.
+ *
+ * `dropped` is carried on BOTH arms. A read that succeeded after dropping
+ * three issues is a different fact from one that dropped none, and the caller
+ * cannot ask afterwards.
+ */
+export type CorpusReading =
+  | { reading: "MEASURED"; findings: readonly Finding[]; dropped: readonly CorpusDrop[] }
+  | { reading: "UNMEASURED"; why: string; dropped: readonly CorpusDrop[] };
+
+/** A reading that was taken. */
+export function measuredCorpus(
+  findings: readonly Finding[],
+  dropped: readonly CorpusDrop[] = [],
+): CorpusReading {
+  return { reading: "MEASURED", findings, dropped };
+}
+
+/** A reading that was not taken, and why. */
+export function unmeasuredCorpus(why: string, dropped: readonly CorpusDrop[] = []): CorpusReading {
+  return { reading: "UNMEASURED", why, dropped };
+}
+
+/**
+ * The open issues, as findings, or an UNMEASURED reading naming why not.
+ *
+ * An empty tracker means nothing is a duplicate; an unreadable one means
+ * nobody asked. Every failure path here is `UNMEASURED` rather than an empty
+ * list, so a `gh` that is missing, unauthenticated, rate-limited, slow or
+ * returning something unexpected cannot be mistaken for a clean tracker.
  *
  * **Through Octokit and never the GitHub CLI.** `lib/`, `hooks/` and `gates/`
  * may not reach `gh` as a subprocess — GITHUB-API-MIGRATION-SPEC.md's SC-893,
@@ -515,7 +656,7 @@ export async function adjudicateFiling(
  * **The cost, stated because it decides what this gate does on a dev box:**
  * `createGitHubClient` needs `GITHUB_TOKEN` or `GH_TOKEN`, and a developer's
  * GitHub credential usually lives in the CLI's keyring and not in the
- * environment. With no token this returns `null`, the dedupe is UNMEASURED,
+ * environment. With no token the dedupe is UNMEASURED,
  * and only the category stage runs. That is visible rather than silent — the
  * ledger row says `UNMEASURED` and the agent is told — and it is the honest
  * reading: nobody asked the tracker. Export a token, or supply the set below.
@@ -528,35 +669,65 @@ export async function adjudicateFiling(
  * allowed to be wrong in: the result is a duplicate reaching the tracker,
  * never a real finding silenced.
  */
+/**
+ * Which tracker the dedupe asks about. One binding, so there is one answer.
+ *
+ * **An explicit `--repo` that does not resolve is `null`, never the working
+ * directory's slug.** Falling back is the tempting repair and it is the worse
+ * one: this gate would then adjudicate a filing bound for one tracker against
+ * another tracker's issues, which is not a weaker reading — it is the wrong
+ * one, and it is wrong in both directions at once (a real duplicate on the
+ * target is invisible, an unrelated issue here can refuse it). The same
+ * argument `filingGate` makes for caching per target rather than per command.
+ *
+ * `null` from here is UNMEASURED to `openFindings`, and the POLICY over an
+ * unparseable explicit target is decided in `adjudicateFiling`, from
+ * `attempt.repo`, before this is ever called. Both read `ghRepoTarget`; one
+ * decides what to query, the other decides what to do about not being able
+ * to — two questions, one predicate.
+ */
+export function corpusSlug(projectRoot: string, repo: string | null): string | null {
+  if (repo !== null) return ghRepoTarget(repo);
+  return resolveRepoSlug({ projectRoot }).slug;
+}
+
 export async function openFindings(
   projectRoot: string,
   repo: string | null = null,
-): Promise<readonly Finding[] | null> {
+): Promise<CorpusReading> {
   const override = process.env.RUNGATE_OPEN_FINDINGS;
   if (override !== undefined && override !== "") {
     try {
-      const rows: unknown = JSON.parse(readFileSync(override, "utf-8"));
-      const findings = asFindings(rows);
-      return findings === null ? null : measuredCorpus(countOf(rows), findings);
+      return asFindings(JSON.parse(readFileSync(override, "utf-8")));
     } catch {
-      return null;
+      return unmeasuredCorpus(
+        `the supplied comparison set \`${override}\` could not be read or parsed, so whether ` +
+          "this symptom is already filed was never asked",
+      );
     }
   }
   try {
-    // `--repo` wins, because it is what `gh` will file against. A slug that
-    // came off the command line is still a slug `parseOwnerRepo` validates.
-    const { slug } = resolveRepoSlug({ projectRoot, repo: repo ?? undefined });
-    if (slug === null) return null;
+    const slug = corpusSlug(projectRoot, repo);
+    if (slug === null) {
+      return unmeasuredCorpus(
+        repo === null
+          ? "no repository slug could be resolved, so there was no tracker to compare against"
+          : `\`--repo ${repo}\` does not resolve to a github.com \`owner/repo\`, so there ` +
+            "was no tracker to compare against",
+      );
+    }
     const issues = await withTimeout(
       listOpenIssues(createGitHubClient(), slug, OPEN_ISSUE_LIMIT),
       OPEN_ISSUE_TIMEOUT_MS,
     );
-    return measuredCorpus(issues.length, trustedCorpus(issues));
+    return trustedCorpus(issues);
   } catch {
-    // Every failure lands here as `null`, which is "nobody asked" and not
+    // Every failure lands here as UNMEASURED, which is "nobody asked" and not
     // "nothing matched" — a missing token, a 403, a rate limit and an
     // unreachable API are all states this must not report as a clean tracker.
-    return null;
+    return unmeasuredCorpus(
+      "the open-issue set could not be read, so whether this symptom is already filed was never asked",
+    );
   }
 }
 
@@ -592,58 +763,87 @@ function withinKeyCap(finding: Finding): boolean {
   return symptomKeys(finding).length <= MAX_KEYS_PER_EXISTING_ISSUE;
 }
 
-/** How many rows the tracker returned, before any filter saw them. */
-function countOf(rows: unknown): number {
-  return Array.isArray(rows) ? rows.length : 0;
-}
-
 /**
- * The corpus, or `null` because there was no reading — the single binding
- * that decides which (#1318).
+ * A corpus that filtered to nothing is UNMEASURED, not a clean tracker.
  *
- * **A corpus that filtered down to empty is not an empty corpus.** Both
- * filters above drop issues silently, so a tracker whose every issue is
- * untrusted, or whose every issue is over the key cap, produced `[]` — and
- * `[]` is byte-identical to a tracker with nothing in it. The gate read the
- * second meaning and ALLOWed. That is the first shape in
- * `.claude/rules/checks-must-be-able-to-fail.md`, in the gate written to
- * catch it: a reading nobody could take, reported as a reading that passed.
+ * **One binding, because both readers below reach it and because this is the
+ * fail-open the filters create.** Each filter is individually argued to fail
+ * in the safe direction — a duplicate reaches the tracker, never a real
+ * finding silenced — and that argument is about ONE issue being dropped. It
+ * does not survive composition: a non-empty issue list that filters down to
+ * an empty one is byte-indistinguishable from a tracker with nothing on it,
+ * and the gate then ALLOWs on the strength of a comparison it never made.
+ * That is not the safe direction; it is no direction at all, and a filter
+ * with a bug in it would read exactly the same.
  *
- * `null` already means UNMEASURED to every caller and already routes to the
- * refusal that says so, which is why this is three lines rather than a new
- * result type. One binding, so a mutation battery has something to mutate —
- * the predicate was previously implied by the absence of code, and absent
- * code cannot be mutated or covered.
- *
- * The direction this is allowed to be wrong in is unchanged: UNMEASURED
- * allows the filing and records that the dedupe never ran. It costs a
- * possible duplicate, never a silenced finding.
+ * `dropped` travels either way, so a read that succeeded after dropping three
+ * issues can be told from one that dropped none.
  */
-function measuredCorpus(seen: number, findings: readonly Finding[]): readonly Finding[] | null {
-  return seen > 0 && findings.length === 0 ? null : findings;
+function corpusReading(
+  considered: number,
+  findings: readonly Finding[],
+  dropped: readonly CorpusDrop[],
+  source: string,
+): CorpusReading {
+  if (considered === 0 || findings.length > 0) return measuredCorpus(findings, dropped);
+  return unmeasuredCorpus(
+    `the ${source} held ${considered} issue(s) and every one of them was filtered out of the ` +
+      "comparison set, so whether this symptom is already filed was never asked — an empty " +
+      `corpus that was emptied BY US is not a clean tracker. Dropped: ${describeDrops(dropped)}`,
+    dropped,
+  );
 }
 
-export function trustedCorpus(issues: readonly OpenIssue[]): readonly Finding[] {
+/** The drops as one sentence, each with the filter's own reason. */
+export function describeDrops(dropped: readonly CorpusDrop[]): string {
+  if (dropped.length === 0) return "nothing — the list was non-empty and the filters took none of it, which should be impossible here";
+  return dropped.map(d => `#${d.id} (${d.reason}: ${d.detail})`).join("; ");
+}
+
+export function trustedCorpus(issues: readonly OpenIssue[]): CorpusReading {
   const out: Finding[] = [];
+  const dropped: CorpusDrop[] = [];
   for (const issue of issues) {
-    if (!TRUSTED_ASSOCIATIONS.has(issue.authorAssociation)) continue;
-    const finding: Finding = { id: String(issue.number), title: issue.title, body: issue.body };
-    if (!withinKeyCap(finding)) continue;
+    const id = String(issue.number);
+    if (!TRUSTED_ASSOCIATIONS.has(issue.authorAssociation)) {
+      dropped.push({
+        id,
+        reason: "untrusted-author",
+        detail:
+          `author association ${issue.authorAssociation === "" ? "(absent)" : issue.authorAssociation}` +
+          ` is not one of ${[...TRUSTED_ASSOCIATIONS].join("/")}`,
+      });
+      continue;
+    }
+    const finding: Finding = { id, title: issue.title, body: issue.body };
+    if (!withinKeyCap(finding)) {
+      dropped.push({
+        id,
+        reason: "over-key-cap",
+        detail: `names ${symptomKeys(finding).length} symptom keys, over the cap of ${MAX_KEYS_PER_EXISTING_ISSUE}`,
+      });
+      continue;
+    }
     out.push(finding);
   }
-  return out;
+  return corpusReading(issues.length, out, dropped, "tracker");
 }
 
-/** Supplied rows as `Finding`s, or `null` if the shape is not what we asked for. */
-function asFindings(parsed: unknown): readonly Finding[] | null {
-  if (!Array.isArray(parsed)) return null;
+/** Supplied rows as `Finding`s, or UNMEASURED if the shape is not what we asked for. */
+function asFindings(parsed: unknown): CorpusReading {
+  const malformed = (what: string) =>
+    unmeasuredCorpus(
+      `the supplied comparison set is ${what}, so whether this symptom is already filed was never asked`,
+    );
+  if (!Array.isArray(parsed)) return malformed("not an array");
   const out: Finding[] = [];
+  const dropped: CorpusDrop[] = [];
   for (const row of parsed) {
-    if (row === null || typeof row !== "object") return null;
+    if (row === null || typeof row !== "object") return malformed("not a list of objects");
     const r = row as Record<string, unknown>;
     const id = r.number ?? r.id;
-    if (typeof id !== "number" && typeof id !== "string") return null;
-    if (typeof r.title !== "string") return null;
+    if (typeof id !== "number" && typeof id !== "string") return malformed("missing a row id");
+    if (typeof r.title !== "string") return malformed("missing a row title");
     const finding: Finding = {
       id: String(id),
       title: r.title,
@@ -653,10 +853,62 @@ function asFindings(parsed: unknown): readonly Finding[] | null {
     // operator-supplied rather than attacker-supplied, so the AUTHOR filter
     // does not, but one row naming everything suppresses everything whoever
     // wrote it.
-    if (!withinKeyCap(finding)) continue;
+    if (!withinKeyCap(finding)) {
+      dropped.push({
+        id: finding.id,
+        reason: "over-key-cap",
+        detail: `names ${symptomKeys(finding).length} symptom keys, over the cap of ${MAX_KEYS_PER_EXISTING_ISSUE}`,
+      });
+      continue;
+    }
     out.push(finding);
   }
-  return out;
+  return corpusReading(parsed.length, out, dropped, "supplied comparison set");
+}
+
+/**
+ * The environment variable the session identity comes from.
+ *
+ * One exported constant because it is named in the UNMEASURED note an agent
+ * reads, and a variable named in prose and read in code from two places is
+ * two spellings of one fact.
+ */
+export const LEDGER_SESSION_ENV = "CLAUDE_CODE_SESSION_ID";
+
+/**
+ * The batch every row of one command shares, or `null` when there is no
+ * session identity to build one from (#1318).
+ *
+ * **`${at}/${index}` is the cheapest wrong fix and it does not hold.**
+ * `ledgerPath()` defaults to `~/.rungate/finding-ledger.jsonl` — one file for
+ * every agent on the machine, not one per worktree — and `at` is a single
+ * `new Date().toISOString()` hoisted outside the row loop. So `${at}/${index}`
+ * is unique *within* one command and only probabilistically across concurrent
+ * writers, and the live ledger already carries two rows identical in every
+ * field including `at`. #1263 asks for unique **by construction**, and a
+ * coin-toss you only have to lose once silently reintroduces the defect.
+ *
+ * Three components, and each closes a case the others leave open:
+ *
+ * - **the session**, first 8 chars of `CLAUDE_CODE_SESSION_ID` — the same cut
+ *   `hooks/TeamInit.hook.ts` takes, so a ledger row joins to that session's
+ *   `teams/session-<8>` directory rather than needing a second identity;
+ * - **the pid**, because one session runs parallel subagents and each Bash
+ *   call spawns its own hook PROCESS. Two of them can append in the same
+ *   millisecond with the same session and the same clause index, which is
+ *   every other component held fixed. A pid is unique among live processes,
+ *   and a process that is appending is live;
+ * - **`at` and the clause index**, which separate one process's own rows.
+ *
+ * `null`, loudly, when the variable is absent — never a fallback that merely
+ * looks unique. `.claude/rules/config-access.md`, *Silent Default
+ * Substitution*: `0`, `{}` and a plausible key are indistinguishable from
+ * success; UNMEASURED is not.
+ */
+export function filingBatch(at: string, pid: number = process.pid): string | null {
+  const session = (process.env[LEDGER_SESSION_ENV] ?? "").trim();
+  if (session === "") return null;
+  return `${session.slice(0, 8)}.${pid}/${at}`;
 }
 
 /** Where the adjudications land. One line of JSON per decision. */
@@ -711,7 +963,7 @@ export async function filingGate(
   options: {
     projectRoot: string;
     now?: string;
-    readExisting?: (projectRoot: string, repo: string | null) => Promise<readonly Finding[] | null>;
+    readExisting?: (projectRoot: string, repo: string | null) => Promise<CorpusReading>;
   },
 ): Promise<FilingGateReading> {
   const attempts = filingAttempts(cmd);
@@ -725,7 +977,7 @@ export async function filingGate(
   // filing against THIS repository's issues, which is not a weaker reading,
   // it is the wrong one. The PROMISE is cached rather than its value, so two
   // clauses on one tracker cannot both start a request before either resolves.
-  const cached = new Map<string, Promise<readonly Finding[] | null>>();
+  const cached = new Map<string, Promise<CorpusReading>>();
   const readFor = (repo: string | null) => {
     const key = repo ?? "";
     const hit = cached.get(key);
@@ -739,13 +991,19 @@ export async function filingGate(
   const refusals: string[] = [];
   const notes: string[] = [];
 
-  for (const attempt of attempts) {
+  // One batch per command, so every row of one adjudication shares it and the
+  // clause index separates them — `CandidateRecord.key`'s scheme exactly.
+  const batch = filingBatch(at);
+  if (batch === null) notes.push(unkeyedLedgerNote());
+
+  for (const [index, attempt] of attempts.entries()) {
     const verdict = await adjudicateFiling(attempt, () => readFor(attempt.repo));
     const overridden = verdict.outcome === "REFUSE" && attempt.labels.includes(FILING_OVERRIDE_LABEL);
     const emitted = verdict.outcome !== "REFUSE" || overridden;
 
     rows.push({
       at,
+      key: batch === null ? null : `${batch}/${index}`,
       id: UNFILED_ID,
       title: attempt.title,
       symptomHash: verdict.symptomHash,
@@ -765,47 +1023,48 @@ export async function filingGate(
     if (overridden) notes.push(overrideNote(verdict));
   }
 
-  // ── Any refused clause refuses the COMMAND ────────────────────────────
+  // ── A refusal blocks the COMMAND, and every clean clause is NAMED in the
+  //    refusal so none of them is lost ───────────────────────────────────
   //
-  // This read `rows.every(r => !r.emitted)` until #1318, and that made
-  // batching the bypass: a command carrying one known duplicate beside one
-  // novel finding was ALLOWED, so the cheapest route past this gate was to
-  // append a clean filing to a refused one. An agent filing several findings
-  // at once reached it by accident.
+  // This read `rows.length > 0 && rows.every(r => !r.emitted)` — block only
+  // when NOTHING in the command was clean. The concern behind it was real: a
+  // hook's one lever is the whole Bash command, so blocking a mixed command
+  // takes novel findings down with a duplicate, and withholding a real
+  // finding with no artefact anywhere is the direction nothing here may fail
+  // in.
   //
-  // The argument for every-or-nothing was that blocking "takes the novel
-  // findings down with a duplicate". That step does not hold, and it is the
-  // one worth writing down because it is persuasive: **this is a PreToolUse
-  // hook, so nothing has executed.** A block costs the agent one re-run with
-  // the duplicate clause removed, and the findings are in its context, not
-  // destroyed. An allow costs a tracker row that a person or an agent has to
-  // triage and close. Those are not comparable, and the expensive,
-  // irreversible one is what the old predicate chose.
+  // What it did not price is the bypass. One duplicate batched with one novel
+  // finding was ALLOWED and the refusal downgraded to a note, so the cheapest
+  // way past the arbiter became putting a refused filing in the same `&&`
+  // chain as a clean one. A gate with a one-clause bypass is worse than no
+  // gate, because it reads as working.
   //
-  // The note the allow emitted said "Please withdraw them and re-run" — an
-  // action the allow had just made impossible, because a filing that already
-  // happened cannot be withdrawn by the agent that made it. A block is that
-  // same instruction delivered while it can still be followed.
+  // And `emitted` is `outcome !== "REFUSE" || overridden`, so it is true for
+  // an **UNMEASURED** row too: one unreadable `--body-file` beside any number
+  // of duplicates allowed the whole command. A broken adjudicator was a
+  // bypass as well as a note, which is the one thing the UNMEASURED policy in
+  // this file's header exists to prevent.
   //
-  // The note is kept. Naming what was not clean is more information than a
-  // bare refusal, so it accompanies the refusal rather than replacing it.
+  // Blocking is affordable because nothing is lost by it. The refusal
+  // ENUMERATES the clauses that were clean, so the agent withdraws the
+  // refused one and re-runs the rest in one step, and the ledger has carried
+  // every row — clean and refused — since the rows above were written. A
+  // finding deferred by one command is not a finding silenced; a finding
+  // filed alongside a duplicate was never adjudicated at all.
   //
-  // Second consequence, and it is why the ledger rows above can be trusted:
-  // they are written with `disposition: "DROP"` and `withheldBy` set BEFORE
-  // this line runs. Under the old predicate an allowed-anyway refusal was
-  // recorded as a successful withhold, so every rate derived from the ledger
-  // counted it as a save — wrong in the direction that flatters the
-  // mechanism. `FG-47` asserts the two can never disagree again.
+  // An OVERRIDDEN refusal is deliberately not in `refusals`, so it does not
+  // block: an override is a decision somebody made and recorded.
   const blocking = refusals.length > 0;
-  if (!blocking && refusals.length > 0) {
-    notes.push(
-      `[FindingArbiter] ${refusals.length} of ${rows.length} filings in this command would have ` +
-        "been refused, and the command is ALLOWED because the others are not duplicates — " +
-        "a hook can only block the whole command, and taking novel findings down with a " +
-        "duplicate is the one direction this gate must never fail in. The refused " +
-        `one(s) are recorded in ${ledgerPath()}. Please withdraw them and re-run:\n\n` +
-        refusals.join("\n\n"),
-    );
+  const clean = rows.filter(r => r.emitted);
+  if (blocking && clean.length > 0) refusals.push(cleanClauseNote(clean, rows.length));
+
+  // Whatever the verdict, say what the comparison set lost on the way in.
+  // A dedupe run over a corpus three issues short is a weaker reading than
+  // one run over the whole tracker, and no reader can tell them apart from
+  // the outcome — the drop is only visible here, once per target tracker.
+  for (const pending of cached.values()) {
+    const reading = await pending;
+    if (reading.dropped.length > 0) notes.push(corpusDropNote(reading.dropped));
   }
 
   return {
@@ -841,6 +1100,43 @@ export function refusalMessage(v: FilingAdjudication): string {
   ].join("\n");
 }
 
+/**
+ * The clauses that were clean, named inside the refusal that blocks them.
+ *
+ * This is the half that makes blocking a mixed command affordable. A hook can
+ * only block the whole Bash command, so a refusal that said nothing about the
+ * clean clauses would cost the agent the work of reconstructing them — which
+ * is the argument the `every`-based predicate was built on. Naming them turns
+ * "the command was blocked" into "withdraw one, re-run these", and the titles
+ * are quoted verbatim so the re-run is a copy rather than a recollection.
+ */
+export function cleanClauseNote(clean: readonly FilingLedgerRow[], total: number): string {
+  return [
+    `[FindingArbiter] ${clean.length} of ${total} filings in this command WERE clean and are`,
+    "not the reason it was blocked. A hook's one lever is the whole Bash command, so they are",
+    `named here rather than lost, and all ${total} rows are recorded in ${ledgerPath()}.`,
+    "Withdraw the refused one(s) and re-run these:",
+    "",
+    ...clean.map(r => `  - ${r.title}`),
+  ].join("\n");
+}
+
+/**
+ * What the comparison set lost on the way in, said out loud.
+ *
+ * A dedupe run over a corpus three issues short is a weaker reading than one
+ * run over the whole tracker, and the two produce the same ALLOW. The drops
+ * are the only thing that can tell them apart, and they are invisible by the
+ * time a verdict exists.
+ */
+export function corpusDropNote(dropped: readonly CorpusDrop[]): string {
+  return (
+    `[FindingArbiter] ${dropped.length} open issue(s) were filtered out of the comparison set ` +
+    `before this filing was adjudicated, so the dedupe read a smaller tracker than the one ` +
+    `that exists: ${describeDrops(dropped)}.`
+  );
+}
+
 /** Said out loud, because an UNMEASURED that nobody sees is a silent pass. */
 export function unmeasuredNote(v: FilingAdjudication): string {
   return (
@@ -848,6 +1144,26 @@ export function unmeasuredNote(v: FilingAdjudication): string {
     "It is allowed through, because a broken adjudicator must not become a gag on " +
     `the tracker, and the row is recorded in ${ledgerPath()} as UNMEASURED rather ` +
     "than as a finding that passed. Those are different states."
+  );
+}
+
+/**
+ * Said out loud for the same reason `unmeasuredNote` is: a row that cannot be
+ * joined to anything is not a row that recorded something.
+ *
+ * The filing still proceeds — the ledger measures this gate and a measurement
+ * apparatus must not block the thing it measures, which is the policy
+ * `recordAdjudication` states for a ledger that cannot be written at all.
+ * What must not happen is the quiet version: a key that looks fine.
+ */
+export function unkeyedLedgerNote(): string {
+  return (
+    `[FindingArbiter] UNMEASURED row identity — \`${LEDGER_SESSION_ENV}\` is not set, so the ` +
+    `rows this command appends to ${ledgerPath()} carry \`key: null\` and cannot be told apart ` +
+    "from any other unkeyed row on that shared ledger. The filing is allowed and recorded; " +
+    "what is lost is the join to its outcome, and it is lost permanently, because the " +
+    "identity exists only at the moment of writing. No key was invented to cover the gap: " +
+    "a plausible one reads as a measurement that was taken."
   );
 }
 

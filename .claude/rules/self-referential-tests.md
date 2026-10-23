@@ -55,15 +55,10 @@ every one fails with a bare `expect(...).toEqual([])` and no guidance.
 `CLOSURE-8` is the one people miss: a `join(import.meta.dir, "..")` read is the
 same property as an import, expressed in different syntax.
 
-The last row cost PR #1024 three CI shards and is worse than it looks. Those
-batteries build a mutant by writing **one file** into a scratch directory, so a
-relative specifier added to the original resolves to nothing there and the
-mutant **fails to load**. Every case comparing real against mutant goes red —
-and the reds read as behavioural differences. Turn one around and it is the
-UNMEASURED shape: had a comparison been written so that a non-loading mutant
-resembled a *refusing* one, the whole battery would have gone **green while
-witnessing nothing**. This table previously warned about adding a *file*;
-nobody was warned about adding an *import*.
+The last row cost PR #1024 three CI shards, and turned around it is the
+UNMEASURED shape rather than a noisy one: a battery whose mutant fails to
+load can go **green while witnessing nothing**. Why, in full:
+`reference/self-referential-tests-worked-instances.md`, *adding an import*.
 
 ## Tier 2 — a hand-maintained list or number you must update
 
@@ -161,17 +156,11 @@ version is a check that refuses a diff whose census tests were not in the same
 run's measured set, and that needs a notion of "what this session ran" which
 does not exist here.
 
-**A ship run no longer depends on you reading this** (#1004).
-`scripts/select-affected-tests.ts` selects by import graph, and a census test
-imports none of the things that move it — measured with
-`specs/HARNESS-STANDARD.md` as the only changed file, that selector reached
-`ticked-sc-cover` as a sweep and missed the other two outright, while
-reporting MEASURED, so nothing fell back. It now unions `censusTestsFor` into
-its SELECTED result, and its artefact records `graphTests` and `censusTests`
-separately so the two halves stay tellable apart. The routers are still
-complements — one routes by what the diff DID, the other by what it IMPORTS —
-and this table is still what you run by hand, because the selector runs only
-inside a ship run.
+**A ship run no longer depends on you reading this** (#1004):
+`scripts/select-affected-tests.ts` unions `censusTestsFor` into its SELECTED
+result. It runs only inside a ship run, so this table is still what you run
+by hand. What it missed before, and why the two routers are complements:
+`reference/self-referential-tests-worked-instances.md`, *the selector*.
 
 ## If you are writing one of these
 

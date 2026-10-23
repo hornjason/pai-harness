@@ -2468,6 +2468,48 @@ export const AI_REVIEW_LEDGER_MARKER = "<!-- rungate:ai-review-ledger:v1 -->";
 export const AI_REVIEW_LEDGER_FENCE = "```json";
 
 /**
+ * The login the ledger comment is written as, and the only one adopted.
+ *
+ * **`user.type == "Bot"` is a CLASS, not an identity.** Every GitHub App
+ * installed on a repository is `type: Bot`, so filtering on it alone narrows
+ * the set of possible impostors from "anyone who can comment" to "any
+ * installed app" — and an app with comment scope can still plant the marker
+ * and have this step PATCH its own round history into it.
+ *
+ * **This is a smaller class, still not a unique identity, and the difference
+ * matters.** `github-actions[bot]` is the login of EVERY workflow in a
+ * repository that authenticates with `GITHUB_TOKEN`, not just this one. What
+ * makes the selection safe is the conjunction: this login, AND the versioned
+ * marker, AND that nothing else in the tree writes that marker — which is
+ * the load-bearing term, so `test/ai-review-ledger-step.test.ts` asserts it
+ * rather than leaving it as a sentence here.
+ */
+export const AI_REVIEW_LEDGER_BOT_LOGIN = "github-actions[bot]";
+
+/**
+ * The most rounds the ledger retains. Older entries are dropped, loudly.
+ *
+ * A comment body has a hard limit of 65,536 characters and nothing warns you
+ * approaching it — the write just fails, on a long-lived pull request, at
+ * the point the history is most worth having. The arithmetic: the prose
+ * header is ~1.2 KB, and a pathological round carrying ten findings with
+ * long summaries and recorded line text is ~4 KB. Twelve of those is 48 KB,
+ * which clears the limit with the header and room over.
+ *
+ * Twelve is also four times `AI_REVIEW_ROUND_CAP`, and well past anything
+ * observed: over 294 merged pull requests with an `AI Review` run the mean
+ * was 1.738 rounds and thirteen reached five or more. So the cap bounds the
+ * pathological case without truncating a real one.
+ *
+ * **A dropped round is not a round that did not happen.** The step emits a
+ * warning naming how many were dropped, because a ledger that silently
+ * became a window would report as a history — the exact collapse between
+ * "not seen before" and "could not read it" that this whole mechanism keeps
+ * apart.
+ */
+export const AI_REVIEW_LEDGER_MAX_ROUNDS = 12;
+
+/**
  * The identity rule this step records its finding anchors under.
  *
  * Stamped on every entry so a later round reads which rule produced the
@@ -6566,10 +6608,22 @@ fi
 # is watching. The author check is what makes the marker an identifier rather
 # than a suggestion (#1319 review).
 #
+# LOGIN, not just \`type == "Bot"\`. Every GitHub App installed on the
+# repository is \`type: Bot\`, so the type alone narrows the impostor set from
+# "anyone who can comment" to "any installed app" — and an app with comment
+# scope clears that bar. Binding to the login this step writes as closes it.
+#
+# The login is still a CLASS and not an identity: \`github-actions[bot]\` is
+# every workflow in this repository using \`GITHUB_TOKEN\`. What makes the
+# selection safe is the conjunction — this login, AND the versioned marker,
+# AND nothing else in the tree writing that marker. The third term is the
+# load-bearing one, so it is asserted in
+# \`test/ai-review-ledger-step.test.ts\` rather than trusted here.
+#
 # \`first\`, not \`last\`: the OLDEST bot-authored match is the real ledger,
 # because that is the one this step created on round one. \`last\` prefers the
 # newest, which is precisely the one an impersonator would have just posted.
-selected=\$(printf '%s' "\${comments}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' '[.[] | select((.user.type? // "") == "Bot" and .body != null and (.body | contains(\$m)))] | first // empty' 2>/dev/null || true)
+selected=\$(printf '%s' "\${comments}" | jq -c --arg m '${AI_REVIEW_LEDGER_MARKER}' --arg login '${AI_REVIEW_LEDGER_BOT_LOGIN}' '[.[] | select((.user.type? // "") == "Bot" and (.user.login? // "") == \$login and .body != null and (.body | contains(\$m)))] | first // empty' 2>/dev/null || true)
 existing_id=""
 existing_body=""
 if [ -n "\${selected}" ]; then
@@ -6586,7 +6640,12 @@ if [ -n "\${existing_body}" ]; then
   # guard below refuses, and the ledger is wedged permanently — a recording
   # failure that looks exactly like a corrupt ledger (#1319 review).
   extracted=\$(printf '%s' "\${existing_body}" | tr -d '\\r' | sed -n '/^${fence}json\$/,/^${fence}\$/p' | sed '1d;\$d' || true)
-  if [ -n "\${extracted}" ] && printf '%s' "\${extracted}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  # SHAPE, not just \`type == "array"\`. The prior payload is parsed out of a
+  # COMMENT BODY and then re-serialised into the next one, so whatever it
+  # holds becomes permanent: an array of strings, of nulls, of anything, is
+  # adopted once and carried forever. \`all(.[]; …)\` is over an empty array
+  # vacuously TRUE, which is what keeps a legitimately empty ledger readable.
+  if [ -n "\${extracted}" ] && printf '%s' "\${extracted}" | jq -e 'type == "array" and all(.[]; type == "object" and has("at") and has("run"))' >/dev/null 2>&1; then
     prior="\${extracted}"
   else
     ledger_note "the existing ledger comment was found and its payload could not be parsed as a JSON array, so this round was NOT recorded. Refusing to replace it: a ledger that cannot be read is not an empty one, and overwriting it would discard every round it holds."
@@ -6594,10 +6653,26 @@ if [ -n "\${existing_body}" ]; then
   fi
 fi
 
-if ! all=\$(printf '%s' "\${prior}" | jq -c --argjson e "\${entry}" '. + [\$e]'); then
+# CAPPED, and the drop is announced. A comment body has a hard 65,536
+# character limit and nothing warns you approaching it — the write simply
+# fails, on a long-lived pull request, at the point the history is most
+# worth having. See \`AI_REVIEW_LEDGER_MAX_ROUNDS\` for the arithmetic.
+#
+# The warning is not decoration. A ledger that silently became a window
+# would report as a history, which collapses "this round was never raised
+# before" into "the round that raised it is no longer in the file" — the one
+# distinction this whole mechanism exists to hold open. A reader cannot
+# recover a round that is gone; it can only be told that one is.
+if ! all=\$(printf '%s' "\${prior}" | jq -c --argjson e "\${entry}" --argjson keep ${AI_REVIEW_LEDGER_MAX_ROUNDS} '(. + [\$e]) | if length > \$keep then .[-\$keep:] else . end'); then
   ledger_note "this round could not be appended to the existing ledger, so nothing was written."
   exit 0
 fi
+
+dropped=\$(printf '%s' "\${prior}" | jq -r --argjson keep ${AI_REVIEW_LEDGER_MAX_ROUNDS} '[(length + 1 - \$keep), 0] | max' 2>/dev/null || true)
+case "\${dropped}" in
+  ""|0) ;;
+  *) ledger_note "the ledger is at its ${AI_REVIEW_LEDGER_MAX_ROUNDS}-round cap, so \${dropped} of the OLDEST round(s) were dropped to keep the comment under GitHub's body limit. Those rounds are gone, not empty: a finding only they recorded can no longer be carried forward, and nothing downstream can tell that from a finding that was never raised." ;;
+esac
 
 # \`if !\`, not \`body_file="\$(mktemp)"\`. An assignment whose only word is a
 # failing command substitution aborts the step under the runner's \`bash -e\`
@@ -6613,6 +6688,7 @@ fi
   printf '%s\\n\\n' '### AI review findings ledger'
   printf '%s\\n\\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168).'
   printf '%s\\n\\n' 'A \`${AI_REVIEW_FINDINGS_KEY}\` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
+  printf '%s\\n\\n' 'At most ${AI_REVIEW_LEDGER_MAX_ROUNDS} rounds are retained — a comment body has a hard 65,536 character limit. When the oldest are dropped the step says so in a warning annotation, because a dropped round is gone rather than empty and nothing downstream can tell those apart.'
   printf '%s\\n\\n' '\`identity\` names the rule the per-finding anchors were recorded under. A reader that does not recognise it carries those findings without keying them, rather than keying them under a rule they were not recorded with. \`${AI_REVIEW_LEDGER_TEXT_FIELD}\` is the content of the cited line at the time, which is the anchor that rule uses; a finding with no \`${AI_REVIEW_LEDGER_TEXT_FIELD}\` cannot be shown resolved and is carried.'
   printf '%s\\n' '${fence}json'
   printf '%s\\n' "\${all}"

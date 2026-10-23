@@ -35,7 +35,9 @@ import {
   AI_REVIEW_FINDINGS_PATH_VAR,
   AI_REVIEW_LEDGER_API_VAR,
   AI_REVIEW_LEDGER_IDENTITY_V1,
+  AI_REVIEW_LEDGER_BOT_LOGIN,
   AI_REVIEW_LEDGER_MARKER,
+  AI_REVIEW_LEDGER_MAX_ROUNDS,
   AI_REVIEW_LEDGER_PR_VAR,
   AI_REVIEW_LEDGER_REPO_VAR,
   AI_REVIEW_LEDGER_SHA_VAR,
@@ -217,7 +219,7 @@ describe("AC-L0 (#1168): the rig delivers its own fixture unmangled", () => {
    * that failure is indistinguishable from a broken script.
    */
   test("AC-L0: the ledger fixture still contains its marker and its fences", () => {
-    const body = ledgerBody([{ run: "run-1" }]);
+    const body = ledgerBody([{ at: "t0", run: "run-1", round: 1, findings: [] }]);
     const r = runPersist({ list: [botComment(5, body)], payload: ONE_FINDING });
     expect(r.stderr, "the stub shelled out while answering with the fixture").toBe("");
     // Reached the script intact: it found the comment and PATCHed it.
@@ -336,7 +338,7 @@ describe("AC-L8 (#1319 review): the ledger is identified by AUTHOR, not by a str
   const HUMAN_IMPOSTOR = {
     id: 99,
     user: { type: "User", login: "someone" },
-    body: ledgerBody([{ run: "planted" }]),
+    body: ledgerBody([{ at: "t0", run: "planted", round: 1, findings: [] }]),
   };
 
   test("AC-L8: a HUMAN comment carrying the marker is not adopted", () => {
@@ -360,8 +362,8 @@ describe("AC-L8 (#1319 review): the ledger is identified by AUTHOR, not by a str
     // the one this step made on round one.
     const r = runPersist({
       list: [
-        { id: 10, user: { type: "Bot", login: "github-actions[bot]" }, body: ledgerBody([{ run: "original" }]) },
-        { id: 20, user: { type: "Bot", login: "github-actions[bot]" }, body: ledgerBody([{ run: "newer" }]) },
+        { id: 10, user: { type: "Bot", login: "github-actions[bot]" }, body: ledgerBody([{ at: "t0", run: "original", round: 1, findings: [] }]) },
+        { id: 20, user: { type: "Bot", login: "github-actions[bot]" }, body: ledgerBody([{ at: "t1", run: "newer", round: 1, findings: [] }]) },
       ],
       payload: ONE_FINDING,
     });
@@ -371,10 +373,25 @@ describe("AC-L8 (#1319 review): the ledger is identified by AUTHOR, not by a str
 
   test("AC-L8: the MUTANT — marker alone, newest wins — adopts the impostor", () => {
     const real = buildPersistScript();
-    const mutant = real
-      .replace('(.user.type? // "") == "Bot" and ', "")
-      .replace("] | first // empty", "] | last // empty");
-    expect(mutant, "the mutation did not apply").not.toBe(real);
+    // BOTH authorship clauses have to come out. When the login clause was
+    // added (#1168), this mutation half-applied: the type check was stripped,
+    // the login check survived and still rejected the impostor, and the
+    // mutant reported POST — indistinguishable from a guard that held. The
+    // old `expect(mutant).not.toBe(real)` was green throughout, because
+    // something HAD changed. Assert the population, not that it differs.
+    const AUTHOR_CLAUSES = [
+      '(.user.type? // "") == "Bot" and ',
+      '(.user.login? // "") == $login and ',
+    ];
+    let mutant = real;
+    for (const clause of AUTHOR_CLAUSES) {
+      expect(real, `the mutation site is not in the script: ${clause}`).toContain(clause);
+      mutant = mutant.replace(clause, "");
+    }
+    mutant = mutant.replace("] | first // empty", "] | last // empty");
+    for (const clause of AUTHOR_CLAUSES) {
+      expect(mutant, `a clause survived the mutation: ${clause}`).not.toContain(clause);
+    }
     const r = runPersist({ list: [HUMAN_IMPOSTOR], payload: ONE_FINDING, script: mutant });
     expect(r.method, "the mutant must adopt it — that is the defect").toBe("PATCH");
   });
@@ -674,5 +691,149 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
     const r = runPersist({ list: [], payload: "{ not json" });
     expect(r.status, r.stderr).toBe(0);
     expect(r.rounds![0].findings).toBeNull();
+  });
+});
+
+/**
+ * AC-L10 (#1168): the ALLOW direction of the ledger's identity check.
+ *
+ * Every case above asks "is the ledger found when it should be". None asked
+ * "is it left alone when it should be" — and a narrowing can only regress in
+ * that direction, silently, because a step that adopts too much still passes
+ * every case about adoption.
+ *
+ * `user.type == "Bot"` is a CLASS. Every GitHub App installed on a
+ * repository is `type: Bot`, so the original filter narrowed the impostor
+ * set from "anyone who can comment" to "any installed app" — a bar an app
+ * with comment scope clears. The rows below vary ONE axis: identical marker,
+ * identical body, different author.
+ */
+describe("AC-L10 (#1168): a comment this step did not write is never adopted", () => {
+  const PLANTED = ledgerBody([{ at: "t0", run: "planted", round: 1, findings: [] }]);
+
+  test("AC-L10: a DIFFERENT bot login carrying the marker is NOT adopted", () => {
+    // The negative control. `type: Bot` is true of this comment, so the row
+    // passes under the old filter and fails under it only once the login is
+    // bound — which is exactly the regression direction nothing else covers.
+    const r = runPersist({
+      list: [{ id: 42, user: { type: "Bot", login: "dependabot[bot]" }, body: PLANTED }],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "it PATCHed another app's comment").toBe("POST");
+    expect(
+      r.rounds,
+      "it inherited rounds from a comment another GitHub App wrote",
+    ).toHaveLength(1);
+    expect(JSON.stringify(r.rounds)).not.toContain("planted");
+  });
+
+  test("AC-L10 CONTROL: the same body from THIS login is adopted", () => {
+    // Without this row the case above is green under a step that adopts
+    // nothing at all — including the ledger it wrote itself.
+    const r = runPersist({
+      list: [{ id: 42, user: { type: "Bot", login: AI_REVIEW_LEDGER_BOT_LOGIN }, body: PLANTED }],
+      payload: ONE_FINDING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "it refused to adopt its own ledger").toBe("PATCH");
+    expect(r.rounds, "the earlier round was dropped").toHaveLength(2);
+  });
+
+  test("AC-L10: the login is a class, so the MARKER has to be the thing nothing else writes", () => {
+    // The conjunction's load-bearing term, asserted rather than asserted in
+    // prose. `github-actions[bot]` is every GITHUB_TOKEN workflow in this
+    // repository, so if a second workflow ever emitted this marker the login
+    // check would not tell them apart. One writer, checked.
+    const emitters = spawnSync(
+      "git",
+      ["grep", "-l", "-F", "--", AI_REVIEW_LEDGER_MARKER, "--", ".github/workflows"],
+      { cwd: REPO, encoding: "utf8" },
+    );
+    const files = (emitters.stdout ?? "").split("\n").filter(Boolean);
+    // Control: the detector finds the marker where it demonstrably is. A
+    // `git grep` that matched nothing reads exactly like "one writer".
+    expect(
+      files,
+      "the marker was found in no workflow at all, so this search proves nothing",
+    ).toContain(".github/workflows/ai-review.yml");
+    expect(
+      files,
+      "a second workflow emits the ledger marker, so the login check can no longer " +
+        "tell this step's comment from that one's",
+    ).toEqual([".github/workflows/ai-review.yml"]);
+  });
+});
+
+/**
+ * AC-L11 (#1168): the prior payload is state parsed out of a comment body.
+ *
+ * Whatever survives the check below is re-serialised into the next comment,
+ * so one malformed entry adopted once is permanent.
+ */
+describe("AC-L11 (#1168): the prior ledger is validated by shape, and capped", () => {
+  test("AC-L11: an array of NON-objects is refused, not adopted", () => {
+    // `type == "array"` alone passes every one of these.
+    for (const junk of [["a string"], [42], [null], [["nested"]], [{ at: "t" }]]) {
+      const r = runPersist({ list: [botComment(5, ledgerBody(junk))], payload: ONE_FINDING });
+      expect(r.status, r.stderr).toBe(0);
+      expect(
+        r.method,
+        `a ledger holding ${JSON.stringify(junk)} was adopted and rewritten`,
+      ).toBeNull();
+    }
+  });
+
+  test("AC-L11 CONTROL: a well-formed prior ledger is still adopted", () => {
+    // The refusals above are green under a step that refuses everything.
+    const ok = [{ at: "t0", sha: "cafe", run: "run-1", attempt: "1", round: 1, findings: [] }];
+    const r = runPersist({ list: [botComment(5, ledgerBody(ok))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "a valid ledger was not adopted").toBe("PATCH");
+    expect(r.rounds).toHaveLength(2);
+  });
+
+  test("AC-L11: an EMPTY prior ledger is readable, not refused", () => {
+    // `all(.[]; …)` over `[]` is vacuously true, and that is load-bearing:
+    // the ledger is legitimately empty exactly once, and a step that refused
+    // it would never record a second round on any pull request.
+    const r = runPersist({ list: [botComment(5, ledgerBody([]))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("PATCH");
+    expect(r.rounds).toHaveLength(1);
+  });
+
+  test("AC-L11: at the cap the OLDEST round is dropped and the drop is announced", () => {
+    const full = Array.from({ length: AI_REVIEW_LEDGER_MAX_ROUNDS }, (_, i) => ({
+      at: `t${i}`,
+      sha: "cafe",
+      run: `run-${i}`,
+      attempt: "1",
+      round: i + 1,
+      findings: [],
+    }));
+    const r = runPersist({ list: [botComment(5, ledgerBody(full))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds, "the ledger grew past its cap").toHaveLength(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    // The oldest is gone and the newest is present — a cap that dropped the
+    // WRONG end keeps the same length and loses every new round instead.
+    expect(JSON.stringify(r.rounds), "run-0 should have been dropped").not.toContain('"run-0"');
+    expect(JSON.stringify(r.rounds)).toContain('"run-9"');
+    expect(JSON.stringify(r.rounds), "this round was not recorded").toContain('"run-9"');
+    // A dropped round is gone, not empty. Silence here would make the ledger
+    // a window that reports as a history.
+    expect(r.stdout, "the ledger dropped a round and said nothing").toContain("cap");
+  });
+
+  test("AC-L11: under the cap nothing is dropped and nothing is announced", () => {
+    // The control for the row above: the warning must not fire on every run.
+    const few = [{ at: "t0", sha: "cafe", run: "run-0", attempt: "1", round: 1, findings: [] }];
+    const r = runPersist({ list: [botComment(5, ledgerBody(few))], payload: ONE_FINDING });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds).toHaveLength(2);
+    expect(JSON.stringify(r.rounds), "an under-cap ledger lost its oldest round").toContain(
+      '"run-0"',
+    );
+    expect(r.stdout, "the cap warning fired below the cap").not.toContain("cap");
   });
 });
