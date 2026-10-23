@@ -36,7 +36,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "fs";
+import { chmodSync, cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -125,6 +125,20 @@ function snapshot(root: string, rel = "", acc = new Map<string, string>()): Map<
     // to make is noise, and noise is how a preview stops being read.
     if (entry.name === "node_modules" || entry.name === ".fallow") continue;
     const child = rel ? `${rel}/${entry.name}` : entry.name;
+    // `.git/` is skipped DURING the walk, not filtered out of the result
+    // (#1433). The filter below was in the right place for the wrong half:
+    // by the time it ran, every path it removed had already been opened.
+    // Git rewrites its own directory while the walk runs, so an entry
+    // `readdirSync` listed can be gone by the `readFileSync` a few entries
+    // later — shard 2 of run 40010348461 died on
+    // `ENOENT … /.git/objects/maintenance.lock` in 15.58 ms, long before
+    // `runScaffold` could be reached. Measured at 1 of 308 shard jobs over
+    // a 3-hour window, on a shard every open pull request runs.
+    //
+    // `.git` ITSELF is entered, because `.git/hooks/` is the one subtree
+    // this test needs: the two generated hooks are scaffold output (#85,
+    // #397). Nothing else under `.git/` is listed or read.
+    if (child !== ".git" && isGitBookkeeping(entry.isDirectory() ? `${child}/` : child)) continue;
     if (entry.isDirectory()) {
       acc.set(`${child}/`, "dir");
       snapshot(root, child, acc);
@@ -150,6 +164,13 @@ function changedPaths(before: Map<string, string>, after: Map<string, string>): 
  * scaffold output. Excluded from the comparison by prefix rather than by
  * name, and the two generated hooks are deliberately NOT excluded — they are
  * scaffold output and the whole point of #85 and #397.
+ *
+ * Asked in TWO places, and they are not redundant. {@link snapshot} asks it
+ * to decide what to OPEN, which is what stops the ENOENT race in #1433; the
+ * comparison asks it to decide what to COMPARE, which still has work to do
+ * because `.git/` itself is walked into and lands in the map as a directory
+ * entry. One call site without the other either reopens the race or reports
+ * `.git/` as a path audit wrote.
  */
 function isGitBookkeeping(p: string): boolean {
   return p.startsWith(".git/") && !p.startsWith(".git/hooks/");
@@ -439,5 +460,135 @@ describe("SC-1512: one binding decides what counts as a written path", () => {
     // make audit and fix agree by both over-reporting, which is agreement
     // for the wrong reason.
     expect(writtenPath(line)).toBeNull();
+  });
+});
+
+/**
+ * #1433 — the walker opened git's own directory, and git deletes out of it
+ * while the walk runs.
+ *
+ * The symptom was `ENOENT … /.git/objects/maintenance.lock` thrown out of
+ * `snapshot` at the `readFileSync`, in 15.58 ms. The latency is the evidence
+ * that it is a race and not contention: a loaded runner fails slowly, and
+ * this died before `runScaffold` could have been reached.
+ *
+ * RATE, measured before the fix so the fix has something to have changed.
+ * Over the 249 completed `ci.yml` runs from 21:45 on 2026-10-22 to 19:54 on
+ * 2026-10-23 — 996 shard jobs, 29 of them failed:
+ *
+ * | window    | shard jobs | ENOENT under `.git/` | rate  |
+ * |-----------|-----------:|---------------------:|------:|
+ * | 77 runs   |        308 |                    1 | 0.32% |
+ * | 249 runs  |        996 |                    1 | 0.10% |
+ *
+ * The same single occurrence both times: run `40010348461`, shard 2, branch
+ * `rg/1385-clock-mask`. Neither the shard nor the branch it was first seen on
+ * (#1430, shard 1), so it is a property of the walker and not of one job —
+ * but **once in 996 shard jobs is not the standing tax the issue wondered
+ * about**, and the 3-hour window overstated it threefold by containing the
+ * only instance. The fix is worth taking because it is free and removes a
+ * whole class of read, not because the rate is high.
+ *
+ * The 28 other failures are the control: had the grep matched all 29 it would
+ * have been matching everything. The first instrument reported 0 hits with
+ * the control ALSO at 0, because `gh api …/logs` answers a 302 to a zip and
+ * yielded nothing readable — 9 of 9 logs unread. `gh run view --log` returns
+ * the text. A zero whose control is also zero is UNMEASURED, and the control
+ * is the only thing that said so.
+ *
+ * ## Why the rows below use an UNREADABLE entry rather than a deleted one
+ *
+ * The production trigger is a file that vanishes between `readdirSync` and
+ * `readFileSync`, and that window cannot be hit on demand — a test that
+ * raced it would be as flaky as the bug. What is actually under test is
+ * narrower and fully determinable: **does the walk open anything under
+ * `.git/` that is not `.git/hooks/`?** An entry that cannot be read answers
+ * that exactly, and deterministically, because the only way to observe it is
+ * to have opened it.
+ *
+ * Both rows were watched RED against the walker as it stood: the structural
+ * one because `.git/objects/…` was in the returned map, the unreadable one
+ * because `readFileSync` threw.
+ */
+describe("#1433: the walk does not open git's own directory", () => {
+  /** A minimal tree: a real `.git/` with a hook, plus one planted object. */
+  function plantGitTree(name: string): string {
+    const root = mkdtempSync(join(tmpdir(), `snapshot-git-${name}-`));
+    roots.push(root);
+    const put = (rel: string, body: string) => {
+      mkdirSync(join(root, rel, ".."), { recursive: true });
+      writeFileSync(join(root, rel), body);
+    };
+    put("src/index.ts", "export const x = 1;\n");
+    put(".git/HEAD", "ref: refs/heads/main\n");
+    put(".git/config", "[core]\n\trepositoryformatversion = 0\n");
+    put(".git/objects/maintenance.lock", "transient\n");
+    put(".git/hooks/pre-push", "#!/bin/sh\nexit 0\n");
+    return root;
+  }
+
+  test("AC-2: nothing under .git/ is in the snapshot except .git/hooks/", () => {
+    // RED before the fix: the walker read `.git/HEAD`, `.git/config` and
+    // `.git/objects/maintenance.lock` into the map and relied on a later
+    // filter to drop them — by which point they had been opened.
+    const keys = [...snapshot(plantGitTree("structural")).keys()];
+    const underGit = keys.filter(k => k.startsWith(".git/") && k !== ".git/");
+    expect(underGit.sort()).toEqual([".git/hooks/", ".git/hooks/pre-push"]);
+  });
+
+  test("AC-2 CONTROL: the rest of the tree is still walked, and .git/hooks/ is kept", () => {
+    // Without this, skipping `.git` entirely — or skipping the whole walk —
+    // would pass the row above. The two generated hooks are scaffold output
+    // (#85, #397); losing them is how this fix could quietly break SC-1510.
+    const keys = new Set(snapshot(plantGitTree("control")).keys());
+    expect(keys.has("src/index.ts")).toBe(true);
+    expect(keys.has(".git/hooks/pre-push")).toBe(true);
+    expect(keys.has(".git/HEAD")).toBe(false);
+    expect(keys.has(".git/objects/maintenance.lock")).toBe(false);
+  });
+
+  test("AC-3: an unopenable entry under .git/objects/ does not throw the walk", () => {
+    // The deterministic stand-in for the transient lock. A file the process
+    // cannot read fails the same `readFileSync` the vanished lock failed, so
+    // a walk that still opens `.git/objects/` still dies here.
+    const root = plantGitTree("unreadable");
+    const planted = join(root, ".git", "objects", "maintenance.lock");
+    chmodSync(planted, 0o000);
+
+    // The premise, asserted rather than assumed: if this process CAN read a
+    // 0o000 file — running as root, or a filesystem that ignores the mode —
+    // the row proves nothing and must say so instead of passing.
+    let unreadable = false;
+    try {
+      readFileSync(planted);
+    } catch {
+      unreadable = true;
+    }
+    expect(
+      unreadable,
+      "premise not established: this process can read a 0o000 file (running as root?), " +
+        "so an unopened path and an opened one look identical here",
+    ).toBe(true);
+
+    expect(() => snapshot(root)).not.toThrow();
+    chmodSync(planted, 0o644);
+  });
+
+  test("AC-3 CONTROL: the same entry outside .git/ DOES throw", () => {
+    // Names what the instrument can show. Without this row, a `snapshot`
+    // that swallowed every read error would pass AC-3 while hiding exactly
+    // the disappeared-file change the content hash exists to detect.
+    const root = plantGitTree("outside");
+    const planted = join(root, "src", "unreadable.ts");
+    writeFileSync(planted, "export const y = 2;\n");
+    chmodSync(planted, 0o000);
+    let threw = false;
+    try {
+      snapshot(root);
+    } catch {
+      threw = true;
+    }
+    chmodSync(planted, 0o644);
+    expect(threw, "snapshot swallowed a read failure outside .git/, which is a real change going unseen").toBe(true);
   });
 });
