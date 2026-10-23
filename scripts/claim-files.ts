@@ -196,9 +196,35 @@ export function readFromRemote(project: string, ref: string, doFetch: boolean) {
   return readFileClaims(r.stdout);
 }
 
+/**
+ * Serialise the store, and refuse to write one the reader would reject.
+ *
+ * Raised by the AI review on this pull request and it was right. Without
+ * this, `--claim /etc/passwd` writes an absolute path that `readFileClaims`
+ * refuses — and because one bad entry refuses the WHOLE store, a single
+ * careless claim makes every path read UNMEASURED for every other session.
+ * The writer could brick the registry for everyone, which is a worse version
+ * of exactly the fail-open this file exists to prevent.
+ *
+ * The check is a ROUND TRIP rather than a second call to the validator: it
+ * serialises the bytes that are about to be written and reads them back
+ * through the real reader. A re-validation would be a second implementation
+ * of the rules and would agree with the first by construction — the fourth
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md`. This agrees with
+ * nothing; it asks the only question that matters, which is whether the next
+ * reader can read the file.
+ */
 function writeStore(project: string, claims: FileClaim[]): void {
   const path = join(project, FILE_CLAIMS_PATH);
-  writeFileSync(path, `${JSON.stringify({ [FILE_CLAIMS_CONTROL_KEY]: claims }, null, 2)}\n`);
+  const bytes = `${JSON.stringify({ [FILE_CLAIMS_CONTROL_KEY]: claims }, null, 2)}\n`;
+  const back = readFileClaims(bytes, path);
+  if (back.status !== "read") {
+    throw new Error(
+      `refusing to write a registry the reader cannot read — ${back.reason ?? back.status}. ` +
+        "Nothing was written; one bad entry would make every path UNMEASURED for every session.",
+    );
+  }
+  writeFileSync(path, bytes);
 }
 
 function readLocal(project: string) {

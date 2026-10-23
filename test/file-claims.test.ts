@@ -17,7 +17,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 import {
@@ -286,6 +288,88 @@ describe("#1413: a landed branch is told apart from a live one by SUBJECT", () =
     // read live — which is precisely the defect being fixed.
     expect(BASE).not.toContain("fix(#1394): the eviction note says how many went");
     expect(isLandedBySubject(["fix(#1394): the eviction note says how many went"], BASE)).toBe(true);
+  });
+});
+
+/**
+ * The writer cannot produce a store the reader refuses.
+ *
+ * Raised by the AI review on PR #1436. `--claim` built an entry and wrote it
+ * with no validation, so `--claim /etc/passwd` would have written an absolute
+ * path — and since one bad entry refuses the WHOLE store, that single
+ * careless claim makes every path read UNMEASURED for every other session.
+ * The writer could brick the lock for everybody.
+ *
+ * Driven through the real script rather than the helper, because the defect
+ * was in the path from argv to disk and a case calling `writeStore` directly
+ * would not have covered the thing that was wrong.
+ */
+describe("#1413: --claim refuses to write a registry the reader cannot read", () => {
+  const run = (dir: string, ...args: string[]) =>
+    spawnSync("bun", [join(REPO, "scripts", "claim-files.ts"), "--project", dir, ...args], {
+      encoding: "utf-8",
+    });
+
+  test("an absolute path is refused and NOTHING is written", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg1413-"));
+    try {
+      mkdirSync(join(dir, "specs"));
+      const r = run(dir, "--claim", "/etc/passwd", "--owner", "rg/x");
+      expect(r.status, r.stdout).not.toBe(0);
+      expect(r.stdout).toContain("refusing to write");
+      expect(
+        existsSync(join(dir, FILE_CLAIMS_PATH)),
+        "a refused claim left a registry behind anyway",
+      ).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a path escaping the repository is refused the same way", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg1413-"));
+    try {
+      mkdirSync(join(dir, "specs"));
+      const r = run(dir, "--claim", "../elsewhere/x.ts", "--owner", "rg/x");
+      expect(r.status).not.toBe(0);
+      expect(existsSync(join(dir, FILE_CLAIMS_PATH))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: an ordinary claim IS written, and reads back", () => {
+    // Without this the two rows above are satisfied by a `--claim` that
+    // refuses everything, which is a lock nobody can take.
+    const dir = mkdtempSync(join(tmpdir(), "rg1413-"));
+    try {
+      mkdirSync(join(dir, "specs"));
+      const r = run(dir, "--claim", "lib/a.ts", "--owner", "rg/x", "--issue", "1413");
+      expect(r.status, r.stdout).toBe(0);
+      const back = readFileClaims(readFileSync(join(dir, FILE_CLAIMS_PATH), "utf-8"));
+      expect(back.status).toBe("read");
+      expect(back.claims).toEqual([{ owner: "rg/x", paths: ["lib/a.ts"], issue: 1413 }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("CONTROL: a second claim by the same owner REPLACES the first", () => {
+    // The registry is a set of owners, not an append log. Two rows for one
+    // branch would both have to be released, and the second release would
+    // find nothing.
+    const dir = mkdtempSync(join(tmpdir(), "rg1413-"));
+    try {
+      mkdirSync(join(dir, "specs"));
+      run(dir, "--claim", "lib/a.ts", "--owner", "rg/x");
+      run(dir, "--claim", "lib/b.ts", "--owner", "rg/x");
+      const back = readFileClaims(readFileSync(join(dir, FILE_CLAIMS_PATH), "utf-8"));
+      if (back.status !== "read") throw new Error(back.reason);
+      expect(back.claims).toHaveLength(1);
+      expect(back.claims[0].paths).toEqual(["lib/b.ts"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
