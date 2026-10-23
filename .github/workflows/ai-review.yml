@@ -1,4 +1,4 @@
-# generated-sha: 0aa596cd46363178
+# generated-sha: fa83cdd6de5e352e
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1203,9 +1203,26 @@ jobs:
 
           # `null` and `[]` are DIFFERENT and the difference is the point: one is a
           # round nobody read, the other is a round that was read and was clean.
+          #
+          # THE SHAPE IS CHECKED BEFORE THE ITERATION, and the absence of a `?` after
+          # `[]` is the whole of #1352 rather than an omission. (AC-8a counts every
+          # spelling of the key across this module and its contract, and a bash comment
+          # inside this template is not a JS comment, so the sentence interpolates the
+          # key rather than typing it — the same trap the git-isolation note above
+          # describes for AC-6b, caught the same way: by the guard, not by review.)
+          # `.${key}[]?` suppresses the iteration error, so a document that PARSES but carries no
+          # array under `findings` exits 0 with an empty
+          # comprehension — and `[]` is this script's spelling of "read and clean",
+          # two lines up. Measured over ten shapes: six recorded `[]` that way,
+          # including `{}`, a null document, and a `findings` key
+          # holding a string, a number or an object.
+          #
+          # `error` rather than a `null` literal, so every unreadable shape leaves
+          # by the one branch that already exists below and already says UNMEASURED
+          # out loud. A second way to be unreadable would be a second decider.
           findings="null"
           if [ -n "${AI_REVIEW_FINDINGS_PATH:-}" ] && [ -s "${AI_REVIEW_FINDINGS_PATH}" ]; then
-            if parsed=$(jq -c '[ .findings[]? | {severity, file, line, summary} ]' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
+            if parsed=$(jq -c 'if (.findings | type) == "array" then [ .findings[] | {severity, file, line, summary} ] else error("findings is not a list") end' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
               # Record the TEXT at each cited line, out of the checkout this round
               # reviewed. A later round cannot obtain it: `actions/checkout` above runs
               # at `fetch-depth: 1`, so the commit a finding was raised against is not
@@ -1226,13 +1243,133 @@ jobs:
                   rf=$(printf '%s' "${row}" | jq -r '.file // ""') || true
                   rl=$(printf '%s' "${row}" | jq -r 'if (.line|type) == "number" then (.line|floor|tostring) else "" end') || true
                   # The REVIEWER chooses `file`, and this step copies a line of it into
-                  # a public comment. An absolute path, or one climbing out of the
-                  # checkout, is refused rather than read.
-                  case "${rf}" in ""|/*|*..*) rf="" ;; esac
+                  # a public comment. An absolute path, one climbing out of the
+                  # checkout, or one spelling a command-line OPTION is refused rather
+                  # than read.
+                  #
+                  # The `-*` arm is the CRITICAL half (#1379, second pass). Without
+                  # it a value like `--expression=e id` reaches `sed` as an option,
+                  # and GNU sed's `e` command executes it through a shell on a
+                  # credentialed runner. `[ -f "${rf}" ]` does not close that:
+                  # `test -f` treats a leading-dash operand as a FILENAME, so it only
+                  # requires such a file to exist — and git tracks one happily, so the
+                  # author commits a file whose NAME is the option and writes code at
+                  # that path shaped to draw a finding. Every input is author-chosen.
+                  case "${rf}" in ""|-*|/*|*..*) rf="" ;; esac
                   rt=""
                   case "${rl}" in
                     ""|0|*[!0-9]*) ;;
-                    *) if [ -n "${rf}" ] && [ -f "${rf}" ]; then rt=$(sed -n "${rl}p" "${rf}" 2>/dev/null || true); fi ;;
+                    *)
+                      # `! -L` BEFORE `-f`, and the ORDER is the fix (#1379).
+                      # The three string tests above read the SPELLING of the path, and
+                      # a committed symlink needs neither a leading `/` nor a `..`
+                      # to leave the checkout. `-f` FOLLOWS the link, so it is not
+                      # evidence of an ordinary in-tree file — it is the test that
+                      # makes the link transparent. Ordering these the other way round
+                      # reinstates the whole hole.
+                      #
+                      # `! -L` alone is not enough either: in `notes/x.md` the
+                      # LINK can be `notes`, and `x.md` is then not a link by any
+                      # test. So resolve the path and require the result to sit under
+                      # the workspace. Both sides go through `readlink -f` because
+                      # the root itself is reached through a symlink on some runners
+                      # (`/tmp` on macOS), and comparing a resolved path against an
+                      # unresolved root refuses every legitimate quote.
+                      #
+                      # An empty `real` or `root` REFUSES rather than defaulting:
+                      # an empty root makes the pattern `/*`, which matches every
+                      # absolute path there is. That is the fail-open shape in
+                      # .claude/rules/checks-must-be-able-to-fail.md, arriving inside
+                      # the guard it would disarm.
+                      #
+                      # Failing containment leaves `rt` empty, which is the existing
+                      # no-quote rendering — no new failure mode and no annotation.
+                      # Untrusted input being declined is not a review result.
+                      #
+                      # The `./` prefix is the SECOND half of the option defence and
+                      # is independent of the `-*` arm above, deliberately: the arm
+                      # states the intent where a reader looks for it, and the prefix
+                      # still holds if someone later adds a path-rewriting step between
+                      # them. `rf` is known relative here — absolute and `..` were
+                      # refused above — so `./` only ever prefixes, never redirects.
+                      #
+                      # `--` on `readlink`, where the operand is still the
+                      # attacker-shaped `rf` and both GNU and BSD accept it.
+                      #
+                      # `--` DELIBERATELY NOT on `sed`, against a review that asked
+                      # for it as a third layer. BSD sed does not implement it: it
+                      # takes `--` as a FILE OPERAND, and numbering is continuous
+                      # across operands, so with a file literally named `--` in the
+                      # tree the quote comes from THAT file. Measured on darwin 25.6 —
+                      # `sed -n 1p -- /abs/a.ts` printed the contents of `./--` —
+                      # and git tracks such a file, so on a BSD runner `--` would ADD
+                      # a disclosure route of exactly the class this fixes. It also
+                      # buys nothing: `sed` is handed `${real}`, an absolute
+                      # resolved path known to start with `${root}/`, which cannot
+                      # be parsed as an option. That is a guarantee by construction,
+                      # which is stronger than a terminator.
+                      if [ -n "${rf}" ] && [ ! -L "./${rf}" ] && [ -f "./${rf}" ]; then
+                        real=$(readlink -f -- "./${rf}" 2>/dev/null || true)
+                        root=$(readlink -f -- "${GITHUB_WORKSPACE:-$PWD}" 2>/dev/null || true)
+                        if [ -n "${real}" ] && [ -n "${root}" ]; then
+                          case "${real}" in
+                            "${root}"/*)
+                              # TRACKED, not merely inside the workspace. Containment
+                              # answers "is this in the checkout"; the question worth
+                              # asking is "is this a file the pull request contains".
+                              # They differ by exactly the interesting set — `.git/`,
+                              # and anything an earlier step or the reviewer itself
+                              # wrote into the workspace. Tracked source is public by
+                              # construction for a pull request: the reviewer is
+                              # quoting something already visible in the diff.
+                              #
+                              # This SUBSUMES the `.git/`/`.ssh/` dot-directory arm
+                              # the same review suggested, so that arm is not added —
+                              # two deciders answering one question are behaviourally
+                              # one, and a mutation of either leaves the other holding
+                              # the case up.
+                              #
+                              # `ls-files` reads the INDEX, not history, so
+                              # `fetch-depth: 1` is sufficient — asserted in the rig,
+                              # not reasoned about. It is local and reaches no network,
+                              # which matters because this job checks out with
+                              # `persist-credentials: false` and has no token in
+                              # `.git/config` to spend.
+                              # READ THE INDEX, not the working tree. `ls-files`
+                              # asks the index "is this path tracked"; a `sed` of
+                              # `${real}` reads whatever is on disk NOW. A tracked
+                              # file that an earlier step modified passes the gate and
+                              # gets its MODIFIED content quoted — the validator and
+                              # the consumer talking about two different objects,
+                              # which is the same class as the symlink defect this arm
+                              # exists to fix, arriving inside the guard that fixed it.
+                              #
+                              # `git show ":${rel}"` makes them one object: the
+                              # thing quoted IS the thing the pull request contains,
+                              # which is what the tracked boundary was for.
+                              #
+                              # ONE decider, and no separate `ls-files` gate. An
+                              # earlier draft kept it as a membership check and it was
+                              # measured redundant: `git show` on a path not in the
+                              # index fails by itself, so defeating `ls-files`
+                              # changed no input and the mutation rows for it went
+                              # green witnessing nothing. Two deciders answering one
+                              # question are behaviourally one, and a mutation of
+                              # either leaves the other holding the case up.
+                              #
+                              # Dropping it also removes a PATHSPEC. `ls-files --
+                              # "${rel}"` reads `rel` as a pathspec, where glob
+                              # magic means a tracked `a?c.ts` answers yes for a
+                              # request naming `abc.ts`; `:${rel}` is a revision
+                              # and never globbed. The mismatch was one-sided, which
+                              # is exactly what made it invisible.
+                              rel=${real#"${root}"/}
+                              rt=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor= -c core.excludesFile=/dev/null -c core.hooksPath=/dev/null -c safe.directory='*' -C "${root}" show ":${rel}" 2>/dev/null | sed -n "${rl}p" || true)
+                              ;;
+                          esac
+                        fi
+                      fi
+                      ;;
                   esac
                   jq -nc --arg t "${rt}" '{text: $t}'
                 done > "${texts}"
@@ -1247,7 +1384,7 @@ jobs:
               fi
               findings="${parsed}"
             else
-              ledger_note "the findings payload exists and could not be parsed as JSON, so this round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
+              ledger_note "the findings payload exists and could not be read as a list of findings — it is not JSON, or it carries no 'findings' array. This round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
             fi
           fi
 
@@ -1631,7 +1768,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          path: ${{ runner.temp }}/ai-review-unmeasured-${{ github.run_id }}-${{ github.run_attempt }}.d/
+          path: ${{ runner.temp }}/ai-review-unmeasured-${{ github.run_id }}-${{ github.run_attempt }}.d/claude-execution-output.json
           name: ai-review-execution-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: ignore
           retention-days: 1

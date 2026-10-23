@@ -1456,12 +1456,27 @@ describe("#1307: the execution file is preserved when no payload was written", (
    * somewhere else reddens them all. Spelling the path in the test instead
    * would be a third author agreeing with one of the two.
    */
-  const uploadDir = (runnerTemp: string) =>
+  const uploadPath = (runnerTemp: string) =>
     (stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with.path as string)
       .replaceAll("${{ runner.temp }}", runnerTemp)
       .replaceAll("${{ github.run_id }}", RUN_ID)
       .replaceAll("${{ github.run_attempt }}", RUN_ATTEMPT)
       .replace(/\/+$/, "");
+
+  /**
+   * The upload names the FILE, not the directory, because
+   * `actions/upload-artifact@v4` follows symlinks and has no option not to —
+   * a directory path publishes every entry in it, a file path reaches one
+   * name. So the directory is the declared path's parent, and the leaf is
+   * asserted rather than assumed: if the generator ever points the upload at
+   * a directory again, this throws instead of silently measuring the wrong
+   * place.
+   */
+  const uploadDir = (runnerTemp: string) => {
+    const p = uploadPath(runnerTemp);
+    expect(p.endsWith(`/${AI_REVIEW_EXECUTION_BASENAME}`), `upload path is ${p}`).toBe(true);
+    return p.slice(0, -(AI_REVIEW_EXECUTION_BASENAME.length + 1));
+  };
 
   /** Run the real staging script against a planted runner state. */
   const stage = (opts: {
@@ -1984,6 +1999,19 @@ describe("#1307: the execution file is preserved when no payload was written", (
     // RUNNER_TEMP and the transcript lands under it or the rows above go
     // red. This row is the upload step's half.
     expect(stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with.path).toContain("runner.temp");
+  });
+
+  test("#1307: the upload names the FILE, because it cannot be told to ignore symlinks", () => {
+    // `actions/upload-artifact@v4` follows links and exposes no option to
+    // stop it — inputs are name, path, if-no-files-found, retention-days,
+    // compression-level, overwrite, include-hidden-files, read from the
+    // action's own `action.yml`. A directory path publishes every entry in
+    // it; a file path reaches one name. This narrows the surface, it does
+    // not close it, and the staging step's `-L` checks are what stand in
+    // front of a link swapped in at that exact name.
+    const p = stepOf(AI_REVIEW_EXECUTION_ARTIFACT_STEP_ID).with.path as string;
+    expect(p.endsWith(AI_REVIEW_EXECUTION_BASENAME)).toBe(true);
+    expect(p.endsWith("/"), "a trailing slash makes this a directory upload again").toBe(false);
   });
 
   test("#1307: retention is one day — the artefact's exposure window on a public repo", () => {

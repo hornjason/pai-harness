@@ -8015,6 +8015,18 @@ export function buildReviewRunStep(
   // composes. A fixed path would be a path a previous job on a reused runner
   // could have left behind, and this step uploads what it finds.
   //
+  // AND IT NAMES THE FILE, not the directory. `upload-artifact` FOLLOWS
+  // SYMLINKS and `@v4` exposes no option to stop it — its inputs are `name`,
+  // `path`, `if-no-files-found`, `retention-days`, `compression-level`,
+  // `overwrite` and `include-hidden-files`, read from the action's own
+  // `action.yml`, and there is no `follow-symlinks`. So the narrowing has to
+  // come from the path: a directory path publishes every entry in it,
+  // including one this job never wrote, while a file path can only ever
+  // reach the one name the staging step chose. It does not close the window
+  // — a link swapped in at that exact name after the staging step's last
+  // check is still followed — and the staging step's own `-L` checks are
+  // what stand in front of that.
+  //
   // `continue-on-error` is what keeps a recorder from refusing: the
   // UNMEASURED annotation is this job's output, and a failed upload must not
   // replace it with a different red. See
@@ -8025,7 +8037,7 @@ export function buildReviewRunStep(
     `  continue-on-error: true`,
     `  uses: ${refs.uploadArtifact}`,
     `  with:`,
-    `    path: \${{ runner.temp }}/${AI_REVIEW_EXECUTION_STAGE_DIR}-\${{ github.run_id }}-\${{ github.run_attempt }}${AI_REVIEW_EXECUTION_STAGE_SUFFIX}/`,
+    `    path: \${{ runner.temp }}/${AI_REVIEW_EXECUTION_STAGE_DIR}-\${{ github.run_id }}-\${{ github.run_attempt }}${AI_REVIEW_EXECUTION_STAGE_SUFFIX}/${AI_REVIEW_EXECUTION_BASENAME}`,
     `    name: ${AI_REVIEW_EXECUTION_ARTIFACT_NAME}-\${{ github.run_id }}-\${{ github.run_attempt }}`,
     `    if-no-files-found: ignore`,
     `    retention-days: ${AI_REVIEW_EXECUTION_ARTIFACT_RETENTION_DAYS}`,
