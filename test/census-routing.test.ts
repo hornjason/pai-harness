@@ -94,6 +94,12 @@ const SC_CENSUS = [
   "test/ticked-sc-absent-symbol.test.ts",
 ];
 
+// The two files #1306 measured as reddening on a new spec and routed by
+// nothing. Written out rather than read from `CENSUS_TRIGGERS`, for the same
+// reason `SC_CENSUS` is: a list derived from the thing it checks agrees with
+// it by construction.
+const NEW_SPEC_CENSUS = ["test/audit-specs.test.ts", "test/scanner.test.ts"];
+
 const change = (p: Partial<Change> & { path: string }): Change => ({
   isNew: false,
   added: [],
@@ -221,6 +227,77 @@ describe("#990: the rule file's block is the router's table", () => {
     // Non-vacuity for the two cases above: they compare sets, and two empty
     // sets are equal.
     for (const t of SC_CENSUS) expect(allCensusTests()).toContain(t);
+  });
+});
+
+describe("#1306: adding a spec is a third event, with its own blast radius", () => {
+  /**
+   * #990 split `specs/` into an edit and a tick. It is three events, not two:
+   * ADDING a spec reddens census files that neither of the other two can.
+   *
+   * Measured on this tree rather than grepped. A probe spec was planted in
+   * `specs/`, the 143 test files whose source names `specs` were run against
+   * it, and the baseline was read first — 6802 pass, 0 fail, 143 files. With
+   * the probe present, six files went red, of which `sc-fixture-namespace`
+   * was the probe's own fault (its id sat in the reserved SC-9000 fixture
+   * range; re-cut at SC-2501 it is green, and that is the input on which the
+   * two probes differ). The five that fire on an ordinary new spec:
+   *
+   *   test/scaffold-conformity.test.ts   DRIFT-2, HYGIENE-2/3/4   routed: new-file
+   *   test/agents-md-spec-listing.test.ts SC-1891                 routed: spec-edit
+   *   test/audit-specs.test.ts           SC-398 compliance:strict routed: NOTHING
+   *   test/scanner.test.ts               #91 docs-routing count   routed: NOTHING
+   *   test/spec-drift.test.ts            DRIFT-2                  routed: NOTHING
+   *
+   * `spec-drift.test.ts` is deliberately NOT routed. Its whole body is
+   * `runSpecDrift(ROOT)` — the same binding `scaffold-conformity.test.ts`
+   * runs DRIFT-2 through, and that file is already routed by `new-file`. Two
+   * deciders that agree are behaviourally one, and a row naming both spends
+   * instruction surface to run the same check twice.
+   *
+   * So the row routes two files and costs 1.3s, against a 36-file list the
+   * issue sized by grep. The denominator matters less than the direction: a
+   * router that names everything is ignored, and an ignored router is the
+   * state before #990.
+   */
+  const newSpec = () =>
+    censusTestsFor([change({ path: "specs/NEW-THING-SPEC.md", isNew: true, added: ["# New"] })]);
+
+  // WITNESS. Red on the pre-#1306 router, which routes neither.
+  test("adding a specs/ file routes the census tests a new spec reddens", () => {
+    const { tests } = newSpec();
+    for (const t of NEW_SPEC_CENSUS) {
+      expect(tests, `adding a spec did not route to ${t} — this is #1298 again`).toContain(t);
+    }
+  });
+
+  // CONTROL against the cheapest wrong fix: append the two to `spec-edit`.
+  // That is one line, it makes the witness above green, and it routes them on
+  // every prose edit to every spec forever. Measured: a prose edit to
+  // `specs/CODE-REVIEW-CONVERGENCE-SPEC.md` reddens neither file.
+  test("a prose edit to an existing spec does not route them", () => {
+    const { tests } = censusTestsFor([
+      change({ path: "specs/CODE-REVIEW-CONVERGENCE-SPEC.md", added: ["some prose"] }),
+    ]);
+    for (const t of NEW_SPEC_CENSUS) {
+      expect(tests, `a prose edit routed to ${t}, which it cannot redden`).not.toContain(t);
+    }
+    expect(tests, "the spec-edit row stopped firing").toContain("test/spec-requirements.test.ts");
+  });
+
+  // CONTROL against the second-cheapest wrong fix: append the two to
+  // `new-file`, which already fires on this diff. Also one line, also makes
+  // the witness green, and routes a spec census on every new `lib/` file.
+  test("a new file outside specs/ does not route them", () => {
+    const { tests } = censusTestsFor([
+      change({ path: "lib/unrelated.ts", isNew: true, added: ["export const a = 1;"] }),
+    ]);
+    for (const t of NEW_SPEC_CENSUS) {
+      expect(tests, `a new lib/ file routed to ${t}`).not.toContain(t);
+    }
+    expect(tests, "the new-file row stopped firing").toContain(
+      "test/scaffold-conformity.test.ts",
+    );
   });
 });
 
