@@ -290,6 +290,137 @@ something in the tree that resembles it and is not it.
 - **CRC-N5** Nothing runs review agents nightly over existing code.
 - **CRC-H2** Risky code requires a human. There is no `CODEOWNERS` and no required approval, so nothing does.
 
+## The order to build the remainder in
+
+Written 2026-10-23 because the work had been running without one, and
+criteria were being picked by whichever looked tractable. That produces the
+failure this section exists to stop: an agent spends a session discovering
+that the criterion it chose is blocked behind one nobody has scheduled, and
+writes the discovery down instead of the code.
+
+**The backlog is 30, not 47.** Of the unticked boxes, 8 are mechanisms this
+tree cannot observe, 4 cannot be meaningful in this deployment, 2 are
+declared deviations, and 3 are repository settings. Only the remainder is
+engineering, and the four categories above are not a smaller version of it —
+they are a different kind of fact, and the tables above say which is which.
+
+Phases are ordered by **effect on rounds-to-pass**, which the table in *Where
+we actually stand, measured* says is 2.64 against the source's 1.32. Within a
+phase the criteria are independent and may be built in parallel. Across
+phases they are not: each phase names what the next one needs.
+
+### Phase 0 — three settings, no engineering
+
+**CRC-C3 is APPLIED as of 2026-10-23.** `required_conversation_resolution` is
+`true` on `main`, set through a full `PUT` that preserved the two required
+contexts, `enforce_admins`, and every other field unchanged. It stays
+**unticked** because the setting is GitHub state and no check in this tree
+reads it — which is the distinction the table above exists to keep, and the
+reason "applied" and "bound" are recorded separately.
+
+**CRC-E8 does not belong in this phase and is moved to the table above it.**
+With one account and `enforce_admins: true`, requiring an approving review
+deadlocks the repository: the only possible approver is the author, so
+nothing merges at all, including every agent's pull request. That is the
+same "needs a second person" constraint CRC-E5 and CRC-E7 carry, and it is a
+hard stop rather than a cost. It was listed here in the plan's first draft
+and that was wrong.
+
+So Phase 0 is **one setting applied, one waiting on a quiet queue, one
+withdrawn**:
+
+CRC-F1 (`strict: true`), CRC-C3 (`required_conversation_resolution`), CRC-E8
+(`required_pull_request_reviews` with `dismiss_stale_reviews`). Minutes, by
+the owner. They are first because two further criteria — CRC-E6 and CRC-M9 —
+are **vacuous rather than unbuilt** until they land: there is no approval to
+count, so nothing can be built that counts one.
+
+Read CRC-F1's caveat before flipping it. A merge queue serialises merges, and
+on `merge_group` the review annotates UNMEASURED and passes, so "every check"
+would be half true. `strict: true` is the cheaper half and closes the same
+hole.
+
+**The trigger for `strict: true` is a number, not a judgement call: open
+pull requests ≤ 2, with no agent mid-push.** Under `strict`, every merge
+stales every other open pull request, and the repair is
+`gh pr update-branch`, which **force-rewrites the contributor's branch** —
+including one an agent is pushing to. On 2026-10-23 this repository merged
+eleven pull requests with four sessions running; flipping it in that state
+converts each merge into five forced rewrites. The hole it closes is real
+(an armed PR merging green against a base it never ran against) and it is
+not urgent enough to pay that. Flip it at the next quiet queue and then
+watch rounds-to-pass: if `strict` costs more rounds than the stale-base hole
+does, that is measurable and the criterion should say so.
+
+### Phase 1 — stop the repeats
+
+**The tail is the problem, not the median.** 20.5% of pull requests take five
+rounds or more, against their 8.9% before; the mean is only a quarter above
+theirs. A minority of PRs is absorbing the loop, and a finding re-posted
+every round is, arithmetically, an extra round.
+
+| | Depends on |
+|---|---|
+| **CRC-N4** — no repeats | nothing. `lib/ai-review-rounds.ts` exports seven functions with **zero production callers between them**. The machinery is built and uncalled. |
+| **CRC-B7** — Pre-existing tagging | the changed-file list reaching the adjudicator, and then a release |
+| **CRC-N2** — diff-only re-review | CRC-N4. It is a declared deviation *only* until `carryForward` has a production caller |
+
+CRC-N4 is the single highest-value item in this document and it is not a
+design problem. Its own entry says the gap is structural: the only non-test
+file naming the module mentions it in prose.
+
+### Phase 2 — stop the false findings
+
+The other half of the tail. A false blocking finding costs a remedy commit, a
+CI round and a review round, and run `39962683401` is the measured instance —
+a same-tree pair that disagreed BLOCKED/CLEAN with the false positive on the
+blocking side.
+
+| | Depends on |
+|---|---|
+| **CRC-B4** — verifier quorum | nothing. `lib/finding-jury.ts` holds group size, quorum, per-verifier votes and a disagreement flag; nothing deployed takes a vote |
+| **CRC-B6** — A/B the filters | CRC-B4, and a variance control that does not read zero by construction |
+| **CRC-B3** — parallel generation | CRC-B4, strictly. Without a quorum, N generators are N chances to block falsely, which is **worse than one** |
+
+### Phase 3 — what the reviewer is told
+
+Cheap, mostly prompt and `REVIEW.md` text, and independent of Phases 1 and 2.
+Sequenced third rather than first because a reviewer given more context and
+no falsification step produces more confident false premises — so Phase 2
+earns the right to do this one.
+
+CRC-A4 (flag a `CLAUDE.md` convention break — the obvious objection does not
+apply, see its entry), CRC-B2 (root cause on a bug fix), CRC-B9 (per-repo
+Quick/Standard/Deep), CRC-A7 (the summary clause).
+
+### Phase 4 — findings get answered, and repeats get fixed at the source
+
+CRC-B8 (every finding answered — CRC-C3 from Phase 0 is half of it), CRC-A8
+(a repeated finding becomes a rule or a lint, not another finding), CRC-A2
+(a fresh-context review before the PR opens), CRC-A1, CRC-A3.
+
+### Phase 5 — the instruments
+
+CRC-M6 (four outcome buckets; one of four is evidence-derived today),
+CRC-M10 (revert and incident rates), CRC-M1/M3/M4/M5 (an incident case set
+and a daily rescore), CRC-M7 (a finding carries no remedy, so the control's
+own number is UNMEASURED), CRC-E3 and CRC-E9 (a second classifier, and a
+ledger that carries a tier to loosen against).
+
+### Phase 6 — release and detection
+
+CRC-F3, CRC-F4, CRC-F5, CRC-N5, CRC-H2. Last because none of them moves
+rounds-to-pass, and CRC-F5 is a gap the source admits on its own side.
+
+### The thing that would make this plan wrong
+
+Re-take the CRC-M11 reading after #1449 and #1452 land. The 2.64 was measured
+across a harness defect that raised a blocking finding on **every** pull
+request editing `.claude/` or `CLAUDE.md`, which in this repository is how
+conventions ship. If the tail collapses on its own, Phases 1 and 2 are
+ordered against a baseline that no longer exists, and the ordering argument
+has to be made again rather than inherited.
+
 ## Known deviations, declared
 
 A deviation is legitimate when it is written here with its reason. An undeclared one is drift.
