@@ -210,6 +210,36 @@ describe("AR-2: extraction refuses the shapes that are not readings", () => {
     expect(citedLines({ id: "x", title: "t", body: "`hooks/BashWriteGuard.hook.ts:81` and `:115`" }))
       .toEqual([{ path: "hooks/BashWriteGuard.hook.ts", line: 81 }]);
   });
+
+  // #1333. The ISO form was already masked; a clock time written apart from
+  // its date was not, because the `:\d+` rule took the minutes and left the
+  // hour standing as an ordinary integer over the `n >= 10` floor.
+  const qty = (body: string) => symptomKeys({ id: "x", title: "t", body }).filter(k => k.startsWith("qty:"));
+
+  test("a clock time is not a quantity", () => {
+    expect(qty("the run started at 15:24 and ended at 16:02")).toEqual([]);
+    expect(qty("it timed out at 23:59:01")).toEqual([]);
+    // The ISO form, which was always masked — here so a fix that moved the
+    // clock rule ahead of the date rule cannot pass by shadowing it.
+    expect(qty("the run started at 2026-10-23T15:24:00Z")).toEqual([]);
+  });
+
+  test("masking a clock time does not mask a reading", () => {
+    // The positive control. A fix that widened far enough to swallow ordinary
+    // integers would satisfy the case above and break the function's purpose,
+    // so the two assertions have to sit together.
+    expect(qty("it found 15 violations")).toEqual(["qty:15"]);
+    expect(qty("41 spellings were swept, 7 newly blocked")).toEqual(["qty:41"]);
+    expect(qty("the ratio moved from 1,024 to 2,048")).toEqual(["qty:1024", "qty:2048"]);
+  });
+
+  test("a clock hour and a reading of the same number do not collide", () => {
+    // The defect stated as the thing it costs: these two findings measure
+    // nothing in common, and before #1333 they shared `qty:15`.
+    const clock = symptomKeys({ id: "a", title: "t", body: "the run started at 15:24" });
+    const reading = symptomKeys({ id: "b", title: "t", body: "it found 15 violations" });
+    expect(clock.filter(k => reading.includes(k))).toEqual([]);
+  });
 });
 
 // ── A repository to read `origin/main` out of ────────────────────────────
