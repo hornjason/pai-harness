@@ -48,6 +48,7 @@ import {
   AI_REVIEW_LEDGER_MARKER,
   AI_REVIEW_LEDGER_MAX_PAGES,
   AI_REVIEW_LEDGER_MAX_ROUNDS,
+  AI_REVIEW_LEDGER_TEXT_FIELD,
   AI_REVIEW_LEDGER_PR_VAR,
   AI_REVIEW_LEDGER_REPO_VAR,
   AI_REVIEW_LEDGER_SHA_VAR,
@@ -56,6 +57,10 @@ import {
   AI_REVIEW_ROUND_PATH_VAR,
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step";
+// The reader, imported here on purpose. The recorder's whole job is to hand
+// `carryForward` something it can tell apart, and asserting the shape without
+// running it through the consumer is how `text: ""` passed review twice.
+import { carryForward } from "../lib/ai-review-rounds";
 import { readAiReviewFindings } from "../lib/scaffold/ai-review-findings";
 import { gitFixtureTestTimeout } from "./helpers/git-fixture-budget";
 
@@ -363,7 +368,9 @@ describe("AC-L1 (#1168): a round is written, and the ledger is cumulative", () =
     expect(r.rounds![0].findings).toEqual([
       // `lib/a.ts` is not in this case's checkout, so there was no line to
       // read and the recorded text is empty. AC-L9 is where it is planted.
-      { severity: "high", file: "lib/a.ts", line: 4, summary: "s", text: "" },
+      // No `text`: nothing is planted at `lib/a.ts` here, so the anchor could
+      // not be read and the recorder records its absence (AC-L14, #1406).
+      { severity: "high", file: "lib/a.ts", line: 4, summary: "s" },
     ]);
     expect(r.rounds![0].round).toBe(2);
     // The identity rule is stamped on the entry, so a later round reads which
@@ -1001,6 +1008,11 @@ describe("AC-L5 (#1168): the committed workflow carries the step, in position", 
  * `sed` that reads the wrong line, which is the failure that matters: a wrong
  * text does not look wrong, it resolves a live finding away.
  */
+/** Whether the entry carries an anchor at all. `""` is one; absent is not. */
+function hasText(finding: Record<string, unknown>): boolean {
+  return Object.hasOwn(finding, AI_REVIEW_LEDGER_TEXT_FIELD);
+}
+
 describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout", () => {
   const SRC = "line one\nline two\n  await symlink(target, path);\nline four\n";
 
@@ -1071,19 +1083,20 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
         },
       });
       expect(r.status, r.stderr).toBe(0);
-      const texts = r.rounds![0].findings.map((f: any) => f.text);
       expect(r.sentRaw, "an absolute path was read into a public comment").not.toContain(
         "THE-SECRET-LINE",
       );
-      // The control is what makes the two empties above a refusal rather than
-      // a step that records nothing at all.
-      expect(texts).toEqual(["", "", "alpha"]);
+      // A refusal records NO anchor — see AC-L12. The control is what makes
+      // the two absences above a refusal rather than a step that recorded
+      // nothing at all.
+      expect(r.rounds![0].findings.map((f: any) => hasText(f))).toEqual([false, false, true]);
+      expect(r.rounds![0].findings[2].text).toBe("alpha");
     } finally {
       rmSync(secret, { force: true });
     }
   });
 
-  test("AC-L9: an unreadable or absent anchor records the empty string, and never fails", () => {
+  test("AC-L9: an unreadable or absent anchor records NO anchor, and never fails", () => {
     const r = runPersist({
       list: [],
       files: { "lib/a.ts": "alpha\n" },
@@ -1098,7 +1111,124 @@ describe("AC-L9 (#1168): the cited line's text is recorded out of the checkout",
     });
     // The recorder observes; it never fails the job it is observing (#1110).
     expect(r.status, r.stderr).toBe(0);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "", ""]);
+    expect(r.rounds![0].findings.map((f: any) => hasText(f))).toEqual([false, false, false, false]);
+  });
+
+  /**
+   * AC-L14 (#1406) — "no anchor" and "the anchor is a blank line" are two
+   * facts, and the recorder wrote one value for both.
+   *
+   * `rt=""` was the initial value AND the value left behind by every path
+   * where the text could not be determined: a refused path spelling, an
+   * absent or non-numeric line, a file not in the index, a line past the end
+   * of the file. It was also what a genuinely blank cited line produces.
+   *
+   * The reader's undecidable test is `typeof recordedText !== "string"`, and
+   * `""` is a string — so all four failure paths went to the comparison, and
+   * a finding whose anchor was never obtained was dropped as RESOLVED the
+   * moment the cited line had any content. That is #1351's defect one value
+   * over: the repair closed the route through an absent field and left the
+   * route through an empty one.
+   *
+   * The fix is in the recorder because the recorder is the only thing that
+   * knows which branch it took. `recordedText === ""` at the reader would be
+   * the wrong fix in the other direction — a finding on a line that really is
+   * blank would become permanently uncarryable-away.
+   */
+  describe("AC-L14 (#1406): a missing anchor is absent, a blank anchor is empty", () => {
+    const WITH_BLANK = "alpha\n\ngamma\n";
+
+    test("AC-L14: a genuinely blank cited line records an EMPTY anchor, present", () => {
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 2, summary: "blank" }] },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const f = r.rounds![0].findings[0];
+      expect(hasText(f), "a blank line is a reading and must be recorded as one").toBe(true);
+      expect(f.text).toBe("");
+    });
+
+    test.each([
+      ["a refused absolute path", { file: "/etc/hosts", line: 1 }],
+      ["a path climbing out", { file: "../../etc/hosts", line: 1 }],
+      ["a path spelling an option", { file: "--expression=e id", line: 1 }],
+      ["a file not in the index", { file: "lib/missing.ts", line: 1 }],
+      ["no line number", { file: "lib/a.ts" }],
+      ["a zero line", { file: "lib/a.ts", line: 0 }],
+      ["a line past the end", { file: "lib/a.ts", line: 99 }],
+    ])("AC-L14: %s records NO anchor, not an empty one", (_label, over) => {
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: { findings: [{ severity: "high", summary: "s", ...over }] },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const f = r.rounds![0].findings[0];
+      expect(
+        hasText(f),
+        `recorded ${JSON.stringify(f.text)} — an unread anchor is UNDECIDABLE, and an empty ` +
+          "string resolves the finding away the moment the cited line has content",
+      ).toBe(false);
+    });
+
+    test("AC-L14: the two cases sit in ONE payload and stay apart", () => {
+      // The row that fails under a recorder which simply stopped emitting the
+      // field at all: the blank anchor is real and must survive.
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: {
+          findings: [
+            { severity: "high", file: "lib/a.ts", line: 1, summary: "content" },
+            { severity: "high", file: "lib/a.ts", line: 2, summary: "blank" },
+            { severity: "high", file: "lib/a.ts", line: 99, summary: "past the end" },
+            { severity: "high", file: "/etc/hosts", line: 1, summary: "refused" },
+          ],
+        },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const fs = r.rounds![0].findings;
+      expect(fs.map(hasText)).toEqual([true, true, false, false]);
+      expect(fs.map((f: any) => f.text)).toEqual(["alpha", "", undefined, undefined]);
+      // Positional: the join must not have shifted the survivors up into the
+      // slots the absences vacated.
+      expect(fs.map((f: any) => f.summary)).toEqual([
+        "content",
+        "blank",
+        "past the end",
+        "refused",
+      ]);
+    });
+
+    test("AC-L14: the reader carries the absent anchor and resolves the blank one", () => {
+      // The end of the chain the recorder exists for. Both findings go into
+      // `carryForward` against a round where the cited line now has content:
+      // the one with no anchor is UNDECIDABLE and carried, the one recorded
+      // as genuinely blank is resolved and dropped.
+      const r = runPersist({
+        list: [],
+        files: { "lib/a.ts": WITH_BLANK },
+        payload: {
+          findings: [
+            { severity: "high", file: "lib/a.ts", line: 2, summary: "was blank" },
+            { severity: "high", file: "lib/a.ts", line: 99, summary: "never read" },
+          ],
+        },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const carried = carryForward(
+        r.rounds![0].findings.map((f: any) => ({
+          finding: f,
+          recordedText: f[AI_REVIEW_LEDGER_TEXT_FIELD],
+        })),
+        () => "the line has content now",
+      );
+      expect(carried.map((f: any) => f.summary), "an unread anchor was resolved away").toEqual([
+        "never read",
+      ]);
+    });
   });
 
   test("AC-L9: a round with no findings still writes a well-formed entry", () => {
@@ -1381,8 +1511,8 @@ const dropContainment = (s: string) => s.replace('"${root}"/*)', "*)");
  */
 const dropIndexRead = (s: string) =>
   s.replace(
-    `rt=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}p" || true)`,
-    'rt=$(sed -n "${rl}p" "${real}" 2>/dev/null || true)',
+    `marked=$(${AI_REVIEW_GIT_ISOLATED} -C "\${root}" show ":\${rel}" 2>/dev/null | sed -n "\${rl}{s/^/X/;p;q;}" || true)`,
+    'marked=$(sed -n "${rl}{s/^/X/;p;q;}" "${real}" 2>/dev/null || true)',
   );
 
 describe("AC-L12 (#1379): a committed symlink does not read outside the checkout", () => {
@@ -1435,7 +1565,8 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
     // The negative control, and it is not decoration: without it a repair
     // that deletes the quoting outright satisfies both assertions above and
     // this whole block certifies a step that records nothing.
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, false, true]);
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   /**
@@ -1480,7 +1611,7 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
       },
     };
 
-    expect(runPersist({ ...rig }).rounds![0].findings[0].text).toBe("");
+    expect(hasText(runPersist({ ...rig }).rounds![0].findings[0])).toBe(false);
     expect(
       runPersist({ ...rig, script: mutant }).rounds![0].findings[0].text,
       "removing `! -L` changed nothing, so the guard decides no input at all",
@@ -1551,7 +1682,7 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
         payload: { findings: [{ severity: "high", file: "lib/a.ts", line: 1, summary: "x" }] },
       });
       expect(r.status, r.stderr).toBe(0);
-      expect(r.rounds![0].findings[0].text).toBe("");
+      expect(hasText(r.rounds![0].findings[0])).toBe(false);
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
@@ -1581,7 +1712,8 @@ describe("AC-L12 (#1379): a committed symlink does not read outside the checkout
       },
     });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, true]);
+    expect(r.rounds![0].findings[1].text).toBe("alpha");
   });
 });
 
@@ -1647,7 +1779,8 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
     expect(r.status, r.stderr).toBe(0);
     expect(r.sentRaw, "an option-named path was read into a public comment").not.toContain(CANARY);
     expect(r.sentRaw, "a flag-named path was read into a public comment").not.toContain(DASH_N);
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, false, true]);
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   test("AC-L13: the MUTANT — the `-*` arm removed — quotes the option-named file", () => {
@@ -1690,7 +1823,8 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
     );
     // `.git/config` is inside the workspace and passes containment, so this
     // row can only be green because the line comes out of the index.
-    expect(r.rounds![0].findings.map((f: any) => f.text)).toEqual(["", "", "alpha"]);
+    expect(r.rounds![0].findings.map(hasText)).toEqual([false, false, true]);
+    expect(r.rounds![0].findings[2].text).toBe("alpha");
   });
 
   test("AC-L13: the MUTANT — reading the working tree instead of the index — quotes the untracked file", () => {
