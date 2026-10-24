@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { fsWriteCapabilities } from "../lib/fs-write-capabilities";
-import { fixedScratchRoots, uniqueScratchPrefixes } from "../lib/scratch-roots";
+import { fixedScratchRoots, repoRootIdents, uniqueScratchPrefixes } from "../lib/scratch-roots";
 import { scratchPrefixes } from "../lib/scratch-cleanup";
 import { describeScanBudget, measureScan, scanBudgetFromBunfig, scanBudgetViolations } from "../lib/scan-budget";
 
@@ -401,6 +401,127 @@ describe("#323 SC-6: no suite plants its fixtures at a path another run shares",
       uniqueScratchPrefixes('const t = join(import.meta.dir, ".inline-");'),
       "a FIXED inline root reached the deletion allowlist",
     ).toEqual([]);
+  });
+
+  /**
+   * #1482 — an `mkdtemp`'d directory is not the shared checkout, however its
+   * argument is spelled.
+   *
+   * `repoRootIdents` tests whether an assignment's right-hand side CONTAINS
+   * `import.meta.dir` or `process.cwd()`. An
+   * `mkdtempSync(join(import.meta.dir, ".x-"))` contains one, so the
+   * identifier naming a directory that is unique by construction was being
+   * added to the set of identifiers bound to the shared checkout — the exact
+   * inverse of the claim in that function's own docblock, which exists to
+   * ALLOW a fixed name under an already-unique root.
+   *
+   * Two symptoms, one defect, and they point in opposite directions:
+   *
+   *   - `fixedScratchRoots` over-flags. `join(t, ".cache")` is reported as a
+   *     shared path when `t` is an inline-rooted `mkdtemp`, and is correctly
+   *     silent when the same program binds the root to a name first.
+   *   - `uniqueScratchPrefixes` over-lists. `.y-` from
+   *     `mkdtempSync(join(t, ".y-"))` reaches a DELETION allowlist, and the
+   *     only reason it is considered at all is that `t` was wrongly a root.
+   *
+   * The membership rule for the second set is defined by the CONSUMER, not by
+   * the declaration. `cleanupScratchDirs` reads `readdirSync(opts.repoRoot)`
+   * and `rmSync`s entries of that one directory — it never descends — and
+   * `scratchPrefixes`'s own docblock says the list is every prefix a suite
+   * plants UNDER THE REPO ROOT. `.y-` is planted inside `t`, which the
+   * sweeper cannot encounter, and removing `.x-<suffix>` recursively already
+   * takes it. So the entry sweeps nothing and buys only exposure, and the
+   * correct value is the one the named-root spelling already produces.
+   *
+   * The direction this is allowed to be wrong in is toward NOT classifying a
+   * repo root: a missed root costs a prefix nobody cleaned, a false root
+   * feeds a name into a recursive delete.
+   */
+  test("#1482: an identifier bound to an mkdtempSync is not a repo root", () => {
+    // The WITNESS, at the binding itself. Before the fix this returns {"t"}.
+    expect([...repoRootIdents('const t = mkdtempSync(join(import.meta.dir, ".x-"));')]).toEqual([]);
+    expect([...repoRootIdents('const t = mkdtempSync(join(process.cwd(), ".x-"));')]).toEqual([]);
+  });
+
+  test("#1482 CONTROL: a genuine repo root is still bound", () => {
+    // The positive control. Without it every case here is satisfied by a
+    // `repoRootIdents` that returns the empty set for everything — and that
+    // function returning nothing switches off both consumers silently.
+    expect([...repoRootIdents('const ROOT = join(import.meta.dir, "..");')]).toEqual(["ROOT"]);
+    expect([...repoRootIdents('const ROOT = join(process.cwd(), "..");')]).toEqual(["ROOT"]);
+  });
+
+  test("#1482: a fixed name under an inline-rooted mkdtemp is not a shared path", () => {
+    // Row A. Before the fix: ["sub = .cache"].
+    const a =
+      'const t = mkdtempSync(join(import.meta.dir, ".x-"));\n' +
+      'const sub = join(t, ".cache");\nmkdirSync(sub);';
+    // Row B — the SAME PROGRAM with the root bound to a name first, which was
+    // correct before the fix and must stay correct after it. A and B together,
+    // or the pair is satisfied by a function that returns [] for everything.
+    const b =
+      'const ROOT = join(import.meta.dir, "..");\n' +
+      'const t = mkdtempSync(join(ROOT, ".x-"));\n' +
+      'const sub = join(t, ".cache");\nmkdirSync(sub);';
+    expect(fixedScratchRoots(a), "an mkdtemp'd directory was treated as the shared checkout").toEqual([]);
+    expect(fixedScratchRoots(b), "the named-root spelling regressed").toEqual([]);
+    expect(fixedScratchRoots(a)).toEqual(fixedScratchRoots(b));
+  });
+
+  test("#1482: the process.cwd() spelling is the same defect, not a second one", () => {
+    // Row D. Both alternatives in the character class are substring tests.
+    const d =
+      'const t = mkdtempSync(join(process.cwd(), ".x-"));\n' +
+      'const sub = join(t, ".cache");\nmkdirSync(sub);';
+    expect(fixedScratchRoots(d)).toEqual([]);
+  });
+
+  test("#1482 CONTROL: an inline FIXED root stays flagged", () => {
+    // Row C, which is #1473. This is what stops the fix being "stop treating
+    // inline roots as roots" and silently re-opening it — the cheapest wrong
+    // repair for the two cases above, and the one that would put
+    // `.tmp-scan-test` back out of sight.
+    const c = 'const tmpDir = join(import.meta.dir, ".tmp-scan-test");\nmkdirSync(tmpDir);';
+    expect(fixedScratchRoots(c)).toEqual(["tmpDir = .tmp-scan-test"]);
+  });
+
+  test("#1482: the same nested program produces one deletion allowlist, whichever spelling", () => {
+    // Rows E and F. Before the fix E is [".x-", ".y-"] and F is [".x-"].
+    //
+    // The VALUE is asserted, not merely the agreement: a case asserting only
+    // that the two match is satisfied by a function returning [], and a case
+    // asserting they match on [".x-", ".y-"] certifies the widening — `.y-`
+    // is planted inside `t`, never at the repo root, so the sweeper can never
+    // encounter it and the entry is a recursive-delete grant with no upside.
+    const e =
+      'const t = mkdtempSync(join(import.meta.dir, ".x-"));\n' +
+      'const inner = mkdtempSync(join(t, ".y-"));';
+    const f =
+      'const ROOT = join(import.meta.dir, "..");\n' +
+      'const t = mkdtempSync(join(ROOT, ".x-"));\n' +
+      'const inner = mkdtempSync(join(t, ".y-"));';
+    expect(uniqueScratchPrefixes(e)).toEqual([".x-"]);
+    expect(uniqueScratchPrefixes(f)).toEqual([".x-"]);
+  });
+
+  test("#1482: a third level is not listed either, in either spelling", () => {
+    // Row G, asserted rather than left as a bystander. `.z-` is planted two
+    // directories below the root under both spellings, so neither it nor
+    // `.y-` is the sweeper's business.
+    const g =
+      'const t = mkdtempSync(join(import.meta.dir, ".x-"));\n' +
+      'const inner = mkdtempSync(join(t, ".y-"));\n' +
+      'const deeper = mkdtempSync(join(inner, ".z-"));';
+    expect(uniqueScratchPrefixes(g)).toEqual([".x-"]);
+  });
+
+  test("#1482 CONTROL: an inline-rooted mkdtemp prefix is still swept", () => {
+    // The direction that would be wrong the other way. `.inline-` IS planted
+    // at the repo root, so narrowing the root set must not cost the sweeper
+    // the one prefix #1473 deliberately added.
+    expect(
+      uniqueScratchPrefixes('const t = mkdtempSync(join(import.meta.dir, ".inline-"));'),
+    ).toEqual([".inline-"]);
   });
 
   test("the scan reads real files, so the live check is not vacuous", () => {

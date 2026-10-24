@@ -261,8 +261,18 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
     // count is satisfied by any substitution that preserves the total.
     // #1473: the reference the live parse is held against is now
     // `pre-#793 + the inline form`. Both halves are frozen and neither
-    // tracks the live module. `repoRootIdents` is NOT part of the delta —
-    // #1473 did not touch it — so idents stay an exact equality.
+    // tracks the live module.
+    //
+    // #1482 DID narrow `repoRootIdents` — an identifier bound to an
+    // `mkdtempSync(...)` is no longer a repo root — and the idents comparison
+    // is still an exact equality, because MEASURED over 888 files in `test/`,
+    // `lib/`, `scripts/`, `gates/`, `hooks/`, `bin/` and `workflows/` the
+    // narrowing drops ZERO of the 559 identifiers the reference reads. No
+    // file in this tree binds a name to an inline-rooted `mkdtempSync`, which
+    // is why #1482 shipped with no live instance and its witnesses are the
+    // unit fixtures in `test/scratch-paths-unique.test.ts`. The first file
+    // that does write one makes this case red for a CORRECT change — see the
+    // third divergence class in the message below.
     const divergences: string[] = [];
     let identTotal = 0;
     let prefixTotal = 0;
@@ -324,11 +334,14 @@ describe("#793: the scan is driven from the identifier, and reads the same thing
     expect(
       divergences,
       "the live parse and the frozen reference disagree over test/. The reference is\n" +
-      "`pre-#793 + #1473's inline-root form`, both frozen. Two legal divergence classes:\n" +
+      "`pre-#793 + #1473's inline-root form`, both frozen. Three legal divergence classes:\n" +
       "an identifier literally prefixed by const/let/var at the start of an assignment\n" +
-      "(see the two cases below), and a root spelled inline as import.meta.dir or\n" +
-      "process.cwd(). If it is either, the LIVE reading is the correct one and this\n" +
-      "expectation needs the file carved out by name, not a reference relaxed:\n" +
+      "(see the two cases below); a root spelled inline as import.meta.dir or\n" +
+      "process.cwd(); and an identifier the reference calls a root because its RHS is\n" +
+      "`mkdtempSync(join(import.meta.dir, ...))`, which #1482 excludes — a directory\n" +
+      "unique by construction is not the shared checkout. If it is any of the three,\n" +
+      "the LIVE reading is the correct one and this expectation needs the file carved\n" +
+      "out by name, not a reference relaxed:\n" +
       divergences.join("\n"),
     ).toEqual([]);
   }, 60_000);

@@ -21,15 +21,51 @@
 import { stripJsComments } from "./strip-js-comments";
 
 /**
+ * The call that makes a directory unique by construction.
+ *
+ * ONE spelling, consulted by both questions the module asks: `DECL` builds
+ * its wrapped-form group from it, and `boundToMkdtemp` decides from it that
+ * an identifier names a unique directory rather than the checkout. A second
+ * spelling would be a second decider for one question, and the two would
+ * disagree the first time either moved —
+ * `.claude/rules/checks-must-be-able-to-fail.md`, fourth shape.
+ */
+const MKDTEMP_CALL = String.raw`mkdtempSync\s*\(\s*`;
+
+/**
+ * Is this right-hand side ITSELF an `mkdtempSync(...)` call?
+ *
+ * Anchored at the start of the RHS, not a substring test, because the whole
+ * defect being fixed here is a substring test standing in for a structural
+ * question (#1482).
+ */
+function boundToMkdtemp(rhs: string): boolean {
+  return new RegExp(`^\\s*${MKDTEMP_CALL}`).test(rhs);
+}
+
+/**
  * Identifiers bound to the repository root, per file.
  *
  * `join(tmpDir, ".claude")` is a fixed name under an ALREADY-UNIQUE root —
  * the suffix is on the parent, which is just as good. Only a path rooted at
  * the shared checkout can collide, so the root is the thing to look at.
+ *
+ * An `mkdtempSync(...)` is excluded whatever its argument contains (#1482).
+ * The test below is whether the RHS MENTIONS a root spelling, and
+ * `mkdtempSync(join(import.meta.dir, ".x-"))` mentions one — so the
+ * identifier naming a directory that is unique by construction was being
+ * added to the set of identifiers bound to the shared checkout, which
+ * inverts the paragraph above. `fixedScratchRoots` then flagged a fixed name
+ * under it as shared, and `uniqueScratchPrefixes` put a prefix planted
+ * INSIDE it into a deletion allowlist that only ever reads the repo root.
+ *
+ * The exclusion is the safe direction. A root this misses costs a prefix
+ * nobody swept; a root it invents feeds a name into a recursive delete.
  */
 export function repoRootIdents(src: string): Set<string> {
   const idents = new Set<string>();
   for (const m of src.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\n]+)/g)) {
+    if (boundToMkdtemp(m[2]!)) continue;
     if (/import\.meta\.dir|process\.cwd\(\)/.test(m[2]!)) idents.add(m[1]!);
   }
   return idents;
@@ -100,7 +136,7 @@ function isInlineRoot(captured: string): boolean {
 }
 
 const DECL = new RegExp(
-  String.raw`([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*` +
+  String.raw`([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(` + MKDTEMP_CALL + String.raw`)?join\(\s*` +
     // The inline spellings first. `import` would otherwise be consumed by the
     // identifier branch, which then fails on the `.` and backtracks — correct
     // but only by accident, and it costs an attempt at every `import` in the
