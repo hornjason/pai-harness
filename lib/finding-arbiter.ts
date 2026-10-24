@@ -948,6 +948,15 @@ export const FILING_BUDGET_FINDINGS = 6;
  *   candidate refused `UNMEASURED` in its own right carries `UNMEASURED`;
  *   the two are deliberately distinguishable, because the first set is what
  *   explains the second.
+ * - `COMMAND_BLOCKED` — the same shape one layer out, and the reason it is a
+ *   value of its own rather than a reuse of the one above (#1344). At the
+ *   `gh issue create` chokepoint the unit is a Bash COMMAND, and a hook's one
+ *   lever is all of it: a clause that cleared on its own merits beside a
+ *   clause that was refused reached the tracker exactly as little as the
+ *   refused one did. It is not `BATCH_UNMEASURED` — nothing here was
+ *   unmeasured, the sibling was measured and refused — and it is not the
+ *   sibling's own `ArbiterRefusal`, because this clause was never refused and
+ *   is the one an agent should re-run.
  * - `UNACCOUNTED` — the promoter returned this candidate in neither
  *   `promoted` nor `withheld`. It partitions its input, so this cannot
  *   happen; it is named instead of defaulted so that if the partition ever
@@ -957,6 +966,7 @@ export type WithheldBy =
   | ArbiterRefusal
   | WithheldReason
   | "BATCH_UNMEASURED"
+  | "COMMAND_BLOCKED"
   | "UNACCOUNTED";
 
 /**

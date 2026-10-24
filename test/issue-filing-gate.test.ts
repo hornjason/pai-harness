@@ -43,12 +43,14 @@ import {
 } from "../lib/github";
 import {
   adjudicateFiling,
+  COMMAND_BLOCKED,
   corpusDropNote,
   corpusSlug,
   filingAttempts,
   filingBatch,
   filingGate,
   ghRepoTarget,
+  markBlockedCommand,
   measuredCorpus,
   namedClaim,
   openFindings,
@@ -718,9 +720,12 @@ describe("#1261 the four suppression classes", () => {
     const r = runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
     expect(r.blocked).toBe(true);
     expect(r.reason, "the refusal still names the duplicate").toContain("DUPLICATE");
-    // Both rows still reach the ledger, so the clean one is recorded as clean.
+    // Both rows still reach the ledger, and the two reasons they did not
+    // reach the TRACKER are different facts: the first clause was refused,
+    // the second only had the misfortune of sharing a command with it
+    // (#1344). `null` here until then, which said it was filed.
     const added = ledgerRows().slice(start);
-    expect(added.map(x => x.withheldBy)).toEqual(["DUPLICATE", null]);
+    expect(added.map(x => x.withheldBy)).toEqual(["DUPLICATE", COMMAND_BLOCKED]);
   });
 });
 
@@ -1025,11 +1030,228 @@ describe("the ledger carries every row of a blocked command", () => {
   test("FG-58: a blocked command still records every row, clean ones included", () => {
     // The ledger is what makes the block affordable: nothing is withheld with
     // no artefact anywhere, which is the failure the old predicate avoided.
+    //
+    // `emitted` is FALSE for both rows since #1344: the hook refused the whole
+    // Bash command, so neither clause reached the tracker. "Recorded as clean"
+    // now lives where it belongs — in `disposition` and in `withheldBy`, which
+    // say the second clause was fine and was never attempted. FG-90 below is
+    // the case for that distinction; this row holds the population at two.
     const start = ledgerRows().length;
     runHook(HOOK, `${DUPLICATE_FILING} && ${NOVEL_FILING}`);
     const added = ledgerRows().slice(start);
     expect(added).toHaveLength(2);
-    expect(added.map(x => x.emitted), "the clean row is recorded as clean").toEqual([false, true]);
+    expect(
+      added.map(x => x.emitted),
+      "a blocked command filed nothing, so no row of it reached the tracker",
+    ).toEqual([false, false]);
+    expect(
+      added.map(x => x.disposition),
+      "the clean row is still recorded as clean — ISSUE is the routing decision",
+    ).toEqual(["DROP", "ISSUE"]);
+  });
+});
+
+/**
+ * #1344 — a blocked command filed nothing, and the ledger has to say so.
+ *
+ * ## The defect
+ *
+ * Rows are written clause by clause, BEFORE the command-level `blocking` is
+ * computed. #1338 made a refused clause block the whole command; the rows
+ * already written still read `emitted: true` for every clause that was clean
+ * on its own merits. Nothing was filed — a hook's one lever is the whole Bash
+ * command and it refused it — so the ledger overcounted filings by one row
+ * per clean clause of every blocked mixed command.
+ *
+ * ## Why an overcount here is not a rounding error
+ *
+ * This ledger is the only record of what the arbiter considered, and the
+ * arbiter refuses filings as duplicates on the strength of it. A count that is
+ * high for a STRUCTURAL reason is worse than no count, because no reader can
+ * tell it apart from a true one — and the direction it is wrong in is toward
+ * making the arbiter more confident than its evidence supports, which
+ * suppresses real findings.
+ *
+ * ## Three states, kept apart, and each one asserted
+ *
+ * | state | `emitted` | `disposition` | `withheldBy` |
+ * |---|---|---|---|
+ * | reached the tracker | `true` | `ISSUE` | `null` |
+ * | refused on its own merits | `false` | `DROP` | its own `ArbiterRefusal` |
+ * | clean, and never attempted | `false` | `ISSUE` | `COMMAND_BLOCKED` |
+ *
+ * `disposition` stays `ISSUE` on the third row deliberately, and that is the
+ * arbiter's own precedent rather than a second vocabulary: `arbitrateBatch`
+ * writes `disposition: verdict.disposition` beside
+ * `withheldBy: "BATCH_UNMEASURED"` for a candidate that was fine while its
+ * batch was not. `disposition` is the adjudication's routing decision;
+ * `emitted` is whether it reached a reader. Collapsing the third row into
+ * `DROP` would lose the one fact that separates it from the second — that
+ * nothing was wrong with it — which is the fact `cleanClauseNote` is built on,
+ * and the fact an agent needs in order to re-run the clause.
+ *
+ * ## The fourth state this does NOT add, named rather than left out
+ *
+ * `emitted: true` means *the hook allowed the command*, which is a prediction
+ * and not an observation: a `gh` that then fails on auth, on the network or on
+ * a rate limit files nothing and leaves a row saying it did. This gate runs
+ * `PreToolUse` and cannot see the outcome, so that remains **UNMEASURED by
+ * this ledger** — named here so nobody reads `emitted: true` as a receipt.
+ * Closing it needs a `PostToolUse` reading, which is not this issue.
+ *
+ * ## The cheapest wrong fix, named
+ *
+ * Flip `emitted` on the rows **before** `cleanClauseNote` is built. The count
+ * goes right, and the refusal stops naming the clauses the agent has to
+ * re-run — which is the half that makes blocking a mixed command affordable
+ * at all (#1338). FG-94 is red under it.
+ */
+describe("FG-90..FG-96: a blocked command filed nothing (#1344)", () => {
+  /**
+   * Read from the one declaring position rather than re-spelled here. A
+   * second literal would be a case that agrees with itself: rename the
+   * constant in `lib/` and this file would go on asserting the old string
+   * against a ledger that had stopped writing it.
+   */
+  const BLOCKED = COMMAND_BLOCKED;
+
+  /** One duplicate (refused) and one novel finding (clean). Blocked. */
+  const MIXED = `${DUPLICATE_FILING} && ${NOVEL_FILING}`;
+  /** Two novel findings. Allowed — the positive control. */
+  const ALL_CLEAN = `${NOVEL_FILING} && ${SAME_SYMBOL_NEW_READING}`;
+
+  test("FG-90: a blocked command records its CLEAN clause as not emitted", () => {
+    const start = ledgerRows().length;
+    const r = runHook(HOOK, MIXED);
+    // The premise, asserted rather than assumed. A command that stopped being
+    // refused would make every assertion below true about nothing.
+    expect(r.blocked, "the command must actually be blocked, or this proves nothing").toBe(true);
+    const [refused, clean] = ledgerRows().slice(start);
+    expect(clean?.title, "the second row is the novel finding").toBe(
+      "pullRequestCache is never invalidated",
+    );
+    expect(clean?.emitted, "nothing was filed: the hook refused the whole command").toBe(false);
+    expect(clean?.withheldBy, "and the reason is the command, not the clause").toBe(BLOCKED);
+    expect(refused?.emitted, "the refused clause was already right").toBe(false);
+  });
+
+  test("FG-91 POSITIVE CONTROL: a fully clean command still records emitted rows", () => {
+    // Without this, a fix that marked every row `emitted: false` would pass
+    // FG-90 and zero the ledger, and no case in this file would see it.
+    const start = ledgerRows().length;
+    const r = runHook(HOOK, ALL_CLEAN);
+    expect(r.blocked, "two novel findings in one command must still run").toBe(false);
+    const added = ledgerRows().slice(start);
+    expect(added).toHaveLength(2);
+    expect(added.map(x => x.emitted)).toEqual([true, true]);
+    expect(added.map(x => x.withheldBy)).toEqual([null, null]);
+    expect(added.map(x => x.disposition)).toEqual(["ISSUE", "ISSUE"]);
+  });
+
+  test("FG-92: the two withholdings are distinguishable inside one command", () => {
+    // `DUPLICATE` and `COMMAND_BLOCKED` are the two reasons a row of a blocked
+    // mixed command did not reach the tracker, and they are opposite facts:
+    // the first says the clause was wrong, the second says only that its
+    // sibling was. One value for both would make the ledger unable to say
+    // which clauses an agent should re-run.
+    const start = ledgerRows().length;
+    runHook(HOOK, MIXED);
+    const added = ledgerRows().slice(start);
+    expect(added.map(x => x.withheldBy)).toEqual(["DUPLICATE", BLOCKED]);
+    expect(new Set(added.map(x => x.withheldBy)).size, "two reasons, not one").toBe(2);
+    expect(
+      added[1]?.refusal,
+      "the clean clause carries no refusal of its own — it was never refused",
+    ).toBeNull();
+    expect(added[0]?.refusal, "the refused one does").toBe("DUPLICATE");
+  });
+
+  test("FG-93: `emitted` and `withheldBy` are one fact, on every row of both commands", () => {
+    // The invariant `test/finding-arbiter.test.ts` holds over `CandidateRecord`,
+    // asserted over the rows this writer produces. Two row shapes, one reader.
+    const start = ledgerRows().length;
+    runHook(HOOK, MIXED);
+    runHook(HOOK, ALL_CLEAN);
+    const added = ledgerRows().slice(start);
+    expect(added).toHaveLength(4);
+    for (const row of added) {
+      expect(row.emitted, `${row.title}: withheldBy is null exactly when it reached the tracker`)
+        .toBe(row.withheldBy === null);
+    }
+  });
+
+  test("FG-94: the refusal still NAMES and COUNTS the clean clause", () => {
+    // The cheapest wrong fix is to flip `emitted` before `cleanClauseNote` is
+    // built, which empties the note: `clean` is `rows.filter(r => r.emitted)`.
+    // The count then reads "0 of 2" and the agent is told nothing about what
+    // to re-run, which is the whole of what made blocking affordable (#1338).
+    const r = runHook(HOOK, MIXED);
+    expect(r.blocked).toBe(true);
+    expect(r.reason, "the clean clause is still named verbatim").toContain(
+      "pullRequestCache is never invalidated",
+    );
+    expect(r.reason, "and still counted").toContain("1 of 2");
+  });
+
+  test("FG-95: an OVERRIDDEN clause a sibling blocked is withheld by the command", () => {
+    // An override says a refusal was waived, not that the command ran. When a
+    // different clause blocks, the overridden one reached the tracker exactly
+    // as little as the clean one did — and the override stays on the row, so
+    // an override that was right is still evidence.
+    const start = ledgerRows().length;
+    const r = runHook(
+      HOOK,
+      `${DUPLICATE_FILING} --label ${FILING_OVERRIDE_LABEL} && ${DUPLICATE_FILING}`,
+    );
+    expect(r.blocked, "the un-overridden duplicate must still refuse").toBe(true);
+    const added = ledgerRows().slice(start);
+    expect(added).toHaveLength(2);
+    expect(added[0]?.overridden, "the first clause carried the label").toBe(true);
+    expect(added[0]?.emitted, "and still filed nothing").toBe(false);
+    expect(added[0]?.withheldBy).toBe(BLOCKED);
+    expect(added[0]?.refusal, "its own refusal is recorded beside the override").toBe("DUPLICATE");
+    expect(added[1]?.withheldBy, "the clause that blocked is withheld on its own merits")
+      .toBe("DUPLICATE");
+  });
+
+  test("FG-96: `markBlockedCommand` touches the emitted rows and only those", () => {
+    // The unit half of the chain. The five rows above establish that the hook
+    // reaches this binding; this one establishes what the binding does, over
+    // an input the hook cannot easily be made to produce — a row that was
+    // already withheld, which must come back byte-identical rather than
+    // having its reason overwritten by the command's.
+    const row = (over: Partial<FilingLedgerRow>): FilingLedgerRow => ({
+      at: "2026-10-24T00:00:00.000Z",
+      key: "b/0",
+      id: "new",
+      title: "t",
+      symptomHash: "h",
+      category: "correctness",
+      severity: null,
+      disposition: "ISSUE",
+      refusal: null,
+      emitted: true,
+      withheldBy: null,
+      jury: null,
+      duplicateOf: [],
+      overridden: false,
+      ...over,
+    });
+    const refused = row({
+      disposition: "DROP",
+      refusal: "DUPLICATE",
+      emitted: false,
+      withheldBy: "DUPLICATE",
+      duplicateOf: ["#900"],
+    });
+    const cleanRow = row({});
+    const [a, b] = markBlockedCommand([refused, cleanRow]);
+    expect(a, "an already-withheld row keeps its own reason").toEqual(refused);
+    expect(b).toEqual({ ...cleanRow, emitted: false, withheldBy: COMMAND_BLOCKED });
+    expect(
+      [refused.emitted, cleanRow.emitted],
+      "and the caller's own rows are not mutated under it",
+    ).toEqual([false, true]);
   });
 });
 
