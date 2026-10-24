@@ -154,6 +154,18 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
     const filePath = join(adrDir, file);
     const content = readFileSync(filePath, "utf-8");
 
+    // #1286: the same guard as `addFrontmatterToSpecs` above, for the same
+    // reason. The declaration is about who PRODUCES a file, not about which
+    // directory it sits in — a generated ADR loses its injected frontmatter
+    // at the next regeneration exactly as a generated spec does, and an
+    // unguarded sibling beside a guarded one reads as an oversight because
+    // that is what it was.
+    const derived = readDerivedDeclaration(content);
+    if (!mayWrite(derived)) {
+      actions.push(skipLine(`docs/adr/${file}`, derived));
+      continue;
+    }
+
     if (!content.startsWith("---\n")) {
       const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;
       writeFileSync(filePath, frontmatter + content);
