@@ -34,7 +34,12 @@ import {
   roundOutcome,
   suppressRepeats,
   type ReviewFinding,
+  AI_REVIEW_CARRY_READ_STATE,
 } from "../lib/ai-review-rounds.ts";
+// #244's rule, asked where it still governs. Imported from its own module
+// rather than through the one above, so the case cannot pass because
+// `ai-review-rounds.ts` happens to re-export something.
+import { reReviewScope } from "../lib/security-verdict.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -145,39 +150,93 @@ describe("AC-2: the cap speaks", () => {
 });
 
 describe("AC-3: diff-only re-review, and the fail-open it must not reopen", () => {
-  const PASS = { verdict: "PASS" };
-  const FAIL = { verdict: "FAIL", failures: ["a thing"] };
+  /**
+   * **This block's second gate changed in #1600, and the change is the whole
+   * of CRC-N2.** It used to hand the held verdict to `reReviewScope`, which
+   * refuses to diff-scope anything but a held PASS. That rule is #244's and
+   * it is unchanged where it belongs — `reReviewBaseFor` in
+   * `lib/security-verdict.ts` still asks it, and
+   * `test/security-verdict*.test.ts` still holds it.
+   *
+   * It was the wrong gate here for a reason that is not "the risk went
+   * away": a CI round has no held verdict, so the conjunction could never
+   * open and this function answered FULL for every input anybody could
+   * supply. What replaced it is the thing #244 said was missing —
+   * `carryForward` re-emitting unresolved priors whether or not the diff
+   * contains the lines they name, which the spec names as this deviation's
+   * own retirement condition and which fired on run `40137812549`.
+   *
+   * `test/ai-review-diff-scope.test.ts` is where the generated bash is held
+   * to this function and where the negative control lives. These cases are
+   * the library's own contract.
+   */
+  const READ = { state: AI_REVIEW_CARRY_READ_STATE, unmeasuredRounds: "0", changedFileCount: "2" };
 
-  test("AC-3: the first rounds are full reviews whatever the held verdict", () => {
+  test("AC-3: the first rounds are full reviews whatever the carry says", () => {
     for (let r = 1; r < AI_REVIEW_DIFF_SCOPE_FROM_ROUND; r++) {
-      expect(reviewScopeForRound(String(r), PASS), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
-      expect(reviewScopeForRound(String(r), FAIL), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
+      expect(reviewScopeForRound(String(r), READ), `round ${r}`).toBe(REVIEW_SCOPE_FULL);
     }
   });
 
-  test("AC-3: from the floor, a held PASS may be diff-scoped", () => {
-    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND), PASS)).toBe(
+  test("AC-3: from the floor, a complete carry reading may be diff-scoped", () => {
+    expect(reviewScopeForRound(String(AI_REVIEW_DIFF_SCOPE_FROM_ROUND), READ)).toBe(
       REVIEW_SCOPE_DIFF,
     );
-    expect(reviewScopeForRound("9", PASS)).toBe(REVIEW_SCOPE_DIFF);
+    expect(reviewScopeForRound("9", READ)).toBe(REVIEW_SCOPE_DIFF);
   });
 
-  test("AC-3: a held FAIL is NEVER diff-scoped — 46034035, by a different door", () => {
+  test("AC-3: an INCOMPLETE carry is NEVER diff-scoped — 46034035, by a different door", () => {
     // A diff against the flagged commit does not contain the flagged code,
-    // so a diff-scoped PASS says nothing about the finding it would clear.
-    // This is `reReviewScope`'s rule and the case exists to prove the
-    // delegation is real: dropping the second gate turns it red.
-    for (const held of [FAIL, undefined, null, {}, "PASS", { verdict: "pass" }, []]) {
-      expect(
-        reviewScopeForRound("9", held),
-        `held ${JSON.stringify(held) ?? String(held)}`,
-      ).toBe(REVIEW_SCOPE_FULL);
+    // so a narrowed round says nothing about an earlier finding UNLESS the
+    // carry hands it over. Each row below is a reading in which it cannot:
+    // the history was not read, or was read with blind spots, or the
+    // changed-file list the narrowing points at does not exist.
+    const rows: Array<[string, unknown]> = [
+      ["not an object", undefined],
+      ["null", null],
+      ["an array", []],
+      ["no state at all", {}],
+      ["the history could not be read", { ...READ, state: "AI_REVIEW_CARRY_UNMEASURED" }],
+      ["no history to read", { ...READ, state: "AI_REVIEW_CARRY_ABSENT" }],
+      ["a state nobody declared", { ...READ, state: "PASS" }],
+      ["one round's findings unreadable", { ...READ, unmeasuredRounds: "1" }],
+      ["the blind-spot count unknown", { ...READ, unmeasuredRounds: "unknown" }],
+      ["no changed-file list", { ...READ, changedFileCount: "unknown" }],
+      ["a changed-file list naming nothing", { ...READ, changedFileCount: "0" }],
+    ];
+    for (const [why, carry] of rows) {
+      expect(reviewScopeForRound("9", carry), why).toBe(REVIEW_SCOPE_FULL);
     }
+  });
+
+  test("AC-3: each gate has an input only it refuses", () => {
+    // #420: two deciders that agree are behaviourally one. Four rows, each
+    // varying exactly ONE field away from a reading that narrows (#585), so
+    // deleting any single gate leaves one row that nothing else catches.
+    expect(reviewScopeForRound("9", READ), "the base row does not narrow").toBe(REVIEW_SCOPE_DIFF);
+    expect(reviewScopeForRound("2", READ)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("9", { ...READ, state: "AI_REVIEW_CARRY_ABSENT" })).toBe(
+      REVIEW_SCOPE_FULL,
+    );
+    expect(reviewScopeForRound("9", { ...READ, unmeasuredRounds: "2" })).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("9", { ...READ, changedFileCount: "0" })).toBe(REVIEW_SCOPE_FULL);
   });
 
   test("AC-3: an unreadable round reads MORE, not less", () => {
-    expect(reviewScopeForRound("", PASS)).toBe(REVIEW_SCOPE_FULL);
-    expect(reviewScopeForRound(undefined, PASS)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("", READ)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound(undefined, READ)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("0", READ)).toBe(REVIEW_SCOPE_FULL);
+    expect(reviewScopeForRound("nine", READ)).toBe(REVIEW_SCOPE_FULL);
+  });
+
+  test("AC-3: #244's rule is unchanged where it still governs", () => {
+    // The gate did not disappear from the codebase, it stopped being asked
+    // on a path that could never answer it. Asserted rather than claimed,
+    // because "the rule still holds elsewhere" is the kind of sentence that
+    // outlives the code it describes.
+    expect(reReviewScope({ verdict: "PASS" })).toBe(REVIEW_SCOPE_DIFF);
+    expect(reReviewScope({ verdict: "FAIL", failures: ["a thing"] })).toBe(REVIEW_SCOPE_FULL);
+    expect(reReviewScope(undefined)).toBe(REVIEW_SCOPE_FULL);
   });
 });
 
