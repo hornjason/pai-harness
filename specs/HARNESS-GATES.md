@@ -511,3 +511,5 @@ no-container reason lives in a different branch than the one the mutation
 emptied, so SC-1585 never saw it. The mutation was narrower than the
 prediction, not the test weaker — confirmed by mutating the other branch,
 which is the row above it.
+- [x] SC-2520: lib/gate-check-audit.ts contains [unassertedWarnPaths,checksThatCannotFail]
+- [x] SC-2521: test/gate-check-audit.test.ts contains [the body-level predicate is blind to a warn-return path,the widened predicate names it]

@@ -1690,11 +1690,18 @@ describe("ship checks", () => {
     const slug = sf("slug");
     if (!slug) return;
     const witnessDir = runArtifact("witnesses");
-    if (!existsSync(witnessDir)) {
-      // WARN — witnesses are new, not all workflows have them yet
-      console.warn("WARN: No witness directory found — witness chain not verified");
-      return;
-    }
+    // #1384 — this warned and returned on exactly the condition it is named
+    // for, so the check could not fail on an absent witness directory. The
+    // deferral it carried ("witnesses are new, not all workflows have them
+    // yet") had outlived its measurement: over ~/.rungate on 2026-10-24, all
+    // 52 runs that reach this check — phase SHIP or DONE, with a slug — carry
+    // a non-empty witnesses/ directory. Refusing costs no run.
+    expect(
+      existsSync(witnessDir),
+      `witness-chain: no witness directory at ${witnessDir} — the gate system records ` +
+        "one per run from SHIP onward, so an absent directory means the chain was never " +
+        "written rather than that this run did not need it (#473, #1384)",
+    ).toBe(true);
     const witnesses = readdirSync(witnessDir).filter(f => f.endsWith(".json"));
     expect(witnesses.length, "Witness directory exists but is empty").toBeGreaterThan(0);
   });

@@ -54,6 +54,12 @@
       "note": "#1348 - a provenance reading states the directory it was taken in. Above every declared block, which is what the allocator hands an owner who has none; 2460-2479 looked free by eyeballing headroom and collided with PARALLEL-AGENT-COORDINATION-SPEC.md, caught by test/spec-sc-ids-unique.test.ts. Delete when the PR merges."
     },
     {
+      "owner": "rg/1384-before-state-path",
+      "from": 2520,
+      "to": 2539,
+      "note": "#1384 - the gate-check audit's unit becomes the PATH, not the check body. Above every declared block, which is what the allocator hands an owner who has none; declared before any id is consumed rather than eyeballing headroom. Cannot be pushed to main ahead of the branch (main requires the `test` and `ai-review` checks with enforce_admins on), so it reaches main through this PR. Delete when the PR merges."
+    },
+    {
       "owner": "rg/1344",
       "from": 90,
       "to": 99,
