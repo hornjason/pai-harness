@@ -156,7 +156,16 @@ const UNCLAIMED_RATCHET = 150;
 // taught the reader the derivation its writer already made. A file-exists
 // pattern would have been satisfiable while the command printed UNMEASURED
 // on every row, which is the state this criterion sat in for two days.
-const CLAIMED_UNBINDABLE = 95;
+// 95 -> 96 on 2026-10-24 (#1587): CRC-B7 ticked, claimed by
+// `test/ai-review-findings.test.ts`. Unbindable because the criterion is two
+// claims about RENDERED OUTPUT — an order and three labels — and no
+// registered matcher pattern reads an annotation string. A file-exists or
+// symbol-present pattern would be satisfied by `SEVERITY_RANK` existing,
+// which is precisely the state the criterion sat in for months: the
+// vocabulary was declared in `lib/finding-jury.ts` and the deployed CI path
+// could not import it, so a matcher over the symbol would have ticked a
+// criterion nothing in CI could reach.
+const CLAIMED_UNBINDABLE = 96;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

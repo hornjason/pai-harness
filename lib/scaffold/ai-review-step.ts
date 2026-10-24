@@ -3606,6 +3606,58 @@ export const AI_REVIEW_PASS_VERDICT = "PASS";
 /** The verdict word meaning "something here blocks the pull request". */
 export const AI_REVIEW_BLOCK_VERDICT = "BLOCK";
 
+/**
+ * The three tags a surviving finding is posted under, and no fourth (CRC-B7).
+ *
+ * ## This is NOT a second severity table, and the distinction is the whole
+ * of why both exist
+ *
+ * `AI_REVIEW_SEVERITIES` above is the reviewer's MAGNITUDE word — how bad the
+ * defect is — and it is the input to one question: does this block the pull
+ * request? This is ATTRIBUTION — whose change the defect belongs to, and
+ * therefore how it should read to whoever opens the checks tab.
+ *
+ * **The input on which the two must disagree for both to be right** is a
+ * finding declaring `severity: "critical"` against a file the pull request
+ * does not touch. `AI_REVIEW_SEVERITIES` must still say `critical` blocks: a
+ * critical defect is critical whoever wrote it, and the table is a statement
+ * about the word, not about the diff. This must still say `Pre-existing`: the
+ * change cannot have introduced it and usually cannot fix it. Their
+ * COMPOSITION is the demotion in `lib/scaffold/ai-review-findings.ts` —
+ * reported, tagged, and not blocking.
+ *
+ * They cannot be collapsed in either direction. Folding `Pre-existing` into
+ * `AI_REVIEW_SEVERITIES` would require the REVIEWER to write it, and the
+ * reviewer is deliberately not given the pull request's file list — that is
+ * why `readPayload` measures verdict agreement BEFORE the demotion. Deriving
+ * these three from the five would require the magnitude word to encode
+ * attribution, which nothing in `critical … info` does.
+ *
+ * ## Declared here rather than in `lib/finding-jury.ts`, where it was
+ *
+ * Same reason `AI_REVIEW_FINDING_FIELDS` is declared here: this module has no
+ * relative imports, so it is the one module the three mutation batteries that
+ * copy `ai-review-findings.ts` into a scratch directory can carry with it. A
+ * tag vocabulary the deployed path cannot import is a tag vocabulary the
+ * deployed path does not use, which is exactly the state CRC-B7 found —
+ * `SEVERITY_RANK` had zero callers reachable from CI. `lib/finding-jury.ts`
+ * imports and re-exports these two names, so its own callers are unchanged
+ * and there is still exactly ONE declaration.
+ */
+export type Severity = "Important" | "Nit" | "Pre-existing";
+
+/**
+ * Sort order for the posted findings. A pre-existing bug is still a bug, so
+ * it outranks a nit; it is not the author's, so it does not outrank an
+ * Important one.
+ *
+ * ONE binding, and the only ordering in the deployed path. A second
+ * comparator would be two deciders over one question and a mutation of
+ * either would leave the other holding every case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape).
+ */
+export const SEVERITY_RANK: Record<Severity, number> = { Important: 0, "Pre-existing": 1, Nit: 2 };
+
 const AI_REVIEW_BLOCKING_SEVERITIES = Object.keys(AI_REVIEW_SEVERITIES).filter(
   s => AI_REVIEW_SEVERITIES[s],
 );

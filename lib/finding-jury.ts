@@ -50,6 +50,7 @@
  */
 
 import type { Finding } from "./finding-arbiter";
+import { SEVERITY_RANK, type Severity } from "./scaffold/ai-review-step";
 
 // ── Cardinalities ────────────────────────────────────────────────────────
 
@@ -214,11 +215,19 @@ export function classifyCategory(finding: Pick<Finding, "title" | "body">): Find
  * `Pre-existing` is the one that matters most here and the one we had no way
  * to say: a finding about code the change never touched is not the author's
  * defect and should not be priced like one.
+ *
+ * **Declared in `./scaffold/ai-review-step` and re-exported here**, not
+ * declared twice. That module is the one the deployed CI path can import —
+ * it has no relative imports of its own, which is what lets the mutation
+ * batteries carry it — and until CRC-B7 this vocabulary lived here, where
+ * nothing reachable from CI could name it. Its docblock there carries the
+ * input on which this and `AI_REVIEW_SEVERITIES` must disagree.
+ *
+ * Re-exported rather than moved outright so `severityOf`, the arbiter, the
+ * filing gate and `hooks/VerifyPhaseLock.hook.ts` keep naming it here.
  */
-export type Severity = "Important" | "Nit" | "Pre-existing";
-
-/** Sort order for the posted comments. A pre-existing bug is still a bug. */
-export const SEVERITY_RANK: Record<Severity, number> = { Important: 0, "Pre-existing": 1, Nit: 2 };
+export { SEVERITY_RANK };
+export type { Severity };
 
 // ── The vote ─────────────────────────────────────────────────────────────
 

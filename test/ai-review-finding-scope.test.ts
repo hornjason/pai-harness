@@ -524,7 +524,14 @@ describe("#1204: a blocking finding is adjudicated only where it can be located"
     const located = payloadOf("BLOCK", [blockingFinding(BLOCKING_SEVERITY)]);
     expect(readAiReviewFindings(unlocatable, scope).outcome).toBe("CLEAN");
 
-    const needle = "!touched.has(named)";
+    // Re-spelt against `findingPathScope`, which CRC-B7 made the ONE site
+    // answering "does this finding name code the pull request touched". It
+    // used to be an inline `!touched.has(named)` in `readPayload`'s blocking
+    // branch; the tag needs the same answer, and two sites computing it
+    // would be free to disagree about one finding. Zeroing it here therefore
+    // removes the demotion AND the `Pre-existing` tag in one mutation, which
+    // is the whole reason there is one binding to zero.
+    const needle = 'touched.has(named) ? "IN_DIFF" : "PRE_EXISTING"';
     expect(
       source.split(needle).length - 1,
       "could not build the mutant: the scope decider is not spelled once",
@@ -534,7 +541,7 @@ describe("#1204: a blocking finding is adjudicated only where it can be located"
     writeFileSync(
       path,
       source
-        .replace(needle, "false")
+        .replace(needle, '"IN_DIFF"')
         .replace(/from "\.\/ai-review-step"/g, `from "${STEP_PATH}"`),
     );
     const mutant = (await import(path)) as typeof import("../lib/scaffold/ai-review-findings");

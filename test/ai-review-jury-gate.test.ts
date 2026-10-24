@@ -845,7 +845,24 @@ async function mutantGate(
   expect(mutated, `the mutation for ${name} did not change lib/finding-jury.ts`).not.toBe(
     jurySource,
   );
-  writeFileSync(join(dir, "finding-jury.ts"), mutated);
+  // The mutant's OWN sibling specifiers, rewritten the same way the gate's
+  // are. `lib/finding-jury.ts` carried only a type-only import until CRC-B7
+  // moved `SEVERITY_RANK` into `./scaffold/ai-review-step` — one declaration,
+  // reachable from the deployed CI path — and a type import is erased at
+  // transpile while a value import is not. Without this the mutant dies on
+  // module resolution, which reads exactly like the mutation being rejected
+  // on the merits (`.claude/rules/self-referential-tests.md`, Tier 1, last
+  // row). Asserted rather than assumed, so a future import that this rewrite
+  // does not cover reds here instead of going quiet.
+  const juryRewritten = mutated
+    .replace(/from "\.\/scaffold\//g, `from "${join(LIB, "scaffold")}/`)
+    .replace(/from "\.\//g, `from "${LIB}/`);
+  expect(
+    juryRewritten,
+    `the mutant copy of finding-jury.ts for ${name} kept a relative import, so it would ` +
+      `die on module resolution and read as the mutation being rejected`,
+  ).not.toContain('from "./');
+  writeFileSync(join(dir, "finding-jury.ts"), juryRewritten);
 
   const gateSource = readFileSync(join(LIB, "ai-review-jury.ts"), "utf-8");
   const rewritten = gateSource
