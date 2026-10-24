@@ -963,6 +963,55 @@ describe("#1442: the doc row asks the ratchet's own binding what a citation is",
  * markdown and is where the failing test reads from. W1 below survives it by
  * asserting the JSON path specifically, and C1 asserts the widening itself
  * did not happen.
+ *
+ * ## What was broken to prove it, run and counted
+ *
+ * Over this file (43 tests). Every count AND membership was predicted before
+ * the battery ran, and the baseline row was read first — an instrument that
+ * has stopped reporting takes the baseline down with it.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 43 pass, 0 fail | **43 pass, 0 fail** | — |
+ * | the `state-write` row deleted AND the table reverted — the genuinely pre-#1515 state | 5: W1, W2, W3, C4, N1 | **5 of 43**, the five named | `{path: "project-state.json"}`: the original routes seven suites, the mutant routes nothing and prints `no census test is reachable` |
+ * | **the cheapest wrong fix** applied faithfully: `doc` widened to any markdown, `state-write` deleted, table regenerated | 6: W1, W2, W3, C1, C4, N1 | **8 of 43**: the six named, plus two | `{path: "docs/research/a-note.md", added: ["some prose"]}`: the original routes nothing, the mutant routes the citation pair |
+ * | the row's `fires` loosened from an exact path to `endsWith` | 1: C3 | **1 of 43**, the one named | `{path: "test/fixtures/project-state.json"}`: the original does not fire, the mutant routes all seven |
+ * | `test/distribution-currency.test.ts` pasted into the row — the issue's own hand list — table regenerated | 1: C4 | **1 of 43**, the one named | the row's `tests` read as source: the original's seven all read a trio path from the repo root, the mutant's eighth reads none |
+ * | the table row deleted from the rule file, router untouched | 2: T1, T2 | **2 of 43**, the two named | the document itself: the rendered block no longer appears in it |
+ *
+ * **Row 3 came back HIGH, and the two extra are recorded rather than
+ * quietly folded into the prediction.** They are
+ * `test/census-routing.test.ts`'s own pre-existing #1442 cases — *"a doc
+ * edit carrying no citation does not route the ratchet"* and *"the router
+ * and the ratchet agree about every sample, both directions"* — which
+ * already guard the `doc` row's citation detector from exactly this
+ * widening. The prediction was written as though C1 were the only case
+ * watching that row; it is the third. The battery was right and the
+ * arithmetic was not.
+ *
+ * Rows 3 and 5 are the ones that matter. Row 3 is the named wrong fix, and
+ * C1 is red under it NON-vacuously — the only grade of survival that is
+ * protection. Row 5 is the membership guard catching the precise mistake
+ * this issue's own acceptance list makes.
+ *
+ * None of the five mutations is left in the tree; all were run and reverted,
+ * and `scripts/census-routing.ts`,
+ * `.claude/rules/self-referential-tests.md` and this file were confirmed
+ * byte-identical to the committed source afterwards by sha256.
+ *
+ * Case labels, since four of the eight are controls and the next reader
+ * should not count eight witnesses:
+ *
+ *   W1  "a diff touching only project-state.json routes closing-keywords"
+ *   W2  "the real three-file state write routes every suite that reads one"
+ *   W3  "each of the three files fires the row on its own"
+ *   C1  "an ordinary markdown edit is not routed by the doc row or this one"
+ *   C2  "a change touching none of the three does not route the state census"
+ *   C3  "a nested file whose basename matches is not the live record"
+ *   C4  "every suite this row routes reads a live state file from the repo root"
+ *   N1  "the row's targets are in the census set and on disk"
+ *   T1  "the table in the rule file is byte-identical to the rendered one"
+ *   T2  "the rule file names no census test the router cannot route"
  */
 describe("#1515: a DA-owned session-state write routes the suites that read it", () => {
   const STATE_TRIO = ["project-state.json", "PROJECT-STATE.md", "SUCCESS.md"];
