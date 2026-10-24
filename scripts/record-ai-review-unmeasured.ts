@@ -70,10 +70,14 @@ import {
   type JobLogReading,
 } from "../lib/ai-review-unmeasured.ts";
 import {
-  AI_REVIEW_LEDGER_COMMENT_MARKER,
+  AI_REVIEW_LEDGER_ABSENT,
   AI_REVIEW_LEDGER_READ,
   AI_REVIEW_LEDGER_ROUNDS_KEY,
+  ledgerUnreadable,
   readLedger,
+  selectLedgerComment,
+  type LedgerCandidate,
+  type LedgerSelection,
 } from "../lib/ai-review-rounds.ts";
 
 /** One exported exit code, so there is a single refusal path to mutate. */
@@ -166,37 +170,62 @@ function resolvePullRequests(args: Args): number[] | { error: string } {
   return (r.stdout ?? "").split("\n").map(s => s.trim()).filter(Boolean).map(Number);
 }
 
-/** The ledger comment on a pull request: its id and its body, or null. */
-function ledgerComment(repo: string, pr: number): { id: number; body: string } | null {
+/**
+ * Which comment on a pull request is the ledger, or why that is not knowable.
+ *
+ * **The AUTHOR is read, and the whole list is walked before anything is
+ * chosen.** This used to select on the marker alone and return the first hit
+ * — and the marker is a quotable string, so on #1319 and #1386 TWO comments
+ * carry it: the ledger, and a `type: "User"` comment that quotes it while
+ * discussing it (measured against the live API, #1412). It took the right
+ * one on both, by the API's oldest-first ordering and not by any clause,
+ * and then PATCHed it. `selectLedgerComment` holds the decision now: this
+ * function's job is to produce candidates and to keep a failed read from
+ * reading as an absent ledger.
+ */
+function ledgerComment(repo: string, pr: number): LedgerSelection {
   const r = gh([
     "api", "--paginate", `repos/${repo}/issues/${pr}/comments`,
-    "-q", ".[] | select(.body != null) | {id, body} | @json",
+    // `?  // null` on both author fields, not a bare `.user.login`. A
+    // comment whose author block is absent would make jq error and take the
+    // WHOLE pull request to UNREADABLE; it is simply not a candidate, and
+    // over-refusing on one unrelated comment is its own silent cost.
+    "-q",
+    ".[] | select(.body != null) | {id, body, login: (.user.login? // null), type: (.user.type? // null)} | @json",
   ]);
-  if (r.status !== 0) return null;
+  if (r.status !== 0) {
+    // NOT absent. A list this script could not read is not a pull request
+    // with no ledger on it, and the destructive branch downstream is the one
+    // that writes when it believes there is nothing there.
+    return ledgerUnreadable(
+      `gh api repos/${repo}/issues/${pr}/comments exited ${r.status}: ` +
+        `${(r.stderr ?? "").trim().slice(0, 300)}`,
+    );
+  }
   // `@json` through `gh -q` prints the object's JSON text RAW, one per line,
   // so ONE parse. The first draft parsed twice, every line threw, the throw
   // was swallowed, and six pull requests that all have a ledger reported
   // "no ledger comment" — the fail-open shape this repository's own rules
   // open with. A line that will not parse is now counted and named.
   let unparseable = 0;
+  const candidates: LedgerCandidate[] = [];
   for (const line of (r.stdout ?? "").split("\n")) {
     if (!line.trim()) continue;
-    let c: { id: number; body: string };
     try {
-      c = JSON.parse(line) as { id: number; body: string };
+      candidates.push(JSON.parse(line) as LedgerCandidate);
     } catch {
       unparseable++;
-      continue;
     }
-    if (typeof c.body === "string" && c.body.includes(AI_REVIEW_LEDGER_COMMENT_MARKER)) return c;
   }
-  if (unparseable > 0) {
-    console.error(
-      `#${pr}: ${unparseable} comment line(s) could not be parsed — a ledger may have ` +
-        "been among them, so this pull request's reading is incomplete",
+  const selection = selectLedgerComment(candidates);
+  if (unparseable > 0 && selection.status === AI_REVIEW_LEDGER_ABSENT) {
+    // A partial list that held no ledger is not a list that held no ledger.
+    return ledgerUnreadable(
+      `${unparseable} comment line(s) could not be parsed and no ledger was found in ` +
+        "the ones that could, so this pull request's reading is incomplete",
     );
   }
-  return null;
+  return selection;
 }
 
 /**
@@ -252,11 +281,20 @@ export function main(argv: readonly string[]): number {
   }
 
   for (const pr of prs) {
-    const comment = ledgerComment(parsed.repo, pr);
-    if (comment === null) {
+    const selected = ledgerComment(parsed.repo, pr);
+    if (selected.status === AI_REVIEW_LEDGER_ABSENT) {
       console.log(`#${pr}: no ledger comment`);
       continue;
     }
+    if (selected.status !== AI_REVIEW_LEDGER_READ) {
+      // AMBIGUOUS or UNFETCHED. Counted as refused rather than skipped
+      // silently: this is the branch where a wrong comment would have been
+      // read, annotated and PATCHed, and nothing afterwards could say so.
+      console.log(`#${pr}: ledger SKIPPED (${selected.status}) — ${selected.reason}`);
+      skipped++;
+      continue;
+    }
+    const comment = selected.comment;
     const reading = readLedger(comment.body);
     if (reading.status !== AI_REVIEW_LEDGER_READ) {
       // REFUSED, and named. Writing here is the destructive case.

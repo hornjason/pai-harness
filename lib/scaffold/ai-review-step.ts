@@ -3115,11 +3115,28 @@ export const AI_REVIEW_LEDGER_FENCE = "```json";
  *
  * **This is a smaller class, still not a unique identity, and the difference
  * matters.** `github-actions[bot]` is the login of EVERY workflow in a
- * repository that authenticates with `GITHUB_TOKEN`, not just this one. What
- * makes the selection safe is the conjunction: this login, AND the versioned
- * marker, AND that nothing else in the tree writes that marker — which is
- * the load-bearing term, so `test/ai-review-ledger-step.test.ts` asserts it
- * rather than leaving it as a sentence here.
+ * repository that authenticates with `GITHUB_TOKEN`, not just this one.
+ *
+ * **This clause is the load-bearing term of the conjunction, and the earlier
+ * rationale here said otherwise (#1412).** It claimed the selection was safe
+ * because nothing else in the tree writes the marker. The marker is a
+ * QUOTABLE STRING, and the tree is not where comments live: measured against
+ * the live API on 2026-10-24, pull requests #1319 and #1386 each carry two
+ * comments containing `AI_REVIEW_LEDGER_MARKER` — the ledger, and a
+ * `type: "User"` comment quoting the marker while discussing it. Only the
+ * login clause, added in #1386, separates them.
+ *
+ * Two things follow and both are the point of recording this:
+ *
+ *   * **Do not relax the login check** on the belief that the marker
+ *     identifies the ledger. `test/ai-review-ledger-step.test.ts` AC-L8 and
+ *     AC-L10 hold that line with a mutant that removes the clause and
+ *     watches the impostor get adopted.
+ *   * **Do not answer this by making the marker more exotic.** Any marker
+ *     that can be discussed in a comment can be quoted in one; uniqueness of
+ *     a quotable string is not obtainable. The reachable property is that a
+ *     reader handed MORE THAN ONE match refuses rather than picking the
+ *     first — `selectLedgerComment` in `lib/ai-review-rounds.ts`.
  */
 export const AI_REVIEW_LEDGER_BOT_LOGIN = "github-actions[bot]";
 
@@ -9203,11 +9220,13 @@ fi
 # scope clears that bar. Binding to the login this step writes as closes it.
 #
 # The login is still a CLASS and not an identity: \`github-actions[bot]\` is
-# every workflow in this repository using \`GITHUB_TOKEN\`. What makes the
-# selection safe is the conjunction — this login, AND the versioned marker,
-# AND nothing else in the tree writing that marker. The third term is the
-# load-bearing one, so it is asserted in
-# \`test/ai-review-ledger-step.test.ts\` rather than trusted here.
+# every workflow in this repository using \`GITHUB_TOKEN\`. The marker narrows
+# that, and NOT because the marker is unique — it is a quotable string, and
+# #1319 and #1386 each carry two comments containing it, the ledger and a
+# \`type: "User"\` comment quoting it while discussing it (measured, #1412).
+# THE LOGIN CLAUSE IS THE LOAD-BEARING TERM: it is the only one of the three
+# that excludes those. Do not relax it, and do not answer this by inventing a
+# more exotic marker — anything discussable is quotable.
 #
 # \`first\`, not \`last\`: the OLDEST bot-authored match is the real ledger,
 # because that is the one this step created on round one. \`last\` prefers the

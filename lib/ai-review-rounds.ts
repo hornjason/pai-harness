@@ -674,9 +674,19 @@ export type LedgerTruncation =
   | { status: typeof AI_REVIEW_TRUNCATION_UNKNOWN; reason: string }
   | { status: typeof AI_REVIEW_TRUNCATION_STATED; dropped: number };
 
+/**
+ * The UNREADABLE arm, named so one construction site serves both a READING
+ * of a ledger body and a SELECTION among comments. Two literals would be two
+ * things to keep in step for one fact.
+ */
+export type LedgerUnreadable = {
+  status: typeof AI_REVIEW_LEDGER_UNREADABLE;
+  reason: string;
+};
+
 export type LedgerReading =
   | { status: typeof AI_REVIEW_LEDGER_ABSENT }
-  | { status: typeof AI_REVIEW_LEDGER_UNREADABLE; reason: string }
+  | LedgerUnreadable
   | {
       status: typeof AI_REVIEW_LEDGER_READ;
       rounds: LedgerRound[];
@@ -692,8 +702,134 @@ export type LedgerReading =
  * indistinguishable from a pull request on its first round, and every earlier
  * finding would silently stop being carried.
  */
-export function ledgerUnreadable(reason: string): LedgerReading {
+export function ledgerUnreadable(reason: string): LedgerUnreadable {
   return { status: AI_REVIEW_LEDGER_UNREADABLE, reason };
+}
+
+/**
+ * The login the ledger comment is written as, and the only one selected.
+ *
+ * **This clause is the load-bearing one, and the repository's own tracker is
+ * the counter-example that makes it so.** The rationale this selection used
+ * to carry said the conjunction was safe because *nothing else writes the
+ * marker*. Measured against the live API on 2026-10-24, pull requests #1319
+ * and #1386 each carry TWO comments containing
+ * `AI_REVIEW_LEDGER_COMMENT_MARKER`: the ledger, written by
+ * `github-actions[bot]`, and a `type: "User"` comment that quotes the marker
+ * while discussing it. The marker is a quotable string and uniqueness of a
+ * quotable string is not obtainable — so making the marker more exotic is
+ * not the answer, and the login clause is what separates the two today.
+ *
+ * `lib/scaffold/ai-review-step.ts` declares the same string as
+ * `AI_REVIEW_LEDGER_BOT_LOGIN` and `test/ai-review-ledger-selection.test.ts`
+ * binds the two, rather than importing: that module is copied into a tmpdir
+ * by mutation batteries, where a relative specifier dies on resolution.
+ */
+export const AI_REVIEW_LEDGER_BOT_LOGIN_NAME = "github-actions[bot]";
+
+/**
+ * How many comments on one pull request may be the ledger. **One.**
+ *
+ * The single site every ambiguity refusal below is routed through, so a test
+ * can build a mutant copy of this module with the bound widened and watch
+ * the refusal stop happening. Raise it and `selectLedgerComment` returns the
+ * first match instead — which is the defect, performed and observed, rather
+ * than a sentence claiming the guard works
+ * (`.claude/rules/checks-must-be-able-to-fail.md`).
+ */
+export const AI_REVIEW_LEDGER_MAX_MATCHES = 1;
+
+/**
+ * A pull-request comment, reduced to the four fields the selection reads.
+ *
+ * Every field is `unknown` because they arrive from an API response that a
+ * caller has at best parsed, never validated. A comment whose author block
+ * is missing is not a comment this selection may adopt.
+ */
+export interface LedgerCandidate {
+  id: unknown;
+  body: unknown;
+  login: unknown;
+  type: unknown;
+}
+
+/** A candidate that passed the selection — every field narrowed. */
+export interface LedgerComment {
+  id: number;
+  body: string;
+  login: string;
+  type: string;
+}
+
+/**
+ * Which comment on a pull request IS the ledger, or why that is not knowable.
+ *
+ * Deliberately the same three statuses `LedgerReading` uses, because they are
+ * the same three facts one step earlier: there is no ledger here, there is
+ * something here that cannot be read as one, or here it is. A fourth status
+ * would be a second vocabulary for a question already answered.
+ */
+export type LedgerSelection =
+  | { status: typeof AI_REVIEW_LEDGER_ABSENT }
+  | LedgerUnreadable
+  | { status: typeof AI_REVIEW_LEDGER_READ; comment: LedgerComment };
+
+/**
+ * Pick the ledger out of a pull request's comments, or REFUSE.
+ *
+ * **Two matches is not a reading, and the first of them is not an answer.**
+ * This is the whole of #1412: a reader handed more than one comment carrying
+ * the ledger marker has no way to tell which document it is about, and a
+ * wrong comment that parses is byte-indistinguishable from a right one — so
+ * every number computed off it (rounds-to-pass, the unmeasured split, the
+ * turn counts) would be read off a population nobody can name. Ambiguous and
+ * absent are different states and neither one is a ledger.
+ *
+ * Three readings, and they are kept apart on purpose:
+ *
+ *   * **ABSENT** — no comment here was written by this bot carrying the
+ *     marker. A MEASURED reading of nothing, correct and complete on round
+ *     one, and the only one that licenses POSTing a first ledger.
+ *   * **UNREADABLE** — more than one did. The reason names every id, because
+ *     a refusal that does not say which documents collided is a refusal
+ *     nobody can act on.
+ *   * **READ** — exactly one, narrowed.
+ *
+ * A `type: "User"` comment quoting the marker is not a candidate and does
+ * not make the reading ambiguous either: it is not a ledger, so it is not
+ * one of the things that could be. See `AI_REVIEW_LEDGER_BOT_LOGIN_NAME` for
+ * why that clause — and not the marker's supposed uniqueness — is what makes
+ * this selection an identity.
+ */
+export function selectLedgerComment(
+  comments: readonly LedgerCandidate[],
+): LedgerSelection {
+  const matches: LedgerComment[] = [];
+  for (const c of comments) {
+    if (c.type !== "Bot") continue;
+    if (c.login !== AI_REVIEW_LEDGER_BOT_LOGIN_NAME) continue;
+    if (typeof c.body !== "string") continue;
+    if (!c.body.includes(AI_REVIEW_LEDGER_COMMENT_MARKER)) continue;
+    if (typeof c.id !== "number" || !Number.isInteger(c.id)) {
+      return ledgerUnreadable(
+        `a comment written by ${AI_REVIEW_LEDGER_BOT_LOGIN_NAME} carries the ledger ` +
+          `marker and reports ${JSON.stringify(c.id)} as its id, which is not one, so ` +
+          "it cannot be addressed and is not being treated as absent",
+      );
+    }
+    matches.push({ id: c.id, body: c.body, login: c.login, type: c.type });
+  }
+  if (matches.length === 0) return { status: AI_REVIEW_LEDGER_ABSENT };
+  if (matches.length > AI_REVIEW_LEDGER_MAX_MATCHES) {
+    return ledgerUnreadable(
+      `${matches.length} comments on this pull request are written by ` +
+        `${AI_REVIEW_LEDGER_BOT_LOGIN_NAME} and carry the ledger marker (ids ` +
+        `${matches.map(m => m.id).join(", ")}), so which one is the ledger cannot be ` +
+        "established. Refusing to read the first: a wrong ledger that parses is " +
+        "indistinguishable from the right one afterwards",
+    );
+  }
+  return { status: AI_REVIEW_LEDGER_READ, comment: matches[0] };
 }
 
 /**

@@ -1,4 +1,4 @@
-# generated-sha: db290be59875ced7
+# generated-sha: c2c59fdf3fefabb6
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -2356,11 +2356,13 @@ jobs:
           # scope clears that bar. Binding to the login this step writes as closes it.
           #
           # The login is still a CLASS and not an identity: `github-actions[bot]` is
-          # every workflow in this repository using `GITHUB_TOKEN`. What makes the
-          # selection safe is the conjunction — this login, AND the versioned marker,
-          # AND nothing else in the tree writing that marker. The third term is the
-          # load-bearing one, so it is asserted in
-          # `test/ai-review-ledger-step.test.ts` rather than trusted here.
+          # every workflow in this repository using `GITHUB_TOKEN`. The marker narrows
+          # that, and NOT because the marker is unique — it is a quotable string, and
+          # #1319 and #1386 each carry two comments containing it, the ledger and a
+          # `type: "User"` comment quoting it while discussing it (measured, #1412).
+          # THE LOGIN CLAUSE IS THE LOAD-BEARING TERM: it is the only one of the three
+          # that excludes those. Do not relax it, and do not answer this by inventing a
+          # more exotic marker — anything discussable is quotable.
           #
           # `first`, not `last`: the OLDEST bot-authored match is the real ledger,
           # because that is the one this step created on round one. `last` prefers the
