@@ -85,6 +85,35 @@ export const CHOKEPOINT = "lib/write-spec.ts";
  * Derived from `SIMPLE_PRIMITIVES` rather than restated, so there is ONE list
  * to extend. A second copy here would drift from the one the detector reads
  * and the sweep would go green on a primitive it no longer looks for.
+ *
+ * ## This list is irreducible, and it fails toward UNDER-reporting
+ *
+ * #1566 replaced the sweep's resolution logic with a semantic invariant — a
+ * value set is complete only for a `const` with an initialiser, which is a
+ * guarantee the *language* makes — so no enumeration of assignment spellings
+ * can fall behind there. The obvious next question, raised by the AI review
+ * on #1569 (`bbaefb99`), is why this list is not given the same treatment.
+ *
+ * Because there is nothing to derive it from. Nothing in the language, the
+ * type system or the AST distinguishes `writeFileSync` from `readFileSync`;
+ * the knowledge lives in Node's documentation. A derivation like
+ * `/write|append|rename|copy|truncate/` over callee names would be a detector
+ * over spellings, which is the exact trade #1566 removed one layer down —
+ * and it would both miss a primitive named otherwise and flag
+ * `logger.writeLine`.
+ *
+ * So the bound stands, and the useful thing to know is its direction:
+ *
+ *  - **A missed primitive is invisible, not wrong.** The sweep reports
+ *    nothing at that call site rather than reporting it incorrectly, so the
+ *    chokepoint's green reading silently excludes it. That is the costly
+ *    direction, and it is why `Bun.write` is here — somebody hit it.
+ *  - **A fix, if one is wanted, is a different instrument.** A capability
+ *    check over the `fs` module surface belongs in
+ *    `lib/fs-write-capabilities.ts`, not in a cleverer predicate here.
+ *
+ * Adding a spelling to `SIMPLE_PRIMITIVES` is therefore an ordinary and
+ * expected edit. Reaching for a pattern instead is the regression.
  */
 export const WRITE_PRIMITIVES = [...SIMPLE_PRIMITIVES, "Bun.write"] as const;
 
