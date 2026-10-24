@@ -1483,19 +1483,39 @@ export const AI_REVIEW_FINDINGS_PATH_VAR = "AI_REVIEW_FINDINGS_PATH";
 export const AI_REVIEW_EXECUTION_FILE_VAR = "AI_REVIEW_EXECUTION_FILE";
 
 /**
- * The execution file's denial counter, as the report step matches it (#1087).
+ * The execution file's denials field, as the report step matches it (#1087,
+ * #1392).
  *
  * One spelling, because the route block greps it three times — for the key's
- * presence, for a zero, and implicitly for everything else — and three
+ * presence, for an EMPTY list, and implicitly for everything else — and three
  * literals would be three things to get subtly out of step with each other.
  *
- * It is the pinned action's own field name, written by the SDK into the file
- * `setExecutionFileOutputIfPresent` names. Matched as TEXT rather than parsed,
- * for the reason the turn-budget branch beside it states: a runner is not
- * guaranteed `jq`, and the cost of a false match here is a different
- * explanatory sentence, never a different exit code.
+ * **It used to be `permission_denials_count`, and that key is not in this
+ * file (#1392).** The `_count` name is computed by `sanitizeSdkOutput` in
+ * `base-action/src/run-claude-sdk.ts` — `permission_denials_count:
+ * resultMsg.permission_denials?.length ?? 0` — and that object is
+ * `console.log`'d to the job log. The FILE is written by
+ * `writeExecutionFile(messages)`, which is `JSON.stringify(messages, null, 2)`
+ * over the raw `SDKMessage[]`, so it carries the SDK's own
+ * `permission_denials`: an ARRAY, declared on both `SDKResultSuccess` and
+ * `SDKResultError`. Two deciders reading different things and disagreeing,
+ * with only one of them visible in the annotation — the job log printed
+ * `"permission_denials_count": 0` on the same runs the annotation called
+ * UNMEASURED. Observed on 3 of 3 runs that reached the block (`39977251682`,
+ * `39979562454`, `39978970937`), which is every run: the first of the three
+ * routes fired always and the other two were unreachable.
+ *
+ * The closing quote in the match is what keeps the two apart — the pattern
+ * carries `"${AI_REVIEW_DENIALS_KEY}"`, so a file holding only the sanitizer's
+ * `_count` spelling reads as UNMEASURED and not as a zero. That direction is
+ * deliberate: an unstated denial count is a thing to say, and a guessed zero
+ * is the Silent Default Substitution this file's own header is about.
+ *
+ * Matched as TEXT rather than parsed, for the reason the turn-budget branch
+ * beside it states: a runner is not guaranteed `jq`, and the cost of a false
+ * match here is a different explanatory sentence, never a different exit code.
  */
-export const AI_REVIEW_DENIALS_KEY = "permission_denials_count";
+export const AI_REVIEW_DENIALS_KEY = "permission_denials";
 
 export const AI_REVIEW_PREPARE_STEP_ID = "ai-review-prepare";
 
@@ -3217,6 +3237,53 @@ export const AI_REVIEW_LEDGER_MERGE_FIELD = "merge";
  * and the cap cannot drift onto two spellings of one field.
  */
 export const AI_REVIEW_EXECUTION_TURNS_KEY = "num_turns";
+
+/**
+ * WHERE that key lives, which is not the document root (#1498).
+ *
+ * Read off the pinned action rather than inferred from the readers that
+ * consume it. At the commit `lib/claude-code-action.ts` declares — that
+ * module is the one declaring position for the pin, so the SHA is not
+ * restated here — `base-action/src/run-claude-sdk.ts`
+ * accumulates `const messages: SDKMessage[]` and calls
+ * `writeExecutionFile(messages)`, and `base-action/src/execution-file.ts` is
+ * `writeFile(executionFile, JSON.stringify(messages, null, 2))` and nothing
+ * else. There is no wrapper object and no root-level summary: the document
+ * root is a JSON ARRAY of messages, and `num_turns` sits on the member whose
+ * `type` is `result`.
+ *
+ * #1493 read `.num_turns` at the root, which on an array is `null` on every
+ * run by construction, and its fixtures fed a top-level `{"num_turns": 51}`
+ * — a shape the action does not write — so every case passed while
+ * witnessing nothing. Confirmed in production on PR #1494 round 1: the
+ * review ran, returned CLEAN, and the round reads `"turns":null`.
+ *
+ * `permission_denials` is the same fact one key over, and is #1392: the
+ * `_count` name the route block used to grep for is computed by
+ * `sanitizeSdkOutput`'s `console.log` and never written to this file at all.
+ */
+export const AI_REVIEW_EXECUTION_TYPE_KEY = "type";
+export const AI_REVIEW_EXECUTION_RESULT_TYPE = "result";
+
+/**
+ * The jq expression that reduces the execution file to its result message, or
+ * to `null` when it holds none.
+ *
+ * ONE binding, so there is one thing a mutation can point back at the
+ * document root — `.claude/rules/checks-must-be-able-to-fail.md`. A second
+ * site spelling its own selection would survive that mutation and the case
+ * would go green having witnessed nothing.
+ *
+ * `last`, not `first`: the SDK emits one result per turn and each carries the
+ * running total, so the latest is the one to read. The array guard is a
+ * REFUSAL and not a fallback — an envelope object, a bare number or a
+ * top-level summary are all documents this reader cannot account for, and
+ * answering them from `..` would credit a key whose provenance nobody can
+ * state.
+ */
+export const AI_REVIEW_EXECUTION_RESULT_JQ =
+  `if type == "array" then . else error("the execution file is not an array of messages") end ` +
+  `| [ .[] | select(type == "object" and .${AI_REVIEW_EXECUTION_TYPE_KEY} == "${AI_REVIEW_EXECUTION_RESULT_TYPE}") ] | last`;
 
 /** Environment variables the persist step reads. Spelled once, used twice. */
 export const AI_REVIEW_LEDGER_PR_VAR = "AI_REVIEW_LEDGER_PR";
@@ -5276,19 +5343,28 @@ export function buildReviewRunScript(version: string): string {
   // guessing about, which is this file's own standing complaint about a
   // default substituted for a reading, made about its own prose.
   //
-  // So the denial count is READ, by the same text match the turn-budget
+  // So the denials are READ, by the same text match the turn-budget
   // branch above uses and for the same reason: a runner is not guaranteed
   // `jq`, and a false match here costs a different explanatory sentence
   // rather than a different verdict. Three states and not two — a file that
   // does not carry the key at all is not a file reporting zero, and calling
   // it zero would be the substitution this branch exists to stop making.
+  //
+  // #1392: those five numbers were read off the JOB LOG, which is where the
+  // sanitizer's derived `_count` lives. The FILE carries the SDK's raw
+  // `permission_denials` ARRAY and has never carried the `_count` name at
+  // all, so the block greped for a key that is not there, the UNMEASURED
+  // route fired on 3 of 3 runs that reached it, and the two routes below it
+  // were unreachable — while the same runs' logs printed the number. The
+  // careful end-anchor reasoning below was correct and sat one line under a
+  // branch that could never be reached.
   const executedNoDenials =
     `The review action exited successfully WITHOUT writing a findings ` +
     `payload, so no AI review ran on this pull request — and the reviewer ` +
     `DID execute: the action wrote an execution file, so this is NOT the ` +
     `case where it declined before running, and nothing about the workflow ` +
-    `file is worth checking. Its execution file reports ` +
-    `permission_denials_count 0, so the reviewer was never refused a call: ` +
+    `file is worth checking. Its execution file reports an EMPTY ` +
+    `${AI_REVIEW_DENIALS_KEY} list, so the reviewer was never refused a call: ` +
     `access to the findings path is NOT the cause and reading it as one is a ` +
     `dead end (#1087). Read the execution file for the turn count and what ` +
     `the reviewer spent its turns on instead. This check is UNMEASURED, not ` +
@@ -5298,7 +5374,7 @@ export function buildReviewRunScript(version: string): string {
     `The review action exited successfully WITHOUT writing a findings ` +
     `payload, so no AI review ran on this pull request — and the reviewer ` +
     `DID execute: the action wrote an execution file, and that file reports ` +
-    `a NON-ZERO permission_denials_count, so the reviewer was refused at ` +
+    `a NON-EMPTY ${AI_REVIEW_DENIALS_KEY} list, so the reviewer was refused at ` +
     `least one call. Read the denials in the execution file: a reviewer ` +
     `refused its own output file is the one case where the findings path, ` +
     `which is outside the checkout, is worth checking. This check is ` +
@@ -5308,10 +5384,12 @@ export function buildReviewRunScript(version: string): string {
     `The review action exited successfully WITHOUT writing a findings ` +
     `payload, so no AI review ran on this pull request — and the reviewer ` +
     `DID execute: the action wrote an execution file. That file carries no ` +
-    `permission_denials_count, so whether the reviewer was refused anything ` +
-    `is UNMEASURED too and this job will not guess at it (#1087). Read the ` +
-    `execution file and the action's own log. This check is UNMEASURED, not ` +
-    `a passing review.`;
+    `${AI_REVIEW_DENIALS_KEY} list, so whether the reviewer was refused ` +
+    `anything is UNMEASURED too and this job will not guess at it (#1087). ` +
+    `The job LOG may still state it: the action's console sanitizer prints a ` +
+    `derived ${AI_REVIEW_DENIALS_KEY}_count that it never writes to the file ` +
+    `(#1392). Read the execution file and the action's own log. This check ` +
+    `is UNMEASURED, not a passing review.`;
 
   const exhausted =
     `The review action exited successfully WITHOUT writing a findings ` +
@@ -5778,15 +5856,22 @@ if [ "\${AI_REVIEW_ACTION_OUTCOME:-}" = success ]; then
       # that may not be there, and "absent" answered last is "absent" reported
       # as whichever branch fell through to it.
       route="${executedDenialsUnknown}"
-    elif grep -qE '"${AI_REVIEW_DENIALS_KEY}"[[:space:]]*:[[:space:]]*0[[:space:]]*(,|\}|$)' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
-      # The end-anchor is \`(,|}|$)\` and the \`$\` is the whole of it. grep is
-      # LINE-based: it strips the newline before matching, so in the
-      # pretty-printed file the action actually writes — where this field is
-      # the last member of the result object — the character after \`0\` is the
-      # end of the line and nothing else. A \`[,}]\` class alone therefore
-      # fails to match a genuine zero, which is the failing direction: the
-      # zero route would be unreachable and every executed run would report
-      # denials it did not have.
+    elif grep -qE '"${AI_REVIEW_DENIALS_KEY}"[[:space:]]*:[[:space:]]*\\[[[:space:]]*\\][[:space:]]*(,|\}|$)' "\${${AI_REVIEW_EXECUTION_FILE_VAR}}"; then
+      # EMPTINESS, not a count (#1392). The field is a list, so "the reviewer
+      # was refused nothing" is \`[]\` on one line and a denial is a \`[\` with
+      # the first object on the NEXT line — \`JSON.stringify(messages, null, 2)\`
+      # puts it there. grep is LINE-based, so requiring the closing \`]\` on
+      # the same line as the opening \`[\` is what separates the two, and it
+      # separates them in the compact spelling too, where a non-empty list
+      # reads \`[{\`.
+      #
+      # The end-anchor is \`(,|}|$)\` and the \`$\` is the whole of it. grep
+      # strips the newline before matching, so in the pretty-printed file the
+      # action actually writes, a field that is the last member of the result
+      # object has nothing after it but the end of the line. A \`[,}]\` class
+      # alone therefore fails to match a genuine empty list, which is the
+      # failing direction: the no-denials route would be unreachable and
+      # every executed run would report denials it did not have.
       #
       # That is not a hypothetical. The first draft of this branch was
       # \`[,}]\`, and \`test/ai-review-route-reading.test.ts\` AC-C4 caught it by
@@ -8972,13 +9057,25 @@ fi
 # same construction the findings read above uses, so there is one branch
 # that means unreadable. A float, a string, a negative and an absent key
 # all leave by it.
+#
+# THE KEY IS NOT AT THE DOCUMENT ROOT (#1498). The action's execution file
+# is \`JSON.stringify(messages, null, 2)\` over an \`SDKMessage[]\`, so the
+# root is an ARRAY and \`${AI_REVIEW_EXECUTION_TURNS_KEY}\` sits on the
+# \`${AI_REVIEW_EXECUTION_RESULT_TYPE}\` member inside it. Reading the root
+# found nothing on every run that has ever happened, and because the
+# honest answer to an unreadable round is \`null\` rather than \`0\`, a field
+# that could NEVER be read looked exactly like a field being carefully
+# cautious. The selection is \`AI_REVIEW_EXECUTION_RESULT_JQ\`, one binding,
+# so there is exactly one thing a mutation can point back at the root.
 turns="null"
 if [ -n "\${${AI_REVIEW_EXECUTION_FILE_VAR}:-}" ] && [ -s "\${${AI_REVIEW_EXECUTION_FILE_VAR}}" ]; then
-  if parsed_turns=\$(jq -c 'if (.${AI_REVIEW_EXECUTION_TURNS_KEY} | type) == "number"
+  if parsed_turns=\$(jq -c '${AI_REVIEW_EXECUTION_RESULT_JQ}
+       | if type == "object"
+         and (.${AI_REVIEW_EXECUTION_TURNS_KEY} | type) == "number"
          and (.${AI_REVIEW_EXECUTION_TURNS_KEY} | floor) == .${AI_REVIEW_EXECUTION_TURNS_KEY}
          and .${AI_REVIEW_EXECUTION_TURNS_KEY} >= 0
        then .${AI_REVIEW_EXECUTION_TURNS_KEY}
-       else error("${AI_REVIEW_EXECUTION_TURNS_KEY} is not a non-negative integer") end' \\
+       else error("no ${AI_REVIEW_EXECUTION_RESULT_TYPE} message states a non-negative integer ${AI_REVIEW_EXECUTION_TURNS_KEY}") end' \\
       "\${${AI_REVIEW_EXECUTION_FILE_VAR}}" 2>/dev/null); then
     turns="\${parsed_turns}"
   else

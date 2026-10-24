@@ -277,62 +277,92 @@ function runReport(opts: {
 
 const PAYLOAD = JSON.stringify({ findings: [], verdict: "PASS" });
 
-/** Run 39518336224's result object, which is the shape the file really holds. */
-const EXECUTED = JSON.stringify(
-  [
-    { type: "system", subtype: "init", message: "Claude Code initialized" },
-    {
-      type: "result",
-      subtype: "success",
-      num_turns: 44,
-      total_cost_usd: 2.0388728,
-      permission_denials_count: 3,
-    },
-  ],
-  null,
-  2,
-);
+/**
+ * One denial, in the SDK's own `SDKPermissionDenial` shape — `tool_name`,
+ * `tool_use_id`, `tool_input` and nothing else (#1392).
+ */
+function denial(tool: string, n: number) {
+  return { tool_name: tool, tool_use_id: `toolu_${n}`, tool_input: { path: `/tmp/x${n}` } };
+}
+
+/**
+ * The execution file as the ACTION writes it, not as a reader wishes it were.
+ *
+ * `base-action/src/execution-file.ts` at the pinned SHA is
+ * `writeFile(executionFile, JSON.stringify(messages, null, 2))` over the
+ * `SDKMessage[]` `run-claude-sdk.ts` accumulates, so the root is an array of
+ * messages and the result message carries the SDK's raw
+ * `permission_denials` — an ARRAY. The `permission_denials_count` these
+ * fixtures used to carry is computed by `sanitizeSdkOutput`'s `console.log`
+ * and reaches the JOB LOG and nothing else; the file has never held it, which
+ * is #1392 and is why every one of these cases used to agree with the bug.
+ */
+function executionFile(result: Record<string, unknown>): string {
+  return JSON.stringify(
+    [
+      { type: "system", subtype: "init", session_id: "s-1392", model: "claude-opus-4-1" },
+      {
+        type: "assistant",
+        session_id: "s-1392",
+        message: { role: "assistant", content: [{ type: "text", text: "reviewing" }] },
+      },
+      { type: "result", is_error: false, session_id: "s-1392", ...result },
+    ],
+    null,
+    2,
+  );
+}
+
+/** Run 39518336224's: the reviewer ran, was denied three times, wrote nothing. */
+const EXECUTED = executionFile({
+  subtype: "success",
+  num_turns: 44,
+  total_cost_usd: 2.0388728,
+  permission_denials: [denial("Write", 1), denial("Write", 2), denial("Bash", 3)],
+});
 
 /**
  * Run 39707821002's, which is the shape #1087 is about: the reviewer ran for
  * 22 turns, was refused nothing, and wrote no payload. Four more runs on this
- * repository reported the same zero — 39708155573 (40 turns), 39707657746
- * (43), 39707621271 (47), 39708162846 (51).
+ * repository reported the same empty list — 39708155573 (40 turns),
+ * 39707657746 (43), 39707621271 (47), 39708162846 (51).
  */
-const EXECUTED_NO_DENIALS = JSON.stringify(
-  [
-    { type: "system", subtype: "init", message: "Claude Code initialized" },
-    {
-      type: "result",
-      subtype: "success",
-      num_turns: 22,
-      total_cost_usd: 0.3704491,
-      permission_denials_count: 0,
-    },
-  ],
-  null,
-  2,
-);
+const EXECUTED_NO_DENIALS = executionFile({
+  subtype: "success",
+  num_turns: 22,
+  total_cost_usd: 0.3704491,
+  permission_denials: [],
+});
 
-/** The same run with the counter absent, which is not the same as zero. */
-const EXECUTED_NO_COUNTER = JSON.stringify(
-  [
-    { type: "system", subtype: "init", message: "Claude Code initialized" },
-    { type: "result", subtype: "success", num_turns: 22, total_cost_usd: 0.3704491 },
-  ],
-  null,
-  2,
-);
+/** The same run with the field absent, which is not the same as empty. */
+const EXECUTED_NO_COUNTER = executionFile({
+  subtype: "success",
+  num_turns: 22,
+  total_cost_usd: 0.3704491,
+});
+
+/**
+ * The trap #1392 is about, planted so it cannot come back: a file carrying
+ * ONLY the sanitizer's derived `permission_denials_count`. No execution file
+ * has ever looked like this — the name exists in a `console.log` — and a
+ * reader that answers it is a reader pointed at the job log's vocabulary
+ * rather than at the file. It must read as UNMEASURED and NOT as a zero.
+ */
+const EXECUTED_SANITIZER_COUNT_ONLY = executionFile({
+  subtype: "success",
+  num_turns: 22,
+  total_cost_usd: 0.3704491,
+  permission_denials_count: 0,
+});
 
 /** Run 39461944884's, which exhausted the turn budget instead. */
-const EXHAUSTED = JSON.stringify(
-  [
-    { type: "system", subtype: "init", message: "Claude Code initialized" },
-    { type: "result", subtype: "error_max_turns", num_turns: 26, total_cost_usd: 1.2685924 },
-  ],
-  null,
-  2,
-);
+const EXHAUSTED = executionFile({
+  subtype: "error_max_turns",
+  is_error: true,
+  num_turns: 26,
+  total_cost_usd: 1.2685924,
+  permission_denials: [],
+});
 
 // ── AC-A: the step receives the thing it branches on ─────────────────────
 
@@ -514,42 +544,63 @@ describe("AC-B (#826): the annotation names the route it measured", () => {
 /**
  * The sentence this block replaces asserted a cause: *"a reviewer that ran
  * and wrote nothing is usually one that could not write to the findings
- * path"*. The execution files refute it at `permission_denials_count: 0` on
- * every run sampled, and the guess cost two readers of #1087 a dead end each
+ * path"*. The job logs refute it at `permission_denials_count: 0` on every
+ * run sampled, and the guess cost two readers of #1087 a dead end each
  * before anyone read the number it was guessing about.
  *
- * Three states, because a file with no counter is not a file reporting zero.
- * The pair case is what makes that a split rather than three spellings of one
- * sentence; AC-C5 is the separation this file's AC-B5 asserts for the route
- * as a whole, re-asserted for the branch added inside it.
+ * Three states, because a file with no denials field is not a file reporting
+ * none. The pair case is what makes that a split rather than three spellings
+ * of one sentence; AC-C5 is the separation this file's AC-B5 asserts for the
+ * route as a whole, re-asserted for the branch added inside it.
+ *
+ * ## #1392: two of the three routes were unreachable, and the cases agreed
+ *
+ * The block greped for `permission_denials_count`. That key is computed by
+ * `sanitizeSdkOutput` in `base-action/src/run-claude-sdk.ts` and `console.
+ * log`'d; the FILE is `JSON.stringify(messages, null, 2)` over the raw
+ * `SDKMessage[]`, which carries `permission_denials` as an ARRAY and has
+ * never carried the `_count` name. So the first route fired on 3 of 3 runs
+ * that reached the block and the other two could not be reached at all.
+ *
+ * The cases here did not catch it because they PLANTED the key the
+ * production code greped for — a fixture agreeing with the reader it is
+ * supposed to measure. They now plant the shape the action writes, and
+ * AC-C7 plants the `_count` spelling explicitly so the old reading cannot
+ * come back as a widening.
  */
-describe("AC-C (#1087): the annotation reads the denial count", () => {
+describe("AC-C (#1087, #1392): the annotation reads the denials list", () => {
   const line = (out: string) => out.split("\n").find(l => l.includes("::warning")) ?? "";
 
-  test("AC-C1: zero denials — the findings path is named as NOT the cause", () => {
+  test("AC-C1 (#1392): an EMPTY denials list — the findings path is named as NOT the cause", () => {
     const r = runReport({ payload: null, execution: EXECUTED_NO_DENIALS });
-    expect(r.out, `stderr:\n${r.err}`).toContain("permission_denials_count 0");
+    expect(
+      r.out,
+      `the no-denials route is unreachable — the block is reading a key the file does not carry (#1392)\nstderr:\n${r.err}`,
+    ).toContain("reports an EMPTY permission_denials list");
     expect(
       r.out,
       "a run that was refused nothing is still being sent at the findings path",
     ).toContain("dead end");
   });
 
-  test("AC-C2: a non-zero count sends the reader at the denials", () => {
+  test("AC-C2 (#1392): a NON-EMPTY denials list sends the reader at the denials", () => {
     const r = runReport({ payload: null, execution: EXECUTED });
-    expect(r.out, `stderr:\n${r.err}`).toContain("NON-ZERO");
+    expect(
+      r.out,
+      `the denied route is unreachable — the block is reading a key the file does not carry (#1392)\nstderr:\n${r.err}`,
+    ).toContain("NON-EMPTY");
     expect(r.out, "the denied route does not say the path is worth checking").toContain(
       "worth checking",
     );
   });
 
-  test("AC-C3: no counter at all is UNMEASURED about the denials, not zero", () => {
+  test("AC-C3: no denials field at all is UNMEASURED about the denials, not empty", () => {
     const r = runReport({ payload: null, execution: EXECUTED_NO_COUNTER });
-    expect(r.out, `stderr:\n${r.err}`).toContain("carries no permission_denials_count");
+    expect(r.out, `stderr:\n${r.err}`).toContain("carries no permission_denials list");
     expect(
       r.out,
-      "an absent counter is being reported as a measured zero",
-    ).not.toContain("permission_denials_count 0");
+      "an absent field is being reported as a measured empty list",
+    ).not.toContain("reports an EMPTY permission_denials list");
   });
 
   test("AC-C4: the THREE sentences are three — one input varies and none repeats", () => {
@@ -572,13 +623,13 @@ describe("AC-C (#1087): the annotation reads the denial count", () => {
 
   test("AC-C5: the denial reading decides the SENTENCE and never the exit code", () => {
     for (const require of [false, true]) {
-      const codes = [EXECUTED_NO_DENIALS, EXECUTED, EXECUTED_NO_COUNTER].map(
+      const codes = [EXECUTED_NO_DENIALS, EXECUTED, EXECUTED_NO_COUNTER, EXECUTED_SANITIZER_COUNT_ONLY].map(
         execution => runReport({ payload: null, execution, require }).code,
       );
       expect(
         codes,
         `the denial count moved the exit code with require=${require}`,
-      ).toEqual([codes[0], codes[0], codes[0]]);
+      ).toEqual([codes[0], codes[0], codes[0], codes[0]]);
     }
     // And the switch is doing something, or the equality above is vacuous —
     // the same trap AC-B5 names.
@@ -588,15 +639,61 @@ describe("AC-C (#1087): the annotation reads the denial count", () => {
     ).not.toBe(0);
   });
 
-  test("AC-C6: a count that merely STARTS with the matched digits is not read as zero", () => {
-    // The other direction of the end-anchor, and the cheap half: `30` was
-    // never going to match a pattern whose first value character is `0`. The
-    // anchor's real work is the `$`, which AC-C4 above measured — see the
-    // generator's comment for the draft it caught.
-    const thirty = EXECUTED.replace('"permission_denials_count": 3', '"permission_denials_count": 30');
-    expect(thirty, "the fixture rewrite did not take").toContain('"permission_denials_count": 30');
-    const r = runReport({ payload: null, execution: thirty });
-    expect(r.out, "a count of 30 was read as a zero").not.toContain("permission_denials_count 0");
-    expect(r.out).toContain("NON-ZERO");
+  test("AC-C6 (#1392): a one-element list is not read as an empty one", () => {
+    // The end-anchor's other direction, re-pointed at a list. A denial is a
+    // `[` whose `]` is lines away — `JSON.stringify(…, null, 2)` puts the
+    // first object on the next line — so the empty pattern requiring both
+    // brackets on ONE line is the whole discrimination, and a single denial
+    // is the smallest input that can expose it going the wrong way.
+    const one = executionFile({
+      subtype: "success",
+      num_turns: 22,
+      permission_denials: [denial("Write", 1)],
+    });
+    expect(one, "the fixture does not carry a non-empty list").toContain('"permission_denials": [');
+    expect(one, "the fixture carries an empty list, so it measures nothing").not.toContain(
+      '"permission_denials": []',
+    );
+    const r = runReport({ payload: null, execution: one });
+    expect(r.out, "one denial was read as none").not.toContain("reports an EMPTY permission_denials list");
+    expect(r.out).toContain("NON-EMPTY");
+  });
+
+  test("AC-C7 (#1392): the sanitizer's derived _count is NOT the file's key", () => {
+    // The defect, planted so a widening cannot bring it back. The cheapest
+    // wrong fix for "the routes are unreachable" is to match BOTH spellings
+    // — and a file carrying only the `_count` name is a file no action has
+    // ever written, so answering it is answering the job log's vocabulary.
+    // The reading must be UNMEASURED, which is the honest state, and it is
+    // the closing quote in `"permission_denials"` that keeps the two apart.
+    expect(
+      EXECUTED_SANITIZER_COUNT_ONLY,
+      "the fixture does not carry the sanitizer spelling",
+    ).toContain('"permission_denials_count": 0');
+    const r = runReport({ payload: null, execution: EXECUTED_SANITIZER_COUNT_ONLY });
+    expect(
+      r.out,
+      `a key the action writes only to its console log was read as the file's own\nstderr:\n${r.err}`,
+    ).toContain("carries no permission_denials list");
+    expect(r.out, "a console-log key was read as a measured empty list").not.toContain(
+      "reports an EMPTY permission_denials list",
+    );
+    expect(r.out, "a console-log key was read as a measured denial").not.toContain("NON-EMPTY");
+  });
+
+  test("AC-C8 (#1392): the generated step greps the field, never the console-log name", () => {
+    // The reader-side half. AC-C1..C7 run the script; this reads it, because
+    // a script that happened to answer correctly through some other branch
+    // would satisfy them while still carrying the dead grep.
+    const src = buildReviewRunScript(FIXTURE_VERSION);
+    const denialGreps = src
+      .split("\n")
+      .filter(l => l.includes("grep") && l.includes("permission_denials"));
+    expect(denialGreps, "the denial route stopped greping anything").not.toEqual([]);
+    for (const g of denialGreps) {
+      expect(g, `the route block still greps the sanitizer's derived name:\n${g}`).not.toContain(
+        '"permission_denials_count"',
+      );
+    }
   });
 });
