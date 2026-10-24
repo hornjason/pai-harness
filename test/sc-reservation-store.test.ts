@@ -52,7 +52,7 @@ import {
   readScReservations,
   RESERVATION_REFUSAL,
   RESERVATIONS_CONTROL_KEY,
-  reservationFor,
+  reservationsFor,
   reservedCeiling,
   reservedIdCount,
   SC_RESERVATIONS_PATH,
@@ -355,11 +355,92 @@ describe("the allocation decision, exercised directly", () => {
     expect(reservedCeiling(blocks)).toBe(119);
     expect(reservedCeiling([])).toBe(0);
     expect(reservedIdCount(blocks)).toBe(20);
-    expect(reservationFor(blocks, "b")).toEqual(blocks[1]);
-    expect(reservationFor(blocks, null)).toBeNull();
-    expect(reservationFor(blocks, "  ")).toBeNull();
+    expect(reservationsFor(blocks, "b")).toEqual([blocks[1]]);
+    expect(reservationsFor(blocks, null)).toEqual([]);
+    expect(reservationsFor(blocks, "  ")).toEqual([]);
     expect(lowestFreeInBlock(blocks[0], new Set([100, 101, 102]))).toBe(103);
     expect(lowestFreeInBlock(blocks[0], new Set(Array.from({ length: 10 }, (_, i) => 100 + i)))).toBeNull();
+  });
+
+  // ── #1541: an owner may hold more than one block ────────────────────────
+
+  test("an owner's second block is reachable when the first is spent", () => {
+    // #1541. The store has never forbidden one owner from declaring two
+    // blocks, and `overlapFault` does not refuse these — they are disjoint.
+    // Under the first-match lookup this threw `ScReservationExhaustedError`
+    // naming 100-102 while 100 free ids sat in the owner's own second block,
+    // and the error tells the reader to WIDEN the spent block, which is the
+    // one repair that cannot work here.
+    const owner = "rg/two-sc-blocks";
+    const two: ScReservation[] = [
+      { owner, from: 100, to: 102, namespace: "SC" },
+      { owner, from: 200, to: 299, namespace: "SC" },
+    ];
+    expect(
+      allocateAgainstReservations(1, two, owner, new Set([100, 101, 102])),
+      "the owner's second block was not reached, or was reached before the first was spent",
+    ).toBe(200);
+    expect(
+      allocateAgainstReservations(1, two, owner, new Set([100])),
+      "allocation left the first block while it still had room",
+    ).toBe(101);
+  });
+
+  test("the blocks are walked in DECLARATION order, not lowest-first", () => {
+    // The control that separates the fix from the cheapest wrong one. Both
+    // "walk in order" and "take the lowest free id the owner holds" return
+    // 200 for the case above, because there the two orders coincide — so that
+    // case alone would certify a sort. Declared high-then-low they disagree,
+    // and only this arrangement can tell them apart.
+    //
+    // Order is the right answer because it is a choice the person writing the
+    // store made and `readScReservations` preserves it; sorting would silently
+    // relocate where existing owners allocate.
+    const owner = "rg/declared-out-of-order";
+    const descending: ScReservation[] = [
+      { owner, from: 200, to: 299, namespace: "SC" },
+      { owner, from: 100, to: 102, namespace: "SC" },
+    ];
+    expect(
+      allocateAgainstReservations(1, descending, owner, new Set()),
+      "the allocator sorted the owner's blocks instead of reading them in the order they were declared",
+    ).toBe(200);
+  });
+
+  test("every block of the owner must be spent before the store refuses", () => {
+    const owner = "rg/two-sc-blocks";
+    const two: ScReservation[] = [
+      { owner, from: 100, to: 101, namespace: "SC" },
+      { owner, from: 200, to: 201, namespace: "SC" },
+    ];
+    let thrown: Error | null = null;
+    try {
+      allocateAgainstReservations(1, two, owner, new Set([100, 101, 200, 201]));
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown, "a fully spent owner did not refuse").toBeInstanceOf(ScReservationExhaustedError);
+    // The message has to name EVERY block, or the reader widens the first one
+    // and allocates into a range the message never mentioned.
+    expect(thrown?.message, "the refusal does not name the owner's first block").toContain("100-101");
+    expect(thrown?.message, "the refusal does not name the owner's second block").toContain("200-201");
+  });
+
+  test("a block in another namespace is not one of the owner's SC blocks", () => {
+    // The control for the two cases above: `reservationsFor` answers about
+    // whatever list it is handed, and it is the ALLOCATOR that narrows to SC
+    // first. An owner whose only SC block is spent refuses even though it
+    // holds an empty FG block of the same integers.
+    const owner = "rg/sc-and-fg";
+    const mixed: ScReservation[] = [
+      { owner, from: 100, to: 101, namespace: "SC" },
+      { owner, from: 200, to: 299, namespace: "FG" },
+    ];
+    expect(reservationsFor(mixed, owner), "the plural lookup dropped one of the owner's blocks").toHaveLength(2);
+    expect(
+      () => allocateAgainstReservations(1, mixed, owner, new Set([100, 101])),
+      "an FG block was offered to an SC allocation",
+    ).toThrow(ScReservationExhaustedError);
   });
 });
 
@@ -536,7 +617,7 @@ describe("#1363: a block declares which namespace its integers belong to", () =>
     //
     // This is also the case that says the duplicate owner is LEGAL. It is not a
     // store defect to be normalised away: `lib/create-sc.ts` filters to the SC
-    // namespace BEFORE calling `reservationFor`, so the owner below has no SC
+    // namespace BEFORE calling `reservationsFor`, so the owner below has no SC
     // block and allocates above the ceiling, which is what the FG case further
     // up already asserts from the other direction.
     const owner = "rg/two-namespaces";

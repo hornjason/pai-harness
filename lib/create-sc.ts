@@ -19,7 +19,7 @@ import {
   readScReservations,
   SC_NAMESPACE,
   RESERVATION_REFUSAL,
-  reservationFor,
+  reservationsFor,
   reservedCeiling,
   reservedIdCount,
   SC_RESERVATIONS_PATH,
@@ -403,16 +403,32 @@ export function allocateAgainstReservations(
   // answered the FG owner's next `create-sc` out of a block that describes
   // different ids entirely.
   blocks = blocksInNamespace(blocks, SC_NAMESPACE);
-  const mine = reservationFor(blocks, owner);
-  if (mine !== null) {
-    const free = lowestFreeInBlock(mine, taken);
-    if (free === null) {
-      throw new ScReservationExhaustedError(
-        `the SC block reserved to ${mine.owner} (${mine.from}-${mine.to}) is spent — ` +
-          `widen it in ${SC_RESERVATIONS_PATH} rather than allocating outside it`,
-      );
+  // EVERY block the owner holds, in declaration order, not the first one
+  // (#1541). Nothing has ever forbidden one owner from declaring two blocks
+  // and `overlapFault` does not refuse disjoint ones, so `find` was making a
+  // silent choice: with `100-102` spent and `200-299` empty under the same
+  // owner, the allocator refused and told the reader to WIDEN `100-102` — the
+  // one repair that cannot work, pointed at a block the owner had already
+  // moved past.
+  //
+  // Declaration order rather than lowest-first, because the order is a thing
+  // the person writing the store chose and `readScReservations` preserves it.
+  // Sorting here would relocate where existing owners allocate, which is a
+  // change to every block in the store dressed up as a bug fix.
+  const mine = reservationsFor(blocks, owner);
+  if (mine.length > 0) {
+    for (const block of mine) {
+      const free = lowestFreeInBlock(block, taken);
+      if (free !== null) return free;
     }
-    return free;
+    // Only now is the owner out of room. The message names every block,
+    // because naming one invites widening it while another sits empty — and
+    // after #1541 that is no longer a hypothetical reader error.
+    const spent = mine.map(b => `${b.from}-${b.to}`).join(", ");
+    throw new ScReservationExhaustedError(
+      `every SC block reserved to ${mine[0].owner} (${spent}) is spent — ` +
+        `widen one in ${SC_RESERVATIONS_PATH} rather than allocating outside it`,
+    );
   }
   // No block of your own. The floor is still correct about what is WRITTEN;
   // it knows nothing about what is DECLARED, so it is raised past every block

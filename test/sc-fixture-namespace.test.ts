@@ -44,7 +44,7 @@ import {
   buildScRegistry, SC_SOURCE_DIRS,
 } from "../lib/sc-ids";
 import { allocateScNumber, nextSCNumber } from "../lib/create-sc";
-import { readScReservations, reservationFor } from "../lib/sc-reservations";
+import { readScReservations, reservationsFor } from "../lib/sc-reservations";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -352,9 +352,9 @@ describe("SC-1525: the CLI asks the allocator the whole question", () => {
     const PROBE_OWNER = "__sc-fixture-namespace-probe__";
     const reserved = readScReservations(ROOT);
     expect(
-      reservationFor(reserved.blocks, PROBE_OWNER),
+      reservationsFor(reserved.blocks, PROBE_OWNER),
       "the probe owner holds a reserved block, so this case no longer measures the fixture step",
-    ).toBeNull();
+    ).toEqual([]);
 
     const probeId = allocateScNumber(ROOT, "", registry, { owner: PROBE_OWNER }).number + 7;
     expect(probeId, "the probe is not above the registry answer it must beat").toBeGreaterThan(specOnly);

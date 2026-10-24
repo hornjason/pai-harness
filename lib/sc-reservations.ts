@@ -358,15 +358,41 @@ export function reservedCeiling(blocks: ScReservation[]): number {
 }
 
 /**
- * The block reserved to `owner`, or `null`.
+ * EVERY block `owner` holds in `blocks`, in declaration order. Possibly none.
  *
  * Exact match on the owner string. A prefix or substring match is the tempting
  * widening and it is the wrong one: `fix/725` matching `fix/725-followup`
  * hands one block to two branches, which is the defect this file exists over.
+ *
+ * **Plural because an owner genuinely holds more than one block** (#1541), and
+ * this function selects nothing on the caller's behalf. It was singular until
+ * 2026-10-24 and returned `blocks.find(...)` — the FIRST match — which made it
+ * a function that reads as broken on its own and is saved by its caller:
+ * nothing in it says which of an owner's blocks you are getting, or that there
+ * might be more. Three readers reached three different wrong conclusions about
+ * it in one day, including that a store with two entries under one owner was
+ * malformed. It is not: a branch needing ids in two namespaces declares two
+ * entries, which is the arrangement `.claude/rules/parallel-sessions.md` shows,
+ * and two DISJOINT blocks in ONE namespace are not refused either.
+ *
+ * So the narrowing belongs to the caller, visibly, and both do it differently
+ * on purpose:
+ *
+ * - `allocateAgainstReservations` filters to `SC` first and then walks what
+ *   this returns in order, so an owner whose first block is spent is handed
+ *   its second instead of a refusal.
+ * - `test/sc-fixture-namespace.test.ts` passes the whole store, because its
+ *   question is whether the probe owner holds a block in ANY namespace.
+ *
+ * Neither is expressible against a singular lookup without the caller knowing
+ * something this signature does not tell it. Do not re-add a `namespace`
+ * parameter to recover the old shape: the filter would then exist here AND in
+ * the allocator, which is two deciders answering one question — a mutation of
+ * either leaves the other holding every case up.
  */
-export function reservationFor(blocks: ScReservation[], owner: string | null): ScReservation | null {
-  if (owner === null || owner.trim() === "") return null;
-  return blocks.find(b => b.owner === owner) ?? null;
+export function reservationsFor(blocks: ScReservation[], owner: string | null): ScReservation[] {
+  if (owner === null || owner.trim() === "") return [];
+  return blocks.filter(b => b.owner === owner);
 }
 
 /**

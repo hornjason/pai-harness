@@ -65,6 +65,12 @@ before #1363 keeps its exact meaning. Anything else must say so:
 { "owner": "rg/my-branch", "from": 45, "to": 60, "namespace": "FG" }
 ```
 
+**One owner may declare several blocks** — one per namespace, or two disjoint
+blocks in the same namespace. The allocator walks them in declaration order
+and refuses only when every one is spent (#1541). Do not suffix the owner to
+keep them apart; the suffix is not a convention anything reads, and it hides
+the second block from `reservationsFor`.
+
 `FG` and `AR` are the ones this rule used to be silent about, and the silence
 cost a collision. They have no allocator — every agent adding a block picks
 ids by eyeballing headroom above the highest in the file, which is the third
