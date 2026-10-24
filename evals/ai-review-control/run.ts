@@ -39,6 +39,7 @@ import {
   summariseReviewControl,
   type ReviewControlSubject,
 } from "./control";
+import { captureRoundPayload } from "./capture";
 import { readLedger, ledgerUnreadable } from "../../lib/ai-review-rounds";
 import {
   formatRoundsToPass,
@@ -151,15 +152,106 @@ export function main(argv: string[]): number {
     return score(find(subjects, id), payloadPath, reviewer);
   }
 
+  if (command === "capture") {
+    return capture(rest);
+  }
+
   if (command === "rounds") {
     return rounds(rest[0]);
   }
 
   process.stderr.write(
     "usage: run.ts list | stage <id> <dir> | score <id> <payload> --reviewer <id>" +
+      " | capture <ledger.json> --round <n> [--draw <k>] --out <payload.json>" +
       " | rounds <pull-requests.json>\n",
   );
   return REFUSED;
+}
+
+/** `--name value`, or `null` when the flag is absent or carries no value. */
+function flag(argv: string[], name: string): string | null {
+  const at = argv.indexOf(name);
+  if (at === -1) return null;
+  const value = argv[at + 1];
+  return value === undefined || value.startsWith("--") ? null : value;
+}
+
+/**
+ * #1509 — the step between `stage` and `score`, which used to be an ellipsis.
+ *
+ * The input is the ai-review ledger COMMENT, as `{ "body": "<text>" }` — the
+ * same per-entry shape `rounds` reads, and for the same reason: fetching it is
+ * a tracker query, and a measurement that can only run against one forge is
+ * not one a consumer can take. `evals/ai-review-control/README.md` carries the
+ * `gh` invocation that produces the file.
+ *
+ * A missing `body` key and a `body` of `null` are the same fact — nothing was
+ * found — and both reach `readLedger`, which answers ABSENT. A `body` that is
+ * present and not a string is the different fact, and is UNREADABLE.
+ */
+function capture(argv: string[]): number {
+  const [path] = argv;
+  const roundRaw = flag(argv, "--round");
+  const drawRaw = flag(argv, "--draw");
+  const out = flag(argv, "--out");
+
+  if (path === undefined || path.startsWith("--") || roundRaw === null || out === null) {
+    process.stderr.write(
+      "usage: run.ts capture <ledger.json> --round <n> [--draw <k>] --out <payload.json>\n",
+    );
+    return REFUSED;
+  }
+
+  const round = Number(roundRaw);
+  if (!Number.isInteger(round)) {
+    process.stderr.write(`capture: --round ${roundRaw} is not an integer\n`);
+    return REFUSED;
+  }
+  const draw = drawRaw === null ? null : Number(drawRaw);
+  if (draw !== null && !Number.isInteger(draw)) {
+    process.stderr.write(`capture: --draw ${drawRaw} is not an integer\n`);
+    return REFUSED;
+  }
+
+  let entry: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      process.stderr.write(`capture: ${path} is not a JSON object carrying a 'body'\n`);
+      return REFUSED;
+    }
+    entry = parsed as Record<string, unknown>;
+  } catch (e) {
+    process.stderr.write(`capture: could not read ${path}: ${(e as Error).message}\n`);
+    return REFUSED;
+  }
+
+  const body = entry.body;
+  const reading =
+    body === undefined || body === null
+      ? readLedger(null)
+      : typeof body === "string"
+        ? readLedger(body)
+        : ledgerUnreadable(`the comment's 'body' is not text: ${typeof body}`);
+
+  const result = captureRoundPayload(reading, round, draw);
+  for (const line of result.detail) process.stdout.write(`${line}\n`);
+
+  if (result.status === "REFUSED" || result.payload === null) return REFUSED;
+
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, result.payload);
+  process.stdout.write(
+    `wrote ${out} — ${result.scoreReading?.outcome ?? "(unread)"}. ` +
+      `Score it with: bun ${import.meta.file} score <subject-id> ${out} --reviewer <id>\n`,
+  );
+  // CAPTURED and exit 0 even when the payload reads UNMEASURED. The capture
+  // SUCCEEDED — the round was found, selected and written out — and whether
+  // what it holds can be scored is the next command's reading to report, not
+  // this one's. Collapsing the two would make "the ledger has no such round"
+  // and "the ledger's projection is lossy" the same exit code, and they are
+  // different problems with different fixes.
+  return 0;
 }
 
 /**
