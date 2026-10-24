@@ -797,6 +797,34 @@ export type ArbiterRefusal =
    * against a diff rather than filed by hand, and have no title to carry one.
    */
   | "NO_CLAIM"
+  /**
+   * Nobody declared a reason this finding cannot be a comment (#1595).
+   *
+   * The refusal this file's own header has asked for since it was written —
+   * *"`Disposition` defaults to `COMMENT`, `ISSUE` requires an explicit
+   * declared reason from the caller (`Finding.outOfScope`)"*. `arbitrate`
+   * enforces it at stage 6 and the `gh issue create` chokepoint did not,
+   * because its header lists the three stages that genuinely cannot run at a
+   * PreToolUse hook and `outOfScope` was quietly carried along with them. It
+   * is not one of them: a declaration is readable from the command line the
+   * hook already has.
+   *
+   * A chokepoint refusal only, for the same reason `NO_CLAIM` is: on the
+   * `arbitrate` path the same question is the `COMMENT` disposition, which
+   * is an outcome rather than a refusal.
+   */
+  | "COMMENT_INSTEAD"
+  /**
+   * An earlier clause of the SAME command already files this finding's class
+   * (#1595, CRC-N3's hook-side half).
+   *
+   * *"Flag the class of bug, so the author fixes every instance, not one
+   * line"* — so two findings that share a class are one item saying *every
+   * instance*, never two issues. Distinct from `DUPLICATE`, which is about
+   * the TRACKER: a duplicate names an issue a reader can go and read, and
+   * this names a clause in a command that has not run yet.
+   */
+  | "SAME_CLASS_IN_RUN"
   /** Something could not be evaluated. Fails; never skips. */
   | "UNMEASURED";
 

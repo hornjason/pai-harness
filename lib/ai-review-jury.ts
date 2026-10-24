@@ -538,6 +538,11 @@ export function juryLedgerRow(
     // so there is no earlier filing of this title for one to be a re-draft
     // of. `null` is the reading here, not an unperformed lookup (#1536).
     refiledAfter: null,
+    // #1595's declaration is read off a `gh issue create` command line, and
+    // a review round has none. `null` is the reading — nobody could have
+    // declared one here — and not a declaration that was looked for and
+    // missing. `emitted` and `refusal` already tell the two apart.
+    exemption: null,
   };
 }
 
