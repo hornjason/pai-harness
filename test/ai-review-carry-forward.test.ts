@@ -708,3 +708,276 @@ describe("AC-C5 (#1381): the reviewer is told the truth about the carry", () => 
     expect(block).not.toContain("continue-on-error");
   });
 });
+
+// ── AC-C6: the extractor slices in the units it measures in (#1568) ──────
+
+/**
+ * #1568 — the walker called a VALID ledger unparseable on three consecutive
+ * rounds of #1569 and started each of them from nothing.
+ *
+ * ## The cause, which is not the parser
+ *
+ * jq's `index` on a string returns a **byte** offset and `.[a:b]` slices by
+ * **codepoints**. The extractor measured with one and cut with the other, so
+ * it overshot by exactly the number of multi-byte UTF-8 bytes before the cut:
+ *
+ * ```
+ * $ jq -nr '"—abcdef" | index("abc")'   # 3  — bytes
+ * $ jq -nr '"—abcdef" | .[1:]'          # abcdef — codepoints
+ * $ jq -nr '"xabcdef" | index("abc")'   # 1  — the ASCII control agrees
+ * ```
+ *
+ * #1569's ledger is 13,826 codepoints in 13,846 bytes, 16 of that difference
+ * inside the fenced block, so `$rest[:$l]` carried the closing fence and the
+ * prose after it into the JSON. `readLedger`'s `indexOf`/`slice` pair agrees
+ * with itself, which is why two readers disagreed about the same bytes and
+ * only the one in CI was wrong.
+ *
+ * ## The blast radius, measured rather than reasoned about
+ *
+ * The first reading of this said non-ASCII *before* the opening fence was
+ * harmless, because the `index("\n")` that follows re-finds the end of the
+ * fence line and absorbs the drift. That is true only while the overshoot
+ * stays inside the seven characters of ```` ```json ````. Probed against the
+ * pre-#1568 extractor, one body per row:
+ *
+ * | where the non-ASCII sits | what the old extractor did |
+ * |---|---|
+ * | nowhere — pure ASCII | read it |
+ * | one em dash before the fence | read it |
+ * | four em dashes before the fence | **extraction failed outright** |
+ * | one em dash inside the JSON | **returned text that does not parse** |
+ * | one em dash inside, nothing after the fence | **returned text that does not parse** |
+ *
+ * So there is no safe amount and no safe position; there is only an amount
+ * small enough that one later search happens to cover for it.
+ *
+ * ## What the battery before this one held fixed
+ *
+ * `AC-C1` already has a case for an unterminated fence and a case for a block
+ * that does not parse, and `AC-C3` already mutates the refusal. Every fixture
+ * in all of them is **ASCII**, and the defect is on the other axis — the
+ * seventh shape in `.claude/rules/checks-must-be-able-to-fail.md`, where a
+ * battery varies the guard while every row hands it the same shape of input.
+ * The em dashes were in the findings' own summaries. This repository writes
+ * them in every sentence, so the broken path was the ordinary one.
+ *
+ * ## Why the fixture is a download and not a construction
+ *
+ * A hand-built non-ASCII body proves the mechanism; it does not prove the
+ * mechanism is what bit #1569. `test/fixtures/ai-review-ledger-1569.json` is
+ * the comment verbatim off the API, and the row below it is a MUTANT holding
+ * the pre-#1568 extractor, so "red before, green after" is performed on every
+ * run rather than asserted once in a pull request description.
+ */
+
+/** The pre-#1568 extractor, for mutating the real script back to it. */
+const SLICE_EXTRACTOR = [
+  `    | (\$b | index(\$m)) as \$i`,
+  `    | (if \$i == null then error("marker") else \$b[\$i:] end) as \$after`,
+  `    | (\$after | index(\$f)) as \$j`,
+  `    | (if \$j == null then error("fence") else \$after[\$j:] end) as \$block`,
+  `    | (\$block | index("\\n")) as \$k`,
+  `    | (if \$k == null then error("fence") else \$block[\$k + 1:] end) as \$rest`,
+  '    | ($rest | index("\\n```")) as $l',
+  `    | if \$l == null then error("unterminated") else \$rest[:\$l] end`,
+].join("\n");
+
+/** The split-based extractor the real script ships, as one addressable block. */
+const SPLIT_EXTRACTOR = [
+  `    | (\$b | split(\$m)) as \$mp`,
+  `    | (if (\$mp | length) < 2 then error("marker") else (\$mp[1:] | join(\$m)) end) as \$after`,
+  `    | (\$after | split(\$f)) as \$fp`,
+  `    | (if (\$fp | length) < 2 then error("fence") else (\$fp[1:] | join(\$f)) end) as \$block`,
+  `    | (\$block | split("\\n")) as \$lp`,
+  `    | (if (\$lp | length) < 2 then error("fence") else (\$lp[1:] | join("\\n")) end) as \$rest`,
+  '    | ($rest | split("\\n```")) as $cp',
+  `    | if (\$cp | length) < 2 then error("unterminated") else \$cp[0] end`,
+].join("\n");
+
+/** The real script with the shipped extractor replaced by the one that bit. */
+function sliceExtractorMutant(): string {
+  const real = buildCarryScript();
+  expect(
+    real.split(SPLIT_EXTRACTOR),
+    "the shipped extractor was not found verbatim, so the mutant below is the real script",
+  ).toHaveLength(2);
+  return real.replace(SPLIT_EXTRACTOR, SLICE_EXTRACTOR);
+}
+
+/** #1569's ledger comment, verbatim off the API. */
+const LEDGER_1569 = JSON.parse(
+  readFileSync(join(ROOT, "test", "fixtures", "ai-review-ledger-1569.json"), "utf8"),
+) as { id: number; user: { type: string; login: string }; body: string };
+
+describe("AC-C6 (#1568): a valid ledger is read, and an unreadable one still is not", () => {
+  test("AC-C6: the fixture is the shape the defect needs, and says so before anything reads it", () => {
+    // The premise, asserted rather than assumed. A fixture that had lost its
+    // non-ASCII in a round trip would make every row below green against the
+    // broken extractor, and the battery would witness nothing.
+    expect(LEDGER_1569.user, "the fixture is not authored the way the selector requires").toEqual({
+      type: "Bot",
+      login: AI_REVIEW_LEDGER_BOT_LOGIN,
+    });
+    expect(LEDGER_1569.body).toContain(AI_REVIEW_LEDGER_MARKER);
+    const bytes = Buffer.byteLength(LEDGER_1569.body, "utf8");
+    expect(
+      bytes - LEDGER_1569.body.length,
+      "the fixture is pure ASCII, so the byte/codepoint disagreement cannot arise in it",
+    ).toBeGreaterThan(0);
+
+    // And it is genuinely valid, by a reader that is neither of the two under
+    // test. This is the issue's own measurement: `JSON.parse` of the fenced
+    // block succeeds while CI called the same bytes unparseable.
+    const open = LEDGER_1569.body.indexOf("```json\n");
+    const block = LEDGER_1569.body.slice(open + "```json\n".length);
+    const payload = JSON.parse(block.slice(0, block.indexOf("\n```"))) as {
+      truncated: number;
+      rounds: unknown[];
+    };
+    expect(payload.truncated, "the writer itself believes it wrote a partial ledger").toBe(0);
+    expect(payload.rounds.length, "the fixture records no rounds, so there is nothing to lose").toBe(8);
+  });
+
+  test("AC-C6: #1569's ledger is READ — and the pre-#1568 extractor calls it UNMEASURED", () => {
+    // Red before, green after, as one pair over one input. The mutant is the
+    // extractor this issue replaced, so this row fails the moment anyone
+    // puts an `index`-measured offset back into a codepoint slice.
+    const real = runCarry({ list: [LEDGER_1569] });
+    const mutant = runCarry({ list: [LEDGER_1569], script: sliceExtractorMutant() });
+
+    expect(
+      mutant.state,
+      "the pre-#1568 extractor read #1569's ledger, so this row witnesses no regression",
+    ).toBe(AI_REVIEW_CARRY_UNMEASURED);
+    expect(mutant.file ?? "").toContain("could not be parsed");
+    expect(mutant.carried, "the broken extractor carried findings").toHaveLength(0);
+
+    expect(
+      real.state,
+      `the shipped extractor still cannot read #1569's ledger:\n${real.file}\n${real.stderr}`,
+    ).toBe(AI_REVIEW_CARRY_READ);
+    expect(
+      real.carried.length,
+      "the ledger was read and nothing came out of it, which is the failure wearing a different state",
+    ).toBeGreaterThan(0);
+  });
+
+  test("AC-C6: the bash and the library agree about #1569, which is the whole finding", () => {
+    // Two readers, the same bytes, and the one in CI was the one that was
+    // wrong. Nothing is planted in the checkout, so every anchor is
+    // UNDECIDABLE and both implementations must CARRY all of them — the
+    // asymmetry, exercised on a real payload.
+    const fromBash = runCarry({ list: [LEDGER_1569] }).carried.map(c => c.summary).sort();
+
+    const reading = readLedger(LEDGER_1569.body);
+    const prior = priorFindings(reading);
+    expect(prior.status, `the library refused the fixture too: ${JSON.stringify(prior)}`).toBe(
+      "AI_REVIEW_PRIOR_MEASURED",
+    );
+    const fromLib = carryForward(
+      (prior as unknown as { prior: CarriedFinding[] }).prior,
+      () => undefined,
+    )
+      .map(f => String((f as { summary?: unknown }).summary))
+      .sort();
+
+    expect(fromLib.length, "the library carried nothing, so the agreement below is vacuous").toBeGreaterThan(0);
+    expect(fromBash).toEqual(fromLib);
+  });
+
+  test("AC-C6: the NEGATIVE control — a genuinely damaged ledger is still refused", () => {
+    // Without this row the fix is indistinguishable from "accept everything".
+    // The corruption is applied to #1569's own body, so the only difference
+    // between this row and the one above is the damage.
+    const damaged = LEDGER_1569.body.replace('{"truncated"', '{{"truncated"');
+    expect(damaged, "the corruption found nothing to corrupt").not.toBe(LEDGER_1569.body);
+    const r = runCarry({ list: [botComment(5, damaged)] });
+    expect(r.state, "a ledger that does not parse was accepted").toBe(AI_REVIEW_CARRY_UNMEASURED);
+    expect(r.carried).toHaveLength(0);
+
+    // Unterminated, on the same non-ASCII body: the split extractor must not
+    // fall back to "take the rest of the comment" when the fence is missing.
+    const unterminated = LEDGER_1569.body.slice(0, LEDGER_1569.body.lastIndexOf("\n```"));
+    expect(unterminated).toContain(AI_REVIEW_LEDGER_MARKER);
+    const u = runCarry({ list: [botComment(6, unterminated)] });
+    expect(u.state, "an unterminated fenced block was read to the end of the comment").toBe(
+      AI_REVIEW_CARRY_UNMEASURED,
+    );
+  });
+
+  test("AC-C6: the VACUITY control — empty, absent and unreadable are three readings", () => {
+    // The conflation #1568 is actually about. A round whose carry failed must
+    // not report like a round that had nothing to carry, and the three must
+    // stay apart on a NON-ASCII body — which is the input the earlier battery
+    // never handed them.
+    const summary = "the identifier — reassigned, never re-read";
+    const resolved = recorded("lib/a.ts", 1, summary, "const x = 1; // — was");
+    const nonAscii = windowBody([round(1, [resolved])]);
+    const files = { "lib/a.ts": "something else entirely\n" };
+
+    const absent = runCarry({ list: [] });
+    const empty = runCarry({ list: [botComment(5, nonAscii)], files });
+    const unreadable = runCarry({
+      list: [botComment(5, nonAscii.replace('{"rounds"', '{{"rounds"'))],
+      files,
+    });
+
+    expect(absent.state, "a pull request with no ledger").toBe(AI_REVIEW_CARRY_ABSENT);
+    expect(empty.state, "a ledger that was read and holds nothing outstanding").toBe(AI_REVIEW_CARRY_READ);
+    expect(empty.carried, "the finding's cited line changed, so it is resolved and dropped").toHaveLength(0);
+    expect(unreadable.state, "a ledger that could not be read").toBe(AI_REVIEW_CARRY_UNMEASURED);
+    expect(new Set([absent.state, empty.state, unreadable.state]).size).toBe(3);
+
+    // And the measurement that makes this row a finding rather than a
+    // restatement of AC-C1: under the pre-#1568 extractor the MIDDLE reading
+    // collapses into the right-hand one, so "nothing to carry" and "could not
+    // read" become the same observation the moment a summary carries an em
+    // dash. Three readings become two.
+    const mutant = sliceExtractorMutant();
+    const emptyBefore = runCarry({ list: [botComment(5, nonAscii)], files, script: mutant });
+    expect(
+      emptyBefore.state,
+      "the pre-#1568 extractor read this body, so the collapse this issue reports did not happen here",
+    ).toBe(AI_REVIEW_CARRY_UNMEASURED);
+  });
+
+  test("AC-C6: an ASCII ledger is the POSITIVE control — the old extractor reads it", () => {
+    // The axis, named and held. If the pre-#1568 extractor refused ASCII too,
+    // the rows above would be measuring a mutant that simply does not work,
+    // and nothing in them would be about UTF-8.
+    const ascii = windowBody([round(1, [recorded("lib/a.ts", 1, "plain ascii only", "alpha")])]);
+    expect(Buffer.byteLength(ascii, "utf8")).toBe(ascii.length);
+    const files = { "lib/a.ts": "alpha\n" };
+    expect(
+      runCarry({ list: [botComment(5, ascii)], files, script: sliceExtractorMutant() }).state,
+      "the pre-#1568 extractor cannot read ASCII either, so the mutant is broken rather than byte-confused",
+    ).toBe(AI_REVIEW_CARRY_READ);
+  });
+
+  test("AC-C6: the refusal has ONE site, so every row above observed the same one", () => {
+    // `.claude/rules/checks-must-be-able-to-fail.md`: a second branch spelling
+    // its own `carry_state AI_REVIEW_CARRY_UNMEASURED` would survive the
+    // mutation in AC-C3 and hold a case up while the mutated site was dead.
+    const real = buildCarryScript();
+    expect(
+      real.split(AI_REVIEW_CARRY_UNMEASURED).length - 1,
+      "the UNMEASURED state is written from more than one place in the script",
+    ).toBe(1);
+
+    // Performed, not described: converting the one site to READ turns an
+    // unreadable ledger into a fully-read clean one, which is the direction
+    // this subsystem may never fail in.
+    const toRead = real.replace(
+      `carry_state '${AI_REVIEW_CARRY_UNMEASURED}'`,
+      `carry_state '${AI_REVIEW_CARRY_READ}'`,
+    );
+    expect(toRead).not.toBe(real);
+    const damaged = LEDGER_1569.body.replace('{"truncated"', '{{"truncated"');
+    expect(
+      runCarry({ list: [botComment(5, damaged)], script: toRead }).state,
+      "rewriting the refusal changed nothing, so the negative control observes no refusal",
+    ).toBe(AI_REVIEW_CARRY_READ);
+    expect(runCarry({ list: [botComment(5, damaged)] }).state).toBe(AI_REVIEW_CARRY_UNMEASURED);
+  });
+});

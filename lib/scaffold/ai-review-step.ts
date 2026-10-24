@@ -4492,16 +4492,32 @@ fi
 # fence. A marked comment whose block is missing, unterminated or unparseable
 # is UNREADABLE and never an empty ledger — treating a damaged ledger as empty
 # discards every round it holds at the moment nothing can tell it happened.
+#
+# SPLIT, NEVER \`index\` WITH A SLICE (#1568). jq's \`index\` on a string
+# returns a BYTE offset and \`.[a:b]\` slices by CODEPOINTS, so the two
+# disagree by exactly the number of multi-byte UTF-8 bytes before the cut.
+# \`readLedger\`'s \`indexOf\`/\`slice\` pair agrees with itself and this
+# restatement did not, which is why two readers disagreed about the same
+# bytes. Measured on #1569's ledger: 13,826 codepoints in 13,846 bytes, so
+# the closing-fence cut overshot by 16 and carried the fence and the prose
+# after it into the JSON. Every round from round 3 on started from nothing.
+# The em dashes were in the findings' own summaries — this repository writes
+# them in every sentence, so the failure was the rule and not the exception,
+# and ASCII is what the whole battery had held fixed.
+#
+# \`split\` is unit-free: it never names an offset. The \`join\` on each tail
+# preserves the original's "from the FIRST occurrence onward" semantics for a
+# body that repeats the marker or the fence.
 if ! fenced=\$(printf '%s' "\${selected}" | jq -r --arg m '${AI_REVIEW_LEDGER_MARKER}' --arg f '${AI_REVIEW_LEDGER_FENCE}' '
     (.body // "") as \$b
-    | (\$b | index(\$m)) as \$i
-    | (if \$i == null then error("marker") else \$b[\$i:] end) as \$after
-    | (\$after | index(\$f)) as \$j
-    | (if \$j == null then error("fence") else \$after[\$j:] end) as \$block
-    | (\$block | index("\\n")) as \$k
-    | (if \$k == null then error("fence") else \$block[\$k + 1:] end) as \$rest
-    | (\$rest | index("\\n${fence}")) as \$l
-    | if \$l == null then error("unterminated") else \$rest[:\$l] end
+    | (\$b | split(\$m)) as \$mp
+    | (if (\$mp | length) < 2 then error("marker") else (\$mp[1:] | join(\$m)) end) as \$after
+    | (\$after | split(\$f)) as \$fp
+    | (if (\$fp | length) < 2 then error("fence") else (\$fp[1:] | join(\$f)) end) as \$block
+    | (\$block | split("\\n")) as \$lp
+    | (if (\$lp | length) < 2 then error("fence") else (\$lp[1:] | join("\\n")) end) as \$rest
+    | (\$rest | split("\\n${fence}")) as \$cp
+    | if (\$cp | length) < 2 then error("unterminated") else \$cp[0] end
   ' 2>/dev/null); then
   # NO BACKTICKS IN AN ANNOTATION STRING. These messages sit inside a bash
   # double-quoted argument, where a backtick opens COMMAND SUBSTITUTION — and
