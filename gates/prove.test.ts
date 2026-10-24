@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
+import { beforeEvidenceFor, comparisonSummaryFor, readBeforeState } from "./gate-executor";
 
 const TEST_DIR = process.env.TEST_WORK_DIR || "";
 const PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
@@ -117,23 +118,28 @@ describe("prove: run evidence commands from workflow-state", () => {
     const verdict = criteriaResults.length === 0 ? "INCONCLUSIVE"
       : fails.length > 0 ? "UNPROVEN" : "PROVEN";
 
+    // #1540: the fallback here used to manufacture `type: "none"`, which is a
+    // value /goal legitimately writes — so a run nobody measured was recorded
+    // as a run measured as empty. The reading keeps the two apart.
+    const beforeReading = readBeforeState(wf);
+
     const evidence = {
       issueNumber: wf.issue,
       verdict,
       commitSHA: commitSha,
       capturedAt: new Date().toISOString(),
-      beforeEvidence: wf.beforeState ?? {
-        type: "none", path: null,
-        capturedAt: new Date().toISOString(),
-        description: "no before-state captured",
-      },
+      beforeEvidence: beforeEvidenceFor(beforeReading),
       afterEvidence: {
         type: "text", path: null,
         capturedAt: new Date().toISOString(),
         environment: proveEnvironment,
         description: criteriaResults.map(r => `${r.scId}: ${r.verdict}`).join(", "),
       },
-      comparisonSummary: `${criteriaResults.filter(r => r.verdict === "PASS").length}/${criteriaResults.length} criteria passed`,
+      comparisonSummary: comparisonSummaryFor(
+        beforeReading,
+        criteriaResults.filter(r => r.verdict === "PASS").length,
+        criteriaResults.length,
+      ),
       reproduced: true,
       gaps: fails.map(f => ({ ac: f.scId, status: "UNPROVEN", detail: f.evidence })),
       criteriaResults,

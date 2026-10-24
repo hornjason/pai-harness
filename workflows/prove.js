@@ -349,7 +349,19 @@ log('Spawning B3 Prove Reproducer')
 const beforeContext = await agent(`
 Check for before-state evidence:
 1. test -f ${WORK_DIR}/workflow-state.json && echo "WF_STATE: exists" || echo "WF_STATE: none"
-2. If workflow-state.json exists, read it and extract beforeState field.
+2. If workflow-state.json exists, read it and report beforeStateStatus, which
+   the prove gate wrote. It is one of three readings and they are different
+   facts — report the one you found, by name (#1540):
+   - CAPTURED: a before-state exists. Describe it; it is what step 4 of the
+     reproducer compares against.
+   - DECLARED_NONE: /goal looked and recorded that there was nothing to
+     capture. There is no comparison to make and that is a measurement.
+   - UNMEASURED, or no beforeStateStatus at all: nothing captured a
+     before-state for this run. Report "before-state UNMEASURED" and quote
+     beforeStateUnmeasured if it is there. Do NOT describe this as a
+     before-state of "none" and do NOT invent one from the issue body — an
+     absent measurement is not an empty one, and only one of them is
+     reportable.
 3. Read the issue body for reproduction steps.
 
 Check this run's resolved config for API/UI bases — written by
@@ -373,7 +385,7 @@ Body (first 2000 chars): ${(issueData.issueBody || '').slice(0, 2000)}
 ${(issueData.successCriteria || []).map((sc, i) => `${i + 1}. ${sc}`).join('\n') || 'Derive from issue body'}
 
 ## Before State
-${beforeContext || 'No before-state captured. Derive from issue description.'}
+${beforeContext || 'UNMEASURED: the before-context step reported nothing. Nothing captured a before-state for this run (#1540).'}
 
 ## Fix Commit
 ${COMMIT_SHA}
@@ -385,7 +397,12 @@ Project root: ${PROJECT_ROOT || 'not set'}
 1. Read ${PROVE_PROMPT} for your full protocol.
 2. For CODE ACs: run evidence commands (grep, bun test, curl) against current code.
 3. For UI/OUTCOME ACs: output SKIP with reason "B3 limitation: no browser tools — requires Quinn".
-4. Compare before-state against current after-state.
+4. Compare before-state against current after-state — but only if the Before
+   State above is CAPTURED. If it is UNMEASURED or DECLARED_NONE, report the
+   comparison as UNMEASURED naming which, and move on. Do not reconstruct a
+   before-state from the issue body and compare against that: a comparison
+   against a guess is not a comparison, and it is indistinguishable from a
+   real one in your output.
 5. Capture real evidence for each criterion.
 
 Output your verdict, criteriaResults, reproduced, gaps, and quinnNeeded (list of AC IDs needing Quinn).
