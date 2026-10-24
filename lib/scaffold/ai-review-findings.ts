@@ -676,6 +676,20 @@ export interface AiReviewFindingsReading {
    * apart. `scope.status` is the discriminator; this is a projection of it.
    */
   unlocatableReported: unknown[] | null;
+  /**
+   * Changed-file entries this reader could not normalise and DROPPED from the
+   * comparison set (#1472) — RAW, named, in list order.
+   *
+   * Three states, and the middle one is the reason this is not a count.
+   * `null` is "no list was supplied, so nothing was read in full or in part";
+   * `[]` is "a list was read and every entry of it was comparable"; a
+   * non-empty list is "a list was read and these entries were not", which is
+   * a reading over a NARROWER set than the pull request actually touched. A
+   * reading that narrowed itself and did not say so is indistinguishable from
+   * a complete one — `.claude/rules/config-access.md`'s *Silent Default
+   * Substitution*, in the place it decides a required check.
+   */
+  scopeDropped: string[] | null;
 }
 
 /**
@@ -705,6 +719,7 @@ function unmeasured(
     detail,
     scope: scopeNotSupplied(),
     unlocatableReported: null,
+    scopeDropped: null,
   };
 }
 
@@ -725,6 +740,7 @@ function withScope(
   reading: AiReviewFindingsReading,
   scope: AiReviewScopeReading,
   unlocatableReported: unknown[] | null,
+  scopeDropped: string[] | null,
 ): AiReviewFindingsReading {
   const merged =
     scope.status === "UNMEASURED"
@@ -734,7 +750,7 @@ function withScope(
           reading.reported,
         )
       : reading;
-  return { ...merged, scope, unlocatableReported };
+  return { ...merged, scope, unlocatableReported, scopeDropped };
 }
 
 /**
@@ -782,12 +798,22 @@ export function readAiReviewFindings(
   scope: AiReviewScopeReading = scopeNotSupplied(),
 ): AiReviewFindingsReading {
   const preExisting: unknown[] = [];
+  // Appended to by `readPayload`, for the same reason `preExisting` is: the
+  // entries belong to the reading its caller composes, and every early return
+  // in there is a state in which the split had not happened yet.
+  const dropped: string[] = [];
   const base = readPayload(
     raw,
     scope.status === "MEASURED" ? scope.files : undefined,
     preExisting,
+    dropped,
   );
-  return withScope(base, scope, scope.status === "MEASURED" ? preExisting : null);
+  return withScope(
+    base,
+    scope,
+    scope.status === "MEASURED" ? preExisting : null,
+    scope.status === "MEASURED" ? dropped : null,
+  );
 }
 
 /**
@@ -804,6 +830,7 @@ function readPayload(
   raw: string | null,
   changedFiles: readonly string[] | undefined,
   preExisting: unknown[],
+  dropped: string[],
 ): AiReviewFindingsReading {
   if (raw === null) {
     return unmeasured(["FINDINGS_FILE_ABSENT"], ["no findings payload was produced"]);
@@ -822,19 +849,33 @@ function readPayload(
   }
   let touched: Set<string> | null = null;
   if (changedFiles !== undefined) {
-    const unreadable = changedFiles.filter(p => normaliseRepoPath(p) === null);
-    if (unreadable.length > 0) {
+    // #1472. ONE unnormalisable entry used to refuse the WHOLE reading, so a
+    // repository holding a single tracked path with a space in it could never
+    // obtain a scope reading at all — `docs/my file.md` was enough, and the
+    // remedy the refusal named (`-z`, `core.quotePath=false`) does not apply,
+    // because git emits a space literally and the regex rejects it literally.
+    //
+    // The comparison is PER FINDING, so one bad entry says nothing about the
+    // others. The entry is dropped, the drop is NAMED, and the findings over
+    // normalisable paths are adjudicated as before.
+    const { readable, dropped: unreadable } = partitionChangedFiles(changedFiles);
+    dropped.push(...unreadable);
+    // The refusal is NARROWED, not deleted. With nothing readable left,
+    // `touched` is empty, every finding is tagged Pre-existing and the run
+    // reports a green check for a review that found something — which is the
+    // one input the original refusal was right about.
+    if (readable.length === 0) {
       return unmeasured(
         ["CHANGED_FILES_UNREADABLE"],
         [
-          `${unreadable.length} changed-file entr(ies) could not be read as a repository ` +
-            `path: ${unreadable.slice(0, 3).map(p => JSON.stringify(p)).join(", ")}. ` +
-            `Comparing against a list this reader cannot normalise would tag every finding ` +
-            `Pre-existing. Produce the list with -z or core.quotePath=false`,
+          `all ${unreadable.length} changed-file entr(ies) could not be read as a repository ` +
+            `path: ${unreadable.map(p => JSON.stringify(p)).join(", ")}. ` +
+            `Comparing against a list with nothing readable left in it would tag every ` +
+            `finding Pre-existing. Produce the list with -z or core.quotePath=false`,
         ],
       );
     }
-    touched = new Set(changedFiles.map(p => normaliseRepoPath(p) as string));
+    touched = new Set(readable);
   }
 
   let doc: unknown;
@@ -1041,8 +1082,12 @@ function readPayload(
     verdict,
     unmeasuredReasons: [],
     detail,
+    // Both of these are `withScope`'s to set, and it is the only site that
+    // sets either. A value here would be a second statement about the same
+    // input, and the two could disagree.
     scope: scopeNotSupplied(),
     unlocatableReported: null,
+    scopeDropped: null,
   };
 }
 
@@ -1122,6 +1167,58 @@ export function normaliseRepoPath(value: unknown): string | null {
   return /^(?:[\w.@+-]+\/)*[\w.@+-]+$/.test(p) ? p.toLowerCase() : null;
 }
 
+/** What a changed-file list reduced to, split by whether it could be read. */
+export interface ChangedFilePartition {
+  /**
+   * The entries that normalised, in the one spelling both sides of the
+   * comparison are reduced to. This is what `touched` is built from.
+   */
+  readable: string[];
+  /**
+   * The entries that did not, RAW and in list order — so the reader can be
+   * NAMED to whoever has to fix the tree, rather than counted at them.
+   */
+  dropped: string[];
+}
+
+/**
+ * Split a changed-file list into the part this reader can compare against and
+ * the part it cannot (#1472).
+ *
+ * **One exported binding, and the only place the split is decided.** A second
+ * site answering "is this entry readable" would be two deciders over one
+ * input, and a mutation of either would leave the other holding every case up
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape). It is
+ * exported so a battery has one thing to short-circuit.
+ *
+ * **Dropping is safe here and it is not an optimistic reading.** A narrower
+ * `touched` can only demote MORE findings, never fewer — and the findings a
+ * dropped entry could falsely demote are none at all, because BOTH sides of
+ * the comparison go through `normaliseRepoPath`: an entry is dropped exactly
+ * when it normalises to `null`, and a finding naming that same path
+ * normalises to `null` too, which `readPayload` answers with *"it keeps
+ * blocking: undecidable is not pre-existing"*. The set the drop could reach
+ * and the set the drop cannot decide are the same set.
+ *
+ * What a drop must never be is SILENT. The caller carries `dropped` onto the
+ * reading as `scopeDropped` and `aiReviewScopeLine` prints it on every run:
+ * "this list was read in full" and "this list was read in part" are different
+ * facts, and a reading over a narrowed set that does not say it was narrowed
+ * is Silent Default Substitution (`.claude/rules/config-access.md`).
+ */
+export function partitionChangedFiles(
+  changedFiles: readonly string[],
+): ChangedFilePartition {
+  const readable: string[] = [];
+  const dropped: string[] = [];
+  for (const entry of changedFiles) {
+    const normalised = normaliseRepoPath(entry);
+    if (normalised === null) dropped.push(entry);
+    else readable.push(normalised);
+  }
+  return { readable, dropped };
+}
+
 // `readChangedFiles` lived here and is gone. It returned `null` for BOTH an
 // unreadable file and — via its caller — an empty one, and `main` reported
 // that single `null` as `CHANGED_FILES_EMPTY`. A failed `git diff` writes no
@@ -1144,6 +1241,7 @@ export function readAiReviewFindingsFile(
         unmeasured(["FINDINGS_FILE_ABSENT"], [`no findings payload at ${path}`]),
         scope,
         null,
+        null,
       );
     }
     return withScope(
@@ -1152,6 +1250,7 @@ export function readAiReviewFindingsFile(
         [`the findings payload at ${path} could not be read: ${(e as Error).message}`],
       ),
       scope,
+      null,
       null,
     );
   }
@@ -1300,6 +1399,14 @@ export interface AiReviewJuryGate {
  * never had one are otherwise the same output. The blocking count is
  * `withheld` under an UNMEASURED reading rather than `0` — the decision is
  * withheld there, and printing a number would be inventing one.
+ *
+ * It also reports its own COVERAGE of the changed-file list (#1472): a scan
+ * that reports a verdict should say how much of its input it read. An entry
+ * this reader could not normalise is dropped from the comparison rather than
+ * refusing the whole run, so `dropped` is what keeps "the list was read in
+ * full" apart from "the list was read in part" — and the entries are NAMED,
+ * because a warning that does not say what was missing is a warning nobody
+ * can act on. `not checked`, `0` and a named list are three facts, not one.
  */
 export function aiReviewScopeLine(reading: AiReviewFindingsReading): string {
   const produced = reading.reported?.length ?? 0;
@@ -1307,9 +1414,18 @@ export function aiReviewScopeLine(reading: AiReviewFindingsReading): string {
     reading.blockingReported === null ? "withheld" : String(reading.blockingReported.length);
   const unlocatable =
     reading.unlocatableReported === null ? "not checked" : String(reading.unlocatableReported.length);
+  const drops = reading.scopeDropped;
+  const dropped =
+    drops === null
+      ? "not checked"
+      : drops.length === 0
+        ? "0"
+        : `${drops.length} (${drops.map(p => JSON.stringify(p)).join(", ")}), ` +
+          `so this comparison ran over a NARROWER set than the pull request touched`;
   return (
     `${AI_REVIEW_SCOPE_LINE} ${reading.scope.status} — findings reported: ${produced}, ` +
-    `allowed to block: ${blocking}, unlocatable: ${unlocatable}. ${reading.scope.detail}`
+    `allowed to block: ${blocking}, unlocatable: ${unlocatable}, ` +
+    `changed-file entries dropped: ${dropped}. ${reading.scope.detail}`
   );
 }
 
@@ -1385,6 +1501,7 @@ function readArgv(argv: string[]): AiReviewFindingsReading {
       ),
       scopeNotSupplied(),
       null,
+      null,
     );
   }
 
@@ -1397,6 +1514,7 @@ function readArgv(argv: string[]): AiReviewFindingsReading {
           ["no findings payload path was given to the findings reader"],
         ),
         scope,
+        null,
         null,
       )
     : readAiReviewFindingsFile(path, scope);
