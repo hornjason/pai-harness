@@ -389,6 +389,89 @@ describe("SC-1566-SCOPE: each cannot-tell state fails if the resolver starts cla
   });
 });
 
+// ── Shape 11, found by a #1569 review round that landed after the merge ──
+
+describe("SC-1566-SCOPE: the expansion follows reassignments, not only initialisers", () => {
+  /**
+   * The frontier was fed from `binding.init` alone. A binding's `assigned`
+   * values were appended to `view` as TEXT and their identifiers were never
+   * expanded, so a target reassigned to another identifier holding a spec
+   * path did not resolve — `view` read `… q` and never `A-SPEC.md`.
+   *
+   * One of two symmetric inputs reached the frontier, which is the fifth time
+   * in this module that a correct mechanism was applied to half its inputs.
+   * The controls below are what separate that from "follow more edges".
+   */
+  test("a reassignment to another identifier resolves through it", () => {
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        const q = join(root, "A-SPEC.md");
+        p = q;
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+
+    // The same shape where the reassigned binding is a parameter, because
+    // `let` and `param` reach this code by different routes.
+    expect(
+      targets(`
+        function f(p) {
+          const q = join(root, "A-SPEC.md");
+          p = q;
+          writeFileSync(p, "x");
+        }
+      `),
+    ).toBe(true);
+  });
+
+  test("NEGATIVE CONTROL: the same indirection with no spec at the end stays false", () => {
+    // Otherwise the fix is "expand until something matches".
+    expect(
+      targets(`
+        let p = join(d, "first.json");
+        const q = join(root, "second.json");
+        p = q;
+        writeFileSync(p, "x");
+      `),
+    ).toBe(false);
+  });
+
+  test("PREMISE CONTROL: both halves of the asymmetry were already working", () => {
+    // Without these two the row above could pass for a resolver that had
+    // broken something else and happened to be fixed by the same edit. The
+    // reassignment WAS read when it named a literal directly, and an
+    // INITIALISER chain through an identifier already followed — so the
+    // defect was specifically the missing edge and nothing wider.
+    expect(
+      targets(`
+        let p = join(d, "report.json");
+        p = join(root, "A-SPEC.md");
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+    expect(
+      targets(`
+        const q = join(root, "A-SPEC.md");
+        const p = q;
+        writeFileSync(p, "x");
+      `),
+    ).toBe(true);
+  });
+
+  test("following more edges does not defeat the per-binding dedup", () => {
+    // #1569 round 3 keyed `seen` on the binding. A new frontier edge must not
+    // reintroduce an unbounded walk: a binding reassigned to itself resolves
+    // once and terminates rather than expanding forever.
+    const site = onlySite(`
+      let p = join(a, "x");
+      p = p;
+      writeFileSync(p, "y");
+    `);
+    expect(site.view.match(/join\(a, "x"\)/g), "`p` was expanded once").toHaveLength(1);
+  });
+});
+
 // ── Shape 10, found by the AI review on #1569 round 4 ────────────────
 
 describe("SC-1566-SCOPE: an assignment never completes a value set it did not start", () => {

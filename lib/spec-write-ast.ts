@@ -132,8 +132,16 @@ interface Binding {
   kind: BindingKind;
   /** Initialiser source text, or `null` when there is none to read. */
   init: string | null;
-  /** Expressions assigned to this binding after declaration. */
-  assigned: string[];
+  /**
+   * Expressions assigned to this binding after declaration, as NODES.
+   *
+   * Stored as nodes rather than as source text so the expansion can follow
+   * through them the way it follows an initialiser. Holding the text alone
+   * meant `p = q` appended the characters `q` to `view` and never resolved
+   * `q` — one of two symmetric inputs reaching the frontier (#1582). The
+   * text is derived at the read site, so there is no second copy to desync.
+   */
+  assigned: AstNode[];
   /** Position of the declaration in the TRANSPILED text. */
   declStart: number;
 }
@@ -474,7 +482,7 @@ export function writeSitesIn(
     // evaluation, and over-attributing is the allowed direction.
     for (const [name] of patternNames(left, false)) {
       const binding = lookup(scopeOf.get(node) ?? root, name, node.start);
-      if (binding) binding.assigned.push(js.slice(right.start, right.end));
+      if (binding) binding.assigned.push(right);
     }
   }
 
@@ -587,9 +595,10 @@ export function writeSitesIn(
             unresolved.push(`${name}: ${reason}`);
           }
 
-          const values = [binding.init, ...binding.assigned].filter(
-            (v): v is string => typeof v === "string" && v.length > 0,
-          );
+          const values = [
+            binding.init,
+            ...binding.assigned.map((n) => js.slice(n.start, n.end)),
+          ].filter((v): v is string => typeof v === "string" && v.length > 0);
           // Nothing readable at all. The reason is already recorded above; the
           // site makes no claim about this identifier, so there is no lower
           // bound to flag.
@@ -605,14 +614,25 @@ export function writeSitesIn(
             view += ` ${v}`;
             if (/["'`]/.test(v)) sawLiteral = true;
           }
-          // Follow the chain: re-parse the initialiser's identifiers from the
-          // binding's own position, not the write site's.
+          // Follow the chain: re-parse each value's identifiers from the
+          // position they were written at, not the write site's.
+          //
+          // BOTH edges, which is the whole of #1582. The frontier was fed from
+          // the initialiser alone, so `p = q` appended the text `q` to `view`
+          // and stopped — a target reassigned to an identifier holding a spec
+          // path did not resolve. An initialiser and an assignment are
+          // symmetric inputs to the same question, and only one of them was
+          // being asked. The per-binding dedup (#1569 round 3) is what keeps
+          // the extra edges from walking forever.
           const declNode = binding.init
             ? [...walkNodes(tree)].find(
                 (n) => n.start === binding.declStart && n.type === "VariableDeclarator",
               )
             : undefined;
           if (declNode?.init) next.push(...valueIdentifiers(declNode.init as AstNode));
+          for (const assignedNode of binding.assigned) {
+            next.push(...valueIdentifiers(assignedNode));
+          }
         }
         frontier = next;
       }
