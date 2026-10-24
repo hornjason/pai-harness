@@ -1322,16 +1322,27 @@ describe("#1472: an unnormalisable changed-file entry is DROPPED and NAMED, not 
   });
 
   test("B7-1472-3: THE PAIR — one entry varies, and the two readings differ", () => {
-    // One axis moves: whether the unreadable entry is in the list. The
-    // verdict must NOT move with it — that is the whole point of the change —
-    // so the only thing left to carry the difference is the reported
-    // coverage. If that were silent the two runs would be byte-identical,
-    // which is the state this issue replaces with a louder one.
-    const full = read(READABLE, [READABLE]);
+    // One axis moves: whether the second entry is readable. The verdict must
+    // NOT move with it — that is the whole point of the change — so the only
+    // thing left to carry the difference is the reported coverage.
+    //
+    // The control list is TWO entries, not one, and that is the pair rather
+    // than a detail of it. `scopeMeasured`'s own detail is `N changed path(s)
+    // supplied directly`, so a one-against-two comparison produces two
+    // different scope lines whatever this issue did, and the assertion below
+    // would hold over a reader that reported the drop nowhere. With both
+    // lists at length two every other term on the line is equal by
+    // construction — asserted, not assumed — and the inequality can only
+    // come from the drop.
+    const full = read(READABLE, [READABLE, "lib/other.ts"]);
     const partial = read(READABLE, [READABLE, AWKWARD]);
 
     expect(full.outcome, "the control reading is not the one being compared").toBe("BLOCKED");
     expect(partial.outcome, "the drop changed the verdict").toBe(full.outcome);
+    expect(full.scope.detail, "the pair varies the list LENGTH as well").toBe(partial.scope.detail);
+    expect(full.reported?.length).toBe(partial.reported?.length);
+    expect(full.blockingReported?.length).toBe(partial.blockingReported?.length);
+    expect(full.unlocatableReported?.length).toBe(partial.unlocatableReported?.length);
 
     expect(full.scopeDropped, "a complete reading reports an empty drop, not a null one").toEqual(
       [],
@@ -1394,9 +1405,12 @@ describe("#1472: an unnormalisable changed-file entry is DROPPED and NAMED, not 
 
     const complete = read(READABLE, [READABLE]);
     expect(complete.scopeDropped).toEqual([]);
-    expect(
-      aiReviewScopeLine(none),
-      "a run with no list reads the same as a run whose list was complete",
-    ).not.toBe(aiReviewScopeLine(complete));
+
+    // Asserted on the TERM and not on the whole line. These two readings
+    // differ in their `scope.status` and in their detail sentence as well, so
+    // a `not.toBe` over the whole string is satisfied by a line that reports
+    // the drop nowhere at all.
+    expect(aiReviewScopeLine(none)).toContain("entries dropped: not checked");
+    expect(aiReviewScopeLine(complete)).toContain("entries dropped: 0");
   });
 });
