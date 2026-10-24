@@ -885,3 +885,280 @@ describe("#1442: the doc row asks the ratchet's own binding what a citation is",
     ).toBeGreaterThan(0);
   });
 });
+
+/**
+ * #1515: a DA-owned session-state write routed to nothing.
+ *
+ * `project-state.json`, `PROJECT-STATE.md` and `SUCCESS.md` are the three
+ * files with the NARROWEST set of people who may edit them — they are
+ * DA-owned (#296) and an agent in a worktree is forbidden to write them — and
+ * `CENSUS_TRIGGERS` keyed on file kinds had no row any of them matched.
+ * `new-file` needs `isNew`; `doc` needs `isNew` or a line citation, and a
+ * session summary has neither; `rule-doc` is scoped to `CLAUDE.md`,
+ * `AGENTS.md` and `.claude/rules/`; and `project-state.json` is not markdown,
+ * so it matched nothing at all.
+ *
+ * ## Measured, on the real diff, before the row existed
+ *
+ * Commit `9a174688` is a session-state write touching `project-state.json`
+ * and `PROJECT-STATE.md` and nothing else. Reproduced in a throwaway worktree
+ * checked out at it:
+ *
+ *   $ bun scripts/census-routing.ts --base 9a174688^
+ *   census-routing: no census test is reachable from this change
+ *
+ *   $ bun test test/closing-keywords.test.ts
+ *   (fail) #590: the live project-state.json, read by the real comparison
+ *          > the live record is read, and the reading is not empty
+ *   error: no closing keyword at all was found in the live summary
+ *   63 pass, 1 fail
+ *
+ * The same suite is green at `009562dc`, the merged version of that write
+ * with the summary's closing keyword restored. So the content of
+ * `project-state.json` is the input that moves it, the router answered
+ * "nothing", and `no census test is reachable` and UNMEASURED were the same
+ * output — which is the `0`/`{}`/`null` reading this project refuses
+ * everywhere else.
+ *
+ * ## Why the set is PASTED, and the three derivations that failed
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md` asks for the instrument's
+ * range, so here are all three attempts, measured on this tree:
+ *
+ *   - **every test file naming one of the three paths**: 68 files, including
+ *     seven transcript fixtures, `test/agents-md-refs.test.ts` and
+ *     `test/scaffold-ownership.test.ts`. Routing 68 is routing everything,
+ *     and an ignored router is the state #990 is about.
+ *   - **the issue's own hand list of nine**: wrong in three places, each
+ *     checked rather than assumed. `test/distribution-currency.test.ts`
+ *     names the three paths ZERO times and so does `lib/distribution-currency.ts`
+ *     — it drives a mkdtemp fixture and the registry, and a trio edit cannot
+ *     redden it. `test/project-state-derivation.test.ts` scans the tree with
+ *     `projectStateDerivation(REPO_ROOT)` and asserts a verdict about
+ *     `scripts/`, not about the trio's content.
+ *     `test/project-state-suite-isolation.test.ts` reads the live trio and
+ *     asserts it is BYTE-IDENTICAL before and after a run — content-invariant
+ *     by construction. All three are excluded.
+ *   - **a test file resolving a trio path against its repo-root constant**:
+ *     returns exactly the seven below on this tree. It is used as the
+ *     one-directional guard `membership` below, and NOT as the router's
+ *     mechanism, because it agrees by SPELLING: `suite-isolation` escapes it
+ *     only because its paths come from a `DA_OWNED` array rather than a
+ *     string literal. A detector that excludes the right file for the wrong
+ *     reason is `.claude/rules/checks-must-be-able-to-fail.md`'s second
+ *     shape, and promoting it to the router would be a derivation that is
+ *     right by luck.
+ *
+ * So the row is FIXED, like `generated-workflow` and for the same reason, and
+ * a fixed row buys back the rename control: `every routed test exists on
+ * disk` goes red the day one of the seven is renamed away, where a derived
+ * row would silently stop routing it.
+ *
+ * ## The cheapest wrong fix, named
+ *
+ * Widening the `doc` row to fire on any markdown edit. It makes the symptom
+ * vanish for two of the three files and routes every `README`, `docs/` and
+ * council-note edit to `line-citation-ratchet` + `agents-md-refs` — the wrong
+ * two suites — while STILL never routing `project-state.json`, which is not
+ * markdown and is where the failing test reads from. W1 below survives it by
+ * asserting the JSON path specifically, and C1 asserts the widening itself
+ * did not happen.
+ *
+ * ## What was broken to prove it, run and counted
+ *
+ * Over this file (43 tests). Every count AND membership was predicted before
+ * the battery ran, and the baseline row was read first — an instrument that
+ * has stopped reporting takes the baseline down with it.
+ *
+ * | Row | Predicted | Measured | The input on which mutant and original differ |
+ * |---|---|---|---|
+ * | **baseline** — unmutated | 43 pass, 0 fail | **43 pass, 0 fail** | — |
+ * | the `state-write` row deleted AND the table reverted — the genuinely pre-#1515 state | 5: W1, W2, W3, C4, N1 | **5 of 43**, the five named | `{path: "project-state.json"}`: the original routes seven suites, the mutant routes nothing and prints `no census test is reachable` |
+ * | **the cheapest wrong fix** applied faithfully: `doc` widened to any markdown, `state-write` deleted, table regenerated | 6: W1, W2, W3, C1, C4, N1 | **8 of 43**: the six named, plus two | `{path: "docs/research/a-note.md", added: ["some prose"]}`: the original routes nothing, the mutant routes the citation pair |
+ * | the row's `fires` loosened from an exact path to `endsWith` | 1: C3 | **1 of 43**, the one named | `{path: "test/fixtures/project-state.json"}`: the original does not fire, the mutant routes all seven |
+ * | `test/distribution-currency.test.ts` pasted into the row — the issue's own hand list — table regenerated | 1: C4 | **1 of 43**, the one named | the row's `tests` read as source: the original's seven all read a trio path from the repo root, the mutant's eighth reads none |
+ * | the table row deleted from the rule file, router untouched | 2: T1, T2 | **2 of 43**, the two named | the document itself: the rendered block no longer appears in it |
+ *
+ * **Row 3 came back HIGH, and the two extra are recorded rather than
+ * quietly folded into the prediction.** They are
+ * `test/census-routing.test.ts`'s own pre-existing #1442 cases — *"a doc
+ * edit carrying no citation does not route the ratchet"* and *"the router
+ * and the ratchet agree about every sample, both directions"* — which
+ * already guard the `doc` row's citation detector from exactly this
+ * widening. The prediction was written as though C1 were the only case
+ * watching that row; it is the third. The battery was right and the
+ * arithmetic was not.
+ *
+ * Rows 3 and 5 are the ones that matter. Row 3 is the named wrong fix, and
+ * C1 is red under it NON-vacuously — the only grade of survival that is
+ * protection. Row 5 is the membership guard catching the precise mistake
+ * this issue's own acceptance list makes.
+ *
+ * None of the five mutations is left in the tree; all were run and reverted,
+ * and `scripts/census-routing.ts`,
+ * `.claude/rules/self-referential-tests.md` and this file were confirmed
+ * byte-identical to the committed source afterwards by sha256.
+ *
+ * Case labels, since four of the eight are controls and the next reader
+ * should not count eight witnesses:
+ *
+ *   W1  "a diff touching only project-state.json routes closing-keywords"
+ *   W2  "the real three-file state write routes every suite that reads one"
+ *   W3  "each of the three files fires the row on its own"
+ *   C1  "an ordinary markdown edit is not routed by the doc row or this one"
+ *   C2  "a change touching none of the three does not route the state census"
+ *   C3  "a nested file whose basename matches is not the live record"
+ *   C4  "every suite this row routes reads a live state file from the repo root"
+ *   N1  "the row's targets are in the census set and on disk"
+ *   T1  "the table in the rule file is byte-identical to the rendered one"
+ *   T2  "the rule file names no census test the router cannot route"
+ */
+describe("#1515: a DA-owned session-state write routes the suites that read it", () => {
+  const STATE_TRIO = ["project-state.json", "PROJECT-STATE.md", "SUCCESS.md"];
+
+  // Written out rather than read from `CENSUS_TRIGGERS`, for the reason
+  // `SC_CENSUS` and `NEW_SPEC_CENSUS` above are: a list derived from the
+  // thing it checks agrees with it by construction.
+  const STATE_CENSUS = [
+    "test/closing-keywords.test.ts",
+    "test/project-state-currency.test.ts",
+    "test/project-state-shape.test.ts",
+    "test/update-project-state.test.ts",
+    "test/success-doc.test.ts",
+    "test/distribution-standing.test.ts",
+    "test/rule-lifecycle-spec.test.ts",
+  ];
+
+  // W1. WITNESS, and the issue's literal acceptance: the JSON half. This is
+  // the one the markdown-widening wrong fix cannot satisfy, because
+  // `project-state.json` is not markdown.
+  test("a diff touching only project-state.json routes closing-keywords", () => {
+    const { tests } = censusTestsFor([
+      change({ path: "project-state.json", added: ['      "summary": "a session"'] }),
+    ]);
+    expect(
+      tests,
+      "a project-state.json edit did not route test/closing-keywords.test.ts — this is " +
+        "#1515 again, and #590 is red on exactly that diff",
+    ).toContain("test/closing-keywords.test.ts");
+  });
+
+  // W2. The whole trio, which is the shape of a real session-state write.
+  test("the real three-file state write routes every suite that reads one", () => {
+    const { tests, fired } = censusTestsFor(
+      STATE_TRIO.map(path => change({ path, added: ["a session summary line"] })),
+    );
+    for (const t of STATE_CENSUS) {
+      expect(tests, `the state trio did not route to ${t}`).toContain(t);
+    }
+    expect(
+      fired.map(f => f.trigger.id),
+      "the state-write row did not fire on the diff it was written for",
+    ).toContain("state-write");
+  });
+
+  // W3. Each file alone fires the row. `9a174688` touched two of the three,
+  // and a row that needed all three would have been silent on it.
+  test("each of the three files fires the row on its own", () => {
+    for (const path of STATE_TRIO) {
+      const { fired } = censusTestsFor([change({ path, added: ["x"] })]);
+      expect(
+        fired.map(f => f.trigger.id),
+        `${path} alone did not fire the state-write row`,
+      ).toContain("state-write");
+    }
+  });
+
+  // C1. CONTROL against the named cheapest wrong fix. Widening `doc` to any
+  // markdown makes W2 go green for two of the three paths while routing the
+  // citation pair on every doc edit in the repo. Measured: an ordinary
+  // markdown edit carrying no citation routes nothing.
+  test("an ordinary markdown edit is not routed by the doc row or this one", () => {
+    const { tests, fired } = censusTestsFor([
+      change({ path: "docs/research/a-note.md", added: ["some prose about the thing"] }),
+    ]);
+    expect(
+      tests,
+      "an ordinary markdown edit routed the citation ratchet — the doc row was widened " +
+        "to any markdown, which is #1515's named cheapest wrong fix",
+    ).not.toContain("test/line-citation-ratchet.test.ts");
+    expect(fired.map(f => f.trigger.id)).not.toContain("state-write");
+    for (const t of STATE_CENSUS) {
+      expect(tests, `an ordinary markdown edit routed ${t}`).not.toContain(t);
+    }
+  });
+
+  // C2. CONTROL against a row that fires on everything, which would make
+  // every witness above green while routing seven suites on every diff.
+  test("a change touching none of the three does not route the state census", () => {
+    const { tests, fired } = censusTestsFor([
+      change({ path: "lib/project-state-shape.ts", added: ["export const a = 1;"] }),
+    ]);
+    expect(fired.map(f => f.trigger.id)).not.toContain("state-write");
+    for (const t of STATE_CENSUS) {
+      expect(tests, `${t} is routed by a change touching no DA-owned state file`).not.toContain(t);
+    }
+  });
+
+  // C3. CONTROL against a path that merely CONTAINS a trio name. A consumer
+  // project's fixture at `test/fixtures/project-state.json` is not the live
+  // record, and a row matching on substring would route seven suites for it.
+  test("a nested file whose basename matches is not the live record", () => {
+    for (const path of [
+      "test/fixtures/project-state.json",
+      "reference/PROJECT-STATE.md",
+      "docs/SUCCESS.md",
+    ]) {
+      const { fired } = censusTestsFor([change({ path, added: ["x"] })]);
+      expect(
+        fired.map(f => f.trigger.id),
+        `${path} fired the state-write row, but it is not the repo-root record`,
+      ).not.toContain("state-write");
+    }
+  });
+
+  // C4. The membership guard, and the reason the pasted list cannot quietly
+  // rot into one that routes suites a state write cannot reach. Every suite
+  // this row names must resolve a trio path against its own repo-root
+  // constant — which is what makes the live file an INPUT to it rather than a
+  // string it mentions.
+  //
+  // ONE-DIRECTIONAL on purpose. The reverse — every file matching this
+  // detector must be routed — is NOT asserted, because the detector agrees
+  // with the list by spelling: `test/project-state-suite-isolation.test.ts`
+  // reads the live trio through a `DA_OWNED` array and must stay OUT of the
+  // row, since it asserts those files are byte-identical before and after a
+  // run and no content edit can move it. Asserting the reverse would redden
+  // the day somebody inlines those literals, and the remedy it would demand —
+  // route a content-invariant suite — is the wrong one.
+  test("every suite this row routes reads a live state file from the repo root", () => {
+    const row = CENSUS_TRIGGERS.find(t => t.id === "state-write");
+    expect(row, "the state-write row is gone, so this asserted nothing").toBeDefined();
+    const reads = new RegExp(
+      `(join|resolve)\\([A-Z_]*(ROOT|REPO)[A-Z_]*, *"(${STATE_TRIO.map(f =>
+        f.replace(/\./g, "\\."),
+      ).join("|")})"\\)`,
+    );
+    const notReaders = row!.tests.filter(t => !reads.test(readFileSync(join(REPO, t), "utf-8")));
+    expect(
+      notReaders,
+      "this row routes a suite that never reads project-state.json, PROJECT-STATE.md or " +
+        "SUCCESS.md from the repo root, so a state write cannot redden it — " +
+        "test/distribution-currency.test.ts names the three paths zero times and was " +
+        "excluded for exactly this reason",
+    ).toEqual([]);
+    expect(
+      row!.tests.length,
+      "the row routes nothing, so the filter above compared two empty lists",
+    ).toBeGreaterThan(0);
+  });
+
+  // Non-vacuity for W1/W2: two empty sets are equal, and a `toContain` over a
+  // list nobody populated is the assertion that holds vacuously.
+  test("the row's targets are in the census set and on disk", () => {
+    for (const t of STATE_CENSUS) {
+      expect(allCensusTests(), `${t} is not routed by any row`).toContain(t);
+      expect(existsSync(join(REPO, t)), `${t} does not exist`).toBe(true);
+    }
+  });
+});
