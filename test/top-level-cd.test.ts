@@ -321,17 +321,34 @@ describe("#992 AC-14: the hook, driven as a real subprocess", () => {
 });
 
 /**
- * AC-15 — the four registration positions, asserted here as well as in
+ * AC-15 — the registration positions, asserted here as well as in
  * `test/hook-traceability.test.ts`.
  *
  * NOT a second decider for that file. It answers *do all hooks agree across
  * their positions*, over a population of hook files; this answers *is THIS
- * hook registered as a Bash PreToolUse refusal*, which is the one behavioural
+ * hook declared as a Bash PreToolUse refusal*, which is the one behavioural
  * claim #992's PR makes. A census that goes green because the population
  * moved cannot witness that claim, and a one-sided edit to any position here
  * reddens a case that names which position.
+ *
+ * ## #1578 moved position 4, and the move is the point
+ *
+ * This used to assert FOUR positions, the fourth being a registration in the
+ * repo's `.claude/settings.json`. That position was measured dead: a session
+ * in a worktree carrying that exact file did not load it, so the hook had
+ * been green, registered and inert since #1050.
+ *
+ * The scope is now `user`, which means the repo owns three positions and
+ * CANNOT own the fourth — `~/.claude/settings.json` is machine state and no
+ * PR carries it. So position 4 inverts: the repo must NOT register it, or
+ * SC-518's double-fire applies once a human adds the real registration. The
+ * honest reading of the fourth position lives in
+ * `test/hook-registration-reconciler.test.ts` as UNMEASURED, and that is the
+ * strongest claim this repository can make about it.
+ *
+ * Live activation is a human action and is still pending.
  */
-describe("#992 AC-15: the hook is registered, in all four positions", () => {
+describe("#992 AC-15 / #1578: the hook is declared in the three positions the repo owns", () => {
   const settings = JSON.parse(readFileSync(join(ROOT, ".claude", "settings.json"), "utf-8"));
   const registry = JSON.parse(
     readFileSync(join(ROOT, ".claude", "rungate", "hooks.json"), "utf-8"),
@@ -350,11 +367,18 @@ describe("#992 AC-15: the hook is registered, in all four positions", () => {
     expect(entry!.enabled).toBe(true);
     expect(entry!.hookFor).toBe("PreToolUse");
     expect(entry!.matcher).toBe("Bash");
-    // Project scope, so `reconcile` in test/hook-registration-reconciler.test.ts
-    // treats .claude/settings.json as the thing it must agree with — the
-    // enforced half. A "user" scope here would make it UNMEASURED and this
-    // PR would be asserting nothing about registration.
-    expect(entry!.scope).toBe("project");
+    // User scope (#1578). What a hook protects decides its scope, and this one
+    // protects the SESSION's primary working directory — the directory
+    // `isolation: 'worktree'` resolves against, which a session may root
+    // anywhere. SC-518 puts machine-wide hooks in user settings because
+    // project settings only load for sessions started in that directory, and
+    // that is exactly what was measured: a worktree carrying the registration
+    // did not load it.
+    //
+    // The cost is honest and deliberate: `reconcile` can no longer enforce a
+    // registration, and reports UNMEASURED instead. It was never enforcing a
+    // registration that ran.
+    expect(entry!.scope).toBe("user");
     expect(String(entry!.command)).toContain("TopLevelCdGuard.hook.ts");
   });
 
@@ -367,13 +391,35 @@ describe("#992 AC-15: the hook is registered, in all four positions", () => {
     ).not.toContain("registered nowhere");
   });
 
-  test("position 4: .claude/settings.json runs it as a PreToolUse hook on Bash", () => {
+  test("position 4 inverted: the repo does NOT register it, because the scope is user (#1578)", () => {
+    // SC-518: "Registration must appear in exactly one scope: the two are not
+    // de-duplicated, so dual registration fires the hook twice." Once a human
+    // adds this to ~/.claude/settings.json — which is item 3 of #1578 and is
+    // NOT done — a leftover project registration would double-fire it in any
+    // session that does load project settings.
+    //
+    // This is the one-sided edit most likely to be made by someone flipping
+    // the scope back, so it is asserted rather than left to the reconciler.
     const groups = settings.hooks?.PreToolUse ?? [];
     const matching = groups.filter((g: { matcher?: string; hooks?: Array<{ command?: string }> }) =>
       (g.hooks ?? []).some(h => String(h.command ?? "").includes("TopLevelCdGuard.hook.ts")),
     );
-    expect(matching.length, ".claude/settings.json does not run TopLevelCdGuard").toBe(1);
-    expect(matching[0].matcher).toBe("Bash");
+    expect(
+      matching.length,
+      ".claude/settings.json still registers TopLevelCdGuard while hooks.json declares user " +
+        "scope. SC-518 says that fires the hook twice; remove the project registration.",
+    ).toBe(0);
+  });
+
+  test("the hook file says out loud that it is not live (#1578)", () => {
+    // The failure mode this whole issue is about is a hook reading as shipped
+    // while being inert. A reader of the hook must be told, in the hook.
+    const source = readFileSync(HOOK, "utf-8");
+    expect(
+      source,
+      "the hook does not state that live registration is pending — the exact " +
+        "shape of #1578, which is a guard that reads as shipped and never runs",
+    ).toContain("NOT LIVE");
   });
 
   test("the hook no longer declares itself unregistered", () => {

@@ -28,12 +28,44 @@
  * `.claude/rungate/hooks.json`, the current-state table in
  * `specs/HOOK-ARCHITECTURE-SPEC.md`, and `.claude/settings.json`.
  *
- * It is registered at PROJECT scope. `${CLAUDE_PROJECT_DIR}` resolves to the
- * worktree a session is in, every worktree carries the committed
- * `.claude/settings.json`, and worktree isolation — the thing a stray `cd`
- * breaks — is a harness concern. Machine-wide registration lives in
- * `~/.claude/settings.json`, which no PR can carry and no test here can
- * honestly assert (`test/hook-registration-reconciler.test.ts`).
+ * ## NOT LIVE. User scope since #1578, and why the first classification was wrong
+ *
+ * #992 registered this at PROJECT scope, reasoning that `${CLAUDE_PROJECT_DIR}`
+ * resolves to the worktree a session is in, that every worktree carries the
+ * committed `.claude/settings.json`, and that worktree isolation is a harness
+ * concern. **The second clause is true and the conclusion does not follow.**
+ *
+ * Measured on 2026-10-24 in a worktree whose committed `.claude/settings.json`
+ * registered this hook: three bare `cd` calls were NOT refused, while a
+ * user-scoped COMP-7 refusal fired on the same `Bash` matcher in the same
+ * session. The decider returns `block` when invoked by hand from that cwd;
+ * `isHarnessProject()` resolves; `RUNGATE_CD_GUARD` is unset. The worktree
+ * carries the file. The session does not load it. So this hook has been
+ * green, registered, tested and INERT since #1050 — which is #1578, and is
+ * the purest form of *absence of evidence recorded as clean*.
+ *
+ * The scope follows from what a hook PROTECTS. This one protects the
+ * SESSION's primary working directory — the directory `isolation: 'worktree'`
+ * resolves against — and a session may be rooted anywhere while working on
+ * this repo, including via an added working directory. That is machine-wide
+ * state, so SC-518 governs it: machine-wide hooks live in user settings,
+ * because project settings only load for sessions started in that directory.
+ * It was misclassified from the start.
+ *
+ * Two consequences, both deliberate:
+ *
+ * - The repo no longer registers it in `.claude/settings.json`. SC-518 says
+ *   the two scopes are not de-duplicated, so leaving it there would fire the
+ *   hook twice once the real registration exists.
+ * - `test/hook-registration-reconciler.test.ts` now reports it UNMEASURED on
+ *   every run, and that reading is the deliverable rather than a loss. A test
+ *   saying *this cannot be verified here* beats one reporting a registration
+ *   nobody loads as satisfied.
+ *
+ * **Live registration in `~/.claude/settings.json` is a human action, is
+ * outside every agent's permitted scope, and is STILL PENDING.** Merging this
+ * does not switch the guard on. Until a human does that, this hook refuses
+ * nothing.
  *
  * ## The rung, and what #1040 left behind
  *
