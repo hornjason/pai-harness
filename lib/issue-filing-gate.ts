@@ -1167,6 +1167,25 @@ export function readLedgerRows(path: string = ledgerPath()): FilingLedgerRow[] |
  * threshold with no corpus behind it, and the cost of attributing an
  * override to a refusal from last month is a row that says so — visible,
  * and nothing is withheld by it.
+ *
+ * ## THREE ROWS THAT ARE NOT A REFUSAL, AND LOOK LIKE ONE
+ *
+ * The first spelling of this was `refusal !== null && !emitted`, and
+ * `FG-48 CONTROL` turned it red inside the hour — a filing that had nothing
+ * to do with #1536 started carrying `refiledNote` because an earlier row on
+ * the shared ledger had the same title.
+ *
+ * - **`UNMEASURED` is not a refusal.** It is this file's whole doctrine
+ *   that a filing nobody could adjudicate and a filing somebody refused are
+ *   different states, and the first predicate collapsed them.
+ * - **A clean clause blocked by a sibling** carries `withheldBy: BLOCKED`
+ *   and `refusal: null` — withheld by the command, never adjudicated down.
+ * - **A refusal that was overridden** reached the tracker. The next filing
+ *   of that title is a second finding, not a re-draft of a waived one.
+ *
+ * So the test is that the row's OWN adjudication withheld it:
+ * `withheldBy === refusal` is what distinguishes a refusal the row earned
+ * from one it inherited, and it is the field `markBlockedCommand` moves.
  */
 export function priorRefusalFor(
   title: string,
@@ -1175,7 +1194,9 @@ export function priorRefusalFor(
   let best: FilingLedgerRow | null = null;
   for (const row of rows) {
     if (row.title !== title) continue;
-    if (row.refusal === null || row.emitted) continue;
+    if (row.refusal === null || row.refusal === "UNMEASURED") continue;
+    if (row.emitted || row.overridden) continue;
+    if (row.withheldBy !== row.refusal) continue;
     if (best === null || row.at >= best.at) best = row;
   }
   return best;

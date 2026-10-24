@@ -2381,7 +2381,7 @@ describe("AR-21: every verifier's vote, and the disagreement, reach the ledger",
 });
 
 /**
- * AR-36..AR-40: a bare integer is not a symptom, and a reading is not an
+ * AR-36..AR-39: a bare integer is not a symptom, and a reading is not an
  * identity (#1536).
  *
  * Two false `DUPLICATE`s on 2026-10-24, both overridden after a human read
@@ -2392,21 +2392,31 @@ describe("AR-21: every verifier's vote, and the disagreement, reach the ledger",
  *
  * ## What was broken to make these fail
  *
- * All five rows are red on the parent commit, and they fail on two
- * different mechanisms, which is why there are five rather than one:
+ * Two mutations of the merged file, each applied on its own and the four
+ * rows run against both. Neither is a revert: the parent file does not
+ * export `quantityKeys`, so reverting it stops the suite LOADING, and a
+ * suite that cannot load is red for a reason that witnesses nothing
+ * (`.claude/rules/self-referential-tests.md`, the UNMEASURED shape).
  *
- * - **AR-36 / AR-37** — emit the bare `qty:<n>` again and the two
- *   quantity-only fixtures collide. That is the defect as filed.
- * - **AR-38 / AR-39** — these two rule out the CHEAPEST WRONG FIX, which is
- *   qualifying the quantity and leaving it inside `symptomKeys`. That
- *   satisfies AR-36 and AR-38 on its own and takes **AR-39** from 1.000 to
- *   0.417, because a body repeats one number beside a different word each
- *   time and every repetition is another key the other side lacks.
- * - **AR-40** — the capability `DUPLICATE_CONTAINMENT_RATIO`'s docblock
- *   declared unreachable at any value of the constant. Red before, and red
- *   again under any change that returns a reading to the denominator.
+ * | mutation | red |
+ * |---|---|
+ * | **A** — `quantitiesIn` emits `${n}` again, and `symptomKeys` carries it | AR-36, AR-37, AR-38, AR-39 |
+ * | **B** — the qualifier stays, and `symptomKeys` carries it | AR-37, AR-39 |
+ *
+ * B is the whole reason there are four rows rather than two. It is the
+ * CHEAPEST WRONG FIX — qualify the quantity and leave it where it was — and
+ * it satisfies AR-36 and AR-38 outright while taking AR-39's containment
+ * from 1.000 to 0.417, because a body repeats one number beside a different
+ * word each time and every repetition is another key the other side lacks.
+ *
+ * **The tie this also breaks is asserted in AR-9, not here.** #1195/#1196
+ * against #1195/#1239 — the pair `DUPLICATE_CONTAINMENT_RATIO`'s docblock
+ * declared unreachable at any value of the constant — is driven there on
+ * the real tracker fixtures, where it genuinely moved. A synthetic pair for
+ * it was written and deleted: it was green under both mutations above and
+ * green on the parent, which is an assertion holding vacuously.
  */
-describe("AR-36..AR-40: a reading is evidence about a finding, not its identity", () => {
+describe("AR-36..AR-39: a reading is evidence about a finding, not its identity", () => {
   /**
    * The two live bodies, cut to the sentences that produced the keys.
    *
@@ -2510,33 +2520,4 @@ describe("AR-36..AR-40: a reading is evidence about a finding, not its identity"
     expect(duplicateOverlap(a, b).duplicate).toBe(true);
   });
 
-  test("AR-40: the #1195 tie no value of the ratio could break", () => {
-    // `DUPLICATE_CONTAINMENT_RATIO`'s docblock records #1195/#1196 (a true
-    // duplicate) and #1195/#1239 (distinct) tied at 0.750 and concludes
-    // that NO value of the constant admits the first and excludes the
-    // second. True of the ratio, false of the problem: the readings were in
-    // the denominator. Both constants are untouched by #1536.
-    const guard = "`decideBashWrite` in lib/bash-write-guard.ts";
-    const a: Finding = {
-      id: "1195",
-      title: "The write guard misreads a heredoc",
-      body:
-        `${guard} calls \`stripHeredocs\`, \`commandWord\`, \`readWord\`, \`statSync\` and ` +
-        "`isDirDestination`, and `resolveTarget`, `normaliseRoot` and `scratchPrefix` follow.",
-    };
-    const b: Finding = {
-      id: "1196",
-      title: "Two regressions from the same merge",
-      body:
-        "`stripHeredocs`, `commandWord`, `readWord`, `statSync` and `isDirDestination` " +
-        "all moved in one merge.",
-    };
-    const distinct: Finding = {
-      id: "1239",
-      title: "A scratch directory is refused from the root",
-      body: `${guard} refuses a named scratch dir.`,
-    };
-    expect(duplicateOverlap(a, b).duplicate, "the true pair").toBe(true);
-    expect(duplicateOverlap(a, distinct).duplicate, "and the distinct one it was tied with").toBe(false);
-  });
 });

@@ -54,7 +54,9 @@ import {
   measuredCorpus,
   namedClaim,
   openFindings,
+  priorRefusalFor,
   readBodyFile,
+  readLedgerRows,
   SUCCESS_CLAIM_COUNT,
   trustedCorpus,
   unmeasuredCorpus,
@@ -2022,5 +2024,181 @@ describe("FG-79..FG-89: a filing names the claim it moves", () => {
       Array.from({ length: stated.length }, (_, i) => i + 1),
     );
     expect(SUCCESS_CLAIM_COUNT).toBe(stated.length);
+  });
+});
+
+/**
+ * FG-100..FG-103: an override survives a re-drafted body (#1536).
+ *
+ * `overridden` read `verdict.outcome === "REFUSE" && labelled`, which is
+ * correct about this adjudication and blind to the one before it. The body
+ * is an input to the symptom keys, so writing down WHY you are overriding
+ * changes the keys, the duplicate stops matching, the verdict is no longer
+ * a refusal, and the label is never exercised. Measured on the live ledger,
+ * one filing, same title, 37 seconds apart:
+ *
+ *     10:55:08.109Z  DROP   refusal=DUPLICATE  emitted=false  overridden=false
+ *     10:55:45.786Z  ISSUE  refusal=null       emitted=true   overridden=false
+ *
+ * One `overridden: true` row had ever been written, against two overrides
+ * performed that day.
+ *
+ * ## What was broken to make these fail
+ *
+ * Restore the one-term predicate — `const overridden = verdict.outcome ===
+ * "REFUSE" && labelled` — and **FG-100 and FG-102 go red together**, which
+ * is the pair worth having: FG-100 loses the `overridden: true` row and
+ * FG-102 loses the `refiledAfter` that makes a silent re-draft visible.
+ * FG-101 stays green under that mutation and is labelled BASELINE for
+ * exactly that reason: it is the live-refusal path, unchanged by #1536, and
+ * a row that moved with the others would not tell anyone which path broke.
+ *
+ * ## Why the join is the title
+ *
+ * It is the one thing the re-draft did not touch, and the issue's own
+ * evidence is two rows agreeing on it. Keying on the hash is what failed;
+ * keying on a *similarity* over prose would fail the same way one layer in.
+ */
+describe("FG-100..FG-103: an override is a claim about a prior refusal", () => {
+  /** Shared by both filings below, and the only thing they share. */
+  const TITLE = "retryBudget abandons a sweep once the budget is spent";
+
+  /** A real DUPLICATE of #900 — same symbol, same file, two same readings. */
+  const REFUSED =
+    `gh issue create --title ${JSON.stringify(TITLE)} ` +
+    '--body "Measured over 5060 invocations: `retryBudget` in lib/command-retry.ts completes 144 of 234."';
+
+  /**
+   * The same filing, re-drafted to explain the override — which is the
+   * normal reaction to a refusal and the thing that defeated the counter.
+   * It no longer collides with #900 on its own merits, so under the old
+   * predicate the label has nothing to waive.
+   */
+  const REDRAFT =
+    `gh issue create --title ${JSON.stringify(TITLE)} ` +
+    '--body "Overriding the arbiter: the issue it named is a different defect, about a cache. ' +
+    'This one is about a sweep abandoning work it had already started. Claim 4."';
+
+  const rowsFor = (title: string) => ledgerRows().filter(r => r.title === title);
+
+  test("FG-100: a refusal, then a re-drafted re-filing with the label, is recorded as an override", () => {
+    const first = runHook(HOOK, REFUSED);
+    expect(first.blocked, "the first filing must actually be refused, or this row proves nothing")
+      .toBe(true);
+    const refusal = rowsFor(TITLE).at(-1)!;
+    expect(refusal.refusal).toBe("DUPLICATE");
+    expect(refusal.duplicateOf).toEqual(["900"]);
+
+    const second = runHook(HOOK, `${REDRAFT} --label ${FILING_OVERRIDE_LABEL}`);
+    expect(second.blocked, "the re-draft is allowed — nothing here makes the gate stricter").toBe(false);
+
+    const override = rowsFor(TITLE).at(-1)!;
+    // The defect, in one assertion: this read `false` before #1536.
+    expect(override.overridden).toBe(true);
+    // And it NAMES the refusal it waived rather than implying it.
+    expect(override.refiledAfter).toBe(refusal.at);
+    expect(override.duplicateOf).toEqual(["900"]);
+    // The adjudication's own output is untouched: this filing really did
+    // not reproduce the collision, and the row must not pretend it did.
+    expect(override.refusal, "the live verdict stays what the scorer returned").toBeNull();
+    expect(second.reason).toContain(FILING_OVERRIDE_LABEL);
+  });
+
+  test("FG-101 BASELINE: an override over a LIVE refusal is still recorded, with no ledger at all", async () => {
+    // `readLedger: () => []` is the control. Without it this row would be
+    // green under a change that recorded every override from the prior-row
+    // lookup and broke the live path — two mechanisms, one observable.
+    const r = await filingGate(`${DUPLICATE_FILING} --label ${FILING_OVERRIDE_LABEL}`, {
+      projectRoot: scratch,
+      readExisting: async () => measuredCorpus(OPEN_ISSUES.map(i => ({ ...i, id: String(i.number) }))),
+      readLedger: () => [],
+    });
+    expect(r.rows[0].refusal, "the live verdict is a refusal").toBe("DUPLICATE");
+    expect(r.rows[0].overridden).toBe(true);
+    expect(r.rows[0].refiledAfter, "and no prior row was involved").toBeNull();
+    expect(r.refusal, "an override does not block").toBeNull();
+  });
+
+  test("FG-102: the same re-draft WITHOUT the label is allowed, and says so", () => {
+    expect(runHook(HOOK, REFUSED).blocked).toBe(true);
+    const refusal = rowsFor(TITLE).at(-1)!;
+
+    const second = runHook(HOOK, REDRAFT);
+    // Not stricter. #1536 says in as many words that the defect is the
+    // re-draft being INVISIBLE, not its getting through.
+    expect(second.blocked).toBe(false);
+
+    const row = rowsFor(TITLE).at(-1)!;
+    expect(row.emitted).toBe(true);
+    // The label is still what an override means, so this is NOT one...
+    expect(row.overridden).toBe(false);
+    // ...and the prior refusal is on the row anyway, which is the whole
+    // difference between a counted waiver and a silent paraphrase.
+    expect(row.refiledAfter).toBe(refusal.at);
+    expect(second.reason).toContain("refused at");
+  });
+
+  test("FG-103: a ledger that cannot be read is UNMEASURED, not an empty one", () => {
+    // `.claude/rules/config-access.md`: an absent store and an unreadable
+    // one are different facts, and only one of them is a reading. Collapsed
+    // here, a machine that has never filed anything would get a note on its
+    // first `gh issue create` — or, far worse, an override attributed to no
+    // refusal would be indistinguishable from one there was none to find.
+    expect(readLedgerRows(join(scratch, "no-such-ledger.jsonl")), "absent is empty").toEqual([]);
+    expect(readLedgerRows(scratch), "a directory cannot be read").toBeNull();
+
+    // A torn final append is skipped rather than refusing the file: several
+    // processes append to one ledger and a half-written line is the
+    // expected failure, not a corrupt store.
+    const torn = join(scratch, "torn-ledger.jsonl");
+    const good = { ...ledgerRows()[0], title: "a complete row" };
+    writeFileSync(torn, `${JSON.stringify(good)}\n{"at":"2026-`, "utf-8");
+    expect(readLedgerRows(torn)?.map(r => r.title)).toEqual(["a complete row"]);
+  });
+
+  test("FG-103: `priorRefusalFor` matches a refusal and nothing else", () => {
+    const base: FilingLedgerRow = {
+      at: "2026-10-24T10:00:00.000Z",
+      key: "b/0",
+      id: "new",
+      title: TITLE,
+      symptomHash: "h",
+      category: "correctness",
+      severity: null,
+      disposition: "DROP",
+      refusal: "DUPLICATE",
+      emitted: false,
+      withheldBy: "DUPLICATE",
+      jury: null,
+      duplicateOf: ["900"],
+      overridden: false,
+      refiledAfter: null,
+    };
+    const older = { ...base, at: "2026-10-24T09:00:00.000Z" };
+    // The most recent wins, and the walk must not depend on file order.
+    expect(priorRefusalFor(TITLE, [base, older])?.at).toBe(base.at);
+    expect(priorRefusalFor(TITLE, [older, base])?.at).toBe(base.at);
+
+    expect(priorRefusalFor("a different title", [base]), "another finding").toBeNull();
+    expect(priorRefusalFor(TITLE, [{ ...base, refusal: null }]), "an ordinary allow").toBeNull();
+    // A refusal that was overridden still REACHED the tracker, so it is not
+    // a refusal a later filing can be a re-draft of.
+    expect(priorRefusalFor(TITLE, [{ ...base, emitted: true, overridden: true }])).toBeNull();
+
+    // The three shapes that are NOT a refusal and look like one. The first
+    // spelling of this predicate admitted all three, and `FG-48 CONTROL`
+    // caught it on an UNMEASURED row left by an unrelated case.
+    expect(
+      priorRefusalFor(TITLE, [{ ...base, refusal: "UNMEASURED", withheldBy: "UNMEASURED" }]),
+      "UNMEASURED is not a refusal — it is the state of not having adjudicated",
+    ).toBeNull();
+    expect(
+      priorRefusalFor(TITLE, [{ ...base, refusal: null, withheldBy: COMMAND_BLOCKED }]),
+      "a clean clause withheld by its sibling was never adjudicated down",
+    ).toBeNull();
+    expect(
+      priorRefusalFor(TITLE, [{ ...base, withheldBy: COMMAND_BLOCKED }]),
+      "and nor was a clause the command blocked before its own verdict landed",
+    ).toBeNull();
   });
 });
