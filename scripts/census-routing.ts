@@ -109,6 +109,17 @@ const isMarkdown = (p: string) => p.endsWith(".md");
 const inDir = (p: string, dir: string) => p.startsWith(`${dir}/`);
 
 /**
+ * The DA-owned session state (#296, #1515), at the repo root and nowhere
+ * else.
+ *
+ * These are a single shared state document: `project-state.json` is the
+ * source, `PROJECT-STATE.md` is rendered from it, and `SUCCESS.md`'s standing
+ * table moves in the same edit. They are listed here rather than inline so
+ * the row's predicate and the test's membership guard read one binding.
+ */
+export const DA_OWNED_STATE = ["project-state.json", "PROJECT-STATE.md", "SUCCESS.md"];
+
+/**
  * What `#541`'s ratchet counts as a line citation — asked of the ratchet's
  * own binding rather than respelled here.
  *
@@ -378,6 +389,60 @@ export const CENSUS_TRIGGERS: CensusTrigger[] = [
       "test/no-fixed-window-slices.test.ts",
     ],
     fires: c => inDir(c.path, ".github/workflows") || inDir(c.path, "lib/scaffold"),
+  },
+  {
+    // #1515. The three files with the NARROWEST set of people who may edit
+    // them — DA-owned (#296), and an agent in a worktree is forbidden to
+    // write them — matched no row at all. `new-file` needs `isNew`; `doc`
+    // needs `isNew` or a line citation, and a session summary has neither;
+    // `rule-doc` is scoped to `CLAUDE.md`, `AGENTS.md` and `.claude/rules/`;
+    // and `project-state.json` is not markdown, so nothing could see it.
+    //
+    // Measured on commit `9a174688`, a state write touching
+    // `project-state.json` and `PROJECT-STATE.md` and nothing else: the
+    // router printed `no census test is reachable from this change`, and
+    // `test/closing-keywords.test.ts` went red on `#590` — *"no closing
+    // keyword at all was found in the live summary"* — reading the live
+    // `project-state.json` the diff had just rewritten. The same suite is
+    // green at `009562dc`, the merged write with the keyword restored. So
+    // `no census test is reachable` and UNMEASURED were the same output,
+    // which is the `0`/`{}`/`null` reading this project refuses everywhere
+    // else.
+    //
+    // FIXED rather than derived, and all three derivations are written up in
+    // `test/census-routing.test.ts` with their counts. The short version:
+    // naming the paths gives 68 test files, the issue's hand list of nine is
+    // wrong in three places, and the one detector that reproduces this set
+    // exactly — a trio path resolved against a repo-root constant — agrees
+    // by SPELLING, since `test/project-state-suite-isolation.test.ts`
+    // escapes it only through a `DA_OWNED` array. That detector is used as a
+    // one-directional membership guard in the test file and NOT as the
+    // mechanism here. A fixed row also keeps the rename control: *"every
+    // routed test exists on disk"* goes red the day one of these seven is
+    // renamed away, where a derived row would silently stop routing it.
+    //
+    // Each member reads one of the three from the repo root, so the file's
+    // CONTENT is an input to it. Three candidates were excluded on evidence:
+    // `distribution-currency` names the three paths zero times (and so does
+    // `lib/distribution-currency.ts`), `project-state-derivation` scans the
+    // tree for a generator rather than reading the record, and
+    // `suite-isolation` asserts the trio is byte-identical before and after
+    // a run — content-invariant by construction.
+    id: "state-write",
+    event: "wrote the DA-owned session state (project-state.json, PROJECT-STATE.md, SUCCESS.md)",
+    tests: [
+      "test/closing-keywords.test.ts",
+      "test/project-state-currency.test.ts",
+      "test/project-state-shape.test.ts",
+      "test/update-project-state.test.ts",
+      "test/success-doc.test.ts",
+      "test/distribution-standing.test.ts",
+      "test/rule-lifecycle-spec.test.ts",
+    ],
+    // Exact repo-root paths, not a basename match. A consumer fixture at
+    // `test/fixtures/project-state.json` is not the live record, and a
+    // substring row would route seven suites for it.
+    fires: c => DA_OWNED_STATE.includes(c.path),
   },
 ];
 
