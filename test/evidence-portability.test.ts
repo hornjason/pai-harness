@@ -264,18 +264,53 @@ describe("#338: driven against the corpus the threshold came from", () => {
       // holding RUNS but no readable state is a corpus that vanished, and
       // that still fails. An empty or run-less store is a machine that has
       // not run the harness, which is true of every CI runner.
-      // What replaces it is a REPORT and not a weaker assertion, because the
-      // only assertion available here is vacuous: anything this branch could
-      // scan, `stateFiles()` has already scanned, so a second `expect` over
-      // the same bytes is two empty collections compared — the third shape in
-      // `.claude/rules/checks-must-be-able-to-fail.md`. An UNMEASURED that
-      // says so is reportable; a check that cannot fail is not.
+      // The replacement is NARROWER AND SOUND, over `.archive`.
+      //
+      // `expect(entries.length).toBe(0)` over the live store was the obvious
+      // repair and it is unsound for the same reason the first spelling was.
+      // Measured on the runner rather than argued: the report below ran on
+      // run 40056396854 and printed *"the store exists and holds 1
+      // entr(ies)"*, so the fallback leaves something under the store and a
+      // count assertion over it fires on a true-but-irrelevant fact, exactly
+      // as `existsSync` did.
+      //
+      // `.archive` cannot be reached that way — `lib/stale-cleanup.ts` is the
+      // only writer and it only ever moves a finished RUN there. So an
+      // `.archive` holding entries while `stateFiles()` found none is a
+      // corpus that vanished, which is the property the first spelling was
+      // reaching for. It scans bytes `stateFiles()` does not report — the
+      // entry list, not the state files — so it is not two empty collections
+      // compared.
+      //
+      // **It is on the ENTRY COUNT and never on the directory's existence**,
+      // and that is the whole of why this spelling is sound where the other
+      // two were not: `lib/stale-cleanup.ts` creates `.archive`
+      // unconditionally, so its presence proves nothing. Check that before
+      // simplifying this to an `existsSync` — it is the third time on this
+      // row that a true fact about a shared path has been read as a finding.
+      //
+      // ONE RESIDUAL, named rather than fixed. If anything ever archives a
+      // run DURING a suite, `.archive` gains an entry and this row is
+      // unsound again for the same reason twice over. The durable answer is
+      // for the case to scope to a store it owns — `RUNGATE_WORK_DIR`
+      // pointed at an `mkdtemp` — rather than to read a shared path at all.
+      // That was out of scope for the branch that found this (#1486/#1487).
+      const archive = join(RUNS, ".archive");
+      const archived = existsSync(archive)
+        ? readdirSync(archive).filter(d => !d.startsWith("."))
+        : [];
+      expect(
+        archived,
+        `${archive} holds ${archived.length} archived run(s) and not one carries a ` +
+          "workflow-state.json — the corpus did not fail to exist, it went missing",
+      ).toEqual([]);
+
       const entries = existsSync(RUNS)
         ? readdirSync(RUNS).filter(d => !d.startsWith("."))
         : [];
       console.warn(
         `#338 UNMEASURED: no run under ${RUNS} carries a workflow-state.json ` +
-          `(${existsSync(RUNS) ? `the store exists and holds ${entries.length} entr(ies)` : "no run store on this machine"}). ` +
+          `(${existsSync(RUNS) ? `the store exists and holds ${entries.length} entr(ies): ${entries.join(", ") || "none"}` : "no run store on this machine"}). ` +
           "The corpus-driven half of this case measured nothing here; the " +
           "hand-written cases above still bind the rule.",
       );
