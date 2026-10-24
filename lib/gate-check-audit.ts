@@ -223,6 +223,17 @@ export interface WarnReturnPath {
 const WARN_CALL = /^console\s*\.\s*warn\s*\(/;
 const EXPECT_CALL = /^expect\s*(?:<[^>()]*>)?\s*\(/;
 const RETURN_KEYWORD = /^return\b/;
+const IF_KEYWORD = /^if\b/;
+/**
+ * The keywords that open a branch excluding the one before it.
+ *
+ * Brace depth alone only notices exclusivity when the branches are braced and
+ * the depth dips between them. `if (a) expect(p); else console.warn(x);` puts
+ * both at the same depth with nothing closing in between, and so does a
+ * `switch`, so the assertion was credited to a path that can never run it.
+ * PR #1539's review caught that.
+ */
+const BRANCH_SPLIT = /^(?:else|case|default)\b/;
 
 type PathToken = {
   kind: "expect" | "warn" | "return";
@@ -253,6 +264,11 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
   const assertDepthAt = new Map<number, number | null>();
   let depth = 0;
   let assertDepth: number | null = null;
+  /** Where the assertion that set `assertDepth` sits, so an `else` can tell
+   *  whether it lives in the branch being superseded. */
+  let assertAt = -1;
+  /** The most recent `if`/`switch` head seen at each depth. */
+  const branchHeadAt = new Map<number, number>();
   let minSinceToken = 0;
   const push = (kind: PathToken["kind"], at: number) => {
     tokens.push({ kind, at, depth, minBefore: Math.min(minSinceToken, depth) });
@@ -293,7 +309,7 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
     if (c === ")" || c === "]" || c === "}") {
       depth--;
       if (depth < minSinceToken) minSinceToken = depth;
-      if (assertDepth !== null && depth < assertDepth) assertDepth = null;
+      if (assertDepth !== null && depth < assertDepth) { assertDepth = null; assertAt = -1; }
       continue;
     }
     // Only start a keyword match at an identifier boundary, so `s.expect(`
@@ -301,8 +317,28 @@ function pathTokens(body: string): { tokens: PathToken[]; assertDepthAt: Map<num
     if (!/[A-Za-z_$]/.test(c)) continue;
     if (i > 0 && /[\w$.]/.test(body[i - 1]!)) continue;
     const rest = body.slice(i, i + 200);
+    if (IF_KEYWORD.test(rest) || /^switch\b/.test(rest)) {
+      branchHeadAt.set(depth, i);
+      continue;
+    }
+    if (BRANCH_SPLIT.test(rest)) {
+      // This opens a branch excluding the one before it. An assertion is
+      // superseded only if it lives INSIDE that preceding branch — i.e. after
+      // the `if`/`switch` head this pairs with. An `expect` written before the
+      // head runs on every path, including this one, so it still counts.
+      // An `else` sits at its `if`'s own depth; a `case` sits one level INSIDE
+      // its `switch`'s braces. Take whichever head is nearer — that is the
+      // construct this branch belongs to.
+      const head = Math.max(branchHeadAt.get(depth) ?? -1, branchHeadAt.get(depth - 1) ?? -1);
+      if (assertDepth !== null && head >= 0 && assertAt > head) {
+        assertDepth = null;
+        assertAt = -1;
+      }
+      continue;
+    }
     if (EXPECT_CALL.test(rest)) {
       push("expect", i);
+      if (assertDepth === null || depth < assertDepth) assertAt = i;
       assertDepth = assertDepth === null ? depth : Math.min(assertDepth, depth);
     } else if (WARN_CALL.test(rest)) {
       push("warn", i);

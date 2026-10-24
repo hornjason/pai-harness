@@ -340,6 +340,62 @@ describe("SC-2520, SC-2521: the audit's unit is the path, not the check body", (
     ]);
   });
 
+  test("a mutually exclusive branch's assertion does not cover the warn", () => {
+    // PR #1539's review, third round. The enclosing-assertion state was reset
+    // by brace depth alone, so it only noticed exclusivity when the branches
+    // were braced and the depth actually dipped between them. Written without
+    // braces, or as switch cases, the `expect` and the `console.warn` sit at
+    // the SAME depth with nothing closing in between — and the assertion was
+    // credited to a path that can never execute it.
+    const braceless = [
+      `test("a: braceless else", () => {`,
+      `  if (a) expect(p, "m").toBe(true);`,
+      `  else console.warn("WARN: nothing to check");`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(braceless).length, "a braceless else is exclusive too").toBe(1);
+
+    const switched = [
+      `test("a: switch", () => {`,
+      `  switch (k) {`,
+      `    case 1: expect(p, "m").toBe(true); break;`,
+      `    case 2: console.warn("WARN: nothing to check"); return;`,
+      `  }`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(switched).length, "switch cases are exclusive too").toBe(1);
+  });
+
+  test("an assertion BEFORE the if still covers a warn in its else", () => {
+    // THE CONTROL for the case above, and the one a careless fix breaks. An
+    // `else` only supersedes an assertion that lives in the `if` branch it
+    // pairs with. This `expect` runs before the branch opens, so it runs on
+    // every path including the warned one, and naming this would be a false
+    // refusal rather than a missed one.
+    const src = [
+      `test("a: asserts, then branches", () => {`,
+      `  expect(p, "m").toBe(true);`,
+      `  if (a) { q(); } else { console.warn("WARN: y"); }`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(src)).toEqual([]);
+    expect(checksThatCannotFail(src)).toEqual([]);
+  });
+
+  test("an assertion earlier in the SAME branch still covers a nested warn", () => {
+    // The second control. The `expect` and the warn are on one path here, so
+    // the path can fail and the warn is a remark.
+    const src = [
+      `test("a: asserts, then warns deeper in the same branch", () => {`,
+      `  if (a) {`,
+      `    expect(p, "m").toBe(true);`,
+      `    if (b) { console.warn("WARN: y"); return; }`,
+      `  }`,
+      `});`,
+    ].join("\n");
+    expect(unassertedWarnPaths(src)).toEqual([]);
+  });
+
   test("a bare tier gate is not named", () => {
     // THE OUTAGE CONTROL. `if (tier === "LIGHT") return;` opens most checks in
     // the suite. It is deliberate scoping, not a swallowed refusal, and a
