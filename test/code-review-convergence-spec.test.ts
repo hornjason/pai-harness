@@ -133,6 +133,15 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
       unobservable: firstCells(section("### A mechanism exists; this repository cannot observe it")),
       "not meaningful": firstCells(section("### Cannot be meaningful in this deployment")),
       "blocked on an owner": firstCells(section("### Blocked on an owner decision")),
+      // #1469. A sixth state, and NOT a shade of the one above it: blocked
+      // means nobody has answered, contested means this repository answers
+      // twice in opposite directions and both answers are current. The
+      // distinction is what an agent does next — a blocked item waits, a
+      // contested one must not be actioned from either document alone — and
+      // the cost of not drawing it is on record: CRC-F1 was read out of the
+      // Phase 0 list as a setting costing no engineering, applied, and
+      // refused every session's push repo-wide through the pre-push hook.
+      contested: firstCells(section("### Contested — this repository gives two opposite instructions")),
       "not adopted": firstCells(section("### Deliberately not adopted")),
       "not done": leadingBold(section("### Not done — the remainder")),
     };
@@ -146,7 +155,7 @@ describe("specs/CODE-REVIEW-CONVERGENCE-SPEC.md: its citations resolve", () => {
     expect(
       [...placements].filter(([, w]) => w.length === 0).map(([id]) => id),
       "criteria in NO bucket: the audit does not account for them. Add each to one " +
-        "of the five sections, or tick it.",
+        "of the six sections, or tick it.",
     ).toEqual([]);
     expect(
       [...placements].filter(([, w]) => w.length > 1).map(([id, w]) => `${id} in ${w.join(" and ")}`),

@@ -498,6 +498,14 @@ describe("#939: the merge_group pass is a default, and the fail-closed flag over
 
       const routes: Array<[string, Record<string, string>]> = [
         ["a merge_group queue entry", QUEUE_ENV],
+        // #1469, and exactly the branch this fence was written for: a
+        // short-circuit added above the readings for another event the
+        // action cannot parse. It reds here if its flag check is omitted or
+        // placed below the branch, which is #939 verbatim.
+        [
+          "a push to the default branch",
+          { ...QUEUE_ENV, [AI_REVIEW_EVENT_VAR]: "push" },
+        ],
         ["no mode output at all", { [AI_REVIEW_EVENT_VAR]: "pull_request" }],
         [
           "the action failed",
@@ -530,7 +538,7 @@ describe("#939: the merge_group pass is a default, and the fail-closed flag over
       // The coverage control. Two assertions that both read an empty list
       // agree with each other and with nothing else; this is what reds if a
       // rewrite empties the table.
-      expect(routes.length, "the route table is empty, so this case measured nothing").toBe(6);
+      expect(routes.length, "the route table is empty, so this case measured nothing").toBe(7);
 
       for (const [label, env] of routes) {
         const r = runIn(dir, script, { ...env, [AI_REVIEW_REQUIRE_VAR]: AI_REVIEW_REQUIRE_VALUE });
