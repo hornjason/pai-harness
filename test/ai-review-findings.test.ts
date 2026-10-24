@@ -20,6 +20,7 @@ import {
   main,
   readAiReviewFindings,
   readAiReviewFindingsFile,
+  scopeMeasured,
   renderFinding,
   severityBlocks,
 } from "../lib/scaffold/ai-review-findings";
@@ -985,10 +986,10 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
   });
 
   test("B7-1: a critical naming an UNTOUCHED file does not block", () => {
-    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), [
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), scopeMeasured([
       "lib/cli-commands.ts",
       "test/ai-review-finding-scope.test.ts",
-    ]);
+    ]));
     expect(r.outcome).toBe("CLEAN");
     expect(r.blocked).toBe(false);
     expect(r.blockingReported).toEqual([]);
@@ -998,9 +999,9 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
     // The only axis that moves between B7-1 and this row is whether the
     // declared file is in the list. Without it B7-1 would be witnessing "a
     // changed-file list makes findings go away".
-    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), [
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/bash-write-guard.ts")]), scopeMeasured([
       "lib/bash-write-guard.ts",
-    ]);
+    ]));
     expect(r.outcome).toBe("BLOCKED");
     expect(r.blockingReported).toHaveLength(1);
   });
@@ -1009,13 +1010,13 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
     // CRC-B8 — a finding is never silently dropped. Demoted is not deleted:
     // it leaves `blockingReported` and stays in `reported`, so the advisory
     // tail still carries it and a maintainer still sees it.
-    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), ["lib/mine.ts"]);
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), scopeMeasured(["lib/mine.ts"]));
     expect(r.reported).toHaveLength(1);
     expect(r.blockingReported).toEqual([]);
   });
 
   test("B7-4: the demotion is said out loud, naming the file and the tag", () => {
-    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), ["lib/mine.ts"]);
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/other.ts")]), scopeMeasured(["lib/mine.ts"]));
     const said = `${advisoryNotice(r) ?? ""}\n${r.detail.join("\n")}`;
     expect(said).toContain("Pre-existing");
     expect(said).toContain("lib/other.ts");
@@ -1024,7 +1025,7 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
   test("B7-5: a mixed payload blocks on the touched one and demotes the other", () => {
     const r = readAiReviewFindings(
       payloadOf("BLOCK", [at("lib/untouched.ts"), at("lib/touched.ts")]),
-      ["lib/touched.ts"],
+      scopeMeasured(["lib/touched.ts"]),
     );
     expect(r.outcome).toBe("BLOCKED");
     expect(r.blockingReported).toHaveLength(1);
@@ -1045,13 +1046,13 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
     // matches". A PR always touches something, so an empty list is a reading
     // that failed — and under it every finding would demote, which is the
     // fail-open this module exists to refuse.
-    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/anything.ts")]), []);
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("lib/anything.ts")]), scopeMeasured([]));
     expect(r.outcome).toBe("UNMEASURED");
     expect(r.unmeasuredReasons).toContain("CHANGED_FILES_EMPTY");
   });
 
   test("B7-8: the comparison is case-insensitive, as the jury's already is", () => {
-    const r = readAiReviewFindings(payloadOf("BLOCK", [at("Lib/Mixed.TS")]), ["lib/mixed.ts"]);
+    const r = readAiReviewFindings(payloadOf("BLOCK", [at("Lib/Mixed.TS")]), scopeMeasured(["lib/mixed.ts"]));
     expect(r.outcome, "a case difference is not a different file on this platform").toBe("BLOCKED");
   });
 
@@ -1093,7 +1094,7 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
           },
         ],
       }),
-      ["lib/mine.ts"],
+      scopeMeasured(["lib/mine.ts"]),
     );
 
   test("B7-10: a non-string file is UNMEASURED, never a demotion", () => {
@@ -1195,7 +1196,7 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
           },
         ],
       }),
-      ['"lib/\\303\\251.ts"'],
+      scopeMeasured(['"lib/\\303\\251.ts"']),
     );
     expect(r.outcome).toBe("UNMEASURED");
     expect(r.unmeasuredReasons).toContain("CHANGED_FILES_UNREADABLE");
@@ -1226,7 +1227,7 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
           },
         ],
       }),
-      ["./lib/mine.ts"],
+      scopeMeasured(["./lib/mine.ts"]),
     );
     expect(r.outcome).toBe("BLOCKED");
   });
@@ -1234,9 +1235,9 @@ describe("CRC-B7: a finding naming no file this PR touched is Pre-existing, not 
   test("B7-9: a non-blocking severity is unaffected by the tag", () => {
     // `info` never blocked, so demoting it changes nothing and must not be
     // counted as this stage having done something.
-    const r = readAiReviewFindings(payloadOf("PASS", [at("lib/untouched.ts", "info")]), [
+    const r = readAiReviewFindings(payloadOf("PASS", [at("lib/untouched.ts", "info")]), scopeMeasured([
       "lib/mine.ts",
-    ]);
+    ]));
     expect(r.outcome).toBe("CLEAN");
     expect(r.reported).toHaveLength(1);
   });
