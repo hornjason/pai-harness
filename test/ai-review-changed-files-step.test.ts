@@ -92,6 +92,7 @@ const JOB = buildReviewRunStep(
     review: actionRef(CLAUDE_CODE_ACTION),
     setupBun: actionRef("oven-sh/setup-bun"),
     setupBunWith: setupBunWith(declaredBunVersion(REPO_ROOT), "    "),
+    uploadArtifact: actionRef("actions/upload-artifact"),
   },
   "0.0.0-fixture",
 );

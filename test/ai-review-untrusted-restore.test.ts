@@ -198,6 +198,7 @@ function generatedJob(): string {
       auth: actionRef(GOOGLE_AUTH_ACTION),
       review: actionRef(CLAUDE_CODE_ACTION),
       setupBun: actionRef("oven-sh/setup-bun"),
+      uploadArtifact: actionRef("actions/upload-artifact"),
       setupBunWith: setupBunWith(declaredBunVersion(join(import.meta.dir, "..")), "    "),
     },
     // A fixture version for the adjudicator's `bunx` pin (#1013). This file is

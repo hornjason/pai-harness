@@ -208,6 +208,7 @@ function generatedStep(id: string): any {
       auth: actionRef(GOOGLE_AUTH_ACTION),
       review: actionRef(CLAUDE_CODE_ACTION),
       setupBun: actionRef("oven-sh/setup-bun"),
+      uploadArtifact: actionRef("actions/upload-artifact"),
       setupBunWith: setupBunWith(declaredBunVersion(join(import.meta.dir, "..")), "    "),
     },
     FIXTURE_VERSION,
