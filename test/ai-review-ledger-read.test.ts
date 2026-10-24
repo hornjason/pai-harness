@@ -45,11 +45,17 @@ import {
   FINDING_IDENTITY_NONE,
   FINDING_IDENTITY_TEXT,
   carryForward,
+  AI_REVIEW_LEDGER_VERDICT_KEY,
+  AI_REVIEW_VERDICT_NOT_RECORDED,
+  AI_REVIEW_VERDICT_RECORDED,
+  AI_REVIEW_VERDICT_UNREADABLE,
   carryKey,
   ledgerUnreadable,
   priorFindings,
   readLedger,
+  readRoundVerdict,
   suppressRepeats,
+  type LedgerRound,
   type ReviewFinding,
 } from "../lib/ai-review-rounds.ts";
 import {
@@ -57,6 +63,7 @@ import {
   AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_MARKER,
   AI_REVIEW_LEDGER_TEXT_FIELD,
+  AI_REVIEW_VERDICT_KEY,
   buildPersistScript,
 } from "../lib/scaffold/ai-review-step.ts";
 // AC-R9 only. The derivation is worth nothing unless the metric that refused
@@ -297,6 +304,51 @@ describe("AC-R6: the writer and the reader agree, with no import between them", 
     expect(AI_REVIEW_LEDGER_COMMENT_MARKER).toBe(AI_REVIEW_LEDGER_MARKER);
     expect(AI_REVIEW_LEDGER_FINDINGS_KEY).toBe(AI_REVIEW_FINDINGS_KEY);
     expect(AI_REVIEW_LEDGER_FINDING_TEXT).toBe(AI_REVIEW_LEDGER_TEXT_FIELD);
+    // #1511's fifth. A reader looking for the wrong verdict key reports
+    // NOT_RECORDED, which is indistinguishable from a pre-#1511 ledger — the
+    // same shape of wrong answer the marker row above guards against.
+    expect(AI_REVIEW_LEDGER_VERDICT_KEY).toBe(AI_REVIEW_VERDICT_KEY);
+  });
+
+  /**
+   * AC-R6 / #1511: the verdict word, three states.
+   *
+   * The split is the one `turns` already carries: a round written before the
+   * writer recorded a verdict has NO key, and a round written after it
+   * always has one. Collapsing them makes "the ledger never recorded a
+   * verdict" and "the reviewer wrote none" the same reading, and only one of
+   * those is a fact about a review.
+   */
+  test("AC-R6: an absent key, a null and a word are three different readings", () => {
+    const read = (over: Record<string, unknown>) =>
+      readLedger(ledgerBody([entry(over)])).status === AI_REVIEW_LEDGER_READ
+        ? (readLedger(ledgerBody([entry(over)])) as { rounds: LedgerRound[] }).rounds[0]!.verdict
+        : null;
+
+    expect(read({})!.status).toBe(AI_REVIEW_VERDICT_NOT_RECORDED);
+    expect(read({ [AI_REVIEW_LEDGER_VERDICT_KEY]: null })!.status).toBe(
+      AI_REVIEW_VERDICT_UNREADABLE,
+    );
+    expect(read({ [AI_REVIEW_LEDGER_VERDICT_KEY]: "BLOCK" })).toEqual({
+      status: AI_REVIEW_VERDICT_RECORDED,
+      word: "BLOCK",
+    });
+  });
+
+  test("AC-R6: a word the contract does not declare is carried, not filtered", () => {
+    // The reader is not a second gate. `lib/scaffold/ai-review-findings.ts`
+    // decides which words are legal and calls this one VERDICT_UNRECOGNISED;
+    // a filter here would turn that into VERDICT_ABSENT, which says the
+    // reviewer wrote nothing about a reviewer that wrote something.
+    expect(readRoundVerdict("MAYBE")).toEqual({
+      status: AI_REVIEW_VERDICT_RECORDED,
+      word: "MAYBE",
+    });
+    expect(readRoundVerdict(7)).toEqual({ status: AI_REVIEW_VERDICT_RECORDED, word: 7 });
+  });
+
+  test("AC-R6: the generated script records the verdict key on the round entry", () => {
+    expect(buildPersistScript()).toContain(`${AI_REVIEW_VERDICT_KEY}:$verdict`);
   });
 
   test("AC-R6: the generated script stamps that identity and records the text field", () => {

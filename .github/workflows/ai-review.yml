@@ -1,4 +1,4 @@
-# generated-sha: c2c59fdf3fefabb6
+# generated-sha: 0c6f01994657ad5b
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -1890,10 +1890,17 @@ jobs:
           # skipped by a condition reports `skipped`. Running before the adjudicator
           # needs no condition at all: the reviewer has already written the payload.
           #
-          # It records findings and NEVER a verdict. Whether a severity blocks is
-          # AI_REVIEW_SEVERITIES' decision, read by lib/scaffold/ai-review-findings.ts.
-          # A verdict computed here would be a second decider answering the same
-          # question about the same input, and both would read as covered.
+          # It TRANSCRIBES the reviewer's verdict word and NEVER computes a verdict.
+          # Whether a severity blocks is AI_REVIEW_SEVERITIES' decision, read by
+          # lib/scaffold/ai-review-findings.ts. A verdict computed here would be a
+          # second decider answering the same question about the same input, and both
+          # would read as covered.
+          #
+          # The reviewer's own word is a different fact and is recorded (#1511): it is
+          # not derivable from the findings, and the gap between the word and what the
+          # severities say IS the contradiction (#1178). The word and the findings
+          # together are exactly the adjudicator's input, so a reader replays the one
+          # adjudicator rather than becoming a second one.
           escape_annotation() {
             local v="$1"
             v="${v//%/%25}"
@@ -2136,8 +2143,16 @@ jobs:
           # by the one branch that already exists below and already says UNMEASURED
           # out loud. A second way to be unreadable would be a second decider.
           findings="null"
+          # The verdict word's own default, and it is `null` rather than an empty
+          # string for the three-state reason `turns` states: a round that recorded
+          # no key at all predates #1511, `null` is this step having tried, and a
+          # string is the word. An absent payload never reaches the read below, so it
+          # records `null` here — which is the same answer as "the payload named no
+          # verdict", and that conflation is named in AI_REVIEW_LEDGER_TURNS_FIELD's
+          # docstring rather than left for a reader to discover.
+          verdict="null"
           if [ -n "${AI_REVIEW_FINDINGS_PATH:-}" ] && [ -s "${AI_REVIEW_FINDINGS_PATH}" ]; then
-            if parsed=$(jq -c 'if (.findings | type) == "array" then [ .findings[] | {severity, file, line, summary} ] else error("findings is not a list") end' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
+            if parsed=$(jq -c 'if (.findings | type) == "array" then [ .findings[] | {severity, file, line, summary, failure_scenario} ] else error("findings is not a list") end' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
               # Record the TEXT at each cited line, out of the checkout this round
               # reviewed. A later round cannot obtain it: `actions/checkout` above runs
               # at `fetch-depth: 1`, so the commit a finding was raised against is not
@@ -2191,6 +2206,29 @@ jobs:
                 rm -f "${texts}"
               fi
               findings="${parsed}"
+              # The reviewer's own verdict WORD, transcribed (#1511). Read HERE, inside
+              # the branch where the payload parsed, so an unreadable payload leaves by
+              # the one branch below that already says UNMEASURED — a second note for
+              # one cause would be a second reading of the same failure.
+              #
+              # VERBATIM and unvalidated. `PASS`,
+              # `BLOCK`, a word that is neither, a number: all of
+              # them record as written, because deciding which words are legal is
+              # `lib/scaffold/ai-review-findings.ts`' job and it already does it. A
+              # recorder that filtered would make a round with an unrecognised verdict
+              # indistinguishable from a round with none.
+              #
+              # NOT a verdict computed here. Whether a severity blocks is
+              # the severity table's decision and this step still never makes it;
+              # what is recorded is the word beside the findings, and the gap between
+              # the two is the only thing that makes a contradiction visible (#1178).
+              #
+              # `if !`, not a bare assignment: under the runner's `bash -e` an
+              # assignment whose only word is a failing $(...) aborts the step on that
+              # line (#1110), and this recorder may not fail the job it observes.
+              if ! verdict=$(jq -c 'if has("verdict") then .verdict else null end' "${AI_REVIEW_FINDINGS_PATH}" 2>/dev/null); then
+                verdict="null"
+              fi
             else
               ledger_note "the findings payload exists and could not be read as a list of findings — it is not JSON, or it carries no 'findings' array. This round is recorded as UNMEASURED rather than as a round with no findings. Those are different states and the ledger keeps them apart."
             fi
@@ -2247,8 +2285,9 @@ jobs:
             --arg identity 'file+text+summary@v1' \
             --argjson round "${round}" \
             --argjson turns "${turns}" \
+            --argjson verdict "${verdict}" \
             --argjson findings "${findings}" \
-            '{at:$at, sha:$sha, merge:$merge, run:$run, attempt:$attempt, identity:$identity, round:$round, turns:$turns, findings:$findings}'); then
+            '{at:$at, sha:$sha, merge:$merge, run:$run, attempt:$attempt, identity:$identity, round:$round, turns:$turns, verdict:$verdict, findings:$findings}'); then
             ledger_note "this round's entry could not be assembled, so nothing was recorded."
             exit 0
           fi
@@ -2478,13 +2517,55 @@ jobs:
           # a legacy ledger sitting at the cap produces, where this round's eviction is
           # known and the ones before it are not. An unknown total omits the field
           # rather than writing a number that is only a lower bound.
-          if ! combined=$(printf '%s' "${prior}" | jq -r --argjson e "${entry}" --argjson keep 12 --argjson pt "${prior_truncated_json}" '
+          #
+          # SINCE #1511 THE CAP IS ALSO MEASURED, and the loop below is the whole of
+          # that. The count cap is an ESTIMATE — `AI_REVIEW_LEDGER_MAX_ROUNDS` derives
+          # twelve from "a pathological round is ~4 KB", which nobody ever measured —
+          # and this round's entry now carries `failure_scenario` per finding, which is
+          # prose. So the body is RENDERED and its bytes counted, and a body over
+          # `AI_REVIEW_LEDGER_MAX_BODY` evicts one more of the oldest rounds and
+          # re-renders.
+          #
+          # ONE mechanism, not two. The eviction is the same eviction: same `$keep`
+          # arithmetic, same `truncated` running total, same annotation. Only the
+          # TRIGGER widens, from "at the count cap" to "at the count cap or over the
+          # body limit", and the annotation says which fired — because "dropped because
+          # twelve is the cap" and "dropped because the comment would not fit" are
+          # different facts about a pull request, and a reader acts differently on
+          # them. A second eviction counter would be two numbers for one eviction.
+          #
+          # NOTHING IS EVER SHORTENED, and that is the design decision rather than an
+          # omission. A `failure_scenario` cut to fit reads as a complete one;
+          # `blockingContractViolations` can see an absent field and cannot see a
+          # plausible-looking lie, so a shortened field would need a marker and a
+          # reader taught to look for it. Dropping a whole round is a loss the reader
+          # is ALREADY told about, by a field it already reads.
+          #
+          # The announcements are emitted AFTER the loop, from the final values. A
+          # note per iteration would report every intermediate window the step
+          # considered as though it had been written.
+          #
+          # `if !`, not `body_file="$(mktemp)"`. An assignment whose only word is a
+          # failing command substitution aborts the step under the runner's `bash -e`
+          # BEFORE anything can read its status (#1110) — which would make this
+          # recorder fail the job it is only supposed to observe, and do it before the
+          # adjudication step has run at all.
+          if ! body_file=$(mktemp); then
+            ledger_note "no temporary file could be created for the ledger body, so this round was not recorded."
+            exit 0
+          fi
+
+          keep=12
+          over_body=no
+          while : ; do
+          if ! combined=$(printf '%s' "${prior}" | jq -r --argjson e "${entry}" --argjson keep "${keep}" --argjson pt "${prior_truncated_json}" '
               (. + [$e]) as $g
               | (([($g | length) - $keep, 0] | max)) as $d
               | ($d | tostring)
                 + " " + (if $pt == null then "-" else (($pt + $d) | tostring) end)
                 + " " + ((if ($g | length) > $keep then $g[-$keep:] else $g end) | tojson)'); then
             ledger_note "this round could not be appended to the existing ledger, so nothing was written."
+            rm -f "${body_file}"
             exit 0
           fi
           dropped="${combined%% *}"
@@ -2499,10 +2580,9 @@ jobs:
           case "${dropped}" in
             ""|*[!0-9]*)
               ledger_note "the number of evicted rounds could not be read, so this round was NOT recorded. Refusing rather than writing a ledger that may have dropped rounds without saying so: an unannounced eviction is indistinguishable from a history that never held those rounds."
+              rm -f "${body_file}"
               exit 0
               ;;
-            0) ;;
-            *) ledger_note "the ledger is at its 12-round cap, so ${dropped} of the OLDEST round(s) were dropped to keep the comment under GitHub's body limit. Those rounds are gone, not empty: a finding only they recorded can no longer be carried forward, and nothing downstream can tell that from a finding that was never raised." ;;
           esac
 
           # The window count the comment will carry. `-` means this ledger cannot say
@@ -2515,42 +2595,92 @@ jobs:
             "-")
               if ! doc=$(printf '%s' "${all}" | jq -c '{rounds: .}'); then
                 ledger_note "the ledger document could not be assembled, so this round was not recorded."
+                rm -f "${body_file}"
                 exit 0
               fi
-              ledger_note "this ledger was written before it counted its own evictions, and it is at the 12-round cap, so how many rounds it has already dropped cannot be established. It is recorded as a window of unknown depth rather than as a complete history."
               ;;
             ""|*[!0-9]*)
               ledger_note "the running total of evicted rounds could not be read, so this round was NOT recorded. Refusing rather than writing a ledger whose own window count is a guess."
+              rm -f "${body_file}"
               exit 0
               ;;
             *)
               if ! doc=$(printf '%s' "${all}" | jq -c --argjson t "${total_truncated}" '{truncated: $t, rounds: .}'); then
                 ledger_note "the ledger document could not be assembled, so this round was not recorded."
+                rm -f "${body_file}"
                 exit 0
               fi
               ;;
           esac
-
-          # `if !`, not `body_file="$(mktemp)"`. An assignment whose only word is a
-          # failing command substitution aborts the step under the runner's `bash -e`
-          # BEFORE anything can read its status (#1110) — which would make this
-          # recorder fail the job it is only supposed to observe, and do it before the
-          # adjudication step has run at all.
-          if ! body_file=$(mktemp); then
-            ledger_note "no temporary file could be created for the ledger body, so this round was not recorded."
-            exit 0
-          fi
           {
             printf '%s\n' '<!-- rungate:ai-review-ledger:v1 -->'
             printf '%s\n\n' '### AI review findings ledger'
             printf '%s\n\n' 'Written by the AI Review workflow, one entry per round, so the finding set is cumulative across rounds rather than evaporating with each runner (#1168).'
             printf '%s\n\n' 'A `findings` of null means the round was NOT measured — the payload was absent or unparseable. An empty array means the round was read and found nothing. They are different facts.'
-            printf '%s\n\n' 'THIS IS A WINDOW, NOT A HISTORY. At most 12 rounds are retained — a comment body has a hard 65,536 character limit — and `truncated` is how many have fallen off the front of it. A dropped round is gone rather than empty, so a finding only that round recorded can no longer be carried forward; without the count, nothing downstream could tell that from a finding nobody ever raised. An ABSENT `truncated` means the depth is unknown, which is not the same as zero.'
+            printf '%s\n\n' 'THIS IS A WINDOW, NOT A HISTORY. At most 12 rounds are retained, and fewer when they would not fit — a comment body has a hard 65536 character limit, so the body is rendered and measured before it is written. `truncated` is how many rounds have fallen off the front of it, by either route. A dropped round is gone rather than empty, so a finding only that round recorded can no longer be carried forward; without the count, nothing downstream could tell that from a finding nobody ever raised. An ABSENT `truncated` means the depth is unknown, which is not the same as zero.'
             printf '%s\n\n' '`identity` names the rule the per-finding anchors were recorded under. A reader that does not recognise it carries those findings without keying them, rather than keying them under a rule they were not recorded with. `text` is the content of the cited line at the time, which is the anchor that rule uses; a finding with no `text` cannot be shown resolved and is carried.'
+            printf '%s\n\n' 'Each round records the `verdict` word the reviewer wrote beside its findings, transcribed and not validated, and each finding records its `failure_scenario` (#1511). Those two with `findings` are the whole of what the adjudicator reads, so a round entry can be replayed through it rather than re-decided. A `verdict` of null means no word was readable; no `verdict` key at all means the round was written before this was recorded. Nothing here is ever shortened to fit: a round is dropped whole, because a cut field reads as a complete one.'
             printf '%s\n' '```json'
             printf '%s\n' "${doc}"
             printf '%s\n' '```'
           } > "${body_file}"
+
+          # The RENDERED body, in bytes. `wc -c` counts bytes and GitHub's limit is in
+          # characters; a UTF-8 byte count is never below the character count, so this
+          # errs toward evicting one round early and never toward a rejected write.
+          #
+          # An unreadable size is a REFUSAL for the same reason an unreadable eviction
+          # count is: writing a body whose size could not be established is exactly the
+          # unannounced failure the measurement exists to replace.
+          if ! body_bytes=$(wc -c < "${body_file}" | tr -d '[:space:]'); then
+            ledger_note "the rendered ledger body's size could not be measured, so this round was NOT recorded. Refusing rather than sending a body that may be over GitHub's 65536 character limit: a rejected write records nothing and says so only in a curl status."
+            rm -f "${body_file}"
+            exit 0
+          fi
+          case "${body_bytes}" in
+            ""|*[!0-9]*)
+              ledger_note "the rendered ledger body's size read as '${body_bytes}', which is not a byte count, so this round was NOT recorded. Refusing rather than guessing that it fits."
+              rm -f "${body_file}"
+              exit 0
+              ;;
+          esac
+          if [ "${body_bytes}" -le 65536 ]; then
+            break
+          fi
+          # The floor. One round whose own findings do not fit cannot be made to fit by
+          # evicting anything, so the step refuses and leaves the ledger exactly as it
+          # stood. That refusal repeats every round for this pull request and says so
+          # every time: a wedge that announces itself is a known gap, and the only
+          # alternative on offer is a quiet one.
+          if [ "${keep}" -le 1 ]; then
+            ledger_note "this round's entry alone renders to ${body_bytes} bytes, over GitHub's 65536 character comment limit, so it was NOT recorded and the existing ledger is unchanged. Every round of this pull request will fail the same way until the reviewer writes a smaller payload. Nothing was shortened to make it fit: a failure_scenario cut down reads as a complete one, and a reader cannot tell those apart."
+            rm -f "${body_file}"
+            exit 0
+          fi
+          over_body=yes
+          keep=$((keep - 1))
+          done
+
+          # Announced ONCE, from the values the written body actually carries, and the
+          # sentence names which trigger fired. `truncated` in the comment counts both
+          # the same way, which is correct — a dropped round is a dropped round — but a
+          # maintainer reading the log acts differently on "this pull request has run
+          # more than 12 rounds" than on "one round's findings are large enough to
+          # push older rounds out of a 64 KB comment".
+          case "${dropped}" in
+            0) ;;
+            *)
+              if [ "${over_body}" = yes ]; then
+                ledger_note "the rendered ledger body exceeded GitHub's 65536 character comment limit, so ${dropped} of the OLDEST round(s) were dropped to make this round fit and the window is now ${keep} round(s) rather than 12. Those rounds are gone, not empty: a finding only they recorded can no longer be carried forward, and nothing downstream can tell that from a finding that was never raised. Nothing was shortened — a cut field reads as a complete one."
+              else
+                ledger_note "the ledger is at its 12-round cap, so ${dropped} of the OLDEST round(s) were dropped to keep the comment under GitHub's body limit. Those rounds are gone, not empty: a finding only they recorded can no longer be carried forward, and nothing downstream can tell that from a finding that was never raised."
+              fi
+              ;;
+          esac
+
+          if [ "${total_truncated}" = "-" ]; then
+            ledger_note "this ledger was written before it counted its own evictions, and it is at the 12-round cap, so how many rounds it has already dropped cannot be established. It is recorded as a window of unknown depth rather than as a complete history."
+          fi
 
           if ! payload=$(jq -nc --rawfile b "${body_file}" '{body: $b}'); then
             ledger_note "the ledger comment body could not be encoded, so this round was not recorded."

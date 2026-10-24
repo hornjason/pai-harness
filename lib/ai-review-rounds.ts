@@ -526,6 +526,73 @@ export const AI_REVIEW_LEDGER_TURNS_KEY = "turns";
  */
 export const AI_REVIEW_LEDGER_MERGE_KEY = "merge";
 
+/**
+ * The key holding the verdict WORD the reviewer wrote beside its findings
+ * (#1511).
+ *
+ * Not an adjudicated outcome and not derivable from `findings`. The payload
+ * contract asks the reviewer for a word, `lib/scaffold/ai-review-findings.ts`
+ * compares it to what the severities say, and a disagreement is a
+ * CONTRADICTION — #1178's shape, measured at roughly a third of runs. A
+ * reader handed findings alone can compute what the word SHOULD have been
+ * and cannot recover what it WAS, so the contradiction is unobservable
+ * through a ledger that does not record it.
+ *
+ * Which is what the ledger did until #1511, and why
+ * `evals/ai-review-control/` could reach `QUIET`, `FIRED` and `MISSED` and
+ * never `DETECTED`: every captured round scored `VERDICT_ABSENT`.
+ *
+ * Declared here and in `lib/scaffold/ai-review-step.ts` as
+ * `AI_REVIEW_VERDICT_KEY`, bound by `AC-R6` in
+ * `test/ai-review-ledger-read.test.ts` rather than by an import, because
+ * that module must stay import-free — the mutation batteries copy it into a
+ * temp directory where no relative specifier resolves.
+ */
+export const AI_REVIEW_LEDGER_VERDICT_KEY = "verdict";
+
+/** The round predates #1511. Nobody tried to record a verdict word. */
+export const AI_REVIEW_VERDICT_NOT_RECORDED = "AI_REVIEW_VERDICT_NOT_RECORDED";
+
+/** The round tried to record a verdict word and found none to record. */
+export const AI_REVIEW_VERDICT_UNREADABLE = "AI_REVIEW_VERDICT_UNREADABLE";
+
+/** A verdict word was recorded. What it SAYS is the adjudicator's question. */
+export const AI_REVIEW_VERDICT_RECORDED = "AI_REVIEW_VERDICT_RECORDED";
+
+/**
+ * The verdict word a round recorded, or why there is none.
+ *
+ * Three states and not two, the same split `turns` carries one key over and
+ * for the same reason: a round written before #1511 has no key, and a round
+ * written after it always has one. Collapsing them makes a ledger that never
+ * recorded a verdict indistinguishable from a reviewer that wrote none.
+ *
+ * `word` is `unknown` and is **never validated here**. Whether `PASS` and
+ * `BLOCK` are the only legal words is
+ * `lib/scaffold/ai-review-findings.ts`' decision and it already makes it;
+ * a second gate here would be two deciders answering one question, of which
+ * a mutation leaves either one holding the case up. A ledger carrying
+ * `MAYBE` reports `MAYBE`, and the adjudicator calls it
+ * `VERDICT_UNRECOGNISED` — which is the truth about that round.
+ */
+export type LedgerVerdictReading =
+  | { status: typeof AI_REVIEW_VERDICT_NOT_RECORDED }
+  | { status: typeof AI_REVIEW_VERDICT_UNREADABLE }
+  | { status: typeof AI_REVIEW_VERDICT_RECORDED; word: unknown };
+
+/**
+ * Read the verdict word off a ledger round.
+ *
+ * `undefined` — no key at all — is NOT_RECORDED. A JSON `null` is the
+ * writer saying it looked and found nothing, which is UNREADABLE. Anything
+ * else is carried through verbatim, including shapes no contract declares.
+ */
+export function readRoundVerdict(raw: unknown): LedgerVerdictReading {
+  if (raw === undefined) return { status: AI_REVIEW_VERDICT_NOT_RECORDED };
+  if (raw === null) return { status: AI_REVIEW_VERDICT_UNREADABLE };
+  return { status: AI_REVIEW_VERDICT_RECORDED, word: raw };
+}
+
 /** The round predates #1380. Nobody tried to read a turn count. */
 export const AI_REVIEW_TURNS_NOT_RECORDED = "AI_REVIEW_TURNS_NOT_RECORDED";
 
@@ -613,6 +680,8 @@ export interface LedgerRound {
   mergeSha: string;
   /** How many turns the reviewer spent, or why that is unknown (#1380). */
   turns: TurnReading;
+  /** The verdict word the reviewer wrote, or why there is none (#1511). */
+  verdict: LedgerVerdictReading;
   /** False when the entry recorded `findings: null`, or was not an object. */
   measured: boolean;
   /** True when the entry stamped the identity rule this reader knows. */
@@ -988,6 +1057,10 @@ function toLedgerRound(raw: unknown): LedgerRound {
       sha: "",
       mergeSha: "",
       turns: { status: AI_REVIEW_TURNS_NOT_RECORDED },
+      // Nobody got as far as asking, which is NOT_RECORDED for the same
+      // reason the turn count above is: an entry that is not an object has
+      // not stated a verdict and has not failed to state one.
+      verdict: { status: AI_REVIEW_VERDICT_NOT_RECORDED },
       measured: false,
       keyable: false,
       findings: [],
@@ -1004,6 +1077,7 @@ function toLedgerRound(raw: unknown): LedgerRound {
         ? (e[AI_REVIEW_LEDGER_MERGE_KEY] as string)
         : "",
     turns: readRoundTurns(e[AI_REVIEW_LEDGER_TURNS_KEY]),
+    verdict: readRoundVerdict(e[AI_REVIEW_LEDGER_VERDICT_KEY]),
     measured,
     keyable: e.identity === AI_REVIEW_LEDGER_IDENTITY,
     findings: measured

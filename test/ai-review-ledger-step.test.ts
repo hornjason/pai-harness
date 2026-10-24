@@ -49,6 +49,7 @@ import {
   AI_REVIEW_LEDGER_IDENTITY_V1,
   AI_REVIEW_LEDGER_BOT_LOGIN,
   AI_REVIEW_LEDGER_MARKER,
+  AI_REVIEW_LEDGER_MAX_BODY,
   AI_REVIEW_LEDGER_MAX_PAGES,
   AI_REVIEW_LEDGER_MAX_ROUNDS,
   AI_REVIEW_LEDGER_TEXT_FIELD,
@@ -504,7 +505,15 @@ describe("AC-L1 (#1168): a round is written, and the ledger is cumulative", () =
       // read and the recorded text is empty. AC-L9 is where it is planted.
       // No `text`: nothing is planted at `lib/a.ts` here, so the anchor could
       // not be read and the recorder records its absence (AC-L14, #1406).
-      { severity: "high", file: "lib/a.ts", line: 4, summary: "s" },
+      //
+      // `failure_scenario: null` and NOT an absent key (#1511). The
+      // projection names the field, so a payload that omitted it records
+      // `null` — which `blockingContractViolations` treats exactly as it
+      // treats an absent one, and which says the reviewer supplied nothing
+      // rather than the recorder having dropped it. `ONE_FINDING` omits it
+      // on purpose: it is the shape the reviewer is NOT supposed to write,
+      // and recording it faithfully is what keeps the refusal reachable.
+      { severity: "high", file: "lib/a.ts", line: 4, summary: "s", failure_scenario: null },
     ]);
     expect(r.rounds![0].round).toBe(2);
     // The identity rule is stamped on the entry, so a later round reads which
@@ -2870,38 +2879,444 @@ describe("AC-T6 (#1380): the per-round cost, and the window that still fits", ()
 });
 
 /**
- * The refusal, asserted so it stays a decision rather than becoming a hole.
+ * The boundary, asserted so it stays a decision rather than becoming a hole.
  *
- * #1380 asks for "verdict + num_turns + merge commit". Two of the three are
- * above. The verdict is NOT recorded and must not be: this step runs BEFORE
- * the adjudicator — the position `buildPersistScript` argues at length — so
- * there is no verdict in scope to read, and one computed here would be a
- * second decider answering `AI_REVIEW_SEVERITIES`' question about the same
- * findings. Two readings that agree until the day they do not, both reading
- * as covered.
+ * #1380 asks for "verdict + num_turns + merge commit", and this case used to
+ * assert that the verdict was deliberately NOT recorded. **#1511 is the
+ * finding that the reasoning behind that was half right**, so the case is
+ * rewritten here rather than deleted, and what it asserts is the line that
+ * actually matters.
  *
- * It is not lost. The verdict is a function of the `findings` array this
- * step records and that one severity table, so a reader derives it rather
- * than reading a second copy that can disagree.
+ * What was right: a verdict COMPUTED here would be a second decider
+ * answering `AI_REVIEW_SEVERITIES`' question about the same findings — two
+ * readings that agree until the day they do not, both reading as covered.
+ * That is still true and the step still computes nothing.
+ *
+ * What was wrong: *"the verdict is a function of the `findings` array"*. It
+ * is not. It is a word the reviewer writes beside them, and the gap between
+ * the two is CONTRADICTION (#1178). A reader handed findings alone can
+ * compute what the word should have been and cannot recover what it was, so
+ * every round ever captured out of the ledger scored `VERDICT_ABSENT` and
+ * `DETECTED` was unreachable — which is #1511.
+ *
+ * So: the WORD is transcribed, an OUTCOME is still never recorded, and the
+ * two halves are asserted separately because a case that merged them would
+ * go green under a writer that computed the word from the severities.
  */
-describe("AC-T8 (#1380): no verdict is recorded, and the recorder says why", () => {
-  test("AC-T8: the entry carries no verdict-shaped key", () => {
+describe("AC-T8 (#1380, #1511): the reviewer's word is transcribed, an outcome is never computed", () => {
+  test("AC-T8: the entry carries the verdict WORD the payload stated", () => {
     const r = runPersist({
       list: [],
       files: { "lib/a.ts": "one\ntwo\nthree\nfour\n" },
-      payload: ONE_FINDING,
+      payload: { ...ONE_FINDING, verdict: "BLOCK" },
       execution: executionMessages(resultWith("num_turns", 51)),
     });
     expect(r.status, r.stderr).toBe(0);
-    const keys = Object.keys(r.rounds![0]);
-    expect(keys).not.toContain("verdict");
-    expect(keys).not.toContain("outcome");
-    expect(keys).not.toContain("blocking");
+    expect(r.rounds![0].verdict).toBe("BLOCK");
   });
 
-  test("AC-T8: the script states the position that makes a verdict here a second decider", () => {
+  test("AC-T8: it transcribes, so a word that CONTRADICTS the findings survives", () => {
+    // The input that separates transcription from computation, and the only
+    // one that can: a `PASS` over a `high`. A writer deriving the word from
+    // `AI_REVIEW_SEVERITIES` records `BLOCK` here and is green on every
+    // agreeing payload, which is most of them.
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\nfour\n" },
+      payload: { ...ONE_FINDING, verdict: "PASS" },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(
+      r.rounds![0].verdict,
+      "the recorded word was derived from the findings rather than read — a " +
+        "contradiction cannot be observed through a ledger that repairs it",
+    ).toBe("PASS");
+  });
+
+  test("AC-T8: no OUTCOME-shaped key is recorded, because this step cannot see one", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\nfour\n" },
+      payload: { ...ONE_FINDING, verdict: "BLOCK" },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const keys = Object.keys(r.rounds![0]);
+    expect(keys).not.toContain("outcome");
+    expect(keys).not.toContain("blocking");
+    expect(keys).not.toContain("adjudicated");
+  });
+
+  test("AC-T8: the script states the position that makes a COMPUTED verdict a second decider", () => {
     const src = buildPersistScript();
-    expect(src).toContain("It records findings and NEVER a verdict");
-    expect(src).toContain("A verdict computed here would be a second decider");
+    expect(src).toContain("NEVER computes a verdict");
+    expect(src).toContain("A verdict computed here would be a");
+  });
+});
+
+/**
+ * AC-L16 (#1511): the per-finding projection carries `failure_scenario`.
+ *
+ * `AI_REVIEW_BLOCKING_REQUIRED_FIELDS` is derived from
+ * `AI_REVIEW_FINDING_FIELDS` minus `severity`, so a blocking finding missing
+ * `failure_scenario` is `BLOCKING_FINDING_INCOMPLETE` and the whole reading
+ * is UNMEASURED. The ledger's projection named four of the five fields, so
+ * EVERY blocking finding it ever recorded read back incomplete and
+ * `DETECTED` was unreachable through the ledger — #1511, found by #1509.
+ *
+ * The halves are asserted against each other rather than separately: the
+ * recorded value is compared to the value the payload stated, and then the
+ * recorded round is driven through `readAiReviewFindings`, the consumer
+ * whose refusal started this. A case asserting only that the key is present
+ * would be green over a recorder that wrote the key with wrong content.
+ */
+describe("AC-L16 (#1511): a blocking finding's failure_scenario survives the projection", () => {
+  const SCENARIO =
+    "call writeGateResult with gates.scope already FAIL and a second PASS " +
+    "arriving on the same key: the second write wins and the run reports green";
+
+  const BLOCKING = {
+    verdict: "BLOCK",
+    findings: [
+      {
+        severity: "high",
+        file: "lib/a.ts",
+        line: 2,
+        summary: "the later write silently replaces an earlier FAIL",
+        failure_scenario: SCENARIO,
+      },
+    ],
+  };
+
+  /** The payload `capture.ts` assembles: the round's word and its findings. */
+  function replay(entry: Record<string, any>) {
+    return readAiReviewFindings(
+      JSON.stringify({ verdict: entry.verdict, findings: entry.findings }),
+    );
+  }
+
+  test("AC-L16: the scenario is recorded verbatim, byte for byte", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\n" },
+      payload: BLOCKING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings[0].failure_scenario).toBe(SCENARIO);
+  });
+
+  test("AC-L16: the recorded round reads back MEASURED through the real consumer", () => {
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\n" },
+      payload: BLOCKING,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const reading = replay(r.rounds![0]);
+    expect(reading.unmeasuredReasons).toEqual([]);
+    expect(reading.outcome, reading.detail.join(" | ")).toBe("BLOCKED");
+  });
+
+  test("AC-L16: the MUTANT — the field dropped from the projection — is UNMEASURED again", () => {
+    // The pre-#1511 projection, restored. The defect verbatim rather than a
+    // reconstruction of its shape.
+    const real = buildPersistScript();
+    const WIDE = ", summary, failure_scenario}";
+    expect(
+      real.split(WIDE).length - 1,
+      "the projection moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    const mutant = real.replace(WIDE, ", summary}");
+
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\n" },
+      payload: BLOCKING,
+      script: mutant,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0].findings[0].failure_scenario).toBeUndefined();
+    const reading = replay(r.rounds![0]);
+    expect(reading.outcome).toBe("UNMEASURED");
+    expect(reading.unmeasuredReasons).toContain("BLOCKING_FINDING_INCOMPLETE");
+  });
+
+  test("AC-L16: the MUTANT — the verdict word dropped from the entry — is VERDICT_ABSENT", () => {
+    // The other half of #1511, mutated at its own binding. The two reasons
+    // are separate cases because one fix without the other leaves the
+    // capture UNMEASURED and a case asserting only `outcome` cannot say
+    // which half is missing.
+    const real = buildPersistScript();
+    const KEY = "verdict:$verdict, ";
+    expect(
+      real.split(KEY).length - 1,
+      "the entry's verdict member moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    const mutant = real.replace(KEY, "");
+
+    const r = runPersist({
+      list: [],
+      files: { "lib/a.ts": "one\ntwo\nthree\n" },
+      payload: BLOCKING,
+      script: mutant,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(Object.keys(r.rounds![0])).not.toContain("verdict");
+    const reading = readAiReviewFindings(JSON.stringify({ findings: r.rounds![0].findings }));
+    expect(reading.outcome).toBe("UNMEASURED");
+    expect(reading.unmeasuredReasons).toContain("VERDICT_ABSENT");
+  });
+});
+
+/**
+ * AC-L17 (#1511): the rendered body is MEASURED, and the eviction says which
+ * trigger fired.
+ *
+ * `AI_REVIEW_LEDGER_MAX_ROUNDS`' twelve was derived from "a pathological
+ * round is ~4 KB", an estimate nobody measured, and #1511 adds a prose field
+ * underneath it. So the body is rendered and counted before it is sent, and
+ * a body over `AI_REVIEW_LEDGER_MAX_BODY` evicts another of the oldest
+ * rounds through the SAME `truncated` counter and the SAME annotation.
+ *
+ * Nothing is ever shortened. A `failure_scenario` cut down reads as a
+ * complete one and `blockingContractViolations` cannot see the difference,
+ * so a round is dropped whole or not at all — which is the one assertion
+ * here a reader should check first.
+ */
+describe("AC-L17 (#1511): a body that would not fit evicts rounds, loudly", () => {
+  /** A prior round whose finding carries `size` characters of scenario. */
+  function fatRounds(n: number, size: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      at: "2026-10-24T00:00:00Z",
+      sha: "cafe",
+      run: `old-${i}`,
+      attempt: "1",
+      round: i + 1,
+      verdict: "BLOCK",
+      findings: [
+        {
+          severity: "high",
+          file: "lib/a.ts",
+          line: 2,
+          summary: `old finding ${i}`,
+          failure_scenario: `${i}`.padEnd(size, "x"),
+        },
+      ],
+    }));
+  }
+
+  /**
+   * THIS round carries a scenario of its own, and that is load-bearing.
+   *
+   * The projection only touches the round being written; prior entries are
+   * re-serialised as they stand. So a fixture whose new round has no
+   * findings cannot see a writer that SHORTENS the field — every scenario it
+   * inspects came out of the prior ledger untouched, and the
+   * "nothing is shortened" case would survive the trimming fix vacuously.
+   */
+  function fatRig(size: number) {
+    return {
+      list: [
+        botComment(
+          5,
+          windowBody(fatRounds(AI_REVIEW_LEDGER_MAX_ROUNDS - 2, size), {
+            [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 0,
+          }),
+        ),
+      ],
+      files: { "lib/a.ts": "one\ntwo\nthree\n" },
+      payload: {
+        verdict: "BLOCK",
+        findings: [
+          {
+            severity: "high",
+            file: "lib/a.ts",
+            line: 2,
+            summary: "this round's finding",
+            failure_scenario: "n".padEnd(size, "y"),
+          },
+        ],
+      },
+    };
+  }
+
+  /** The body the rig captured, as GitHub would receive it. */
+  function sentBody(r: ReturnType<typeof runPersist>): string {
+    return JSON.parse(r.sentRaw!).body as string;
+  }
+
+  /** Ten prior rounds plus this one — ELEVEN, deliberately under the cap. */
+  const TOTAL = AI_REVIEW_LEDGER_MAX_ROUNDS - 1;
+
+  test("AC-L17: a window UNDER the count cap is still cut to fit, and says so", () => {
+    const r = runPersist(fatRig(6000));
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method, "nothing was written at all").toBe("PATCH");
+
+    const body = sentBody(r);
+    expect(
+      body.length,
+      `the written body is ${body.length} characters, over the ${AI_REVIEW_LEDGER_MAX_BODY} limit`,
+    ).toBeLessThanOrEqual(AI_REVIEW_LEDGER_MAX_BODY);
+
+    // ELEVEN rounds is under the twelve-round cap, so the count cap evicts
+    // NOTHING here and every dropped round is the measurement's doing. That
+    // is what makes this a reading of size rather than of count.
+    expect(TOTAL).toBeLessThan(AI_REVIEW_LEDGER_MAX_ROUNDS);
+    expect(r.doc.rounds.length).toBeLessThan(TOTAL);
+    expect(r.doc.rounds.length).toBeGreaterThan(0);
+
+    // ONE counter, not two. The number in the comment is how many rounds
+    // went missing, by either route.
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(TOTAL - r.doc.rounds.length);
+
+    // The newest survived and the oldest did not — an eviction that dropped
+    // the wrong end keeps the same length and loses every new round.
+    expect(JSON.stringify(r.doc), "this round was not recorded").toContain('"run-9"');
+    expect(JSON.stringify(r.doc), "old-0 should have been dropped").not.toContain('"old-0"');
+
+    // WHICH trigger fired. "at the twelve-round cap" and "the comment would
+    // not fit" are different facts a maintainer acts differently on, so the
+    // annotation names the limit rather than the cap.
+    expect(r.stdout, "the size eviction was not announced").toContain(
+      `exceeded GitHub's ${AI_REVIEW_LEDGER_MAX_BODY} character comment limit`,
+    );
+    expect(r.stdout, "the size eviction did not say how many rounds it cost").toContain(
+      "of the OLDEST round(s) were dropped to make this round fit",
+    );
+  });
+
+  test("AC-L17 CONTROL: the same number of SMALL rounds keeps the whole window, silently", () => {
+    // The pair, varying exactly one thing: the length of one string per
+    // finding. Same ten prior rounds, same new round, same everything else.
+    const r = runPersist(fatRig(20));
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.doc.rounds).toHaveLength(TOTAL);
+    expect(r.doc[AI_REVIEW_LEDGER_TRUNCATED_FIELD]).toBe(0);
+    expect(JSON.stringify(r.doc), "an under-limit ledger lost its oldest round").toContain(
+      '"old-0"',
+    );
+    expect(r.stdout, "the size eviction fired under the limit").not.toContain(
+      "character comment limit",
+    );
+    expect(r.stdout, "the cap warning fired below the cap").not.toContain("OLDEST");
+  });
+
+  test("AC-L17: nothing is SHORTENED — this round's scenario and every kept one is whole", () => {
+    // The assertion that separates this design from the other one on offer,
+    // and the reason `fatRig` gives THIS round a finding: the projection
+    // only touches the round being written, so a fixture reading prior
+    // entries alone would survive the trimming fix without witnessing it.
+    const r = runPersist(fatRig(6000));
+    expect(r.status, r.stderr).toBe(0);
+
+    const written = r.doc.rounds[r.doc.rounds.length - 1] as Record<string, any>;
+    expect(written.run, "the last entry is not the round just written").toBe("run-9");
+    expect(
+      written.findings[0].failure_scenario.length,
+      "the scenario this round recorded was shortened to make the body fit",
+    ).toBe(6000);
+
+    let checked = 0;
+    for (const round of r.doc.rounds as Array<Record<string, any>>) {
+      for (const f of (round.findings ?? []) as Array<Record<string, unknown>>) {
+        if (typeof f.failure_scenario !== "string") continue;
+        checked += 1;
+        expect(
+          f.failure_scenario.length,
+          `a kept scenario is ${f.failure_scenario.length} characters, not the 6000 recorded`,
+        ).toBe(6000);
+      }
+    }
+    // Vacuity control: a loop over nothing asserts nothing.
+    expect(checked, "no kept round carried a scenario, so nothing was checked").toBeGreaterThan(1);
+  });
+
+  test("AC-L17: the MUTANT — the measurement raised out of reach — writes an over-limit body", () => {
+    // ONE binding, so there is exactly one thing to mutate. Raising the
+    // comparison IS the pre-#1511 behaviour: the count cap alone decides,
+    // twelve large rounds are assembled, and the body GitHub is handed is
+    // over its own limit — a write that fails with nothing but a curl status
+    // to say why.
+    const real = buildPersistScript();
+    const GUARD = `-le ${AI_REVIEW_LEDGER_MAX_BODY} `;
+    expect(
+      real.split(GUARD).length - 1,
+      "the body-size comparison moved — this row mutates a string that is no longer there",
+    ).toBe(1);
+    const mutant = real.replace(GUARD, "-le 99999999 ");
+
+    const m = runPersist({ ...fatRig(6000), script: mutant });
+    expect(m.status, m.stderr).toBe(0);
+    expect(m.doc.rounds, "the mutant did not keep the whole window").toHaveLength(TOTAL);
+    expect(
+      sentBody(m).length,
+      "the mutant's body fits, so this fixture cannot witness the measurement",
+    ).toBeGreaterThan(AI_REVIEW_LEDGER_MAX_BODY);
+
+    // The control, same rig and the real script: the eviction is the
+    // measurement's doing, not something this fixture provokes on its own.
+    const control = runPersist(fatRig(6000));
+    expect(sentBody(control).length).toBeLessThanOrEqual(AI_REVIEW_LEDGER_MAX_BODY);
+    expect(control.doc.rounds.length).toBeLessThan(TOTAL);
+  });
+});
+
+/**
+ * AC-L18 (#1511): the floor. One round that cannot be made to fit REFUSES.
+ *
+ * The eviction loop stops at one round. A round whose own findings exceed
+ * the comment limit cannot be made to fit by evicting anything, so the step
+ * writes nothing and leaves the existing ledger exactly as it stood — the
+ * direction every other failure in this recorder takes, because an
+ * unreadable ledger costs one round and an overwritten one costs all of
+ * them.
+ *
+ * It is a wedge and it is an ANNOUNCED one: the same refusal fires on every
+ * subsequent round of that pull request, every run. A known gap beats a
+ * silent one, and the alternative — shortening the field — is the lie this
+ * whole issue is about.
+ */
+describe("AC-L18 (#1511): a single round that cannot fit is refused, not trimmed", () => {
+  const prior = [
+    { at: "2026-10-24T00:00:00Z", sha: "cafe", run: "old-0", attempt: "1", round: 1, findings: [] },
+  ];
+
+  function oneRound(scenario: string) {
+    return {
+      list: [botComment(5, windowBody(prior, { [AI_REVIEW_LEDGER_TRUNCATED_FIELD]: 0 }))],
+      files: { "lib/a.ts": "one\ntwo\nthree\n" },
+      payload: {
+        verdict: "BLOCK",
+        findings: [
+          { severity: "high", file: "lib/a.ts", line: 2, summary: "s", failure_scenario: scenario },
+        ],
+      },
+    };
+  }
+
+  test("AC-L18: nothing is written and the existing ledger is untouched", () => {
+    const r = runPersist(oneRound("x".repeat(AI_REVIEW_LEDGER_MAX_BODY + 8_000)));
+    expect(r.status, "the recorder failed the job it only observes").toBe(0);
+    expect(r.method, "an over-limit body was sent to the API").toBe(null);
+    expect(r.stdout, "the refusal was silent").toContain("NOT recorded");
+    expect(r.stdout, "the refusal did not name the limit it hit").toContain(
+      `over GitHub's ${AI_REVIEW_LEDGER_MAX_BODY} character comment limit`,
+    );
+    expect(
+      r.stdout,
+      "the refusal did not say that nothing was shortened, which is the decision",
+    ).toContain("Nothing was shortened to make it fit");
+  });
+
+  test("AC-L18 CONTROL: the same round with a scenario that FITS is written whole", () => {
+    // The pair, varying exactly one thing: the length of one string. A
+    // refusal that fired on every large payload would pass the row above.
+    const fits = "x".repeat(4_000);
+    const r = runPersist(oneRound(fits));
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.method).toBe("PATCH");
+    expect(r.doc.rounds).toHaveLength(2);
+    expect(r.doc.rounds[1].findings[0].failure_scenario).toBe(fits);
+    expect(r.stdout).not.toContain("NOT recorded");
   });
 });

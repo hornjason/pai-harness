@@ -23,32 +23,38 @@
  * ## What the ledger carries, MEASURED rather than assumed
  *
  * #1509 proposed the ledger as the cheapest capture path *because* it already
- * records `findings` per round "in the shape `score` wants". It does not, and
- * the gap is in two named fields. The writer's projection in
- * `lib/scaffold/ai-review-step.ts` is
+ * records `findings` per round "in the shape `score` wants". **It did not**,
+ * and the gap was in two named fields. The writer's projection in
+ * `lib/scaffold/ai-review-step.ts` was
  *
  * ```
  * [ .findings[] | {severity, file, line, summary} ]
  * ```
  *
- * plus a `text` anchor, and the round entry around it is
+ * plus a `text` anchor, and the round entry around it was
  * `{at, sha, merge, run, attempt, identity, round, turns, findings}`.
  *
- * | the payload contract wants | the ledger holds | consequence for `score` |
+ * | the payload contract wants | the ledger held | consequence for `score` |
  * |---|---|---|
- * | a `verdict` of `PASS` or `BLOCK` | nothing — no round entry has ever carried one | `VERDICT_ABSENT` on EVERY round, planted and clean alike |
+ * | a `verdict` of `PASS` or `BLOCK` | nothing — no round entry had ever carried one | `VERDICT_ABSENT` on EVERY round, planted and clean alike |
  * | `failure_scenario` on every BLOCKING finding | projected away | `BLOCKING_FINDING_INCOMPLETE` on every blocking finding |
  * | `severity`, `file`, `line`, `summary` | all four | — |
  *
- * The second row is the one that decides what this instrument can measure.
- * `DETECTED` requires a BLOCKING finding at the declared location, and a
- * blocking finding read out of the ledger is always incomplete — so **a
- * reading captured this way can reach `QUIET`, `FIRED` and `MISSED`, and
- * cannot reach `DETECTED`.** Recall is the half the control exists for, and
- * through this path it is structurally unreachable.
+ * The second row decided what this instrument could measure. `DETECTED`
+ * requires a BLOCKING finding at the declared location, and a blocking
+ * finding read out of such a ledger is always incomplete — so a reading
+ * captured that way could reach `QUIET`, `FIRED` and `MISSED` and not
+ * `DETECTED`. Recall is the half the control exists for.
  *
- * That is reported, not worked around. Two repairs are available and both are
- * refused here on purpose:
+ * **#1511 fixed the writer.** The projection carries `failure_scenario`, and
+ * the round entry carries the `verdict` word the reviewer wrote. This module
+ * now emits both into the payload, VERBATIM, which makes `DETECTED` reachable
+ * on a round recorded by a current writer.
+ *
+ * **What it still refuses, and will keep refusing.** Two repairs were
+ * available here and both were rejected before #1511 existed; neither becomes
+ * acceptable now, and a round written by an OLDER writer still reads
+ * UNMEASURED rather than being patched up:
  *
  * - **Synthesise the verdict** from the findings. It makes clean subjects
  *   readable, and it makes `CONTRADICTION` — the #1178 shape, a `BLOCK` over
@@ -59,9 +65,11 @@
  *   finding on the reviewer's behalf, which is the one thing a control may
  *   never do.
  *
- * The honest fix is for the ledger writer to record both, and that is a change
- * to `lib/scaffold/ai-review-step.ts`, outside this module and outside #1509.
- * It is filed as **#1511**.
+ * A round whose `verdict` is `AI_REVIEW_VERDICT_NOT_RECORDED` was written
+ * before the writer recorded one; a round whose `verdict` is
+ * `AI_REVIEW_VERDICT_UNREADABLE` was written by a current writer that found
+ * no word in the payload. Both emit a payload with no `verdict` key, which
+ * reads `VERDICT_ABSENT` — true of both, and the detail line says which.
  *
  * ## Why the forge query is the caller's job
  *
@@ -75,7 +83,10 @@ import {
   AI_REVIEW_LEDGER_ABSENT,
   AI_REVIEW_LEDGER_READ,
   AI_REVIEW_LEDGER_UNREADABLE,
+  AI_REVIEW_LEDGER_VERDICT_KEY,
   AI_REVIEW_TRUNCATION_UNKNOWN,
+  AI_REVIEW_VERDICT_NOT_RECORDED,
+  AI_REVIEW_VERDICT_RECORDED,
   type LedgerReading,
   type LedgerRound,
 } from "../../lib/ai-review-rounds";
@@ -214,7 +225,18 @@ export function captureRoundPayload(
   // dropped — including the ledger's own `text` anchor, which the payload
   // reader ignores and which is the only evidence of what the cited line said
   // at the time.
-  const payload = `${JSON.stringify({ [AI_REVIEW_FINDINGS_KEY]: entry.findings }, null, 2)}\n`;
+  //
+  // The `verdict` key is emitted only when the entry RECORDED one (#1511).
+  // Emitting `verdict: null` for a round that recorded none would hand the
+  // adjudicator a value nobody wrote, and `VERDICT_UNRECOGNISED` is a
+  // different claim about the reviewer from `VERDICT_ABSENT`. Absent in the
+  // ledger stays absent in the payload; which of the two absences it was is
+  // said in the detail below, where it cannot be mistaken for data.
+  const captured: Record<string, unknown> =
+    entry.verdict.status === AI_REVIEW_VERDICT_RECORDED
+      ? { [AI_REVIEW_LEDGER_VERDICT_KEY]: entry.verdict.word, [AI_REVIEW_FINDINGS_KEY]: entry.findings }
+      : { [AI_REVIEW_FINDINGS_KEY]: entry.findings };
+  const payload = `${JSON.stringify(captured, null, 2)}\n`;
   const scored = readAiReviewFindings(payload);
 
   const detail: string[] = [
@@ -223,15 +245,30 @@ export function captureRoundPayload(
       `${entry.findings.length} finding(s).`,
   ];
 
+  if (entry.verdict.status === AI_REVIEW_VERDICT_NOT_RECORDED) {
+    detail.push(
+      `this round entry carries no '${AI_REVIEW_LEDGER_VERDICT_KEY}' key at all, so it was ` +
+        "written by a ledger writer from before #1511, when the word was never recorded. " +
+        "It is not supplied here: deriving it from the findings would make CONTRADICTION " +
+        "unobservable, because the word compared would come from the thing it is compared " +
+        "against. Take a draw from a round recorded by a current writer.",
+    );
+  } else if (entry.verdict.status !== AI_REVIEW_VERDICT_RECORDED) {
+    detail.push(
+      `this round entry recorded '${AI_REVIEW_LEDGER_VERDICT_KEY}: null' — a current writer ` +
+        "looked and found no word in the reviewer's payload. That is a reading, and it is " +
+        "not repaired here.",
+    );
+  }
+
   if (scored.outcome === "UNMEASURED") {
     detail.push(
-      `this payload reads UNMEASURED: ${scored.unmeasuredReasons.join(", ")}. The ledger's ` +
-        "round entry carries no verdict word, and its per-finding projection drops " +
-        "failure_scenario — so every capture is VERDICT_ABSENT, and a capture holding a " +
-        "blocking finding is also BLOCKING_FINDING_INCOMPLETE. DETECTED is therefore not " +
-        "reachable through this path. The reading is UNMEASURED rather than repaired: " +
-        "deriving the verdict from the findings would make CONTRADICTION unobservable, " +
-        "and writing a failure_scenario would be writing the reviewer's finding for it.",
+      `this payload reads UNMEASURED: ${scored.unmeasuredReasons.join(", ")}. The reading is ` +
+        "UNMEASURED rather than repaired: deriving the verdict from the findings would make " +
+        "CONTRADICTION unobservable, and writing a failure_scenario would be writing the " +
+        "reviewer's finding for it. Since #1511 the writer records both, so an UNMEASURED " +
+        "capture of a current round is a statement about what that round holds — not, as it " +
+        "was before, a statement about what the ledger format can express.",
     );
     detail.push(...scored.detail);
   }
