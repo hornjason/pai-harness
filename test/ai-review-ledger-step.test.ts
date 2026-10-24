@@ -119,6 +119,73 @@ function botComment(id: number, body: string) {
   return { id, user: { type: "Bot", login: "github-actions[bot]" }, body };
 }
 
+/**
+ * The action's result message, as the SDK declares it and the action writes
+ * it — NOT as a reader wishes it were (#1498).
+ *
+ * Derived from the pinned action rather than from the readers that consume
+ * it. `anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6`
+ * (the SHA `lib/claude-code-action.ts` declares, v1 as of 2026-10-19):
+ *
+ *  - `base-action/src/run-claude-sdk.ts` accumulates `const messages:
+ *    SDKMessage[]` and hands that ARRAY to `writeExecutionFile(messages)`.
+ *  - `base-action/src/execution-file.ts` is
+ *    `writeFile(executionFile, JSON.stringify(messages, null, 2))` — the whole
+ *    of it. No wrapper object, no root-level summary.
+ *
+ * So the document root is a JSON ARRAY of messages and `num_turns` sits on the
+ * `type: "result"` member inside it. A reader addressing `.num_turns` at the
+ * root finds nothing on any run that has ever happened, which is #1498.
+ *
+ * The field list is `SDKResultSuccess` in `@anthropic-ai/claude-agent-sdk`'s
+ * `sdk.d.ts`, including `permission_denials` as an ARRAY — the `_count` name
+ * exists only in `sanitizeSdkOutput`'s `console.log` and never reaches this
+ * file, which is #1392, the same defect one key over.
+ */
+const RESULT_MESSAGE: Record<string, unknown> = {
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  duration_ms: 412_118,
+  duration_api_ms: 390_004,
+  num_turns: 51,
+  result: "CLEAN — no blocking findings.",
+  stop_reason: null,
+  total_cost_usd: 1.8423,
+  usage: { input_tokens: 41, output_tokens: 1180 },
+  modelUsage: {},
+  permission_denials: [],
+  session_id: "sess-1498",
+  uuid: "11111111-2222-3333-4444-555555555555",
+};
+
+/**
+ * A real `SDKMessage[]` as the action writes one: an `init`, some traffic, and
+ * the result message LAST. `result === null` plants an array with no result
+ * message at all, which is a readable document stating no turn count — and
+ * must record UNMEASURED rather than `0`.
+ */
+function executionMessages(result: Record<string, unknown> | null): unknown[] {
+  const messages: unknown[] = [
+    { type: "system", subtype: "init", session_id: "sess-1498", model: "claude-opus-4-1" },
+    {
+      type: "assistant",
+      session_id: "sess-1498",
+      message: { role: "assistant", content: [{ type: "text", text: "reviewing" }] },
+    },
+  ];
+  if (result !== null) messages.push(result);
+  return messages;
+}
+
+/** The result message with one field replaced, or — for `undefined` — removed. */
+function resultWith(field: string, value: unknown): Record<string, unknown> {
+  const r = { ...RESULT_MESSAGE };
+  if (value === undefined) delete r[field];
+  else r[field] = value;
+  return r;
+}
+
 /** A comment body in the ledger's own format, holding `rounds`. */
 function ledgerBody(payload: unknown): string {
   return [
@@ -2422,11 +2489,25 @@ describe("AC-L13 (#1379): a cited path is not an option, and must be tracked", (
  *
  * NO VERDICT FIELD, and that is a refusal rather than an omission — AC-T8.
  */
-describe("AC-T1 (#1380): a readable num_turns is recorded, and the reader reads it back", () => {
-  test("AC-T1: `num_turns: 51` records 51, and `readRoundTurns` says READ", () => {
-    const r = runPersist({ list: [], payload: { findings: [] }, execution: { num_turns: 51 } });
+describe("AC-T1 (#1380, #1498): a readable num_turns is recorded, and the reader reads it back", () => {
+  // #1498. THE decisive case. The fixture is a real `SDKMessage[]` — the
+  // shape `writeExecutionFile` produces — and before the fix the filter read
+  // `.num_turns` off the ARRAY, where it cannot exist, so this records
+  // `null`. #1493's own cases fed a top-level `{"num_turns": 51}`, a shape
+  // the action does not write, and passed while witnessing nothing about
+  // production; PR #1494 round 1 recorded `"turns":null` on a review that
+  // ran, returned CLEAN and spent real turns.
+  test("AC-T1 (#1498): a real SDKMessage[] stating num_turns 51 records 51", () => {
+    const r = runPersist({
+      list: [],
+      payload: { findings: [] },
+      execution: executionMessages(resultWith("num_turns", 51)),
+    });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD]).toBe(51);
+    expect(
+      r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD],
+      "the turn count was read off the document ROOT, which on a real execution file is an array — #1498",
+    ).toBe(51);
     // Through the real reader, never off the raw object. The step and the
     // reader are two modules that may not import each other, so the only
     // honest place an agreement about this key can be asserted is here.
@@ -2436,13 +2517,49 @@ describe("AC-T1 (#1380): a readable num_turns is recorded, and the reader reads 
     });
   });
 
-  test("AC-T1: zero turns is a READ zero, and says so through the reader", () => {
-    const r = runPersist({ list: [], payload: { findings: [] }, execution: { num_turns: 0 } });
+  test("AC-T1 (#1498): zero turns is a READ zero, and says so through the reader", () => {
+    const r = runPersist({
+      list: [],
+      payload: { findings: [] },
+      execution: executionMessages(resultWith("num_turns", 0)),
+    });
     expect(r.status, r.stderr).toBe(0);
     expect(readRoundTurns(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD])).toEqual({
       status: AI_REVIEW_TURNS_READ,
       turns: 0,
     });
+  });
+
+  // The result message is not necessarily the only message, and it is the
+  // LAST one — the action `break`s out of the iterator on it. A reader that
+  // happened to take the first object in the array would be green on a
+  // one-message fixture and wrong on every real file.
+  test("AC-T1 (#1498): the count is taken from the result message, not from the first message", () => {
+    const r = runPersist({
+      list: [],
+      payload: { findings: [] },
+      execution: executionMessages(resultWith("num_turns", 83)),
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD]).toBe(83);
+  });
+
+  // An exhausted run writes `error_max_turns` and still states its count.
+  // That is a reading, not a failure to read: the route block one file over
+  // uses the same subtype to explain the empty payload, and the ledger's
+  // whole purpose is to compare that count against the cap.
+  test("AC-T1 (#1498): an error_max_turns result still states a readable count", () => {
+    const r = runPersist({
+      list: [],
+      payload: { findings: [] },
+      execution: executionMessages({
+        ...resultWith("subtype", "error_max_turns"),
+        num_turns: 80,
+        is_error: true,
+      }),
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.rounds![0][AI_REVIEW_LEDGER_TURNS_FIELD]).toBe(80);
   });
 });
 
@@ -2456,12 +2573,38 @@ const TURN_SHAPES: { name: string; execution: unknown }[] = [
   { name: "no execution file at all", execution: undefined },
   { name: "an empty execution file", execution: "" },
   { name: "bytes that are not JSON", execution: "not json at all" },
-  { name: "a document with no num_turns key", execution: { subtype: "success" } },
-  { name: "num_turns as a string", execution: { num_turns: "51" } },
-  { name: "num_turns as a float", execution: { num_turns: 51.5 } },
-  { name: "a negative num_turns", execution: { num_turns: -1 } },
-  { name: "num_turns explicitly null", execution: { num_turns: null } },
-  { name: "num_turns as an object", execution: { num_turns: { n: 51 } } },
+  // Every row below is the REAL array shape with one thing wrong in it
+  // (#1498). Before this they were top-level objects, which is a document
+  // the action has never written — so each row agreed with the broken reader
+  // rather than measuring it.
+  {
+    name: "a result message with no num_turns key",
+    execution: executionMessages(resultWith("num_turns", undefined)),
+  },
+  { name: "num_turns as a string", execution: executionMessages(resultWith("num_turns", "51")) },
+  { name: "num_turns as a float", execution: executionMessages(resultWith("num_turns", 51.5)) },
+  { name: "a negative num_turns", execution: executionMessages(resultWith("num_turns", -1)) },
+  { name: "num_turns explicitly null", execution: executionMessages(resultWith("num_turns", null)) },
+  {
+    name: "num_turns as an object",
+    execution: executionMessages(resultWith("num_turns", { n: 51 })),
+  },
+  // #1498's three new unreadable shapes. The first is the one that matters:
+  // it is #1493's OWN fixture, and it is a document the action does not
+  // write. A reader that still answers 51 to it is reading the root.
+  {
+    name: "a top-level object stating num_turns — the shape the action never writes",
+    execution: { num_turns: 51 },
+  },
+  { name: "a valid array carrying no result message", execution: executionMessages(null) },
+  { name: "an empty array", execution: [] },
+  // A result-shaped object nested one level too deep. `..` would find it;
+  // the reader must not, because a key found at an unknown depth is a key
+  // nobody can say the provenance of.
+  {
+    name: "a result message wrapped in an envelope object",
+    execution: { messages: executionMessages(resultWith("num_turns", 51)) },
+  },
 ];
 
 describe("AC-T2 (#1380): an unreadable turn count is UNMEASURED, never a number", () => {
@@ -2747,7 +2890,7 @@ describe("AC-T8 (#1380): no verdict is recorded, and the recorder says why", () 
       list: [],
       files: { "lib/a.ts": "one\ntwo\nthree\nfour\n" },
       payload: ONE_FINDING,
-      execution: { num_turns: 51 },
+      execution: executionMessages(resultWith("num_turns", 51)),
     });
     expect(r.status, r.stderr).toBe(0);
     const keys = Object.keys(r.rounds![0]);

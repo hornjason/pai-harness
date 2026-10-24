@@ -1,4 +1,4 @@
-# generated-sha: 45919e6a908860f1
+# generated-sha: db290be59875ced7
 # Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 #
 # THREE OUTCOMES, and only one of them is a review that found nothing.
@@ -2210,13 +2210,25 @@ jobs:
           # same construction the findings read above uses, so there is one branch
           # that means unreadable. A float, a string, a negative and an absent key
           # all leave by it.
+          #
+          # THE KEY IS NOT AT THE DOCUMENT ROOT (#1498). The action's execution file
+          # is `JSON.stringify(messages, null, 2)` over an `SDKMessage[]`, so the
+          # root is an ARRAY and `num_turns` sits on the
+          # `result` member inside it. Reading the root
+          # found nothing on every run that has ever happened, and because the
+          # honest answer to an unreadable round is `null` rather than `0`, a field
+          # that could NEVER be read looked exactly like a field being carefully
+          # cautious. The selection is `AI_REVIEW_EXECUTION_RESULT_JQ`, one binding,
+          # so there is exactly one thing a mutation can point back at the root.
           turns="null"
           if [ -n "${AI_REVIEW_EXECUTION_FILE:-}" ] && [ -s "${AI_REVIEW_EXECUTION_FILE}" ]; then
-            if parsed_turns=$(jq -c 'if (.num_turns | type) == "number"
+            if parsed_turns=$(jq -c 'if type == "array" then . else error("the execution file is not an array of messages") end | [ .[] | select(type == "object" and .type == "result") ] | last
+                 | if type == "object"
+                   and (.num_turns | type) == "number"
                    and (.num_turns | floor) == .num_turns
                    and .num_turns >= 0
                  then .num_turns
-                 else error("num_turns is not a non-negative integer") end' \
+                 else error("no result message states a non-negative integer num_turns") end' \
                 "${AI_REVIEW_EXECUTION_FILE}" 2>/dev/null); then
               turns="${parsed_turns}"
             else
@@ -3238,28 +3250,35 @@ jobs:
               # different explanatory sentence rather than a different verdict.
               if grep -qE '"subtype"[[:space:]]*:[[:space:]]*"error_max_turns"' "${AI_REVIEW_EXECUTION_FILE}"; then
                 route="The review action exited successfully WITHOUT writing a findings payload, and its execution file reports the turn budget was exhausted (error_max_turns), so the reviewer ran out of turns before it wrote anything. Raising AI_REVIEW_MAX_TURNS is the lever; making the prompt write a payload early is NOT, because a partial review that leaves a file behind reports as a pass. This check is UNMEASURED, not a passing review."
-              elif ! grep -qE '"permission_denials_count"[[:space:]]*:' "${AI_REVIEW_EXECUTION_FILE}"; then
+              elif ! grep -qE '"permission_denials"[[:space:]]*:' "${AI_REVIEW_EXECUTION_FILE}"; then
                 # Asked FIRST, because the two readings below are both about a number
                 # that may not be there, and "absent" answered last is "absent" reported
                 # as whichever branch fell through to it.
-                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file. That file carries no permission_denials_count, so whether the reviewer was refused anything is UNMEASURED too and this job will not guess at it (#1087). Read the execution file and the action's own log. This check is UNMEASURED, not a passing review."
-              elif grep -qE '"permission_denials_count"[[:space:]]*:[[:space:]]*0[[:space:]]*(,|}|$)' "${AI_REVIEW_EXECUTION_FILE}"; then
-                # The end-anchor is `(,|}|$)` and the `$` is the whole of it. grep is
-                # LINE-based: it strips the newline before matching, so in the
-                # pretty-printed file the action actually writes — where this field is
-                # the last member of the result object — the character after `0` is the
-                # end of the line and nothing else. A `[,}]` class alone therefore
-                # fails to match a genuine zero, which is the failing direction: the
-                # zero route would be unreachable and every executed run would report
-                # denials it did not have.
+                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file. That file carries no permission_denials list, so whether the reviewer was refused anything is UNMEASURED too and this job will not guess at it (#1087). The job LOG may still state it: the action's console sanitizer prints a derived permission_denials_count that it never writes to the file (#1392). Read the execution file and the action's own log. This check is UNMEASURED, not a passing review."
+              elif grep -qE '"permission_denials"[[:space:]]*:[[:space:]]*\[[[:space:]]*\][[:space:]]*(,|}|$)' "${AI_REVIEW_EXECUTION_FILE}"; then
+                # EMPTINESS, not a count (#1392). The field is a list, so "the reviewer
+                # was refused nothing" is `[]` on one line and a denial is a `[` with
+                # the first object on the NEXT line — `JSON.stringify(messages, null, 2)`
+                # puts it there. grep is LINE-based, so requiring the closing `]` on
+                # the same line as the opening `[` is what separates the two, and it
+                # separates them in the compact spelling too, where a non-empty list
+                # reads `[{`.
+                #
+                # The end-anchor is `(,|}|$)` and the `$` is the whole of it. grep
+                # strips the newline before matching, so in the pretty-printed file the
+                # action actually writes, a field that is the last member of the result
+                # object has nothing after it but the end of the line. A `[,}]` class
+                # alone therefore fails to match a genuine empty list, which is the
+                # failing direction: the no-denials route would be unreachable and
+                # every executed run would report denials it did not have.
                 #
                 # That is not a hypothetical. The first draft of this branch was
                 # `[,}]`, and `test/ai-review-route-reading.test.ts` AC-C4 caught it by
                 # pairing the three routes and finding two of them printing one
                 # sentence. The trailing `,` and `}` are kept for a compact file.
-                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file, so this is NOT the case where it declined before running, and nothing about the workflow file is worth checking. Its execution file reports permission_denials_count 0, so the reviewer was never refused a call: access to the findings path is NOT the cause and reading it as one is a dead end (#1087). Read the execution file for the turn count and what the reviewer spent its turns on instead. This check is UNMEASURED, not a passing review."
+                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file, so this is NOT the case where it declined before running, and nothing about the workflow file is worth checking. Its execution file reports an EMPTY permission_denials list, so the reviewer was never refused a call: access to the findings path is NOT the cause and reading it as one is a dead end (#1087). Read the execution file for the turn count and what the reviewer spent its turns on instead. This check is UNMEASURED, not a passing review."
               else
-                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file, and that file reports a NON-ZERO permission_denials_count, so the reviewer was refused at least one call. Read the denials in the execution file: a reviewer refused its own output file is the one case where the findings path, which is outside the checkout, is worth checking. This check is UNMEASURED, not a passing review."
+                route="The review action exited successfully WITHOUT writing a findings payload, so no AI review ran on this pull request — and the reviewer DID execute: the action wrote an execution file, and that file reports a NON-EMPTY permission_denials list, so the reviewer was refused at least one call. Read the denials in the execution file: a reviewer refused its own output file is the one case where the findings path, which is outside the checkout, is worth checking. This check is UNMEASURED, not a passing review."
               fi
             elif [ -n "${AI_REVIEW_EXECUTION_FILE:-}" ]; then
               # Named but unreadable. Reporting that as the declined route would be a
