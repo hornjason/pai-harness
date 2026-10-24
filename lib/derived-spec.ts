@@ -109,28 +109,40 @@ const PROSE_DECLARATIONS = [
   /\bgenerated\s+by\b/i,
 ];
 
+/** Fenced blocks hold examples OF markers, never markers. */
+function stripFences(text: string): string {
+  return text.replace(/^(```|~~~)[\s\S]*?^\1[^\n]*$/gm, "");
+}
+
 /**
  * The part of the document a whole-file declaration can live in.
  *
  * Everything after the frontmatter, up to the first ATX heading or the first
  * criterion line — whichever comes first. A marker below the first heading is
  * talking about a section, which is the `SPEC-TEMPLATE.md` case.
+ *
+ * **Fences come out BEFORE the boundary is looked for, not after.** A fenced
+ * block quoting YAML, shell or Python holds lines beginning `# `, which is
+ * also an ATX heading — so searching the raw body ends the head inside the
+ * fence and a real marker below it is never read. That is a miss in the
+ * unsafe direction: the file reads as authored and `--fix` writes it.
+ *
+ * It also made the fenced-example case below pass for the wrong reason, which
+ * is the shape `.claude/rules/checks-must-be-able-to-fail.md` calls *green on
+ * the exit code, witnessing the wrong mechanism*: the fence was never
+ * stripped, the head simply stopped before it. Both cases in
+ * `test/derived-spec-guard.test.ts` now turn on this ordering.
  */
 function documentHead(content: string): string {
-  const body = content.replace(FRONTMATTER, "");
+  const body = stripFences(content.replace(FRONTMATTER, ""));
   const lines = body.split("\n");
   const end = lines.findIndex((l) => /^#{1,6}\s/.test(l) || /^\s*- \[[ xX]\]/.test(l));
   return (end === -1 ? lines : lines.slice(0, end)).join("\n");
 }
 
-/** Fenced blocks hold examples OF markers, never markers. */
-function stripFences(text: string): string {
-  return text.replace(/^(```|~~~)[\s\S]*?^\1[^\n]*$/gm, "");
-}
-
 /** The first head HTML comment that declares the file produced, or null. */
 function proseDerivedMarker(content: string): string | null {
-  const head = stripFences(documentHead(content));
+  const head = documentHead(content);
   for (const [comment] of head.matchAll(/<!--[\s\S]*?-->/g)) {
     if (PROSE_DECLARATIONS.some((re) => re.test(comment))) {
       return comment.split("\n")[0].trim();
