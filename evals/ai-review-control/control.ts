@@ -406,6 +406,123 @@ export function summariseReviewControl(readings: ReviewControlReading[]): Review
   };
 }
 
+/**
+ * What the caller resolved about the repository a subject would be staged
+ * into. Taken by the caller, like `RootReading` next door, so the decision
+ * below is pure and a case can plant a repository that does not exist.
+ */
+export interface ReviewPathReading {
+  /** Of the paths asked about, the ones that resolve in the tree. */
+  resolvesInTree: readonly string[];
+  /** reviewPath → the spec files naming it. Absent and `[]` mean the same. */
+  namedBySpecs: Readonly<Record<string, readonly string[]>>;
+  /**
+   * The glob patterns `REVIEW.md`'s *Do not flag* list names, read from that
+   * document rather than restated here — a second copy of the list would be a
+   * second decider, and the two would agree right up until the document moved.
+   */
+  notFlagged: readonly string[];
+}
+
+/** Raised when the reading cannot support a judgement. */
+export class UnreadableReviewPathReading extends Error {}
+
+/** `**` crosses a separator, `*` does not. Everything else is a literal. */
+function globMatches(pattern: string, path: string): boolean {
+  const source = pattern
+    .split("**")
+    .map(part => part.split("*").map(lit => lit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*"))
+    .join(".*");
+  return new RegExp(`^${source}$`).test(path);
+}
+
+/**
+ * Every reason a `reviewPath` cannot carry a reading (#1513).
+ *
+ * A subject is a compacted, self-contained copy, so it is by construction a
+ * WORSE file than any live module whose path it borrows. #1509 measured both
+ * halves of what that costs, and they are different failures:
+ *
+ * - `lib/project-state-root.ts` — the reviewer wrote a true `critical` in all
+ *   four draws saying the module no longer exports what its callers import.
+ *   True of the baseline, the planted candidate and the clean candidate
+ *   alike, so the clean arm could only ever score `FIRED` and the precision
+ *   half of the instrument had one reachable outcome.
+ * - `lib/test-suite-lock.ts` — five conformity criteria assert that file's
+ *   contents, the compacted copy carries none of them, and the pre-push gate
+ *   correctly refuses the measurement branch. N = 0, permanently.
+ *
+ * So a `reviewPath` must name a path that exists in NEITHER the tree nor the
+ * specs, and must still sit where the reviewer looks. The third rule is the
+ * other side of that: a path `REVIEW.md` excludes is a path where every
+ * finding is a declared false positive, so a reading taken there measures
+ * exclusion-obedience rather than the reviewer.
+ *
+ * An empty `notFlagged` is a REFUSAL, not agreement. Zero patterns match
+ * nothing, so a reading that failed to find the list would certify every
+ * subject — the shape `.claude/rules/checks-must-be-able-to-fail.md` calls an
+ * assertion that holds vacuously.
+ */
+export function reviewPathViolations(
+  subjects: readonly ReviewControlSubject[],
+  reading: ReviewPathReading,
+): string[] {
+  if (reading.notFlagged.length === 0) {
+    throw new UnreadableReviewPathReading(
+      "the reading carries no REVIEW.md exclusion patterns. Zero patterns match nothing, so " +
+        "every reviewPath would pass the exclusion rule without being read — UNMEASURED, not clean.",
+    );
+  }
+
+  const violations: string[] = [];
+  const seen = new Map<string, string>();
+
+  for (const subject of subjects) {
+    const path = subject.file;
+
+    const first = seen.get(path);
+    if (first === undefined) seen.set(path, subject.id);
+    else if (first.split("/")[0] !== subject.id.split("/")[0]) {
+      violations.push(
+        `${subject.id} and ${first} both stage at ${path}. Two subjects at one path cannot be ` +
+          "measured by one branch pair — give each subject its own reviewPath.",
+      );
+    }
+
+    if (reading.resolvesInTree.includes(path)) {
+      violations.push(
+        `${subject.id}: ${path} is a live module. A compacted subject staged over it is a ` +
+          "degraded version of a file the tree depends on, so the reviewer has a true finding " +
+          "available in EVERY draw and the clean arm can only score FIRED (#1513, instance 1). " +
+          "Name a path that exists in neither the tree nor the specs.",
+      );
+    }
+
+    const specs = reading.namedBySpecs[path] ?? [];
+    if (specs.length > 0) {
+      violations.push(
+        `${subject.id}: ${path} is named by ${specs.length} spec file(s) (${specs.join(", ")}). ` +
+          "A spec that names a path may assert its CONTENTS — five criteria do for " +
+          "lib/test-suite-lock.ts — and the compacted copy carries none of it, so the conformity " +
+          "gate refuses the measurement branch and the subject stays at N = 0 (#1513, instance 2). " +
+          "This refuses a prose mention too: that is the direction that costs a rename rather " +
+          "than a reading. Name a path no spec mentions.",
+      );
+    }
+
+    for (const pattern of reading.notFlagged) {
+      if (!globMatches(pattern, path)) continue;
+      violations.push(
+        `${subject.id}: ${path} is under ${pattern}, which REVIEW.md's "Do not flag" list names. ` +
+          "Every finding there is a declared false positive, so the reading would measure whether " +
+          "the reviewer obeyed the exclusion. Stage somewhere the reviewer is asked to look.",
+      );
+    }
+  }
+
+  return violations;
+}
+
 function asLineRange(value: unknown): readonly [number, number] | null {
   if (!Array.isArray(value) || value.length !== 2) return null;
   const [a, b] = value;

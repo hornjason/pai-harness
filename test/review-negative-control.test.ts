@@ -24,7 +24,7 @@
  * entirely and watches it pass.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 
 import {
@@ -39,10 +39,13 @@ import { AI_REVIEW_UNTRUSTED_PATHS } from "../lib/scaffold/ai-review-step";
 
 import {
   REVIEW_CONTROL_SUBJECTS_DIR,
+  UnreadableReviewPathReading,
   loadReviewControlSubjects,
   readReviewControl,
+  reviewPathViolations,
   summariseReviewControl,
   type ReviewControlSubject,
+  type ReviewPathReading,
 } from "../evals/ai-review-control/control";
 
 import { isFullSuite as baseline } from "../evals/ai-review-control/subjects/suite-lock-redirect/baseline";
@@ -663,5 +666,167 @@ describe("#1225: the harmful-change count, and why it is UNMEASURED here", () =>
     expect(run.fired).toBe(1);
     expect(run.quiet).toBe(1);
     expect(run.passed).toBe(false);
+  });
+});
+
+/**
+ * #1513: a reviewPath has to be stageable, and both live ones were not.
+ *
+ * #1509 took the first readings and hit two blockers with one root: a subject
+ * is a compacted, self-contained copy, so it is by construction a worse file
+ * than the live module whose path it borrowed. The cost came back in two
+ * different shapes and the control could see neither.
+ *
+ * The readings below are taken from THIS repository and handed to one
+ * exported predicate. Keeping the reading outside the predicate is what makes
+ * the planted cases possible: a repository where `lib/project-state-root.ts`
+ * is live and one where nothing is differ only in the argument.
+ */
+const REPO_ROOT = join(import.meta.dir, "..");
+
+/** Every `.md` under `specs/`, repo-relative. */
+function specDocuments(dir: string, prefix = "specs"): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      found.push(...specDocuments(join(dir, entry.name), `${prefix}/${entry.name}`));
+    } else if (entry.name.endsWith(".md")) {
+      found.push(`${prefix}/${entry.name}`);
+    }
+  }
+  return found.sort();
+}
+
+/**
+ * The patterns `REVIEW.md`'s *Do not flag* list names, cut by heading rather
+ * than by a character count — the region a claim is about ends where the
+ * section ends (`.claude/rules/self-referential-tests.md`).
+ *
+ * A backticked token with no `/` is a whole file (`CODE-MAP.md`) and cannot be
+ * a directory a subject sits under, so it is not a pattern. `lib/scaffold/*.ts`
+ * is excluded in REVIEW.md only for the LENGTH of its comment blocks rather
+ * than wholesale; treating it as a full exclusion errs toward refusing a
+ * reviewPath, which is the direction that costs an unticked box rather than a
+ * bad reading.
+ */
+function doNotFlagPatterns(reviewDoc: string): string[] {
+  const section = reviewDoc.split(/^## /m).find(part => part.startsWith("Do not flag"));
+  if (section === undefined) return [];
+  return [...section.matchAll(/`([^`]+)`/g)].map(m => m[1]).filter(p => p.includes("/"));
+}
+
+/** The reading this repository produces for a set of candidate paths. */
+function repositoryReading(paths: readonly string[]): ReviewPathReading {
+  const namedBySpecs: Record<string, string[]> = {};
+  for (const path of paths) namedBySpecs[path] = [];
+  for (const spec of specDocuments(join(REPO_ROOT, "specs"))) {
+    const text = readFileSync(join(REPO_ROOT, spec), "utf-8");
+    for (const path of paths) if (text.includes(path)) namedBySpecs[path].push(spec);
+  }
+  return {
+    resolvesInTree: paths.filter(path => existsSync(join(REPO_ROOT, path))),
+    namedBySpecs,
+    notFlagged: doNotFlagPatterns(readFileSync(join(REPO_ROOT, "REVIEW.md"), "utf-8")),
+  };
+}
+
+const SUBJECT_PATHS = [...new Set(SUBJECTS.map(s => s.file))];
+
+describe("#1513: a reviewPath must be stageable, and the check must say why not", () => {
+  test("AC-1: the exclusion list really was read, so a clean result is not a failed read", () => {
+    // The control for every exclusion case below. Zero patterns match
+    // nothing, so a parse that silently found none would certify every
+    // reviewPath — and it would look exactly like a tree with nothing to
+    // exclude.
+    const patterns = doNotFlagPatterns(readFileSync(join(REPO_ROOT, "REVIEW.md"), "utf-8"));
+    expect(patterns).toContain("evals/**/subjects/**");
+    expect(patterns.length).toBeGreaterThan(1);
+  });
+
+  test("AC-1: an empty exclusion list is a refusal, not agreement", () => {
+    expect(() =>
+      reviewPathViolations(SUBJECTS, { resolvesInTree: [], namedBySpecs: {}, notFlagged: [] }),
+    ).toThrow(UnreadableReviewPathReading);
+  });
+
+  test("AC-2: every subject in the tree stages at a path this repository can carry", () => {
+    expect(reviewPathViolations(SUBJECTS, repositoryReading(SUBJECT_PATHS))).toEqual([]);
+  });
+
+  test("AC-2: and that is not vacuous — two distinct paths were read, both under lib/", () => {
+    expect(SUBJECT_PATHS.length).toBe(2);
+    expect(SUBJECT_PATHS.filter(path => path.startsWith("lib/"))).toEqual(SUBJECT_PATHS);
+  });
+
+  test("#1513 instance 1: a live module's path is refused, naming the confound", () => {
+    // `lib/project-state-root.ts`, where all four of #1509's draws carried a
+    // true `critical` about the compacted stub breaking its callers.
+    const live = "lib/project-state-root.ts";
+    expect(existsSync(join(REPO_ROOT, live))).toBe(true);
+
+    const violations = reviewPathViolations([{ ...SUBJECTS[0], file: live }], {
+      ...repositoryReading([live]),
+      namedBySpecs: {},
+    });
+    expect(violations.length).toBe(1);
+    expect(violations[0]).toContain("is a live module");
+    expect(violations[0]).toContain("FIRED");
+  });
+
+  test("#1513 instance 2: a path the specs assert the contents of is refused", () => {
+    // `lib/test-suite-lock.ts` — SC-648, SC-649, SC-759, SC-760, SC-625.
+    // Measured on this tree: 5 of 1410 conformity cases red with the subject
+    // staged there, 0 of 1410 with it absent.
+    const asserted = "lib/test-suite-lock.ts";
+    const reading = repositoryReading([asserted]);
+    expect(reading.namedBySpecs[asserted].length).toBeGreaterThan(0);
+
+    const violations = reviewPathViolations([{ ...SUBJECTS[0], file: asserted }], {
+      ...reading,
+      resolvesInTree: [],
+    });
+    expect(violations.length).toBe(1);
+    expect(violations[0]).toContain("spec file(s)");
+    expect(violations[0]).toContain("N = 0");
+  });
+
+  test("the subjects' own directory is refused — a reading there measures the exclusion", () => {
+    // Named in #1513 as a thing NOT to do: leaving the subject where it
+    // lives, or widening REVIEW.md's list to cover a new path, both turn
+    // recall into a measurement of exclusion-obedience.
+    const inside = "evals/ai-review-control/subjects/worktree-state-write/planted.ts";
+    const violations = reviewPathViolations([{ ...SUBJECTS[0], file: inside }], {
+      ...repositoryReading([inside]),
+      resolvesInTree: [],
+      namedBySpecs: {},
+    });
+    expect(violations.length).toBe(1);
+    expect(violations[0]).toContain("evals/**/subjects/**");
+  });
+
+  test("two subject directories sharing one reviewPath is refused", () => {
+    const shared = "lib/unoccupied.ts";
+    const violations = reviewPathViolations(
+      [
+        { ...SUBJECTS[0], id: "alpha/planted", file: shared },
+        { ...SUBJECTS[1], id: "beta/clean", file: shared },
+      ],
+      { ...repositoryReading([shared]), resolvesInTree: [] },
+    );
+    expect(violations.length).toBe(1);
+    expect(violations[0]).toContain("both stage at");
+  });
+
+  test("…while several cases of ONE subject at one path is the normal shape", () => {
+    const shared = "lib/unoccupied.ts";
+    const violations = reviewPathViolations(
+      [
+        { ...SUBJECTS[0], id: "alpha/planted", file: shared },
+        { ...SUBJECTS[1], id: "alpha/clean", file: shared },
+        { ...SUBJECTS[1], id: "alpha/clean-loop", file: shared },
+      ],
+      { ...repositoryReading([shared]), resolvesInTree: [] },
+    );
+    expect(violations).toEqual([]);
   });
 });
