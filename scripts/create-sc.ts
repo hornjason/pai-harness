@@ -24,6 +24,7 @@ import {
 import { readScRegistry } from "./sync-sc-status";
 import { describeReading } from "../lib/sc-id-cross-tree";
 import { currentScOwner } from "../lib/sc-reservations";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
 import { join } from "path";
 
 /** Same resolution sync-sc-status uses, so both halves read one tree. */
@@ -112,6 +113,16 @@ try {
     const owner = getFlag("owner") ?? currentScOwner(ROOT);
     const { number: scNumber, namespace } = allocateScNumber(ROOT, content, readScRegistry(), { owner });
     const scLine = formatSCLine(scNumber, statement);
+
+    // #1286: appending to a spec a generator owns writes a criterion that
+    // disappears at the next regeneration, having consumed an SC id that
+    // nothing then declares. Refuse loudly rather than allocate into a file
+    // that cannot keep it.
+    const reading = readDerivedDeclaration(content);
+    if (!mayWrite(reading)) {
+      console.error(skipLine(specPath, reading));
+      process.exit(1);
+    }
 
     // Append SC line to the end of the file
     const newContent = content.trimEnd() + "\n" + scLine + "\n";

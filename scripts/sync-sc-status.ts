@@ -23,6 +23,7 @@ import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
 import { behavioralCachePath, readFreshCache } from "../lib/behavioral-cache";
+import { mayWrite, readDerivedDeclaration, skipLine } from "../lib/derived-spec";
 import { detectDrift } from "./detect-sc-drift";
 import {
   ambiguityOf,
@@ -684,6 +685,16 @@ export function flipCheckboxes(specFile: string, scIds: string[], specsDir?: str
   const dir = specsDir || SPECS_DIR;
   const filePath = join(dir, specFile);
   let content = readFileSync(filePath, "utf-8");
+
+  // #1286: ticking a checkbox is an in-place edit like any other. A spec a
+  // generator owns gets its ticks from the generator, and flipping one here
+  // is discarded at the next regeneration after breaking whatever pins it.
+  const reading = readDerivedDeclaration(content);
+  if (!mayWrite(reading)) {
+    console.warn(skipLine(specFile, reading));
+    return 0;
+  }
+
   let flipped = 0;
 
   for (const id of scIds) {
