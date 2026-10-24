@@ -373,12 +373,42 @@ export interface AstWriteSite {
   /** `name: reason` for each identifier in the target carrying no value. */
   unresolved: string[];
   /**
-   * True when the target shows NO string literal at all and has at least one
-   * unresolved identifier — the path is entirely invisible, so the detector
-   * cannot say it is not a spec. Distinct from a merely partial reading like
-   * `join(root, "report.json")`, where `root` is opaque but the filename is not.
+   * True when the sweep cannot determine this target's path, so it must not
+   * claim the site is not a spec write. Two causes:
+   *
+   *  - the target shows NO string literal at all and has an unresolved
+   *    identifier — the path is entirely invisible. Distinct from a partial
+   *    reading like `join(root, "report.json")`, where `root` is unresolved
+   *    but the filename is not;
+   *  - the target depends on a REASSIGNABLE binding (`let`/`var`), whose value
+   *    at the write is not what its initialiser says. See `reassignable`.
    */
   opaque: boolean;
+  /**
+   * True when some identifier in the target resolves to a `let` or `var`.
+   *
+   * This is the property that replaced enumerating assignment spellings. The
+   * first fix for the #1569 review finding widened the tracker from `x = …` to
+   * destructuring patterns; MEASURED against six spellings, three were still
+   * missed — a default inside a pattern, `for ([p] of …)` and `for (p of …)`.
+   * Widening again just moves the boundary.
+   *
+   * `const` cannot be reassigned, and that is a guarantee from the language
+   * rather than a list this file has to keep current. So eligibility is
+   * decided by the binding's kind, and a new assignment spelling nobody
+   * enumerated changes no answer: the binding was already untrusted.
+   *
+   * MEASURED on this tree: 6 of 131 write sites. The flag propagates through
+   * the expansion, so a locally-`const` target counts when an identifier
+   * inside it is a `let`. Those 6 are declared in `REASSIGNABLE_TARGETS`
+   * rather than silently cleared.
+   *
+   * An earlier draft of this comment said the cost was 3 sites. That number
+   * came from a probe that only inspected module-level declarations and so
+   * could not see a parameter or a function-local — the instrument's scope
+   * was narrower than the question it was quoted as answering.
+   */
+  reassignable: boolean;
   /** Offset of the call in the TRANSPILED text. Never an original-file offset. */
   start: number;
 }
@@ -477,6 +507,7 @@ export function writeSitesIn(
     const unresolved: string[] = [];
     let view = target;
     let sawLiteral = false;
+    let reassignable = false;
 
     if (arg) {
       for (const n of walkNodes(arg)) {
@@ -500,6 +531,12 @@ export function writeSitesIn(
             if (depth === 0) unresolved.push(`${name}: not-found`);
             continue;
           }
+          // `let`/`var` can be reassigned by a spelling this file does not
+          // enumerate, so its initialiser does not establish the value at the
+          // write. `const` cannot — that is the language's guarantee, and it
+          // is why this question needs no list of assignment forms.
+          if (binding.kind === "let" || binding.kind === "var") reassignable = true;
+
           const values = [binding.init, ...binding.assigned].filter(
             (v): v is string => typeof v === "string" && v.length > 0,
           );
@@ -538,7 +575,11 @@ export function writeSitesIn(
       target,
       view: view.replace(/\s+/g, " ").trim(),
       unresolved,
-      opaque: !sawLiteral && unresolved.length > 0,
+      // A reassignable binding makes the target opaque even when a literal IS
+      // visible: the literal may be the initialiser while the value at the
+      // write came from an assignment in a form nobody enumerated.
+      opaque: reassignable || (!sawLiteral && unresolved.length > 0),
+      reassignable,
       start: node.start,
     });
   }

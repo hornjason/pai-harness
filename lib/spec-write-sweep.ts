@@ -121,9 +121,52 @@ export interface WriteSite {
   specTargeting: boolean;
   /** `name: reason` for each identifier in the target carrying no value. */
   unresolved?: string[];
-  /** True when the target's path is entirely invisible to the resolver. */
+  /** True when the sweep cannot determine this target's path. */
   opaque?: boolean;
+  /** True when the target depends on a `let`/`var` binding. */
+  reassignable?: boolean;
 }
+
+/**
+ * Write sites whose target depends on a REASSIGNABLE binding, each with what
+ * it actually writes. Keyed `file::targetExpression`.
+ *
+ * This is the population that makes the strict reading honest. A target built
+ * from a `let` or `var` is one whose value at the write the sweep cannot
+ * establish — so rather than let it read as "not a spec", every one is listed
+ * here and `undeterminedTargets` fails on one that is not.
+ *
+ * That is what stops the detector being defeated by an assignment spelling
+ * nobody enumerated. MEASURED: widening the tracker to destructuring patterns
+ * still missed 3 of 6 spellings (a default inside a pattern, `for ([p] of …)`,
+ * `for (p of …)`); under this reading all three come out undetermined instead
+ * of clean, and a fourth spelling nobody has thought of does too.
+ *
+ * Six entries on this tree, out of 131 write sites. The flag propagates
+ * through the expansion, so a locally-`const` target lands here when an
+ * identifier INSIDE it is a `let` — `backupDir`, `outDir` and `SF` are why
+ * most of these are listed.
+ *
+ * This deliberately does NOT cover the wider class of targets with no visible
+ * literal at all — 32 sites, nearly all function parameters. That bound
+ * predates this change, is stated in `lib/spec-write-ast.ts`, and declaring
+ * all 32 would be a guard that flags a quarter of the tree: louder, not more
+ * accurate.
+ */
+export const REASSIGNABLE_TARGETS: Record<string, string> = {
+  "lib/test-suite-lock.ts::tmp":
+    "a temp sibling of the lock file, `${path}.${pid}.${rand}`, renamed over it; `path` is the lock path",
+  "lib/test-suite-lock.ts::path":
+    "the suite lock file itself, as the destination of the atomic rename above",
+  "lib/worktree-collect.ts::slot":
+    "a numbered slot under the collect backup root, from `backupDir` which is a lazily-assigned let",
+  "scripts/suite-flake-run.ts::log":
+    "`run-NN.log` under the flake run's output directory",
+  "scripts/verify-merge-content.ts::out":
+    "the artefact path given by --out, written only when that flag was passed",
+  "gates/run-gate.ts::SF":
+    "the gate state file this script exists to maintain",
+};
 
 /**
  * Write sites whose target matches `/spec/i` and is nonetheless not a path
@@ -196,6 +239,7 @@ export function writeSites(root: string, dirs: readonly string[] = SWEPT_DIRS): 
         specTargeting: specTargetingOf(s),
         unresolved: s.unresolved,
         opaque: s.opaque,
+        reassignable: s.reassignable,
       });
     });
   }
@@ -216,6 +260,27 @@ export function specChokepointViolations(
 ): WriteSite[] {
   return writeSites(root, dirs).filter(
     (s) => s.specTargeting && s.file !== CHOKEPOINT && !(`${s.file}::${s.target}` in classified),
+  );
+}
+
+/**
+ * Write sites built from a reassignable binding that nobody has declared.
+ * Empty is the only acceptable reading.
+ *
+ * Separate from `specChokepointViolations` because it is a different claim: a
+ * violation says "this writes a spec and skips the chokepoint", while this
+ * says "the sweep cannot establish what this writes, and nobody has said why
+ * that is alright". Both must be empty for the chokepoint's green reading to
+ * mean anything — without this one, a target the resolver cannot follow reads
+ * exactly like a target it followed and cleared.
+ */
+export function undeterminedTargets(
+  root: string,
+  dirs: readonly string[] = SWEPT_DIRS,
+  declared: Record<string, string> = REASSIGNABLE_TARGETS,
+): WriteSite[] {
+  return writeSites(root, dirs).filter(
+    (s) => s.reassignable && s.file !== CHOKEPOINT && !(`${s.file}::${s.target}` in declared),
   );
 }
 

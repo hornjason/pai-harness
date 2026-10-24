@@ -235,6 +235,106 @@ describe("SC-1566-SCOPE: an identifier at a write site resolves by scope, not by
   });
 });
 
+// ── The property that makes the assignment enumeration stop mattering ──
+
+describe("SC-1566-SCOPE: a reassignable binding makes a target undetermined", () => {
+  /** The spellings a widened assignment tracker still misses. */
+  const MISSED_BY_ENUMERATION: [string, string][] = [
+    ["a default inside a pattern", '[p = join(d, "A-SPEC.md")] = [];'],
+    ["for ([p] of …)", 'for ([p] of [[join(d, "A-SPEC.md")]]) { }'],
+    ["for (p of …)", 'for (p of [join(d, "A-SPEC.md")]) { }'],
+  ];
+
+  test("every spelling the tracker misses comes out UNDETERMINED, not clean", () => {
+    // This is the whole point of deciding eligibility by binding kind. Each
+    // of these assigns a spec path in a form the tracker does not read, so
+    // under a spelling-based reading the site says "not a spec" — the
+    // permissive direction. `let` is untrusted by the language's own rule, so
+    // all three say "cannot tell" instead, and so does a fourth spelling
+    // nobody has thought of.
+    const clean: string[] = [];
+    for (const [name, assignment] of MISSED_BY_ENUMERATION) {
+      const site = onlySite(
+        `let p = join(d, "report.json");\n${assignment}\nwriteFileSync(p, "x");`,
+      );
+      if (!site.opaque && !specTargetingOf(site)) clean.push(name);
+      expect(site.reassignable, `${name}: p is a let and must be flagged`).toBe(true);
+    }
+    expect(
+      clean,
+      "these spellings assigned a spec path and the sweep reported the site as clean",
+    ).toEqual([]);
+  });
+
+  test("NEGATIVE CONTROL: the same shapes on a const are determined", () => {
+    // Without this the row above would pass for a resolver that called
+    // everything undetermined, which is the louder-not-better failure.
+    const site = onlySite('const p = join(d, "report.json");\nwriteFileSync(p, "x");');
+    expect(site.reassignable).toBe(false);
+    expect(site.opaque).toBe(false);
+    expect(specTargetingOf(site)).toBe(false);
+
+    const spec = onlySite('const p = join(d, "A-SPEC.md");\nwriteFileSync(p, "x");');
+    expect(spec.reassignable).toBe(false);
+    expect(specTargetingOf(spec)).toBe(true);
+  });
+
+  test("the flag propagates through the expansion, not just the outer binding", () => {
+    // Six of this tree's declared entries are locally `const` and land in the
+    // population because an identifier INSIDE the target is a let. A reading
+    // that only checked the outermost binding would clear all of them.
+    const site = onlySite(
+      'let base = outDir;\nconst p = join(base, "f.json");\nwriteFileSync(p, "x");',
+    );
+    expect(site.reassignable, "p is const but base is not").toBe(true);
+
+    // NEGATIVE CONTROL: make the inner binding const and it clears.
+    const fixed = onlySite(
+      'const base = outDir;\nconst p = join(base, "f.json");\nwriteFileSync(p, "x");',
+    );
+    expect(fixed.reassignable).toBe(false);
+  });
+});
+
+// ── The four "cannot tell" states, each able to go red ──────────────
+
+describe("SC-1566-SCOPE: each cannot-tell state fails if the resolver starts claiming it", () => {
+  // Three of the four — parameter, destructured, import — are asserted in
+  // shapes 3, 5 and 6 as an EQUALITY on `unresolved`, so a resolver that
+  // started producing a value for one of them empties the list and reddens
+  // the row. `opaque` had no such case until this block: it was only ever
+  // asserted false, which is the direction a resolver drifts towards.
+
+  test("opaque is TRUE when the target shows no literal and nothing resolves", () => {
+    const site = onlySite(`function f(p) { writeFileSync(p, "x"); }`);
+    expect(site.opaque, "a bare parameter target is entirely invisible").toBe(true);
+    expect(specTargetingOf(site)).toBe(false);
+  });
+
+  test("NEGATIVE CONTROL: a literal in the target makes it not opaque", () => {
+    // One feature removed — the target now shows a readable filename, so the
+    // sweep can say it is not a spec rather than that it cannot tell. Without
+    // this the row above passes for a resolver that calls everything opaque.
+    const site = onlySite(`function f(p) { writeFileSync(join(p, "report.json"), "x"); }`);
+    expect(site.unresolved, "p is still a parameter").toEqual(["p: parameter"]);
+    expect(site.opaque).toBe(false);
+    expect(specTargetingOf(site)).toBe(false);
+  });
+
+  test("opaque survives a visible literal when a binding is reassignable", () => {
+    // The two inputs disagree: there IS a literal, and the path is still not
+    // establishable. `reassignable` has to win, or the `let` property is
+    // decorative on every target that happens to name a file.
+    const site = onlySite(`let d = tmp;\nwriteFileSync(join(d, "report.json"), "x");`);
+    expect(site.opaque).toBe(true);
+    expect(site.reassignable).toBe(true);
+
+    // NEGATIVE CONTROL: same bytes, const.
+    const fixed = onlySite(`const d = tmp;\nwriteFileSync(join(d, "report.json"), "x");`);
+    expect(fixed.opaque).toBe(false);
+  });
+});
+
 // ── Write-site DETECTION, which is the same question one level up ────
 
 describe("SC-1566-DETECT: a write site is a call, not a spelling", () => {

@@ -42,12 +42,14 @@ import { join } from "path";
 import {
   CHOKEPOINT,
   NOT_A_SPEC_PATH,
+  REASSIGNABLE_TARGETS,
   SWEPT_DIRS,
   SWEPT_JS_DIRS,
   WRITE_PRIMITIVES,
   shellCorpus,
   shellSpecWrites,
   specChokepointViolations,
+  undeterminedTargets,
   writeSites,
   type WriteSite,
 } from "../lib/spec-write-sweep";
@@ -152,6 +154,50 @@ describe("#1552: the real tree routes every spec write through the chokepoint", 
     expect(
       Object.keys(NOT_A_SPEC_PATH).filter((k) => !keys.has(k)),
       "these sites no longer exist — delete the entry",
+    ).toEqual([]);
+  });
+
+  test("#1566: every reassignable target is declared, and no declaration is stale", () => {
+    // The second reading the green above needs. A target built from a `let`
+    // is one whose value at the write cannot be established, so without this
+    // it reads exactly like a target the resolver followed and cleared.
+    expect(
+      undeterminedTargets(REPO).map((s) => `${s.file}::${s.target}`),
+      "this write's target is built from a let/var, so the sweep cannot say " +
+        "what it writes. Make the binding const, or add it to " +
+        "REASSIGNABLE_TARGETS in lib/spec-write-sweep.ts with what it writes (#1566)",
+    ).toEqual([]);
+
+    // VACUITY CONTROL: the declared list must be non-empty and every entry
+    // must still be in the population. An empty list with an empty verdict is
+    // the two-empty-collections shape, and a stale entry is an exemption for
+    // a site that no longer exists.
+    const reassignable = new Set(
+      writeSites(REPO)
+        .filter((s) => s.reassignable)
+        .map((s) => `${s.file}::${s.target}`),
+    );
+    expect(reassignable.size, "no site on this tree is reassignable — is the flag wired?").toBe(
+      Object.keys(REASSIGNABLE_TARGETS).length,
+    );
+    expect(
+      Object.keys(REASSIGNABLE_TARGETS).filter((k) => !reassignable.has(k)),
+      "these sites are no longer reassignable — delete the entry",
+    ).toEqual([]);
+  });
+
+  test("#1566: the undetermined reading is a SEPARATE claim from the violation one", () => {
+    // Two deciders that agree are behaviourally one decider. These answer
+    // different questions about the same population and the counts must
+    // differ, or one of them is dead and no behavioural test can say which.
+    const sites = writeSites(REPO);
+    const specTargeting = sites.filter((s) => s.specTargeting).length;
+    const reassignable = sites.filter((s) => s.reassignable).length;
+    expect(specTargeting).toBe(1); // the chokepoint
+    expect(reassignable).toBe(Object.keys(REASSIGNABLE_TARGETS).length);
+    expect(
+      sites.filter((s) => s.specTargeting && s.reassignable),
+      "a site is in both populations — the two readings are no longer separable here",
     ).toEqual([]);
   });
 });
