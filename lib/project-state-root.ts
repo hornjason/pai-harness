@@ -40,7 +40,10 @@ export function generatorTarget(r: RootReading): GeneratorTarget {
   if (r.repoRoot === null) return decline("declined-outside-repo");
 
   if (r.repoRoot !== r.projectRoot) {
-    return decline("declined-not-repo-root");
+    // A linked worktree is a checkout of the same repository, carrying the
+    // same tracked generator. `--git-common-dir` resolving to the main
+    // checkout is how git stores a worktree, not a reason to refuse one.
+    if (!r.linkedWorktree) return decline("declined-not-repo-root");
   }
 
   if (!r.generatorTracked) return decline("declined-untracked-generator");
