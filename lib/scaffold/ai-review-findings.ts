@@ -1245,10 +1245,21 @@ export const AI_REVIEW_JURY_UNMEASURED_TITLE = "AI review verifier quorum UNMEAS
  *
  * **The gate decides nothing.** It is consulted after the reading is
  * complete, its answer reaches an annotation and the finding ledger, and
- * `reading` is not rebuilt from it. So a gate that is absent, broken or
- * wired wrong cannot change a verdict in either direction — which is the
- * only honest arrangement while the group that casts the votes is not yet
- * structurally independent. See `AI_REVIEW_JURY_NOTICE_TITLE`.
+ * `reading` is not rebuilt from it.
+ *
+ * So a gate that is absent, unreadable, malformed **or throwing** leaves
+ * the verdict alone — and the last of those four is enforced by a `try`
+ * at the call site rather than by this sentence. It is listed explicitly
+ * because the first draft of this docblock claimed all four while only
+ * three held: the call was outside any `catch`, so a throwing gate
+ * propagated out of `main` and killed the process above the outcome
+ * marker. A comment asserting a property the code lacks is the reason
+ * nobody checks it — the instance this repository keeps is
+ * `lib/cli-commands.ts`'s "runs every command for real" over a test that
+ * ran one command of ten. `JG-6h` is now the assertion.
+ *
+ * That is the only honest arrangement while the group casting the votes
+ * is not yet structurally independent. See `AI_REVIEW_JURY_NOTICE_TITLE`.
  *
  * **It takes the findings and nothing else.** The ballot directory is
  * bound by whoever supplies the gate, so this module never learns a path
@@ -1442,9 +1453,38 @@ export function main(argv: string[], jury: AiReviewJuryGate | null = null): numb
   let juryDetail: readonly string[] = [];
   let juryUnmeasured: string | null = null;
   if (jury !== null && reading.blockingReported !== null && reading.blockingReported.length > 0) {
-    const gate = jury(reading.blockingReported);
-    juryDetail = gate.detail;
-    juryUnmeasured = gate.unmeasured;
+    try {
+      const gate = jury(reading.blockingReported);
+      juryDetail = gate.detail;
+      juryUnmeasured = gate.unmeasured;
+    } catch (e) {
+      // A FAIL-OPEN, DELIBERATELY, and this is the one arrangement where
+      // that is the correct choice rather than the first thing
+      // `.claude/rules/checks-must-be-able-to-fail.md` tells you to
+      // distrust. Its warning is about a guard that converts its own
+      // breakage into "no problems found". This gate finds no problems
+      // and gates nothing: the verdict is `aiReviewExitCode(reading)`
+      // either way, so catching here cannot hide a finding — it can only
+      // stop an advisory recorder from deciding a review it has no vote
+      // in. The day the ballot is allowed to subtract, this catch must
+      // become a refusal, and that is the line to change.
+      //
+      // Without it the throw propagates out of `main`, so
+      // `process.exit(main(...))` never runs and a CLEAN review dies
+      // non-zero. Worse than the exit code: this block sits ABOVE the
+      // `AI_REVIEW_OUTCOME_LINE` print, which the generated step greps
+      // for before it will read an exit code as a verdict, so the step
+      // sees an adjudicator that could not run rather than a verdict.
+      //
+      // Three things inside the real gate are outside any catch of their
+      // own — `juryReading`, `advisoryKey` over a hostile payload, and
+      // all of `juryLedgerRow`. `JG-6h` is this case.
+      juryUnmeasured =
+        `the verifier quorum threw and was not counted, so no vote was recorded for this ` +
+        `run: ${(e as Error).message}. The verdict below is the adjudicator's own and is ` +
+        `unchanged — the group decides nothing this round — but the votes for these findings ` +
+        `are lost rather than merely unfavourable, and the ledger has no row to recover`;
+    }
   }
 
   // FIRST, and before any branch below can return. The generated workflow step

@@ -55,6 +55,7 @@ import {
   NO_GROUP_CONVENED,
   aiReviewJuryGate,
   juryGate,
+  readBallotDirectory,
   readBallots,
   type JuryGateOutcome,
 } from "../lib/ai-review-jury";
@@ -367,6 +368,63 @@ describe("JG-4: an unreadable ballot source is a reading that failed", () => {
     // and the hash is still the one identity.
     expect(Object.keys(r.ballots ?? {})).toEqual([keyOf(f)]);
   });
+
+  /**
+   * THE COUNTERFEIT, ARRIVING THROUGH THE FILE FORMAT.
+   *
+   * Found by this pull request's own `ai-review` run, against
+   * `lib/ai-review-jury.ts:readBallotDirectory`, and it is the same shape
+   * as the constant `agree` the issue names — a quorum that is populated,
+   * plausible and filtered nothing — reached by a different route.
+   *
+   * One verifier directory, one file, `VERIFIER_GROUP_SIZE` votes under
+   * distinct names. `juryReading` sees a full group: the names differ so
+   * `REPEATED_VERIFIER` does not fire, the count is right so
+   * `INCOMPLETE_GROUP` does not fire, and nothing else knows how many
+   * files those votes came out of. That is exactly the artefact one model
+   * in one context produces, and `AI_REVIEW_BALLOT_BASENAME`'s docblock
+   * already said so — "once written down it is indistinguishable from a
+   * real group" — while the code it documents merged the array whole.
+   *
+   * The count of files is the ONLY independence signal this layer has, so
+   * it has to be spent here: one vote per file, and a file carrying more
+   * is refused rather than truncated. Truncating would read as a group
+   * that met and fell short; this is a ballot nobody can count.
+   */
+  test("JG-4h: one file cannot be a whole group — a multi-vote file is refused", () => {
+    const f = blocking();
+    const dir = join(SCRATCH, `stuffed-${seq++}`);
+    const own = join(dir, "verifier-0");
+    mkdirSync(own, { recursive: true });
+    writeFileSync(
+      join(own, AI_REVIEW_BALLOT_BASENAME),
+      JSON.stringify({
+        [AI_REVIEW_BALLOT_KEY]: [
+          { file: f.file, summary: f.summary, votes: ballotFor(VERIFIER_GROUP_SIZE) },
+        ],
+      }),
+    );
+
+    const read = readBallotDirectory(dir);
+    expect(read.ballots, "one file supplied a whole quorum").toBeNull();
+    expect(read.unmeasured).toContain(BALLOT_UNREADABLE_PREFIX);
+    expect(read.unmeasured).toContain("verifier-0");
+
+    // And the gate reports it as a group that did not meet, with the
+    // finding still blocking — never as a quorum.
+    const out = withLedgerResult(() => aiReviewJuryGate([f], dir));
+    expect(out.unmeasured).not.toBeNull();
+    expect(out.wouldWithhold).toEqual([]);
+  });
+
+  test("JG-4i: one vote per file IS the readable case — the control for JG-4h", () => {
+    // Without this, JG-4h could pass on a reader that refuses every
+    // directory, and the refusal would look like a working cap.
+    const f = blocking();
+    const read = readBallotDirectory(ballotDir([[f, VERIFIER_GROUP_SIZE]]));
+    expect(read.unmeasured).toBeNull();
+    expect((read.ballots ?? {})[keyOf(f)]).toHaveLength(VERIFIER_GROUP_SIZE);
+  });
 });
 
 // ── JG-9: one vote may not decide two findings ───────────────────────────
@@ -639,6 +697,86 @@ describe("JG-6: main records the quorum and changes no verdict", () => {
     );
     expect(lines.some(l => l.includes(`${AI_REVIEW_OUTCOME_LINE} CLEAN`))).toBe(true);
     expect(code).toBe(0);
+  });
+
+  /**
+   * THE THIRD COLUMN OF `JG-6b`, and the one that was missing.
+   *
+   * `JG-6b` compares a ballot against no ballot. Both of those are the
+   * gate behaving. A gate that THROWS was the third state, and nothing
+   * held it: the call sat outside any `try`, so the exception propagated
+   * out of `main` and `process.exit(main(...))` never ran. A CLEAN review
+   * would have died non-zero — and worse than an exit flip, the throw
+   * happens ABOVE `AI_REVIEW_OUTCOME_LINE`, which the generated step greps
+   * for before it will read an exit code as a verdict. No marker is an
+   * adjudicator that could not run, not a verdict.
+   *
+   * Three things inside the real gate are outside any catch and can
+   * throw: `juryReading`, `advisoryKey` over a hostile payload, and all
+   * of `juryLedgerRow` — `symptomHash`, `filingBatch`, `juryCategory`,
+   * `severityOf`, `classifyCategory`. Unreachable today only because
+   * nothing sets `AI_REVIEW_BALLOT_DIR`; reachable the moment the
+   * workflow half lands, which is this issue's remaining work.
+   */
+  test("JG-6h: a gate that throws changes neither the exit code nor the first line", () => {
+    const payload = fixture(
+      JSON.stringify({ findings: [blocking()], verdict: AI_REVIEW_BLOCK_VERDICT }),
+    );
+    const thrower = (): never => {
+      throw new Error("the quorum exploded");
+    };
+
+    const without = captureBoth(() => main([payload]));
+    const thrown = captureBoth(() => main([payload], thrower));
+
+    expect(thrown.code, "a throwing gate changed the verdict").toBe(without.code);
+    expect(thrown.lines[0], "the outcome marker moved or vanished").toBe(without.lines[0]);
+    expect(thrown.lines[0]).toContain(AI_REVIEW_OUTCOME_LINE);
+    // And it is named, not swallowed. A fail-open that says nothing is the
+    // first shape `checks-must-be-able-to-fail.md` warns about.
+    expect(thrown.lines.some(l => l.includes(AI_REVIEW_JURY_UNMEASURED_TITLE))).toBe(true);
+    expect(thrown.lines.join("\n")).toContain("the quorum exploded");
+  });
+
+  /**
+   * Written as a CALL COUNT, after the first draft of it was vacuous.
+   *
+   * That draft ran a CLEAN payload through a gate that throws and
+   * asserted exit 0 — and it passed before the `try` existed, because a
+   * CLEAN run has no blocking findings and the gate is never reached. It
+   * asserted a true thing by a path that cannot reach the mechanism:
+   * `checks-must-be-able-to-fail.md`'s third shape, in a case written to
+   * guard against the sixth.
+   *
+   * The property worth holding is the one that made it vacuous. A quorum
+   * is spent per blocking finding, so a CLEAN run must not convene one at
+   * all, and a count is the only reading that can tell "did not throw"
+   * from "was never called".
+   */
+  test("JG-6i: a CLEAN run never convenes the group — zero calls, not a safe one", () => {
+    let calls = 0;
+    const counting = (b: readonly unknown[]): JuryGateOutcome => {
+      calls += 1;
+      return { wouldWithhold: b.map(() => null), unmeasured: null, detail: [] };
+    };
+
+    const clean = fixture(
+      JSON.stringify({
+        findings: [blocking({ severity: "info", summary: "a nit" })],
+        verdict: AI_REVIEW_PASS_VERDICT,
+      }),
+    );
+    const { code } = captureBoth(() => main([clean], counting));
+    expect(code).toBe(0);
+    expect(calls, "a CLEAN run spent a verifier group").toBe(0);
+
+    // The positive control, and the half that makes the zero mean
+    // something: the same gate IS called on a payload that blocks.
+    const blocked = fixture(
+      JSON.stringify({ findings: [blocking()], verdict: AI_REVIEW_BLOCK_VERDICT }),
+    );
+    captureBoth(() => main([blocked], counting));
+    expect(calls, "the gate was never called on a blocking payload either").toBe(1);
   });
 
   test("JG-6g: the finding is still reported — nothing is silently dropped", () => {

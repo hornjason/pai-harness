@@ -9569,7 +9569,6 @@ export function buildReviewRunStep(
     ...buildPersistScript().trimEnd().split("\n").map(l => (l ? `    ${l}` : "")),
   ];
 
-
   // #1242. The consequence of a waiver, and LAST for that reason — see
   // `AI_REVIEW_DISARM_STEP_ID`. It carries no `if:`, like every other step in
   // this job: the waived marker is resolved inside `run:` so the step reports

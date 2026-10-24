@@ -604,8 +604,54 @@ export function readBallotDirectory(ballotDir: string): BallotReading {
       };
     }
     for (const [key, votes] of Object.entries(one.ballots)) {
+      const cast = votes as unknown[];
+      // ONE VOTE PER FILE, and a file carrying more is REFUSED rather
+      // than truncated.
+      //
+      // This is the counterfeit CRC-B4 names, arriving through the file
+      // format instead of through a constant `agree`. One file listing
+      // `VERIFIER_GROUP_SIZE` votes under distinct names reads as a full
+      // group one level down: the names differ so `REPEATED_VERIFIER`
+      // cannot fire, the count is right so `INCOMPLETE_GROUP` cannot,
+      // and nothing below this line knows how many files the votes came
+      // out of. The file count is the ONLY independence signal this
+      // layer has, so it is spent here or not at all.
+      //
+      // Refused and not truncated, because the two readings differ:
+      // keeping the first vote would report a group that met and fell
+      // short, which is a reading, and this is a ballot nobody can
+      // count. Found by this repository's own `ai-review` against the
+      // first cut of this function, whose docblock already said a
+      // self-written group "is indistinguishable from a real group"
+      // while the code merged the array whole.
+      //
+      // **Here and not in `readBallots`**, which is the other candidate
+      // and the tempting one — it is the single-file reader, so the
+      // invariant would sit with the thing it describes. Two reasons it
+      // does not. The refusal has to NAME the verifier that filed the
+      // stuffed file, and the directory name is knowledge this loop has
+      // and `readBallots` does not; putting the cap down there means the
+      // caller rewrites the message to add the name, which is two places
+      // shaping one refusal. And the violated property is provenance,
+      // not syntax: `VERIFIER_GROUP_SIZE` votes for one finding is a
+      // perfectly well-formed ballot, and what makes it a counterfeit is
+      // that they arrived in one file. Only a reader counting files can
+      // see that. `readBallotDirectory` is the only production caller of
+      // `readBallots`, so there is exactly one decider either way —
+      // this is about which one can state the fact.
+      if (cast.length !== 1) {
+        return {
+          ballots: null,
+          unmeasured:
+            `${BALLOT_UNREADABLE_PREFIX}: verifier ${JSON.stringify(entry)} filed ${cast.length} ` +
+            `votes for one finding in a single ${AI_REVIEW_BALLOT_BASENAME}. The contract is one ` +
+            `vote per file because the file count is the only evidence the votes came from ` +
+            `separate contexts: a group one writer can produce alone is the quorum wired to a ` +
+            `constant that CRC-B4 refuses, wearing ${cast.length} names`,
+        };
+      }
       const carried = merged[key];
-      merged[key] = [...(Array.isArray(carried) ? carried : []), ...(votes as unknown[])];
+      merged[key] = [...(Array.isArray(carried) ? carried : []), ...cast];
     }
   }
 
@@ -636,6 +682,14 @@ export function readBallotDirectory(ballotDir: string): BallotReading {
  * it to bypass: the gate changes no verdict. An entry point that forgets to
  * wire it records no votes and says so under
  * `AI_REVIEW_JURY_UNMEASURED_TITLE`.
+ *
+ * **Including when this function throws.** That is not a property of this
+ * file — nothing here is exception-safe, and `juryReading`, `advisoryKey`
+ * and the whole of `juryLedgerRow` can all raise — it is a property of the
+ * `try` around the call in `lib/scaffold/ai-review-findings.ts`, asserted
+ * by `JG-6h`. Said here because this is where a reader will look for it,
+ * and because the first cut of that sentence was true of three states out
+ * of four.
  *
  * **A ledger that cannot be written does not change the verdict**, which is
  * trivially true here and is said anyway, because it will stop being
