@@ -1146,7 +1146,13 @@ export async function filingGate(
   for (const [index, attempt] of attempts.entries()) {
     const verdict = await adjudicateFiling(attempt, () => readFor(attempt.repo));
     const overridden = verdict.outcome === "REFUSE" && attempt.labels.includes(FILING_OVERRIDE_LABEL);
-    const emitted = verdict.outcome !== "REFUSE" || overridden;
+    // **This clause's own reading, and nothing about the command.** The
+    // command-level decision is not available yet — it needs every clause —
+    // so `emitted` here is provisional and `markBlockedCommand` below applies
+    // the second half. #1344 is what happens when it is not applied: a clause
+    // that cleared on its own merits inside a command the hook went on to
+    // refuse was recorded as having reached the tracker.
+    const cleared = verdict.outcome !== "REFUSE" || overridden;
 
     rows.push({
       at,
@@ -1156,10 +1162,14 @@ export async function filingGate(
       symptomHash: verdict.symptomHash,
       category: verdict.category,
       severity: null,
-      disposition: emitted ? "ISSUE" : "DROP",
+      // The adjudication's ROUTING decision, which is a different question
+      // from whether anything was filed and stays answered on a blocked
+      // command. `arbitrateBatch` does the same: a candidate withheld
+      // `BATCH_UNMEASURED` keeps the disposition its verdict gave it.
+      disposition: cleared ? "ISSUE" : "DROP",
       refusal: verdict.refusal,
-      emitted,
-      withheldBy: emitted ? null : verdict.refusal,
+      emitted: cleared,
+      withheldBy: cleared ? null : verdict.refusal,
       jury: null,
       duplicateOf: verdict.duplicateOf,
       overridden,
@@ -1201,9 +1211,16 @@ export async function filingGate(
   //
   // An OVERRIDDEN refusal is deliberately not in `refusals`, so it does not
   // block: an override is a decision somebody made and recorded.
+  //
+  // The rows above are written clause by clause, so they cannot yet know
+  // this. `markBlockedCommand` is where the command-level decision reaches
+  // them, and `clean` is read BEFORE it so the refusal still enumerates the
+  // clauses an agent should re-run — see that function's header for why that
+  // ordering is the whole of #1344's wrong fix.
   const blocking = refusals.length > 0;
   const clean = rows.filter(r => r.emitted);
   if (blocking && clean.length > 0) refusals.push(cleanClauseNote(clean, rows.length));
+  const recorded = blocking ? markBlockedCommand(rows) : rows;
 
   // Whatever the verdict, say what the comparison set lost on the way in.
   // A dedupe run over a corpus three issues short is a weaker reading than
@@ -1217,8 +1234,78 @@ export async function filingGate(
   return {
     refusal: blocking ? refusals.join("\n\n") : null,
     note: notes.length > 0 ? notes.join("\n\n") : null,
-    rows,
+    rows: recorded,
   };
+}
+
+/**
+ * Why a clause of a BLOCKED command did not reach the tracker when nothing
+ * was wrong with the clause (#1344).
+ *
+ * One exported constant, so there is one thing to mutate and one declaring
+ * position for the string the ledger carries.
+ */
+export const COMMAND_BLOCKED = "COMMAND_BLOCKED" satisfies WithheldBy;
+
+/**
+ * The command-level decision, applied to rows written clause by clause.
+ *
+ * ## What it fixes
+ *
+ * `filingGate` adjudicates one clause at a time and writes a row for each,
+ * and the decision that matters — block the command, or let it run — is not
+ * knowable until every clause has been read. So for the whole of #1338's
+ * life, a command the hook went on to REFUSE left rows reading
+ * `emitted: true` for every clause that had been clean on its own merits.
+ * Nothing was filed: a hook's one lever is the entire Bash command. The
+ * ledger overcounted filings by one row per clean clause of every blocked
+ * mixed command, and an overcount there is not decoration — this ledger is
+ * the record the arbiter's confidence is read off, and the direction it was
+ * wrong in was toward suppressing real findings as duplicates.
+ *
+ * ## Three states, and the one that is new
+ *
+ * | state | `emitted` | `disposition` | `withheldBy` |
+ * |---|---|---|---|
+ * | reached the tracker | `true` | `ISSUE` | `null` |
+ * | refused on its own merits | `false` | `DROP` | its own `ArbiterRefusal` |
+ * | clean, and never attempted | `false` | `ISSUE` | `COMMAND_BLOCKED` |
+ *
+ * The third is the one this adds, and it must not be either of the others.
+ * Marking it `DROP` with the sibling's refusal would say this clause was
+ * wrong, which is the only thing the ledger knows it was not; leaving it
+ * `emitted` says it was filed, which is #1344. `disposition` is deliberately
+ * untouched — it is the adjudication's ROUTING decision, and
+ * `arbitrateBatch` keeps it the same way for a candidate it withholds as
+ * `BATCH_UNMEASURED`.
+ *
+ * The invariant `withheldBy === null` exactly when `emitted` — the one
+ * `test/finding-arbiter.test.ts` holds over `CandidateRecord` — is preserved,
+ * because the two row shapes exist to be read as one population.
+ *
+ * ## Call it AFTER `cleanClauseNote`, never before
+ *
+ * The cheapest wrong fix for #1344 is to flip `emitted` where the rows are
+ * written. The count then comes out right and the refusal goes quiet: the
+ * note that names the clean clauses is built from `rows.filter(r =>
+ * r.emitted)`, so it would find none and tell the agent "0 of 2" with
+ * nothing to re-run. That note is the half that makes blocking a mixed
+ * command affordable at all (#1338), so the ordering is load-bearing and
+ * `FG-94` is the case that holds it.
+ *
+ * ## What this does NOT claim
+ *
+ * `emitted: true` means the hook ALLOWED the command. It is a prediction,
+ * not a receipt: this gate runs `PreToolUse`, and a `gh` that then fails on
+ * auth, the network or a rate limit files nothing. That outcome is
+ * **UNMEASURED by this ledger** and no value here stands in for it — a
+ * fourth state inferred from something the gate cannot see would be exactly
+ * the plausible-looking reading `.claude/rules/config-access.md` forbids.
+ */
+export function markBlockedCommand(rows: readonly FilingLedgerRow[]): FilingLedgerRow[] {
+  return rows.map(row =>
+    row.emitted ? { ...row, emitted: false, withheldBy: COMMAND_BLOCKED } : { ...row },
+  );
 }
 
 /**
